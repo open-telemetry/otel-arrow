@@ -1,3 +1,31 @@
+bin/
+dist/
+
+# GoLand IDEA
+/.idea/
+*.iml
+
+# VS Code
+.vscode/
+.devcontainer/
+
+# Emacs
+*~
+\#*\#
+
+# Miscellaneous files
+*.sw[op]
+*.DS_Store
+
+# Coverage
+coverage.out
+coverage.txt
+coverage.html
+
+# Wix
+*.wixobj
+*.wixpdb
+
 # Binaries for programs and plugins
 *.exe
 *.exe~
@@ -13,3 +41,4 @@
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
+
