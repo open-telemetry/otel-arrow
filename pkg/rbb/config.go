@@ -24,6 +24,7 @@ type Config struct {
 type DictionariesConfig struct {
 	// Dictionary options for binary columns
 	BinaryColumns DictionaryConfig
+
 	// Dictionary options for string columns
 	StringColumns DictionaryConfig
 }
@@ -32,10 +33,13 @@ type DictionariesConfig struct {
 type DictionaryConfig struct {
 	// The creation of a dictionary will be performed only on columns with more than `min_row_count` elements.
 	MinRowCount uint64
+
 	// The creation of a dictionary will be performed only on columns with a cardinality lower than `max_card`.
 	MaxCard uint64
+
 	// The creation of a dictionary will only be performed on columns with a ratio `card` / `size` <= `max_card_ratio`.
 	MaxCardRatio float64
+
 	// Maximum number of sorted dictionaries (based on cardinality/total_size and avg_data_lenght).
 	MaxSortedDictionaries uint64
 }
