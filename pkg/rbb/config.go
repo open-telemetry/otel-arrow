@@ -43,3 +43,11 @@ type DictionaryConfig struct {
 	// Maximum number of sorted dictionaries (based on cardinality/total_size and avg_data_lenght).
 	MaxSortedDictionaries uint64
 }
+
+// IsDictionaryEnabled returns true if the dictionary parameters passed in parameter statisfy the current
+// dictionary configuration.
+func (d *DictionaryConfig) IsDictionary(rowCount, card uint64) bool {
+	return rowCount >= d.MinRowCount &&
+		card <= d.MaxCard &&
+		float64(card)/float64(rowCount) <= d.MaxCardRatio
+}
