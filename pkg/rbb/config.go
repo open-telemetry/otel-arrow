@@ -14,13 +14,13 @@
 
 package rbb
 
-// Config defines the configuration supported by the RecordBatchRepository.
+// Config defines configuration for RecordBatchRepository.
 type Config struct {
 	// Configuration for the dictionaries
 	Dictionaries DictionariesConfig
 }
 
-// DictionariesConfig defines dictionaries configuration (binary and string)
+// DictionariesConfig defines configuration for binary and string dictionaries.
 type DictionariesConfig struct {
 	// Dictionary options for binary columns
 	BinaryColumns DictionaryConfig
@@ -28,7 +28,7 @@ type DictionariesConfig struct {
 	StringColumns DictionaryConfig
 }
 
-// DictionaryConfig defines the dictionary configuration.
+// DictionaryConfig defines configuration for a dictionary.
 type DictionaryConfig struct {
 	// The creation of a dictionary will be performed only on columns with more than `min_row_count` elements.
 	MinRowCount uint64
