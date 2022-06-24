@@ -125,6 +125,13 @@ type Columns struct {
 	StructColumns []StructColumn
 }
 
+type ColumnMetadata struct {
+	Name     string
+	Type     arrow.DataType
+	Len      int
+	Children []*ColumnMetadata
+}
+
 // Create a column with a field based on its field type and field name.
 func (c *Columns) CreateColumn(path []int, field *value.Field, config *Config, dictIdGen *DictIdGenerator) *FieldPath {
 	switch field.Value.(type) {
@@ -288,4 +295,116 @@ func (c *Columns) UpdateColumn(fieldPath *FieldPath, field *value.Field) {
 
 func (c *Columns) IsEmpty() bool {
 	return len(c.I8Columns) == 0 && len(c.I16Columns) == 0 && len(c.I32Columns) == 0 && len(c.I64Columns) == 0 && len(c.U8Columns) == 0 && len(c.U16Columns) == 0 && len(c.U32Columns) == 0 && len(c.U64Columns) == 0 && len(c.F32Columns) == 0 && len(c.F64Columns) == 0 && len(c.BooleanColumns) == 0 && len(c.StringColumns) == 0 && len(c.BinaryColumns) == 0 && len(c.ListColumns) == 0 && len(c.StructColumns) == 0
+}
+
+func (c *Columns) Metadata() []*ColumnMetadata {
+	var metadata []*ColumnMetadata
+
+	for _, i8Column := range c.I8Columns {
+		metadata = append(metadata, &ColumnMetadata{
+			Name: i8Column.Name,
+			Type: arrow.PrimitiveTypes.Int8,
+			Len:  len(i8Column.Data),
+		})
+	}
+	for _, i16Column := range c.I16Columns {
+		metadata = append(metadata, &ColumnMetadata{
+			Name: i16Column.Name,
+			Type: arrow.PrimitiveTypes.Int16,
+			Len:  len(i16Column.Data),
+		})
+	}
+	for _, i32Column := range c.I32Columns {
+		metadata = append(metadata, &ColumnMetadata{
+			Name: i32Column.Name,
+			Type: arrow.PrimitiveTypes.Int32,
+			Len:  len(i32Column.Data),
+		})
+	}
+	for _, i64Column := range c.I64Columns {
+		metadata = append(metadata, &ColumnMetadata{
+			Name: i64Column.Name,
+			Type: arrow.PrimitiveTypes.Int64,
+			Len:  len(i64Column.Data),
+		})
+	}
+	for _, u8Column := range c.U8Columns {
+		metadata = append(metadata, &ColumnMetadata{
+			Name: u8Column.Name,
+			Type: arrow.PrimitiveTypes.Uint8,
+			Len:  len(u8Column.Data),
+		})
+	}
+	for _, u16Column := range c.U16Columns {
+		metadata = append(metadata, &ColumnMetadata{
+			Name: u16Column.Name,
+			Type: arrow.PrimitiveTypes.Uint16,
+			Len:  len(u16Column.Data),
+		})
+	}
+	for _, u32Column := range c.U32Columns {
+		metadata = append(metadata, &ColumnMetadata{
+			Name: u32Column.Name,
+			Type: arrow.PrimitiveTypes.Uint32,
+			Len:  len(u32Column.Data),
+		})
+	}
+	for _, u64Column := range c.U64Columns {
+		metadata = append(metadata, &ColumnMetadata{
+			Name: u64Column.Name,
+			Type: arrow.PrimitiveTypes.Uint64,
+			Len:  len(u64Column.Data),
+		})
+	}
+	for _, f32Column := range c.F32Columns {
+		metadata = append(metadata, &ColumnMetadata{
+			Name: f32Column.Name,
+			Type: arrow.PrimitiveTypes.Float32,
+			Len:  len(f32Column.Data),
+		})
+	}
+	for _, f64Column := range c.F64Columns {
+		metadata = append(metadata, &ColumnMetadata{
+			Name: f64Column.Name,
+			Type: arrow.PrimitiveTypes.Float64,
+			Len:  len(f64Column.Data),
+		})
+	}
+	for _, booleanColumn := range c.BooleanColumns {
+		metadata = append(metadata, &ColumnMetadata{
+			Name: booleanColumn.Name,
+			Type: arrow.FixedWidthTypes.Boolean,
+			Len:  len(booleanColumn.Data),
+		})
+	}
+	for _, stringColumn := range c.StringColumns {
+		metadata = append(metadata, &ColumnMetadata{
+			Name: stringColumn.Name,
+			Type: arrow.BinaryTypes.String,
+			Len:  len(stringColumn.Data),
+		})
+	}
+	for _, binaryColumn := range c.BinaryColumns {
+		metadata = append(metadata, &ColumnMetadata{
+			Name: binaryColumn.Name,
+			Type: arrow.BinaryTypes.Binary,
+			Len:  len(binaryColumn.Data),
+		})
+	}
+	for _, listColumn := range c.ListColumns {
+		metadata = append(metadata, &ColumnMetadata{
+			Name: listColumn.Name,
+			Type: listColumn.Type,
+			Len:  len(listColumn.Data),
+		})
+	}
+	for _, structColumn := range c.StructColumns {
+		metadata = append(metadata, &ColumnMetadata{
+			Name:     structColumn.Name,
+			Type:     structColumn.Type,
+			Len:      0,
+			Children: structColumn.Columns.Metadata(),
+		})
+	}
+	return metadata
 }

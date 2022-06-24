@@ -81,6 +81,13 @@ type RecordBatchBuilder struct {
 	optimized bool
 }
 
+type RecordBatchBuilderMetadata struct {
+	SchemaId      string
+	Columns       []*ColumnMetadata
+	RecordListLen int
+	Optimized     bool
+}
+
 // Constructs a new `RecordBatchBuilder` from a Record.
 func NewRecordBatchBuilderWithRecord(record *Record, config *Config) *RecordBatchBuilder {
 	fieldPath := make([]*FieldPath, 0, record.FieldCount())
@@ -115,4 +122,19 @@ func (rbb *RecordBatchBuilder) AddRecord(record *Record) {
 
 func (rbb *RecordBatchBuilder) IsEmpty() bool {
 	return rbb.columns.IsEmpty()
+}
+
+func (rbb *RecordBatchBuilder) Metadata(schemaId string) *RecordBatchBuilderMetadata {
+	recordListLen := 0
+
+	if rbb.recordList != nil {
+		recordListLen = len(rbb.recordList)
+	}
+
+	return &RecordBatchBuilderMetadata{
+		SchemaId:      schemaId,
+		Columns:       rbb.columns.Metadata(),
+		RecordListLen: recordListLen,
+		Optimized:     rbb.optimized,
+	}
 }

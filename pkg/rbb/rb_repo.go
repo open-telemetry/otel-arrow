@@ -49,3 +49,13 @@ func (rbr *RecordBatchRepository) RecordBatchBuilderCount() int {
 	}
 	return count
 }
+
+func (rbr *RecordBatchRepository) Metadata() []*RecordBatchBuilderMetadata {
+	metadata := []*RecordBatchBuilderMetadata{}
+	for schemaId, rbb := range rbr.builders {
+		if !rbb.IsEmpty() {
+			metadata = append(metadata, rbb.Metadata(schemaId))
+		}
+	}
+	return metadata
+}
