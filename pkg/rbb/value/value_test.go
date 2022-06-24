@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package rbb
+package value
 
 import (
 	"testing"
@@ -30,7 +30,7 @@ func TestNormalize(t *testing.T) {
 
 	// Test normalize on a struct value
 	s2 := Struct{
-		fields: []Field{
+		Fields: []Field{
 			{
 				Name:  "c",
 				Value: &Bool{Value: false},
@@ -46,23 +46,23 @@ func TestNormalize(t *testing.T) {
 		},
 	}
 	s2.Normalize()
-	if s2.fields[0].Name != "a" {
-		t.Errorf("Expected a, got %v", s2.fields[0].Name)
+	if s2.Fields[0].Name != "a" {
+		t.Errorf("Expected a, got %v", s2.Fields[0].Name)
 	}
-	if s2.fields[1].Name != "b" {
-		t.Errorf("Expected b, got %v", s2.fields[1].Name)
+	if s2.Fields[1].Name != "b" {
+		t.Errorf("Expected b, got %v", s2.Fields[1].Name)
 	}
-	if s2.fields[2].Name != "c" {
-		t.Errorf("Expected c, got %v", s2.fields[2].Name)
+	if s2.Fields[2].Name != "c" {
+		t.Errorf("Expected c, got %v", s2.Fields[2].Name)
 	}
 
 	// Test normalize on a list value
 	s3 := List{
-		values: []Value{
+		Values: []Value{
 			&Bool{Value: true},
 			&I64{Value: 1},
 			&Struct{
-				fields: []Field{
+				Fields: []Field{
 					{
 						Name:  "c",
 						Value: &Bool{Value: false},
@@ -80,13 +80,13 @@ func TestNormalize(t *testing.T) {
 		},
 	}
 	s3.Normalize()
-	if s3.values[2].(*Struct).fields[0].Name != "a" {
-		t.Errorf("Expected a, got %v", s2.fields[0].Name)
+	if s3.Values[2].(*Struct).Fields[0].Name != "a" {
+		t.Errorf("Expected a, got %v", s2.Fields[0].Name)
 	}
-	if s3.values[2].(*Struct).fields[1].Name != "b" {
-		t.Errorf("Expected b, got %v", s2.fields[1].Name)
+	if s3.Values[2].(*Struct).Fields[1].Name != "b" {
+		t.Errorf("Expected b, got %v", s2.Fields[1].Name)
 	}
-	if s3.values[2].(*Struct).fields[2].Name != "c" {
-		t.Errorf("Expected c, got %v", s2.fields[2].Name)
+	if s3.Values[2].(*Struct).Fields[2].Name != "c" {
+		t.Errorf("Expected c, got %v", s2.Fields[2].Name)
 	}
 }

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package rbb
+package value
 
 import (
 	"github.com/apache/arrow/go/arrow"
@@ -120,12 +120,12 @@ type Binary struct {
 func (v *Binary) DataType() arrow.DataType { return arrow.BinaryTypes.Binary }
 
 type Struct struct {
-	fields []Field
+	Fields []Field
 }
 
 func (v *Struct) DataType() arrow.DataType {
-	fields := make([]arrow.Field, 0, len(v.fields))
-	for _, field := range v.fields {
+	fields := make([]arrow.Field, 0, len(v.Fields))
+	for _, field := range v.Fields {
 		arrowField := arrow.Field{Name: field.Name, Type: field.Value.DataType(), Nullable: true, Metadata: arrow.Metadata{}}
 		fields = append(fields, arrowField)
 	}
@@ -133,25 +133,25 @@ func (v *Struct) DataType() arrow.DataType {
 }
 func (v *Struct) Normalize() {
 	// Sort all the fields by name
-	sort.Slice(v.fields, func(i, j int) bool {
-		return v.fields[i].Name < v.fields[j].Name
+	sort.Slice(v.Fields, func(i, j int) bool {
+		return v.Fields[i].Name < v.Fields[j].Name
 	})
 	// Normalize recursively all the fields
-	for _, field := range v.fields {
+	for _, field := range v.Fields {
 		field.Normalize()
 	}
 }
 
 type List struct {
-	values []Value
+	Values []Value
 }
 
 func (v *List) DataType() arrow.DataType {
-	return arrow.ListOf(ListDataType(v.values))
+	return arrow.ListOf(ListDataType(v.Values))
 }
 func (v *List) Normalize() {
 	// Normalize recursively all the value
-	for _, value := range v.values {
+	for _, value := range v.Values {
 		value.Normalize()
 	}
 }

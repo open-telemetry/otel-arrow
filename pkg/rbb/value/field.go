@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package rbb
+package value
 
 import (
 	"github.com/apache/arrow/go/arrow"
@@ -66,7 +66,7 @@ func (f *Field) WriteSignature(sig *strings.Builder) {
 		sig.WriteString(BINARY_SIG)
 	case *Struct:
 		sig.WriteString("{")
-		for i, f := range v.fields {
+		for i, f := range v.Fields {
 			if i > 0 {
 				sig.WriteByte(',')
 			}
@@ -75,7 +75,7 @@ func (f *Field) WriteSignature(sig *strings.Builder) {
 		sig.WriteString("}")
 	case *List:
 		sig.WriteString("[")
-		sig.WriteString(DataTypeSignature(ListDataType(v.values)))
+		sig.WriteString(DataTypeSignature(ListDataType(v.Values)))
 		sig.WriteString("]")
 	default:
 		panic("unknown field value type")

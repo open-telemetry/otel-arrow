@@ -16,33 +16,34 @@ package rbb
 
 import (
 	"github.com/google/go-cmp/cmp"
+	"otel-arrow-adapter/pkg/rbb/value"
 	"testing"
 )
 
 func TestRecordNormalize(t *testing.T) {
 	record := Record{
-		fields: []Field{
-			{Name: "b", Value: &String{Value: ""}},
-			{Name: "a", Value: &Struct{
-				fields: []Field{
-					{Name: "e", Value: &String{Value: ""}},
-					{Name: "b", Value: &String{Value: ""}},
-					{Name: "c", Value: &Struct{
-						fields: []Field{
-							{Name: "x", Value: &String{Value: ""}},
-							{Name: "t", Value: &String{Value: ""}},
-							{Name: "z", Value: &List{
-								values: []Value{
-									&I64{Value: 1},
-									&I64{Value: 2},
+		fields: []value.Field{
+			{Name: "b", Value: &value.String{Value: ""}},
+			{Name: "a", Value: &value.Struct{
+				Fields: []value.Field{
+					{Name: "e", Value: &value.String{Value: ""}},
+					{Name: "b", Value: &value.String{Value: ""}},
+					{Name: "c", Value: &value.Struct{
+						Fields: []value.Field{
+							{Name: "x", Value: &value.String{Value: ""}},
+							{Name: "t", Value: &value.String{Value: ""}},
+							{Name: "z", Value: &value.List{
+								Values: []value.Value{
+									&value.I64{Value: 1},
+									&value.I64{Value: 2},
 								},
 							}},
-							{Name: "a", Value: &List{
-								values: []Value{
-									&Struct{
-										fields: []Field{
-											{Name: "f2_3_4_2", Value: &String{Value: "f2_3_4_2"}},
-											{Name: "f2_3_4_1", Value: &String{Value: "f2_3_4_1"}},
+							{Name: "a", Value: &value.List{
+								Values: []value.Value{
+									&value.Struct{
+										Fields: []value.Field{
+											{Name: "f2_3_4_2", Value: &value.String{Value: "f2_3_4_2"}},
+											{Name: "f2_3_4_1", Value: &value.String{Value: "f2_3_4_1"}},
 										},
 									},
 								},
@@ -56,87 +57,87 @@ func TestRecordNormalize(t *testing.T) {
 	record.Normalize()
 
 	expected_record := Record{
-		fields: []Field{
-			{Name: "a", Value: &Struct{
-				fields: []Field{
-					{Name: "b", Value: &String{Value: ""}},
-					{Name: "c", Value: &Struct{
-						fields: []Field{
-							{Name: "a", Value: &List{
-								values: []Value{
-									&Struct{
-										fields: []Field{
-											{Name: "f2_3_4_1", Value: &String{Value: "f2_3_4_1"}},
-											{Name: "f2_3_4_2", Value: &String{Value: "f2_3_4_2"}},
+		fields: []value.Field{
+			{Name: "a", Value: &value.Struct{
+				Fields: []value.Field{
+					{Name: "b", Value: &value.String{Value: ""}},
+					{Name: "c", Value: &value.Struct{
+						Fields: []value.Field{
+							{Name: "a", Value: &value.List{
+								Values: []value.Value{
+									&value.Struct{
+										Fields: []value.Field{
+											{Name: "f2_3_4_1", Value: &value.String{Value: "f2_3_4_1"}},
+											{Name: "f2_3_4_2", Value: &value.String{Value: "f2_3_4_2"}},
 										},
 									},
 								},
 							}},
-							{Name: "t", Value: &String{Value: ""}},
-							{Name: "x", Value: &String{Value: ""}},
-							{Name: "z", Value: &List{
-								values: []Value{
-									&I64{Value: 1},
-									&I64{Value: 2},
+							{Name: "t", Value: &value.String{Value: ""}},
+							{Name: "x", Value: &value.String{Value: ""}},
+							{Name: "z", Value: &value.List{
+								Values: []value.Value{
+									&value.I64{Value: 1},
+									&value.I64{Value: 2},
 								},
 							}},
 						},
 					}},
-					{Name: "e", Value: &String{Value: ""}},
+					{Name: "e", Value: &value.String{Value: ""}},
 				},
 			}},
-			{Name: "b", Value: &String{Value: ""}},
+			{Name: "b", Value: &value.String{Value: ""}},
 		},
 	}
 
-	if !cmp.Equal(record, expected_record, cmp.AllowUnexported(Record{}, Struct{}, List{})) {
+	if !cmp.Equal(record, expected_record, cmp.AllowUnexported(Record{}, value.Struct{}, value.List{})) {
 		t.Errorf("Expected: %+v\nGot: %+v", expected_record, record)
 	}
 }
 
 func TestRecordSchemaId(t *testing.T) {
 	record := Record{
-		fields: []Field{
-			{Name: "b", Value: &String{Value: ""}},
-			{Name: "a", Value: &Struct{
-				fields: []Field{
-					{Name: "e", Value: &String{Value: ""}},
-					{Name: "b", Value: &String{Value: ""}},
-					{Name: "c", Value: &Struct{
-						fields: []Field{
-							{Name: "y", Value: &List{
-								values: []Value{
-									&I8{Value: 1},
-									&I64{Value: 2},
-									&String{Value: "true"},
+		fields: []value.Field{
+			{Name: "b", Value: &value.String{Value: ""}},
+			{Name: "a", Value: &value.Struct{
+				Fields: []value.Field{
+					{Name: "e", Value: &value.String{Value: ""}},
+					{Name: "b", Value: &value.String{Value: ""}},
+					{Name: "c", Value: &value.Struct{
+						Fields: []value.Field{
+							{Name: "y", Value: &value.List{
+								Values: []value.Value{
+									&value.I8{Value: 1},
+									&value.I64{Value: 2},
+									&value.String{Value: "true"},
 								},
 							}},
-							{Name: "x", Value: &List{
-								values: []Value{
-									&I8{Value: 1},
-									&I64{Value: 2},
-									&Bool{Value: true},
+							{Name: "x", Value: &value.List{
+								Values: []value.Value{
+									&value.I8{Value: 1},
+									&value.I64{Value: 2},
+									&value.Bool{Value: true},
 								},
 							}},
-							{Name: "t", Value: &String{Value: ""}},
-							{Name: "z", Value: &List{
-								values: []Value{
-									&I8{Value: 1},
-									&I64{Value: 2},
+							{Name: "t", Value: &value.String{Value: ""}},
+							{Name: "z", Value: &value.List{
+								Values: []value.Value{
+									&value.I8{Value: 1},
+									&value.I64{Value: 2},
 								},
 							}},
-							{Name: "a", Value: &List{
-								values: []Value{
-									&Struct{
-										fields: []Field{
-											{Name: "f2_3_4_2", Value: &I8{Value: 1}},
-											{Name: "f2_3_4_1", Value: &I8{Value: 2}},
+							{Name: "a", Value: &value.List{
+								Values: []value.Value{
+									&value.Struct{
+										Fields: []value.Field{
+											{Name: "f2_3_4_2", Value: &value.I8{Value: 1}},
+											{Name: "f2_3_4_1", Value: &value.I8{Value: 2}},
 										},
 									},
-									&Struct{
-										fields: []Field{
-											{Name: "f2_3_4_3", Value: &String{Value: "f2_3_4_3"}},
-											{Name: "f2_3_4_1", Value: &String{Value: "f2_3_4_1"}},
+									&value.Struct{
+										Fields: []value.Field{
+											{Name: "f2_3_4_3", Value: &value.String{Value: "f2_3_4_3"}},
+											{Name: "f2_3_4_1", Value: &value.String{Value: "f2_3_4_1"}},
 										},
 									},
 								},
