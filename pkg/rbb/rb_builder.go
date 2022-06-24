@@ -86,7 +86,7 @@ type RecordBatchBuilder struct {
 }
 
 // Constructs a new `RecordBatchBuilder` from a Record.
-func NewRecordBatchBuilderWithRecord(record Record, config *Config) *RecordBatchBuilder {
+func NewRecordBatchBuilderWithRecord(record *Record, config *Config) *RecordBatchBuilder {
 	fieldPath := make([]*FieldPath, 0, record.FieldCount())
 	builder := RecordBatchBuilder{
 		config:     config,

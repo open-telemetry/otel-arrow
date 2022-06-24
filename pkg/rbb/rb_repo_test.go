@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestNewRecordBatchBuilderWithRecord(t *testing.T) {
+func TestAddRecord(t *testing.T) {
 	config := NewDefaultConfig()
 	record := Record{
 		fields: []value.Field{
@@ -41,8 +41,9 @@ func TestNewRecordBatchBuilderWithRecord(t *testing.T) {
 			}},
 		},
 	}
-	record.Normalize()
 
-	rbb := NewRecordBatchBuilderWithRecord(record, config)
+	rbb := NewRecordBatchRepository(config)
+	rbb.AddRecord(&record)
+
 	spew.Dump(rbb)
 }
