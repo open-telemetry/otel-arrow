@@ -14,7 +14,10 @@
 
 package rbb
 
-import "strings"
+import (
+	"github.com/apache/arrow/go/arrow"
+	"strings"
+)
 
 // Field is a scalar or a composite named value.
 type Field struct {
@@ -22,12 +25,16 @@ type Field struct {
 	Value Value
 }
 
+func (f *Field) DataType() arrow.DataType {
+	return f.Value.DataType()
+}
+
 // Normalize normalizes the field name and value.
-func (f Field) Normalize() {
+func (f *Field) Normalize() {
 	f.Value.Normalize()
 }
 
-func (f Field) WriteSignature(sig *strings.Builder) {
+func (f *Field) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(f.Name)
 	sig.WriteString(":")
 	switch v := f.Value.(type) {

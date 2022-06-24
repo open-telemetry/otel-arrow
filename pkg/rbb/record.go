@@ -46,6 +46,10 @@ func (r Record) SchemaId() string {
 	return sig.String()
 }
 
+func (r *Record) FieldCount() int {
+	return len(r.fields)
+}
+
 func (r *Record) BoolField(name string, value bool) {
 	r.fields = append(r.fields, Field{
 		Name:  name,

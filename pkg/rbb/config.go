@@ -14,6 +14,8 @@
 
 package rbb
 
+import "math"
+
 // Config defines configuration for RecordBatchRepository.
 type Config struct {
 	// Configuration for the dictionaries
@@ -42,6 +44,19 @@ type DictionaryConfig struct {
 
 	// Maximum number of sorted dictionaries (based on cardinality/total_size and avg_data_lenght).
 	MaxSortedDictionaries uint64
+}
+
+func NewDefaultConfig() *Config {
+	return &Config{
+		Dictionaries: DictionariesConfig{
+			StringColumns: DictionaryConfig{
+				MinRowCount:           10,
+				MaxCard:               math.MaxUint8,
+				MaxCardRatio:          0.5,
+				MaxSortedDictionaries: 5,
+			},
+		},
+	}
 }
 
 // IsDictionaryEnabled returns true if the dictionary parameters passed in parameter statisfy the current

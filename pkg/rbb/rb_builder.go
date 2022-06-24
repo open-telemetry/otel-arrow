@@ -16,13 +16,40 @@ package rbb
 
 // DictIdGenerator defines a dictionary id generator.
 type DictIdGenerator struct {
-	id uint64
+	id int
+}
+
+func (g *DictIdGenerator) NextId() int {
+	id := g.id
+	g.id += 1
+	return id
 }
 
 // FieldPath defines a field path.
 type FieldPath struct {
-	Current  uint64
-	Children []FieldPath
+	Current  int
+	Children []*FieldPath
+}
+
+func NewFieldPathWithChildren(current int, children []*FieldPath) *FieldPath {
+	return &FieldPath{
+		Current:  current,
+		Children: children,
+	}
+}
+
+func NewFieldPath(current int) *FieldPath {
+	return &FieldPath{
+		Current:  current,
+		Children: []*FieldPath{},
+	}
+}
+
+func (fp *FieldPath) ChildPath(current int) *FieldPath {
+	return &FieldPath{
+		Current:  current,
+		Children: fp.Children,
+	}
 }
 
 type OrderBy struct {
@@ -37,23 +64,45 @@ type RecordList struct {
 // Must be fed with homogeneous records.
 type RecordBatchBuilder struct {
 	// The configuration of the builder.
-	Config Config
+	config *Config
 
 	// The dictionary id generator.
-	DictIdGen DictIdGenerator
+	dictIdGen DictIdGenerator
 
 	// The columns of the RecordBatch builder.
-	Columns Columns
+	columns Columns
 
 	// The path for each fields.
-	FieldPaths []FieldPath
+	fieldPaths []*FieldPath
 
 	// Optional order by clause
-	OrderBy OrderBy
+	orderBy *OrderBy
 
 	// Non ordered records
-	RecordList []RecordList
+	recordList []RecordList
 
 	// Flag to indicate if the builder has been optimized.
-	Optimized bool
+	optimized bool
+}
+
+// Constructs a new `RecordBatchBuilder` from a Record.
+func NewRecordBatchBuilderWithRecord(record Record, config *Config) *RecordBatchBuilder {
+	fieldPath := make([]*FieldPath, 0, record.FieldCount())
+	builder := RecordBatchBuilder{
+		config:     config,
+		dictIdGen:  DictIdGenerator{id: 0},
+		columns:    Columns{},
+		fieldPaths: fieldPath,
+		orderBy:    nil,
+		recordList: []RecordList{},
+		optimized:  config.Dictionaries.StringColumns.MaxSortedDictionaries == 0,
+	}
+
+	for fieldIdx, field := range record.fields {
+		fieldPath := builder.columns.CreateColumn([]int{fieldIdx}, &field, config, &builder.dictIdGen)
+		if fieldPath != nil {
+			builder.fieldPaths = append(builder.fieldPaths, fieldPath)
+		}
+	}
+	return &builder
 }
