@@ -408,3 +408,46 @@ func (c *Columns) Metadata() []*ColumnMetadata {
 	}
 	return metadata
 }
+
+func (c *Columns) DictionaryStats() []*DictionaryStats {
+	var stats []*DictionaryStats
+
+	for _, stringColumn := range c.StringColumns {
+		stats = append(stats, stringColumn.DictionaryStats())
+	}
+	for _, structColumn := range c.StructColumns {
+		stats = append(stats, structColumn.DictionaryStats()...)
+	}
+	return stats
+}
+
+func (c *StringColumn) DictionaryStats() *DictionaryStats {
+	if c.dictionary != nil {
+		return &DictionaryStats{
+			Path:           c.fieldPath,
+			Cardinality:    c.DictionaryLen(),
+			AvgEntryLength: c.AvgValueLength(),
+			TotalEntry:     c.TotalRowCount(),
+		}
+	}
+	return nil
+}
+
+func (c *StringColumn) DictionaryLen() int {
+	return len(c.dictionary)
+}
+
+func (c *StringColumn) AvgValueLength() float64 {
+	if c.totalValueLength == 0 || c.totalRowCount == 0 {
+		return 0.0
+	}
+	return float64(c.totalValueLength) / float64(c.totalRowCount)
+}
+
+func (c *StringColumn) TotalRowCount() int {
+	return c.totalRowCount
+}
+
+func (c *StructColumn) DictionaryStats() []*DictionaryStats {
+	return c.Columns.DictionaryStats()
+}

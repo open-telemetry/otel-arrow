@@ -34,16 +34,16 @@ type DictionariesConfig struct {
 // DictionaryConfig defines configuration for a dictionary.
 type DictionaryConfig struct {
 	// The creation of a dictionary will be performed only on columns with more than `min_row_count` elements.
-	MinRowCount uint64
+	MinRowCount int
 
 	// The creation of a dictionary will be performed only on columns with a cardinality lower than `max_card`.
-	MaxCard uint64
+	MaxCard int
 
 	// The creation of a dictionary will only be performed on columns with a ratio `card` / `size` <= `max_card_ratio`.
 	MaxCardRatio float64
 
 	// Maximum number of sorted dictionaries (based on cardinality/total_size and avg_data_lenght).
-	MaxSortedDictionaries uint64
+	MaxSortedDictionaries int
 }
 
 func NewDefaultConfig() *Config {
@@ -61,7 +61,7 @@ func NewDefaultConfig() *Config {
 
 // IsDictionaryEnabled returns true if the dictionary parameters passed in parameter statisfy the current
 // dictionary configuration.
-func (d *DictionaryConfig) IsDictionary(rowCount, card uint64) bool {
+func (d *DictionaryConfig) IsDictionary(rowCount, card int) bool {
 	return rowCount >= d.MinRowCount &&
 		card <= d.MaxCard &&
 		float64(card)/float64(rowCount) <= d.MaxCardRatio

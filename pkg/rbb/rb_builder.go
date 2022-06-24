@@ -14,6 +14,8 @@
 
 package rbb
 
+import "sort"
+
 // DictIdGenerator defines a dictionary id generator.
 type DictIdGenerator struct {
 	id int
@@ -53,7 +55,7 @@ func (fp *FieldPath) ChildPath(current int) *FieldPath {
 }
 
 type OrderBy struct {
-	FieldPaths [][]uint64
+	FieldPaths [][]int
 }
 
 // A RecordBatch builder.
@@ -86,6 +88,13 @@ type RecordBatchBuilderMetadata struct {
 	Columns       []*ColumnMetadata
 	RecordListLen int
 	Optimized     bool
+}
+
+type DictionaryStats struct {
+	Path           []int
+	AvgEntryLength float64
+	Cardinality    int
+	TotalEntry     int
 }
 
 // Constructs a new `RecordBatchBuilder` from a Record.
@@ -137,4 +146,60 @@ func (rbb *RecordBatchBuilder) Metadata(schemaId string) *RecordBatchBuilderMeta
 		RecordListLen: recordListLen,
 		Optimized:     rbb.optimized,
 	}
+}
+
+func (rbb *RecordBatchBuilder) DictionaryStats() []*DictionaryStats {
+	return rbb.columns.DictionaryStats()
+}
+
+func (rbb *RecordBatchBuilder) OrderBy(fieldPaths [][]int) {
+	rbb.orderBy = &OrderBy{
+		FieldPaths: fieldPaths,
+	}
+	rbb.recordList = []*Record{}
+}
+
+func (rbb *RecordBatchBuilder) Optimize() bool {
+	if rbb.optimized {
+		return true
+	}
+
+	if rbb.orderBy == nil {
+		var dictionaryStats []*DictionaryStats
+		for _, ds := range rbb.DictionaryStats() {
+			if ds.Cardinality > 1 && rbb.config.Dictionaries.StringColumns.IsDictionary(ds.TotalEntry, ds.Cardinality) {
+				dictionaryStats = append(dictionaryStats, ds)
+			}
+		}
+		sort.Slice(dictionaryStats, func(i, j int) bool {
+			a := dictionaryStats[i]
+			b := dictionaryStats[j]
+			a_ratio := float64(a.Cardinality) / float64(a.TotalEntry)
+			b_ratio := float64(b.Cardinality) / float64(b.TotalEntry)
+			if a_ratio == b_ratio {
+				return a.AvgEntryLength > b.AvgEntryLength
+			} else {
+				return a_ratio < b_ratio
+			}
+		})
+		var paths [][]int
+		for i, ds := range dictionaryStats {
+			if i < rbb.config.Dictionaries.StringColumns.MaxSortedDictionaries {
+				path := make([]int, len(ds.Path))
+				copy(path, ds.Path)
+				paths = append(paths, path)
+			} else {
+				break
+			}
+		}
+		if len(paths) > 0 {
+			rbb.orderBy = &OrderBy{
+				FieldPaths: paths,
+			}
+			rbb.optimized = true
+			rbb.recordList = []*Record{}
+			return true
+		}
+	}
+	return false
 }

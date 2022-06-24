@@ -50,6 +50,12 @@ func (rbr *RecordBatchRepository) RecordBatchBuilderCount() int {
 	return count
 }
 
+func (rbr *RecordBatchRepository) Optimize() {
+	for _, rbb := range rbr.builders {
+		rbb.Optimize()
+	}
+}
+
 func (rbr *RecordBatchRepository) Metadata() []*RecordBatchBuilderMetadata {
 	metadata := []*RecordBatchBuilderMetadata{}
 	for schemaId, rbb := range rbr.builders {
