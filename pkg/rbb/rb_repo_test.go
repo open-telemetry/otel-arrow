@@ -2,48 +2,18 @@ package rbb
 
 import (
 	"github.com/davecgh/go-spew/spew"
-	"otel-arrow-adapter/pkg/rbb/value"
 	"testing"
 )
 
 func TestAddRecord(t *testing.T) {
-	config := NewDefaultConfig()
-	record := Record{
-		fields: []value.Field{
-			{Name: "b", Value: &value.String{Value: "bla"}},
-			{Name: "a", Value: &value.Struct{
-				Fields: []value.Field{
-					{Name: "e", Value: &value.String{Value: ""}},
-					{Name: "b", Value: &value.String{Value: ""}},
-					{Name: "c", Value: &value.Struct{
-						Fields: []value.Field{
-							{Name: "x", Value: &value.String{Value: ""}},
-							{Name: "t", Value: &value.String{Value: ""}},
-							{Name: "z", Value: &value.List{
-								Values: []value.Value{
-									&value.I64{Value: 1},
-									&value.I64{Value: 2},
-								},
-							}},
-							{Name: "a", Value: &value.List{
-								Values: []value.Value{
-									&value.Struct{
-										Fields: []value.Field{
-											{Name: "f2_3_4_2", Value: &value.String{Value: "f2_3_4_2"}},
-											{Name: "f2_3_4_1", Value: &value.String{Value: "f2_3_4_1"}},
-										},
-									},
-								},
-							}},
-						},
-					}},
-				},
-			}},
-		},
+	rbr := NewRecordBatchRepository(NewDefaultConfig())
+	rbr.AddRecord(GenSimpleRecord(0))
+	rbr.AddRecord(GenComplexRecord(1))
+	rbr.AddRecord(GenSimpleRecord(2))
+	rbr.AddRecord(GenComplexRecord(3))
+
+	if rbr.RecordBatchBuilderCount() != 2 {
+		t.Errorf("Expected 2 RecordBatchBuilders, got %d", rbr.RecordBatchBuilderCount())
 	}
-
-	rbb := NewRecordBatchRepository(config)
-	rbb.AddRecord(&record)
-
-	spew.Dump(rbb)
+	spew.Dump(rbr)
 }

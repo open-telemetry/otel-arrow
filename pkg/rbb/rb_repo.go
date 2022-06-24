@@ -38,3 +38,14 @@ func (rbr *RecordBatchRepository) AddRecord(record *Record) {
 		rbr.builders[schemaId] = NewRecordBatchBuilderWithRecord(record, rbr.config)
 	}
 }
+
+// RecordBatchBuilderCount returns the number of non-empty RecordBatchBuilder in the repository.
+func (rbr *RecordBatchRepository) RecordBatchBuilderCount() int {
+	count := 0
+	for _, rbb := range rbr.builders {
+		if !rbb.IsEmpty() {
+			count++
+		}
+	}
+	return count
+}

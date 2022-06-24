@@ -112,3 +112,7 @@ func (rbb *RecordBatchBuilder) AddRecord(record *Record) {
 		}
 	}
 }
+
+func (rbb *RecordBatchBuilder) IsEmpty() bool {
+	return rbb.columns.IsEmpty()
+}
