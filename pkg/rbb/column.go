@@ -247,6 +247,45 @@ func (c *Columns) CreateColumn(path []int, field *value.Field, config *Config, d
 	}
 }
 
+func (c *Columns) UpdateColumn(fieldPath *FieldPath, field *value.Field) {
+	switch field.Value.(type) {
+	case *value.I8:
+		c.I8Columns[fieldPath.Current].Data = append(c.I8Columns[fieldPath.Current].Data, &field.Value.(*value.I8).Value)
+	case *value.I16:
+		c.I16Columns[fieldPath.Current].Data = append(c.I16Columns[fieldPath.Current].Data, &field.Value.(*value.I16).Value)
+	case *value.I32:
+		c.I32Columns[fieldPath.Current].Data = append(c.I32Columns[fieldPath.Current].Data, &field.Value.(*value.I32).Value)
+	case *value.I64:
+		c.I64Columns[fieldPath.Current].Data = append(c.I64Columns[fieldPath.Current].Data, &field.Value.(*value.I64).Value)
+	case *value.U8:
+		c.U8Columns[fieldPath.Current].Data = append(c.U8Columns[fieldPath.Current].Data, &field.Value.(*value.U8).Value)
+	case *value.U16:
+		c.U16Columns[fieldPath.Current].Data = append(c.U16Columns[fieldPath.Current].Data, &field.Value.(*value.U16).Value)
+	case *value.U32:
+		c.U32Columns[fieldPath.Current].Data = append(c.U32Columns[fieldPath.Current].Data, &field.Value.(*value.U32).Value)
+	case *value.U64:
+		c.U64Columns[fieldPath.Current].Data = append(c.U64Columns[fieldPath.Current].Data, &field.Value.(*value.U64).Value)
+	case *value.F32:
+		c.F32Columns[fieldPath.Current].Data = append(c.F32Columns[fieldPath.Current].Data, &field.Value.(*value.F32).Value)
+	case *value.F64:
+		c.F64Columns[fieldPath.Current].Data = append(c.F64Columns[fieldPath.Current].Data, &field.Value.(*value.F64).Value)
+	case *value.String:
+		c.StringColumns[fieldPath.Current].Data = append(c.StringColumns[fieldPath.Current].Data, &field.Value.(*value.String).Value)
+	case *value.Binary:
+		c.BinaryColumns[fieldPath.Current].Data = append(c.BinaryColumns[fieldPath.Current].Data, &field.Value.(*value.Binary).Value)
+	case *value.Bool:
+		c.BooleanColumns[fieldPath.Current].Data = append(c.BooleanColumns[fieldPath.Current].Data, &field.Value.(*value.Bool).Value)
+	case *value.List:
+		c.ListColumns[fieldPath.Current].Data = append(c.ListColumns[fieldPath.Current].Data, field.Value.(*value.List).Values)
+	case *value.Struct:
+		for fieldPos, field := range field.Value.(*value.Struct).Fields {
+			c.StructColumns[fieldPath.Current].Columns.UpdateColumn(fieldPath.Children[fieldPos], &field)
+		}
+	default:
+		panic("unsupported field type")
+	}
+}
+
 func (c *Columns) IsEmpty() bool {
 	return len(c.I8Columns) == 0 && len(c.I16Columns) == 0 && len(c.I32Columns) == 0 && len(c.I64Columns) == 0 && len(c.U8Columns) == 0 && len(c.U16Columns) == 0 && len(c.U32Columns) == 0 && len(c.U64Columns) == 0 && len(c.F32Columns) == 0 && len(c.F64Columns) == 0 && len(c.BooleanColumns) == 0 && len(c.StringColumns) == 0 && len(c.BinaryColumns) == 0 && len(c.ListColumns) == 0 && len(c.StructColumns) == 0
 }

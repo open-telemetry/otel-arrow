@@ -56,10 +56,6 @@ type OrderBy struct {
 	FieldPaths [][]uint64
 }
 
-type RecordList struct {
-	Records []Record
-}
-
 // A RecordBatch builder.
 // Must be fed with homogeneous records.
 type RecordBatchBuilder struct {
@@ -79,7 +75,7 @@ type RecordBatchBuilder struct {
 	orderBy *OrderBy
 
 	// Non ordered records
-	recordList []RecordList
+	recordList []*Record
 
 	// Flag to indicate if the builder has been optimized.
 	optimized bool
@@ -94,7 +90,7 @@ func NewRecordBatchBuilderWithRecord(record *Record, config *Config) *RecordBatc
 		columns:    Columns{},
 		fieldPaths: fieldPath,
 		orderBy:    nil,
-		recordList: []RecordList{},
+		recordList: nil,
 		optimized:  config.Dictionaries.StringColumns.MaxSortedDictionaries == 0,
 	}
 
@@ -105,4 +101,14 @@ func NewRecordBatchBuilderWithRecord(record *Record, config *Config) *RecordBatc
 		}
 	}
 	return &builder
+}
+
+func (rbb *RecordBatchBuilder) AddRecord(record *Record) {
+	if rbb.recordList != nil {
+		rbb.recordList = append(rbb.recordList, record)
+	} else {
+		for fieldIdx, field := range record.fields {
+			rbb.columns.UpdateColumn(rbb.fieldPaths[fieldIdx], &field)
+		}
+	}
 }

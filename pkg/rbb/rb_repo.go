@@ -32,8 +32,8 @@ func (rbr *RecordBatchRepository) AddRecord(record *Record) {
 	record.Normalize()
 	schemaId := record.SchemaId()
 
-	if _, ok := rbr.builders[schemaId]; ok {
-		// rbb.AddRecord(record)
+	if rbb, ok := rbr.builders[schemaId]; ok {
+		rbb.AddRecord(record)
 	} else {
 		rbr.builders[schemaId] = NewRecordBatchBuilderWithRecord(record, rbr.config)
 	}
