@@ -58,6 +58,7 @@ func TestStringColumn(t *testing.T) {
 
 	// dictionary card > max card ==> no dictionary
 	value = "test4" // len = 5
+	sc.Push(&value)
 	if sc.DictionaryLen() != 0 {
 		t.Errorf("Expected dictionary length to be 0, got %d", sc.DictionaryLen())
 	}
