@@ -16,6 +16,8 @@ package rbb
 
 import (
 	"github.com/apache/arrow/go/arrow"
+	"otel-arrow-adapter/pkg/rbb/config"
+	"otel-arrow-adapter/pkg/rbb/stats"
 	"otel-arrow-adapter/pkg/rbb/value"
 )
 
@@ -74,17 +76,6 @@ type F64Column struct {
 	Data []*float64
 }
 
-type StringColumn struct {
-	Name             string
-	config           *DictionaryConfig
-	fieldPath        []int
-	dictId           int
-	dictionary       map[string]bool
-	Data             []*string
-	totalValueLength int
-	totalRowCount    int
-}
-
 type BinaryColumn struct {
 	Name string
 	Data []*[]byte
@@ -118,7 +109,7 @@ type Columns struct {
 	F32Columns []F32Column
 	F64Columns []F64Column
 
-	StringColumns []StringColumn
+	StringColumns []value.StringColumn
 	BinaryColumns []BinaryColumn
 
 	ListColumns   []ListColumn
@@ -133,7 +124,7 @@ type ColumnMetadata struct {
 }
 
 // Create a column with a field based on its field type and field name.
-func (c *Columns) CreateColumn(path []int, field *value.Field, config *Config, dictIdGen *DictIdGenerator) *FieldPath {
+func (c *Columns) CreateColumn(path []int, field *value.Field, config *config.Config, dictIdGen *DictIdGenerator) *FieldPath {
 	switch field.Value.(type) {
 	case *value.Bool:
 		c.BooleanColumns = append(c.BooleanColumns, BoolColumn{
@@ -202,15 +193,15 @@ func (c *Columns) CreateColumn(path []int, field *value.Field, config *Config, d
 		})
 		return NewFieldPath(len(c.F64Columns) - 1)
 	case *value.String:
-		stringColumn := StringColumn{
+		stringColumn := value.StringColumn{
 			Name:             field.Name,
-			config:           &config.Dictionaries.StringColumns,
-			fieldPath:        path,
-			dictId:           dictIdGen.NextId(),
+			Config:           &config.Dictionaries.StringColumns,
+			FieldPath:        path,
+			DictId:           dictIdGen.NextId(),
 			Data:             []*string{},
-			totalValueLength: 0,
-			totalRowCount:    0,
-			dictionary:       make(map[string]bool),
+			TotalValueLength: 0,
+			TotalRowCount:    0,
+			Dictionary:       make(map[string]bool),
 		}
 		stringColumn.Push(&field.Value.(*value.String).Value)
 		c.StringColumns = append(c.StringColumns, stringColumn)
@@ -412,65 +403,18 @@ func (c *Columns) Metadata() []*ColumnMetadata {
 	return metadata
 }
 
-func (c *Columns) DictionaryStats() []*DictionaryStats {
-	var stats []*DictionaryStats
+func (c *Columns) DictionaryStats() []*stats.DictionaryStats {
+	var dictionaryStats []*stats.DictionaryStats
 
 	for _, stringColumn := range c.StringColumns {
-		stats = append(stats, stringColumn.DictionaryStats())
+		dictionaryStats = append(dictionaryStats, stringColumn.DictionaryStats())
 	}
 	for _, structColumn := range c.StructColumns {
-		stats = append(stats, structColumn.DictionaryStats()...)
+		dictionaryStats = append(dictionaryStats, structColumn.DictionaryStats()...)
 	}
-	return stats
+	return dictionaryStats
 }
 
-func (c *StringColumn) Push(value *string) {
-	// Maintains a dictionary of unique values
-	if c.dictionary != nil {
-		if value != nil {
-			if _, ok := c.dictionary[*value]; !ok {
-				c.dictionary[*value] = true
-				if len(c.dictionary) > c.config.MaxCard {
-					c.dictionary = nil
-				}
-			}
-		}
-	}
-
-	c.totalRowCount++
-	if value != nil {
-		c.totalValueLength += len(*value)
-	}
-	c.Data = append(c.Data, value)
-}
-
-func (c *StringColumn) DictionaryStats() *DictionaryStats {
-	if c.dictionary != nil {
-		return &DictionaryStats{
-			Path:           c.fieldPath,
-			Cardinality:    c.DictionaryLen(),
-			AvgEntryLength: c.AvgValueLength(),
-			TotalEntry:     c.TotalRowCount(),
-		}
-	}
-	return nil
-}
-
-func (c *StringColumn) DictionaryLen() int {
-	return len(c.dictionary)
-}
-
-func (c *StringColumn) AvgValueLength() float64 {
-	if c.totalValueLength == 0 || c.totalRowCount == 0 {
-		return 0.0
-	}
-	return float64(c.totalValueLength) / float64(c.totalRowCount)
-}
-
-func (c *StringColumn) TotalRowCount() int {
-	return c.totalRowCount
-}
-
-func (c *StructColumn) DictionaryStats() []*DictionaryStats {
+func (c *StructColumn) DictionaryStats() []*stats.DictionaryStats {
 	return c.Columns.DictionaryStats()
 }

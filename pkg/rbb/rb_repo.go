@@ -14,14 +14,16 @@
 
 package rbb
 
+import config2 "otel-arrow-adapter/pkg/rbb/config"
+
 type RecordBatchRepository struct {
-	config *Config
+	config *config2.Config
 
 	// A map of SchemaId to RecordBatchBuilder.
 	builders map[string]*RecordBatchBuilder
 }
 
-func NewRecordBatchRepository(config *Config) *RecordBatchRepository {
+func NewRecordBatchRepository(config *config2.Config) *RecordBatchRepository {
 	return &RecordBatchRepository{
 		config:   config,
 		builders: make(map[string]*RecordBatchBuilder),

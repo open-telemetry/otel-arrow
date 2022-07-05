@@ -14,7 +14,11 @@
 
 package rbb
 
-import "sort"
+import (
+	config2 "otel-arrow-adapter/pkg/rbb/config"
+	"otel-arrow-adapter/pkg/rbb/stats"
+	"sort"
+)
 
 // DictIdGenerator defines a dictionary id generator.
 type DictIdGenerator struct {
@@ -62,7 +66,7 @@ type OrderBy struct {
 // Must be fed with homogeneous records.
 type RecordBatchBuilder struct {
 	// The configuration of the builder.
-	config *Config
+	config *config2.Config
 
 	// The dictionary id generator.
 	dictIdGen DictIdGenerator
@@ -90,15 +94,8 @@ type RecordBatchBuilderMetadata struct {
 	Optimized     bool
 }
 
-type DictionaryStats struct {
-	Path           []int
-	AvgEntryLength float64
-	Cardinality    int
-	TotalEntry     int
-}
-
 // Constructs a new `RecordBatchBuilder` from a Record.
-func NewRecordBatchBuilderWithRecord(record *Record, config *Config) *RecordBatchBuilder {
+func NewRecordBatchBuilderWithRecord(record *Record, config *config2.Config) *RecordBatchBuilder {
 	fieldPath := make([]*FieldPath, 0, record.FieldCount())
 	builder := RecordBatchBuilder{
 		config:     config,
@@ -148,7 +145,7 @@ func (rbb *RecordBatchBuilder) Metadata(schemaId string) *RecordBatchBuilderMeta
 	}
 }
 
-func (rbb *RecordBatchBuilder) DictionaryStats() []*DictionaryStats {
+func (rbb *RecordBatchBuilder) DictionaryStats() []*stats.DictionaryStats {
 	return rbb.columns.DictionaryStats()
 }
 
@@ -165,7 +162,7 @@ func (rbb *RecordBatchBuilder) Optimize() bool {
 	}
 
 	if rbb.orderBy == nil {
-		var dictionaryStats []*DictionaryStats
+		var dictionaryStats []*stats.DictionaryStats
 		for _, ds := range rbb.DictionaryStats() {
 			if ds.Cardinality > 1 && rbb.config.Dictionaries.StringColumns.IsDictionary(ds.TotalEntry, ds.Cardinality) {
 				dictionaryStats = append(dictionaryStats, ds)

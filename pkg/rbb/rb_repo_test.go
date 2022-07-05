@@ -3,11 +3,12 @@ package rbb
 import (
 	"github.com/davecgh/go-spew/spew"
 	"math"
+	config2 "otel-arrow-adapter/pkg/rbb/config"
 	"testing"
 )
 
 func TestAddRecord(t *testing.T) {
-	rbr := NewRecordBatchRepository(NewDefaultConfig())
+	rbr := NewRecordBatchRepository(config2.NewDefaultConfig())
 	rbr.AddRecord(GenSimpleRecord(0))
 	rbr.AddRecord(GenComplexRecord(1))
 	rbr.AddRecord(GenSimpleRecord(2))
@@ -51,9 +52,9 @@ func TestAddRecord(t *testing.T) {
 }
 
 func TestOptimize(t *testing.T) {
-	config := Config{
-		Dictionaries: DictionariesConfig{
-			StringColumns: DictionaryConfig{
+	config := config2.Config{
+		Dictionaries: config2.DictionariesConfig{
+			StringColumns: config2.DictionaryConfig{
 				MinRowCount:           10,
 				MaxCard:               math.MaxUint8,
 				MaxCardRatio:          0.5,
