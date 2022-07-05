@@ -88,10 +88,11 @@ type RecordBatchBuilder struct {
 }
 
 type RecordBatchBuilderMetadata struct {
-	SchemaId      string
-	Columns       []*ColumnMetadata
-	RecordListLen int
-	Optimized     bool
+	SchemaId        string
+	Columns         []*ColumnMetadata
+	RecordListLen   int
+	Optimized       bool
+	DictionaryStats []*stats.DictionaryStats
 }
 
 // Constructs a new `RecordBatchBuilder` from a Record.
@@ -138,10 +139,11 @@ func (rbb *RecordBatchBuilder) Metadata(schemaId string) *RecordBatchBuilderMeta
 	}
 
 	return &RecordBatchBuilderMetadata{
-		SchemaId:      schemaId,
-		Columns:       rbb.columns.Metadata(),
-		RecordListLen: recordListLen,
-		Optimized:     rbb.optimized,
+		SchemaId:        schemaId,
+		Columns:         rbb.columns.Metadata(),
+		RecordListLen:   recordListLen,
+		Optimized:       rbb.optimized,
+		DictionaryStats: rbb.columns.DictionaryStats(),
 	}
 }
 
