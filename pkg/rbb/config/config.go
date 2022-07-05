@@ -59,7 +59,7 @@ func NewDefaultConfig() *Config {
 	}
 }
 
-// IsDictionaryEnabled returns true if the dictionary parameters passed in parameter statisfy the current
+// IsDictionary returns true if the dictionary parameters passed in parameter satisfy the current
 // dictionary configuration.
 func (d *DictionaryConfig) IsDictionary(rowCount, card int) bool {
 	return rowCount >= d.MinRowCount &&
