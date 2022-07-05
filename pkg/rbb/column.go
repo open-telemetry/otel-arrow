@@ -202,15 +202,18 @@ func (c *Columns) CreateColumn(path []int, field *value.Field, config *Config, d
 		})
 		return NewFieldPath(len(c.F64Columns) - 1)
 	case *value.String:
-		c.StringColumns = append(c.StringColumns, StringColumn{
+		stringColumn := StringColumn{
 			Name:             field.Name,
 			config:           &config.Dictionaries.StringColumns,
 			fieldPath:        path,
 			dictId:           dictIdGen.NextId(),
-			Data:             []*string{&field.Value.(*value.String).Value},
+			Data:             []*string{},
 			totalValueLength: 0,
 			totalRowCount:    0,
-		})
+			dictionary:       make(map[string]bool),
+		}
+		stringColumn.Push(&field.Value.(*value.String).Value)
+		c.StringColumns = append(c.StringColumns, stringColumn)
 		return NewFieldPath(len(c.StringColumns) - 1)
 	case *value.Binary:
 		c.BinaryColumns = append(c.BinaryColumns, BinaryColumn{
@@ -277,7 +280,7 @@ func (c *Columns) UpdateColumn(fieldPath *FieldPath, field *value.Field) {
 	case *value.F64:
 		c.F64Columns[fieldPath.Current].Data = append(c.F64Columns[fieldPath.Current].Data, &field.Value.(*value.F64).Value)
 	case *value.String:
-		c.StringColumns[fieldPath.Current].Data = append(c.StringColumns[fieldPath.Current].Data, &field.Value.(*value.String).Value)
+		c.StringColumns[fieldPath.Current].Push(&field.Value.(*value.String).Value)
 	case *value.Binary:
 		c.BinaryColumns[fieldPath.Current].Data = append(c.BinaryColumns[fieldPath.Current].Data, &field.Value.(*value.Binary).Value)
 	case *value.Bool:
@@ -419,6 +422,26 @@ func (c *Columns) DictionaryStats() []*DictionaryStats {
 		stats = append(stats, structColumn.DictionaryStats()...)
 	}
 	return stats
+}
+
+func (c *StringColumn) Push(value *string) {
+	// Maintains a dictionary of unique values
+	if c.dictionary != nil {
+		if value != nil {
+			if _, ok := c.dictionary[*value]; !ok {
+				c.dictionary[*value] = true
+				if len(c.dictionary) > c.config.MaxCard {
+					c.dictionary = nil
+				}
+			}
+		}
+	}
+
+	c.totalRowCount++
+	if value != nil {
+		c.totalValueLength += len(*value)
+	}
+	c.Data = append(c.Data, value)
 }
 
 func (c *StringColumn) DictionaryStats() *DictionaryStats {

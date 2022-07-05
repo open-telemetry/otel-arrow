@@ -2,6 +2,7 @@ package rbb
 
 import (
 	"github.com/davecgh/go-spew/spew"
+	"math"
 	"testing"
 )
 
@@ -45,6 +46,27 @@ func TestAddRecord(t *testing.T) {
 			}
 		}
 	}
+
+	spew.Dump(rbr.Metadata())
+}
+
+func TestOptimize(t *testing.T) {
+	config := Config{
+		Dictionaries: DictionariesConfig{
+			StringColumns: DictionaryConfig{
+				MinRowCount:           10,
+				MaxCard:               math.MaxUint8,
+				MaxCardRatio:          0.5,
+				MaxSortedDictionaries: 5,
+			},
+		},
+	}
+	rbr := NewRecordBatchRepository(&config)
+
+	for i := 0; i < 10; i++ {
+		rbr.AddRecord(GenRecord(int64(i), i%15, i%2, i))
+	}
+	rbr.Optimize()
 
 	spew.Dump(rbr.Metadata())
 }
