@@ -12,21 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package value
+package value_test
 
 import (
 	"otel-arrow-adapter/pkg/rbb/config"
+	value2 "otel-arrow-adapter/pkg/rbb/value"
 	"testing"
 )
 
 func TestStringColumn(t *testing.T) {
+	t.Parallel()
+
 	dictionaryConfig := config.DictionaryConfig{
 		MinRowCount:           10,
 		MaxCard:               3,
 		MaxCardRatio:          0.5,
 		MaxSortedDictionaries: 5,
 	}
-	sc := NewStringColumn("test", &dictionaryConfig, []int{1}, 1)
+	sc := value2.NewStringColumn("test", &dictionaryConfig, []int{1}, 1)
 	if *sc.ColumnName() != "test" {
 		t.Errorf("Expected column name to be 'test', got %s", *sc.ColumnName())
 	}

@@ -25,6 +25,10 @@ type Record struct {
 	fields []value2.Field
 }
 
+func NewRecord() *Record {
+	return &Record{}
+}
+
 // Normalize normalizes the field names and values.
 func (r Record) Normalize() {
 	sort.Slice(r.fields, func(i, j int) bool {

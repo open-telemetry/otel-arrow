@@ -107,8 +107,8 @@ func NewRecordBatchBuilderWithRecord(record *Record, config *config2.Config) *Re
 		optimized:  config.Dictionaries.StringColumns.MaxSortedDictionaries == 0,
 	}
 
-	for fieldIdx, field := range record.fields {
-		fieldPath := builder.columns.CreateColumn([]int{fieldIdx}, &field, config, &builder.dictIdGen)
+	for fieldIdx := range record.fields {
+		fieldPath := builder.columns.CreateColumn([]int{fieldIdx}, &record.fields[fieldIdx], config, &builder.dictIdGen)
 		if fieldPath != nil {
 			builder.fieldPaths = append(builder.fieldPaths, fieldPath)
 		}
@@ -120,8 +120,8 @@ func (rbb *RecordBatchBuilder) AddRecord(record *Record) {
 	if rbb.recordList != nil {
 		rbb.recordList = append(rbb.recordList, record)
 	} else {
-		for fieldIdx, field := range record.fields {
-			rbb.columns.UpdateColumn(rbb.fieldPaths[fieldIdx], &field)
+		for fieldIdx := range record.fields {
+			rbb.columns.UpdateColumn(rbb.fieldPaths[fieldIdx], &record.fields[fieldIdx])
 		}
 	}
 }

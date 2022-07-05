@@ -42,7 +42,7 @@ type DictionaryConfig struct {
 	// The creation of a dictionary will only be performed on columns with a ratio `card` / `size` <= `max_card_ratio`.
 	MaxCardRatio float64
 
-	// Maximum number of sorted dictionaries (based on cardinality/total_size and avg_data_lenght).
+	// Maximum number of sorted dictionaries (based on cardinality/total_size and avg_data_length).
 	MaxSortedDictionaries int
 }
 

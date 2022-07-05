@@ -1,14 +1,16 @@
-package rbb
+package rbb_test
 
 import (
 	"github.com/davecgh/go-spew/spew"
 	"math"
+	"otel-arrow-adapter/pkg/rbb"
 	config2 "otel-arrow-adapter/pkg/rbb/config"
 	"testing"
 )
 
 func TestAddRecord(t *testing.T) {
-	rbr := NewRecordBatchRepository(config2.NewDefaultConfig())
+	t.Parallel()
+	rbr := rbb.NewRecordBatchRepository(config2.NewDefaultConfig())
 	rbr.AddRecord(GenSimpleRecord(0))
 	rbr.AddRecord(GenComplexRecord(1))
 	rbr.AddRecord(GenSimpleRecord(2))
@@ -52,6 +54,8 @@ func TestAddRecord(t *testing.T) {
 }
 
 func TestOptimize(t *testing.T) {
+	t.Parallel()
+
 	config := config2.Config{
 		Dictionaries: config2.DictionariesConfig{
 			StringColumns: config2.DictionaryConfig{
@@ -62,7 +66,7 @@ func TestOptimize(t *testing.T) {
 			},
 		},
 	}
-	rbr := NewRecordBatchRepository(&config)
+	rbr := rbb.NewRecordBatchRepository(&config)
 
 	for i := 0; i < 10; i++ {
 		rbr.AddRecord(GenRecord(int64(i), i%15, i%2, i))

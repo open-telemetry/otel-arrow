@@ -12,15 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package value
+package value_test
 
 import (
+	"otel-arrow-adapter/pkg/rbb/value"
 	"testing"
 )
 
 func TestNormalize(t *testing.T) {
+	t.Parallel()
+
 	// Test normalize on a scalar value
-	s1 := Bool{
+	s1 := value.Bool{
 		Value: true,
 	}
 	s1.Normalize()
@@ -29,19 +32,19 @@ func TestNormalize(t *testing.T) {
 	}
 
 	// Test normalize on a struct value
-	s2 := Struct{
-		Fields: []Field{
+	s2 := value.Struct{
+		Fields: []value.Field{
 			{
 				Name:  "c",
-				Value: &Bool{Value: false},
+				Value: &value.Bool{Value: false},
 			},
 			{
 				Name:  "a",
-				Value: &I64{Value: 123},
+				Value: &value.I64{Value: 123},
 			},
 			{
 				Name:  "b",
-				Value: &String{Value: "text"},
+				Value: &value.String{Value: "text"},
 			},
 		},
 	}
@@ -57,36 +60,36 @@ func TestNormalize(t *testing.T) {
 	}
 
 	// Test normalize on a list value
-	s3 := List{
-		Values: []Value{
-			&Bool{Value: true},
-			&I64{Value: 1},
-			&Struct{
-				Fields: []Field{
+	s3 := value.List{
+		Values: []value.Value{
+			&value.Bool{Value: true},
+			&value.I64{Value: 1},
+			&value.Struct{
+				Fields: []value.Field{
 					{
 						Name:  "c",
-						Value: &Bool{Value: false},
+						Value: &value.Bool{Value: false},
 					},
 					{
 						Name:  "a",
-						Value: &I64{Value: 123},
+						Value: &value.I64{Value: 123},
 					},
 					{
 						Name:  "b",
-						Value: &String{Value: "text"},
+						Value: &value.String{Value: "text"},
 					},
 				},
 			},
 		},
 	}
 	s3.Normalize()
-	if s3.Values[2].(*Struct).Fields[0].Name != "a" {
+	if s3.Values[2].(*value.Struct).Fields[0].Name != "a" {
 		t.Errorf("Expected a, got %v", s2.Fields[0].Name)
 	}
-	if s3.Values[2].(*Struct).Fields[1].Name != "b" {
+	if s3.Values[2].(*value.Struct).Fields[1].Name != "b" {
 		t.Errorf("Expected b, got %v", s2.Fields[1].Name)
 	}
-	if s3.Values[2].(*Struct).Fields[2].Name != "c" {
+	if s3.Values[2].(*value.Struct).Fields[2].Name != "c" {
 		t.Errorf("Expected c, got %v", s2.Fields[2].Name)
 	}
 }

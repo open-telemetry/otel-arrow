@@ -1,9 +1,13 @@
-package config
+package config_test
 
-import "testing"
+import (
+	config2 "otel-arrow-adapter/pkg/rbb/config"
+	"testing"
+)
 
 func TestIsDictionary(t *testing.T) {
-	config := DictionaryConfig{
+	t.Parallel()
+	config := config2.DictionaryConfig{
 		MinRowCount:           10,
 		MaxCard:               2,
 		MaxCardRatio:          0.5,

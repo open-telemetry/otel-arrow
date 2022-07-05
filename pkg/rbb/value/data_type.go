@@ -87,13 +87,19 @@ func DataTypeSignature(dataType arrow.DataType) string {
 			fieldSigs = append(fieldSigs, field.Name+":"+field.Type)
 		}
 		return "{" + strings.Join(fieldSigs, ",") + "}"
+	case arrow.DATE32, arrow.DATE64, arrow.DECIMAL128, arrow.DECIMAL256, arrow.DENSE_UNION, arrow.SPARSE_UNION,
+		arrow.INTERVAL, arrow.TIME32, arrow.TIME64, arrow.DICTIONARY, arrow.FIXED_SIZE_LIST, arrow.MAP,
+		arrow.FIXED_SIZE_BINARY, arrow.INTERVAL_DAY_TIME, arrow.INTERVAL_MONTHS, arrow.INTERVAL_MONTH_DAY_NANO,
+		arrow.DURATION, arrow.EXTENSION, arrow.FLOAT16, arrow.LARGE_LIST, arrow.LARGE_STRING, arrow.LARGE_BINARY,
+		arrow.NULL, arrow.TIMESTAMP:
+		fallthrough
 	default:
 		panic("unknown data type '" + dataType.ID().String() + "'")
 	}
 }
 
 func StructDataType(fields []Field) arrow.DataType {
-	var arrowFields []arrow.Field
+	arrowFields := make([]arrow.Field, 0, len(fields))
 	for _, field := range fields {
 		arrowFields = append(arrowFields, arrow.Field{
 			Name:     field.Name,
@@ -118,7 +124,7 @@ func ListDataType(values []Value) arrow.DataType {
 
 	if len(dataTypeSet) > 0 {
 		dataTypes := make([]arrow.DataType, 0, len(dataTypeSet))
-		for dataType, _ := range dataTypeSet {
+		for dataType := range dataTypeSet {
 			dataTypes = append(dataTypes, dataType)
 		}
 		return CoerceDataType(&dataTypes)
@@ -131,7 +137,7 @@ func ListDataType(values []Value) arrow.DataType {
 // * `Int64` and `Float64` are `Float64`
 // * Lists and scalars are coerced to a list of a compatible scalar
 // * Structs contain the union of all fields
-// * All other types are coerced to `Utf8`
+// * All other types are coerced to `Utf8`.
 func CoerceDataType(dataTypes *[]arrow.DataType) arrow.DataType {
 	dataType := (*dataTypes)[0]
 
@@ -185,8 +191,10 @@ func CoerceDataType(dataTypes *[]arrow.DataType) arrow.DataType {
 }
 
 func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.DataType {
+	//exhaustive:ignore
 	switch dataType1.ID() {
 	case arrow.PrimitiveTypes.Uint8.ID():
+		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Uint8.ID():
 			return arrow.PrimitiveTypes.Uint8
@@ -202,6 +210,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 			return arrow.BinaryTypes.String
 		}
 	case arrow.PrimitiveTypes.Int8.ID():
+		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Int8.ID():
 			return arrow.PrimitiveTypes.Int8
@@ -217,6 +226,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 			return arrow.BinaryTypes.String
 		}
 	case arrow.PrimitiveTypes.Uint16.ID():
+		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Uint8.ID():
 			return arrow.PrimitiveTypes.Uint16
@@ -232,6 +242,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 			return arrow.BinaryTypes.String
 		}
 	case arrow.PrimitiveTypes.Int16.ID():
+		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Int8.ID():
 			return arrow.PrimitiveTypes.Int16
@@ -247,6 +258,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 			return arrow.BinaryTypes.String
 		}
 	case arrow.PrimitiveTypes.Uint32.ID():
+		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Uint8.ID():
 			return arrow.PrimitiveTypes.Uint32
@@ -262,6 +274,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 			return arrow.BinaryTypes.String
 		}
 	case arrow.PrimitiveTypes.Int32.ID():
+		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Int8.ID():
 			return arrow.PrimitiveTypes.Int32
@@ -277,6 +290,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 			return arrow.BinaryTypes.String
 		}
 	case arrow.PrimitiveTypes.Uint64.ID():
+		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Uint8.ID():
 			return arrow.PrimitiveTypes.Uint64
@@ -292,6 +306,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 			return arrow.BinaryTypes.String
 		}
 	case arrow.PrimitiveTypes.Int64.ID():
+		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Int8.ID():
 			return arrow.PrimitiveTypes.Int64
@@ -307,6 +322,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 			return arrow.BinaryTypes.String
 		}
 	case arrow.FixedWidthTypes.Boolean.ID():
+		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Uint8.ID():
 			return arrow.PrimitiveTypes.Uint8

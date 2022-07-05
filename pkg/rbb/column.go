@@ -215,11 +215,11 @@ func (c *Columns) CreateColumn(path []int, field *value.Field, config *config.Co
 		dataType := value.StructDataType(field.Value.(*value.Struct).Fields)
 		fieldPaths := make([]*FieldPath, 0, len(field.Value.(*value.Struct).Fields))
 		columns := Columns{}
-		for _, field := range field.Value.(*value.Struct).Fields {
+		for i := range field.Value.(*value.Struct).Fields {
 			updatedPath := make([]int, 0, len(path)+1)
 			copy(updatedPath, path)
 			updatedPath = append(updatedPath, len(fieldPaths))
-			fieldPath := columns.CreateColumn(updatedPath, &field, config, dictIdGen)
+			fieldPath := columns.CreateColumn(updatedPath, &field.Value.(*value.Struct).Fields[i], config, dictIdGen)
 			if fieldPath != nil {
 				fieldPaths = append(fieldPaths, fieldPath)
 			}
@@ -270,8 +270,8 @@ func (c *Columns) UpdateColumn(fieldPath *FieldPath, field *value.Field) {
 	case *value.List:
 		c.ListColumns[fieldPath.Current].Data = append(c.ListColumns[fieldPath.Current].Data, field.Value.(*value.List).Values)
 	case *value.Struct:
-		for fieldPos, field := range field.Value.(*value.Struct).Fields {
-			c.StructColumns[fieldPath.Current].Columns.UpdateColumn(fieldPath.Children[fieldPos], &field)
+		for fieldPos := range field.Value.(*value.Struct).Fields {
+			c.StructColumns[fieldPath.Current].Columns.UpdateColumn(fieldPath.Children[fieldPos], &field.Value.(*value.Struct).Fields[fieldPos])
 		}
 	default:
 		panic("unsupported field type")
@@ -283,7 +283,9 @@ func (c *Columns) IsEmpty() bool {
 }
 
 func (c *Columns) Metadata() []*ColumnMetadata {
-	var metadata []*ColumnMetadata
+	metadata := make([]*ColumnMetadata, 0, len(c.I8Columns)+len(c.I16Columns)+len(c.I32Columns)+len(c.I64Columns)+
+		len(c.U8Columns)+len(c.U16Columns)+len(c.U32Columns)+len(c.U64Columns)+len(c.F32Columns)+len(c.F64Columns)+
+		len(c.BooleanColumns)+len(c.StringColumns)+len(c.BinaryColumns)+len(c.ListColumns)+len(c.StructColumns))
 
 	for _, i8Column := range c.I8Columns {
 		metadata = append(metadata, &ColumnMetadata{
@@ -395,7 +397,7 @@ func (c *Columns) Metadata() []*ColumnMetadata {
 }
 
 func (c *Columns) DictionaryStats() []*stats.DictionaryStats {
-	var dictionaryStats []*stats.DictionaryStats
+	dictionaryStats := make([]*stats.DictionaryStats, 0, len(c.StringColumns)+len(c.StructColumns))
 
 	for _, stringColumn := range c.StringColumns {
 		dictionaryStats = append(dictionaryStats, stringColumn.DictionaryStats())
