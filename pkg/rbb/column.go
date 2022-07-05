@@ -193,18 +193,9 @@ func (c *Columns) CreateColumn(path []int, field *value.Field, config *config.Co
 		})
 		return NewFieldPath(len(c.F64Columns) - 1)
 	case *value.String:
-		stringColumn := value.StringColumn{
-			Name:             field.Name,
-			Config:           &config.Dictionaries.StringColumns,
-			FieldPath:        path,
-			DictId:           dictIdGen.NextId(),
-			Data:             []*string{},
-			TotalValueLength: 0,
-			TotalRowCount:    0,
-			Dictionary:       make(map[string]bool),
-		}
+		stringColumn := value.NewStringColumn(field.Name, &config.Dictionaries.StringColumns, path, dictIdGen.NextId())
 		stringColumn.Push(&field.Value.(*value.String).Value)
-		c.StringColumns = append(c.StringColumns, stringColumn)
+		c.StringColumns = append(c.StringColumns, *stringColumn)
 		return NewFieldPath(len(c.StringColumns) - 1)
 	case *value.Binary:
 		c.BinaryColumns = append(c.BinaryColumns, BinaryColumn{
@@ -373,9 +364,9 @@ func (c *Columns) Metadata() []*ColumnMetadata {
 	}
 	for _, stringColumn := range c.StringColumns {
 		metadata = append(metadata, &ColumnMetadata{
-			Name: stringColumn.Name,
+			Name: *stringColumn.ColumnName(),
 			Type: arrow.BinaryTypes.String,
-			Len:  len(stringColumn.Data),
+			Len:  stringColumn.Len(),
 		})
 	}
 	for _, binaryColumn := range c.BinaryColumns {
