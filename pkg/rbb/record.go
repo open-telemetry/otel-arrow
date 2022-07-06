@@ -125,6 +125,7 @@ func (r *Record) ValueByPath(path []int) value2.Value {
 	return nil
 }
 
+// Compare compares two records based on an order by clause expressed as a collection of numerical path.
 func (r *Record) Compare(other *Record, sortBy [][]int) int {
 	for _, path := range sortBy {
 		v := r.ValueByPath(path)
@@ -133,10 +134,10 @@ func (r *Record) Compare(other *Record, sortBy [][]int) int {
 			panic("compare: invalid path")
 		}
 
-		//if cmp := v.Compare(otherV); cmp != 0 {
-		//	// Not equals
-		//	return cmp
-		//}
+		if cmp := v.Compare(otherV); cmp != 0 {
+			// Not equals
+			return cmp
+		}
 	}
 	return 0
 }

@@ -97,6 +97,43 @@ func TestValue(t *testing.T) {
 	}
 }
 
+func TestCompare(t *testing.T) {
+	t.Parallel()
+
+	record1 := GenComplexRecord(1)
+	record1.Normalize()
+
+	record2 := GenComplexRecord(2)
+	record2.Normalize()
+
+	// Compare the two records based on the field "b".
+	sortBy := [][]int{
+		{1}, // field "b"
+	}
+	result := record1.Compare(record2, sortBy)
+	if result != 0 {
+		t.Errorf("expected the comparison of record1 and record2 to be 0, got %v", result)
+	}
+	result = record2.Compare(record1, sortBy)
+	if result != 0 {
+		t.Errorf("expected the comparison of record1 and record2 to be 0, got %v", result)
+	}
+
+	// Compare the two records based on the fields "b" and "ts".
+	sortBy = [][]int{
+		{1}, // field "b"
+		{3}, // field "ts"
+	}
+	result = record1.Compare(record2, sortBy)
+	if result != -1 {
+		t.Errorf("expected the comparison of record1 and record2 to be -1, got %v", result)
+	}
+	result = record2.Compare(record1, sortBy)
+	if result != 1 {
+		t.Errorf("expected the comparison of record2 and record1 to be 1, got %v", result)
+	}
+}
+
 func TestRecordNormalize(t *testing.T) {
 	t.Parallel()
 

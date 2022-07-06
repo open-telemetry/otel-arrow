@@ -15,6 +15,7 @@
 package value
 
 import (
+	"bytes"
 	"github.com/apache/arrow/go/arrow"
 	"sort"
 )
@@ -23,6 +24,7 @@ type Value interface {
 	Normalize()
 	DataType() arrow.DataType
 	ValueByPath(path []int) Value
+	Compare(other Value) int
 }
 
 type CommonValue struct{}
@@ -41,6 +43,19 @@ func (v *Bool) ValueByPath(path []int) Value {
 	}
 	return nil
 }
+func (v *Bool) Compare(other Value) int {
+	if other == nil || other.DataType() != v.DataType() {
+		panic("invalid comparison")
+	}
+	otherValue := other.(*Bool).Value
+	if v.Value == otherValue {
+		return 0
+	} else if v.Value {
+		return 1
+	} else {
+		return -1
+	}
+}
 
 type I8 struct {
 	CommonValue
@@ -53,6 +68,19 @@ func (v *I8) ValueByPath(path []int) Value {
 		return v
 	}
 	return nil
+}
+func (v *I8) Compare(other Value) int {
+	if other == nil || other.DataType() != v.DataType() {
+		panic("invalid comparison")
+	}
+	otherValue := other.(*I8).Value
+	if v.Value == otherValue {
+		return 0
+	} else if v.Value > otherValue {
+		return 1
+	} else {
+		return -1
+	}
 }
 
 type I16 struct {
@@ -67,6 +95,19 @@ func (v *I16) ValueByPath(path []int) Value {
 	}
 	return nil
 }
+func (v *I16) Compare(other Value) int {
+	if other == nil || other.DataType() != v.DataType() {
+		panic("invalid comparison")
+	}
+	otherValue := other.(*I16).Value
+	if v.Value == otherValue {
+		return 0
+	} else if v.Value > otherValue {
+		return 1
+	} else {
+		return -1
+	}
+}
 
 type I32 struct {
 	CommonValue
@@ -79,6 +120,19 @@ func (v *I32) ValueByPath(path []int) Value {
 		return v
 	}
 	return nil
+}
+func (v *I32) Compare(other Value) int {
+	if other == nil || other.DataType() != v.DataType() {
+		panic("invalid comparison")
+	}
+	otherValue := other.(*I32).Value
+	if v.Value == otherValue {
+		return 0
+	} else if v.Value > otherValue {
+		return 1
+	} else {
+		return -1
+	}
 }
 
 type I64 struct {
@@ -93,6 +147,19 @@ func (v *I64) ValueByPath(path []int) Value {
 	}
 	return nil
 }
+func (v *I64) Compare(other Value) int {
+	if other == nil || other.DataType() != v.DataType() {
+		panic("invalid comparison")
+	}
+	otherValue := other.(*I64).Value
+	if v.Value == otherValue {
+		return 0
+	} else if v.Value > otherValue {
+		return 1
+	} else {
+		return -1
+	}
+}
 
 type U8 struct {
 	CommonValue
@@ -105,6 +172,19 @@ func (v *U8) ValueByPath(path []int) Value {
 		return v
 	}
 	return nil
+}
+func (v *U8) Compare(other Value) int {
+	if other == nil || other.DataType() != v.DataType() {
+		panic("invalid comparison")
+	}
+	otherValue := other.(*U8).Value
+	if v.Value == otherValue {
+		return 0
+	} else if v.Value > otherValue {
+		return 1
+	} else {
+		return -1
+	}
 }
 
 type U16 struct {
@@ -119,6 +199,19 @@ func (v *U16) ValueByPath(path []int) Value {
 	}
 	return nil
 }
+func (v *U16) Compare(other Value) int {
+	if other == nil || other.DataType() != v.DataType() {
+		panic("invalid comparison")
+	}
+	otherValue := other.(*U16).Value
+	if v.Value == otherValue {
+		return 0
+	} else if v.Value > otherValue {
+		return 1
+	} else {
+		return -1
+	}
+}
 
 type U32 struct {
 	CommonValue
@@ -131,6 +224,19 @@ func (v *U32) ValueByPath(path []int) Value {
 		return v
 	}
 	return nil
+}
+func (v *U32) Compare(other Value) int {
+	if other == nil || other.DataType() != v.DataType() {
+		panic("invalid comparison")
+	}
+	otherValue := other.(*U32).Value
+	if v.Value == otherValue {
+		return 0
+	} else if v.Value > otherValue {
+		return 1
+	} else {
+		return -1
+	}
 }
 
 type U64 struct {
@@ -145,6 +251,19 @@ func (v *U64) ValueByPath(path []int) Value {
 	}
 	return nil
 }
+func (v *U64) Compare(other Value) int {
+	if other == nil || other.DataType() != v.DataType() {
+		panic("invalid comparison")
+	}
+	otherValue := other.(*U64).Value
+	if v.Value == otherValue {
+		return 0
+	} else if v.Value > otherValue {
+		return 1
+	} else {
+		return -1
+	}
+}
 
 type F32 struct {
 	CommonValue
@@ -157,6 +276,19 @@ func (v *F32) ValueByPath(path []int) Value {
 		return v
 	}
 	return nil
+}
+func (v *F32) Compare(other Value) int {
+	if other == nil || other.DataType() != v.DataType() {
+		panic("invalid comparison")
+	}
+	otherValue := other.(*F32).Value
+	if v.Value == otherValue {
+		return 0
+	} else if v.Value > otherValue {
+		return 1
+	} else {
+		return -1
+	}
 }
 
 type F64 struct {
@@ -171,6 +303,19 @@ func (v *F64) ValueByPath(path []int) Value {
 	}
 	return nil
 }
+func (v *F64) Compare(other Value) int {
+	if other == nil || other.DataType() != v.DataType() {
+		panic("invalid comparison")
+	}
+	otherValue := other.(*F64).Value
+	if v.Value == otherValue {
+		return 0
+	} else if v.Value > otherValue {
+		return 1
+	} else {
+		return -1
+	}
+}
 
 type String struct {
 	CommonValue
@@ -184,6 +329,19 @@ func (v *String) ValueByPath(path []int) Value {
 	}
 	return nil
 }
+func (v *String) Compare(other Value) int {
+	if other == nil || other.DataType() != v.DataType() {
+		panic("invalid comparison")
+	}
+	otherValue := other.(*String).Value
+	if v.Value == otherValue {
+		return 0
+	} else if v.Value > otherValue {
+		return 1
+	} else {
+		return -1
+	}
+}
 
 type Binary struct {
 	CommonValue
@@ -196,6 +354,13 @@ func (v *Binary) ValueByPath(path []int) Value {
 		return v
 	}
 	return nil
+}
+func (v *Binary) Compare(other Value) int {
+	if other == nil || other.DataType() != v.DataType() {
+		panic("invalid comparison")
+	}
+	otherValue := other.(*Binary).Value
+	return bytes.Compare(v.Value, otherValue)
 }
 
 type Struct struct {
@@ -226,6 +391,9 @@ func (v *Struct) ValueByPath(path []int) Value {
 	}
 	return v.Fields[path[0]].ValueByPath(path[1:])
 }
+func (v *Struct) Compare(_ Value) int {
+	panic("struct comparison not implemented")
+}
 
 type List struct {
 	Values []Value
@@ -245,6 +413,9 @@ func (v *List) ValueByPath(path []int) Value {
 		return v
 	}
 	return v.Values[path[0]].ValueByPath(path[1:])
+}
+func (v *List) Compare(_ Value) int {
+	panic("struct comparison not implemented")
 }
 
 // ToDo what about list mixing struct, uint, string, ... items?
