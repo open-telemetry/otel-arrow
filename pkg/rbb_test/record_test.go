@@ -21,6 +21,82 @@ import (
 	"testing"
 )
 
+func TestValue(t *testing.T) {
+	t.Parallel()
+
+	record := rbb.NewRecord()
+	record.StringField("b", "b")
+	record.StructField("a", value.Struct{
+		Fields: []value.Field{
+			{Name: "e1", Value: &value.String{Value: "e1"}},
+			{Name: "b1", Value: &value.String{Value: "b1"}},
+			{Name: "c1", Value: &value.Struct{
+				Fields: []value.Field{
+					{Name: "x", Value: &value.String{Value: "x"}},
+					{Name: "t", Value: &value.String{Value: "t"}},
+					{Name: "z", Value: &value.List{
+						Values: []value.Value{
+							&value.I64{Value: 1},
+							&value.I64{Value: 2},
+						},
+					}},
+					{Name: "a", Value: &value.List{
+						Values: []value.Value{
+							&value.Struct{
+								Fields: []value.Field{
+									{Name: "f2_3_4_2", Value: &value.String{Value: "f2_3_4_2"}},
+									{Name: "f2_3_4_1", Value: &value.String{Value: "f2_3_4_1"}},
+								},
+							},
+						},
+					}},
+				},
+			}},
+		},
+	})
+	record.Normalize()
+
+	v := record.ValueByPath([]int{0, 0}) // field "b"
+	if v.(*value.String).Value != "b1" {
+		t.Errorf("expected the value of field \"a.b1\" to be \"b1\", got %v", v)
+	}
+
+	v = record.ValueByPath([]int{0, 1, 0, 0, 0}) // field "a.c1.a.f2_3_4_1"
+	if v.(*value.String).Value != "f2_3_4_1" {
+		t.Errorf("expected the value of field \"a.c1.a.f2_3_4_1\" to be \"f2_3_4_1\", got %v", v)
+	}
+
+	v = record.ValueByPath([]int{0, 1, 1}) // field "a.c1.t"
+	if v.(*value.String).Value != "t" {
+		t.Errorf("expected the value of field \"a.c1.t\" to be \"t\", got %v", v)
+	}
+
+	v = record.ValueByPath([]int{0, 1, 2}) // field "a.c1.x"
+	if v.(*value.String).Value != "x" {
+		t.Errorf("expected the value of field \"a.c1.x\" to be \"x\", got %v", v)
+	}
+
+	v = record.ValueByPath([]int{0, 1, 3, 0}) // field "a.c1.z[0]"
+	if v.(*value.I64).Value != 1 {
+		t.Errorf("expected the value of field \"a.c1.z[0]\" to be \"1\", got %v", v)
+	}
+
+	v = record.ValueByPath([]int{0, 1, 3, 1}) // field "a.c1.z[1]"
+	if v.(*value.I64).Value != 2 {
+		t.Errorf("expected the value of field \"a.c1.z[1]\" to be \"2\", got %v", v)
+	}
+
+	v = record.ValueByPath([]int{0, 2}) // field "a.e1"
+	if v.(*value.String).Value != "e1" {
+		t.Errorf("expected the value of field \"a.e1\" to be \"e1\", got %v", v)
+	}
+
+	v = record.ValueByPath([]int{1}) // field "b"
+	if v.(*value.String).Value != "b" {
+		t.Errorf("expected the value of field \"b\" to be \"b\", got %v", v)
+	}
+}
+
 func TestRecordNormalize(t *testing.T) {
 	t.Parallel()
 

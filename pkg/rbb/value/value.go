@@ -22,6 +22,7 @@ import (
 type Value interface {
 	Normalize()
 	DataType() arrow.DataType
+	ValueByPath(path []int) Value
 }
 
 type CommonValue struct{}
@@ -34,6 +35,12 @@ type Bool struct {
 }
 
 func (v *Bool) DataType() arrow.DataType { return arrow.FixedWidthTypes.Boolean }
+func (v *Bool) ValueByPath(path []int) Value {
+	if path == nil || len(path) == 0 {
+		return v
+	}
+	return nil
+}
 
 type I8 struct {
 	CommonValue
@@ -41,6 +48,12 @@ type I8 struct {
 }
 
 func (v *I8) DataType() arrow.DataType { return arrow.PrimitiveTypes.Int8 }
+func (v *I8) ValueByPath(path []int) Value {
+	if path == nil || len(path) == 0 {
+		return v
+	}
+	return nil
+}
 
 type I16 struct {
 	CommonValue
@@ -48,6 +61,12 @@ type I16 struct {
 }
 
 func (v *I16) DataType() arrow.DataType { return arrow.PrimitiveTypes.Int16 }
+func (v *I16) ValueByPath(path []int) Value {
+	if path == nil || len(path) == 0 {
+		return v
+	}
+	return nil
+}
 
 type I32 struct {
 	CommonValue
@@ -55,6 +74,12 @@ type I32 struct {
 }
 
 func (v *I32) DataType() arrow.DataType { return arrow.PrimitiveTypes.Int32 }
+func (v *I32) ValueByPath(path []int) Value {
+	if path == nil || len(path) == 0 {
+		return v
+	}
+	return nil
+}
 
 type I64 struct {
 	CommonValue
@@ -62,6 +87,12 @@ type I64 struct {
 }
 
 func (v *I64) DataType() arrow.DataType { return arrow.PrimitiveTypes.Int64 }
+func (v *I64) ValueByPath(path []int) Value {
+	if path == nil || len(path) == 0 {
+		return v
+	}
+	return nil
+}
 
 type U8 struct {
 	CommonValue
@@ -69,6 +100,12 @@ type U8 struct {
 }
 
 func (v *U8) DataType() arrow.DataType { return arrow.PrimitiveTypes.Uint8 }
+func (v *U8) ValueByPath(path []int) Value {
+	if path == nil || len(path) == 0 {
+		return v
+	}
+	return nil
+}
 
 type U16 struct {
 	CommonValue
@@ -76,6 +113,12 @@ type U16 struct {
 }
 
 func (v *U16) DataType() arrow.DataType { return arrow.PrimitiveTypes.Uint16 }
+func (v *U16) ValueByPath(path []int) Value {
+	if path == nil || len(path) == 0 {
+		return v
+	}
+	return nil
+}
 
 type U32 struct {
 	CommonValue
@@ -83,6 +126,12 @@ type U32 struct {
 }
 
 func (v *U32) DataType() arrow.DataType { return arrow.PrimitiveTypes.Uint32 }
+func (v *U32) ValueByPath(path []int) Value {
+	if path == nil || len(path) == 0 {
+		return v
+	}
+	return nil
+}
 
 type U64 struct {
 	CommonValue
@@ -90,6 +139,12 @@ type U64 struct {
 }
 
 func (v *U64) DataType() arrow.DataType { return arrow.PrimitiveTypes.Uint64 }
+func (v *U64) ValueByPath(path []int) Value {
+	if path == nil || len(path) == 0 {
+		return v
+	}
+	return nil
+}
 
 type F32 struct {
 	CommonValue
@@ -97,6 +152,12 @@ type F32 struct {
 }
 
 func (v *F32) DataType() arrow.DataType { return arrow.PrimitiveTypes.Float32 }
+func (v *F32) ValueByPath(path []int) Value {
+	if path == nil || len(path) == 0 {
+		return v
+	}
+	return nil
+}
 
 type F64 struct {
 	CommonValue
@@ -104,6 +165,12 @@ type F64 struct {
 }
 
 func (v *F64) DataType() arrow.DataType { return arrow.PrimitiveTypes.Float64 }
+func (v *F64) ValueByPath(path []int) Value {
+	if path == nil || len(path) == 0 {
+		return v
+	}
+	return nil
+}
 
 type String struct {
 	CommonValue
@@ -111,6 +178,12 @@ type String struct {
 }
 
 func (v *String) DataType() arrow.DataType { return arrow.BinaryTypes.String }
+func (v *String) ValueByPath(path []int) Value {
+	if path == nil || len(path) == 0 {
+		return v
+	}
+	return nil
+}
 
 type Binary struct {
 	CommonValue
@@ -118,6 +191,12 @@ type Binary struct {
 }
 
 func (v *Binary) DataType() arrow.DataType { return arrow.BinaryTypes.Binary }
+func (v *Binary) ValueByPath(path []int) Value {
+	if path == nil || len(path) == 0 {
+		return v
+	}
+	return nil
+}
 
 type Struct struct {
 	Fields []Field
@@ -141,6 +220,12 @@ func (v *Struct) Normalize() {
 		field.Normalize()
 	}
 }
+func (v *Struct) ValueByPath(path []int) Value {
+	if path == nil || len(path) == 0 {
+		return v
+	}
+	return v.Fields[path[0]].ValueByPath(path[1:])
+}
 
 type List struct {
 	Values []Value
@@ -154,6 +239,12 @@ func (v *List) Normalize() {
 	for _, value := range v.Values {
 		value.Normalize()
 	}
+}
+func (v *List) ValueByPath(path []int) Value {
+	if path == nil || len(path) == 0 {
+		return v
+	}
+	return v.Values[path[0]].ValueByPath(path[1:])
 }
 
 // ToDo what about list mixing struct, uint, string, ... items?

@@ -25,6 +25,145 @@ type Field struct {
 	Value Value
 }
 
+func MakeBoolField(name string, value bool) Field {
+	return Field{
+		Name: name,
+		Value: &Bool{
+			Value: value,
+		},
+	}
+}
+
+func MakeI8Field(name string, value int8) Field {
+	return Field{
+		Name: name,
+		Value: &I8{
+			Value: value,
+		},
+	}
+}
+
+func MakeI16Field(name string, value int16) Field {
+	return Field{
+		Name: name,
+		Value: &I16{
+			Value: value,
+		},
+	}
+}
+
+func MakeI32Field(name string, value int32) Field {
+	return Field{
+		Name: name,
+		Value: &I32{
+			Value: value,
+		},
+	}
+}
+
+func MakeI64Field(name string, value int64) Field {
+	return Field{
+		Name: name,
+		Value: &I64{
+			Value: value,
+		},
+	}
+}
+
+func MakeU8Field(name string, value uint8) Field {
+	return Field{
+		Name: name,
+		Value: &U8{
+			Value: value,
+		},
+	}
+}
+
+func MakeU16Field(name string, value uint16) Field {
+	return Field{
+		Name: name,
+		Value: &U16{
+			Value: value,
+		},
+	}
+}
+
+func MakeU32Field(name string, value uint32) Field {
+	return Field{
+		Name: name,
+		Value: &U32{
+			Value: value,
+		},
+	}
+}
+
+func MakeU64Field(name string, value uint64) Field {
+	return Field{
+		Name: name,
+		Value: &U64{
+			Value: value,
+		},
+	}
+}
+
+func MakeF32Field(name string, value float32) Field {
+	return Field{
+		Name: name,
+		Value: &F32{
+			Value: value,
+		},
+	}
+}
+
+func MakeF64Field(name string, value float64) Field {
+	return Field{
+		Name: name,
+		Value: &F64{
+			Value: value,
+		},
+	}
+}
+
+func MakeStringField(name string, value string) Field {
+	return Field{
+		Name: name,
+		Value: &String{
+			Value: value,
+		},
+	}
+}
+
+func MakeBinaryField(name string, value []byte) Field {
+	return Field{
+		Name: name,
+		Value: &Binary{
+			Value: value,
+		},
+	}
+}
+
+func MakeStructField(name string, value Struct) Field {
+	return Field{
+		Name:  name,
+		Value: &value,
+	}
+}
+
+func MakeListField(name string, value List) Field {
+	return Field{
+		Name:  name,
+		Value: &value,
+	}
+}
+
+func (f *Field) ValueByPath(path []int) Value {
+	if len(path) == 0 {
+		return f.Value
+	} else {
+		return f.Value.ValueByPath(path)
+	}
+}
+
 func (f *Field) DataType() arrow.DataType {
 	return f.Value.DataType()
 }

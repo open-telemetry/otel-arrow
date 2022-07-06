@@ -136,8 +136,18 @@ func (rbb *RecordBatchBuilder) IsEmpty() bool {
 }
 
 func (rbb *RecordBatchBuilder) Build(allocator *memory.GoAllocator) (array.Record, error) {
-	// ToDo order_by
+	// Sorts the string columns according to the order by clause.
+	if rbb.orderBy != nil {
+		recordList := rbb.recordList
+		capacity := 100
+		if len(recordList) > capacity {
+			capacity = len(recordList)
+		}
+		rbb.recordList = make([]*Record, 0, capacity)
 
+	}
+
+	// Creates a column builder for every column.
 	fields, builders, err := rbb.columns.Build(allocator)
 	if err != nil {
 		return nil, err
@@ -146,6 +156,7 @@ func (rbb *RecordBatchBuilder) Build(allocator *memory.GoAllocator) (array.Recor
 		return nil, nil
 	}
 
+	// Creates an Arrow Schema from the fields returned by the build method.
 	schema := arrow.NewSchema(fields, nil)
 	cols := make([]array.Interface, len(fields))
 	rows := int64(0)
@@ -159,6 +170,7 @@ func (rbb *RecordBatchBuilder) Build(allocator *memory.GoAllocator) (array.Recor
 		}
 	}(cols)
 
+	// Creates the RecordBatch from the schema and columns.
 	for i, builder := range builders {
 		cols[i] = builder.NewArray()
 		irow := int64(cols[i].Len())
@@ -242,4 +254,22 @@ func (rbb *RecordBatchBuilder) Optimize() bool {
 		}
 	}
 	return false
+}
+
+func sortByRecordList(recordList []*Record, orderBy *OrderBy) {
+	if orderBy == nil {
+		return
+	}
+	sort.Slice(recordList, func(i, j int) bool {
+		//for _, fieldPath := range orderBy.FieldPaths {
+		//	for _, fieldIdx := range fieldPath {
+		//		a := recordList[i].fields[fieldIdx]
+		//		b := recordList[j].fields[fieldIdx]
+		//		if a != b {
+		//			return a < b
+		//		}
+		//	}
+		//}
+		return false
+	})
 }

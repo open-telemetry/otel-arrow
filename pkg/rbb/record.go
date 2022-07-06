@@ -56,106 +56,87 @@ func (r *Record) FieldCount() int {
 }
 
 func (r *Record) BoolField(name string, value bool) {
-	r.fields = append(r.fields, value2.Field{
-		Name:  name,
-		Value: &value2.Bool{Value: value},
-	})
+	r.fields = append(r.fields, value2.MakeBoolField(name, value))
 }
 
 func (r *Record) I8Field(name string, value int8) {
-	r.fields = append(r.fields, value2.Field{
-		Name:  name,
-		Value: &value2.I8{Value: value},
-	})
+	r.fields = append(r.fields, value2.MakeI8Field(name, value))
 }
 
 func (r *Record) I16Field(name string, value int16) {
-	r.fields = append(r.fields, value2.Field{
-		Name:  name,
-		Value: &value2.I16{Value: value},
-	})
+	r.fields = append(r.fields, value2.MakeI16Field(name, value))
 }
 
 func (r *Record) I32Field(name string, value int32) {
-	r.fields = append(r.fields, value2.Field{
-		Name:  name,
-		Value: &value2.I32{Value: value},
-	})
+	r.fields = append(r.fields, value2.MakeI32Field(name, value))
 }
 
 func (r *Record) I64Field(name string, value int64) {
-	r.fields = append(r.fields, value2.Field{
-		Name:  name,
-		Value: &value2.I64{Value: value},
-	})
+	r.fields = append(r.fields, value2.MakeI64Field(name, value))
 }
 
 func (r *Record) U8Field(name string, value uint8) {
-	r.fields = append(r.fields, value2.Field{
-		Name:  name,
-		Value: &value2.U8{Value: value},
-	})
+	r.fields = append(r.fields, value2.MakeU8Field(name, value))
 }
 
 func (r *Record) U16Field(name string, value uint16) {
-	r.fields = append(r.fields, value2.Field{
-		Name:  name,
-		Value: &value2.U16{Value: value},
-	})
+	r.fields = append(r.fields, value2.MakeU16Field(name, value))
 }
 
 func (r *Record) U32Field(name string, value uint32) {
-	r.fields = append(r.fields, value2.Field{
-		Name:  name,
-		Value: &value2.U32{Value: value},
-	})
+	r.fields = append(r.fields, value2.MakeU32Field(name, value))
 }
 
 func (r *Record) U64Field(name string, value uint64) {
-	r.fields = append(r.fields, value2.Field{
-		Name:  name,
-		Value: &value2.U64{Value: value},
-	})
+	r.fields = append(r.fields, value2.MakeU64Field(name, value))
 }
 
 func (r *Record) F32Field(name string, value float32) {
-	r.fields = append(r.fields, value2.Field{
-		Name:  name,
-		Value: &value2.F32{Value: value},
-	})
+	r.fields = append(r.fields, value2.MakeF32Field(name, value))
 }
 
 func (r *Record) F64Field(name string, value float64) {
-	r.fields = append(r.fields, value2.Field{
-		Name:  name,
-		Value: &value2.F64{Value: value},
-	})
+	r.fields = append(r.fields, value2.MakeF64Field(name, value))
 }
 
 func (r *Record) StringField(name string, value string) {
-	r.fields = append(r.fields, value2.Field{
-		Name:  name,
-		Value: &value2.String{Value: value},
-	})
+	r.fields = append(r.fields, value2.MakeStringField(name, value))
 }
 
 func (r *Record) BinaryField(name string, value []byte) {
-	r.fields = append(r.fields, value2.Field{
-		Name:  name,
-		Value: &value2.Binary{Value: value},
-	})
+	r.fields = append(r.fields, value2.MakeBinaryField(name, value))
 }
 
 func (r *Record) StructField(name string, value value2.Struct) {
-	r.fields = append(r.fields, value2.Field{
-		Name:  name,
-		Value: &value,
-	})
+	r.fields = append(r.fields, value2.MakeStructField(name, value))
 }
 
 func (r *Record) ListField(name string, value value2.List) {
-	r.fields = append(r.fields, value2.Field{
-		Name:  name,
-		Value: &value,
-	})
+	r.fields = append(r.fields, value2.MakeListField(name, value))
+}
+
+func (r *Record) ValueByPath(path []int) value2.Value {
+	if path == nil {
+		return nil
+	}
+	if len(r.fields) > path[0] {
+		return r.fields[path[0]].ValueByPath(path[1:])
+	}
+	return nil
+}
+
+func (r *Record) Compare(other *Record, sortBy [][]int) int {
+	for _, path := range sortBy {
+		v := r.ValueByPath(path)
+		otherV := other.ValueByPath(path)
+		if v == nil || otherV == nil {
+			panic("compare: invalid path")
+		}
+
+		//if cmp := v.Compare(otherV); cmp != 0 {
+		//	// Not equals
+		//	return cmp
+		//}
+	}
+	return 0
 }
