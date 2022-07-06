@@ -2,11 +2,13 @@ package rbb_test
 
 import (
 	"github.com/apache/arrow/go/arrow"
-	"github.com/davecgh/go-spew/spew"
+	"github.com/apache/arrow/go/arrow/array"
 	"math"
+	"math/rand"
 	"otel-arrow-adapter/pkg/rbb"
 	config2 "otel-arrow-adapter/pkg/rbb/config"
 	"testing"
+	"time"
 )
 
 func TestAddRecord(t *testing.T) {
@@ -163,19 +165,69 @@ func TestBuild(t *testing.T) {
 	}
 	rbr := rbb.NewRecordBatchRepository(&config)
 
+	// Generates 100 timestamps randomly sorted.
+	tsValues := make([]int64, 0, 100)
 	for i := 0; i < 100; i++ {
-		rbr.AddRecord(GenBasicRecord(int64(i)))
+		tsValues = append(tsValues, int64(i))
 	}
-	rbr.Optimize()
+	rand.Seed(time.Now().UnixNano())
+	rand.Shuffle(len(tsValues), func(i, j int) { tsValues[i], tsValues[j] = tsValues[j], tsValues[i] })
+
+	// Inserts 100 records
+	for _, ts := range tsValues {
+		rbr.AddRecord(GenRecord(ts, int(ts%15), int(ts%2), int(ts)))
+	}
+	rbr.Optimize() // Optimize will determine which string columns must be sorted (first batch only).
 	records, err := rbr.Build()
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
 
-	for _, record := range records {
-		record.Release()
+	// Inserts 100 records
+	for _, ts := range tsValues {
+		rbr.AddRecord(GenRecord(ts, int(ts%15), int(ts%2), int(ts)))
+	}
+	rbr.Optimize()
+	records, err = rbr.Build() // Build will build an Arrow Record with the sorted columns determined in the first batch.
+
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
 	}
 
-	spew.Dump(records)
+	// Columns "b" and "a" must be sorted.
+	// "b" because it's cardinality is 2.
+	// "a" because it's cardinality is 15 (satisfy the configuration).
+	// "c" is not sorted because it's cardinality is 100 (doesn't satisfy the configuration).
+	for schemaId, record := range records {
+		if schemaId != "a:Str,b:Str,c:Str,ts:I64" {
+			t.Errorf("Expected schemaId to be a:Str,b:Str,c:Str,ts:I64, got %s", schemaId)
+		}
+		if record.NumRows() != 100 {
+			t.Errorf("Expected 100 rows, got %d", record.NumRows())
+		}
+		if record.ColumnName(0) != "ts" {
+			t.Errorf("Expected column name to be ts, got %s", record.ColumnName(0))
+		}
+		if record.ColumnName(1) != "a" {
+			t.Errorf("Expected column name to be a, got %s", record.ColumnName(1))
+		}
+		if record.Column(1).(*array.String).String() != "[\"a_0\" \"a_0\" \"a_0\" \"a_0\" \"a_1\" \"a_1\" \"a_1\" \"a_10\" \"a_10\" \"a_10\" \"a_11\" \"a_11\" \"a_11\" \"a_12\" \"a_12\" \"a_12\" \"a_13\" \"a_13\" \"a_13\" \"a_14\" \"a_14\" \"a_14\" \"a_2\" \"a_2\" \"a_2\" \"a_2\" \"a_3\" \"a_3\" \"a_3\" \"a_4\" \"a_4\" \"a_4\" \"a_4\" \"a_5\" \"a_5\" \"a_5\" \"a_6\" \"a_6\" \"a_6\" \"a_6\" \"a_7\" \"a_7\" \"a_7\" \"a_8\" \"a_8\" \"a_8\" \"a_8\" \"a_9\" \"a_9\" \"a_9\" \"a_0\" \"a_0\" \"a_0\" \"a_1\" \"a_1\" \"a_1\" \"a_1\" \"a_10\" \"a_10\" \"a_10\" \"a_11\" \"a_11\" \"a_11\" \"a_12\" \"a_12\" \"a_12\" \"a_13\" \"a_13\" \"a_13\" \"a_14\" \"a_14\" \"a_14\" \"a_2\" \"a_2\" \"a_2\" \"a_3\" \"a_3\" \"a_3\" \"a_3\" \"a_4\" \"a_4\" \"a_4\" \"a_5\" \"a_5\" \"a_5\" \"a_5\" \"a_6\" \"a_6\" \"a_6\" \"a_7\" \"a_7\" \"a_7\" \"a_7\" \"a_8\" \"a_8\" \"a_8\" \"a_9\" \"a_9\" \"a_9\" \"a_9\"]" {
+			t.Errorf("Column a is not sorted as expected")
+		}
+
+		if record.ColumnName(2) != "b" {
+			t.Errorf("Expected column name to be b, got %s", record.ColumnName(2))
+		}
+		if record.Column(2).(*array.String).String() != "[\"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\"]" {
+			t.Errorf("Column b is not sorted as expected")
+		}
+
+		if record.ColumnName(3) != "c" {
+			t.Errorf("Expected column name to be c, got %s", record.ColumnName(3))
+		}
+
+		//spew.Dump(record)
+		record.Release()
+	}
 }

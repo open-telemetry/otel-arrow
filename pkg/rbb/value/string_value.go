@@ -15,6 +15,8 @@
 package value
 
 import (
+	"github.com/apache/arrow/go/arrow/array"
+	"github.com/apache/arrow/go/arrow/memory"
 	"otel-arrow-adapter/pkg/rbb/config"
 	"otel-arrow-adapter/pkg/rbb/stats"
 )
@@ -97,4 +99,21 @@ func (c *StringColumn) AvgValueLength() float64 {
 
 func (c *StringColumn) Len() int {
 	return len(c.data)
+}
+
+func (c *StringColumn) Clear() {
+	c.data = c.data[:0]
+}
+
+func (c *StringColumn) MakeBuilder(allocator *memory.GoAllocator) *array.StringBuilder {
+	builder := array.NewStringBuilder(allocator)
+	builder.Reserve(c.Len())
+	for _, v := range c.data {
+		if v == nil {
+			builder.AppendNull()
+		} else {
+			builder.Append(*v)
+		}
+	}
+	return builder
 }

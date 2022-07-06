@@ -450,6 +450,14 @@ func (c *Columns) Build(allocator *memory.GoAllocator) ([]arrow.Field, []array.B
 		builders = append(builders, builder)
 		col.Clear()
 	}
+	for i := range c.StringColumns {
+		col := &c.StringColumns[i]
+		// ToDo implement dictionary builder when that makes sense
+		fields = append(fields, arrow.Field{Name: *col.ColumnName(), Type: arrow.BinaryTypes.String})
+		builders = append(builders, col.MakeBuilder(allocator))
+		col.Clear()
+	}
+
 	return fields, builders, nil
 }
 

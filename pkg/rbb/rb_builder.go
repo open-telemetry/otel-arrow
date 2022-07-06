@@ -144,7 +144,12 @@ func (rbb *RecordBatchBuilder) Build(allocator *memory.GoAllocator) (array.Recor
 			capacity = len(recordList)
 		}
 		rbb.recordList = make([]*Record, 0, capacity)
-
+		sortByRecordList(recordList, rbb.orderBy)
+		for _, record := range recordList {
+			for pos := range record.fields {
+				rbb.columns.UpdateColumn(rbb.fieldPaths[pos], &record.fields[pos])
+			}
+		}
 	}
 
 	// Creates a column builder for every column.
@@ -261,15 +266,12 @@ func sortByRecordList(recordList []*Record, orderBy *OrderBy) {
 		return
 	}
 	sort.Slice(recordList, func(i, j int) bool {
-		//for _, fieldPath := range orderBy.FieldPaths {
-		//	for _, fieldIdx := range fieldPath {
-		//		a := recordList[i].fields[fieldIdx]
-		//		b := recordList[j].fields[fieldIdx]
-		//		if a != b {
-		//			return a < b
-		//		}
-		//	}
-		//}
-		return false
+		r1 := recordList[i]
+		r2 := recordList[j]
+		if r1.Compare(r2, orderBy.FieldPaths) < 0 {
+			return true
+		} else {
+			return false
+		}
 	})
 }
