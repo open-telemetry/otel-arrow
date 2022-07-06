@@ -2,6 +2,7 @@ package rbb_test
 
 import (
 	"github.com/apache/arrow/go/arrow"
+	"github.com/davecgh/go-spew/spew"
 	"math"
 	"otel-arrow-adapter/pkg/rbb"
 	config2 "otel-arrow-adapter/pkg/rbb/config"
@@ -145,4 +146,36 @@ func TestOptimize(t *testing.T) {
 		}
 	}
 	//spew.Dump(rbr.Metadata())
+}
+
+func TestBuild(t *testing.T) {
+	t.Parallel()
+
+	config := config2.Config{
+		Dictionaries: config2.DictionariesConfig{
+			StringColumns: config2.DictionaryConfig{
+				MinRowCount:           10,
+				MaxCard:               math.MaxUint8,
+				MaxCardRatio:          0.5,
+				MaxSortedDictionaries: 5,
+			},
+		},
+	}
+	rbr := rbb.NewRecordBatchRepository(&config)
+
+	for i := 0; i < 100; i++ {
+		rbr.AddRecord(GenBasicRecord(int64(i)))
+	}
+	rbr.Optimize()
+	records, err := rbr.Build()
+
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+
+	for _, record := range records {
+		record.Release()
+	}
+
+	spew.Dump(records)
 }

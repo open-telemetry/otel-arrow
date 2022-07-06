@@ -14,19 +14,26 @@
 
 package rbb
 
-import config2 "otel-arrow-adapter/pkg/rbb/config"
+import (
+	"github.com/apache/arrow/go/arrow/array"
+	"github.com/apache/arrow/go/arrow/memory"
+	config2 "otel-arrow-adapter/pkg/rbb/config"
+)
 
 type RecordBatchRepository struct {
 	config *config2.Config
 
 	// A map of SchemaId to RecordBatchBuilder.
 	builders map[string]*RecordBatchBuilder
+
+	allocator *memory.GoAllocator
 }
 
 func NewRecordBatchRepository(config *config2.Config) *RecordBatchRepository {
 	return &RecordBatchRepository{
-		config:   config,
-		builders: make(map[string]*RecordBatchBuilder),
+		config:    config,
+		builders:  make(map[string]*RecordBatchBuilder),
+		allocator: memory.NewGoAllocator(),
 	}
 }
 
@@ -50,6 +57,22 @@ func (rbr *RecordBatchRepository) RecordBatchBuilderCount() int {
 		}
 	}
 	return count
+}
+
+func (rbr *RecordBatchRepository) Build() (map[string]array.Record, error) {
+	recordBatches := make(map[string]array.Record)
+
+	for schemaId, builder := range rbr.builders {
+		if !builder.IsEmpty() {
+			record, err := builder.Build(rbr.allocator)
+			if err != nil {
+				return nil, err
+			}
+			recordBatches[schemaId] = record
+		}
+	}
+
+	return recordBatches, nil
 }
 
 func (rbr *RecordBatchRepository) Optimize() {

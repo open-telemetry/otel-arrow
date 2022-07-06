@@ -16,6 +16,8 @@ package rbb
 
 import (
 	"github.com/apache/arrow/go/arrow"
+	"github.com/apache/arrow/go/arrow/array"
+	"github.com/apache/arrow/go/arrow/memory"
 	"otel-arrow-adapter/pkg/rbb/config"
 	"otel-arrow-adapter/pkg/rbb/stats"
 	"otel-arrow-adapter/pkg/rbb/value"
@@ -278,6 +280,190 @@ func (c *Columns) UpdateColumn(fieldPath *FieldPath, field *value.Field) {
 	}
 }
 
+func (c *Columns) Build(allocator *memory.GoAllocator) ([]arrow.Field, []array.Builder, error) {
+	columnCount := c.ColumnCount()
+	fields := make([]arrow.Field, 0, columnCount)
+	builders := make([]array.Builder, 0, columnCount)
+
+	for i := range c.BooleanColumns {
+		col := &c.BooleanColumns[i]
+		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.FixedWidthTypes.Boolean})
+		builder := array.NewBooleanBuilder(allocator)
+		builder.Reserve(len(col.Data))
+		for _, v := range col.Data {
+			if v == nil {
+				builder.AppendNull()
+			} else {
+				builder.UnsafeAppend(*v)
+			}
+		}
+		builders = append(builders, builder)
+		col.Clear()
+	}
+	for i := range c.I8Columns {
+		col := &c.I8Columns[i]
+		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.PrimitiveTypes.Int8})
+		builder := array.NewInt8Builder(allocator)
+		builder.Reserve(len(col.Data))
+		for _, v := range col.Data {
+			if v == nil {
+				builder.AppendNull()
+			} else {
+				builder.UnsafeAppend(*v)
+			}
+		}
+		builders = append(builders, builder)
+		col.Clear()
+	}
+	for i := range c.I16Columns {
+		col := &c.I16Columns[i]
+		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.PrimitiveTypes.Int16})
+		builder := array.NewInt16Builder(allocator)
+		builder.Reserve(len(col.Data))
+		for _, v := range col.Data {
+			if v == nil {
+				builder.AppendNull()
+			} else {
+				builder.UnsafeAppend(*v)
+			}
+		}
+		builders = append(builders, builder)
+		col.Clear()
+	}
+	for i := range c.I32Columns {
+		col := &c.I32Columns[i]
+		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.PrimitiveTypes.Int32})
+		builder := array.NewInt32Builder(allocator)
+		builder.Reserve(len(col.Data))
+		for _, v := range col.Data {
+			if v == nil {
+				builder.AppendNull()
+			} else {
+				builder.UnsafeAppend(*v)
+			}
+		}
+		builders = append(builders, builder)
+		col.Clear()
+	}
+	for i := range c.I64Columns {
+		col := &c.I64Columns[i]
+		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.PrimitiveTypes.Int64})
+		builder := array.NewInt64Builder(allocator)
+		builder.Reserve(len(col.Data))
+		for _, v := range col.Data {
+			if v == nil {
+				builder.AppendNull()
+			} else {
+				builder.UnsafeAppend(*v)
+			}
+		}
+		builders = append(builders, builder)
+		col.Clear()
+	}
+	for i := range c.U8Columns {
+		col := &c.U8Columns[i]
+		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.PrimitiveTypes.Uint8})
+		builder := array.NewUint8Builder(allocator)
+		builder.Reserve(len(col.Data))
+		for _, v := range col.Data {
+			if v == nil {
+				builder.AppendNull()
+			} else {
+				builder.UnsafeAppend(*v)
+			}
+		}
+		builders = append(builders, builder)
+		col.Clear()
+	}
+	for i := range c.U16Columns {
+		col := &c.U16Columns[i]
+		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.PrimitiveTypes.Uint16})
+		builder := array.NewUint16Builder(allocator)
+		builder.Reserve(len(col.Data))
+		for _, v := range col.Data {
+			if v == nil {
+				builder.AppendNull()
+			} else {
+				builder.UnsafeAppend(*v)
+			}
+		}
+		builders = append(builders, builder)
+		col.Clear()
+	}
+	for i := range c.U32Columns {
+		col := &c.U32Columns[i]
+		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.PrimitiveTypes.Uint32})
+		builder := array.NewUint32Builder(allocator)
+		builder.Reserve(len(col.Data))
+		for _, v := range col.Data {
+			if v == nil {
+				builder.AppendNull()
+			} else {
+				builder.UnsafeAppend(*v)
+			}
+		}
+		builders = append(builders, builder)
+		col.Clear()
+	}
+	for i := range c.U64Columns {
+		col := &c.U64Columns[i]
+		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.PrimitiveTypes.Uint64})
+		builder := array.NewUint64Builder(allocator)
+		builder.Reserve(len(col.Data))
+		for _, v := range col.Data {
+			if v == nil {
+				builder.AppendNull()
+			} else {
+				builder.UnsafeAppend(*v)
+			}
+		}
+		builders = append(builders, builder)
+		col.Clear()
+	}
+	for i := range c.F32Columns {
+		col := &c.F32Columns[i]
+		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.PrimitiveTypes.Float32})
+		builder := array.NewFloat32Builder(allocator)
+		builder.Reserve(len(col.Data))
+		for _, v := range col.Data {
+			if v == nil {
+				builder.AppendNull()
+			} else {
+				builder.UnsafeAppend(*v)
+			}
+		}
+		builders = append(builders, builder)
+		col.Clear()
+	}
+	for i := range c.F64Columns {
+		col := &c.F64Columns[i]
+		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.PrimitiveTypes.Float64})
+		builder := array.NewFloat64Builder(allocator)
+		builder.Reserve(len(col.Data))
+		for _, v := range col.Data {
+			if v == nil {
+				builder.AppendNull()
+			} else {
+				builder.UnsafeAppend(*v)
+			}
+		}
+		builders = append(builders, builder)
+		col.Clear()
+	}
+	return fields, builders, nil
+}
+
+func (c *Columns) ColumnCount() int {
+	return len(c.I8Columns) + len(c.I16Columns) + len(c.I32Columns) + len(c.I64Columns) +
+		len(c.U8Columns) + len(c.U16Columns) + len(c.U32Columns) + len(c.U64Columns) +
+		len(c.F32Columns) + len(c.F64Columns) +
+		len(c.BooleanColumns) +
+		len(c.StringColumns) +
+		len(c.BinaryColumns) +
+		len(c.ListColumns) +
+		len(c.StructColumns)
+}
+
 func (c *Columns) IsEmpty() bool {
 	return len(c.I8Columns) == 0 && len(c.I16Columns) == 0 && len(c.I32Columns) == 0 && len(c.I64Columns) == 0 && len(c.U8Columns) == 0 && len(c.U16Columns) == 0 && len(c.U32Columns) == 0 && len(c.U64Columns) == 0 && len(c.F32Columns) == 0 && len(c.F64Columns) == 0 && len(c.BooleanColumns) == 0 && len(c.StringColumns) == 0 && len(c.BinaryColumns) == 0 && len(c.ListColumns) == 0 && len(c.StructColumns) == 0
 }
@@ -410,4 +596,48 @@ func (c *Columns) DictionaryStats() []*stats.DictionaryStats {
 
 func (c *StructColumn) DictionaryStats() []*stats.DictionaryStats {
 	return c.Columns.DictionaryStats()
+}
+
+func (c *BoolColumn) Clear() {
+	c.Data = c.Data[:0]
+}
+
+func (c *I8Column) Clear() {
+	c.Data = c.Data[:0]
+}
+
+func (c *I16Column) Clear() {
+	c.Data = c.Data[:0]
+}
+
+func (c *I32Column) Clear() {
+	c.Data = c.Data[:0]
+}
+
+func (c *I64Column) Clear() {
+	c.Data = c.Data[:0]
+}
+
+func (c *U8Column) Clear() {
+	c.Data = c.Data[:0]
+}
+
+func (c *U16Column) Clear() {
+	c.Data = c.Data[:0]
+}
+
+func (c *U32Column) Clear() {
+	c.Data = c.Data[:0]
+}
+
+func (c *U64Column) Clear() {
+	c.Data = c.Data[:0]
+}
+
+func (c *F32Column) Clear() {
+	c.Data = c.Data[:0]
+}
+
+func (c *F64Column) Clear() {
+	c.Data = c.Data[:0]
 }

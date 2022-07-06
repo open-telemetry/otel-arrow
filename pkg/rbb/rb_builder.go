@@ -15,6 +15,10 @@
 package rbb
 
 import (
+	"fmt"
+	"github.com/apache/arrow/go/arrow"
+	"github.com/apache/arrow/go/arrow/array"
+	"github.com/apache/arrow/go/arrow/memory"
 	config2 "otel-arrow-adapter/pkg/rbb/config"
 	"otel-arrow-adapter/pkg/rbb/stats"
 	"sort"
@@ -129,6 +133,43 @@ func (rbb *RecordBatchBuilder) AddRecord(record *Record) {
 
 func (rbb *RecordBatchBuilder) IsEmpty() bool {
 	return rbb.columns.IsEmpty()
+}
+
+func (rbb *RecordBatchBuilder) Build(allocator *memory.GoAllocator) (array.Record, error) {
+	// ToDo order_by
+
+	fields, builders, err := rbb.columns.Build(allocator)
+	if err != nil {
+		return nil, err
+	}
+	if len(fields) == 0 {
+		return nil, nil
+	}
+
+	schema := arrow.NewSchema(fields, nil)
+	cols := make([]array.Interface, len(fields))
+	rows := int64(0)
+
+	defer func(cols []array.Interface) {
+		for _, col := range cols {
+			if col == nil {
+				continue
+			}
+			col.Release()
+		}
+	}(cols)
+
+	for i, builder := range builders {
+		cols[i] = builder.NewArray()
+		irow := int64(cols[i].Len())
+		if i > 0 && irow != rows {
+			panic(fmt.Errorf("arrow/array: field %d has %d rows. want=%d", i, irow, rows))
+		}
+		rows = irow
+		builder.Release()
+	}
+
+	return array.NewRecord(schema, cols, rows), nil
 }
 
 func (rbb *RecordBatchBuilder) Metadata(schemaId string) *RecordBatchBuilderMetadata {
