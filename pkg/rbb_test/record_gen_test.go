@@ -3,7 +3,7 @@ package rbb_test
 import (
 	"fmt"
 	"otel-arrow-adapter/pkg/rbb"
-	"otel-arrow-adapter/pkg/rbb/value"
+	"otel-arrow-adapter/pkg/rbb/field_value"
 )
 
 func GenSimpleRecord(ts int64) *rbb.Record {
@@ -18,10 +18,10 @@ func GenSimpleRecord(ts int64) *rbb.Record {
 func GenComplexRecord(ts int64) *rbb.Record {
 	record := rbb.NewRecord()
 	record.I64Field("ts", ts)
-	record.StructField("a", value.Struct{
-		Fields: []value.Field{
-			{Name: "b", Value: &value.String{Value: "b"}},
-			{Name: "c", Value: &value.String{Value: "c"}},
+	record.StructField("a", field_value.Struct{
+		Fields: []field_value.Field{
+			{Name: "b", Value: &field_value.String{Value: "b"}},
+			{Name: "c", Value: &field_value.String{Value: "c"}},
 		},
 	})
 	record.StringField("b", "b")

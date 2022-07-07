@@ -12,24 +12,31 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package column
+package field_value
 
-import (
-	"github.com/apache/arrow/go/arrow"
-	"otel-arrow-adapter/pkg/rbb/field_value"
-)
-
-// ListColumn is a column of list data.
-type ListColumn struct {
-	// Name of the column.
-	Name string
-	// Type of the list items.
-	Type arrow.DataType
-	// Data of the column.
-	Data [][]field_value.Value
+// FieldPath defines a field path.
+type FieldPath struct {
+	Current  int
+	Children []*FieldPath
 }
 
-// Clear clears the list data in the column but keep the original memory buffer allocated.
-func (c *ListColumn) Clear() {
-	c.Data = c.Data[:0]
+func NewFieldPathWithChildren(current int, children []*FieldPath) *FieldPath {
+	return &FieldPath{
+		Current:  current,
+		Children: children,
+	}
+}
+
+func NewFieldPath(current int) *FieldPath {
+	return &FieldPath{
+		Current:  current,
+		Children: []*FieldPath{},
+	}
+}
+
+func (fp *FieldPath) ChildPath(current int) *FieldPath {
+	return &FieldPath{
+		Current:  current,
+		Children: fp.Children,
+	}
 }

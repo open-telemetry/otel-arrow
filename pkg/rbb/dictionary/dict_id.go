@@ -12,24 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package column
+package dictionary
 
-import (
-	"github.com/apache/arrow/go/arrow"
-	"otel-arrow-adapter/pkg/rbb/field_value"
-)
-
-// ListColumn is a column of list data.
-type ListColumn struct {
-	// Name of the column.
-	Name string
-	// Type of the list items.
-	Type arrow.DataType
-	// Data of the column.
-	Data [][]field_value.Value
+// DictIdGenerator defines a dictionary id generator.
+type DictIdGenerator struct {
+	Id int
 }
 
-// Clear clears the list data in the column but keep the original memory buffer allocated.
-func (c *ListColumn) Clear() {
-	c.Data = c.Data[:0]
+func (g *DictIdGenerator) NextId() int {
+	id := g.Id
+	g.Id += 1
+	return id
 }

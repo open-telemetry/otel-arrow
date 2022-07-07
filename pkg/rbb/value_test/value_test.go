@@ -15,7 +15,7 @@
 package value_test
 
 import (
-	"otel-arrow-adapter/pkg/rbb/value"
+	"otel-arrow-adapter/pkg/rbb/field_value"
 	"testing"
 )
 
@@ -23,7 +23,7 @@ func TestNormalize(t *testing.T) {
 	t.Parallel()
 
 	// Test normalize on a scalar value
-	s1 := value.Bool{
+	s1 := field_value.Bool{
 		Value: true,
 	}
 	s1.Normalize()
@@ -32,19 +32,19 @@ func TestNormalize(t *testing.T) {
 	}
 
 	// Test normalize on a struct value
-	s2 := value.Struct{
-		Fields: []value.Field{
+	s2 := field_value.Struct{
+		Fields: []field_value.Field{
 			{
 				Name:  "c",
-				Value: &value.Bool{Value: false},
+				Value: &field_value.Bool{Value: false},
 			},
 			{
 				Name:  "a",
-				Value: &value.I64{Value: 123},
+				Value: &field_value.I64{Value: 123},
 			},
 			{
 				Name:  "b",
-				Value: &value.String{Value: "text"},
+				Value: &field_value.String{Value: "text"},
 			},
 		},
 	}
@@ -60,36 +60,36 @@ func TestNormalize(t *testing.T) {
 	}
 
 	// Test normalize on a list value
-	s3 := value.List{
-		Values: []value.Value{
-			&value.Bool{Value: true},
-			&value.I64{Value: 1},
-			&value.Struct{
-				Fields: []value.Field{
+	s3 := field_value.List{
+		Values: []field_value.Value{
+			&field_value.Bool{Value: true},
+			&field_value.I64{Value: 1},
+			&field_value.Struct{
+				Fields: []field_value.Field{
 					{
 						Name:  "c",
-						Value: &value.Bool{Value: false},
+						Value: &field_value.Bool{Value: false},
 					},
 					{
 						Name:  "a",
-						Value: &value.I64{Value: 123},
+						Value: &field_value.I64{Value: 123},
 					},
 					{
 						Name:  "b",
-						Value: &value.String{Value: "text"},
+						Value: &field_value.String{Value: "text"},
 					},
 				},
 			},
 		},
 	}
 	s3.Normalize()
-	if s3.Values[2].(*value.Struct).Fields[0].Name != "a" {
+	if s3.Values[2].(*field_value.Struct).Fields[0].Name != "a" {
 		t.Errorf("Expected a, got %v", s2.Fields[0].Name)
 	}
-	if s3.Values[2].(*value.Struct).Fields[1].Name != "b" {
+	if s3.Values[2].(*field_value.Struct).Fields[1].Name != "b" {
 		t.Errorf("Expected b, got %v", s2.Fields[1].Name)
 	}
-	if s3.Values[2].(*value.Struct).Fields[2].Name != "c" {
+	if s3.Values[2].(*field_value.Struct).Fields[2].Name != "c" {
 		t.Errorf("Expected c, got %v", s2.Fields[2].Name)
 	}
 }

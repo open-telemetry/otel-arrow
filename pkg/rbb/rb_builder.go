@@ -19,48 +19,13 @@ import (
 	"github.com/apache/arrow/go/arrow"
 	"github.com/apache/arrow/go/arrow/array"
 	"github.com/apache/arrow/go/arrow/memory"
+	"otel-arrow-adapter/pkg/rbb/column"
 	config2 "otel-arrow-adapter/pkg/rbb/config"
+	"otel-arrow-adapter/pkg/rbb/dictionary"
+	"otel-arrow-adapter/pkg/rbb/field_value"
 	"otel-arrow-adapter/pkg/rbb/stats"
 	"sort"
 )
-
-// DictIdGenerator defines a dictionary id generator.
-type DictIdGenerator struct {
-	id int
-}
-
-func (g *DictIdGenerator) NextId() int {
-	id := g.id
-	g.id += 1
-	return id
-}
-
-// FieldPath defines a field path.
-type FieldPath struct {
-	Current  int
-	Children []*FieldPath
-}
-
-func NewFieldPathWithChildren(current int, children []*FieldPath) *FieldPath {
-	return &FieldPath{
-		Current:  current,
-		Children: children,
-	}
-}
-
-func NewFieldPath(current int) *FieldPath {
-	return &FieldPath{
-		Current:  current,
-		Children: []*FieldPath{},
-	}
-}
-
-func (fp *FieldPath) ChildPath(current int) *FieldPath {
-	return &FieldPath{
-		Current:  current,
-		Children: fp.Children,
-	}
-}
 
 type OrderBy struct {
 	FieldPaths [][]int
@@ -73,13 +38,13 @@ type RecordBatchBuilder struct {
 	config *config2.Config
 
 	// The dictionary id generator.
-	dictIdGen DictIdGenerator
+	dictIdGen dictionary.DictIdGenerator
 
 	// The columns of the RecordBatch builder.
-	columns Columns
+	columns column.Columns
 
 	// The path for each fields.
-	fieldPaths []*FieldPath
+	fieldPaths []*field_value.FieldPath
 
 	// Optional order by clause
 	orderBy *OrderBy
@@ -93,7 +58,7 @@ type RecordBatchBuilder struct {
 
 type RecordBatchBuilderMetadata struct {
 	SchemaId        string
-	Columns         []*ColumnMetadata
+	Columns         []*column.ColumnMetadata
 	RecordListLen   int
 	Optimized       bool
 	DictionaryStats []*stats.DictionaryStats
@@ -101,11 +66,11 @@ type RecordBatchBuilderMetadata struct {
 
 // Constructs a new `RecordBatchBuilder` from a Record.
 func NewRecordBatchBuilderWithRecord(record *Record, config *config2.Config) *RecordBatchBuilder {
-	fieldPath := make([]*FieldPath, 0, record.FieldCount())
+	fieldPath := make([]*field_value.FieldPath, 0, record.FieldCount())
 	builder := RecordBatchBuilder{
 		config:     config,
-		dictIdGen:  DictIdGenerator{id: 0},
-		columns:    Columns{},
+		dictIdGen:  dictionary.DictIdGenerator{Id: 0},
+		columns:    column.Columns{},
 		fieldPaths: fieldPath,
 		orderBy:    nil,
 		recordList: nil,

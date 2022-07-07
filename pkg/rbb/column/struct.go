@@ -1,4 +1,4 @@
-package rbb
+package column
 
 import (
 	"github.com/apache/arrow/go/arrow"
