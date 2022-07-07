@@ -58,10 +58,7 @@ type ColumnMetadata struct {
 func (c *Columns) CreateColumn(path []int, field *field_value.Field, config *config.Config, dictIdGen *dictionary.DictIdGenerator) *field_value.FieldPath {
 	switch field.Value.(type) {
 	case *field_value.Bool:
-		c.BooleanColumns = append(c.BooleanColumns, BoolColumn{
-			Name: field.Name,
-			Data: []*bool{&field.Value.(*field_value.Bool).Value},
-		})
+		c.BooleanColumns = append(c.BooleanColumns, MakeBoolColumn(field.Name, &field.Value.(*field_value.Bool).Value))
 		return field_value.NewFieldPath(len(c.BooleanColumns) - 1)
 	case *field_value.I8:
 		c.I8Columns = append(c.I8Columns, MakeI8Column(field.Name, &field.Value.(*field_value.I8).Value))
@@ -99,10 +96,7 @@ func (c *Columns) CreateColumn(path []int, field *field_value.Field, config *con
 		c.StringColumns = append(c.StringColumns, *stringColumn)
 		return field_value.NewFieldPath(len(c.StringColumns) - 1)
 	case *field_value.Binary:
-		c.BinaryColumns = append(c.BinaryColumns, BinaryColumn{
-			Name: field.Name,
-			Data: []*[]byte{&field.Value.(*field_value.Binary).Value},
-		})
+		c.BinaryColumns = append(c.BinaryColumns, MakeBinaryColumn(field.Name, &field.Value.(*field_value.Binary).Value))
 		return field_value.NewFieldPath(len(c.BinaryColumns) - 1)
 	case *field_value.List:
 		dataType := field_value.ListDataType(field.Value.(*field_value.List).Values)
@@ -165,9 +159,9 @@ func (c *Columns) UpdateColumn(fieldPath *field_value.FieldPath, field *field_va
 	case *field_value.String:
 		c.StringColumns[fieldPath.Current].Push(&field.Value.(*field_value.String).Value)
 	case *field_value.Binary:
-		c.BinaryColumns[fieldPath.Current].Data = append(c.BinaryColumns[fieldPath.Current].Data, &field.Value.(*field_value.Binary).Value)
+		c.BinaryColumns[fieldPath.Current].Push(&field.Value.(*field_value.Binary).Value)
 	case *field_value.Bool:
-		c.BooleanColumns[fieldPath.Current].Data = append(c.BooleanColumns[fieldPath.Current].Data, &field.Value.(*field_value.Bool).Value)
+		c.BooleanColumns[fieldPath.Current].Push(&field.Value.(*field_value.Bool).Value)
 	case *field_value.List:
 		c.ListColumns[fieldPath.Current].Data = append(c.ListColumns[fieldPath.Current].Data, field.Value.(*field_value.List).Values)
 	case *field_value.Struct:
@@ -186,18 +180,8 @@ func (c *Columns) Build(allocator *memory.GoAllocator) ([]arrow.Field, []array.B
 
 	for i := range c.BooleanColumns {
 		col := &c.BooleanColumns[i]
-		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.FixedWidthTypes.Boolean})
-		builder := array.NewBooleanBuilder(allocator)
-		builder.Reserve(len(col.Data))
-		for _, v := range col.Data {
-			if v == nil {
-				builder.AppendNull()
-			} else {
-				builder.UnsafeAppend(*v)
-			}
-		}
-		builders = append(builders, builder)
-		col.Clear()
+		fields = append(fields, col.MakeBoolSchemaField())
+		builders = append(builders, col.NewBoolBuilder(allocator))
 	}
 	for i := range c.I8Columns {
 		col := &c.I8Columns[i]
@@ -361,9 +345,9 @@ func (c *Columns) Metadata() []*ColumnMetadata {
 	}
 	for _, booleanColumn := range c.BooleanColumns {
 		metadata = append(metadata, &ColumnMetadata{
-			Name: booleanColumn.Name,
+			Name: booleanColumn.Name(),
 			Type: arrow.FixedWidthTypes.Boolean,
-			Len:  len(booleanColumn.Data),
+			Len:  booleanColumn.Len(),
 		})
 	}
 	for _, stringColumn := range c.StringColumns {
@@ -375,9 +359,9 @@ func (c *Columns) Metadata() []*ColumnMetadata {
 	}
 	for _, binaryColumn := range c.BinaryColumns {
 		metadata = append(metadata, &ColumnMetadata{
-			Name: binaryColumn.Name,
+			Name: binaryColumn.Name(),
 			Type: arrow.BinaryTypes.Binary,
-			Len:  len(binaryColumn.Data),
+			Len:  binaryColumn.Len(),
 		})
 	}
 	for _, listColumn := range c.ListColumns {

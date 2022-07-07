@@ -14,15 +14,66 @@
 
 package column
 
+import (
+	"github.com/apache/arrow/go/arrow"
+	"github.com/apache/arrow/go/arrow/array"
+	"github.com/apache/arrow/go/arrow/memory"
+)
+
 // BoolColumn is a column of boolean data.
 type BoolColumn struct {
-	// Name of the column.
-	Name string
-	// Data of the column.
-	Data []*bool
+	// name of the column.
+	name string
+
+	// ToDo replace []*bool by []bool + bitset
+	// data of the column.
+	data []*bool
 }
 
-// Clear clears the data in the column but keep the original memory buffer allocated.
+// MakeBoolColumn creates a new bool column.
+func MakeBoolColumn(name string, data *bool) BoolColumn {
+	return BoolColumn{
+		name: name,
+		data: []*bool{data},
+	}
+}
+
+// NewBoolBuilder creates and initializes a new BooleanBuilder for the column.
+func (c *BoolColumn) NewBoolBuilder(allocator *memory.GoAllocator) *array.BooleanBuilder {
+	builder := array.NewBooleanBuilder(allocator)
+	builder.Reserve(len(c.data))
+	for _, v := range c.data {
+		if v == nil {
+			builder.AppendNull()
+		} else {
+			builder.UnsafeAppend(*v)
+		}
+	}
+	c.Clear()
+	return builder
+}
+
+// Name returns the name of the column.
+func (c *BoolColumn) Name() string {
+	return c.name
+}
+
+// Push adds a new value to the column.
+func (c *BoolColumn) Push(data *bool) {
+	c.data = append(c.data, data)
+}
+
+// Len returns the number of values in the column.
+func (c *BoolColumn) Len() int {
+	return len(c.data)
+}
+
+// Clear clears the int64 data in the column but keep the original memory buffer allocated.
 func (c *BoolColumn) Clear() {
-	c.Data = c.Data[:0]
+	c.data = c.data[:0]
+}
+
+// MakeBoolSchemaField creates a Bool schema field.
+func (c *BoolColumn) MakeBoolSchemaField() arrow.Field {
+	return arrow.Field{Name: c.name, Type: arrow.FixedWidthTypes.Boolean}
 }
