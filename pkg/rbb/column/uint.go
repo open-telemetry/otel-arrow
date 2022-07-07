@@ -14,54 +14,232 @@
 
 package column
 
+import (
+	"github.com/apache/arrow/go/arrow"
+	"github.com/apache/arrow/go/arrow/array"
+	"github.com/apache/arrow/go/arrow/memory"
+)
+
 // U8Column is a column of uint8 data.
 type U8Column struct {
-	// Name of the column.
-	Name string
-	// Data of the column.
-	Data []*uint8
+	// name of the column.
+	name string
+	// data of the column.
+	data []*uint8
 }
 
 // U16Column is a column of uint16 data.
 type U16Column struct {
-	// Name of the column.
-	Name string
-	// Data of the column.
-	Data []*uint16
+	// name of the column.
+	name string
+	// data of the column.
+	data []*uint16
 }
 
 // U32Column is a column of uint32 data.
 type U32Column struct {
-	// Name of the column.
-	Name string
-	// Data of the column.
-	Data []*uint32
+	// name of the column.
+	name string
+	// data of the column.
+	data []*uint32
 }
 
 // U64Column is a column of uint64 data.
 type U64Column struct {
-	// Name of the column.
-	Name string
-	// Data of the column.
-	Data []*uint64
+	// name of the column.
+	name string
+	// data of the column.
+	data []*uint64
+}
+
+// MakeU8Column creates a new U8 column.
+func MakeU8Column(name string, data *uint8) U8Column {
+	return U8Column{
+		name: name,
+		data: []*uint8{data},
+	}
+}
+
+// MakeU16Column creates a new U16 column.
+func MakeU16Column(name string, data *uint16) U16Column {
+	return U16Column{
+		name: name,
+		data: []*uint16{data},
+	}
+}
+
+// MakeU32Column creates a new U32 column.
+func MakeU32Column(name string, data *uint32) U32Column {
+	return U32Column{
+		name: name,
+		data: []*uint32{data},
+	}
+}
+
+// MakeU64Column creates a new U64 column.
+func MakeU64Column(name string, data *uint64) U64Column {
+	return U64Column{
+		name: name,
+		data: []*uint64{data},
+	}
+}
+
+// Name returns the name of the column.
+func (c *U8Column) Name() string {
+	return c.name
+}
+
+// Push adds a new value to the column.
+func (c *U8Column) Push(data *uint8) {
+	c.data = append(c.data, data)
+}
+
+// Len returns the number of values in the column.
+func (c *U8Column) Len() int {
+	return len(c.data)
+}
+
+// MakeU8SchemaField creates a U8 schema field.
+func (c *U8Column) MakeU8SchemaField() arrow.Field {
+	return arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Uint8}
+}
+
+// NewU8Builder creates and initializes a new Uint8Builder for the column.
+func (c *U8Column) NewU8Builder(allocator *memory.GoAllocator) *array.Uint8Builder {
+	builder := array.NewUint8Builder(allocator)
+	builder.Reserve(len(c.data))
+	for _, v := range c.data {
+		if v == nil {
+			builder.AppendNull()
+		} else {
+			builder.UnsafeAppend(*v)
+		}
+	}
+	c.Clear()
+	return builder
 }
 
 // Clear clears the uint8 data in the column but keep the original memory buffer allocated.
 func (c *U8Column) Clear() {
-	c.Data = c.Data[:0]
+	c.data = c.data[:0]
+}
+
+// Name returns the name of the column.
+func (c *U16Column) Name() string {
+	return c.name
+}
+
+// Push adds a new value to the column.
+func (c *U16Column) Push(data *uint16) {
+	c.data = append(c.data, data)
+}
+
+// Len returns the number of values in the column.
+func (c *U16Column) Len() int {
+	return len(c.data)
+}
+
+// MakeU16SchemaField creates a U16 schema field.
+func (c *U16Column) MakeU16SchemaField() arrow.Field {
+	return arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Uint16}
+}
+
+// NewU16Builder creates and initializes a new Uint16Builder for the column.
+func (c *U16Column) NewU16Builder(allocator *memory.GoAllocator) *array.Uint16Builder {
+	builder := array.NewUint16Builder(allocator)
+	builder.Reserve(len(c.data))
+	for _, v := range c.data {
+		if v == nil {
+			builder.AppendNull()
+		} else {
+			builder.UnsafeAppend(*v)
+		}
+	}
+	c.Clear()
+	return builder
 }
 
 // Clear clears the uint16 data in the column but keep the original memory buffer allocated.
 func (c *U16Column) Clear() {
-	c.Data = c.Data[:0]
+	c.data = c.data[:0]
+}
+
+// Name returns the name of the column.
+func (c *U32Column) Name() string {
+	return c.name
+}
+
+// Push adds a new value to the column.
+func (c *U32Column) Push(data *uint32) {
+	c.data = append(c.data, data)
+}
+
+// Len returns the number of values in the column.
+func (c *U32Column) Len() int {
+	return len(c.data)
 }
 
 // Clear clears the uint32 data in the column but keep the original memory buffer allocated.
 func (c *U32Column) Clear() {
-	c.Data = c.Data[:0]
+	c.data = c.data[:0]
+}
+
+// MakeU32SchemaField creates a U32 schema field.
+func (c *U32Column) MakeU32SchemaField() arrow.Field {
+	return arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Uint32}
+}
+
+// NewU32Builder creates and initializes a new Uint32Builder for the column.
+func (c *U32Column) NewU32Builder(allocator *memory.GoAllocator) *array.Uint32Builder {
+	builder := array.NewUint32Builder(allocator)
+	builder.Reserve(len(c.data))
+	for _, v := range c.data {
+		if v == nil {
+			builder.AppendNull()
+		} else {
+			builder.UnsafeAppend(*v)
+		}
+	}
+	c.Clear()
+	return builder
+}
+
+// Name returns the name of the column.
+func (c *U64Column) Name() string {
+	return c.name
+}
+
+// Push adds a new value to the column.
+func (c *U64Column) Push(data *uint64) {
+	c.data = append(c.data, data)
+}
+
+// Len returns the number of values in the column.
+func (c *U64Column) Len() int {
+	return len(c.data)
 }
 
 // Clear clears the uint64 data in the column but keep the original memory buffer allocated.
 func (c *U64Column) Clear() {
-	c.Data = c.Data[:0]
+	c.data = c.data[:0]
+}
+
+// MakeU64SchemaField creates a U64 schema field.
+func (c *U64Column) MakeU64SchemaField() arrow.Field {
+	return arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Uint64}
+}
+
+// NewU64Builder creates and initializes a new Uint64Builder for the column.
+func (c *U64Column) NewU64Builder(allocator *memory.GoAllocator) *array.Uint64Builder {
+	builder := array.NewUint64Builder(allocator)
+	builder.Reserve(len(c.data))
+	for _, v := range c.data {
+		if v == nil {
+			builder.AppendNull()
+		} else {
+			builder.UnsafeAppend(*v)
+		}
+	}
+	c.Clear()
+	return builder
 }

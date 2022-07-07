@@ -57,7 +57,7 @@ func NewStringColumn(fieldName string, config *config.DictionaryConfig, fieldPat
 }
 
 // ColumnName returns the name of the column.
-func (c *StringColumn) ColumnName() *string {
+func (c *StringColumn) Name() *string {
 	return &c.name
 }
 

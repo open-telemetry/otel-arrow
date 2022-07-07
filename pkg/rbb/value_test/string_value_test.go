@@ -30,8 +30,8 @@ func TestStringColumn(t *testing.T) {
 		MaxSortedDictionaries: 5,
 	}
 	sc := value2.NewStringColumn("test", &dictionaryConfig, []int{1}, 1)
-	if *sc.ColumnName() != "test" {
-		t.Errorf("Expected column name to be 'test', got %s", *sc.ColumnName())
+	if *sc.Name() != "test" {
+		t.Errorf("Expected column name to be 'test', got %s", *sc.Name())
 	}
 
 	// Push 5 strings + 1 nil string to the column
