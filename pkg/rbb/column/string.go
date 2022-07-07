@@ -15,6 +15,7 @@
 package column
 
 import (
+	"github.com/apache/arrow/go/arrow"
 	"github.com/apache/arrow/go/arrow/array"
 	"github.com/apache/arrow/go/arrow/memory"
 	"otel-arrow-adapter/pkg/rbb/config"
@@ -121,8 +122,13 @@ func (c *StringColumn) Clear() {
 	c.data = c.data[:0]
 }
 
-// MakeBuilder creates and initializes a new StringBuilder for the column.
-func (c *StringColumn) MakeBuilder(allocator *memory.GoAllocator) *array.StringBuilder {
+// MakeSchemaField creates a schema field
+func (c *StringColumn) MakeSchemaField() arrow.Field {
+	return arrow.Field{Name: c.name, Type: arrow.BinaryTypes.String}
+}
+
+// NewStringBuilder creates and initializes a new StringBuilder for the column.
+func (c *StringColumn) NewStringBuilder(allocator *memory.GoAllocator) *array.StringBuilder {
 	builder := array.NewStringBuilder(allocator)
 	builder.Reserve(c.Len())
 	for _, v := range c.data {
@@ -132,5 +138,6 @@ func (c *StringColumn) MakeBuilder(allocator *memory.GoAllocator) *array.StringB
 			builder.Append(*v)
 		}
 	}
+	c.Clear()
 	return builder
 }

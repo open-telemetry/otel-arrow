@@ -14,28 +14,120 @@
 
 package column
 
+import (
+	"github.com/apache/arrow/go/arrow"
+	"github.com/apache/arrow/go/arrow/array"
+	"github.com/apache/arrow/go/arrow/memory"
+)
+
 // F32Column is a column of float32 data.
 type F32Column struct {
 	// Name of the column.
-	Name string
+	name string
 	// Data of the column.
-	Data []*float32
+	data []*float32
 }
 
 // F64Column is a column of float64 data.
 type F64Column struct {
 	// Name of the column.
-	Name string
+	name string
 	// Data of the column.
-	Data []*float64
+	data []*float64
+}
+
+// MakeF32Column creates a new F32 column.
+func MakeF32Column(name string, data *float32) F32Column {
+	return F32Column{
+		name: name,
+		data: []*float32{data},
+	}
+}
+
+// MakeF64Column creates a new F64 column.
+func MakeF64Column(name string, data *float64) F64Column {
+	return F64Column{
+		name: name,
+		data: []*float64{data},
+	}
+}
+
+// Push adds a new value to the column.
+func (c *F32Column) Push(data *float32) {
+	c.data = append(c.data, data)
+}
+
+// Name returns the name of the column.
+func (c *F32Column) Name() string {
+	return c.name
+}
+
+// Len returns the number of elements in the column.
+func (c *F32Column) Len() int {
+	return len(c.data)
 }
 
 // Clear clears the f32 data in the column but keep the original memory buffer allocated.
 func (c *F32Column) Clear() {
-	c.Data = c.Data[:0]
+	c.data = c.data[:0]
+}
+
+// MakeF32SchemaField creates a F32 schema field.
+func (c *F32Column) MakeF32SchemaField() arrow.Field {
+	return arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Float32}
+}
+
+// NewF32Builder creates and initializes a new Float32Builder for the column.
+func (c *F32Column) NewF32Builder(allocator *memory.GoAllocator) *array.Float32Builder {
+	builder := array.NewFloat32Builder(allocator)
+	builder.Reserve(len(c.data))
+	for _, v := range c.data {
+		if v == nil {
+			builder.AppendNull()
+		} else {
+			builder.UnsafeAppend(*v)
+		}
+	}
+	c.Clear()
+	return builder
+}
+
+// Push adds a new value to the column.
+func (c *F64Column) Push(data *float64) {
+	c.data = append(c.data, data)
+}
+
+// Name returns the name of the column.
+func (c *F64Column) Name() string {
+	return c.name
+}
+
+// Len returns the number of elements in the column.
+func (c *F64Column) Len() int {
+	return len(c.data)
 }
 
 // Clear clears the f64 data in the column but keep the original memory buffer allocated.
 func (c *F64Column) Clear() {
-	c.Data = c.Data[:0]
+	c.data = c.data[:0]
+}
+
+// MakeF64SchemaField creates a F64 schema field.
+func (c *F64Column) MakeF64SchemaField() arrow.Field {
+	return arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Float64}
+}
+
+// NewF64Builder creates and initializes a new Float64Builder for the column.
+func (c *F64Column) NewF64Builder(allocator *memory.GoAllocator) *array.Float64Builder {
+	builder := array.NewFloat64Builder(allocator)
+	builder.Reserve(len(c.data))
+	for _, v := range c.data {
+		if v == nil {
+			builder.AppendNull()
+		} else {
+			builder.UnsafeAppend(*v)
+		}
+	}
+	c.Clear()
+	return builder
 }

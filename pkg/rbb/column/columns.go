@@ -112,16 +112,10 @@ func (c *Columns) CreateColumn(path []int, field *field_value.Field, config *con
 		})
 		return field_value.NewFieldPath(len(c.U64Columns) - 1)
 	case *field_value.F32:
-		c.F32Columns = append(c.F32Columns, F32Column{
-			Name: field.Name,
-			Data: []*float32{&field.Value.(*field_value.F32).Value},
-		})
+		c.F32Columns = append(c.F32Columns, MakeF32Column(field.Name, &field.Value.(*field_value.F32).Value))
 		return field_value.NewFieldPath(len(c.F32Columns) - 1)
 	case *field_value.F64:
-		c.F64Columns = append(c.F64Columns, F64Column{
-			Name: field.Name,
-			Data: []*float64{&field.Value.(*field_value.F64).Value},
-		})
+		c.F64Columns = append(c.F64Columns, MakeF64Column(field.Name, &field.Value.(*field_value.F64).Value))
 		return field_value.NewFieldPath(len(c.F64Columns) - 1)
 	case *field_value.String:
 		stringColumn := NewStringColumn(field.Name, &config.Dictionaries.StringColumns, path, dictIdGen.NextId())
@@ -189,9 +183,9 @@ func (c *Columns) UpdateColumn(fieldPath *field_value.FieldPath, field *field_va
 	case *field_value.U64:
 		c.U64Columns[fieldPath.Current].Data = append(c.U64Columns[fieldPath.Current].Data, &field.Value.(*field_value.U64).Value)
 	case *field_value.F32:
-		c.F32Columns[fieldPath.Current].Data = append(c.F32Columns[fieldPath.Current].Data, &field.Value.(*field_value.F32).Value)
+		c.F32Columns[fieldPath.Current].Push(&field.Value.(*field_value.F32).Value)
 	case *field_value.F64:
-		c.F64Columns[fieldPath.Current].Data = append(c.F64Columns[fieldPath.Current].Data, &field.Value.(*field_value.F64).Value)
+		c.F64Columns[fieldPath.Current].Push(&field.Value.(*field_value.F64).Value)
 	case *field_value.String:
 		c.StringColumns[fieldPath.Current].Push(&field.Value.(*field_value.String).Value)
 	case *field_value.Binary:
@@ -351,40 +345,19 @@ func (c *Columns) Build(allocator *memory.GoAllocator) ([]arrow.Field, []array.B
 	}
 	for i := range c.F32Columns {
 		col := &c.F32Columns[i]
-		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.PrimitiveTypes.Float32})
-		builder := array.NewFloat32Builder(allocator)
-		builder.Reserve(len(col.Data))
-		for _, v := range col.Data {
-			if v == nil {
-				builder.AppendNull()
-			} else {
-				builder.UnsafeAppend(*v)
-			}
-		}
-		builders = append(builders, builder)
-		col.Clear()
+		fields = append(fields, col.MakeF32SchemaField())
+		builders = append(builders, col.NewF32Builder(allocator))
 	}
 	for i := range c.F64Columns {
 		col := &c.F64Columns[i]
-		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.PrimitiveTypes.Float64})
-		builder := array.NewFloat64Builder(allocator)
-		builder.Reserve(len(col.Data))
-		for _, v := range col.Data {
-			if v == nil {
-				builder.AppendNull()
-			} else {
-				builder.UnsafeAppend(*v)
-			}
-		}
-		builders = append(builders, builder)
-		col.Clear()
+		fields = append(fields, col.MakeF64SchemaField())
+		builders = append(builders, col.NewF64Builder(allocator))
 	}
 	for i := range c.StringColumns {
 		col := &c.StringColumns[i]
 		// ToDo implement dictionary builder when that makes sense
-		fields = append(fields, arrow.Field{Name: *col.ColumnName(), Type: arrow.BinaryTypes.String})
-		builders = append(builders, col.MakeBuilder(allocator))
-		col.Clear()
+		fields = append(fields, col.MakeSchemaField())
+		builders = append(builders, col.NewStringBuilder(allocator))
 	}
 	//for i := range c.BinaryColumns {
 	//	col := &c.BinaryColumns[i]
@@ -478,16 +451,16 @@ func (c *Columns) Metadata() []*ColumnMetadata {
 	}
 	for _, f32Column := range c.F32Columns {
 		metadata = append(metadata, &ColumnMetadata{
-			Name: f32Column.Name,
+			Name: f32Column.Name(),
 			Type: arrow.PrimitiveTypes.Float32,
-			Len:  len(f32Column.Data),
+			Len:  f32Column.Len(),
 		})
 	}
 	for _, f64Column := range c.F64Columns {
 		metadata = append(metadata, &ColumnMetadata{
-			Name: f64Column.Name,
+			Name: f64Column.Name(),
 			Type: arrow.PrimitiveTypes.Float64,
-			Len:  len(f64Column.Data),
+			Len:  f64Column.Len(),
 		})
 	}
 	for _, booleanColumn := range c.BooleanColumns {
