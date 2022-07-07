@@ -18,103 +18,32 @@ import (
 	"github.com/apache/arrow/go/arrow"
 	"github.com/apache/arrow/go/arrow/array"
 	"github.com/apache/arrow/go/arrow/memory"
+	"otel-arrow-adapter/pkg/rbb/column"
 	"otel-arrow-adapter/pkg/rbb/config"
 	"otel-arrow-adapter/pkg/rbb/stats"
 	"otel-arrow-adapter/pkg/rbb/value"
 )
 
-type BoolColumn struct {
-	Name string
-	Data []*bool
-}
-
-type I8Column struct {
-	Name string
-	Data []*int8
-}
-
-type I16Column struct {
-	Name string
-	Data []*int16
-}
-
-type I32Column struct {
-	Name string
-	Data []*int32
-}
-
-type I64Column struct {
-	Name string
-	Data []*int64
-}
-
-type U8Column struct {
-	Name string
-	Data []*uint8
-}
-
-type U16Column struct {
-	Name string
-	Data []*uint16
-}
-
-type U32Column struct {
-	Name string
-	Data []*uint32
-}
-
-type U64Column struct {
-	Name string
-	Data []*uint64
-}
-
-type F32Column struct {
-	Name string
-	Data []*float32
-}
-
-type F64Column struct {
-	Name string
-	Data []*float64
-}
-
-type BinaryColumn struct {
-	Name string
-	Data []*[]byte
-}
-
-type ListColumn struct {
-	Name string
-	Type arrow.DataType
-	Data [][]value.Value
-}
-
-type StructColumn struct {
-	Name    string
-	Type    arrow.DataType
-	Columns Columns
-}
-
 type Columns struct {
-	BooleanColumns []BoolColumn
+	BooleanColumns []column.BoolColumn
 
-	I8Columns  []I8Column
-	I16Columns []I16Column
-	I32Columns []I32Column
-	I64Columns []I64Column
+	I8Columns  []column.I8Column
+	I16Columns []column.I16Column
+	I32Columns []column.I32Column
+	I64Columns []column.I64Column
 
-	U8Columns  []U8Column
-	U16Columns []U16Column
-	U32Columns []U32Column
-	U64Columns []U64Column
+	U8Columns  []column.U8Column
+	U16Columns []column.U16Column
+	U32Columns []column.U32Column
+	U64Columns []column.U64Column
 
-	F32Columns []F32Column
-	F64Columns []F64Column
+	F32Columns []column.F32Column
+	F64Columns []column.F64Column
 
-	StringColumns []value.StringColumn
-	BinaryColumns []BinaryColumn
+	StringColumns []column.StringColumn
+	BinaryColumns []column.BinaryColumn
 
-	ListColumns   []ListColumn
+	ListColumns   []column.ListColumn
 	StructColumns []StructColumn
 }
 
@@ -129,85 +58,85 @@ type ColumnMetadata struct {
 func (c *Columns) CreateColumn(path []int, field *value.Field, config *config.Config, dictIdGen *DictIdGenerator) *FieldPath {
 	switch field.Value.(type) {
 	case *value.Bool:
-		c.BooleanColumns = append(c.BooleanColumns, BoolColumn{
+		c.BooleanColumns = append(c.BooleanColumns, column.BoolColumn{
 			Name: field.Name,
 			Data: []*bool{&field.Value.(*value.Bool).Value},
 		})
 		return NewFieldPath(len(c.BooleanColumns) - 1)
 	case *value.I8:
-		c.I8Columns = append(c.I8Columns, I8Column{
+		c.I8Columns = append(c.I8Columns, column.I8Column{
 			Name: field.Name,
 			Data: []*int8{&field.Value.(*value.I8).Value},
 		})
 		return NewFieldPath(len(c.I8Columns) - 1)
 	case *value.I16:
-		c.I16Columns = append(c.I16Columns, I16Column{
+		c.I16Columns = append(c.I16Columns, column.I16Column{
 			Name: field.Name,
 			Data: []*int16{&field.Value.(*value.I16).Value},
 		})
 		return NewFieldPath(len(c.I16Columns) - 1)
 	case *value.I32:
-		c.I32Columns = append(c.I32Columns, I32Column{
+		c.I32Columns = append(c.I32Columns, column.I32Column{
 			Name: field.Name,
 			Data: []*int32{&field.Value.(*value.I32).Value},
 		})
 		return NewFieldPath(len(c.I32Columns) - 1)
 	case *value.I64:
-		c.I64Columns = append(c.I64Columns, I64Column{
+		c.I64Columns = append(c.I64Columns, column.I64Column{
 			Name: field.Name,
 			Data: []*int64{&field.Value.(*value.I64).Value},
 		})
 		return NewFieldPath(len(c.I64Columns) - 1)
 	case *value.U8:
-		c.U8Columns = append(c.U8Columns, U8Column{
+		c.U8Columns = append(c.U8Columns, column.U8Column{
 			Name: field.Name,
 			Data: []*uint8{&field.Value.(*value.U8).Value},
 		})
 		return NewFieldPath(len(c.U8Columns) - 1)
 	case *value.U16:
-		c.U16Columns = append(c.U16Columns, U16Column{
+		c.U16Columns = append(c.U16Columns, column.U16Column{
 			Name: field.Name,
 			Data: []*uint16{&field.Value.(*value.U16).Value},
 		})
 		return NewFieldPath(len(c.U16Columns) - 1)
 	case *value.U32:
-		c.U32Columns = append(c.U32Columns, U32Column{
+		c.U32Columns = append(c.U32Columns, column.U32Column{
 			Name: field.Name,
 			Data: []*uint32{&field.Value.(*value.U32).Value},
 		})
 		return NewFieldPath(len(c.U32Columns) - 1)
 	case *value.U64:
-		c.U64Columns = append(c.U64Columns, U64Column{
+		c.U64Columns = append(c.U64Columns, column.U64Column{
 			Name: field.Name,
 			Data: []*uint64{&field.Value.(*value.U64).Value},
 		})
 		return NewFieldPath(len(c.U64Columns) - 1)
 	case *value.F32:
-		c.F32Columns = append(c.F32Columns, F32Column{
+		c.F32Columns = append(c.F32Columns, column.F32Column{
 			Name: field.Name,
 			Data: []*float32{&field.Value.(*value.F32).Value},
 		})
 		return NewFieldPath(len(c.F32Columns) - 1)
 	case *value.F64:
-		c.F64Columns = append(c.F64Columns, F64Column{
+		c.F64Columns = append(c.F64Columns, column.F64Column{
 			Name: field.Name,
 			Data: []*float64{&field.Value.(*value.F64).Value},
 		})
 		return NewFieldPath(len(c.F64Columns) - 1)
 	case *value.String:
-		stringColumn := value.NewStringColumn(field.Name, &config.Dictionaries.StringColumns, path, dictIdGen.NextId())
+		stringColumn := column.NewStringColumn(field.Name, &config.Dictionaries.StringColumns, path, dictIdGen.NextId())
 		stringColumn.Push(&field.Value.(*value.String).Value)
 		c.StringColumns = append(c.StringColumns, *stringColumn)
 		return NewFieldPath(len(c.StringColumns) - 1)
 	case *value.Binary:
-		c.BinaryColumns = append(c.BinaryColumns, BinaryColumn{
+		c.BinaryColumns = append(c.BinaryColumns, column.BinaryColumn{
 			Name: field.Name,
 			Data: []*[]byte{&field.Value.(*value.Binary).Value},
 		})
 		return NewFieldPath(len(c.BinaryColumns) - 1)
 	case *value.List:
 		dataType := value.ListDataType(field.Value.(*value.List).Values)
-		c.ListColumns = append(c.ListColumns, ListColumn{
+		c.ListColumns = append(c.ListColumns, column.ListColumn{
 			Name: field.Name,
 			Type: dataType,
 			Data: [][]value.Value{field.Value.(*value.List).Values},
@@ -457,6 +386,16 @@ func (c *Columns) Build(allocator *memory.GoAllocator) ([]arrow.Field, []array.B
 		builders = append(builders, col.MakeBuilder(allocator))
 		col.Clear()
 	}
+	//for i := range c.BinaryColumns {
+	//	col := &c.BinaryColumns[i]
+	//	// ToDo implement dictionary builder when that makes sense
+	//	fields = append(fields, arrow.Field{Name: *col.ColumnName(), Type: arrow.BinaryTypes.Binary})
+	//	builders = append(builders, col.MakeBuilder(allocator))
+	//	col.Clear()
+	//}
+	// ToDo Binary columns
+	// ToDo Struct columns
+	// ToDo List columns
 
 	return fields, builders, nil
 }
@@ -600,52 +539,4 @@ func (c *Columns) DictionaryStats() []*stats.DictionaryStats {
 		dictionaryStats = append(dictionaryStats, structColumn.DictionaryStats()...)
 	}
 	return dictionaryStats
-}
-
-func (c *StructColumn) DictionaryStats() []*stats.DictionaryStats {
-	return c.Columns.DictionaryStats()
-}
-
-func (c *BoolColumn) Clear() {
-	c.Data = c.Data[:0]
-}
-
-func (c *I8Column) Clear() {
-	c.Data = c.Data[:0]
-}
-
-func (c *I16Column) Clear() {
-	c.Data = c.Data[:0]
-}
-
-func (c *I32Column) Clear() {
-	c.Data = c.Data[:0]
-}
-
-func (c *I64Column) Clear() {
-	c.Data = c.Data[:0]
-}
-
-func (c *U8Column) Clear() {
-	c.Data = c.Data[:0]
-}
-
-func (c *U16Column) Clear() {
-	c.Data = c.Data[:0]
-}
-
-func (c *U32Column) Clear() {
-	c.Data = c.Data[:0]
-}
-
-func (c *U64Column) Clear() {
-	c.Data = c.Data[:0]
-}
-
-func (c *F32Column) Clear() {
-	c.Data = c.Data[:0]
-}
-
-func (c *F64Column) Clear() {
-	c.Data = c.Data[:0]
 }
