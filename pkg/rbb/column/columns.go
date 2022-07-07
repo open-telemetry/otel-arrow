@@ -64,28 +64,16 @@ func (c *Columns) CreateColumn(path []int, field *field_value.Field, config *con
 		})
 		return field_value.NewFieldPath(len(c.BooleanColumns) - 1)
 	case *field_value.I8:
-		c.I8Columns = append(c.I8Columns, I8Column{
-			Name: field.Name,
-			Data: []*int8{&field.Value.(*field_value.I8).Value},
-		})
+		c.I8Columns = append(c.I8Columns, MakeI8Column(field.Name, &field.Value.(*field_value.I8).Value))
 		return field_value.NewFieldPath(len(c.I8Columns) - 1)
 	case *field_value.I16:
-		c.I16Columns = append(c.I16Columns, I16Column{
-			Name: field.Name,
-			Data: []*int16{&field.Value.(*field_value.I16).Value},
-		})
+		c.I16Columns = append(c.I16Columns, MakeI16Column(field.Name, &field.Value.(*field_value.I16).Value))
 		return field_value.NewFieldPath(len(c.I16Columns) - 1)
 	case *field_value.I32:
-		c.I32Columns = append(c.I32Columns, I32Column{
-			Name: field.Name,
-			Data: []*int32{&field.Value.(*field_value.I32).Value},
-		})
+		c.I32Columns = append(c.I32Columns, MakeI32Column(field.Name, &field.Value.(*field_value.I32).Value))
 		return field_value.NewFieldPath(len(c.I32Columns) - 1)
 	case *field_value.I64:
-		c.I64Columns = append(c.I64Columns, I64Column{
-			Name: field.Name,
-			Data: []*int64{&field.Value.(*field_value.I64).Value},
-		})
+		c.I64Columns = append(c.I64Columns, MakeI64Column(field.Name, &field.Value.(*field_value.I64).Value))
 		return field_value.NewFieldPath(len(c.I64Columns) - 1)
 	case *field_value.U8:
 		c.U8Columns = append(c.U8Columns, MakeU8Column(field.Name, &field.Value.(*field_value.U8).Value))
@@ -155,13 +143,13 @@ func (c *Columns) CreateColumn(path []int, field *field_value.Field, config *con
 func (c *Columns) UpdateColumn(fieldPath *field_value.FieldPath, field *field_value.Field) {
 	switch field.Value.(type) {
 	case *field_value.I8:
-		c.I8Columns[fieldPath.Current].Data = append(c.I8Columns[fieldPath.Current].Data, &field.Value.(*field_value.I8).Value)
+		c.I8Columns[fieldPath.Current].Push(&field.Value.(*field_value.I8).Value)
 	case *field_value.I16:
-		c.I16Columns[fieldPath.Current].Data = append(c.I16Columns[fieldPath.Current].Data, &field.Value.(*field_value.I16).Value)
+		c.I16Columns[fieldPath.Current].Push(&field.Value.(*field_value.I16).Value)
 	case *field_value.I32:
-		c.I32Columns[fieldPath.Current].Data = append(c.I32Columns[fieldPath.Current].Data, &field.Value.(*field_value.I32).Value)
+		c.I32Columns[fieldPath.Current].Push(&field.Value.(*field_value.I32).Value)
 	case *field_value.I64:
-		c.I64Columns[fieldPath.Current].Data = append(c.I64Columns[fieldPath.Current].Data, &field.Value.(*field_value.I64).Value)
+		c.I64Columns[fieldPath.Current].Push(&field.Value.(*field_value.I64).Value)
 	case *field_value.U8:
 		c.U8Columns[fieldPath.Current].Push(&field.Value.(*field_value.U8).Value)
 	case *field_value.U16:
@@ -213,63 +201,23 @@ func (c *Columns) Build(allocator *memory.GoAllocator) ([]arrow.Field, []array.B
 	}
 	for i := range c.I8Columns {
 		col := &c.I8Columns[i]
-		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.PrimitiveTypes.Int8})
-		builder := array.NewInt8Builder(allocator)
-		builder.Reserve(len(col.Data))
-		for _, v := range col.Data {
-			if v == nil {
-				builder.AppendNull()
-			} else {
-				builder.UnsafeAppend(*v)
-			}
-		}
-		builders = append(builders, builder)
-		col.Clear()
+		fields = append(fields, col.MakeI8SchemaField())
+		builders = append(builders, col.NewI8Builder(allocator))
 	}
 	for i := range c.I16Columns {
 		col := &c.I16Columns[i]
-		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.PrimitiveTypes.Int16})
-		builder := array.NewInt16Builder(allocator)
-		builder.Reserve(len(col.Data))
-		for _, v := range col.Data {
-			if v == nil {
-				builder.AppendNull()
-			} else {
-				builder.UnsafeAppend(*v)
-			}
-		}
-		builders = append(builders, builder)
-		col.Clear()
+		fields = append(fields, col.MakeI16SchemaField())
+		builders = append(builders, col.NewI16Builder(allocator))
 	}
 	for i := range c.I32Columns {
 		col := &c.I32Columns[i]
-		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.PrimitiveTypes.Int32})
-		builder := array.NewInt32Builder(allocator)
-		builder.Reserve(len(col.Data))
-		for _, v := range col.Data {
-			if v == nil {
-				builder.AppendNull()
-			} else {
-				builder.UnsafeAppend(*v)
-			}
-		}
-		builders = append(builders, builder)
-		col.Clear()
+		fields = append(fields, col.MakeI32SchemaField())
+		builders = append(builders, col.NewI32Builder(allocator))
 	}
 	for i := range c.I64Columns {
 		col := &c.I64Columns[i]
-		fields = append(fields, arrow.Field{Name: col.Name, Type: arrow.PrimitiveTypes.Int64})
-		builder := array.NewInt64Builder(allocator)
-		builder.Reserve(len(col.Data))
-		for _, v := range col.Data {
-			if v == nil {
-				builder.AppendNull()
-			} else {
-				builder.UnsafeAppend(*v)
-			}
-		}
-		builders = append(builders, builder)
-		col.Clear()
+		fields = append(fields, col.MakeI64SchemaField())
+		builders = append(builders, col.NewI64Builder(allocator))
 	}
 	for i := range c.U8Columns {
 		col := &c.U8Columns[i]
@@ -343,30 +291,30 @@ func (c *Columns) Metadata() []*ColumnMetadata {
 
 	for _, i8Column := range c.I8Columns {
 		metadata = append(metadata, &ColumnMetadata{
-			Name: i8Column.Name,
+			Name: i8Column.Name(),
 			Type: arrow.PrimitiveTypes.Int8,
-			Len:  len(i8Column.Data),
+			Len:  i8Column.Len(),
 		})
 	}
 	for _, i16Column := range c.I16Columns {
 		metadata = append(metadata, &ColumnMetadata{
-			Name: i16Column.Name,
+			Name: i16Column.Name(),
 			Type: arrow.PrimitiveTypes.Int16,
-			Len:  len(i16Column.Data),
+			Len:  i16Column.Len(),
 		})
 	}
 	for _, i32Column := range c.I32Columns {
 		metadata = append(metadata, &ColumnMetadata{
-			Name: i32Column.Name,
+			Name: i32Column.Name(),
 			Type: arrow.PrimitiveTypes.Int32,
-			Len:  len(i32Column.Data),
+			Len:  i32Column.Len(),
 		})
 	}
 	for _, i64Column := range c.I64Columns {
 		metadata = append(metadata, &ColumnMetadata{
-			Name: i64Column.Name,
+			Name: i64Column.Name(),
 			Type: arrow.PrimitiveTypes.Int64,
-			Len:  len(i64Column.Data),
+			Len:  i64Column.Len(),
 		})
 	}
 	for _, u8Column := range c.U8Columns {
