@@ -120,11 +120,7 @@ func (c *Columns) CreateColumn(path []int, field *field_value.Field, config *con
 			}
 		}
 		if !columns.IsEmpty() {
-			c.StructColumns = append(c.StructColumns, StructColumn{
-				Name:    field.Name,
-				Type:    dataType,
-				Columns: columns,
-			})
+			c.StructColumns = append(c.StructColumns, MakeStructColumn(field.Name, dataType, columns))
 			return field_value.NewFieldPathWithChildren(len(c.StructColumns)-1, fieldPaths)
 		} else {
 			return nil
@@ -166,7 +162,7 @@ func (c *Columns) UpdateColumn(fieldPath *field_value.FieldPath, field *field_va
 		c.ListColumns[fieldPath.Current].Data = append(c.ListColumns[fieldPath.Current].Data, field.Value.(*field_value.List).Values)
 	case *field_value.Struct:
 		for fieldPos := range field.Value.(*field_value.Struct).Fields {
-			c.StructColumns[fieldPath.Current].Columns.UpdateColumn(fieldPath.Children[fieldPos], &field.Value.(*field_value.Struct).Fields[fieldPos])
+			c.StructColumns[fieldPath.Current].Push(fieldPath.Children[fieldPos], &field.Value.(*field_value.Struct).Fields[fieldPos])
 		}
 	default:
 		panic("unsupported field type")
@@ -239,14 +235,26 @@ func (c *Columns) Build(allocator *memory.GoAllocator) ([]arrow.Field, []array.B
 		fields = append(fields, col.MakeSchemaField())
 		builders = append(builders, col.NewStringBuilder(allocator))
 	}
-	//for i := range c.BinaryColumns {
-	//	col := &c.BinaryColumns[i]
-	//	// ToDo implement dictionary builder when that makes sense
-	//	fields = append(fields, arrow.Field{Name: *col.ColumnName(), Type: arrow.BinaryTypes.Binary})
-	//	builders = append(builders, col.MakeBuilder(allocator))
-	//	col.Clear()
+	for i := range c.BinaryColumns {
+		col := &c.BinaryColumns[i]
+		// ToDo implement dictionary builder when that makes sense
+		fields = append(fields, col.MakeBinarySchemaField())
+		builders = append(builders, col.NewBinaryBuilder(allocator))
+	}
+	//for i := range c.StructColumns {
+	//col := &c.StructColumns[i]
+	//fields, builders, err := col.Build(allocator)
+	//if err != nil {
+	//	return nil, nil, err
 	//}
-	// ToDo Binary columns
+	//dataType := arrow.StructOf(fields...)
+	//array.NewStructBuilder(allocator, dataType)
+	//t := &array.StructBuilder{
+	//	builder: builder{refCount: 1, mem: mem},
+	//	dtype:   dataType,
+	//	fields:  builders,
+	//}
+	//}
 	// ToDo Struct columns
 	// ToDo List columns
 
@@ -373,10 +381,10 @@ func (c *Columns) Metadata() []*ColumnMetadata {
 	}
 	for _, structColumn := range c.StructColumns {
 		metadata = append(metadata, &ColumnMetadata{
-			Name:     structColumn.Name,
-			Type:     structColumn.Type,
+			Name:     structColumn.Name(),
+			Type:     structColumn.Type(),
 			Len:      0,
-			Children: structColumn.Columns.Metadata(),
+			Children: structColumn.Metadata(),
 		})
 	}
 	return metadata
