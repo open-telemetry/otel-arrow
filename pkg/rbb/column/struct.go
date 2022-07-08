@@ -49,8 +49,14 @@ func (c *StructColumn) Name() string {
 }
 
 // Build builds the column.
-func (c *StructColumn) Build(allocator *memory.GoAllocator) ([]arrow.Field, []array.Builder, error) {
-	return c.columns.Build(allocator)
+func (c *StructColumn) Build(allocator *memory.GoAllocator) (*arrow.Field, array.Builder, error) {
+	fields, fieldBuilders, err := c.columns.Build(allocator)
+	if err != nil {
+		return nil, nil, err
+	}
+	structField := arrow.Field{Name: c.name, Type: arrow.StructOf(fields...)}
+	structBuilder := array.UnsafeNewStructBuilderFromFields(allocator, fields, fieldBuilders)
+	return &structField, structBuilder, nil
 }
 
 // DictionaryStats returns the dictionary statistics of the column.

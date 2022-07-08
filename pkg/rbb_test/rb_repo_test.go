@@ -200,8 +200,8 @@ func TestBuild(t *testing.T) {
 	// "a" because it's cardinality is 15 (satisfy the configuration).
 	// "c" is not sorted because it's cardinality is 100 (doesn't satisfy the configuration).
 	for schemaId, record := range records {
-		if schemaId != "a:Str,b:Str,c:Str,ts:I64" {
-			t.Errorf("Expected schemaId to be a:Str,b:Str,c:Str,ts:I64, got %s", schemaId)
+		if schemaId != "a:Str,b:Str,c:Str,d:{a:Str,b:Str},ts:I64" {
+			t.Errorf("Expected schemaId to be a:Str,b:Str,c:Str,d:{a:Str,b:Str},ts:I64, got %s", schemaId)
 		}
 		if record.NumRows() != 100 {
 			t.Errorf("Expected 100 rows, got %d", record.NumRows())
@@ -227,7 +227,19 @@ func TestBuild(t *testing.T) {
 			t.Errorf("Expected column name to be c, got %s", record.ColumnName(3))
 		}
 
-		//spew.Dump(record)
+		if record.ColumnName(4) != "d" {
+			t.Errorf("Expected column name to be d, got %s", record.ColumnName(4))
+		}
+		d := record.Column(4).(*array.Struct)
+		dA := d.Field(0)
+		if dA.(*array.String).String() != "[\"a_0\" \"a_0\" \"a_0\" \"a_0\" \"a_1\" \"a_1\" \"a_1\" \"a_10\" \"a_10\" \"a_10\" \"a_11\" \"a_11\" \"a_11\" \"a_12\" \"a_12\" \"a_12\" \"a_13\" \"a_13\" \"a_13\" \"a_14\" \"a_14\" \"a_14\" \"a_2\" \"a_2\" \"a_2\" \"a_2\" \"a_3\" \"a_3\" \"a_3\" \"a_4\" \"a_4\" \"a_4\" \"a_4\" \"a_5\" \"a_5\" \"a_5\" \"a_6\" \"a_6\" \"a_6\" \"a_6\" \"a_7\" \"a_7\" \"a_7\" \"a_8\" \"a_8\" \"a_8\" \"a_8\" \"a_9\" \"a_9\" \"a_9\" \"a_0\" \"a_0\" \"a_0\" \"a_1\" \"a_1\" \"a_1\" \"a_1\" \"a_10\" \"a_10\" \"a_10\" \"a_11\" \"a_11\" \"a_11\" \"a_12\" \"a_12\" \"a_12\" \"a_13\" \"a_13\" \"a_13\" \"a_14\" \"a_14\" \"a_14\" \"a_2\" \"a_2\" \"a_2\" \"a_3\" \"a_3\" \"a_3\" \"a_3\" \"a_4\" \"a_4\" \"a_4\" \"a_5\" \"a_5\" \"a_5\" \"a_5\" \"a_6\" \"a_6\" \"a_6\" \"a_7\" \"a_7\" \"a_7\" \"a_7\" \"a_8\" \"a_8\" \"a_8\" \"a_9\" \"a_9\" \"a_9\" \"a_9\"]" {
+			t.Errorf("Column d.a is not sorted as expected")
+		}
+		dB := d.Field(1)
+		if dB.(*array.String).String() != "[\"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\"]" {
+			t.Errorf("Column d.b is not sorted as expected")
+		}
+
 		record.Release()
 	}
 }

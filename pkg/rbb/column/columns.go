@@ -241,21 +241,15 @@ func (c *Columns) Build(allocator *memory.GoAllocator) ([]arrow.Field, []array.B
 		fields = append(fields, col.MakeBinarySchemaField())
 		builders = append(builders, col.NewBinaryBuilder(allocator))
 	}
-	//for i := range c.StructColumns {
-	//col := &c.StructColumns[i]
-	//fields, builders, err := col.Build(allocator)
-	//if err != nil {
-	//	return nil, nil, err
-	//}
-	//dataType := arrow.StructOf(fields...)
-	//array.NewStructBuilder(allocator, dataType)
-	//t := &array.StructBuilder{
-	//	builder: builder{refCount: 1, mem: mem},
-	//	dtype:   dataType,
-	//	fields:  builders,
-	//}
-	//}
-	// ToDo Struct columns
+	for i := range c.StructColumns {
+		col := &c.StructColumns[i]
+		structField, structBuilder, err := col.Build(allocator)
+		if err != nil {
+			return nil, nil, err
+		}
+		fields = append(fields, *structField)
+		builders = append(builders, structBuilder)
+	}
 	// ToDo List columns
 
 	return fields, builders, nil
