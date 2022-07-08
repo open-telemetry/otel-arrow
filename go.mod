@@ -4,7 +4,9 @@ go 1.18
 
 require (
 	github.com/apache/arrow/go/v9 v9.0.0-00010101000000-000000000000
+	github.com/davecgh/go-spew v1.1.1
 	github.com/google/go-cmp v0.5.8
+	google.golang.org/protobuf v1.28.0
 )
 
 require (

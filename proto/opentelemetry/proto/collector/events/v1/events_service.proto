@@ -1,0 +1,125 @@
+syntax = "proto3";
+
+package opentelemetry.proto.collector.events.v1;
+
+option java_multiple_files = true;
+option java_package = "io.opentelemetry.proto.collector.events.v1";
+option java_outer_classname = "EventsServiceProto";
+option go_package = "go.opentelemetry.io/proto/otlp/collector/events/v1";
+
+service EventsService {
+  // The EventStream endpoint is a bi-directional stream used to send batch of events (`BatchEvent`) from the exporter
+  // to the collector. The collector returns `BatchStatus` messages to acknowledge the `BatchEvent` messages received.
+  rpc EventStream(stream BatchEvent) returns (stream BatchStatus) {}
+
+  // Future evolution: command_stream(stream ExporterMessage) return (stream CollectorMessage) {}
+}
+
+// A message sent by an exporter to a collector containing a batch of events in the Apache Arrow columnar encoding.
+message BatchEvent {
+  // [mandatory] Batch ID. Must be unique in the context of the stream.
+  string batch_id = 1;
+
+  // [mandatory] A unique id assigned to a sub-stream of the batch sharing the same schema, and dictionaries.
+  string sub_stream_id = 2;
+
+  // [mandatory] A collection of columnar tables representing OTLP entities (i.e. metrics, logs, traces) in a columnar
+  // encoding.
+  // This collection must contain one main table (metrics, logs, or spans) and:
+  // - one resources table
+  // - zero or one instrumentation_libraries table
+  // - zero or one links tables (if the main table is a span table)
+  // - zero or one events tables (if the main table is a span table)
+  // Inventory of the relationship between each type of main entity and its sub-tables:
+  // Main tables are annotated with (M)
+  // Shared tables are annotated with (S)
+  // Dependent tables are annotated with (D)
+  //
+  // Metrics (M) -*--1-> Resource (S)
+  //       |
+  //       +------*--1-> InstrumentationLibrary (S)
+  //
+  // Logs (M) -*--1-> Resource (S)
+  //    |
+  //    +------*--1-> InstrumentationLibrary (S)
+  //
+  // Spans (M) -*----1-> Resource (S)
+  // | | |
+  // | | +-*---------1-> InstrumentationLibrary (S)
+  // | +-1-----------*-> Link (D)
+  // +-1-------------*-> Event (D)
+  repeated ColumnarTable columnar_tables = 3;
+
+  // [optional] Delivery type (BEST_EFFORT by default).
+  DeliveryType delivery_type = 4;
+}
+
+// Enumeration of all the columnar table types current supported by the OTLP protocol.
+enum ColumnarTableType {
+  // A columnar table representing a collection of metrics.
+  METRICS = 0;
+  // A columnar table representing a collection of logs.
+  LOGS = 1;
+  // A columnar table representing a collection of traces.
+  SPANS = 2;
+  // A columnar table containing resource related data.
+  RESOURCE = 3;
+  // A columnar table containing instrumentation library related data.
+  INSTRUMENTATION_LIBRARY = 4;
+  // A columnar table containing span event related data.
+  EVENT = 5;
+  // A columnar table containing span link related data.
+  LINK = 6;
+}
+
+// Represents a batch of OTLP entities.
+message ColumnarTable {
+  // [mandatory] Type of the columnar table.
+  ColumnarTableType type = 1;
+
+  // [mandatory for the first message] Serialized Arrow Schema in IPC stream format representing the batch of events
+  // stored in record_batch. The definition of this schema follows a set of naming conventions and defines a set of
+  // mandatory and optional fields.
+  //
+  // For a description of the Arrow IPC format see: https://arrow.apache.org/docs/format/Columnar.html#serialization-and-interprocess-communication-ipc
+  bytes schema = 2;
+
+  // [optional] Serialized Arrow dictionaries
+  repeated EncodedData dictionaries = 3;
+
+  // [mandatory] Serialized Arrow Record Batch
+  EncodedData record_batch = 4;
+}
+
+// The delivery mode used to process the message.
+// The collector must comply with this parameter.
+enum DeliveryType {
+  BEST_EFFORT = 0;
+  AT_LEAST_ONCE = 1;
+}
+
+// Arrow IPC message
+// see: https://arrow.apache.org/docs/format/Columnar.html#serialization-and-interprocess-communication-ipc
+message EncodedData {
+  // Serialized Arrow encoded IPC message
+  bytes ipc_message = 1;
+
+  // Serialized Arrow buffer
+  bytes arrow_data = 2;
+}
+
+// A message sent by a Collector to the exporter that opened the data stream.
+message BatchStatus {
+  repeated StatusMessage statuses = 1;
+}
+
+message StatusMessage {
+  StatusCode status_code = 1;
+  string batch_id = 2;
+  string error_message = 3;
+}
+
+enum StatusCode {
+  OK = 0;
+  ERROR = 1;
+}
