@@ -15,7 +15,7 @@
 package column
 
 import (
-	"github.com/apache/arrow/go/arrow"
+	"github.com/apache/arrow/go/v9/arrow"
 	"otel-arrow-adapter/pkg/rbb/field_value"
 )
 

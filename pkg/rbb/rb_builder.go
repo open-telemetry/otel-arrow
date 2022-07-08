@@ -16,9 +16,9 @@ package rbb
 
 import (
 	"fmt"
-	"github.com/apache/arrow/go/arrow"
-	"github.com/apache/arrow/go/arrow/array"
-	"github.com/apache/arrow/go/arrow/memory"
+	"github.com/apache/arrow/go/v9/arrow"
+	"github.com/apache/arrow/go/v9/arrow/array"
+	"github.com/apache/arrow/go/v9/arrow/memory"
 	"otel-arrow-adapter/pkg/rbb/column"
 	config2 "otel-arrow-adapter/pkg/rbb/config"
 	"otel-arrow-adapter/pkg/rbb/dictionary"
@@ -100,7 +100,7 @@ func (rbb *RecordBatchBuilder) IsEmpty() bool {
 	return rbb.columns.IsEmpty()
 }
 
-func (rbb *RecordBatchBuilder) Build(allocator *memory.GoAllocator) (array.Record, error) {
+func (rbb *RecordBatchBuilder) Build(allocator *memory.GoAllocator) (arrow.Record, error) {
 	// Sorts the string columns according to the order by clause.
 	if rbb.orderBy != nil {
 		recordList := rbb.recordList
@@ -128,10 +128,10 @@ func (rbb *RecordBatchBuilder) Build(allocator *memory.GoAllocator) (array.Recor
 
 	// Creates an Arrow Schema from the fields returned by the build method.
 	schema := arrow.NewSchema(fields, nil)
-	cols := make([]array.Interface, len(fields))
+	cols := make([]arrow.Array, len(fields))
 	rows := int64(0)
 
-	defer func(cols []array.Interface) {
+	defer func(cols []arrow.Array) {
 		for _, col := range cols {
 			if col == nil {
 				continue

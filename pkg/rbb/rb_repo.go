@@ -15,8 +15,8 @@
 package rbb
 
 import (
-	"github.com/apache/arrow/go/arrow/array"
-	"github.com/apache/arrow/go/arrow/memory"
+	"github.com/apache/arrow/go/v9/arrow"
+	"github.com/apache/arrow/go/v9/arrow/memory"
 	config2 "otel-arrow-adapter/pkg/rbb/config"
 )
 
@@ -59,8 +59,8 @@ func (rbr *RecordBatchRepository) RecordBatchBuilderCount() int {
 	return count
 }
 
-func (rbr *RecordBatchRepository) Build() (map[string]array.Record, error) {
-	recordBatches := make(map[string]array.Record)
+func (rbr *RecordBatchRepository) Build() (map[string]arrow.Record, error) {
+	recordBatches := make(map[string]arrow.Record)
 
 	for schemaId, builder := range rbr.builders {
 		if !builder.IsEmpty() {

@@ -15,7 +15,7 @@
 package field_value
 
 import (
-	"github.com/apache/arrow/go/arrow"
+	"github.com/apache/arrow/go/v9/arrow"
 	"strings"
 )
 

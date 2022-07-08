@@ -1,8 +1,8 @@
 package rbb_test
 
 import (
-	"github.com/apache/arrow/go/arrow"
-	"github.com/apache/arrow/go/arrow/array"
+	"github.com/apache/arrow/go/v9/arrow"
+	"github.com/apache/arrow/go/v9/arrow/array"
 	"math"
 	"math/rand"
 	"otel-arrow-adapter/pkg/rbb"
