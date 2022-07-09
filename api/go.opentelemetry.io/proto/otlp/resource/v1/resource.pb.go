@@ -23,7 +23,7 @@ package v1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	otlpcommon "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
+	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
 	reflect "reflect"
 	sync "sync"
 )
@@ -44,7 +44,7 @@ type Resource struct {
 	// Set of attributes that describe the resource.
 	// Attribute keys MUST be unique (it is not allowed to have more than one
 	// attribute with the same key).
-	Attributes []*otlpcommon.KeyValue `protobuf:"bytes,1,rep,name=attributes,proto3" json:"attributes,omitempty"`
+	Attributes []*v1.KeyValue `protobuf:"bytes,1,rep,name=attributes,proto3" json:"attributes,omitempty"`
 	// dropped_attributes_count is the number of dropped attributes. If the value is 0, then
 	// no attributes were dropped.
 	DroppedAttributesCount uint32 `protobuf:"varint,2,opt,name=dropped_attributes_count,json=droppedAttributesCount,proto3" json:"dropped_attributes_count,omitempty"`
@@ -82,7 +82,7 @@ func (*Resource) Descriptor() ([]byte, []int) {
 	return file_opentelemetry_proto_resource_v1_resource_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *Resource) GetAttributes() []*otlpcommon.KeyValue {
+func (x *Resource) GetAttributes() []*v1.KeyValue {
 	if x != nil {
 		return x.Attributes
 	}
@@ -141,8 +141,8 @@ func file_opentelemetry_proto_resource_v1_resource_proto_rawDescGZIP() []byte {
 
 var file_opentelemetry_proto_resource_v1_resource_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
 var file_opentelemetry_proto_resource_v1_resource_proto_goTypes = []interface{}{
-	(*Resource)(nil),            // 0: opentelemetry.proto.resource.v1.Resource
-	(*otlpcommon.KeyValue)(nil), // 1: opentelemetry.proto.common.v1.KeyValue
+	(*Resource)(nil),    // 0: opentelemetry.proto.resource.v1.Resource
+	(*v1.KeyValue)(nil), // 1: opentelemetry.proto.common.v1.KeyValue
 }
 var file_opentelemetry_proto_resource_v1_resource_proto_depIdxs = []int32{
 	1, // 0: opentelemetry.proto.resource.v1.Resource.attributes:type_name -> opentelemetry.proto.common.v1.KeyValue

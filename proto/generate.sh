@@ -7,5 +7,6 @@ for dir in $(find ${DIR}/opentelemetry -name '*.proto' -print0 | xargs -0 -n1 di
   files=$(find "${dir}" -name '*.proto')
 
   # Generate all files with protoc-gen-go.
+  echo ${files}
   protoc -I ${DIR} --go_out=api ${files}
 done

@@ -23,8 +23,8 @@ package v1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	otlpcommon "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
-	otlpresource "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
+	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
+	resourcepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
 	reflect "reflect"
 	sync "sync"
 )
@@ -235,7 +235,7 @@ type ResourceSpans struct {
 
 	// The resource for the spans in this message.
 	// If this field is not set then no resource info is known.
-	Resource *otlpresource.Resource `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
+	Resource *resourcepb.Resource `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
 	// A list of ScopeSpans that originate from a resource.
 	ScopeSpans []*ScopeSpans `protobuf:"bytes,2,rep,name=scope_spans,json=scopeSpans,proto3" json:"scope_spans,omitempty"`
 	// This schema_url applies to the data in the "resource" field. It does not apply
@@ -275,7 +275,7 @@ func (*ResourceSpans) Descriptor() ([]byte, []int) {
 	return file_opentelemetry_proto_trace_v1_trace_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *ResourceSpans) GetResource() *otlpresource.Resource {
+func (x *ResourceSpans) GetResource() *resourcepb.Resource {
 	if x != nil {
 		return x.Resource
 	}
@@ -305,7 +305,7 @@ type ScopeSpans struct {
 	// The instrumentation scope information for the spans in this message.
 	// Semantically when InstrumentationScope isn't set, it is equivalent with
 	// an empty instrumentation scope name (unknown).
-	Scope *otlpcommon.InstrumentationScope `protobuf:"bytes,1,opt,name=scope,proto3" json:"scope,omitempty"`
+	Scope *commonpb.InstrumentationScope `protobuf:"bytes,1,opt,name=scope,proto3" json:"scope,omitempty"`
 	// A list of Spans that originate from an instrumentation scope.
 	Spans []*Span `protobuf:"bytes,2,rep,name=spans,proto3" json:"spans,omitempty"`
 	// This schema_url applies to all spans and span events in the "spans" field.
@@ -344,7 +344,7 @@ func (*ScopeSpans) Descriptor() ([]byte, []int) {
 	return file_opentelemetry_proto_trace_v1_trace_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *ScopeSpans) GetScope() *otlpcommon.InstrumentationScope {
+func (x *ScopeSpans) GetScope() *commonpb.InstrumentationScope {
 	if x != nil {
 		return x.Scope
 	}
@@ -440,7 +440,7 @@ type Span struct {
 	// https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/common/README.md#attribute
 	// Attribute keys MUST be unique (it is not allowed to have more than one
 	// attribute with the same key).
-	Attributes []*otlpcommon.KeyValue `protobuf:"bytes,9,rep,name=attributes,proto3" json:"attributes,omitempty"`
+	Attributes []*commonpb.KeyValue `protobuf:"bytes,9,rep,name=attributes,proto3" json:"attributes,omitempty"`
 	// dropped_attributes_count is the number of attributes that were discarded. Attributes
 	// can be discarded because their keys are too long or because there are too many
 	// attributes. If this value is 0, then no attributes were dropped.
@@ -549,7 +549,7 @@ func (x *Span) GetEndTimeUnixNano() uint64 {
 	return 0
 }
 
-func (x *Span) GetAttributes() []*otlpcommon.KeyValue {
+func (x *Span) GetAttributes() []*commonpb.KeyValue {
 	if x != nil {
 		return x.Attributes
 	}
@@ -672,7 +672,7 @@ type Span_Event struct {
 	// attributes is a collection of attribute key/value pairs on the event.
 	// Attribute keys MUST be unique (it is not allowed to have more than one
 	// attribute with the same key).
-	Attributes []*otlpcommon.KeyValue `protobuf:"bytes,3,rep,name=attributes,proto3" json:"attributes,omitempty"`
+	Attributes []*commonpb.KeyValue `protobuf:"bytes,3,rep,name=attributes,proto3" json:"attributes,omitempty"`
 	// dropped_attributes_count is the number of dropped attributes. If the value is 0,
 	// then no attributes were dropped.
 	DroppedAttributesCount uint32 `protobuf:"varint,4,opt,name=dropped_attributes_count,json=droppedAttributesCount,proto3" json:"dropped_attributes_count,omitempty"`
@@ -724,7 +724,7 @@ func (x *Span_Event) GetName() string {
 	return ""
 }
 
-func (x *Span_Event) GetAttributes() []*otlpcommon.KeyValue {
+func (x *Span_Event) GetAttributes() []*commonpb.KeyValue {
 	if x != nil {
 		return x.Attributes
 	}
@@ -757,7 +757,7 @@ type Span_Link struct {
 	// attributes is a collection of attribute key/value pairs on the link.
 	// Attribute keys MUST be unique (it is not allowed to have more than one
 	// attribute with the same key).
-	Attributes []*otlpcommon.KeyValue `protobuf:"bytes,4,rep,name=attributes,proto3" json:"attributes,omitempty"`
+	Attributes []*commonpb.KeyValue `protobuf:"bytes,4,rep,name=attributes,proto3" json:"attributes,omitempty"`
 	// dropped_attributes_count is the number of dropped attributes. If the value is 0,
 	// then no attributes were dropped.
 	DroppedAttributesCount uint32 `protobuf:"varint,5,opt,name=dropped_attributes_count,json=droppedAttributesCount,proto3" json:"dropped_attributes_count,omitempty"`
@@ -816,7 +816,7 @@ func (x *Span_Link) GetTraceState() string {
 	return ""
 }
 
-func (x *Span_Link) GetAttributes() []*otlpcommon.KeyValue {
+func (x *Span_Link) GetAttributes() []*commonpb.KeyValue {
 	if x != nil {
 		return x.Attributes
 	}
@@ -993,18 +993,18 @@ func file_opentelemetry_proto_trace_v1_trace_proto_rawDescGZIP() []byte {
 var file_opentelemetry_proto_trace_v1_trace_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_opentelemetry_proto_trace_v1_trace_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_opentelemetry_proto_trace_v1_trace_proto_goTypes = []interface{}{
-	(Span_SpanKind)(0),                      // 0: opentelemetry.proto.trace.v1.Span.SpanKind
-	(Status_StatusCode)(0),                  // 1: opentelemetry.proto.trace.v1.Status.StatusCode
-	(*TracesData)(nil),                      // 2: opentelemetry.proto.trace.v1.TracesData
-	(*ResourceSpans)(nil),                   // 3: opentelemetry.proto.trace.v1.ResourceSpans
-	(*ScopeSpans)(nil),                      // 4: opentelemetry.proto.trace.v1.ScopeSpans
-	(*Span)(nil),                            // 5: opentelemetry.proto.trace.v1.Span
-	(*Status)(nil),                          // 6: opentelemetry.proto.trace.v1.Status
-	(*Span_Event)(nil),                      // 7: opentelemetry.proto.trace.v1.Span.Event
-	(*Span_Link)(nil),                       // 8: opentelemetry.proto.trace.v1.Span.Link
-	(*otlpresource.Resource)(nil),           // 9: opentelemetry.proto.resource.v1.Resource
-	(*otlpcommon.InstrumentationScope)(nil), // 10: opentelemetry.proto.common.v1.InstrumentationScope
-	(*otlpcommon.KeyValue)(nil),             // 11: opentelemetry.proto.common.v1.KeyValue
+	(Span_SpanKind)(0),                    // 0: opentelemetry.proto.trace.v1.Span.SpanKind
+	(Status_StatusCode)(0),                // 1: opentelemetry.proto.trace.v1.Status.StatusCode
+	(*TracesData)(nil),                    // 2: opentelemetry.proto.trace.v1.TracesData
+	(*ResourceSpans)(nil),                 // 3: opentelemetry.proto.trace.v1.ResourceSpans
+	(*ScopeSpans)(nil),                    // 4: opentelemetry.proto.trace.v1.ScopeSpans
+	(*Span)(nil),                          // 5: opentelemetry.proto.trace.v1.Span
+	(*Status)(nil),                        // 6: opentelemetry.proto.trace.v1.Status
+	(*Span_Event)(nil),                    // 7: opentelemetry.proto.trace.v1.Span.Event
+	(*Span_Link)(nil),                     // 8: opentelemetry.proto.trace.v1.Span.Link
+	(*resourcepb.Resource)(nil),           // 9: opentelemetry.proto.resource.v1.Resource
+	(*commonpb.InstrumentationScope)(nil), // 10: opentelemetry.proto.common.v1.InstrumentationScope
+	(*commonpb.KeyValue)(nil),             // 11: opentelemetry.proto.common.v1.KeyValue
 }
 var file_opentelemetry_proto_trace_v1_trace_proto_depIdxs = []int32{
 	3,  // 0: opentelemetry.proto.trace.v1.TracesData.resource_spans:type_name -> opentelemetry.proto.trace.v1.ResourceSpans

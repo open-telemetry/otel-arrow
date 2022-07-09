@@ -23,7 +23,7 @@ package v1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	otlpmetrics "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/metrics/v1"
+	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/metrics/v1"
 	reflect "reflect"
 	sync "sync"
 )
@@ -45,7 +45,7 @@ type ExportMetricsServiceRequest struct {
 	// element. Intermediary nodes (such as OpenTelemetry Collector) that receive
 	// data from multiple origins typically batch the data before forwarding further and
 	// in that case this array will contain multiple elements.
-	ResourceMetrics []*otlpmetrics.ResourceMetrics `protobuf:"bytes,1,rep,name=resource_metrics,json=resourceMetrics,proto3" json:"resource_metrics,omitempty"`
+	ResourceMetrics []*v1.ResourceMetrics `protobuf:"bytes,1,rep,name=resource_metrics,json=resourceMetrics,proto3" json:"resource_metrics,omitempty"`
 }
 
 func (x *ExportMetricsServiceRequest) Reset() {
@@ -80,7 +80,7 @@ func (*ExportMetricsServiceRequest) Descriptor() ([]byte, []int) {
 	return file_opentelemetry_proto_collector_metrics_v1_metrics_service_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *ExportMetricsServiceRequest) GetResourceMetrics() []*otlpmetrics.ResourceMetrics {
+func (x *ExportMetricsServiceRequest) GetResourceMetrics() []*v1.ResourceMetrics {
 	if x != nil {
 		return x.ResourceMetrics
 	}
@@ -188,7 +188,7 @@ var file_opentelemetry_proto_collector_metrics_v1_metrics_service_proto_msgTypes
 var file_opentelemetry_proto_collector_metrics_v1_metrics_service_proto_goTypes = []interface{}{
 	(*ExportMetricsServiceRequest)(nil),  // 0: opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest
 	(*ExportMetricsServiceResponse)(nil), // 1: opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceResponse
-	(*otlpmetrics.ResourceMetrics)(nil),  // 2: opentelemetry.proto.metrics.v1.ResourceMetrics
+	(*v1.ResourceMetrics)(nil),           // 2: opentelemetry.proto.metrics.v1.ResourceMetrics
 }
 var file_opentelemetry_proto_collector_metrics_v1_metrics_service_proto_depIdxs = []int32{
 	2, // 0: opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest.resource_metrics:type_name -> opentelemetry.proto.metrics.v1.ResourceMetrics

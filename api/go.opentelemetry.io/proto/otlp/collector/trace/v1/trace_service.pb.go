@@ -23,7 +23,7 @@ package v1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	otlptrace "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/trace/v1"
+	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/trace/v1"
 	reflect "reflect"
 	sync "sync"
 )
@@ -45,7 +45,7 @@ type ExportTraceServiceRequest struct {
 	// element. Intermediary nodes (such as OpenTelemetry Collector) that receive
 	// data from multiple origins typically batch the data before forwarding further and
 	// in that case this array will contain multiple elements.
-	ResourceSpans []*otlptrace.ResourceSpans `protobuf:"bytes,1,rep,name=resource_spans,json=resourceSpans,proto3" json:"resource_spans,omitempty"`
+	ResourceSpans []*v1.ResourceSpans `protobuf:"bytes,1,rep,name=resource_spans,json=resourceSpans,proto3" json:"resource_spans,omitempty"`
 }
 
 func (x *ExportTraceServiceRequest) Reset() {
@@ -80,7 +80,7 @@ func (*ExportTraceServiceRequest) Descriptor() ([]byte, []int) {
 	return file_opentelemetry_proto_collector_trace_v1_trace_service_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *ExportTraceServiceRequest) GetResourceSpans() []*otlptrace.ResourceSpans {
+func (x *ExportTraceServiceRequest) GetResourceSpans() []*v1.ResourceSpans {
 	if x != nil {
 		return x.ResourceSpans
 	}
@@ -185,7 +185,7 @@ var file_opentelemetry_proto_collector_trace_v1_trace_service_proto_msgTypes = m
 var file_opentelemetry_proto_collector_trace_v1_trace_service_proto_goTypes = []interface{}{
 	(*ExportTraceServiceRequest)(nil),  // 0: opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest
 	(*ExportTraceServiceResponse)(nil), // 1: opentelemetry.proto.collector.trace.v1.ExportTraceServiceResponse
-	(*otlptrace.ResourceSpans)(nil),    // 2: opentelemetry.proto.trace.v1.ResourceSpans
+	(*v1.ResourceSpans)(nil),           // 2: opentelemetry.proto.trace.v1.ResourceSpans
 }
 var file_opentelemetry_proto_collector_trace_v1_trace_service_proto_depIdxs = []int32{
 	2, // 0: opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest.resource_spans:type_name -> opentelemetry.proto.trace.v1.ResourceSpans

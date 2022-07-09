@@ -23,8 +23,8 @@ package v1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	otlpcommon "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
-	otlpresource "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
+	v11 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
+	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
 	reflect "reflect"
 	sync "sync"
 )
@@ -274,7 +274,7 @@ type ResourceMetrics struct {
 
 	// The resource for the metrics in this message.
 	// If this field is not set then no resource info is known.
-	Resource *otlpresource.Resource `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
+	Resource *v1.Resource `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
 	// A list of metrics that originate from a resource.
 	ScopeMetrics []*ScopeMetrics `protobuf:"bytes,2,rep,name=scope_metrics,json=scopeMetrics,proto3" json:"scope_metrics,omitempty"`
 	// This schema_url applies to the data in the "resource" field. It does not apply
@@ -314,7 +314,7 @@ func (*ResourceMetrics) Descriptor() ([]byte, []int) {
 	return file_opentelemetry_proto_metrics_v1_metrics_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *ResourceMetrics) GetResource() *otlpresource.Resource {
+func (x *ResourceMetrics) GetResource() *v1.Resource {
 	if x != nil {
 		return x.Resource
 	}
@@ -344,7 +344,7 @@ type ScopeMetrics struct {
 	// The instrumentation scope information for the metrics in this message.
 	// Semantically when InstrumentationScope isn't set, it is equivalent with
 	// an empty instrumentation scope name (unknown).
-	Scope *otlpcommon.InstrumentationScope `protobuf:"bytes,1,opt,name=scope,proto3" json:"scope,omitempty"`
+	Scope *v11.InstrumentationScope `protobuf:"bytes,1,opt,name=scope,proto3" json:"scope,omitempty"`
 	// A list of metrics that originate from an instrumentation library.
 	Metrics []*Metric `protobuf:"bytes,2,rep,name=metrics,proto3" json:"metrics,omitempty"`
 	// This schema_url applies to all metrics in the "metrics" field.
@@ -383,7 +383,7 @@ func (*ScopeMetrics) Descriptor() ([]byte, []int) {
 	return file_opentelemetry_proto_metrics_v1_metrics_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *ScopeMetrics) GetScope() *otlpcommon.InstrumentationScope {
+func (x *ScopeMetrics) GetScope() *v11.InstrumentationScope {
 	if x != nil {
 		return x.Scope
 	}
@@ -949,7 +949,7 @@ type NumberDataPoint struct {
 	// where this point belongs. The list may be empty (may contain 0 elements).
 	// Attribute keys MUST be unique (it is not allowed to have more than one
 	// attribute with the same key).
-	Attributes []*otlpcommon.KeyValue `protobuf:"bytes,7,rep,name=attributes,proto3" json:"attributes,omitempty"`
+	Attributes []*v11.KeyValue `protobuf:"bytes,7,rep,name=attributes,proto3" json:"attributes,omitempty"`
 	// StartTimeUnixNano is optional but strongly encouraged, see the
 	// the detailed comments above Metric.
 	//
@@ -1008,7 +1008,7 @@ func (*NumberDataPoint) Descriptor() ([]byte, []int) {
 	return file_opentelemetry_proto_metrics_v1_metrics_proto_rawDescGZIP(), []int{9}
 }
 
-func (x *NumberDataPoint) GetAttributes() []*otlpcommon.KeyValue {
+func (x *NumberDataPoint) GetAttributes() []*v11.KeyValue {
 	if x != nil {
 		return x.Attributes
 	}
@@ -1099,7 +1099,7 @@ type HistogramDataPoint struct {
 	// where this point belongs. The list may be empty (may contain 0 elements).
 	// Attribute keys MUST be unique (it is not allowed to have more than one
 	// attribute with the same key).
-	Attributes []*otlpcommon.KeyValue `protobuf:"bytes,9,rep,name=attributes,proto3" json:"attributes,omitempty"`
+	Attributes []*v11.KeyValue `protobuf:"bytes,9,rep,name=attributes,proto3" json:"attributes,omitempty"`
 	// StartTimeUnixNano is optional but strongly encouraged, see the
 	// the detailed comments above Metric.
 	//
@@ -1190,7 +1190,7 @@ func (*HistogramDataPoint) Descriptor() ([]byte, []int) {
 	return file_opentelemetry_proto_metrics_v1_metrics_proto_rawDescGZIP(), []int{10}
 }
 
-func (x *HistogramDataPoint) GetAttributes() []*otlpcommon.KeyValue {
+func (x *HistogramDataPoint) GetAttributes() []*v11.KeyValue {
 	if x != nil {
 		return x.Attributes
 	}
@@ -1281,7 +1281,7 @@ type ExponentialHistogramDataPoint struct {
 	// where this point belongs. The list may be empty (may contain 0 elements).
 	// Attribute keys MUST be unique (it is not allowed to have more than one
 	// attribute with the same key).
-	Attributes []*otlpcommon.KeyValue `protobuf:"bytes,1,rep,name=attributes,proto3" json:"attributes,omitempty"`
+	Attributes []*v11.KeyValue `protobuf:"bytes,1,rep,name=attributes,proto3" json:"attributes,omitempty"`
 	// StartTimeUnixNano is optional but strongly encouraged, see the
 	// the detailed comments above Metric.
 	//
@@ -1379,7 +1379,7 @@ func (*ExponentialHistogramDataPoint) Descriptor() ([]byte, []int) {
 	return file_opentelemetry_proto_metrics_v1_metrics_proto_rawDescGZIP(), []int{11}
 }
 
-func (x *ExponentialHistogramDataPoint) GetAttributes() []*otlpcommon.KeyValue {
+func (x *ExponentialHistogramDataPoint) GetAttributes() []*v11.KeyValue {
 	if x != nil {
 		return x.Attributes
 	}
@@ -1481,7 +1481,7 @@ type SummaryDataPoint struct {
 	// where this point belongs. The list may be empty (may contain 0 elements).
 	// Attribute keys MUST be unique (it is not allowed to have more than one
 	// attribute with the same key).
-	Attributes []*otlpcommon.KeyValue `protobuf:"bytes,7,rep,name=attributes,proto3" json:"attributes,omitempty"`
+	Attributes []*v11.KeyValue `protobuf:"bytes,7,rep,name=attributes,proto3" json:"attributes,omitempty"`
 	// StartTimeUnixNano is optional but strongly encouraged, see the
 	// the detailed comments above Metric.
 	//
@@ -1544,7 +1544,7 @@ func (*SummaryDataPoint) Descriptor() ([]byte, []int) {
 	return file_opentelemetry_proto_metrics_v1_metrics_proto_rawDescGZIP(), []int{12}
 }
 
-func (x *SummaryDataPoint) GetAttributes() []*otlpcommon.KeyValue {
+func (x *SummaryDataPoint) GetAttributes() []*v11.KeyValue {
 	if x != nil {
 		return x.Attributes
 	}
@@ -1605,7 +1605,7 @@ type Exemplar struct {
 	// The set of key/value pairs that were filtered out by the aggregator, but
 	// recorded alongside the original measurement. Only key/value pairs that were
 	// filtered out by the aggregator should be included
-	FilteredAttributes []*otlpcommon.KeyValue `protobuf:"bytes,7,rep,name=filtered_attributes,json=filteredAttributes,proto3" json:"filtered_attributes,omitempty"`
+	FilteredAttributes []*v11.KeyValue `protobuf:"bytes,7,rep,name=filtered_attributes,json=filteredAttributes,proto3" json:"filtered_attributes,omitempty"`
 	// time_unix_nano is the exact time when this exemplar was recorded
 	//
 	// Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January
@@ -1661,7 +1661,7 @@ func (*Exemplar) Descriptor() ([]byte, []int) {
 	return file_opentelemetry_proto_metrics_v1_metrics_proto_rawDescGZIP(), []int{13}
 }
 
-func (x *Exemplar) GetFilteredAttributes() []*otlpcommon.KeyValue {
+func (x *Exemplar) GetFilteredAttributes() []*v11.KeyValue {
 	if x != nil {
 		return x.FilteredAttributes
 	}
@@ -2190,9 +2190,9 @@ var file_opentelemetry_proto_metrics_v1_metrics_proto_goTypes = []interface{}{
 	(*Exemplar)(nil),                              // 15: opentelemetry.proto.metrics.v1.Exemplar
 	(*ExponentialHistogramDataPoint_Buckets)(nil), // 16: opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint.Buckets
 	(*SummaryDataPoint_ValueAtQuantile)(nil),      // 17: opentelemetry.proto.metrics.v1.SummaryDataPoint.ValueAtQuantile
-	(*otlpresource.Resource)(nil),                 // 18: opentelemetry.proto.resource.v1.Resource
-	(*otlpcommon.InstrumentationScope)(nil),       // 19: opentelemetry.proto.common.v1.InstrumentationScope
-	(*otlpcommon.KeyValue)(nil),                   // 20: opentelemetry.proto.common.v1.KeyValue
+	(*v1.Resource)(nil),                           // 18: opentelemetry.proto.resource.v1.Resource
+	(*v11.InstrumentationScope)(nil),              // 19: opentelemetry.proto.common.v1.InstrumentationScope
+	(*v11.KeyValue)(nil),                          // 20: opentelemetry.proto.common.v1.KeyValue
 }
 var file_opentelemetry_proto_metrics_v1_metrics_proto_depIdxs = []int32{
 	3,  // 0: opentelemetry.proto.metrics.v1.MetricsData.resource_metrics:type_name -> opentelemetry.proto.metrics.v1.ResourceMetrics

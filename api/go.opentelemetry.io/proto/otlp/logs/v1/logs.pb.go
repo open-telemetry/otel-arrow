@@ -23,8 +23,8 @@ package v1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	otlpcommon "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
-	otlpresource "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
+	v11 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
+	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
 	reflect "reflect"
 	sync "sync"
 )
@@ -270,7 +270,7 @@ type ResourceLogs struct {
 
 	// The resource for the logs in this message.
 	// If this field is not set then resource info is unknown.
-	Resource *otlpresource.Resource `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
+	Resource *v1.Resource `protobuf:"bytes,1,opt,name=resource,proto3" json:"resource,omitempty"`
 	// A list of ScopeLogs that originate from a resource.
 	ScopeLogs []*ScopeLogs `protobuf:"bytes,2,rep,name=scope_logs,json=scopeLogs,proto3" json:"scope_logs,omitempty"`
 	// This schema_url applies to the data in the "resource" field. It does not apply
@@ -310,7 +310,7 @@ func (*ResourceLogs) Descriptor() ([]byte, []int) {
 	return file_opentelemetry_proto_logs_v1_logs_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *ResourceLogs) GetResource() *otlpresource.Resource {
+func (x *ResourceLogs) GetResource() *v1.Resource {
 	if x != nil {
 		return x.Resource
 	}
@@ -340,7 +340,7 @@ type ScopeLogs struct {
 	// The instrumentation scope information for the logs in this message.
 	// Semantically when InstrumentationScope isn't set, it is equivalent with
 	// an empty instrumentation scope name (unknown).
-	Scope *otlpcommon.InstrumentationScope `protobuf:"bytes,1,opt,name=scope,proto3" json:"scope,omitempty"`
+	Scope *v11.InstrumentationScope `protobuf:"bytes,1,opt,name=scope,proto3" json:"scope,omitempty"`
 	// A list of log records.
 	LogRecords []*LogRecord `protobuf:"bytes,2,rep,name=log_records,json=logRecords,proto3" json:"log_records,omitempty"`
 	// This schema_url applies to all logs in the "logs" field.
@@ -379,7 +379,7 @@ func (*ScopeLogs) Descriptor() ([]byte, []int) {
 	return file_opentelemetry_proto_logs_v1_logs_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *ScopeLogs) GetScope() *otlpcommon.InstrumentationScope {
+func (x *ScopeLogs) GetScope() *v11.InstrumentationScope {
 	if x != nil {
 		return x.Scope
 	}
@@ -436,12 +436,12 @@ type LogRecord struct {
 	// A value containing the body of the log record. Can be for example a human-readable
 	// string message (including multi-line) describing the event in a free form or it can
 	// be a structured data composed of arrays and maps of other values. [Optional].
-	Body *otlpcommon.AnyValue `protobuf:"bytes,5,opt,name=body,proto3" json:"body,omitempty"`
+	Body *v11.AnyValue `protobuf:"bytes,5,opt,name=body,proto3" json:"body,omitempty"`
 	// Additional attributes that describe the specific event occurrence. [Optional].
 	// Attribute keys MUST be unique (it is not allowed to have more than one
 	// attribute with the same key).
-	Attributes             []*otlpcommon.KeyValue `protobuf:"bytes,6,rep,name=attributes,proto3" json:"attributes,omitempty"`
-	DroppedAttributesCount uint32                 `protobuf:"varint,7,opt,name=dropped_attributes_count,json=droppedAttributesCount,proto3" json:"dropped_attributes_count,omitempty"`
+	Attributes             []*v11.KeyValue `protobuf:"bytes,6,rep,name=attributes,proto3" json:"attributes,omitempty"`
+	DroppedAttributesCount uint32          `protobuf:"varint,7,opt,name=dropped_attributes_count,json=droppedAttributesCount,proto3" json:"dropped_attributes_count,omitempty"`
 	// Flags, a bit field. 8 least significant bits are the trace flags as
 	// defined in W3C Trace Context specification. 24 most significant bits are reserved
 	// and must be set to 0. Readers must not assume that 24 most significant bits
@@ -520,14 +520,14 @@ func (x *LogRecord) GetSeverityText() string {
 	return ""
 }
 
-func (x *LogRecord) GetBody() *otlpcommon.AnyValue {
+func (x *LogRecord) GetBody() *v11.AnyValue {
 	if x != nil {
 		return x.Body
 	}
 	return nil
 }
 
-func (x *LogRecord) GetAttributes() []*otlpcommon.KeyValue {
+func (x *LogRecord) GetAttributes() []*v11.KeyValue {
 	if x != nil {
 		return x.Attributes
 	}
@@ -712,16 +712,16 @@ func file_opentelemetry_proto_logs_v1_logs_proto_rawDescGZIP() []byte {
 var file_opentelemetry_proto_logs_v1_logs_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_opentelemetry_proto_logs_v1_logs_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_opentelemetry_proto_logs_v1_logs_proto_goTypes = []interface{}{
-	(SeverityNumber)(0),                     // 0: opentelemetry.proto.logs.v1.SeverityNumber
-	(LogRecordFlags)(0),                     // 1: opentelemetry.proto.logs.v1.LogRecordFlags
-	(*LogsData)(nil),                        // 2: opentelemetry.proto.logs.v1.LogsData
-	(*ResourceLogs)(nil),                    // 3: opentelemetry.proto.logs.v1.ResourceLogs
-	(*ScopeLogs)(nil),                       // 4: opentelemetry.proto.logs.v1.ScopeLogs
-	(*LogRecord)(nil),                       // 5: opentelemetry.proto.logs.v1.LogRecord
-	(*otlpresource.Resource)(nil),           // 6: opentelemetry.proto.resource.v1.Resource
-	(*otlpcommon.InstrumentationScope)(nil), // 7: opentelemetry.proto.common.v1.InstrumentationScope
-	(*otlpcommon.AnyValue)(nil),             // 8: opentelemetry.proto.common.v1.AnyValue
-	(*otlpcommon.KeyValue)(nil),             // 9: opentelemetry.proto.common.v1.KeyValue
+	(SeverityNumber)(0),              // 0: opentelemetry.proto.logs.v1.SeverityNumber
+	(LogRecordFlags)(0),              // 1: opentelemetry.proto.logs.v1.LogRecordFlags
+	(*LogsData)(nil),                 // 2: opentelemetry.proto.logs.v1.LogsData
+	(*ResourceLogs)(nil),             // 3: opentelemetry.proto.logs.v1.ResourceLogs
+	(*ScopeLogs)(nil),                // 4: opentelemetry.proto.logs.v1.ScopeLogs
+	(*LogRecord)(nil),                // 5: opentelemetry.proto.logs.v1.LogRecord
+	(*v1.Resource)(nil),              // 6: opentelemetry.proto.resource.v1.Resource
+	(*v11.InstrumentationScope)(nil), // 7: opentelemetry.proto.common.v1.InstrumentationScope
+	(*v11.AnyValue)(nil),             // 8: opentelemetry.proto.common.v1.AnyValue
+	(*v11.KeyValue)(nil),             // 9: opentelemetry.proto.common.v1.KeyValue
 }
 var file_opentelemetry_proto_logs_v1_logs_proto_depIdxs = []int32{
 	3, // 0: opentelemetry.proto.logs.v1.LogsData.resource_logs:type_name -> opentelemetry.proto.logs.v1.ResourceLogs

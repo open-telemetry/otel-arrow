@@ -23,7 +23,7 @@ package v1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	otlplogs "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/logs/v1"
+	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/logs/v1"
 	reflect "reflect"
 	sync "sync"
 )
@@ -45,7 +45,7 @@ type ExportLogsServiceRequest struct {
 	// element. Intermediary nodes (such as OpenTelemetry Collector) that receive
 	// data from multiple origins typically batch the data before forwarding further and
 	// in that case this array will contain multiple elements.
-	ResourceLogs []*otlplogs.ResourceLogs `protobuf:"bytes,1,rep,name=resource_logs,json=resourceLogs,proto3" json:"resource_logs,omitempty"`
+	ResourceLogs []*v1.ResourceLogs `protobuf:"bytes,1,rep,name=resource_logs,json=resourceLogs,proto3" json:"resource_logs,omitempty"`
 }
 
 func (x *ExportLogsServiceRequest) Reset() {
@@ -80,7 +80,7 @@ func (*ExportLogsServiceRequest) Descriptor() ([]byte, []int) {
 	return file_opentelemetry_proto_collector_logs_v1_logs_service_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *ExportLogsServiceRequest) GetResourceLogs() []*otlplogs.ResourceLogs {
+func (x *ExportLogsServiceRequest) GetResourceLogs() []*v1.ResourceLogs {
 	if x != nil {
 		return x.ResourceLogs
 	}
@@ -184,7 +184,7 @@ var file_opentelemetry_proto_collector_logs_v1_logs_service_proto_msgTypes = mak
 var file_opentelemetry_proto_collector_logs_v1_logs_service_proto_goTypes = []interface{}{
 	(*ExportLogsServiceRequest)(nil),  // 0: opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest
 	(*ExportLogsServiceResponse)(nil), // 1: opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse
-	(*otlplogs.ResourceLogs)(nil),     // 2: opentelemetry.proto.logs.v1.ResourceLogs
+	(*v1.ResourceLogs)(nil),           // 2: opentelemetry.proto.logs.v1.ResourceLogs
 }
 var file_opentelemetry_proto_collector_logs_v1_logs_service_proto_depIdxs = []int32{
 	2, // 0: opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest.resource_logs:type_name -> opentelemetry.proto.logs.v1.ResourceLogs
