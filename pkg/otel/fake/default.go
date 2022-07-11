@@ -1,0 +1,90 @@
+package fake
+
+import (
+	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
+)
+
+func DefaultAttributes() []*commonpb.KeyValue {
+	return []*commonpb.KeyValue{
+		{
+			Key:   "hostname",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "localhost"}},
+		},
+		{
+			Key:   "up",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}},
+		},
+		{
+			Key:   "status",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 200}},
+		},
+		{
+			Key:   "version",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: 1.0}},
+		},
+		{
+			Key: "tags_array",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_ArrayValue{ArrayValue: &commonpb.ArrayValue{
+				Values: []*commonpb.AnyValue{
+					{Value: &commonpb.AnyValue_StringValue{StringValue: "tag1"}},
+					{Value: &commonpb.AnyValue_StringValue{StringValue: "tag2"}},
+				},
+			}}},
+		},
+		{
+			Key: "tags_kv_list",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_KvlistValue{
+				KvlistValue: &commonpb.KeyValueList{
+					Values: []*commonpb.KeyValue{
+						{
+							Key:   "attribute_1",
+							Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "abc"}},
+						},
+						{
+							Key:   "attribute_2",
+							Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 192}},
+						},
+					},
+				},
+			}},
+		},
+		{
+			Key: "version_binary",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BytesValue{
+				BytesValue: []byte("binary"),
+			}},
+		},
+	}
+}
+
+func DefaultResourceAttributes() []*commonpb.KeyValue {
+	return []*commonpb.KeyValue{
+		{
+			Key:   "hostname",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "localhost"}},
+		},
+		{
+			Key:   "ip",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "192.168.0.1"}},
+		},
+		{
+			Key:   "up",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}},
+		},
+		{
+			Key:   "status",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 200}},
+		},
+		{
+			Key:   "version",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: 1.0}},
+		},
+	}
+}
+
+func DefaultInstrumentationScope() *commonpb.InstrumentationScope {
+	return &commonpb.InstrumentationScope{
+		Name:    "fake_generator",
+		Version: "1.0.0",
+	}
+}

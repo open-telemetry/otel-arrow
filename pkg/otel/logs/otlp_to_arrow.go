@@ -8,7 +8,7 @@ import (
 	"otel-arrow-adapter/pkg/rbb"
 )
 
-func OtlpLogsToArrowLogs(rbr rbb.RecordBatchBuilder, request collogspb.ExportLogsServiceRequest) ([]arrow.Record, error) {
+func OtlpLogsToArrowLogs(rbr *rbb.RecordBatchRepository, request *collogspb.ExportLogsServiceRequest) ([]arrow.Record, error) {
 	for _, resourceLogs := range request.ResourceLogs {
 		for _, scopeLogs := range resourceLogs.ScopeLogs {
 			for _, log := range scopeLogs.LogRecords {
@@ -51,5 +51,16 @@ func OtlpLogsToArrowLogs(rbr rbb.RecordBatchBuilder, request collogspb.ExportLog
 			}
 		}
 	}
-	return nil, nil
+
+	logsRecords, err := rbr.Build()
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]arrow.Record, 0, len(logsRecords))
+	for _, record := range logsRecords {
+		result = append(result, record)
+	}
+
+	return result, nil
 }
