@@ -6,6 +6,7 @@ require (
 	github.com/apache/arrow/go/v9 v9.0.0-00010101000000-000000000000
 	github.com/davecgh/go-spew v1.1.1
 	github.com/google/go-cmp v0.5.8
+	go.opentelemetry.io/proto/otlp v0.7.0
 	google.golang.org/protobuf v1.28.0
 )
 
@@ -13,6 +14,7 @@ require (
 	github.com/andybalholm/brotli v1.0.4 // indirect
 	github.com/apache/thrift v0.15.0 // indirect
 	github.com/goccy/go-json v0.9.6 // indirect
+	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/klauspost/asmfmt v1.3.1 // indirect
 	github.com/klauspost/compress v1.14.2 // indirect
