@@ -2,7 +2,7 @@ package common
 
 import (
 	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
-	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/logs/v1"
+	logspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/logs/v1"
 	resourcepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
 	"otel-arrow-adapter/pkg/otel/constants"
 	"otel-arrow-adapter/pkg/rbb"
@@ -48,7 +48,7 @@ func AddResource(record *rbb.Record, resource *resourcepb.Resource) {
 	}
 }
 
-func AddScopeLogs(record *rbb.Record, scopeLogs *v1.ScopeLogs) {
+func AddScopeLogs(record *rbb.Record, scopeLogs *logspb.ScopeLogs) {
 	record.StructField(constants.SCOPE_LOGS, field_value.Struct{
 		Fields: []field_value.Field{
 			field_value.MakeStringField(constants.NAME, scopeLogs.Scope.Name),
