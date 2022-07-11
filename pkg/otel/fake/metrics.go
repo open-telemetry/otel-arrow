@@ -15,8 +15,8 @@ type MetricsGenerator struct {
 	dataGenerator        *DataGenerator
 }
 
-func NewMetricsGenerator(resourceAttributes []*commonpb.KeyValue, instrumentationScope *commonpb.InstrumentationScope) *LogsGenerator {
-	return &LogsGenerator{
+func NewMetricsGenerator(resourceAttributes []*commonpb.KeyValue, instrumentationScope *commonpb.InstrumentationScope) *MetricsGenerator {
+	return &MetricsGenerator{
 		resourceAttributes:   resourceAttributes,
 		defaultSchemaUrl:     "",
 		instrumentationScope: instrumentationScope,
@@ -24,34 +24,32 @@ func NewMetricsGenerator(resourceAttributes []*commonpb.KeyValue, instrumentatio
 	}
 }
 
-func (lg *MetricsGenerator) Generate(resourceMetricsCount int, batchSize int, collectInterval time.Duration) *collogspb.ExportMetricsServiceRequest {
+func (lg *MetricsGenerator) Generate(batchSize int, collectInterval time.Duration) *collogspb.ExportMetricsServiceRequest {
 	var resourceMetrics []*metricspb.ResourceMetrics
 
-	for _rmc := 0; _rmc < resourceMetricsCount; _rmc++ {
-		var metrics []*metricspb.Metric
+	var metrics []*metricspb.Metric
 
-		for i := 0; i < batchSize; i++ {
-			lg.dataGenerator.AdvanceTime(collectInterval)
+	for i := 0; i < batchSize; i++ {
+		lg.dataGenerator.AdvanceTime(collectInterval)
 
-			metrics = append(metrics, SystemCpuTime(lg.dataGenerator, 1))
-			metrics = append(metrics, SystemMemoryUsage(lg.dataGenerator))
-			metrics = append(metrics, SystemCpuLoadAverage1m(lg.dataGenerator))
-		}
-		resourceMetrics = append(resourceMetrics, &metricspb.ResourceMetrics{
-			Resource: &resourcepb.Resource{
-				Attributes:             lg.resourceAttributes,
-				DroppedAttributesCount: 0,
-			},
-			SchemaUrl: lg.defaultSchemaUrl,
-			ScopeMetrics: []*metricspb.ScopeMetrics{
-				{
-					Scope:     lg.instrumentationScope,
-					Metrics:   metrics,
-					SchemaUrl: "",
-				},
-			},
-		})
+		metrics = append(metrics, SystemCpuTime(lg.dataGenerator, 1))
+		metrics = append(metrics, SystemMemoryUsage(lg.dataGenerator))
+		metrics = append(metrics, SystemCpuLoadAverage1m(lg.dataGenerator))
 	}
+	resourceMetrics = append(resourceMetrics, &metricspb.ResourceMetrics{
+		Resource: &resourcepb.Resource{
+			Attributes:             lg.resourceAttributes,
+			DroppedAttributesCount: 0,
+		},
+		SchemaUrl: lg.defaultSchemaUrl,
+		ScopeMetrics: []*metricspb.ScopeMetrics{
+			{
+				Scope:     lg.instrumentationScope,
+				Metrics:   metrics,
+				SchemaUrl: "",
+			},
+		},
+	})
 
 	return &collogspb.ExportMetricsServiceRequest{
 		ResourceMetrics: resourceMetrics,
