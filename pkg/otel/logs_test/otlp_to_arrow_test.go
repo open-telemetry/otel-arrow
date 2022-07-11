@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestOtlpLogsToArrowLogs(t *testing.T) {
+func TestOtlpLogsToArrowEvents(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewDefaultConfig()
@@ -16,7 +16,7 @@ func TestOtlpLogsToArrowLogs(t *testing.T) {
 	lg := fake.NewLogsGenerator(fake.DefaultResourceAttributes(), fake.DefaultInstrumentationScope())
 
 	request := lg.Generate(10, 100)
-	records, err := logs.OtlpLogsToArrowLogs(rbr, request)
+	records, err := logs.OtlpLogsToArrowEvents(rbr, request)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}

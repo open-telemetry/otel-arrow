@@ -8,7 +8,7 @@ import (
 	"otel-arrow-adapter/pkg/rbb"
 )
 
-func OtlpLogsToArrowLogs(rbr *rbb.RecordBatchRepository, request *collogspb.ExportLogsServiceRequest) ([]arrow.Record, error) {
+func OtlpLogsToArrowEvents(rbr *rbb.RecordBatchRepository, request *collogspb.ExportLogsServiceRequest) ([]arrow.Record, error) {
 	for _, resourceLogs := range request.ResourceLogs {
 		for _, scopeLogs := range resourceLogs.ScopeLogs {
 			for _, log := range scopeLogs.LogRecords {
