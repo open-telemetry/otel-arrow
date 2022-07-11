@@ -2,17 +2,17 @@ package common
 
 import (
 	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
+	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/logs/v1"
 	resourcepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
 	"otel-arrow-adapter/pkg/otel/constants"
 	"otel-arrow-adapter/pkg/rbb"
 	"otel-arrow-adapter/pkg/rbb/field_value"
 )
 
-func OtlpResourceToArrowResource(record *rbb.Record, resource *resourcepb.Resource) {
-	resourceFields := make([]field_value.Field, 0, 2)
-	attributeFields := make([]field_value.Field, 0, len(resource.Attributes))
+func NewAttributes(attributes []*commonpb.KeyValue) *field_value.Field {
+	attributeFields := make([]field_value.Field, 0, len(attributes))
 
-	for _, attribute := range resource.Attributes {
+	for _, attribute := range attributes {
 		value := OtlpAnyValueToValue(attribute.Value)
 		if value != nil {
 			attributeFields = append(attributeFields, field_value.Field{
@@ -22,10 +22,22 @@ func OtlpResourceToArrowResource(record *rbb.Record, resource *resourcepb.Resour
 		}
 	}
 	if len(attributeFields) > 0 {
-		resourceFields = append(resourceFields, field_value.MakeStructField(constants.ATTRIBUTES, field_value.Struct{
+		attrs := field_value.MakeStructField(constants.ATTRIBUTES, field_value.Struct{
 			Fields: attributeFields,
-		}))
+		})
+		return &attrs
 	}
+	return nil
+}
+
+func AddResource(record *rbb.Record, resource *resourcepb.Resource) {
+	resourceFields := make([]field_value.Field, 0, 2)
+
+	attributes := NewAttributes(resource.Attributes)
+	if attributes != nil {
+		resourceFields = append(resourceFields, *attributes)
+	}
+
 	if resource.DroppedAttributesCount > 0 {
 		resourceFields = append(resourceFields, field_value.MakeU32Field(constants.DROPPED_ATTRIBUTES_COUNT, resource.DroppedAttributesCount))
 	}
@@ -34,6 +46,15 @@ func OtlpResourceToArrowResource(record *rbb.Record, resource *resourcepb.Resour
 			Fields: resourceFields,
 		})
 	}
+}
+
+func AddScopeLogs(record *rbb.Record, scopeLogs *v1.ScopeLogs) {
+	record.StructField(constants.SCOPE_LOGS, field_value.Struct{
+		Fields: []field_value.Field{
+			field_value.MakeStringField(constants.NAME, scopeLogs.Scope.Name),
+			field_value.MakeStringField(constants.VERSION, scopeLogs.Scope.Version),
+		},
+	})
 }
 
 func OtlpAnyValueToValue(value *commonpb.AnyValue) field_value.Value {

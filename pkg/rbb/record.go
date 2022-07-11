@@ -55,6 +55,14 @@ func (r *Record) FieldCount() int {
 	return len(r.fields)
 }
 
+func (r *Record) AddField(f field_value.Field) {
+	r.fields = append(r.fields, f)
+}
+
+func (r *Record) GenericField(name string, value field_value.Value) {
+	r.fields = append(r.fields, field_value.MakeField(name, value))
+}
+
 func (r *Record) BoolField(name string, value bool) {
 	r.fields = append(r.fields, field_value.MakeBoolField(name, value))
 }

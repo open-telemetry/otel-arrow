@@ -25,6 +25,13 @@ type Field struct {
 	Value Value
 }
 
+func MakeField(name string, value Value) Field {
+	return Field{
+		Name:  name,
+		Value: value,
+	}
+}
+
 func MakeBoolField(name string, value bool) Field {
 	return Field{
 		Name: name,

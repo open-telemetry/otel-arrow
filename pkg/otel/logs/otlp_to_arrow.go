@@ -20,14 +20,19 @@ func OtlpLogsToArrowLogs(rbr rbb.RecordBatchBuilder, request collogspb.ExportLog
 				if log.ObservedTimeUnixNano > 0 {
 					record.U64Field(constants.OBSERVED_TIME_UNIX_NANO, log.ObservedTimeUnixNano)
 				}
-				common.OtlpResourceToArrowResource(record, resourceLogs.Resource)
-				// ToDo scope logs
+				common.AddResource(record, resourceLogs.Resource)
+				common.AddScopeLogs(record, scopeLogs)
 
 				record.I32Field(constants.SEVERITY_NUMBER, int32(log.SeverityNumber))
 				record.StringField(constants.SEVERITY_TEXT, log.SeverityText)
-
-				// ToDo body
-				// ToDo attributes
+				body := common.OtlpAnyValueToValue(log.Body)
+				if body != nil {
+					record.GenericField(constants.BODY, body)
+				}
+				attributes := common.NewAttributes(log.Attributes)
+				if attributes != nil {
+					record.AddField(*attributes)
+				}
 
 				if log.DroppedAttributesCount > 0 {
 					record.U32Field(constants.DROPPED_ATTRIBUTES_COUNT, uint32(log.DroppedAttributesCount))
