@@ -15,6 +15,7 @@ func OtlpMetricsToArrowEvents(rbr *rbb.RecordBatchRepository, request *collogspb
 				if metric.Data != nil {
 					switch metric.Data.(type) {
 					case *metricspb.Metric_Gauge:
+						// ToDo !
 						return nil, nil
 					case *metricspb.Metric_Sum:
 						return nil, nil
