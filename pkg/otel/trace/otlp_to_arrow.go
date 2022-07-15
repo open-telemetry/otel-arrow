@@ -3,11 +3,9 @@ package trace
 import (
 	"github.com/apache/arrow/go/v9/arrow"
 	coltracepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
-	tracepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/trace/v1"
 	"otel-arrow-adapter/pkg/otel/common"
 	"otel-arrow-adapter/pkg/otel/constants"
 	"otel-arrow-adapter/pkg/rbb"
-	"otel-arrow-adapter/pkg/rbb/field_value"
 )
 
 func OtlpTraceToArrowEvents(rbr *rbb.RecordBatchRepository, request *coltracepb.ExportTraceServiceRequest) ([]arrow.Record, error) {
@@ -23,7 +21,7 @@ func OtlpTraceToArrowEvents(rbr *rbb.RecordBatchRepository, request *coltracepb.
 					record.U64Field(constants.END_TIME_UNIX_NANO, span.EndTimeUnixNano)
 				}
 				common.AddResource(record, resourceSpans.Resource)
-				AddScopeSpans(record, scopeSpans)
+				common.AddScope(record, constants.SCOPE_SPANS, scopeSpans.Scope)
 
 				if span.TraceId != nil && len(span.TraceId) > 0 {
 					record.BinaryField(constants.TRACE_ID, span.TraceId)
@@ -76,13 +74,4 @@ func OtlpTraceToArrowEvents(rbr *rbb.RecordBatchRepository, request *coltracepb.
 	}
 
 	return result, nil
-}
-
-func AddScopeSpans(record *rbb.Record, scopeSpans *tracepb.ScopeSpans) {
-	record.StructField(constants.SCOPE_SPANS, field_value.Struct{
-		Fields: []field_value.Field{
-			field_value.MakeStringField(constants.NAME, scopeSpans.Scope.Name),
-			field_value.MakeStringField(constants.VERSION, scopeSpans.Scope.Version),
-		},
-	})
 }

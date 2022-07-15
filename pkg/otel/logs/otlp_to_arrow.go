@@ -3,11 +3,9 @@ package logs
 import (
 	"github.com/apache/arrow/go/v9/arrow"
 	collogspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/logs/v1"
-	logspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/logs/v1"
 	"otel-arrow-adapter/pkg/otel/common"
 	"otel-arrow-adapter/pkg/otel/constants"
 	"otel-arrow-adapter/pkg/rbb"
-	"otel-arrow-adapter/pkg/rbb/field_value"
 )
 
 func OtlpLogsToArrowEvents(rbr *rbb.RecordBatchRepository, request *collogspb.ExportLogsServiceRequest) ([]arrow.Record, error) {
@@ -23,7 +21,7 @@ func OtlpLogsToArrowEvents(rbr *rbb.RecordBatchRepository, request *collogspb.Ex
 					record.U64Field(constants.OBSERVED_TIME_UNIX_NANO, log.ObservedTimeUnixNano)
 				}
 				common.AddResource(record, resourceLogs.Resource)
-				AddScopeLogs(record, scopeLogs)
+				common.AddScope(record, constants.SCOPE_LOGS, scopeLogs.Scope)
 
 				record.I32Field(constants.SEVERITY_NUMBER, int32(log.SeverityNumber))
 				record.StringField(constants.SEVERITY_TEXT, log.SeverityText)
@@ -65,13 +63,4 @@ func OtlpLogsToArrowEvents(rbr *rbb.RecordBatchRepository, request *collogspb.Ex
 	}
 
 	return result, nil
-}
-
-func AddScopeLogs(record *rbb.Record, scopeLogs *logspb.ScopeLogs) {
-	record.StructField(constants.SCOPE_LOGS, field_value.Struct{
-		Fields: []field_value.Field{
-			field_value.MakeStringField(constants.NAME, scopeLogs.Scope.Name),
-			field_value.MakeStringField(constants.VERSION, scopeLogs.Scope.Version),
-		},
-	})
 }

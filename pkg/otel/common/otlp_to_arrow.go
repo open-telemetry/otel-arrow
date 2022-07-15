@@ -9,6 +9,10 @@ import (
 )
 
 func NewAttributes(attributes []*commonpb.KeyValue) *field_value.Field {
+	if attributes == nil || len(attributes) == 0 {
+		return nil
+	}
+
 	attributeFields := make([]field_value.Field, 0, len(attributes))
 
 	for _, attribute := range attributes {
@@ -45,6 +49,24 @@ func AddResource(record *rbb.Record, resource *resourcepb.Resource) {
 			Fields: resourceFields,
 		})
 	}
+}
+
+func AddScope(record *rbb.Record, scopeKey string, scope *commonpb.InstrumentationScope) {
+	var fields []field_value.Field
+
+	fields = append(fields, field_value.MakeStringField(constants.NAME, scope.Name))
+	fields = append(fields, field_value.MakeStringField(constants.VERSION, scope.Version))
+	attributes := NewAttributes(scope.Attributes)
+	if attributes != nil {
+		fields = append(fields, *attributes)
+	}
+	if scope.DroppedAttributesCount > 0 {
+		fields = append(fields, field_value.MakeU32Field(constants.DROPPED_ATTRIBUTES_COUNT, scope.DroppedAttributesCount))
+	}
+
+	record.StructField(scopeKey, field_value.Struct{
+		Fields: fields,
+	})
 }
 
 func OtlpAnyValueToValue(value *commonpb.AnyValue) field_value.Value {

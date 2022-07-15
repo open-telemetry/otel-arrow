@@ -15,8 +15,12 @@ func TestOtlpMetricsToArrowEvents(t *testing.T) {
 	rbr := rbb.NewRecordBatchRepository(cfg)
 	lg := fake.NewMetricsGenerator(fake.DefaultResourceAttributes(), fake.DefaultInstrumentationScope())
 
+	multivariateConf := metrics.MultivariateMetricsConfig{
+		Metrics: make(map[string]string),
+	}
+
 	request := lg.Generate(10, 100)
-	records, err := metrics.OtlpMetricsToArrowEvents(rbr, request)
+	records, err := metrics.OtlpMetricsToArrowEvents(rbr, request, &multivariateConf)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
