@@ -66,6 +66,10 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
   - [ ] gRPC service implementation
 
 ### Benchmarks 
+  - [X] Fake data generator
+    - [X] ExportMetricsServiceRequest (except for histograms and summary)
+    - [X] ExportLogsServiceRequest
+    - [X] ExportTraceServiceRequest (except for links and events)
   - [ ] OTLP batch creation + serialization + compression + decompression + deserialization
   - [ ] OTLP_ARROW batch creation + serialization + compression + decompression + deserialization
   - [ ] Framework to compare OTLP and OTLP_ARROW performances (i.e. size and time)
