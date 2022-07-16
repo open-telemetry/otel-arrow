@@ -1,12 +1,10 @@
 # otel-arrow-adapter
 
-> Status: WIP
-
 Adapter used to convert OTEL batches to/from OTEL Arrow batches in both directions.
 
 See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md) for more details on the OTEL Arrow protocol.
 
-## To be done
+## Status [WIP]
 
 ### Framework to convert row-oriented structured data to Arrow columnar data
 - [X] Record Repository
@@ -29,6 +27,7 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
     - [ ] Summary
     - [ ] Histogram and exponential histogram
     - [X] Univariate metrics to multivariate metrics
+    - [ ] Exemplar
   - **OTLP logs --> OTLP_ARROW events**
       - [X] Basic fields
       - [X] Complex attributes
@@ -48,6 +47,7 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
     - [ ] Summary
     - [ ] Histogram and exponential histogram
     - [ ] Univariate metrics to multivariate metrics
+    - [ ] Exemplar
   - **OTLP_ARROW events --> OTLP logs**
     - [ ] Basic fields
     - [ ] Complex attributes
@@ -68,4 +68,6 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
 ### Benchmarks 
   - [ ] OTLP batch creation + serialization + compression + decompression + deserialization
   - [ ] OTLP_ARROW batch creation + serialization + compression + decompression + deserialization
-  - [ ] Framework to compare OTLP and OTLP_ARROW performances (i.e. size and time)  
+  - [ ] Framework to compare OTLP and OTLP_ARROW performances (i.e. size and time)
+  - [ ] Performance and memory optimizations
+  - [ ] Check memory leaks (e.g. Arrow related memory leaks)
