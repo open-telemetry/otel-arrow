@@ -21,6 +21,9 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
   - [ ] Multi-field sorting (binary field)
 
 ### OTLP --> OTLP Arrow
+  - **General**
+    - [X] Complex attributes
+    - [X] Complex body
   - **OTLP metrics --> OTLP_ARROW events**
     - [X] Gauge
     - [X] Sum
@@ -29,18 +32,18 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
     - [X] Univariate metrics to multivariate metrics
     - [ ] Exemplar
   - **OTLP logs --> OTLP_ARROW events**
-      - [X] Basic fields
-      - [X] Complex attributes
-      - [X] Complex body
+    - [X] Logs
   - **OTLP trace --> OTLP_ARROW events**
-    - [X] Basic fields
-    - [X] Complex attributes
+    - [X] Trace
     - [ ] Links
     - [ ] Events
   - **Arrow IPC format**
     - [ ] Producer
 
 ### OTLP Arrow --> OTLP
+  - **General**
+    - [ ] Complex attributes
+    - [ ] Complex body
   - **OTLP_ARROW events --> OTLP metrics**
     - [ ] Gauge
     - [ ] Sum
@@ -49,12 +52,9 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
     - [ ] Univariate metrics to multivariate metrics
     - [ ] Exemplar
   - **OTLP_ARROW events --> OTLP logs**
-    - [ ] Basic fields
-    - [ ] Complex attributes
-    - [ ] Complex body
+    - [ ] Logs
   - **OTLP_ARROW events --> OTLP trace**
-    - [ ] Basic fields
-    - [ ] Complex attributes
+    - [ ] Trace
     - [ ] Links
     - [ ] Events
   - **Arrow IPC format**
