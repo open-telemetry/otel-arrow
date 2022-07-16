@@ -16,7 +16,7 @@ package column
 
 import (
 	"github.com/apache/arrow/go/v9/arrow"
-	"otel-arrow-adapter/pkg/rbb/field_value"
+	"otel-arrow-adapter/pkg/rbb/rfield"
 )
 
 // ListColumn is a column of list data.
@@ -26,7 +26,7 @@ type ListColumn struct {
 	// Type of the list items.
 	Type arrow.DataType
 	// Data of the column.
-	Data [][]field_value.Value
+	Data [][]rfield.Value
 }
 
 // Clear clears the list data in the column but keep the original memory buffer allocated.

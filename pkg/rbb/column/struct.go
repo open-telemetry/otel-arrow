@@ -18,7 +18,7 @@ import (
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/memory"
-	"otel-arrow-adapter/pkg/rbb/field_value"
+	"otel-arrow-adapter/pkg/rbb/rfield"
 	"otel-arrow-adapter/pkg/rbb/stats"
 )
 
@@ -39,7 +39,7 @@ func MakeStructColumn(name string, structType arrow.DataType, columns Columns) S
 }
 
 // Push pushes the value to the column.
-func (c *StructColumn) Push(fieldPath *field_value.FieldPath, field *field_value.Field) {
+func (c *StructColumn) Push(fieldPath *rfield.FieldPath, field *rfield.Field) {
 	c.columns.UpdateColumn(fieldPath, field)
 }
 

@@ -22,7 +22,7 @@ import (
 	"otel-arrow-adapter/pkg/rbb/column"
 	config2 "otel-arrow-adapter/pkg/rbb/config"
 	"otel-arrow-adapter/pkg/rbb/dictionary"
-	"otel-arrow-adapter/pkg/rbb/field_value"
+	"otel-arrow-adapter/pkg/rbb/rfield"
 	"otel-arrow-adapter/pkg/rbb/stats"
 	"sort"
 )
@@ -44,7 +44,7 @@ type RecordBatchBuilder struct {
 	columns column.Columns
 
 	// The path for each fields.
-	fieldPaths []*field_value.FieldPath
+	fieldPaths []*rfield.FieldPath
 
 	// Optional order by clause
 	orderBy *OrderBy
@@ -66,7 +66,7 @@ type RecordBatchBuilderMetadata struct {
 
 // Constructs a new `RecordBatchBuilder` from a Record.
 func NewRecordBatchBuilderWithRecord(record *Record, config *config2.Config) *RecordBatchBuilder {
-	fieldPath := make([]*field_value.FieldPath, 0, record.FieldCount())
+	fieldPath := make([]*rfield.FieldPath, 0, record.FieldCount())
 	builder := RecordBatchBuilder{
 		config:     config,
 		dictIdGen:  dictionary.DictIdGenerator{Id: 0},

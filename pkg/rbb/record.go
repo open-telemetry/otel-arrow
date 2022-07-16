@@ -15,21 +15,21 @@
 package rbb
 
 import (
-	"otel-arrow-adapter/pkg/rbb/field_value"
+	"otel-arrow-adapter/pkg/rbb/rfield"
 	"sort"
 	"strings"
 )
 
 // Record is a collection of fields (scalar our composite fields).
 type Record struct {
-	fields []*field_value.Field
+	fields []*rfield.Field
 }
 
 func NewRecord() *Record {
 	return &Record{}
 }
 
-func NewRecordFromFields(fields []*field_value.Field) *Record {
+func NewRecordFromFields(fields []*rfield.Field) *Record {
 	return &Record{fields: fields}
 }
 
@@ -59,75 +59,75 @@ func (r *Record) FieldCount() int {
 	return len(r.fields)
 }
 
-func (r *Record) AddField(f *field_value.Field) {
+func (r *Record) AddField(f *rfield.Field) {
 	r.fields = append(r.fields, f)
 }
 
-func (r *Record) GenericField(name string, value field_value.Value) {
-	r.fields = append(r.fields, field_value.NewField(name, value))
+func (r *Record) GenericField(name string, value rfield.Value) {
+	r.fields = append(r.fields, rfield.NewField(name, value))
 }
 
 func (r *Record) BoolField(name string, value bool) {
-	r.fields = append(r.fields, field_value.NewBoolField(name, value))
+	r.fields = append(r.fields, rfield.NewBoolField(name, value))
 }
 
 func (r *Record) I8Field(name string, value int8) {
-	r.fields = append(r.fields, field_value.NewI8Field(name, value))
+	r.fields = append(r.fields, rfield.NewI8Field(name, value))
 }
 
 func (r *Record) I16Field(name string, value int16) {
-	r.fields = append(r.fields, field_value.NewI16Field(name, value))
+	r.fields = append(r.fields, rfield.NewI16Field(name, value))
 }
 
 func (r *Record) I32Field(name string, value int32) {
-	r.fields = append(r.fields, field_value.NewI32Field(name, value))
+	r.fields = append(r.fields, rfield.NewI32Field(name, value))
 }
 
 func (r *Record) I64Field(name string, value int64) {
-	r.fields = append(r.fields, field_value.NewI64Field(name, value))
+	r.fields = append(r.fields, rfield.NewI64Field(name, value))
 }
 
 func (r *Record) U8Field(name string, value uint8) {
-	r.fields = append(r.fields, field_value.NewU8Field(name, value))
+	r.fields = append(r.fields, rfield.NewU8Field(name, value))
 }
 
 func (r *Record) U16Field(name string, value uint16) {
-	r.fields = append(r.fields, field_value.NewU16Field(name, value))
+	r.fields = append(r.fields, rfield.NewU16Field(name, value))
 }
 
 func (r *Record) U32Field(name string, value uint32) {
-	r.fields = append(r.fields, field_value.NewU32Field(name, value))
+	r.fields = append(r.fields, rfield.NewU32Field(name, value))
 }
 
 func (r *Record) U64Field(name string, value uint64) {
-	r.fields = append(r.fields, field_value.NewU64Field(name, value))
+	r.fields = append(r.fields, rfield.NewU64Field(name, value))
 }
 
 func (r *Record) F32Field(name string, value float32) {
-	r.fields = append(r.fields, field_value.NewF32Field(name, value))
+	r.fields = append(r.fields, rfield.NewF32Field(name, value))
 }
 
 func (r *Record) F64Field(name string, value float64) {
-	r.fields = append(r.fields, field_value.NewF64Field(name, value))
+	r.fields = append(r.fields, rfield.NewF64Field(name, value))
 }
 
 func (r *Record) StringField(name string, value string) {
-	r.fields = append(r.fields, field_value.NewStringField(name, value))
+	r.fields = append(r.fields, rfield.NewStringField(name, value))
 }
 
 func (r *Record) BinaryField(name string, value []byte) {
-	r.fields = append(r.fields, field_value.NewBinaryField(name, value))
+	r.fields = append(r.fields, rfield.NewBinaryField(name, value))
 }
 
-func (r *Record) StructField(name string, value field_value.Struct) {
-	r.fields = append(r.fields, field_value.NewStructField(name, value))
+func (r *Record) StructField(name string, value rfield.Struct) {
+	r.fields = append(r.fields, rfield.NewStructField(name, value))
 }
 
-func (r *Record) ListField(name string, value field_value.List) {
-	r.fields = append(r.fields, field_value.NewListField(name, value))
+func (r *Record) ListField(name string, value rfield.List) {
+	r.fields = append(r.fields, rfield.NewListField(name, value))
 }
 
-func (r *Record) ValueByPath(path []int) field_value.Value {
+func (r *Record) ValueByPath(path []int) rfield.Value {
 	if path == nil {
 		return nil
 	}

@@ -20,7 +20,7 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/memory"
 	"otel-arrow-adapter/pkg/rbb/config"
 	"otel-arrow-adapter/pkg/rbb/dictionary"
-	"otel-arrow-adapter/pkg/rbb/field_value"
+	"otel-arrow-adapter/pkg/rbb/rfield"
 	"otel-arrow-adapter/pkg/rbb/stats"
 )
 
@@ -55,73 +55,73 @@ type ColumnMetadata struct {
 }
 
 // Create a column with a field based on its field type and field name.
-func (c *Columns) CreateColumn(path []int, field *field_value.Field, config *config.Config, dictIdGen *dictionary.DictIdGenerator) *field_value.FieldPath {
+func (c *Columns) CreateColumn(path []int, field *rfield.Field, config *config.Config, dictIdGen *dictionary.DictIdGenerator) *rfield.FieldPath {
 	switch field.Value.(type) {
-	case *field_value.Bool:
-		c.BooleanColumns = append(c.BooleanColumns, MakeBoolColumn(field.Name, &field.Value.(*field_value.Bool).Value))
-		return field_value.NewFieldPath(len(c.BooleanColumns) - 1)
-	case *field_value.I8:
-		c.I8Columns = append(c.I8Columns, MakeI8Column(field.Name, &field.Value.(*field_value.I8).Value))
-		return field_value.NewFieldPath(len(c.I8Columns) - 1)
-	case *field_value.I16:
-		c.I16Columns = append(c.I16Columns, MakeI16Column(field.Name, &field.Value.(*field_value.I16).Value))
-		return field_value.NewFieldPath(len(c.I16Columns) - 1)
-	case *field_value.I32:
-		c.I32Columns = append(c.I32Columns, MakeI32Column(field.Name, &field.Value.(*field_value.I32).Value))
-		return field_value.NewFieldPath(len(c.I32Columns) - 1)
-	case *field_value.I64:
-		c.I64Columns = append(c.I64Columns, MakeI64Column(field.Name, &field.Value.(*field_value.I64).Value))
-		return field_value.NewFieldPath(len(c.I64Columns) - 1)
-	case *field_value.U8:
-		c.U8Columns = append(c.U8Columns, MakeU8Column(field.Name, &field.Value.(*field_value.U8).Value))
-		return field_value.NewFieldPath(len(c.U8Columns) - 1)
-	case *field_value.U16:
-		c.U16Columns = append(c.U16Columns, MakeU16Column(field.Name, &field.Value.(*field_value.U16).Value))
-		return field_value.NewFieldPath(len(c.U16Columns) - 1)
-	case *field_value.U32:
-		c.U32Columns = append(c.U32Columns, MakeU32Column(field.Name, &field.Value.(*field_value.U32).Value))
-		return field_value.NewFieldPath(len(c.U32Columns) - 1)
-	case *field_value.U64:
-		c.U64Columns = append(c.U64Columns, MakeU64Column(field.Name, &field.Value.(*field_value.U64).Value))
-		return field_value.NewFieldPath(len(c.U64Columns) - 1)
-	case *field_value.F32:
-		c.F32Columns = append(c.F32Columns, MakeF32Column(field.Name, &field.Value.(*field_value.F32).Value))
-		return field_value.NewFieldPath(len(c.F32Columns) - 1)
-	case *field_value.F64:
-		c.F64Columns = append(c.F64Columns, MakeF64Column(field.Name, &field.Value.(*field_value.F64).Value))
-		return field_value.NewFieldPath(len(c.F64Columns) - 1)
-	case *field_value.String:
+	case *rfield.Bool:
+		c.BooleanColumns = append(c.BooleanColumns, MakeBoolColumn(field.Name, &field.Value.(*rfield.Bool).Value))
+		return rfield.NewFieldPath(len(c.BooleanColumns) - 1)
+	case *rfield.I8:
+		c.I8Columns = append(c.I8Columns, MakeI8Column(field.Name, &field.Value.(*rfield.I8).Value))
+		return rfield.NewFieldPath(len(c.I8Columns) - 1)
+	case *rfield.I16:
+		c.I16Columns = append(c.I16Columns, MakeI16Column(field.Name, &field.Value.(*rfield.I16).Value))
+		return rfield.NewFieldPath(len(c.I16Columns) - 1)
+	case *rfield.I32:
+		c.I32Columns = append(c.I32Columns, MakeI32Column(field.Name, &field.Value.(*rfield.I32).Value))
+		return rfield.NewFieldPath(len(c.I32Columns) - 1)
+	case *rfield.I64:
+		c.I64Columns = append(c.I64Columns, MakeI64Column(field.Name, &field.Value.(*rfield.I64).Value))
+		return rfield.NewFieldPath(len(c.I64Columns) - 1)
+	case *rfield.U8:
+		c.U8Columns = append(c.U8Columns, MakeU8Column(field.Name, &field.Value.(*rfield.U8).Value))
+		return rfield.NewFieldPath(len(c.U8Columns) - 1)
+	case *rfield.U16:
+		c.U16Columns = append(c.U16Columns, MakeU16Column(field.Name, &field.Value.(*rfield.U16).Value))
+		return rfield.NewFieldPath(len(c.U16Columns) - 1)
+	case *rfield.U32:
+		c.U32Columns = append(c.U32Columns, MakeU32Column(field.Name, &field.Value.(*rfield.U32).Value))
+		return rfield.NewFieldPath(len(c.U32Columns) - 1)
+	case *rfield.U64:
+		c.U64Columns = append(c.U64Columns, MakeU64Column(field.Name, &field.Value.(*rfield.U64).Value))
+		return rfield.NewFieldPath(len(c.U64Columns) - 1)
+	case *rfield.F32:
+		c.F32Columns = append(c.F32Columns, MakeF32Column(field.Name, &field.Value.(*rfield.F32).Value))
+		return rfield.NewFieldPath(len(c.F32Columns) - 1)
+	case *rfield.F64:
+		c.F64Columns = append(c.F64Columns, MakeF64Column(field.Name, &field.Value.(*rfield.F64).Value))
+		return rfield.NewFieldPath(len(c.F64Columns) - 1)
+	case *rfield.String:
 		stringColumn := NewStringColumn(field.Name, &config.Dictionaries.StringColumns, path, dictIdGen.NextId())
-		stringColumn.Push(&field.Value.(*field_value.String).Value)
+		stringColumn.Push(&field.Value.(*rfield.String).Value)
 		c.StringColumns = append(c.StringColumns, *stringColumn)
-		return field_value.NewFieldPath(len(c.StringColumns) - 1)
-	case *field_value.Binary:
-		c.BinaryColumns = append(c.BinaryColumns, MakeBinaryColumn(field.Name, &field.Value.(*field_value.Binary).Value))
-		return field_value.NewFieldPath(len(c.BinaryColumns) - 1)
-	case *field_value.List:
-		dataType := field_value.ListDataType(field.Value.(*field_value.List).Values)
+		return rfield.NewFieldPath(len(c.StringColumns) - 1)
+	case *rfield.Binary:
+		c.BinaryColumns = append(c.BinaryColumns, MakeBinaryColumn(field.Name, &field.Value.(*rfield.Binary).Value))
+		return rfield.NewFieldPath(len(c.BinaryColumns) - 1)
+	case *rfield.List:
+		dataType := rfield.ListDataType(field.Value.(*rfield.List).Values)
 		c.ListColumns = append(c.ListColumns, ListColumn{
 			Name: field.Name,
 			Type: dataType,
-			Data: [][]field_value.Value{field.Value.(*field_value.List).Values},
+			Data: [][]rfield.Value{field.Value.(*rfield.List).Values},
 		})
-		return field_value.NewFieldPath(len(c.ListColumns) - 1)
-	case *field_value.Struct:
-		dataType := field_value.StructDataType(field.Value.(*field_value.Struct).Fields)
-		fieldPaths := make([]*field_value.FieldPath, 0, len(field.Value.(*field_value.Struct).Fields))
+		return rfield.NewFieldPath(len(c.ListColumns) - 1)
+	case *rfield.Struct:
+		dataType := rfield.StructDataType(field.Value.(*rfield.Struct).Fields)
+		fieldPaths := make([]*rfield.FieldPath, 0, len(field.Value.(*rfield.Struct).Fields))
 		columns := Columns{}
-		for i := range field.Value.(*field_value.Struct).Fields {
+		for i := range field.Value.(*rfield.Struct).Fields {
 			updatedPath := make([]int, 0, len(path)+1)
 			copy(updatedPath, path)
 			updatedPath = append(updatedPath, len(fieldPaths))
-			fieldPath := columns.CreateColumn(updatedPath, field.Value.(*field_value.Struct).Fields[i], config, dictIdGen)
+			fieldPath := columns.CreateColumn(updatedPath, field.Value.(*rfield.Struct).Fields[i], config, dictIdGen)
 			if fieldPath != nil {
 				fieldPaths = append(fieldPaths, fieldPath)
 			}
 		}
 		if !columns.IsEmpty() {
 			c.StructColumns = append(c.StructColumns, MakeStructColumn(field.Name, dataType, columns))
-			return field_value.NewFieldPathWithChildren(len(c.StructColumns)-1, fieldPaths)
+			return rfield.NewFieldPathWithChildren(len(c.StructColumns)-1, fieldPaths)
 		} else {
 			return nil
 		}
@@ -130,39 +130,39 @@ func (c *Columns) CreateColumn(path []int, field *field_value.Field, config *con
 	}
 }
 
-func (c *Columns) UpdateColumn(fieldPath *field_value.FieldPath, field *field_value.Field) {
+func (c *Columns) UpdateColumn(fieldPath *rfield.FieldPath, field *rfield.Field) {
 	switch field.Value.(type) {
-	case *field_value.I8:
-		c.I8Columns[fieldPath.Current].Push(&field.Value.(*field_value.I8).Value)
-	case *field_value.I16:
-		c.I16Columns[fieldPath.Current].Push(&field.Value.(*field_value.I16).Value)
-	case *field_value.I32:
-		c.I32Columns[fieldPath.Current].Push(&field.Value.(*field_value.I32).Value)
-	case *field_value.I64:
-		c.I64Columns[fieldPath.Current].Push(&field.Value.(*field_value.I64).Value)
-	case *field_value.U8:
-		c.U8Columns[fieldPath.Current].Push(&field.Value.(*field_value.U8).Value)
-	case *field_value.U16:
-		c.U16Columns[fieldPath.Current].Push(&field.Value.(*field_value.U16).Value)
-	case *field_value.U32:
-		c.U32Columns[fieldPath.Current].Push(&field.Value.(*field_value.U32).Value)
-	case *field_value.U64:
-		c.U64Columns[fieldPath.Current].Push(&field.Value.(*field_value.U64).Value)
-	case *field_value.F32:
-		c.F32Columns[fieldPath.Current].Push(&field.Value.(*field_value.F32).Value)
-	case *field_value.F64:
-		c.F64Columns[fieldPath.Current].Push(&field.Value.(*field_value.F64).Value)
-	case *field_value.String:
-		c.StringColumns[fieldPath.Current].Push(&field.Value.(*field_value.String).Value)
-	case *field_value.Binary:
-		c.BinaryColumns[fieldPath.Current].Push(&field.Value.(*field_value.Binary).Value)
-	case *field_value.Bool:
-		c.BooleanColumns[fieldPath.Current].Push(&field.Value.(*field_value.Bool).Value)
-	case *field_value.List:
-		c.ListColumns[fieldPath.Current].Data = append(c.ListColumns[fieldPath.Current].Data, field.Value.(*field_value.List).Values)
-	case *field_value.Struct:
-		for fieldPos := range field.Value.(*field_value.Struct).Fields {
-			c.StructColumns[fieldPath.Current].Push(fieldPath.Children[fieldPos], field.Value.(*field_value.Struct).Fields[fieldPos])
+	case *rfield.I8:
+		c.I8Columns[fieldPath.Current].Push(&field.Value.(*rfield.I8).Value)
+	case *rfield.I16:
+		c.I16Columns[fieldPath.Current].Push(&field.Value.(*rfield.I16).Value)
+	case *rfield.I32:
+		c.I32Columns[fieldPath.Current].Push(&field.Value.(*rfield.I32).Value)
+	case *rfield.I64:
+		c.I64Columns[fieldPath.Current].Push(&field.Value.(*rfield.I64).Value)
+	case *rfield.U8:
+		c.U8Columns[fieldPath.Current].Push(&field.Value.(*rfield.U8).Value)
+	case *rfield.U16:
+		c.U16Columns[fieldPath.Current].Push(&field.Value.(*rfield.U16).Value)
+	case *rfield.U32:
+		c.U32Columns[fieldPath.Current].Push(&field.Value.(*rfield.U32).Value)
+	case *rfield.U64:
+		c.U64Columns[fieldPath.Current].Push(&field.Value.(*rfield.U64).Value)
+	case *rfield.F32:
+		c.F32Columns[fieldPath.Current].Push(&field.Value.(*rfield.F32).Value)
+	case *rfield.F64:
+		c.F64Columns[fieldPath.Current].Push(&field.Value.(*rfield.F64).Value)
+	case *rfield.String:
+		c.StringColumns[fieldPath.Current].Push(&field.Value.(*rfield.String).Value)
+	case *rfield.Binary:
+		c.BinaryColumns[fieldPath.Current].Push(&field.Value.(*rfield.Binary).Value)
+	case *rfield.Bool:
+		c.BooleanColumns[fieldPath.Current].Push(&field.Value.(*rfield.Bool).Value)
+	case *rfield.List:
+		c.ListColumns[fieldPath.Current].Data = append(c.ListColumns[fieldPath.Current].Data, field.Value.(*rfield.List).Values)
+	case *rfield.Struct:
+		for fieldPos := range field.Value.(*rfield.Struct).Fields {
+			c.StructColumns[fieldPath.Current].Push(fieldPath.Children[fieldPos], field.Value.(*rfield.Struct).Fields[fieldPos])
 		}
 	default:
 		panic("unsupported field type")

@@ -16,7 +16,7 @@ package value_test
 
 import (
 	"github.com/apache/arrow/go/v9/arrow"
-	"otel-arrow-adapter/pkg/rbb/field_value"
+	"otel-arrow-adapter/pkg/rbb/rfield"
 	"testing"
 )
 
@@ -24,72 +24,72 @@ func TestCoerceFromI8(t *testing.T) {
 	t.Parallel()
 
 	// Test coerce on a scalar value
-	dataType1 := (&field_value.I8{Value: 1}).DataType()
-	dataType2 := (&field_value.I8{Value: 1}).DataType()
-	dataType := field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 := (&rfield.I8{Value: 1}).DataType()
+	dataType2 := (&rfield.I8{Value: 1}).DataType()
+	dataType := rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT8 {
 		t.Errorf("Expected INT8, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I8{Value: 1}).DataType()
-	dataType2 = (&field_value.U8{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I8{Value: 1}).DataType()
+	dataType2 = (&rfield.U8{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I8{Value: 1}).DataType()
-	dataType2 = (&field_value.I16{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I8{Value: 1}).DataType()
+	dataType2 = (&rfield.I16{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT16 {
 		t.Errorf("Expected INT16, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I8{Value: 1}).DataType()
-	dataType2 = (&field_value.U16{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I8{Value: 1}).DataType()
+	dataType2 = (&rfield.U16{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I8{Value: 1}).DataType()
-	dataType2 = (&field_value.I32{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I8{Value: 1}).DataType()
+	dataType2 = (&rfield.I32{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT32 {
 		t.Errorf("Expected INT32, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I8{Value: 1}).DataType()
-	dataType2 = (&field_value.U32{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I8{Value: 1}).DataType()
+	dataType2 = (&rfield.U32{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I8{Value: 1}).DataType()
-	dataType2 = (&field_value.I64{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I8{Value: 1}).DataType()
+	dataType2 = (&rfield.I64{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT64 {
 		t.Errorf("Expected INT64, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I8{Value: 1}).DataType()
-	dataType2 = (&field_value.U64{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I8{Value: 1}).DataType()
+	dataType2 = (&rfield.U64{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I8{Value: 1}).DataType()
-	dataType2 = (&field_value.Bool{Value: true}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I8{Value: 1}).DataType()
+	dataType2 = (&rfield.Bool{Value: true}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT8 {
 		t.Errorf("Expected INT8, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I8{Value: 1}).DataType()
-	dataType2 = (&field_value.String{Value: "bla"}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I8{Value: 1}).DataType()
+	dataType2 = (&rfield.String{Value: "bla"}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected String, got %v", dataType.ID())
 	}
@@ -99,72 +99,72 @@ func TestCoerceFromI16(t *testing.T) {
 	t.Parallel()
 
 	// Test coerce on a scalar value
-	dataType1 := (&field_value.I16{Value: 1}).DataType()
-	dataType2 := (&field_value.I16{Value: 1}).DataType()
-	dataType := field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 := (&rfield.I16{Value: 1}).DataType()
+	dataType2 := (&rfield.I16{Value: 1}).DataType()
+	dataType := rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT16 {
 		t.Errorf("Expected INT16, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I16{Value: 1}).DataType()
-	dataType2 = (&field_value.U8{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I16{Value: 1}).DataType()
+	dataType2 = (&rfield.U8{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I16{Value: 1}).DataType()
-	dataType2 = (&field_value.I8{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I16{Value: 1}).DataType()
+	dataType2 = (&rfield.I8{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT16 {
 		t.Errorf("Expected INT16, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I16{Value: 1}).DataType()
-	dataType2 = (&field_value.U16{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I16{Value: 1}).DataType()
+	dataType2 = (&rfield.U16{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I16{Value: 1}).DataType()
-	dataType2 = (&field_value.I32{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I16{Value: 1}).DataType()
+	dataType2 = (&rfield.I32{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT32 {
 		t.Errorf("Expected INT32, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I16{Value: 1}).DataType()
-	dataType2 = (&field_value.U32{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I16{Value: 1}).DataType()
+	dataType2 = (&rfield.U32{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I16{Value: 1}).DataType()
-	dataType2 = (&field_value.I64{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I16{Value: 1}).DataType()
+	dataType2 = (&rfield.I64{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT64 {
 		t.Errorf("Expected INT64, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I16{Value: 1}).DataType()
-	dataType2 = (&field_value.U64{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I16{Value: 1}).DataType()
+	dataType2 = (&rfield.U64{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I16{Value: 1}).DataType()
-	dataType2 = (&field_value.Bool{Value: true}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I16{Value: 1}).DataType()
+	dataType2 = (&rfield.Bool{Value: true}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT16 {
 		t.Errorf("Expected INT16, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I16{Value: 1}).DataType()
-	dataType2 = (&field_value.String{Value: "bla"}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I16{Value: 1}).DataType()
+	dataType2 = (&rfield.String{Value: "bla"}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected String, got %v", dataType.ID())
 	}
@@ -174,72 +174,72 @@ func TestCoerceFromI32(t *testing.T) {
 	t.Parallel()
 
 	// Test coerce on a scalar value
-	dataType1 := (&field_value.I32{Value: 1}).DataType()
-	dataType2 := (&field_value.I32{Value: 1}).DataType()
-	dataType := field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 := (&rfield.I32{Value: 1}).DataType()
+	dataType2 := (&rfield.I32{Value: 1}).DataType()
+	dataType := rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT32 {
 		t.Errorf("Expected INT32, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I32{Value: 1}).DataType()
-	dataType2 = (&field_value.U8{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I32{Value: 1}).DataType()
+	dataType2 = (&rfield.U8{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I32{Value: 1}).DataType()
-	dataType2 = (&field_value.I8{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I32{Value: 1}).DataType()
+	dataType2 = (&rfield.I8{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT32 {
 		t.Errorf("Expected INT32, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I32{Value: 1}).DataType()
-	dataType2 = (&field_value.U16{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I32{Value: 1}).DataType()
+	dataType2 = (&rfield.U16{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I32{Value: 1}).DataType()
-	dataType2 = (&field_value.I16{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I32{Value: 1}).DataType()
+	dataType2 = (&rfield.I16{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT32 {
 		t.Errorf("Expected INT32, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I32{Value: 1}).DataType()
-	dataType2 = (&field_value.U32{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I32{Value: 1}).DataType()
+	dataType2 = (&rfield.U32{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I32{Value: 1}).DataType()
-	dataType2 = (&field_value.I64{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I32{Value: 1}).DataType()
+	dataType2 = (&rfield.I64{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT64 {
 		t.Errorf("Expected INT64, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I32{Value: 1}).DataType()
-	dataType2 = (&field_value.U64{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I32{Value: 1}).DataType()
+	dataType2 = (&rfield.U64{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I32{Value: 1}).DataType()
-	dataType2 = (&field_value.Bool{Value: true}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I32{Value: 1}).DataType()
+	dataType2 = (&rfield.Bool{Value: true}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT32 {
 		t.Errorf("Expected INT32, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I32{Value: 1}).DataType()
-	dataType2 = (&field_value.String{Value: "bla"}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I32{Value: 1}).DataType()
+	dataType2 = (&rfield.String{Value: "bla"}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected String, got %v", dataType.ID())
 	}
@@ -249,72 +249,72 @@ func TestCoerceFromI64(t *testing.T) {
 	t.Parallel()
 
 	// Test coerce on a scalar value
-	dataType1 := (&field_value.I64{Value: 1}).DataType()
-	dataType2 := (&field_value.I64{Value: 1}).DataType()
-	dataType := field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 := (&rfield.I64{Value: 1}).DataType()
+	dataType2 := (&rfield.I64{Value: 1}).DataType()
+	dataType := rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT64 {
 		t.Errorf("Expected INT64, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I64{Value: 1}).DataType()
-	dataType2 = (&field_value.U8{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I64{Value: 1}).DataType()
+	dataType2 = (&rfield.U8{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I64{Value: 1}).DataType()
-	dataType2 = (&field_value.I8{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I64{Value: 1}).DataType()
+	dataType2 = (&rfield.I8{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT64 {
 		t.Errorf("Expected INT64, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I64{Value: 1}).DataType()
-	dataType2 = (&field_value.U16{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I64{Value: 1}).DataType()
+	dataType2 = (&rfield.U16{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I64{Value: 1}).DataType()
-	dataType2 = (&field_value.I16{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I64{Value: 1}).DataType()
+	dataType2 = (&rfield.I16{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT64 {
 		t.Errorf("Expected INT64, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I64{Value: 1}).DataType()
-	dataType2 = (&field_value.U32{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I64{Value: 1}).DataType()
+	dataType2 = (&rfield.U32{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I64{Value: 1}).DataType()
-	dataType2 = (&field_value.I32{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I64{Value: 1}).DataType()
+	dataType2 = (&rfield.I32{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT64 {
 		t.Errorf("Expected INT64, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I64{Value: 1}).DataType()
-	dataType2 = (&field_value.U64{Value: 1}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I64{Value: 1}).DataType()
+	dataType2 = (&rfield.U64{Value: 1}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I64{Value: 1}).DataType()
-	dataType2 = (&field_value.Bool{Value: true}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I64{Value: 1}).DataType()
+	dataType2 = (&rfield.Bool{Value: true}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.INT64 {
 		t.Errorf("Expected INT64, got %v", dataType.ID())
 	}
 
-	dataType1 = (&field_value.I64{Value: 1}).DataType()
-	dataType2 = (&field_value.String{Value: "bla"}).DataType()
-	dataType = field_value.CoerceDataTypes(dataType1, dataType2)
+	dataType1 = (&rfield.I64{Value: 1}).DataType()
+	dataType2 = (&rfield.String{Value: "bla"}).DataType()
+	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
