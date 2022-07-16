@@ -34,7 +34,15 @@ func NewAttributes(attributes []*commonpb.KeyValue) *field_value.Field {
 }
 
 func AddResource(record *rbb.Record, resource *resourcepb.Resource) {
-	resourceFields := make([]field_value.Field, 0, 2)
+	resourceField := ResourceField(resource)
+	if resourceField != nil {
+		// ToDo check optimization for when fields are always pointers or interfaces instead of structs as today.
+		record.AddField(*resourceField)
+	}
+}
+
+func ResourceField(resource *resourcepb.Resource) *field_value.Field {
+	var resourceFields []field_value.Field
 
 	attributes := NewAttributes(resource.Attributes)
 	if attributes != nil {
@@ -45,13 +53,24 @@ func AddResource(record *rbb.Record, resource *resourcepb.Resource) {
 		resourceFields = append(resourceFields, field_value.MakeU32Field(constants.DROPPED_ATTRIBUTES_COUNT, resource.DroppedAttributesCount))
 	}
 	if len(resourceFields) > 0 {
-		record.StructField(constants.RESOURCE, field_value.Struct{
+		field := field_value.MakeStructField(constants.RESOURCE, field_value.Struct{
 			Fields: resourceFields,
 		})
+		return &field
+	} else {
+		return nil
 	}
 }
 
 func AddScope(record *rbb.Record, scopeKey string, scope *commonpb.InstrumentationScope) {
+	scopeField := ScopeField(scopeKey, scope)
+	if scopeField != nil {
+		// ToDo check optimization for when fields are always pointers or interfaces instead of structs as today.
+		record.AddField(*scopeField)
+	}
+}
+
+func ScopeField(scopeKey string, scope *commonpb.InstrumentationScope) *field_value.Field {
 	var fields []field_value.Field
 
 	fields = append(fields, field_value.MakeStringField(constants.NAME, scope.Name))
@@ -64,9 +83,10 @@ func AddScope(record *rbb.Record, scopeKey string, scope *commonpb.Instrumentati
 		fields = append(fields, field_value.MakeU32Field(constants.DROPPED_ATTRIBUTES_COUNT, scope.DroppedAttributesCount))
 	}
 
-	record.StructField(scopeKey, field_value.Struct{
+	field := field_value.MakeStructField(scopeKey, field_value.Struct{
 		Fields: fields,
 	})
+	return &field
 }
 
 func OtlpAnyValueToValue(value *commonpb.AnyValue) field_value.Value {

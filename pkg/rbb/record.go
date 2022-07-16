@@ -29,6 +29,10 @@ func NewRecord() *Record {
 	return &Record{}
 }
 
+func NewRecordFromFields(fields []field_value.Field) *Record {
+	return &Record{fields: fields}
+}
+
 // Normalize normalizes the field names and values.
 func (r Record) Normalize() {
 	sort.Slice(r.fields, func(i, j int) bool {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/apache/arrow/go/v9/arrow"
 	collogspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/metrics/v1"
 	"otel-arrow-adapter/pkg/otel/common"
 	"otel-arrow-adapter/pkg/otel/constants"
@@ -15,17 +16,28 @@ type MultivariateMetricsConfig struct {
 	Metrics map[string]string
 }
 
-func OtlpMetricsToArrowEvents(rbr *rbb.RecordBatchRepository, request *collogspb.ExportMetricsServiceRequest, multivariateConf *MultivariateMetricsConfig) ([]arrow.Record, error) {
+type MultivariateRecord struct {
+	fields  []field_value.Field
+	metrics []field_value.Field
+}
+
+func OtlpMetricsToArrowEvents(rbr *rbb.RecordBatchRepository, request *collogspb.ExportMetricsServiceRequest, multivariateConf *MultivariateMetricsConfig) (map[string][]arrow.Record, error) {
+	result := make(map[string][]arrow.Record)
 	for _, resourceMetrics := range request.ResourceMetrics {
 		for _, scopeMetrics := range resourceMetrics.ScopeMetrics {
 			for _, metric := range scopeMetrics.Metrics {
 				if metric.Data != nil {
 					switch metric.Data.(type) {
 					case *metricspb.Metric_Gauge:
-						metricGauge(rbr, resourceMetrics, scopeMetrics, metric, multivariateConf)
+						err := addMetric(rbr, resourceMetrics, scopeMetrics, metric.Name, metric.Data.(*metricspb.Metric_Gauge).Gauge.DataPoints, multivariateConf)
+						if err != nil {
+							return nil, err
+						}
 					case *metricspb.Metric_Sum:
-						// ToDo Metric Sum
-						return nil, nil
+						err := addMetric(rbr, resourceMetrics, scopeMetrics, metric.Name, metric.Data.(*metricspb.Metric_Sum).Sum.DataPoints, multivariateConf)
+						if err != nil {
+							return nil, err
+						}
 					case *metricspb.Metric_Histogram:
 						// ToDo Metric Histogram
 						return nil, nil
@@ -45,34 +57,103 @@ func OtlpMetricsToArrowEvents(rbr *rbb.RecordBatchRepository, request *collogspb
 			if err != nil {
 				return nil, err
 			}
-			result := make([]arrow.Record, len(records))
-			for _, record := range records {
-				result = append(result, record)
+			for schemaId, record := range records {
+				allRecords := result[schemaId]
+				if allRecords == nil {
+					result[schemaId] = []arrow.Record{record}
+				} else {
+					result[schemaId] = append(allRecords, record)
+				}
 			}
-			return result, nil
 		}
 	}
-	return nil, nil
+	return result, nil
 }
 
-func metricGauge(rbr *rbb.RecordBatchRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, config *MultivariateMetricsConfig) {
-	if mvKey, ok := config.Metrics[metric.Name]; ok {
-		multivariateMetricGauge(rbr, resMetrics, scopeMetrics, metric.Name, metric.Data.(*metricspb.Metric_Gauge), mvKey)
+func addMetric(rbr *rbb.RecordBatchRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint, config *MultivariateMetricsConfig) error {
+	if mvKey, ok := config.Metrics[metricName]; ok {
+		return multivariateMetric(rbr, resMetrics, scopeMetrics, dataPoints, mvKey)
 	} else {
-		univariateMetricGauge(rbr, resMetrics, scopeMetrics, metric.Name, metric.Data.(*metricspb.Metric_Gauge))
+		univariateMetric(rbr, resMetrics, scopeMetrics, metricName, dataPoints)
+		return nil
 	}
 }
 
-func multivariateMetricGauge(rbr *rbb.RecordBatchRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, metric *metricspb.Metric_Gauge, multivariateKey string) {
-	//record := rbb.NewRecord()
+// ToDo initial metric name is lost, it should be recorded as metadata or constant column
+func multivariateMetric(rbr *rbb.RecordBatchRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, dataPoints []*metricspb.NumberDataPoint, multivariateKey string) error {
+	records := make(map[string]*MultivariateRecord)
 
-	//for _, ndp := range metric.Gauge.DataPoints {
-	//	sig := DataPointSig(ndp, multivariateKey)
-	//}
+	for _, ndp := range dataPoints {
+		sig := DataPointSig(ndp, multivariateKey)
+		newEntry := false
+		stringSig := string(sig)
+		record := records[stringSig]
+
+		if record == nil {
+			newEntry = true
+			record = &MultivariateRecord{
+				fields:  []field_value.Field{},
+				metrics: []field_value.Field{},
+			}
+			records[stringSig] = record
+		}
+
+		var multivariateMetricName *string
+		if newEntry {
+			if resMetrics.Resource != nil {
+				record.fields = append(record.fields, *common.ResourceField(resMetrics.Resource))
+			}
+			if scopeMetrics.Scope != nil {
+				record.fields = append(record.fields, *common.ScopeField(constants.SCOPE_METRICS, scopeMetrics.Scope))
+			}
+			timeUnixNanoField := field_value.MakeU64Field(constants.TIME_UNIX_NANO, ndp.TimeUnixNano)
+			record.fields = append(record.fields, timeUnixNanoField)
+			if ndp.StartTimeUnixNano > 0 {
+				startTimeUnixNano := field_value.MakeU64Field(constants.START_TIME_UNIX_NANO, ndp.StartTimeUnixNano)
+				record.fields = append(record.fields, startTimeUnixNano)
+			}
+			ma, err := AddMultivariateValue(ndp.Attributes, multivariateKey, &record.fields)
+			if err != nil {
+				return err
+			}
+			multivariateMetricName = ma
+		} else {
+			ma, err := ExtractMultivariateValue(ndp.Attributes, multivariateKey)
+			if err != nil {
+				return err
+			}
+			multivariateMetricName = ma
+		}
+
+		if multivariateMetricName == nil {
+			emptyString := ""
+			multivariateMetricName = &emptyString
+		}
+
+		switch ndp.Value.(type) {
+		case *metricspb.NumberDataPoint_AsDouble:
+			record.metrics = append(record.metrics, field_value.MakeF64Field(*multivariateMetricName, ndp.Value.(*metricspb.NumberDataPoint_AsDouble).AsDouble))
+		case *metricspb.NumberDataPoint_AsInt:
+			record.metrics = append(record.metrics, field_value.MakeI64Field(*multivariateMetricName, ndp.Value.(*metricspb.NumberDataPoint_AsInt).AsInt))
+		default:
+			panic("Unsupported number data point value type")
+		}
+	}
+
+	for _, record := range records {
+		if len(record.fields) == 0 && len(record.metrics) == 0 {
+			continue
+		}
+		record.fields = append(record.fields, field_value.MakeStructField(constants.METRICS, field_value.Struct{
+			Fields: record.metrics,
+		}))
+		rbr.AddRecord(rbb.NewRecordFromFields(record.fields))
+	}
+	return nil
 }
 
-func univariateMetricGauge(rbr *rbb.RecordBatchRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, metric *metricspb.Metric_Gauge) {
-	for _, ndp := range metric.Gauge.DataPoints {
+func univariateMetric(rbr *rbb.RecordBatchRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint) {
+	for _, ndp := range dataPoints {
 		record := rbb.NewRecord()
 
 		if resMetrics.Resource != nil {
@@ -119,4 +200,42 @@ func univariateMetricGauge(rbr *rbb.RecordBatchRepository, resMetrics *metricspb
 
 		rbr.AddRecord(record)
 	}
+}
+
+func ExtractMultivariateValue(attributes []*commonpb.KeyValue, multivariateKey string) (*string, error) {
+	for _, attribute := range attributes {
+		if attribute.GetKey() == multivariateKey {
+			value := attribute.GetValue().Value
+			switch value.(type) {
+			case *commonpb.AnyValue_StringValue:
+				return &value.(*commonpb.AnyValue_StringValue).StringValue, nil
+			default:
+				return nil, fmt.Errorf("Unsupported multivariate value type: %v", value)
+			}
+		}
+	}
+	return nil, nil
+}
+
+func AddMultivariateValue(attributes []*commonpb.KeyValue, multivariateKey string, fields *[]field_value.Field) (*string, error) {
+	var multivariateValue *string
+	attributeFields := make([]field_value.Field, 0, len(attributes))
+	for _, attribute := range attributes {
+		if attribute.Value != nil {
+			if attribute.GetKey() == multivariateKey {
+				value := attribute.GetValue().Value
+				switch value.(type) {
+				case *commonpb.AnyValue_StringValue:
+					multivariateValue = &value.(*commonpb.AnyValue_StringValue).StringValue
+				default:
+					return nil, fmt.Errorf("Unsupported multivariate value type: %v", value)
+				}
+			}
+		}
+		attributeFields = append(attributeFields, field_value.MakeField(attribute.GetKey(), common.OtlpAnyValueToValue(attribute.GetValue())))
+	}
+	if len(attributeFields) > 0 {
+		*fields = append(*fields, field_value.MakeStructField(constants.ATTRIBUTES, field_value.Struct{Fields: attributeFields}))
+	}
+	return multivariateValue, nil
 }
