@@ -28,14 +28,14 @@ import (
 func TestAddRecord(t *testing.T) {
 	t.Parallel()
 
-	rbr := rbb.NewRecordBatchRepository(config2.NewDefaultConfig())
+	rbr := rbb.NewRecordRepository(config2.NewDefaultConfig())
 	rbr.AddRecord(GenSimpleRecord(0))
 	rbr.AddRecord(GenComplexRecord(1))
 	rbr.AddRecord(GenSimpleRecord(2))
 	rbr.AddRecord(GenComplexRecord(3))
 
-	if rbr.RecordBatchBuilderCount() != 2 {
-		t.Errorf("Expected 2 RecordBatchBuilders, got %d", rbr.RecordBatchBuilderCount())
+	if rbr.RecordBuilderCount() != 2 {
+		t.Errorf("Expected 2 RecordBuilders, got %d", rbr.RecordBuilderCount())
 	}
 
 	metadata := rbr.Metadata()
@@ -43,7 +43,7 @@ func TestAddRecord(t *testing.T) {
 		switch m.SchemaId {
 		case "a:Str,b:Str,c:Str,ts:I64":
 			if m.RecordListLen != 0 {
-				t.Errorf("Expected 0 RecordBatchCount, got %d", m.RecordListLen)
+				t.Errorf("Expected 0 RecordCount, got %d", m.RecordListLen)
 			}
 			if len(m.Columns) != 4 {
 				t.Errorf("Expected 4 columns, got %d", len(m.Columns))
@@ -55,7 +55,7 @@ func TestAddRecord(t *testing.T) {
 			}
 		case "a:{b:Str,c:Str},b:Str,c:Str,ts:I64":
 			if m.RecordListLen != 0 {
-				t.Errorf("Expected 0 RecordBatchCount, got %d", m.RecordListLen)
+				t.Errorf("Expected 0 RecordCount, got %d", m.RecordListLen)
 			}
 			if len(m.Columns) != 4 {
 				t.Errorf("Expected 4 columns, got %d", len(m.Columns))
@@ -92,7 +92,7 @@ func TestOptimize(t *testing.T) {
 			},
 		},
 	}
-	rbr := rbb.NewRecordBatchRepository(&config)
+	rbr := rbb.NewRecordRepository(&config)
 
 	for i := 0; i < 100; i++ {
 		rbr.AddRecord(GenRecord(int64(i), i%15, i%2, i))
@@ -104,7 +104,7 @@ func TestOptimize(t *testing.T) {
 		switch m.SchemaId {
 		case "a:Str,b:Str,c:Str,ts:I64":
 			if m.RecordListLen != 0 {
-				t.Errorf("Expected 0 RecordBatchCount, got %d", m.RecordListLen)
+				t.Errorf("Expected 0 RecordCount, got %d", m.RecordListLen)
 			}
 			if len(m.Columns) != 4 {
 				t.Errorf("Expected 4 columns, got %d", len(m.Columns))
@@ -177,7 +177,7 @@ func TestBuild(t *testing.T) {
 			},
 		},
 	}
-	rbr := rbb.NewRecordBatchRepository(&config)
+	rbr := rbb.NewRecordRepository(&config)
 
 	// Generates 100 timestamps randomly sorted.
 	tsValues := make([]int64, 0, 100)

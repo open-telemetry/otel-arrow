@@ -20,37 +20,37 @@ import (
 	config2 "otel-arrow-adapter/pkg/rbb/config"
 )
 
-type RecordBatchRepository struct {
+type RecordRepository struct {
 	config *config2.Config
 
-	// A map of SchemaId to RecordBatchBuilder.
-	builders map[string]*RecordBatchBuilder
+	// A map of SchemaId to RecordBuilder.
+	builders map[string]*RecordBuilder
 
 	// ToDo check if release is called properly
 	allocator *memory.GoAllocator
 }
 
-func NewRecordBatchRepository(config *config2.Config) *RecordBatchRepository {
-	return &RecordBatchRepository{
+func NewRecordRepository(config *config2.Config) *RecordRepository {
+	return &RecordRepository{
 		config:    config,
-		builders:  make(map[string]*RecordBatchBuilder),
+		builders:  make(map[string]*RecordBuilder),
 		allocator: memory.NewGoAllocator(),
 	}
 }
 
-func (rbr *RecordBatchRepository) AddRecord(record *Record) {
+func (rbr *RecordRepository) AddRecord(record *Record) {
 	record.Normalize()
 	schemaId := record.SchemaId()
 
 	if rbb, ok := rbr.builders[schemaId]; ok {
 		rbb.AddRecord(record)
 	} else {
-		rbr.builders[schemaId] = NewRecordBatchBuilderWithRecord(record, rbr.config)
+		rbr.builders[schemaId] = NewRecordBuilderWithRecord(record, rbr.config)
 	}
 }
 
-// RecordBatchBuilderCount returns the number of non-empty RecordBatchBuilder in the repository.
-func (rbr *RecordBatchRepository) RecordBatchBuilderCount() int {
+// RecordBuilderCount returns the number of non-empty RecordBuilder in the repository.
+func (rbr *RecordRepository) RecordBuilderCount() int {
 	count := 0
 	for _, rbb := range rbr.builders {
 		if !rbb.IsEmpty() {
@@ -60,7 +60,7 @@ func (rbr *RecordBatchRepository) RecordBatchBuilderCount() int {
 	return count
 }
 
-func (rbr *RecordBatchRepository) Build() (map[string]arrow.Record, error) {
+func (rbr *RecordRepository) Build() (map[string]arrow.Record, error) {
 	recordBatches := make(map[string]arrow.Record)
 
 	for schemaId, builder := range rbr.builders {
@@ -76,14 +76,14 @@ func (rbr *RecordBatchRepository) Build() (map[string]arrow.Record, error) {
 	return recordBatches, nil
 }
 
-func (rbr *RecordBatchRepository) Optimize() {
+func (rbr *RecordRepository) Optimize() {
 	for _, rbb := range rbr.builders {
 		rbb.Optimize()
 	}
 }
 
-func (rbr *RecordBatchRepository) Metadata() []*RecordBatchBuilderMetadata {
-	metadata := []*RecordBatchBuilderMetadata{}
+func (rbr *RecordRepository) Metadata() []*RecordBuilderMetadata {
+	var metadata []*RecordBuilderMetadata
 	for schemaId, rbb := range rbr.builders {
 		if !rbb.IsEmpty() {
 			metadata = append(metadata, rbb.Metadata(schemaId))

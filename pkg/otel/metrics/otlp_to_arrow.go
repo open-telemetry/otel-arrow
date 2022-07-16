@@ -35,7 +35,7 @@ type MultivariateRecord struct {
 	metrics []*rfield.Field
 }
 
-func OtlpMetricsToArrowEvents(rbr *rbb.RecordBatchRepository, request *collogspb.ExportMetricsServiceRequest, multivariateConf *MultivariateMetricsConfig) (map[string][]arrow.Record, error) {
+func OtlpMetricsToArrowEvents(rbr *rbb.RecordRepository, request *collogspb.ExportMetricsServiceRequest, multivariateConf *MultivariateMetricsConfig) (map[string][]arrow.Record, error) {
 	result := make(map[string][]arrow.Record)
 	for _, resourceMetrics := range request.ResourceMetrics {
 		for _, scopeMetrics := range resourceMetrics.ScopeMetrics {
@@ -84,7 +84,7 @@ func OtlpMetricsToArrowEvents(rbr *rbb.RecordBatchRepository, request *collogspb
 	return result, nil
 }
 
-func addMetric(rbr *rbb.RecordBatchRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint, config *MultivariateMetricsConfig) error {
+func addMetric(rbr *rbb.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint, config *MultivariateMetricsConfig) error {
 	if mvKey, ok := config.Metrics[metricName]; ok {
 		return multivariateMetric(rbr, resMetrics, scopeMetrics, dataPoints, mvKey)
 	} else {
@@ -94,7 +94,7 @@ func addMetric(rbr *rbb.RecordBatchRepository, resMetrics *metricspb.ResourceMet
 }
 
 // ToDo initial metric name is lost, it should be recorded as metadata or constant column
-func multivariateMetric(rbr *rbb.RecordBatchRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, dataPoints []*metricspb.NumberDataPoint, multivariateKey string) error {
+func multivariateMetric(rbr *rbb.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, dataPoints []*metricspb.NumberDataPoint, multivariateKey string) error {
 	records := make(map[string]*MultivariateRecord)
 
 	for _, ndp := range dataPoints {
@@ -166,7 +166,7 @@ func multivariateMetric(rbr *rbb.RecordBatchRepository, resMetrics *metricspb.Re
 	return nil
 }
 
-func univariateMetric(rbr *rbb.RecordBatchRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint) {
+func univariateMetric(rbr *rbb.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint) {
 	for _, ndp := range dataPoints {
 		record := rbb.NewRecord()
 

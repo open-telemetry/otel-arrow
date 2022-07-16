@@ -26,7 +26,7 @@ func TestOtlpLogsToArrowEvents(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewDefaultConfig()
-	rbr := rbb.NewRecordBatchRepository(cfg)
+	rbr := rbb.NewRecordRepository(cfg)
 	lg := fake.NewLogsGenerator(fake.DefaultResourceAttributes(), fake.DefaultInstrumentationScope())
 
 	request := lg.Generate(10, 100)

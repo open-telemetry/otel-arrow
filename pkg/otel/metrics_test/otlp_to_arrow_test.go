@@ -26,7 +26,7 @@ func TestOtlpMetricsToArrowEvents(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewDefaultConfig()
-	rbr := rbb.NewRecordBatchRepository(cfg)
+	rbr := rbb.NewRecordRepository(cfg)
 	lg := fake.NewMetricsGenerator(fake.DefaultResourceAttributes(), fake.DefaultInstrumentationScope())
 
 	multivariateConf := metrics.MultivariateMetricsConfig{

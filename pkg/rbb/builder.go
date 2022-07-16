@@ -31,16 +31,16 @@ type OrderBy struct {
 	FieldPaths [][]int
 }
 
-// A RecordBatch builder.
+// A Record builder.
 // Must be fed with homogeneous records.
-type RecordBatchBuilder struct {
+type RecordBuilder struct {
 	// The configuration of the builder.
 	config *config2.Config
 
 	// The dictionary id generator.
 	dictIdGen dictionary.DictIdGenerator
 
-	// The columns of the RecordBatch builder.
+	// The columns of the Record builder.
 	columns column.Columns
 
 	// The path for each fields.
@@ -56,7 +56,7 @@ type RecordBatchBuilder struct {
 	optimized bool
 }
 
-type RecordBatchBuilderMetadata struct {
+type RecordBuilderMetadata struct {
 	SchemaId        string
 	Columns         []*column.ColumnMetadata
 	RecordListLen   int
@@ -64,10 +64,10 @@ type RecordBatchBuilderMetadata struct {
 	DictionaryStats []*stats.DictionaryStats
 }
 
-// Constructs a new `RecordBatchBuilder` from a Record.
-func NewRecordBatchBuilderWithRecord(record *Record, config *config2.Config) *RecordBatchBuilder {
+// Constructs a new `RecordBuilder` from a Record.
+func NewRecordBuilderWithRecord(record *Record, config *config2.Config) *RecordBuilder {
 	fieldPath := make([]*rfield.FieldPath, 0, record.FieldCount())
-	builder := RecordBatchBuilder{
+	builder := RecordBuilder{
 		config:     config,
 		dictIdGen:  dictionary.DictIdGenerator{Id: 0},
 		columns:    column.Columns{},
@@ -86,7 +86,7 @@ func NewRecordBatchBuilderWithRecord(record *Record, config *config2.Config) *Re
 	return &builder
 }
 
-func (rbb *RecordBatchBuilder) AddRecord(record *Record) {
+func (rbb *RecordBuilder) AddRecord(record *Record) {
 	if rbb.recordList != nil {
 		rbb.recordList = append(rbb.recordList, record)
 	} else {
@@ -96,11 +96,11 @@ func (rbb *RecordBatchBuilder) AddRecord(record *Record) {
 	}
 }
 
-func (rbb *RecordBatchBuilder) IsEmpty() bool {
+func (rbb *RecordBuilder) IsEmpty() bool {
 	return rbb.columns.IsEmpty()
 }
 
-func (rbb *RecordBatchBuilder) Build(allocator *memory.GoAllocator) (arrow.Record, error) {
+func (rbb *RecordBuilder) Build(allocator *memory.GoAllocator) (arrow.Record, error) {
 	// Sorts the string columns according to the order by clause.
 	if rbb.orderBy != nil {
 		recordList := rbb.recordList
@@ -140,7 +140,7 @@ func (rbb *RecordBatchBuilder) Build(allocator *memory.GoAllocator) (arrow.Recor
 		}
 	}(cols)
 
-	// Creates the RecordBatch from the schema and columns.
+	// Creates the Record from the schema and columns.
 	for i, builder := range builders {
 		cols[i] = builder.NewArray()
 		irow := int64(cols[i].Len())
@@ -154,14 +154,14 @@ func (rbb *RecordBatchBuilder) Build(allocator *memory.GoAllocator) (arrow.Recor
 	return array.NewRecord(schema, cols, rows), nil
 }
 
-func (rbb *RecordBatchBuilder) Metadata(schemaId string) *RecordBatchBuilderMetadata {
+func (rbb *RecordBuilder) Metadata(schemaId string) *RecordBuilderMetadata {
 	recordListLen := 0
 
 	if rbb.recordList != nil {
 		recordListLen = len(rbb.recordList)
 	}
 
-	return &RecordBatchBuilderMetadata{
+	return &RecordBuilderMetadata{
 		SchemaId:        schemaId,
 		Columns:         rbb.columns.Metadata(),
 		RecordListLen:   recordListLen,
@@ -170,18 +170,18 @@ func (rbb *RecordBatchBuilder) Metadata(schemaId string) *RecordBatchBuilderMeta
 	}
 }
 
-func (rbb *RecordBatchBuilder) DictionaryStats() []*stats.DictionaryStats {
+func (rbb *RecordBuilder) DictionaryStats() []*stats.DictionaryStats {
 	return rbb.columns.DictionaryStats()
 }
 
-func (rbb *RecordBatchBuilder) OrderBy(fieldPaths [][]int) {
+func (rbb *RecordBuilder) OrderBy(fieldPaths [][]int) {
 	rbb.orderBy = &OrderBy{
 		FieldPaths: fieldPaths,
 	}
 	rbb.recordList = []*Record{}
 }
 
-func (rbb *RecordBatchBuilder) Optimize() bool {
+func (rbb *RecordBuilder) Optimize() bool {
 	if rbb.optimized {
 		return true
 	}

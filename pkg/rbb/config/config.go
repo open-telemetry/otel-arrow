@@ -16,7 +16,7 @@ package config
 
 import "math"
 
-// Config defines configuration for RecordBatchRepository.
+// Config defines configuration for RecordRepository.
 type Config struct {
 	// Configuration for the dictionaries
 	Dictionaries DictionariesConfig

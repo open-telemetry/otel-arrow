@@ -22,7 +22,7 @@ import (
 	"otel-arrow-adapter/pkg/rbb"
 )
 
-func OtlpTraceToArrowEvents(rbr *rbb.RecordBatchRepository, request *coltracepb.ExportTraceServiceRequest) ([]arrow.Record, error) {
+func OtlpTraceToArrowEvents(rbr *rbb.RecordRepository, request *coltracepb.ExportTraceServiceRequest) ([]arrow.Record, error) {
 	for _, resourceSpans := range request.ResourceSpans {
 		for _, scopeSpans := range resourceSpans.ScopeSpans {
 			for _, span := range scopeSpans.Spans {
