@@ -13,22 +13,22 @@ func NewAttributes(attributes []*commonpb.KeyValue) *field_value.Field {
 		return nil
 	}
 
-	attributeFields := make([]field_value.Field, 0, len(attributes))
+	attributeFields := make([]*field_value.Field, 0, len(attributes))
 
 	for _, attribute := range attributes {
 		value := OtlpAnyValueToValue(attribute.Value)
 		if value != nil {
-			attributeFields = append(attributeFields, field_value.Field{
+			attributeFields = append(attributeFields, &field_value.Field{
 				Name:  attribute.Key,
 				Value: value,
 			})
 		}
 	}
 	if len(attributeFields) > 0 {
-		attrs := field_value.MakeStructField(constants.ATTRIBUTES, field_value.Struct{
+		attrs := field_value.NewStructField(constants.ATTRIBUTES, field_value.Struct{
 			Fields: attributeFields,
 		})
-		return &attrs
+		return attrs
 	}
 	return nil
 }
@@ -36,27 +36,26 @@ func NewAttributes(attributes []*commonpb.KeyValue) *field_value.Field {
 func AddResource(record *rbb.Record, resource *resourcepb.Resource) {
 	resourceField := ResourceField(resource)
 	if resourceField != nil {
-		// ToDo check optimization for when fields are always pointers or interfaces instead of structs as today.
-		record.AddField(*resourceField)
+		record.AddField(resourceField)
 	}
 }
 
 func ResourceField(resource *resourcepb.Resource) *field_value.Field {
-	var resourceFields []field_value.Field
+	var resourceFields []*field_value.Field
 
 	attributes := NewAttributes(resource.Attributes)
 	if attributes != nil {
-		resourceFields = append(resourceFields, *attributes)
+		resourceFields = append(resourceFields, attributes)
 	}
 
 	if resource.DroppedAttributesCount > 0 {
-		resourceFields = append(resourceFields, field_value.MakeU32Field(constants.DROPPED_ATTRIBUTES_COUNT, resource.DroppedAttributesCount))
+		resourceFields = append(resourceFields, field_value.NewU32Field(constants.DROPPED_ATTRIBUTES_COUNT, resource.DroppedAttributesCount))
 	}
 	if len(resourceFields) > 0 {
-		field := field_value.MakeStructField(constants.RESOURCE, field_value.Struct{
+		field := field_value.NewStructField(constants.RESOURCE, field_value.Struct{
 			Fields: resourceFields,
 		})
-		return &field
+		return field
 	} else {
 		return nil
 	}
@@ -66,27 +65,27 @@ func AddScope(record *rbb.Record, scopeKey string, scope *commonpb.Instrumentati
 	scopeField := ScopeField(scopeKey, scope)
 	if scopeField != nil {
 		// ToDo check optimization for when fields are always pointers or interfaces instead of structs as today.
-		record.AddField(*scopeField)
+		record.AddField(scopeField)
 	}
 }
 
 func ScopeField(scopeKey string, scope *commonpb.InstrumentationScope) *field_value.Field {
-	var fields []field_value.Field
+	var fields []*field_value.Field
 
-	fields = append(fields, field_value.MakeStringField(constants.NAME, scope.Name))
-	fields = append(fields, field_value.MakeStringField(constants.VERSION, scope.Version))
+	fields = append(fields, field_value.NewStringField(constants.NAME, scope.Name))
+	fields = append(fields, field_value.NewStringField(constants.VERSION, scope.Version))
 	attributes := NewAttributes(scope.Attributes)
 	if attributes != nil {
-		fields = append(fields, *attributes)
+		fields = append(fields, attributes)
 	}
 	if scope.DroppedAttributesCount > 0 {
-		fields = append(fields, field_value.MakeU32Field(constants.DROPPED_ATTRIBUTES_COUNT, scope.DroppedAttributesCount))
+		fields = append(fields, field_value.NewU32Field(constants.DROPPED_ATTRIBUTES_COUNT, scope.DroppedAttributesCount))
 	}
 
-	field := field_value.MakeStructField(scopeKey, field_value.Struct{
+	field := field_value.NewStructField(scopeKey, field_value.Struct{
 		Fields: fields,
 	})
-	return &field
+	return field
 }
 
 func OtlpAnyValueToValue(value *commonpb.AnyValue) field_value.Value {
@@ -117,11 +116,11 @@ func OtlpAnyValueToValue(value *commonpb.AnyValue) field_value.Value {
 			if values == nil || len(values.Values) == 0 {
 				return nil
 			} else {
-				fields := make([]field_value.Field, 0, len(values.Values))
+				fields := make([]*field_value.Field, 0, len(values.Values))
 				for _, kv := range values.Values {
 					v := OtlpAnyValueToValue(kv.Value)
 					if v != nil {
-						fields = append(fields, field_value.Field{
+						fields = append(fields, &field_value.Field{
 							Name:  kv.Key,
 							Value: v,
 						})

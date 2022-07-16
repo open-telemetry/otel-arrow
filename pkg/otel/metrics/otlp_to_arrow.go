@@ -17,8 +17,8 @@ type MultivariateMetricsConfig struct {
 }
 
 type MultivariateRecord struct {
-	fields  []field_value.Field
-	metrics []field_value.Field
+	fields  []*field_value.Field
+	metrics []*field_value.Field
 }
 
 func OtlpMetricsToArrowEvents(rbr *rbb.RecordBatchRepository, request *collogspb.ExportMetricsServiceRequest, multivariateConf *MultivariateMetricsConfig) (map[string][]arrow.Record, error) {
@@ -92,8 +92,8 @@ func multivariateMetric(rbr *rbb.RecordBatchRepository, resMetrics *metricspb.Re
 		if record == nil {
 			newEntry = true
 			record = &MultivariateRecord{
-				fields:  []field_value.Field{},
-				metrics: []field_value.Field{},
+				fields:  []*field_value.Field{},
+				metrics: []*field_value.Field{},
 			}
 			records[stringSig] = record
 		}
@@ -101,15 +101,15 @@ func multivariateMetric(rbr *rbb.RecordBatchRepository, resMetrics *metricspb.Re
 		var multivariateMetricName *string
 		if newEntry {
 			if resMetrics.Resource != nil {
-				record.fields = append(record.fields, *common.ResourceField(resMetrics.Resource))
+				record.fields = append(record.fields, common.ResourceField(resMetrics.Resource))
 			}
 			if scopeMetrics.Scope != nil {
-				record.fields = append(record.fields, *common.ScopeField(constants.SCOPE_METRICS, scopeMetrics.Scope))
+				record.fields = append(record.fields, common.ScopeField(constants.SCOPE_METRICS, scopeMetrics.Scope))
 			}
-			timeUnixNanoField := field_value.MakeU64Field(constants.TIME_UNIX_NANO, ndp.TimeUnixNano)
+			timeUnixNanoField := field_value.NewU64Field(constants.TIME_UNIX_NANO, ndp.TimeUnixNano)
 			record.fields = append(record.fields, timeUnixNanoField)
 			if ndp.StartTimeUnixNano > 0 {
-				startTimeUnixNano := field_value.MakeU64Field(constants.START_TIME_UNIX_NANO, ndp.StartTimeUnixNano)
+				startTimeUnixNano := field_value.NewU64Field(constants.START_TIME_UNIX_NANO, ndp.StartTimeUnixNano)
 				record.fields = append(record.fields, startTimeUnixNano)
 			}
 			ma, err := AddMultivariateValue(ndp.Attributes, multivariateKey, &record.fields)
@@ -132,9 +132,9 @@ func multivariateMetric(rbr *rbb.RecordBatchRepository, resMetrics *metricspb.Re
 
 		switch ndp.Value.(type) {
 		case *metricspb.NumberDataPoint_AsDouble:
-			record.metrics = append(record.metrics, field_value.MakeF64Field(*multivariateMetricName, ndp.Value.(*metricspb.NumberDataPoint_AsDouble).AsDouble))
+			record.metrics = append(record.metrics, field_value.NewF64Field(*multivariateMetricName, ndp.Value.(*metricspb.NumberDataPoint_AsDouble).AsDouble))
 		case *metricspb.NumberDataPoint_AsInt:
-			record.metrics = append(record.metrics, field_value.MakeI64Field(*multivariateMetricName, ndp.Value.(*metricspb.NumberDataPoint_AsInt).AsInt))
+			record.metrics = append(record.metrics, field_value.NewI64Field(*multivariateMetricName, ndp.Value.(*metricspb.NumberDataPoint_AsInt).AsInt))
 		default:
 			panic("Unsupported number data point value type")
 		}
@@ -144,7 +144,7 @@ func multivariateMetric(rbr *rbb.RecordBatchRepository, resMetrics *metricspb.Re
 		if len(record.fields) == 0 && len(record.metrics) == 0 {
 			continue
 		}
-		record.fields = append(record.fields, field_value.MakeStructField(constants.METRICS, field_value.Struct{
+		record.fields = append(record.fields, field_value.NewStructField(constants.METRICS, field_value.Struct{
 			Fields: record.metrics,
 		}))
 		rbr.AddRecord(rbb.NewRecordFromFields(record.fields))
@@ -170,21 +170,21 @@ func univariateMetric(rbr *rbb.RecordBatchRepository, resMetrics *metricspb.Reso
 
 		attributes := common.NewAttributes(ndp.Attributes)
 		if attributes != nil {
-			record.AddField(*attributes)
+			record.AddField(attributes)
 		}
 
 		if ndp.Value != nil {
 			switch ndp.Value.(type) {
 			case *metricspb.NumberDataPoint_AsDouble:
 				record.StructField(constants.METRICS, field_value.Struct{
-					Fields: []field_value.Field{
-						field_value.MakeF64Field(metricName, ndp.Value.(*metricspb.NumberDataPoint_AsDouble).AsDouble),
+					Fields: []*field_value.Field{
+						field_value.NewF64Field(metricName, ndp.Value.(*metricspb.NumberDataPoint_AsDouble).AsDouble),
 					},
 				})
 			case *metricspb.NumberDataPoint_AsInt:
 				record.StructField(constants.METRICS, field_value.Struct{
-					Fields: []field_value.Field{
-						field_value.MakeI64Field(metricName, ndp.Value.(*metricspb.NumberDataPoint_AsInt).AsInt),
+					Fields: []*field_value.Field{
+						field_value.NewI64Field(metricName, ndp.Value.(*metricspb.NumberDataPoint_AsInt).AsInt),
 					},
 				})
 			default:
@@ -217,9 +217,9 @@ func ExtractMultivariateValue(attributes []*commonpb.KeyValue, multivariateKey s
 	return nil, nil
 }
 
-func AddMultivariateValue(attributes []*commonpb.KeyValue, multivariateKey string, fields *[]field_value.Field) (*string, error) {
+func AddMultivariateValue(attributes []*commonpb.KeyValue, multivariateKey string, fields *[]*field_value.Field) (*string, error) {
 	var multivariateValue *string
-	attributeFields := make([]field_value.Field, 0, len(attributes))
+	attributeFields := make([]*field_value.Field, 0, len(attributes))
 	for _, attribute := range attributes {
 		if attribute.Value != nil {
 			if attribute.GetKey() == multivariateKey {
@@ -232,10 +232,10 @@ func AddMultivariateValue(attributes []*commonpb.KeyValue, multivariateKey strin
 				}
 			}
 		}
-		attributeFields = append(attributeFields, field_value.MakeField(attribute.GetKey(), common.OtlpAnyValueToValue(attribute.GetValue())))
+		attributeFields = append(attributeFields, field_value.NewField(attribute.GetKey(), common.OtlpAnyValueToValue(attribute.GetValue())))
 	}
 	if len(attributeFields) > 0 {
-		*fields = append(*fields, field_value.MakeStructField(constants.ATTRIBUTES, field_value.Struct{Fields: attributeFields}))
+		*fields = append(*fields, field_value.NewStructField(constants.ATTRIBUTES, field_value.Struct{Fields: attributeFields}))
 	}
 	return multivariateValue, nil
 }

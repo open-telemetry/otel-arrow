@@ -22,14 +22,14 @@ import (
 
 // Record is a collection of fields (scalar our composite fields).
 type Record struct {
-	fields []field_value.Field
+	fields []*field_value.Field
 }
 
 func NewRecord() *Record {
 	return &Record{}
 }
 
-func NewRecordFromFields(fields []field_value.Field) *Record {
+func NewRecordFromFields(fields []*field_value.Field) *Record {
 	return &Record{fields: fields}
 }
 
@@ -59,72 +59,72 @@ func (r *Record) FieldCount() int {
 	return len(r.fields)
 }
 
-func (r *Record) AddField(f field_value.Field) {
+func (r *Record) AddField(f *field_value.Field) {
 	r.fields = append(r.fields, f)
 }
 
 func (r *Record) GenericField(name string, value field_value.Value) {
-	r.fields = append(r.fields, field_value.MakeField(name, value))
+	r.fields = append(r.fields, field_value.NewField(name, value))
 }
 
 func (r *Record) BoolField(name string, value bool) {
-	r.fields = append(r.fields, field_value.MakeBoolField(name, value))
+	r.fields = append(r.fields, field_value.NewBoolField(name, value))
 }
 
 func (r *Record) I8Field(name string, value int8) {
-	r.fields = append(r.fields, field_value.MakeI8Field(name, value))
+	r.fields = append(r.fields, field_value.NewI8Field(name, value))
 }
 
 func (r *Record) I16Field(name string, value int16) {
-	r.fields = append(r.fields, field_value.MakeI16Field(name, value))
+	r.fields = append(r.fields, field_value.NewI16Field(name, value))
 }
 
 func (r *Record) I32Field(name string, value int32) {
-	r.fields = append(r.fields, field_value.MakeI32Field(name, value))
+	r.fields = append(r.fields, field_value.NewI32Field(name, value))
 }
 
 func (r *Record) I64Field(name string, value int64) {
-	r.fields = append(r.fields, field_value.MakeI64Field(name, value))
+	r.fields = append(r.fields, field_value.NewI64Field(name, value))
 }
 
 func (r *Record) U8Field(name string, value uint8) {
-	r.fields = append(r.fields, field_value.MakeU8Field(name, value))
+	r.fields = append(r.fields, field_value.NewU8Field(name, value))
 }
 
 func (r *Record) U16Field(name string, value uint16) {
-	r.fields = append(r.fields, field_value.MakeU16Field(name, value))
+	r.fields = append(r.fields, field_value.NewU16Field(name, value))
 }
 
 func (r *Record) U32Field(name string, value uint32) {
-	r.fields = append(r.fields, field_value.MakeU32Field(name, value))
+	r.fields = append(r.fields, field_value.NewU32Field(name, value))
 }
 
 func (r *Record) U64Field(name string, value uint64) {
-	r.fields = append(r.fields, field_value.MakeU64Field(name, value))
+	r.fields = append(r.fields, field_value.NewU64Field(name, value))
 }
 
 func (r *Record) F32Field(name string, value float32) {
-	r.fields = append(r.fields, field_value.MakeF32Field(name, value))
+	r.fields = append(r.fields, field_value.NewF32Field(name, value))
 }
 
 func (r *Record) F64Field(name string, value float64) {
-	r.fields = append(r.fields, field_value.MakeF64Field(name, value))
+	r.fields = append(r.fields, field_value.NewF64Field(name, value))
 }
 
 func (r *Record) StringField(name string, value string) {
-	r.fields = append(r.fields, field_value.MakeStringField(name, value))
+	r.fields = append(r.fields, field_value.NewStringField(name, value))
 }
 
 func (r *Record) BinaryField(name string, value []byte) {
-	r.fields = append(r.fields, field_value.MakeBinaryField(name, value))
+	r.fields = append(r.fields, field_value.NewBinaryField(name, value))
 }
 
 func (r *Record) StructField(name string, value field_value.Struct) {
-	r.fields = append(r.fields, field_value.MakeStructField(name, value))
+	r.fields = append(r.fields, field_value.NewStructField(name, value))
 }
 
 func (r *Record) ListField(name string, value field_value.List) {
-	r.fields = append(r.fields, field_value.MakeListField(name, value))
+	r.fields = append(r.fields, field_value.NewListField(name, value))
 }
 
 func (r *Record) ValueByPath(path []int) field_value.Value {

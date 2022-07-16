@@ -41,7 +41,7 @@ func OtlpTraceToArrowEvents(rbr *rbb.RecordBatchRepository, request *coltracepb.
 				record.I32Field(constants.KIND, int32(span.Kind))
 				attributes := common.NewAttributes(span.Attributes)
 				if attributes != nil {
-					record.AddField(*attributes)
+					record.AddField(attributes)
 				}
 
 				if span.DroppedAttributesCount > 0 {

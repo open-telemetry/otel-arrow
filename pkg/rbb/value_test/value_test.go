@@ -33,7 +33,7 @@ func TestNormalize(t *testing.T) {
 
 	// Test normalize on a struct value
 	s2 := field_value.Struct{
-		Fields: []field_value.Field{
+		Fields: []*field_value.Field{
 			{
 				Name:  "c",
 				Value: &field_value.Bool{Value: false},
@@ -65,7 +65,7 @@ func TestNormalize(t *testing.T) {
 			&field_value.Bool{Value: true},
 			&field_value.I64{Value: 1},
 			&field_value.Struct{
-				Fields: []field_value.Field{
+				Fields: []*field_value.Field{
 					{
 						Name:  "c",
 						Value: &field_value.Bool{Value: false},

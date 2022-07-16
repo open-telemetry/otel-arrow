@@ -31,7 +31,7 @@ func OtlpLogsToArrowEvents(rbr *rbb.RecordBatchRepository, request *collogspb.Ex
 				}
 				attributes := common.NewAttributes(log.Attributes)
 				if attributes != nil {
-					record.AddField(*attributes)
+					record.AddField(attributes)
 				}
 
 				if log.DroppedAttributesCount > 0 {

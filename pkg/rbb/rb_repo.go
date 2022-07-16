@@ -26,6 +26,7 @@ type RecordBatchRepository struct {
 	// A map of SchemaId to RecordBatchBuilder.
 	builders map[string]*RecordBatchBuilder
 
+	// ToDo check if release is called properly
 	allocator *memory.GoAllocator
 }
 

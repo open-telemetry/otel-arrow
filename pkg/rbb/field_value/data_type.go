@@ -98,7 +98,7 @@ func DataTypeSignature(dataType arrow.DataType) string {
 	}
 }
 
-func StructDataType(fields []Field) arrow.DataType {
+func StructDataType(fields []*Field) arrow.DataType {
 	arrowFields := make([]arrow.Field, 0, len(fields))
 	for _, field := range fields {
 		arrowFields = append(arrowFields, arrow.Field{

@@ -114,7 +114,7 @@ func (c *Columns) CreateColumn(path []int, field *field_value.Field, config *con
 			updatedPath := make([]int, 0, len(path)+1)
 			copy(updatedPath, path)
 			updatedPath = append(updatedPath, len(fieldPaths))
-			fieldPath := columns.CreateColumn(updatedPath, &field.Value.(*field_value.Struct).Fields[i], config, dictIdGen)
+			fieldPath := columns.CreateColumn(updatedPath, field.Value.(*field_value.Struct).Fields[i], config, dictIdGen)
 			if fieldPath != nil {
 				fieldPaths = append(fieldPaths, fieldPath)
 			}
@@ -162,7 +162,7 @@ func (c *Columns) UpdateColumn(fieldPath *field_value.FieldPath, field *field_va
 		c.ListColumns[fieldPath.Current].Data = append(c.ListColumns[fieldPath.Current].Data, field.Value.(*field_value.List).Values)
 	case *field_value.Struct:
 		for fieldPos := range field.Value.(*field_value.Struct).Fields {
-			c.StructColumns[fieldPath.Current].Push(fieldPath.Children[fieldPos], &field.Value.(*field_value.Struct).Fields[fieldPos])
+			c.StructColumns[fieldPath.Current].Push(fieldPath.Children[fieldPos], field.Value.(*field_value.Struct).Fields[fieldPos])
 		}
 	default:
 		panic("unsupported field type")

@@ -78,7 +78,7 @@ func NewRecordBatchBuilderWithRecord(record *Record, config *config2.Config) *Re
 	}
 
 	for fieldIdx := range record.fields {
-		fieldPath := builder.columns.CreateColumn([]int{fieldIdx}, &record.fields[fieldIdx], config, &builder.dictIdGen)
+		fieldPath := builder.columns.CreateColumn([]int{fieldIdx}, record.fields[fieldIdx], config, &builder.dictIdGen)
 		if fieldPath != nil {
 			builder.fieldPaths = append(builder.fieldPaths, fieldPath)
 		}
@@ -91,7 +91,7 @@ func (rbb *RecordBatchBuilder) AddRecord(record *Record) {
 		rbb.recordList = append(rbb.recordList, record)
 	} else {
 		for fieldIdx := range record.fields {
-			rbb.columns.UpdateColumn(rbb.fieldPaths[fieldIdx], &record.fields[fieldIdx])
+			rbb.columns.UpdateColumn(rbb.fieldPaths[fieldIdx], record.fields[fieldIdx])
 		}
 	}
 }
@@ -112,7 +112,7 @@ func (rbb *RecordBatchBuilder) Build(allocator *memory.GoAllocator) (arrow.Recor
 		sortByRecordList(recordList, rbb.orderBy)
 		for _, record := range recordList {
 			for pos := range record.fields {
-				rbb.columns.UpdateColumn(rbb.fieldPaths[pos], &record.fields[pos])
+				rbb.columns.UpdateColumn(rbb.fieldPaths[pos], record.fields[pos])
 			}
 		}
 	}

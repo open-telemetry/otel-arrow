@@ -364,7 +364,7 @@ func (v *Binary) Compare(other Value) int {
 }
 
 type Struct struct {
-	Fields []Field
+	Fields []*Field
 }
 
 func (v *Struct) DataType() arrow.DataType {

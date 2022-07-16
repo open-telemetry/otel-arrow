@@ -27,11 +27,11 @@ func TestValue(t *testing.T) {
 	record := rbb.NewRecord()
 	record.StringField("b", "b")
 	record.StructField("a", field_value.Struct{
-		Fields: []field_value.Field{
+		Fields: []*field_value.Field{
 			{Name: "e1", Value: &field_value.String{Value: "e1"}},
 			{Name: "b1", Value: &field_value.String{Value: "b1"}},
 			{Name: "c1", Value: &field_value.Struct{
-				Fields: []field_value.Field{
+				Fields: []*field_value.Field{
 					{Name: "x", Value: &field_value.String{Value: "x"}},
 					{Name: "t", Value: &field_value.String{Value: "t"}},
 					{Name: "z", Value: &field_value.List{
@@ -43,7 +43,7 @@ func TestValue(t *testing.T) {
 					{Name: "a", Value: &field_value.List{
 						Values: []field_value.Value{
 							&field_value.Struct{
-								Fields: []field_value.Field{
+								Fields: []*field_value.Field{
 									{Name: "f2_3_4_2", Value: &field_value.String{Value: "f2_3_4_2"}},
 									{Name: "f2_3_4_1", Value: &field_value.String{Value: "f2_3_4_1"}},
 								},
@@ -140,11 +140,11 @@ func TestRecordNormalize(t *testing.T) {
 	record := rbb.NewRecord()
 	record.StringField("b", "")
 	record.StructField("a", field_value.Struct{
-		Fields: []field_value.Field{
+		Fields: []*field_value.Field{
 			{Name: "e", Value: &field_value.String{Value: ""}},
 			{Name: "b", Value: &field_value.String{Value: ""}},
 			{Name: "c", Value: &field_value.Struct{
-				Fields: []field_value.Field{
+				Fields: []*field_value.Field{
 					{Name: "x", Value: &field_value.String{Value: ""}},
 					{Name: "t", Value: &field_value.String{Value: ""}},
 					{Name: "z", Value: &field_value.List{
@@ -156,7 +156,7 @@ func TestRecordNormalize(t *testing.T) {
 					{Name: "a", Value: &field_value.List{
 						Values: []field_value.Value{
 							&field_value.Struct{
-								Fields: []field_value.Field{
+								Fields: []*field_value.Field{
 									{Name: "f2_3_4_2", Value: &field_value.String{Value: "f2_3_4_2"}},
 									{Name: "f2_3_4_1", Value: &field_value.String{Value: "f2_3_4_1"}},
 								},
@@ -171,14 +171,14 @@ func TestRecordNormalize(t *testing.T) {
 
 	expected_record := rbb.NewRecord()
 	expected_record.StructField("a", field_value.Struct{
-		Fields: []field_value.Field{
+		Fields: []*field_value.Field{
 			{Name: "b", Value: &field_value.String{Value: ""}},
 			{Name: "c", Value: &field_value.Struct{
-				Fields: []field_value.Field{
+				Fields: []*field_value.Field{
 					{Name: "a", Value: &field_value.List{
 						Values: []field_value.Value{
 							&field_value.Struct{
-								Fields: []field_value.Field{
+								Fields: []*field_value.Field{
 									{Name: "f2_3_4_1", Value: &field_value.String{Value: "f2_3_4_1"}},
 									{Name: "f2_3_4_2", Value: &field_value.String{Value: "f2_3_4_2"}},
 								},
@@ -211,11 +211,11 @@ func TestRecordSchemaId(t *testing.T) {
 	record := rbb.NewRecord()
 	record.StringField("b", "")
 	record.StructField("a", field_value.Struct{
-		Fields: []field_value.Field{
+		Fields: []*field_value.Field{
 			{Name: "e", Value: &field_value.String{Value: ""}},
 			{Name: "b", Value: &field_value.String{Value: ""}},
 			{Name: "c", Value: &field_value.Struct{
-				Fields: []field_value.Field{
+				Fields: []*field_value.Field{
 					{Name: "y", Value: &field_value.List{
 						Values: []field_value.Value{
 							&field_value.I8{Value: 1},
@@ -240,13 +240,13 @@ func TestRecordSchemaId(t *testing.T) {
 					{Name: "a", Value: &field_value.List{
 						Values: []field_value.Value{
 							&field_value.Struct{
-								Fields: []field_value.Field{
+								Fields: []*field_value.Field{
 									{Name: "f2_3_4_2", Value: &field_value.I8{Value: 1}},
 									{Name: "f2_3_4_1", Value: &field_value.I8{Value: 2}},
 								},
 							},
 							&field_value.Struct{
-								Fields: []field_value.Field{
+								Fields: []*field_value.Field{
 									{Name: "f2_3_4_3", Value: &field_value.String{Value: "f2_3_4_3"}},
 									{Name: "f2_3_4_1", Value: &field_value.String{Value: "f2_3_4_1"}},
 								},
