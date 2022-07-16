@@ -20,6 +20,24 @@ import (
 	"strings"
 )
 
+type Records struct {
+	records []*Record
+	orderBy *OrderBy
+}
+
+// Sort interface
+func (r *Records) Less(i, j int) bool {
+	r1 := r.records[i]
+	r2 := r.records[j]
+	if r1.Compare(r2, r.orderBy.FieldPaths) < 0 {
+		return true
+	} else {
+		return false
+	}
+}
+func (r *Records) Len() int      { return len(r.records) }
+func (r *Records) Swap(i, j int) { r.records[i], r.records[j] = r.records[j], r.records[i] }
+
 // Record is a collection of fields (scalar our composite fields).
 type Record struct {
 	fields []*rfield.Field
@@ -35,9 +53,7 @@ func NewRecordFromFields(fields []*rfield.Field) *Record {
 
 // Normalize normalizes the field names and values.
 func (r Record) Normalize() {
-	sort.Slice(r.fields, func(i, j int) bool {
-		return r.fields[i].Name < r.fields[j].Name
-	})
+	sort.Sort(rfield.Fields(r.fields))
 	for _, f := range r.fields {
 		f.Normalize()
 	}

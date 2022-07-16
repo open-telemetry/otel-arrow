@@ -34,6 +34,15 @@ const F64_SIG = "F64"
 const BINARY_SIG = "Bin"
 const STRING_SIG = "Str"
 
+type NameTypes []*NameType
+
+// Sort interface
+func (f NameTypes) Less(i, j int) bool {
+	return f[i].Name < f[j].Name
+}
+func (f NameTypes) Len() int      { return len(f) }
+func (f NameTypes) Swap(i, j int) { f[i], f[j] = f[j], f[i] }
+
 type NameType struct {
 	Name string
 	Type string
@@ -71,17 +80,15 @@ func DataTypeSignature(dataType arrow.DataType) string {
 	case arrow.LIST:
 		return "[" + DataTypeSignature(dataType.(*arrow.ListType).Elem()) + "]"
 	case arrow.STRUCT:
-		var fields []NameType
+		var fields []*NameType
 		structDataType := dataType.(*arrow.StructType)
 		for _, field := range structDataType.Fields() {
-			fields = append(fields, NameType{
+			fields = append(fields, &NameType{
 				Name: field.Name,
 				Type: DataTypeSignature(field.Type),
 			})
 		}
-		sort.Slice(fields, func(i, j int) bool {
-			return fields[i].Name < fields[j].Name
-		})
+		sort.Sort(NameTypes(fields))
 		fieldSigs := make([]string, 0, len(fields))
 		for _, field := range fields {
 			fieldSigs = append(fieldSigs, field.Name+":"+field.Type)

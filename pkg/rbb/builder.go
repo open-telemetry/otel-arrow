@@ -193,17 +193,7 @@ func (rbb *RecordBuilder) Optimize() bool {
 				dictionaryStats = append(dictionaryStats, ds)
 			}
 		}
-		sort.Slice(dictionaryStats, func(i, j int) bool {
-			a := dictionaryStats[i]
-			b := dictionaryStats[j]
-			a_ratio := float64(a.Cardinality) / float64(a.TotalEntry)
-			b_ratio := float64(b.Cardinality) / float64(b.TotalEntry)
-			if a_ratio == b_ratio {
-				return a.AvgEntryLength > b.AvgEntryLength
-			} else {
-				return a_ratio < b_ratio
-			}
-		})
+		sort.Sort(stats.DictionaryStatsSlice(dictionaryStats))
 		var paths [][]int
 		for i, ds := range dictionaryStats {
 			if i < rbb.config.Dictionaries.StringColumns.MaxSortedDictionaries {
@@ -230,13 +220,10 @@ func sortByRecordList(recordList []*Record, orderBy *OrderBy) {
 	if orderBy == nil {
 		return
 	}
-	sort.Slice(recordList, func(i, j int) bool {
-		r1 := recordList[i]
-		r2 := recordList[j]
-		if r1.Compare(r2, orderBy.FieldPaths) < 0 {
-			return true
-		} else {
-			return false
-		}
-	})
+
+	records := Records{
+		records: recordList,
+		orderBy: orderBy,
+	}
+	sort.Sort(&records)
 }

@@ -14,6 +14,23 @@
 
 package stats
 
+type DictionaryStatsSlice []*DictionaryStats
+
+// Sort interface
+func (d DictionaryStatsSlice) Less(i, j int) bool {
+	a := d[i]
+	b := d[j]
+	a_ratio := float64(a.Cardinality) / float64(a.TotalEntry)
+	b_ratio := float64(b.Cardinality) / float64(b.TotalEntry)
+	if a_ratio == b_ratio {
+		return a.AvgEntryLength > b.AvgEntryLength
+	} else {
+		return a_ratio < b_ratio
+	}
+}
+func (d DictionaryStatsSlice) Len() int      { return len(d) }
+func (d DictionaryStatsSlice) Swap(i, j int) { d[i], d[j] = d[j], d[i] }
+
 type DictionaryStats struct {
 	Path           []int
 	AvgEntryLength float64

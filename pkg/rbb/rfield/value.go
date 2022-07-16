@@ -377,9 +377,7 @@ func (v *Struct) DataType() arrow.DataType {
 }
 func (v *Struct) Normalize() {
 	// Sort all the fields by name
-	sort.Slice(v.Fields, func(i, j int) bool {
-		return v.Fields[i].Name < v.Fields[j].Name
-	})
+	sort.Sort(Fields(v.Fields))
 	// Normalize recursively all the fields
 	for _, field := range v.Fields {
 		field.Normalize()

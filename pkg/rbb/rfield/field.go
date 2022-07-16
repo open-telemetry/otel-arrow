@@ -19,6 +19,15 @@ import (
 	"strings"
 )
 
+type Fields []*Field
+
+// Sort interface
+func (f Fields) Less(i, j int) bool {
+	return f[i].Name < f[j].Name
+}
+func (f Fields) Len() int      { return len(f) }
+func (f Fields) Swap(i, j int) { f[i], f[j] = f[j], f[i] }
+
 // Field is a scalar or a composite named value.
 type Field struct {
 	Name  string
