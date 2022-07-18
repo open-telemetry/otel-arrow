@@ -19,7 +19,7 @@ type LogsDataset interface {
 
 type TraceDataset interface {
 	Len() int
-	Logs(start, size int) []*coltrace.ExportTraceServiceRequest
+	Traces(start, size int) []*coltrace.ExportTraceServiceRequest
 }
 
 // ===== Fake metrics dataset =====
@@ -78,6 +78,6 @@ func (d *FakeTraceDataset) Len() int {
 	return d.len
 }
 
-func (d *FakeTraceDataset) Logs(_, size int) []*coltrace.ExportTraceServiceRequest {
+func (d *FakeTraceDataset) Traces(_, size int) []*coltrace.ExportTraceServiceRequest {
 	return []*coltrace.ExportTraceServiceRequest{d.generator.Generate(size, 100)}
 }
