@@ -6,6 +6,8 @@ import (
 )
 
 func TestSummary(t *testing.T) {
+	t.Parallel()
+
 	metric := benchmark.NewMetric()
 
 	// Sample

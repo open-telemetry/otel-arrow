@@ -1,6 +1,6 @@
 package benchmark
 
-type ProfileableProtocol interface {
+type ProfileableSystem interface {
 	Name() string
 	Tags() []string
 	DatasetSize() uint64

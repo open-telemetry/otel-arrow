@@ -19,15 +19,15 @@ type Summary struct {
 
 type BatchSummary struct {
 	batchSize            uint64
-	uncompressedSizeByte Summary
-	compressedSizeByte   Summary
-	batchCreationSec     Summary
-	processingSec        Summary
-	serializationSec     Summary
-	deserializationSec   Summary
-	compressionSec       Summary
-	decompressionSec     Summary
-	totalTimeSec         Summary
+	uncompressedSizeByte *Summary
+	compressedSizeByte   *Summary
+	batchCreationSec     *Summary
+	processingSec        *Summary
+	serializationSec     *Summary
+	deserializationSec   *Summary
+	compressionSec       *Summary
+	decompressionSec     *Summary
+	totalTimeSec         *Summary
 	processingResults    []string
 }
 
