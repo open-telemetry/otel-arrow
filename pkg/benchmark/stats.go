@@ -18,7 +18,7 @@ type Summary struct {
 }
 
 type BatchSummary struct {
-	batchSize            uint64
+	batchSize            int
 	uncompressedSizeByte *Summary
 	compressedSizeByte   *Summary
 	batchCreationSec     *Summary

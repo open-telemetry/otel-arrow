@@ -3,11 +3,11 @@ package benchmark
 type ProfileableSystem interface {
 	Name() string
 	Tags() []string
-	DatasetSize() uint64
+	DatasetSize() int
 	CompressionAlgorithm() CompressionAlgorithm
-	InitBatchSize(batchSize uint64)
-	PrepareBatch(startAt, size uint64)
-	CreateBatch(startAt, size uint64)
+	InitBatchSize(batchSize int)
+	PrepareBatch(startAt, size int)
+	CreateBatch(startAt, size int)
 	Process() string
 	Serialize() ([][]byte, error)
 	Deserialize(buffers [][]byte)

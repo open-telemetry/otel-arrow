@@ -13,11 +13,11 @@ import (
 )
 
 type Profiler struct {
-	batchSizes []uint64
+	batchSizes []int
 	benchmarks []*ProfilerResult
 }
 
-func NewProfiler(batchSizes []uint64) *Profiler {
+func NewProfiler(batchSizes []int) *Profiler {
 	return &Profiler{
 		batchSizes: batchSizes,
 		benchmarks: []*ProfilerResult{},
@@ -51,7 +51,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 
 		for _i := uint64(0); _i < maxIter; _i++ {
 			maxBatchCount := uint64(math.Ceil(float64(profileable.DatasetSize()) / float64(batchSize)))
-			startAt := uint64(0)
+			startAt := 0
 			for _j := uint64(0); _j < maxBatchCount; _j++ {
 				correctedBatchSize := min(profileable.DatasetSize()-startAt, batchSize)
 				profileable.PrepareBatch(startAt, correctedBatchSize)
@@ -220,7 +220,7 @@ func (p *Profiler) PrintCompressionRatio() {
 
 }
 
-func (p *Profiler) AddSection(label string, step string, table *tablewriter.Table, values map[string]*Summary, transform func(float64) float64) {
+func (p *Profiler) AddSection(_label string, _step string, _table *tablewriter.Table, _values map[string]*Summary, _transform func(float64) float64) {
 	// ToDo add section
 }
 
@@ -328,7 +328,7 @@ func (p *Profiler) ExportMetricsBytesCSV(filePrefix string) {
 	}
 }
 
-func min(a, b uint64) uint64 {
+func min(a, b int) int {
 	if a < b {
 		return a
 	}
