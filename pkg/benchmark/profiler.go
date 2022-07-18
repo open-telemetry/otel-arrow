@@ -1,29 +1,33 @@
 package benchmark
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"github.com/olekukonko/tablewriter"
+	"log"
 	"math"
+	"os"
 	"strings"
 	"time"
 )
 
 type Profiler struct {
 	batchSizes []uint64
-	benchmarks []ProfilerResult
+	benchmarks []*ProfilerResult
 }
 
 func NewProfiler(batchSizes []uint64) *Profiler {
 	return &Profiler{
 		batchSizes: batchSizes,
-		benchmarks: []ProfilerResult{},
+		benchmarks: []*ProfilerResult{},
 	}
 }
 
 func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error {
 	tags := strings.Join(profileable.Tags()[:], "+")
 
-	p.benchmarks = append(p.benchmarks, ProfilerResult{
+	p.benchmarks = append(p.benchmarks, &ProfilerResult{
 		benchName: profileable.Name(),
 		summaries: []BatchSummary{},
 		tags:      tags,
@@ -129,7 +133,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 		}
 
 		profileable.ShowStats()
-		currentBenchmark := &p.benchmarks[len(p.benchmarks)-1]
+		currentBenchmark := p.benchmarks[len(p.benchmarks)-1]
 		currentBenchmark.summaries = append(currentBenchmark.summaries, BatchSummary{
 			batchSize:            batchSize,
 			uncompressedSizeByte: uncompressedSize.ComputeSummary(),
@@ -172,11 +176,156 @@ func (p *Profiler) PrintResults() {
 }
 
 func (p *Profiler) PrintStepsTiming() {
+	header := []string{"Steps"}
+	for _, benchmark := range p.benchmarks {
+		header = append(header, fmt.Sprintf("%s %s - p99", benchmark.benchName, benchmark.tags))
+	}
 
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader(header)
+
+	values := make(map[string]*Summary)
+	for _, result := range p.benchmarks {
+		for _, summary := range result.summaries {
+			key := fmt.Sprintf("%s:%s:%s:%s", result.benchName, result.tags, summary.batchSize, "batch_creation_sec")
+			values[key] = summary.batchCreationSec
+			key = fmt.Sprintf("%s:%s:%s:%s", result.benchName, result.tags, summary.batchSize, "processing_sec")
+			values[key] = summary.processingSec
+			key = fmt.Sprintf("%s:%s:%s:%s", result.benchName, result.tags, summary.batchSize, "serialization_sec")
+			values[key] = summary.serializationSec
+			key = fmt.Sprintf("%s:%s:%s:%s", result.benchName, result.tags, summary.batchSize, "compression_sec")
+			values[key] = summary.compressionSec
+			key = fmt.Sprintf("%s:%s:%s:%s", result.benchName, result.tags, summary.batchSize, "decompression_sec")
+			values[key] = summary.decompressionSec
+			key = fmt.Sprintf("%s:%s:%s:%s", result.benchName, result.tags, summary.batchSize, "deserialization_sec")
+			values[key] = summary.deserializationSec
+			key = fmt.Sprintf("%s:%s:%s:%s", result.benchName, result.tags, summary.batchSize, "total_time_sec")
+			values[key] = summary.totalTimeSec
+		}
+	}
+
+	transform := func(value float64) float64 { return value * 1000.0 }
+	p.AddSection("Batch creation (ms)", "batch_creation_sec", table, values, transform)
+	// p.AddSection("Batch processing (ms)", "processing_sec", table, values, transform)
+	p.AddSection("Serialization (ms)", "serialization_sec", table, values, transform)
+	p.AddSection("Compression (ms)", "compression_sec", table, values, transform)
+	p.AddSection("Decompression (ms)", "decompression_sec", table, values, transform)
+	p.AddSection("Deserialisation (ms)", "deserialization_sec", table, values, transform)
+	p.AddSection("Total time (ms)", "total_time_sec", table, values, transform)
+
+	table.Render()
 }
 
 func (p *Profiler) PrintCompressionRatio() {
 
+}
+
+func (p *Profiler) AddSection(label string, step string, table *tablewriter.Table, values map[string]*Summary, transform func(float64) float64) {
+	// ToDo add section
+}
+
+func (p *Profiler) ExportMetricsTimesCSV(filePrefix string) {
+	file, err := os.OpenFile(fmt.Sprintf("%s_times.csv", filePrefix), os.O_CREATE|os.O_WRONLY, 0644)
+
+	if err != nil {
+		log.Fatalf("failed creating file: %s", err)
+	}
+
+	dataWriter := bufio.NewWriter(file)
+
+	_, err = dataWriter.WriteString("batch_size,duration_ms,protocol,step\n")
+	if err != nil {
+		panic(fmt.Sprintf("failed writing to file: %s", err))
+	}
+
+	for batchIdx, batchSize := range p.batchSizes {
+		if len(p.benchmarks) == 0 {
+			continue
+		}
+
+		for _, result := range p.benchmarks {
+			batchCreationMs := result.summaries[batchIdx].batchCreationSec.P99
+			serializationMs := result.summaries[batchIdx].serializationSec.P99
+			compressionMs := result.summaries[batchIdx].compressionSec.P99
+			decompressionMs := result.summaries[batchIdx].decompressionSec.P99
+			deserializationMs := result.summaries[batchIdx].deserializationSec.P99
+
+			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],0_Batch_creation\n", batchSize, batchCreationMs, result.benchName, result.tags))
+			if err != nil {
+				panic(fmt.Sprintf("failed writing to file: %s", err))
+			}
+			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],1_Serialization\n", batchSize, serializationMs, result.benchName, result.tags))
+			if err != nil {
+				panic(fmt.Sprintf("failed writing to file: %s", err))
+			}
+			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],2_Compression\n", batchSize, compressionMs, result.benchName, result.tags))
+			if err != nil {
+				panic(fmt.Sprintf("failed writing to file: %s", err))
+			}
+			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],3_Decompression\n", batchSize, decompressionMs, result.benchName, result.tags))
+			if err != nil {
+				panic(fmt.Sprintf("failed writing to file: %s", err))
+			}
+			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],4_Deserialization\n", batchSize, deserializationMs, result.benchName, result.tags))
+			if err != nil {
+				panic(fmt.Sprintf("failed writing to file: %s", err))
+			}
+		}
+	}
+
+	err = dataWriter.Flush()
+	if err != nil {
+		panic(fmt.Sprintf("failed flushing the file: %s", err))
+	}
+	err = file.Close()
+	if err != nil {
+		panic(fmt.Sprintf("failed closing the file: %s", err))
+	}
+}
+
+func (p *Profiler) ExportMetricsBytesCSV(filePrefix string) {
+	file, err := os.OpenFile(fmt.Sprintf("%s_bytes.csv", filePrefix), os.O_CREATE|os.O_WRONLY, 0644)
+
+	if err != nil {
+		log.Fatalf("failed creating file: %s", err)
+	}
+
+	dataWriter := bufio.NewWriter(file)
+
+	_, err = dataWriter.WriteString("batch_size,iteration,compressed_size_byte,uncompressed_size_byte,Protocol\n")
+	if err != nil {
+		panic(fmt.Sprintf("failed writing to file: %s", err))
+	}
+
+	for batchIdx, batchSize := range p.batchSizes {
+		if len(p.benchmarks) == 0 {
+			continue
+		}
+
+		numSamples := len(p.benchmarks[0].summaries[batchIdx].batchCreationSec.Values)
+		for sampleIdx := 0; sampleIdx < numSamples; sampleIdx++ {
+			for _, result := range p.benchmarks {
+				line := fmt.Sprintf("%d,%d", batchSize, sampleIdx)
+				compressedSizeByte := result.summaries[batchIdx].compressedSizeByte.Values[sampleIdx]
+				uncompressedSizeByte := result.summaries[batchIdx].uncompressedSizeByte.Values[sampleIdx]
+
+				line += fmt.Sprintf(",%f,%f,%s [%s]\n", compressedSizeByte, uncompressedSizeByte, result.benchName, result.tags)
+				_, err = dataWriter.WriteString(line)
+				if err != nil {
+					panic(fmt.Sprintf("failed writing to file: %s", err))
+				}
+			}
+		}
+	}
+
+	err = dataWriter.Flush()
+	if err != nil {
+		panic(fmt.Sprintf("failed flushing the file: %s", err))
+	}
+	err = file.Close()
+	if err != nil {
+		panic(fmt.Sprintf("failed closing the file: %s", err))
+	}
 }
 
 func min(a, b uint64) uint64 {

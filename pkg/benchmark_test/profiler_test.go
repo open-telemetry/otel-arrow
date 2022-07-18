@@ -15,6 +15,8 @@ func TestProfiler(t *testing.T) {
 	}
 	profiler.CheckProcessingResults()
 	profiler.PrintResults()
+	profiler.ExportMetricsTimesCSV("test")
+	profiler.ExportMetricsBytesCSV("test")
 }
 
 type SystemToProfile struct{}
@@ -26,7 +28,7 @@ func (s *SystemToProfile) Name() string {
 func (s *SystemToProfile) Tags() []string {
 	return []string{"tag1", "tag2"}
 }
-func (s *SystemToProfile) DatasetSize() uint64 { return 0 }
+func (s *SystemToProfile) DatasetSize() uint64 { return 10 }
 func (s *SystemToProfile) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return benchmark.Zstd
 }
