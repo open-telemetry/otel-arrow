@@ -87,3 +87,9 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
   - [ ] OTLP_ARROW batch creation + serialization + compression + decompression + deserialization
 ` - [ ] Performance and memory optimizations
   - [ ] Check memory leaks (e.g. Arrow related memory leaks)
+
+### CI
+  - [ ] GitHub Actions to build, test, check at every commit.
+
+### Integration
+  - [ ] Integration with Open Telemetry Collector.
