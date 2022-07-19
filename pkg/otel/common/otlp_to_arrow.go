@@ -17,9 +17,9 @@ package common
 import (
 	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
+	"otel-arrow-adapter/pkg/air"
+	"otel-arrow-adapter/pkg/air/rfield"
 	"otel-arrow-adapter/pkg/otel/constants"
-	"otel-arrow-adapter/pkg/rbb"
-	"otel-arrow-adapter/pkg/rbb/rfield"
 )
 
 func NewAttributes(attributes []*commonpb.KeyValue) *rfield.Field {
@@ -47,7 +47,7 @@ func NewAttributes(attributes []*commonpb.KeyValue) *rfield.Field {
 	return nil
 }
 
-func AddResource(record *rbb.Record, resource *resourcepb.Resource) {
+func AddResource(record *air.Record, resource *resourcepb.Resource) {
 	resourceField := ResourceField(resource)
 	if resourceField != nil {
 		record.AddField(resourceField)
@@ -75,7 +75,7 @@ func ResourceField(resource *resourcepb.Resource) *rfield.Field {
 	}
 }
 
-func AddScope(record *rbb.Record, scopeKey string, scope *commonpb.InstrumentationScope) {
+func AddScope(record *air.Record, scopeKey string, scope *commonpb.InstrumentationScope) {
 	scopeField := ScopeField(scopeKey, scope)
 	if scopeField != nil {
 		// ToDo check optimization for when fields are always pointers or interfaces instead of structs as today.

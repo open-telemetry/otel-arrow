@@ -15,7 +15,7 @@
 package config_test
 
 import (
-	config2 "otel-arrow-adapter/pkg/rbb/config"
+	config2 "otel-arrow-adapter/pkg/air/config"
 	"testing"
 )
 

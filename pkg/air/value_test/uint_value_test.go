@@ -16,7 +16,7 @@ package value_test
 
 import (
 	"github.com/apache/arrow/go/v9/arrow"
-	"otel-arrow-adapter/pkg/rbb/rfield"
+	"otel-arrow-adapter/pkg/air/rfield"
 	"testing"
 )
 

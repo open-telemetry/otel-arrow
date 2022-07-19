@@ -18,8 +18,8 @@ import (
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/memory"
-	"otel-arrow-adapter/pkg/rbb/rfield"
-	"otel-arrow-adapter/pkg/rbb/stats"
+	"otel-arrow-adapter/pkg/air/rfield"
+	"otel-arrow-adapter/pkg/air/stats"
 )
 
 // StructColumn is a column of struct data.

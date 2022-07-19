@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package rbb
+package air
 
 import (
 	"fmt"
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/memory"
-	"otel-arrow-adapter/pkg/rbb/column"
-	config2 "otel-arrow-adapter/pkg/rbb/config"
-	"otel-arrow-adapter/pkg/rbb/dictionary"
-	"otel-arrow-adapter/pkg/rbb/rfield"
-	"otel-arrow-adapter/pkg/rbb/stats"
+	"otel-arrow-adapter/pkg/air/column"
+	config2 "otel-arrow-adapter/pkg/air/config"
+	"otel-arrow-adapter/pkg/air/dictionary"
+	"otel-arrow-adapter/pkg/air/rfield"
+	"otel-arrow-adapter/pkg/air/stats"
 	"sort"
 )
 

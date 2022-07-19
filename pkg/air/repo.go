@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package rbb
+package air
 
 import (
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/memory"
-	config2 "otel-arrow-adapter/pkg/rbb/config"
+	config2 "otel-arrow-adapter/pkg/air/config"
 )
 
 type RecordRepository struct {

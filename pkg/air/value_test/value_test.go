@@ -15,7 +15,7 @@
 package value_test
 
 import (
-	"otel-arrow-adapter/pkg/rbb/rfield"
+	"otel-arrow-adapter/pkg/air/rfield"
 	"testing"
 )
 

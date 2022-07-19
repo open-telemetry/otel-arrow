@@ -17,17 +17,17 @@ package logs
 import (
 	"github.com/apache/arrow/go/v9/arrow"
 	collogspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/otel/common"
 	"otel-arrow-adapter/pkg/otel/constants"
-	"otel-arrow-adapter/pkg/rbb"
 )
 
 // OtlpLogsToArrowRecords converts an OTLP ResourceLogs to one or more Arrow records
-func OtlpLogsToArrowRecords(rbr *rbb.RecordRepository, request *collogspb.ExportLogsServiceRequest) ([]arrow.Record, error) {
+func OtlpLogsToArrowRecords(rbr *air.RecordRepository, request *collogspb.ExportLogsServiceRequest) ([]arrow.Record, error) {
 	for _, resourceLogs := range request.ResourceLogs {
 		for _, scopeLogs := range resourceLogs.ScopeLogs {
 			for _, log := range scopeLogs.LogRecords {
-				record := rbb.NewRecord()
+				record := air.NewRecord()
 
 				if log.TimeUnixNano > 0 {
 					record.U64Field(constants.TIME_UNIX_NANO, log.TimeUnixNano)

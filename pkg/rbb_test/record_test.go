@@ -16,15 +16,15 @@ package rbb_test
 
 import (
 	"github.com/google/go-cmp/cmp"
-	"otel-arrow-adapter/pkg/rbb"
-	"otel-arrow-adapter/pkg/rbb/rfield"
+	"otel-arrow-adapter/pkg/air"
+	"otel-arrow-adapter/pkg/air/rfield"
 	"testing"
 )
 
 func TestValue(t *testing.T) {
 	t.Parallel()
 
-	record := rbb.NewRecord()
+	record := air.NewRecord()
 	record.StringField("b", "b")
 	record.StructField("a", rfield.Struct{
 		Fields: []*rfield.Field{
@@ -137,7 +137,7 @@ func TestCompare(t *testing.T) {
 func TestRecordNormalize(t *testing.T) {
 	t.Parallel()
 
-	record := rbb.NewRecord()
+	record := air.NewRecord()
 	record.StringField("b", "")
 	record.StructField("a", rfield.Struct{
 		Fields: []*rfield.Field{
@@ -169,7 +169,7 @@ func TestRecordNormalize(t *testing.T) {
 	})
 	record.Normalize()
 
-	expected_record := rbb.NewRecord()
+	expected_record := air.NewRecord()
 	expected_record.StructField("a", rfield.Struct{
 		Fields: []*rfield.Field{
 			{Name: "b", Value: &rfield.String{Value: ""}},
@@ -200,7 +200,7 @@ func TestRecordNormalize(t *testing.T) {
 	})
 	expected_record.StringField("b", "")
 
-	if !cmp.Equal(record, expected_record, cmp.AllowUnexported(rbb.Record{}, rfield.Struct{}, rfield.List{})) {
+	if !cmp.Equal(record, expected_record, cmp.AllowUnexported(air.Record{}, rfield.Struct{}, rfield.List{})) {
 		t.Errorf("Expected: %+v\nGot: %+v", expected_record, record)
 	}
 }
@@ -208,7 +208,7 @@ func TestRecordNormalize(t *testing.T) {
 func TestRecordSchemaId(t *testing.T) {
 	t.Parallel()
 
-	record := rbb.NewRecord()
+	record := air.NewRecord()
 	record.StringField("b", "")
 	record.StructField("a", rfield.Struct{
 		Fields: []*rfield.Field{

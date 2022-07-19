@@ -18,8 +18,8 @@ import (
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/memory"
-	"otel-arrow-adapter/pkg/rbb/config"
-	"otel-arrow-adapter/pkg/rbb/stats"
+	"otel-arrow-adapter/pkg/air/config"
+	"otel-arrow-adapter/pkg/air/stats"
 )
 
 // StringColumn is a column of optional string values.

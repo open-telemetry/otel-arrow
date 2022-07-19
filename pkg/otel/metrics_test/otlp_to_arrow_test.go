@@ -15,10 +15,10 @@
 package metrics_test
 
 import (
+	"otel-arrow-adapter/pkg/air"
+	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/otel/fake"
 	"otel-arrow-adapter/pkg/otel/metrics"
-	"otel-arrow-adapter/pkg/rbb"
-	"otel-arrow-adapter/pkg/rbb/config"
 	"testing"
 )
 
@@ -26,7 +26,7 @@ func TestOtlpMetricsToArrowEvents(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewDefaultConfig()
-	rbr := rbb.NewRecordRepository(cfg)
+	rbr := air.NewRecordRepository(cfg)
 	lg := fake.NewMetricsGenerator(fake.DefaultResourceAttributes(), fake.DefaultInstrumentationScope())
 
 	multivariateConf := metrics.MultivariateMetricsConfig{

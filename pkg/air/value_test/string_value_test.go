@@ -15,8 +15,8 @@
 package value_test
 
 import (
-	value2 "otel-arrow-adapter/pkg/rbb/column"
-	"otel-arrow-adapter/pkg/rbb/config"
+	value2 "otel-arrow-adapter/pkg/air/column"
+	"otel-arrow-adapter/pkg/air/config"
 	"testing"
 )
 

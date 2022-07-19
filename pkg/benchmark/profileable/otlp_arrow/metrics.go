@@ -5,23 +5,23 @@ import (
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/ipc"
 	metricspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	"otel-arrow-adapter/pkg/air"
+	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/benchmark"
 	"otel-arrow-adapter/pkg/otel/metrics"
-	"otel-arrow-adapter/pkg/rbb"
-	"otel-arrow-adapter/pkg/rbb/config"
 )
 
 type MetricsProfileable struct {
 	compression        benchmark.CompressionAlgorithm
 	dataset            benchmark.MetricsDataset
 	metrics            []*metricspb.ExportMetricsServiceRequest
-	rr                 *rbb.RecordRepository
+	rr                 *air.RecordRepository
 	multivariateConfig *metrics.MultivariateMetricsConfig
 	records            []arrow.Record
 }
 
 func NewMetricsProfileable(dataset benchmark.MetricsDataset, dictionaryCfg *config.Config, multivariateCfg *metrics.MultivariateMetricsConfig, compression benchmark.CompressionAlgorithm) *MetricsProfileable {
-	return &MetricsProfileable{dataset: dataset, compression: compression, rr: rbb.NewRecordRepository(dictionaryCfg), multivariateConfig: multivariateCfg, records: []arrow.Record{}}
+	return &MetricsProfileable{dataset: dataset, compression: compression, rr: air.NewRecordRepository(dictionaryCfg), multivariateConfig: multivariateCfg, records: []arrow.Record{}}
 }
 
 func (s *MetricsProfileable) Name() string {

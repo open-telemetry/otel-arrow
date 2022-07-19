@@ -20,10 +20,10 @@ import (
 	collogspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/metrics/v1"
+	"otel-arrow-adapter/pkg/air"
+	"otel-arrow-adapter/pkg/air/rfield"
 	"otel-arrow-adapter/pkg/otel/common"
 	"otel-arrow-adapter/pkg/otel/constants"
-	"otel-arrow-adapter/pkg/rbb"
-	"otel-arrow-adapter/pkg/rbb/rfield"
 )
 
 type MultivariateMetricsConfig struct {
@@ -36,7 +36,7 @@ type MultivariateRecord struct {
 }
 
 // OtlpMetricsToArrowRecords converts an OTLP ResourceMetrics to one or more Arrow records.
-func OtlpMetricsToArrowRecords(rbr *rbb.RecordRepository, request *collogspb.ExportMetricsServiceRequest, multivariateConf *MultivariateMetricsConfig) (map[string][]arrow.Record, error) {
+func OtlpMetricsToArrowRecords(rbr *air.RecordRepository, request *collogspb.ExportMetricsServiceRequest, multivariateConf *MultivariateMetricsConfig) (map[string][]arrow.Record, error) {
 	result := make(map[string][]arrow.Record)
 	for _, resourceMetrics := range request.ResourceMetrics {
 		for _, scopeMetrics := range resourceMetrics.ScopeMetrics {
@@ -85,7 +85,7 @@ func OtlpMetricsToArrowRecords(rbr *rbb.RecordRepository, request *collogspb.Exp
 	return result, nil
 }
 
-func addMetric(rbr *rbb.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint, config *MultivariateMetricsConfig) error {
+func addMetric(rbr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint, config *MultivariateMetricsConfig) error {
 	if mvKey, ok := config.Metrics[metricName]; ok {
 		return multivariateMetric(rbr, resMetrics, scopeMetrics, dataPoints, mvKey)
 	} else {
@@ -95,7 +95,7 @@ func addMetric(rbr *rbb.RecordRepository, resMetrics *metricspb.ResourceMetrics,
 }
 
 // ToDo initial metric name is lost, it should be recorded as metadata or constant column
-func multivariateMetric(rbr *rbb.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, dataPoints []*metricspb.NumberDataPoint, multivariateKey string) error {
+func multivariateMetric(rbr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, dataPoints []*metricspb.NumberDataPoint, multivariateKey string) error {
 	records := make(map[string]*MultivariateRecord)
 
 	for _, ndp := range dataPoints {
@@ -162,14 +162,14 @@ func multivariateMetric(rbr *rbb.RecordRepository, resMetrics *metricspb.Resourc
 		record.fields = append(record.fields, rfield.NewStructField(constants.METRICS, rfield.Struct{
 			Fields: record.metrics,
 		}))
-		rbr.AddRecord(rbb.NewRecordFromFields(record.fields))
+		rbr.AddRecord(air.NewRecordFromFields(record.fields))
 	}
 	return nil
 }
 
-func univariateMetric(rbr *rbb.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint) {
+func univariateMetric(rbr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint) {
 	for _, ndp := range dataPoints {
-		record := rbb.NewRecord()
+		record := air.NewRecord()
 
 		if resMetrics.Resource != nil {
 			common.AddResource(record, resMetrics.Resource)

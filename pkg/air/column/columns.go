@@ -18,10 +18,10 @@ import (
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/memory"
-	"otel-arrow-adapter/pkg/rbb/config"
-	"otel-arrow-adapter/pkg/rbb/dictionary"
-	"otel-arrow-adapter/pkg/rbb/rfield"
-	"otel-arrow-adapter/pkg/rbb/stats"
+	"otel-arrow-adapter/pkg/air/config"
+	"otel-arrow-adapter/pkg/air/dictionary"
+	"otel-arrow-adapter/pkg/air/rfield"
+	"otel-arrow-adapter/pkg/air/stats"
 )
 
 type Columns struct {

@@ -19,8 +19,8 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"math"
 	"math/rand"
-	"otel-arrow-adapter/pkg/rbb"
-	config2 "otel-arrow-adapter/pkg/rbb/config"
+	"otel-arrow-adapter/pkg/air"
+	config2 "otel-arrow-adapter/pkg/air/config"
 	"testing"
 	"time"
 )
@@ -28,7 +28,7 @@ import (
 func TestAddRecord(t *testing.T) {
 	t.Parallel()
 
-	rbr := rbb.NewRecordRepository(config2.NewDefaultConfig())
+	rbr := air.NewRecordRepository(config2.NewDefaultConfig())
 	rbr.AddRecord(GenSimpleRecord(0))
 	rbr.AddRecord(GenComplexRecord(1))
 	rbr.AddRecord(GenSimpleRecord(2))
@@ -92,7 +92,7 @@ func TestOptimize(t *testing.T) {
 			},
 		},
 	}
-	rbr := rbb.NewRecordRepository(&config)
+	rbr := air.NewRecordRepository(&config)
 
 	for i := 0; i < 100; i++ {
 		rbr.AddRecord(GenRecord(int64(i), i%15, i%2, i))
@@ -177,7 +177,7 @@ func TestBuild(t *testing.T) {
 			},
 		},
 	}
-	rbr := rbb.NewRecordRepository(&config)
+	rbr := air.NewRecordRepository(&config)
 
 	// Generates 100 timestamps randomly sorted.
 	tsValues := make([]int64, 0, 100)

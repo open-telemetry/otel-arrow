@@ -18,18 +18,18 @@ import (
 	"github.com/apache/arrow/go/v9/arrow"
 	coltracepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/trace/v1"
+	"otel-arrow-adapter/pkg/air"
+	"otel-arrow-adapter/pkg/air/rfield"
 	"otel-arrow-adapter/pkg/otel/common"
 	"otel-arrow-adapter/pkg/otel/constants"
-	"otel-arrow-adapter/pkg/rbb"
-	"otel-arrow-adapter/pkg/rbb/rfield"
 )
 
 // OtlpTraceToArrowRecords converts an OTLP trace to one or more Arrow records.
-func OtlpTraceToArrowRecords(rbr *rbb.RecordRepository, request *coltracepb.ExportTraceServiceRequest) ([]arrow.Record, error) {
+func OtlpTraceToArrowRecords(rbr *air.RecordRepository, request *coltracepb.ExportTraceServiceRequest) ([]arrow.Record, error) {
 	for _, resourceSpans := range request.ResourceSpans {
 		for _, scopeSpans := range resourceSpans.ScopeSpans {
 			for _, span := range scopeSpans.Spans {
-				record := rbb.NewRecord()
+				record := air.NewRecord()
 
 				if span.StartTimeUnixNano > 0 {
 					record.U64Field(constants.START_TIME_UNIX_NANO, span.StartTimeUnixNano)
@@ -101,7 +101,7 @@ func OtlpTraceToArrowRecords(rbr *rbb.RecordRepository, request *coltracepb.Expo
 	return result, nil
 }
 
-func AddEvents(record *rbb.Record, events []*v1.Span_Event) {
+func AddEvents(record *air.Record, events []*v1.Span_Event) {
 	if events == nil {
 		return
 	}
@@ -135,7 +135,7 @@ func AddEvents(record *rbb.Record, events []*v1.Span_Event) {
 	})
 }
 
-func AddLinks(record *rbb.Record, links []*v1.Span_Link) {
+func AddLinks(record *air.Record, links []*v1.Span_Link) {
 	if links == nil {
 		return
 	}
