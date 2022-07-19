@@ -4,6 +4,14 @@ Adapter used to convert OTEL batches to/from OTEL Arrow batches in both directio
 
 See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md) for more details on the OTEL Arrow protocol.
 
+## Packages
+
+| Package   | Description                                                                                                                  |
+|-----------|------------------------------------------------------------------------------------------------------------------------------|
+| air       | Arrow Intermediate Representation used to translate batch of row-oriented entities into columnar-oriented batch of entities. |
+| otel      | Conversion functions to translate OTLP entities into OTLP Arrow Event.                                                       |
+| benchmark | Benchmark infrastructure to compare OTLP and OTLP Arrow representations.                                                     |
+
 ## Status [WIP]
 
 ### Framework to convert row-oriented structured data to Arrow columnar data
