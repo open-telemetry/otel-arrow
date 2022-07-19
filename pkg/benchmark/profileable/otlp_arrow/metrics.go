@@ -41,7 +41,7 @@ func (s *MetricsProfileable) PrepareBatch(startAt, size int) {
 }
 func (s *MetricsProfileable) CreateBatch(_, _ int) {
 	for _, m := range s.metrics {
-		records, err := metrics.OtlpMetricsToArrowEvents(s.rr, m, s.multivariateConfig)
+		records, err := metrics.OtlpMetricsToArrowRecords(s.rr, m, s.multivariateConfig)
 		if err != nil {
 			panic(err)
 		}

@@ -30,7 +30,7 @@ func TestOtlpLogsToArrowEvents(t *testing.T) {
 	lg := fake.NewLogsGenerator(fake.DefaultResourceAttributes(), fake.DefaultInstrumentationScope())
 
 	request := lg.Generate(10, 100)
-	records, err := logs.OtlpLogsToArrowEvents(rbr, request)
+	records, err := logs.OtlpLogsToArrowRecords(rbr, request)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}

@@ -36,7 +36,7 @@ func TestOtlpMetricsToArrowEvents(t *testing.T) {
 	multivariateConf.Metrics["system.memory.usage"] = "state"
 
 	request := lg.Generate(10, 100)
-	multiSchemaRecords, err := metrics.OtlpMetricsToArrowEvents(rbr, request, &multivariateConf)
+	multiSchemaRecords, err := metrics.OtlpMetricsToArrowRecords(rbr, request, &multivariateConf)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}

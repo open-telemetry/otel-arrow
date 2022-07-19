@@ -22,7 +22,8 @@ import (
 	"otel-arrow-adapter/pkg/rbb"
 )
 
-func OtlpTraceToArrowEvents(rbr *rbb.RecordRepository, request *coltracepb.ExportTraceServiceRequest) ([]arrow.Record, error) {
+// OtlpTraceToArrowRecords converts an OTLP trace to one or more Arrow records.
+func OtlpTraceToArrowRecords(rbr *rbb.RecordRepository, request *coltracepb.ExportTraceServiceRequest) ([]arrow.Record, error) {
 	for _, resourceSpans := range request.ResourceSpans {
 		for _, scopeSpans := range resourceSpans.ScopeSpans {
 			for _, span := range scopeSpans.Spans {

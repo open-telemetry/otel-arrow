@@ -35,7 +35,8 @@ type MultivariateRecord struct {
 	metrics []*rfield.Field
 }
 
-func OtlpMetricsToArrowEvents(rbr *rbb.RecordRepository, request *collogspb.ExportMetricsServiceRequest, multivariateConf *MultivariateMetricsConfig) (map[string][]arrow.Record, error) {
+// OtlpMetricsToArrowRecords converts an OTLP ResourceMetrics to one or more Arrow records.
+func OtlpMetricsToArrowRecords(rbr *rbb.RecordRepository, request *collogspb.ExportMetricsServiceRequest, multivariateConf *MultivariateMetricsConfig) (map[string][]arrow.Record, error) {
 	result := make(map[string][]arrow.Record)
 	for _, resourceMetrics := range request.ResourceMetrics {
 		for _, scopeMetrics := range resourceMetrics.ScopeMetrics {

@@ -22,7 +22,8 @@ import (
 	"otel-arrow-adapter/pkg/rbb"
 )
 
-func OtlpLogsToArrowEvents(rbr *rbb.RecordRepository, request *collogspb.ExportLogsServiceRequest) ([]arrow.Record, error) {
+// OtlpLogsToArrowRecords converts an OTLP ResourceLogs to one or more Arrow records
+func OtlpLogsToArrowRecords(rbr *rbb.RecordRepository, request *collogspb.ExportLogsServiceRequest) ([]arrow.Record, error) {
 	for _, resourceLogs := range request.ResourceLogs {
 		for _, scopeLogs := range resourceLogs.ScopeLogs {
 			for _, log := range scopeLogs.LogRecords {
