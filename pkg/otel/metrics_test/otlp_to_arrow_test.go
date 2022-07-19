@@ -26,7 +26,7 @@ func TestOtlpMetricsToArrowEvents(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewDefaultConfig()
-	rbr := air.NewRecordRepository(cfg)
+	rr := air.NewRecordRepository(cfg)
 	lg := fake.NewMetricsGenerator(fake.DefaultResourceAttributes(), fake.DefaultInstrumentationScope())
 
 	multivariateConf := metrics.MultivariateMetricsConfig{
@@ -36,7 +36,7 @@ func TestOtlpMetricsToArrowEvents(t *testing.T) {
 	multivariateConf.Metrics["system.memory.usage"] = "state"
 
 	request := lg.Generate(10, 100)
-	multiSchemaRecords, err := metrics.OtlpMetricsToArrowRecords(rbr, request, &multivariateConf)
+	multiSchemaRecords, err := metrics.OtlpMetricsToArrowRecords(rr, request, &multivariateConf)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}

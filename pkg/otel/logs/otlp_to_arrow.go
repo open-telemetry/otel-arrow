@@ -23,7 +23,7 @@ import (
 )
 
 // OtlpLogsToArrowRecords converts an OTLP ResourceLogs to one or more Arrow records
-func OtlpLogsToArrowRecords(rbr *air.RecordRepository, request *collogspb.ExportLogsServiceRequest) ([]arrow.Record, error) {
+func OtlpLogsToArrowRecords(rr *air.RecordRepository, request *collogspb.ExportLogsServiceRequest) ([]arrow.Record, error) {
 	for _, resourceLogs := range request.ResourceLogs {
 		for _, scopeLogs := range resourceLogs.ScopeLogs {
 			for _, log := range scopeLogs.LogRecords {
@@ -62,12 +62,12 @@ func OtlpLogsToArrowRecords(rbr *air.RecordRepository, request *collogspb.Export
 					record.BinaryField(constants.SPAN_ID, log.SpanId)
 				}
 
-				rbr.AddRecord(record)
+				rr.AddRecord(record)
 			}
 		}
 	}
 
-	logsRecords, err := rbr.Build()
+	logsRecords, err := rr.Build()
 	if err != nil {
 		return nil, err
 	}

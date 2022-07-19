@@ -25,7 +25,7 @@ import (
 )
 
 // OtlpTraceToArrowRecords converts an OTLP trace to one or more Arrow records.
-func OtlpTraceToArrowRecords(rbr *air.RecordRepository, request *coltracepb.ExportTraceServiceRequest) ([]arrow.Record, error) {
+func OtlpTraceToArrowRecords(rr *air.RecordRepository, request *coltracepb.ExportTraceServiceRequest) ([]arrow.Record, error) {
 	for _, resourceSpans := range request.ResourceSpans {
 		for _, scopeSpans := range resourceSpans.ScopeSpans {
 			for _, span := range scopeSpans.Spans {
@@ -83,12 +83,12 @@ func OtlpTraceToArrowRecords(rbr *air.RecordRepository, request *coltracepb.Expo
 					record.StringField(constants.STATUS_MESSAGE, span.Status.Message)
 				}
 
-				rbr.AddRecord(record)
+				rr.AddRecord(record)
 			}
 		}
 	}
 
-	logsRecords, err := rbr.Build()
+	logsRecords, err := rr.Build()
 	if err != nil {
 		return nil, err
 	}

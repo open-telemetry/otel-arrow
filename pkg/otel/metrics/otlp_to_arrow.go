@@ -36,7 +36,7 @@ type MultivariateRecord struct {
 }
 
 // OtlpMetricsToArrowRecords converts an OTLP ResourceMetrics to one or more Arrow records.
-func OtlpMetricsToArrowRecords(rbr *air.RecordRepository, request *collogspb.ExportMetricsServiceRequest, multivariateConf *MultivariateMetricsConfig) (map[string][]arrow.Record, error) {
+func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request *collogspb.ExportMetricsServiceRequest, multivariateConf *MultivariateMetricsConfig) (map[string][]arrow.Record, error) {
 	result := make(map[string][]arrow.Record)
 	for _, resourceMetrics := range request.ResourceMetrics {
 		for _, scopeMetrics := range resourceMetrics.ScopeMetrics {
@@ -44,12 +44,12 @@ func OtlpMetricsToArrowRecords(rbr *air.RecordRepository, request *collogspb.Exp
 				if metric.Data != nil {
 					switch metric.Data.(type) {
 					case *metricspb.Metric_Gauge:
-						err := addMetric(rbr, resourceMetrics, scopeMetrics, metric.Name, metric.Data.(*metricspb.Metric_Gauge).Gauge.DataPoints, multivariateConf)
+						err := addMetric(rr, resourceMetrics, scopeMetrics, metric.Name, metric.Data.(*metricspb.Metric_Gauge).Gauge.DataPoints, multivariateConf)
 						if err != nil {
 							return nil, err
 						}
 					case *metricspb.Metric_Sum:
-						err := addMetric(rbr, resourceMetrics, scopeMetrics, metric.Name, metric.Data.(*metricspb.Metric_Sum).Sum.DataPoints, multivariateConf)
+						err := addMetric(rr, resourceMetrics, scopeMetrics, metric.Name, metric.Data.(*metricspb.Metric_Sum).Sum.DataPoints, multivariateConf)
 						if err != nil {
 							return nil, err
 						}
@@ -68,7 +68,7 @@ func OtlpMetricsToArrowRecords(rbr *air.RecordRepository, request *collogspb.Exp
 					}
 				}
 			}
-			records, err := rbr.Build()
+			records, err := rr.Build()
 			if err != nil {
 				return nil, err
 			}
@@ -85,17 +85,17 @@ func OtlpMetricsToArrowRecords(rbr *air.RecordRepository, request *collogspb.Exp
 	return result, nil
 }
 
-func addMetric(rbr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint, config *MultivariateMetricsConfig) error {
+func addMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint, config *MultivariateMetricsConfig) error {
 	if mvKey, ok := config.Metrics[metricName]; ok {
-		return multivariateMetric(rbr, resMetrics, scopeMetrics, dataPoints, mvKey)
+		return multivariateMetric(rr, resMetrics, scopeMetrics, dataPoints, mvKey)
 	} else {
-		univariateMetric(rbr, resMetrics, scopeMetrics, metricName, dataPoints)
+		univariateMetric(rr, resMetrics, scopeMetrics, metricName, dataPoints)
 		return nil
 	}
 }
 
 // ToDo initial metric name is lost, it should be recorded as metadata or constant column
-func multivariateMetric(rbr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, dataPoints []*metricspb.NumberDataPoint, multivariateKey string) error {
+func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, dataPoints []*metricspb.NumberDataPoint, multivariateKey string) error {
 	records := make(map[string]*MultivariateRecord)
 
 	for _, ndp := range dataPoints {
@@ -162,12 +162,12 @@ func multivariateMetric(rbr *air.RecordRepository, resMetrics *metricspb.Resourc
 		record.fields = append(record.fields, rfield.NewStructField(constants.METRICS, rfield.Struct{
 			Fields: record.metrics,
 		}))
-		rbr.AddRecord(air.NewRecordFromFields(record.fields))
+		rr.AddRecord(air.NewRecordFromFields(record.fields))
 	}
 	return nil
 }
 
-func univariateMetric(rbr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint) {
+func univariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint) {
 	for _, ndp := range dataPoints {
 		record := air.NewRecord()
 
@@ -213,7 +213,7 @@ func univariateMetric(rbr *air.RecordRepository, resMetrics *metricspb.ResourceM
 			record.U32Field(constants.FLAGS, ndp.Flags)
 		}
 
-		rbr.AddRecord(record)
+		rr.AddRecord(record)
 	}
 }
 

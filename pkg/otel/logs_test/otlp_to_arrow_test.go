@@ -26,11 +26,11 @@ func TestOtlpLogsToArrowEvents(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewDefaultConfig()
-	rbr := air.NewRecordRepository(cfg)
+	rr := air.NewRecordRepository(cfg)
 	lg := fake.NewLogsGenerator(fake.DefaultResourceAttributes(), fake.DefaultInstrumentationScope())
 
 	request := lg.Generate(10, 100)
-	records, err := logs.OtlpLogsToArrowRecords(rbr, request)
+	records, err := logs.OtlpLogsToArrowRecords(rr, request)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}

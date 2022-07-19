@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package rbb_test
+package air_test
 
 import (
 	"github.com/apache/arrow/go/v9/arrow"
@@ -28,17 +28,17 @@ import (
 func TestAddRecord(t *testing.T) {
 	t.Parallel()
 
-	rbr := air.NewRecordRepository(config2.NewDefaultConfig())
-	rbr.AddRecord(GenSimpleRecord(0))
-	rbr.AddRecord(GenComplexRecord(1))
-	rbr.AddRecord(GenSimpleRecord(2))
-	rbr.AddRecord(GenComplexRecord(3))
+	rr := air.NewRecordRepository(config2.NewDefaultConfig())
+	rr.AddRecord(GenSimpleRecord(0))
+	rr.AddRecord(GenComplexRecord(1))
+	rr.AddRecord(GenSimpleRecord(2))
+	rr.AddRecord(GenComplexRecord(3))
 
-	if rbr.RecordBuilderCount() != 2 {
-		t.Errorf("Expected 2 RecordBuilders, got %d", rbr.RecordBuilderCount())
+	if rr.RecordBuilderCount() != 2 {
+		t.Errorf("Expected 2 RecordBuilders, got %d", rr.RecordBuilderCount())
 	}
 
-	metadata := rbr.Metadata()
+	metadata := rr.Metadata()
 	for _, m := range metadata {
 		switch m.SchemaId {
 		case "a:Str,b:Str,c:Str,ts:I64":
@@ -76,7 +76,7 @@ func TestAddRecord(t *testing.T) {
 			}
 		}
 	}
-	//spew.Dump(rbr.Metadata())
+	//spew.Dump(rr.Metadata())
 }
 
 func TestOptimize(t *testing.T) {
@@ -92,14 +92,14 @@ func TestOptimize(t *testing.T) {
 			},
 		},
 	}
-	rbr := air.NewRecordRepository(&config)
+	rr := air.NewRecordRepository(&config)
 
 	for i := 0; i < 100; i++ {
-		rbr.AddRecord(GenRecord(int64(i), i%15, i%2, i))
+		rr.AddRecord(GenRecord(int64(i), i%15, i%2, i))
 	}
-	rbr.Optimize()
+	rr.Optimize()
 
-	metadata := rbr.Metadata()
+	metadata := rr.Metadata()
 	for _, m := range metadata {
 		switch m.SchemaId {
 		case "a:Str,b:Str,c:Str,ts:I64":
@@ -161,7 +161,7 @@ func TestOptimize(t *testing.T) {
 			}
 		}
 	}
-	//spew.Dump(rbr.Metadata())
+	//spew.Dump(rr.Metadata())
 }
 
 func TestBuild(t *testing.T) {
@@ -177,7 +177,7 @@ func TestBuild(t *testing.T) {
 			},
 		},
 	}
-	rbr := air.NewRecordRepository(&config)
+	rr := air.NewRecordRepository(&config)
 
 	// Generates 100 timestamps randomly sorted.
 	tsValues := make([]int64, 0, 100)
@@ -189,10 +189,10 @@ func TestBuild(t *testing.T) {
 
 	// Inserts 100 records
 	for _, ts := range tsValues {
-		rbr.AddRecord(GenRecord(ts, int(ts%15), int(ts%2), int(ts)))
+		rr.AddRecord(GenRecord(ts, int(ts%15), int(ts%2), int(ts)))
 	}
-	rbr.Optimize() // Optimize will determine which string columns must be sorted (first batch only).
-	records, err := rbr.Build()
+	rr.Optimize() // Optimize will determine which string columns must be sorted (first batch only).
+	records, err := rr.Build()
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
@@ -200,10 +200,10 @@ func TestBuild(t *testing.T) {
 
 	// Inserts 100 records
 	for _, ts := range tsValues {
-		rbr.AddRecord(GenRecord(ts, int(ts%15), int(ts%2), int(ts)))
+		rr.AddRecord(GenRecord(ts, int(ts%15), int(ts%2), int(ts)))
 	}
-	rbr.Optimize()
-	records, err = rbr.Build() // Build will build an Arrow Record with the sorted columns determined in the first batch.
+	rr.Optimize()
+	records, err = rr.Build() // Build will build an Arrow Record with the sorted columns determined in the first batch.
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)

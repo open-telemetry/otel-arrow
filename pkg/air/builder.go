@@ -86,39 +86,39 @@ func NewRecordBuilderWithRecord(record *Record, config *config2.Config) *RecordB
 	return &builder
 }
 
-func (rbb *RecordBuilder) AddRecord(record *Record) {
-	if rbb.recordList != nil {
-		rbb.recordList = append(rbb.recordList, record)
+func (rb *RecordBuilder) AddRecord(record *Record) {
+	if rb.recordList != nil {
+		rb.recordList = append(rb.recordList, record)
 	} else {
 		for fieldIdx := range record.fields {
-			rbb.columns.UpdateColumn(rbb.fieldPaths[fieldIdx], record.fields[fieldIdx])
+			rb.columns.UpdateColumn(rb.fieldPaths[fieldIdx], record.fields[fieldIdx])
 		}
 	}
 }
 
-func (rbb *RecordBuilder) IsEmpty() bool {
-	return rbb.columns.IsEmpty()
+func (rb *RecordBuilder) IsEmpty() bool {
+	return rb.columns.IsEmpty()
 }
 
-func (rbb *RecordBuilder) Build(allocator *memory.GoAllocator) (arrow.Record, error) {
+func (rb *RecordBuilder) Build(allocator *memory.GoAllocator) (arrow.Record, error) {
 	// Sorts the string columns according to the order by clause.
-	if rbb.orderBy != nil {
-		recordList := rbb.recordList
+	if rb.orderBy != nil {
+		recordList := rb.recordList
 		capacity := 100
 		if len(recordList) > capacity {
 			capacity = len(recordList)
 		}
-		rbb.recordList = make([]*Record, 0, capacity)
-		sortByRecordList(recordList, rbb.orderBy)
+		rb.recordList = make([]*Record, 0, capacity)
+		sortByRecordList(recordList, rb.orderBy)
 		for _, record := range recordList {
 			for pos := range record.fields {
-				rbb.columns.UpdateColumn(rbb.fieldPaths[pos], record.fields[pos])
+				rb.columns.UpdateColumn(rb.fieldPaths[pos], record.fields[pos])
 			}
 		}
 	}
 
 	// Creates a column builder for every column.
-	fields, builders, err := rbb.columns.Build(allocator)
+	fields, builders, err := rb.columns.Build(allocator)
 	if err != nil {
 		return nil, err
 	}
@@ -154,49 +154,49 @@ func (rbb *RecordBuilder) Build(allocator *memory.GoAllocator) (arrow.Record, er
 	return array.NewRecord(schema, cols, rows), nil
 }
 
-func (rbb *RecordBuilder) Metadata(schemaId string) *RecordBuilderMetadata {
+func (rb *RecordBuilder) Metadata(schemaId string) *RecordBuilderMetadata {
 	recordListLen := 0
 
-	if rbb.recordList != nil {
-		recordListLen = len(rbb.recordList)
+	if rb.recordList != nil {
+		recordListLen = len(rb.recordList)
 	}
 
 	return &RecordBuilderMetadata{
 		SchemaId:        schemaId,
-		Columns:         rbb.columns.Metadata(),
+		Columns:         rb.columns.Metadata(),
 		RecordListLen:   recordListLen,
-		Optimized:       rbb.optimized,
-		DictionaryStats: rbb.columns.DictionaryStats(),
+		Optimized:       rb.optimized,
+		DictionaryStats: rb.columns.DictionaryStats(),
 	}
 }
 
-func (rbb *RecordBuilder) DictionaryStats() []*stats.DictionaryStats {
-	return rbb.columns.DictionaryStats()
+func (rb *RecordBuilder) DictionaryStats() []*stats.DictionaryStats {
+	return rb.columns.DictionaryStats()
 }
 
-func (rbb *RecordBuilder) OrderBy(fieldPaths [][]int) {
-	rbb.orderBy = &OrderBy{
+func (rb *RecordBuilder) OrderBy(fieldPaths [][]int) {
+	rb.orderBy = &OrderBy{
 		FieldPaths: fieldPaths,
 	}
-	rbb.recordList = []*Record{}
+	rb.recordList = []*Record{}
 }
 
-func (rbb *RecordBuilder) Optimize() bool {
-	if rbb.optimized {
+func (rb *RecordBuilder) Optimize() bool {
+	if rb.optimized {
 		return true
 	}
 
-	if rbb.orderBy == nil {
+	if rb.orderBy == nil {
 		var dictionaryStats []*stats.DictionaryStats
-		for _, ds := range rbb.DictionaryStats() {
-			if ds.Cardinality > 1 && rbb.config.Dictionaries.StringColumns.IsDictionary(ds.TotalEntry, ds.Cardinality) {
+		for _, ds := range rb.DictionaryStats() {
+			if ds.Cardinality > 1 && rb.config.Dictionaries.StringColumns.IsDictionary(ds.TotalEntry, ds.Cardinality) {
 				dictionaryStats = append(dictionaryStats, ds)
 			}
 		}
 		sort.Sort(stats.DictionaryStatsSlice(dictionaryStats))
 		var paths [][]int
 		for i, ds := range dictionaryStats {
-			if i < rbb.config.Dictionaries.StringColumns.MaxSortedDictionaries {
+			if i < rb.config.Dictionaries.StringColumns.MaxSortedDictionaries {
 				path := make([]int, len(ds.Path))
 				copy(path, ds.Path)
 				paths = append(paths, path)
@@ -205,11 +205,11 @@ func (rbb *RecordBuilder) Optimize() bool {
 			}
 		}
 		if len(paths) > 0 {
-			rbb.orderBy = &OrderBy{
+			rb.orderBy = &OrderBy{
 				FieldPaths: paths,
 			}
-			rbb.optimized = true
-			rbb.recordList = []*Record{}
+			rb.optimized = true
+			rb.recordList = []*Record{}
 			return true
 		}
 	}

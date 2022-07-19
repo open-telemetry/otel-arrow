@@ -38,34 +38,34 @@ func NewRecordRepository(config *config2.Config) *RecordRepository {
 	}
 }
 
-func (rbr *RecordRepository) AddRecord(record *Record) {
+func (rr *RecordRepository) AddRecord(record *Record) {
 	record.Normalize()
 	schemaId := record.SchemaId()
 
-	if rbb, ok := rbr.builders[schemaId]; ok {
-		rbb.AddRecord(record)
+	if rb, ok := rr.builders[schemaId]; ok {
+		rb.AddRecord(record)
 	} else {
-		rbr.builders[schemaId] = NewRecordBuilderWithRecord(record, rbr.config)
+		rr.builders[schemaId] = NewRecordBuilderWithRecord(record, rr.config)
 	}
 }
 
 // RecordBuilderCount returns the number of non-empty RecordBuilder in the repository.
-func (rbr *RecordRepository) RecordBuilderCount() int {
+func (rr *RecordRepository) RecordBuilderCount() int {
 	count := 0
-	for _, rbb := range rbr.builders {
-		if !rbb.IsEmpty() {
+	for _, rb := range rr.builders {
+		if !rb.IsEmpty() {
 			count++
 		}
 	}
 	return count
 }
 
-func (rbr *RecordRepository) Build() (map[string]arrow.Record, error) {
+func (rr *RecordRepository) Build() (map[string]arrow.Record, error) {
 	recordBatches := make(map[string]arrow.Record)
 
-	for schemaId, builder := range rbr.builders {
+	for schemaId, builder := range rr.builders {
 		if !builder.IsEmpty() {
-			record, err := builder.Build(rbr.allocator)
+			record, err := builder.Build(rr.allocator)
 			if err != nil {
 				return nil, err
 			}
@@ -76,17 +76,17 @@ func (rbr *RecordRepository) Build() (map[string]arrow.Record, error) {
 	return recordBatches, nil
 }
 
-func (rbr *RecordRepository) Optimize() {
-	for _, rbb := range rbr.builders {
-		rbb.Optimize()
+func (rr *RecordRepository) Optimize() {
+	for _, rb := range rr.builders {
+		rb.Optimize()
 	}
 }
 
-func (rbr *RecordRepository) Metadata() []*RecordBuilderMetadata {
+func (rr *RecordRepository) Metadata() []*RecordBuilderMetadata {
 	var metadata []*RecordBuilderMetadata
-	for schemaId, rbb := range rbr.builders {
-		if !rbb.IsEmpty() {
-			metadata = append(metadata, rbb.Metadata(schemaId))
+	for schemaId, rb := range rr.builders {
+		if !rb.IsEmpty() {
+			metadata = append(metadata, rb.Metadata(schemaId))
 		}
 	}
 	return metadata
