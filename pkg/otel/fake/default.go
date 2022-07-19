@@ -102,3 +102,37 @@ func DefaultInstrumentationScope() *commonpb.InstrumentationScope {
 		Version: "1.0.0",
 	}
 }
+
+func DefaultSpanEventAttributes() []*commonpb.KeyValue {
+	return []*commonpb.KeyValue{
+		{
+			Key:   "hostname",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "localhost"}},
+		},
+		{
+			Key:   "up",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}},
+		},
+		{
+			Key:   "status",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 200}},
+		},
+	}
+}
+
+func DefaultSpanLinkAttributes() []*commonpb.KeyValue {
+	return []*commonpb.KeyValue{
+		{
+			Key:   "hostname",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "localhost"}},
+		},
+		{
+			Key:   "up",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}},
+		},
+		{
+			Key:   "status",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 200}},
+		},
+	}
+}

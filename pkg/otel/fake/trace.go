@@ -15,6 +15,7 @@
 package fake
 
 import (
+	"fmt"
 	coltracepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
@@ -96,6 +97,10 @@ func Spans(dataGenerator *DataGenerator) []*tracepb.Span {
 			Kind:                   tracepb.Span_SPAN_KIND_SERVER,
 			Attributes:             DefaultAttributes(),
 			DroppedAttributesCount: 0,
+			Events:                 events(dataGenerator),
+			DroppedEventsCount:     0,
+			Links:                  links(dataGenerator),
+			DroppedLinksCount:      0,
 			Status: &tracepb.Status{
 				Code:    tracepb.Status_STATUS_CODE_OK,
 				Message: "OK",
@@ -110,6 +115,10 @@ func Spans(dataGenerator *DataGenerator) []*tracepb.Span {
 			Kind:                   tracepb.Span_SPAN_KIND_SERVER,
 			Attributes:             DefaultAttributes(),
 			DroppedAttributesCount: 0,
+			Events:                 events(dataGenerator),
+			DroppedEventsCount:     0,
+			Links:                  links(dataGenerator),
+			DroppedLinksCount:      0,
 			Status: &tracepb.Status{
 				Code:    tracepb.Status_STATUS_CODE_OK,
 				Message: "OK",
@@ -124,10 +133,46 @@ func Spans(dataGenerator *DataGenerator) []*tracepb.Span {
 			Kind:                   tracepb.Span_SPAN_KIND_SERVER,
 			Attributes:             DefaultAttributes(),
 			DroppedAttributesCount: 0,
+			Events:                 events(dataGenerator),
+			DroppedEventsCount:     0,
+			Links:                  links(dataGenerator),
+			DroppedLinksCount:      0,
 			Status: &tracepb.Status{
 				Code:    tracepb.Status_STATUS_CODE_OK,
 				Message: "OK",
 			},
 		},
 	}
+}
+
+// events returns a slice of events for the span.
+func events(dataGenerator *DataGenerator) []*tracepb.Span_Event {
+	events := make([]*tracepb.Span_Event, 0, 3)
+	for i := 0; i < 3; i++ {
+		events[i] = &tracepb.Span_Event{
+			TimeUnixNano:           dataGenerator.CurrentTime(),
+			Name:                   fmt.Sprintf("event-%d", i),
+			Attributes:             DefaultSpanEventAttributes(),
+			DroppedAttributesCount: 0,
+		}
+	}
+	return events
+}
+
+// links returns a slice of links for the span.
+func links(dataGenerator *DataGenerator) []*tracepb.Span_Link {
+	dataGenerator.NextId8Bits()
+	dataGenerator.NextId8Bits()
+
+	links := make([]*tracepb.Span_Link, 0, 3)
+	for i := 0; i < 3; i++ {
+		links[i] = &tracepb.Span_Link{
+			TraceId:                dataGenerator.Id16Bits(),
+			SpanId:                 dataGenerator.Id8Bits(),
+			TraceState:             fmt.Sprintf("link-trace-state-%d", i),
+			Attributes:             DefaultSpanLinkAttributes(),
+			DroppedAttributesCount: 0,
+		}
+	}
+	return links
 }

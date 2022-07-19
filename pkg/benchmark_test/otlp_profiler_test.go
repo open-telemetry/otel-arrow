@@ -22,6 +22,7 @@ func TestOtlpMetricsProfiler(t *testing.T) {
 }
 
 func TestOtlpLogsProfiler(t *testing.T) {
+	t.Skip("Skipping this test because it's not fully implemented yet")
 	t.Parallel()
 
 	systemToProfile := otlp.NewLogsProfileable(benchmark.NewFakeLogsDataset(1000), benchmark.Zstd)
@@ -36,6 +37,7 @@ func TestOtlpLogsProfiler(t *testing.T) {
 }
 
 func TestOtlpTracesProfiler(t *testing.T) {
+	t.Skip("Skipping this test because it's not fully implemented yet")
 	t.Parallel()
 
 	systemToProfile := otlp.NewTraceProfileable(benchmark.NewFakeTraceDataset(1000), benchmark.Zstd)
