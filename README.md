@@ -35,8 +35,8 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
     - [X] Logs
   - **OTLP trace --> OTLP_ARROW events**
     - [X] Trace
-    - [ ] Links
-    - [ ] Events
+    - [X] Links
+    - [X] Events
   - **Arrow IPC format**
     - [ ] Producer
 

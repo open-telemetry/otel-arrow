@@ -147,7 +147,7 @@ func Spans(dataGenerator *DataGenerator) []*tracepb.Span {
 
 // events returns a slice of events for the span.
 func events(dataGenerator *DataGenerator) []*tracepb.Span_Event {
-	events := make([]*tracepb.Span_Event, 0, 3)
+	events := make([]*tracepb.Span_Event, 3)
 	for i := 0; i < 3; i++ {
 		events[i] = &tracepb.Span_Event{
 			TimeUnixNano:           dataGenerator.CurrentTime(),
@@ -164,7 +164,7 @@ func links(dataGenerator *DataGenerator) []*tracepb.Span_Link {
 	dataGenerator.NextId8Bits()
 	dataGenerator.NextId8Bits()
 
-	links := make([]*tracepb.Span_Link, 0, 3)
+	links := make([]*tracepb.Span_Link, 3)
 	for i := 0; i < 3; i++ {
 		links[i] = &tracepb.Span_Link{
 			TraceId:                dataGenerator.Id16Bits(),

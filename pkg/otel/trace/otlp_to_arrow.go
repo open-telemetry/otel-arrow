@@ -17,9 +17,11 @@ package trace
 import (
 	"github.com/apache/arrow/go/v9/arrow"
 	coltracepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/trace/v1"
 	"otel-arrow-adapter/pkg/otel/common"
 	"otel-arrow-adapter/pkg/otel/constants"
 	"otel-arrow-adapter/pkg/rbb"
+	"otel-arrow-adapter/pkg/rbb/rfield"
 )
 
 // OtlpTraceToArrowRecords converts an OTLP trace to one or more Arrow records.
@@ -63,11 +65,19 @@ func OtlpTraceToArrowRecords(rbr *rbb.RecordRepository, request *coltracepb.Expo
 					record.U32Field(constants.DROPPED_ATTRIBUTES_COUNT, uint32(span.DroppedAttributesCount))
 				}
 
-				// ToDo Events
-				// ToDo DroppedEventsCount
-				// ToDo Links
-				// ToDo DroppedLinksCount
+				// Events
+				AddEvents(record, span.Events)
+				if span.DroppedEventsCount > 0 {
+					record.U32Field(constants.DROPPED_EVENTS_COUNT, uint32(span.DroppedEventsCount))
+				}
 
+				// Links
+				AddLinks(record, span.Links)
+				if span.DroppedLinksCount > 0 {
+					record.U32Field(constants.DROPPED_LINKS_COUNT, uint32(span.DroppedLinksCount))
+				}
+
+				// Status
 				if span.Status != nil {
 					record.I32Field(constants.STATUS, int32(span.Status.Code))
 					record.StringField(constants.STATUS_MESSAGE, span.Status.Message)
@@ -89,4 +99,75 @@ func OtlpTraceToArrowRecords(rbr *rbb.RecordRepository, request *coltracepb.Expo
 	}
 
 	return result, nil
+}
+
+func AddEvents(record *rbb.Record, events []*v1.Span_Event) {
+	if events == nil {
+		return
+	}
+
+	convertedEvents := make([]rfield.Value, 0, len(events))
+
+	for _, event := range events {
+		fields := make([]*rfield.Field, 0, 4)
+
+		if event.TimeUnixNano > 0 {
+			fields = append(fields, rfield.NewU64Field(constants.TIME_UNIX_NANO, event.TimeUnixNano))
+		}
+		if len(event.Name) > 0 {
+			fields = append(fields, rfield.NewStringField(constants.NAME, event.Name))
+		}
+		if event.Attributes != nil {
+			attributes := common.NewAttributes(event.Attributes)
+			if attributes != nil {
+				fields = append(fields, attributes)
+			}
+		}
+		if event.DroppedAttributesCount > 0 {
+			fields = append(fields, rfield.NewU32Field(constants.DROPPED_ATTRIBUTES_COUNT, uint32(event.DroppedAttributesCount)))
+		}
+		convertedEvents = append(convertedEvents, &rfield.Struct{
+			Fields: fields,
+		})
+	}
+	record.ListField(constants.SPAN_EVENTS, rfield.List{
+		Values: convertedEvents,
+	})
+}
+
+func AddLinks(record *rbb.Record, links []*v1.Span_Link) {
+	if links == nil {
+		return
+	}
+
+	convertedLinks := make([]rfield.Value, 0, len(links))
+
+	for _, link := range links {
+		fields := make([]*rfield.Field, 0, 4)
+
+		if link.TraceId != nil && len(link.TraceId) > 0 {
+			fields = append(fields, rfield.NewBinaryField(constants.TRACE_ID, link.TraceId))
+		}
+		if link.SpanId != nil && len(link.SpanId) > 0 {
+			fields = append(fields, rfield.NewBinaryField(constants.SPAN_ID, link.SpanId))
+		}
+		if len(link.TraceState) > 0 {
+			fields = append(fields, rfield.NewStringField(constants.TRACE_STATE, link.TraceState))
+		}
+		if link.Attributes != nil {
+			attributes := common.NewAttributes(link.Attributes)
+			if attributes != nil {
+				fields = append(fields, attributes)
+			}
+		}
+		if link.DroppedAttributesCount > 0 {
+			fields = append(fields, rfield.NewU32Field(constants.DROPPED_ATTRIBUTES_COUNT, uint32(link.DroppedAttributesCount)))
+		}
+		convertedLinks = append(convertedLinks, &rfield.Struct{
+			Fields: fields,
+		})
+	}
+	record.ListField(constants.SPAN_LINKS, rfield.List{
+		Values: convertedLinks,
+	})
 }
