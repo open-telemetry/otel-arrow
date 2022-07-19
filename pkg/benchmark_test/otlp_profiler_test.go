@@ -2,48 +2,48 @@ package benchmark
 
 import (
 	"otel-arrow-adapter/pkg/benchmark"
-	"otel-arrow-adapter/pkg/benchmark/profileable"
+	"otel-arrow-adapter/pkg/benchmark/profileable/otlp"
 	"testing"
 )
 
-func TestMetricsProfiler(t *testing.T) {
+func TestOtlpMetricsProfiler(t *testing.T) {
 	t.Parallel()
 
-	systemToProfile := profileable.NewMetricsOtlpProfileable(benchmark.NewFakeMetricsDataset(1000), benchmark.Zstd)
+	systemToProfile := otlp.NewMetricsProfileable(benchmark.NewFakeMetricsDataset(1000), benchmark.Zstd)
 	profiler := benchmark.NewProfiler([]int{10, 100, 1000})
 	if err := profiler.Profile(systemToProfile, 10); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
 	profiler.CheckProcessingResults()
 	profiler.PrintResults()
-	profiler.ExportMetricsTimesCSV("metrics")
-	profiler.ExportMetricsBytesCSV("metrics")
+	profiler.ExportMetricsTimesCSV("otlp_metrics")
+	profiler.ExportMetricsBytesCSV("otlp_metrics")
 }
 
-func TestLogsProfiler(t *testing.T) {
+func TestOtlpLogsProfiler(t *testing.T) {
 	t.Parallel()
 
-	systemToProfile := profileable.NewLogsOtlpProfileable(benchmark.NewFakeLogsDataset(1000), benchmark.Zstd)
+	systemToProfile := otlp.NewLogsProfileable(benchmark.NewFakeLogsDataset(1000), benchmark.Zstd)
 	profiler := benchmark.NewProfiler([]int{10, 100, 1000})
 	if err := profiler.Profile(systemToProfile, 10); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
 	profiler.CheckProcessingResults()
 	profiler.PrintResults()
-	profiler.ExportMetricsTimesCSV("logs")
-	profiler.ExportMetricsBytesCSV("logs")
+	profiler.ExportMetricsTimesCSV("otlp_logs")
+	profiler.ExportMetricsBytesCSV("otlp_logs")
 }
 
-func TestTracesProfiler(t *testing.T) {
+func TestOtlpTracesProfiler(t *testing.T) {
 	t.Parallel()
 
-	systemToProfile := profileable.NewTraceOtlpProfileable(benchmark.NewFakeTraceDataset(1000), benchmark.Zstd)
+	systemToProfile := otlp.NewTraceProfileable(benchmark.NewFakeTraceDataset(1000), benchmark.Zstd)
 	profiler := benchmark.NewProfiler([]int{10, 100, 1000})
 	if err := profiler.Profile(systemToProfile, 10); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
 	profiler.CheckProcessingResults()
 	profiler.PrintResults()
-	profiler.ExportMetricsTimesCSV("traces")
-	profiler.ExportMetricsBytesCSV("traces")
+	profiler.ExportMetricsTimesCSV("otlp_traces")
+	profiler.ExportMetricsBytesCSV("otlp_traces")
 }

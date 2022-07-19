@@ -7,6 +7,7 @@ require (
 	github.com/brianvoe/gofakeit/v6 v6.17.0
 	github.com/davecgh/go-spew v1.1.1
 	github.com/google/go-cmp v0.5.8
+	github.com/klauspost/compress v1.15.8
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/pierrec/lz4 v2.0.5+incompatible
 	google.golang.org/protobuf v1.28.0
@@ -17,8 +18,8 @@ require (
 	github.com/apache/thrift v0.15.0 // indirect
 	github.com/goccy/go-json v0.9.6 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
+	github.com/google/flatbuffers v2.0.5+incompatible // indirect
 	github.com/klauspost/asmfmt v1.3.1 // indirect
-	github.com/klauspost/compress v1.15.8 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
 	github.com/mattn/go-runewidth v0.0.9 // indirect
 	github.com/minio/asm2plan9s v0.0.0-20200509001527-cdd76441f9d8 // indirect
