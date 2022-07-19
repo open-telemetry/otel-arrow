@@ -34,7 +34,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 	})
 
 	for _, batchSize := range p.batchSizes {
-		fmt.Printf("Profiling '%s' (compression=%s, batch-size=%d)\n", profileable.Name(), profileable.CompressionAlgorithm(), batchSize)
+		fmt.Printf("Profiling '%s' (compression=%v, batch-size=%d)\n", profileable.Name(), profileable.CompressionAlgorithm(), batchSize)
 
 		uncompressedSize := NewMetric()
 		compressedSize := NewMetric()
@@ -187,19 +187,19 @@ func (p *Profiler) PrintStepsTiming() {
 	values := make(map[string]*Summary)
 	for _, result := range p.benchmarks {
 		for _, summary := range result.summaries {
-			key := fmt.Sprintf("%s:%s:%s:%s", result.benchName, result.tags, summary.batchSize, "batch_creation_sec")
+			key := fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "batch_creation_sec")
 			values[key] = summary.batchCreationSec
-			key = fmt.Sprintf("%s:%s:%s:%s", result.benchName, result.tags, summary.batchSize, "processing_sec")
+			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "processing_sec")
 			values[key] = summary.processingSec
-			key = fmt.Sprintf("%s:%s:%s:%s", result.benchName, result.tags, summary.batchSize, "serialization_sec")
+			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "serialization_sec")
 			values[key] = summary.serializationSec
-			key = fmt.Sprintf("%s:%s:%s:%s", result.benchName, result.tags, summary.batchSize, "compression_sec")
+			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "compression_sec")
 			values[key] = summary.compressionSec
-			key = fmt.Sprintf("%s:%s:%s:%s", result.benchName, result.tags, summary.batchSize, "decompression_sec")
+			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "decompression_sec")
 			values[key] = summary.decompressionSec
-			key = fmt.Sprintf("%s:%s:%s:%s", result.benchName, result.tags, summary.batchSize, "deserialization_sec")
+			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "deserialization_sec")
 			values[key] = summary.deserializationSec
-			key = fmt.Sprintf("%s:%s:%s:%s", result.benchName, result.tags, summary.batchSize, "total_time_sec")
+			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "total_time_sec")
 			values[key] = summary.totalTimeSec
 		}
 	}
