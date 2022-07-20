@@ -169,76 +169,76 @@ func (c *Columns) UpdateColumn(fieldPath *rfield.FieldPath, field *rfield.Field)
 	}
 }
 
-func (c *Columns) Build(allocator *memory.GoAllocator) ([]arrow.Field, []array.Builder, error) {
+func (c *Columns) Build(allocator *memory.GoAllocator) ([]*arrow.Field, []array.Builder, error) {
 	columnCount := c.ColumnCount()
-	fields := make([]arrow.Field, 0, columnCount)
+	fields := make([]*arrow.Field, 0, columnCount)
 	builders := make([]array.Builder, 0, columnCount)
 
 	for i := range c.BooleanColumns {
 		col := &c.BooleanColumns[i]
-		fields = append(fields, col.MakeBoolSchemaField())
+		fields = append(fields, col.NewBoolSchemaField())
 		builders = append(builders, col.NewBoolBuilder(allocator))
 	}
 	for i := range c.I8Columns {
 		col := &c.I8Columns[i]
-		fields = append(fields, col.MakeI8SchemaField())
+		fields = append(fields, col.NewI8SchemaField())
 		builders = append(builders, col.NewI8Builder(allocator))
 	}
 	for i := range c.I16Columns {
 		col := &c.I16Columns[i]
-		fields = append(fields, col.MakeI16SchemaField())
+		fields = append(fields, col.NewI16SchemaField())
 		builders = append(builders, col.NewI16Builder(allocator))
 	}
 	for i := range c.I32Columns {
 		col := &c.I32Columns[i]
-		fields = append(fields, col.MakeI32SchemaField())
+		fields = append(fields, col.NewI32SchemaField())
 		builders = append(builders, col.NewI32Builder(allocator))
 	}
 	for i := range c.I64Columns {
 		col := &c.I64Columns[i]
-		fields = append(fields, col.MakeI64SchemaField())
+		fields = append(fields, col.NewI64SchemaField())
 		builders = append(builders, col.NewI64Builder(allocator))
 	}
 	for i := range c.U8Columns {
 		col := &c.U8Columns[i]
-		fields = append(fields, col.MakeU8SchemaField())
+		fields = append(fields, col.NewU8SchemaField())
 		builders = append(builders, col.NewU8Builder(allocator))
 	}
 	for i := range c.U16Columns {
 		col := &c.U16Columns[i]
-		fields = append(fields, col.MakeU16SchemaField())
+		fields = append(fields, col.NewU16SchemaField())
 		builders = append(builders, col.NewU16Builder(allocator))
 	}
 	for i := range c.U32Columns {
 		col := &c.U32Columns[i]
-		fields = append(fields, col.MakeU32SchemaField())
+		fields = append(fields, col.NewU32SchemaField())
 		builders = append(builders, col.NewU32Builder(allocator))
 	}
 	for i := range c.U64Columns {
 		col := &c.U64Columns[i]
-		fields = append(fields, col.MakeU64SchemaField())
+		fields = append(fields, col.NewU64SchemaField())
 		builders = append(builders, col.NewU64Builder(allocator))
 	}
 	for i := range c.F32Columns {
 		col := &c.F32Columns[i]
-		fields = append(fields, col.MakeF32SchemaField())
+		fields = append(fields, col.NewF32SchemaField())
 		builders = append(builders, col.NewF32Builder(allocator))
 	}
 	for i := range c.F64Columns {
 		col := &c.F64Columns[i]
-		fields = append(fields, col.MakeF64SchemaField())
+		fields = append(fields, col.NewF64SchemaField())
 		builders = append(builders, col.NewF64Builder(allocator))
 	}
 	for i := range c.StringColumns {
 		col := &c.StringColumns[i]
 		// ToDo implement dictionary builder when that makes sense
-		fields = append(fields, col.MakeSchemaField())
+		fields = append(fields, col.NewStringSchemaField())
 		builders = append(builders, col.NewStringBuilder(allocator))
 	}
 	for i := range c.BinaryColumns {
 		col := &c.BinaryColumns[i]
 		// ToDo implement dictionary builder when that makes sense
-		fields = append(fields, col.MakeBinarySchemaField())
+		fields = append(fields, col.NewBinarySchemaField())
 		builders = append(builders, col.NewBinaryBuilder(allocator))
 	}
 	for i := range c.StructColumns {
@@ -247,10 +247,18 @@ func (c *Columns) Build(allocator *memory.GoAllocator) ([]arrow.Field, []array.B
 		if err != nil {
 			return nil, nil, err
 		}
-		fields = append(fields, *structField)
+		fields = append(fields, structField)
 		builders = append(builders, structBuilder)
 	}
-	// ToDo List columns
+	//for i := range c.ListColumns {
+	//	col := &c.ListColumns[i]
+	//	listField, listBuilder, err := col.Build(allocator)
+	//	if err != nil {
+	//		return nil, nil, err
+	//	}
+	//	fields = append(fields, listField)
+	//	builders = append(builders, listBuilder)
+	//}
 
 	return fields, builders, nil
 }

@@ -122,9 +122,9 @@ func (c *StringColumn) Clear() {
 	c.data = c.data[:0]
 }
 
-// MakeSchemaField creates a schema field
-func (c *StringColumn) MakeSchemaField() arrow.Field {
-	return arrow.Field{Name: c.name, Type: arrow.BinaryTypes.String}
+// NewStringSchemaField creates a schema field
+func (c *StringColumn) NewStringSchemaField() *arrow.Field {
+	return &arrow.Field{Name: c.name, Type: arrow.BinaryTypes.String}
 }
 
 // NewStringBuilder creates and initializes a new StringBuilder for the column.

@@ -72,9 +72,9 @@ func (c *F32Column) Clear() {
 	c.data = c.data[:0]
 }
 
-// MakeF32SchemaField creates a F32 schema field.
-func (c *F32Column) MakeF32SchemaField() arrow.Field {
-	return arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Float32}
+// NewF32SchemaField creates a F32 schema field.
+func (c *F32Column) NewF32SchemaField() *arrow.Field {
+	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Float32}
 }
 
 // NewF32Builder creates and initializes a new Float32Builder for the column.
@@ -112,9 +112,9 @@ func (c *F64Column) Clear() {
 	c.data = c.data[:0]
 }
 
-// MakeF64SchemaField creates a F64 schema field.
-func (c *F64Column) MakeF64SchemaField() arrow.Field {
-	return arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Float64}
+// NewF64SchemaField creates a F64 schema field.
+func (c *F64Column) NewF64SchemaField() *arrow.Field {
+	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Float64}
 }
 
 // NewF64Builder creates and initializes a new Float64Builder for the column.

@@ -71,7 +71,7 @@ func (c *BinaryColumn) Clear() {
 	c.data = c.data[:0]
 }
 
-// MakeBinarySchemaField creates a Binary schema field.
-func (c *BinaryColumn) MakeBinarySchemaField() arrow.Field {
-	return arrow.Field{Name: c.name, Type: arrow.BinaryTypes.Binary}
+// NewBinarySchemaField creates a Binary schema field.
+func (c *BinaryColumn) NewBinarySchemaField() *arrow.Field {
+	return &arrow.Field{Name: c.name, Type: arrow.BinaryTypes.Binary}
 }

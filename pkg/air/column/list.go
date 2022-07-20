@@ -16,6 +16,8 @@ package column
 
 import (
 	"github.com/apache/arrow/go/v9/arrow"
+	"github.com/apache/arrow/go/v9/arrow/array"
+	"github.com/apache/arrow/go/v9/arrow/memory"
 	"otel-arrow-adapter/pkg/air/rfield"
 )
 
@@ -32,4 +34,10 @@ type ListColumn struct {
 // Clear clears the list data in the column but keep the original memory buffer allocated.
 func (c *ListColumn) Clear() {
 	c.Data = c.Data[:0]
+}
+
+func (c *ListColumn) Build(allocator *memory.GoAllocator) (*arrow.Field, array.Builder, error) {
+	// ToDo List Build method
+	panic("not implemented")
+	return nil, nil, nil
 }

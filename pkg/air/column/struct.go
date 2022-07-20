@@ -50,11 +50,16 @@ func (c *StructColumn) Name() string {
 
 // Build builds the column.
 func (c *StructColumn) Build(allocator *memory.GoAllocator) (*arrow.Field, array.Builder, error) {
-	fields, fieldBuilders, err := c.columns.Build(allocator)
+	fieldRefs, fieldBuilders, err := c.columns.Build(allocator)
 	if err != nil {
 		return nil, nil, err
 	}
+	fields := make([]arrow.Field, len(fieldRefs))
+	for i, field := range fieldRefs {
+		fields[i] = *field
+	}
 	structField := arrow.Field{Name: c.name, Type: arrow.StructOf(fields...)}
+	// ToDo replace StructBuilder by our own struct builder to avoid this UnsafeNewStructBuilderFromFields
 	structBuilder := array.UnsafeNewStructBuilderFromFields(allocator, fields, fieldBuilders)
 	return &structField, structBuilder, nil
 }

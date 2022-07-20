@@ -118,17 +118,21 @@ func (rb *RecordBuilder) Build(allocator *memory.GoAllocator) (arrow.Record, err
 	}
 
 	// Creates a column builder for every column.
-	fields, builders, err := rb.columns.Build(allocator)
+	fieldRefs, builders, err := rb.columns.Build(allocator)
 	if err != nil {
 		return nil, err
 	}
-	if len(fields) == 0 {
+	if len(fieldRefs) == 0 {
 		return nil, nil
 	}
 
 	// Creates an Arrow Schema from the fields returned by the build method.
+	fields := make([]arrow.Field, len(fieldRefs))
+	for i, fieldRef := range fieldRefs {
+		fields[i] = *fieldRef
+	}
 	schema := arrow.NewSchema(fields, nil)
-	cols := make([]arrow.Array, len(fields))
+	cols := make([]arrow.Array, len(fieldRefs))
 	rows := int64(0)
 
 	defer func(cols []arrow.Array) {

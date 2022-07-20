@@ -99,9 +99,9 @@ func (c *I8Column) Len() int {
 	return len(c.data)
 }
 
-// MakeI8SchemaField creates a I8 schema field.
-func (c *I8Column) MakeI8SchemaField() arrow.Field {
-	return arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Int8}
+// NewI8SchemaField creates a I8 schema field.
+func (c *I8Column) NewI8SchemaField() *arrow.Field {
+	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Int8}
 }
 
 // NewI8Builder creates and initializes a new Int8Builder for the column.
@@ -139,9 +139,9 @@ func (c *I16Column) Len() int {
 	return len(c.data)
 }
 
-// MakeI16SchemaField creates a I16 schema field.
-func (c *I16Column) MakeI16SchemaField() arrow.Field {
-	return arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Int16}
+// NewI16SchemaField creates a I16 schema field.
+func (c *I16Column) NewI16SchemaField() *arrow.Field {
+	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Int16}
 }
 
 // NewI16Builder creates and initializes a new Iint16Builder for the column.
@@ -184,9 +184,9 @@ func (c *I32Column) Clear() {
 	c.data = c.data[:0]
 }
 
-// MakeI32SchemaField creates a I32 schema field.
-func (c *I32Column) MakeI32SchemaField() arrow.Field {
-	return arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Int32}
+// NewI32SchemaField creates a I32 schema field.
+func (c *I32Column) NewI32SchemaField() *arrow.Field {
+	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Int32}
 }
 
 // NewI32Builder creates and initializes a new Iint32Builder for the column.
@@ -224,9 +224,9 @@ func (c *I64Column) Clear() {
 	c.data = c.data[:0]
 }
 
-// MakeI64SchemaField creates a I64 schema field.
-func (c *I64Column) MakeI64SchemaField() arrow.Field {
-	return arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Int64}
+// NewI64SchemaField creates a I64 schema field.
+func (c *I64Column) NewI64SchemaField() *arrow.Field {
+	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Int64}
 }
 
 // NewI64Builder creates and initializes a new Iint64Builder for the column.

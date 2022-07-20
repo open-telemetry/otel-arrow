@@ -73,7 +73,7 @@ func (c *BoolColumn) Clear() {
 	c.data = c.data[:0]
 }
 
-// MakeBoolSchemaField creates a Bool schema field.
-func (c *BoolColumn) MakeBoolSchemaField() arrow.Field {
-	return arrow.Field{Name: c.name, Type: arrow.FixedWidthTypes.Boolean}
+// NewBoolSchemaField creates a Bool schema field.
+func (c *BoolColumn) NewBoolSchemaField() *arrow.Field {
+	return &arrow.Field{Name: c.name, Type: arrow.FixedWidthTypes.Boolean}
 }

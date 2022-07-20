@@ -14,7 +14,7 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
 
 ## Status [WIP]
 
-### Framework to convert row-oriented structured data to Arrow columnar data
+### Arrow Intermediate Representation (framework to convert row-oriented structured data to Arrow columnar data)
 - [X] Record Repository
 - [X] Record Builder
 - [X] Record, fields, and values
@@ -23,7 +23,7 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
   - [X] Struct values
   - [ ] List values
 - [X] Optimizations
-  - [X] Dictionary encoding for string fields
+  - [ ] Dictionary encoding for string fields
   - [ ] Dictionary encoding for binary fields
   - [X] Multi-field sorting (string field)
   - [ ] Multi-field sorting (binary field)
