@@ -179,9 +179,11 @@ func TestBuild(t *testing.T) {
 	}
 	rr := air.NewRecordRepository(&config)
 
+	recordCount := 100
+
 	// Generates 100 timestamps randomly sorted.
-	tsValues := make([]int64, 0, 100)
-	for i := 0; i < 100; i++ {
+	tsValues := make([]int64, 0, recordCount)
+	for i := 0; i < recordCount; i++ {
 		tsValues = append(tsValues, int64(i))
 	}
 	rand.Seed(time.Now().UnixNano())
@@ -214,11 +216,11 @@ func TestBuild(t *testing.T) {
 	// "a" because it's cardinality is 15 (satisfy the configuration).
 	// "c" is not sorted because it's cardinality is 100 (doesn't satisfy the configuration).
 	for schemaId, record := range records {
-		if schemaId != "a:Str,b:Str,c:Str,d:{a:Str,b:Str},ts:I64" {
+		if schemaId != "a:Str,b:Str,c:Str,d:{a:Str,b:Str,c:[I64]},ts:I64" {
 			t.Errorf("Expected schemaId to be a:Str,b:Str,c:Str,d:{a:Str,b:Str},ts:I64, got %s", schemaId)
 		}
-		if record.NumRows() != 100 {
-			t.Errorf("Expected 100 rows, got %d", record.NumRows())
+		if record.NumRows() != int64(recordCount) {
+			t.Errorf("Expected %d rows, got %d", recordCount, record.NumRows())
 		}
 		if record.ColumnName(0) != "ts" {
 			t.Errorf("Expected column name to be ts, got %s", record.ColumnName(0))
@@ -252,6 +254,10 @@ func TestBuild(t *testing.T) {
 		dB := d.Field(1)
 		if dB.(*array.String).String() != "[\"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_0\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\" \"b_1\"]" {
 			t.Errorf("Column d.b is not sorted as expected")
+		}
+		dC := d.Field(2)
+		if dC.(*array.List).String() != "[[1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3] [1 2 3]]" {
+			t.Errorf("Column d.c does not match expected value")
 		}
 
 		record.Release()

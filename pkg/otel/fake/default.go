@@ -36,15 +36,16 @@ func DefaultAttributes() []*commonpb.KeyValue {
 			Key:   "version",
 			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: 1.0}},
 		},
-		{
-			Key: "tags_array",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_ArrayValue{ArrayValue: &commonpb.ArrayValue{
-				Values: []*commonpb.AnyValue{
-					{Value: &commonpb.AnyValue_StringValue{StringValue: "tag1"}},
-					{Value: &commonpb.AnyValue_StringValue{StringValue: "tag2"}},
-				},
-			}}},
-		},
+		// ToDo reintroduce tags_arrays once list are fully supported
+		//{
+		//	Key: "tags_array",
+		//	Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_ArrayValue{ArrayValue: &commonpb.ArrayValue{
+		//		Values: []*commonpb.AnyValue{
+		//			{Value: &commonpb.AnyValue_StringValue{StringValue: "tag1"}},
+		//			{Value: &commonpb.AnyValue_StringValue{StringValue: "tag2"}},
+		//		},
+		//	}}},
+		//},
 		{
 			Key: "tags_kv_list",
 			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_KvlistValue{

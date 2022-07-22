@@ -24,6 +24,14 @@ import (
 	"otel-arrow-adapter/pkg/air/stats"
 )
 
+type Column interface {
+	Name() string
+	Type() arrow.DataType
+	Len() int
+	Clear()
+	Build(allocator *memory.GoAllocator) (*arrow.Field, array.Builder, error)
+}
+
 type Columns struct {
 	BooleanColumns []BoolColumn
 
@@ -100,11 +108,7 @@ func (c *Columns) CreateColumn(path []int, field *rfield.Field, config *config.C
 		return rfield.NewFieldPath(len(c.BinaryColumns) - 1)
 	case *rfield.List:
 		dataType := rfield.ListDataType(field.Value.(*rfield.List).Values)
-		c.ListColumns = append(c.ListColumns, ListColumn{
-			Name: field.Name,
-			Type: dataType,
-			Data: [][]rfield.Value{field.Value.(*rfield.List).Values},
-		})
+		c.ListColumns = append(c.ListColumns, MakeListColumn(field.Name, dataType, field.Value.(*rfield.List).Values))
 		return rfield.NewFieldPath(len(c.ListColumns) - 1)
 	case *rfield.Struct:
 		dataType := rfield.StructDataType(field.Value.(*rfield.Struct).Fields)
@@ -159,7 +163,7 @@ func (c *Columns) UpdateColumn(fieldPath *rfield.FieldPath, field *rfield.Field)
 	case *rfield.Bool:
 		c.BooleanColumns[fieldPath.Current].Push(&field.Value.(*rfield.Bool).Value)
 	case *rfield.List:
-		c.ListColumns[fieldPath.Current].Data = append(c.ListColumns[fieldPath.Current].Data, field.Value.(*rfield.List).Values)
+		c.ListColumns[fieldPath.Current].Push(field.Value.(*rfield.List).Values)
 	case *rfield.Struct:
 		for fieldPos := range field.Value.(*rfield.Struct).Fields {
 			c.StructColumns[fieldPath.Current].Push(fieldPath.Children[fieldPos], field.Value.(*rfield.Struct).Fields[fieldPos])
@@ -250,15 +254,15 @@ func (c *Columns) Build(allocator *memory.GoAllocator) ([]*arrow.Field, []array.
 		fields = append(fields, structField)
 		builders = append(builders, structBuilder)
 	}
-	//for i := range c.ListColumns {
-	//	col := &c.ListColumns[i]
-	//	listField, listBuilder, err := col.Build(allocator)
-	//	if err != nil {
-	//		return nil, nil, err
-	//	}
-	//	fields = append(fields, listField)
-	//	builders = append(builders, listBuilder)
-	//}
+	for i := range c.ListColumns {
+		col := c.ListColumns[i]
+		listField, listBuilder, err := col.Build(allocator)
+		if err != nil {
+			return nil, nil, err
+		}
+		fields = append(fields, listField)
+		builders = append(builders, listBuilder)
+	}
 
 	return fields, builders, nil
 }
@@ -376,9 +380,9 @@ func (c *Columns) Metadata() []*ColumnMetadata {
 	}
 	for _, listColumn := range c.ListColumns {
 		metadata = append(metadata, &ColumnMetadata{
-			Name: listColumn.Name,
-			Type: listColumn.Type,
-			Len:  len(listColumn.Data),
+			Name: listColumn.Name(),
+			Type: listColumn.Type(),
+			Len:  listColumn.Len(),
 		})
 	}
 	for _, structColumn := range c.StructColumns {

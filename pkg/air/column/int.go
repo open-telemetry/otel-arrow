@@ -84,6 +84,13 @@ func MakeI64Column(name string, data *int64) I64Column {
 	}
 }
 
+func MakeI64sColumn(name string, data []*int64) I64Column {
+	return I64Column{
+		name: name,
+		data: data,
+	}
+}
+
 // Name returns the name of the column.
 func (c *I8Column) Name() string {
 	return c.name

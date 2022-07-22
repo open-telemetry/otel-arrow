@@ -16,6 +16,7 @@ package rfield
 
 import (
 	"bytes"
+	"fmt"
 	"github.com/apache/arrow/go/v9/arrow"
 	"sort"
 )
@@ -25,6 +26,11 @@ type Value interface {
 	DataType() arrow.DataType
 	ValueByPath(path []int) Value
 	Compare(other Value) int
+
+	AsI8() (*int8, error)
+	AsI16() (*int16, error)
+	AsI32() (*int32, error)
+	AsI64() (*int64, error)
 }
 
 type CommonValue struct{}
@@ -56,6 +62,34 @@ func (v *Bool) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *Bool) AsI8() (*int8, error) {
+	value := int8(0)
+	if v.Value {
+		value = int8(1)
+	}
+	return &value, nil
+}
+func (v *Bool) AsI16() (*int16, error) {
+	value := int16(0)
+	if v.Value {
+		value = int16(1)
+	}
+	return &value, nil
+}
+func (v *Bool) AsI32() (*int32, error) {
+	value := int32(0)
+	if v.Value {
+		value = int32(1)
+	}
+	return &value, nil
+}
+func (v *Bool) AsI64() (*int64, error) {
+	v64 := int64(0)
+	if v.Value {
+		v64 = int64(1)
+	}
+	return &v64, nil
+}
 
 type I8 struct {
 	CommonValue
@@ -81,6 +115,21 @@ func (v *I8) Compare(other Value) int {
 	} else {
 		return -1
 	}
+}
+func (v *I8) AsI8() (*int8, error) {
+	return &v.Value, nil
+}
+func (v *I8) AsI16() (*int16, error) {
+	value := int16(v.Value)
+	return &value, nil
+}
+func (v *I8) AsI32() (*int32, error) {
+	value := int32(v.Value)
+	return &value, nil
+}
+func (v *I8) AsI64() (*int64, error) {
+	v64 := int64(v.Value)
+	return &v64, nil
 }
 
 type I16 struct {
@@ -108,6 +157,20 @@ func (v *I16) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *I16) AsI8() (*int8, error) {
+	return nil, fmt.Errorf("cannot convert int16 to int8")
+}
+func (v *I16) AsI16() (*int16, error) {
+	return &v.Value, nil
+}
+func (v *I16) AsI32() (*int32, error) {
+	value := int32(v.Value)
+	return &value, nil
+}
+func (v *I16) AsI64() (*int64, error) {
+	v64 := int64(v.Value)
+	return &v64, nil
+}
 
 type I32 struct {
 	CommonValue
@@ -133,6 +196,19 @@ func (v *I32) Compare(other Value) int {
 	} else {
 		return -1
 	}
+}
+func (v *I32) AsI8() (*int8, error) {
+	return nil, fmt.Errorf("cannot convert int32 to int8")
+}
+func (v *I32) AsI16() (*int16, error) {
+	return nil, fmt.Errorf("cannot convert int32 to int16")
+}
+func (v *I32) AsI32() (*int32, error) {
+	return &v.Value, nil
+}
+func (v *I32) AsI64() (*int64, error) {
+	v64 := int64(v.Value)
+	return &v64, nil
 }
 
 type I64 struct {
@@ -160,6 +236,18 @@ func (v *I64) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *I64) AsI8() (*int8, error) {
+	return nil, fmt.Errorf("cannot convert int64 to int8")
+}
+func (v *I64) AsI16() (*int16, error) {
+	return nil, fmt.Errorf("cannot convert int64 to int16")
+}
+func (v *I64) AsI32() (*int32, error) {
+	return nil, fmt.Errorf("cannot convert int64 to int32")
+}
+func (v *I64) AsI64() (*int64, error) {
+	return &v.Value, nil
+}
 
 type U8 struct {
 	CommonValue
@@ -185,6 +273,21 @@ func (v *U8) Compare(other Value) int {
 	} else {
 		return -1
 	}
+}
+func (v *U8) AsI8() (*int8, error) {
+	return nil, fmt.Errorf("cannot convert uint8 to int8")
+}
+func (v *U8) AsI16() (*int16, error) {
+	value := int16(v.Value)
+	return &value, nil
+}
+func (v *U8) AsI32() (*int32, error) {
+	value := int32(v.Value)
+	return &value, nil
+}
+func (v *U8) AsI64() (*int64, error) {
+	v64 := int64(v.Value)
+	return &v64, nil
 }
 
 type U16 struct {
@@ -212,6 +315,20 @@ func (v *U16) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *U16) AsI8() (*int8, error) {
+	return nil, fmt.Errorf("cannot convert uint16 to int8")
+}
+func (v *U16) AsI16() (*int16, error) {
+	return nil, fmt.Errorf("cannot convert uint16 to int16")
+}
+func (v *U16) AsI32() (*int32, error) {
+	value := int32(v.Value)
+	return &value, nil
+}
+func (v *U16) AsI64() (*int64, error) {
+	v64 := int64(v.Value)
+	return &v64, nil
+}
 
 type U32 struct {
 	CommonValue
@@ -237,6 +354,19 @@ func (v *U32) Compare(other Value) int {
 	} else {
 		return -1
 	}
+}
+func (v *U32) AsI8() (*int8, error) {
+	return nil, fmt.Errorf("cannot convert uint32 to int8")
+}
+func (v *U32) AsI16() (*int16, error) {
+	return nil, fmt.Errorf("cannot convert uint32 to int16")
+}
+func (v *U32) AsI32() (*int32, error) {
+	return nil, fmt.Errorf("cannot convert uint32 to int32")
+}
+func (v *U32) AsI64() (*int64, error) {
+	v64 := int64(v.Value)
+	return &v64, nil
 }
 
 type U64 struct {
@@ -264,6 +394,18 @@ func (v *U64) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *U64) AsI8() (*int8, error) {
+	return nil, fmt.Errorf("cannot convert uint64 column to int8")
+}
+func (v *U64) AsI16() (*int16, error) {
+	return nil, fmt.Errorf("cannot convert uint64 column to int16")
+}
+func (v *U64) AsI32() (*int32, error) {
+	return nil, fmt.Errorf("cannot convert uint64 column to int32")
+}
+func (c *U64) AsI64() (*int64, error) {
+	return nil, fmt.Errorf("cannot convert uint64 column to int64")
+}
 
 type F32 struct {
 	CommonValue
@@ -289,6 +431,18 @@ func (v *F32) Compare(other Value) int {
 	} else {
 		return -1
 	}
+}
+func (v *F32) AsI8() (*int8, error) {
+	return nil, fmt.Errorf("cannot convert f32 column to int8")
+}
+func (v *F32) AsI16() (*int16, error) {
+	return nil, fmt.Errorf("cannot convert f32 column to int16")
+}
+func (v *F32) AsI32() (*int32, error) {
+	return nil, fmt.Errorf("cannot convert f32 column to int32")
+}
+func (c *F32) AsI64() (*int64, error) {
+	return nil, fmt.Errorf("cannot convert f32 column to int64")
 }
 
 type F64 struct {
@@ -316,6 +470,18 @@ func (v *F64) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *F64) AsI8() (*int8, error) {
+	return nil, fmt.Errorf("cannot convert f64 column to int8")
+}
+func (v *F64) AsI16() (*int16, error) {
+	return nil, fmt.Errorf("cannot convert f64 column to int16")
+}
+func (v *F64) AsI32() (*int32, error) {
+	return nil, fmt.Errorf("cannot convert f64 column to int32")
+}
+func (c *F64) AsI64() (*int64, error) {
+	return nil, fmt.Errorf("cannot convert f64 column to int64")
+}
 
 type String struct {
 	CommonValue
@@ -342,6 +508,18 @@ func (v *String) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *String) AsI8() (*int8, error) {
+	return nil, fmt.Errorf("cannot convert string column to int8")
+}
+func (v *String) AsI16() (*int16, error) {
+	return nil, fmt.Errorf("cannot convert string column to int16")
+}
+func (v *String) AsI32() (*int32, error) {
+	return nil, fmt.Errorf("cannot convert string column to int32")
+}
+func (c *String) AsI64() (*int64, error) {
+	return nil, fmt.Errorf("cannot convert string column to int64")
+}
 
 type Binary struct {
 	CommonValue
@@ -361,6 +539,18 @@ func (v *Binary) Compare(other Value) int {
 	}
 	otherValue := other.(*Binary).Value
 	return bytes.Compare(v.Value, otherValue)
+}
+func (v *Binary) AsI8() (*int8, error) {
+	return nil, fmt.Errorf("cannot convert binary column to int8")
+}
+func (v *Binary) AsI16() (*int16, error) {
+	return nil, fmt.Errorf("cannot convert binary column to int16")
+}
+func (v *Binary) AsI32() (*int32, error) {
+	return nil, fmt.Errorf("cannot convert binary column to int32")
+}
+func (c *Binary) AsI64() (*int64, error) {
+	return nil, fmt.Errorf("cannot convert binary column to int64")
 }
 
 type Struct struct {
@@ -392,6 +582,18 @@ func (v *Struct) ValueByPath(path []int) Value {
 func (v *Struct) Compare(_ Value) int {
 	panic("struct comparison not implemented")
 }
+func (v *Struct) AsI8() (*int8, error) {
+	return nil, fmt.Errorf("cannot convert struct column to int8")
+}
+func (v *Struct) AsI16() (*int16, error) {
+	return nil, fmt.Errorf("cannot convert struct column to int16")
+}
+func (v *Struct) AsI32() (*int32, error) {
+	return nil, fmt.Errorf("cannot convert struct column to int32")
+}
+func (c *Struct) AsI64() (*int64, error) {
+	return nil, fmt.Errorf("cannot convert struct column to int64")
+}
 
 type List struct {
 	Values []Value
@@ -414,6 +616,18 @@ func (v *List) ValueByPath(path []int) Value {
 }
 func (v *List) Compare(_ Value) int {
 	panic("struct comparison not implemented")
+}
+func (v *List) AsI8() (*int8, error) {
+	return nil, fmt.Errorf("cannot convert list column to int8")
+}
+func (v *List) AsI16() (*int16, error) {
+	return nil, fmt.Errorf("cannot convert list column to int16")
+}
+func (v *List) AsI32() (*int32, error) {
+	return nil, fmt.Errorf("cannot convert list column to int32")
+}
+func (c *List) AsI64() (*int64, error) {
+	return nil, fmt.Errorf("cannot convert list column to int64")
 }
 
 // ToDo what about list mixing struct, uint, string, ... items?
