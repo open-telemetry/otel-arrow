@@ -18,6 +18,7 @@ import (
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/memory"
+	"otel-arrow-adapter/pkg/air/rfield"
 )
 
 // I8Column is a column of int8 data.
@@ -84,10 +85,23 @@ func MakeI64Column(name string, data *int64) I64Column {
 	}
 }
 
-func MakeI64sColumn(name string, data []*int64) I64Column {
+func MakeI64ColumnFromValues(name string, data []rfield.Value) I64Column {
+	values := make([]*int64, len(data))
+	for i, value := range data {
+		if value == nil {
+			values[i] = nil
+		} else {
+			v, err := value.AsI64()
+			if err != nil {
+				panic(err)
+			}
+			values[i] = v
+		}
+	}
+
 	return I64Column{
 		name: name,
-		data: data,
+		data: values,
 	}
 }
 
@@ -111,8 +125,8 @@ func (c *I8Column) NewI8SchemaField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Int8}
 }
 
-// NewI8Builder creates and initializes a new Int8Builder for the column.
-func (c *I8Column) NewI8Builder(allocator *memory.GoAllocator) *array.Int8Builder {
+// NewI8Array creates and initializes a new Arrow Array for the column.
+func (c *I8Column) NewI8Array(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewInt8Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -123,7 +137,7 @@ func (c *I8Column) NewI8Builder(allocator *memory.GoAllocator) *array.Int8Builde
 		}
 	}
 	c.Clear()
-	return builder
+	return builder.NewArray()
 }
 
 // Clear clears the int8 data in the column but keep the original memory buffer allocated.
@@ -151,8 +165,8 @@ func (c *I16Column) NewI16SchemaField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Int16}
 }
 
-// NewI16Builder creates and initializes a new Iint16Builder for the column.
-func (c *I16Column) NewI16Builder(allocator *memory.GoAllocator) *array.Int16Builder {
+// NewI16Array creates and initializes a new Arrow Array for the column.
+func (c *I16Column) NewI16Array(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewInt16Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -163,7 +177,7 @@ func (c *I16Column) NewI16Builder(allocator *memory.GoAllocator) *array.Int16Bui
 		}
 	}
 	c.Clear()
-	return builder
+	return builder.NewArray()
 }
 
 // Clear clears the int16 data in the column but keep the original memory buffer allocated.
@@ -196,8 +210,8 @@ func (c *I32Column) NewI32SchemaField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Int32}
 }
 
-// NewI32Builder creates and initializes a new Iint32Builder for the column.
-func (c *I32Column) NewI32Builder(allocator *memory.GoAllocator) *array.Int32Builder {
+// NewI32Array creates and initializes a new Arrow Array for the column.
+func (c *I32Column) NewI32Array(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewInt32Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -208,7 +222,7 @@ func (c *I32Column) NewI32Builder(allocator *memory.GoAllocator) *array.Int32Bui
 		}
 	}
 	c.Clear()
-	return builder
+	return builder.NewArray()
 }
 
 // Name returns the name of the column.
@@ -219,6 +233,16 @@ func (c *I64Column) Name() string {
 // Push adds a new value to the column.
 func (c *I64Column) Push(data *int64) {
 	c.data = append(c.data, data)
+}
+
+func (c *I64Column) PushFromValues(data []rfield.Value) {
+	for _, value := range data {
+		i64, err := value.AsI64()
+		if err != nil {
+			panic(err)
+		}
+		c.data = append(c.data, i64)
+	}
 }
 
 // Len returns the number of values in the column.
@@ -236,8 +260,16 @@ func (c *I64Column) NewI64SchemaField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Int64}
 }
 
-// NewI64Builder creates and initializes a new Iint64Builder for the column.
-func (c *I64Column) NewI64Builder(allocator *memory.GoAllocator) *array.Int64Builder {
+func (c *I64Column) Type() arrow.DataType {
+	return arrow.PrimitiveTypes.Int64
+}
+
+func (c *I64Column) Build(allocator *memory.GoAllocator) (*arrow.Field, arrow.Array, error) {
+	return c.NewI64SchemaField(), c.NewArray(allocator), nil
+}
+
+// NewArray creates and initializes a new Arrow Array for the column.
+func (c *I64Column) NewArray(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewInt64Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -248,5 +280,5 @@ func (c *I64Column) NewI64Builder(allocator *memory.GoAllocator) *array.Int64Bui
 		}
 	}
 	c.Clear()
-	return builder
+	return builder.NewArray()
 }

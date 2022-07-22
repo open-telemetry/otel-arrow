@@ -77,8 +77,8 @@ func (c *F32Column) NewF32SchemaField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Float32}
 }
 
-// NewF32Builder creates and initializes a new Float32Builder for the column.
-func (c *F32Column) NewF32Builder(allocator *memory.GoAllocator) *array.Float32Builder {
+// NewF32Array creates and initializes a new Arrow Array for the column.
+func (c *F32Column) NewF32Array(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewFloat32Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -89,7 +89,7 @@ func (c *F32Column) NewF32Builder(allocator *memory.GoAllocator) *array.Float32B
 		}
 	}
 	c.Clear()
-	return builder
+	return builder.NewArray()
 }
 
 // Push adds a new value to the column.
@@ -117,8 +117,8 @@ func (c *F64Column) NewF64SchemaField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Float64}
 }
 
-// NewF64Builder creates and initializes a new Float64Builder for the column.
-func (c *F64Column) NewF64Builder(allocator *memory.GoAllocator) *array.Float64Builder {
+// NewF64Array creates and initializes a new Arrow Array for the column.
+func (c *F64Column) NewF64Array(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewFloat64Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -129,5 +129,5 @@ func (c *F64Column) NewF64Builder(allocator *memory.GoAllocator) *array.Float64B
 		}
 	}
 	c.Clear()
-	return builder
+	return builder.NewArray()
 }

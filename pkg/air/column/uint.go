@@ -104,8 +104,8 @@ func (c *U8Column) NewU8SchemaField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Uint8}
 }
 
-// NewU8Builder creates and initializes a new Uint8Builder for the column.
-func (c *U8Column) NewU8Builder(allocator *memory.GoAllocator) *array.Uint8Builder {
+// NewU8Array creates and initializes a new Arrow Array for the column.
+func (c *U8Column) NewU8Array(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewUint8Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -116,7 +116,7 @@ func (c *U8Column) NewU8Builder(allocator *memory.GoAllocator) *array.Uint8Build
 		}
 	}
 	c.Clear()
-	return builder
+	return builder.NewArray()
 }
 
 // Clear clears the uint8 data in the column but keep the original memory buffer allocated.
@@ -144,8 +144,8 @@ func (c *U16Column) NewU16SchemaField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Uint16}
 }
 
-// NewU16Builder creates and initializes a new Uint16Builder for the column.
-func (c *U16Column) NewU16Builder(allocator *memory.GoAllocator) *array.Uint16Builder {
+// NewU16Array creates and initializes a new Arrow Array for the column.
+func (c *U16Column) NewU16Array(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewUint16Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -156,7 +156,7 @@ func (c *U16Column) NewU16Builder(allocator *memory.GoAllocator) *array.Uint16Bu
 		}
 	}
 	c.Clear()
-	return builder
+	return builder.NewArray()
 }
 
 // Clear clears the uint16 data in the column but keep the original memory buffer allocated.
@@ -189,8 +189,8 @@ func (c *U32Column) NewU32SchemaField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Uint32}
 }
 
-// NewU32Builder creates and initializes a new Uint32Builder for the column.
-func (c *U32Column) NewU32Builder(allocator *memory.GoAllocator) *array.Uint32Builder {
+// NewU32Array creates and initializes a new Arrow Array for the column.
+func (c *U32Column) NewU32Array(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewUint32Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -201,7 +201,7 @@ func (c *U32Column) NewU32Builder(allocator *memory.GoAllocator) *array.Uint32Bu
 		}
 	}
 	c.Clear()
-	return builder
+	return builder.NewArray()
 }
 
 // Name returns the name of the column.
@@ -229,8 +229,8 @@ func (c *U64Column) NewU64SchemaField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Uint64}
 }
 
-// NewU64Builder creates and initializes a new Uint64Builder for the column.
-func (c *U64Column) NewU64Builder(allocator *memory.GoAllocator) *array.Uint64Builder {
+// NewU64Array creates and initializes a new Arrow Array for the column.
+func (c *U64Column) NewU64Array(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewUint64Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -241,5 +241,5 @@ func (c *U64Column) NewU64Builder(allocator *memory.GoAllocator) *array.Uint64Bu
 		}
 	}
 	c.Clear()
-	return builder
+	return builder.NewArray()
 }

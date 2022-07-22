@@ -49,19 +49,30 @@ func (c *StructColumn) Name() string {
 }
 
 // Build builds the column.
-func (c *StructColumn) Build(allocator *memory.GoAllocator) (*arrow.Field, array.Builder, error) {
-	fieldRefs, fieldBuilders, err := c.columns.Build(allocator)
+func (c *StructColumn) Build(allocator *memory.GoAllocator) (*arrow.Field, arrow.Array, error) {
+	fieldRefs, fieldArrays, err := c.columns.Build(allocator)
 	if err != nil {
 		return nil, nil, err
 	}
+
+	// Create a struct field.
 	fields := make([]arrow.Field, len(fieldRefs))
 	for i, field := range fieldRefs {
 		fields[i] = *field
 	}
 	structField := arrow.Field{Name: c.name, Type: arrow.StructOf(fields...)}
-	// ToDo replace StructBuilder by our own struct builder to avoid this UnsafeNewStructBuilderFromFields
-	structBuilder := array.UnsafeNewStructBuilderFromFields(allocator, fields, fieldBuilders)
-	return &structField, structBuilder, nil
+
+	// Create a struct array.
+	children := make([]arrow.ArrayData, len(fieldArrays))
+	for i, fieldArray := range fieldArrays {
+		defer fieldArray.Release()
+		children[i] = fieldArray.Data()
+	}
+	data := array.NewData(arrow.StructOf(fields...), children[0].Len(), []*memory.Buffer{nil, nil}, children, 0, 0)
+	defer data.Release()
+	structArray := array.NewStructData(data)
+
+	return &structField, structArray, nil
 }
 
 // DictionaryStats returns the dictionary statistics of the column.
@@ -78,60 +89,3 @@ func (c *StructColumn) Type() arrow.DataType {
 func (c *StructColumn) Metadata() []*ColumnMetadata {
 	return c.columns.Metadata()
 }
-
-/*
-func buildStruct(fields []arrow.Field, builders []array.Builder, memory *memory.GoAllocator) (*arrow.Field, array.Builder, error) {
-	children := make([]arrow.ArrayData, len(builders))
-	for i, b := range builders {
-		arr := b.NewArray()
-		defer arr.Release()
-		children[i] = arr.Data()
-	}
-
-	data := array.NewData(arrow.StructOf(fields...), children[0].Len(), []*memory.Buffers{nil, nil}, children, 0, 0)
-	defer data.Release()
-	final := array.NewStructData(data)
-}
-
-type MyStructBuilder struct {}
-
-
-// Retain increases the reference count by 1.
-// Retain may be called simultaneously from multiple goroutines.
-func (b *MyStructBuilder) Retain() {}
-
-// Release decreases the reference count by 1.
-func (b *MyStructBuilder) Release() {}
-
-// Len returns the number of elements in the array builder.
-func (b *MyStructBuilder) Len() int {}
-
-// Cap returns the total number of elements that can be stored
-// without allocating additional memory.
-func (b *MyStructBuilder) Cap() int {}
-
-// NullN returns the number of null values in the array builder.
-func (b *MyStructBuilder) NullN() int {}
-
-// AppendNull adds a new null value to the array being built.
-func (b *MyStructBuilder) AppendNull() {}
-
-// Reserve ensures there is enough space for appending n elements
-// by checking the capacity and calling Resize if necessary.
-func (b *MyStructBuilder) Reserve(n int) {}
-
-// Resize adjusts the space allocated by b to n elements. If n is greater than b.Cap(),
-// additional memory will be allocated. If n is smaller, the allocated memory may reduced.
-func (b *MyStructBuilder) Resize(n int) {}
-
-// NewArray creates a new array from the memory buffers used
-// by the builder and resets the Builder so it can be used to build
-// a new array.
-func (b *MyStructBuilder) NewArray() arrow.Array {}
-
-func (b *MyStructBuilder) init(capacity int) {}
-func (b *MyStructBuilder) resize(newBits int, init func(int)) {}
-
-func (b *MyStructBuilder) unmarshalOne(*json.Decoder) error {}
-func (b *MyStructBuilder) unmarshal(*json.Decoder) error {}
-*/

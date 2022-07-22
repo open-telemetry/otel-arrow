@@ -16,7 +16,6 @@ package column
 
 import (
 	"github.com/apache/arrow/go/v9/arrow"
-	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/memory"
 	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/air/dictionary"
@@ -29,7 +28,9 @@ type Column interface {
 	Type() arrow.DataType
 	Len() int
 	Clear()
-	Build(allocator *memory.GoAllocator) (*arrow.Field, array.Builder, error)
+	PushFromValues(data []rfield.Value)
+	Build(allocator *memory.GoAllocator) (*arrow.Field, arrow.Array, error)
+	NewArray(allocator *memory.GoAllocator) arrow.Array
 }
 
 type Columns struct {
@@ -63,7 +64,7 @@ type ColumnMetadata struct {
 }
 
 // Create a column with a field based on its field type and field name.
-func (c *Columns) CreateColumn(path []int, field *rfield.Field, config *config.Config, dictIdGen *dictionary.DictIdGenerator) *rfield.FieldPath {
+func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, field *rfield.Field, config *config.Config, dictIdGen *dictionary.DictIdGenerator) *rfield.FieldPath {
 	switch field.Value.(type) {
 	case *rfield.Bool:
 		c.BooleanColumns = append(c.BooleanColumns, MakeBoolColumn(field.Name, &field.Value.(*rfield.Bool).Value))
@@ -108,7 +109,7 @@ func (c *Columns) CreateColumn(path []int, field *rfield.Field, config *config.C
 		return rfield.NewFieldPath(len(c.BinaryColumns) - 1)
 	case *rfield.List:
 		dataType := rfield.ListDataType(field.Value.(*rfield.List).Values)
-		c.ListColumns = append(c.ListColumns, MakeListColumn(field.Name, dataType, field.Value.(*rfield.List).Values))
+		c.ListColumns = append(c.ListColumns, MakeListColumn(allocator, field.Name, dataType, field.Value.(*rfield.List).Values))
 		return rfield.NewFieldPath(len(c.ListColumns) - 1)
 	case *rfield.Struct:
 		dataType := rfield.StructDataType(field.Value.(*rfield.Struct).Fields)
@@ -118,7 +119,7 @@ func (c *Columns) CreateColumn(path []int, field *rfield.Field, config *config.C
 			updatedPath := make([]int, 0, len(path)+1)
 			copy(updatedPath, path)
 			updatedPath = append(updatedPath, len(fieldPaths))
-			fieldPath := columns.CreateColumn(updatedPath, field.Value.(*rfield.Struct).Fields[i], config, dictIdGen)
+			fieldPath := columns.CreateColumn(allocator, updatedPath, field.Value.(*rfield.Struct).Fields[i], config, dictIdGen)
 			if fieldPath != nil {
 				fieldPaths = append(fieldPaths, fieldPath)
 			}
@@ -173,98 +174,98 @@ func (c *Columns) UpdateColumn(fieldPath *rfield.FieldPath, field *rfield.Field)
 	}
 }
 
-func (c *Columns) Build(allocator *memory.GoAllocator) ([]*arrow.Field, []array.Builder, error) {
+func (c *Columns) Build(allocator *memory.GoAllocator) ([]*arrow.Field, []arrow.Array, error) {
 	columnCount := c.ColumnCount()
 	fields := make([]*arrow.Field, 0, columnCount)
-	builders := make([]array.Builder, 0, columnCount)
+	arrays := make([]arrow.Array, 0, columnCount)
 
 	for i := range c.BooleanColumns {
 		col := &c.BooleanColumns[i]
 		fields = append(fields, col.NewBoolSchemaField())
-		builders = append(builders, col.NewBoolBuilder(allocator))
+		arrays = append(arrays, col.NewBoolArray(allocator))
 	}
 	for i := range c.I8Columns {
 		col := &c.I8Columns[i]
 		fields = append(fields, col.NewI8SchemaField())
-		builders = append(builders, col.NewI8Builder(allocator))
+		arrays = append(arrays, col.NewI8Array(allocator))
 	}
 	for i := range c.I16Columns {
 		col := &c.I16Columns[i]
 		fields = append(fields, col.NewI16SchemaField())
-		builders = append(builders, col.NewI16Builder(allocator))
+		arrays = append(arrays, col.NewI16Array(allocator))
 	}
 	for i := range c.I32Columns {
 		col := &c.I32Columns[i]
 		fields = append(fields, col.NewI32SchemaField())
-		builders = append(builders, col.NewI32Builder(allocator))
+		arrays = append(arrays, col.NewI32Array(allocator))
 	}
 	for i := range c.I64Columns {
 		col := &c.I64Columns[i]
 		fields = append(fields, col.NewI64SchemaField())
-		builders = append(builders, col.NewI64Builder(allocator))
+		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.U8Columns {
 		col := &c.U8Columns[i]
 		fields = append(fields, col.NewU8SchemaField())
-		builders = append(builders, col.NewU8Builder(allocator))
+		arrays = append(arrays, col.NewU8Array(allocator))
 	}
 	for i := range c.U16Columns {
 		col := &c.U16Columns[i]
 		fields = append(fields, col.NewU16SchemaField())
-		builders = append(builders, col.NewU16Builder(allocator))
+		arrays = append(arrays, col.NewU16Array(allocator))
 	}
 	for i := range c.U32Columns {
 		col := &c.U32Columns[i]
 		fields = append(fields, col.NewU32SchemaField())
-		builders = append(builders, col.NewU32Builder(allocator))
+		arrays = append(arrays, col.NewU32Array(allocator))
 	}
 	for i := range c.U64Columns {
 		col := &c.U64Columns[i]
 		fields = append(fields, col.NewU64SchemaField())
-		builders = append(builders, col.NewU64Builder(allocator))
+		arrays = append(arrays, col.NewU64Array(allocator))
 	}
 	for i := range c.F32Columns {
 		col := &c.F32Columns[i]
 		fields = append(fields, col.NewF32SchemaField())
-		builders = append(builders, col.NewF32Builder(allocator))
+		arrays = append(arrays, col.NewF32Array(allocator))
 	}
 	for i := range c.F64Columns {
 		col := &c.F64Columns[i]
 		fields = append(fields, col.NewF64SchemaField())
-		builders = append(builders, col.NewF64Builder(allocator))
+		arrays = append(arrays, col.NewF64Array(allocator))
 	}
 	for i := range c.StringColumns {
 		col := &c.StringColumns[i]
 		// ToDo implement dictionary builder when that makes sense
 		fields = append(fields, col.NewStringSchemaField())
-		builders = append(builders, col.NewStringBuilder(allocator))
+		arrays = append(arrays, col.NewStringArray(allocator))
 	}
 	for i := range c.BinaryColumns {
 		col := &c.BinaryColumns[i]
 		// ToDo implement dictionary builder when that makes sense
 		fields = append(fields, col.NewBinarySchemaField())
-		builders = append(builders, col.NewBinaryBuilder(allocator))
+		arrays = append(arrays, col.NewBinaryArray(allocator))
 	}
 	for i := range c.StructColumns {
 		col := &c.StructColumns[i]
-		structField, structBuilder, err := col.Build(allocator)
+		structField, structArray, err := col.Build(allocator)
 		if err != nil {
 			return nil, nil, err
 		}
 		fields = append(fields, structField)
-		builders = append(builders, structBuilder)
+		arrays = append(arrays, structArray)
 	}
 	for i := range c.ListColumns {
 		col := c.ListColumns[i]
-		listField, listBuilder, err := col.Build(allocator)
+		listField, listArray, err := col.Build(allocator)
 		if err != nil {
 			return nil, nil, err
 		}
 		fields = append(fields, listField)
-		builders = append(builders, listBuilder)
+		arrays = append(arrays, listArray)
 	}
 
-	return fields, builders, nil
+	return fields, arrays, nil
 }
 
 func (c *Columns) ColumnCount() int {

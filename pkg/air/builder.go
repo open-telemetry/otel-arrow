@@ -65,7 +65,7 @@ type RecordBuilderMetadata struct {
 }
 
 // Constructs a new `RecordBuilder` from a Record.
-func NewRecordBuilderWithRecord(record *Record, config *config2.Config) *RecordBuilder {
+func NewRecordBuilderWithRecord(allocator *memory.GoAllocator, record *Record, config *config2.Config) *RecordBuilder {
 	fieldPath := make([]*rfield.FieldPath, 0, record.FieldCount())
 	builder := RecordBuilder{
 		config:     config,
@@ -78,7 +78,7 @@ func NewRecordBuilderWithRecord(record *Record, config *config2.Config) *RecordB
 	}
 
 	for fieldIdx := range record.fields {
-		fieldPath := builder.columns.CreateColumn([]int{fieldIdx}, record.fields[fieldIdx], config, &builder.dictIdGen)
+		fieldPath := builder.columns.CreateColumn(allocator, []int{fieldIdx}, record.fields[fieldIdx], config, &builder.dictIdGen)
 		if fieldPath != nil {
 			builder.fieldPaths = append(builder.fieldPaths, fieldPath)
 		}
@@ -118,7 +118,7 @@ func (rb *RecordBuilder) Build(allocator *memory.GoAllocator) (arrow.Record, err
 	}
 
 	// Creates a column builder for every column.
-	fieldRefs, builders, err := rb.columns.Build(allocator)
+	fieldRefs, fieldArrays, err := rb.columns.Build(allocator)
 	if err != nil {
 		return nil, err
 	}
@@ -145,14 +145,13 @@ func (rb *RecordBuilder) Build(allocator *memory.GoAllocator) (arrow.Record, err
 	}(cols)
 
 	// Creates the Record from the schema and columns.
-	for i, builder := range builders {
-		cols[i] = builder.NewArray()
+	for i, fieldArray := range fieldArrays {
+		cols[i] = fieldArray
 		irow := int64(cols[i].Len())
 		if i > 0 && irow != rows {
 			panic(fmt.Errorf("arrow/array: field %d has %d rows. want=%d", i, irow, rows))
 		}
 		rows = irow
-		builder.Release()
 	}
 
 	return array.NewRecord(schema, cols, rows), nil

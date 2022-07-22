@@ -45,7 +45,7 @@ func (rr *RecordRepository) AddRecord(record *Record) {
 	if rb, ok := rr.builders[schemaId]; ok {
 		rb.AddRecord(record)
 	} else {
-		rr.builders[schemaId] = NewRecordBuilderWithRecord(record, rr.config)
+		rr.builders[schemaId] = NewRecordBuilderWithRecord(rr.allocator, record, rr.config)
 	}
 }
 

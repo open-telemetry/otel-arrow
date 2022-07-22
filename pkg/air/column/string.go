@@ -127,8 +127,8 @@ func (c *StringColumn) NewStringSchemaField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.BinaryTypes.String}
 }
 
-// NewStringBuilder creates and initializes a new StringBuilder for the column.
-func (c *StringColumn) NewStringBuilder(allocator *memory.GoAllocator) *array.StringBuilder {
+// NewStringArray creates and initializes a new Arrow Array for the column.
+func (c *StringColumn) NewStringArray(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewStringBuilder(allocator)
 	builder.Reserve(c.Len())
 	for _, v := range c.data {
@@ -139,5 +139,5 @@ func (c *StringColumn) NewStringBuilder(allocator *memory.GoAllocator) *array.St
 		}
 	}
 	c.Clear()
-	return builder
+	return builder.NewArray()
 }

@@ -38,8 +38,8 @@ func MakeBoolColumn(name string, data *bool) BoolColumn {
 	}
 }
 
-// NewBoolBuilder creates and initializes a new BooleanBuilder for the column.
-func (c *BoolColumn) NewBoolBuilder(allocator *memory.GoAllocator) *array.BooleanBuilder {
+// NewBoolArray creates and initializes a new Arrow Array for the column.
+func (c *BoolColumn) NewBoolArray(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewBooleanBuilder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -50,7 +50,7 @@ func (c *BoolColumn) NewBoolBuilder(allocator *memory.GoAllocator) *array.Boolea
 		}
 	}
 	c.Clear()
-	return builder
+	return builder.NewArray()
 }
 
 // Name returns the name of the column.

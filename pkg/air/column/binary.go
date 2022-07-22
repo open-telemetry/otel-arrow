@@ -36,8 +36,8 @@ func MakeBinaryColumn(name string, data *[]byte) BinaryColumn {
 	}
 }
 
-// NewBinaryBuilder creates and initializes a new BinaryBuilder for the column.
-func (c *BinaryColumn) NewBinaryBuilder(allocator *memory.GoAllocator) *array.BinaryBuilder {
+// NewBinaryArray creates and initializes a new Arrow Array for the column.
+func (c *BinaryColumn) NewBinaryArray(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewBinaryBuilder(allocator, arrow.BinaryTypes.Binary)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -48,7 +48,7 @@ func (c *BinaryColumn) NewBinaryBuilder(allocator *memory.GoAllocator) *array.Bi
 		}
 	}
 	c.Clear()
-	return builder
+	return builder.NewArray()
 }
 
 // Name returns the name of the column.
