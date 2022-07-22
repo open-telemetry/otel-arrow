@@ -255,8 +255,8 @@ func (c *I64Column) Clear() {
 	c.data = c.data[:0]
 }
 
-// NewI64SchemaField creates a I64 schema field.
-func (c *I64Column) NewI64SchemaField() *arrow.Field {
+// NewArrowField creates a I64 schema field.
+func (c *I64Column) NewArrowField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Int64}
 }
 
@@ -265,7 +265,7 @@ func (c *I64Column) Type() arrow.DataType {
 }
 
 func (c *I64Column) Build(allocator *memory.GoAllocator) (*arrow.Field, arrow.Array, error) {
-	return c.NewI64SchemaField(), c.NewArray(allocator), nil
+	return c.NewArrowField(), c.NewArray(allocator), nil
 }
 
 // NewArray creates and initializes a new Arrow Array for the column.

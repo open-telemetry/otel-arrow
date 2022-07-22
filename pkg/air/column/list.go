@@ -173,18 +173,11 @@ func (c *ListColumnBase) Push(list []rfield.Value) {
 	c.values.PushFromValues(list)
 }
 
-func (c *ListColumnBase) Build(allocator *memory.GoAllocator) (*arrow.Field, arrow.Array, error) {
-	if c.offsets.Len() != c.length+1 {
-		c.appendNextOffset(int32(c.values.Len()))
-	}
-
-	listField := &arrow.Field{
+func (c *ListColumnBase) NewArrowField() *arrow.Field {
+	return &arrow.Field{
 		Name: c.name,
 		Type: arrow.ListOf(c.etype),
 	}
-
-	defer c.Clear()
-	return listField, c.NewArray(allocator), nil
 }
 
 // Clear clears the list data in the column but keep the original memory buffer allocated.
@@ -203,6 +196,10 @@ func (c *ListColumnBase) Clear() {
 }
 
 func (c *ListColumnBase) NewArray(allocator *memory.GoAllocator) arrow.Array {
+	if c.offsets.Len() != c.length+1 {
+		c.appendNextOffset(int32(c.values.Len()))
+	}
+
 	values := c.values.NewArray(allocator)
 	defer values.Release()
 
@@ -223,7 +220,7 @@ func (c *ListColumnBase) NewArray(allocator *memory.GoAllocator) arrow.Array {
 		c.nulls,
 		0,
 	)
-	//c.reset()
+	defer c.Clear()
 
 	listArray := array.NewListData(data)
 	data.Release()

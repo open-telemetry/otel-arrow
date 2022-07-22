@@ -24,12 +24,19 @@ import (
 )
 
 type Column interface {
+	// Name returns the name of the column.
 	Name() string
+	// Type returns the type of the column.
 	Type() arrow.DataType
+	// Len returns the number of elements in the column.
 	Len() int
+	// Clear resets the column to its initial state.
 	Clear()
+	// PushFromValues adds the given values to the column.
 	PushFromValues(data []rfield.Value)
-	Build(allocator *memory.GoAllocator) (*arrow.Field, arrow.Array, error)
+	// NewArrowField returns an Arrow field for the column.
+	NewArrowField() *arrow.Field
+	// NewArray returns a new array for the column.
 	NewArray(allocator *memory.GoAllocator) arrow.Array
 }
 
@@ -201,7 +208,7 @@ func (c *Columns) Build(allocator *memory.GoAllocator) ([]*arrow.Field, []arrow.
 	}
 	for i := range c.I64Columns {
 		col := &c.I64Columns[i]
-		fields = append(fields, col.NewI64SchemaField())
+		fields = append(fields, col.NewArrowField())
 		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.U8Columns {
@@ -257,10 +264,8 @@ func (c *Columns) Build(allocator *memory.GoAllocator) ([]*arrow.Field, []arrow.
 	}
 	for i := range c.ListColumns {
 		col := c.ListColumns[i]
-		listField, listArray, err := col.Build(allocator)
-		if err != nil {
-			return nil, nil, err
-		}
+		listField := col.NewArrowField()
+		listArray := col.NewArray(allocator)
 		fields = append(fields, listField)
 		arrays = append(arrays, listArray)
 	}
