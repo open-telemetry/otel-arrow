@@ -19,6 +19,8 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/bitutil"
 	"github.com/apache/arrow/go/v9/arrow/memory"
+	"otel-arrow-adapter/pkg/air/config"
+	"otel-arrow-adapter/pkg/air/dictionary"
 	"otel-arrow-adapter/pkg/air/rfield"
 )
 
@@ -44,14 +46,18 @@ type ListColumnBase struct {
 	values     Column
 }
 
-func MakeListColumn(allocator *memory.GoAllocator, name string, dataType arrow.DataType, initialSubList []rfield.Value) ListColumn {
+func MakeListColumn(allocator *memory.GoAllocator, field *rfield.Field, fieldPath []int, dataType arrow.DataType, initialSubList []rfield.Value, config *config.Config, dictIdGen *dictionary.DictIdGenerator) ListColumn {
+	var values Column
 	switch dataType.(type) {
 	case *arrow.Int64Type:
-		values := MakeI64ColumnFromValues(name, initialSubList)
-		return NewListColumnBase(allocator, name, dataType, &values)
+		values = NewI64ColumnFromValues(field.Name, initialSubList)
+	case *arrow.StructType:
+		columns, _ := NewColumns(allocator, field, fieldPath, field.Value.(*rfield.Struct).Fields, config, dictIdGen)
+		values = NewStructColumn(field.Name, dataType, columns)
 	default:
 		panic("ListColumn: unsupported data type")
 	}
+	return NewListColumnBase(allocator, field.Name, dataType, values)
 }
 
 func NewListColumnBase(allocator *memory.GoAllocator, name string, dataType arrow.DataType, values Column) *ListColumnBase {

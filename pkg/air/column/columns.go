@@ -23,6 +23,7 @@ import (
 	"otel-arrow-adapter/pkg/air/stats"
 )
 
+// Column is a generic interface to interact with all types of column.
 type Column interface {
 	// Name returns the name of the column.
 	Name() string
@@ -60,7 +61,7 @@ type Columns struct {
 	BinaryColumns []BinaryColumn
 
 	ListColumns   []ListColumn
-	StructColumns []StructColumn
+	StructColumns []*StructColumn
 }
 
 type ColumnMetadata struct {
@@ -68,6 +69,21 @@ type ColumnMetadata struct {
 	Type     arrow.DataType
 	Len      int
 	Children []*ColumnMetadata
+}
+
+func NewColumns(allocator *memory.GoAllocator, field *rfield.Field, fieldPath []int, subFields []*rfield.Field, config *config.Config, dictIdGen *dictionary.DictIdGenerator) (*Columns, []*rfield.FieldPath) {
+	fieldPaths := make([]*rfield.FieldPath, 0, len(subFields))
+	columns := Columns{}
+	for i := range subFields {
+		subFieldPath := make([]int, 0, len(fieldPath)+1)
+		copy(subFieldPath, fieldPath)
+		subFieldPath = append(subFieldPath, len(fieldPaths))
+		fieldPath := columns.CreateColumn(allocator, subFieldPath, field.Value.(*rfield.Struct).Fields[i], config, dictIdGen)
+		if fieldPath != nil {
+			fieldPaths = append(fieldPaths, fieldPath)
+		}
+	}
+	return &columns, fieldPaths
 }
 
 // Create a column with a field based on its field type and field name.
@@ -116,23 +132,13 @@ func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, field 
 		return rfield.NewFieldPath(len(c.BinaryColumns) - 1)
 	case *rfield.List:
 		dataType := rfield.ListDataType(field.Value.(*rfield.List).Values)
-		c.ListColumns = append(c.ListColumns, MakeListColumn(allocator, field.Name, dataType, field.Value.(*rfield.List).Values))
+		c.ListColumns = append(c.ListColumns, MakeListColumn(allocator, field, path, dataType, field.Value.(*rfield.List).Values, config, dictIdGen))
 		return rfield.NewFieldPath(len(c.ListColumns) - 1)
 	case *rfield.Struct:
 		dataType := rfield.StructDataType(field.Value.(*rfield.Struct).Fields)
-		fieldPaths := make([]*rfield.FieldPath, 0, len(field.Value.(*rfield.Struct).Fields))
-		columns := Columns{}
-		for i := range field.Value.(*rfield.Struct).Fields {
-			updatedPath := make([]int, 0, len(path)+1)
-			copy(updatedPath, path)
-			updatedPath = append(updatedPath, len(fieldPaths))
-			fieldPath := columns.CreateColumn(allocator, updatedPath, field.Value.(*rfield.Struct).Fields[i], config, dictIdGen)
-			if fieldPath != nil {
-				fieldPaths = append(fieldPaths, fieldPath)
-			}
-		}
+		columns, fieldPaths := NewColumns(allocator, field, path, field.Value.(*rfield.Struct).Fields, config, dictIdGen)
 		if !columns.IsEmpty() {
-			c.StructColumns = append(c.StructColumns, MakeStructColumn(field.Name, dataType, columns))
+			c.StructColumns = append(c.StructColumns, NewStructColumn(field.Name, dataType, columns))
 			return rfield.NewFieldPathWithChildren(len(c.StructColumns)-1, fieldPaths)
 		} else {
 			return nil
@@ -254,7 +260,7 @@ func (c *Columns) Build(allocator *memory.GoAllocator) ([]*arrow.Field, []arrow.
 		arrays = append(arrays, col.NewBinaryArray(allocator))
 	}
 	for i := range c.StructColumns {
-		col := &c.StructColumns[i]
+		col := c.StructColumns[i]
 		structField, structArray, err := col.Build(allocator)
 		if err != nil {
 			return nil, nil, err

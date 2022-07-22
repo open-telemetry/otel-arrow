@@ -85,7 +85,7 @@ func MakeI64Column(name string, data *int64) I64Column {
 	}
 }
 
-func MakeI64ColumnFromValues(name string, data []rfield.Value) I64Column {
+func NewI64ColumnFromValues(name string, data []rfield.Value) *I64Column {
 	values := make([]*int64, len(data))
 	for i, value := range data {
 		if value == nil {
@@ -99,7 +99,7 @@ func MakeI64ColumnFromValues(name string, data []rfield.Value) I64Column {
 		}
 	}
 
-	return I64Column{
+	return &I64Column{
 		name: name,
 		data: values,
 	}
