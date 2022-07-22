@@ -118,28 +118,6 @@ func StructDataType(fields []*Field) arrow.DataType {
 	return arrow.StructOf(arrowFields...)
 }
 
-func ListDataType(values []Value) arrow.DataType {
-	dataTypeSet := map[arrow.DataType]bool{}
-
-	// Deduplicate data types
-	for _, value := range values {
-		dataType := value.DataType()
-		if dataType.ID() != arrow.NULL {
-			dataTypeSet[dataType] = true
-		}
-	}
-
-	if len(dataTypeSet) > 0 {
-		dataTypes := make([]arrow.DataType, 0, len(dataTypeSet))
-		for dataType := range dataTypeSet {
-			dataTypes = append(dataTypes, dataType)
-		}
-		return CoerceDataType(&dataTypes)
-	} else {
-		return arrow.Null
-	}
-}
-
 // CoerceDataType coerces an heterogeneous set of [`DataType`] into a single one. Rules:
 // * `Int64` and `Float64` are `Float64`
 // * Lists and scalars are coerced to a list of a compatible scalar

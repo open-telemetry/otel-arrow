@@ -596,12 +596,43 @@ func (c *Struct) AsI64() (*int64, error) {
 }
 
 type List struct {
+	etype  arrow.DataType
 	Values []Value
 }
 
 func (v *List) DataType() arrow.DataType {
-	return arrow.ListOf(ListDataType(v.Values))
+	return arrow.ListOf(v.EType())
 }
+
+func (v *List) EType() arrow.DataType {
+	if v.etype == nil {
+		v.etype = listDataType(v.Values)
+	}
+	return v.etype
+}
+
+func listDataType(values []Value) arrow.DataType {
+	dataTypeSet := map[arrow.DataType]bool{}
+
+	// Deduplicate data types
+	for _, value := range values {
+		dataType := value.DataType()
+		if dataType.ID() != arrow.NULL {
+			dataTypeSet[dataType] = true
+		}
+	}
+
+	if len(dataTypeSet) > 0 {
+		dataTypes := make([]arrow.DataType, 0, len(dataTypeSet))
+		for dataType := range dataTypeSet {
+			dataTypes = append(dataTypes, dataType)
+		}
+		return CoerceDataType(&dataTypes)
+	} else {
+		return arrow.Null
+	}
+}
+
 func (v *List) Normalize() {
 	// Normalize recursively all the value
 	for _, value := range v.Values {

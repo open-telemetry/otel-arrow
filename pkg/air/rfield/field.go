@@ -230,7 +230,7 @@ func (f *Field) WriteSignature(sig *strings.Builder) {
 		sig.WriteString("}")
 	case *List:
 		sig.WriteString("[")
-		sig.WriteString(DataTypeSignature(ListDataType(v.Values)))
+		sig.WriteString(DataTypeSignature(v.EType()))
 		sig.WriteString("]")
 	default:
 		panic("unknown field value type")
