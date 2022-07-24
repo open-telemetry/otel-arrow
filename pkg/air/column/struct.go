@@ -27,7 +27,6 @@ type StructColumn struct {
 	name       string
 	structType arrow.DataType
 	columns    *Columns
-	length     int
 }
 
 // NewStructColumn creates a new Struct column.
@@ -36,14 +35,12 @@ func NewStructColumn(name string, structType arrow.DataType, columns *Columns) *
 		name:       name,
 		structType: structType,
 		columns:    columns,
-		length:     0,
 	}
 }
 
 // Push pushes the value to the column.
 func (c *StructColumn) Push(fieldPath *rfield.FieldPath, field *rfield.Field) {
 	c.columns.UpdateColumn(fieldPath, field)
-	c.length++
 }
 
 // Name returns the name of the column.
@@ -53,19 +50,21 @@ func (c *StructColumn) Name() string {
 
 // Len returns the number of elements in the column.
 func (c *StructColumn) Len() int {
-	return c.length
+	return c.columns.Len()
 }
 
 // Clear resets the column to its initial state.
 func (c *StructColumn) Clear() {
-	c.length = 0
+	c.columns.Clear()
 }
 
 // PushFromValues adds the given values to the column.
-func (c *StructColumn) PushFromValues(data []rfield.Value) {
-	//for _, value := range data {
-	//	c.Push(nil, value)
-	//}
+func (c *StructColumn) PushFromValues(fieldPath *rfield.FieldPath, data []rfield.Value) {
+	for _, value := range data {
+		for i, field := range value.(*rfield.Struct).Fields {
+			c.Push(fieldPath.ChildPath(i), field)
+		}
+	}
 }
 
 // NewArrowField returns an Arrow field for the column.
@@ -75,11 +74,34 @@ func (c *StructColumn) NewArrowField() *arrow.Field {
 
 // NewArray returns a new array for the column.
 func (c *StructColumn) NewArray(allocator *memory.GoAllocator) arrow.Array {
-	panic("not implemented")
+	fieldRefs, fieldArrays, err := c.columns.Build(allocator)
+	if err != nil {
+		panic(err)
+	}
+
+	// Create a struct field.
+	fields := make([]arrow.Field, len(fieldRefs))
+	for i, field := range fieldRefs {
+		fields[i] = *field
+	}
+
+	children := make([]arrow.ArrayData, len(fieldArrays))
+	for i, fieldArray := range fieldArrays {
+		defer fieldArray.Release()
+		children[i] = fieldArray.Data()
+	}
+	data := array.NewData(arrow.StructOf(fields...), children[0].Len(), []*memory.Buffer{nil, nil}, children, 0, 0)
+	defer data.Release()
+	structArray := array.NewStructData(data)
+
+	c.Clear()
+
+	return structArray
 }
 
 // Build builds the column.
 func (c *StructColumn) Build(allocator *memory.GoAllocator) (*arrow.Field, arrow.Array, error) {
+	// Create struct field
 	fieldRefs, fieldArrays, err := c.columns.Build(allocator)
 	if err != nil {
 		return nil, nil, err
@@ -92,7 +114,7 @@ func (c *StructColumn) Build(allocator *memory.GoAllocator) (*arrow.Field, arrow
 	}
 	structField := arrow.Field{Name: c.name, Type: arrow.StructOf(fields...)}
 
-	// Create a struct array.
+	// Create struct array.
 	children := make([]arrow.ArrayData, len(fieldArrays))
 	for i, fieldArray := range fieldArrays {
 		defer fieldArray.Release()

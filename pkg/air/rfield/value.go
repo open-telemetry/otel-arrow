@@ -612,19 +612,19 @@ func (v *List) EType() arrow.DataType {
 }
 
 func listDataType(values []Value) arrow.DataType {
-	dataTypeSet := map[arrow.DataType]bool{}
+	dataTypeSet := map[string]arrow.DataType{}
 
 	// Deduplicate data types
 	for _, value := range values {
 		dataType := value.DataType()
 		if dataType.ID() != arrow.NULL {
-			dataTypeSet[dataType] = true
+			dataTypeSet[DataTypeSignature(dataType)] = dataType
 		}
 	}
 
 	if len(dataTypeSet) > 0 {
 		dataTypes := make([]arrow.DataType, 0, len(dataTypeSet))
-		for dataType := range dataTypeSet {
+		for _, dataType := range dataTypeSet {
 			dataTypes = append(dataTypes, dataType)
 		}
 		return CoerceDataType(&dataTypes)

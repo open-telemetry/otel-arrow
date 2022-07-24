@@ -37,18 +37,18 @@ type F64Column struct {
 }
 
 // MakeF32Column creates a new F32 column.
-func MakeF32Column(name string, data *float32) F32Column {
+func MakeF32Column(name string) F32Column {
 	return F32Column{
 		name: name,
-		data: []*float32{data},
+		data: []*float32{},
 	}
 }
 
 // MakeF64Column creates a new F64 column.
-func MakeF64Column(name string, data *float64) F64Column {
+func MakeF64Column(name string) F64Column {
 	return F64Column{
 		name: name,
-		data: []*float64{data},
+		data: []*float64{},
 	}
 }
 

@@ -58,23 +58,23 @@ func GenRecord(ts int64, value_a, value_b, value_c int) *air.Record {
 				&rfield.I64{Value: 2},
 				&rfield.I64{Value: 3},
 			}}},
-			//{Name: "d", Value: &rfield.List{Values: []rfield.Value{
-			//	&rfield.Struct{Fields: []*rfield.Field{
-			//		rfield.NewI64Field("a", 1),
-			//		rfield.NewI64Field("b", 2),
-			//		rfield.NewI64Field("c", 3),
-			//	}},
-			//	&rfield.Struct{Fields: []*rfield.Field{
-			//		rfield.NewI64Field("a", 4),
-			//		rfield.NewI64Field("b", 5),
-			//		rfield.NewI64Field("c", 6),
-			//	}},
-			//	&rfield.Struct{Fields: []*rfield.Field{
-			//		rfield.NewI64Field("a", 7),
-			//		rfield.NewI64Field("b", 8),
-			//		rfield.NewI64Field("c", 9),
-			//	}},
-			//}}},
+			{Name: "d", Value: &rfield.List{Values: []rfield.Value{
+				&rfield.Struct{Fields: []*rfield.Field{
+					rfield.NewI64Field("a", 1),
+					rfield.NewF64Field("b", 2.0),
+					rfield.NewStringField("c", "3"),
+				}},
+				&rfield.Struct{Fields: []*rfield.Field{
+					rfield.NewI64Field("a", 4),
+					rfield.NewF64Field("b", 5.0),
+					rfield.NewStringField("c", "6"),
+				}},
+				&rfield.Struct{Fields: []*rfield.Field{
+					rfield.NewI64Field("a", 7),
+					rfield.NewF64Field("b", 8.0),
+					rfield.NewStringField("c", "9"),
+				}},
+			}}},
 		},
 	})
 	return record

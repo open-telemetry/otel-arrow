@@ -26,7 +26,7 @@ import (
 
 type ListColumn interface {
 	Column
-	Push(list []rfield.Value)
+	Push(fieldPath *rfield.FieldPath, list []rfield.Value)
 }
 
 const (
@@ -46,33 +46,35 @@ type ListColumnBase struct {
 	values     Column
 }
 
-func MakeListColumn(allocator *memory.GoAllocator, field *rfield.Field, fieldPath []int, dataType arrow.DataType, initialSubList []rfield.Value, config *config.Config, dictIdGen *dictionary.DictIdGenerator) ListColumn {
+func MakeListColumn(allocator *memory.GoAllocator, fieldPath []int, etype arrow.DataType, config *config.Config, dictIdGen *dictionary.DictIdGenerator) (ListColumn, []*rfield.FieldPath) {
 	var values Column
-	switch dataType.(type) {
+	fieldPaths := []*rfield.FieldPath(nil)
+	switch etype.(type) {
 	case *arrow.Int64Type:
-		values = NewI64ColumnFromValues(field.Name, initialSubList)
+		i64col := MakeI64Column(etype.Name())
+		values = &i64col
 	case *arrow.StructType:
-		columns, _ := NewColumns(allocator, field, fieldPath, field.Value.(*rfield.Struct).Fields, config, dictIdGen)
-		values = NewStructColumn(field.Name, dataType, columns)
+		columns, fps := NewColumns(allocator, etype, fieldPath, config, dictIdGen)
+		fieldPaths = fps
+		values = NewStructColumn(etype.Name(), etype, columns)
 	default:
 		panic("ListColumn: unsupported data type")
 	}
-	return NewListColumnBase(allocator, field.Name, dataType, values)
+	return NewListColumnBase(allocator, etype.Name(), etype, values), fieldPaths
 }
 
 func NewListColumnBase(allocator *memory.GoAllocator, name string, dataType arrow.DataType, values Column) *ListColumnBase {
 	// Initialize ListColumnBase
 	nulls := 0
 
-	zero := int32(0)
-	offsets := MakeI32Column("offsets", &zero)
+	offsets := MakeI32Column("offsets")
 
 	return &ListColumnBase{
 		name:       name,
 		etype:      dataType,
 		offsets:    &offsets, // offsets used to recover the initial sub-list from the flattened list of values.
 		nullBitmap: nil,      // null bitmap used to determine if a sub-list is valid or null.
-		length:     1,        // number of sub-lists.
+		length:     0,        // number of sub-lists.
 		capacity:   0,
 		nulls:      nulls,
 		mem:        allocator,
@@ -92,7 +94,7 @@ func (c *ListColumnBase) Len() int {
 	return c.length
 }
 
-func (c *ListColumnBase) PushFromValues(_ []rfield.Value) {
+func (c *ListColumnBase) PushFromValues(fieldPath *rfield.FieldPath, _ []rfield.Value) {
 	panic("not implemented")
 }
 
@@ -170,13 +172,13 @@ func (c *ListColumnBase) unsafeAppendBoolToBitmap(isValid bool) {
 	c.length++
 }
 
-func (c *ListColumnBase) Push(list []rfield.Value) {
+func (c *ListColumnBase) Push(fieldPath *rfield.FieldPath, list []rfield.Value) {
 	if list != nil {
 		c.Append(true, int32(c.values.Len()))
 	} else {
 		c.Append(false, int32(c.values.Len()))
 	}
-	c.values.PushFromValues(list)
+	c.values.PushFromValues(fieldPath, list)
 }
 
 func (c *ListColumnBase) NewArrowField() *arrow.Field {

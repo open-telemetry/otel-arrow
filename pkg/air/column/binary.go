@@ -29,10 +29,10 @@ type BinaryColumn struct {
 }
 
 // MakeBinaryColumn creates a new Binary column.
-func MakeBinaryColumn(name string, data *[]byte) BinaryColumn {
+func MakeBinaryColumn(name string) BinaryColumn {
 	return BinaryColumn{
 		name: name,
-		data: []*[]byte{data},
+		data: []*[]byte{},
 	}
 }
 

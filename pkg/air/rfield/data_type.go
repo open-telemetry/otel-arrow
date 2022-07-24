@@ -105,19 +105,6 @@ func DataTypeSignature(dataType arrow.DataType) string {
 	}
 }
 
-func StructDataType(fields []*Field) arrow.DataType {
-	arrowFields := make([]arrow.Field, 0, len(fields))
-	for _, field := range fields {
-		arrowFields = append(arrowFields, arrow.Field{
-			Name:     field.Name,
-			Type:     field.DataType(),
-			Nullable: true,
-			Metadata: arrow.Metadata{},
-		})
-	}
-	return arrow.StructOf(arrowFields...)
-}
-
 // CoerceDataType coerces an heterogeneous set of [`DataType`] into a single one. Rules:
 // * `Int64` and `Float64` are `Float64`
 // * Lists and scalars are coerced to a list of a compatible scalar
@@ -303,6 +290,26 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 			return arrow.PrimitiveTypes.Int64
 		case arrow.FixedWidthTypes.Boolean.ID():
 			return arrow.PrimitiveTypes.Int64
+		default:
+			return arrow.BinaryTypes.String
+		}
+	case arrow.PrimitiveTypes.Float32.ID():
+		//exhaustive:ignore
+		switch dataType2.ID() {
+		case arrow.PrimitiveTypes.Float32.ID():
+			return arrow.PrimitiveTypes.Float32
+		case arrow.PrimitiveTypes.Float64.ID():
+			return arrow.PrimitiveTypes.Float64
+		default:
+			return arrow.BinaryTypes.String
+		}
+	case arrow.PrimitiveTypes.Float64.ID():
+		//exhaustive:ignore
+		switch dataType2.ID() {
+		case arrow.PrimitiveTypes.Float32.ID():
+			return arrow.PrimitiveTypes.Float64
+		case arrow.PrimitiveTypes.Float64.ID():
+			return arrow.PrimitiveTypes.Float64
 		default:
 			return arrow.BinaryTypes.String
 		}

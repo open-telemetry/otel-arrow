@@ -35,8 +35,5 @@ func NewFieldPath(current int) *FieldPath {
 }
 
 func (fp *FieldPath) ChildPath(current int) *FieldPath {
-	return &FieldPath{
-		Current:  current,
-		Children: fp.Children,
-	}
+	return fp.Children[current]
 }

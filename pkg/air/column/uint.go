@@ -53,34 +53,34 @@ type U64Column struct {
 }
 
 // MakeU8Column creates a new U8 column.
-func MakeU8Column(name string, data *uint8) U8Column {
+func MakeU8Column(name string) U8Column {
 	return U8Column{
 		name: name,
-		data: []*uint8{data},
+		data: []*uint8{},
 	}
 }
 
 // MakeU16Column creates a new U16 column.
-func MakeU16Column(name string, data *uint16) U16Column {
+func MakeU16Column(name string) U16Column {
 	return U16Column{
 		name: name,
-		data: []*uint16{data},
+		data: []*uint16{},
 	}
 }
 
 // MakeU32Column creates a new U32 column.
-func MakeU32Column(name string, data *uint32) U32Column {
+func MakeU32Column(name string) U32Column {
 	return U32Column{
 		name: name,
-		data: []*uint32{data},
+		data: []*uint32{},
 	}
 }
 
 // MakeU64Column creates a new U64 column.
-func MakeU64Column(name string, data *uint64) U64Column {
+func MakeU64Column(name string) U64Column {
 	return U64Column{
 		name: name,
-		data: []*uint64{data},
+		data: []*uint64{},
 	}
 }
 

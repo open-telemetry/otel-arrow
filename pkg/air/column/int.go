@@ -54,54 +54,34 @@ type I64Column struct {
 }
 
 // MakeI8Column creates a new I8 column.
-func MakeI8Column(name string, data *int8) I8Column {
+func MakeI8Column(name string) I8Column {
 	return I8Column{
 		name: name,
-		data: []*int8{data},
+		data: []*int8{},
 	}
 }
 
 // MakeI16Column creates a new I16 column.
-func MakeI16Column(name string, data *int16) I16Column {
+func MakeI16Column(name string) I16Column {
 	return I16Column{
 		name: name,
-		data: []*int16{data},
+		data: []*int16{},
 	}
 }
 
 // MakeI32Column creates a new I32 column.
-func MakeI32Column(name string, data *int32) I32Column {
+func MakeI32Column(name string) I32Column {
 	return I32Column{
 		name: name,
-		data: []*int32{data},
+		data: []*int32{},
 	}
 }
 
 // MakeI64Column creates a new I64 column.
-func MakeI64Column(name string, data *int64) I64Column {
+func MakeI64Column(name string) I64Column {
 	return I64Column{
 		name: name,
-		data: []*int64{data},
-	}
-}
-
-func NewI64ColumnFromValues(name string, data []rfield.Value) *I64Column {
-	values := make([]*int64, len(data))
-	for i, value := range data {
-		if value == nil {
-			values[i] = nil
-		} else {
-			v, err := value.AsI64()
-			if err != nil {
-				panic(err)
-			}
-			values[i] = v
-		}
-	}
-
-	return &I64Column{
-		name: name,
-		data: values,
+		data: []*int64{},
 	}
 }
 
@@ -235,7 +215,7 @@ func (c *I64Column) Push(data *int64) {
 	c.data = append(c.data, data)
 }
 
-func (c *I64Column) PushFromValues(data []rfield.Value) {
+func (c *I64Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
 	for _, value := range data {
 		i64, err := value.AsI64()
 		if err != nil {

@@ -31,10 +31,10 @@ type BoolColumn struct {
 }
 
 // MakeBoolColumn creates a new bool column.
-func MakeBoolColumn(name string, data *bool) BoolColumn {
+func MakeBoolColumn(name string) BoolColumn {
 	return BoolColumn{
 		name: name,
-		data: []*bool{data},
+		data: []*bool{},
 	}
 }
 
