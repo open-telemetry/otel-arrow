@@ -90,6 +90,10 @@ func (c *I8Column) Name() string {
 	return c.name
 }
 
+func (c *I8Column) Type() arrow.DataType {
+	return arrow.PrimitiveTypes.Int8
+}
+
 // Push adds a new value to the column.
 func (c *I8Column) Push(data *int8) {
 	c.data = append(c.data, data)
@@ -100,13 +104,13 @@ func (c *I8Column) Len() int {
 	return len(c.data)
 }
 
-// NewI8SchemaField creates a I8 schema field.
-func (c *I8Column) NewI8SchemaField() *arrow.Field {
+// NewArrowField creates a I8 schema field.
+func (c *I8Column) NewArrowField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Int8}
 }
 
-// NewI8Array creates and initializes a new Arrow Array for the column.
-func (c *I8Column) NewI8Array(allocator *memory.GoAllocator) arrow.Array {
+// NewArray creates and initializes a new Arrow Array for the column.
+func (c *I8Column) NewArray(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewInt8Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -125,9 +129,23 @@ func (c *I8Column) Clear() {
 	c.data = c.data[:0]
 }
 
+func (c *I8Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
+	for _, value := range data {
+		v, err := value.AsI8()
+		if err != nil {
+			panic(err)
+		}
+		c.data = append(c.data, v)
+	}
+}
+
 // Name returns the name of the column.
 func (c *I16Column) Name() string {
 	return c.name
+}
+
+func (c *I16Column) Type() arrow.DataType {
+	return arrow.PrimitiveTypes.Int16
 }
 
 // Push adds a new value to the column.
@@ -140,13 +158,13 @@ func (c *I16Column) Len() int {
 	return len(c.data)
 }
 
-// NewI16SchemaField creates a I16 schema field.
-func (c *I16Column) NewI16SchemaField() *arrow.Field {
+// NewArrowField creates a I16 schema field.
+func (c *I16Column) NewArrowField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Int16}
 }
 
-// NewI16Array creates and initializes a new Arrow Array for the column.
-func (c *I16Column) NewI16Array(allocator *memory.GoAllocator) arrow.Array {
+// NewArray creates and initializes a new Arrow Array for the column.
+func (c *I16Column) NewArray(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewInt16Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -165,9 +183,23 @@ func (c *I16Column) Clear() {
 	c.data = c.data[:0]
 }
 
+func (c *I16Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
+	for _, value := range data {
+		v, err := value.AsI16()
+		if err != nil {
+			panic(err)
+		}
+		c.data = append(c.data, v)
+	}
+}
+
 // Name returns the name of the column.
 func (c *I32Column) Name() string {
 	return c.name
+}
+
+func (c *I32Column) Type() arrow.DataType {
+	return arrow.PrimitiveTypes.Int32
 }
 
 // Push adds a new value to the column.
@@ -185,13 +217,23 @@ func (c *I32Column) Clear() {
 	c.data = c.data[:0]
 }
 
-// NewI32SchemaField creates a I32 schema field.
-func (c *I32Column) NewI32SchemaField() *arrow.Field {
+func (c *I32Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
+	for _, value := range data {
+		v, err := value.AsI32()
+		if err != nil {
+			panic(err)
+		}
+		c.data = append(c.data, v)
+	}
+}
+
+// NewArrowField creates a I32 schema field.
+func (c *I32Column) NewArrowField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Int32}
 }
 
-// NewI32Array creates and initializes a new Arrow Array for the column.
-func (c *I32Column) NewI32Array(allocator *memory.GoAllocator) arrow.Array {
+// NewArray creates and initializes a new Arrow Array for the column.
+func (c *I32Column) NewArray(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewInt32Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {

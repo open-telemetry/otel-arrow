@@ -50,9 +50,18 @@ func MakeListColumn(allocator *memory.GoAllocator, fieldPath []int, etype arrow.
 	var values Column
 	fieldPaths := []*rfield.FieldPath(nil)
 	switch etype.(type) {
+	case *arrow.Int8Type:
+		col := MakeI8Column(etype.Name())
+		values = &col
+	case *arrow.Int16Type:
+		col := MakeI16Column(etype.Name())
+		values = &col
+	case *arrow.Int32Type:
+		col := MakeI32Column(etype.Name())
+		values = &col
 	case *arrow.Int64Type:
-		i64col := MakeI64Column(etype.Name())
-		values = &i64col
+		col := MakeI64Column(etype.Name())
+		values = &col
 	case *arrow.StructType:
 		columns, fps := NewColumns(allocator, etype, fieldPath, config, dictIdGen)
 		fieldPaths = fps
@@ -213,7 +222,7 @@ func (c *ListColumnBase) NewArray(allocator *memory.GoAllocator) arrow.Array {
 
 	var offsets *memory.Buffer
 	if c.offsets != nil {
-		arr := c.offsets.NewI32Array(allocator)
+		arr := c.offsets.NewArray(allocator)
 		defer arr.Release()
 		offsets = arr.Data().Buffers()[1]
 	}

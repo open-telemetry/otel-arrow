@@ -220,18 +220,18 @@ func (c *Columns) Build(allocator *memory.GoAllocator) ([]*arrow.Field, []arrow.
 	}
 	for i := range c.I8Columns {
 		col := &c.I8Columns[i]
-		fields = append(fields, col.NewI8SchemaField())
-		arrays = append(arrays, col.NewI8Array(allocator))
+		fields = append(fields, col.NewArrowField())
+		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.I16Columns {
 		col := &c.I16Columns[i]
-		fields = append(fields, col.NewI16SchemaField())
-		arrays = append(arrays, col.NewI16Array(allocator))
+		fields = append(fields, col.NewArrowField())
+		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.I32Columns {
 		col := &c.I32Columns[i]
-		fields = append(fields, col.NewI32SchemaField())
-		arrays = append(arrays, col.NewI32Array(allocator))
+		fields = append(fields, col.NewArrowField())
+		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.I64Columns {
 		col := &c.I64Columns[i]
