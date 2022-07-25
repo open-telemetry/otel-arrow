@@ -11,7 +11,7 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
 | air       | Arrow Intermediate Representation used to translate batch of row-oriented entities into columnar-oriented batch of entities. |
 | benchmark | Benchmark infrastructure to compare OTLP and OTLP Arrow representations.                                                     |
 | datagen   | Metrics, logs, and traces generator (fake data).                                                                             |
-| otel      | Conversion functions to translate OTLP entities into OTLP Arrow Event.                                                       |
+| otel      | Conversion functions to translate OTLP entities into OTLP Arrow Event and vice versa.                                        |
 
 ## Status [WIP]
 
