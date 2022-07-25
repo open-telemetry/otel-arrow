@@ -16,7 +16,18 @@ const (
 	//Zlib
 )
 
-//go:generate stringer -type=CompressionAlgorithm
+func (c CompressionAlgorithm) String() string {
+	switch c {
+	case None:
+		return "None"
+	case Lz4:
+		return "Lz4"
+	case Zstd:
+		return "Zstd"
+	default:
+		return "Unknown"
+	}
+}
 
 func Compress(algorithm CompressionAlgorithm, data []byte) ([]byte, error) {
 	switch algorithm {

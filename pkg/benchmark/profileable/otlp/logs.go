@@ -10,7 +10,7 @@ import (
 type LogsProfileable struct {
 	compression benchmark.CompressionAlgorithm
 	dataset     benchmark.LogsDataset
-	metrics     []*v1.ExportLogsServiceRequest
+	logs        []*v1.ExportLogsServiceRequest
 }
 
 func NewLogsProfileable(dataset benchmark.LogsDataset, compression benchmark.CompressionAlgorithm) *LogsProfileable {
@@ -22,7 +22,7 @@ func (s *LogsProfileable) Name() string {
 }
 
 func (s *LogsProfileable) Tags() []string {
-	return []string{"tag1", "tag2"}
+	return []string{s.compression.String()}
 }
 func (s *LogsProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *LogsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
@@ -31,12 +31,12 @@ func (s *LogsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm 
 func (s *LogsProfileable) InitBatchSize(_ int)   {}
 func (s *LogsProfileable) PrepareBatch(_, _ int) {}
 func (s *LogsProfileable) CreateBatch(startAt, size int) {
-	s.metrics = s.dataset.Logs(startAt, size)
+	s.logs = s.dataset.Logs(startAt, size)
 }
 func (s *LogsProfileable) Process() string { return "" }
 func (s *LogsProfileable) Serialize() ([][]byte, error) {
-	buffers := make([][]byte, len(s.metrics))
-	for i, m := range s.metrics {
+	buffers := make([][]byte, len(s.logs))
+	for i, m := range s.logs {
 		bytes, err := proto.Marshal(m)
 		if err != nil {
 			return nil, err
@@ -46,16 +46,16 @@ func (s *LogsProfileable) Serialize() ([][]byte, error) {
 	return buffers, nil
 }
 func (s *LogsProfileable) Deserialize(buffers [][]byte) {
-	s.metrics = make([]*v1.ExportLogsServiceRequest, len(buffers))
+	s.logs = make([]*v1.ExportLogsServiceRequest, len(buffers))
 	for i, b := range buffers {
 		m := &v1.ExportLogsServiceRequest{}
 		if err := proto.Unmarshal(b, m); err != nil {
 			panic(err)
 		}
-		s.metrics[i] = m
+		s.logs[i] = m
 	}
 }
 func (s *LogsProfileable) Clear() {
-	s.metrics = nil
+	s.logs = nil
 }
 func (s *LogsProfileable) ShowStats() {}

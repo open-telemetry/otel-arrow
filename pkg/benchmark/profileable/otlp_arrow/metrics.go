@@ -20,10 +20,11 @@ type MetricsProfileable struct {
 	rr                 *air.RecordRepository
 	multivariateConfig *metrics.MultivariateMetricsConfig
 	records            []arrow.Record
+	profileName        string
 }
 
-func NewMetricsProfileable(dataset benchmark.MetricsDataset, dictionaryCfg *config.Config, multivariateCfg *metrics.MultivariateMetricsConfig, compression benchmark.CompressionAlgorithm) *MetricsProfileable {
-	return &MetricsProfileable{dataset: dataset, compression: compression, rr: air.NewRecordRepository(dictionaryCfg), multivariateConfig: multivariateCfg, records: []arrow.Record{}}
+func NewMetricsProfileable(profileName string, dataset benchmark.MetricsDataset, dictionaryCfg *config.Config, multivariateCfg *metrics.MultivariateMetricsConfig, compression benchmark.CompressionAlgorithm) *MetricsProfileable {
+	return &MetricsProfileable{dataset: dataset, compression: compression, rr: air.NewRecordRepository(dictionaryCfg), multivariateConfig: multivariateCfg, records: []arrow.Record{}, profileName: profileName}
 }
 
 func (s *MetricsProfileable) Name() string {
@@ -31,7 +32,7 @@ func (s *MetricsProfileable) Name() string {
 }
 
 func (s *MetricsProfileable) Tags() []string {
-	return []string{"tag1", "tag2"}
+	return []string{s.compression.String(), s.profileName}
 }
 func (s *MetricsProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *MetricsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
@@ -42,6 +43,7 @@ func (s *MetricsProfileable) PrepareBatch(startAt, size int) {
 	s.metrics = s.dataset.Metrics(startAt, size)
 }
 func (s *MetricsProfileable) CreateBatch(_, _ int) {
+	// Conversion of OTLP metrics to OTLP Arrow events
 	for _, m := range s.metrics {
 		records, err := metrics.OtlpMetricsToArrowRecords(s.rr, m, s.multivariateConfig)
 		if err != nil {
@@ -52,7 +54,10 @@ func (s *MetricsProfileable) CreateBatch(_, _ int) {
 		}
 	}
 }
-func (s *MetricsProfileable) Process() string { return "" }
+func (s *MetricsProfileable) Process() string {
+	// Not used in this benchmark
+	return ""
+}
 func (s *MetricsProfileable) Serialize() ([][]byte, error) {
 	buffers := make([][]byte, len(s.records))
 	for _, r := range s.records {

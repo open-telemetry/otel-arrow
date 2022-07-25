@@ -21,7 +21,7 @@ func TestOtlpArrowMetricsProfiler(t *testing.T) {
 	multivariateConf.Metrics["system.cpu.time"] = "state"
 	multivariateConf.Metrics["system.memory.usage"] = "state"
 
-	systemToProfile := otlp_arrow.NewMetricsProfileable(benchmark.NewFakeMetricsDataset(1000), cfg, multivariateConf, benchmark.Zstd)
+	systemToProfile := otlp_arrow.NewMetricsProfileable("multivariate", benchmark.NewFakeMetricsDataset(1000), cfg, multivariateConf, benchmark.Zstd)
 	profiler := benchmark.NewProfiler([]int{10, 100, 1000})
 	if err := profiler.Profile(systemToProfile, 10); err != nil {
 		t.Errorf("expected no error, got %v", err)

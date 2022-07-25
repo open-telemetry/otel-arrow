@@ -10,7 +10,7 @@ import (
 type TraceProfileable struct {
 	compression benchmark.CompressionAlgorithm
 	dataset     benchmark.TraceDataset
-	metrics     []*v1.ExportTraceServiceRequest
+	traces      []*v1.ExportTraceServiceRequest
 }
 
 func NewTraceProfileable(dataset benchmark.TraceDataset, compression benchmark.CompressionAlgorithm) *TraceProfileable {
@@ -22,7 +22,7 @@ func (s *TraceProfileable) Name() string {
 }
 
 func (s *TraceProfileable) Tags() []string {
-	return []string{"tag1", "tag2"}
+	return []string{s.compression.String()}
 }
 func (s *TraceProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *TraceProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
@@ -31,12 +31,12 @@ func (s *TraceProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm
 func (s *TraceProfileable) InitBatchSize(_ int)   {}
 func (s *TraceProfileable) PrepareBatch(_, _ int) {}
 func (s *TraceProfileable) CreateBatch(startAt, size int) {
-	s.metrics = s.dataset.Traces(startAt, size)
+	s.traces = s.dataset.Traces(startAt, size)
 }
 func (s *TraceProfileable) Process() string { return "" }
 func (s *TraceProfileable) Serialize() ([][]byte, error) {
-	buffers := make([][]byte, len(s.metrics))
-	for i, m := range s.metrics {
+	buffers := make([][]byte, len(s.traces))
+	for i, m := range s.traces {
 		bytes, err := proto.Marshal(m)
 		if err != nil {
 			return nil, err
@@ -46,16 +46,16 @@ func (s *TraceProfileable) Serialize() ([][]byte, error) {
 	return buffers, nil
 }
 func (s *TraceProfileable) Deserialize(buffers [][]byte) {
-	s.metrics = make([]*v1.ExportTraceServiceRequest, len(buffers))
+	s.traces = make([]*v1.ExportTraceServiceRequest, len(buffers))
 	for i, b := range buffers {
 		m := &v1.ExportTraceServiceRequest{}
 		if err := proto.Unmarshal(b, m); err != nil {
 			panic(err)
 		}
-		s.metrics[i] = m
+		s.traces[i] = m
 	}
 }
 func (s *TraceProfileable) Clear() {
-	s.metrics = nil
+	s.traces = nil
 }
 func (s *TraceProfileable) ShowStats() {}

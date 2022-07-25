@@ -22,7 +22,7 @@ func (s *MetricsProfileable) Name() string {
 }
 
 func (s *MetricsProfileable) Tags() []string {
-	return []string{"tag1", "tag2"}
+	return []string{s.compression.String()}
 }
 func (s *MetricsProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *MetricsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {

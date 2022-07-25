@@ -8,7 +8,6 @@ import (
 )
 
 func TestOtlpMetricsProfiler(t *testing.T) {
-	t.Skip("Skipping this test because it's not fully implemented yet")
 	t.Parallel()
 
 	systemToProfile := otlp.NewMetricsProfileable(benchmark.NewFakeMetricsDataset(1000), benchmark.Zstd)
@@ -17,13 +16,12 @@ func TestOtlpMetricsProfiler(t *testing.T) {
 		t.Errorf("expected no error, got %v", err)
 	}
 	profiler.CheckProcessingResults()
-	profiler.PrintResults()
-	profiler.ExportMetricsTimesCSV("otlp_metrics")
-	profiler.ExportMetricsBytesCSV("otlp_metrics")
+	//profiler.PrintResults()
+	//profiler.ExportMetricsTimesCSV("otlp_metrics")
+	//profiler.ExportMetricsBytesCSV("otlp_metrics")
 }
 
 func TestOtlpLogsProfiler(t *testing.T) {
-	t.Skip("Skipping this test because it's not fully implemented yet")
 	t.Parallel()
 
 	systemToProfile := otlp.NewLogsProfileable(benchmark.NewFakeLogsDataset(1000), benchmark.Zstd)
@@ -32,13 +30,12 @@ func TestOtlpLogsProfiler(t *testing.T) {
 		t.Errorf("expected no error, got %v", err)
 	}
 	profiler.CheckProcessingResults()
-	profiler.PrintResults()
-	profiler.ExportMetricsTimesCSV("otlp_logs")
-	profiler.ExportMetricsBytesCSV("otlp_logs")
+	//profiler.PrintResults()
+	//profiler.ExportMetricsTimesCSV("otlp_logs")
+	//profiler.ExportMetricsBytesCSV("otlp_logs")
 }
 
 func TestOtlpTracesProfiler(t *testing.T) {
-	t.Skip("Skipping this test because it's not fully implemented yet")
 	t.Parallel()
 
 	systemToProfile := otlp.NewTraceProfileable(benchmark.NewFakeTraceDataset(1000), benchmark.Zstd)
@@ -47,7 +44,7 @@ func TestOtlpTracesProfiler(t *testing.T) {
 		t.Errorf("expected no error, got %v", err)
 	}
 	profiler.CheckProcessingResults()
-	profiler.PrintResults()
-	profiler.ExportMetricsTimesCSV("otlp_traces")
-	profiler.ExportMetricsBytesCSV("otlp_traces")
+	//profiler.PrintResults()
+	//profiler.ExportMetricsTimesCSV("otlp_traces")
+	//profiler.ExportMetricsBytesCSV("otlp_traces")
 }
