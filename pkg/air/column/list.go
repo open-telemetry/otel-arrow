@@ -19,6 +19,7 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/bitutil"
 	"github.com/apache/arrow/go/v9/arrow/memory"
+
 	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/air/dictionary"
 	"otel-arrow-adapter/pkg/air/rfield"

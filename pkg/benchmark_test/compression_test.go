@@ -1,8 +1,9 @@
 package benchmark
 
 import (
-	"otel-arrow-adapter/pkg/benchmark"
 	"testing"
+
+	"otel-arrow-adapter/pkg/benchmark"
 )
 
 func TestLz4(t *testing.T) {

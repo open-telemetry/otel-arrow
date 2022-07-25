@@ -15,9 +15,10 @@
 package air
 
 import (
-	"otel-arrow-adapter/pkg/air/rfield"
 	"sort"
 	"strings"
+
+	"otel-arrow-adapter/pkg/air/rfield"
 )
 
 type Records struct {

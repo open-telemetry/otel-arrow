@@ -15,14 +15,16 @@
 package air_test
 
 import (
-	"github.com/apache/arrow/go/v9/arrow"
-	"github.com/apache/arrow/go/v9/arrow/array"
 	"math"
 	"math/rand"
-	"otel-arrow-adapter/pkg/air"
-	config2 "otel-arrow-adapter/pkg/air/config"
 	"testing"
 	"time"
+
+	"github.com/apache/arrow/go/v9/arrow"
+	"github.com/apache/arrow/go/v9/arrow/array"
+
+	"otel-arrow-adapter/pkg/air"
+	config2 "otel-arrow-adapter/pkg/air/config"
 )
 
 func TestAddRecord(t *testing.T) {

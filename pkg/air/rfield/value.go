@@ -17,8 +17,9 @@ package rfield
 import (
 	"bytes"
 	"fmt"
-	"github.com/apache/arrow/go/v9/arrow"
 	"sort"
+
+	"github.com/apache/arrow/go/v9/arrow"
 )
 
 type Value interface {

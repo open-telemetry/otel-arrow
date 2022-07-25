@@ -15,9 +15,10 @@
 package datagen
 
 import (
-	"github.com/brianvoe/gofakeit/v6"
 	"math/rand"
 	"time"
+
+	"github.com/brianvoe/gofakeit/v6"
 )
 
 type DataGenerator struct {

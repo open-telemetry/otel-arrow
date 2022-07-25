@@ -15,9 +15,10 @@
 package rfield
 
 import (
-	"github.com/apache/arrow/go/v9/arrow"
 	"sort"
 	"strings"
+
+	"github.com/apache/arrow/go/v9/arrow"
 )
 
 const BOOL_SIG = "Bol"

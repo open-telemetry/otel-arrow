@@ -15,8 +15,9 @@
 package rfield
 
 import (
-	"github.com/apache/arrow/go/v9/arrow"
 	"strings"
+
+	"github.com/apache/arrow/go/v9/arrow"
 )
 
 type Fields []*Field

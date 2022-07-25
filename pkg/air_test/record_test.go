@@ -15,10 +15,12 @@
 package air_test
 
 import (
+	"testing"
+
 	"github.com/google/go-cmp/cmp"
+
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/air/rfield"
-	"testing"
 )
 
 func TestValue(t *testing.T) {

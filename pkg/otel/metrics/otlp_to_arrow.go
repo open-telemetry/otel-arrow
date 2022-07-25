@@ -16,7 +16,7 @@ package metrics
 
 import (
 	"fmt"
-	"github.com/apache/arrow/go/v9/arrow"
+
 	collogspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/metrics/v1"
@@ -24,6 +24,8 @@ import (
 	"otel-arrow-adapter/pkg/air/rfield"
 	"otel-arrow-adapter/pkg/otel/common"
 	"otel-arrow-adapter/pkg/otel/constants"
+
+	"github.com/apache/arrow/go/v9/arrow"
 )
 
 type MultivariateMetricsConfig struct {
@@ -42,14 +44,14 @@ func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request *collogspb.Expo
 		for _, scopeMetrics := range resourceMetrics.ScopeMetrics {
 			for _, metric := range scopeMetrics.Metrics {
 				if metric.Data != nil {
-					switch metric.Data.(type) {
+					switch t := metric.Data.(type) {
 					case *metricspb.Metric_Gauge:
-						err := addMetric(rr, resourceMetrics, scopeMetrics, metric.Name, metric.Data.(*metricspb.Metric_Gauge).Gauge.DataPoints, multivariateConf)
+						err := addMetric(rr, resourceMetrics, scopeMetrics, metric.Name, t.Gauge.DataPoints, constants.GAUGE_METRICS, multivariateConf)
 						if err != nil {
 							return nil, err
 						}
 					case *metricspb.Metric_Sum:
-						err := addMetric(rr, resourceMetrics, scopeMetrics, metric.Name, metric.Data.(*metricspb.Metric_Sum).Sum.DataPoints, multivariateConf)
+						err := addMetric(rr, resourceMetrics, scopeMetrics, metric.Name, t.Sum.DataPoints, constants.SUM_METRICS, multivariateConf)
 						if err != nil {
 							return nil, err
 						}
@@ -57,8 +59,10 @@ func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request *collogspb.Expo
 						// ToDo Metric Histogram
 						return nil, nil
 					case *metricspb.Metric_Summary:
-						// ToDo Metric Summary
-						return nil, nil
+						err := addSummaryMetric(rr, resourceMetrics, scopeMetrics, metric.Name, t.Summary)
+						if err != nil {
+							return nil, err
+						}
 					case *metricspb.Metric_ExponentialHistogram:
 						// ToDo Metric Exponential Histogram
 						return nil, nil
@@ -74,28 +78,23 @@ func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request *collogspb.Expo
 			}
 			for schemaId, record := range records {
 				allRecords := result[schemaId]
-				if allRecords == nil {
-					result[schemaId] = []arrow.Record{record}
-				} else {
-					result[schemaId] = append(allRecords, record)
-				}
+				result[schemaId] = append(allRecords, record)
 			}
 		}
 	}
 	return result, nil
 }
 
-func addMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint, config *MultivariateMetricsConfig) error {
+func addMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint, metric_type string, config *MultivariateMetricsConfig) error {
 	if mvKey, ok := config.Metrics[metricName]; ok {
-		return multivariateMetric(rr, resMetrics, scopeMetrics, dataPoints, mvKey)
-	} else {
-		univariateMetric(rr, resMetrics, scopeMetrics, metricName, dataPoints)
-		return nil
+		return multivariateMetric(rr, resMetrics, scopeMetrics, metricName, dataPoints, metric_type, mvKey)
 	}
+	univariateMetric(rr, resMetrics, scopeMetrics, metricName, dataPoints, metric_type)
+	return nil
 }
 
 // ToDo initial metric name is lost, it should be recorded as metadata or constant column
-func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, dataPoints []*metricspb.NumberDataPoint, multivariateKey string) error {
+func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint, metric_type string, multivariateKey string) error {
 	records := make(map[string]*MultivariateRecord)
 
 	for _, ndp := range dataPoints {
@@ -103,6 +102,8 @@ func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.Resource
 		newEntry := false
 		stringSig := string(sig)
 		record := records[stringSig]
+
+		var multivariateMetricName *string
 
 		if record == nil {
 			newEntry = true
@@ -113,7 +114,6 @@ func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.Resource
 			records[stringSig] = record
 		}
 
-		var multivariateMetricName *string
 		if newEntry {
 			if resMetrics.Resource != nil {
 				record.fields = append(record.fields, common.ResourceField(resMetrics.Resource))
@@ -141,15 +141,14 @@ func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.Resource
 		}
 
 		if multivariateMetricName == nil {
-			emptyString := ""
-			multivariateMetricName = &emptyString
+			multivariateMetricName = new(string)
 		}
 
-		switch ndp.Value.(type) {
+		switch t := ndp.Value.(type) {
 		case *metricspb.NumberDataPoint_AsDouble:
-			record.metrics = append(record.metrics, rfield.NewF64Field(*multivariateMetricName, ndp.Value.(*metricspb.NumberDataPoint_AsDouble).AsDouble))
+			record.metrics = append(record.metrics, rfield.NewF64Field(*multivariateMetricName, t.AsDouble))
 		case *metricspb.NumberDataPoint_AsInt:
-			record.metrics = append(record.metrics, rfield.NewI64Field(*multivariateMetricName, ndp.Value.(*metricspb.NumberDataPoint_AsInt).AsInt))
+			record.metrics = append(record.metrics, rfield.NewI64Field(*multivariateMetricName, t.AsInt))
 		default:
 			panic("Unsupported number data point value type")
 		}
@@ -159,7 +158,7 @@ func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.Resource
 		if len(record.fields) == 0 && len(record.metrics) == 0 {
 			continue
 		}
-		record.fields = append(record.fields, rfield.NewStructField(constants.METRICS, rfield.Struct{
+		record.fields = append(record.fields, rfield.NewStructField(fmt.Sprintf("%s_%s", metric_type, metricName), rfield.Struct{
 			Fields: record.metrics,
 		}))
 		rr.AddRecord(air.NewRecordFromFields(record.fields))
@@ -167,7 +166,7 @@ func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.Resource
 	return nil
 }
 
-func univariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint) {
+func univariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint, metric_type string) {
 	for _, ndp := range dataPoints {
 		record := air.NewRecord()
 
@@ -183,23 +182,22 @@ func univariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMe
 			record.U64Field(constants.START_TIME_UNIX_NANO, ndp.StartTimeUnixNano)
 		}
 
-		attributes := common.NewAttributes(ndp.Attributes)
-		if attributes != nil {
+		if attributes := common.NewAttributes(ndp.Attributes); attributes != nil {
 			record.AddField(attributes)
 		}
 
 		if ndp.Value != nil {
-			switch ndp.Value.(type) {
+			switch t := ndp.Value.(type) {
 			case *metricspb.NumberDataPoint_AsDouble:
-				record.StructField(constants.METRICS, rfield.Struct{
+				record.StructField(fmt.Sprintf("%s_%s", metric_type, metricName), rfield.Struct{
 					Fields: []*rfield.Field{
-						rfield.NewF64Field(metricName, ndp.Value.(*metricspb.NumberDataPoint_AsDouble).AsDouble),
+						rfield.NewF64Field(constants.METRIC_VALUE, t.AsDouble),
 					},
 				})
 			case *metricspb.NumberDataPoint_AsInt:
-				record.StructField(constants.METRICS, rfield.Struct{
+				record.StructField(fmt.Sprintf("%s_%s", metric_type, metricName), rfield.Struct{
 					Fields: []*rfield.Field{
-						rfield.NewI64Field(metricName, ndp.Value.(*metricspb.NumberDataPoint_AsInt).AsInt),
+						rfield.NewI64Field(constants.METRIC_VALUE, t.AsInt),
 					},
 				})
 			default:
@@ -217,13 +215,56 @@ func univariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMe
 	}
 }
 
+func addSummaryMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, summary *metricspb.Summary) error {
+	for _, sdp := range summary.DataPoints {
+		record := air.NewRecord()
+
+		if resMetrics.Resource != nil {
+			common.AddResource(record, resMetrics.Resource)
+		}
+		if scopeMetrics.Scope != nil {
+			common.AddScope(record, constants.SCOPE_METRICS, scopeMetrics.Scope)
+		}
+
+		record.U64Field(constants.TIME_UNIX_NANO, sdp.TimeUnixNano)
+		if sdp.StartTimeUnixNano > 0 {
+			record.U64Field(constants.START_TIME_UNIX_NANO, sdp.StartTimeUnixNano)
+		}
+
+		record.U64Field(constants.SUMMARY_COUNT, sdp.Count)
+		record.F64Field(constants.SUMMARY_SUM, sdp.Sum)
+
+		if attributes := common.NewAttributes(sdp.Attributes); attributes != nil {
+			record.AddField(attributes)
+		}
+
+		var items []rfield.Value
+		for _, quantile := range sdp.QuantileValues {
+			items = append(items, &rfield.Struct{
+				Fields: []*rfield.Field{
+					rfield.NewF64Field(constants.SUMMARY_QUANTILE, quantile.Quantile),
+					rfield.NewF64Field(constants.SUMMARY_VALUE, quantile.Value),
+				},
+			})
+		}
+		record.ListField(fmt.Sprintf("%s_%s", constants.SUMMARY_QUANTILE_VALUES, metricName), rfield.List{Values: items})
+
+		if sdp.Flags > 0 {
+			record.U32Field(constants.FLAGS, sdp.Flags)
+		}
+
+		rr.AddRecord(record)
+	}
+	return nil
+}
+
 func ExtractMultivariateValue(attributes []*commonpb.KeyValue, multivariateKey string) (*string, error) {
 	for _, attribute := range attributes {
 		if attribute.GetKey() == multivariateKey {
 			value := attribute.GetValue().Value
-			switch value.(type) {
+			switch t := value.(type) {
 			case *commonpb.AnyValue_StringValue:
-				return &value.(*commonpb.AnyValue_StringValue).StringValue, nil
+				return &t.StringValue, nil
 			default:
 				return nil, fmt.Errorf("Unsupported multivariate value type: %v", value)
 			}
@@ -239,9 +280,9 @@ func AddMultivariateValue(attributes []*commonpb.KeyValue, multivariateKey strin
 		if attribute.Value != nil {
 			if attribute.GetKey() == multivariateKey {
 				value := attribute.GetValue().Value
-				switch value.(type) {
+				switch t := value.(type) {
 				case *commonpb.AnyValue_StringValue:
-					multivariateValue = &value.(*commonpb.AnyValue_StringValue).StringValue
+					multivariateValue = &t.StringValue
 				default:
 					return nil, fmt.Errorf("Unsupported multivariate value type: %v", value)
 				}

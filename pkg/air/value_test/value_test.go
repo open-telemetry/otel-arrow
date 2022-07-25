@@ -15,8 +15,9 @@
 package value_test
 
 import (
-	"otel-arrow-adapter/pkg/air/rfield"
 	"testing"
+
+	"otel-arrow-adapter/pkg/air/rfield"
 )
 
 func TestNormalize(t *testing.T) {

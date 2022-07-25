@@ -2,6 +2,7 @@ package benchmark
 
 import (
 	"fmt"
+
 	"github.com/klauspost/compress/zstd"
 	"github.com/pierrec/lz4"
 )

@@ -15,11 +15,12 @@
 package logs_test
 
 import (
+	"testing"
+
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/air/config"
 	datagen2 "otel-arrow-adapter/pkg/datagen"
 	"otel-arrow-adapter/pkg/otel/logs"
-	"testing"
 )
 
 func TestOtlpLogsToArrowEvents(t *testing.T) {

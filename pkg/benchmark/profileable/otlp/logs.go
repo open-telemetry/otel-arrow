@@ -2,6 +2,7 @@ package otlp
 
 import (
 	"google.golang.org/protobuf/proto"
+
 	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	"otel-arrow-adapter/pkg/benchmark"
 )

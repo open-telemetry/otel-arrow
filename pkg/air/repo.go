@@ -17,6 +17,7 @@ package air
 import (
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/memory"
+
 	config2 "otel-arrow-adapter/pkg/air/config"
 )
 

@@ -16,6 +16,7 @@ package trace
 
 import (
 	"github.com/apache/arrow/go/v9/arrow"
+
 	coltracepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/trace/v1"
 	"otel-arrow-adapter/pkg/air"

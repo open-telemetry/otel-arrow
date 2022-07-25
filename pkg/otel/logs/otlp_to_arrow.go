@@ -16,6 +16,7 @@ package logs
 
 import (
 	"github.com/apache/arrow/go/v9/arrow"
+
 	collogspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/otel/common"

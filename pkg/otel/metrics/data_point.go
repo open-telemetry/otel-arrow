@@ -17,9 +17,10 @@ package metrics
 import (
 	"encoding/binary"
 	"math"
+	"sort"
+
 	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
 	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/metrics/v1"
-	"sort"
 )
 
 type KeyValues []*commonpb.KeyValue

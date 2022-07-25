@@ -16,11 +16,12 @@ package datagen
 
 import (
 	"fmt"
+	"time"
+
 	coltracepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/trace/v1"
-	"time"
 )
 
 type TraceGenerator struct {

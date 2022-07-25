@@ -16,6 +16,7 @@ package air_test
 
 import (
 	"fmt"
+
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/air/rfield"
 )

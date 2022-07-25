@@ -15,9 +15,10 @@
 package value_test
 
 import (
+	"testing"
+
 	value2 "otel-arrow-adapter/pkg/air/column"
 	"otel-arrow-adapter/pkg/air/config"
-	"testing"
 )
 
 func TestStringColumn(t *testing.T) {

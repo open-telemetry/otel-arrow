@@ -15,12 +15,14 @@
 package datagen
 
 import (
+	"time"
+
 	"github.com/brianvoe/gofakeit/v6"
+
 	collogspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
 	logspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/logs/v1"
 	resourcepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
-	"time"
 )
 
 type LogsGenerator struct {

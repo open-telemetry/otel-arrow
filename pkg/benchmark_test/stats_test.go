@@ -1,8 +1,9 @@
 package benchmark_test
 
 import (
-	"otel-arrow-adapter/pkg/benchmark"
 	"testing"
+
+	"otel-arrow-adapter/pkg/benchmark"
 )
 
 func TestSummary(t *testing.T) {

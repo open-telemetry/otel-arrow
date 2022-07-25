@@ -16,10 +16,11 @@ package metrics
 
 import (
 	"fmt"
+	"testing"
+
 	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
 	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/metrics/v1"
 	"otel-arrow-adapter/pkg/otel/metrics"
-	"testing"
 )
 
 func TestDataPointSig(t *testing.T) {

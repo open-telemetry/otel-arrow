@@ -17,6 +17,7 @@ package column
 import (
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/memory"
+
 	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/air/dictionary"
 	"otel-arrow-adapter/pkg/air/rfield"
@@ -91,7 +92,7 @@ func NewColumns(allocator *memory.GoAllocator, fieldType arrow.DataType, fieldPa
 
 // CreateColumn creates a column with a field based on its field type and field name.
 func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, fieldName string, fieldType arrow.DataType, config *config.Config, dictIdGen *dictionary.DictIdGenerator) *rfield.FieldPath {
-	switch fieldType.(type) {
+	switch t := fieldType.(type) {
 	case *arrow.BooleanType:
 		c.BooleanColumns = append(c.BooleanColumns, MakeBoolColumn(fieldName))
 		return rfield.NewFieldPath(len(c.BooleanColumns) - 1)
@@ -133,7 +134,7 @@ func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, fieldN
 		c.BinaryColumns = append(c.BinaryColumns, MakeBinaryColumn(fieldName))
 		return rfield.NewFieldPath(len(c.BinaryColumns) - 1)
 	case *arrow.ListType:
-		etype := fieldType.(*arrow.ListType).Elem()
+		etype := t.Elem()
 		listColumn, fieldPaths := MakeListColumn(allocator, path, etype, config, dictIdGen)
 		c.ListColumns = append(c.ListColumns, listColumn)
 		if fieldPaths == nil {
@@ -155,52 +156,52 @@ func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, fieldN
 }
 
 func (c *Columns) UpdateColumn(fieldPath *rfield.FieldPath, field *rfield.Field) {
-	switch field.Value.(type) {
+	switch t := field.Value.(type) {
 	case *rfield.I8:
-		c.I8Columns[fieldPath.Current].Push(&field.Value.(*rfield.I8).Value)
+		c.I8Columns[fieldPath.Current].Push(&t.Value)
 		c.length = c.I8Columns[fieldPath.Current].Len()
 	case *rfield.I16:
-		c.I16Columns[fieldPath.Current].Push(&field.Value.(*rfield.I16).Value)
+		c.I16Columns[fieldPath.Current].Push(&t.Value)
 		c.length = c.I16Columns[fieldPath.Current].Len()
 	case *rfield.I32:
-		c.I32Columns[fieldPath.Current].Push(&field.Value.(*rfield.I32).Value)
+		c.I32Columns[fieldPath.Current].Push(&t.Value)
 		c.length = c.I32Columns[fieldPath.Current].Len()
 	case *rfield.I64:
-		c.I64Columns[fieldPath.Current].Push(&field.Value.(*rfield.I64).Value)
+		c.I64Columns[fieldPath.Current].Push(&t.Value)
 		c.length = c.I64Columns[fieldPath.Current].Len()
 	case *rfield.U8:
-		c.U8Columns[fieldPath.Current].Push(&field.Value.(*rfield.U8).Value)
+		c.U8Columns[fieldPath.Current].Push(&t.Value)
 		c.length = c.U8Columns[fieldPath.Current].Len()
 	case *rfield.U16:
-		c.U16Columns[fieldPath.Current].Push(&field.Value.(*rfield.U16).Value)
+		c.U16Columns[fieldPath.Current].Push(&t.Value)
 		c.length = c.U16Columns[fieldPath.Current].Len()
 	case *rfield.U32:
-		c.U32Columns[fieldPath.Current].Push(&field.Value.(*rfield.U32).Value)
+		c.U32Columns[fieldPath.Current].Push(&t.Value)
 		c.length = c.U32Columns[fieldPath.Current].Len()
 	case *rfield.U64:
-		c.U64Columns[fieldPath.Current].Push(&field.Value.(*rfield.U64).Value)
+		c.U64Columns[fieldPath.Current].Push(&t.Value)
 		c.length = c.U64Columns[fieldPath.Current].Len()
 	case *rfield.F32:
-		c.F32Columns[fieldPath.Current].Push(&field.Value.(*rfield.F32).Value)
+		c.F32Columns[fieldPath.Current].Push(&t.Value)
 		c.length = c.F32Columns[fieldPath.Current].Len()
 	case *rfield.F64:
-		c.F64Columns[fieldPath.Current].Push(&field.Value.(*rfield.F64).Value)
+		c.F64Columns[fieldPath.Current].Push(&t.Value)
 		c.length = c.F64Columns[fieldPath.Current].Len()
 	case *rfield.String:
-		c.StringColumns[fieldPath.Current].Push(&field.Value.(*rfield.String).Value)
+		c.StringColumns[fieldPath.Current].Push(&t.Value)
 		c.length = c.StringColumns[fieldPath.Current].Len()
 	case *rfield.Binary:
-		c.BinaryColumns[fieldPath.Current].Push(&field.Value.(*rfield.Binary).Value)
+		c.BinaryColumns[fieldPath.Current].Push(&t.Value)
 		c.length = c.BinaryColumns[fieldPath.Current].Len()
 	case *rfield.Bool:
-		c.BooleanColumns[fieldPath.Current].Push(&field.Value.(*rfield.Bool).Value)
+		c.BooleanColumns[fieldPath.Current].Push(&t.Value)
 		c.length = c.BooleanColumns[fieldPath.Current].Len()
 	case *rfield.List:
-		c.ListColumns[fieldPath.Current].Push(fieldPath, field.Value.(*rfield.List).Values)
+		c.ListColumns[fieldPath.Current].Push(fieldPath, t.Values)
 		c.length = c.ListColumns[fieldPath.Current].Len()
 	case *rfield.Struct:
 		for fieldPos := range field.Value.(*rfield.Struct).Fields {
-			c.StructColumns[fieldPath.Current].Push(fieldPath.Children[fieldPos], field.Value.(*rfield.Struct).Fields[fieldPos])
+			c.StructColumns[fieldPath.Current].Push(fieldPath.Children[fieldPos], t.Fields[fieldPos])
 		}
 		c.length = c.StructColumns[fieldPath.Current].Len()
 	default:

@@ -4,12 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
-	"github.com/olekukonko/tablewriter"
 	"log"
 	"math"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/olekukonko/tablewriter"
 )
 
 type Profiler struct {

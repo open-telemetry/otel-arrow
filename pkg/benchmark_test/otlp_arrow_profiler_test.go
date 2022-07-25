@@ -1,11 +1,12 @@
 package benchmark
 
 import (
+	"testing"
+
 	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/benchmark"
 	"otel-arrow-adapter/pkg/benchmark/profileable/otlp_arrow"
 	"otel-arrow-adapter/pkg/otel/metrics"
-	"testing"
 )
 
 func TestOtlpArrowMetricsProfiler(t *testing.T) {

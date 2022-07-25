@@ -15,11 +15,12 @@
 package metrics_test
 
 import (
+	"testing"
+
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/air/config"
 	datagen2 "otel-arrow-adapter/pkg/datagen"
 	"otel-arrow-adapter/pkg/otel/metrics"
-	"testing"
 )
 
 func TestOtlpMetricsToArrowEvents(t *testing.T) {
@@ -45,7 +46,7 @@ func TestOtlpMetricsToArrowEvents(t *testing.T) {
 	}
 	for schemaId, records := range multiSchemaRecords {
 		switch schemaId {
-		case "metrics:{system.cpu.load_average.1m:F64},resource:{attributes:{hostname:Str,ip:Str,status:I64,up:Bol,version:F64}},scope_metrics:{name:Str,version:Str},start_time_unix_nano:U64,time_unix_nano:U64":
+		case "resource:{attributes:{hostname:Str,ip:Str,status:I64,up:Bol,version:F64}},scope_metrics:{name:Str,version:Str},start_time_unix_nano:U64,sum_system.cpu.load_average.1m:{value:F64},time_unix_nano:U64":
 			for _, record := range records {
 				if record.NumCols() != 5 {
 					t.Errorf("Expected 6 fields, got %d", record.NumCols())
@@ -54,7 +55,7 @@ func TestOtlpMetricsToArrowEvents(t *testing.T) {
 					t.Errorf("Expected 10 rows, got %d", record.NumRows())
 				}
 			}
-		case "attributes:{cpu:I64,state:Str},metrics:{idle:F64,interrupt:F64,iowait:F64,system:F64,user:F64},resource:{attributes:{hostname:Str,ip:Str,status:I64,up:Bol,version:F64}},scope_metrics:{name:Str,version:Str},start_time_unix_nano:U64,time_unix_nano:U64":
+		case "attributes:{cpu:I64,state:Str},resource:{attributes:{hostname:Str,ip:Str,status:I64,up:Bol,version:F64}},scope_metrics:{name:Str,version:Str},start_time_unix_nano:U64,sum_system.cpu.time:{idle:F64,interrupt:F64,iowait:F64,system:F64,user:F64},time_unix_nano:U64":
 			for _, record := range records {
 				if record.NumCols() != 6 {
 					t.Errorf("Expected 5 fields, got %d", record.NumCols())
@@ -63,7 +64,7 @@ func TestOtlpMetricsToArrowEvents(t *testing.T) {
 					t.Errorf("Expected 10 rows, got %d", record.NumRows())
 				}
 			}
-		case "attributes:{state:Str},metrics:{free:I64,inactive:I64,used:I64},resource:{attributes:{hostname:Str,ip:Str,status:I64,up:Bol,version:F64}},scope_metrics:{name:Str,version:Str},start_time_unix_nano:U64,time_unix_nano:U64":
+		case "attributes:{state:Str},resource:{attributes:{hostname:Str,ip:Str,status:I64,up:Bol,version:F64}},scope_metrics:{name:Str,version:Str},start_time_unix_nano:U64,sum_system.memory.usage:{free:I64,inactive:I64,used:I64},time_unix_nano:U64":
 			for _, record := range records {
 				if record.NumCols() != 6 {
 					t.Errorf("Expected 5 fields, got %d", record.NumCols())
