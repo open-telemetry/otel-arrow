@@ -27,6 +27,8 @@ type Value interface {
 	ValueByPath(path []int) Value
 	Compare(other Value) int
 
+	AsBool() (*bool, error)
+
 	AsU8() (*uint8, error)
 	AsU16() (*uint16, error)
 	AsU32() (*uint32, error)
@@ -36,6 +38,9 @@ type Value interface {
 	AsI16() (*int16, error)
 	AsI32() (*int32, error)
 	AsI64() (*int64, error)
+
+	AsF32() (*float32, error)
+	AsF64() (*float64, error)
 }
 
 type CommonValue struct{}
@@ -67,6 +72,10 @@ func (v *Bool) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *Bool) AsBool() (*bool, error) {
+	return &v.Value, nil
+}
+
 func (v *Bool) AsU8() (*uint8, error) {
 	value := uint8(0)
 	if v.Value {
@@ -123,6 +132,12 @@ func (v *Bool) AsI64() (*int64, error) {
 	}
 	return &v64, nil
 }
+func (v *Bool) AsF32() (*float32, error) {
+	return nil, fmt.Errorf("cannot convert bool to float32")
+}
+func (v *Bool) AsF64() (*float64, error) {
+	return nil, fmt.Errorf("cannot convert bool to float64")
+}
 
 type I8 struct {
 	CommonValue
@@ -148,6 +163,9 @@ func (v *I8) Compare(other Value) int {
 	} else {
 		return -1
 	}
+}
+func (v *I8) AsBool() (*bool, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to bool")
 }
 func (v *I8) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
@@ -176,6 +194,12 @@ func (v *I8) AsI64() (*int64, error) {
 	v64 := int64(v.Value)
 	return &v64, nil
 }
+func (v *I8) AsF32() (*float32, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to float32")
+}
+func (v *I8) AsF64() (*float64, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to float64")
+}
 
 type I16 struct {
 	CommonValue
@@ -201,6 +225,9 @@ func (v *I16) Compare(other Value) int {
 	} else {
 		return -1
 	}
+}
+func (v *I16) AsBool() (*bool, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to bool")
 }
 func (v *I16) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
@@ -228,6 +255,12 @@ func (v *I16) AsI64() (*int64, error) {
 	v64 := int64(v.Value)
 	return &v64, nil
 }
+func (v *I16) AsF32() (*float32, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to float32")
+}
+func (v *I16) AsF64() (*float64, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to float64")
+}
 
 type I32 struct {
 	CommonValue
@@ -254,6 +287,9 @@ func (v *I32) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *I32) AsBool() (*bool, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to bool")
+}
 func (v *I32) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
 }
@@ -278,6 +314,12 @@ func (v *I32) AsI32() (*int32, error) {
 func (v *I32) AsI64() (*int64, error) {
 	v64 := int64(v.Value)
 	return &v64, nil
+}
+func (v *I32) AsF32() (*float32, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to float32")
+}
+func (v *I32) AsF64() (*float64, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to float64")
 }
 
 type I64 struct {
@@ -305,6 +347,9 @@ func (v *I64) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *I64) AsBool() (*bool, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to bool")
+}
 func (v *I64) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
 }
@@ -328,6 +373,12 @@ func (v *I64) AsI32() (*int32, error) {
 }
 func (v *I64) AsI64() (*int64, error) {
 	return &v.Value, nil
+}
+func (v *I64) AsF32() (*float32, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to float32")
+}
+func (v *I64) AsF64() (*float64, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to float64")
 }
 
 type U8 struct {
@@ -354,6 +405,9 @@ func (v *U8) Compare(other Value) int {
 	} else {
 		return -1
 	}
+}
+func (v *U8) AsBool() (*bool, error) {
+	return nil, fmt.Errorf("cannot convert unsigned integer to bool")
 }
 func (v *U8) AsU8() (*uint8, error) {
 	return &v.Value, nil
@@ -385,6 +439,12 @@ func (v *U8) AsI64() (*int64, error) {
 	value := int64(v.Value)
 	return &value, nil
 }
+func (v *U8) AsF32() (*float32, error) {
+	return nil, fmt.Errorf("cannot convert unsigned integer to float32")
+}
+func (v *U8) AsF64() (*float64, error) {
+	return nil, fmt.Errorf("cannot convert unsigned integer to float64")
+}
 
 type U16 struct {
 	CommonValue
@@ -410,6 +470,9 @@ func (v *U16) Compare(other Value) int {
 	} else {
 		return -1
 	}
+}
+func (v *U16) AsBool() (*bool, error) {
+	return nil, fmt.Errorf("cannot convert unsigned integer to bool")
 }
 func (v *U16) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert uint16 to uint8")
@@ -439,6 +502,12 @@ func (v *U16) AsI64() (*int64, error) {
 	v64 := int64(v.Value)
 	return &v64, nil
 }
+func (v *U16) AsF32() (*float32, error) {
+	return nil, fmt.Errorf("cannot convert unsigned integer to float32")
+}
+func (v *U16) AsF64() (*float64, error) {
+	return nil, fmt.Errorf("cannot convert unsigned integer to float64")
+}
 
 type U32 struct {
 	CommonValue
@@ -464,6 +533,9 @@ func (v *U32) Compare(other Value) int {
 	} else {
 		return -1
 	}
+}
+func (v *U32) AsBool() (*bool, error) {
+	return nil, fmt.Errorf("cannot convert unsigned integer to bool")
 }
 func (v *U32) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert uint32 to uint8")
@@ -492,6 +564,12 @@ func (v *U32) AsI64() (*int64, error) {
 	v64 := int64(v.Value)
 	return &v64, nil
 }
+func (v *U32) AsF32() (*float32, error) {
+	return nil, fmt.Errorf("cannot convert unsigned integer to float32")
+}
+func (v *U32) AsF64() (*float64, error) {
+	return nil, fmt.Errorf("cannot convert unsigned integer to float64")
+}
 
 type U64 struct {
 	CommonValue
@@ -518,6 +596,9 @@ func (v *U64) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *U64) AsBool() (*bool, error) {
+	return nil, fmt.Errorf("cannot convert unsigned integer to bool")
+}
 func (v *U64) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert uint64 to uint8")
 }
@@ -542,6 +623,12 @@ func (v *U64) AsI32() (*int32, error) {
 }
 func (c *U64) AsI64() (*int64, error) {
 	return nil, fmt.Errorf("cannot convert uint64 column to int64")
+}
+func (v *U64) AsF32() (*float32, error) {
+	return nil, fmt.Errorf("cannot convert unsigned integer to float32")
+}
+func (v *U64) AsF64() (*float64, error) {
+	return nil, fmt.Errorf("cannot convert unsigned integer to float64")
 }
 
 type F32 struct {
@@ -569,6 +656,9 @@ func (v *F32) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *F32) AsBool() (*bool, error) {
+	return nil, fmt.Errorf("cannot convert float32 to bool")
+}
 func (v *F32) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert f32 to uint8")
 }
@@ -592,6 +682,13 @@ func (v *F32) AsI32() (*int32, error) {
 }
 func (c *F32) AsI64() (*int64, error) {
 	return nil, fmt.Errorf("cannot convert f32 column to int64")
+}
+func (v *F32) AsF32() (*float32, error) {
+	return &v.Value, nil
+}
+func (v *F32) AsF64() (*float64, error) {
+	value := float64(v.Value)
+	return &value, nil
 }
 
 type F64 struct {
@@ -619,6 +716,9 @@ func (v *F64) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *F64) AsBool() (*bool, error) {
+	return nil, fmt.Errorf("cannot convert float64 to bool")
+}
 func (v *F64) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert f64 to uint8")
 }
@@ -642,6 +742,12 @@ func (v *F64) AsI32() (*int32, error) {
 }
 func (c *F64) AsI64() (*int64, error) {
 	return nil, fmt.Errorf("cannot convert f64 column to int64")
+}
+func (v *F64) AsF32() (*float32, error) {
+	return nil, fmt.Errorf("cannot convert f64 to float32")
+}
+func (v *F64) AsF64() (*float64, error) {
+	return &v.Value, nil
 }
 
 type String struct {
@@ -669,6 +775,9 @@ func (v *String) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *String) AsBool() (*bool, error) {
+	return nil, fmt.Errorf("cannot convert string to bool")
+}
 func (v *String) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert string to uint8")
 }
@@ -693,6 +802,12 @@ func (v *String) AsI32() (*int32, error) {
 func (c *String) AsI64() (*int64, error) {
 	return nil, fmt.Errorf("cannot convert string column to int64")
 }
+func (v *String) AsF32() (*float32, error) {
+	return nil, fmt.Errorf("cannot convert string to float32")
+}
+func (v *String) AsF64() (*float64, error) {
+	return nil, fmt.Errorf("cannot convert string to float64")
+}
 
 type Binary struct {
 	CommonValue
@@ -712,6 +827,9 @@ func (v *Binary) Compare(other Value) int {
 	}
 	otherValue := other.(*Binary).Value
 	return bytes.Compare(v.Value, otherValue)
+}
+func (v *Binary) AsBool() (*bool, error) {
+	return nil, fmt.Errorf("cannot convert binary to bool")
 }
 func (v *Binary) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert binary to uint8")
@@ -736,6 +854,12 @@ func (v *Binary) AsI32() (*int32, error) {
 }
 func (c *Binary) AsI64() (*int64, error) {
 	return nil, fmt.Errorf("cannot convert binary column to int64")
+}
+func (v *Binary) AsF32() (*float32, error) {
+	return nil, fmt.Errorf("cannot convert binary to float32")
+}
+func (v *Binary) AsF64() (*float64, error) {
+	return nil, fmt.Errorf("cannot convert binary to float64")
 }
 
 type Struct struct {
@@ -767,6 +891,9 @@ func (v *Struct) ValueByPath(path []int) Value {
 func (v *Struct) Compare(_ Value) int {
 	panic("struct comparison not implemented")
 }
+func (v *Struct) AsBool() (*bool, error) {
+	return nil, fmt.Errorf("cannot convert struct to bool")
+}
 func (v *Struct) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert struct to uint8")
 }
@@ -790,6 +917,12 @@ func (v *Struct) AsI32() (*int32, error) {
 }
 func (c *Struct) AsI64() (*int64, error) {
 	return nil, fmt.Errorf("cannot convert struct column to int64")
+}
+func (v *Struct) AsF32() (*float32, error) {
+	return nil, fmt.Errorf("cannot convert struct to float32")
+}
+func (v *Struct) AsF64() (*float64, error) {
+	return nil, fmt.Errorf("cannot convert struct to float64")
 }
 
 type List struct {
@@ -845,6 +978,9 @@ func (v *List) ValueByPath(path []int) Value {
 func (v *List) Compare(_ Value) int {
 	panic("struct comparison not implemented")
 }
+func (v *List) AsBool() (*bool, error) {
+	return nil, fmt.Errorf("cannot convert list to bool")
+}
 func (v *List) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert list to uint8")
 }
@@ -868,6 +1004,12 @@ func (v *List) AsI32() (*int32, error) {
 }
 func (c *List) AsI64() (*int64, error) {
 	return nil, fmt.Errorf("cannot convert list column to int64")
+}
+func (v *List) AsF32() (*float32, error) {
+	return nil, fmt.Errorf("cannot convert list to float32")
+}
+func (v *List) AsF64() (*float64, error) {
+	return nil, fmt.Errorf("cannot convert list to float64")
 }
 
 // ToDo what about list mixing struct, uint, string, ... items?
