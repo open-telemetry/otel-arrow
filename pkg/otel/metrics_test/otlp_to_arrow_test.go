@@ -17,7 +17,7 @@ package metrics_test
 import (
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/air/config"
-	"otel-arrow-adapter/pkg/otel/datagen"
+	datagen2 "otel-arrow-adapter/pkg/datagen"
 	"otel-arrow-adapter/pkg/otel/metrics"
 	"testing"
 )
@@ -27,7 +27,7 @@ func TestOtlpMetricsToArrowEvents(t *testing.T) {
 
 	cfg := config.NewDefaultConfig()
 	rr := air.NewRecordRepository(cfg)
-	lg := datagen.NewMetricsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScope())
+	lg := datagen2.NewMetricsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScope())
 
 	multivariateConf := metrics.MultivariateMetricsConfig{
 		Metrics: make(map[string]string),

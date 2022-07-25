@@ -17,7 +17,7 @@ package logs_test
 import (
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/air/config"
-	"otel-arrow-adapter/pkg/otel/datagen"
+	datagen2 "otel-arrow-adapter/pkg/datagen"
 	"otel-arrow-adapter/pkg/otel/logs"
 	"testing"
 )
@@ -27,7 +27,7 @@ func TestOtlpLogsToArrowEvents(t *testing.T) {
 
 	cfg := config.NewDefaultConfig()
 	rr := air.NewRecordRepository(cfg)
-	lg := datagen.NewLogsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScope())
+	lg := datagen2.NewLogsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScope())
 
 	request := lg.Generate(10, 100)
 	records, err := logs.OtlpLogsToArrowRecords(rr, request)

@@ -2,7 +2,7 @@ package benchmark
 
 import (
 	colmetrics "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/metrics/v1"
-	"otel-arrow-adapter/pkg/otel/datagen"
+	datagen2 "otel-arrow-adapter/pkg/datagen"
 )
 import collogs "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/logs/v1"
 import coltrace "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
@@ -27,11 +27,11 @@ type TraceDataset interface {
 // FakeMetricsDataset is an implementation of MetricsDataset returning fake metrics.
 type FakeMetricsDataset struct {
 	len       int
-	generator *datagen.MetricsGenerator
+	generator *datagen2.MetricsGenerator
 }
 
 func NewFakeMetricsDataset(len int) *FakeMetricsDataset {
-	return &FakeMetricsDataset{len: len, generator: datagen.NewMetricsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScope())}
+	return &FakeMetricsDataset{len: len, generator: datagen2.NewMetricsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScope())}
 }
 
 func (d *FakeMetricsDataset) Len() int {
@@ -47,11 +47,11 @@ func (d *FakeMetricsDataset) Metrics(_, size int) []*colmetrics.ExportMetricsSer
 // FakeLogsDataset is an implementation of LogsDataset returning fake logs.
 type FakeLogsDataset struct {
 	len       int
-	generator *datagen.LogsGenerator
+	generator *datagen2.LogsGenerator
 }
 
 func NewFakeLogsDataset(len int) *FakeLogsDataset {
-	return &FakeLogsDataset{len: len, generator: datagen.NewLogsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScope())}
+	return &FakeLogsDataset{len: len, generator: datagen2.NewLogsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScope())}
 }
 
 func (d *FakeLogsDataset) Len() int {
@@ -67,11 +67,11 @@ func (d *FakeLogsDataset) Logs(_, size int) []*collogs.ExportLogsServiceRequest 
 // FakeTraceDataset is an implementation of TraceDataset returning fake traces.
 type FakeTraceDataset struct {
 	len       int
-	generator *datagen.TraceGenerator
+	generator *datagen2.TraceGenerator
 }
 
 func NewFakeTraceDataset(len int) *FakeTraceDataset {
-	return &FakeTraceDataset{len: len, generator: datagen.NewTraceGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScope())}
+	return &FakeTraceDataset{len: len, generator: datagen2.NewTraceGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScope())}
 }
 
 func (d *FakeTraceDataset) Len() int {
