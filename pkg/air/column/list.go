@@ -50,6 +50,9 @@ func MakeListColumn(allocator *memory.GoAllocator, fieldPath []int, etype arrow.
 	var values Column
 	fieldPaths := []*rfield.FieldPath(nil)
 	switch etype.(type) {
+	case *arrow.BooleanType:
+		col := MakeBoolColumn(etype.Name())
+		values = &col
 	case *arrow.Uint8Type:
 		col := MakeU8Column(etype.Name())
 		values = &col
@@ -74,10 +77,19 @@ func MakeListColumn(allocator *memory.GoAllocator, fieldPath []int, etype arrow.
 	case *arrow.Int64Type:
 		col := MakeI64Column(etype.Name())
 		values = &col
+	case *arrow.Float32Type:
+		col := MakeF32Column(etype.Name())
+		values = &col
+	case *arrow.Float64Type:
+		col := MakeF64Column(etype.Name())
+		values = &col
 	case *arrow.StructType:
 		columns, fps := NewColumns(allocator, etype, fieldPath, config, dictIdGen)
 		fieldPaths = fps
 		values = NewStructColumn(etype.Name(), etype, columns)
+
+	// List of list of not yet supported
+
 	default:
 		panic("ListColumn: unsupported data type")
 	}
@@ -115,7 +127,7 @@ func (c *ListColumnBase) Len() int {
 	return c.length
 }
 
-func (c *ListColumnBase) PushFromValues(fieldPath *rfield.FieldPath, _ []rfield.Value) {
+func (c *ListColumnBase) PushFromValues(_ *rfield.FieldPath, _ []rfield.Value) {
 	panic("not implemented")
 }
 

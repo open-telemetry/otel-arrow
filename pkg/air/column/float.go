@@ -18,6 +18,7 @@ import (
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/memory"
+	"otel-arrow-adapter/pkg/air/rfield"
 )
 
 // F32Column is a column of float32 data.
@@ -57,9 +58,24 @@ func (c *F32Column) Push(data *float32) {
 	c.data = append(c.data, data)
 }
 
+// PushFromValues adds the given values to the column.
+func (c *F32Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
+	for _, v := range data {
+		fv, err := v.AsF32()
+		if err != nil {
+			panic(err)
+		}
+		c.Push(fv)
+	}
+}
+
 // Name returns the name of the column.
 func (c *F32Column) Name() string {
 	return c.name
+}
+
+func (c *F32Column) Type() arrow.DataType {
+	return arrow.PrimitiveTypes.Float32
 }
 
 // Len returns the number of elements in the column.
@@ -72,13 +88,13 @@ func (c *F32Column) Clear() {
 	c.data = c.data[:0]
 }
 
-// NewF32SchemaField creates a F32 schema field.
-func (c *F32Column) NewF32SchemaField() *arrow.Field {
+// NewArrowField creates a F32 schema field.
+func (c *F32Column) NewArrowField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Float32}
 }
 
-// NewF32Array creates and initializes a new Arrow Array for the column.
-func (c *F32Column) NewF32Array(allocator *memory.GoAllocator) arrow.Array {
+// NewArray creates and initializes a new Arrow Array for the column.
+func (c *F32Column) NewArray(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewFloat32Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -97,9 +113,24 @@ func (c *F64Column) Push(data *float64) {
 	c.data = append(c.data, data)
 }
 
+// PushFromValues adds the given values to the column.
+func (c *F64Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
+	for _, v := range data {
+		fv, err := v.AsF64()
+		if err != nil {
+			panic(err)
+		}
+		c.Push(fv)
+	}
+}
+
 // Name returns the name of the column.
 func (c *F64Column) Name() string {
 	return c.name
+}
+
+func (c *F64Column) Type() arrow.DataType {
+	return arrow.PrimitiveTypes.Float64
 }
 
 // Len returns the number of elements in the column.
@@ -112,13 +143,13 @@ func (c *F64Column) Clear() {
 	c.data = c.data[:0]
 }
 
-// NewF64SchemaField creates a F64 schema field.
-func (c *F64Column) NewF64SchemaField() *arrow.Field {
+// NewArrowField creates a F64 schema field.
+func (c *F64Column) NewArrowField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Float64}
 }
 
-// NewF64Array creates and initializes a new Arrow Array for the column.
-func (c *F64Column) NewF64Array(allocator *memory.GoAllocator) arrow.Array {
+// NewArray creates and initializes a new Arrow Array for the column.
+func (c *F64Column) NewArray(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewFloat64Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {

@@ -215,8 +215,8 @@ func (c *Columns) Build(allocator *memory.GoAllocator) ([]*arrow.Field, []arrow.
 
 	for i := range c.BooleanColumns {
 		col := &c.BooleanColumns[i]
-		fields = append(fields, col.NewBoolSchemaField())
-		arrays = append(arrays, col.NewBoolArray(allocator))
+		fields = append(fields, col.NewArrowField())
+		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.I8Columns {
 		col := &c.I8Columns[i]
@@ -260,13 +260,13 @@ func (c *Columns) Build(allocator *memory.GoAllocator) ([]*arrow.Field, []arrow.
 	}
 	for i := range c.F32Columns {
 		col := &c.F32Columns[i]
-		fields = append(fields, col.NewF32SchemaField())
-		arrays = append(arrays, col.NewF32Array(allocator))
+		fields = append(fields, col.NewArrowField())
+		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.F64Columns {
 		col := &c.F64Columns[i]
-		fields = append(fields, col.NewF64SchemaField())
-		arrays = append(arrays, col.NewF64Array(allocator))
+		fields = append(fields, col.NewArrowField())
+		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.StringColumns {
 		col := &c.StringColumns[i]

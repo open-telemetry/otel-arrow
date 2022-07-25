@@ -18,6 +18,7 @@ import (
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/memory"
+	"otel-arrow-adapter/pkg/air/rfield"
 )
 
 // BoolColumn is a column of boolean data.
@@ -38,29 +39,29 @@ func MakeBoolColumn(name string) BoolColumn {
 	}
 }
 
-// NewBoolArray creates and initializes a new Arrow Array for the column.
-func (c *BoolColumn) NewBoolArray(allocator *memory.GoAllocator) arrow.Array {
-	builder := array.NewBooleanBuilder(allocator)
-	builder.Reserve(len(c.data))
-	for _, v := range c.data {
-		if v == nil {
-			builder.AppendNull()
-		} else {
-			builder.UnsafeAppend(*v)
-		}
-	}
-	c.Clear()
-	return builder.NewArray()
-}
-
 // Name returns the name of the column.
 func (c *BoolColumn) Name() string {
 	return c.name
 }
 
+func (c *BoolColumn) Type() arrow.DataType {
+	return arrow.FixedWidthTypes.Boolean
+}
+
 // Push adds a new value to the column.
 func (c *BoolColumn) Push(data *bool) {
 	c.data = append(c.data, data)
+}
+
+// PushFromValues adds the given values to the column.
+func (c *BoolColumn) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
+	for _, v := range data {
+		bv, err := v.AsBool()
+		if err != nil {
+			panic(err)
+		}
+		c.Push(bv)
+	}
 }
 
 // Len returns the number of values in the column.
@@ -73,7 +74,22 @@ func (c *BoolColumn) Clear() {
 	c.data = c.data[:0]
 }
 
-// NewBoolSchemaField creates a Bool schema field.
-func (c *BoolColumn) NewBoolSchemaField() *arrow.Field {
+// NewArrowField creates a Bool schema field.
+func (c *BoolColumn) NewArrowField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.FixedWidthTypes.Boolean}
+}
+
+// NewArray creates and initializes a new Arrow Array for the column.
+func (c *BoolColumn) NewArray(allocator *memory.GoAllocator) arrow.Array {
+	builder := array.NewBooleanBuilder(allocator)
+	builder.Reserve(len(c.data))
+	for _, v := range c.data {
+		if v == nil {
+			builder.AppendNull()
+		} else {
+			builder.UnsafeAppend(*v)
+		}
+	}
+	c.Clear()
+	return builder.NewArray()
 }
