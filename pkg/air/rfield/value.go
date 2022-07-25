@@ -27,6 +27,11 @@ type Value interface {
 	ValueByPath(path []int) Value
 	Compare(other Value) int
 
+	AsU8() (*uint8, error)
+	AsU16() (*uint16, error)
+	AsU32() (*uint32, error)
+	AsU64() (*uint64, error)
+
 	AsI8() (*int8, error)
 	AsI16() (*int16, error)
 	AsI32() (*int32, error)
@@ -61,6 +66,34 @@ func (v *Bool) Compare(other Value) int {
 	} else {
 		return -1
 	}
+}
+func (v *Bool) AsU8() (*uint8, error) {
+	value := uint8(0)
+	if v.Value {
+		value = uint8(1)
+	}
+	return &value, nil
+}
+func (v *Bool) AsU16() (*uint16, error) {
+	value := uint16(0)
+	if v.Value {
+		value = uint16(1)
+	}
+	return &value, nil
+}
+func (v *Bool) AsU32() (*uint32, error) {
+	value := uint32(0)
+	if v.Value {
+		value = uint32(1)
+	}
+	return &value, nil
+}
+func (v *Bool) AsU64() (*uint64, error) {
+	v64 := uint64(0)
+	if v.Value {
+		v64 = uint64(1)
+	}
+	return &v64, nil
 }
 func (v *Bool) AsI8() (*int8, error) {
 	value := int8(0)
@@ -116,6 +149,18 @@ func (v *I8) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *I8) AsU8() (*uint8, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
+}
+func (v *I8) AsU16() (*uint16, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
+}
+func (v *I8) AsU32() (*uint32, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
+}
+func (v *I8) AsU64() (*uint64, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
+}
 func (v *I8) AsI8() (*int8, error) {
 	return &v.Value, nil
 }
@@ -157,6 +202,18 @@ func (v *I16) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *I16) AsU8() (*uint8, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
+}
+func (v *I16) AsU16() (*uint16, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
+}
+func (v *I16) AsU32() (*uint32, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
+}
+func (v *I16) AsU64() (*uint64, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
+}
 func (v *I16) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert int16 to int8")
 }
@@ -197,6 +254,18 @@ func (v *I32) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *I32) AsU8() (*uint8, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
+}
+func (v *I32) AsU16() (*uint16, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
+}
+func (v *I32) AsU32() (*uint32, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
+}
+func (v *I32) AsU64() (*uint64, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
+}
 func (v *I32) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert int32 to int8")
 }
@@ -236,6 +305,18 @@ func (v *I64) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *I64) AsU8() (*uint8, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
+}
+func (v *I64) AsU16() (*uint16, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
+}
+func (v *I64) AsU32() (*uint32, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
+}
+func (v *I64) AsU64() (*uint64, error) {
+	return nil, fmt.Errorf("cannot convert signed integer to unsigned integer")
+}
 func (v *I64) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert int64 to int8")
 }
@@ -274,6 +355,21 @@ func (v *U8) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *U8) AsU8() (*uint8, error) {
+	return &v.Value, nil
+}
+func (v *U8) AsU16() (*uint16, error) {
+	value := uint16(v.Value)
+	return &value, nil
+}
+func (v *U8) AsU32() (*uint32, error) {
+	value := uint32(v.Value)
+	return &value, nil
+}
+func (v *U8) AsU64() (*uint64, error) {
+	value := uint64(v.Value)
+	return &value, nil
+}
 func (v *U8) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert uint8 to int8")
 }
@@ -286,8 +382,8 @@ func (v *U8) AsI32() (*int32, error) {
 	return &value, nil
 }
 func (v *U8) AsI64() (*int64, error) {
-	v64 := int64(v.Value)
-	return &v64, nil
+	value := int64(v.Value)
+	return &value, nil
 }
 
 type U16 struct {
@@ -314,6 +410,20 @@ func (v *U16) Compare(other Value) int {
 	} else {
 		return -1
 	}
+}
+func (v *U16) AsU8() (*uint8, error) {
+	return nil, fmt.Errorf("cannot convert uint16 to uint8")
+}
+func (v *U16) AsU16() (*uint16, error) {
+	return &v.Value, nil
+}
+func (v *U16) AsU32() (*uint32, error) {
+	value := uint32(v.Value)
+	return &value, nil
+}
+func (v *U16) AsU64() (*uint64, error) {
+	value := uint64(v.Value)
+	return &value, nil
 }
 func (v *U16) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert uint16 to int8")
@@ -355,6 +465,20 @@ func (v *U32) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *U32) AsU8() (*uint8, error) {
+	return nil, fmt.Errorf("cannot convert uint32 to uint8")
+}
+func (v *U32) AsU16() (*uint16, error) {
+	return nil, fmt.Errorf("cannot convert uint32 to uint16")
+}
+func (v *U32) AsU32() (*uint32, error) {
+	value := uint32(v.Value)
+	return &value, nil
+}
+func (v *U32) AsU64() (*uint64, error) {
+	value := uint64(v.Value)
+	return &value, nil
+}
 func (v *U32) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert uint32 to int8")
 }
@@ -394,6 +518,19 @@ func (v *U64) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *U64) AsU8() (*uint8, error) {
+	return nil, fmt.Errorf("cannot convert uint64 to uint8")
+}
+func (v *U64) AsU16() (*uint16, error) {
+	return nil, fmt.Errorf("cannot convert uint64 to uint16")
+}
+func (v *U64) AsU32() (*uint32, error) {
+	return nil, fmt.Errorf("cannot convert uint64 to uint16")
+}
+func (v *U64) AsU64() (*uint64, error) {
+	value := uint64(v.Value)
+	return &value, nil
+}
 func (v *U64) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert uint64 column to int8")
 }
@@ -431,6 +568,18 @@ func (v *F32) Compare(other Value) int {
 	} else {
 		return -1
 	}
+}
+func (v *F32) AsU8() (*uint8, error) {
+	return nil, fmt.Errorf("cannot convert f32 to uint8")
+}
+func (v *F32) AsU16() (*uint16, error) {
+	return nil, fmt.Errorf("cannot convert f32 to uint16")
+}
+func (v *F32) AsU32() (*uint32, error) {
+	return nil, fmt.Errorf("cannot convert f32 to uint16")
+}
+func (v *F32) AsU64() (*uint64, error) {
+	return nil, fmt.Errorf("cannot convert f32 to uint16")
 }
 func (v *F32) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert f32 column to int8")
@@ -470,6 +619,18 @@ func (v *F64) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *F64) AsU8() (*uint8, error) {
+	return nil, fmt.Errorf("cannot convert f64 to uint8")
+}
+func (v *F64) AsU16() (*uint16, error) {
+	return nil, fmt.Errorf("cannot convert f64 to uint16")
+}
+func (v *F64) AsU32() (*uint32, error) {
+	return nil, fmt.Errorf("cannot convert f64 to uint16")
+}
+func (v *F64) AsU64() (*uint64, error) {
+	return nil, fmt.Errorf("cannot convert f64 to uint16")
+}
 func (v *F64) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert f64 column to int8")
 }
@@ -508,6 +669,18 @@ func (v *String) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *String) AsU8() (*uint8, error) {
+	return nil, fmt.Errorf("cannot convert string to uint8")
+}
+func (v *String) AsU16() (*uint16, error) {
+	return nil, fmt.Errorf("cannot convert string to uint16")
+}
+func (v *String) AsU32() (*uint32, error) {
+	return nil, fmt.Errorf("cannot convert string to uint16")
+}
+func (v *String) AsU64() (*uint64, error) {
+	return nil, fmt.Errorf("cannot convert string to uint16")
+}
 func (v *String) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert string column to int8")
 }
@@ -539,6 +712,18 @@ func (v *Binary) Compare(other Value) int {
 	}
 	otherValue := other.(*Binary).Value
 	return bytes.Compare(v.Value, otherValue)
+}
+func (v *Binary) AsU8() (*uint8, error) {
+	return nil, fmt.Errorf("cannot convert binary to uint8")
+}
+func (v *Binary) AsU16() (*uint16, error) {
+	return nil, fmt.Errorf("cannot convert binary to uint16")
+}
+func (v *Binary) AsU32() (*uint32, error) {
+	return nil, fmt.Errorf("cannot convert binary to uint16")
+}
+func (v *Binary) AsU64() (*uint64, error) {
+	return nil, fmt.Errorf("cannot convert binary to uint16")
 }
 func (v *Binary) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert binary column to int8")
@@ -581,6 +766,18 @@ func (v *Struct) ValueByPath(path []int) Value {
 }
 func (v *Struct) Compare(_ Value) int {
 	panic("struct comparison not implemented")
+}
+func (v *Struct) AsU8() (*uint8, error) {
+	return nil, fmt.Errorf("cannot convert struct to uint8")
+}
+func (v *Struct) AsU16() (*uint16, error) {
+	return nil, fmt.Errorf("cannot convert struct to uint16")
+}
+func (v *Struct) AsU32() (*uint32, error) {
+	return nil, fmt.Errorf("cannot convert struct to uint16")
+}
+func (v *Struct) AsU64() (*uint64, error) {
+	return nil, fmt.Errorf("cannot convert struct to uint16")
 }
 func (v *Struct) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert struct column to int8")
@@ -647,6 +844,18 @@ func (v *List) ValueByPath(path []int) Value {
 }
 func (v *List) Compare(_ Value) int {
 	panic("struct comparison not implemented")
+}
+func (v *List) AsU8() (*uint8, error) {
+	return nil, fmt.Errorf("cannot convert list to uint8")
+}
+func (v *List) AsU16() (*uint16, error) {
+	return nil, fmt.Errorf("cannot convert list to uint16")
+}
+func (v *List) AsU32() (*uint32, error) {
+	return nil, fmt.Errorf("cannot convert list to uint16")
+}
+func (v *List) AsU64() (*uint64, error) {
+	return nil, fmt.Errorf("cannot convert list to uint16")
 }
 func (v *List) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert list column to int8")

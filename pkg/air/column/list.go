@@ -50,6 +50,18 @@ func MakeListColumn(allocator *memory.GoAllocator, fieldPath []int, etype arrow.
 	var values Column
 	fieldPaths := []*rfield.FieldPath(nil)
 	switch etype.(type) {
+	case *arrow.Uint8Type:
+		col := MakeU8Column(etype.Name())
+		values = &col
+	case *arrow.Uint16Type:
+		col := MakeU16Column(etype.Name())
+		values = &col
+	case *arrow.Uint32Type:
+		col := MakeU32Column(etype.Name())
+		values = &col
+	case *arrow.Uint64Type:
+		col := MakeU64Column(etype.Name())
+		values = &col
 	case *arrow.Int8Type:
 		col := MakeI8Column(etype.Name())
 		values = &col

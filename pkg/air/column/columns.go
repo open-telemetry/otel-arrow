@@ -240,23 +240,23 @@ func (c *Columns) Build(allocator *memory.GoAllocator) ([]*arrow.Field, []arrow.
 	}
 	for i := range c.U8Columns {
 		col := &c.U8Columns[i]
-		fields = append(fields, col.NewU8SchemaField())
-		arrays = append(arrays, col.NewU8Array(allocator))
+		fields = append(fields, col.NewArrowField())
+		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.U16Columns {
 		col := &c.U16Columns[i]
-		fields = append(fields, col.NewU16SchemaField())
-		arrays = append(arrays, col.NewU16Array(allocator))
+		fields = append(fields, col.NewArrowField())
+		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.U32Columns {
 		col := &c.U32Columns[i]
-		fields = append(fields, col.NewU32SchemaField())
-		arrays = append(arrays, col.NewU32Array(allocator))
+		fields = append(fields, col.NewArrowField())
+		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.U64Columns {
 		col := &c.U64Columns[i]
-		fields = append(fields, col.NewU64SchemaField())
-		arrays = append(arrays, col.NewU64Array(allocator))
+		fields = append(fields, col.NewArrowField())
+		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.F32Columns {
 		col := &c.F32Columns[i]

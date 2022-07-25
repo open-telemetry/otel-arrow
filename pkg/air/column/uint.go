@@ -18,6 +18,7 @@ import (
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/memory"
+	"otel-arrow-adapter/pkg/air/rfield"
 )
 
 // U8Column is a column of uint8 data.
@@ -89,6 +90,10 @@ func (c *U8Column) Name() string {
 	return c.name
 }
 
+func (c *U8Column) Type() arrow.DataType {
+	return arrow.PrimitiveTypes.Uint8
+}
+
 // Push adds a new value to the column.
 func (c *U8Column) Push(data *uint8) {
 	c.data = append(c.data, data)
@@ -99,13 +104,13 @@ func (c *U8Column) Len() int {
 	return len(c.data)
 }
 
-// NewU8SchemaField creates a U8 schema field.
-func (c *U8Column) NewU8SchemaField() *arrow.Field {
+// NewArrowField creates a U8 schema field.
+func (c *U8Column) NewArrowField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Uint8}
 }
 
-// NewU8Array creates and initializes a new Arrow Array for the column.
-func (c *U8Column) NewU8Array(allocator *memory.GoAllocator) arrow.Array {
+// NewArray creates and initializes a new Arrow Array for the column.
+func (c *U8Column) NewArray(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewUint8Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -124,9 +129,23 @@ func (c *U8Column) Clear() {
 	c.data = c.data[:0]
 }
 
+func (c *U8Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
+	for _, value := range data {
+		v, err := value.AsU8()
+		if err != nil {
+			panic(err)
+		}
+		c.data = append(c.data, v)
+	}
+}
+
 // Name returns the name of the column.
 func (c *U16Column) Name() string {
 	return c.name
+}
+
+func (c *U16Column) Type() arrow.DataType {
+	return arrow.PrimitiveTypes.Uint16
 }
 
 // Push adds a new value to the column.
@@ -139,13 +158,13 @@ func (c *U16Column) Len() int {
 	return len(c.data)
 }
 
-// NewU16SchemaField creates a U16 schema field.
-func (c *U16Column) NewU16SchemaField() *arrow.Field {
+// NewArrowField creates a U16 schema field.
+func (c *U16Column) NewArrowField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Uint16}
 }
 
-// NewU16Array creates and initializes a new Arrow Array for the column.
-func (c *U16Column) NewU16Array(allocator *memory.GoAllocator) arrow.Array {
+// NewArray creates and initializes a new Arrow Array for the column.
+func (c *U16Column) NewArray(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewUint16Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -164,9 +183,23 @@ func (c *U16Column) Clear() {
 	c.data = c.data[:0]
 }
 
+func (c *U16Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
+	for _, value := range data {
+		v, err := value.AsU16()
+		if err != nil {
+			panic(err)
+		}
+		c.data = append(c.data, v)
+	}
+}
+
 // Name returns the name of the column.
 func (c *U32Column) Name() string {
 	return c.name
+}
+
+func (c *U32Column) Type() arrow.DataType {
+	return arrow.PrimitiveTypes.Uint32
 }
 
 // Push adds a new value to the column.
@@ -184,13 +217,23 @@ func (c *U32Column) Clear() {
 	c.data = c.data[:0]
 }
 
-// NewU32SchemaField creates a U32 schema field.
-func (c *U32Column) NewU32SchemaField() *arrow.Field {
+func (c *U32Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
+	for _, value := range data {
+		v, err := value.AsU32()
+		if err != nil {
+			panic(err)
+		}
+		c.data = append(c.data, v)
+	}
+}
+
+// NewArrowField creates a U32 schema field.
+func (c *U32Column) NewArrowField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Uint32}
 }
 
-// NewU32Array creates and initializes a new Arrow Array for the column.
-func (c *U32Column) NewU32Array(allocator *memory.GoAllocator) arrow.Array {
+// NewArray creates and initializes a new Arrow Array for the column.
+func (c *U32Column) NewArray(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewUint32Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
@@ -209,6 +252,10 @@ func (c *U64Column) Name() string {
 	return c.name
 }
 
+func (c *U64Column) Type() arrow.DataType {
+	return arrow.PrimitiveTypes.Uint64
+}
+
 // Push adds a new value to the column.
 func (c *U64Column) Push(data *uint64) {
 	c.data = append(c.data, data)
@@ -224,13 +271,23 @@ func (c *U64Column) Clear() {
 	c.data = c.data[:0]
 }
 
-// NewU64SchemaField creates a U64 schema field.
-func (c *U64Column) NewU64SchemaField() *arrow.Field {
+func (c *U64Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
+	for _, value := range data {
+		v, err := value.AsU64()
+		if err != nil {
+			panic(err)
+		}
+		c.data = append(c.data, v)
+	}
+}
+
+// NewArrowField creates a U64 schema field.
+func (c *U64Column) NewArrowField() *arrow.Field {
 	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Uint64}
 }
 
-// NewU64Array creates and initializes a new Arrow Array for the column.
-func (c *U64Column) NewU64Array(allocator *memory.GoAllocator) arrow.Array {
+// NewArray creates and initializes a new Arrow Array for the column.
+func (c *U64Column) NewArray(allocator *memory.GoAllocator) arrow.Array {
 	builder := array.NewUint64Builder(allocator)
 	builder.Reserve(len(c.data))
 	for _, v := range c.data {
