@@ -16,9 +16,11 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
 ## Status [WIP]
 
 ### Arrow Intermediate Representation (framework to convert row-oriented structured data to Arrow columnar data)
-- [X] Record Repository
+- [X] Values (supported types: bool, i[8|16|32|64], u[8|16|32|64], f[32|64], string, binary, list, struct)
+- [X] Fields
+- [X] Record
 - [X] Record Builder
-- [X] Record, fields, and values
+- [X] Record Repository
 - [X] Generate Arrow records
   - [X] Scalar values
   - [X] Struct values
@@ -28,6 +30,9 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
   - [ ] Dictionary encoding for binary fields
   - [X] Multi-field sorting (string field)
   - [ ] Multi-field sorting (binary field)
+- Arrow IPC format
+  - [ ] Producer
+  - [ ] Consumer
 
 ### OTLP --> OTLP Arrow
   - **General**
@@ -46,8 +51,6 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
     - [X] Trace
     - [X] Links
     - [X] Events
-  - **Arrow IPC format**
-    - [ ] Producer
 
 ### OTLP Arrow --> OTLP
   - **General**
@@ -66,8 +69,6 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
     - [ ] Trace
     - [ ] Links
     - [ ] Events
-  - **Arrow IPC format**
-    - [ ] Consumer
 
 ### Protocol
   - [X] OTLP proto
