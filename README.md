@@ -42,9 +42,10 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
     - [X] Gauge
     - [X] Sum
     - [X] Summary
-    - [ ] Histogram
-    - [ ] Exponential histogram
+    - [X] Histogram
+    - [X] Exponential histogram
     - [X] Univariate metrics to multivariate metrics
+    - [ ] Aggregation temporality
     - [ ] Exemplar
   - **OTLP logs --> OTLP_ARROW events**
     - [X] Logs
@@ -64,6 +65,7 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
     - [ ] Histogram
     - [ ] Exponential histogram
     - [ ] Univariate metrics to multivariate metrics
+    - [ ] Aggregation temporality
     - [ ] Exemplar
   - **OTLP_ARROW events --> OTLP logs**
     - [ ] Logs
