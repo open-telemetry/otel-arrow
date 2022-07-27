@@ -68,12 +68,11 @@ type RecordBuilderMetadata struct {
 
 // Constructs a new `RecordBuilder` from a Record.
 func NewRecordBuilderWithRecord(allocator *memory.GoAllocator, record *Record, config *config2.Config) *RecordBuilder {
-	fieldPath := make([]*rfield.FieldPath, 0, record.FieldCount())
 	builder := RecordBuilder{
 		config:     config,
 		dictIdGen:  dictionary.DictIdGenerator{Id: 0},
 		columns:    column.Columns{},
-		fieldPaths: fieldPath,
+		fieldPaths: make([]*rfield.FieldPath, 0, record.FieldCount()),
 		orderBy:    nil,
 		recordList: nil,
 		optimized:  config.Dictionaries.StringColumns.MaxSortedDictionaries == 0,

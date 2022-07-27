@@ -50,7 +50,7 @@ type ListColumnBase struct {
 func MakeListColumn(allocator *memory.GoAllocator, fieldPath []int, etype arrow.DataType, config *config.Config, dictIdGen *dictionary.DictIdGenerator) (ListColumn, []*rfield.FieldPath) {
 	var values Column
 	fieldPaths := []*rfield.FieldPath(nil)
-	switch etype.(type) {
+	switch t := etype.(type) {
 	case *arrow.BooleanType:
 		col := MakeBoolColumn(etype.Name())
 		values = &col
@@ -85,7 +85,7 @@ func MakeListColumn(allocator *memory.GoAllocator, fieldPath []int, etype arrow.
 		col := MakeF64Column(etype.Name())
 		values = &col
 	case *arrow.StructType:
-		columns, fps := NewColumns(allocator, etype, fieldPath, config, dictIdGen)
+		columns, fps := NewColumns(allocator, t, fieldPath, config, dictIdGen)
 		fieldPaths = fps
 		values = NewStructColumn(etype.Name(), etype, columns)
 

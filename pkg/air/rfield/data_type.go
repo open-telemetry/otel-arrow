@@ -37,6 +37,16 @@ const STRING_SIG = "Str"
 
 type NameTypes []*NameType
 
+// Sort interface for Arrow Fields
+type ArrowFields []arrow.Field
+
+// Sort interface
+func (f ArrowFields) Less(i, j int) bool {
+	return f[i].Name < f[j].Name
+}
+func (f ArrowFields) Len() int      { return len(f) }
+func (f ArrowFields) Swap(i, j int) { f[i], f[j] = f[j], f[i] }
+
 // Sort interface
 func (f NameTypes) Less(i, j int) bool {
 	return f[i].Name < f[j].Name
@@ -142,6 +152,8 @@ func CoerceDataType(dataTypes *[]arrow.DataType) arrow.DataType {
 				Metadata: arrow.Metadata{},
 			})
 		}
+		// ToDo check if it's possible to get rid of this sort as the incoming dataTypes are already sorted. Note: the fields map removes this incoming sort.
+		sort.Sort(ArrowFields(structFields))
 		return arrow.StructOf(structFields...)
 	} else {
 		areAllEqual := true

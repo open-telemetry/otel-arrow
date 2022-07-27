@@ -111,6 +111,10 @@ func DefaultSpanEventAttributes() []*commonpb.KeyValue {
 			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "localhost"}},
 		},
 		{
+			Key:   "version",
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "1.0.0"}},
+		},
+		{
 			Key:   "up",
 			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}},
 		},

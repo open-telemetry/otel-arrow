@@ -15,35 +15,41 @@
 package otel_test
 
 import (
+	"bufio"
+	"bytes"
 	"testing"
 
+	"github.com/apache/arrow/go/v9/arrow/ipc"
 	"github.com/davecgh/go-spew/spew"
 
-	collogspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/logs/v1"
-	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
-	logspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/logs/v1"
-	resourcepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
+	"otel-arrow-adapter/pkg/air"
+	"otel-arrow-adapter/pkg/air/config"
+	"otel-arrow-adapter/pkg/datagen"
+	"otel-arrow-adapter/pkg/otel/trace"
 )
 
-func TestProto(t *testing.T) {
+func TestIPCWriter(t *testing.T) {
+	//t.Skip("WIP")
 	t.Parallel()
 
-	request := collogspb.ExportLogsServiceRequest{
-		ResourceLogs: []*logspb.ResourceLogs{
-			{
-				Resource: &resourcepb.Resource{
-					Attributes: []*commonpb.KeyValue{
-						{
-							Key: "key",
-							Value: &commonpb.AnyValue{
-								Value: &commonpb.AnyValue_StringValue{StringValue: "value"},
-							},
-						},
-					},
-					DroppedAttributesCount: 1,
-				},
-			},
-		},
+	cfg := config.NewDefaultConfig()
+	rr := air.NewRecordRepository(cfg)
+	lg := datagen.NewTraceGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScope())
+
+	request := lg.Generate(10, 100)
+	records, err := trace.OtlpTraceToArrowRecords(rr, request)
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
 	}
-	spew.Dump(request)
+	if len(records) != 1 {
+		t.Errorf("Expected 1 record, got %d", len(records))
+	}
+
+	for _, record := range records {
+		var b bytes.Buffer
+		memWriter := bufio.NewWriter(&b)
+		writer := ipc.NewWriter(memWriter, ipc.WithSchema(record.Schema()))
+		writer.Write(record)
+		spew.Dump(b.Bytes())
+	}
 }

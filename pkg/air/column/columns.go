@@ -74,17 +74,17 @@ type ColumnMetadata struct {
 	Children []*ColumnMetadata
 }
 
-func NewColumns(allocator *memory.GoAllocator, fieldType arrow.DataType, fieldPath []int, config *config.Config, dictIdGen *dictionary.DictIdGenerator) (*Columns, []*rfield.FieldPath) {
-	subFields := fieldType.(*arrow.StructType).Fields()
+func NewColumns(allocator *memory.GoAllocator, structType *arrow.StructType, fieldPath []int, config *config.Config, dictIdGen *dictionary.DictIdGenerator) (*Columns, []*rfield.FieldPath) {
+	subFields := structType.Fields()
 	fieldPaths := make([]*rfield.FieldPath, 0, len(subFields))
 	columns := Columns{}
 	for i := range subFields {
 		subFieldPath := make([]int, 0, len(fieldPath)+1)
 		copy(subFieldPath, fieldPath)
 		subFieldPath = append(subFieldPath, len(fieldPaths))
-		fieldPath := columns.CreateColumn(allocator, subFieldPath, subFields[i].Name, subFields[i].Type, config, dictIdGen)
-		if fieldPath != nil {
-			fieldPaths = append(fieldPaths, fieldPath)
+		colFieldPath := columns.CreateColumn(allocator, subFieldPath, subFields[i].Name, subFields[i].Type, config, dictIdGen)
+		if colFieldPath != nil {
+			fieldPaths = append(fieldPaths, colFieldPath)
 		}
 	}
 	return &columns, fieldPaths
@@ -143,7 +143,7 @@ func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, fieldN
 			return rfield.NewFieldPathWithChildren(len(c.ListColumns)-1, fieldPaths)
 		}
 	case *arrow.StructType:
-		columns, fieldPaths := NewColumns(allocator, fieldType, path, config, dictIdGen)
+		columns, fieldPaths := NewColumns(allocator, t, path, config, dictIdGen)
 		if !columns.IsEmpty() {
 			c.StructColumns = append(c.StructColumns, NewStructColumn(fieldName, fieldType, columns))
 			return rfield.NewFieldPathWithChildren(len(c.StructColumns)-1, fieldPaths)
@@ -200,7 +200,7 @@ func (c *Columns) UpdateColumn(fieldPath *rfield.FieldPath, field *rfield.Field)
 		c.ListColumns[fieldPath.Current].Push(fieldPath, t.Values)
 		c.length = c.ListColumns[fieldPath.Current].Len()
 	case *rfield.Struct:
-		for fieldPos := range field.Value.(*rfield.Struct).Fields {
+		for fieldPos := range t.Fields {
 			c.StructColumns[fieldPath.Current].Push(fieldPath.Children[fieldPos], t.Fields[fieldPos])
 		}
 		c.length = c.StructColumns[fieldPath.Current].Len()
