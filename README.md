@@ -31,8 +31,8 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
   - [X] Multi-field sorting (string field)
   - [ ] Multi-field sorting (binary field)
 - Arrow IPC format
-  - [ ] Producer
-  - [ ] Consumer
+  - [WIP] Producer
+  - [WIP] Consumer
 
 ### OTLP --> OTLP Arrow
   - **General**
@@ -83,7 +83,7 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
   - Fake data generator
     - [X] ExportMetricsServiceRequest (except for histograms and summary)
     - [X] ExportLogsServiceRequest
-    - [X] ExportTraceServiceRequest (except for links and events)
+    - [X] ExportTraceServiceRequest 
   - Framework to compare OTLP and OTLP_ARROW performances (i.e. size and time)
     - [X] General framework
     - [X] Compression algorithms (lz4 and zstd)
