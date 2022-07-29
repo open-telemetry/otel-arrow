@@ -17,9 +17,12 @@ package trace_test
 import (
 	"testing"
 
+	"github.com/davecgh/go-spew/spew"
+
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/air/config"
 	datagen2 "otel-arrow-adapter/pkg/datagen"
+	"otel-arrow-adapter/pkg/otel/events"
 	"otel-arrow-adapter/pkg/otel/trace"
 )
 
@@ -32,18 +35,20 @@ func TestOtlpTraceToArrowEvents(t *testing.T) {
 	lg := datagen2.NewTraceGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScope())
 
 	request := lg.Generate(10, 100)
-	events, err := trace.OtlpTraceToEvents(rr, request)
+	evts, err := trace.OtlpTraceToEvents(rr, request)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
-	if len(events) != 1 {
-		t.Errorf("Expected 1 record, got %d", len(events))
+	if len(evts) != 1 {
+		t.Errorf("Expected 1 record, got %d", len(evts))
 	}
 
-	traceConsumer := trace.NewConsumer()
-	for _, event := range events {
-		if err := traceConsumer.ConsumeEvent(event); err != nil {
+	traceConsumer := events.NewConsumer()
+	for _, event := range evts {
+		records, err := traceConsumer.ConsumeEvent(event)
+		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
+		spew.Dump(records)
 	}
 }

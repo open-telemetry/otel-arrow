@@ -151,9 +151,9 @@ func events(dataGenerator *DataGenerator) []*tracepb.Span_Event {
 	events := make([]*tracepb.Span_Event, 3)
 	for i := 0; i < 3; i++ {
 		events[i] = &tracepb.Span_Event{
-			TimeUnixNano:           dataGenerator.CurrentTime(),
-			Name:                   fmt.Sprintf("event-%d", i),
-			Attributes:             DefaultSpanEventAttributes(),
+			TimeUnixNano: dataGenerator.CurrentTime(),
+			//Name:         fmt.Sprintf("event-%d", i),			// ToDo fix this bug
+			//Attributes:             DefaultSpanEventAttributes(),
 			DroppedAttributesCount: 0,
 		}
 	}
@@ -168,10 +168,10 @@ func links(dataGenerator *DataGenerator) []*tracepb.Span_Link {
 	links := make([]*tracepb.Span_Link, 3)
 	for i := 0; i < 3; i++ {
 		links[i] = &tracepb.Span_Link{
-			TraceId:                dataGenerator.Id16Bits(),
-			SpanId:                 dataGenerator.Id8Bits(),
-			TraceState:             fmt.Sprintf("link-trace-state-%d", i),
-			Attributes:             DefaultSpanLinkAttributes(),
+			TraceId:    dataGenerator.Id16Bits(),
+			SpanId:     dataGenerator.Id8Bits(),
+			TraceState: fmt.Sprintf("link-trace-state-%d", i),
+			//Attributes:             DefaultSpanLinkAttributes(),
 			DroppedAttributesCount: 0,
 		}
 	}

@@ -15,42 +15,57 @@
  *
  */
 
-package trace
+package events
 
 import (
 	"bytes"
 
+	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/ipc"
-	"github.com/davecgh/go-spew/spew"
 
 	coleventspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/events/v1"
 )
 
 type consumer struct {
+	streamConsumers map[string]*streamConsumer
+}
+
+type streamConsumer struct {
 	bufReader *bytes.Reader
 	ipcReader *ipc.Reader
 }
 
 func NewConsumer() *consumer {
-	bufReader := bytes.NewReader([]byte{})
 	return &consumer{
-		bufReader: bufReader,
+		streamConsumers: make(map[string]*streamConsumer),
 	}
 }
 
-func (c *consumer) ConsumeEvent(event *coleventspb.BatchEvent) error {
-	c.bufReader.Reset(event.OtlpArrowPayloads[0].Schema)
-	if c.ipcReader == nil {
-		ipcReader, err := ipc.NewReader(c.bufReader)
-		if err != nil {
-			return err
+func (c *consumer) ConsumeEvent(event *coleventspb.BatchEvent) ([]arrow.Record, error) {
+	// ToDo return XYZ_ServiceRequest and BatchId
+
+	sc := c.streamConsumers[event.SubStreamId]
+	if sc == nil {
+		bufReader := bytes.NewReader([]byte{})
+		sc = &streamConsumer{
+			bufReader: bufReader,
 		}
-		c.ipcReader = ipcReader
 	}
 
-	for c.ipcReader.Next() {
-		out := c.ipcReader.Record()
-		spew.Dump(out)
+	sc.bufReader.Reset(event.OtlpArrowPayloads[0].Schema)
+	if sc.ipcReader == nil {
+		ipcReader, err := ipc.NewReader(sc.bufReader)
+		if err != nil {
+			return nil, err
+		}
+		sc.ipcReader = ipcReader
 	}
-	return nil
+
+	var records []arrow.Record
+
+	for sc.ipcReader.Next() {
+		rec := sc.ipcReader.Record()
+		records = append(records, rec)
+	}
+	return records, nil
 }
