@@ -51,5 +51,9 @@ func TestIPCWriter(t *testing.T) {
 		writer := ipc.NewWriter(memWriter, ipc.WithSchema(record.Schema()))
 		writer.Write(record)
 		spew.Dump(b.Bytes())
+		memWriter.Flush()
+		b.Reset()
+		writer.Write(record)
+		spew.Dump(b.Bytes())
 	}
 }

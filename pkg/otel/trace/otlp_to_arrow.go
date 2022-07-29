@@ -15,8 +15,11 @@
 package trace
 
 import (
+	"fmt"
+
 	"github.com/apache/arrow/go/v9/arrow"
 
+	coleventspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/events/v1"
 	coltracepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/trace/v1"
 	"otel-arrow-adapter/pkg/air"
@@ -27,6 +30,48 @@ import (
 
 // OtlpTraceToArrowRecords converts an OTLP trace to one or more Arrow records.
 func OtlpTraceToArrowRecords(rr *air.RecordRepository, request *coltracepb.ExportTraceServiceRequest) ([]arrow.Record, error) {
+	AddTraces(rr, request)
+
+	records, err := rr.BuildRecords()
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]arrow.Record, 0, len(records))
+	for _, record := range records {
+		result = append(result, record)
+	}
+
+	return result, nil
+}
+
+func OtlpTraceToEvents(rr *air.RecordRepository, request *coltracepb.ExportTraceServiceRequest) ([]*coleventspb.BatchEvent, error) {
+	AddTraces(rr, request)
+
+	ipcMessages, err := rr.BuildIPCMessages()
+	if err != nil {
+		return nil, err
+	}
+
+	batchEvents := make([]*coleventspb.BatchEvent, 0, len(ipcMessages))
+	for schemaId, ipcMessage := range ipcMessages {
+		fmt.Printf("write ipc message: %d\n", len(ipcMessage))
+		batchEvents = append(batchEvents, &coleventspb.BatchEvent{
+			BatchId:     "", // ToDo - add batch id
+			SubStreamId: schemaId,
+			OtlpArrowPayloads: []*coleventspb.OtlpArrowPayload{
+				{
+					Type:   coleventspb.OtlpArrowPayloadType_SPANS,
+					Schema: ipcMessage,
+				},
+			},
+		})
+	}
+
+	return batchEvents, nil
+}
+
+func AddTraces(rr *air.RecordRepository, request *coltracepb.ExportTraceServiceRequest) {
 	for _, resourceSpans := range request.ResourceSpans {
 		for _, scopeSpans := range resourceSpans.ScopeSpans {
 			for _, span := range scopeSpans.Spans {
@@ -88,18 +133,6 @@ func OtlpTraceToArrowRecords(rr *air.RecordRepository, request *coltracepb.Expor
 			}
 		}
 	}
-
-	logsRecords, err := rr.Build()
-	if err != nil {
-		return nil, err
-	}
-
-	result := make([]arrow.Record, 0, len(logsRecords))
-	for _, record := range logsRecords {
-		result = append(result, record)
-	}
-
-	return result, nil
 }
 
 func AddEvents(record *air.Record, events []*v1.Span_Event) {

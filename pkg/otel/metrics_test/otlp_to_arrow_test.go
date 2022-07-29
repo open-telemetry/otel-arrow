@@ -42,7 +42,7 @@ func TestOtlpMetricsToArrowEvents(t *testing.T) {
 		t.Errorf("Unexpected error: %v", err)
 	}
 	if len(multiSchemaRecords) != 3 {
-		t.Errorf("Expected 1 record, got %d", len(multiSchemaRecords))
+		t.Errorf("Expected 3 record, got %d", len(multiSchemaRecords))
 	}
 	for schemaId, records := range multiSchemaRecords {
 		switch schemaId {

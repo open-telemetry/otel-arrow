@@ -68,7 +68,7 @@ func OtlpLogsToArrowRecords(rr *air.RecordRepository, request *collogspb.ExportL
 		}
 	}
 
-	logsRecords, err := rr.Build()
+	logsRecords, err := rr.BuildRecords()
 	if err != nil {
 		return nil, err
 	}

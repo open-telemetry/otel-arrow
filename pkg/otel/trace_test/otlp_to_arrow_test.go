@@ -24,7 +24,7 @@ import (
 )
 
 func TestOtlpTraceToArrowEvents(t *testing.T) {
-	t.Skip("TODO: implement")
+	// t.Skip("TODO: implement")
 	t.Parallel()
 
 	cfg := config.NewDefaultConfig()
@@ -32,11 +32,18 @@ func TestOtlpTraceToArrowEvents(t *testing.T) {
 	lg := datagen2.NewTraceGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScope())
 
 	request := lg.Generate(10, 100)
-	records, err := trace.OtlpTraceToArrowRecords(rr, request)
+	events, err := trace.OtlpTraceToEvents(rr, request)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
-	if len(records) != 1 {
-		t.Errorf("Expected 1 record, got %d", len(records))
+	if len(events) != 1 {
+		t.Errorf("Expected 1 record, got %d", len(events))
+	}
+
+	traceConsumer := trace.NewConsumer()
+	for _, event := range events {
+		if err := traceConsumer.ConsumeEvent(event); err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
 	}
 }

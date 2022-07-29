@@ -15,11 +15,13 @@
 package air
 
 import (
+	"bytes"
 	"fmt"
 	"sort"
 
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
+	"github.com/apache/arrow/go/v9/arrow/ipc"
 	"github.com/apache/arrow/go/v9/arrow/memory"
 
 	"otel-arrow-adapter/pkg/air/column"
@@ -56,6 +58,9 @@ type RecordBuilder struct {
 
 	// Flag to indicate if the builder has been optimized.
 	optimized bool
+
+	output    bytes.Buffer
+	ipcWriter *ipc.Writer
 }
 
 type RecordBuilderMetadata struct {
@@ -68,6 +73,8 @@ type RecordBuilderMetadata struct {
 
 // Constructs a new `RecordBuilder` from a Record.
 func NewRecordBuilderWithRecord(allocator *memory.GoAllocator, record *Record, config *config2.Config) *RecordBuilder {
+	var buf bytes.Buffer
+
 	builder := RecordBuilder{
 		config:     config,
 		dictIdGen:  dictionary.DictIdGenerator{Id: 0},
@@ -76,6 +83,8 @@ func NewRecordBuilderWithRecord(allocator *memory.GoAllocator, record *Record, c
 		orderBy:    nil,
 		recordList: nil,
 		optimized:  config.Dictionaries.StringColumns.MaxSortedDictionaries == 0,
+		output:     buf,
+		ipcWriter:  nil,
 	}
 
 	for fieldIdx := range record.fields {
@@ -104,7 +113,7 @@ func (rb *RecordBuilder) IsEmpty() bool {
 	return rb.columns.IsEmpty()
 }
 
-func (rb *RecordBuilder) Build(allocator *memory.GoAllocator) (arrow.Record, error) {
+func (rb *RecordBuilder) BuildRecord(allocator *memory.GoAllocator) (arrow.Record, error) {
 	// Sorts the string columns according to the order by clause.
 	if rb.orderBy != nil {
 		recordList := rb.recordList
@@ -159,6 +168,27 @@ func (rb *RecordBuilder) Build(allocator *memory.GoAllocator) (arrow.Record, err
 	}
 
 	return array.NewRecord(schema, cols, rows), nil
+}
+
+func (rb *RecordBuilder) BuildIPCMessage(allocator *memory.GoAllocator) ([]byte, error) {
+	rec, err := rb.BuildRecord(allocator)
+	if err != nil {
+		return nil, err
+	}
+
+	if rb.ipcWriter == nil {
+		rb.ipcWriter = ipc.NewWriter(&rb.output, ipc.WithSchema(rec.Schema()))
+	}
+	err = rb.ipcWriter.Write(rec)
+	if err != nil {
+		return nil, err
+	}
+	buf := rb.output.Bytes()
+
+	// Reset the buffer
+	rb.output.Reset()
+
+	return buf, nil
 }
 
 func (rb *RecordBuilder) Metadata(schemaId string) *RecordBuilderMetadata {

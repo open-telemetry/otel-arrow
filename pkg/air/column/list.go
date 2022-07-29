@@ -47,7 +47,7 @@ type ListColumnBase struct {
 	values     Column
 }
 
-func MakeListColumn(allocator *memory.GoAllocator, fieldPath []int, etype arrow.DataType, config *config.Config, dictIdGen *dictionary.DictIdGenerator) (ListColumn, []*rfield.FieldPath) {
+func MakeListColumn(allocator *memory.GoAllocator, listName string, fieldPath []int, etype arrow.DataType, config *config.Config, dictIdGen *dictionary.DictIdGenerator) (ListColumn, []*rfield.FieldPath) {
 	var values Column
 	fieldPaths := []*rfield.FieldPath(nil)
 	switch t := etype.(type) {
@@ -94,7 +94,7 @@ func MakeListColumn(allocator *memory.GoAllocator, fieldPath []int, etype arrow.
 	default:
 		panic("ListColumn: unsupported data type")
 	}
-	return NewListColumnBase(allocator, etype.Name(), etype, values), fieldPaths
+	return NewListColumnBase(allocator, listName, etype, values), fieldPaths
 }
 
 func NewListColumnBase(allocator *memory.GoAllocator, name string, dataType arrow.DataType, values Column) *ListColumnBase {

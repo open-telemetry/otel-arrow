@@ -196,7 +196,7 @@ func TestBuild(t *testing.T) {
 		rr.AddRecord(GenRecord(ts, int(ts%15), int(ts%2), int(ts)))
 	}
 	rr.Optimize() // Optimize will determine which string columns must be sorted (first batch only).
-	records, err := rr.Build()
+	records, err := rr.BuildRecords()
 
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
@@ -207,7 +207,7 @@ func TestBuild(t *testing.T) {
 		rr.AddRecord(GenRecord(ts, int(ts%15), int(ts%2), int(ts)))
 	}
 	rr.Optimize()
-	records, err = rr.Build() // Build will build an Arrow Record with the sorted columns determined in the first batch.
+	records, err = rr.BuildRecords() // BuildRecord will build an Arrow Record with the sorted columns determined in the first batch.
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}

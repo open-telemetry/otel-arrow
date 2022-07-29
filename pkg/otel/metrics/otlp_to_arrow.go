@@ -75,7 +75,7 @@ func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request *collogspb.Expo
 					}
 				}
 			}
-			records, err := rr.Build()
+			records, err := rr.BuildRecords()
 			if err != nil {
 				return nil, err
 			}

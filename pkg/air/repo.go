@@ -61,12 +61,12 @@ func (rr *RecordRepository) RecordBuilderCount() int {
 	return count
 }
 
-func (rr *RecordRepository) Build() (map[string]arrow.Record, error) {
+func (rr *RecordRepository) BuildRecords() (map[string]arrow.Record, error) {
 	recordBatches := make(map[string]arrow.Record)
 
 	for schemaId, builder := range rr.builders {
 		if !builder.IsEmpty() {
-			record, err := builder.Build(rr.allocator)
+			record, err := builder.BuildRecord(rr.allocator)
 			if err != nil {
 				return nil, err
 			}
@@ -75,6 +75,22 @@ func (rr *RecordRepository) Build() (map[string]arrow.Record, error) {
 	}
 
 	return recordBatches, nil
+}
+
+func (rr *RecordRepository) BuildIPCMessages() (map[string][]byte, error) {
+	ipcMessages := make(map[string][]byte)
+
+	for schemaId, builder := range rr.builders {
+		if !builder.IsEmpty() {
+			ipcBuf, err := builder.BuildIPCMessage(rr.allocator)
+			if err != nil {
+				return nil, err
+			}
+			ipcMessages[schemaId] = ipcBuf
+		}
+	}
+
+	return ipcMessages, nil
 }
 
 func (rr *RecordRepository) Optimize() {
