@@ -99,3 +99,6 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
 
 ### Integration
   - [ ] Integration with Open Telemetry Collector.
+
+### Feedback to implement
+  - [ ] Feedback provided by @atoulme 
