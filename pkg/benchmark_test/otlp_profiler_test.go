@@ -58,7 +58,25 @@ func TestOtlpTracesProfiler(t *testing.T) {
 		t.Errorf("expected no error, got %v", err)
 	}
 	profiler.CheckProcessingResults()
-	//profiler.PrintResults()
+	profiler.PrintResults()
+	//profiler.ExportMetricsTimesCSV("otlp_traces")
+	//profiler.ExportMetricsBytesCSV("otlp_traces")
+}
+
+func TestOtlpLightstepTracesProfiler(t *testing.T) {
+	t.Parallel()
+
+	benchdata := benchmark.NewRealTraceDataset("/Users/josh.macdonald/src/lightstep/forward_spans.bin.otlp.bin", []string{
+		"trace_id",
+	})
+
+	systemToProfile := otlp.NewTraceProfileable(benchdata, benchmark.Zstd)
+	profiler := benchmark.NewProfiler([]int{10, 100, 1000})
+	if err := profiler.Profile(systemToProfile, 10); err != nil {
+		t.Errorf("expected no error, got %v", err)
+	}
+	profiler.CheckProcessingResults()
+	profiler.PrintResults()
 	//profiler.ExportMetricsTimesCSV("otlp_traces")
 	//profiler.ExportMetricsBytesCSV("otlp_traces")
 }
