@@ -30,9 +30,6 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
   - [ ] Dictionary encoding for binary fields
   - [X] Multi-field sorting (string field)
   - [ ] Multi-field sorting (binary field)
-- Arrow IPC format
-  - [WIP] Producer
-  - [WIP] Consumer
 
 ### OTLP --> OTLP Arrow
   - **General**
@@ -77,6 +74,8 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
 ### Protocol
   - [X] OTLP proto
   - [X] Event service
+  - [x] BatchEvent producer
+  - [X] BatchEvent consumer
   - [ ] gRPC service implementation
 
 ### Benchmarks 
