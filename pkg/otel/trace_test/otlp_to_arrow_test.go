@@ -22,7 +22,7 @@ import (
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/air/config"
 	datagen2 "otel-arrow-adapter/pkg/datagen"
-	"otel-arrow-adapter/pkg/otel/events"
+	"otel-arrow-adapter/pkg/otel/batch_event"
 	"otel-arrow-adapter/pkg/otel/trace"
 )
 
@@ -43,12 +43,12 @@ func TestOtlpTraceToArrowEvents(t *testing.T) {
 		t.Errorf("Expected 1 record, got %d", len(evts))
 	}
 
-	traceConsumer := events.NewConsumer()
+	traceConsumer := batch_event.NewConsumer()
 	for _, event := range evts {
-		records, err := traceConsumer.ConsumeEvent(event)
+		ibes, err := traceConsumer.Consume(event)
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
-		spew.Dump(records)
+		spew.Dump(ibes)
 	}
 }

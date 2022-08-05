@@ -15,12 +15,11 @@
  *
  */
 
-package events
+package batch_event
 
 import (
 	"bytes"
 
-	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/ipc"
 
 	coleventspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/events/v1"
@@ -35,15 +34,16 @@ type streamConsumer struct {
 	ipcReader *ipc.Reader
 }
 
+// NewConsumer creates a new BatchEvent consumer.
 func NewConsumer() *consumer {
 	return &consumer{
 		streamConsumers: make(map[string]*streamConsumer),
 	}
 }
 
-func (c *consumer) ConsumeEvent(event *coleventspb.BatchEvent) ([]arrow.Record, error) {
-	// ToDo return XYZ_ServiceRequest and BatchId
-
+// Consume takes a BatchEvent protobuf message and returns an array of InternalBatchEvent.
+func (c *consumer) Consume(event *coleventspb.BatchEvent) ([]*InternalBatchEvent, error) {
+	// Retrieves (or creates) the stream consumer for the sub-stream id defined in the BatchEvent message.
 	sc := c.streamConsumers[event.SubStreamId]
 	if sc == nil {
 		bufReader := bytes.NewReader([]byte{})
@@ -52,20 +52,29 @@ func (c *consumer) ConsumeEvent(event *coleventspb.BatchEvent) ([]arrow.Record, 
 		}
 	}
 
-	sc.bufReader.Reset(event.OtlpArrowPayloads[0].Schema)
-	if sc.ipcReader == nil {
-		ipcReader, err := ipc.NewReader(sc.bufReader)
-		if err != nil {
-			return nil, err
+	var ibes []*InternalBatchEvent
+
+	// Transform each individual OtlpArrowPayload into InternalBatchEvent
+	for _, payload := range event.OtlpArrowPayloads {
+		sc.bufReader.Reset(payload.Schema) // ToDo change the protobuf definition to contain a single ipc_message
+		if sc.ipcReader == nil {
+			ipcReader, err := ipc.NewReader(sc.bufReader)
+			if err != nil {
+				return nil, err
+			}
+			sc.ipcReader = ipcReader
 		}
-		sc.ipcReader = ipcReader
+
+		for sc.ipcReader.Next() {
+			rec := sc.ipcReader.Record()
+			ibes = append(ibes, &InternalBatchEvent{
+				batchId:      event.BatchId,
+				recordType:   payload.GetType(),
+				record:       rec,
+				deliveryType: event.DeliveryType,
+			})
+		}
 	}
 
-	var records []arrow.Record
-
-	for sc.ipcReader.Next() {
-		rec := sc.ipcReader.Record()
-		records = append(records, rec)
-	}
-	return records, nil
+	return ibes, nil
 }
