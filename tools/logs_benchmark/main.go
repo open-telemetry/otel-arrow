@@ -25,7 +25,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
 )
 
 var help = flag.Bool("help", false, "Show help")
@@ -43,7 +43,7 @@ func main() {
 	// Define default input file
 	inputFiles := flag.Args()
 	if len(inputFiles) == 0 {
-		inputFiles = append(inputFiles, "./data/otlp_metrics.pb")
+		inputFiles = append(inputFiles, "./data/otlp_traces.pb")
 	}
 
 	// Compare the performance for each input file
@@ -55,7 +55,7 @@ func main() {
 		if err != nil {
 			log.Fatal("read file:", err)
 		}
-		var otlp v1.ExportMetricsServiceRequest
+		var otlp v1.ExportTraceServiceRequest
 		if err := proto.Unmarshal(data, &otlp); err != nil {
 			log.Fatal("unmarshal:", err)
 		}

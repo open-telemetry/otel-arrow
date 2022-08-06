@@ -13,6 +13,17 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
 | datagen   | Metrics, logs, and traces generator (fake data).                                                                             |
 | otel      | Conversion functions to translate OTLP entities into OTLP Arrow Event and vice versa.                                        |
 
+## Tools
+
+| Tool              | Description                                                      |
+|-------------------|------------------------------------------------------------------|
+| logs_gen          | Generates fake logs and store them as protobuf binary files.     |
+| metrics_gen       | Generates fake metrics and store them as protobuf binary files.  |
+| traces_gen        | Generates fake traces and store them as protobuf binary files.   |
+| logs_benchmark    | Benchmark tool to compare OTLP and OTLP Arrow representations.   |
+| metrics_benchmark | Benchmark tool to compare OTLP and OTLP Arrow representations.   |
+| traces_benchmark  | Benchmark tool to compare OTLP and OTLP Arrow representations.   |
+
 ## Status [WIP]
 
 ### Arrow Intermediate Representation (framework to convert row-oriented structured data to Arrow columnar data)
@@ -92,6 +103,14 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
   - [ ] OTLP_ARROW batch creation + serialization + compression + decompression + deserialization
 ` - [ ] Performance and memory optimizations
   - [ ] Check memory leaks (e.g. Arrow related memory leaks)
+
+### Tools
+  - [X] logs_gen
+  - [X] metrics_gen
+  - [X] traces_gen
+  - [WIP] logs_benchmark
+  - [WIP] metrics_benchmark
+  - [WIP] traces_benchmark
 
 ### CI
   - [ ] GitHub Actions to build, test, check at every commit.
