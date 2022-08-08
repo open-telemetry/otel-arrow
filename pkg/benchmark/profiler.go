@@ -240,7 +240,8 @@ func (p *Profiler) AddSection(_label string, _step string, _table *tablewriter.T
 }
 
 func (p *Profiler) ExportMetricsTimesCSV(filePrefix string) {
-	file, err := os.OpenFile(fmt.Sprintf("%s_times.csv", filePrefix), os.O_CREATE|os.O_WRONLY, 0644)
+	filename := fmt.Sprintf("%s_times.csv", filePrefix)
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644)
 
 	if err != nil {
 		log.Fatalf("failed creating file: %s", err)
@@ -296,10 +297,13 @@ func (p *Profiler) ExportMetricsTimesCSV(filePrefix string) {
 	if err != nil {
 		panic(fmt.Sprintf("failed closing the file: %s", err))
 	}
+
+	fmt.Printf("Time meseasurements exported to %s\n", filename)
 }
 
 func (p *Profiler) ExportMetricsBytesCSV(filePrefix string) {
-	file, err := os.OpenFile(fmt.Sprintf("%s_bytes.csv", filePrefix), os.O_CREATE|os.O_WRONLY, 0644)
+	filename := fmt.Sprintf("%s_bytes.csv", filePrefix)
+	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644)
 
 	if err != nil {
 		log.Fatalf("failed creating file: %s", err)
@@ -341,6 +345,8 @@ func (p *Profiler) ExportMetricsBytesCSV(filePrefix string) {
 	if err != nil {
 		panic(fmt.Sprintf("failed closing the file: %s", err))
 	}
+
+	fmt.Printf("Meseasurements of the message sizes exported to %s\n", filename)
 }
 
 func min(a, b int) int {

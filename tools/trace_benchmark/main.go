@@ -20,12 +20,11 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"os"
 
-	"google.golang.org/protobuf/proto"
-
-	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	"otel-arrow-adapter/pkg/benchmark"
+	"otel-arrow-adapter/pkg/benchmark/profileable/otlp"
+	"otel-arrow-adapter/pkg/benchmark/profileable/otlp_arrow"
 )
 
 var help = flag.Bool("help", false, "Show help")
@@ -43,24 +42,31 @@ func main() {
 	// Define default input file
 	inputFiles := flag.Args()
 	if len(inputFiles) == 0 {
-		inputFiles = append(inputFiles, "./data/otlp_metrics.pb")
+		inputFiles = append(inputFiles, "./data/otlp_traces.pb")
 	}
 
 	// Compare the performance for each input file
 	for i := range inputFiles {
-		fmt.Printf("Benchmark '%s'\n", inputFiles[i])
-
-		// Unmarshal the ExportTraceServiceRequest protobuf file.
-		data, err := os.ReadFile(inputFiles[i])
-		if err != nil {
-			log.Fatal("read file:", err)
-		}
-		var otlp v1.ExportMetricsServiceRequest
-		if err := proto.Unmarshal(data, &otlp); err != nil {
-			log.Fatal("unmarshal:", err)
-		}
+		fmt.Printf("Dataset '%s'\n", inputFiles[i])
 
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
-		// ToDo
+		profiler := benchmark.NewProfiler([]int{10, 100, 1000})
+		compressionAlgo := benchmark.Zstd
+		dataset := benchmark.NewRealTraceDataset(inputFiles[i], []string{"trace_id"})
+		otlpTraces := otlp.NewTraceProfileable(dataset, compressionAlgo)
+		otlpArrowTraces := otlp_arrow.NewTraceProfileable(dataset, compressionAlgo)
+
+		if err := profiler.Profile(otlpTraces, 10); err != nil {
+			panic(fmt.Errorf("expected no error, got %v", err))
+		}
+		if err := profiler.Profile(otlpArrowTraces, 10); err != nil {
+			panic(fmt.Errorf("expected no error, got %v", err))
+		}
+
+		profiler.CheckProcessingResults()
+		profiler.PrintResults()
+
+		profiler.ExportMetricsTimesCSV(fmt.Sprintf("%d_traces_benchmark_results", i))
+		profiler.ExportMetricsBytesCSV(fmt.Sprintf("%d_traces_benchmark_results", i))
 	}
 }

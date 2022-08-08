@@ -19,9 +19,10 @@ import (
 	"log"
 	"math/rand"
 	"os"
-	datagen2 "otel-arrow-adapter/pkg/datagen"
 	"sort"
 	"strings"
+
+	datagen2 "otel-arrow-adapter/pkg/datagen"
 
 	"google.golang.org/protobuf/proto"
 
