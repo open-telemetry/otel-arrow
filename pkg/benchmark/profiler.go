@@ -191,6 +191,7 @@ func (p *Profiler) PrintResults() {
 }
 
 func (p *Profiler) PrintStepsTiming() {
+	println()
 	headers := []string{"Steps"}
 	for _, benchmark := range p.benchmarks {
 		headers = append(headers, fmt.Sprintf("%s %s - p99", benchmark.benchName, benchmark.tags))
@@ -234,6 +235,7 @@ func (p *Profiler) PrintStepsTiming() {
 }
 
 func (p *Profiler) PrintCompressionRatio() {
+	println()
 	headers := []string{"Steps"}
 	for _, benchmark := range p.benchmarks {
 		headers = append(headers, fmt.Sprintf("%s %s - p99", benchmark.benchName, benchmark.tags))
@@ -275,7 +277,7 @@ func (p *Profiler) AddSection(label string, step string, table *tablewriter.Tabl
 				refImplName = fmt.Sprintf("%s:%s", result.benchName, result.tags)
 			} else {
 				refKey := fmt.Sprintf("%s:%d:%s", refImplName, batchSize, step)
-				improvement = fmt.Sprintf("(x%.2f%%)", 100.0*(values[refKey].P99/values[key].P99))
+				improvement = fmt.Sprintf("(x%.2f)", values[refKey].P99/values[key].P99)
 			}
 
 			value := transform(values[key].P99)

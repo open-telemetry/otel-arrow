@@ -77,22 +77,6 @@ func (rr *RecordRepository) BuildRecords() (map[string]arrow.Record, error) {
 	return recordBatches, nil
 }
 
-func (rr *RecordRepository) BuildIPCMessages() (map[string][]byte, error) {
-	ipcMessages := make(map[string][]byte)
-
-	for schemaId, builder := range rr.builders {
-		if !builder.IsEmpty() {
-			ipcBuf, err := builder.BuildIPCMessage(rr.allocator)
-			if err != nil {
-				return nil, err
-			}
-			ipcMessages[schemaId] = ipcBuf
-		}
-	}
-
-	return ipcMessages, nil
-}
-
 func (rr *RecordRepository) Optimize() {
 	for _, rb := range rr.builders {
 		rb.Optimize()

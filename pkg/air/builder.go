@@ -170,27 +170,6 @@ func (rb *RecordBuilder) BuildRecord(allocator *memory.GoAllocator) (arrow.Recor
 	return array.NewRecord(schema, cols, rows), nil
 }
 
-func (rb *RecordBuilder) BuildIPCMessage(allocator *memory.GoAllocator) ([]byte, error) {
-	rec, err := rb.BuildRecord(allocator)
-	if err != nil {
-		return nil, err
-	}
-
-	if rb.ipcWriter == nil {
-		rb.ipcWriter = ipc.NewWriter(&rb.output, ipc.WithSchema(rec.Schema()))
-	}
-	err = rb.ipcWriter.Write(rec)
-	if err != nil {
-		return nil, err
-	}
-	buf := rb.output.Bytes()
-
-	// Reset the buffer
-	rb.output.Reset()
-
-	return buf, nil
-}
-
 func (rb *RecordBuilder) Metadata(schemaId string) *RecordBuilderMetadata {
 	recordListLen := 0
 

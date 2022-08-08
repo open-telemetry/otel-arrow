@@ -25,7 +25,7 @@ import (
 	coleventspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/events/v1"
 )
 
-type producer struct {
+type Producer struct {
 	streamProducers map[string]*streamProducer
 }
 
@@ -35,15 +35,15 @@ type streamProducer struct {
 }
 
 // NewProducer creates a new BatchEvent producer.
-func NewProducer() *producer {
-	return &producer{
+func NewProducer() *Producer {
+	return &Producer{
 		streamProducers: make(map[string]*streamProducer),
 	}
 }
 
 // Produce takes an InternalBatchEvent and returns the corresponding BatchEvent protobuf message.
-func (p *producer) Produce(ibe *InternalBatchEvent) (*coleventspb.BatchEvent, error) {
-	// Retrieves (or creates) the stream producer for the sub-stream id defined in the InternalBatchEvent.
+func (p *Producer) Produce(ibe *InternalBatchEvent) (*coleventspb.BatchEvent, error) {
+	// Retrieves (or creates) the stream Producer for the sub-stream id defined in the InternalBatchEvent.
 	sp := p.streamProducers[ibe.subStreamId]
 	if sp == nil {
 		var buf bytes.Buffer
