@@ -191,13 +191,15 @@ func (p *Profiler) PrintResults() {
 }
 
 func (p *Profiler) PrintStepsTiming() {
-	header := []string{"Steps"}
+	headers := []string{"Steps"}
 	for _, benchmark := range p.benchmarks {
-		header = append(header, fmt.Sprintf("%s %s - p99", benchmark.benchName, benchmark.tags))
+		headers = append(headers, fmt.Sprintf("%s %s - p99", benchmark.benchName, benchmark.tags))
 	}
 
 	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader(header)
+	table.SetHeader(headers)
+	table.SetBorder(false)
+	table.SetHeaderColor(tablewriter.Color(tablewriter.Normal, tablewriter.FgGreenColor), tablewriter.Color(), tablewriter.Color())
 
 	values := make(map[string]*Summary)
 	for _, result := range p.benchmarks {
@@ -232,11 +234,59 @@ func (p *Profiler) PrintStepsTiming() {
 }
 
 func (p *Profiler) PrintCompressionRatio() {
+	headers := []string{"Steps"}
+	for _, benchmark := range p.benchmarks {
+		headers = append(headers, fmt.Sprintf("%s %s - p99", benchmark.benchName, benchmark.tags))
+	}
 
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader(headers)
+	table.SetBorder(false)
+	table.SetHeaderColor(tablewriter.Color(tablewriter.Normal, tablewriter.FgGreenColor), tablewriter.Color(), tablewriter.Color())
+
+	values := make(map[string]*Summary)
+	for _, result := range p.benchmarks {
+		for _, summary := range result.summaries {
+			key := fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "compressed_size_byte")
+			values[key] = summary.compressedSizeByte
+			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "uncompressed_size_byte")
+			values[key] = summary.uncompressedSizeByte
+		}
+	}
+
+	transform := func(value float64) float64 { return value }
+	p.AddSection("Uncompressed size (bytes)", "uncompressed_size_byte", table, values, transform)
+	p.AddSection("Compressed size (bytes)", "compressed_size_byte", table, values, transform)
+
+	table.Render()
 }
 
-func (p *Profiler) AddSection(_label string, _step string, _table *tablewriter.Table, _values map[string]*Summary, _transform func(float64) float64) {
-	// ToDo add section
+func (p *Profiler) AddSection(label string, step string, table *tablewriter.Table, values map[string]*Summary, transform func(float64) float64) {
+	table.Rich([]string{label, "", ""}, []tablewriter.Colors{tablewriter.Color(tablewriter.Normal, tablewriter.FgGreenColor), tablewriter.Color(), tablewriter.Color()})
+
+	for _, batchSize := range p.batchSizes {
+		row := []string{fmt.Sprintf("batch_size: %d", batchSize)}
+		refImplName := ""
+		for _, result := range p.benchmarks {
+			key := fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, batchSize, step)
+			improvement := ""
+
+			if refImplName == "" {
+				refImplName = fmt.Sprintf("%s:%s", result.benchName, result.tags)
+			} else {
+				refKey := fmt.Sprintf("%s:%d:%s", refImplName, batchSize, step)
+				improvement = fmt.Sprintf("(x%.2f%%)", 100.0*(values[refKey].P99/values[key].P99))
+			}
+
+			value := transform(values[key].P99)
+			if value >= 1.0 {
+				row = append(row, fmt.Sprintf("%.5f %s", value, improvement))
+			} else {
+				row = append(row, fmt.Sprintf("%.10f %s", value, improvement))
+			}
+		}
+		table.Append(row)
+	}
 }
 
 func (p *Profiler) ExportMetricsTimesCSV(filePrefix string) {

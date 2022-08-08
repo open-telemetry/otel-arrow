@@ -66,7 +66,7 @@ func main() {
 		profiler.CheckProcessingResults()
 		profiler.PrintResults()
 
-		profiler.ExportMetricsTimesCSV(fmt.Sprintf("%d_traces_benchmark_results", i))
-		profiler.ExportMetricsBytesCSV(fmt.Sprintf("%d_traces_benchmark_results", i))
+		//profiler.ExportMetricsTimesCSV(fmt.Sprintf("%d_traces_benchmark_results", i))
+		//profiler.ExportMetricsBytesCSV(fmt.Sprintf("%d_traces_benchmark_results", i))
 	}
 }
