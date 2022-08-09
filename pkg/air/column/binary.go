@@ -114,6 +114,7 @@ func (c *BinaryColumn) NewBinarySchemaField() *arrow.Field {
 func (c *BinaryColumn) NewBinaryArray(allocator *memory.GoAllocator) arrow.Array {
 	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen()) {
 		dictBuilder := array.NewBinaryBuilder(allocator, arrow.BinaryTypes.Binary)
+		dictBuilder.Reserve(len(c.dictionary))
 		for data := range c.dictionary {
 			dictBuilder.Append([]byte(data))
 		}

@@ -144,6 +144,7 @@ func (c *StringColumn) NewStringSchemaField() *arrow.Field {
 func (c *StringColumn) NewStringArray(allocator *memory.GoAllocator) arrow.Array {
 	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen()) {
 		dictBuilder := array.NewStringBuilder(allocator)
+		dictBuilder.Reserve(len(c.dictionary))
 		for txt := range c.dictionary {
 			dictBuilder.Append(txt)
 		}

@@ -37,8 +37,8 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
   - [X] Struct values
   - [X] List values (except list of list)
 - [X] Optimizations
-  - [ ] Dictionary encoding for string fields
-  - [ ] Dictionary encoding for binary fields
+  - [X] Dictionary encoding for string fields
+  - [X] Dictionary encoding for binary fields
   - [X] Multi-field sorting (string field)
   - [ ] Multi-field sorting (binary field)
 
@@ -97,7 +97,7 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
   - Framework to compare OTLP and OTLP_ARROW performances (i.e. size and time)
     - [X] General framework
     - [X] Compression algorithms (lz4 and zstd)
-    - [ ] Console output
+    - [X] Console output
     - [X] Export CSV
 ` - [ ] OTLP batch creation + serialization + compression + decompression + deserialization
   - [ ] OTLP_ARROW batch creation + serialization + compression + decompression + deserialization
@@ -110,7 +110,7 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
   - [X] traces_gen
   - [WIP] logs_benchmark
   - [WIP] metrics_benchmark
-  - [WIP] traces_benchmark
+  - [X] traces_benchmark
 
 ### CI
   - [ ] GitHub Actions to build, test, check at every commit.
