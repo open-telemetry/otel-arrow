@@ -13,6 +13,7 @@ import (
 )
 
 type TraceProfileable struct {
+	tags        []string
 	compression benchmark.CompressionAlgorithm
 	dataset     benchmark.TraceDataset
 	traces      []*tracepb.ExportTraceServiceRequest
@@ -21,11 +22,12 @@ type TraceProfileable struct {
 	batchEvents []*v1.BatchEvent
 }
 
-func NewTraceProfileable(dataset benchmark.TraceDataset, compression benchmark.CompressionAlgorithm) *TraceProfileable {
+func NewTraceProfileable(tags []string, dataset benchmark.TraceDataset, config *config.Config, compression benchmark.CompressionAlgorithm) *TraceProfileable {
 	return &TraceProfileable{
+		tags:        tags,
 		dataset:     dataset,
 		compression: compression,
-		rr:          air.NewRecordRepository(config.NewDefaultConfig()),
+		rr:          air.NewRecordRepository(config),
 		producer:    batch_event.NewProducer(),
 		batchEvents: make([]*v1.BatchEvent, 0, 10),
 	}
@@ -36,7 +38,9 @@ func (s *TraceProfileable) Name() string {
 }
 
 func (s *TraceProfileable) Tags() []string {
-	return []string{s.compression.String()}
+	tags := []string{s.compression.String()}
+	tags = append(tags, s.tags...)
+	return tags
 }
 func (s *TraceProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *TraceProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {

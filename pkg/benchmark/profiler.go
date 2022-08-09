@@ -49,7 +49,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 	})
 
 	for _, batchSize := range p.batchSizes {
-		fmt.Printf("Profiling '%s' (compression=%v, batch-size=%d)\n", profileable.Name(), profileable.CompressionAlgorithm(), batchSize)
+		fmt.Printf("Profiling '%s' (tags=[%v], batch-size=%d)\n", profileable.Name(), strings.Join(profileable.Tags(), `,`), batchSize)
 
 		uncompressedSize := NewMetric()
 		compressedSize := NewMetric()
@@ -200,7 +200,11 @@ func (p *Profiler) PrintStepsTiming() {
 	table := tablewriter.NewWriter(os.Stdout)
 	table.SetHeader(headers)
 	table.SetBorder(false)
-	table.SetHeaderColor(tablewriter.Color(tablewriter.Normal, tablewriter.FgGreenColor), tablewriter.Color(), tablewriter.Color())
+	headerColors := []tablewriter.Colors{tablewriter.Color(tablewriter.Normal, tablewriter.FgGreenColor)}
+	for i := 0; i < len(p.benchmarks); i++ {
+		headerColors = append(headerColors, tablewriter.Color())
+	}
+	table.SetHeaderColor(headerColors...)
 
 	values := make(map[string]*Summary)
 	for _, result := range p.benchmarks {
@@ -244,7 +248,11 @@ func (p *Profiler) PrintCompressionRatio() {
 	table := tablewriter.NewWriter(os.Stdout)
 	table.SetHeader(headers)
 	table.SetBorder(false)
-	table.SetHeaderColor(tablewriter.Color(tablewriter.Normal, tablewriter.FgGreenColor), tablewriter.Color(), tablewriter.Color())
+	headerColors := []tablewriter.Colors{tablewriter.Color(tablewriter.Normal, tablewriter.FgGreenColor)}
+	for i := 0; i < len(p.benchmarks); i++ {
+		headerColors = append(headerColors, tablewriter.Color())
+	}
+	table.SetHeaderColor(headerColors...)
 
 	values := make(map[string]*Summary)
 	for _, result := range p.benchmarks {

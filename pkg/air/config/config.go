@@ -59,6 +59,25 @@ func NewDefaultConfig() *Config {
 	}
 }
 
+func NewConfigWithoutDictionary() *Config {
+	return &Config{
+		Dictionaries: DictionariesConfig{
+			BinaryColumns: DictionaryConfig{
+				MinRowCount: math.MaxInt,
+				MaxCard:     0,
+			},
+			StringColumns: DictionaryConfig{
+				MinRowCount: math.MaxInt,
+				MaxCard:     0,
+			},
+		},
+	}
+}
+
+func (c *Config) ConfigWithoutDictionarySupport() *Config {
+	return NewConfigWithoutDictionary()
+}
+
 // IsDictionary returns true if the dictionary parameters passed in parameter satisfy the current
 // dictionary configuration.
 func (d *DictionaryConfig) IsDictionary(rowCount, card int) bool {
