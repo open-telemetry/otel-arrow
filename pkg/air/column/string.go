@@ -44,13 +44,13 @@ type StringColumn struct {
 }
 
 // NewStringColumn creates a new StringColumn.
-func NewStringColumn(fieldName string, config *config.DictionaryConfig, fieldPath []int, dictId int) *StringColumn {
+func NewStringColumn(name string, config *config.DictionaryConfig, fieldPath []int, dictId int) *StringColumn {
 	var dictionary map[string]int
 	if config.MaxCard > 0 {
 		dictionary = make(map[string]int)
 	}
 	return &StringColumn{
-		name:             fieldName,
+		name:             name,
 		config:           config,
 		fieldPath:        fieldPath,
 		dictId:           dictId,
@@ -156,6 +156,7 @@ func (c *StringColumn) NewStringArray(allocator *memory.GoAllocator) arrow.Array
 			},
 			dictBuilder.NewArray())
 		valuesBuilder := array.NewStringBuilder(allocator)
+		builder.Reserve(len(c.data))
 		for _, value := range c.data {
 			if value != nil {
 				valuesBuilder.Append(*value)

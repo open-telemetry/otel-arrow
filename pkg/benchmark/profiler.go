@@ -21,6 +21,7 @@ import (
 	"log"
 	"math"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -40,6 +41,7 @@ func NewProfiler(batchSizes []int) *Profiler {
 }
 
 func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error {
+	runtime.GC()
 	tags := strings.Join(profileable.Tags()[:], "+")
 
 	p.benchmarks = append(p.benchmarks, &ProfilerResult{

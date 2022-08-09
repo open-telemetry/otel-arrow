@@ -51,9 +51,9 @@ func main() {
 		fmt.Printf("Dataset '%s'\n", inputFiles[i])
 
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
-		profiler := benchmark.NewProfiler([]int{10, 100, 1000})
+		profiler := benchmark.NewProfiler([]int{1000, 5000, 10000, 25000})
 		compressionAlgo := benchmark.Zstd
-		maxIter := uint64(10)
+		maxIter := uint64(3)
 		dataset := benchmark.NewRealTraceDataset(inputFiles[i], []string{"trace_id"})
 		otlpTraces := otlp.NewTraceProfileable(dataset, compressionAlgo)
 		otlpArrowTracesWithoutDictionary := otlp_arrow.NewTraceProfileable([]string{"No dict"}, dataset, config.NewConfigWithoutDictionary(), compressionAlgo)

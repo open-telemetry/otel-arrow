@@ -131,7 +131,7 @@ func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, fieldN
 		c.StringColumns = append(c.StringColumns, *stringColumn)
 		return rfield.NewFieldPath(len(c.StringColumns) - 1)
 	case *arrow.BinaryType:
-		c.BinaryColumns = append(c.BinaryColumns, MakeBinaryColumn(fieldName))
+		c.BinaryColumns = append(c.BinaryColumns, MakeBinaryColumn(fieldName, &config.Dictionaries.BinaryColumns, dictIdGen.NextId()))
 		return rfield.NewFieldPath(len(c.BinaryColumns) - 1)
 	case *arrow.ListType:
 		etype := t.Elem()

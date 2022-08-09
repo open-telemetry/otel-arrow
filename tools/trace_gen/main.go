@@ -30,7 +30,7 @@ import (
 
 var help = flag.Bool("help", false, "Show help")
 var outputFile = "./data/otlp_traces.pb"
-var batchSize = 1000
+var batchSize = 50000
 
 func main() {
 	// Define the flags.
