@@ -40,7 +40,7 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
   - [X] Dictionary encoding for string fields
   - [X] Dictionary encoding for binary fields
   - [X] Multi-field sorting (string field)
-  - [ ] Multi-field sorting (binary field)
+  - [X] Multi-field sorting (binary field)
 
 ### OTLP --> OTLP Arrow
   - **General**
