@@ -16,7 +16,7 @@ package column
 
 import (
 	"fmt"
-	"os"
+	"io"
 
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/memory"
@@ -83,25 +83,25 @@ type ColumnMetadata struct {
 	Dictionary *DictionaryMetadata
 }
 
-func (m ColumnMetadata) Dump(prefix string, f *os.File) {
-	_, err := f.WriteString(fmt.Sprintf("%s- %s(%s)", prefix, m.Field.Name, m.Field.Type))
+func (m ColumnMetadata) Dump(prefix string, f io.Writer) {
+	_, err := fmt.Fprintf(f, "%s- %s(%s)", prefix, m.Field.Name, m.Field.Type)
 	if err != nil {
 		panic(err)
 	}
 	if m.Dictionary != nil {
 		if m.Dictionary.Card > 0 {
-			_, err := f.WriteString(fmt.Sprintf(" dictionary-card=%d, entry-avg-len=%f, total-entry=%d", m.Dictionary.Card, m.Dictionary.AvgLen, m.Dictionary.TotalEntry))
+			_, err := fmt.Fprintf(f, " dictionary-card=%d, entry-avg-len=%f, total-entry=%d", m.Dictionary.Card, m.Dictionary.AvgLen, m.Dictionary.TotalEntry)
 			if err != nil {
 				panic(err)
 			}
 		} else {
-			_, err := f.WriteString(fmt.Sprintf(" entry-avg-len=%f, total-entry=%d", m.Dictionary.AvgLen, m.Dictionary.TotalEntry))
+			_, err := fmt.Fprintf(f, " entry-avg-len=%f, total-entry=%d", m.Dictionary.AvgLen, m.Dictionary.TotalEntry)
 			if err != nil {
 				panic(err)
 			}
 		}
 	}
-	_, err = f.WriteString("\n")
+	_, err = fmt.Fprintf(f, "\n")
 	if err != nil {
 		panic(err)
 	}

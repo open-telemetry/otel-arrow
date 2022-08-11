@@ -28,7 +28,7 @@ func TestOtlpLogsToArrowEvents(t *testing.T) {
 
 	cfg := config.NewDefaultConfig()
 	rr := air.NewRecordRepository(cfg)
-	lg := datagen2.NewLogsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScope())
+	lg := datagen2.NewLogsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScopes())
 
 	request := lg.Generate(10, 100)
 	records, err := logs.OtlpLogsToArrowRecords(rr, request)

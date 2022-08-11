@@ -25,18 +25,18 @@ import (
 )
 
 type TraceGenerator struct {
-	resourceAttributes   []*commonpb.KeyValue
-	defaultSchemaUrl     string
-	instrumentationScope *commonpb.InstrumentationScope
-	dataGenerator        *DataGenerator
+	resourceAttributes    [][]*commonpb.KeyValue
+	defaultSchemaUrl      string
+	instrumentationScopes []*commonpb.InstrumentationScope
+	dataGenerator         *DataGenerator
 }
 
-func NewTraceGenerator(resourceAttributes []*commonpb.KeyValue, instrumentationScope *commonpb.InstrumentationScope) *TraceGenerator {
+func NewTraceGenerator(resourceAttributes [][]*commonpb.KeyValue, instrumentationScopes []*commonpb.InstrumentationScope) *TraceGenerator {
 	return &TraceGenerator{
-		resourceAttributes:   resourceAttributes,
-		defaultSchemaUrl:     "",
-		instrumentationScope: instrumentationScope,
-		dataGenerator:        NewDataGenerator(uint64(time.Now().UnixNano() / int64(time.Millisecond))),
+		resourceAttributes:    resourceAttributes,
+		defaultSchemaUrl:      "",
+		instrumentationScopes: instrumentationScopes,
+		dataGenerator:         NewDataGenerator(uint64(time.Now().UnixNano() / int64(time.Millisecond))),
 	}
 }
 
@@ -48,13 +48,13 @@ func (lg *TraceGenerator) Generate(batchSize int, collectInterval time.Duration)
 
 		resourceSpans = append(resourceSpans, &tracepb.ResourceSpans{
 			Resource: &resourcepb.Resource{
-				Attributes:             lg.resourceAttributes,
+				Attributes:             lg.resourceAttributes[i%len(lg.resourceAttributes)],
 				DroppedAttributesCount: 0,
 			},
 			SchemaUrl: lg.defaultSchemaUrl,
 			ScopeSpans: []*tracepb.ScopeSpans{
 				{
-					Scope:     lg.instrumentationScope,
+					Scope:     lg.instrumentationScopes[i%len(lg.instrumentationScopes)],
 					Spans:     Spans(lg.dataGenerator),
 					SchemaUrl: "",
 				},

@@ -58,7 +58,7 @@ type FakeMetricsDataset struct {
 }
 
 func NewFakeMetricsDataset(len int) *FakeMetricsDataset {
-	return &FakeMetricsDataset{len: len, generator: datagen2.NewMetricsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScope())}
+	return &FakeMetricsDataset{len: len, generator: datagen2.NewMetricsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScopes())}
 }
 
 func (d *FakeMetricsDataset) Len() int {
@@ -78,7 +78,7 @@ type FakeLogsDataset struct {
 }
 
 func NewFakeLogsDataset(len int) *FakeLogsDataset {
-	return &FakeLogsDataset{len: len, generator: datagen2.NewLogsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScope())}
+	return &FakeLogsDataset{len: len, generator: datagen2.NewLogsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScopes())}
 }
 
 func (d *FakeLogsDataset) Len() int {
@@ -98,7 +98,7 @@ type FakeTraceDataset struct {
 }
 
 func NewFakeTraceDataset(len int) *FakeTraceDataset {
-	return &FakeTraceDataset{len: len, generator: datagen2.NewTraceGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScope())}
+	return &FakeTraceDataset{len: len, generator: datagen2.NewTraceGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScopes())}
 }
 
 func (d *FakeTraceDataset) Len() int {

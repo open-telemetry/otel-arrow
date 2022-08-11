@@ -72,35 +72,86 @@ func DefaultAttributes() []*commonpb.KeyValue {
 	}
 }
 
-func DefaultResourceAttributes() []*commonpb.KeyValue {
-	return []*commonpb.KeyValue{
+func DefaultResourceAttributes() [][]*commonpb.KeyValue {
+	return [][]*commonpb.KeyValue{
 		{
-			Key:   "hostname",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "localhost"}},
+			{
+				Key:   "hostname",
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "host1.mydomain.com"}},
+			},
+			{
+				Key:   "ip",
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "192.168.0.1"}},
+			},
+			{
+				Key:   "up",
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}},
+			},
+			{
+				Key:   "status",
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 200}},
+			},
+			{
+				Key:   "version",
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: 1.0}},
+			},
 		},
 		{
-			Key:   "ip",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "192.168.0.1"}},
+			{
+				Key:   "hostname",
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "host2.mydomain.com"}},
+			},
+			{
+				Key:   "ip",
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "192.168.0.2"}},
+			},
+			{
+				Key:   "up",
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}},
+			},
+			{
+				Key:   "status",
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 200}},
+			},
+			{
+				Key:   "version",
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: 1.0}},
+			},
 		},
 		{
-			Key:   "up",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}},
-		},
-		{
-			Key:   "status",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 200}},
-		},
-		{
-			Key:   "version",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: 1.0}},
-		},
-	}
+			{
+				Key:   "hostname",
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "host3.mydomain.com"}},
+			},
+			{
+				Key:   "ip",
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "192.168.0.3"}},
+			},
+			{
+				Key:   "up",
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: false}},
+			},
+			{
+				Key:   "status",
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 500}},
+			},
+			{
+				Key:   "version",
+				Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: 1.5}},
+			},
+		}}
 }
 
-func DefaultInstrumentationScope() *commonpb.InstrumentationScope {
-	return &commonpb.InstrumentationScope{
-		Name:    "fake_generator",
-		Version: "1.0.0",
+func DefaultInstrumentationScopes() []*commonpb.InstrumentationScope {
+	return []*commonpb.InstrumentationScope{
+		{
+			Name:    "fake_generator",
+			Version: "1.0.0",
+		},
+		{
+			Name:    "fake_generator",
+			Version: "1.0.1",
+		},
 	}
 }
 

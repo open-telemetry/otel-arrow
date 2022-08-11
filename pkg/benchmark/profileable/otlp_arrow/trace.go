@@ -1,7 +1,7 @@
 package otlp_arrow
 
 import (
-	"os"
+	"io"
 
 	"google.golang.org/protobuf/proto"
 
@@ -50,11 +50,11 @@ func (s *TraceProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *TraceProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
 }
-func (s *TraceProfileable) StartProfiling() {
+func (s *TraceProfileable) StartProfiling(_ io.Writer) {
 	s.rr = air.NewRecordRepository(s.config)
 }
-func (s *TraceProfileable) EndProfiling() {
-	s.rr.DumpMetadata(os.Stdout)
+func (s *TraceProfileable) EndProfiling(writer io.Writer) {
+	s.rr.DumpMetadata(writer)
 	s.rr = nil
 }
 func (s *TraceProfileable) InitBatchSize(_ int) {}

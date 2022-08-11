@@ -17,7 +17,7 @@ package air
 import (
 	"bytes"
 	"fmt"
-	"os"
+	"io"
 	"sort"
 
 	"github.com/apache/arrow/go/v9/arrow"
@@ -270,20 +270,20 @@ func sortByRecordList(recordList []*Record, orderBy *OrderBy) {
 	sort.Sort(&records)
 }
 
-func (m *RecordBuilderMetadata) Dump(f *os.File) {
-	_, err := f.WriteString("Arrow Record Schema:\n")
+func (m *RecordBuilderMetadata) Dump(f io.Writer) {
+	_, err := fmt.Fprintf(f, "Arrow Record Schema:\n")
 	if err != nil {
 		panic(err)
 	}
 	for _, col := range m.Columns {
 		col.Dump("\t", f)
 	}
-	_, err = f.WriteString(fmt.Sprintf("Optimized: %t\n", m.Optimized))
+	_, err = fmt.Fprintf(f, "Optimized: %t\n", m.Optimized)
 	if err != nil {
 		panic(err)
 	}
 	if m.OrderBy != nil {
-		_, err = f.WriteString(fmt.Sprintf("OrderBy: %v\n", m.OrderBy))
+		_, err = fmt.Fprintf(f, "OrderBy: %v\n", m.OrderBy)
 		if err != nil {
 			panic(err)
 		}

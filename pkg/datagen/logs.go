@@ -26,18 +26,20 @@ import (
 )
 
 type LogsGenerator struct {
-	resourceAttributes   []*commonpb.KeyValue
-	defaultSchemaUrl     string
-	instrumentationScope *commonpb.InstrumentationScope
-	dataGenerator        *DataGenerator
+	resourceAttributes    [][]*commonpb.KeyValue
+	defaultSchemaUrl      string
+	instrumentationScopes []*commonpb.InstrumentationScope
+	dataGenerator         *DataGenerator
+	generation            int
 }
 
-func NewLogsGenerator(resourceAttributes []*commonpb.KeyValue, instrumentationScope *commonpb.InstrumentationScope) *LogsGenerator {
+func NewLogsGenerator(resourceAttributes [][]*commonpb.KeyValue, instrumentationScopes []*commonpb.InstrumentationScope) *LogsGenerator {
 	return &LogsGenerator{
-		resourceAttributes:   resourceAttributes,
-		defaultSchemaUrl:     "",
-		instrumentationScope: instrumentationScope,
-		dataGenerator:        NewDataGenerator(uint64(time.Now().UnixNano() / int64(time.Millisecond))),
+		resourceAttributes:    resourceAttributes,
+		defaultSchemaUrl:      "",
+		instrumentationScopes: instrumentationScopes,
+		dataGenerator:         NewDataGenerator(uint64(time.Now().UnixNano() / int64(time.Millisecond))),
+		generation:            0,
 	}
 }
 
@@ -58,13 +60,13 @@ func (lg *LogsGenerator) Generate(batchSize int, collectInterval time.Duration) 
 
 		resourceLogs = append(resourceLogs, &logspb.ResourceLogs{
 			Resource: &resourcepb.Resource{
-				Attributes:             lg.resourceAttributes,
+				Attributes:             lg.resourceAttributes[lg.generation%len(lg.resourceAttributes)],
 				DroppedAttributesCount: 0,
 			},
 			SchemaUrl: lg.defaultSchemaUrl,
 			ScopeLogs: []*logspb.ScopeLogs{
 				{
-					Scope:      lg.instrumentationScope,
+					Scope:      lg.instrumentationScopes[lg.generation%len(lg.instrumentationScopes)],
 					LogRecords: logRecords,
 					SchemaUrl:  "",
 				},

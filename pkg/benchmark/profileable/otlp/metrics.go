@@ -1,6 +1,8 @@
 package otlp
 
 import (
+	"io"
+
 	"google.golang.org/protobuf/proto"
 
 	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/metrics/v1"
@@ -28,10 +30,10 @@ func (s *MetricsProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *MetricsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
 }
-func (s *MetricsProfileable) StartProfiling()       {}
-func (s *MetricsProfileable) EndProfiling()         {}
-func (s *MetricsProfileable) InitBatchSize(_ int)   {}
-func (s *MetricsProfileable) PrepareBatch(_, _ int) {}
+func (s *MetricsProfileable) StartProfiling(io.Writer) {}
+func (s *MetricsProfileable) EndProfiling(io.Writer)   {}
+func (s *MetricsProfileable) InitBatchSize(_ int)      {}
+func (s *MetricsProfileable) PrepareBatch(_, _ int)    {}
 func (s *MetricsProfileable) CreateBatch(startAt, size int) {
 	s.metrics = s.dataset.Metrics(startAt, size)
 }

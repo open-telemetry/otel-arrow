@@ -34,7 +34,7 @@ func TestIPCWriter(t *testing.T) {
 
 	cfg := config.NewDefaultConfig()
 	rr := air.NewRecordRepository(cfg)
-	lg := datagen.NewTraceGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScope())
+	lg := datagen.NewTraceGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
 
 	request := lg.Generate(10, 100)
 	records, err := trace.OtlpTraceToArrowRecords(rr, request)
@@ -49,11 +49,11 @@ func TestIPCWriter(t *testing.T) {
 		var b bytes.Buffer
 		memWriter := bufio.NewWriter(&b)
 		writer := ipc.NewWriter(memWriter, ipc.WithSchema(record.Schema()))
-		writer.Write(record)
+		_ = writer.Write(record)
 		spew.Dump(b.Bytes())
-		memWriter.Flush()
+		_ = memWriter.Flush()
 		b.Reset()
-		writer.Write(record)
+		_ = writer.Write(record)
 		spew.Dump(b.Bytes())
 	}
 }

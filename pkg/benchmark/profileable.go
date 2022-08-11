@@ -14,14 +14,16 @@
 
 package benchmark
 
+import "io"
+
 type ProfileableSystem interface {
 	Name() string
 	Tags() []string
 	DatasetSize() int
 	CompressionAlgorithm() CompressionAlgorithm
 
-	StartProfiling()
-	EndProfiling()
+	StartProfiling(writer io.Writer)
+	EndProfiling(writer io.Writer)
 
 	InitBatchSize(batchSize int)
 	PrepareBatch(startAt, size int)

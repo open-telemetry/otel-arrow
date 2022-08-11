@@ -2,6 +2,7 @@ package otlp_arrow
 
 import (
 	"bytes"
+	"io"
 
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/ipc"
@@ -38,9 +39,9 @@ func (s *MetricsProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *MetricsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
 }
-func (s *MetricsProfileable) StartProfiling()     {}
-func (s *MetricsProfileable) EndProfiling()       {}
-func (s *MetricsProfileable) InitBatchSize(_ int) {}
+func (s *MetricsProfileable) StartProfiling(io.Writer) {}
+func (s *MetricsProfileable) EndProfiling(io.Writer)   {}
+func (s *MetricsProfileable) InitBatchSize(_ int)      {}
 func (s *MetricsProfileable) PrepareBatch(startAt, size int) {
 	s.metrics = s.dataset.Metrics(startAt, size)
 }

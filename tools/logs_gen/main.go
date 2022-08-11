@@ -47,7 +47,7 @@ func main() {
 	}
 
 	// Generate the dataset.
-	generator := datagen.NewLogsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScope())
+	generator := datagen.NewLogsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
 	request := generator.Generate(batchSize, 100)
 
 	// Marshal the request to bytes.

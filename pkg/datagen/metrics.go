@@ -24,18 +24,20 @@ import (
 )
 
 type MetricsGenerator struct {
-	resourceAttributes   []*commonpb.KeyValue
-	defaultSchemaUrl     string
-	instrumentationScope *commonpb.InstrumentationScope
-	dataGenerator        *DataGenerator
+	resourceAttributes    [][]*commonpb.KeyValue
+	defaultSchemaUrl      string
+	instrumentationScopes []*commonpb.InstrumentationScope
+	dataGenerator         *DataGenerator
+	generation            int
 }
 
-func NewMetricsGenerator(resourceAttributes []*commonpb.KeyValue, instrumentationScope *commonpb.InstrumentationScope) *MetricsGenerator {
+func NewMetricsGenerator(resourceAttributes [][]*commonpb.KeyValue, instrumentationScopes []*commonpb.InstrumentationScope) *MetricsGenerator {
 	return &MetricsGenerator{
-		resourceAttributes:   resourceAttributes,
-		defaultSchemaUrl:     "",
-		instrumentationScope: instrumentationScope,
-		dataGenerator:        NewDataGenerator(uint64(time.Now().UnixNano() / int64(time.Millisecond))),
+		resourceAttributes:    resourceAttributes,
+		defaultSchemaUrl:      "",
+		instrumentationScopes: instrumentationScopes,
+		dataGenerator:         NewDataGenerator(uint64(time.Now().UnixNano() / int64(time.Millisecond))),
+		generation:            0,
 	}
 }
 
@@ -53,18 +55,20 @@ func (lg *MetricsGenerator) Generate(batchSize int, collectInterval time.Duratio
 	}
 	resourceMetrics = append(resourceMetrics, &metricspb.ResourceMetrics{
 		Resource: &resourcepb.Resource{
-			Attributes:             lg.resourceAttributes,
+			Attributes:             lg.resourceAttributes[lg.generation%len(lg.resourceAttributes)],
 			DroppedAttributesCount: 0,
 		},
 		SchemaUrl: lg.defaultSchemaUrl,
 		ScopeMetrics: []*metricspb.ScopeMetrics{
 			{
-				Scope:     lg.instrumentationScope,
+				Scope:     lg.instrumentationScopes[lg.generation%len(lg.instrumentationScopes)],
 				Metrics:   metrics,
 				SchemaUrl: "",
 			},
 		},
 	})
+
+	lg.generation++
 
 	return &collogspb.ExportMetricsServiceRequest{
 		ResourceMetrics: resourceMetrics,

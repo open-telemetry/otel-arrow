@@ -18,9 +18,11 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"os"
+	"path"
 	"runtime"
 	"strings"
 	"time"
@@ -31,13 +33,35 @@ import (
 type Profiler struct {
 	batchSizes []int
 	benchmarks []*ProfilerResult
+	writer     io.Writer
+	outputDir  string
 }
 
-func NewProfiler(batchSizes []int) *Profiler {
+func NewProfiler(batchSizes []int, logfile string) *Profiler {
+	if _, err := os.Stat(logfile); os.IsNotExist(err) {
+		err = os.MkdirAll(path.Dir(logfile), 0700)
+		if err != nil {
+			log.Fatal("error creating directory: ", err)
+		}
+	}
+
+	file, _ := os.OpenFile(logfile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	mw := io.MultiWriter(os.Stdout, file)
+	dt := time.Now()
+	_, _ = fmt.Fprintln(mw, "\n================================================================================")
+	_, _ = fmt.Fprintln(mw, "Benchmark started at: ", dt.String())
+	_, _ = fmt.Fprintln(mw, "")
+
 	return &Profiler{
 		batchSizes: batchSizes,
 		benchmarks: []*ProfilerResult{},
+		writer:     mw,
+		outputDir:  path.Dir(logfile),
 	}
+}
+
+func (p *Profiler) Printf(format string, a ...any) {
+	_, _ = fmt.Fprintf(p.writer, format, a...)
 }
 
 func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error {
@@ -51,8 +75,8 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 	})
 
 	for _, batchSize := range p.batchSizes {
-		profileable.StartProfiling()
-		fmt.Printf("Profiling '%s' (tags=[%v], batch-size=%d)\n", profileable.Name(), strings.Join(profileable.Tags(), `,`), batchSize)
+		profileable.StartProfiling(p.writer)
+		_, _ = fmt.Fprintf(p.writer, "Profiling '%s' (tags=[%v], batch-size=%d)\n", profileable.Name(), strings.Join(profileable.Tags(), `,`), batchSize)
 
 		uncompressedSize := NewMetric()
 		compressedSize := NewMetric()
@@ -165,7 +189,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 			totalTimeSec:         totalTime.ComputeSummary(),
 			processingResults:    processingResults,
 		})
-		profileable.EndProfiling()
+		profileable.EndProfiling(p.writer)
 	}
 
 	return nil
@@ -196,13 +220,13 @@ func (p *Profiler) PrintResults() {
 }
 
 func (p *Profiler) PrintStepsTiming() {
-	println()
+	_, _ = fmt.Fprintf(p.writer, "\n")
 	headers := []string{"Steps"}
 	for _, benchmark := range p.benchmarks {
 		headers = append(headers, fmt.Sprintf("%s %s - p99", benchmark.benchName, benchmark.tags))
 	}
 
-	table := tablewriter.NewWriter(os.Stdout)
+	table := tablewriter.NewWriter(p.writer)
 	table.SetHeader(headers)
 	table.SetBorder(false)
 	headerColors := []tablewriter.Colors{tablewriter.Color(tablewriter.Normal, tablewriter.FgGreenColor)}
@@ -244,13 +268,13 @@ func (p *Profiler) PrintStepsTiming() {
 }
 
 func (p *Profiler) PrintCompressionRatio() {
-	println()
+	_, _ = fmt.Fprintf(p.writer, "\n")
 	headers := []string{"Steps"}
 	for _, benchmark := range p.benchmarks {
 		headers = append(headers, fmt.Sprintf("%s %s - p99", benchmark.benchName, benchmark.tags))
 	}
 
-	table := tablewriter.NewWriter(os.Stdout)
+	table := tablewriter.NewWriter(p.writer)
 	table.SetHeader(headers)
 	table.SetBorder(false)
 	headerColors := []tablewriter.Colors{tablewriter.Color(tablewriter.Normal, tablewriter.FgGreenColor)}
@@ -311,7 +335,7 @@ func (p *Profiler) AddSection(label string, step string, table *tablewriter.Tabl
 }
 
 func (p *Profiler) ExportMetricsTimesCSV(filePrefix string) {
-	filename := fmt.Sprintf("%s_times.csv", filePrefix)
+	filename := fmt.Sprintf("%s/%s_times.csv", p.outputDir, filePrefix)
 	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644)
 
 	if err != nil {
@@ -369,11 +393,11 @@ func (p *Profiler) ExportMetricsTimesCSV(filePrefix string) {
 		panic(fmt.Sprintf("failed closing the file: %s", err))
 	}
 
-	fmt.Printf("Time meseasurements exported to %s\n", filename)
+	_, _ = fmt.Fprintf(p.writer, "Time meseasurements exported to %s\n", filename)
 }
 
 func (p *Profiler) ExportMetricsBytesCSV(filePrefix string) {
-	filename := fmt.Sprintf("%s_bytes.csv", filePrefix)
+	filename := fmt.Sprintf("%s/%s_bytes.csv", p.outputDir, filePrefix)
 	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644)
 
 	if err != nil {
@@ -417,7 +441,7 @@ func (p *Profiler) ExportMetricsBytesCSV(filePrefix string) {
 		panic(fmt.Sprintf("failed closing the file: %s", err))
 	}
 
-	fmt.Printf("Meseasurements of the message sizes exported to %s\n", filename)
+	_, _ = fmt.Fprintf(p.writer, "Meseasurements of the message sizes exported to %s\n", filename)
 }
 
 func min(a, b int) int {

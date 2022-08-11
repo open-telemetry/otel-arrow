@@ -15,7 +15,7 @@
 package air
 
 import (
-	"os"
+	"io"
 
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/memory"
@@ -97,7 +97,7 @@ func (rr *RecordRepository) Metadata() []*RecordBuilderMetadata {
 	return metadata
 }
 
-func (rr *RecordRepository) DumpMetadata(f *os.File) {
+func (rr *RecordRepository) DumpMetadata(f io.Writer) {
 	metadata := rr.Metadata()
 	for _, m := range metadata {
 		m.Dump(f)
