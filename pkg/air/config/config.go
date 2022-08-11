@@ -55,6 +55,12 @@ func NewDefaultConfig() *Config {
 				MaxCardRatio:          0.5,
 				MaxSortedDictionaries: 5,
 			},
+			BinaryColumns: DictionaryConfig{
+				MinRowCount:           10,
+				MaxCard:               math.MaxUint8,
+				MaxCardRatio:          0.5,
+				MaxSortedDictionaries: 5,
+			},
 		},
 	}
 }

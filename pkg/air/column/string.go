@@ -88,10 +88,16 @@ func (c *StringColumn) Push(value *string) {
 }
 
 // DictionaryStats returns the DictionaryStats of the column.
-func (c *StringColumn) DictionaryStats() *stats.DictionaryStats {
+func (c *StringColumn) DictionaryStats(parentPath string) *stats.DictionaryStats {
 	if c.dictionary != nil {
+		stringPath := c.name
+		if len(parentPath) > 0 {
+			stringPath = parentPath + "." + c.name
+		}
 		return &stats.DictionaryStats{
-			Path:           c.fieldPath,
+			Type:           stats.StringDic,
+			NumPath:        c.fieldPath,
+			StringPath:     stringPath,
 			Cardinality:    c.DictionaryLen(),
 			AvgEntryLength: c.AvgValueLength(),
 			TotalEntry:     c.totalRowCount,
@@ -117,6 +123,10 @@ func (c *StringColumn) AvgValueLength() float64 {
 	return float64(c.totalValueLength) / float64(c.totalRowCount)
 }
 
+func (c *StringColumn) TotalEntry() int {
+	return c.totalRowCount
+}
+
 // Len returns the number of values in the column.
 func (c *StringColumn) Len() int {
 	return len(c.data)
@@ -127,8 +137,8 @@ func (c *StringColumn) Clear() {
 	c.data = c.data[:0]
 }
 
-// NewStringSchemaField creates a schema field
-func (c *StringColumn) NewStringSchemaField() *arrow.Field {
+// NewArrowField creates a schema field
+func (c *StringColumn) NewArrowField() *arrow.Field {
 	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen()) {
 		return &arrow.Field{Name: c.name, Type: &arrow.DictionaryType{
 			IndexType: arrow.PrimitiveTypes.Uint8,

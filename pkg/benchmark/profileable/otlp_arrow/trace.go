@@ -1,6 +1,8 @@
 package otlp_arrow
 
 import (
+	"os"
+
 	"google.golang.org/protobuf/proto"
 
 	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/events/v1"
@@ -20,6 +22,7 @@ type TraceProfileable struct {
 	rr          *air.RecordRepository
 	producer    *batch_event.Producer
 	batchEvents []*v1.BatchEvent
+	config      *config.Config
 }
 
 func NewTraceProfileable(tags []string, dataset benchmark.TraceDataset, config *config.Config, compression benchmark.CompressionAlgorithm) *TraceProfileable {
@@ -27,9 +30,10 @@ func NewTraceProfileable(tags []string, dataset benchmark.TraceDataset, config *
 		tags:        tags,
 		dataset:     dataset,
 		compression: compression,
-		rr:          air.NewRecordRepository(config),
+		rr:          nil,
 		producer:    batch_event.NewProducer(),
 		batchEvents: make([]*v1.BatchEvent, 0, 10),
+		config:      config,
 	}
 }
 
@@ -45,6 +49,13 @@ func (s *TraceProfileable) Tags() []string {
 func (s *TraceProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *TraceProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
+}
+func (s *TraceProfileable) StartProfiling() {
+	s.rr = air.NewRecordRepository(s.config)
+}
+func (s *TraceProfileable) EndProfiling() {
+	s.rr.DumpMetadata(os.Stdout)
+	s.rr = nil
 }
 func (s *TraceProfileable) InitBatchSize(_ int) {}
 func (s *TraceProfileable) PrepareBatch(startAt, size int) {

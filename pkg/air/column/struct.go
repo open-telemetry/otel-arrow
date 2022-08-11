@@ -70,12 +70,21 @@ func (c *StructColumn) PushFromValues(fieldPath *rfield.FieldPath, data []rfield
 
 // NewArrowField returns an Arrow field for the column.
 func (c *StructColumn) NewArrowField() *arrow.Field {
-	panic("not implemented")
+	// Create struct field
+	fieldRefs := c.columns.NewArrowFields()
+
+	// Create a struct field.
+	fields := make([]arrow.Field, len(fieldRefs))
+	for i, field := range fieldRefs {
+		fields[i] = *field
+	}
+	return &arrow.Field{Name: c.name, Type: arrow.StructOf(fields...)}
 }
 
 // NewArray returns a new array for the column.
 func (c *StructColumn) NewArray(allocator *memory.GoAllocator) arrow.Array {
-	fieldRefs, fieldArrays, err := c.columns.Build(allocator)
+	fieldRefs := c.columns.NewArrowFields()
+	fieldArrays, err := c.columns.NewArrays(allocator)
 	if err != nil {
 		panic(err)
 	}
@@ -103,7 +112,8 @@ func (c *StructColumn) NewArray(allocator *memory.GoAllocator) arrow.Array {
 // Build builds the column.
 func (c *StructColumn) Build(allocator *memory.GoAllocator) (*arrow.Field, arrow.Array, error) {
 	// Create struct field
-	fieldRefs, fieldArrays, err := c.columns.Build(allocator)
+	fieldRefs := c.columns.NewArrowFields()
+	fieldArrays, err := c.columns.NewArrays(allocator)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -131,8 +141,13 @@ func (c *StructColumn) Build(allocator *memory.GoAllocator) (*arrow.Field, arrow
 }
 
 // DictionaryStats returns the dictionary statistics of the column.
-func (c *StructColumn) DictionaryStats() []*stats.DictionaryStats {
-	return c.columns.DictionaryStats()
+func (c *StructColumn) DictionaryStats(parentPath string) []*stats.DictionaryStats {
+	if len(parentPath) > 0 {
+		parentPath += "." + c.name
+	} else {
+		parentPath = c.name
+	}
+	return c.columns.DictionaryStats(parentPath)
 }
 
 // Type returns the type of the column.
@@ -141,6 +156,6 @@ func (c *StructColumn) Type() arrow.DataType {
 }
 
 // Metadata returns the metadata of the column.
-func (c *StructColumn) Metadata() []*ColumnMetadata {
+func (c *StructColumn) Metadata() map[string]*ColumnMetadata {
 	return c.columns.Metadata()
 }

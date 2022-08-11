@@ -19,12 +19,19 @@ type ProfileableSystem interface {
 	Tags() []string
 	DatasetSize() int
 	CompressionAlgorithm() CompressionAlgorithm
+
+	StartProfiling()
+	EndProfiling()
+
 	InitBatchSize(batchSize int)
 	PrepareBatch(startAt, size int)
 	CreateBatch(startAt, size int)
+
 	Process() string
+
 	Serialize() ([][]byte, error)
 	Deserialize(buffers [][]byte)
+
 	Clear()
 	ShowStats()
 }

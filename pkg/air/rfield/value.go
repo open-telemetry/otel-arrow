@@ -26,6 +26,7 @@ type Value interface {
 	Normalize()
 	DataType() arrow.DataType
 	ValueByPath(path []int) Value
+	StringPath(path []int) string
 	Compare(other Value) int
 
 	AsBool() (*bool, error)
@@ -59,6 +60,9 @@ func (v *Bool) ValueByPath(path []int) Value {
 		return v
 	}
 	return nil
+}
+func (v *Bool) StringPath(_ []int) string {
+	return ""
 }
 func (v *Bool) Compare(other Value) int {
 	if other == nil || other.DataType() != v.DataType() {
@@ -152,6 +156,9 @@ func (v *I8) ValueByPath(path []int) Value {
 	}
 	return nil
 }
+func (v *I8) StringPath(_ []int) string {
+	return ""
+}
 func (v *I8) Compare(other Value) int {
 	if other == nil || other.DataType() != v.DataType() {
 		panic("invalid comparison")
@@ -214,6 +221,9 @@ func (v *I16) ValueByPath(path []int) Value {
 	}
 	return nil
 }
+func (v *I16) StringPath(_ []int) string {
+	return ""
+}
 func (v *I16) Compare(other Value) int {
 	if other == nil || other.DataType() != v.DataType() {
 		panic("invalid comparison")
@@ -275,6 +285,9 @@ func (v *I32) ValueByPath(path []int) Value {
 	}
 	return nil
 }
+func (v *I32) StringPath(_ []int) string {
+	return ""
+}
 func (v *I32) Compare(other Value) int {
 	if other == nil || other.DataType() != v.DataType() {
 		panic("invalid comparison")
@@ -335,6 +348,9 @@ func (v *I64) ValueByPath(path []int) Value {
 	}
 	return nil
 }
+func (v *I64) StringPath(_ []int) string {
+	return ""
+}
 func (v *I64) Compare(other Value) int {
 	if other == nil || other.DataType() != v.DataType() {
 		panic("invalid comparison")
@@ -393,6 +409,9 @@ func (v *U8) ValueByPath(path []int) Value {
 		return v
 	}
 	return nil
+}
+func (v *U8) StringPath(_ []int) string {
+	return ""
 }
 func (v *U8) Compare(other Value) int {
 	if other == nil || other.DataType() != v.DataType() {
@@ -459,6 +478,9 @@ func (v *U16) ValueByPath(path []int) Value {
 	}
 	return nil
 }
+func (v *U16) StringPath(_ []int) string {
+	return ""
+}
 func (v *U16) Compare(other Value) int {
 	if other == nil || other.DataType() != v.DataType() {
 		panic("invalid comparison")
@@ -522,6 +544,9 @@ func (v *U32) ValueByPath(path []int) Value {
 	}
 	return nil
 }
+func (v *U32) StringPath(_ []int) string {
+	return ""
+}
 func (v *U32) Compare(other Value) int {
 	if other == nil || other.DataType() != v.DataType() {
 		panic("invalid comparison")
@@ -584,6 +609,9 @@ func (v *U64) ValueByPath(path []int) Value {
 	}
 	return nil
 }
+func (v *U64) StringPath(_ []int) string {
+	return ""
+}
 func (v *U64) Compare(other Value) int {
 	if other == nil || other.DataType() != v.DataType() {
 		panic("invalid comparison")
@@ -643,6 +671,9 @@ func (v *F32) ValueByPath(path []int) Value {
 		return v
 	}
 	return nil
+}
+func (v *F32) StringPath(_ []int) string {
+	return ""
 }
 func (v *F32) Compare(other Value) int {
 	if other == nil || other.DataType() != v.DataType() {
@@ -704,6 +735,9 @@ func (v *F64) ValueByPath(path []int) Value {
 	}
 	return nil
 }
+func (v *F64) StringPath(_ []int) string {
+	return ""
+}
 func (v *F64) Compare(other Value) int {
 	if other == nil || other.DataType() != v.DataType() {
 		panic("invalid comparison")
@@ -763,6 +797,9 @@ func (v *String) ValueByPath(path []int) Value {
 	}
 	return nil
 }
+func (v *String) StringPath(_ []int) string {
+	return ""
+}
 func (v *String) Compare(other Value) int {
 	if other == nil || other.DataType() != v.DataType() {
 		panic("invalid comparison")
@@ -821,6 +858,9 @@ func (v *Binary) ValueByPath(path []int) Value {
 		return v
 	}
 	return nil
+}
+func (v *Binary) StringPath(_ []int) string {
+	return ""
 }
 func (v *Binary) Compare(other Value) int {
 	if other == nil || other.DataType() != v.DataType() {
@@ -888,6 +928,12 @@ func (v *Struct) ValueByPath(path []int) Value {
 		return v
 	}
 	return v.Fields[path[0]].ValueByPath(path[1:])
+}
+func (v *Struct) StringPath(path []int) string {
+	if path == nil || len(path) == 0 {
+		return ""
+	}
+	return v.Fields[path[0]].StringPath(path[1:])
 }
 func (v *Struct) Compare(_ Value) int {
 	panic("struct comparison not implemented")
@@ -975,6 +1021,17 @@ func (v *List) ValueByPath(path []int) Value {
 		return v
 	}
 	return v.Values[path[0]].ValueByPath(path[1:])
+}
+func (v *List) StringPath(path []int) string {
+	if path == nil || len(path) == 0 {
+		return ""
+	}
+	subPath := v.Values[path[0]].StringPath(path[1:])
+	if subPath != "" {
+		return "[]" + subPath
+	} else {
+		return "[]"
+	}
 }
 func (v *List) Compare(_ Value) int {
 	panic("struct comparison not implemented")

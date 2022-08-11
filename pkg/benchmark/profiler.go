@@ -51,6 +51,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 	})
 
 	for _, batchSize := range p.batchSizes {
+		profileable.StartProfiling()
 		fmt.Printf("Profiling '%s' (tags=[%v], batch-size=%d)\n", profileable.Name(), strings.Join(profileable.Tags(), `,`), batchSize)
 
 		uncompressedSize := NewMetric()
@@ -164,7 +165,9 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 			totalTimeSec:         totalTime.ComputeSummary(),
 			processingResults:    processingResults,
 		})
+		profileable.EndProfiling()
 	}
+
 	return nil
 }
 
@@ -274,7 +277,13 @@ func (p *Profiler) PrintCompressionRatio() {
 }
 
 func (p *Profiler) AddSection(label string, step string, table *tablewriter.Table, values map[string]*Summary, transform func(float64) float64) {
-	table.Rich([]string{label, "", ""}, []tablewriter.Colors{tablewriter.Color(tablewriter.Normal, tablewriter.FgGreenColor), tablewriter.Color(), tablewriter.Color()})
+	labels := []string{label}
+	colors := []tablewriter.Colors{tablewriter.Color(tablewriter.Normal, tablewriter.FgGreenColor)}
+	for i := 0; i < len(p.benchmarks); i++ {
+		labels = append(labels, "")
+		colors = append(colors, tablewriter.Color())
+	}
+	table.Rich(labels, colors)
 
 	for _, batchSize := range p.batchSizes {
 		row := []string{fmt.Sprintf("batch_size: %d", batchSize)}

@@ -28,6 +28,8 @@ func (s *LogsProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *LogsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
 }
+func (s *LogsProfileable) StartProfiling()       {}
+func (s *LogsProfileable) EndProfiling()         {}
 func (s *LogsProfileable) InitBatchSize(_ int)   {}
 func (s *LogsProfileable) PrepareBatch(_, _ int) {}
 func (s *LogsProfileable) CreateBatch(startAt, size int) {

@@ -14,6 +14,11 @@
 
 package stats
 
+import (
+	"fmt"
+	"os"
+)
+
 type DictionaryStatsSlice []*DictionaryStats
 
 // Sort interface
@@ -31,9 +36,37 @@ func (d DictionaryStatsSlice) Less(i, j int) bool {
 func (d DictionaryStatsSlice) Len() int      { return len(d) }
 func (d DictionaryStatsSlice) Swap(i, j int) { d[i], d[j] = d[j], d[i] }
 
+type DictionaryType int64
+
+const (
+	StringDic DictionaryType = iota
+	BinaryDic
+)
+
+func (c DictionaryType) String() string {
+	switch c {
+	case StringDic:
+		return "StringDic"
+	case BinaryDic:
+		return "BinaryDic"
+	default:
+		return "Unknown"
+	}
+}
+
 type DictionaryStats struct {
-	Path           []int
+	Type           DictionaryType
+	NumPath        []int
+	StringPath     string
 	AvgEntryLength float64
 	Cardinality    int
 	TotalEntry     int
+}
+
+func (s DictionaryStats) Dump(f *os.File) {
+	_, err := f.WriteString(fmt.Sprintf("Dictionary type=%s, path=%v, avg-entry-length=%f, card=%d, total-entry=%d\n", s.Type,
+		s.StringPath, s.AvgEntryLength, s.Cardinality, s.TotalEntry))
+	if err != nil {
+		panic(err)
+	}
 }

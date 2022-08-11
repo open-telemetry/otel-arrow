@@ -181,6 +181,19 @@ func (f *Field) ValueByPath(path []int) Value {
 	}
 }
 
+func (f *Field) StringPath(path []int) string {
+	if len(path) == 0 {
+		return f.Name
+	} else {
+		subPath := f.Value.StringPath(path)
+		if subPath != "" {
+			return f.Name + "." + subPath
+		} else {
+			return f.Name
+		}
+	}
+}
+
 func (f *Field) DataType() arrow.DataType {
 	return f.Value.DataType()
 }

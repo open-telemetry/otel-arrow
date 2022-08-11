@@ -15,6 +15,8 @@
 package air
 
 import (
+	"os"
+
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/memory"
 
@@ -62,6 +64,8 @@ func (rr *RecordRepository) RecordBuilderCount() int {
 }
 
 func (rr *RecordRepository) BuildRecords() (map[string]arrow.Record, error) {
+	rr.Optimize()
+
 	recordBatches := make(map[string]arrow.Record)
 
 	for schemaId, builder := range rr.builders {
@@ -91,4 +95,11 @@ func (rr *RecordRepository) Metadata() []*RecordBuilderMetadata {
 		}
 	}
 	return metadata
+}
+
+func (rr *RecordRepository) DumpMetadata(f *os.File) {
+	metadata := rr.Metadata()
+	for _, m := range metadata {
+		m.Dump(f)
+	}
 }

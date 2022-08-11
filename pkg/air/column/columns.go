@@ -15,6 +15,9 @@
 package column
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/memory"
 
@@ -67,11 +70,44 @@ type Columns struct {
 	length int
 }
 
+type DictionaryMetadata struct {
+	Card       int
+	AvgLen     float64
+	TotalEntry int
+}
+
 type ColumnMetadata struct {
-	Name     string
-	Type     arrow.DataType
-	Len      int
-	Children []*ColumnMetadata
+	Field      *arrow.Field
+	Len        int
+	Children   map[string]*ColumnMetadata
+	Dictionary *DictionaryMetadata
+}
+
+func (m ColumnMetadata) Dump(prefix string, f *os.File) {
+	_, err := f.WriteString(fmt.Sprintf("%s- %s(%s)", prefix, m.Field.Name, m.Field.Type))
+	if err != nil {
+		panic(err)
+	}
+	if m.Dictionary != nil {
+		if m.Dictionary.Card > 0 {
+			_, err := f.WriteString(fmt.Sprintf(" dictionary-card=%d, entry-avg-len=%f, total-entry=%d", m.Dictionary.Card, m.Dictionary.AvgLen, m.Dictionary.TotalEntry))
+			if err != nil {
+				panic(err)
+			}
+		} else {
+			_, err := f.WriteString(fmt.Sprintf(" entry-avg-len=%f, total-entry=%d", m.Dictionary.AvgLen, m.Dictionary.TotalEntry))
+			if err != nil {
+				panic(err)
+			}
+		}
+	}
+	_, err = f.WriteString("\n")
+	if err != nil {
+		panic(err)
+	}
+	for _, child := range m.Children {
+		child.Dump(prefix+"\t", f)
+	}
 }
 
 func NewColumns(allocator *memory.GoAllocator, structType *arrow.StructType, fieldPath []int, config *config.Config, dictIdGen *dictionary.DictIdGenerator) (*Columns, []*rfield.FieldPath) {
@@ -79,7 +115,7 @@ func NewColumns(allocator *memory.GoAllocator, structType *arrow.StructType, fie
 	fieldPaths := make([]*rfield.FieldPath, 0, len(subFields))
 	columns := Columns{}
 	for i := range subFields {
-		subFieldPath := make([]int, 0, len(fieldPath)+1)
+		subFieldPath := make([]int, len(fieldPath), len(fieldPath)+1)
 		copy(subFieldPath, fieldPath)
 		subFieldPath = append(subFieldPath, len(fieldPaths))
 		colFieldPath := columns.CreateColumn(allocator, subFieldPath, subFields[i].Name, subFields[i].Type, config, dictIdGen)
@@ -131,7 +167,7 @@ func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, fieldN
 		c.StringColumns = append(c.StringColumns, *stringColumn)
 		return rfield.NewFieldPath(len(c.StringColumns) - 1)
 	case *arrow.BinaryType:
-		c.BinaryColumns = append(c.BinaryColumns, MakeBinaryColumn(fieldName, &config.Dictionaries.BinaryColumns, dictIdGen.NextId()))
+		c.BinaryColumns = append(c.BinaryColumns, MakeBinaryColumn(fieldName, &config.Dictionaries.BinaryColumns, path, dictIdGen.NextId()))
 		return rfield.NewFieldPath(len(c.BinaryColumns) - 1)
 	case *arrow.ListType:
 		etype := t.Elem()
@@ -210,96 +246,144 @@ func (c *Columns) UpdateColumn(fieldPath *rfield.FieldPath, field *rfield.Field)
 	}
 }
 
-func (c *Columns) Build(allocator *memory.GoAllocator) ([]*arrow.Field, []arrow.Array, error) {
-	columnCount := c.ColumnCount()
-	fields := make([]*arrow.Field, 0, columnCount)
-	arrays := make([]arrow.Array, 0, columnCount)
+func (c *Columns) NewArrowFields() []*arrow.Field {
+	fields := make([]*arrow.Field, 0, c.ColumnCount())
 
 	for i := range c.BooleanColumns {
 		col := &c.BooleanColumns[i]
 		fields = append(fields, col.NewArrowField())
-		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.I8Columns {
 		col := &c.I8Columns[i]
 		fields = append(fields, col.NewArrowField())
-		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.I16Columns {
 		col := &c.I16Columns[i]
 		fields = append(fields, col.NewArrowField())
-		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.I32Columns {
 		col := &c.I32Columns[i]
 		fields = append(fields, col.NewArrowField())
-		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.I64Columns {
 		col := &c.I64Columns[i]
 		fields = append(fields, col.NewArrowField())
-		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.U8Columns {
 		col := &c.U8Columns[i]
 		fields = append(fields, col.NewArrowField())
-		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.U16Columns {
 		col := &c.U16Columns[i]
 		fields = append(fields, col.NewArrowField())
-		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.U32Columns {
 		col := &c.U32Columns[i]
 		fields = append(fields, col.NewArrowField())
-		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.U64Columns {
 		col := &c.U64Columns[i]
 		fields = append(fields, col.NewArrowField())
-		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.F32Columns {
 		col := &c.F32Columns[i]
 		fields = append(fields, col.NewArrowField())
-		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.F64Columns {
 		col := &c.F64Columns[i]
 		fields = append(fields, col.NewArrowField())
+	}
+	for i := range c.StringColumns {
+		col := &c.StringColumns[i]
+		fields = append(fields, col.NewArrowField())
+	}
+	for i := range c.BinaryColumns {
+		col := &c.BinaryColumns[i]
+		fields = append(fields, col.NewArrowField())
+	}
+	for i := range c.StructColumns {
+		col := c.StructColumns[i]
+		structField := col.NewArrowField()
+		fields = append(fields, structField)
+	}
+	for i := range c.ListColumns {
+		col := c.ListColumns[i]
+		listField := col.NewArrowField()
+		fields = append(fields, listField)
+	}
+
+	return fields
+}
+
+func (c *Columns) NewArrays(allocator *memory.GoAllocator) ([]arrow.Array, error) {
+	columnCount := c.ColumnCount()
+	arrays := make([]arrow.Array, 0, columnCount)
+
+	for i := range c.BooleanColumns {
+		col := &c.BooleanColumns[i]
+		arrays = append(arrays, col.NewArray(allocator))
+	}
+	for i := range c.I8Columns {
+		col := &c.I8Columns[i]
+		arrays = append(arrays, col.NewArray(allocator))
+	}
+	for i := range c.I16Columns {
+		col := &c.I16Columns[i]
+		arrays = append(arrays, col.NewArray(allocator))
+	}
+	for i := range c.I32Columns {
+		col := &c.I32Columns[i]
+		arrays = append(arrays, col.NewArray(allocator))
+	}
+	for i := range c.I64Columns {
+		col := &c.I64Columns[i]
+		arrays = append(arrays, col.NewArray(allocator))
+	}
+	for i := range c.U8Columns {
+		col := &c.U8Columns[i]
+		arrays = append(arrays, col.NewArray(allocator))
+	}
+	for i := range c.U16Columns {
+		col := &c.U16Columns[i]
+		arrays = append(arrays, col.NewArray(allocator))
+	}
+	for i := range c.U32Columns {
+		col := &c.U32Columns[i]
+		arrays = append(arrays, col.NewArray(allocator))
+	}
+	for i := range c.U64Columns {
+		col := &c.U64Columns[i]
+		arrays = append(arrays, col.NewArray(allocator))
+	}
+	for i := range c.F32Columns {
+		col := &c.F32Columns[i]
+		arrays = append(arrays, col.NewArray(allocator))
+	}
+	for i := range c.F64Columns {
+		col := &c.F64Columns[i]
 		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.StringColumns {
 		col := &c.StringColumns[i]
 		// ToDo implement dictionary builder when that makes sense
-		fields = append(fields, col.NewStringSchemaField())
 		arrays = append(arrays, col.NewStringArray(allocator))
 	}
 	for i := range c.BinaryColumns {
 		col := &c.BinaryColumns[i]
 		// ToDo implement dictionary builder when that makes sense
-		fields = append(fields, col.NewBinarySchemaField())
 		arrays = append(arrays, col.NewBinaryArray(allocator))
 	}
 	for i := range c.StructColumns {
 		col := c.StructColumns[i]
-		structField, structArray, err := col.Build(allocator)
-		if err != nil {
-			return nil, nil, err
-		}
-		fields = append(fields, structField)
-		arrays = append(arrays, structArray)
+		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.ListColumns {
 		col := c.ListColumns[i]
-		listField := col.NewArrowField()
 		listArray := col.NewArray(allocator)
-		fields = append(fields, listField)
 		arrays = append(arrays, listArray)
 	}
 
-	return fields, arrays, nil
+	return arrays, nil
 }
 
 func (c *Columns) ColumnCount() int {
@@ -370,128 +454,124 @@ func (c *Columns) IsEmpty() bool {
 	return len(c.I8Columns) == 0 && len(c.I16Columns) == 0 && len(c.I32Columns) == 0 && len(c.I64Columns) == 0 && len(c.U8Columns) == 0 && len(c.U16Columns) == 0 && len(c.U32Columns) == 0 && len(c.U64Columns) == 0 && len(c.F32Columns) == 0 && len(c.F64Columns) == 0 && len(c.BooleanColumns) == 0 && len(c.StringColumns) == 0 && len(c.BinaryColumns) == 0 && len(c.ListColumns) == 0 && len(c.StructColumns) == 0
 }
 
-func (c *Columns) Metadata() []*ColumnMetadata {
-	metadata := make([]*ColumnMetadata, 0, len(c.I8Columns)+len(c.I16Columns)+len(c.I32Columns)+len(c.I64Columns)+
-		len(c.U8Columns)+len(c.U16Columns)+len(c.U32Columns)+len(c.U64Columns)+len(c.F32Columns)+len(c.F64Columns)+
-		len(c.BooleanColumns)+len(c.StringColumns)+len(c.BinaryColumns)+len(c.ListColumns)+len(c.StructColumns))
+func (c *Columns) Metadata() map[string]*ColumnMetadata {
+	metadata := make(map[string]*ColumnMetadata)
 
-	for _, i8Column := range c.I8Columns {
-		metadata = append(metadata, &ColumnMetadata{
-			Name: i8Column.Name(),
-			Type: arrow.PrimitiveTypes.Int8,
-			Len:  i8Column.Len(),
-		})
+	for _, column := range c.I8Columns {
+		metadata[column.Name()] = &ColumnMetadata{
+			Field: column.NewArrowField(),
+			Len:   column.Len(),
+		}
 	}
-	for _, i16Column := range c.I16Columns {
-		metadata = append(metadata, &ColumnMetadata{
-			Name: i16Column.Name(),
-			Type: arrow.PrimitiveTypes.Int16,
-			Len:  i16Column.Len(),
-		})
+	for _, column := range c.I16Columns {
+		metadata[column.Name()] = &ColumnMetadata{
+			Field: column.NewArrowField(),
+			Len:   column.Len(),
+		}
 	}
-	for _, i32Column := range c.I32Columns {
-		metadata = append(metadata, &ColumnMetadata{
-			Name: i32Column.Name(),
-			Type: arrow.PrimitiveTypes.Int32,
-			Len:  i32Column.Len(),
-		})
+	for _, column := range c.I32Columns {
+		metadata[column.Name()] = &ColumnMetadata{
+			Field: column.NewArrowField(),
+			Len:   column.Len(),
+		}
 	}
-	for _, i64Column := range c.I64Columns {
-		metadata = append(metadata, &ColumnMetadata{
-			Name: i64Column.Name(),
-			Type: arrow.PrimitiveTypes.Int64,
-			Len:  i64Column.Len(),
-		})
+	for _, column := range c.I64Columns {
+		metadata[column.Name()] = &ColumnMetadata{
+			Field: column.NewArrowField(),
+			Len:   column.Len(),
+		}
 	}
-	for _, u8Column := range c.U8Columns {
-		metadata = append(metadata, &ColumnMetadata{
-			Name: u8Column.Name(),
-			Type: arrow.PrimitiveTypes.Uint8,
-			Len:  u8Column.Len(),
-		})
+	for _, column := range c.U8Columns {
+		metadata[column.Name()] = &ColumnMetadata{
+			Field: column.NewArrowField(),
+			Len:   column.Len(),
+		}
 	}
-	for _, u16Column := range c.U16Columns {
-		metadata = append(metadata, &ColumnMetadata{
-			Name: u16Column.Name(),
-			Type: arrow.PrimitiveTypes.Uint16,
-			Len:  u16Column.Len(),
-		})
+	for _, column := range c.U16Columns {
+		metadata[column.Name()] = &ColumnMetadata{
+			Field: column.NewArrowField(),
+			Len:   column.Len(),
+		}
 	}
-	for _, u32Column := range c.U32Columns {
-		metadata = append(metadata, &ColumnMetadata{
-			Name: u32Column.Name(),
-			Type: arrow.PrimitiveTypes.Uint32,
-			Len:  u32Column.Len(),
-		})
+	for _, column := range c.U32Columns {
+		metadata[column.Name()] = &ColumnMetadata{
+			Field: column.NewArrowField(),
+			Len:   column.Len(),
+		}
 	}
-	for _, u64Column := range c.U64Columns {
-		metadata = append(metadata, &ColumnMetadata{
-			Name: u64Column.Name(),
-			Type: arrow.PrimitiveTypes.Uint64,
-			Len:  u64Column.Len(),
-		})
+	for _, column := range c.U64Columns {
+		metadata[column.Name()] = &ColumnMetadata{
+			Field: column.NewArrowField(),
+			Len:   column.Len(),
+		}
 	}
-	for _, f32Column := range c.F32Columns {
-		metadata = append(metadata, &ColumnMetadata{
-			Name: f32Column.Name(),
-			Type: arrow.PrimitiveTypes.Float32,
-			Len:  f32Column.Len(),
-		})
+	for _, column := range c.F32Columns {
+		metadata[column.Name()] = &ColumnMetadata{
+			Field: column.NewArrowField(),
+			Len:   column.Len(),
+		}
 	}
-	for _, f64Column := range c.F64Columns {
-		metadata = append(metadata, &ColumnMetadata{
-			Name: f64Column.Name(),
-			Type: arrow.PrimitiveTypes.Float64,
-			Len:  f64Column.Len(),
-		})
+	for _, column := range c.F64Columns {
+		metadata[column.Name()] = &ColumnMetadata{
+			Field: column.NewArrowField(),
+			Len:   column.Len(),
+		}
 	}
-	for _, booleanColumn := range c.BooleanColumns {
-		metadata = append(metadata, &ColumnMetadata{
-			Name: booleanColumn.Name(),
-			Type: arrow.FixedWidthTypes.Boolean,
-			Len:  booleanColumn.Len(),
-		})
+	for _, column := range c.BooleanColumns {
+		metadata[column.Name()] = &ColumnMetadata{
+			Field: column.NewArrowField(),
+			Len:   column.Len(),
+		}
 	}
-	for _, stringColumn := range c.StringColumns {
-		metadata = append(metadata, &ColumnMetadata{
-			Name: *stringColumn.Name(),
-			Type: arrow.BinaryTypes.String,
-			Len:  stringColumn.Len(),
-		})
+	for _, column := range c.StringColumns {
+		metadata[*column.Name()] = &ColumnMetadata{
+			Field: column.NewArrowField(),
+			Len:   column.Len(),
+			Dictionary: &DictionaryMetadata{
+				Card:       column.DictionaryLen(),
+				AvgLen:     column.AvgValueLength(),
+				TotalEntry: column.TotalEntry(),
+			},
+		}
 	}
-	for _, binaryColumn := range c.BinaryColumns {
-		metadata = append(metadata, &ColumnMetadata{
-			Name: binaryColumn.Name(),
-			Type: arrow.BinaryTypes.Binary,
-			Len:  binaryColumn.Len(),
-		})
+	for _, column := range c.BinaryColumns {
+		metadata[column.Name()] = &ColumnMetadata{
+			Field: column.NewArrowField(),
+			Len:   column.Len(),
+			Dictionary: &DictionaryMetadata{
+				Card:       column.DictionaryLen(),
+				AvgLen:     column.AvgValueLength(),
+				TotalEntry: column.TotalEntry(),
+			},
+		}
 	}
-	for _, listColumn := range c.ListColumns {
-		metadata = append(metadata, &ColumnMetadata{
-			Name: listColumn.Name(),
-			Type: listColumn.Type(),
-			Len:  listColumn.Len(),
-		})
+	for _, column := range c.ListColumns {
+		metadata[column.Name()] = &ColumnMetadata{
+			Field: column.NewArrowField(),
+			Len:   column.Len(),
+		}
 	}
-	for _, structColumn := range c.StructColumns {
-		metadata = append(metadata, &ColumnMetadata{
-			Name:     structColumn.Name(),
-			Type:     structColumn.Type(),
+	for _, column := range c.StructColumns {
+		metadata[column.Name()] = &ColumnMetadata{
+			Field:    column.NewArrowField(),
 			Len:      0,
-			Children: structColumn.Metadata(),
-		})
+			Children: column.Metadata(),
+		}
 	}
 	return metadata
 }
 
-func (c *Columns) DictionaryStats() []*stats.DictionaryStats {
+func (c *Columns) DictionaryStats(parentPath string) []*stats.DictionaryStats {
 	dictionaryStats := make([]*stats.DictionaryStats, 0, len(c.StringColumns)+len(c.StructColumns))
 
-	for _, stringColumn := range c.StringColumns {
-		dictionaryStats = append(dictionaryStats, stringColumn.DictionaryStats())
+	for _, column := range c.StringColumns {
+		dictionaryStats = append(dictionaryStats, column.DictionaryStats(parentPath))
+	}
+	for _, column := range c.BinaryColumns {
+		dictionaryStats = append(dictionaryStats, column.DictionaryStats(parentPath))
 	}
 	for _, structColumn := range c.StructColumns {
-		dictionaryStats = append(dictionaryStats, structColumn.DictionaryStats()...)
+		dictionaryStats = append(dictionaryStats, structColumn.DictionaryStats(parentPath)...)
 	}
 	return dictionaryStats
 }

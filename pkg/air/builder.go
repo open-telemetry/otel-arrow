@@ -17,6 +17,7 @@ package air
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"sort"
 
 	"github.com/apache/arrow/go/v9/arrow"
@@ -51,7 +52,9 @@ type RecordBuilder struct {
 	fieldPaths []*rfield.FieldPath
 
 	// Optional order by clause
-	orderBy *OrderBy
+	orderByPath *OrderBy
+
+	orderByClause []string
 
 	// Non ordered records
 	recordList []*Record
@@ -65,9 +68,10 @@ type RecordBuilder struct {
 
 type RecordBuilderMetadata struct {
 	SchemaId        string
-	Columns         []*column.ColumnMetadata
+	Columns         map[string]*column.ColumnMetadata
 	RecordListLen   int
 	Optimized       bool
+	OrderBy         []string
 	DictionaryStats []*stats.DictionaryStats
 }
 
@@ -76,15 +80,15 @@ func NewRecordBuilderWithRecord(allocator *memory.GoAllocator, record *Record, c
 	var buf bytes.Buffer
 
 	builder := RecordBuilder{
-		config:     config,
-		dictIdGen:  dictionary.DictIdGenerator{Id: 0},
-		columns:    column.Columns{},
-		fieldPaths: make([]*rfield.FieldPath, 0, record.FieldCount()),
-		orderBy:    nil,
-		recordList: nil,
-		optimized:  config.Dictionaries.StringColumns.MaxSortedDictionaries == 0,
-		output:     buf,
-		ipcWriter:  nil,
+		config:      config,
+		dictIdGen:   dictionary.DictIdGenerator{Id: 0},
+		columns:     column.Columns{},
+		fieldPaths:  make([]*rfield.FieldPath, 0, record.FieldCount()),
+		orderByPath: nil,
+		recordList:  nil,
+		optimized:   config.Dictionaries.StringColumns.MaxSortedDictionaries == 0,
+		output:      buf,
+		ipcWriter:   nil,
 	}
 
 	for fieldIdx := range record.fields {
@@ -115,14 +119,14 @@ func (rb *RecordBuilder) IsEmpty() bool {
 
 func (rb *RecordBuilder) BuildRecord(allocator *memory.GoAllocator) (arrow.Record, error) {
 	// Sorts the string columns according to the order by clause.
-	if rb.orderBy != nil {
+	if rb.orderByPath != nil {
 		recordList := rb.recordList
 		capacity := 100
 		if len(recordList) > capacity {
 			capacity = len(recordList)
 		}
 		rb.recordList = make([]*Record, 0, capacity)
-		sortByRecordList(recordList, rb.orderBy)
+		sortByRecordList(recordList, rb.orderByPath)
 		for _, record := range recordList {
 			for pos := range record.fields {
 				rb.columns.UpdateColumn(rb.fieldPaths[pos], record.fields[pos])
@@ -131,7 +135,8 @@ func (rb *RecordBuilder) BuildRecord(allocator *memory.GoAllocator) (arrow.Recor
 	}
 
 	// Creates a column builder for every column.
-	fieldRefs, fieldArrays, err := rb.columns.Build(allocator)
+	fieldRefs := rb.columns.NewArrowFields()
+	fieldArrays, err := rb.columns.NewArrays(allocator)
 	if err != nil {
 		return nil, err
 	}
@@ -177,21 +182,24 @@ func (rb *RecordBuilder) Metadata(schemaId string) *RecordBuilderMetadata {
 		recordListLen = len(rb.recordList)
 	}
 
+	columnsMetadata := rb.columns.Metadata()
+
 	return &RecordBuilderMetadata{
 		SchemaId:        schemaId,
-		Columns:         rb.columns.Metadata(),
+		Columns:         columnsMetadata,
 		RecordListLen:   recordListLen,
 		Optimized:       rb.optimized,
-		DictionaryStats: rb.columns.DictionaryStats(),
+		OrderBy:         rb.orderByClause,
+		DictionaryStats: rb.columns.DictionaryStats(""),
 	}
 }
 
 func (rb *RecordBuilder) DictionaryStats() []*stats.DictionaryStats {
-	return rb.columns.DictionaryStats()
+	return rb.columns.DictionaryStats("")
 }
 
 func (rb *RecordBuilder) OrderBy(fieldPaths [][]int) {
-	rb.orderBy = &OrderBy{
+	rb.orderByPath = &OrderBy{
 		FieldPaths: fieldPaths,
 	}
 	rb.recordList = []*Record{}
@@ -202,28 +210,45 @@ func (rb *RecordBuilder) Optimize() bool {
 		return true
 	}
 
-	if rb.orderBy == nil {
+	if rb.orderByPath == nil {
 		var dictionaryStats []*stats.DictionaryStats
 		for _, ds := range rb.DictionaryStats() {
-			if ds.Cardinality > 1 && rb.config.Dictionaries.StringColumns.IsDictionary(ds.TotalEntry, ds.Cardinality) {
+			if ds == nil || ds.Cardinality <= 1 {
+				continue
+			}
+
+			if ds.Type == stats.StringDic && rb.config.Dictionaries.StringColumns.IsDictionary(ds.TotalEntry, ds.Cardinality) {
+				dictionaryStats = append(dictionaryStats, ds)
+			} else if ds.Type == stats.BinaryDic && rb.config.Dictionaries.BinaryColumns.IsDictionary(ds.TotalEntry, ds.Cardinality) {
 				dictionaryStats = append(dictionaryStats, ds)
 			}
 		}
+		if len(dictionaryStats) == 0 {
+			rb.optimized = false
+			return false
+		}
 		sort.Sort(stats.DictionaryStatsSlice(dictionaryStats))
-		var paths [][]int
+		var numPaths [][]int
+		var stringPaths []string
 		for i, ds := range dictionaryStats {
 			if i < rb.config.Dictionaries.StringColumns.MaxSortedDictionaries {
-				path := make([]int, len(ds.Path))
-				copy(path, ds.Path)
-				paths = append(paths, path)
+				path := make([]int, len(ds.NumPath))
+				copy(path, ds.NumPath)
+				numPaths = append(numPaths, path)
+				stringPaths = append(stringPaths, ds.StringPath)
 			} else {
 				break
 			}
 		}
-		if len(paths) > 0 {
-			rb.orderBy = &OrderBy{
-				FieldPaths: paths,
+		if len(numPaths) > 0 {
+			rb.orderByPath = &OrderBy{
+				FieldPaths: numPaths,
 			}
+			orderByClause := make([]string, 0, len(numPaths))
+			for _, path := range stringPaths {
+				orderByClause = append(orderByClause, path)
+			}
+			rb.orderByClause = orderByClause
 			rb.optimized = true
 			rb.recordList = []*Record{}
 			return true
@@ -241,5 +266,26 @@ func sortByRecordList(recordList []*Record, orderBy *OrderBy) {
 		records: recordList,
 		orderBy: orderBy,
 	}
+
 	sort.Sort(&records)
+}
+
+func (m *RecordBuilderMetadata) Dump(f *os.File) {
+	_, err := f.WriteString("Arrow Record Schema:\n")
+	if err != nil {
+		panic(err)
+	}
+	for _, col := range m.Columns {
+		col.Dump("\t", f)
+	}
+	_, err = f.WriteString(fmt.Sprintf("Optimized: %t\n", m.Optimized))
+	if err != nil {
+		panic(err)
+	}
+	if m.OrderBy != nil {
+		_, err = f.WriteString(fmt.Sprintf("OrderBy: %v\n", m.OrderBy))
+		if err != nil {
+			panic(err)
+		}
+	}
 }

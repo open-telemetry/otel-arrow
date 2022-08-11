@@ -20,6 +20,7 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/memory"
 
 	"otel-arrow-adapter/pkg/air/config"
+	"otel-arrow-adapter/pkg/air/stats"
 )
 
 // BinaryColumn is a column of binary data.
@@ -30,28 +31,34 @@ type BinaryColumn struct {
 	data []*[]byte
 	// Dictionary config of the column.
 	config *config.DictionaryConfig
+	// Field path of the column (used to ref this column in the DictionaryStats).
+	fieldPath []int
 	// Dictionary ID of the column.
 	dictId int
 	// Optional dictionary containing the unique values of the column (used to build Arrow Dictionary).
 	dictionary map[string]int
 	// Total number of rows in the column.
 	totalRowCount int
+	// Total length of the values in the column.
+	totalValueLength int
 }
 
 // MakeBinaryColumn creates a new Binary column.
-func MakeBinaryColumn(name string, config *config.DictionaryConfig, dictId int) BinaryColumn {
+func MakeBinaryColumn(name string, config *config.DictionaryConfig, fieldPath []int, dictId int) BinaryColumn {
 	var dictionary map[string]int
 	if config.MaxCard > 0 {
 		dictionary = make(map[string]int)
 	}
 
 	return BinaryColumn{
-		name:          name,
-		data:          []*[]byte{},
-		config:        config,
-		dictId:        dictId,
-		dictionary:    dictionary,
-		totalRowCount: 0,
+		name:             name,
+		data:             []*[]byte{},
+		config:           config,
+		fieldPath:        fieldPath,
+		dictId:           dictId,
+		dictionary:       dictionary,
+		totalRowCount:    0,
+		totalValueLength: 0,
 	}
 }
 
@@ -75,6 +82,10 @@ func (c *BinaryColumn) Push(value *[]byte) {
 	}
 
 	c.totalRowCount++
+	if value != nil {
+		c.totalValueLength += len(*value)
+	}
+
 	c.data = append(c.data, value)
 }
 
@@ -92,13 +103,44 @@ func (c *BinaryColumn) DictionaryLen() int {
 	}
 }
 
+func (c *BinaryColumn) TotalEntry() int {
+	return c.totalRowCount
+}
+
+// AvgValueLength returns the average length of the values in the column.
+func (c *BinaryColumn) AvgValueLength() float64 {
+	if c.totalValueLength == 0 || c.totalRowCount == 0 {
+		return 0.0
+	}
+	return float64(c.totalValueLength) / float64(c.totalRowCount)
+}
+
+// DictionaryStats returns the DictionaryStats of the column.
+func (c *BinaryColumn) DictionaryStats(parentPath string) *stats.DictionaryStats {
+	if c.dictionary != nil {
+		stringPath := c.name
+		if len(parentPath) > 0 {
+			stringPath = parentPath + "." + c.name
+		}
+		return &stats.DictionaryStats{
+			Type:           stats.BinaryDic,
+			NumPath:        c.fieldPath,
+			StringPath:     stringPath,
+			Cardinality:    c.DictionaryLen(),
+			AvgEntryLength: c.AvgValueLength(),
+			TotalEntry:     c.totalRowCount,
+		}
+	}
+	return nil
+}
+
 // Clear clears the bool data in the column but keep the original memory buffer allocated.
 func (c *BinaryColumn) Clear() {
 	c.data = c.data[:0]
 }
 
-// NewBinarySchemaField creates a Binary schema field.
-func (c *BinaryColumn) NewBinarySchemaField() *arrow.Field {
+// NewArrowField creates a Binary schema field.
+func (c *BinaryColumn) NewArrowField() *arrow.Field {
 	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen()) {
 		return &arrow.Field{Name: c.name, Type: &arrow.DictionaryType{
 			IndexType: arrow.PrimitiveTypes.Uint8,

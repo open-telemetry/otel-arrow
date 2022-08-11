@@ -154,6 +154,16 @@ func (r *Record) ValueByPath(path []int) rfield.Value {
 	return nil
 }
 
+func (r *Record) StringPath(path []int) string {
+	if path == nil {
+		return ""
+	}
+	if len(r.fields) > path[0] {
+		return r.fields[path[0]].StringPath(path[1:])
+	}
+	return ""
+}
+
 // Compare compares two records based on an order by clause expressed as a collection of numerical path.
 func (r *Record) Compare(other *Record, sortBy [][]int) int {
 	for _, path := range sortBy {
