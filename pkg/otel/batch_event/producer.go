@@ -19,6 +19,7 @@ package batch_event
 
 import (
 	"bytes"
+	"fmt"
 
 	"github.com/apache/arrow/go/v9/arrow/ipc"
 
@@ -30,8 +31,10 @@ type Producer struct {
 }
 
 type streamProducer struct {
-	output    bytes.Buffer
-	ipcWriter *ipc.Writer
+	output      bytes.Buffer
+	ipcWriter   *ipc.Writer
+	batchId     int64
+	subStreamId string
 }
 
 // NewProducer creates a new BatchEvent producer.
@@ -48,8 +51,11 @@ func (p *Producer) Produce(ibe *InternalBatchEvent) (*coleventspb.BatchEvent, er
 	if sp == nil {
 		var buf bytes.Buffer
 		sp = &streamProducer{
-			output: buf,
+			output:      buf,
+			batchId:     0,
+			subStreamId: fmt.Sprintf("%d", len(p.streamProducers)),
 		}
+		p.streamProducers[ibe.subStreamId] = sp
 	}
 
 	if sp.ipcWriter == nil {
@@ -64,9 +70,12 @@ func (p *Producer) Produce(ibe *InternalBatchEvent) (*coleventspb.BatchEvent, er
 	// Reset the buffer
 	sp.output.Reset()
 
+	batchId := fmt.Sprintf("%d", sp.batchId)
+	sp.batchId++
+
 	return &coleventspb.BatchEvent{
-		BatchId:     ibe.batchId,
-		SubStreamId: ibe.subStreamId,
+		BatchId:     batchId,
+		SubStreamId: sp.subStreamId,
 		OtlpArrowPayloads: []*coleventspb.OtlpArrowPayload{
 			{
 				Type:   ibe.recordType,

@@ -25,14 +25,14 @@ type ProfileableSystem interface {
 	StartProfiling(writer io.Writer)
 	EndProfiling(writer io.Writer)
 
-	InitBatchSize(batchSize int)
-	PrepareBatch(startAt, size int)
-	CreateBatch(startAt, size int)
+	InitBatchSize(writer io.Writer, batchSize int)
+	PrepareBatch(writer io.Writer, startAt, size int)
+	CreateBatch(writer io.Writer, startAt, size int)
 
-	Process() string
+	Process(writer io.Writer) string
 
-	Serialize() ([][]byte, error)
-	Deserialize(buffers [][]byte)
+	Serialize(writer io.Writer) ([][]byte, error)
+	Deserialize(writer io.Writer, buffers [][]byte)
 
 	Clear()
 	ShowStats()

@@ -30,15 +30,15 @@ func (s *LogsProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *LogsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
 }
-func (s *LogsProfileable) StartProfiling(io.Writer) {}
-func (s *LogsProfileable) EndProfiling(io.Writer)   {}
-func (s *LogsProfileable) InitBatchSize(_ int)      {}
-func (s *LogsProfileable) PrepareBatch(_, _ int)    {}
-func (s *LogsProfileable) CreateBatch(startAt, size int) {
+func (s *LogsProfileable) StartProfiling(io.Writer)           {}
+func (s *LogsProfileable) EndProfiling(io.Writer)             {}
+func (s *LogsProfileable) InitBatchSize(_ io.Writer, _ int)   {}
+func (s *LogsProfileable) PrepareBatch(_ io.Writer, _, _ int) {}
+func (s *LogsProfileable) CreateBatch(_ io.Writer, startAt, size int) {
 	s.logs = s.dataset.Logs(startAt, size)
 }
-func (s *LogsProfileable) Process() string { return "" }
-func (s *LogsProfileable) Serialize() ([][]byte, error) {
+func (s *LogsProfileable) Process(io.Writer) string { return "" }
+func (s *LogsProfileable) Serialize(io.Writer) ([][]byte, error) {
 	buffers := make([][]byte, len(s.logs))
 	for i, m := range s.logs {
 		bytes, err := proto.Marshal(m)
@@ -49,7 +49,7 @@ func (s *LogsProfileable) Serialize() ([][]byte, error) {
 	}
 	return buffers, nil
 }
-func (s *LogsProfileable) Deserialize(buffers [][]byte) {
+func (s *LogsProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
 	s.logs = make([]*v1.ExportLogsServiceRequest, len(buffers))
 	for i, b := range buffers {
 		m := &v1.ExportLogsServiceRequest{}

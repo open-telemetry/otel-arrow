@@ -57,11 +57,11 @@ func (s *TraceProfileable) EndProfiling(writer io.Writer) {
 	s.rr.DumpMetadata(writer)
 	s.rr = nil
 }
-func (s *TraceProfileable) InitBatchSize(_ int) {}
-func (s *TraceProfileable) PrepareBatch(startAt, size int) {
+func (s *TraceProfileable) InitBatchSize(_ io.Writer, _ int) {}
+func (s *TraceProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	s.traces = s.dataset.Traces(startAt, size)
 }
-func (s *TraceProfileable) CreateBatch(_, _ int) {
+func (s *TraceProfileable) CreateBatch(_ io.Writer, _, _ int) {
 	// Conversion of OTLP metrics to OTLP Arrow events
 	s.batchEvents = make([]*v1.BatchEvent, 0, len(s.traces))
 	for _, trace := range s.traces {
@@ -70,19 +70,26 @@ func (s *TraceProfileable) CreateBatch(_, _ int) {
 			panic(err)
 		}
 		for schemaId, record := range records {
+			//fmt.Fprintf(writer, "IPC Message\n")
+			//fmt.Fprintf(writer, "\t- record #row = %d\n", record.Column(0).Len())
 			batchEvent, err := s.producer.Produce(batch_event.NewBatchEventOfTraces(schemaId, record, v1.DeliveryType_BEST_EFFORT))
 			if err != nil {
 				panic(err)
 			}
+			//fmt.Fprintf(writer, "\t- batch-id = %s\n", batchEvent.BatchId)
+			//fmt.Fprintf(writer, "\t- sub-stream-id = %s\n", batchEvent.SubStreamId)
+			//for _, p := range batchEvent.OtlpArrowPayloads {
+			//	fmt.Fprintf(writer, "\t- IPC message size = %d\n", len(p.Schema))
+			//}
 			s.batchEvents = append(s.batchEvents, batchEvent)
 		}
 	}
 }
-func (s *TraceProfileable) Process() string {
+func (s *TraceProfileable) Process(io.Writer) string {
 	// Not used in this benchmark
 	return ""
 }
-func (s *TraceProfileable) Serialize() ([][]byte, error) {
+func (s *TraceProfileable) Serialize(io.Writer) ([][]byte, error) {
 	buffers := make([][]byte, len(s.batchEvents))
 	for i, be := range s.batchEvents {
 		bytes, err := proto.Marshal(be)
@@ -93,7 +100,7 @@ func (s *TraceProfileable) Serialize() ([][]byte, error) {
 	}
 	return buffers, nil
 }
-func (s *TraceProfileable) Deserialize(buffers [][]byte) {
+func (s *TraceProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
 	s.batchEvents = make([]*v1.BatchEvent, len(buffers))
 	for i, b := range buffers {
 		be := &v1.BatchEvent{}

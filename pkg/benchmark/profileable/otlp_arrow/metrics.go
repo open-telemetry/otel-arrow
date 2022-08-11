@@ -39,13 +39,13 @@ func (s *MetricsProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *MetricsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
 }
-func (s *MetricsProfileable) StartProfiling(io.Writer) {}
-func (s *MetricsProfileable) EndProfiling(io.Writer)   {}
-func (s *MetricsProfileable) InitBatchSize(_ int)      {}
-func (s *MetricsProfileable) PrepareBatch(startAt, size int) {
+func (s *MetricsProfileable) StartProfiling(io.Writer)         {}
+func (s *MetricsProfileable) EndProfiling(io.Writer)           {}
+func (s *MetricsProfileable) InitBatchSize(_ io.Writer, _ int) {}
+func (s *MetricsProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	s.metrics = s.dataset.Metrics(startAt, size)
 }
-func (s *MetricsProfileable) CreateBatch(_, _ int) {
+func (s *MetricsProfileable) CreateBatch(_ io.Writer, _, _ int) {
 	// Conversion of OTLP metrics to OTLP Arrow events
 	for _, m := range s.metrics {
 		records, err := metrics.OtlpMetricsToArrowRecords(s.rr, m, s.multivariateConfig)
@@ -57,11 +57,11 @@ func (s *MetricsProfileable) CreateBatch(_, _ int) {
 		}
 	}
 }
-func (s *MetricsProfileable) Process() string {
+func (s *MetricsProfileable) Process(io.Writer) string {
 	// Not used in this benchmark
 	return ""
 }
-func (s *MetricsProfileable) Serialize() ([][]byte, error) {
+func (s *MetricsProfileable) Serialize(io.Writer) ([][]byte, error) {
 	buffers := make([][]byte, len(s.records))
 	for _, r := range s.records {
 		var buf bytes.Buffer
@@ -79,7 +79,7 @@ func (s *MetricsProfileable) Serialize() ([][]byte, error) {
 	}
 	return buffers, nil
 }
-func (s *MetricsProfileable) Deserialize(buffers [][]byte) {
+func (s *MetricsProfileable) Deserialize(_ io.Writer, _ [][]byte) {
 	println("ToDo Deserialize")
 	//for _, b := range buffers {
 	//	reader, err := ipc.NewReader(bytes.NewReader(b))

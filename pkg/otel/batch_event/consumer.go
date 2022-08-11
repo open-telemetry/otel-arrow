@@ -50,6 +50,7 @@ func (c *consumer) Consume(event *coleventspb.BatchEvent) ([]*InternalBatchEvent
 		sc = &streamConsumer{
 			bufReader: bufReader,
 		}
+		c.streamConsumers[event.SubStreamId] = sc
 	}
 
 	var ibes []*InternalBatchEvent

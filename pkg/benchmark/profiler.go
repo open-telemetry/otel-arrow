@@ -89,28 +89,28 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 		totalTime := NewMetric()
 		processingResults := []string{}
 
-		profileable.InitBatchSize(batchSize)
+		profileable.InitBatchSize(p.writer, batchSize)
 
 		for _i := uint64(0); _i < maxIter; _i++ {
 			maxBatchCount := uint64(math.Ceil(float64(profileable.DatasetSize()) / float64(batchSize)))
 			startAt := 0
 			for _j := uint64(0); _j < maxBatchCount; _j++ {
 				correctedBatchSize := min(profileable.DatasetSize()-startAt, batchSize)
-				profileable.PrepareBatch(startAt, correctedBatchSize)
+				profileable.PrepareBatch(p.writer, startAt, correctedBatchSize)
 
 				start := time.Now()
 
 				// Batch creation
-				profileable.CreateBatch(startAt, correctedBatchSize)
+				profileable.CreateBatch(p.writer, startAt, correctedBatchSize)
 				afterBatchCreation := time.Now()
 
 				// Processing
-				result := profileable.Process()
+				result := profileable.Process(p.writer)
 				afterProcessing := time.Now()
 				processingResults = append(processingResults, result)
 
 				// Serialization
-				buffers, err := profileable.Serialize()
+				buffers, err := profileable.Serialize(p.writer)
 				if err != nil {
 					return err
 				}
@@ -152,7 +152,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 				}
 
 				// Deserialization
-				profileable.Deserialize(buffers)
+				profileable.Deserialize(p.writer, buffers)
 				afterDeserialization := time.Now()
 				profileable.Clear()
 

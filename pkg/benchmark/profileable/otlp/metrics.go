@@ -30,15 +30,15 @@ func (s *MetricsProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *MetricsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
 }
-func (s *MetricsProfileable) StartProfiling(io.Writer) {}
-func (s *MetricsProfileable) EndProfiling(io.Writer)   {}
-func (s *MetricsProfileable) InitBatchSize(_ int)      {}
-func (s *MetricsProfileable) PrepareBatch(_, _ int)    {}
-func (s *MetricsProfileable) CreateBatch(startAt, size int) {
+func (s *MetricsProfileable) StartProfiling(io.Writer)           {}
+func (s *MetricsProfileable) EndProfiling(io.Writer)             {}
+func (s *MetricsProfileable) InitBatchSize(_ io.Writer, _ int)   {}
+func (s *MetricsProfileable) PrepareBatch(_ io.Writer, _, _ int) {}
+func (s *MetricsProfileable) CreateBatch(_ io.Writer, startAt, size int) {
 	s.metrics = s.dataset.Metrics(startAt, size)
 }
-func (s *MetricsProfileable) Process() string { return "" }
-func (s *MetricsProfileable) Serialize() ([][]byte, error) {
+func (s *MetricsProfileable) Process(io.Writer) string { return "" }
+func (s *MetricsProfileable) Serialize(io.Writer) ([][]byte, error) {
 	buffers := make([][]byte, len(s.metrics))
 	for i, m := range s.metrics {
 		bytes, err := proto.Marshal(m)
@@ -49,7 +49,7 @@ func (s *MetricsProfileable) Serialize() ([][]byte, error) {
 	}
 	return buffers, nil
 }
-func (s *MetricsProfileable) Deserialize(buffers [][]byte) {
+func (s *MetricsProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
 	s.metrics = make([]*v1.ExportMetricsServiceRequest, len(buffers))
 	for i, b := range buffers {
 		m := &v1.ExportMetricsServiceRequest{}

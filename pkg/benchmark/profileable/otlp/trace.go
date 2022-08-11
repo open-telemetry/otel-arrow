@@ -30,15 +30,15 @@ func (s *TraceProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *TraceProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
 }
-func (s *TraceProfileable) StartProfiling(io.Writer) {}
-func (s *TraceProfileable) EndProfiling(io.Writer)   {}
-func (s *TraceProfileable) InitBatchSize(_ int)      {}
-func (s *TraceProfileable) PrepareBatch(_, _ int)    {}
-func (s *TraceProfileable) CreateBatch(startAt, size int) {
+func (s *TraceProfileable) StartProfiling(io.Writer)           {}
+func (s *TraceProfileable) EndProfiling(io.Writer)             {}
+func (s *TraceProfileable) InitBatchSize(_ io.Writer, _ int)   {}
+func (s *TraceProfileable) PrepareBatch(_ io.Writer, _, _ int) {}
+func (s *TraceProfileable) CreateBatch(_ io.Writer, startAt, size int) {
 	s.traces = s.dataset.Traces(startAt, size)
 }
-func (s *TraceProfileable) Process() string { return "" }
-func (s *TraceProfileable) Serialize() ([][]byte, error) {
+func (s *TraceProfileable) Process(io.Writer) string { return "" }
+func (s *TraceProfileable) Serialize(io.Writer) ([][]byte, error) {
 	buffers := make([][]byte, len(s.traces))
 	for i, m := range s.traces {
 		bytes, err := proto.Marshal(m)
@@ -49,7 +49,7 @@ func (s *TraceProfileable) Serialize() ([][]byte, error) {
 	}
 	return buffers, nil
 }
-func (s *TraceProfileable) Deserialize(buffers [][]byte) {
+func (s *TraceProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
 	s.traces = make([]*v1.ExportTraceServiceRequest, len(buffers))
 	for i, b := range buffers {
 		m := &v1.ExportTraceServiceRequest{}
