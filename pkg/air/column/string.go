@@ -41,6 +41,10 @@ type StringColumn struct {
 	totalValueLength int
 	// Total number of rows in the column.
 	totalRowCount int
+
+	dictionaryType    *arrow.DictionaryType
+	dictionaryUpdated bool
+	dictionaryArray   arrow.Array
 }
 
 // NewStringColumn creates a new StringColumn.
@@ -58,6 +62,13 @@ func NewStringColumn(name string, config *config.DictionaryConfig, fieldPath []i
 		totalValueLength: 0,
 		totalRowCount:    0,
 		dictionary:       dictionary,
+		dictionaryType: &arrow.DictionaryType{
+			IndexType: arrow.PrimitiveTypes.Uint8, // ToDo add support for uint16, uint32, uint64
+			ValueType: arrow.BinaryTypes.String,
+			Ordered:   false, // ToDo do test with ordered dictionaries
+		},
+		dictionaryUpdated: false,
+		dictionaryArray:   nil,
 	}
 }
 
@@ -75,6 +86,8 @@ func (c *StringColumn) Push(value *string) {
 				c.dictionary[*value] = len(c.dictionary)
 				if len(c.dictionary) > c.config.MaxCard {
 					c.dictionary = nil
+				} else {
+					c.dictionaryUpdated = true
 				}
 			}
 		}
@@ -140,11 +153,7 @@ func (c *StringColumn) Clear() {
 // NewArrowField creates a schema field
 func (c *StringColumn) NewArrowField() *arrow.Field {
 	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen()) {
-		return &arrow.Field{Name: c.name, Type: &arrow.DictionaryType{
-			IndexType: arrow.PrimitiveTypes.Uint8,
-			ValueType: arrow.BinaryTypes.String,
-			Ordered:   false,
-		}}
+		return &arrow.Field{Name: c.name, Type: c.dictionaryType}
 	} else {
 		return &arrow.Field{Name: c.name, Type: arrow.BinaryTypes.String}
 	}
@@ -153,19 +162,16 @@ func (c *StringColumn) NewArrowField() *arrow.Field {
 // NewStringArray creates and initializes a new Arrow Array for the column.
 func (c *StringColumn) NewStringArray(allocator *memory.GoAllocator) arrow.Array {
 	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen()) {
-		dictBuilder := array.NewStringBuilder(allocator)
-		dictBuilder.Reserve(len(c.dictionary))
-		for txt := range c.dictionary {
-			dictBuilder.Append(txt)
+		if c.dictionaryUpdated {
+			dictBuilder := array.NewStringBuilder(allocator)
+			dictBuilder.Reserve(len(c.dictionary))
+			for txt := range c.dictionary {
+				dictBuilder.Append(txt)
+			}
+			c.dictionaryArray = dictBuilder.NewArray()
+			c.dictionaryUpdated = false
 		}
-		builder := array.NewDictionaryBuilderWithDict(
-			allocator,
-			&arrow.DictionaryType{
-				IndexType: arrow.PrimitiveTypes.Uint8, // ToDo add support for uint16, uint32, uint64
-				ValueType: arrow.BinaryTypes.String,
-				Ordered:   false, // ToDo do test with ordered dictionaries
-			},
-			dictBuilder.NewArray())
+		builder := array.NewDictionaryBuilderWithDict(allocator, c.dictionaryType, c.dictionaryArray)
 		valuesBuilder := array.NewStringBuilder(allocator)
 		builder.Reserve(len(c.data))
 		for _, value := range c.data {
