@@ -41,13 +41,24 @@ type BinaryColumn struct {
 	totalRowCount int
 	// Total length of the values in the column.
 	totalValueLength int
+
+	field          *arrow.Field
+	binaryBuilder  *array.BinaryBuilder
+	dicoBuilder    *array.BinaryDictionaryBuilder
+	dictionaryType *arrow.DictionaryType
 }
 
 // MakeBinaryColumn creates a new Binary column.
-func MakeBinaryColumn(name string, config *config.DictionaryConfig, fieldPath []int, dictId int) BinaryColumn {
+func MakeBinaryColumn(allocator *memory.GoAllocator, name string, config *config.DictionaryConfig, fieldPath []int, dictId int) BinaryColumn {
 	var dictionary map[string]int
 	if config.MaxCard > 0 {
 		dictionary = make(map[string]int)
+	}
+
+	dicoType := &arrow.DictionaryType{
+		IndexType: arrow.PrimitiveTypes.Uint8, // ToDo add support for uint16, uint32, uint64
+		ValueType: arrow.BinaryTypes.Binary,
+		Ordered:   false, // ToDo do test with ordered dictionaries
 	}
 
 	return BinaryColumn{
@@ -59,6 +70,9 @@ func MakeBinaryColumn(name string, config *config.DictionaryConfig, fieldPath []
 		dictionary:       dictionary,
 		totalRowCount:    0,
 		totalValueLength: 0,
+		binaryBuilder:    array.NewBinaryBuilder(allocator, arrow.BinaryTypes.Binary),
+		dicoBuilder:      array.NewDictionaryBuilder(allocator, dicoType).(*array.BinaryDictionaryBuilder),
+		dictionaryType:   dicoType,
 	}
 }
 
@@ -142,58 +156,38 @@ func (c *BinaryColumn) Clear() {
 // NewArrowField creates a Binary schema field.
 func (c *BinaryColumn) NewArrowField() *arrow.Field {
 	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen()) {
-		return &arrow.Field{Name: c.name, Type: &arrow.DictionaryType{
-			IndexType: arrow.PrimitiveTypes.Uint8,
-			ValueType: arrow.BinaryTypes.Binary,
-			Ordered:   false,
-		}}
+		return &arrow.Field{Name: c.name, Type: c.dictionaryType}
 	} else {
 		return &arrow.Field{Name: c.name, Type: arrow.BinaryTypes.Binary}
 	}
 }
 
 // NewBinaryArray creates and initializes a new Arrow Array for the column.
-func (c *BinaryColumn) NewBinaryArray(allocator *memory.GoAllocator) arrow.Array {
+func (c *BinaryColumn) NewBinaryArray(_ *memory.GoAllocator) arrow.Array {
 	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen()) {
-		dictBuilder := array.NewBinaryBuilder(allocator, arrow.BinaryTypes.Binary)
-		dictBuilder.Reserve(len(c.dictionary))
-		for data := range c.dictionary {
-			dictBuilder.Append([]byte(data))
-		}
-		builder := array.NewDictionaryBuilderWithDict(
-			allocator,
-			&arrow.DictionaryType{
-				IndexType: arrow.PrimitiveTypes.Uint8, // ToDo add support for uint16, uint32, uint64
-				ValueType: arrow.BinaryTypes.Binary,
-				Ordered:   false, // ToDo do test with ordered dictionaries
-			},
-			dictBuilder.NewArray())
-		valuesBuilder := array.NewBinaryBuilder(allocator, arrow.BinaryTypes.Binary)
-		builder.Reserve(len(c.data))
+		c.dicoBuilder.Reserve(len(c.data))
 		for _, value := range c.data {
 			if value != nil {
-				valuesBuilder.Append(*value)
+				err := c.dicoBuilder.Append(*value)
+				if err != nil {
+					panic(err)
+				}
 			} else {
-				valuesBuilder.AppendNull()
+				c.dicoBuilder.AppendNull()
 			}
 		}
-		err := builder.AppendArray(valuesBuilder.NewArray())
-		if err != nil {
-			panic(err)
-		}
 		c.Clear()
-		return builder.NewArray()
+		return c.dicoBuilder.NewArray()
 	} else {
-		builder := array.NewBinaryBuilder(allocator, arrow.BinaryTypes.Binary)
-		builder.Reserve(len(c.data))
+		c.binaryBuilder.Reserve(len(c.data))
 		for _, v := range c.data {
 			if v == nil {
-				builder.AppendNull()
+				c.binaryBuilder.AppendNull()
 			} else {
-				builder.Append(*v)
+				c.binaryBuilder.Append(*v)
 			}
 		}
 		c.Clear()
-		return builder.NewArray()
+		return c.binaryBuilder.NewArray()
 	}
 }

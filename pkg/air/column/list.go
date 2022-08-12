@@ -52,37 +52,37 @@ func MakeListColumn(allocator *memory.GoAllocator, listName string, fieldPath []
 	fieldPaths := []*rfield.FieldPath(nil)
 	switch t := etype.(type) {
 	case *arrow.BooleanType:
-		col := MakeBoolColumn(etype.Name())
+		col := MakeBoolColumn(allocator, etype.Name())
 		values = &col
 	case *arrow.Uint8Type:
-		col := MakeU8Column(etype.Name())
+		col := MakeU8Column(allocator, etype.Name())
 		values = &col
 	case *arrow.Uint16Type:
-		col := MakeU16Column(etype.Name())
+		col := MakeU16Column(allocator, etype.Name())
 		values = &col
 	case *arrow.Uint32Type:
-		col := MakeU32Column(etype.Name())
+		col := MakeU32Column(allocator, etype.Name())
 		values = &col
 	case *arrow.Uint64Type:
-		col := MakeU64Column(etype.Name())
+		col := MakeU64Column(allocator, etype.Name())
 		values = &col
 	case *arrow.Int8Type:
-		col := MakeI8Column(etype.Name())
+		col := MakeI8Column(allocator, etype.Name())
 		values = &col
 	case *arrow.Int16Type:
-		col := MakeI16Column(etype.Name())
+		col := MakeI16Column(allocator, etype.Name())
 		values = &col
 	case *arrow.Int32Type:
-		col := MakeI32Column(etype.Name())
+		col := MakeI32Column(allocator, etype.Name())
 		values = &col
 	case *arrow.Int64Type:
-		col := MakeI64Column(etype.Name())
+		col := MakeI64Column(allocator, etype.Name())
 		values = &col
 	case *arrow.Float32Type:
-		col := MakeF32Column(etype.Name())
+		col := MakeF32Column(allocator, etype.Name())
 		values = &col
 	case *arrow.Float64Type:
-		col := MakeF64Column(etype.Name())
+		col := MakeF64Column(allocator, etype.Name())
 		values = &col
 	case *arrow.StructType:
 		columns, fps := NewColumns(allocator, t, fieldPath, config, dictIdGen)
@@ -101,7 +101,7 @@ func NewListColumnBase(allocator *memory.GoAllocator, name string, dataType arro
 	// Initialize ListColumnBase
 	nulls := 0
 
-	offsets := MakeI32Column("offsets")
+	offsets := MakeI32Column(allocator, "offsets")
 
 	return &ListColumnBase{
 		name:       name,

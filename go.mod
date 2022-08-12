@@ -10,6 +10,7 @@ require (
 	github.com/klauspost/compress v1.15.8
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/pierrec/lz4 v2.0.5+incompatible
+	golang.org/x/exp v0.0.0-20211216164055-b2b84827b756
 	google.golang.org/protobuf v1.28.0
 )
 

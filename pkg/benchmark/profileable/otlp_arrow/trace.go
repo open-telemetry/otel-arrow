@@ -61,7 +61,7 @@ func (s *TraceProfileable) InitBatchSize(_ io.Writer, _ int) {}
 func (s *TraceProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	s.traces = s.dataset.Traces(startAt, size)
 }
-func (s *TraceProfileable) CreateBatch(_ io.Writer, _, _ int) {
+func (s *TraceProfileable) CreateBatch(writer io.Writer, _, _ int) {
 	// Conversion of OTLP metrics to OTLP Arrow events
 	s.batchEvents = make([]*v1.BatchEvent, 0, len(s.traces))
 	for _, trace := range s.traces {
@@ -71,6 +71,7 @@ func (s *TraceProfileable) CreateBatch(_ io.Writer, _, _ int) {
 		}
 		for schemaId, record := range records {
 			//fmt.Fprintf(writer, "IPC Message\n")
+			//fmt.Fprintf(writer, "\t- schema id = %s\n", schemaId)
 			//fmt.Fprintf(writer, "\t- record #row = %d\n", record.Column(0).Len())
 			batchEvent, err := s.producer.Produce(batch_event.NewBatchEventOfTraces(schemaId, record, v1.DeliveryType_BEST_EFFORT))
 			if err != nil {

@@ -24,39 +24,39 @@ import (
 
 // F32Column is a column of float32 data.
 type F32Column struct {
-	// Name of the column.
-	name string
-	// Data of the column.
-	data []*float32
+	field   *arrow.Field
+	builder *array.Float32Builder
 }
 
 // F64Column is a column of float64 data.
 type F64Column struct {
-	// Name of the column.
-	name string
-	// Data of the column.
-	data []*float64
+	field   *arrow.Field
+	builder *array.Float64Builder
 }
 
 // MakeF32Column creates a new F32 column.
-func MakeF32Column(name string) F32Column {
+func MakeF32Column(allocator *memory.GoAllocator, name string) F32Column {
 	return F32Column{
-		name: name,
-		data: []*float32{},
+		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Float32},
+		builder: array.NewFloat32Builder(allocator),
 	}
 }
 
 // MakeF64Column creates a new F64 column.
-func MakeF64Column(name string) F64Column {
+func MakeF64Column(allocator *memory.GoAllocator, name string) F64Column {
 	return F64Column{
-		name: name,
-		data: []*float64{},
+		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Float64},
+		builder: array.NewFloat64Builder(allocator),
 	}
 }
 
 // Push adds a new value to the column.
 func (c *F32Column) Push(data *float32) {
-	c.data = append(c.data, data)
+	if data == nil {
+		c.builder.AppendNull()
+	} else {
+		c.builder.Append(*data)
+	}
 }
 
 // PushFromValues adds the given values to the column.
@@ -72,46 +72,39 @@ func (c *F32Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
 
 // Name returns the name of the column.
 func (c *F32Column) Name() string {
-	return c.name
+	return c.field.Name
 }
 
 func (c *F32Column) Type() arrow.DataType {
-	return arrow.PrimitiveTypes.Float32
+	return c.field.Type
 }
 
 // Len returns the number of elements in the column.
 func (c *F32Column) Len() int {
-	return len(c.data)
+	return c.builder.Len()
 }
 
 // Clear clears the f32 data in the column but keep the original memory buffer allocated.
 func (c *F32Column) Clear() {
-	c.data = c.data[:0]
 }
 
 // NewArrowField creates a F32 schema field.
 func (c *F32Column) NewArrowField() *arrow.Field {
-	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Float32}
+	return c.field
 }
 
 // NewArray creates and initializes a new Arrow Array for the column.
-func (c *F32Column) NewArray(allocator *memory.GoAllocator) arrow.Array {
-	builder := array.NewFloat32Builder(allocator)
-	builder.Reserve(len(c.data))
-	for _, v := range c.data {
-		if v == nil {
-			builder.AppendNull()
-		} else {
-			builder.UnsafeAppend(*v)
-		}
-	}
-	c.Clear()
-	return builder.NewArray()
+func (c *F32Column) NewArray(_ *memory.GoAllocator) arrow.Array {
+	return c.builder.NewArray()
 }
 
 // Push adds a new value to the column.
 func (c *F64Column) Push(data *float64) {
-	c.data = append(c.data, data)
+	if data == nil {
+		c.builder.AppendNull()
+	} else {
+		c.builder.Append(*data)
+	}
 }
 
 // PushFromValues adds the given values to the column.
@@ -127,39 +120,28 @@ func (c *F64Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
 
 // Name returns the name of the column.
 func (c *F64Column) Name() string {
-	return c.name
+	return c.field.Name
 }
 
 func (c *F64Column) Type() arrow.DataType {
-	return arrow.PrimitiveTypes.Float64
+	return c.field.Type
 }
 
 // Len returns the number of elements in the column.
 func (c *F64Column) Len() int {
-	return len(c.data)
+	return c.builder.Len()
 }
 
 // Clear clears the f64 data in the column but keep the original memory buffer allocated.
 func (c *F64Column) Clear() {
-	c.data = c.data[:0]
 }
 
 // NewArrowField creates a F64 schema field.
 func (c *F64Column) NewArrowField() *arrow.Field {
-	return &arrow.Field{Name: c.name, Type: arrow.PrimitiveTypes.Float64}
+	return c.field
 }
 
 // NewArray creates and initializes a new Arrow Array for the column.
-func (c *F64Column) NewArray(allocator *memory.GoAllocator) arrow.Array {
-	builder := array.NewFloat64Builder(allocator)
-	builder.Reserve(len(c.data))
-	for _, v := range c.data {
-		if v == nil {
-			builder.AppendNull()
-		} else {
-			builder.UnsafeAppend(*v)
-		}
-	}
-	c.Clear()
-	return builder.NewArray()
+func (c *F64Column) NewArray(_ *memory.GoAllocator) arrow.Array {
+	return c.builder.NewArray()
 }

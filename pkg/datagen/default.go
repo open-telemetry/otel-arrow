@@ -15,26 +15,35 @@
 package datagen
 
 import (
+	"golang.org/x/exp/rand"
+
 	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
 )
 
+var HOSTNAMES = []string{"host1.mydomain.com", "host2.org", "host3.thedomain.edu", "host4.gov", "host5.retailer.com"}
+var UPS = []bool{true, false}
+var STATUS = []int64{200, 300, 400, 404, 500, 503}
+var VERSIONS = []string{"1.0.0", "1.0.2", "2.0", "1.9.9"}
+var STATES = []string{"running", "ready", "maintenance", "degraded", "unavailable", "unknown"}
+var TRACE_IDS = []string{"trace1", "trace2", "trace3", "trace4", "trace5"}
+
 func DefaultAttributes() []*commonpb.KeyValue {
-	return []*commonpb.KeyValue{
+	attributes := []*commonpb.KeyValue{
 		{
 			Key:   "hostname",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "localhost"}},
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: HOSTNAMES[rand.Intn(len(HOSTNAMES))]}},
 		},
 		{
 			Key:   "up",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}},
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: UPS[rand.Intn(len(UPS))]}},
 		},
 		{
 			Key:   "status",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 200}},
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: STATUS[rand.Intn(len(STATUS))]}},
 		},
 		{
 			Key:   "version",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: 1.0}},
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: VERSIONS[rand.Intn(len(VERSIONS))]}},
 		},
 		// ToDo reintroduce tags_arrays once list are fully supported
 		//{
@@ -52,24 +61,29 @@ func DefaultAttributes() []*commonpb.KeyValue {
 				KvlistValue: &commonpb.KeyValueList{
 					Values: []*commonpb.KeyValue{
 						{
-							Key:   "attribute_1",
-							Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "abc"}},
+							Key:   "state",
+							Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: STATES[rand.Intn(len(STATES))]}},
 						},
 						{
-							Key:   "attribute_2",
-							Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 192}},
+							Key:   "duration",
+							Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: int64(rand.Intn(100))}},
 						},
 					},
 				},
 			}},
 		},
 		{
-			Key: "version_binary",
+			Key: "trace_id",
 			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BytesValue{
-				BytesValue: []byte("binary"),
+				BytesValue: []byte(TRACE_IDS[rand.Intn(len(TRACE_IDS))]),
 			}},
 		},
 	}
+
+	rand.Shuffle(len(attributes), func(i, j int) {
+		attributes[i], attributes[j] = attributes[j], attributes[i]
+	})
+	return attributes
 }
 
 func DefaultResourceAttributes() [][]*commonpb.KeyValue {
@@ -159,19 +173,19 @@ func DefaultSpanEventAttributes() []*commonpb.KeyValue {
 	return []*commonpb.KeyValue{
 		{
 			Key:   "hostname",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "localhost"}},
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: HOSTNAMES[rand.Intn(len(HOSTNAMES))]}},
 		},
 		{
 			Key:   "version",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "1.0.0"}},
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: VERSIONS[rand.Intn(len(VERSIONS))]}},
 		},
 		{
 			Key:   "up",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}},
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: UPS[rand.Intn(len(UPS))]}},
 		},
 		{
 			Key:   "status",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 200}},
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: STATUS[rand.Intn(len(STATUS))]}},
 		},
 	}
 }
@@ -180,15 +194,15 @@ func DefaultSpanLinkAttributes() []*commonpb.KeyValue {
 	return []*commonpb.KeyValue{
 		{
 			Key:   "hostname",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "localhost"}},
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: HOSTNAMES[rand.Intn(len(HOSTNAMES))]}},
 		},
 		{
 			Key:   "up",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: true}},
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: UPS[rand.Intn(len(UPS))]}},
 		},
 		{
 			Key:   "status",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 200}},
+			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: STATUS[rand.Intn(len(STATUS))]}},
 		},
 	}
 }

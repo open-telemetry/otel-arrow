@@ -24,34 +24,34 @@ import (
 
 // BoolColumn is a column of boolean data.
 type BoolColumn struct {
-	// name of the column.
-	name string
-
-	// ToDo replace []*bool by []bool + bitset
-	// data of the column.
-	data []*bool
+	field   *arrow.Field
+	builder *array.BooleanBuilder
 }
 
 // MakeBoolColumn creates a new bool column.
-func MakeBoolColumn(name string) BoolColumn {
+func MakeBoolColumn(allocator *memory.GoAllocator, name string) BoolColumn {
 	return BoolColumn{
-		name: name,
-		data: []*bool{},
+		field:   &arrow.Field{Name: name, Type: arrow.FixedWidthTypes.Boolean},
+		builder: array.NewBooleanBuilder(allocator),
 	}
 }
 
 // Name returns the name of the column.
 func (c *BoolColumn) Name() string {
-	return c.name
+	return c.field.Name
 }
 
 func (c *BoolColumn) Type() arrow.DataType {
-	return arrow.FixedWidthTypes.Boolean
+	return c.field.Type
 }
 
 // Push adds a new value to the column.
 func (c *BoolColumn) Push(data *bool) {
-	c.data = append(c.data, data)
+	if data == nil {
+		c.builder.AppendNull()
+	} else {
+		c.builder.Append(*data)
+	}
 }
 
 // PushFromValues adds the given values to the column.
@@ -67,30 +67,19 @@ func (c *BoolColumn) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
 
 // Len returns the number of values in the column.
 func (c *BoolColumn) Len() int {
-	return len(c.data)
+	return c.builder.Len()
 }
 
 // Clear clears the int64 data in the column but keep the original memory buffer allocated.
 func (c *BoolColumn) Clear() {
-	c.data = c.data[:0]
 }
 
 // NewArrowField creates a Bool schema field.
 func (c *BoolColumn) NewArrowField() *arrow.Field {
-	return &arrow.Field{Name: c.name, Type: arrow.FixedWidthTypes.Boolean}
+	return c.field
 }
 
 // NewArray creates and initializes a new Arrow Array for the column.
-func (c *BoolColumn) NewArray(allocator *memory.GoAllocator) arrow.Array {
-	builder := array.NewBooleanBuilder(allocator)
-	builder.Reserve(len(c.data))
-	for _, v := range c.data {
-		if v == nil {
-			builder.AppendNull()
-		} else {
-			builder.UnsafeAppend(*v)
-		}
-	}
-	c.Clear()
-	return builder.NewArray()
+func (c *BoolColumn) NewArray(_ *memory.GoAllocator) arrow.Array {
+	return c.builder.NewArray()
 }

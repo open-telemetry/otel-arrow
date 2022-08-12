@@ -25,8 +25,6 @@ import (
 
 // StringColumn is a column of optional string values.
 type StringColumn struct {
-	// Name of the column.
-	name string
 	// Dictionary config of the column.
 	config *config.DictionaryConfig
 	// Field path of the column (used to ref this column in the DictionaryStats).
@@ -42,19 +40,27 @@ type StringColumn struct {
 	// Total number of rows in the column.
 	totalRowCount int
 
-	dictionaryType    *arrow.DictionaryType
-	dictionaryUpdated bool
-	dictionaryArray   arrow.Array
+	stringField *arrow.Field
+	dicoField   *arrow.Field
+
+	stringBuilder  *array.StringBuilder
+	dicoBuilder    *array.BinaryDictionaryBuilder
+	dictionaryType *arrow.DictionaryType
 }
 
 // NewStringColumn creates a new StringColumn.
-func NewStringColumn(name string, config *config.DictionaryConfig, fieldPath []int, dictId int) *StringColumn {
+func NewStringColumn(allocator *memory.GoAllocator, name string, config *config.DictionaryConfig, fieldPath []int, dictId int) *StringColumn {
 	var dictionary map[string]int
 	if config.MaxCard > 0 {
 		dictionary = make(map[string]int)
 	}
+	dicoType := &arrow.DictionaryType{
+		IndexType: arrow.PrimitiveTypes.Uint8, // ToDo add support for uint16, uint32, uint64
+		ValueType: arrow.BinaryTypes.String,
+		Ordered:   false, // ToDo do test with ordered dictionaries
+	}
+
 	return &StringColumn{
-		name:             name,
 		config:           config,
 		fieldPath:        fieldPath,
 		dictId:           dictId,
@@ -62,19 +68,17 @@ func NewStringColumn(name string, config *config.DictionaryConfig, fieldPath []i
 		totalValueLength: 0,
 		totalRowCount:    0,
 		dictionary:       dictionary,
-		dictionaryType: &arrow.DictionaryType{
-			IndexType: arrow.PrimitiveTypes.Uint8, // ToDo add support for uint16, uint32, uint64
-			ValueType: arrow.BinaryTypes.String,
-			Ordered:   false, // ToDo do test with ordered dictionaries
-		},
-		dictionaryUpdated: false,
-		dictionaryArray:   nil,
+		stringField:      &arrow.Field{Name: name, Type: arrow.BinaryTypes.String},
+		dicoField:        &arrow.Field{Name: name, Type: dicoType},
+		stringBuilder:    array.NewStringBuilder(allocator),
+		dicoBuilder:      array.NewDictionaryBuilder(allocator, dicoType).(*array.BinaryDictionaryBuilder),
+		dictionaryType:   dicoType,
 	}
 }
 
 // ColumnName returns the name of the column.
 func (c *StringColumn) Name() *string {
-	return &c.name
+	return &c.stringField.Name
 }
 
 // Push adds a new value to the column.
@@ -86,8 +90,6 @@ func (c *StringColumn) Push(value *string) {
 				c.dictionary[*value] = len(c.dictionary)
 				if len(c.dictionary) > c.config.MaxCard {
 					c.dictionary = nil
-				} else {
-					c.dictionaryUpdated = true
 				}
 			}
 		}
@@ -103,9 +105,9 @@ func (c *StringColumn) Push(value *string) {
 // DictionaryStats returns the DictionaryStats of the column.
 func (c *StringColumn) DictionaryStats(parentPath string) *stats.DictionaryStats {
 	if c.dictionary != nil {
-		stringPath := c.name
+		stringPath := c.dicoField.Name
 		if len(parentPath) > 0 {
-			stringPath = parentPath + "." + c.name
+			stringPath = parentPath + "." + c.dicoField.Name
 		}
 		return &stats.DictionaryStats{
 			Type:           stats.StringDic,
@@ -153,51 +155,38 @@ func (c *StringColumn) Clear() {
 // NewArrowField creates a schema field
 func (c *StringColumn) NewArrowField() *arrow.Field {
 	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen()) {
-		return &arrow.Field{Name: c.name, Type: c.dictionaryType}
+		return c.dicoField
 	} else {
-		return &arrow.Field{Name: c.name, Type: arrow.BinaryTypes.String}
+		return c.stringField
 	}
 }
 
 // NewStringArray creates and initializes a new Arrow Array for the column.
-func (c *StringColumn) NewStringArray(allocator *memory.GoAllocator) arrow.Array {
+func (c *StringColumn) NewStringArray(_ *memory.GoAllocator) arrow.Array {
 	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen()) {
-		if c.dictionaryUpdated {
-			dictBuilder := array.NewStringBuilder(allocator)
-			dictBuilder.Reserve(len(c.dictionary))
-			for txt := range c.dictionary {
-				dictBuilder.Append(txt)
-			}
-			c.dictionaryArray = dictBuilder.NewArray()
-			c.dictionaryUpdated = false
-		}
-		builder := array.NewDictionaryBuilderWithDict(allocator, c.dictionaryType, c.dictionaryArray)
-		valuesBuilder := array.NewStringBuilder(allocator)
-		builder.Reserve(len(c.data))
+		c.dicoBuilder.Reserve(len(c.data))
 		for _, value := range c.data {
 			if value != nil {
-				valuesBuilder.Append(*value)
+				err := c.dicoBuilder.AppendString(*value)
+				if err != nil {
+					panic(err)
+				}
 			} else {
-				valuesBuilder.AppendNull()
+				c.dicoBuilder.AppendNull()
 			}
 		}
-		err := builder.AppendArray(valuesBuilder.NewArray())
-		if err != nil {
-			panic(err)
-		}
 		c.Clear()
-		return builder.NewArray()
+		return c.dicoBuilder.NewArray()
 	} else {
-		builder := array.NewStringBuilder(allocator)
-		builder.Reserve(c.Len())
+		c.stringBuilder.Reserve(c.Len())
 		for _, v := range c.data {
 			if v == nil {
-				builder.AppendNull()
+				c.stringBuilder.AppendNull()
 			} else {
-				builder.Append(*v)
+				c.stringBuilder.Append(*v)
 			}
 		}
 		c.Clear()
-		return builder.NewArray()
+		return c.stringBuilder.NewArray()
 	}
 }

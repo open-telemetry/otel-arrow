@@ -130,44 +130,44 @@ func NewColumns(allocator *memory.GoAllocator, structType *arrow.StructType, fie
 func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, fieldName string, fieldType arrow.DataType, config *config.Config, dictIdGen *dictionary.DictIdGenerator) *rfield.FieldPath {
 	switch t := fieldType.(type) {
 	case *arrow.BooleanType:
-		c.BooleanColumns = append(c.BooleanColumns, MakeBoolColumn(fieldName))
+		c.BooleanColumns = append(c.BooleanColumns, MakeBoolColumn(allocator, fieldName))
 		return rfield.NewFieldPath(len(c.BooleanColumns) - 1)
 	case *arrow.Int8Type:
-		c.I8Columns = append(c.I8Columns, MakeI8Column(fieldName))
+		c.I8Columns = append(c.I8Columns, MakeI8Column(allocator, fieldName))
 		return rfield.NewFieldPath(len(c.I8Columns) - 1)
 	case *arrow.Int16Type:
-		c.I16Columns = append(c.I16Columns, MakeI16Column(fieldName))
+		c.I16Columns = append(c.I16Columns, MakeI16Column(allocator, fieldName))
 		return rfield.NewFieldPath(len(c.I16Columns) - 1)
 	case *arrow.Int32Type:
-		c.I32Columns = append(c.I32Columns, MakeI32Column(fieldName))
+		c.I32Columns = append(c.I32Columns, MakeI32Column(allocator, fieldName))
 		return rfield.NewFieldPath(len(c.I32Columns) - 1)
 	case *arrow.Int64Type:
-		c.I64Columns = append(c.I64Columns, MakeI64Column(fieldName))
+		c.I64Columns = append(c.I64Columns, MakeI64Column(allocator, fieldName))
 		return rfield.NewFieldPath(len(c.I64Columns) - 1)
 	case *arrow.Uint8Type:
-		c.U8Columns = append(c.U8Columns, MakeU8Column(fieldName))
+		c.U8Columns = append(c.U8Columns, MakeU8Column(allocator, fieldName))
 		return rfield.NewFieldPath(len(c.U8Columns) - 1)
 	case *arrow.Uint16Type:
-		c.U16Columns = append(c.U16Columns, MakeU16Column(fieldName))
+		c.U16Columns = append(c.U16Columns, MakeU16Column(allocator, fieldName))
 		return rfield.NewFieldPath(len(c.U16Columns) - 1)
 	case *arrow.Uint32Type:
-		c.U32Columns = append(c.U32Columns, MakeU32Column(fieldName))
+		c.U32Columns = append(c.U32Columns, MakeU32Column(allocator, fieldName))
 		return rfield.NewFieldPath(len(c.U32Columns) - 1)
 	case *arrow.Uint64Type:
-		c.U64Columns = append(c.U64Columns, MakeU64Column(fieldName))
+		c.U64Columns = append(c.U64Columns, MakeU64Column(allocator, fieldName))
 		return rfield.NewFieldPath(len(c.U64Columns) - 1)
 	case *arrow.Float32Type:
-		c.F32Columns = append(c.F32Columns, MakeF32Column(fieldName))
+		c.F32Columns = append(c.F32Columns, MakeF32Column(allocator, fieldName))
 		return rfield.NewFieldPath(len(c.F32Columns) - 1)
 	case *arrow.Float64Type:
-		c.F64Columns = append(c.F64Columns, MakeF64Column(fieldName))
+		c.F64Columns = append(c.F64Columns, MakeF64Column(allocator, fieldName))
 		return rfield.NewFieldPath(len(c.F64Columns) - 1)
 	case *arrow.StringType:
-		stringColumn := NewStringColumn(fieldName, &config.Dictionaries.StringColumns, path, dictIdGen.NextId())
+		stringColumn := NewStringColumn(allocator, fieldName, &config.Dictionaries.StringColumns, path, dictIdGen.NextId())
 		c.StringColumns = append(c.StringColumns, *stringColumn)
 		return rfield.NewFieldPath(len(c.StringColumns) - 1)
 	case *arrow.BinaryType:
-		c.BinaryColumns = append(c.BinaryColumns, MakeBinaryColumn(fieldName, &config.Dictionaries.BinaryColumns, path, dictIdGen.NextId()))
+		c.BinaryColumns = append(c.BinaryColumns, MakeBinaryColumn(allocator, fieldName, &config.Dictionaries.BinaryColumns, path, dictIdGen.NextId()))
 		return rfield.NewFieldPath(len(c.BinaryColumns) - 1)
 	case *arrow.ListType:
 		etype := t.Elem()

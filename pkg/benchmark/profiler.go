@@ -293,7 +293,7 @@ func (p *Profiler) PrintCompressionRatio() {
 		}
 	}
 
-	transform := func(value float64) float64 { return value }
+	transform := func(value float64) float64 { return math.Trunc(value) }
 	p.AddSection("Uncompressed size (bytes)", "uncompressed_size_byte", table, values, transform)
 	p.AddSection("Compressed size (bytes)", "compressed_size_byte", table, values, transform)
 
@@ -324,10 +324,14 @@ func (p *Profiler) AddSection(label string, step string, table *tablewriter.Tabl
 			}
 
 			value := transform(values[key].P99)
-			if value >= 1.0 {
-				row = append(row, fmt.Sprintf("%.5f %s", value, improvement))
+			if value == math.Trunc(value) {
+				row = append(row, fmt.Sprintf("%d %s", int64(value), improvement))
 			} else {
-				row = append(row, fmt.Sprintf("%.10f %s", value, improvement))
+				if value >= 1.0 {
+					row = append(row, fmt.Sprintf("%.3f %s", value, improvement))
+				} else {
+					row = append(row, fmt.Sprintf("%.5f %s", value, improvement))
+				}
 			}
 		}
 		table.Append(row)
