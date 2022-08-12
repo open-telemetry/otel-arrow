@@ -124,7 +124,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 				// Compression
 				var compressedBuffers [][]byte
 				for _, buffer := range buffers {
-					compressedBuffer, err := Compress(profileable.CompressionAlgorithm(), buffer)
+					compressedBuffer, err := profileable.CompressionAlgorithm().Compress(buffer)
 					if err != nil {
 						return err
 					}
@@ -140,7 +140,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 				// Decompression
 				var uncompressedBuffers [][]byte
 				for _, buffer := range compressedBuffers {
-					uncompressedBuffer, err := Decompress(profileable.CompressionAlgorithm(), buffer)
+					uncompressedBuffer, err := profileable.CompressionAlgorithm().Decompress(buffer)
 					if err != nil {
 						return err
 					}

@@ -51,7 +51,7 @@ func main() {
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
 		//profiler := benchmark.NewProfiler([]int{1000, 5000, 10000, 25000})
 		profiler := benchmark.NewProfiler([]int{5000}, "output/trace_benchmark.log")
-		compressionAlgo := benchmark.Zstd
+		compressionAlgo := benchmark.Zstd()
 		maxIter := uint64(3)
 		profiler.Printf("Dataset '%s'\n", inputFiles[i])
 		dataset := benchmark.NewRealTraceDataset(inputFiles[i], []string{"trace_id"})
