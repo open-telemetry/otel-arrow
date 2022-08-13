@@ -99,8 +99,8 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
     - [X] Compression algorithms (lz4 and zstd)
     - [X] Console output
     - [X] Export CSV
-` - [ ] OTLP batch creation + serialization + compression + decompression + deserialization
-  - [ ] OTLP_ARROW batch creation + serialization + compression + decompression + deserialization
+` - [X] OTLP batch creation + serialization + compression + decompression + deserialization
+  - [X] OTLP_ARROW batch creation + serialization + compression + decompression + deserialization
 ` - [ ] Performance and memory optimizations
   - [ ] Check memory leaks (e.g. Arrow related memory leaks)
 
