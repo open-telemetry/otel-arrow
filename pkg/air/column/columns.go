@@ -172,7 +172,7 @@ func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, fieldN
 	case *arrow.ListType:
 		etype := t.Elem()
 		// Dictionary are not yet supported for list columns (arrow implementation limitation).
-		listColumn, fieldPaths := MakeListColumn(allocator, fieldName, path, etype, config.ConfigWithoutDictionarySupport(), dictIdGen)
+		listColumn, fieldPaths := MakeListColumn(allocator, fieldName, path, etype, config /*config.ConfigWithoutDictionarySupport()*/, dictIdGen)
 		c.ListColumns = append(c.ListColumns, listColumn)
 		if fieldPaths == nil {
 			return rfield.NewFieldPath(len(c.ListColumns) - 1)

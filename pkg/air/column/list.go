@@ -252,6 +252,7 @@ func (c *ListColumnBase) NewArray(allocator *memory.GoAllocator) arrow.Array {
 
 	values := c.values.NewArray(allocator)
 	defer values.Release()
+	c.etype = c.values.NewArrowField().Type // Update etype as the schema of the items is not necessarily the same (string -> dictionary).
 
 	var offsets *memory.Buffer
 	if c.offsets != nil {
@@ -261,7 +262,7 @@ func (c *ListColumnBase) NewArray(allocator *memory.GoAllocator) arrow.Array {
 	}
 
 	data := array.NewData(
-		arrow.ListOf(c.Type()), c.Len(),
+		arrow.ListOf(c.etype), c.Len(),
 		[]*memory.Buffer{
 			c.nullBitmap,
 			offsets,

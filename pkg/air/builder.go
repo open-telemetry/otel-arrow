@@ -135,11 +135,11 @@ func (rb *RecordBuilder) BuildRecord(allocator *memory.GoAllocator) (arrow.Recor
 	}
 
 	// Creates a column builder for every column.
-	fieldRefs := rb.columns.NewArrowFields()
 	fieldArrays, err := rb.columns.NewArrays(allocator)
 	if err != nil {
 		return nil, err
 	}
+	fieldRefs := rb.columns.NewArrowFields()
 	if len(fieldRefs) == 0 {
 		return nil, nil
 	}
