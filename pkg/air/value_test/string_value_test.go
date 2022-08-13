@@ -17,6 +17,8 @@ package value_test
 import (
 	"testing"
 
+	"github.com/apache/arrow/go/v9/arrow/memory"
+
 	value2 "otel-arrow-adapter/pkg/air/column"
 	"otel-arrow-adapter/pkg/air/config"
 )
@@ -30,9 +32,11 @@ func TestStringColumn(t *testing.T) {
 		MaxCardRatio:          0.5,
 		MaxSortedDictionaries: 5,
 	}
-	sc := value2.NewStringColumn("test", &dictionaryConfig, []int{1}, 1)
-	if *sc.Name() != "test" {
-		t.Errorf("Expected column name to be 'test', got %s", *sc.Name())
+	allocator := memory.NewGoAllocator()
+
+	sc := value2.NewStringColumn(allocator, "test", &dictionaryConfig, []int{1}, 1)
+	if sc.Name() != "test" {
+		t.Errorf("Expected column name to be 'test', got %s", sc.Name())
 	}
 
 	// Push 5 strings + 1 nil string to the column

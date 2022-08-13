@@ -20,6 +20,7 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/memory"
 
 	"otel-arrow-adapter/pkg/air/config"
+	"otel-arrow-adapter/pkg/air/rfield"
 	"otel-arrow-adapter/pkg/air/stats"
 )
 
@@ -28,7 +29,7 @@ type BinaryColumn struct {
 	// Name of the column.
 	name string
 	// Data of the column.
-	data []*[]byte
+	data [][]byte
 	// Dictionary config of the column.
 	config *config.DictionaryConfig
 	// Field path of the column (used to ref this column in the DictionaryStats).
@@ -63,7 +64,7 @@ func MakeBinaryColumn(allocator *memory.GoAllocator, name string, config *config
 
 	return BinaryColumn{
 		name:             name,
-		data:             []*[]byte{},
+		data:             [][]byte{},
 		config:           config,
 		fieldPath:        fieldPath,
 		dictId:           dictId,
@@ -81,13 +82,17 @@ func (c *BinaryColumn) Name() string {
 	return c.name
 }
 
+func (c *BinaryColumn) Type() arrow.DataType {
+	return arrow.BinaryTypes.Binary
+}
+
 // Push adds a new value to the column.
-func (c *BinaryColumn) Push(value *[]byte) {
+func (c *BinaryColumn) Push(value []byte) {
 	// Maintains a dictionary of unique values
 	if c.dictionary != nil {
 		if value != nil {
-			if _, ok := c.dictionary[string(*value)]; !ok {
-				c.dictionary[string(*value)] = len(c.dictionary)
+			if _, ok := c.dictionary[string(value)]; !ok {
+				c.dictionary[string(value)] = len(c.dictionary)
 				if len(c.dictionary) > c.config.MaxCard {
 					c.dictionary = nil
 				}
@@ -97,10 +102,21 @@ func (c *BinaryColumn) Push(value *[]byte) {
 
 	c.totalRowCount++
 	if value != nil {
-		c.totalValueLength += len(*value)
+		c.totalValueLength += len(value)
 	}
 
 	c.data = append(c.data, value)
+}
+
+// PushFromValues adds the given values to the column.
+func (c *BinaryColumn) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
+	for _, v := range data {
+		fv, err := v.AsBinary()
+		if err != nil {
+			panic(err)
+		}
+		c.Push(fv)
+	}
 }
 
 // Len returns the number of values in the column.
@@ -162,13 +178,13 @@ func (c *BinaryColumn) NewArrowField() *arrow.Field {
 	}
 }
 
-// NewBinaryArray creates and initializes a new Arrow Array for the column.
-func (c *BinaryColumn) NewBinaryArray(_ *memory.GoAllocator) arrow.Array {
+// NewArray creates and initializes a new Arrow Array for the column.
+func (c *BinaryColumn) NewArray(_ *memory.GoAllocator) arrow.Array {
 	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen()) {
 		c.dicoBuilder.Reserve(len(c.data))
 		for _, value := range c.data {
 			if value != nil {
-				err := c.dicoBuilder.Append(*value)
+				err := c.dicoBuilder.Append(value)
 				if err != nil {
 					panic(err)
 				}
@@ -184,7 +200,7 @@ func (c *BinaryColumn) NewBinaryArray(_ *memory.GoAllocator) arrow.Array {
 			if v == nil {
 				c.binaryBuilder.AppendNull()
 			} else {
-				c.binaryBuilder.Append(*v)
+				c.binaryBuilder.Append(v)
 			}
 		}
 		c.Clear()

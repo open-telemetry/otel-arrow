@@ -20,6 +20,7 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/memory"
 
 	"otel-arrow-adapter/pkg/air/config"
+	"otel-arrow-adapter/pkg/air/rfield"
 	"otel-arrow-adapter/pkg/air/stats"
 )
 
@@ -77,8 +78,12 @@ func NewStringColumn(allocator *memory.GoAllocator, name string, config *config.
 }
 
 // ColumnName returns the name of the column.
-func (c *StringColumn) Name() *string {
-	return &c.stringField.Name
+func (c *StringColumn) Name() string {
+	return c.stringField.Name
+}
+
+func (c *StringColumn) Type() arrow.DataType {
+	return c.stringField.Type
 }
 
 // Push adds a new value to the column.
@@ -100,6 +105,17 @@ func (c *StringColumn) Push(value *string) {
 		c.totalValueLength += len(*value)
 	}
 	c.data = append(c.data, value)
+}
+
+// PushFromValues adds the given values to the column.
+func (c *StringColumn) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
+	for _, v := range data {
+		fv, err := v.AsString()
+		if err != nil {
+			panic(err)
+		}
+		c.Push(fv)
+	}
 }
 
 // DictionaryStats returns the DictionaryStats of the column.
@@ -161,8 +177,8 @@ func (c *StringColumn) NewArrowField() *arrow.Field {
 	}
 }
 
-// NewStringArray creates and initializes a new Arrow Array for the column.
-func (c *StringColumn) NewStringArray(_ *memory.GoAllocator) arrow.Array {
+// NewArray creates and initializes a new Arrow Array for the column.
+func (c *StringColumn) NewArray(_ *memory.GoAllocator) arrow.Array {
 	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen()) {
 		c.dicoBuilder.Reserve(len(c.data))
 		for _, value := range c.data {

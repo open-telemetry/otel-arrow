@@ -15,6 +15,8 @@
 package column
 
 import (
+	"fmt"
+
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/bitutil"
@@ -84,6 +86,12 @@ func MakeListColumn(allocator *memory.GoAllocator, listName string, fieldPath []
 	case *arrow.Float64Type:
 		col := MakeF64Column(allocator, etype.Name())
 		values = &col
+	case *arrow.StringType:
+		col := NewStringColumn(allocator, etype.Name(), &config.Dictionaries.StringColumns, fieldPath, dictIdGen.NextId())
+		values = col
+	case *arrow.BinaryType:
+		col := MakeBinaryColumn(allocator, etype.Name(), &config.Dictionaries.StringColumns, fieldPath, dictIdGen.NextId())
+		values = &col
 	case *arrow.StructType:
 		columns, fps := NewColumns(allocator, t, fieldPath, config, dictIdGen)
 		fieldPaths = fps
@@ -92,7 +100,7 @@ func MakeListColumn(allocator *memory.GoAllocator, listName string, fieldPath []
 	// List of list of not yet supported
 
 	default:
-		panic("ListColumn: unsupported data type")
+		panic(fmt.Sprintf("ListColumn: unsupported data type %s", etype.Name()))
 	}
 	return NewListColumnBase(allocator, listName, etype, values), fieldPaths
 }

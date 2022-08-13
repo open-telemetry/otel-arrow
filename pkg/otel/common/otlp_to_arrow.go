@@ -47,6 +47,30 @@ func NewAttributes(attributes []*commonpb.KeyValue) *rfield.Field {
 	return nil
 }
 
+func AttributesValue(attributes []*commonpb.KeyValue) rfield.Value {
+	if attributes == nil || len(attributes) == 0 {
+		return nil
+	}
+
+	attributeFields := make([]*rfield.Field, 0, len(attributes))
+
+	for _, attribute := range attributes {
+		value := OtlpAnyValueToValue(attribute.Value)
+		if value != nil {
+			attributeFields = append(attributeFields, &rfield.Field{
+				Name:  attribute.Key,
+				Value: value,
+			})
+		}
+	}
+	if len(attributeFields) > 0 {
+		return &rfield.Struct{
+			Fields: attributeFields,
+		}
+	}
+	return nil
+}
+
 func AddResource(record *air.Record, resource *resourcepb.Resource) {
 	resourceField := ResourceField(resource)
 	if resourceField != nil {

@@ -16,8 +16,10 @@ package rfield
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"sort"
+	"strconv"
 
 	"github.com/apache/arrow/go/v9/arrow"
 )
@@ -43,6 +45,9 @@ type Value interface {
 
 	AsF32() (*float32, error)
 	AsF64() (*float64, error)
+
+	AsString() (*string, error)
+	AsBinary() ([]byte, error)
 }
 
 type CommonValue struct{}
@@ -143,6 +148,22 @@ func (v *Bool) AsF32() (*float32, error) {
 func (v *Bool) AsF64() (*float64, error) {
 	return nil, fmt.Errorf("cannot convert bool to float64")
 }
+func (v *Bool) AsString() (*string, error) {
+	if v.Value {
+		val := "true"
+		return &val, nil
+	} else {
+		val := "false"
+		return &val, nil
+	}
+}
+func (v *Bool) AsBinary() ([]byte, error) {
+	if v.Value {
+		return []byte("true"), nil
+	} else {
+		return []byte("false"), nil
+	}
+}
 
 type I8 struct {
 	CommonValue
@@ -208,6 +229,18 @@ func (v *I8) AsF32() (*float32, error) {
 func (v *I8) AsF64() (*float64, error) {
 	return nil, fmt.Errorf("cannot convert signed integer to float64")
 }
+func (v *I8) AsString() (*string, error) {
+	val := strconv.FormatInt(int64(v.Value), 10)
+	return &val, nil
+}
+func (v *I8) AsBinary() ([]byte, error) {
+	buf := new(bytes.Buffer)
+	err := binary.Write(buf, binary.LittleEndian, v.Value)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
 
 type I16 struct {
 	CommonValue
@@ -272,6 +305,18 @@ func (v *I16) AsF32() (*float32, error) {
 func (v *I16) AsF64() (*float64, error) {
 	return nil, fmt.Errorf("cannot convert signed integer to float64")
 }
+func (v *I16) AsString() (*string, error) {
+	val := strconv.FormatInt(int64(v.Value), 10)
+	return &val, nil
+}
+func (v *I16) AsBinary() ([]byte, error) {
+	buf := new(bytes.Buffer)
+	err := binary.Write(buf, binary.LittleEndian, v.Value)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
 
 type I32 struct {
 	CommonValue
@@ -335,6 +380,18 @@ func (v *I32) AsF32() (*float32, error) {
 func (v *I32) AsF64() (*float64, error) {
 	return nil, fmt.Errorf("cannot convert signed integer to float64")
 }
+func (v *I32) AsString() (*string, error) {
+	val := strconv.FormatInt(int64(v.Value), 10)
+	return &val, nil
+}
+func (v *I32) AsBinary() ([]byte, error) {
+	buf := new(bytes.Buffer)
+	err := binary.Write(buf, binary.LittleEndian, v.Value)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
 
 type I64 struct {
 	CommonValue
@@ -396,6 +453,18 @@ func (v *I64) AsF32() (*float32, error) {
 }
 func (v *I64) AsF64() (*float64, error) {
 	return nil, fmt.Errorf("cannot convert signed integer to float64")
+}
+func (v *I64) AsString() (*string, error) {
+	val := strconv.FormatInt(int64(v.Value), 10)
+	return &val, nil
+}
+func (v *I64) AsBinary() ([]byte, error) {
+	buf := new(bytes.Buffer)
+	err := binary.Write(buf, binary.LittleEndian, v.Value)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 type U8 struct {
@@ -465,6 +534,18 @@ func (v *U8) AsF32() (*float32, error) {
 func (v *U8) AsF64() (*float64, error) {
 	return nil, fmt.Errorf("cannot convert unsigned integer to float64")
 }
+func (v *U8) AsString() (*string, error) {
+	val := strconv.FormatUint(uint64(v.Value), 10)
+	return &val, nil
+}
+func (v *U8) AsBinary() ([]byte, error) {
+	buf := new(bytes.Buffer)
+	err := binary.Write(buf, binary.LittleEndian, v.Value)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
 
 type U16 struct {
 	CommonValue
@@ -531,6 +612,18 @@ func (v *U16) AsF32() (*float32, error) {
 func (v *U16) AsF64() (*float64, error) {
 	return nil, fmt.Errorf("cannot convert unsigned integer to float64")
 }
+func (v *U16) AsString() (*string, error) {
+	val := strconv.FormatUint(uint64(v.Value), 10)
+	return &val, nil
+}
+func (v *U16) AsBinary() ([]byte, error) {
+	buf := new(bytes.Buffer)
+	err := binary.Write(buf, binary.LittleEndian, v.Value)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
 
 type U32 struct {
 	CommonValue
@@ -596,6 +689,18 @@ func (v *U32) AsF32() (*float32, error) {
 func (v *U32) AsF64() (*float64, error) {
 	return nil, fmt.Errorf("cannot convert unsigned integer to float64")
 }
+func (v *U32) AsString() (*string, error) {
+	val := strconv.FormatUint(uint64(v.Value), 10)
+	return &val, nil
+}
+func (v *U32) AsBinary() ([]byte, error) {
+	buf := new(bytes.Buffer)
+	err := binary.Write(buf, binary.LittleEndian, v.Value)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
 
 type U64 struct {
 	CommonValue
@@ -658,6 +763,18 @@ func (v *U64) AsF32() (*float32, error) {
 }
 func (v *U64) AsF64() (*float64, error) {
 	return nil, fmt.Errorf("cannot convert unsigned integer to float64")
+}
+func (v *U64) AsString() (*string, error) {
+	val := strconv.FormatUint(uint64(v.Value), 10)
+	return &val, nil
+}
+func (v *U64) AsBinary() ([]byte, error) {
+	buf := new(bytes.Buffer)
+	err := binary.Write(buf, binary.LittleEndian, v.Value)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 type F32 struct {
@@ -722,6 +839,18 @@ func (v *F32) AsF64() (*float64, error) {
 	value := float64(v.Value)
 	return &value, nil
 }
+func (v *F32) AsString() (*string, error) {
+	val := fmt.Sprintf("%f", v.Value)
+	return &val, nil
+}
+func (v *F32) AsBinary() ([]byte, error) {
+	buf := new(bytes.Buffer)
+	err := binary.Write(buf, binary.LittleEndian, v.Value)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
 
 type F64 struct {
 	CommonValue
@@ -783,6 +912,18 @@ func (v *F64) AsF32() (*float32, error) {
 }
 func (v *F64) AsF64() (*float64, error) {
 	return &v.Value, nil
+}
+func (v *F64) AsString() (*string, error) {
+	val := fmt.Sprintf("%f", v.Value)
+	return &val, nil
+}
+func (v *F64) AsBinary() ([]byte, error) {
+	buf := new(bytes.Buffer)
+	err := binary.Write(buf, binary.LittleEndian, v.Value)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 type String struct {
@@ -846,6 +987,12 @@ func (v *String) AsF32() (*float32, error) {
 func (v *String) AsF64() (*float64, error) {
 	return nil, fmt.Errorf("cannot convert string to float64")
 }
+func (v *String) AsString() (*string, error) {
+	return &v.Value, nil
+}
+func (v *String) AsBinary() ([]byte, error) {
+	return []byte(v.Value), nil
+}
 
 type Binary struct {
 	CommonValue
@@ -901,6 +1048,13 @@ func (v *Binary) AsF32() (*float32, error) {
 }
 func (v *Binary) AsF64() (*float64, error) {
 	return nil, fmt.Errorf("cannot convert binary to float64")
+}
+func (v *Binary) AsString() (*string, error) {
+	val := string(v.Value)
+	return &val, nil
+}
+func (v *Binary) AsBinary() ([]byte, error) {
+	return v.Value, nil
 }
 
 type Struct struct {
@@ -970,6 +1124,12 @@ func (v *Struct) AsF32() (*float32, error) {
 }
 func (v *Struct) AsF64() (*float64, error) {
 	return nil, fmt.Errorf("cannot convert struct to float64")
+}
+func (v *Struct) AsString() (*string, error) {
+	return nil, fmt.Errorf("cannot convert struct to string")
+}
+func (v *Struct) AsBinary() ([]byte, error) {
+	return nil, fmt.Errorf("cannot convert struct to binary")
 }
 
 type List struct {
@@ -1068,6 +1228,12 @@ func (v *List) AsF32() (*float32, error) {
 }
 func (v *List) AsF64() (*float64, error) {
 	return nil, fmt.Errorf("cannot convert list to float64")
+}
+func (v *List) AsString() (*string, error) {
+	return nil, fmt.Errorf("cannot convert list to string")
+}
+func (v *List) AsBinary() ([]byte, error) {
+	return nil, fmt.Errorf("cannot convert list to binary")
 }
 
 // ToDo what about list mixing struct, uint, string, ... items?

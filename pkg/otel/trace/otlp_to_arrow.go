@@ -84,7 +84,7 @@ func AddTraces(rr *air.RecordRepository, request *coltracepb.ExportTraceServiceR
 				}
 
 				// Links
-				AddLinks(record, span.Links)
+				AddLinksAsListOfStructs(record, span.Links)
 				if span.DroppedLinksCount > 0 {
 					record.U32Field(constants.DROPPED_LINKS_COUNT, uint32(span.DroppedLinksCount))
 				}
@@ -135,7 +135,7 @@ func AddEvents(record *air.Record, events []*v1.Span_Event) {
 	})
 }
 
-func AddLinks(record *air.Record, links []*v1.Span_Link) {
+func AddLinksAsListOfStructs(record *air.Record, links []*v1.Span_Link) {
 	if links == nil {
 		return
 	}
@@ -170,4 +170,74 @@ func AddLinks(record *air.Record, links []*v1.Span_Link) {
 	record.ListField(constants.SPAN_LINKS, rfield.List{
 		Values: convertedLinks,
 	})
+}
+
+func AddLinksAsStructOfLists(record *air.Record, links []*v1.Span_Link) {
+	if links == nil {
+		return
+	}
+
+	fields := make([]*rfield.Field, 5)
+
+	for pos, link := range links {
+		if link.TraceId != nil && len(link.TraceId) > 0 {
+			if fields[0] == nil {
+				fields[0] = rfield.NewListField(constants.TRACE_ID, rfield.List{Values: make([]rfield.Value, len(links))})
+				for i := 0; i < pos; i++ {
+					fields[0].Value.(*rfield.List).Values[pos] = nil
+				}
+			}
+			fields[0].Value.(*rfield.List).Values[pos] = &rfield.Binary{Value: link.TraceId}
+		}
+		if link.SpanId != nil && len(link.SpanId) > 0 {
+			if fields[1] == nil {
+				fields[1] = rfield.NewListField(constants.SPAN_ID, rfield.List{Values: make([]rfield.Value, len(links))})
+				for i := 0; i < pos; i++ {
+					fields[1].Value.(*rfield.List).Values[pos] = nil
+				}
+			}
+			fields[1].Value.(*rfield.List).Values[pos] = &rfield.Binary{Value: link.SpanId}
+		}
+		if len(link.TraceState) > 0 {
+			if fields[2] == nil {
+				fields[2] = rfield.NewListField(constants.TRACE_STATE, rfield.List{Values: make([]rfield.Value, len(links))})
+				for i := 0; i < pos; i++ {
+					fields[2].Value.(*rfield.List).Values[pos] = nil
+				}
+			}
+			fields[2].Value.(*rfield.List).Values[pos] = &rfield.String{Value: link.TraceState}
+		}
+		if link.Attributes != nil {
+			attributes := common.AttributesValue(link.Attributes)
+			if attributes != nil {
+				if fields[3] == nil {
+					fields[3] = rfield.NewListField(constants.ATTRIBUTES, rfield.List{Values: make([]rfield.Value, len(links))})
+					for i := 0; i < pos; i++ {
+						fields[3].Value.(*rfield.List).Values[pos] = nil
+					}
+				}
+				fields[3].Value.(*rfield.List).Values[pos] = attributes
+			}
+		}
+		if link.DroppedAttributesCount > 0 {
+			if fields[4] == nil {
+				fields[4] = rfield.NewListField(constants.DROPPED_ATTRIBUTES_COUNT, rfield.List{Values: make([]rfield.Value, len(links))})
+				for i := 0; i < pos; i++ {
+					fields[4].Value.(*rfield.List).Values[pos] = nil
+				}
+			}
+			fields[4].Value.(*rfield.List).Values[pos] = &rfield.U32{Value: link.DroppedAttributesCount}
+		}
+	}
+	nonEmptyFields := make([]*rfield.Field, 0, len(fields))
+	for _, field := range fields {
+		if field != nil {
+			nonEmptyFields = append(nonEmptyFields, field)
+		}
+	}
+	if len(nonEmptyFields) > 0 {
+		record.StructField(constants.SPAN_LINKS, rfield.Struct{
+			Fields: nonEmptyFields,
+		})
+	}
 }

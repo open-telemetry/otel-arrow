@@ -228,7 +228,7 @@ func (c *Columns) UpdateColumn(fieldPath *rfield.FieldPath, field *rfield.Field)
 		c.StringColumns[fieldPath.Current].Push(&t.Value)
 		c.length = c.StringColumns[fieldPath.Current].Len()
 	case *rfield.Binary:
-		c.BinaryColumns[fieldPath.Current].Push(&t.Value)
+		c.BinaryColumns[fieldPath.Current].Push(t.Value)
 		c.length = c.BinaryColumns[fieldPath.Current].Len()
 	case *rfield.Bool:
 		c.BooleanColumns[fieldPath.Current].Push(&t.Value)
@@ -366,12 +366,12 @@ func (c *Columns) NewArrays(allocator *memory.GoAllocator) ([]arrow.Array, error
 	for i := range c.StringColumns {
 		col := &c.StringColumns[i]
 		// ToDo implement dictionary builder when that makes sense
-		arrays = append(arrays, col.NewStringArray(allocator))
+		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.BinaryColumns {
 		col := &c.BinaryColumns[i]
 		// ToDo implement dictionary builder when that makes sense
-		arrays = append(arrays, col.NewBinaryArray(allocator))
+		arrays = append(arrays, col.NewArray(allocator))
 	}
 	for i := range c.StructColumns {
 		col := c.StructColumns[i]
@@ -524,7 +524,7 @@ func (c *Columns) Metadata() map[string]*ColumnMetadata {
 		}
 	}
 	for _, column := range c.StringColumns {
-		metadata[*column.Name()] = &ColumnMetadata{
+		metadata[column.Name()] = &ColumnMetadata{
 			Field: column.NewArrowField(),
 			Len:   column.Len(),
 			Dictionary: &DictionaryMetadata{
