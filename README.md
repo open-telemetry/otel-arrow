@@ -6,23 +6,53 @@ See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-en
 
 ## Packages
 
-| Package   | Description                                                                                                                  |
-|-----------|------------------------------------------------------------------------------------------------------------------------------|
-| air       | Arrow Intermediate Representation used to translate batch of row-oriented entities into columnar-oriented batch of entities. |
-| benchmark | Benchmark infrastructure to compare OTLP and OTLP Arrow representations.                                                     |
-| datagen   | Metrics, logs, and traces generator (fake data).                                                                             |
-| otel      | Conversion functions to translate OTLP entities into OTLP Arrow Event and vice versa.                                        |
+| Package       | Description                                                                                                                  |
+|---------------|------------------------------------------------------------------------------------------------------------------------------|
+| pkg/air       | Arrow Intermediate Representation used to translate batch of row-oriented entities into columnar-oriented batch of entities. |
+| pkg/benchmark | Benchmark infrastructure to compare OTLP and OTLP Arrow representations.                                                     |
+| pkg/datagen   | Metrics, logs, and traces generator (fake data).                                                                             |
+| pkg/otel      | Conversion functions to translate OTLP entities into OTLP Arrow Event and vice versa.                                        |
+| tools         | Set of command line tools to generate synthetic OTLP entities and to compare OTLP vs OTLP Arrow protocols.                   |
 
-## Tools
+## Synthetic OTLP entities generator
 
-| Tool              | Description                                                      |
-|-------------------|------------------------------------------------------------------|
-| logs_gen          | Generates fake logs and store them as protobuf binary files.     |
-| metrics_gen       | Generates fake metrics and store them as protobuf binary files.  |
-| traces_gen        | Generates fake traces and store them as protobuf binary files.   |
-| logs_benchmark    | Benchmark tool to compare OTLP and OTLP Arrow representations.   |
-| metrics_benchmark | Benchmark tool to compare OTLP and OTLP Arrow representations.   |
-| traces_benchmark  | Benchmark tool to compare OTLP and OTLP Arrow representations.   |
+### Metrics
+
+This tool generates synthetic metrics and store them as protobuf binary files.
+
+### Logs
+
+This tool generates synthetic metrics and store them as protobuf binary files.
+
+### Traces
+
+This tool generates synthetic metrics and store them as protobuf binary files.
+
+
+## Benchmarking tools
+
+These command line tools are used to compare the performance of OTLP and OTLP Arrow entity representations. Each tool
+takes as input a set of OTLP entities encoded as protobuf binary files and produces an evaluation report and a set of 
+data files (CSV format).
+
+### Metrics [WIP]
+
+This tool compares the performance of OTLP and OTLP Arrow representations for metrics.
+
+### Logs [WIP]
+
+This tool compares the performance of OTLP and OTLP Arrow representations for metrics.
+
+### Traces
+
+This tool compares the performance of OTLP and OTLP Arrow representations for metrics.
+
+```bash
+$ go run tools/trace_benchmark/main.go <INPUT FILES>
+```
+
+The input files must be one or more OTLP traces (ExportTraceServiceRequest) encoded as protobuf binary files.
+
 
 ## Status [WIP]
 
