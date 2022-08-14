@@ -117,10 +117,10 @@ The input files must be one or more OTLP traces (ExportTraceServiceRequest) enco
   - [X] Event service
   - [x] BatchEvent producer
   - [X] BatchEvent consumer
-  - [ ] gRPC service implementation
+  - [ ] gRPC service implementation (most likely to be implemented in the OpenTelemetry collector itself)
 
-### Benchmarks 
-  - Fake data generator
+### Benchmarking tools 
+  - Synthetic data generator
     - [X] ExportMetricsServiceRequest (except for histograms and summary)
     - [X] ExportLogsServiceRequest
     - [X] ExportTraceServiceRequest 
@@ -129,18 +129,20 @@ The input files must be one or more OTLP traces (ExportTraceServiceRequest) enco
     - [X] Compression algorithms (lz4 and zstd)
     - [X] Console output
     - [X] Export CSV
-` - [X] OTLP batch creation + serialization + compression + decompression + deserialization
+  - [X] OTLP batch creation + serialization + compression + decompression + deserialization
   - [X] OTLP_ARROW batch creation + serialization + compression + decompression + deserialization
-` - [ ] Performance and memory optimizations
-  - [ ] Check memory leaks (e.g. Arrow related memory leaks)
+  - Synthetic data generators
+    - [X] logs_gen
+    - [X] metrics_gen
+    - [X] traces_gen
+  - Benchmarking tools
+    - [ ] logs_benchmark [WIP]
+    - [ ] metrics_benchmark [WIP]
+    - [X] traces_benchmark
 
-### Tools
-  - [X] logs_gen
-  - [X] metrics_gen
-  - [X] traces_gen
-  - [WIP] logs_benchmark
-  - [WIP] metrics_benchmark
-  - [X] traces_benchmark
+### Performance
+  - [ ] Performance and memory optimizations
+  - [ ] Check memory leaks (e.g. Arrow related memory leaks)
 
 ### CI
   - [ ] GitHub Actions to build, test, check at every commit.
