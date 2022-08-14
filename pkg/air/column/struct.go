@@ -158,6 +158,10 @@ func (c *StructColumn) Type() arrow.DataType {
 }
 
 // Metadata returns the metadata of the column.
-func (c *StructColumn) Metadata() map[string]*ColumnMetadata {
-	return c.columns.Metadata()
+func (c *StructColumn) Metadata() *ColumnMetadata {
+	return &ColumnMetadata{
+		Field:    c.NewArrowField(),
+		Len:      0,
+		Children: c.columns.Metadata(),
+	}
 }

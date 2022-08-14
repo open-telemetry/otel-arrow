@@ -98,6 +98,13 @@ func (c *F32Column) NewArray(_ *memory.GoAllocator) arrow.Array {
 	return c.builder.NewArray()
 }
 
+func (c *F32Column) Metadata() *ColumnMetadata {
+	return &ColumnMetadata{
+		Field: c.NewArrowField(),
+		Len:   c.Len(),
+	}
+}
+
 // Push adds a new value to the column.
 func (c *F64Column) Push(data *float64) {
 	if data == nil {
@@ -144,4 +151,11 @@ func (c *F64Column) NewArrowField() *arrow.Field {
 // NewArray creates and initializes a new Arrow Array for the column.
 func (c *F64Column) NewArray(_ *memory.GoAllocator) arrow.Array {
 	return c.builder.NewArray()
+}
+
+func (c *F64Column) Metadata() *ColumnMetadata {
+	return &ColumnMetadata{
+		Field: c.NewArrowField(),
+		Len:   c.Len(),
+	}
 }

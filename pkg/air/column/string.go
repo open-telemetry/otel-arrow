@@ -206,3 +206,15 @@ func (c *StringColumn) NewArray(_ *memory.GoAllocator) arrow.Array {
 		return c.stringBuilder.NewArray()
 	}
 }
+
+func (c *StringColumn) Metadata() *ColumnMetadata {
+	return &ColumnMetadata{
+		Field: c.NewArrowField(),
+		Len:   c.Len(),
+		Dictionary: &DictionaryMetadata{
+			Card:       c.DictionaryLen(),
+			AvgLen:     c.AvgValueLength(),
+			TotalEntry: c.TotalEntry(),
+		},
+	}
+}

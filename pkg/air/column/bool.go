@@ -83,3 +83,10 @@ func (c *BoolColumn) NewArrowField() *arrow.Field {
 func (c *BoolColumn) NewArray(_ *memory.GoAllocator) arrow.Array {
 	return c.builder.NewArray()
 }
+
+func (c *BoolColumn) Metadata() *ColumnMetadata {
+	return &ColumnMetadata{
+		Field: c.NewArrowField(),
+		Len:   c.Len(),
+	}
+}

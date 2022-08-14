@@ -43,6 +43,7 @@ type Column interface {
 	NewArrowField() *arrow.Field
 	// NewArray returns a new array for the column.
 	NewArray(allocator *memory.GoAllocator) arrow.Array
+	Metadata() *ColumnMetadata
 }
 
 type Columns struct {
@@ -458,105 +459,49 @@ func (c *Columns) Metadata() map[string]*ColumnMetadata {
 	metadata := make(map[string]*ColumnMetadata)
 
 	for _, column := range c.I8Columns {
-		metadata[column.Name()] = &ColumnMetadata{
-			Field: column.NewArrowField(),
-			Len:   column.Len(),
-		}
+		metadata[column.Name()] = column.Metadata()
 	}
 	for _, column := range c.I16Columns {
-		metadata[column.Name()] = &ColumnMetadata{
-			Field: column.NewArrowField(),
-			Len:   column.Len(),
-		}
+		metadata[column.Name()] = column.Metadata()
 	}
 	for _, column := range c.I32Columns {
-		metadata[column.Name()] = &ColumnMetadata{
-			Field: column.NewArrowField(),
-			Len:   column.Len(),
-		}
+		metadata[column.Name()] = column.Metadata()
 	}
 	for _, column := range c.I64Columns {
-		metadata[column.Name()] = &ColumnMetadata{
-			Field: column.NewArrowField(),
-			Len:   column.Len(),
-		}
+		metadata[column.Name()] = column.Metadata()
 	}
 	for _, column := range c.U8Columns {
-		metadata[column.Name()] = &ColumnMetadata{
-			Field: column.NewArrowField(),
-			Len:   column.Len(),
-		}
+		metadata[column.Name()] = column.Metadata()
 	}
 	for _, column := range c.U16Columns {
-		metadata[column.Name()] = &ColumnMetadata{
-			Field: column.NewArrowField(),
-			Len:   column.Len(),
-		}
+		metadata[column.Name()] = column.Metadata()
 	}
 	for _, column := range c.U32Columns {
-		metadata[column.Name()] = &ColumnMetadata{
-			Field: column.NewArrowField(),
-			Len:   column.Len(),
-		}
+		metadata[column.Name()] = column.Metadata()
 	}
 	for _, column := range c.U64Columns {
-		metadata[column.Name()] = &ColumnMetadata{
-			Field: column.NewArrowField(),
-			Len:   column.Len(),
-		}
+		metadata[column.Name()] = column.Metadata()
 	}
 	for _, column := range c.F32Columns {
-		metadata[column.Name()] = &ColumnMetadata{
-			Field: column.NewArrowField(),
-			Len:   column.Len(),
-		}
+		metadata[column.Name()] = column.Metadata()
 	}
 	for _, column := range c.F64Columns {
-		metadata[column.Name()] = &ColumnMetadata{
-			Field: column.NewArrowField(),
-			Len:   column.Len(),
-		}
+		metadata[column.Name()] = column.Metadata()
 	}
 	for _, column := range c.BooleanColumns {
-		metadata[column.Name()] = &ColumnMetadata{
-			Field: column.NewArrowField(),
-			Len:   column.Len(),
-		}
+		metadata[column.Name()] = column.Metadata()
 	}
 	for _, column := range c.StringColumns {
-		metadata[column.Name()] = &ColumnMetadata{
-			Field: column.NewArrowField(),
-			Len:   column.Len(),
-			Dictionary: &DictionaryMetadata{
-				Card:       column.DictionaryLen(),
-				AvgLen:     column.AvgValueLength(),
-				TotalEntry: column.TotalEntry(),
-			},
-		}
+		metadata[column.Name()] = column.Metadata()
 	}
 	for _, column := range c.BinaryColumns {
-		metadata[column.Name()] = &ColumnMetadata{
-			Field: column.NewArrowField(),
-			Len:   column.Len(),
-			Dictionary: &DictionaryMetadata{
-				Card:       column.DictionaryLen(),
-				AvgLen:     column.AvgValueLength(),
-				TotalEntry: column.TotalEntry(),
-			},
-		}
+		metadata[column.Name()] = column.Metadata()
 	}
 	for _, column := range c.ListColumns {
-		metadata[column.Name()] = &ColumnMetadata{
-			Field: column.NewArrowField(),
-			Len:   column.Len(),
-		}
+		metadata[column.Name()] = column.Metadata()
 	}
 	for _, column := range c.StructColumns {
-		metadata[column.Name()] = &ColumnMetadata{
-			Field:    column.NewArrowField(),
-			Len:      0,
-			Children: column.Metadata(),
-		}
+		metadata[column.Name()] = column.Metadata()
 	}
 	return metadata
 }

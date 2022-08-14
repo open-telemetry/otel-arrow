@@ -124,6 +124,12 @@ func (c *I8Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
 		c.Push(v)
 	}
 }
+func (c *I8Column) Metadata() *ColumnMetadata {
+	return &ColumnMetadata{
+		Field: c.NewArrowField(),
+		Len:   c.Len(),
+	}
+}
 
 // Name returns the name of the column.
 func (c *I16Column) Name() string {
@@ -169,6 +175,12 @@ func (c *I16Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
 			panic(err)
 		}
 		c.Push(v)
+	}
+}
+func (c *I16Column) Metadata() *ColumnMetadata {
+	return &ColumnMetadata{
+		Field: c.NewArrowField(),
+		Len:   c.Len(),
 	}
 }
 
@@ -217,6 +229,12 @@ func (c *I32Column) NewArrowField() *arrow.Field {
 // NewArray creates and initializes a new Arrow Array for the column.
 func (c *I32Column) NewArray(_ *memory.GoAllocator) arrow.Array {
 	return c.builder.NewArray()
+}
+func (c *I32Column) Metadata() *ColumnMetadata {
+	return &ColumnMetadata{
+		Field: c.NewArrowField(),
+		Len:   c.Len(),
+	}
 }
 
 // Name returns the name of the column.
@@ -268,4 +286,10 @@ func (c *I64Column) Build(allocator *memory.GoAllocator) (*arrow.Field, arrow.Ar
 // NewArray creates and initializes a new Arrow Array for the column.
 func (c *I64Column) NewArray(_ *memory.GoAllocator) arrow.Array {
 	return c.builder.NewArray()
+}
+func (c *I64Column) Metadata() *ColumnMetadata {
+	return &ColumnMetadata{
+		Field: c.NewArrowField(),
+		Len:   c.Len(),
+	}
 }

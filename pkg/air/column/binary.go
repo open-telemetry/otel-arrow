@@ -207,3 +207,15 @@ func (c *BinaryColumn) NewArray(_ *memory.GoAllocator) arrow.Array {
 		return c.binaryBuilder.NewArray()
 	}
 }
+
+func (c *BinaryColumn) Metadata() *ColumnMetadata {
+	return &ColumnMetadata{
+		Field: c.NewArrowField(),
+		Len:   c.Len(),
+		Dictionary: &DictionaryMetadata{
+			Card:       c.DictionaryLen(),
+			AvgLen:     c.AvgValueLength(),
+			TotalEntry: c.TotalEntry(),
+		},
+	}
+}

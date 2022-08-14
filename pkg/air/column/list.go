@@ -278,3 +278,14 @@ func (c *ListColumnBase) NewArray(allocator *memory.GoAllocator) arrow.Array {
 
 	return listArray
 }
+
+// Metadata returns the metadata of the column.
+func (c *ListColumnBase) Metadata() *ColumnMetadata {
+	children := make(map[string]*ColumnMetadata)
+	children[c.values.Name()] = c.values.Metadata()
+	return &ColumnMetadata{
+		Field:    c.NewArrowField(),
+		Len:      c.Len(),
+		Children: children,
+	}
+}

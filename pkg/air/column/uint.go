@@ -125,6 +125,13 @@ func (c *U8Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
 	}
 }
 
+func (c *U8Column) Metadata() *ColumnMetadata {
+	return &ColumnMetadata{
+		Field: c.NewArrowField(),
+		Len:   c.Len(),
+	}
+}
+
 // Name returns the name of the column.
 func (c *U16Column) Name() string {
 	return c.field.Name
@@ -169,6 +176,13 @@ func (c *U16Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
 			panic(err)
 		}
 		c.Push(v)
+	}
+}
+
+func (c *U16Column) Metadata() *ColumnMetadata {
+	return &ColumnMetadata{
+		Field: c.NewArrowField(),
+		Len:   c.Len(),
 	}
 }
 
@@ -219,6 +233,13 @@ func (c *U32Column) NewArray(_ *memory.GoAllocator) arrow.Array {
 	return c.builder.NewArray()
 }
 
+func (c *U32Column) Metadata() *ColumnMetadata {
+	return &ColumnMetadata{
+		Field: c.NewArrowField(),
+		Len:   c.Len(),
+	}
+}
+
 // Name returns the name of the column.
 func (c *U64Column) Name() string {
 	return c.field.Name
@@ -264,4 +285,11 @@ func (c *U64Column) NewArrowField() *arrow.Field {
 // NewArray creates and initializes a new Arrow Array for the column.
 func (c *U64Column) NewArray(_ *memory.GoAllocator) arrow.Array {
 	return c.builder.NewArray()
+}
+
+func (c *U64Column) Metadata() *ColumnMetadata {
+	return &ColumnMetadata{
+		Field: c.NewArrowField(),
+		Len:   c.Len(),
+	}
 }
