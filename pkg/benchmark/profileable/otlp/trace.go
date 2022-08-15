@@ -7,15 +7,16 @@ import (
 
 	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"otel-arrow-adapter/pkg/benchmark"
+	"otel-arrow-adapter/pkg/benchmark/dataset"
 )
 
 type TraceProfileable struct {
 	compression benchmark.CompressionAlgorithm
-	dataset     benchmark.TraceDataset
+	dataset     dataset.TraceDataset
 	traces      []*v1.ExportTraceServiceRequest
 }
 
-func NewTraceProfileable(dataset benchmark.TraceDataset, compression benchmark.CompressionAlgorithm) *TraceProfileable {
+func NewTraceProfileable(dataset dataset.TraceDataset, compression benchmark.CompressionAlgorithm) *TraceProfileable {
 	return &TraceProfileable{dataset: dataset, compression: compression}
 }
 

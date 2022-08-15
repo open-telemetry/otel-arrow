@@ -7,15 +7,16 @@ import (
 
 	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	"otel-arrow-adapter/pkg/benchmark"
+	"otel-arrow-adapter/pkg/benchmark/dataset"
 )
 
 type LogsProfileable struct {
 	compression benchmark.CompressionAlgorithm
-	dataset     benchmark.LogsDataset
+	dataset     dataset.LogsDataset
 	logs        []*v1.ExportLogsServiceRequest
 }
 
-func NewLogsProfileable(dataset benchmark.LogsDataset, compression benchmark.CompressionAlgorithm) *LogsProfileable {
+func NewLogsProfileable(dataset dataset.LogsDataset, compression benchmark.CompressionAlgorithm) *LogsProfileable {
 	return &LogsProfileable{dataset: dataset, compression: compression}
 }
 

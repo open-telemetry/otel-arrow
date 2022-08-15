@@ -20,12 +20,14 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
 	"os"
 
-	"google.golang.org/protobuf/proto"
-
-	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	"otel-arrow-adapter/pkg/air/config"
+	"otel-arrow-adapter/pkg/benchmark"
+	"otel-arrow-adapter/pkg/benchmark/dataset"
+	"otel-arrow-adapter/pkg/benchmark/profileable/otlp"
+	"otel-arrow-adapter/pkg/benchmark/profileable/otlp_arrow"
+	"otel-arrow-adapter/pkg/otel/metrics"
 )
 
 var help = flag.Bool("help", false, "Show help")
@@ -43,24 +45,35 @@ func main() {
 	// Define default input file
 	inputFiles := flag.Args()
 	if len(inputFiles) == 0 {
-		inputFiles = append(inputFiles, "./data/otlp_logs.pb")
+		inputFiles = append(inputFiles, "./data/otlp_metrics.pb")
 	}
+
+	multivariateConf := metrics.NewMultivariateMetricsConfig()
+	// ToDo Multivariate metrics configuration TBD somewhere
 
 	// Compare the performance for each input file
 	for i := range inputFiles {
-		fmt.Printf("Benchmark '%s'\n", inputFiles[i])
-
-		// Unmarshal the ExportTraceServiceRequest protobuf file.
-		data, err := os.ReadFile(inputFiles[i])
-		if err != nil {
-			log.Fatal("read file:", err)
-		}
-		var otlp v1.ExportLogsServiceRequest
-		if err := proto.Unmarshal(data, &otlp); err != nil {
-			log.Fatal("unmarshal:", err)
-		}
-
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
-		// ToDo
+		//profiler := benchmark.NewProfiler([]int{1000, 5000, 10000, 25000})
+		profiler := benchmark.NewProfiler([]int{10000}, "output/metrics_benchmark.log")
+		compressionAlgo := benchmark.Zstd()
+		maxIter := uint64(3)
+		profiler.Printf("Dataset '%s'\n", inputFiles[i])
+		ds := dataset.NewRealMetricsDataset(inputFiles[i])
+		otlpMetrics := otlp.NewMetricsProfileable(ds, compressionAlgo)
+		otlpArrowMetricsWithDictionary := otlp_arrow.NewMetricsProfileable([]string{"With dict"}, ds, config.NewDefaultConfig(), multivariateConf, compressionAlgo)
+
+		if err := profiler.Profile(otlpMetrics, maxIter); err != nil {
+			panic(fmt.Errorf("expected no error, got %v", err))
+		}
+		if err := profiler.Profile(otlpArrowMetricsWithDictionary, maxIter); err != nil {
+			panic(fmt.Errorf("expected no error, got %v", err))
+		}
+
+		profiler.CheckProcessingResults()
+		profiler.PrintResults()
+
+		profiler.ExportMetricsTimesCSV(fmt.Sprintf("%d_metrics_benchmark_results", i))
+		profiler.ExportMetricsBytesCSV(fmt.Sprintf("%d_metrics_benchmark_results", i))
 	}
 }

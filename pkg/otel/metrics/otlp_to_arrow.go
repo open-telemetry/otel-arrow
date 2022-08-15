@@ -37,9 +37,15 @@ type MultivariateRecord struct {
 	metrics []*rfield.Field
 }
 
+func NewMultivariateMetricsConfig() *MultivariateMetricsConfig {
+	return &MultivariateMetricsConfig{
+		Metrics: make(map[string]string),
+	}
+}
+
 // OtlpMetricsToArrowRecords converts an OTLP ResourceMetrics to one or more Arrow records.
-func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request *collogspb.ExportMetricsServiceRequest, multivariateConf *MultivariateMetricsConfig) (map[string][]arrow.Record, error) {
-	result := make(map[string][]arrow.Record)
+func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request *collogspb.ExportMetricsServiceRequest, multivariateConf *MultivariateMetricsConfig) ([]arrow.Record, error) {
+	result := []arrow.Record{}
 	for _, resourceMetrics := range request.ResourceMetrics {
 		for _, scopeMetrics := range resourceMetrics.ScopeMetrics {
 			for _, metric := range scopeMetrics.Metrics {
@@ -79,10 +85,7 @@ func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request *collogspb.Expo
 			if err != nil {
 				return nil, err
 			}
-			for schemaId, record := range records {
-				allRecords := result[schemaId]
-				result[schemaId] = append(allRecords, record)
-			}
+			result = append(result, records...)
 		}
 	}
 	return result, nil

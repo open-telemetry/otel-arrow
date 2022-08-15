@@ -136,8 +136,8 @@ The input files must be one or more OTLP traces (ExportTraceServiceRequest) enco
     - [X] metrics_gen
     - [X] traces_gen
   - Benchmarking tools
-    - [ ] logs_benchmark [WIP]
-    - [ ] metrics_benchmark [WIP]
+    - [X] logs_benchmark 
+    - [X] metrics_benchmark  
     - [X] traces_benchmark
 
 ### Performance

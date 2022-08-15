@@ -21,6 +21,7 @@ import (
 	"github.com/apache/arrow/go/v9/arrow"
 
 	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/events/v1"
+	"otel-arrow-adapter/pkg/air"
 )
 
 type InternalBatchEvent struct {
@@ -31,27 +32,28 @@ type InternalBatchEvent struct {
 	deliveryType v1.DeliveryType
 }
 
-func NewBatchEventOfMetrics(schemaId string, record arrow.Record, deliveryType v1.DeliveryType) *InternalBatchEvent {
+func NewBatchEventOfMetrics(record arrow.Record, deliveryType v1.DeliveryType) *InternalBatchEvent {
 	return &InternalBatchEvent{
-		subStreamId:  schemaId,
+		subStreamId:  air.SchemaToId(record.Schema()),
 		recordType:   v1.OtlpArrowPayloadType_METRICS,
 		record:       record,
 		deliveryType: deliveryType,
 	}
 }
 
-func NewBatchEventOfLogs(schemaId string, record arrow.Record, deliveryType v1.DeliveryType) *InternalBatchEvent {
+func NewBatchEventOfLogs(record arrow.Record, deliveryType v1.DeliveryType) *InternalBatchEvent {
+	record.Schema()
 	return &InternalBatchEvent{
-		subStreamId:  schemaId,
+		subStreamId:  air.SchemaToId(record.Schema()),
 		recordType:   v1.OtlpArrowPayloadType_LOGS,
 		record:       record,
 		deliveryType: deliveryType,
 	}
 }
 
-func NewBatchEventOfTraces(schemaId string, record arrow.Record, deliveryType v1.DeliveryType) *InternalBatchEvent {
+func NewBatchEventOfTraces(record arrow.Record, deliveryType v1.DeliveryType) *InternalBatchEvent {
 	return &InternalBatchEvent{
-		subStreamId:  schemaId,
+		subStreamId:  air.SchemaToId(record.Schema()),
 		recordType:   v1.OtlpArrowPayloadType_LOGS,
 		record:       record,
 		deliveryType: deliveryType,

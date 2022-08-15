@@ -18,14 +18,15 @@ import (
 	"testing"
 
 	"otel-arrow-adapter/pkg/benchmark"
+	"otel-arrow-adapter/pkg/benchmark/dataset"
 	"otel-arrow-adapter/pkg/benchmark/profileable/otlp"
 )
 
 func TestOtlpMetricsProfiler(t *testing.T) {
 	t.Parallel()
 
-	systemToProfile := otlp.NewMetricsProfileable(benchmark.NewFakeMetricsDataset(1000), benchmark.Zstd)
-	profiler := benchmark.NewProfiler([]int{10, 100, 1000})
+	systemToProfile := otlp.NewMetricsProfileable(dataset.NewFakeMetricsDataset(1000), benchmark.Zstd())
+	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, "tmpfile")
 	if err := profiler.Profile(systemToProfile, 10); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -38,8 +39,8 @@ func TestOtlpMetricsProfiler(t *testing.T) {
 func TestOtlpLogsProfiler(t *testing.T) {
 	t.Parallel()
 
-	systemToProfile := otlp.NewLogsProfileable(benchmark.NewFakeLogsDataset(1000), benchmark.Zstd)
-	profiler := benchmark.NewProfiler([]int{10, 100, 1000})
+	systemToProfile := otlp.NewLogsProfileable(dataset.NewFakeLogsDataset(1000), benchmark.Zstd())
+	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, "tmpfile")
 	if err := profiler.Profile(systemToProfile, 10); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -52,8 +53,8 @@ func TestOtlpLogsProfiler(t *testing.T) {
 func TestOtlpTracesProfiler(t *testing.T) {
 	t.Parallel()
 
-	systemToProfile := otlp.NewTraceProfileable(benchmark.NewFakeTraceDataset(1000), benchmark.Zstd)
-	profiler := benchmark.NewProfiler([]int{10, 100, 1000})
+	systemToProfile := otlp.NewTraceProfileable(dataset.NewFakeTraceDataset(1000), benchmark.Zstd())
+	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, "tmpfile")
 	if err := profiler.Profile(systemToProfile, 10); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -66,12 +67,12 @@ func TestOtlpTracesProfiler(t *testing.T) {
 func TestOtlpLightstepTracesProfiler(t *testing.T) {
 	t.Parallel()
 
-	benchdata := benchmark.NewRealTraceDataset("/Users/josh.macdonald/src/lightstep/forward_spans.bin.otlp.bin", []string{
+	benchdata := dataset.NewRealTraceDataset("/Users/josh.macdonald/src/lightstep/forward_spans.bin.otlp.bin", []string{
 		"trace_id",
 	})
 
-	systemToProfile := otlp.NewTraceProfileable(benchdata, benchmark.Zstd)
-	profiler := benchmark.NewProfiler([]int{10, 100, 1000})
+	systemToProfile := otlp.NewTraceProfileable(benchdata, benchmark.Zstd())
+	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, "tmpfile")
 	if err := profiler.Profile(systemToProfile, 10); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}

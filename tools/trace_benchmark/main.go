@@ -24,6 +24,7 @@ import (
 
 	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/benchmark"
+	"otel-arrow-adapter/pkg/benchmark/dataset"
 	"otel-arrow-adapter/pkg/benchmark/profileable/otlp"
 	"otel-arrow-adapter/pkg/benchmark/profileable/otlp_arrow"
 )
@@ -54,10 +55,10 @@ func main() {
 		compressionAlgo := benchmark.Zstd()
 		maxIter := uint64(3)
 		profiler.Printf("Dataset '%s'\n", inputFiles[i])
-		dataset := benchmark.NewRealTraceDataset(inputFiles[i], []string{"trace_id"})
-		otlpTraces := otlp.NewTraceProfileable(dataset, compressionAlgo)
+		ds := dataset.NewRealTraceDataset(inputFiles[i], []string{"trace_id"})
+		otlpTraces := otlp.NewTraceProfileable(ds, compressionAlgo)
 		//otlpArrowTracesWithoutDictionary := otlp_arrow.NewTraceProfileable([]string{"No dict"}, dataset, config.NewConfigWithoutDictionary(), compressionAlgo)
-		otlpArrowTracesWithDictionary := otlp_arrow.NewTraceProfileable([]string{"With dict"}, dataset, config.NewDefaultConfig(), compressionAlgo)
+		otlpArrowTracesWithDictionary := otlp_arrow.NewTraceProfileable([]string{"With dict"}, ds, config.NewDefaultConfig(), compressionAlgo)
 
 		if err := profiler.Profile(otlpTraces, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))

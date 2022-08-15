@@ -19,21 +19,9 @@ import (
 	"strings"
 
 	"github.com/apache/arrow/go/v9/arrow"
-)
 
-const BOOL_SIG = "Bol"
-const U8_SIG = "U8"
-const U16_SIG = "U16"
-const U32_SIG = "U32"
-const U64_SIG = "U64"
-const I8_SIG = "I8"
-const I16_SIG = "I16"
-const I32_SIG = "I32"
-const I64_SIG = "I64"
-const F32_SIG = "F32"
-const F64_SIG = "F64"
-const BINARY_SIG = "Bin"
-const STRING_SIG = "Str"
+	"otel-arrow-adapter/pkg/air/common"
+)
 
 type NameTypes []*NameType
 
@@ -63,31 +51,31 @@ type NameType struct {
 func DataTypeSignature(dataType arrow.DataType) string {
 	switch dataType.ID() {
 	case arrow.BOOL:
-		return BOOL_SIG
+		return common.BOOL_SIG
 	case arrow.UINT8:
-		return U8_SIG
+		return common.U8_SIG
 	case arrow.UINT16:
-		return U16_SIG
+		return common.U16_SIG
 	case arrow.UINT32:
-		return U32_SIG
+		return common.U32_SIG
 	case arrow.UINT64:
-		return U64_SIG
+		return common.U64_SIG
 	case arrow.INT8:
-		return I8_SIG
+		return common.I8_SIG
 	case arrow.INT16:
-		return I16_SIG
+		return common.I16_SIG
 	case arrow.INT32:
-		return I32_SIG
+		return common.I32_SIG
 	case arrow.INT64:
-		return I64_SIG
+		return common.I64_SIG
 	case arrow.FLOAT32:
-		return F32_SIG
+		return common.F32_SIG
 	case arrow.FLOAT64:
-		return F64_SIG
+		return common.F64_SIG
 	case arrow.STRING:
-		return STRING_SIG
+		return common.STRING_SIG
 	case arrow.BINARY:
-		return BINARY_SIG
+		return common.BINARY_SIG
 	case arrow.LIST:
 		return "[" + DataTypeSignature(dataType.(*arrow.ListType).Elem()) + "]"
 	case arrow.STRUCT:

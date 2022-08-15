@@ -18,6 +18,8 @@ import (
 	"strings"
 
 	"github.com/apache/arrow/go/v9/arrow"
+
+	"otel-arrow-adapter/pkg/air/common"
 )
 
 type Fields []*Field
@@ -208,31 +210,31 @@ func (f *Field) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(":")
 	switch v := f.Value.(type) {
 	case *Bool:
-		sig.WriteString(BOOL_SIG)
+		sig.WriteString(common.BOOL_SIG)
 	case *I8:
-		sig.WriteString(I8_SIG)
+		sig.WriteString(common.I8_SIG)
 	case *I16:
-		sig.WriteString(I16_SIG)
+		sig.WriteString(common.I16_SIG)
 	case *I32:
-		sig.WriteString(I32_SIG)
+		sig.WriteString(common.I32_SIG)
 	case *I64:
-		sig.WriteString(I64_SIG)
+		sig.WriteString(common.I64_SIG)
 	case *U8:
-		sig.WriteString(U8_SIG)
+		sig.WriteString(common.U8_SIG)
 	case *U16:
-		sig.WriteString(U16_SIG)
+		sig.WriteString(common.U16_SIG)
 	case *U32:
-		sig.WriteString(U32_SIG)
+		sig.WriteString(common.U32_SIG)
 	case *U64:
-		sig.WriteString(U64_SIG)
+		sig.WriteString(common.U64_SIG)
 	case *F32:
-		sig.WriteString(F32_SIG)
+		sig.WriteString(common.F32_SIG)
 	case *F64:
-		sig.WriteString(F64_SIG)
+		sig.WriteString(common.F64_SIG)
 	case *String:
-		sig.WriteString(STRING_SIG)
+		sig.WriteString(common.STRING_SIG)
 	case *Binary:
-		sig.WriteString(BINARY_SIG)
+		sig.WriteString(common.BINARY_SIG)
 	case *Struct:
 		sig.WriteString("{")
 		for i, f := range v.Fields {

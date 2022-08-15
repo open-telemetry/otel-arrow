@@ -63,18 +63,18 @@ func (rr *RecordRepository) RecordBuilderCount() int {
 	return count
 }
 
-func (rr *RecordRepository) BuildRecords() (map[string]arrow.Record, error) {
+func (rr *RecordRepository) BuildRecords() ([]arrow.Record, error) {
 	rr.Optimize()
 
-	recordBatches := make(map[string]arrow.Record)
+	recordBatches := []arrow.Record{}
 
-	for schemaId, builder := range rr.builders {
+	for _, builder := range rr.builders {
 		if !builder.IsEmpty() {
 			record, err := builder.BuildRecord(rr.allocator)
 			if err != nil {
 				return nil, err
 			}
-			recordBatches[schemaId] = record
+			recordBatches = append(recordBatches, record)
 		}
 	}
 

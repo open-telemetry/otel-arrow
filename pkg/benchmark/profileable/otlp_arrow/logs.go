@@ -6,28 +6,28 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/events/v1"
-	tracepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	logspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/benchmark"
 	"otel-arrow-adapter/pkg/benchmark/dataset"
 	"otel-arrow-adapter/pkg/otel/batch_event"
-	trace2 "otel-arrow-adapter/pkg/otel/trace"
+	logs "otel-arrow-adapter/pkg/otel/logs"
 )
 
-type TraceProfileable struct {
+type LogsProfileable struct {
 	tags        []string
 	compression benchmark.CompressionAlgorithm
-	dataset     dataset.TraceDataset
-	traces      []*tracepb.ExportTraceServiceRequest
+	dataset     dataset.LogsDataset
+	logs        []*logspb.ExportLogsServiceRequest
 	rr          *air.RecordRepository
 	producer    *batch_event.Producer
 	batchEvents []*v1.BatchEvent
 	config      *config.Config
 }
 
-func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *config.Config, compression benchmark.CompressionAlgorithm) *TraceProfileable {
-	return &TraceProfileable{
+func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *config.Config, compression benchmark.CompressionAlgorithm) *LogsProfileable {
+	return &LogsProfileable{
 		tags:        tags,
 		dataset:     dataset,
 		compression: compression,
@@ -38,35 +38,35 @@ func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *co
 	}
 }
 
-func (s *TraceProfileable) Name() string {
+func (s *LogsProfileable) Name() string {
 	return "OTLP_ARROW"
 }
 
-func (s *TraceProfileable) Tags() []string {
+func (s *LogsProfileable) Tags() []string {
 	tags := []string{s.compression.String()}
 	tags = append(tags, s.tags...)
 	return tags
 }
-func (s *TraceProfileable) DatasetSize() int { return s.dataset.Len() }
-func (s *TraceProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
+func (s *LogsProfileable) DatasetSize() int { return s.dataset.Len() }
+func (s *LogsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
 }
-func (s *TraceProfileable) StartProfiling(_ io.Writer) {
+func (s *LogsProfileable) StartProfiling(_ io.Writer) {
 	s.rr = air.NewRecordRepository(s.config)
 }
-func (s *TraceProfileable) EndProfiling(writer io.Writer) {
+func (s *LogsProfileable) EndProfiling(writer io.Writer) {
 	s.rr.DumpMetadata(writer)
 	s.rr = nil
 }
-func (s *TraceProfileable) InitBatchSize(_ io.Writer, _ int) {}
-func (s *TraceProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
-	s.traces = s.dataset.Traces(startAt, size)
+func (s *LogsProfileable) InitBatchSize(_ io.Writer, _ int) {}
+func (s *LogsProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
+	s.logs = s.dataset.Logs(startAt, size)
 }
-func (s *TraceProfileable) CreateBatch(_ io.Writer, _, _ int) {
+func (s *LogsProfileable) CreateBatch(_ io.Writer, _, _ int) {
 	// Conversion of OTLP metrics to OTLP Arrow events
-	s.batchEvents = make([]*v1.BatchEvent, 0, len(s.traces))
-	for _, trace := range s.traces {
-		records, err := trace2.OtlpTraceToArrowRecords(s.rr, trace)
+	s.batchEvents = make([]*v1.BatchEvent, 0, len(s.logs))
+	for _, log := range s.logs {
+		records, err := logs.OtlpLogsToArrowRecords(s.rr, log)
 		if err != nil {
 			panic(err)
 		}
@@ -74,7 +74,7 @@ func (s *TraceProfileable) CreateBatch(_ io.Writer, _, _ int) {
 			//fmt.Fprintf(writer, "IPC Message\n")
 			//fmt.Fprintf(writer, "\t- schema id = %s\n", schemaId)
 			//fmt.Fprintf(writer, "\t- record #row = %d\n", record.Column(0).Len())
-			batchEvent, err := s.producer.Produce(batch_event.NewBatchEventOfTraces(record, v1.DeliveryType_BEST_EFFORT))
+			batchEvent, err := s.producer.Produce(batch_event.NewBatchEventOfLogs(record, v1.DeliveryType_BEST_EFFORT))
 			if err != nil {
 				panic(err)
 			}
@@ -87,11 +87,11 @@ func (s *TraceProfileable) CreateBatch(_ io.Writer, _, _ int) {
 		}
 	}
 }
-func (s *TraceProfileable) Process(io.Writer) string {
+func (s *LogsProfileable) Process(io.Writer) string {
 	// Not used in this benchmark
 	return ""
 }
-func (s *TraceProfileable) Serialize(io.Writer) ([][]byte, error) {
+func (s *LogsProfileable) Serialize(io.Writer) ([][]byte, error) {
 	buffers := make([][]byte, len(s.batchEvents))
 	for i, be := range s.batchEvents {
 		bytes, err := proto.Marshal(be)
@@ -102,7 +102,7 @@ func (s *TraceProfileable) Serialize(io.Writer) ([][]byte, error) {
 	}
 	return buffers, nil
 }
-func (s *TraceProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
+func (s *LogsProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
 	s.batchEvents = make([]*v1.BatchEvent, len(buffers))
 	for i, b := range buffers {
 		be := &v1.BatchEvent{}
@@ -112,8 +112,8 @@ func (s *TraceProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
 		s.batchEvents[i] = be
 	}
 }
-func (s *TraceProfileable) Clear() {
-	s.traces = nil
+func (s *LogsProfileable) Clear() {
+	s.logs = nil
 	s.batchEvents = s.batchEvents[:0]
 }
-func (s *TraceProfileable) ShowStats() {}
+func (s *LogsProfileable) ShowStats() {}
