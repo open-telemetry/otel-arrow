@@ -23,11 +23,12 @@ import (
 func TestLz4(t *testing.T) {
 	t.Parallel()
 
-	compressed, err := benchmark.Compress(benchmark.Lz4, []byte("This is an example of text to compress.This is an example of text to compress.This is an example of text to compress."))
+	lz4 := benchmark.Lz4()
+	compressed, err := lz4.Compress([]byte("This is an example of text to compress.This is an example of text to compress.This is an example of text to compress."))
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
-	decompressed, err := benchmark.Decompress(benchmark.Lz4, compressed)
+	decompressed, err := lz4.Decompress(compressed)
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -39,11 +40,12 @@ func TestLz4(t *testing.T) {
 func TestZstd(t *testing.T) {
 	t.Parallel()
 
-	compressed, err := benchmark.Compress(benchmark.Zstd, []byte("This is an example of text to compress.This is an example of text to compress.This is an example of text to compress."))
+	zstd := benchmark.Zstd()
+	compressed, err := zstd.Compress([]byte("This is an example of text to compress.This is an example of text to compress.This is an example of text to compress."))
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
-	decompressed, err := benchmark.Decompress(benchmark.Zstd, compressed)
+	decompressed, err := zstd.Decompress(compressed)
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
