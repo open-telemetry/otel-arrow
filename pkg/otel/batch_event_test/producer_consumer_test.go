@@ -69,6 +69,35 @@ func TestProducerConsumer(t *testing.T) {
 			t.Errorf("Expected %d rows, got %d", recordCount, recordMessages[0].Record().NumRows())
 		}
 	}
+
+	for _, ts := range tsValues {
+		rr.AddRecord(GenRecord(ts, int(ts%15), int(ts%2), int(ts)))
+	}
+	records, err = rr.BuildRecords()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, record := range records {
+		recordMesssage := batch_event.NewTraceMessage(record, v1.DeliveryType_BEST_EFFORT)
+		batchEvent, err := producer.Produce(recordMesssage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recordMessages, err := consumer.Consume(batchEvent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(recordMessages) != 1 {
+			t.Errorf("Expected 1 record message, got %d", len(recordMessages))
+		}
+		if recordMessages[0].Record().NumCols() != 5 {
+			t.Errorf("Expected 5 columns, got %d", recordMessages[0].Record().NumCols())
+		}
+		if recordMessages[0].Record().NumRows() != int64(recordCount) {
+			t.Errorf("Expected %d rows, got %d", recordCount, recordMessages[0].Record().NumRows())
+		}
+	}
 }
 
 func GenRecord(ts int64, value_a, value_b, value_c int) *air.Record {
