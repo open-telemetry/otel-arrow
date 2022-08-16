@@ -59,3 +59,7 @@ func NewBatchEventOfTraces(record arrow.Record, deliveryType v1.DeliveryType) *I
 		deliveryType: deliveryType,
 	}
 }
+
+func (ibe *InternalBatchEvent) Record() arrow.Record {
+	return ibe.record
+}

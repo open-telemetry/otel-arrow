@@ -25,7 +25,7 @@ import (
 	coleventspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/events/v1"
 )
 
-type consumer struct {
+type Consumer struct {
 	streamConsumers map[string]*streamConsumer
 }
 
@@ -35,14 +35,14 @@ type streamConsumer struct {
 }
 
 // NewConsumer creates a new BatchEvent consumer.
-func NewConsumer() *consumer {
-	return &consumer{
+func NewConsumer() *Consumer {
+	return &Consumer{
 		streamConsumers: make(map[string]*streamConsumer),
 	}
 }
 
 // Consume takes a BatchEvent protobuf message and returns an array of InternalBatchEvent.
-func (c *consumer) Consume(event *coleventspb.BatchEvent) ([]*InternalBatchEvent, error) {
+func (c *Consumer) Consume(event *coleventspb.BatchEvent) ([]*InternalBatchEvent, error) {
 	// Retrieves (or creates) the stream consumer for the sub-stream id defined in the BatchEvent message.
 	sc := c.streamConsumers[event.SubStreamId]
 	if sc == nil {

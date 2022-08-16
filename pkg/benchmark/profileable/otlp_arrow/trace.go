@@ -22,6 +22,7 @@ type TraceProfileable struct {
 	traces      []*tracepb.ExportTraceServiceRequest
 	rr          *air.RecordRepository
 	producer    *batch_event.Producer
+	consumer    *batch_event.Consumer
 	batchEvents []*v1.BatchEvent
 	config      *config.Config
 }
@@ -33,6 +34,7 @@ func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *co
 		compression: compression,
 		rr:          nil,
 		producer:    batch_event.NewProducer(),
+		consumer:    batch_event.NewConsumer(),
 		batchEvents: make([]*v1.BatchEvent, 0, 10),
 		config:      config,
 	}
@@ -110,6 +112,19 @@ func (s *TraceProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
 			panic(err)
 		}
 		s.batchEvents[i] = be
+
+		// ToDo TMP
+		//ibes, err := s.consumer.Consume(be)
+		//if err != nil {
+		//	panic(err)
+		//}
+		//for _, ibe := range ibes {
+		//	request, err := trace2.ArrowRecordsToOtlpTrace(ibe.Record())
+		//	if err != nil {
+		//		panic(err)
+		//	}
+		//	spew.Dump(request)
+		//}
 	}
 }
 func (s *TraceProfileable) Clear() {

@@ -18,7 +18,10 @@
 package air
 
 import (
+	"fmt"
+
 	"github.com/apache/arrow/go/v9/arrow"
+	"github.com/apache/arrow/go/v9/arrow/array"
 
 	"otel-arrow-adapter/pkg/air/common"
 )
@@ -93,4 +96,103 @@ func DataTypeToId(dt arrow.DataType) string {
 	}
 
 	return id
+}
+
+func Column(record arrow.Record, column string, columns map[string]int) arrow.Array {
+	if c, ok := columns[column]; !ok {
+		return nil
+	} else {
+		return record.Column(c)
+	}
+}
+
+func ReadUint64(record arrow.Record, row int, column string, columns map[string]int) (uint64, error) {
+	if c, ok := columns[column]; !ok {
+		return 0, nil
+	} else {
+		switch arr := record.Column(c).(type) {
+		case *array.Uint64:
+			if arr.IsNull(row) {
+				return 0, nil
+			} else {
+				return arr.Value(row), nil
+			}
+		default:
+			return 0, fmt.Errorf("column '%s' is not of type uint64", column)
+		}
+	}
+}
+
+func ReadUint32(record arrow.Record, row int, column string, columns map[string]int) (uint32, error) {
+	if c, ok := columns[column]; !ok {
+		return 0, nil
+	} else {
+		switch arr := record.Column(c).(type) {
+		case *array.Uint32:
+			if arr.IsNull(row) {
+				return 0, nil
+			} else {
+				return arr.Value(row), nil
+			}
+		default:
+			return 0, fmt.Errorf("column '%s' is not of type uint32", column)
+		}
+	}
+}
+
+func ReadInt32(record arrow.Record, row int, column string, columns map[string]int) (int32, error) {
+	if c, ok := columns[column]; !ok {
+		return 0, nil
+	} else {
+		switch arr := record.Column(c).(type) {
+		case *array.Int32:
+			if arr.IsNull(row) {
+				return 0, nil
+			} else {
+				return arr.Value(row), nil
+			}
+		default:
+			return 0, fmt.Errorf("column '%s' is not of type int32", column)
+		}
+	}
+}
+
+func ReadString(record arrow.Record, row int, column string, columns map[string]int) (string, error) {
+	if c, ok := columns[column]; !ok {
+		return "", nil
+	} else {
+		column := record.Column(c)
+		if column.IsNull(row) {
+			return "", nil
+		}
+
+		switch arr := column.(type) {
+		case *array.String:
+			return arr.Value(row), nil
+		case *array.Dictionary:
+			return arr.Dictionary().(*array.String).Value(arr.GetValueIndex(row)), nil
+		default:
+			return "", fmt.Errorf("column '%s' is not of type string", column)
+		}
+	}
+}
+
+func ReadBinary(record arrow.Record, row int, column string, columns map[string]int) ([]byte, error) {
+	if c, ok := columns[column]; !ok {
+		return nil, nil
+	} else {
+		column := record.Column(c)
+		if column.IsNull(row) {
+			return nil, nil
+		}
+
+		switch arr := column.(type) {
+		case *array.Binary:
+			return arr.Value(row), nil
+		case *array.Dictionary:
+			return arr.Dictionary().(*array.Binary).Value(arr.GetValueIndex(row)), nil
+		default:
+			return nil, fmt.Errorf("column '%s' is not of type binary", column)
+		}
+	}
 }

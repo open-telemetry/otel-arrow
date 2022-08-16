@@ -72,8 +72,9 @@ The input files must be one or more OTLP traces (ExportTraceServiceRequest) enco
   - [X] Multi-field sorting (string field)
   - [X] Multi-field sorting (binary field)
 
-### OTLP --> OTLP Arrow
-  - **General**
+### Transform OTLP entities into OTLP Arrow entities
+This capability will be used to implement a receiver into the existing collector (phase 1)
+  - **General**.
     - [X] Complex attributes
     - [X] Complex body
   - **OTLP metrics --> OTLP_ARROW events**
@@ -92,7 +93,8 @@ The input files must be one or more OTLP traces (ExportTraceServiceRequest) enco
     - [X] Links
     - [X] Events
 
-### OTLP Arrow --> OTLP
+### Transform OTLP Arrow entities into OTLP entities
+This capability will be used to implement an exporter into the existing collector (phase 1).
   - **General**
     - [ ] Complex attributes
     - [ ] Complex body
@@ -113,7 +115,7 @@ The input files must be one or more OTLP traces (ExportTraceServiceRequest) enco
     - [ ] Events
 
 ### Protocol
-  - [X] OTLP proto
+  - [X] OTLP proto [WIP change a little bit the BatchEvent specification]
   - [X] Event service
   - [x] BatchEvent producer
   - [X] BatchEvent consumer
@@ -137,8 +139,8 @@ The input files must be one or more OTLP traces (ExportTraceServiceRequest) enco
     - [X] traces_gen
   - Benchmarking tools
     - [X] logs_benchmark 
-    - [X] metrics_benchmark  
-    - [X] traces_benchmark
+    - [X] metrics_benchmark [WIP define a way to specify the multivariate metrics configuration]  
+    - [X] traces_benchmark 
 
 ### Performance
   - [ ] Performance and memory optimizations
@@ -149,6 +151,9 @@ The input files must be one or more OTLP traces (ExportTraceServiceRequest) enco
 
 ### Integration
   - [ ] Integration with Open Telemetry Collector.
+
+### Documentation
+  - [ ] Update OTEP 0156.
 
 ### Feedback to implement
   - [ ] Feedback provided by @atoulme 
