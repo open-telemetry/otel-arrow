@@ -21,8 +21,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/davecgh/go-spew/spew"
-
 	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/events/v1"
 	"otel-arrow-adapter/pkg/air"
 	cfg "otel-arrow-adapter/pkg/air/config"
@@ -53,7 +51,6 @@ func TestProducerConsumer(t *testing.T) {
 
 	for _, record := range records {
 		recordMesssage := batch_event.NewTraceMessage(record, v1.DeliveryType_BEST_EFFORT)
-		spew.Dump(recordMesssage)
 		batchEvent, err := producer.Produce(recordMesssage)
 		if err != nil {
 			t.Fatal(err)
@@ -62,7 +59,15 @@ func TestProducerConsumer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		spew.Dump(recordMessages)
+		if len(recordMessages) != 1 {
+			t.Errorf("Expected 1 record message, got %d", len(recordMessages))
+		}
+		if recordMessages[0].Record().NumCols() != 5 {
+			t.Errorf("Expected 5 columns, got %d", recordMessages[0].Record().NumCols())
+		}
+		if recordMessages[0].Record().NumRows() != int64(recordCount) {
+			t.Errorf("Expected %d rows, got %d", recordCount, recordMessages[0].Record().NumRows())
+		}
 	}
 }
 

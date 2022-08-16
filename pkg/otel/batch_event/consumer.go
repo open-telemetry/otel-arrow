@@ -66,7 +66,7 @@ func (c *Consumer) Consume(event *coleventspb.BatchEvent) ([]*RecordMessage, err
 			sc.ipcReader = ipcReader
 		}
 
-		for sc.ipcReader.Next() {
+		if sc.ipcReader.Next() {
 			rec := sc.ipcReader.Record()
 			ibes = append(ibes, &RecordMessage{
 				batchId:      event.BatchId,
