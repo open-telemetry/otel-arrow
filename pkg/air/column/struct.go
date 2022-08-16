@@ -15,6 +15,8 @@
 package column
 
 import (
+	"fmt"
+
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/memory"
@@ -75,8 +77,14 @@ func (c *StructColumn) NewArrowField() *arrow.Field {
 
 	// Create a struct field.
 	fields := make([]arrow.Field, len(fieldRefs))
+	names := map[string]bool{}
 	for i, field := range fieldRefs {
 		fields[i] = *field
+		if _, ok := names[field.Name]; ok {
+			panic(fmt.Sprintf("duplicate field name %q (in struct %q)", field.Name, c.name))
+		} else {
+			names[field.Name] = true
+		}
 	}
 	return &arrow.Field{Name: c.name, Type: arrow.StructOf(fields...)}
 }
