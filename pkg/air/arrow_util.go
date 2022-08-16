@@ -19,6 +19,7 @@ package air
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
@@ -26,10 +27,21 @@ import (
 	"otel-arrow-adapter/pkg/air/common"
 )
 
+type Fields []arrow.Field
+
+// Sort interface
+func (d Fields) Less(i, j int) bool {
+	return d[i].Name < d[j].Name
+}
+func (d Fields) Len() int      { return len(d) }
+func (d Fields) Swap(i, j int) { d[i], d[j] = d[j], d[i] }
+
 func SchemaToId(schema *arrow.Schema) string {
 	schemaId := ""
-	for i := range schema.Fields() {
-		field := &schema.Fields()[i]
+	fields := schema.Fields()
+	sort.Sort(Fields(fields))
+	for i := range fields {
+		field := &fields[i]
 		if i != 0 {
 			schemaId += ","
 		}
@@ -73,20 +85,22 @@ func DataTypeToId(dt arrow.DataType) string {
 		id += common.BINARY_SIG
 	case *arrow.StructType:
 		id += "{"
-		for i, f := range t.Fields() {
+		fields := t.Fields()
+		sort.Sort(Fields(fields))
+		for i := range fields {
 			if i > 0 {
 				id += ","
 			}
-			id += FieldToId(&f)
+			id += FieldToId(&fields[i])
 		}
 		id += "}"
 	case *arrow.ListType:
 		id += "["
 		elemField := t.ElemField()
-		id += FieldToId(&elemField)
+		id += DataTypeToId(elemField.Type)
 		id += "]"
 	case *arrow.DictionaryType:
-		id += "Dico<"
+		id += "Dic<"
 		id += DataTypeToId(t.IndexType)
 		id += ","
 		id += DataTypeToId(t.ValueType)

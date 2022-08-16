@@ -23,6 +23,7 @@ import (
 )
 
 func TestOtlpMetricsProfiler(t *testing.T) {
+	t.Skip("Too long test")
 	t.Parallel()
 
 	systemToProfile := otlp.NewMetricsProfileable(dataset.NewFakeMetricsDataset(1000), benchmark.Zstd())
@@ -37,6 +38,7 @@ func TestOtlpMetricsProfiler(t *testing.T) {
 }
 
 func TestOtlpLogsProfiler(t *testing.T) {
+	t.Skip("Too long test")
 	t.Parallel()
 
 	systemToProfile := otlp.NewLogsProfileable(dataset.NewFakeLogsDataset(1000), benchmark.Zstd())
@@ -51,6 +53,7 @@ func TestOtlpLogsProfiler(t *testing.T) {
 }
 
 func TestOtlpTracesProfiler(t *testing.T) {
+	t.Skip("Too long test")
 	t.Parallel()
 
 	systemToProfile := otlp.NewTraceProfileable(dataset.NewFakeTraceDataset(1000), benchmark.Zstd())
@@ -65,6 +68,7 @@ func TestOtlpTracesProfiler(t *testing.T) {
 }
 
 func TestOtlpLightstepTracesProfiler(t *testing.T) {
+	t.Skip("Lightstep specific test")
 	t.Parallel()
 
 	benchdata := dataset.NewRealTraceDataset("/Users/josh.macdonald/src/lightstep/forward_spans.bin.otlp.bin", []string{

@@ -44,34 +44,29 @@ func TestOtlpMetricsToArrowEvents(t *testing.T) {
 	if len(multiSchemaRecords) != 3 {
 		t.Errorf("Expected 3 record, got %d", len(multiSchemaRecords))
 	}
-	for schemaId, records := range multiSchemaRecords {
+	for _, record := range multiSchemaRecords {
+		schemaId := air.SchemaToId(record.Schema())
 		switch schemaId {
-		case "resource:{attributes:{hostname:Str,ip:Str,status:I64,up:Bol,version:F64}},scope_metrics:{name:Str,version:Str},start_time_unix_nano:U64,sum_system.cpu.load_average.1m:{value:F64},time_unix_nano:U64":
-			for _, record := range records {
-				if record.NumCols() != 5 {
-					t.Errorf("Expected 6 fields, got %d", record.NumCols())
-				}
-				if record.NumRows() != 10 {
-					t.Errorf("Expected 10 rows, got %d", record.NumRows())
-				}
+		case "resource:{attributes:{hostname:Dic<U8,Str>,ip:Dic<U8,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U8,Str>,version:Dic<U8,Str>},start_time_unix_nano:U64,sum_system.cpu.load_average.1m:{value:F64},time_unix_nano:U64":
+			if record.NumCols() != 5 {
+				t.Errorf("Expected 6 fields, got %d", record.NumCols())
 			}
-		case "attributes:{cpu:I64,state:Str},resource:{attributes:{hostname:Str,ip:Str,status:I64,up:Bol,version:F64}},scope_metrics:{name:Str,version:Str},start_time_unix_nano:U64,sum_system.cpu.time:{idle:F64,interrupt:F64,iowait:F64,system:F64,user:F64},time_unix_nano:U64":
-			for _, record := range records {
-				if record.NumCols() != 6 {
-					t.Errorf("Expected 5 fields, got %d", record.NumCols())
-				}
-				if record.NumRows() != 10 {
-					t.Errorf("Expected 10 rows, got %d", record.NumRows())
-				}
+			if record.NumRows() != 10 {
+				t.Errorf("Expected 10 rows, got %d", record.NumRows())
 			}
-		case "attributes:{state:Str},resource:{attributes:{hostname:Str,ip:Str,status:I64,up:Bol,version:F64}},scope_metrics:{name:Str,version:Str},start_time_unix_nano:U64,sum_system.memory.usage:{free:I64,inactive:I64,used:I64},time_unix_nano:U64":
-			for _, record := range records {
-				if record.NumCols() != 6 {
-					t.Errorf("Expected 5 fields, got %d", record.NumCols())
-				}
-				if record.NumRows() != 10 {
-					t.Errorf("Expected 10 rows, got %d", record.NumRows())
-				}
+		case "attributes:{cpu:I64,state:Dic<U8,Str>},resource:{attributes:{hostname:Dic<U8,Str>,ip:Dic<U8,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U8,Str>,version:Dic<U8,Str>},start_time_unix_nano:U64,sum_system.cpu.time:{idle:F64,interrupt:F64,iowait:F64,system:F64,user:F64},time_unix_nano:U64":
+			if record.NumCols() != 6 {
+				t.Errorf("Expected 5 fields, got %d", record.NumCols())
+			}
+			if record.NumRows() != 10 {
+				t.Errorf("Expected 10 rows, got %d", record.NumRows())
+			}
+		case "attributes:{state:Dic<U8,Str>},resource:{attributes:{hostname:Dic<U8,Str>,ip:Dic<U8,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U8,Str>,version:Dic<U8,Str>},start_time_unix_nano:U64,sum_system.memory.usage:{free:I64,inactive:I64,used:I64},time_unix_nano:U64":
+			if record.NumCols() != 6 {
+				t.Errorf("Expected 5 fields, got %d", record.NumCols())
+			}
+			if record.NumRows() != 10 {
+				t.Errorf("Expected 10 rows, got %d", record.NumRows())
 			}
 		default:
 			t.Errorf("Unexpected schemaId: %s", schemaId)
