@@ -224,12 +224,12 @@ func TestBuild(t *testing.T) {
 			t.Errorf("Expected %d rows, got %d", recordCount, record.NumRows())
 		}
 		d := record.Column(4).(*array.Struct)
-		if record.ColumnName(4) != "ts" {
+		if record.ColumnName(0) != "ts" {
 			t.Errorf("Expected column name to be ts, got %s", record.ColumnName(0))
 		}
 
 		// Field b
-		if record.ColumnName(1) != "b" {
+		if record.ColumnName(2) != "b" {
 			t.Errorf("Expected column name to be b, got %s", record.ColumnName(2))
 		}
 		if String(record.Column(2).(*array.Dictionary)) != "[\"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__0\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\" \"b__1\"]" {
@@ -241,7 +241,7 @@ func TestBuild(t *testing.T) {
 			t.Errorf("Column d.b is not sorted as expected %s", String(dB.(*array.Dictionary)))
 		}
 		// Field a
-		if record.ColumnName(0) != "a" {
+		if record.ColumnName(1) != "a" {
 			t.Errorf("Expected column name to be a, got %s", record.ColumnName(1))
 		}
 		if String(record.Column(1).(*array.Dictionary)) != "[\"a___0\" \"a___0\" \"a___0\" \"a___0\" \"a___1\" \"a___1\" \"a___1\" \"a___10\" \"a___10\" \"a___10\" \"a___11\" \"a___11\" \"a___11\" \"a___12\" \"a___12\" \"a___12\" \"a___13\" \"a___13\" \"a___13\" \"a___14\" \"a___14\" \"a___14\" \"a___2\" \"a___2\" \"a___2\" \"a___2\" \"a___3\" \"a___3\" \"a___3\" \"a___4\" \"a___4\" \"a___4\" \"a___4\" \"a___5\" \"a___5\" \"a___5\" \"a___6\" \"a___6\" \"a___6\" \"a___6\" \"a___7\" \"a___7\" \"a___7\" \"a___8\" \"a___8\" \"a___8\" \"a___8\" \"a___9\" \"a___9\" \"a___9\" \"a___0\" \"a___0\" \"a___0\" \"a___1\" \"a___1\" \"a___1\" \"a___1\" \"a___10\" \"a___10\" \"a___10\" \"a___11\" \"a___11\" \"a___11\" \"a___12\" \"a___12\" \"a___12\" \"a___13\" \"a___13\" \"a___13\" \"a___14\" \"a___14\" \"a___14\" \"a___2\" \"a___2\" \"a___2\" \"a___3\" \"a___3\" \"a___3\" \"a___3\" \"a___4\" \"a___4\" \"a___4\" \"a___5\" \"a___5\" \"a___5\" \"a___5\" \"a___6\" \"a___6\" \"a___6\" \"a___7\" \"a___7\" \"a___7\" \"a___7\" \"a___8\" \"a___8\" \"a___8\" \"a___9\" \"a___9\" \"a___9\" \"a___9\"]" {
@@ -253,11 +253,11 @@ func TestBuild(t *testing.T) {
 			t.Errorf("Column d.a is not sorted as expected %s", String(dA.(*array.Dictionary)))
 		}
 
-		if record.ColumnName(2) != "c" {
+		if record.ColumnName(3) != "c" {
 			t.Errorf("Expected column name to be c, got %s", record.ColumnName(3))
 		}
 
-		if record.ColumnName(3) != "d" {
+		if record.ColumnName(4) != "d" {
 			t.Errorf("Expected column name to be d, got %s", record.ColumnName(4))
 		}
 		dC := d.Field(2)

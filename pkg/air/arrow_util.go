@@ -27,27 +27,43 @@ import (
 	"otel-arrow-adapter/pkg/air/common"
 )
 
-type Fields []arrow.Field
+type SortableField struct {
+	name  *string
+	field *arrow.Field
+}
+
+type Fields []SortableField
 
 // Sort interface
 func (d Fields) Less(i, j int) bool {
-	return d[i].Name < d[j].Name
+	return *d[i].name < *d[j].name
 }
 func (d Fields) Len() int      { return len(d) }
 func (d Fields) Swap(i, j int) { d[i], d[j] = d[j], d[i] }
 
 func SchemaToId(schema *arrow.Schema) string {
 	schemaId := ""
-	fields := schema.Fields()
-	sort.Sort(Fields(fields))
+	fields := sortedFields(schema.Fields())
 	for i := range fields {
 		field := &fields[i]
 		if i != 0 {
 			schemaId += ","
 		}
-		schemaId += FieldToId(field)
+		schemaId += FieldToId(field.field)
 	}
 	return schemaId
+}
+
+func sortedFields(fields []arrow.Field) []SortableField {
+	sortedField := make([]SortableField, len(fields))
+	for i := 0; i < len(fields); i++ {
+		sortedField[i] = SortableField{
+			name:  &fields[i].Name,
+			field: &fields[i],
+		}
+	}
+	sort.Sort(Fields(sortedField))
+	return sortedField
 }
 
 func FieldToId(field *arrow.Field) string {
@@ -85,13 +101,12 @@ func DataTypeToId(dt arrow.DataType) string {
 		id += common.BINARY_SIG
 	case *arrow.StructType:
 		id += "{"
-		fields := t.Fields()
-		sort.Sort(Fields(fields))
+		fields := sortedFields(t.Fields())
 		for i := range fields {
 			if i > 0 {
 				id += ","
 			}
-			id += FieldToId(&fields[i])
+			id += FieldToId(fields[i].field)
 		}
 		id += "}"
 	case *arrow.ListType:

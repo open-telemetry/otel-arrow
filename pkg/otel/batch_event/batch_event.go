@@ -24,7 +24,7 @@ import (
 	"otel-arrow-adapter/pkg/air"
 )
 
-type InternalBatchEvent struct {
+type RecordMessage struct {
 	batchId      string
 	subStreamId  string
 	recordType   v1.OtlpArrowPayloadType
@@ -32,8 +32,8 @@ type InternalBatchEvent struct {
 	deliveryType v1.DeliveryType
 }
 
-func NewBatchEventOfMetrics(record arrow.Record, deliveryType v1.DeliveryType) *InternalBatchEvent {
-	return &InternalBatchEvent{
+func NewMetricsMessage(record arrow.Record, deliveryType v1.DeliveryType) *RecordMessage {
+	return &RecordMessage{
 		subStreamId:  air.SchemaToId(record.Schema()),
 		recordType:   v1.OtlpArrowPayloadType_METRICS,
 		record:       record,
@@ -41,9 +41,9 @@ func NewBatchEventOfMetrics(record arrow.Record, deliveryType v1.DeliveryType) *
 	}
 }
 
-func NewBatchEventOfLogs(record arrow.Record, deliveryType v1.DeliveryType) *InternalBatchEvent {
+func NewLogsMessage(record arrow.Record, deliveryType v1.DeliveryType) *RecordMessage {
 	record.Schema()
-	return &InternalBatchEvent{
+	return &RecordMessage{
 		subStreamId:  air.SchemaToId(record.Schema()),
 		recordType:   v1.OtlpArrowPayloadType_LOGS,
 		record:       record,
@@ -51,15 +51,15 @@ func NewBatchEventOfLogs(record arrow.Record, deliveryType v1.DeliveryType) *Int
 	}
 }
 
-func NewBatchEventOfTraces(record arrow.Record, deliveryType v1.DeliveryType) *InternalBatchEvent {
-	return &InternalBatchEvent{
+func NewTraceMessage(record arrow.Record, deliveryType v1.DeliveryType) *RecordMessage {
+	return &RecordMessage{
 		subStreamId:  air.SchemaToId(record.Schema()),
-		recordType:   v1.OtlpArrowPayloadType_LOGS,
+		recordType:   v1.OtlpArrowPayloadType_SPANS,
 		record:       record,
 		deliveryType: deliveryType,
 	}
 }
 
-func (ibe *InternalBatchEvent) Record() arrow.Record {
+func (ibe *RecordMessage) Record() arrow.Record {
 	return ibe.record
 }

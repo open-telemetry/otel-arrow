@@ -41,8 +41,8 @@ func NewConsumer() *Consumer {
 	}
 }
 
-// Consume takes a BatchEvent protobuf message and returns an array of InternalBatchEvent.
-func (c *Consumer) Consume(event *coleventspb.BatchEvent) ([]*InternalBatchEvent, error) {
+// Consume takes a BatchEvent protobuf message and returns an array of RecordMessage.
+func (c *Consumer) Consume(event *coleventspb.BatchEvent) ([]*RecordMessage, error) {
 	// Retrieves (or creates) the stream consumer for the sub-stream id defined in the BatchEvent message.
 	sc := c.streamConsumers[event.SubStreamId]
 	if sc == nil {
@@ -53,9 +53,9 @@ func (c *Consumer) Consume(event *coleventspb.BatchEvent) ([]*InternalBatchEvent
 		c.streamConsumers[event.SubStreamId] = sc
 	}
 
-	var ibes []*InternalBatchEvent
+	var ibes []*RecordMessage
 
-	// Transform each individual OtlpArrowPayload into InternalBatchEvent
+	// Transform each individual OtlpArrowPayload into RecordMessage
 	for _, payload := range event.OtlpArrowPayloads {
 		sc.bufReader.Reset(payload.Schema) // ToDo change the protobuf definition to contain a single ipc_message
 		if sc.ipcReader == nil {
@@ -68,7 +68,7 @@ func (c *Consumer) Consume(event *coleventspb.BatchEvent) ([]*InternalBatchEvent
 
 		for sc.ipcReader.Next() {
 			rec := sc.ipcReader.Record()
-			ibes = append(ibes, &InternalBatchEvent{
+			ibes = append(ibes, &RecordMessage{
 				batchId:      event.BatchId,
 				recordType:   payload.GetType(),
 				record:       rec,

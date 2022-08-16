@@ -76,7 +76,7 @@ func (s *MetricsProfileable) CreateBatch(_ io.Writer, _, _ int) {
 			//fmt.Fprintf(writer, "IPC Message\n")
 			//fmt.Fprintf(writer, "\t- schema id = %s\n", schemaId)
 			//fmt.Fprintf(writer, "\t- record #row = %d\n", record.Column(0).Len())
-			batchEvent, err := s.producer.Produce(batch_event.NewBatchEventOfMetrics(record, v1.DeliveryType_BEST_EFFORT))
+			batchEvent, err := s.producer.Produce(batch_event.NewMetricsMessage(record, v1.DeliveryType_BEST_EFFORT))
 			if err != nil {
 				panic(err)
 			}

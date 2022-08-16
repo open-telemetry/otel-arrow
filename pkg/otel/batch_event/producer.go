@@ -44,10 +44,10 @@ func NewProducer() *Producer {
 	}
 }
 
-// Produce takes an InternalBatchEvent and returns the corresponding BatchEvent protobuf message.
-func (p *Producer) Produce(ibe *InternalBatchEvent) (*coleventspb.BatchEvent, error) {
-	// Retrieves (or creates) the stream Producer for the sub-stream id defined in the InternalBatchEvent.
-	sp := p.streamProducers[ibe.subStreamId]
+// Produce takes an RecordMessage and returns the corresponding BatchEvent protobuf message.
+func (p *Producer) Produce(rm *RecordMessage) (*coleventspb.BatchEvent, error) {
+	// Retrieves (or creates) the stream Producer for the sub-stream id defined in the RecordMessage.
+	sp := p.streamProducers[rm.subStreamId]
 	if sp == nil {
 		var buf bytes.Buffer
 		sp = &streamProducer{
@@ -55,13 +55,13 @@ func (p *Producer) Produce(ibe *InternalBatchEvent) (*coleventspb.BatchEvent, er
 			batchId:     0,
 			subStreamId: fmt.Sprintf("%d", len(p.streamProducers)),
 		}
-		p.streamProducers[ibe.subStreamId] = sp
+		p.streamProducers[rm.subStreamId] = sp
 	}
 
 	if sp.ipcWriter == nil {
-		sp.ipcWriter = ipc.NewWriter(&sp.output, ipc.WithSchema(ibe.record.Schema()))
+		sp.ipcWriter = ipc.NewWriter(&sp.output, ipc.WithSchema(rm.record.Schema()))
 	}
-	err := sp.ipcWriter.Write(ibe.record)
+	err := sp.ipcWriter.Write(rm.record)
 	if err != nil {
 		return nil, err
 	}
@@ -78,10 +78,10 @@ func (p *Producer) Produce(ibe *InternalBatchEvent) (*coleventspb.BatchEvent, er
 		SubStreamId: sp.subStreamId,
 		OtlpArrowPayloads: []*coleventspb.OtlpArrowPayload{
 			{
-				Type:   ibe.recordType,
+				Type:   rm.recordType,
 				Schema: buf,
 			},
 		},
-		DeliveryType: ibe.deliveryType,
+		DeliveryType: rm.deliveryType,
 	}, nil
 }
