@@ -94,10 +94,11 @@ func NewRecordBuilderWithRecord(allocator *memory.GoAllocator, record *Record, c
 	for fieldIdx := range record.fields {
 		fieldName := record.fields[fieldIdx].Name
 		fieldType := record.fields[fieldIdx].DataType()
-		fieldPath := builder.columns.CreateColumn(allocator, []int{fieldIdx}, fieldName, fieldType, config, &builder.dictIdGen)
-		builder.columns.UpdateColumn(fieldPath, record.fields[fieldIdx])
-		if fieldPath != nil {
-			builder.fieldPaths = append(builder.fieldPaths, fieldPath)
+		stringPath := fieldName
+		numPath := builder.columns.CreateColumn(allocator, []int{fieldIdx}, fieldName, stringPath, fieldType, config, &builder.dictIdGen)
+		builder.columns.UpdateColumn(numPath, record.fields[fieldIdx])
+		if numPath != nil {
+			builder.fieldPaths = append(builder.fieldPaths, numPath)
 		}
 	}
 	return &builder

@@ -111,7 +111,7 @@ func (m ColumnMetadata) Dump(prefix string, f io.Writer) {
 	}
 }
 
-func NewColumns(allocator *memory.GoAllocator, structType *arrow.StructType, fieldPath []int, config *config.Config, dictIdGen *dictionary.DictIdGenerator) (*Columns, []*rfield.FieldPath) {
+func NewColumns(allocator *memory.GoAllocator, structType *arrow.StructType, fieldPath []int, stringFieldPath string, config *config.Config, dictIdGen *dictionary.DictIdGenerator) (*Columns, []*rfield.FieldPath) {
 	subFields := structType.Fields()
 	fieldPaths := make([]*rfield.FieldPath, 0, len(subFields))
 	columns := Columns{}
@@ -119,7 +119,8 @@ func NewColumns(allocator *memory.GoAllocator, structType *arrow.StructType, fie
 		subFieldPath := make([]int, len(fieldPath), len(fieldPath)+1)
 		copy(subFieldPath, fieldPath)
 		subFieldPath = append(subFieldPath, len(fieldPaths))
-		colFieldPath := columns.CreateColumn(allocator, subFieldPath, subFields[i].Name, subFields[i].Type, config, dictIdGen)
+		stringFieldPath = stringFieldPath + "." + subFields[i].Name
+		colFieldPath := columns.CreateColumn(allocator, subFieldPath, subFields[i].Name, stringFieldPath, subFields[i].Type, config, dictIdGen)
 		if colFieldPath != nil {
 			fieldPaths = append(fieldPaths, colFieldPath)
 		}
@@ -128,7 +129,7 @@ func NewColumns(allocator *memory.GoAllocator, structType *arrow.StructType, fie
 }
 
 // CreateColumn creates a column with a field based on its field type and field name.
-func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, fieldName string, fieldType arrow.DataType, config *config.Config, dictIdGen *dictionary.DictIdGenerator) *rfield.FieldPath {
+func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, fieldName string, stringFieldPath string, fieldType arrow.DataType, config *config.Config, dictIdGen *dictionary.DictIdGenerator) *rfield.FieldPath {
 	switch t := fieldType.(type) {
 	case *arrow.BooleanType:
 		c.BooleanColumns = append(c.BooleanColumns, MakeBoolColumn(allocator, fieldName))
@@ -173,7 +174,7 @@ func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, fieldN
 	case *arrow.ListType:
 		etype := t.Elem()
 		// Dictionary are not yet supported for list columns (arrow implementation limitation).
-		listColumn, fieldPaths := MakeListColumn(allocator, fieldName, path, etype, config /*config.ConfigWithoutDictionarySupport()*/, dictIdGen)
+		listColumn, fieldPaths := MakeListColumn(allocator, fieldName, path, stringFieldPath, etype, config /*config.ConfigWithoutDictionarySupport()*/, dictIdGen)
 		c.ListColumns = append(c.ListColumns, listColumn)
 		if fieldPaths == nil {
 			return rfield.NewFieldPath(len(c.ListColumns) - 1)
@@ -181,7 +182,7 @@ func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, fieldN
 			return rfield.NewFieldPathWithChildren(len(c.ListColumns)-1, fieldPaths)
 		}
 	case *arrow.StructType:
-		columns, fieldPaths := NewColumns(allocator, t, path, config, dictIdGen)
+		columns, fieldPaths := NewColumns(allocator, t, path, stringFieldPath, config, dictIdGen)
 		if !columns.IsEmpty() {
 			c.StructColumns = append(c.StructColumns, NewStructColumn(fieldName, fieldType, columns))
 			return rfield.NewFieldPathWithChildren(len(c.StructColumns)-1, fieldPaths)

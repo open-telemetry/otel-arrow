@@ -49,7 +49,7 @@ type ListColumnBase struct {
 	values     Column
 }
 
-func MakeListColumn(allocator *memory.GoAllocator, listName string, fieldPath []int, etype arrow.DataType, config *config.Config, dictIdGen *dictionary.DictIdGenerator) (ListColumn, []*rfield.FieldPath) {
+func MakeListColumn(allocator *memory.GoAllocator, listName string, fieldPath []int, stringFieldPath string, etype arrow.DataType, config *config.Config, dictIdGen *dictionary.DictIdGenerator) (ListColumn, []*rfield.FieldPath) {
 	var values Column
 	fieldPaths := []*rfield.FieldPath(nil)
 	switch t := etype.(type) {
@@ -93,7 +93,7 @@ func MakeListColumn(allocator *memory.GoAllocator, listName string, fieldPath []
 		col := MakeBinaryColumn(allocator, etype.Name(), &config.Dictionaries.StringColumns, fieldPath, dictIdGen.NextId())
 		values = &col
 	case *arrow.StructType:
-		columns, fps := NewColumns(allocator, t, fieldPath, config, dictIdGen)
+		columns, fps := NewColumns(allocator, t, fieldPath, stringFieldPath, config, dictIdGen)
 		fieldPaths = fps
 		values = NewStructColumn(etype.Name(), etype, columns)
 
