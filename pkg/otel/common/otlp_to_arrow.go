@@ -102,7 +102,6 @@ func ResourceField(resource *resourcepb.Resource) *rfield.Field {
 func AddScope(record *air.Record, scopeKey string, scope *commonpb.InstrumentationScope) {
 	scopeField := ScopeField(scopeKey, scope)
 	if scopeField != nil {
-		// ToDo check optimization for when fields are always pointers or interfaces instead of structs as today.
 		record.AddField(scopeField)
 	}
 }

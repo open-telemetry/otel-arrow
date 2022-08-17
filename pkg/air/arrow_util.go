@@ -243,6 +243,22 @@ func U32FromRecord(record arrow.Record, row int, column string) (uint32, error) 
 	return U32FromArray(Array(record, column), row)
 }
 
+func U32FromStruct(field *arrow.Field, arr arrow.Array, row int, column string) (uint32, error) {
+	if dt := field.Type.(*arrow.StructType); dt != nil {
+		if structArr := arr.(*array.Struct); structArr != nil {
+			_, id, found := FieldOfStruct(dt, column)
+			if !found {
+				return 0, nil
+			}
+			return U32FromArray(structArr.Field(id), row)
+		} else {
+			return 0, fmt.Errorf("column array is not of type struct")
+		}
+	} else {
+		return 0, fmt.Errorf("field is not of type struct")
+	}
+}
+
 func I32FromArray(arr arrow.Array, row int) (int32, error) {
 	if arr == nil {
 		return 0, nil
@@ -305,6 +321,22 @@ func StringFromArray(arr arrow.Array, row int) (string, error) {
 
 func StringFromRecord(record arrow.Record, row int, column string) (string, error) {
 	return StringFromArray(Array(record, column), row)
+}
+
+func StringFromStruct(field *arrow.Field, arr arrow.Array, row int, column string) (string, error) {
+	if dt := field.Type.(*arrow.StructType); dt != nil {
+		if structArr := arr.(*array.Struct); structArr != nil {
+			_, id, found := FieldOfStruct(dt, column)
+			if !found {
+				return "", nil
+			}
+			return StringFromArray(structArr.Field(id), row)
+		} else {
+			return "", fmt.Errorf("column array is not of type struct")
+		}
+	} else {
+		return "", fmt.Errorf("field is not of type struct")
+	}
 }
 
 func BinaryFromArray(arr arrow.Array, row int) ([]byte, error) {

@@ -44,10 +44,14 @@ func ArrowRecordsToOtlpTrace(record arrow.Record) (*coltrace.ExportTraceServiceR
 	for i := 0; i < numRows; i++ {
 		resId := ResourceId(record, i)
 		if _, ok := resourceSpans[resId]; !ok {
+			resource, err := NewResourceFrom(record, i)
+			if err != nil {
+				return nil, err
+			}
 			rs := &tracepb.ResourceSpans{
-				Resource:   NewResourceFrom(record, i),
+				Resource:   resource,
 				ScopeSpans: []*tracepb.ScopeSpans{},
-				SchemaUrl:  MakeResourceSchemaUrlFrom(record, i),
+				SchemaUrl:  "",
 			}
 			resourceSpans[resId] = rs
 		}
@@ -55,10 +59,14 @@ func ArrowRecordsToOtlpTrace(record arrow.Record) (*coltrace.ExportTraceServiceR
 
 		scopeSpanId := resId + "|" + ScopeSpanId(record, i)
 		if _, ok := scopeSpans[scopeSpanId]; !ok {
+			scope, err := NewInstrumentationScopeFrom(record, i)
+			if err != nil {
+				return nil, err
+			}
 			ss := &tracepb.ScopeSpans{
-				Scope:     NewInstrumentationScopeFrom(record, i),
+				Scope:     scope,
 				Spans:     []*tracepb.Span{},
-				SchemaUrl: MakeScopeSchemaUrlFrom(record, i),
+				SchemaUrl: "",
 			}
 			scopeSpans[scopeSpanId] = ss
 			rs.ScopeSpans = append(rs.ScopeSpans, ss)
@@ -88,32 +96,61 @@ func Columns(record arrow.Record) map[string]int {
 }
 
 func ResourceId(record arrow.Record, row int) string {
+	println("todo resourceId")
 	return ""
 }
 
 func ScopeSpanId(record arrow.Record, row int) string {
+	println("todo scopeSpanId")
 	return ""
 }
 
-func NewResourceFrom(record arrow.Record, row int) *resourcepb.Resource {
-	return nil
-}
-
-func MakeResourceSchemaUrlFrom(record arrow.Record, row int) string {
-	return ""
-}
-
-func NewInstrumentationScopeFrom(record arrow.Record, row int) *v1.InstrumentationScope {
-	return &v1.InstrumentationScope{
-		Name:                   "",  // ToDo
-		Version:                "",  // ToDo
-		Attributes:             nil, // ToDo
-		DroppedAttributesCount: 0,
+func NewResourceFrom(record arrow.Record, row int) (*resourcepb.Resource, error) {
+	resourceField, resourceArray := air.FieldArray(record, constants.RESOURCE)
+	if resourceArray == nil {
+		return nil, nil
 	}
+	droppedAttributesCount, err := air.U32FromStruct(resourceField, resourceArray, row, constants.DROPPED_ATTRIBUTES_COUNT)
+	if err != nil {
+		return nil, err
+	}
+	attributes, err := common.AttributesFrom(resourceField, resourceArray, row)
+	if err != nil {
+		return nil, err
+	}
+	return &resourcepb.Resource{
+		Attributes:             attributes,
+		DroppedAttributesCount: droppedAttributesCount,
+	}, nil
 }
 
-func MakeScopeSchemaUrlFrom(record arrow.Record, row int) string {
-	return ""
+func NewInstrumentationScopeFrom(record arrow.Record, row int) (*v1.InstrumentationScope, error) {
+	scopeField, scopeArray := air.FieldArray(record, constants.SCOPE_SPANS)
+	if scopeArray == nil {
+		return nil, nil
+	}
+	name, err := air.StringFromStruct(scopeField, scopeArray, row, constants.NAME)
+	if err != nil {
+		return nil, err
+	}
+	version, err := air.StringFromStruct(scopeField, scopeArray, row, constants.VERSION)
+	if err != nil {
+		return nil, err
+	}
+	droppedAttributesCount, err := air.U32FromStruct(scopeField, scopeArray, row, constants.DROPPED_ATTRIBUTES_COUNT)
+	if err != nil {
+		return nil, err
+	}
+	attributes, err := common.AttributesFrom(scopeField, scopeArray, row)
+	if err != nil {
+		return nil, err
+	}
+	return &v1.InstrumentationScope{
+		Name:                   name,
+		Version:                version,
+		Attributes:             attributes,
+		DroppedAttributesCount: droppedAttributesCount,
+	}, nil
 }
 
 func NewSpanFrom(record arrow.Record, row int) (*tracepb.Span, error) {

@@ -77,6 +77,7 @@ This capability will be used to implement a receiver into the existing collector
   - **General**.
     - [X] Complex attributes
     - [X] Complex body
+    - [ ] Schema URL
   - **OTLP metrics --> OTLP_ARROW events**
     - [X] Gauge
     - [X] Sum
@@ -96,8 +97,9 @@ This capability will be used to implement a receiver into the existing collector
 ### Transform OTLP Arrow entities into OTLP entities
 This capability will be used to implement an exporter into the existing collector (phase 1).
   - **General**
-    - [X] Complex attributes (WIP) 
+    - [X] Complex attributes 
     - [ ] Complex body
+    - [ ] Schema URL 
   - **OTLP_ARROW events --> OTLP metrics**
     - [ ] Gauge
     - [ ] Sum
@@ -110,7 +112,7 @@ This capability will be used to implement an exporter into the existing collecto
   - **OTLP_ARROW events --> OTLP logs**
     - [ ] Logs
   - **OTLP_ARROW events --> OTLP trace**
-    - [X] Trace (WIP)
+    - [X] Trace
     - [X] Links 
     - [X] Events
 
