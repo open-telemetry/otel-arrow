@@ -127,6 +127,18 @@ func DataTypeToId(dt arrow.DataType) string {
 	return id
 }
 
+func FieldArray(record arrow.Record, column string) (*arrow.Field, arrow.Array) {
+	fieldIdsWithSameName := record.Schema().FieldIndices(column)
+	if fieldIdsWithSameName == nil {
+		return nil, nil
+	}
+	if len(fieldIdsWithSameName) != 1 {
+		panic(fmt.Sprintf("duplicate field with name %q", column))
+	}
+	field := record.Schema().Field(fieldIdsWithSameName[0])
+	return &field, record.Column(fieldIdsWithSameName[0])
+}
+
 func Array(record arrow.Record, column string) arrow.Array {
 	fieldIdsWithSameName := record.Schema().FieldIndices(column)
 	if fieldIdsWithSameName == nil {
@@ -136,6 +148,57 @@ func Array(record arrow.Record, column string) arrow.Array {
 		panic(fmt.Sprintf("duplicate field with name %q", column))
 	}
 	return record.Column(fieldIdsWithSameName[0])
+}
+
+func FieldOfStruct(dt *arrow.StructType, column string) (*arrow.Field, int, bool) {
+	idx, found := dt.FieldIdx(column)
+	if !found {
+		return nil, 0, false
+	}
+	field := dt.Field(idx)
+	return &field, idx, true
+}
+
+func BoolFromArray(arr arrow.Array, row int) (bool, error) {
+	if arr == nil {
+		return false, nil
+	} else {
+		switch arr := arr.(type) {
+		case *array.Boolean:
+			if arr.IsNull(row) {
+				return false, nil
+			} else {
+				return arr.Value(row), nil
+			}
+		default:
+			return false, fmt.Errorf("column is not of type bool")
+		}
+	}
+}
+
+func BoolFromRecord(record arrow.Record, row int, column string) (bool, error) {
+	return BoolFromArray(Array(record, column), row)
+}
+
+func F64FromArray(arr arrow.Array, row int) (float64, error) {
+	if arr == nil {
+		return 0.0, nil
+	} else {
+		switch arr := arr.(type) {
+		case *array.Float64:
+			if arr.IsNull(row) {
+				return 0.0, nil
+			} else {
+				return arr.Value(row), nil
+			}
+		default:
+			return 0.0, fmt.Errorf("column is not of type f64")
+		}
+	}
+}
+
+func F64FromRecord(record arrow.Record, row int, column string) (float64, error) {
+	return F64FromArray(Array(record, column), row)
 }
 
 func U64FromArray(arr arrow.Array, row int) (uint64, error) {
@@ -201,6 +264,26 @@ func I32FromRecord(record arrow.Record, row int, column string) (int32, error) {
 	return I32FromArray(Array(record, column), row)
 }
 
+func I64FromArray(arr arrow.Array, row int) (int64, error) {
+	if arr == nil {
+		return 0, nil
+	} else {
+		switch arr := arr.(type) {
+		case *array.Int64:
+			if arr.IsNull(row) {
+				return 0, nil
+			} else {
+				return arr.Value(row), nil
+			}
+		default:
+			return 0, fmt.Errorf("column is not of type int64")
+		}
+	}
+}
+
+func I64FromRecord(record arrow.Record, row int, column string) (int64, error) {
+	return I64FromArray(Array(record, column), row)
+}
 func StringFromArray(arr arrow.Array, row int) (string, error) {
 	if arr == nil {
 		return "", nil

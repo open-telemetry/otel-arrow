@@ -169,10 +169,10 @@ func NewSpanFrom(record arrow.Record, row int) (*tracepb.Span, error) {
 	if err != nil {
 		return nil, err
 	}
-	attrColumn := air.Array(record, constants.ATTRIBUTES)
+	attrField, attrColumn := air.FieldArray(record, constants.ATTRIBUTES)
 	attributes := []*v1.KeyValue(nil)
 	if attrColumn != nil {
-		attributes, err = common.AttributesFrom(attrColumn)
+		attributes, err = common.AttributesFrom(attrField, attrColumn, row)
 		if err != nil {
 			return nil, err
 		}
@@ -225,7 +225,7 @@ func EventsFrom(record arrow.Record, row int) ([]*tracepb.Span_Event, error) {
 			end := int(eventList.Offsets()[row+1])
 			timeUnixNanoId, timeUnixNanoFound := dt.FieldIdx(constants.TIME_UNIX_NANO)
 			nameId, nameFound := dt.FieldIdx(constants.NAME)
-			attributesId, attributesFound := dt.FieldIdx(constants.ATTRIBUTES)
+			attributesField, attributesId, attributesFound := air.FieldOfStruct(dt, constants.ATTRIBUTES)
 			droppedAttributesCountId, droppedAttributesCountFound := dt.FieldIdx(constants.DROPPED_ATTRIBUTES_COUNT)
 			result := make([]*tracepb.Span_Event, 0, end-start)
 
@@ -252,8 +252,7 @@ func EventsFrom(record arrow.Record, row int) ([]*tracepb.Span_Event, error) {
 					event.Name = value
 				}
 				if attributesFound {
-					column := events.Field(attributesId)
-					value, err := common.AttributesFrom(column)
+					value, err := common.AttributesFrom(attributesField, events.Field(attributesId), start)
 					if err != nil {
 						return nil, err
 					}
@@ -296,7 +295,7 @@ func LinksFrom(record arrow.Record, row int) ([]*tracepb.Span_Link, error) {
 			traceIdId, traceIdFound := dt.FieldIdx(constants.TRACE_ID)
 			spanIdId, spanIdFound := dt.FieldIdx(constants.SPAN_ID)
 			traceStateId, traceStateFound := dt.FieldIdx(constants.TRACE_STATE)
-			attributesId, attributesFound := dt.FieldIdx(constants.ATTRIBUTES)
+			attributesField, attributesId, attributesFound := air.FieldOfStruct(dt, constants.ATTRIBUTES)
 			droppedAttributesCountId, droppedAttributesCountFound := dt.FieldIdx(constants.DROPPED_ATTRIBUTES_COUNT)
 			result := make([]*tracepb.Span_Link, 0, end-start)
 
@@ -332,8 +331,7 @@ func LinksFrom(record arrow.Record, row int) ([]*tracepb.Span_Link, error) {
 					link.TraceState = value
 				}
 				if attributesFound {
-					column := links.Field(attributesId)
-					value, err := common.AttributesFrom(column)
+					value, err := common.AttributesFrom(attributesField, links.Field(attributesId), start)
 					if err != nil {
 						return nil, err
 					}
