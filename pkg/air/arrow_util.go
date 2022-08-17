@@ -139,6 +139,22 @@ func FieldArray(record arrow.Record, column string) (*arrow.Field, arrow.Array) 
 	return &field, record.Column(fieldIdsWithSameName[0])
 }
 
+func FieldArrayOfStruct(field *arrow.Field, arr arrow.Array, column string) (*arrow.Field, arrow.Array, error) {
+	if dt := field.Type.(*arrow.StructType); dt != nil {
+		if structArr := arr.(*array.Struct); structArr != nil {
+			fieldOfStruct, id, found := FieldOfStruct(dt, column)
+			if !found {
+				return nil, nil, nil
+			}
+			return fieldOfStruct, structArr.Field(id), nil
+		} else {
+			return nil, nil, fmt.Errorf("column array is not of type struct")
+		}
+	} else {
+		return nil, nil, fmt.Errorf("field is not of type struct")
+	}
+}
+
 func Array(record arrow.Record, column string) arrow.Array {
 	fieldIdsWithSameName := record.Schema().FieldIndices(column)
 	if fieldIdsWithSameName == nil {
@@ -176,9 +192,9 @@ func BoolFromArray(arr arrow.Array, row int) (bool, error) {
 	}
 }
 
-func BoolFromRecord(record arrow.Record, row int, column string) (bool, error) {
-	return BoolFromArray(Array(record, column), row)
-}
+//func BoolFromRecord(record arrow.Record, row int, column string) (bool, error) {
+//	return BoolFromArray(Array(record, column), row)
+//}
 
 func F64FromArray(arr arrow.Array, row int) (float64, error) {
 	if arr == nil {
@@ -197,9 +213,9 @@ func F64FromArray(arr arrow.Array, row int) (float64, error) {
 	}
 }
 
-func F64FromRecord(record arrow.Record, row int, column string) (float64, error) {
-	return F64FromArray(Array(record, column), row)
-}
+//func F64FromRecord(record arrow.Record, row int, column string) (float64, error) {
+//	return F64FromArray(Array(record, column), row)
+//}
 
 func U64FromArray(arr arrow.Array, row int) (uint64, error) {
 	if arr == nil {
@@ -297,9 +313,10 @@ func I64FromArray(arr arrow.Array, row int) (int64, error) {
 	}
 }
 
-func I64FromRecord(record arrow.Record, row int, column string) (int64, error) {
-	return I64FromArray(Array(record, column), row)
-}
+//func I64FromRecord(record arrow.Record, row int, column string) (int64, error) {
+//	return I64FromArray(Array(record, column), row)
+//}
+
 func StringFromArray(arr arrow.Array, row int) (string, error) {
 	if arr == nil {
 		return "", nil

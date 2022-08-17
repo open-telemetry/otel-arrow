@@ -19,13 +19,128 @@ package common
 
 import (
 	"fmt"
+	"sort"
 
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
 
 	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
+	resourcepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
 	"otel-arrow-adapter/pkg/air"
+	"otel-arrow-adapter/pkg/otel/constants"
 )
+
+type Attributes []*commonpb.KeyValue
+
+// Sort interface
+func (d Attributes) Less(i, j int) bool {
+	return d[i].Key < d[j].Key
+}
+func (d Attributes) Len() int      { return len(d) }
+func (d Attributes) Swap(i, j int) { d[i], d[j] = d[j], d[i] }
+
+func AttributesId(attrs []*commonpb.KeyValue) string {
+	sort.Sort(Attributes(attrs))
+	attrsId := "{"
+	for i, attr := range attrs {
+		if i > 0 {
+			attrsId += ","
+		}
+		attrsId += attr.Key + ":" + ValueId(attr.Value)
+	}
+	attrsId += "}"
+	return attrsId
+}
+
+func NewResourceFrom(record arrow.Record, row int) (*resourcepb.Resource, error) {
+	resourceField, resourceArray := air.FieldArray(record, constants.RESOURCE)
+	if resourceArray == nil {
+		return nil, nil
+	}
+	droppedAttributesCount, err := air.U32FromStruct(resourceField, resourceArray, row, constants.DROPPED_ATTRIBUTES_COUNT)
+	if err != nil {
+		return nil, err
+	}
+	attrField, attrArray, err := air.FieldArrayOfStruct(resourceField, resourceArray, constants.ATTRIBUTES)
+	if err != nil {
+		return nil, err
+	}
+	attributes, err := AttributesFrom(attrField.Type, attrArray, row)
+	if err != nil {
+		return nil, err
+	}
+	return &resourcepb.Resource{
+		Attributes:             attributes,
+		DroppedAttributesCount: droppedAttributesCount,
+	}, nil
+}
+
+func NewInstrumentationScopeFrom(record arrow.Record, row int) (*commonpb.InstrumentationScope, error) {
+	scopeField, scopeArray := air.FieldArray(record, constants.SCOPE_SPANS)
+	if scopeArray == nil {
+		return nil, nil
+	}
+	name, err := air.StringFromStruct(scopeField, scopeArray, row, constants.NAME)
+	if err != nil {
+		return nil, err
+	}
+	version, err := air.StringFromStruct(scopeField, scopeArray, row, constants.VERSION)
+	if err != nil {
+		return nil, err
+	}
+	droppedAttributesCount, err := air.U32FromStruct(scopeField, scopeArray, row, constants.DROPPED_ATTRIBUTES_COUNT)
+	if err != nil {
+		return nil, err
+	}
+	attributes, err := AttributesFrom(scopeField.Type, scopeArray, row)
+	if err != nil {
+		return nil, err
+	}
+	return &commonpb.InstrumentationScope{
+		Name:                   name,
+		Version:                version,
+		Attributes:             attributes,
+		DroppedAttributesCount: droppedAttributesCount,
+	}, nil
+}
+
+func ResourceId(r *resourcepb.Resource) string {
+	return AttributesId(r.Attributes) + "|" + fmt.Sprintf("dac:%d", r.DroppedAttributesCount)
+}
+
+func ScopeSpanId(is *commonpb.InstrumentationScope) string {
+	return "name:" + is.Name + "|version:" + is.Version + "|" + AttributesId(is.Attributes) + "|" + fmt.Sprintf("dac:%d", is.DroppedAttributesCount)
+}
+
+func ValueId(v *commonpb.AnyValue) string {
+	switch v.Value.(type) {
+	case *commonpb.AnyValue_StringValue:
+		return v.GetStringValue()
+	case *commonpb.AnyValue_IntValue:
+		return fmt.Sprintf("%d", v.GetIntValue())
+	case *commonpb.AnyValue_DoubleValue:
+		return fmt.Sprintf("%f", v.GetDoubleValue())
+	case *commonpb.AnyValue_BoolValue:
+		return fmt.Sprintf("%t", v.GetBoolValue())
+	case *commonpb.AnyValue_BytesValue:
+		return fmt.Sprintf("%x", v.GetBytesValue())
+	case *commonpb.AnyValue_KvlistValue:
+		return AttributesId(v.GetKvlistValue().Values)
+	case *commonpb.AnyValue_ArrayValue:
+		values := v.GetArrayValue().Values
+		valueId := "["
+		for i := 0; i < len(values); i++ {
+			if i > 0 {
+				valueId += ","
+			}
+			valueId += ValueId(values[i])
+		}
+		valueId += "]"
+		return valueId
+	default:
+		panic("unsupported value type")
+	}
+}
 
 func AttributesFrom(dt arrow.DataType, arr arrow.Array, row int) ([]*commonpb.KeyValue, error) {
 	structType, ok := dt.(*arrow.StructType)

@@ -45,30 +45,33 @@ func NewTraceGenerator(resourceAttributes [][]*commonpb.KeyValue, instrumentatio
 }
 
 func (lg *TraceGenerator) Generate(batchSize int, collectInterval time.Duration) *coltracepb.ExportTraceServiceRequest {
-	var resourceSpans []*tracepb.ResourceSpans
+	resourceAttrs := lg.resourceAttributes[rand.Intn(len(lg.resourceAttributes))]
+	scopeAttrs := lg.instrumentationScopes[rand.Intn(len(lg.instrumentationScopes))]
+	spans := make([]*tracepb.Span, 0, batchSize)
 
 	rand.Seed(uint64(time.Now().UnixNano()))
 	for i := 0; i < batchSize; i++ {
 		lg.dataGenerator.AdvanceTime(collectInterval)
-
-		resourceSpans = append(resourceSpans, &tracepb.ResourceSpans{
-			Resource: &resourcepb.Resource{
-				Attributes:             lg.resourceAttributes[rand.Intn(len(lg.resourceAttributes))],
-				DroppedAttributesCount: 0,
-			},
-			SchemaUrl: lg.defaultSchemaUrl,
-			ScopeSpans: []*tracepb.ScopeSpans{
-				{
-					Scope:     lg.instrumentationScopes[rand.Intn(len(lg.instrumentationScopes))],
-					Spans:     Spans(lg.dataGenerator),
-					SchemaUrl: "",
-				},
-			},
-		})
+		spans = append(spans, Spans(lg.dataGenerator)...)
 	}
 
 	return &coltracepb.ExportTraceServiceRequest{
-		ResourceSpans: resourceSpans,
+		ResourceSpans: []*tracepb.ResourceSpans{
+			{
+				Resource: &resourcepb.Resource{
+					Attributes:             resourceAttrs,
+					DroppedAttributesCount: 0,
+				},
+				SchemaUrl: lg.defaultSchemaUrl,
+				ScopeSpans: []*tracepb.ScopeSpans{
+					{
+						Scope:     scopeAttrs,
+						Spans:     spans,
+						SchemaUrl: "",
+					},
+				},
+			},
+		},
 	}
 }
 

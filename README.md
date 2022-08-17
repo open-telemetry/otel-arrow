@@ -115,7 +115,7 @@ This capability will be used to implement an exporter into the existing collecto
     - [ ] Aggregation temporality
     - [ ] Exemplar
   - **OTLP_ARROW events --> OTLP logs**
-    - [ ] Logs
+    - [X] Logs
   - **OTLP_ARROW events --> OTLP trace**
     - [X] Trace
     - [X] Links 

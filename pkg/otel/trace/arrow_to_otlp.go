@@ -24,8 +24,7 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/array"
 
 	coltrace "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
-	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
-	resourcepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
+	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
 	tracepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/trace/v1"
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/otel/common"
@@ -42,12 +41,12 @@ func ArrowRecordsToOtlpTrace(record arrow.Record) (*coltrace.ExportTraceServiceR
 
 	numRows := int(record.NumRows())
 	for i := 0; i < numRows; i++ {
-		resId := ResourceId(record, i)
+		resource, err := common.NewResourceFrom(record, i)
+		if err != nil {
+			return nil, err
+		}
+		resId := common.ResourceId(resource)
 		if _, ok := resourceSpans[resId]; !ok {
-			resource, err := NewResourceFrom(record, i)
-			if err != nil {
-				return nil, err
-			}
 			rs := &tracepb.ResourceSpans{
 				Resource:   resource,
 				ScopeSpans: []*tracepb.ScopeSpans{},
@@ -57,12 +56,12 @@ func ArrowRecordsToOtlpTrace(record arrow.Record) (*coltrace.ExportTraceServiceR
 		}
 		rs := resourceSpans[resId]
 
-		scopeSpanId := resId + "|" + ScopeSpanId(record, i)
+		scope, err := common.NewInstrumentationScopeFrom(record, i)
+		if err != nil {
+			return nil, err
+		}
+		scopeSpanId := resId + "|" + common.ScopeSpanId(scope)
 		if _, ok := scopeSpans[scopeSpanId]; !ok {
-			scope, err := NewInstrumentationScopeFrom(record, i)
-			if err != nil {
-				return nil, err
-			}
 			ss := &tracepb.ScopeSpans{
 				Scope:     scope,
 				Spans:     []*tracepb.Span{},
@@ -85,73 +84,6 @@ func ArrowRecordsToOtlpTrace(record arrow.Record) (*coltrace.ExportTraceServiceR
 	}
 
 	return &request, nil
-}
-
-func Columns(record arrow.Record) map[string]int {
-	columns := map[string]int{}
-	for i := int64(0); i < record.NumCols(); i++ {
-		columns[record.ColumnName(int(i))] = int(i)
-	}
-	return columns
-}
-
-func ResourceId(record arrow.Record, row int) string {
-	println("todo resourceId")
-	return ""
-}
-
-func ScopeSpanId(record arrow.Record, row int) string {
-	println("todo scopeSpanId")
-	return ""
-}
-
-func NewResourceFrom(record arrow.Record, row int) (*resourcepb.Resource, error) {
-	resourceField, resourceArray := air.FieldArray(record, constants.RESOURCE)
-	if resourceArray == nil {
-		return nil, nil
-	}
-	droppedAttributesCount, err := air.U32FromStruct(resourceField, resourceArray, row, constants.DROPPED_ATTRIBUTES_COUNT)
-	if err != nil {
-		return nil, err
-	}
-	attrField, attrArray := air.FieldArray(record, constants.ATTRIBUTES)
-	attributes, err := common.AttributesFrom(attrField.Type, attrArray, row)
-	if err != nil {
-		return nil, err
-	}
-	return &resourcepb.Resource{
-		Attributes:             attributes,
-		DroppedAttributesCount: droppedAttributesCount,
-	}, nil
-}
-
-func NewInstrumentationScopeFrom(record arrow.Record, row int) (*v1.InstrumentationScope, error) {
-	scopeField, scopeArray := air.FieldArray(record, constants.SCOPE_SPANS)
-	if scopeArray == nil {
-		return nil, nil
-	}
-	name, err := air.StringFromStruct(scopeField, scopeArray, row, constants.NAME)
-	if err != nil {
-		return nil, err
-	}
-	version, err := air.StringFromStruct(scopeField, scopeArray, row, constants.VERSION)
-	if err != nil {
-		return nil, err
-	}
-	droppedAttributesCount, err := air.U32FromStruct(scopeField, scopeArray, row, constants.DROPPED_ATTRIBUTES_COUNT)
-	if err != nil {
-		return nil, err
-	}
-	attributes, err := common.AttributesFrom(scopeField.Type, scopeArray, row)
-	if err != nil {
-		return nil, err
-	}
-	return &v1.InstrumentationScope{
-		Name:                   name,
-		Version:                version,
-		Attributes:             attributes,
-		DroppedAttributesCount: droppedAttributesCount,
-	}, nil
 }
 
 func NewSpanFrom(record arrow.Record, row int) (*tracepb.Span, error) {
@@ -208,7 +140,7 @@ func NewSpanFrom(record arrow.Record, row int) (*tracepb.Span, error) {
 		return nil, err
 	}
 	attrField, attrColumn := air.FieldArray(record, constants.ATTRIBUTES)
-	attributes := []*v1.KeyValue(nil)
+	attributes := []*commonpb.KeyValue(nil)
 	if attrColumn != nil {
 		attributes, err = common.AttributesFrom(attrField.Type, attrColumn, row)
 		if err != nil {
