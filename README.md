@@ -54,6 +54,11 @@ $ go run tools/trace_benchmark/main.go <INPUT FILES>
 The input files must be one or more OTLP traces (ExportTraceServiceRequest) encoded as protobuf binary files.
 
 
+## Integration with the OpenTelemetry Collector
+
+TBD
+
+
 ## Status [WIP]
 
 ### Arrow Intermediate Representation (framework to convert row-oriented structured data to Arrow columnar data)
@@ -98,7 +103,7 @@ This capability will be used to implement a receiver into the existing collector
 This capability will be used to implement an exporter into the existing collector (phase 1).
   - **General**
     - [X] Complex attributes 
-    - [ ] Complex body
+    - [X] Complex body
     - [ ] Schema URL 
   - **OTLP_ARROW events --> OTLP metrics**
     - [ ] Gauge

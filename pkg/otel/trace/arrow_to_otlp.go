@@ -114,7 +114,8 @@ func NewResourceFrom(record arrow.Record, row int) (*resourcepb.Resource, error)
 	if err != nil {
 		return nil, err
 	}
-	attributes, err := common.AttributesFrom(resourceField, resourceArray, row)
+	attrField, attrArray := air.FieldArray(record, constants.ATTRIBUTES)
+	attributes, err := common.AttributesFrom(attrField.Type, attrArray, row)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +142,7 @@ func NewInstrumentationScopeFrom(record arrow.Record, row int) (*v1.Instrumentat
 	if err != nil {
 		return nil, err
 	}
-	attributes, err := common.AttributesFrom(scopeField, scopeArray, row)
+	attributes, err := common.AttributesFrom(scopeField.Type, scopeArray, row)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +210,7 @@ func NewSpanFrom(record arrow.Record, row int) (*tracepb.Span, error) {
 	attrField, attrColumn := air.FieldArray(record, constants.ATTRIBUTES)
 	attributes := []*v1.KeyValue(nil)
 	if attrColumn != nil {
-		attributes, err = common.AttributesFrom(attrField, attrColumn, row)
+		attributes, err = common.AttributesFrom(attrField.Type, attrColumn, row)
 		if err != nil {
 			return nil, err
 		}
@@ -289,7 +290,7 @@ func EventsFrom(record arrow.Record, row int) ([]*tracepb.Span_Event, error) {
 					event.Name = value
 				}
 				if attributesFound {
-					value, err := common.AttributesFrom(attributesField, events.Field(attributesId), start)
+					value, err := common.AttributesFrom(attributesField.Type, events.Field(attributesId), start)
 					if err != nil {
 						return nil, err
 					}
@@ -368,7 +369,7 @@ func LinksFrom(record arrow.Record, row int) ([]*tracepb.Span_Link, error) {
 					link.TraceState = value
 				}
 				if attributesFound {
-					value, err := common.AttributesFrom(attributesField, links.Field(attributesId), start)
+					value, err := common.AttributesFrom(attributesField.Type, links.Field(attributesId), start)
 					if err != nil {
 						return nil, err
 					}
