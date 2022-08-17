@@ -39,7 +39,6 @@ func ArrowRecordsToOtlpTrace(record arrow.Record) (*coltrace.ExportTraceServiceR
 
 	resourceSpans := map[string]*tracepb.ResourceSpans{}
 	scopeSpans := map[string]*tracepb.ScopeSpans{}
-	columns := Columns(record)
 
 	numRows := int(record.NumRows())
 	for i := 0; i < numRows; i++ {
@@ -66,7 +65,7 @@ func ArrowRecordsToOtlpTrace(record arrow.Record) (*coltrace.ExportTraceServiceR
 		}
 		ss := scopeSpans[scopeSpanId]
 
-		span, err := NewSpanFrom(columns, record, i)
+		span, err := NewSpanFrom(record, i)
 		if err != nil {
 			return nil, err
 		}
@@ -117,60 +116,60 @@ func MakeScopeSchemaUrlFrom(record arrow.Record, row int) string {
 	return ""
 }
 
-func NewSpanFrom(columns map[string]int, record arrow.Record, row int) (*tracepb.Span, error) {
-	traceId, err := air.ReadBinary(record, row, constants.TRACE_ID, columns)
+func NewSpanFrom(record arrow.Record, row int) (*tracepb.Span, error) {
+	traceId, err := air.BinaryFromRecord(record, row, constants.TRACE_ID)
 	if err != nil {
 		return nil, err
 	}
-	spanId, err := air.ReadBinary(record, row, constants.SPAN_ID, columns)
+	spanId, err := air.BinaryFromRecord(record, row, constants.SPAN_ID)
 	if err != nil {
 		return nil, err
 	}
-	traceState, err := air.ReadString(record, row, constants.TRACE_STATE, columns)
+	traceState, err := air.StringFromRecord(record, row, constants.TRACE_STATE)
 	if err != nil {
 		return nil, err
 	}
-	parentSpanId, err := air.ReadBinary(record, row, constants.PARENT_SPAN_ID, columns)
+	parentSpanId, err := air.BinaryFromRecord(record, row, constants.PARENT_SPAN_ID)
 	if err != nil {
 		return nil, err
 	}
-	name, err := air.ReadString(record, row, constants.NAME, columns)
+	name, err := air.StringFromRecord(record, row, constants.NAME)
 	if err != nil {
 		return nil, err
 	}
-	kind, err := air.ReadInt32(record, row, constants.KIND, columns)
+	kind, err := air.I32FromRecord(record, row, constants.KIND)
 	if err != nil {
 		return nil, err
 	}
-	startTimeUnixNano, err := air.ReadUint64(record, row, constants.START_TIME_UNIX_NANO, columns)
+	startTimeUnixNano, err := air.U64FromRecord(record, row, constants.START_TIME_UNIX_NANO)
 	if err != nil {
 		return nil, err
 	}
-	endTimeUnixNano, err := air.ReadUint64(record, row, constants.END_TIME_UNIX_NANO, columns)
+	endTimeUnixNano, err := air.U64FromRecord(record, row, constants.END_TIME_UNIX_NANO)
 	if err != nil {
 		return nil, err
 	}
-	droppedAttributesCount, err := air.ReadUint32(record, row, constants.DROPPED_ATTRIBUTES_COUNT, columns)
+	droppedAttributesCount, err := air.U32FromRecord(record, row, constants.DROPPED_ATTRIBUTES_COUNT)
 	if err != nil {
 		return nil, err
 	}
-	droppedEventsCount, err := air.ReadUint32(record, row, constants.DROPPED_EVENTS_COUNT, columns)
+	droppedEventsCount, err := air.U32FromRecord(record, row, constants.DROPPED_EVENTS_COUNT)
 	if err != nil {
 		return nil, err
 	}
-	droppedLinksCount, err := air.ReadUint32(record, row, constants.DROPPED_LINKS_COUNT, columns)
+	droppedLinksCount, err := air.U32FromRecord(record, row, constants.DROPPED_LINKS_COUNT)
 	if err != nil {
 		return nil, err
 	}
-	message, err := air.ReadString(record, row, constants.STATUS_MESSAGE, columns)
+	message, err := air.StringFromRecord(record, row, constants.STATUS_MESSAGE)
 	if err != nil {
 		return nil, err
 	}
-	code, err := air.ReadInt32(record, row, constants.STATUS_CODE, columns)
+	code, err := air.I32FromRecord(record, row, constants.STATUS_CODE)
 	if err != nil {
 		return nil, err
 	}
-	attrColumn := air.Column(record, constants.ATTRIBUTES, columns)
+	attrColumn := air.Array(record, constants.ATTRIBUTES)
 	attributes := []*v1.KeyValue(nil)
 	if attrColumn != nil {
 		attributes, err = common.AttributesFrom(attrColumn)
@@ -178,11 +177,11 @@ func NewSpanFrom(columns map[string]int, record arrow.Record, row int) (*tracepb
 			return nil, err
 		}
 	}
-	events, err := EventsFrom(record, row, columns)
+	events, err := EventsFrom(record, row)
 	if err != nil {
 		return nil, err
 	}
-	links, err := LinksFrom(record, row, columns)
+	links, err := LinksFrom(record, row)
 	if err != nil {
 		return nil, err
 	}
@@ -209,8 +208,8 @@ func NewSpanFrom(columns map[string]int, record arrow.Record, row int) (*tracepb
 	}, nil
 }
 
-func EventsFrom(record arrow.Record, row int, columns map[string]int) ([]*tracepb.Span_Event, error) {
-	eventsColumn := air.Column(record, constants.SPAN_EVENTS, columns)
+func EventsFrom(record arrow.Record, row int) ([]*tracepb.Span_Event, error) {
+	eventsColumn := air.Array(record, constants.SPAN_EVENTS)
 	if eventsColumn == nil {
 		return nil, nil
 	}
@@ -221,12 +220,56 @@ func EventsFrom(record arrow.Record, row int, columns map[string]int) ([]*tracep
 		}
 		switch events := eventList.ListValues().(type) {
 		case *array.Struct:
-			for i := 0; i < events.Len(); i++ {
-				// ToDo continue here (LQ)
-				//events.Field()
-				//eventList.Offsets()[row]
+			dt := events.DataType().(*arrow.StructType)
+			start := int(eventList.Offsets()[row])
+			end := int(eventList.Offsets()[row+1])
+			timeUnixNanoId, timeUnixNanoFound := dt.FieldIdx(constants.TIME_UNIX_NANO)
+			nameId, nameFound := dt.FieldIdx(constants.NAME)
+			attributesId, attributesFound := dt.FieldIdx(constants.ATTRIBUTES)
+			droppedAttributesCountId, droppedAttributesCountFound := dt.FieldIdx(constants.DROPPED_ATTRIBUTES_COUNT)
+			result := make([]*tracepb.Span_Event, 0, end-start)
+
+			for ; start < end; start++ {
+				if events.IsNull(start) {
+					result = append(result, nil)
+					continue
+				}
+				event := tracepb.Span_Event{}
+				if timeUnixNanoFound {
+					column := events.Field(timeUnixNanoId)
+					value, err := air.U64FromArray(column, start)
+					if err != nil {
+						return nil, err
+					}
+					event.TimeUnixNano = value
+				}
+				if nameFound {
+					column := events.Field(nameId)
+					value, err := air.StringFromArray(column, start)
+					if err != nil {
+						return nil, err
+					}
+					event.Name = value
+				}
+				if attributesFound {
+					column := events.Field(attributesId)
+					value, err := common.AttributesFrom(column)
+					if err != nil {
+						return nil, err
+					}
+					event.Attributes = value
+				}
+				if droppedAttributesCountFound {
+					column := events.Field(droppedAttributesCountId)
+					value, err := air.U32FromArray(column, start)
+					if err != nil {
+						return nil, err
+					}
+					event.DroppedAttributesCount = value
+				}
+				result = append(result, &event)
 			}
-			return nil, nil
+			return result, nil
 		default:
 			return nil, fmt.Errorf("expecting a struct array for the column events but got %T", events)
 		}
@@ -235,10 +278,82 @@ func EventsFrom(record arrow.Record, row int, columns map[string]int) ([]*tracep
 	}
 }
 
-func EventFrom(array *array.Struct, row int) (*tracepb.Span_Event, error) {
-	return nil, nil
-}
+func LinksFrom(record arrow.Record, row int) ([]*tracepb.Span_Link, error) {
+	linksColumn := air.Array(record, constants.SPAN_LINKS)
+	if linksColumn == nil {
+		return nil, nil
+	}
+	switch linkList := linksColumn.(type) {
+	case *array.List:
+		if linkList.IsNull(row) {
+			return nil, nil
+		}
+		switch links := linkList.ListValues().(type) {
+		case *array.Struct:
+			dt := links.DataType().(*arrow.StructType)
+			start := int(linkList.Offsets()[row])
+			end := int(linkList.Offsets()[row+1])
+			traceIdId, traceIdFound := dt.FieldIdx(constants.TRACE_ID)
+			spanIdId, spanIdFound := dt.FieldIdx(constants.SPAN_ID)
+			traceStateId, traceStateFound := dt.FieldIdx(constants.TRACE_STATE)
+			attributesId, attributesFound := dt.FieldIdx(constants.ATTRIBUTES)
+			droppedAttributesCountId, droppedAttributesCountFound := dt.FieldIdx(constants.DROPPED_ATTRIBUTES_COUNT)
+			result := make([]*tracepb.Span_Link, 0, end-start)
 
-func LinksFrom(record arrow.Record, row int, columns map[string]int) ([]*tracepb.Span_Link, error) {
-	return nil, nil
+			for ; start < end; start++ {
+				if links.IsNull(start) {
+					result = append(result, nil)
+					continue
+				}
+
+				link := tracepb.Span_Link{}
+				if traceIdFound {
+					column := links.Field(traceIdId)
+					value, err := air.BinaryFromArray(column, start)
+					if err != nil {
+						return nil, err
+					}
+					link.TraceId = value
+				}
+				if spanIdFound {
+					column := links.Field(spanIdId)
+					value, err := air.BinaryFromArray(column, start)
+					if err != nil {
+						return nil, err
+					}
+					link.SpanId = value
+				}
+				if traceStateFound {
+					column := links.Field(traceStateId)
+					value, err := air.StringFromArray(column, start)
+					if err != nil {
+						return nil, err
+					}
+					link.TraceState = value
+				}
+				if attributesFound {
+					column := links.Field(attributesId)
+					value, err := common.AttributesFrom(column)
+					if err != nil {
+						return nil, err
+					}
+					link.Attributes = value
+				}
+				if droppedAttributesCountFound {
+					column := links.Field(droppedAttributesCountId)
+					value, err := air.U32FromArray(column, start)
+					if err != nil {
+						return nil, err
+					}
+					link.DroppedAttributesCount = value
+				}
+				result = append(result, &link)
+			}
+			return result, nil
+		default:
+			return nil, fmt.Errorf("expecting a struct array for the column links but got %T", links)
+		}
+	default:
+		return nil, fmt.Errorf("expecting a list array for the column links but got %T", linkList)
+	}
 }

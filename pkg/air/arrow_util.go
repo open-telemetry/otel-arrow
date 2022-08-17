@@ -127,19 +127,22 @@ func DataTypeToId(dt arrow.DataType) string {
 	return id
 }
 
-func Column(record arrow.Record, column string, columns map[string]int) arrow.Array {
-	if c, ok := columns[column]; !ok {
+func Array(record arrow.Record, column string) arrow.Array {
+	fieldIdsWithSameName := record.Schema().FieldIndices(column)
+	if fieldIdsWithSameName == nil {
 		return nil
-	} else {
-		return record.Column(c)
 	}
+	if len(fieldIdsWithSameName) != 1 {
+		panic(fmt.Sprintf("duplicate field with name %q", column))
+	}
+	return record.Column(fieldIdsWithSameName[0])
 }
 
-func ReadUint64(record arrow.Record, row int, column string, columns map[string]int) (uint64, error) {
-	if c, ok := columns[column]; !ok {
+func U64FromArray(arr arrow.Array, row int) (uint64, error) {
+	if arr == nil {
 		return 0, nil
 	} else {
-		switch arr := record.Column(c).(type) {
+		switch arr := arr.(type) {
 		case *array.Uint64:
 			if arr.IsNull(row) {
 				return 0, nil
@@ -147,16 +150,20 @@ func ReadUint64(record arrow.Record, row int, column string, columns map[string]
 				return arr.Value(row), nil
 			}
 		default:
-			return 0, fmt.Errorf("column '%s' is not of type uint64", column)
+			return 0, fmt.Errorf("column is not of type uint64")
 		}
 	}
 }
 
-func ReadUint32(record arrow.Record, row int, column string, columns map[string]int) (uint32, error) {
-	if c, ok := columns[column]; !ok {
+func U64FromRecord(record arrow.Record, row int, column string) (uint64, error) {
+	return U64FromArray(Array(record, column), row)
+}
+
+func U32FromArray(arr arrow.Array, row int) (uint32, error) {
+	if arr == nil {
 		return 0, nil
 	} else {
-		switch arr := record.Column(c).(type) {
+		switch arr := arr.(type) {
 		case *array.Uint32:
 			if arr.IsNull(row) {
 				return 0, nil
@@ -164,16 +171,20 @@ func ReadUint32(record arrow.Record, row int, column string, columns map[string]
 				return arr.Value(row), nil
 			}
 		default:
-			return 0, fmt.Errorf("column '%s' is not of type uint32", column)
+			return 0, fmt.Errorf("column is not of type uint32")
 		}
 	}
 }
 
-func ReadInt32(record arrow.Record, row int, column string, columns map[string]int) (int32, error) {
-	if c, ok := columns[column]; !ok {
+func U32FromRecord(record arrow.Record, row int, column string) (uint32, error) {
+	return U32FromArray(Array(record, column), row)
+}
+
+func I32FromArray(arr arrow.Array, row int) (int32, error) {
+	if arr == nil {
 		return 0, nil
 	} else {
-		switch arr := record.Column(c).(type) {
+		switch arr := arr.(type) {
 		case *array.Int32:
 			if arr.IsNull(row) {
 				return 0, nil
@@ -181,47 +192,57 @@ func ReadInt32(record arrow.Record, row int, column string, columns map[string]i
 				return arr.Value(row), nil
 			}
 		default:
-			return 0, fmt.Errorf("column '%s' is not of type int32", column)
+			return 0, fmt.Errorf("column is not of type int32")
 		}
 	}
 }
 
-func ReadString(record arrow.Record, row int, column string, columns map[string]int) (string, error) {
-	if c, ok := columns[column]; !ok {
+func I32FromRecord(record arrow.Record, row int, column string) (int32, error) {
+	return I32FromArray(Array(record, column), row)
+}
+
+func StringFromArray(arr arrow.Array, row int) (string, error) {
+	if arr == nil {
 		return "", nil
 	} else {
-		column := record.Column(c)
-		if column.IsNull(row) {
+		if arr.IsNull(row) {
 			return "", nil
 		}
 
-		switch arr := column.(type) {
+		switch arr := arr.(type) {
 		case *array.String:
 			return arr.Value(row), nil
 		case *array.Dictionary:
 			return arr.Dictionary().(*array.String).Value(arr.GetValueIndex(row)), nil
 		default:
-			return "", fmt.Errorf("column '%s' is not of type string", column)
+			return "", fmt.Errorf("column is not of type string")
 		}
 	}
 }
 
-func ReadBinary(record arrow.Record, row int, column string, columns map[string]int) ([]byte, error) {
-	if c, ok := columns[column]; !ok {
+func StringFromRecord(record arrow.Record, row int, column string) (string, error) {
+	return StringFromArray(Array(record, column), row)
+}
+
+func BinaryFromArray(arr arrow.Array, row int) ([]byte, error) {
+	if arr == nil {
 		return nil, nil
 	} else {
-		column := record.Column(c)
-		if column.IsNull(row) {
+		if arr.IsNull(row) {
 			return nil, nil
 		}
 
-		switch arr := column.(type) {
+		switch arr := arr.(type) {
 		case *array.Binary:
 			return arr.Value(row), nil
 		case *array.Dictionary:
 			return arr.Dictionary().(*array.Binary).Value(arr.GetValueIndex(row)), nil
 		default:
-			return nil, fmt.Errorf("column '%s' is not of type binary", column)
+			return nil, fmt.Errorf("column is not of type binary")
 		}
 	}
+}
+
+func BinaryFromRecord(record arrow.Record, row int, column string) ([]byte, error) {
+	return BinaryFromArray(Array(record, column), row)
 }

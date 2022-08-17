@@ -114,17 +114,19 @@ func (s *TraceProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
 		s.batchEvents[i] = be
 
 		// ToDo TMP
-		//ibes, err := s.consumer.Consume(be)
-		//if err != nil {
-		//	panic(err)
-		//}
-		//for _, ibe := range ibes {
-		//	request, err := trace2.ArrowRecordsToOtlpTrace(ibe.Record())
-		//	if err != nil {
-		//		panic(err)
-		//	}
-		//	spew.Dump(request)
-		//}
+		ibes, err := s.consumer.Consume(be)
+		if err != nil {
+			panic(err)
+		}
+		for _, ibe := range ibes {
+			request, err := trace2.ArrowRecordsToOtlpTrace(ibe.Record())
+			if err != nil {
+				panic(err)
+			}
+			if len(request.ResourceSpans) == 0 {
+				panic("no resource spans")
+			}
+		}
 	}
 }
 func (s *TraceProfileable) Clear() {
