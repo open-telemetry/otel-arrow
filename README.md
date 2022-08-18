@@ -83,6 +83,8 @@ This capability will be used to implement a receiver into the existing collector
     - [X] Complex attributes
     - [X] Complex body
     - [ ] Schema URL
+    - [X] Description
+    - [X] Unit
   - **OTLP metrics --> OTLP_ARROW events**
     - [X] Gauge
     - [X] Sum
@@ -105,6 +107,8 @@ This capability will be used to implement an exporter into the existing collecto
     - [X] Complex attributes 
     - [X] Complex body
     - [ ] Schema URL 
+    - [X] Description
+    - [X] Unit
   - **OTLP_ARROW events --> OTLP metrics**
     - [ ] Gauge
     - [X] Sum

@@ -52,27 +52,27 @@ func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request *collogspb.Expo
 				if metric.Data != nil {
 					switch t := metric.Data.(type) {
 					case *metricspb.Metric_Gauge:
-						err := addGaugeOrSum(rr, resourceMetrics, scopeMetrics, metric.Name, t.Gauge.DataPoints, constants.GAUGE_METRICS, multivariateConf)
+						err := addGaugeOrSum(rr, resourceMetrics, scopeMetrics, metric, t.Gauge.DataPoints, constants.GAUGE_METRICS, multivariateConf)
 						if err != nil {
 							return nil, err
 						}
 					case *metricspb.Metric_Sum:
-						err := addGaugeOrSum(rr, resourceMetrics, scopeMetrics, metric.Name, t.Sum.DataPoints, constants.SUM_METRICS, multivariateConf)
+						err := addGaugeOrSum(rr, resourceMetrics, scopeMetrics, metric, t.Sum.DataPoints, constants.SUM_METRICS, multivariateConf)
 						if err != nil {
 							return nil, err
 						}
 					case *metricspb.Metric_Histogram:
-						err := addHistogram(rr, resourceMetrics, scopeMetrics, metric.Name, t.Histogram)
+						err := addHistogram(rr, resourceMetrics, scopeMetrics, metric, t.Histogram)
 						if err != nil {
 							return nil, err
 						}
 					case *metricspb.Metric_Summary:
-						err := addSummary(rr, resourceMetrics, scopeMetrics, metric.Name, t.Summary)
+						err := addSummary(rr, resourceMetrics, scopeMetrics, metric, t.Summary)
 						if err != nil {
 							return nil, err
 						}
 					case *metricspb.Metric_ExponentialHistogram:
-						err := addExpHistogram(rr, resourceMetrics, scopeMetrics, metric.Name, t.ExponentialHistogram)
+						err := addExpHistogram(rr, resourceMetrics, scopeMetrics, metric, t.ExponentialHistogram)
 						if err != nil {
 							return nil, err
 						}
@@ -91,16 +91,16 @@ func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request *collogspb.Expo
 	return result, nil
 }
 
-func addGaugeOrSum(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint, metric_type string, config *MultivariateMetricsConfig) error {
-	if mvKey, ok := config.Metrics[metricName]; ok {
-		return multivariateMetric(rr, resMetrics, scopeMetrics, metricName, dataPoints, metric_type, mvKey)
+func addGaugeOrSum(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, dataPoints []*metricspb.NumberDataPoint, metric_type string, config *MultivariateMetricsConfig) error {
+	if mvKey, ok := config.Metrics[metric.Name]; ok {
+		return multivariateMetric(rr, resMetrics, scopeMetrics, metric, dataPoints, metric_type, mvKey)
 	}
-	univariateMetric(rr, resMetrics, scopeMetrics, metricName, dataPoints, metric_type)
+	univariateMetric(rr, resMetrics, scopeMetrics, metric, dataPoints, metric_type)
 	return nil
 }
 
 // ToDo initial metric name is lost, it should be recorded as metadata or constant column
-func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint, metric_type string, multivariateKey string) error {
+func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, dataPoints []*metricspb.NumberDataPoint, metric_type string, multivariateKey string) error {
 	records := make(map[string]*MultivariateRecord)
 
 	for _, ndp := range dataPoints {
@@ -168,10 +168,16 @@ func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.Resource
 		if len(record.fields) == 0 && len(record.metrics) == 0 {
 			continue
 		}
-		metricField := rfield.NewStructField(metricName, rfield.Struct{
+		metricField := rfield.NewStructField(metric.Name, rfield.Struct{
 			Fields: record.metrics,
 		})
 		metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metric_type)
+		if len(metric.Description) > 0 {
+			metricField.AddMetadata(constants.METADATA_METRIC_DESCRIPTION, metric.Description)
+		}
+		if len(metric.Unit) > 0 {
+			metricField.AddMetadata(constants.METADATA_METRIC_UNIT, metric.Unit)
+		}
 		record.fields = append(record.fields, rfield.NewStructField(constants.METRICS, rfield.Struct{
 			Fields: []*rfield.Field{metricField},
 		}))
@@ -180,7 +186,7 @@ func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.Resource
 	return nil
 }
 
-func univariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, dataPoints []*metricspb.NumberDataPoint, metric_type string) {
+func univariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, dataPoints []*metricspb.NumberDataPoint, metric_type string) {
 	for _, ndp := range dataPoints {
 		record := air.NewRecord()
 
@@ -203,21 +209,19 @@ func univariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMe
 		if ndp.Value != nil {
 			switch t := ndp.Value.(type) {
 			case *metricspb.NumberDataPoint_AsDouble:
-				metricField := rfield.NewStructField(metricName, rfield.Struct{
-					Fields: []*rfield.Field{
-						rfield.NewF64Field(constants.METRIC_VALUE, t.AsDouble),
-					},
-				})
+				metricField := rfield.NewF64Field(metric.Name, t.AsDouble)
 				metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metric_type)
+				if len(metric.Description) > 0 {
+					metricField.AddMetadata(constants.METADATA_METRIC_DESCRIPTION, metric.Description)
+				}
+				if len(metric.Unit) > 0 {
+					metricField.AddMetadata(constants.METADATA_METRIC_UNIT, metric.Unit)
+				}
 				record.StructField(constants.METRICS, rfield.Struct{
 					Fields: []*rfield.Field{metricField},
 				})
 			case *metricspb.NumberDataPoint_AsInt:
-				metricField := rfield.NewStructField(metricName, rfield.Struct{
-					Fields: []*rfield.Field{
-						rfield.NewI64Field(constants.METRIC_VALUE, t.AsInt),
-					},
-				})
+				metricField := rfield.NewI64Field(metric.Name, t.AsInt)
 				metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metric_type)
 				record.StructField(constants.METRICS, rfield.Struct{
 					Fields: []*rfield.Field{metricField},
@@ -237,7 +241,7 @@ func univariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMe
 	}
 }
 
-func addSummary(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, summary *metricspb.Summary) error {
+func addSummary(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, summary *metricspb.Summary) error {
 	for _, sdp := range summary.DataPoints {
 		record := air.NewRecord()
 
@@ -273,7 +277,7 @@ func addSummary(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics,
 		}
 		summaryFields = append(summaryFields, rfield.NewListField(constants.SUMMARY_QUANTILE_VALUES, rfield.List{Values: items}))
 
-		record.StructField(fmt.Sprintf("%s_%s", constants.SUMMARY_METRICS, metricName), rfield.Struct{Fields: summaryFields})
+		record.StructField(fmt.Sprintf("%s_%s", constants.SUMMARY_METRICS, metric.Name), rfield.Struct{Fields: summaryFields})
 
 		if sdp.Flags > 0 {
 			record.U32Field(constants.FLAGS, sdp.Flags)
@@ -284,7 +288,7 @@ func addSummary(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics,
 	return nil
 }
 
-func addHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, histogram *metricspb.Histogram) error {
+func addHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, histogram *metricspb.Histogram) error {
 	for _, sdp := range histogram.DataPoints {
 		record := air.NewRecord()
 
@@ -332,7 +336,7 @@ func addHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetric
 			histoFields = append(histoFields, rfield.NewListField(constants.HISTOGRAM_EXPLICIT_BOUNDS, rfield.List{Values: explicitBounds}))
 		}
 
-		record.StructField(fmt.Sprintf("%s_%s", constants.HISTOGRAM, metricName), rfield.Struct{Fields: histoFields})
+		record.StructField(fmt.Sprintf("%s_%s", constants.HISTOGRAM, metric.Name), rfield.Struct{Fields: histoFields})
 
 		if sdp.Flags > 0 {
 			record.U32Field(constants.FLAGS, sdp.Flags)
@@ -346,7 +350,7 @@ func addHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetric
 	return nil
 }
 
-func addExpHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metricName string, histogram *metricspb.ExponentialHistogram) error {
+func addExpHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, histogram *metricspb.ExponentialHistogram) error {
 	for _, sdp := range histogram.DataPoints {
 		record := air.NewRecord()
 
@@ -416,7 +420,7 @@ func addExpHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMet
 			}
 		}
 
-		record.StructField(fmt.Sprintf("%s_%s", constants.EXP_HISTOGRAM, metricName), rfield.Struct{Fields: histoFields})
+		record.StructField(fmt.Sprintf("%s_%s", constants.EXP_HISTOGRAM, metric.Name), rfield.Struct{Fields: histoFields})
 
 		if sdp.Flags > 0 {
 			record.U32Field(constants.FLAGS, sdp.Flags)

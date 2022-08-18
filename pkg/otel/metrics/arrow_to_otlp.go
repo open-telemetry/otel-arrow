@@ -89,6 +89,18 @@ func ArrowRecordsToOtlpMetrics(record arrow.Record) (*colmetrics.ExportMetricsSe
 func NewMetrics(record arrow.Record, row int) ([]*metricspb.Metric, error) {
 	metrics := []*metricspb.Metric{}
 
+	timeUnixNano, err := air.U64FromRecord(record, row, constants.TIME_UNIX_NANO)
+	if err != nil {
+		return nil, err
+	}
+	startTimeUnixNano, err := air.U64FromRecord(record, row, constants.START_TIME_UNIX_NANO)
+	if err != nil {
+		return nil, err
+	}
+	flags, err := air.U32FromRecord(record, row, constants.FLAGS)
+	if err != nil {
+		return nil, err
+	}
 	metricsField, arr := air.FieldArray(record, constants.METRICS)
 	if metricsField == nil {
 		return nil, fmt.Errorf("no metrics found")
@@ -110,33 +122,14 @@ func NewMetrics(record arrow.Record, row int) ([]*metricspb.Metric, error) {
 		}
 		for i, metricField := range metricsType.Fields() {
 			metricType := metricMetadata(&metricField, constants.METADATA_METRIC_TYPE)
+
 			if metricType == constants.SUM_METRICS {
-				metricName := metricField.Name
 				metricArr := metricsArr.Field(i)
-				switch dt := metricField.Type.(type) {
-				case *arrow.Int64Type:
-					metrics = append(metrics, &metricspb.Metric{
-						Name:        metricName,
-						Description: metricMetadata(&metricField, constants.METADATA_METRIC_DESCRIPTION),
-						Unit:        metricMetadata(&metricField, constants.METADATA_METRIC_UNIT),
-						Data:        nil,
-					})
-				case *arrow.Float64Type:
-					metrics = append(metrics, &metricspb.Metric{
-						Name:        metricName,
-						Description: metricMetadata(&metricField, constants.METADATA_METRIC_DESCRIPTION),
-						Unit:        metricMetadata(&metricField, constants.METADATA_METRIC_UNIT),
-						Data:        nil,
-					})
-				case *arrow.StructType:
-					mm, err := NewMultivariateSumMetrics(&metricField, metricArr, metricName, row, attributes)
-					if err != nil {
-						return nil, err
-					}
-					metrics = append(metrics, mm...)
-				default:
-					return nil, fmt.Errorf("unsupported metric type: %T", dt)
+				sumMetrics, err := collectMetricsSum(timeUnixNano, startTimeUnixNano, flags, metricField, metricArr, row, attributes)
+				if err != nil {
+					return nil, err
 				}
+				metrics = append(metrics, sumMetrics...)
 			} else {
 				return nil, fmt.Errorf("unsupported metric type: %q", metricType)
 			}
@@ -149,7 +142,89 @@ func NewMetrics(record arrow.Record, row int) ([]*metricspb.Metric, error) {
 	}
 }
 
-func NewMultivariateSumMetrics(field *arrow.Field, arr arrow.Array, name string, row int, attributes []*v1.KeyValue) ([]*metricspb.Metric, error) {
+func collectMetricsSum(timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, metricField arrow.Field, metricArr arrow.Array, row int, attributes []*v1.KeyValue) ([]*metricspb.Metric, error) {
+	metricName := metricField.Name
+	switch dt := metricField.Type.(type) {
+	case *arrow.Int64Type:
+		dp, err := collectI64NumberDataPoint(timeUnixNano, startTimeUnixNano, flags, metricArr, row, attributes)
+		if err != nil {
+			return nil, err
+		}
+		return []*metricspb.Metric{{
+			Name:        metricName,
+			Description: metricMetadata(&metricField, constants.METADATA_METRIC_DESCRIPTION),
+			Unit:        metricMetadata(&metricField, constants.METADATA_METRIC_UNIT),
+			Data: &metricspb.Metric_Sum{
+				Sum: &metricspb.Sum{
+					DataPoints:             []*metricspb.NumberDataPoint{dp},
+					AggregationTemporality: 0,     // ToDo Add aggregation temporality
+					IsMonotonic:            false, // ToDo Add is monotonic
+				},
+			},
+		}}, nil
+	case *arrow.Float64Type:
+		dp, err := collectF64NumberDataPoint(timeUnixNano, startTimeUnixNano, flags, metricArr, row, attributes)
+		if err != nil {
+			return nil, err
+		}
+		return []*metricspb.Metric{{
+			Name:        metricName,
+			Description: metricMetadata(&metricField, constants.METADATA_METRIC_DESCRIPTION),
+			Unit:        metricMetadata(&metricField, constants.METADATA_METRIC_UNIT),
+			Data: &metricspb.Metric_Sum{
+				Sum: &metricspb.Sum{
+					DataPoints:             []*metricspb.NumberDataPoint{dp},
+					AggregationTemporality: 0,     // ToDo Add aggregation temporality
+					IsMonotonic:            false, // ToDo Add is monotonic
+				},
+			},
+		}}, nil
+	case *arrow.StructType:
+		mm, err := NewMultivariateSumMetrics(timeUnixNano, startTimeUnixNano, flags, &metricField, metricArr, metricName, row, attributes)
+		if err != nil {
+			return nil, err
+		}
+		return mm, nil
+	default:
+		return nil, fmt.Errorf("unsupported metric type: %T", dt)
+	}
+}
+
+func collectI64NumberDataPoint(timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, metricArr arrow.Array, row int, attributes []*v1.KeyValue) (*metricspb.NumberDataPoint, error) {
+	v, err := air.I64FromArray(metricArr, row)
+	if err != nil {
+		return nil, err
+	}
+	return &metricspb.NumberDataPoint{
+		Attributes:        attributes,
+		StartTimeUnixNano: startTimeUnixNano,
+		TimeUnixNano:      timeUnixNano,
+		Value: &metricspb.NumberDataPoint_AsInt{
+			AsInt: v,
+		},
+		Exemplars: nil, // ToDo Add exemplars
+		Flags:     flags,
+	}, nil
+}
+
+func collectF64NumberDataPoint(timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, metricArr arrow.Array, row int, attributes []*v1.KeyValue) (*metricspb.NumberDataPoint, error) {
+	v, err := air.F64FromArray(metricArr, row)
+	if err != nil {
+		return nil, err
+	}
+	return &metricspb.NumberDataPoint{
+		Attributes:        attributes,
+		StartTimeUnixNano: startTimeUnixNano,
+		TimeUnixNano:      timeUnixNano,
+		Value: &metricspb.NumberDataPoint_AsDouble{
+			AsDouble: v,
+		},
+		Exemplars: nil, // ToDo Add exemplars
+		Flags:     flags,
+	}, nil
+}
+
+func NewMultivariateSumMetrics(timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, field *arrow.Field, arr arrow.Array, name string, row int, attributes []*v1.KeyValue) ([]*metricspb.Metric, error) {
 	metricFields := field.Type.(*arrow.StructType).Fields()
 	multivariateArr, ok := arr.(*array.Struct)
 	if !ok {
@@ -173,35 +248,17 @@ func NewMultivariateSumMetrics(field *arrow.Field, arr arrow.Array, name string,
 
 		switch dt := metricField.Type.(type) {
 		case *arrow.Int64Type:
-			v, err := air.I64FromArray(metricArr, row)
+			dp, err := collectI64NumberDataPoint(timeUnixNano, startTimeUnixNano, flags, metricArr, row, extAttributes)
 			if err != nil {
 				return nil, err
 			}
-			dataPoints = append(dataPoints, &metricspb.NumberDataPoint{
-				Attributes:        attributes,
-				StartTimeUnixNano: 0,
-				TimeUnixNano:      0,
-				Value: &metricspb.NumberDataPoint_AsInt{
-					AsInt: v,
-				},
-				Exemplars: nil, // ToDo Add exemplars
-				Flags:     0,
-			})
+			dataPoints = append(dataPoints, dp)
 		case *arrow.Float64Type:
-			v, err := air.F64FromArray(metricArr, row)
+			dp, err := collectF64NumberDataPoint(timeUnixNano, startTimeUnixNano, flags, metricArr, row, extAttributes)
 			if err != nil {
 				return nil, err
 			}
-			dataPoints = append(dataPoints, &metricspb.NumberDataPoint{
-				Attributes:        extAttributes,
-				StartTimeUnixNano: 0,
-				TimeUnixNano:      0,
-				Value: &metricspb.NumberDataPoint_AsDouble{
-					AsDouble: v,
-				},
-				Exemplars: nil, // ToDo Add exemplars
-				Flags:     0,
-			})
+			dataPoints = append(dataPoints, dp)
 		default:
 			return nil, fmt.Errorf("unsupported metric type: %T", dt)
 		}

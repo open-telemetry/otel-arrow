@@ -65,7 +65,10 @@ func NewResourceFrom(record arrow.Record, row int) (*resourcepb.Resource, error)
 	if err != nil {
 		return nil, err
 	}
-	attributes, err := AttributesFrom(attrField.Type, attrArray, row)
+	var attributes []*commonpb.KeyValue
+	if attrField != nil {
+		attributes, err = AttributesFrom(attrField.Type, attrArray, row)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +95,14 @@ func NewInstrumentationScopeFrom(record arrow.Record, row int, scope string) (*c
 	if err != nil {
 		return nil, err
 	}
-	attributes, err := AttributesFrom(scopeField.Type, scopeArray, row)
+	attrField, attrArray, err := air.FieldArrayOfStruct(scopeField, scopeArray, constants.ATTRIBUTES)
+	if err != nil {
+		return nil, err
+	}
+	var attributes []*commonpb.KeyValue
+	if attrField != nil {
+		attributes, err = AttributesFrom(attrField.Type, attrArray, row)
+	}
 	if err != nil {
 		return nil, err
 	}
