@@ -61,7 +61,7 @@ TBD
 
 ## Status [WIP]
 
-### Arrow Intermediate Representation (framework to convert row-oriented structured data to Arrow columnar data)
+**Arrow Intermediate Representation (framework to convert row-oriented structured data to Arrow columnar data)**
 - [X] Values (supported types: bool, i[8|16|32|64], u[8|16|32|64], f[32|64], string, binary, list, struct)
 - [X] Fields
 - [X] Record
@@ -77,7 +77,7 @@ TBD
   - [X] Multi-field sorting (string field)
   - [X] Multi-field sorting (binary field)
 
-### Transform OTLP entities into OTLP Arrow entities
+**Transform OTLP entities into OTLP Arrow entities**
 This capability will be used to implement a receiver into the existing collector (phase 1)
   - **General**.
     - [X] Complex attributes
@@ -99,7 +99,7 @@ This capability will be used to implement a receiver into the existing collector
     - [X] Links
     - [X] Events
 
-### Transform OTLP Arrow entities into OTLP entities
+**Transform OTLP Arrow entities into OTLP entities**
 This capability will be used to implement an exporter into the existing collector (phase 1).
   - **General**
     - [X] Complex attributes 
@@ -121,14 +121,14 @@ This capability will be used to implement an exporter into the existing collecto
     - [X] Links 
     - [X] Events
 
-### Protocol
+**Protocol**
   - [X] OTLP proto [WIP change a little bit the BatchEvent specification]
   - [X] Event service
   - [x] BatchEvent producer
   - [X] BatchEvent consumer
   - [ ] gRPC service implementation (most likely to be implemented in the OpenTelemetry collector itself)
 
-### Benchmarking tools 
+**Benchmarking tools** 
   - Synthetic data generator
     - [X] ExportMetricsServiceRequest (except for histograms and summary)
     - [X] ExportLogsServiceRequest
@@ -149,18 +149,18 @@ This capability will be used to implement an exporter into the existing collecto
     - [X] metrics_benchmark [WIP define a way to specify the multivariate metrics configuration]  
     - [X] traces_benchmark 
 
-### Performance
+**Performance**
   - [ ] Performance and memory optimizations
   - [ ] Check memory leaks (e.g. Arrow related memory leaks)
 
-### CI
+**CI**
   - [ ] GitHub Actions to build, test, check at every commit.
 
-### Integration
+**Integration**
   - [ ] Integration with Open Telemetry Collector.
 
-### Documentation
+**Documentation**
   - [ ] Update OTEP 0156.
 
-### Feedback to implement
+**Feedback to implement**
   - [ ] Feedback provided by @atoulme 
