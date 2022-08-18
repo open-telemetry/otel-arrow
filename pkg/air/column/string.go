@@ -50,7 +50,7 @@ type StringColumn struct {
 }
 
 // NewStringColumn creates a new StringColumn.
-func NewStringColumn(allocator *memory.GoAllocator, name string, config *config.DictionaryConfig, fieldPath []int, dictId int) *StringColumn {
+func NewStringColumn(allocator *memory.GoAllocator, name string, metadata arrow.Metadata, config *config.DictionaryConfig, fieldPath []int, dictId int) *StringColumn {
 	var dictionary map[string]int
 	if config.MaxCard > 0 {
 		dictionary = make(map[string]int)
@@ -69,8 +69,8 @@ func NewStringColumn(allocator *memory.GoAllocator, name string, config *config.
 		totalValueLength: 0,
 		totalRowCount:    0,
 		dictionary:       dictionary,
-		stringField:      &arrow.Field{Name: name, Type: arrow.BinaryTypes.String},
-		dicoField:        &arrow.Field{Name: name, Type: dicoType},
+		stringField:      &arrow.Field{Name: name, Type: arrow.BinaryTypes.String, Metadata: metadata},
+		dicoField:        &arrow.Field{Name: name, Type: dicoType, Metadata: metadata},
 		stringBuilder:    array.NewStringBuilder(allocator),
 		dicoBuilder:      array.NewDictionaryBuilder(allocator, dicoType).(*array.BinaryDictionaryBuilder),
 		dictionaryType:   dicoType,

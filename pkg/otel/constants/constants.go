@@ -14,6 +14,15 @@
 
 package constants
 
+// All constants used as metadata keys.
+
+const METADATA_METRIC_TYPE = "mt"
+const METADATA_METRIC_MULTIVARIATE_ATTR = "mma"
+const METADATA_METRIC_UNIT = "mu"
+const METADATA_METRIC_DESCRIPTION = "md"
+
+// All constants used a column names.
+
 const TIME_UNIX_NANO string = "time_unix_nano"
 const START_TIME_UNIX_NANO string = "start_time_unix_nano"
 const END_TIME_UNIX_NANO string = "end_time_unix_nano"
@@ -65,3 +74,4 @@ const EXP_HISTOGRAM_POSITIVE string = "positive"
 const EXP_HISTOGRAM_NEGATIVE string = "negative"
 const EXP_HISTOGRAM_OFFSET string = "offset"
 const SCHEMA_URL string = "schema_url"
+const METRICS string = "metrics"

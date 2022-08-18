@@ -107,7 +107,7 @@ This capability will be used to implement an exporter into the existing collecto
     - [ ] Schema URL 
   - **OTLP_ARROW events --> OTLP metrics**
     - [ ] Gauge
-    - [ ] Sum
+    - [X] Sum
     - [ ] Summary
     - [ ] Histogram
     - [ ] Exponential histogram

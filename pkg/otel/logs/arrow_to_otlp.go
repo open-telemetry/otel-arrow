@@ -53,11 +53,11 @@ func ArrowRecordsToOtlpLogs(record arrow.Record) (*collogs.ExportLogsServiceRequ
 		}
 		rs := resourceLogs[resId]
 
-		scope, err := common.NewInstrumentationScopeFrom(record, i)
+		scope, err := common.NewInstrumentationScopeFrom(record, i, constants.SCOPE_LOGS)
 		if err != nil {
 			return nil, err
 		}
-		scopeSpanId := resId + "|" + common.ScopeSpanId(scope)
+		scopeSpanId := resId + "|" + common.ScopeId(scope)
 		if _, ok := scopeLogs[scopeSpanId]; !ok {
 			ss := &logspb.ScopeLogs{
 				Scope:      scope,

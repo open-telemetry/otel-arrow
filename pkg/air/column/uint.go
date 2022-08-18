@@ -47,33 +47,33 @@ type U64Column struct {
 }
 
 // MakeU8Column creates a new U8 column.
-func MakeU8Column(allocator *memory.GoAllocator, name string) U8Column {
+func MakeU8Column(allocator *memory.GoAllocator, name string, metadata arrow.Metadata) U8Column {
 	return U8Column{
-		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Uint8},
+		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Uint8, Metadata: metadata},
 		builder: array.NewUint8Builder(allocator),
 	}
 }
 
 // MakeU16Column creates a new U16 column.
-func MakeU16Column(allocator *memory.GoAllocator, name string) U16Column {
+func MakeU16Column(allocator *memory.GoAllocator, name string, metadata arrow.Metadata) U16Column {
 	return U16Column{
-		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Uint16},
+		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Uint16, Metadata: metadata},
 		builder: array.NewUint16Builder(allocator),
 	}
 }
 
 // MakeU32Column creates a new U32 column.
-func MakeU32Column(allocator *memory.GoAllocator, name string) U32Column {
+func MakeU32Column(allocator *memory.GoAllocator, name string, metadata arrow.Metadata) U32Column {
 	return U32Column{
-		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Uint32},
+		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Uint32, Metadata: metadata},
 		builder: array.NewUint32Builder(allocator),
 	}
 }
 
 // MakeU64Column creates a new U64 column.
-func MakeU64Column(allocator *memory.GoAllocator, name string) U64Column {
+func MakeU64Column(allocator *memory.GoAllocator, name string, metadata arrow.Metadata) U64Column {
 	return U64Column{
-		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Uint64},
+		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Uint64, Metadata: metadata},
 		builder: array.NewUint64Builder(allocator),
 	}
 }

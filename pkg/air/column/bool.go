@@ -29,9 +29,9 @@ type BoolColumn struct {
 }
 
 // MakeBoolColumn creates a new bool column.
-func MakeBoolColumn(allocator *memory.GoAllocator, name string) BoolColumn {
+func MakeBoolColumn(allocator *memory.GoAllocator, name string, metadata arrow.Metadata) BoolColumn {
 	return BoolColumn{
-		field:   &arrow.Field{Name: name, Type: arrow.FixedWidthTypes.Boolean},
+		field:   &arrow.Field{Name: name, Type: arrow.FixedWidthTypes.Boolean, Metadata: metadata},
 		builder: array.NewBooleanBuilder(allocator),
 	}
 }

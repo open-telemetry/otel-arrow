@@ -1064,8 +1064,14 @@ type Struct struct {
 func (v *Struct) DataType() arrow.DataType {
 	fields := make([]arrow.Field, 0, len(v.Fields))
 	for _, field := range v.Fields {
-		arrowField := arrow.Field{Name: field.Name, Type: field.Value.DataType(), Nullable: true, Metadata: arrow.Metadata{}}
-		fields = append(fields, arrowField)
+		fieldMetadata := field.Metadata()
+		if fieldMetadata == nil {
+			arrowField := arrow.Field{Name: field.Name, Type: field.Value.DataType(), Nullable: true, Metadata: arrow.Metadata{}}
+			fields = append(fields, arrowField)
+		} else {
+			arrowField := arrow.Field{Name: field.Name, Type: field.Value.DataType(), Nullable: true, Metadata: arrow.NewMetadata(fieldMetadata.Keys, fieldMetadata.Values)}
+			fields = append(fields, arrowField)
+		}
 	}
 	return arrow.StructOf(fields...)
 }

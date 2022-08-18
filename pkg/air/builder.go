@@ -91,11 +91,17 @@ func NewRecordBuilderWithRecord(allocator *memory.GoAllocator, record *Record, c
 		ipcWriter:   nil,
 	}
 
-	for fieldIdx := range record.fields {
-		fieldName := record.fields[fieldIdx].Name
-		fieldType := record.fields[fieldIdx].DataType()
+	for fieldIdx, field := range record.fields {
+		fieldName := field.Name
+		fieldType := field.DataType()
+		fieldMetadata := field.Metadata()
+		var arrowMetadata arrow.Metadata
+		if fieldMetadata != nil {
+			arrowMetadata = arrow.NewMetadata(fieldMetadata.Keys, fieldMetadata.Values)
+		}
+
 		stringPath := fieldName
-		numPath := builder.columns.CreateColumn(allocator, []int{fieldIdx}, fieldName, stringPath, fieldType, config, &builder.dictIdGen)
+		numPath := builder.columns.CreateColumn(allocator, []int{fieldIdx}, fieldName, stringPath, fieldType, arrowMetadata, config, &builder.dictIdGen)
 		builder.columns.UpdateColumn(numPath, record.fields[fieldIdx])
 		if numPath != nil {
 			builder.fieldPaths = append(builder.fieldPaths, numPath)

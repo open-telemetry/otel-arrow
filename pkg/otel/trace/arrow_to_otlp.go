@@ -56,11 +56,11 @@ func ArrowRecordsToOtlpTrace(record arrow.Record) (*coltrace.ExportTraceServiceR
 		}
 		rs := resourceSpans[resId]
 
-		scope, err := common.NewInstrumentationScopeFrom(record, i)
+		scope, err := common.NewInstrumentationScopeFrom(record, i, constants.SCOPE_SPANS)
 		if err != nil {
 			return nil, err
 		}
-		scopeSpanId := resId + "|" + common.ScopeSpanId(scope)
+		scopeSpanId := resId + "|" + common.ScopeId(scope)
 		if _, ok := scopeSpans[scopeSpanId]; !ok {
 			ss := &tracepb.ScopeSpans{
 				Scope:     scope,

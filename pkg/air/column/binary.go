@@ -47,10 +47,11 @@ type BinaryColumn struct {
 	binaryBuilder  *array.BinaryBuilder
 	dicoBuilder    *array.BinaryDictionaryBuilder
 	dictionaryType *arrow.DictionaryType
+	metadata       arrow.Metadata
 }
 
 // MakeBinaryColumn creates a new Binary column.
-func MakeBinaryColumn(allocator *memory.GoAllocator, name string, config *config.DictionaryConfig, fieldPath []int, dictId int) BinaryColumn {
+func MakeBinaryColumn(allocator *memory.GoAllocator, name string, metadata arrow.Metadata, config *config.DictionaryConfig, fieldPath []int, dictId int) BinaryColumn {
 	var dictionary map[string]int
 	if config.MaxCard > 0 {
 		dictionary = make(map[string]int)
@@ -74,6 +75,7 @@ func MakeBinaryColumn(allocator *memory.GoAllocator, name string, config *config
 		binaryBuilder:    array.NewBinaryBuilder(allocator, arrow.BinaryTypes.Binary),
 		dicoBuilder:      array.NewDictionaryBuilder(allocator, dicoType).(*array.BinaryDictionaryBuilder),
 		dictionaryType:   dicoType,
+		metadata:         metadata,
 	}
 }
 
@@ -172,9 +174,9 @@ func (c *BinaryColumn) Clear() {
 // NewArrowField creates a Binary schema field.
 func (c *BinaryColumn) NewArrowField() *arrow.Field {
 	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen()) {
-		return &arrow.Field{Name: c.name, Type: c.dictionaryType}
+		return &arrow.Field{Name: c.name, Type: c.dictionaryType, Metadata: c.metadata}
 	} else {
-		return &arrow.Field{Name: c.name, Type: arrow.BinaryTypes.Binary}
+		return &arrow.Field{Name: c.name, Type: arrow.BinaryTypes.Binary, Metadata: c.metadata}
 	}
 }
 

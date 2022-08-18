@@ -35,17 +35,17 @@ type F64Column struct {
 }
 
 // MakeF32Column creates a new F32 column.
-func MakeF32Column(allocator *memory.GoAllocator, name string) F32Column {
+func MakeF32Column(allocator *memory.GoAllocator, name string, metadata arrow.Metadata) F32Column {
 	return F32Column{
-		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Float32},
+		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Float32, Metadata: metadata},
 		builder: array.NewFloat32Builder(allocator),
 	}
 }
 
 // MakeF64Column creates a new F64 column.
-func MakeF64Column(allocator *memory.GoAllocator, name string) F64Column {
+func MakeF64Column(allocator *memory.GoAllocator, name string, metadata arrow.Metadata) F64Column {
 	return F64Column{
-		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Float64},
+		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Float64, Metadata: metadata},
 		builder: array.NewFloat64Builder(allocator),
 	}
 }

@@ -30,14 +30,16 @@ type StructColumn struct {
 	name       string
 	structType arrow.DataType
 	columns    *Columns
+	metadata   arrow.Metadata
 }
 
 // NewStructColumn creates a new Struct column.
-func NewStructColumn(name string, structType arrow.DataType, columns *Columns) *StructColumn {
+func NewStructColumn(name string, metadata arrow.Metadata, structType arrow.DataType, columns *Columns) *StructColumn {
 	return &StructColumn{
 		name:       name,
 		structType: structType,
 		columns:    columns,
+		metadata:   metadata,
 	}
 }
 
@@ -86,7 +88,7 @@ func (c *StructColumn) NewArrowField() *arrow.Field {
 			names[field.Name] = true
 		}
 	}
-	return &arrow.Field{Name: c.name, Type: arrow.StructOf(fields...)}
+	return &arrow.Field{Name: c.name, Type: arrow.StructOf(fields...), Metadata: c.metadata}
 }
 
 // NewArray returns a new array for the column.

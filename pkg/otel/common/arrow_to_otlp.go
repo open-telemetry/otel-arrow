@@ -75,8 +75,8 @@ func NewResourceFrom(record arrow.Record, row int) (*resourcepb.Resource, error)
 	}, nil
 }
 
-func NewInstrumentationScopeFrom(record arrow.Record, row int) (*commonpb.InstrumentationScope, error) {
-	scopeField, scopeArray := air.FieldArray(record, constants.SCOPE_SPANS)
+func NewInstrumentationScopeFrom(record arrow.Record, row int, scope string) (*commonpb.InstrumentationScope, error) {
+	scopeField, scopeArray := air.FieldArray(record, scope)
 	if scopeArray == nil {
 		return nil, nil
 	}
@@ -105,10 +105,16 @@ func NewInstrumentationScopeFrom(record arrow.Record, row int) (*commonpb.Instru
 }
 
 func ResourceId(r *resourcepb.Resource) string {
+	if r == nil {
+		return ""
+	}
 	return AttributesId(r.Attributes) + "|" + fmt.Sprintf("dac:%d", r.DroppedAttributesCount)
 }
 
-func ScopeSpanId(is *commonpb.InstrumentationScope) string {
+func ScopeId(is *commonpb.InstrumentationScope) string {
+	if is == nil {
+		return ""
+	}
 	return "name:" + is.Name + "|version:" + is.Version + "|" + AttributesId(is.Attributes) + "|" + fmt.Sprintf("dac:%d", is.DroppedAttributesCount)
 }
 

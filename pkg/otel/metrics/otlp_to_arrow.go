@@ -152,9 +152,13 @@ func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.Resource
 
 		switch t := ndp.Value.(type) {
 		case *metricspb.NumberDataPoint_AsDouble:
-			record.metrics = append(record.metrics, rfield.NewF64Field(*multivariateMetricName, t.AsDouble))
+			field := rfield.NewF64Field(*multivariateMetricName, t.AsDouble)
+			field.AddMetadata(constants.METADATA_METRIC_MULTIVARIATE_ATTR, multivariateKey)
+			record.metrics = append(record.metrics, field)
 		case *metricspb.NumberDataPoint_AsInt:
-			record.metrics = append(record.metrics, rfield.NewI64Field(*multivariateMetricName, t.AsInt))
+			field := rfield.NewI64Field(*multivariateMetricName, t.AsInt)
+			field.AddMetadata(constants.METADATA_METRIC_MULTIVARIATE_ATTR, multivariateKey)
+			record.metrics = append(record.metrics, field)
 		default:
 			panic("Unsupported number data point value type")
 		}
@@ -164,8 +168,12 @@ func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.Resource
 		if len(record.fields) == 0 && len(record.metrics) == 0 {
 			continue
 		}
-		record.fields = append(record.fields, rfield.NewStructField(fmt.Sprintf("%s_%s", metric_type, metricName), rfield.Struct{
+		metricField := rfield.NewStructField(metricName, rfield.Struct{
 			Fields: record.metrics,
+		})
+		metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metric_type)
+		record.fields = append(record.fields, rfield.NewStructField(constants.METRICS, rfield.Struct{
+			Fields: []*rfield.Field{metricField},
 		}))
 		rr.AddRecord(air.NewRecordFromFields(record.fields))
 	}
@@ -195,16 +203,24 @@ func univariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMe
 		if ndp.Value != nil {
 			switch t := ndp.Value.(type) {
 			case *metricspb.NumberDataPoint_AsDouble:
-				record.StructField(fmt.Sprintf("%s_%s", metric_type, metricName), rfield.Struct{
+				metricField := rfield.NewStructField(metricName, rfield.Struct{
 					Fields: []*rfield.Field{
 						rfield.NewF64Field(constants.METRIC_VALUE, t.AsDouble),
 					},
 				})
+				metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metric_type)
+				record.StructField(constants.METRICS, rfield.Struct{
+					Fields: []*rfield.Field{metricField},
+				})
 			case *metricspb.NumberDataPoint_AsInt:
-				record.StructField(fmt.Sprintf("%s_%s", metric_type, metricName), rfield.Struct{
+				metricField := rfield.NewStructField(metricName, rfield.Struct{
 					Fields: []*rfield.Field{
 						rfield.NewI64Field(constants.METRIC_VALUE, t.AsInt),
 					},
+				})
+				metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metric_type)
+				record.StructField(constants.METRICS, rfield.Struct{
+					Fields: []*rfield.Field{metricField},
 				})
 			default:
 				panic("Unsupported number data point value type")
@@ -444,6 +460,7 @@ func AddMultivariateValue(attributes []*commonpb.KeyValue, multivariateKey strin
 				switch t := value.(type) {
 				case *commonpb.AnyValue_StringValue:
 					multivariateValue = &t.StringValue
+					continue
 				default:
 					return nil, fmt.Errorf("Unsupported multivariate value type: %v", value)
 				}

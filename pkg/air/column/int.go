@@ -47,33 +47,33 @@ type I64Column struct {
 }
 
 // MakeI8Column creates a new I8 column.
-func MakeI8Column(allocator *memory.GoAllocator, name string) I8Column {
+func MakeI8Column(allocator *memory.GoAllocator, name string, metadata arrow.Metadata) I8Column {
 	return I8Column{
-		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Int8},
+		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Int8, Metadata: metadata},
 		builder: array.NewInt8Builder(allocator),
 	}
 }
 
 // MakeI16Column creates a new I16 column.
-func MakeI16Column(allocator *memory.GoAllocator, name string) I16Column {
+func MakeI16Column(allocator *memory.GoAllocator, name string, metadata arrow.Metadata) I16Column {
 	return I16Column{
-		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Int16},
+		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Int16, Metadata: metadata},
 		builder: array.NewInt16Builder(allocator),
 	}
 }
 
 // MakeI32Column creates a new I32 column.
-func MakeI32Column(allocator *memory.GoAllocator, name string) I32Column {
+func MakeI32Column(allocator *memory.GoAllocator, name string, metadata arrow.Metadata) I32Column {
 	return I32Column{
-		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Int32},
+		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Int32, Metadata: metadata},
 		builder: array.NewInt32Builder(allocator),
 	}
 }
 
 // MakeI64Column creates a new I64 column.
-func MakeI64Column(allocator *memory.GoAllocator, name string) I64Column {
+func MakeI64Column(allocator *memory.GoAllocator, name string, metadata arrow.Metadata) I64Column {
 	return I64Column{
-		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Int64},
+		field:   &arrow.Field{Name: name, Type: arrow.PrimitiveTypes.Int64, Metadata: metadata},
 		builder: array.NewInt64Builder(allocator),
 	}
 }

@@ -31,10 +31,16 @@ func (f Fields) Less(i, j int) bool {
 func (f Fields) Len() int      { return len(f) }
 func (f Fields) Swap(i, j int) { f[i], f[j] = f[j], f[i] }
 
+type Metadata struct {
+	Keys   []string
+	Values []string
+}
+
 // Field is a scalar or a composite named value.
 type Field struct {
-	Name  string
-	Value Value
+	Name     string
+	Value    Value
+	metadata *Metadata
 }
 
 func NewField(name string, value Value) *Field {
@@ -200,6 +206,34 @@ func (f *Field) DataType() arrow.DataType {
 	return f.Value.DataType()
 }
 
+func (f *Field) Metadata() *Metadata {
+	return f.metadata
+}
+
+func (f *Field) AddMetadata(key string, value string) {
+	if f.metadata == nil {
+		f.metadata = &Metadata{
+			Keys:   []string{key},
+			Values: []string{value},
+		}
+	} else {
+		// Insertion sort (naive implementation as we don't expect many keys)
+		// Metadata must be sorted by keys to be able to build a canonical signature (see WriteSignature).
+		i := 0
+		for ; i < len(f.metadata.Keys); i++ {
+			if f.metadata.Keys[i] > key {
+				break
+			}
+		}
+		f.metadata.Keys = append(f.metadata.Keys, "")
+		f.metadata.Values = append(f.metadata.Values, "")
+		copy(f.metadata.Keys[i+1:], f.metadata.Keys[i:])
+		copy(f.metadata.Values[i+1:], f.metadata.Values[i:])
+		f.metadata.Keys[i] = key
+		f.metadata.Values[i] = value
+	}
+}
+
 // Normalize normalizes the field name and value.
 func (f *Field) Normalize() {
 	f.Value.Normalize()
@@ -250,5 +284,17 @@ func (f *Field) WriteSignature(sig *strings.Builder) {
 		sig.WriteString("]")
 	default:
 		panic("unknown field value type")
+	}
+	if f.metadata != nil {
+		sig.WriteString("<")
+		for i, key := range f.metadata.Keys {
+			if i > 0 {
+				sig.WriteByte(',')
+			}
+			sig.WriteString(key)
+			sig.WriteByte('=')
+			sig.WriteString(f.metadata.Values[i])
+		}
+		sig.WriteString(">")
 	}
 }

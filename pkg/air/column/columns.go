@@ -119,8 +119,7 @@ func NewColumns(allocator *memory.GoAllocator, structType *arrow.StructType, fie
 		subFieldPath := make([]int, len(fieldPath), len(fieldPath)+1)
 		copy(subFieldPath, fieldPath)
 		subFieldPath = append(subFieldPath, len(fieldPaths))
-		stringFieldPath = stringFieldPath + "." + subFields[i].Name
-		colFieldPath := columns.CreateColumn(allocator, subFieldPath, subFields[i].Name, stringFieldPath, subFields[i].Type, config, dictIdGen)
+		colFieldPath := columns.CreateColumn(allocator, subFieldPath, subFields[i].Name, stringFieldPath+"."+subFields[i].Name, subFields[i].Type, subFields[i].Metadata, config, dictIdGen)
 		if colFieldPath != nil {
 			fieldPaths = append(fieldPaths, colFieldPath)
 		}
@@ -129,52 +128,52 @@ func NewColumns(allocator *memory.GoAllocator, structType *arrow.StructType, fie
 }
 
 // CreateColumn creates a column with a field based on its field type and field name.
-func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, fieldName string, stringFieldPath string, fieldType arrow.DataType, config *config.Config, dictIdGen *dictionary.DictIdGenerator) *rfield.FieldPath {
+func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, fieldName string, stringFieldPath string, fieldType arrow.DataType, arrowMetadata arrow.Metadata, config *config.Config, dictIdGen *dictionary.DictIdGenerator) *rfield.FieldPath {
 	switch t := fieldType.(type) {
 	case *arrow.BooleanType:
-		c.BooleanColumns = append(c.BooleanColumns, MakeBoolColumn(allocator, fieldName))
+		c.BooleanColumns = append(c.BooleanColumns, MakeBoolColumn(allocator, fieldName, arrowMetadata))
 		return rfield.NewFieldPath(len(c.BooleanColumns) - 1)
 	case *arrow.Int8Type:
-		c.I8Columns = append(c.I8Columns, MakeI8Column(allocator, fieldName))
+		c.I8Columns = append(c.I8Columns, MakeI8Column(allocator, fieldName, arrowMetadata))
 		return rfield.NewFieldPath(len(c.I8Columns) - 1)
 	case *arrow.Int16Type:
-		c.I16Columns = append(c.I16Columns, MakeI16Column(allocator, fieldName))
+		c.I16Columns = append(c.I16Columns, MakeI16Column(allocator, fieldName, arrowMetadata))
 		return rfield.NewFieldPath(len(c.I16Columns) - 1)
 	case *arrow.Int32Type:
-		c.I32Columns = append(c.I32Columns, MakeI32Column(allocator, fieldName))
+		c.I32Columns = append(c.I32Columns, MakeI32Column(allocator, fieldName, arrowMetadata))
 		return rfield.NewFieldPath(len(c.I32Columns) - 1)
 	case *arrow.Int64Type:
-		c.I64Columns = append(c.I64Columns, MakeI64Column(allocator, fieldName))
+		c.I64Columns = append(c.I64Columns, MakeI64Column(allocator, fieldName, arrowMetadata))
 		return rfield.NewFieldPath(len(c.I64Columns) - 1)
 	case *arrow.Uint8Type:
-		c.U8Columns = append(c.U8Columns, MakeU8Column(allocator, fieldName))
+		c.U8Columns = append(c.U8Columns, MakeU8Column(allocator, fieldName, arrowMetadata))
 		return rfield.NewFieldPath(len(c.U8Columns) - 1)
 	case *arrow.Uint16Type:
-		c.U16Columns = append(c.U16Columns, MakeU16Column(allocator, fieldName))
+		c.U16Columns = append(c.U16Columns, MakeU16Column(allocator, fieldName, arrowMetadata))
 		return rfield.NewFieldPath(len(c.U16Columns) - 1)
 	case *arrow.Uint32Type:
-		c.U32Columns = append(c.U32Columns, MakeU32Column(allocator, fieldName))
+		c.U32Columns = append(c.U32Columns, MakeU32Column(allocator, fieldName, arrowMetadata))
 		return rfield.NewFieldPath(len(c.U32Columns) - 1)
 	case *arrow.Uint64Type:
-		c.U64Columns = append(c.U64Columns, MakeU64Column(allocator, fieldName))
+		c.U64Columns = append(c.U64Columns, MakeU64Column(allocator, fieldName, arrowMetadata))
 		return rfield.NewFieldPath(len(c.U64Columns) - 1)
 	case *arrow.Float32Type:
-		c.F32Columns = append(c.F32Columns, MakeF32Column(allocator, fieldName))
+		c.F32Columns = append(c.F32Columns, MakeF32Column(allocator, fieldName, arrowMetadata))
 		return rfield.NewFieldPath(len(c.F32Columns) - 1)
 	case *arrow.Float64Type:
-		c.F64Columns = append(c.F64Columns, MakeF64Column(allocator, fieldName))
+		c.F64Columns = append(c.F64Columns, MakeF64Column(allocator, fieldName, arrowMetadata))
 		return rfield.NewFieldPath(len(c.F64Columns) - 1)
 	case *arrow.StringType:
-		stringColumn := NewStringColumn(allocator, fieldName, &config.Dictionaries.StringColumns, path, dictIdGen.NextId())
+		stringColumn := NewStringColumn(allocator, fieldName, arrowMetadata, &config.Dictionaries.StringColumns, path, dictIdGen.NextId())
 		c.StringColumns = append(c.StringColumns, *stringColumn)
 		return rfield.NewFieldPath(len(c.StringColumns) - 1)
 	case *arrow.BinaryType:
-		c.BinaryColumns = append(c.BinaryColumns, MakeBinaryColumn(allocator, fieldName, &config.Dictionaries.BinaryColumns, path, dictIdGen.NextId()))
+		c.BinaryColumns = append(c.BinaryColumns, MakeBinaryColumn(allocator, fieldName, arrowMetadata, &config.Dictionaries.BinaryColumns, path, dictIdGen.NextId()))
 		return rfield.NewFieldPath(len(c.BinaryColumns) - 1)
 	case *arrow.ListType:
 		etype := t.Elem()
 		// Dictionary are not yet supported for list columns (arrow implementation limitation).
-		listColumn, fieldPaths := MakeListColumn(allocator, fieldName, path, stringFieldPath, etype, config /*config.ConfigWithoutDictionarySupport()*/, dictIdGen)
+		listColumn, fieldPaths := MakeListColumn(allocator, fieldName, arrowMetadata, path, stringFieldPath, etype, config /*config.ConfigWithoutDictionarySupport()*/, dictIdGen)
 		c.ListColumns = append(c.ListColumns, listColumn)
 		if fieldPaths == nil {
 			return rfield.NewFieldPath(len(c.ListColumns) - 1)
@@ -184,7 +183,7 @@ func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, fieldN
 	case *arrow.StructType:
 		columns, fieldPaths := NewColumns(allocator, t, path, stringFieldPath, config, dictIdGen)
 		if !columns.IsEmpty() {
-			c.StructColumns = append(c.StructColumns, NewStructColumn(fieldName, fieldType, columns))
+			c.StructColumns = append(c.StructColumns, NewStructColumn(fieldName, arrowMetadata, fieldType, columns))
 			return rfield.NewFieldPathWithChildren(len(c.StructColumns)-1, fieldPaths)
 		} else {
 			return nil
