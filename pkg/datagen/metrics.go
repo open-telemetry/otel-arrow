@@ -75,6 +75,102 @@ func (lg *MetricsGenerator) Generate(batchSize int, collectInterval time.Duratio
 	}
 }
 
+func (lg *MetricsGenerator) GenerateSystemCpuTime(batchSize int, collectInterval time.Duration) *collogspb.ExportMetricsServiceRequest {
+	var resourceMetrics []*metricspb.ResourceMetrics
+
+	var metrics []*metricspb.Metric
+
+	for i := 0; i < batchSize; i++ {
+		lg.dataGenerator.AdvanceTime(collectInterval)
+
+		metrics = append(metrics, SystemCpuTime(lg.dataGenerator, 1))
+	}
+	resourceMetrics = append(resourceMetrics, &metricspb.ResourceMetrics{
+		Resource: &resourcepb.Resource{
+			Attributes:             lg.resourceAttributes[lg.generation%len(lg.resourceAttributes)],
+			DroppedAttributesCount: 0,
+		},
+		SchemaUrl: lg.defaultSchemaUrl,
+		ScopeMetrics: []*metricspb.ScopeMetrics{
+			{
+				Scope:     lg.instrumentationScopes[lg.generation%len(lg.instrumentationScopes)],
+				Metrics:   metrics,
+				SchemaUrl: "",
+			},
+		},
+	})
+
+	lg.generation++
+
+	return &collogspb.ExportMetricsServiceRequest{
+		ResourceMetrics: resourceMetrics,
+	}
+}
+
+func (lg *MetricsGenerator) GenerateSystemMemoryUsage(batchSize int, collectInterval time.Duration) *collogspb.ExportMetricsServiceRequest {
+	var resourceMetrics []*metricspb.ResourceMetrics
+
+	var metrics []*metricspb.Metric
+
+	for i := 0; i < batchSize; i++ {
+		lg.dataGenerator.AdvanceTime(collectInterval)
+
+		metrics = append(metrics, SystemMemoryUsage(lg.dataGenerator))
+	}
+	resourceMetrics = append(resourceMetrics, &metricspb.ResourceMetrics{
+		Resource: &resourcepb.Resource{
+			Attributes:             lg.resourceAttributes[lg.generation%len(lg.resourceAttributes)],
+			DroppedAttributesCount: 0,
+		},
+		SchemaUrl: lg.defaultSchemaUrl,
+		ScopeMetrics: []*metricspb.ScopeMetrics{
+			{
+				Scope:     lg.instrumentationScopes[lg.generation%len(lg.instrumentationScopes)],
+				Metrics:   metrics,
+				SchemaUrl: "",
+			},
+		},
+	})
+
+	lg.generation++
+
+	return &collogspb.ExportMetricsServiceRequest{
+		ResourceMetrics: resourceMetrics,
+	}
+}
+
+func (lg *MetricsGenerator) GenerateSystemCpuLoadAverage1m(batchSize int, collectInterval time.Duration) *collogspb.ExportMetricsServiceRequest {
+	var resourceMetrics []*metricspb.ResourceMetrics
+
+	var metrics []*metricspb.Metric
+
+	for i := 0; i < batchSize; i++ {
+		lg.dataGenerator.AdvanceTime(collectInterval)
+
+		metrics = append(metrics, SystemCpuLoadAverage1m(lg.dataGenerator))
+	}
+	resourceMetrics = append(resourceMetrics, &metricspb.ResourceMetrics{
+		Resource: &resourcepb.Resource{
+			Attributes:             lg.resourceAttributes[lg.generation%len(lg.resourceAttributes)],
+			DroppedAttributesCount: 0,
+		},
+		SchemaUrl: lg.defaultSchemaUrl,
+		ScopeMetrics: []*metricspb.ScopeMetrics{
+			{
+				Scope:     lg.instrumentationScopes[lg.generation%len(lg.instrumentationScopes)],
+				Metrics:   metrics,
+				SchemaUrl: "",
+			},
+		},
+	})
+
+	lg.generation++
+
+	return &collogspb.ExportMetricsServiceRequest{
+		ResourceMetrics: resourceMetrics,
+	}
+}
+
 func SystemCpuTime(dg *DataGenerator, cpuCount int) *metricspb.Metric {
 	cpuStates := CpuStates()
 	var dataPoint []*metricspb.NumberDataPoint

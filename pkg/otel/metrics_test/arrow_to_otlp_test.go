@@ -22,10 +22,11 @@ import (
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/air/config"
 	datagen2 "otel-arrow-adapter/pkg/datagen"
+	"otel-arrow-adapter/pkg/otel/common"
 	"otel-arrow-adapter/pkg/otel/metrics"
 )
 
-func TestArrowToOtlpMetrics(t *testing.T) {
+func TestSystemCpuTimeConversion(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewDefaultConfig()
@@ -38,7 +39,7 @@ func TestArrowToOtlpMetrics(t *testing.T) {
 	multivariateConf.Metrics["system.cpu.time"] = "state"
 	multivariateConf.Metrics["system.memory.usage"] = "state"
 
-	request := lg.Generate(1, 100)
+	request := lg.GenerateSystemCpuTime(1, 100)
 	spew.Dump(request)
 
 	multiSchemaRecords, err := metrics.OtlpMetricsToArrowRecords(rr, request, &multivariateConf)
@@ -52,5 +53,68 @@ func TestArrowToOtlpMetrics(t *testing.T) {
 			t.Errorf("Unexpected error: %v", err)
 		}
 		spew.Dump(req)
+		common.MetricsRequestAssertEq(request, req)
+	}
+}
+
+func TestSystemMemoryUsageConversion(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.NewDefaultConfig()
+	rr := air.NewRecordRepository(cfg)
+	lg := datagen2.NewMetricsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScopes())
+
+	multivariateConf := metrics.MultivariateMetricsConfig{
+		Metrics: make(map[string]string),
+	}
+	multivariateConf.Metrics["system.cpu.time"] = "state"
+	multivariateConf.Metrics["system.memory.usage"] = "state"
+
+	request := lg.GenerateSystemMemoryUsage(1, 100)
+	spew.Dump(request)
+
+	multiSchemaRecords, err := metrics.OtlpMetricsToArrowRecords(rr, request, &multivariateConf)
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	for _, record := range multiSchemaRecords {
+		req, err := metrics.ArrowRecordsToOtlpMetrics(record)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+		spew.Dump(req)
+		common.MetricsRequestAssertEq(request, req)
+	}
+}
+
+func TestSystemCpuLoadAverage1mConversion(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.NewDefaultConfig()
+	rr := air.NewRecordRepository(cfg)
+	lg := datagen2.NewMetricsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScopes())
+
+	multivariateConf := metrics.MultivariateMetricsConfig{
+		Metrics: make(map[string]string),
+	}
+	multivariateConf.Metrics["system.cpu.time"] = "state"
+	multivariateConf.Metrics["system.memory.usage"] = "state"
+
+	request := lg.GenerateSystemCpuLoadAverage1m(1, 100)
+	spew.Dump(request)
+
+	multiSchemaRecords, err := metrics.OtlpMetricsToArrowRecords(rr, request, &multivariateConf)
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+
+	for _, record := range multiSchemaRecords {
+		req, err := metrics.ArrowRecordsToOtlpMetrics(record)
+		if err != nil {
+			t.Errorf("Unexpected error: %v", err)
+		}
+		spew.Dump(req)
+		common.MetricsRequestAssertEq(request, req)
 	}
 }
