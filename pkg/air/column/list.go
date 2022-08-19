@@ -95,7 +95,7 @@ func MakeListColumn(allocator *memory.GoAllocator, listName string, metadata arr
 	case *arrow.StructType:
 		columns, fps := NewColumns(allocator, t, fieldPath, stringFieldPath, config, dictIdGen)
 		fieldPaths = fps
-		values = NewStructColumn(etype.Name(), metadata, etype, columns)
+		values = NewStructColumn(stringFieldPath, etype.Name(), metadata, etype, columns)
 
 	// List of list of not yet supported
 

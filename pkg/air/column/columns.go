@@ -20,6 +20,7 @@ import (
 
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/memory"
+	"github.com/davecgh/go-spew/spew"
 
 	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/air/dictionary"
@@ -183,7 +184,7 @@ func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, fieldN
 	case *arrow.StructType:
 		columns, fieldPaths := NewColumns(allocator, t, path, stringFieldPath, config, dictIdGen)
 		if !columns.IsEmpty() {
-			c.StructColumns = append(c.StructColumns, NewStructColumn(fieldName, arrowMetadata, fieldType, columns))
+			c.StructColumns = append(c.StructColumns, NewStructColumn(stringFieldPath, fieldName, arrowMetadata, fieldType, columns))
 			return rfield.NewFieldPathWithChildren(len(c.StructColumns)-1, fieldPaths)
 		} else {
 			return nil
@@ -193,7 +194,7 @@ func (c *Columns) CreateColumn(allocator *memory.GoAllocator, path []int, fieldN
 	}
 }
 
-func (c *Columns) UpdateColumn(fieldPath *rfield.FieldPath, field *rfield.Field) {
+func (c *Columns) UpdateColumn(fieldPath *rfield.FieldPath, fieldStringPath string, field *rfield.Field) {
 	switch t := field.Value.(type) {
 	case *rfield.I8:
 		c.I8Columns[fieldPath.Current].Push(&t.Value)
@@ -239,6 +240,23 @@ func (c *Columns) UpdateColumn(fieldPath *rfield.FieldPath, field *rfield.Field)
 		c.length = c.ListColumns[fieldPath.Current].Len()
 	case *rfield.Struct:
 		for fieldPos := range t.Fields {
+			// TODO begin debug statement
+			if len(c.StructColumns) <= fieldPath.Current {
+				spew.Dump(fieldPath)
+				spew.Dump(field)
+				panic(fmt.Sprintf("c.StructColumns index out of range (field path %q)", fieldStringPath))
+			}
+			if len(fieldPath.Children) <= fieldPos {
+				spew.Dump(fieldPath)
+				spew.Dump(field)
+				panic(fmt.Sprintf("fieldPath.Children index out of range (field path %q)", fieldStringPath))
+			}
+			if len(t.Fields) <= fieldPos {
+				spew.Dump(fieldPath)
+				spew.Dump(field)
+				panic(fmt.Sprintf("t.Fields index out of range (field path %q)", fieldStringPath))
+			}
+			// TODO end debug statement
 			c.StructColumns[fieldPath.Current].Push(fieldPath.Children[fieldPos], t.Fields[fieldPos])
 		}
 		c.length = c.StructColumns[fieldPath.Current].Len()

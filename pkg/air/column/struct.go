@@ -27,25 +27,27 @@ import (
 
 // StructColumn is a column of struct data.
 type StructColumn struct {
-	name       string
-	structType arrow.DataType
-	columns    *Columns
-	metadata   arrow.Metadata
+	fieldStringPath string
+	name            string
+	structType      arrow.DataType
+	columns         *Columns
+	metadata        arrow.Metadata
 }
 
 // NewStructColumn creates a new Struct column.
-func NewStructColumn(name string, metadata arrow.Metadata, structType arrow.DataType, columns *Columns) *StructColumn {
+func NewStructColumn(fieldStringPath string, name string, metadata arrow.Metadata, structType arrow.DataType, columns *Columns) *StructColumn {
 	return &StructColumn{
-		name:       name,
-		structType: structType,
-		columns:    columns,
-		metadata:   metadata,
+		fieldStringPath: fieldStringPath,
+		name:            name,
+		structType:      structType,
+		columns:         columns,
+		metadata:        metadata,
 	}
 }
 
 // Push pushes the value to the column.
 func (c *StructColumn) Push(fieldPath *rfield.FieldPath, field *rfield.Field) {
-	c.columns.UpdateColumn(fieldPath, field)
+	c.columns.UpdateColumn(fieldPath, c.fieldStringPath, field)
 }
 
 // Name returns the name of the column.

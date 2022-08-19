@@ -159,12 +159,14 @@ func DefaultResourceAttributes() [][]*commonpb.KeyValue {
 func DefaultInstrumentationScopes() []*commonpb.InstrumentationScope {
 	return []*commonpb.InstrumentationScope{
 		{
-			Name:    "fake_generator",
-			Version: "1.0.0",
+			Name:       "fake_generator",
+			Version:    "1.0.0",
+			Attributes: []*commonpb.KeyValue{},
 		},
 		{
-			Name:    "fake_generator",
-			Version: "1.0.1",
+			Name:       "fake_generator",
+			Version:    "1.0.1",
+			Attributes: []*commonpb.KeyValue{},
 		},
 	}
 }
