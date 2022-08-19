@@ -25,7 +25,7 @@ import (
 	tracepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/trace/v1"
 )
 
-var EVENT_NAMES = []string{"dns-lookup", "tcp-connect", "tcp-handshake", "tcp-send", "tcp-receive", "tcp-close", "http-send", "http-receive", "http-close", "message-send", "message-receive", "message-close", "grpc-send", "grpc-receive", "grpc-close", "grpc-status", "grpc-trailers", "unknown"}
+var EVENT_NAMES = []string{"empty", "dns-lookup", "tcp-connect", "tcp-handshake", "tcp-send", "tcp-receive", "tcp-close", "http-send", "http-receive", "http-close", "message-send", "message-receive", "message-close", "grpc-send", "grpc-receive", "grpc-close", "grpc-status", "grpc-trailers", "unknown"}
 var TRACE_STATES = []string{"started", "ended", "unknown"}
 
 type TraceGenerator struct {
@@ -163,10 +163,15 @@ func events(dataGenerator *DataGenerator) []*tracepb.Span_Event {
 	eventCount := rand.Intn(8) + 2
 	events := make([]*tracepb.Span_Event, eventCount)
 	for i := 0; i < eventCount; i++ {
+		name := EVENT_NAMES[rand.Intn(len(EVENT_NAMES))]
+		attributes := DefaultSpanEventAttributes()
+		if name == "empty" {
+			attributes = nil
+		}
 		events[i] = &tracepb.Span_Event{
 			TimeUnixNano:           dataGenerator.CurrentTime() + uint64(rand.Intn(5)),
-			Name:                   EVENT_NAMES[rand.Intn(len(EVENT_NAMES))],
-			Attributes:             DefaultSpanEventAttributes(),
+			Name:                   name,
+			Attributes:             attributes,
 			DroppedAttributesCount: 0,
 		}
 	}

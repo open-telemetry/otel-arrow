@@ -181,6 +181,56 @@ func NewListField(name string, value List) *Field {
 	}
 }
 
+func NewDefaultFieldFromDataType(name string, dt arrow.DataType) *Field {
+	switch t := dt.(type) {
+	case *arrow.BooleanType:
+		return NewBoolField(name, false)
+	case *arrow.Int8Type:
+		return NewI8Field(name, 0)
+	case *arrow.Int16Type:
+		return NewI16Field(name, 0)
+	case *arrow.Int32Type:
+		return NewI32Field(name, 0)
+	case *arrow.Int64Type:
+		return NewI64Field(name, 0)
+	case *arrow.Uint8Type:
+		return NewU8Field(name, 0)
+	case *arrow.Uint16Type:
+		return NewU16Field(name, 0)
+	case *arrow.Uint32Type:
+		return NewU32Field(name, 0)
+	case *arrow.Uint64Type:
+		return NewU64Field(name, 0)
+	case *arrow.Float32Type:
+		return NewF32Field(name, 0)
+	case *arrow.Float64Type:
+		return NewF64Field(name, 0)
+	case *arrow.StringType:
+		return NewStringField(name, "")
+	case *arrow.BinaryType:
+		return NewBinaryField(name, []byte{})
+	case *arrow.StructType:
+		var fields []*Field
+		for _, field := range t.Fields() {
+			fields = append(fields, NewDefaultFieldFromDataType(field.Name, field.Type))
+		}
+		return NewStructField(name, Struct{Fields: fields})
+	case *arrow.ListType:
+		return NewListField(name, List{})
+	case *arrow.DictionaryType:
+		switch t.ValueType.(type) {
+		case *arrow.StringType:
+			return NewStringField(name, "")
+		case *arrow.BinaryType:
+			return NewBinaryField(name, []byte{})
+		default:
+			panic("unsupported dictionary value type")
+		}
+	default:
+		panic("unsupported type")
+	}
+}
+
 func (f *Field) ValueByPath(path []int) Value {
 	if len(path) == 0 {
 		return f.Value

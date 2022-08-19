@@ -25,17 +25,26 @@ import (
 	"otel-arrow-adapter/pkg/air/stats"
 )
 
+type ArrowFields []*arrow.Field
+
+// Sort interface
+func (d ArrowFields) Less(i, j int) bool {
+	return d[i].Name < d[j].Name
+}
+func (d ArrowFields) Len() int      { return len(d) }
+func (d ArrowFields) Swap(i, j int) { d[i], d[j] = d[j], d[i] }
+
 // StructColumn is a column of struct data.
 type StructColumn struct {
 	fieldStringPath string
 	name            string
-	structType      arrow.DataType
+	structType      *arrow.StructType
 	columns         *Columns
 	metadata        arrow.Metadata
 }
 
 // NewStructColumn creates a new Struct column.
-func NewStructColumn(fieldStringPath string, name string, metadata arrow.Metadata, structType arrow.DataType, columns *Columns) *StructColumn {
+func NewStructColumn(fieldStringPath string, name string, metadata arrow.Metadata, structType *arrow.StructType, columns *Columns) *StructColumn {
 	return &StructColumn{
 		fieldStringPath: fieldStringPath,
 		name:            name,
@@ -68,8 +77,22 @@ func (c *StructColumn) Clear() {
 // PushFromValues adds the given values to the column.
 func (c *StructColumn) PushFromValues(fieldPath *rfield.FieldPath, data []rfield.Value) {
 	for _, value := range data {
-		for i, field := range value.(*rfield.Struct).Fields {
-			c.Push(fieldPath.ChildPath(i), field)
+		valueFields := value.(*rfield.Struct).Fields
+		if len(valueFields) == len(c.structType.Fields()) {
+			for i, field := range value.(*rfield.Struct).Fields {
+				c.Push(fieldPath.ChildPath(i), field)
+			}
+		} else {
+			// Some fields are missing in the value.
+			//valueFieldIdx := 0
+			//for i, structField := range c.structType.Fields() {
+			//	if valueFieldIdx < len(valueFields) && structField.Name == valueFields[valueFieldIdx].Name {
+			//		c.Push(fieldPath.ChildPath(i), valueFields[valueFieldIdx])
+			//		valueFieldIdx++
+			//	} else {
+			//		c.Push(fieldPath.ChildPath(i), rfield.NewDefaultFieldFromDataType(structField.Name, structField.Type))
+			//	}
+			//}
 		}
 	}
 }
@@ -78,6 +101,7 @@ func (c *StructColumn) PushFromValues(fieldPath *rfield.FieldPath, data []rfield
 func (c *StructColumn) NewArrowField() *arrow.Field {
 	// Create struct field
 	fieldRefs := c.columns.NewArrowFields()
+	//sort.Sort(ArrowFields(fieldRefs))
 
 	// Create a struct field.
 	fields := make([]arrow.Field, len(fieldRefs))

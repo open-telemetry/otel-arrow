@@ -117,11 +117,9 @@ func AddEvents(record *air.Record, events []*v1.Span_Event) {
 		if len(event.Name) > 0 {
 			fields = append(fields, rfield.NewStringField(constants.NAME, event.Name))
 		}
-		if event.Attributes != nil {
-			attributes := common.NewAttributes(event.Attributes)
-			if attributes != nil {
-				fields = append(fields, attributes)
-			}
+		attributes := common.NewAttributes(event.Attributes)
+		if attributes != nil {
+			fields = append(fields, attributes)
 		}
 		if event.DroppedAttributesCount > 0 {
 			fields = append(fields, rfield.NewU32Field(constants.DROPPED_ATTRIBUTES_COUNT, uint32(event.DroppedAttributesCount)))
@@ -154,11 +152,9 @@ func AddLinksAsListOfStructs(record *air.Record, links []*v1.Span_Link) {
 		if len(link.TraceState) > 0 {
 			fields = append(fields, rfield.NewStringField(constants.TRACE_STATE, link.TraceState))
 		}
-		if link.Attributes != nil {
-			attributes := common.NewAttributes(link.Attributes)
-			if attributes != nil {
-				fields = append(fields, attributes)
-			}
+		attributes := common.NewAttributes(link.Attributes)
+		if attributes != nil {
+			fields = append(fields, attributes)
 		}
 		if link.DroppedAttributesCount > 0 {
 			fields = append(fields, rfield.NewU32Field(constants.DROPPED_ATTRIBUTES_COUNT, uint32(link.DroppedAttributesCount)))
@@ -207,17 +203,15 @@ func AddLinksAsStructOfLists(record *air.Record, links []*v1.Span_Link) {
 			}
 			fields[2].Value.(*rfield.List).Values[pos] = &rfield.String{Value: link.TraceState}
 		}
-		if link.Attributes != nil {
-			attributes := common.AttributesValue(link.Attributes)
-			if attributes != nil {
-				if fields[3] == nil {
-					fields[3] = rfield.NewListField(constants.ATTRIBUTES, rfield.List{Values: make([]rfield.Value, len(links))})
-					for i := 0; i < pos; i++ {
-						fields[3].Value.(*rfield.List).Values[pos] = nil
-					}
+		attributes := common.AttributesValue(link.Attributes)
+		if attributes != nil {
+			if fields[3] == nil {
+				fields[3] = rfield.NewListField(constants.ATTRIBUTES, rfield.List{Values: make([]rfield.Value, len(links))})
+				for i := 0; i < pos; i++ {
+					fields[3].Value.(*rfield.List).Values[pos] = nil
 				}
-				fields[3].Value.(*rfield.List).Values[pos] = attributes
 			}
+			fields[3].Value.(*rfield.List).Values[pos] = attributes
 		}
 		if link.DroppedAttributesCount > 0 {
 			if fields[4] == nil {

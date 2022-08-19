@@ -147,7 +147,10 @@ func OtlpAnyValueToValue(value *commonpb.AnyValue) rfield.Value {
 					fieldValues = append(fieldValues, v)
 				}
 			}
-			return &rfield.List{Values: fieldValues}
+			if len(fieldValues) > 0 {
+				return &rfield.List{Values: fieldValues}
+			}
+			return nil
 		case *commonpb.AnyValue_KvlistValue:
 			values := value.GetKvlistValue()
 			if values == nil || len(values.Values) == 0 {
@@ -163,7 +166,10 @@ func OtlpAnyValueToValue(value *commonpb.AnyValue) rfield.Value {
 						})
 					}
 				}
-				return &rfield.Struct{Fields: fields}
+				if len(fields) > 0 {
+					return &rfield.Struct{Fields: fields}
+				}
+				return nil
 			}
 		default:
 			return nil

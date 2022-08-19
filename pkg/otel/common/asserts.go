@@ -20,6 +20,7 @@ package common
 import (
 	"bytes"
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 
@@ -290,7 +291,34 @@ func MetricAssertEq(m1 *metricspb.Metric, m2 *metricspb.Metric, context string) 
 }
 
 func MetricDataAssertEq(d1 interface{}, d2 interface{}, context string) {
-	// ToDo
+	if d1 == nil && d2 == nil {
+		return
+	}
+	if d1 == nil {
+		panic("The first metric data is nil (context: " + context + ")")
+	}
+	if d2 == nil {
+		panic("The second metric data is nil (context: " + context + ")")
+	}
+	switch d1.(type) {
+	case *metricspb.Metric_Gauge:
+		// Todo
+		break
+	case *metricspb.Metric_Sum:
+		// Todo
+		break
+	case *metricspb.Metric_Histogram:
+		// Todo
+		break
+	case *metricspb.Metric_ExponentialHistogram:
+		// Todo
+		break
+	case *metricspb.Metric_Summary:
+		// Todo
+		break
+	default:
+		panic("unexpected metric data type: " + reflect.TypeOf(d1).String() + " (context: " + context + ")")
+	}
 }
 
 func InstrumentationScopeAssertEq(sc1 *commonpb.InstrumentationScope, sc2 *commonpb.InstrumentationScope, context string) {

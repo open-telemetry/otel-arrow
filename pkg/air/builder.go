@@ -102,8 +102,7 @@ func NewRecordBuilderWithRecord(allocator *memory.GoAllocator, record *Record, c
 
 		stringPath := fieldName
 		numPath := builder.columns.CreateColumn(allocator, []int{fieldIdx}, fieldName, stringPath, fieldType, arrowMetadata, config, &builder.dictIdGen)
-		field := record.fields[fieldIdx]
-		builder.columns.UpdateColumn(numPath, field.Name, field)
+		builder.columns.UpdateColumn(numPath, record.fields[fieldIdx].Name, record.fields[fieldIdx])
 		if numPath != nil {
 			builder.fieldPaths = append(builder.fieldPaths, numPath)
 		}
@@ -116,8 +115,7 @@ func (rb *RecordBuilder) AddRecord(record *Record) {
 		rb.recordList = append(rb.recordList, record)
 	} else {
 		for fieldIdx := range record.fields {
-			field := record.fields[fieldIdx]
-			rb.columns.UpdateColumn(rb.fieldPaths[fieldIdx], field.Name, field)
+			rb.columns.UpdateColumn(rb.fieldPaths[fieldIdx], record.fields[fieldIdx].Name, record.fields[fieldIdx])
 		}
 	}
 }
@@ -138,8 +136,7 @@ func (rb *RecordBuilder) BuildRecord(allocator *memory.GoAllocator) (arrow.Recor
 		sortByRecordList(recordList, rb.orderByPath)
 		for _, record := range recordList {
 			for pos := range record.fields {
-				field := record.fields[pos]
-				rb.columns.UpdateColumn(rb.fieldPaths[pos], field.Name, field)
+				rb.columns.UpdateColumn(rb.fieldPaths[pos], record.fields[pos].Name, record.fields[pos])
 			}
 		}
 	}
