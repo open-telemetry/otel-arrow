@@ -79,7 +79,7 @@ func (v *Bool) Compare(other Value) int {
 		panic("invalid comparison")
 	}
 	otherValue := other.(*Bool).Value
-	if v.Value == otherValue {
+	if *v.Value == *otherValue {
 		return 0
 	} else if v.Value != nil && *v.Value {
 		return 1
@@ -202,7 +202,7 @@ func (v *I8) Compare(other Value) int {
 		panic("invalid comparison")
 	}
 	otherValue := other.(*I8).Value
-	if v.Value == otherValue {
+	if *v.Value == *otherValue {
 		return 0
 	} else if v.Value == nil {
 		return -1
@@ -301,7 +301,7 @@ func (v *I16) Compare(other Value) int {
 		panic("invalid comparison")
 	}
 	otherValue := other.(*I16).Value
-	if v.Value == otherValue {
+	if *v.Value == *otherValue {
 		return 0
 	} else if v.Value == nil {
 		return -1
@@ -396,7 +396,7 @@ func (v *I32) Compare(other Value) int {
 		panic("invalid comparison")
 	}
 	otherValue := other.(*I32).Value
-	if v.Value == otherValue {
+	if *v.Value == *otherValue {
 		return 0
 	} else if v.Value == nil {
 		return -1
@@ -487,7 +487,7 @@ func (v *I64) Compare(other Value) int {
 		panic("invalid comparison")
 	}
 	otherValue := other.(*I64).Value
-	if v.Value == otherValue {
+	if *v.Value == *otherValue {
 		return 0
 	} else if v.Value == nil {
 		return -1
@@ -574,7 +574,7 @@ func (v *U8) Compare(other Value) int {
 		panic("invalid comparison")
 	}
 	otherValue := other.(*U8).Value
-	if v.Value == otherValue {
+	if *v.Value == *otherValue {
 		return 0
 	} else if v.Value == nil {
 		return -1
@@ -685,7 +685,7 @@ func (v *U16) Compare(other Value) int {
 		panic("invalid comparison")
 	}
 	otherValue := other.(*U16).Value
-	if v.Value == otherValue {
+	if *v.Value == *otherValue {
 		return 0
 	} else if v.Value == nil {
 		return -1
@@ -788,7 +788,7 @@ func (v *U32) Compare(other Value) int {
 		panic("invalid comparison")
 	}
 	otherValue := other.(*U32).Value
-	if v.Value == otherValue {
+	if *v.Value == *otherValue {
 		return 0
 	} else if v.Value == nil {
 		return -1
@@ -883,7 +883,7 @@ func (v *U64) Compare(other Value) int {
 		panic("invalid comparison")
 	}
 	otherValue := other.(*U64).Value
-	if v.Value == otherValue {
+	if *v.Value == *otherValue {
 		return 0
 	} else if v.Value == nil {
 		return -1
@@ -970,7 +970,7 @@ func (v *F32) Compare(other Value) int {
 		panic("invalid comparison")
 	}
 	otherValue := other.(*F32).Value
-	if v.Value == otherValue {
+	if *v.Value == *otherValue {
 		return 0
 	} else if v.Value == nil {
 		return -1
@@ -1061,7 +1061,7 @@ func (v *F64) Compare(other Value) int {
 		panic("invalid comparison")
 	}
 	otherValue := other.(*F64).Value
-	if v.Value == otherValue {
+	if *v.Value == *otherValue {
 		return 0
 	} else if v.Value == nil {
 		return -1
@@ -1150,7 +1150,7 @@ func (v *String) Compare(other Value) int {
 		panic("invalid comparison")
 	}
 	otherValue := other.(*String).Value
-	if v.Value == otherValue {
+	if *v.Value == *otherValue {
 		return 0
 	} else if v.Value == nil {
 		return -1

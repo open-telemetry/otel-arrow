@@ -203,7 +203,7 @@ func TestRecordNormalize(t *testing.T) {
 	})
 	expected_record.StringField("b", "")
 
-	if !cmp.Equal(record, expected_record, cmp.AllowUnexported(air.Record{}, rfield.Struct{}, rfield.List{})) {
+	if !cmp.Equal(record, expected_record, cmp.AllowUnexported(air.Record{}, rfield.Struct{}, rfield.List{}, rfield.Field{}, rfield.Metadata{})) {
 		t.Errorf("Expected: %+v\nGot: %+v", expected_record, record)
 	}
 }
