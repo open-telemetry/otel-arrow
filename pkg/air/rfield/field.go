@@ -54,7 +54,7 @@ func NewBoolField(name string, value bool) *Field {
 	return &Field{
 		Name: name,
 		Value: &Bool{
-			Value: value,
+			Value: &value,
 		},
 	}
 }
@@ -63,7 +63,7 @@ func NewI8Field(name string, value int8) *Field {
 	return &Field{
 		Name: name,
 		Value: &I8{
-			Value: value,
+			Value: &value,
 		},
 	}
 }
@@ -72,7 +72,7 @@ func NewI16Field(name string, value int16) *Field {
 	return &Field{
 		Name: name,
 		Value: &I16{
-			Value: value,
+			Value: &value,
 		},
 	}
 }
@@ -81,7 +81,7 @@ func NewI32Field(name string, value int32) *Field {
 	return &Field{
 		Name: name,
 		Value: &I32{
-			Value: value,
+			Value: &value,
 		},
 	}
 }
@@ -90,7 +90,7 @@ func NewI64Field(name string, value int64) *Field {
 	return &Field{
 		Name: name,
 		Value: &I64{
-			Value: value,
+			Value: &value,
 		},
 	}
 }
@@ -99,7 +99,7 @@ func NewU8Field(name string, value uint8) *Field {
 	return &Field{
 		Name: name,
 		Value: &U8{
-			Value: value,
+			Value: &value,
 		},
 	}
 }
@@ -108,7 +108,7 @@ func NewU16Field(name string, value uint16) *Field {
 	return &Field{
 		Name: name,
 		Value: &U16{
-			Value: value,
+			Value: &value,
 		},
 	}
 }
@@ -117,7 +117,7 @@ func NewU32Field(name string, value uint32) *Field {
 	return &Field{
 		Name: name,
 		Value: &U32{
-			Value: value,
+			Value: &value,
 		},
 	}
 }
@@ -126,7 +126,7 @@ func NewU64Field(name string, value uint64) *Field {
 	return &Field{
 		Name: name,
 		Value: &U64{
-			Value: value,
+			Value: &value,
 		},
 	}
 }
@@ -135,7 +135,7 @@ func NewF32Field(name string, value float32) *Field {
 	return &Field{
 		Name: name,
 		Value: &F32{
-			Value: value,
+			Value: &value,
 		},
 	}
 }
@@ -144,7 +144,7 @@ func NewF64Field(name string, value float64) *Field {
 	return &Field{
 		Name: name,
 		Value: &F64{
-			Value: value,
+			Value: &value,
 		},
 	}
 }
@@ -153,7 +153,7 @@ func NewStringField(name string, value string) *Field {
 	return &Field{
 		Name: name,
 		Value: &String{
-			Value: value,
+			Value: &value,
 		},
 	}
 }
@@ -181,40 +181,106 @@ func NewListField(name string, value List) *Field {
 	}
 }
 
-func NewDefaultFieldFromDataType(name string, dt arrow.DataType) *Field {
+func NewNullFieldFromDataType(name string, dt arrow.DataType) *Field {
 	switch t := dt.(type) {
 	case *arrow.BooleanType:
-		return NewBoolField(name, false)
-	case *arrow.Int8Type:
-		return NewI8Field(name, 0)
-	case *arrow.Int16Type:
-		return NewI16Field(name, 0)
-	case *arrow.Int32Type:
-		return NewI32Field(name, 0)
-	case *arrow.Int64Type:
-		return NewI64Field(name, 0)
-	case *arrow.Uint8Type:
-		return NewU8Field(name, 0)
-	case *arrow.Uint16Type:
-		return NewU16Field(name, 0)
-	case *arrow.Uint32Type:
-		return NewU32Field(name, 0)
-	case *arrow.Uint64Type:
-		return NewU64Field(name, 0)
-	case *arrow.Float32Type:
-		return NewF32Field(name, 0)
-	case *arrow.Float64Type:
-		return NewF64Field(name, 0)
-	case *arrow.StringType:
-		return NewStringField(name, "")
-	case *arrow.BinaryType:
-		return NewBinaryField(name, []byte{})
-	case *arrow.StructType:
-		var fields []*Field
-		for _, field := range t.Fields() {
-			fields = append(fields, NewDefaultFieldFromDataType(field.Name, field.Type))
+		return &Field{
+			Name: name,
+			Value: &Bool{
+				Value: nil,
+			},
 		}
-		return NewStructField(name, Struct{Fields: fields})
+	case *arrow.Int8Type:
+		return &Field{
+			Name: name,
+			Value: &I8{
+				Value: nil,
+			},
+		}
+	case *arrow.Int16Type:
+		return &Field{
+			Name: name,
+			Value: &I16{
+				Value: nil,
+			},
+		}
+	case *arrow.Int32Type:
+		return &Field{
+			Name: name,
+			Value: &I32{
+				Value: nil,
+			},
+		}
+	case *arrow.Int64Type:
+		return &Field{
+			Name: name,
+			Value: &I64{
+				Value: nil,
+			},
+		}
+	case *arrow.Uint8Type:
+		return &Field{
+			Name: name,
+			Value: &U8{
+				Value: nil,
+			},
+		}
+	case *arrow.Uint16Type:
+		return &Field{
+			Name: name,
+			Value: &U16{
+				Value: nil,
+			},
+		}
+	case *arrow.Uint32Type:
+		return &Field{
+			Name: name,
+			Value: &U32{
+				Value: nil,
+			},
+		}
+	case *arrow.Uint64Type:
+		return &Field{
+			Name: name,
+			Value: &U64{
+				Value: nil,
+			},
+		}
+	case *arrow.Float32Type:
+		return &Field{
+			Name: name,
+			Value: &F32{
+				Value: nil,
+			},
+		}
+	case *arrow.Float64Type:
+		return &Field{
+			Name: name,
+			Value: &F64{
+				Value: nil,
+			},
+		}
+	case *arrow.StringType:
+		return &Field{
+			Name: name,
+			Value: &String{
+				Value: nil,
+			},
+		}
+	case *arrow.BinaryType:
+		return &Field{
+			Name: name,
+			Value: &Binary{
+				Value: nil,
+			},
+		}
+	case *arrow.StructType:
+		return &Field{
+			Name: name,
+			Value: &Struct{
+				Fields: nil,
+			},
+		}
 	case *arrow.ListType:
 		return NewListField(name, List{})
 	case *arrow.DictionaryType:

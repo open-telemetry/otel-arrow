@@ -24,11 +24,13 @@ func TestNormalize(t *testing.T) {
 	t.Parallel()
 
 	// Test normalize on a scalar value
+	vTrue := true
+	vFalse := false
 	s1 := rfield.Bool{
-		Value: true,
+		Value: &vTrue,
 	}
 	s1.Normalize()
-	if s1.Value != true {
+	if *s1.Value != true {
 		t.Errorf("Expected true, got %v", s1.Value)
 	}
 
@@ -37,15 +39,15 @@ func TestNormalize(t *testing.T) {
 		Fields: []*rfield.Field{
 			{
 				Name:  "c",
-				Value: &rfield.Bool{Value: false},
+				Value: &rfield.Bool{Value: &vFalse},
 			},
 			{
 				Name:  "a",
-				Value: &rfield.I64{Value: 123},
+				Value: rfield.NewI64(123),
 			},
 			{
 				Name:  "b",
-				Value: &rfield.String{Value: "text"},
+				Value: rfield.NewString("text"),
 			},
 		},
 	}
@@ -63,21 +65,21 @@ func TestNormalize(t *testing.T) {
 	// Test normalize on a list value
 	s3 := rfield.List{
 		Values: []rfield.Value{
-			&rfield.Bool{Value: true},
-			&rfield.I64{Value: 1},
+			&rfield.Bool{Value: &vTrue},
+			rfield.NewI64(1),
 			&rfield.Struct{
 				Fields: []*rfield.Field{
 					{
 						Name:  "c",
-						Value: &rfield.Bool{Value: false},
+						Value: &rfield.Bool{Value: &vFalse},
 					},
 					{
 						Name:  "a",
-						Value: &rfield.I64{Value: 123},
+						Value: rfield.NewI64(123),
 					},
 					{
 						Name:  "b",
-						Value: &rfield.String{Value: "text"},
+						Value: rfield.NewString("text"),
 					},
 				},
 			},

@@ -23,9 +23,11 @@ import (
 
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
+	"github.com/davecgh/go-spew/spew"
 
 	"otel-arrow-adapter/pkg/air"
 	config2 "otel-arrow-adapter/pkg/air/config"
+	"otel-arrow-adapter/pkg/air/rfield"
 )
 
 func TestAddRecord(t *testing.T) {
@@ -271,6 +273,79 @@ func TestBuild(t *testing.T) {
 
 		record.Release()
 	}
+}
+
+func TestBuildHeterogeneousListOfStructs(t *testing.T) {
+	t.Parallel()
+
+	config := config2.NewDefaultConfig()
+	rr := air.NewRecordRepository(config)
+
+	rr.AddRecord(RecordWithHeterogeneousListOfStructs(1))
+
+	records, err := rr.BuildRecords()
+
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	spew.Dump(records)
+}
+
+func RecordWithHeterogeneousListOfStructs(ts uint64) *air.Record {
+	record := air.NewRecord()
+	record.U64Field("ts", ts)
+	record.ListField("events", rfield.List{
+		Values: []rfield.Value{
+			&rfield.Struct{
+				Fields: []*rfield.Field{
+					{Name: "name", Value: rfield.NewString("event1.name")},
+					{Name: "attributes", Value: &rfield.Struct{
+						Fields: []*rfield.Field{
+							{Name: "attr1", Value: rfield.NewString("event1.a1")},
+							{Name: "attr2", Value: rfield.NewI8(2)},
+							{Name: "attr4", Value: rfield.NewI32(4)},
+							{Name: "attr7", Value: rfield.NewU16(7)},
+							{Name: "attr9", Value: rfield.NewU64(9)},
+							{Name: "attr11", Value: rfield.NewF64(11.0)},
+							{Name: "attr13", Value: rfield.NewStruct([]*rfield.Field{
+								{Name: "attr13_1", Value: rfield.NewString("event1.attr13.attr13_13")},
+								{Name: "attr13_2", Value: rfield.NewI8(13)},
+							})},
+						},
+					}},
+				},
+			},
+			&rfield.Struct{
+				Fields: []*rfield.Field{
+					{Name: "name", Value: rfield.NewString("event2.name")},
+					{Name: "attributes", Value: &rfield.Struct{
+						Fields: []*rfield.Field{
+							{Name: "attr1", Value: rfield.NewString("event2.a1")},
+							{Name: "attr3", Value: rfield.NewI16(3)},
+							{Name: "attr5", Value: rfield.NewI64(5)},
+							{Name: "attr6", Value: rfield.NewU8(6)},
+							{Name: "attr8", Value: rfield.NewU32(8)},
+							{Name: "attr10", Value: rfield.NewF32(10.0)},
+							{Name: "attr12", Value: rfield.NewBinary([]byte("12"))},
+							{Name: "attr14", Value: rfield.NewList(&arrow.Int8Type{}, []rfield.Value{
+								rfield.NewI8(14),
+								rfield.NewI8(14),
+								&rfield.I8{
+									Value: nil,
+								},
+							})},
+						},
+					}},
+				},
+			},
+			&rfield.Struct{
+				Fields: []*rfield.Field{
+					{Name: "name", Value: rfield.NewString("event3.name")},
+				},
+			},
+		},
+	})
+	return record
 }
 
 func String(dictionary *array.Dictionary) string {

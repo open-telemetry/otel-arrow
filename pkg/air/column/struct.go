@@ -36,27 +36,30 @@ func (d ArrowFields) Swap(i, j int) { d[i], d[j] = d[j], d[i] }
 
 // StructColumn is a column of struct data.
 type StructColumn struct {
-	fieldStringPath string
-	name            string
-	structType      *arrow.StructType
-	columns         *Columns
-	metadata        arrow.Metadata
+	fieldStringPath   string
+	name              string
+	initialStructType *arrow.StructType
+	// Dynamic because fields types can change based on the values and the dictionary configurations (string and binary)
+	dynStructType *arrow.StructType
+	columns       *Columns
+	metadata      arrow.Metadata
 }
 
 // NewStructColumn creates a new Struct column.
 func NewStructColumn(fieldStringPath string, name string, metadata arrow.Metadata, structType *arrow.StructType, columns *Columns) *StructColumn {
 	return &StructColumn{
-		fieldStringPath: fieldStringPath,
-		name:            name,
-		structType:      structType,
-		columns:         columns,
-		metadata:        metadata,
+		fieldStringPath:   fieldStringPath,
+		name:              name,
+		initialStructType: structType,
+		dynStructType:     structType,
+		columns:           columns,
+		metadata:          metadata,
 	}
 }
 
 // Push pushes the value to the column.
-func (c *StructColumn) Push(fieldPath *rfield.FieldPath, field *rfield.Field) {
-	c.columns.UpdateColumn(fieldPath, c.fieldStringPath, field)
+func (c *StructColumn) Push(fieldPath *rfield.FieldPath, fieldType arrow.DataType, field *rfield.Field) {
+	c.columns.UpdateColumn(fieldPath, fieldType, field)
 }
 
 // Name returns the name of the column.
@@ -78,21 +81,21 @@ func (c *StructColumn) Clear() {
 func (c *StructColumn) PushFromValues(fieldPath *rfield.FieldPath, data []rfield.Value) {
 	for _, value := range data {
 		valueFields := value.(*rfield.Struct).Fields
-		if len(valueFields) == len(c.structType.Fields()) {
+		if len(valueFields) == len(c.initialStructType.Fields()) {
 			for i, field := range value.(*rfield.Struct).Fields {
-				c.Push(fieldPath.ChildPath(i), field)
+				c.Push(fieldPath.ChildPath(i), c.initialStructType.Field(i).Type, field)
 			}
 		} else {
 			// Some fields are missing in the value.
-			//valueFieldIdx := 0
-			//for i, structField := range c.structType.Fields() {
-			//	if valueFieldIdx < len(valueFields) && structField.Name == valueFields[valueFieldIdx].Name {
-			//		c.Push(fieldPath.ChildPath(i), valueFields[valueFieldIdx])
-			//		valueFieldIdx++
-			//	} else {
-			//		c.Push(fieldPath.ChildPath(i), rfield.NewDefaultFieldFromDataType(structField.Name, structField.Type))
-			//	}
-			//}
+			valueFieldIdx := 0
+			for i, structField := range c.initialStructType.Fields() {
+				if valueFieldIdx < len(valueFields) && structField.Name == valueFields[valueFieldIdx].Name {
+					c.Push(fieldPath.ChildPath(i), c.initialStructType.Field(i).Type, valueFields[valueFieldIdx])
+					valueFieldIdx++
+				} else {
+					c.Push(fieldPath.ChildPath(i), c.initialStructType.Field(i).Type, rfield.NewNullFieldFromDataType(structField.Name, structField.Type))
+				}
+			}
 		}
 	}
 }
@@ -136,8 +139,8 @@ func (c *StructColumn) NewArray(allocator *memory.GoAllocator) arrow.Array {
 		defer fieldArray.Release()
 		children[i] = fieldArray.Data()
 	}
-	c.structType = arrow.StructOf(fields...)
-	data := array.NewData(c.structType, children[0].Len(), []*memory.Buffer{nil, nil}, children, 0, 0)
+	c.dynStructType = arrow.StructOf(fields...)
+	data := array.NewData(c.dynStructType, children[0].Len(), []*memory.Buffer{nil, nil}, children, 0, 0)
 	defer data.Release()
 	structArray := array.NewStructData(data)
 
@@ -168,8 +171,8 @@ func (c *StructColumn) Build(allocator *memory.GoAllocator) (*arrow.Field, arrow
 		defer fieldArray.Release()
 		children[i] = fieldArray.Data()
 	}
-	c.structType = arrow.StructOf(fields...)
-	data := array.NewData(c.structType, children[0].Len(), []*memory.Buffer{nil, nil}, children, 0, 0)
+	c.dynStructType = arrow.StructOf(fields...)
+	data := array.NewData(c.dynStructType, children[0].Len(), []*memory.Buffer{nil, nil}, children, 0, 0)
 	defer data.Release()
 	structArray := array.NewStructData(data)
 
@@ -190,7 +193,7 @@ func (c *StructColumn) DictionaryStats(parentPath string) []*stats.DictionarySta
 
 // Type returns the type of the column.
 func (c *StructColumn) Type() arrow.DataType {
-	return c.structType
+	return c.dynStructType
 }
 
 // Metadata returns the metadata of the column.

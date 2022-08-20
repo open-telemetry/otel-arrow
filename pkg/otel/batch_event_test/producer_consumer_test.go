@@ -108,12 +108,12 @@ func GenRecord(ts int64, value_a, value_b, value_c int) *air.Record {
 	record.StringField("b", fmt.Sprintf("b__%d", value_b))
 	record.StructField("d", rfield.Struct{
 		Fields: []*rfield.Field{
-			{Name: "a", Value: &rfield.String{Value: fmt.Sprintf("a_%d", value_a)}},
-			{Name: "b", Value: &rfield.String{Value: fmt.Sprintf("b_%d", value_b)}},
+			{Name: "a", Value: rfield.NewString(fmt.Sprintf("a_%d", value_a))},
+			{Name: "b", Value: rfield.NewString(fmt.Sprintf("b_%d", value_b))},
 			{Name: "c", Value: &rfield.List{Values: []rfield.Value{
-				&rfield.I64{Value: 1},
-				&rfield.I64{Value: 2},
-				&rfield.I64{Value: 3},
+				rfield.NewI64(1),
+				rfield.NewI64(2),
+				rfield.NewI64(3),
 			}}},
 			{Name: "d", Value: &rfield.List{Values: []rfield.Value{
 				&rfield.Struct{Fields: []*rfield.Field{

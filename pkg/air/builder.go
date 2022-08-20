@@ -45,6 +45,8 @@ type RecordBuilder struct {
 	// The dictionary id generator.
 	dictIdGen dictionary.DictIdGenerator
 
+	fieldDataTypes map[string]arrow.DataType
+
 	// The columns of the Record builder.
 	columns column.Columns
 
@@ -80,20 +82,21 @@ func NewRecordBuilderWithRecord(allocator *memory.GoAllocator, record *Record, c
 	var buf bytes.Buffer
 
 	builder := RecordBuilder{
-		config:      config,
-		dictIdGen:   dictionary.DictIdGenerator{Id: 0},
-		columns:     column.Columns{},
-		fieldPaths:  make([]*rfield.FieldPath, 0, record.FieldCount()),
-		orderByPath: nil,
-		recordList:  nil,
-		optimized:   config.Dictionaries.StringColumns.MaxSortedDictionaries == 0,
-		output:      buf,
-		ipcWriter:   nil,
+		config:         config,
+		dictIdGen:      dictionary.DictIdGenerator{Id: 0},
+		fieldDataTypes: record.FieldDataTypes(),
+		columns:        column.Columns{},
+		fieldPaths:     make([]*rfield.FieldPath, 0, record.FieldCount()),
+		orderByPath:    nil,
+		recordList:     nil,
+		optimized:      config.Dictionaries.StringColumns.MaxSortedDictionaries == 0,
+		output:         buf,
+		ipcWriter:      nil,
 	}
 
 	for fieldIdx, field := range record.fields {
 		fieldName := field.Name
-		fieldType := field.DataType()
+		fieldType := builder.fieldDataTypes[fieldName]
 		fieldMetadata := field.Metadata()
 		var arrowMetadata arrow.Metadata
 		if fieldMetadata != nil {
@@ -102,7 +105,7 @@ func NewRecordBuilderWithRecord(allocator *memory.GoAllocator, record *Record, c
 
 		stringPath := fieldName
 		numPath := builder.columns.CreateColumn(allocator, []int{fieldIdx}, fieldName, stringPath, fieldType, arrowMetadata, config, &builder.dictIdGen)
-		builder.columns.UpdateColumn(numPath, record.fields[fieldIdx].Name, record.fields[fieldIdx])
+		builder.columns.UpdateColumn(numPath, fieldType, record.fields[fieldIdx])
 		if numPath != nil {
 			builder.fieldPaths = append(builder.fieldPaths, numPath)
 		}
@@ -115,7 +118,8 @@ func (rb *RecordBuilder) AddRecord(record *Record) {
 		rb.recordList = append(rb.recordList, record)
 	} else {
 		for fieldIdx := range record.fields {
-			rb.columns.UpdateColumn(rb.fieldPaths[fieldIdx], record.fields[fieldIdx].Name, record.fields[fieldIdx])
+			field := record.fields[fieldIdx]
+			rb.columns.UpdateColumn(rb.fieldPaths[fieldIdx], rb.fieldDataTypes[field.Name], field)
 		}
 	}
 }
@@ -136,7 +140,8 @@ func (rb *RecordBuilder) BuildRecord(allocator *memory.GoAllocator) (arrow.Recor
 		sortByRecordList(recordList, rb.orderByPath)
 		for _, record := range recordList {
 			for pos := range record.fields {
-				rb.columns.UpdateColumn(rb.fieldPaths[pos], record.fields[pos].Name, record.fields[pos])
+				field := record.fields[pos]
+				rb.columns.UpdateColumn(rb.fieldPaths[pos], rb.fieldDataTypes[field.Name], field)
 			}
 		}
 	}

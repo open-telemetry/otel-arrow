@@ -201,7 +201,7 @@ func AddLinksAsStructOfLists(record *air.Record, links []*v1.Span_Link) {
 					fields[2].Value.(*rfield.List).Values[pos] = nil
 				}
 			}
-			fields[2].Value.(*rfield.List).Values[pos] = &rfield.String{Value: link.TraceState}
+			fields[2].Value.(*rfield.List).Values[pos] = rfield.NewString(link.TraceState)
 		}
 		attributes := common.AttributesValue(link.Attributes)
 		if attributes != nil {
@@ -220,7 +220,7 @@ func AddLinksAsStructOfLists(record *air.Record, links []*v1.Span_Link) {
 					fields[4].Value.(*rfield.List).Values[pos] = nil
 				}
 			}
-			fields[4].Value.(*rfield.List).Values[pos] = &rfield.U32{Value: link.DroppedAttributesCount}
+			fields[4].Value.(*rfield.List).Values[pos] = rfield.NewU32(link.DroppedAttributesCount)
 		}
 	}
 	nonEmptyFields := make([]*rfield.Field, 0, len(fields))

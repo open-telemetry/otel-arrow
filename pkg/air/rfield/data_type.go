@@ -124,7 +124,7 @@ func CoerceDataType(dataTypes *[]arrow.DataType) arrow.DataType {
 		for _, dataType := range *dataTypes {
 			for _, field := range dataType.(*arrow.StructType).Fields() {
 				if dataType, found := fields[field.Name]; found {
-					fields[field.Name] = CoerceDataTypes(dataType, field.Type)
+					fields[field.Name] = CoerceDataType(&[]arrow.DataType{dataType, field.Type})
 				} else {
 					fields[field.Name] = field.Type
 				}

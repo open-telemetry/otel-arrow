@@ -323,14 +323,14 @@ func addHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetric
 		}
 		var bucketCounts []rfield.Value
 		for _, count := range sdp.BucketCounts {
-			bucketCounts = append(bucketCounts, &rfield.U64{Value: count})
+			bucketCounts = append(bucketCounts, rfield.NewU64(count))
 		}
 		if bucketCounts != nil {
 			histoFields = append(histoFields, rfield.NewListField(constants.HISTOGRAM_BUCKET_COUNTS, rfield.List{Values: bucketCounts}))
 		}
 		var explicitBounds []rfield.Value
 		for _, count := range sdp.ExplicitBounds {
-			explicitBounds = append(explicitBounds, &rfield.F64{Value: count})
+			explicitBounds = append(explicitBounds, rfield.NewF64(count))
 		}
 		if explicitBounds != nil {
 			histoFields = append(histoFields, rfield.NewListField(constants.HISTOGRAM_EXPLICIT_BOUNDS, rfield.List{Values: explicitBounds}))
@@ -389,7 +389,7 @@ func addExpHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMet
 		if sdp.Positive != nil {
 			var bucketCounts []rfield.Value
 			for _, count := range sdp.Positive.BucketCounts {
-				bucketCounts = append(bucketCounts, &rfield.U64{Value: count})
+				bucketCounts = append(bucketCounts, rfield.NewU64(count))
 			}
 			if bucketCounts != nil {
 				histoFields = append(histoFields, rfield.NewStructField(constants.EXP_HISTOGRAM_POSITIVE, rfield.Struct{Fields: []*rfield.Field{
@@ -406,7 +406,7 @@ func addExpHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMet
 		if sdp.Negative != nil {
 			var bucketCounts []rfield.Value
 			for _, count := range sdp.Negative.BucketCounts {
-				bucketCounts = append(bucketCounts, &rfield.U64{Value: count})
+				bucketCounts = append(bucketCounts, rfield.NewU64(count))
 			}
 			if bucketCounts != nil {
 				histoFields = append(histoFields, rfield.NewStructField(constants.EXP_HISTOGRAM_NEGATIVE, rfield.Struct{Fields: []*rfield.Field{

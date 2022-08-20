@@ -17,6 +17,7 @@ package value_test
 import (
 	"testing"
 
+	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/memory"
 
 	value2 "otel-arrow-adapter/pkg/air/column"
@@ -34,7 +35,7 @@ func TestStringColumn(t *testing.T) {
 	}
 	allocator := memory.NewGoAllocator()
 
-	sc := value2.NewStringColumn(allocator, "test", &dictionaryConfig, []int{1}, 1)
+	sc := value2.NewStringColumn(allocator, "test", arrow.Metadata{}, &dictionaryConfig, []int{1}, 1)
 	if sc.Name() != "test" {
 		t.Errorf("Expected column name to be 'test', got %s", sc.Name())
 	}

@@ -129,13 +129,13 @@ func OtlpAnyValueToValue(value *commonpb.AnyValue) rfield.Value {
 	if value != nil {
 		switch value.Value.(type) {
 		case *commonpb.AnyValue_BoolValue:
-			return &rfield.Bool{Value: value.GetBoolValue()}
+			return rfield.NewBool(value.GetBoolValue())
 		case *commonpb.AnyValue_IntValue:
-			return &rfield.I64{Value: value.GetIntValue()}
+			return rfield.NewI64(value.GetIntValue())
 		case *commonpb.AnyValue_DoubleValue:
-			return &rfield.F64{Value: value.GetDoubleValue()}
+			return rfield.NewF64(value.GetDoubleValue())
 		case *commonpb.AnyValue_StringValue:
-			return &rfield.String{Value: value.GetStringValue()}
+			return rfield.NewString(value.GetStringValue())
 		case *commonpb.AnyValue_BytesValue:
 			return &rfield.Binary{Value: value.GetBytesValue()}
 		case *commonpb.AnyValue_ArrayValue:

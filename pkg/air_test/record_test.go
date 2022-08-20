@@ -30,24 +30,24 @@ func TestValue(t *testing.T) {
 	record.StringField("b", "b")
 	record.StructField("a", rfield.Struct{
 		Fields: []*rfield.Field{
-			{Name: "e1", Value: &rfield.String{Value: "e1"}},
-			{Name: "b1", Value: &rfield.String{Value: "b1"}},
+			{Name: "e1", Value: rfield.NewString("e1")},
+			{Name: "b1", Value: rfield.NewString("b1")},
 			{Name: "c1", Value: &rfield.Struct{
 				Fields: []*rfield.Field{
-					{Name: "x", Value: &rfield.String{Value: "x"}},
-					{Name: "t", Value: &rfield.String{Value: "t"}},
+					{Name: "x", Value: rfield.NewString("x")},
+					{Name: "t", Value: rfield.NewString("t")},
 					{Name: "z", Value: &rfield.List{
 						Values: []rfield.Value{
-							&rfield.I64{Value: 1},
-							&rfield.I64{Value: 2},
+							rfield.NewI64(1),
+							rfield.NewI64(2),
 						},
 					}},
 					{Name: "a", Value: &rfield.List{
 						Values: []rfield.Value{
 							&rfield.Struct{
 								Fields: []*rfield.Field{
-									{Name: "f2_3_4_2", Value: &rfield.String{Value: "f2_3_4_2"}},
-									{Name: "f2_3_4_1", Value: &rfield.String{Value: "f2_3_4_1"}},
+									{Name: "f2_3_4_2", Value: rfield.NewString("f2_3_4_2")},
+									{Name: "f2_3_4_1", Value: rfield.NewString("f2_3_4_1")},
 								},
 							},
 						},
@@ -59,42 +59,42 @@ func TestValue(t *testing.T) {
 	record.Normalize()
 
 	v := record.ValueByPath([]int{0, 0}) // field "b"
-	if v.(*rfield.String).Value != "b1" {
+	if *v.(*rfield.String).Value != "b1" {
 		t.Errorf("expected the value of field \"a.b1\" to be \"b1\", got %v", v)
 	}
 
 	v = record.ValueByPath([]int{0, 1, 0, 0, 0}) // field "a.c1.a.f2_3_4_1"
-	if v.(*rfield.String).Value != "f2_3_4_1" {
+	if *v.(*rfield.String).Value != "f2_3_4_1" {
 		t.Errorf("expected the value of field \"a.c1.a.f2_3_4_1\" to be \"f2_3_4_1\", got %v", v)
 	}
 
 	v = record.ValueByPath([]int{0, 1, 1}) // field "a.c1.t"
-	if v.(*rfield.String).Value != "t" {
+	if *v.(*rfield.String).Value != "t" {
 		t.Errorf("expected the value of field \"a.c1.t\" to be \"t\", got %v", v)
 	}
 
 	v = record.ValueByPath([]int{0, 1, 2}) // field "a.c1.x"
-	if v.(*rfield.String).Value != "x" {
+	if *v.(*rfield.String).Value != "x" {
 		t.Errorf("expected the value of field \"a.c1.x\" to be \"x\", got %v", v)
 	}
 
 	v = record.ValueByPath([]int{0, 1, 3, 0}) // field "a.c1.z[0]"
-	if v.(*rfield.I64).Value != 1 {
+	if *v.(*rfield.I64).Value != 1 {
 		t.Errorf("expected the value of field \"a.c1.z[0]\" to be \"1\", got %v", v)
 	}
 
 	v = record.ValueByPath([]int{0, 1, 3, 1}) // field "a.c1.z[1]"
-	if v.(*rfield.I64).Value != 2 {
+	if *v.(*rfield.I64).Value != 2 {
 		t.Errorf("expected the value of field \"a.c1.z[1]\" to be \"2\", got %v", v)
 	}
 
 	v = record.ValueByPath([]int{0, 2}) // field "a.e1"
-	if v.(*rfield.String).Value != "e1" {
+	if *v.(*rfield.String).Value != "e1" {
 		t.Errorf("expected the value of field \"a.e1\" to be \"e1\", got %v", v)
 	}
 
 	v = record.ValueByPath([]int{1}) // field "b"
-	if v.(*rfield.String).Value != "b" {
+	if *v.(*rfield.String).Value != "b" {
 		t.Errorf("expected the value of field \"b\" to be \"b\", got %v", v)
 	}
 }
@@ -139,28 +139,29 @@ func TestCompare(t *testing.T) {
 func TestRecordNormalize(t *testing.T) {
 	t.Parallel()
 
+	emptyString := ""
 	record := air.NewRecord()
 	record.StringField("b", "")
 	record.StructField("a", rfield.Struct{
 		Fields: []*rfield.Field{
-			{Name: "e", Value: &rfield.String{Value: ""}},
-			{Name: "b", Value: &rfield.String{Value: ""}},
+			{Name: "e", Value: &rfield.String{Value: &emptyString}},
+			{Name: "b", Value: &rfield.String{Value: &emptyString}},
 			{Name: "c", Value: &rfield.Struct{
 				Fields: []*rfield.Field{
-					{Name: "x", Value: &rfield.String{Value: ""}},
-					{Name: "t", Value: &rfield.String{Value: ""}},
+					{Name: "x", Value: &rfield.String{Value: &emptyString}},
+					{Name: "t", Value: &rfield.String{Value: &emptyString}},
 					{Name: "z", Value: &rfield.List{
 						Values: []rfield.Value{
-							&rfield.I64{Value: 1},
-							&rfield.I64{Value: 2},
+							rfield.NewI64(1),
+							rfield.NewI64(2),
 						},
 					}},
 					{Name: "a", Value: &rfield.List{
 						Values: []rfield.Value{
 							&rfield.Struct{
 								Fields: []*rfield.Field{
-									{Name: "f2_3_4_2", Value: &rfield.String{Value: "f2_3_4_2"}},
-									{Name: "f2_3_4_1", Value: &rfield.String{Value: "f2_3_4_1"}},
+									{Name: "f2_3_4_2", Value: rfield.NewString("f2_3_4_2")},
+									{Name: "f2_3_4_1", Value: rfield.NewString("f2_3_4_1")},
 								},
 							},
 						},
@@ -174,30 +175,30 @@ func TestRecordNormalize(t *testing.T) {
 	expected_record := air.NewRecord()
 	expected_record.StructField("a", rfield.Struct{
 		Fields: []*rfield.Field{
-			{Name: "b", Value: &rfield.String{Value: ""}},
+			{Name: "b", Value: &rfield.String{Value: &emptyString}},
 			{Name: "c", Value: &rfield.Struct{
 				Fields: []*rfield.Field{
 					{Name: "a", Value: &rfield.List{
 						Values: []rfield.Value{
 							&rfield.Struct{
 								Fields: []*rfield.Field{
-									{Name: "f2_3_4_1", Value: &rfield.String{Value: "f2_3_4_1"}},
-									{Name: "f2_3_4_2", Value: &rfield.String{Value: "f2_3_4_2"}},
+									{Name: "f2_3_4_1", Value: rfield.NewString("f2_3_4_1")},
+									{Name: "f2_3_4_2", Value: rfield.NewString("f2_3_4_2")},
 								},
 							},
 						},
 					}},
-					{Name: "t", Value: &rfield.String{Value: ""}},
-					{Name: "x", Value: &rfield.String{Value: ""}},
+					{Name: "t", Value: &rfield.String{Value: &emptyString}},
+					{Name: "x", Value: &rfield.String{Value: &emptyString}},
 					{Name: "z", Value: &rfield.List{
 						Values: []rfield.Value{
-							&rfield.I64{Value: 1},
-							&rfield.I64{Value: 2},
+							rfield.NewI64(1),
+							rfield.NewI64(2),
 						},
 					}},
 				},
 			}},
-			{Name: "e", Value: &rfield.String{Value: ""}},
+			{Name: "e", Value: &rfield.String{Value: &emptyString}},
 		},
 	})
 	expected_record.StringField("b", "")
@@ -210,47 +211,49 @@ func TestRecordNormalize(t *testing.T) {
 func TestRecordSchemaId(t *testing.T) {
 	t.Parallel()
 
+	vTrue := true
+	emptyString := ""
 	record := air.NewRecord()
 	record.StringField("b", "")
 	record.StructField("a", rfield.Struct{
 		Fields: []*rfield.Field{
-			{Name: "e", Value: &rfield.String{Value: ""}},
-			{Name: "b", Value: &rfield.String{Value: ""}},
+			{Name: "e", Value: &rfield.String{Value: &emptyString}},
+			{Name: "b", Value: &rfield.String{Value: &emptyString}},
 			{Name: "c", Value: &rfield.Struct{
 				Fields: []*rfield.Field{
 					{Name: "y", Value: &rfield.List{
 						Values: []rfield.Value{
-							&rfield.I8{Value: 1},
-							&rfield.I64{Value: 2},
-							&rfield.String{Value: "true"},
+							rfield.NewI8(1),
+							rfield.NewI64(2),
+							rfield.NewString("true"),
 						},
 					}},
 					{Name: "x", Value: &rfield.List{
 						Values: []rfield.Value{
-							&rfield.I8{Value: 1},
-							&rfield.I64{Value: 2},
-							&rfield.Bool{Value: true},
+							rfield.NewI8(1),
+							rfield.NewI64(2),
+							&rfield.Bool{Value: &vTrue},
 						},
 					}},
-					{Name: "t", Value: &rfield.String{Value: ""}},
+					{Name: "t", Value: &rfield.String{Value: &emptyString}},
 					{Name: "z", Value: &rfield.List{
 						Values: []rfield.Value{
-							&rfield.I8{Value: 1},
-							&rfield.I64{Value: 2},
+							rfield.NewI8(1),
+							rfield.NewI64(2),
 						},
 					}},
 					{Name: "a", Value: &rfield.List{
 						Values: []rfield.Value{
 							&rfield.Struct{
 								Fields: []*rfield.Field{
-									{Name: "f2_3_4_2", Value: &rfield.I8{Value: 1}},
-									{Name: "f2_3_4_1", Value: &rfield.I8{Value: 2}},
+									{Name: "f2_3_4_2", Value: rfield.NewI8(1)},
+									{Name: "f2_3_4_1", Value: rfield.NewI8(2)},
 								},
 							},
 							&rfield.Struct{
 								Fields: []*rfield.Field{
-									{Name: "f2_3_4_3", Value: &rfield.String{Value: "f2_3_4_3"}},
-									{Name: "f2_3_4_1", Value: &rfield.String{Value: "f2_3_4_1"}},
+									{Name: "f2_3_4_3", Value: rfield.NewString("f2_3_4_3")},
+									{Name: "f2_3_4_1", Value: rfield.NewString("f2_3_4_1")},
 								},
 							},
 						},

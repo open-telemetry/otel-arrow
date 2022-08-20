@@ -18,6 +18,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/apache/arrow/go/v9/arrow"
+
 	"otel-arrow-adapter/pkg/air/rfield"
 )
 
@@ -70,6 +72,14 @@ func (r Record) SchemaId() string {
 		f.WriteSignature(&sig)
 	}
 	return sig.String()
+}
+
+func (r Record) FieldDataTypes() map[string]arrow.DataType {
+	fieldDataTypes := make(map[string]arrow.DataType, len(r.fields))
+	for _, f := range r.fields {
+		fieldDataTypes[f.Name] = f.DataType()
+	}
+	return fieldDataTypes
 }
 
 func (r *Record) FieldCount() int {

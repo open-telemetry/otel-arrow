@@ -219,7 +219,7 @@ func AnyValueFrom(dt arrow.DataType, arr arrow.Array, row int) (*commonpb.AnyVal
 	case *arrow.ListType:
 		arrList, ok := arr.(*array.List)
 		if !ok {
-			return nil, fmt.Errorf("array %is not a list")
+			return nil, fmt.Errorf("array is not a list")
 		}
 		values, err := ArrayValueFrom(arrList, row)
 		if err != nil {

@@ -26,71 +26,71 @@ func TestCoerceFromString(t *testing.T) {
 	t.Parallel()
 
 	// Test coerce on a scalar value
-	dataType1 := (&rfield.String{Value: "true"}).DataType()
-	dataType2 := (&rfield.I8{Value: 1}).DataType()
+	dataType1 := (rfield.NewString("true")).DataType()
+	dataType2 := (rfield.NewI8(1)).DataType()
 	dataType := rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&rfield.String{Value: "true"}).DataType()
-	dataType2 = (&rfield.U8{Value: 1}).DataType()
+	dataType1 = (rfield.NewString("true")).DataType()
+	dataType2 = (rfield.NewU8(1)).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&rfield.String{Value: "true"}).DataType()
-	dataType2 = (&rfield.I16{Value: 1}).DataType()
+	dataType1 = (rfield.NewString("true")).DataType()
+	dataType2 = (rfield.NewI16(1)).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&rfield.String{Value: "true"}).DataType()
-	dataType2 = (&rfield.U16{Value: 1}).DataType()
+	dataType1 = (rfield.NewString("true")).DataType()
+	dataType2 = (rfield.NewU16(1)).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&rfield.String{Value: "true"}).DataType()
-	dataType2 = (&rfield.I32{Value: 1}).DataType()
+	dataType1 = (rfield.NewString("true")).DataType()
+	dataType2 = (rfield.NewI32(1)).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&rfield.String{Value: "true"}).DataType()
-	dataType2 = (&rfield.U32{Value: 1}).DataType()
+	dataType1 = (rfield.NewString("true")).DataType()
+	dataType2 = (rfield.NewU32(1)).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&rfield.String{Value: "true"}).DataType()
-	dataType2 = (&rfield.I64{Value: 1}).DataType()
+	dataType1 = (rfield.NewString("true")).DataType()
+	dataType2 = (rfield.NewI64(1)).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&rfield.String{Value: "true"}).DataType()
-	dataType2 = (&rfield.U64{Value: 1}).DataType()
+	dataType1 = (rfield.NewString("true")).DataType()
+	dataType2 = (rfield.NewU64(1)).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&rfield.String{Value: "true"}).DataType()
-	dataType2 = (&rfield.Bool{Value: true}).DataType()
+	dataType1 = (rfield.NewString("true")).DataType()
+	dataType2 = (rfield.NewBool(true)).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
 	}
 
-	dataType1 = (&rfield.String{Value: "true"}).DataType()
-	dataType2 = (&rfield.String{Value: "bla"}).DataType()
+	dataType1 = (rfield.NewString("true")).DataType()
+	dataType2 = (rfield.NewString("bla")).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.STRING {
 		t.Errorf("Expected STRING, got %v", dataType.ID())
@@ -102,70 +102,70 @@ func TestCoerceFromBinary(t *testing.T) {
 
 	// Test coerce on a scalar value
 	dataType1 := (&rfield.Binary{Value: []byte("true")}).DataType()
-	dataType2 := (&rfield.I8{Value: 1}).DataType()
+	dataType2 := (rfield.NewI8(1)).DataType()
 	dataType := rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.BINARY {
 		t.Errorf("Expected BINARY, got %v", dataType.ID())
 	}
 
 	dataType1 = (&rfield.Binary{Value: []byte("true")}).DataType()
-	dataType2 = (&rfield.U8{Value: 1}).DataType()
+	dataType2 = (rfield.NewU8(1)).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.BINARY {
 		t.Errorf("Expected BINARY, got %v", dataType.ID())
 	}
 
 	dataType1 = (&rfield.Binary{Value: []byte("true")}).DataType()
-	dataType2 = (&rfield.I16{Value: 1}).DataType()
+	dataType2 = (rfield.NewI16(1)).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.BINARY {
 		t.Errorf("Expected BINARY, got %v", dataType.ID())
 	}
 
 	dataType1 = (&rfield.Binary{Value: []byte("true")}).DataType()
-	dataType2 = (&rfield.U16{Value: 1}).DataType()
+	dataType2 = (rfield.NewU16(1)).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.BINARY {
 		t.Errorf("Expected BINARY, got %v", dataType.ID())
 	}
 
 	dataType1 = (&rfield.Binary{Value: []byte("true")}).DataType()
-	dataType2 = (&rfield.I32{Value: 1}).DataType()
+	dataType2 = (rfield.NewI32(1)).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.BINARY {
 		t.Errorf("Expected BINARY, got %v", dataType.ID())
 	}
 
 	dataType1 = (&rfield.Binary{Value: []byte("true")}).DataType()
-	dataType2 = (&rfield.U32{Value: 1}).DataType()
+	dataType2 = (rfield.NewU32(1)).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.BINARY {
 		t.Errorf("Expected BINARY, got %v", dataType.ID())
 	}
 
 	dataType1 = (&rfield.Binary{Value: []byte("true")}).DataType()
-	dataType2 = (&rfield.I64{Value: 1}).DataType()
+	dataType2 = (rfield.NewI64(1)).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.BINARY {
 		t.Errorf("Expected BINARY, got %v", dataType.ID())
 	}
 
 	dataType1 = (&rfield.Binary{Value: []byte("true")}).DataType()
-	dataType2 = (&rfield.U64{Value: 1}).DataType()
+	dataType2 = (rfield.NewU64(1)).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.BINARY {
 		t.Errorf("Expected BINARY, got %v", dataType.ID())
 	}
 
 	dataType1 = (&rfield.Binary{Value: []byte("true")}).DataType()
-	dataType2 = (&rfield.Bool{Value: true}).DataType()
+	dataType2 = (rfield.NewBool(true)).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.BINARY {
 		t.Errorf("Expected BINARY, got %v", dataType.ID())
 	}
 
 	dataType1 = (&rfield.Binary{Value: []byte("true")}).DataType()
-	dataType2 = (&rfield.String{Value: "bla"}).DataType()
+	dataType2 = (rfield.NewString("bla")).DataType()
 	dataType = rfield.CoerceDataTypes(dataType1, dataType2)
 	if dataType.ID() != arrow.BINARY {
 		t.Errorf("Expected BINARY, got %v", dataType.ID())
