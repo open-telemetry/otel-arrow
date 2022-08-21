@@ -152,6 +152,10 @@ This capability will be used to implement an exporter into the existing collecto
     - [X] logs_benchmark 
     - [X] metrics_benchmark [WIP define a way to specify the multivariate metrics configuration]  
     - [X] traces_benchmark 
+  - [ ] Assertions to check the correctness of the OTLP_ARROW representation
+    - [ ] [WIP] Metrics
+    - [ ] Logs
+    - [ ] Trace
 
 **Performance**
   - [ ] Performance and memory optimizations

@@ -290,37 +290,6 @@ func MetricAssertEq(m1 *metricspb.Metric, m2 *metricspb.Metric, context string) 
 	MetricDataAssertEq(m1.Data, m2.Data, context+".Data")
 }
 
-func MetricDataAssertEq(d1 interface{}, d2 interface{}, context string) {
-	if d1 == nil && d2 == nil {
-		return
-	}
-	if d1 == nil {
-		panic("The first metric data is nil (context: " + context + ")")
-	}
-	if d2 == nil {
-		panic("The second metric data is nil (context: " + context + ")")
-	}
-	switch d1.(type) {
-	case *metricspb.Metric_Gauge:
-		// Todo
-		break
-	case *metricspb.Metric_Sum:
-		// Todo
-		break
-	case *metricspb.Metric_Histogram:
-		// Todo
-		break
-	case *metricspb.Metric_ExponentialHistogram:
-		// Todo
-		break
-	case *metricspb.Metric_Summary:
-		// Todo
-		break
-	default:
-		panic("unexpected metric data type: " + reflect.TypeOf(d1).String() + " (context: " + context + ")")
-	}
-}
-
 func InstrumentationScopeAssertEq(sc1 *commonpb.InstrumentationScope, sc2 *commonpb.InstrumentationScope, context string) {
 	if sc1 == nil && sc2 == nil {
 		return
@@ -341,4 +310,115 @@ func InstrumentationScopeAssertEq(sc1 *commonpb.InstrumentationScope, sc2 *commo
 	if sc1.DroppedAttributesCount != sc2.DroppedAttributesCount {
 		panic(fmt.Sprintf("instrumentation scope dropped attributes count mismatch (sc1.DroppedAttributesCount=%d, sc2.DroppedAttributesCount=%d, context: %s)", sc1.DroppedAttributesCount, sc2.DroppedAttributesCount, context))
 	}
+}
+
+func MetricDataAssertEq(d1 interface{}, d2 interface{}, context string) {
+	if d1 == nil && d2 == nil {
+		return
+	}
+	if d1 == nil {
+		panic("The first metric data is nil (context: " + context + ")")
+	}
+	if d2 == nil {
+		panic("The second metric data is nil (context: " + context + ")")
+	}
+	switch m1 := d1.(type) {
+	case *metricspb.Metric_Gauge:
+		MetricGaugeAssertEq(m1, d2.(*metricspb.Metric_Gauge), context)
+	case *metricspb.Metric_Sum:
+		// Todo
+		break
+	case *metricspb.Metric_Histogram:
+		// Todo
+		break
+	case *metricspb.Metric_ExponentialHistogram:
+		// Todo
+		break
+	case *metricspb.Metric_Summary:
+		// Todo
+		break
+	default:
+		panic("unexpected metric data type: " + reflect.TypeOf(d1).String() + " (context: " + context + ")")
+	}
+}
+
+func MetricGaugeAssertEq(mg1 *metricspb.Metric_Gauge, mg2 *metricspb.Metric_Gauge, context string) {
+	if mg1 == nil && mg2 == nil {
+		return
+	}
+	if mg1 == nil || mg1.Gauge == nil {
+		panic("The first metric gauge is nil (context: " + context + ")")
+	}
+	if mg2 == nil || mg2.Gauge == nil {
+		panic("The second metric gauge is nil (context: " + context + ")")
+	}
+	mg1DataPoints := mg1.Gauge.DataPoints
+	mg2DataPoints := mg2.Gauge.DataPoints
+	if mg1DataPoints == nil && mg2DataPoints == nil {
+		return
+	}
+	if mg1DataPoints == nil {
+		panic("The first metric gauge data points is nil (context: " + context + ")")
+	}
+	if mg2DataPoints == nil {
+		panic("The second metric gauge data points is nil (context: " + context + ")")
+	}
+	if len(mg1DataPoints) != len(mg2DataPoints) {
+		panic(fmt.Sprintf("gauge data points length mismatch (len(mg1DataPoints)=%d, len(mg2DataPoints)=%d, context: %s)", len(mg1DataPoints), len(mg2DataPoints), context))
+	}
+	for i := range mg1DataPoints {
+		DataPointAssertEq(mg1DataPoints[i], mg2DataPoints[i], context+"["+strconv.Itoa(i)+"]")
+	}
+}
+
+func DataPointAssertEq(dp1 *metricspb.NumberDataPoint, dp2 *metricspb.NumberDataPoint, context string) {
+	if dp1 == nil && dp2 == nil {
+		return
+	}
+	if dp1 == nil {
+		panic("The first data point is nil (context: " + context + ")")
+	}
+	if dp2 == nil {
+		panic("The second data point is nil (context: " + context + ")")
+	}
+	if dp1.StartTimeUnixNano != dp2.StartTimeUnixNano {
+		panic(fmt.Sprintf("data point start time mismatch (dp1.StartTimeUnixNano=%d, dp2.StartTimeUnixNano=%d, context: %s)", dp1.StartTimeUnixNano, dp2.StartTimeUnixNano, context))
+	}
+	if dp1.TimeUnixNano != dp2.TimeUnixNano {
+		panic(fmt.Sprintf("data point time mismatch (dp1.TimeUnixNano=%d, dp2.TimeUnixNano=%d, context: %s)", dp1.TimeUnixNano, dp2.TimeUnixNano, context))
+	}
+	AttributesAssertEq(dp1.Attributes, dp2.Attributes, context+".attributes")
+	NumberDataPointValueAssertEq(dp1.Value, dp2.Value, context+".value")
+	// ToDo check examplars
+	if dp1.Flags != dp2.Flags {
+		panic(fmt.Sprintf("data point flags mismatch (dp1.Flags=%d, dp2.Flags=%d, context: %s)", dp1.Flags, dp2.Flags, context))
+	}
+}
+
+func NumberDataPointValueAssertEq(v1 interface{}, v2 interface{}, context string) {
+	if v1 == nil && v2 == nil {
+		return
+	}
+	if v1 == nil {
+		panic("The first data point value is nil (context: " + context + ")")
+	}
+	if v2 == nil {
+		panic("The second data point value is nil (context: " + context + ")")
+	}
+	switch v1 := v1.(type) {
+	case *metricspb.NumberDataPoint_AsInt:
+		NumberDataPointValueAsIntAssertEq(v1, v2.(*metricspb.NumberDataPoint_AsInt), context)
+	case *metricspb.NumberDataPoint_AsDouble:
+		NumberDataPointValueAsDoubleAssertEq(v1, v2.(*metricspb.NumberDataPoint_AsDouble), context)
+	default:
+		panic("unexpected data point value type: " + reflect.TypeOf(v1).String() + " (context: " + context + ")")
+	}
+}
+
+func NumberDataPointValueAsDoubleAssertEq(v1 *metricspb.NumberDataPoint_AsDouble, v2 *metricspb.NumberDataPoint_AsDouble, context string) {
+	// ToDo
+}
+
+func NumberDataPointValueAsIntAssertEq(v1 *metricspb.NumberDataPoint_AsInt, v2 *metricspb.NumberDataPoint_AsInt, context string) {
+	// ToDo
 }
