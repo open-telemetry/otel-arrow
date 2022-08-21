@@ -26,7 +26,7 @@ import (
 func TestOtlpLogsToArrowEvents(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.NewDefaultConfig()
+	cfg := config.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(cfg)
 	lg := datagen2.NewLogsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScopes())
 

@@ -58,7 +58,8 @@ func main() {
 		ds := dataset.NewRealTraceDataset(inputFiles[i], []string{"trace_id"})
 		otlpTraces := otlp.NewTraceProfileable(ds, compressionAlgo)
 		//otlpArrowTracesWithoutDictionary := otlp_arrow.NewTraceProfileable([]string{"No dict"}, dataset, config.NewConfigWithoutDictionary(), compressionAlgo)
-		otlpArrowTracesWithDictionary := otlp_arrow.NewTraceProfileable([]string{"With dict"}, ds, config.NewDefaultConfig(), compressionAlgo)
+		otlpArrowTracesWithUint8Dictionary := otlp_arrow.NewTraceProfileable([]string{"uint8 dict"}, ds, config.NewUint8DefaultConfig(), compressionAlgo)
+		otlpArrowTracesWithUint16Dictionary := otlp_arrow.NewTraceProfileable([]string{"uint16 dict"}, ds, config.NewUint16DefaultConfig(), compressionAlgo)
 
 		if err := profiler.Profile(otlpTraces, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
@@ -66,7 +67,10 @@ func main() {
 		//if err := profiler.Profile(otlpArrowTracesWithoutDictionary, maxIter); err != nil {
 		//	panic(fmt.Errorf("expected no error, got %v", err))
 		//}
-		if err := profiler.Profile(otlpArrowTracesWithDictionary, maxIter); err != nil {
+		if err := profiler.Profile(otlpArrowTracesWithUint8Dictionary, maxIter); err != nil {
+			panic(fmt.Errorf("expected no error, got %v", err))
+		}
+		if err := profiler.Profile(otlpArrowTracesWithUint16Dictionary, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
 		}
 

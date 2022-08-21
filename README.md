@@ -72,8 +72,8 @@ TBD
   - [X] Struct values
   - [X] List values (except list of list)
 - [X] Optimizations
-  - [X] Dictionary encoding for string fields
-  - [X] Dictionary encoding for binary fields
+  - [X] Dictionary encoding for string fields (uint8 and uint16 indices)
+  - [X] Dictionary encoding for binary fields (uint8 and uint16 indices)
   - [X] Multi-field sorting (string field)
   - [X] Multi-field sorting (binary field)
 

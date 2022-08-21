@@ -33,7 +33,7 @@ import (
 func TestAddRecord(t *testing.T) {
 	t.Parallel()
 
-	rr := air.NewRecordRepository(config2.NewDefaultConfig())
+	rr := air.NewRecordRepository(config2.NewUint8DefaultConfig())
 	rr.AddRecord(GenSimpleRecord(0))
 	rr.AddRecord(GenComplexRecord(1))
 	rr.AddRecord(GenSimpleRecord(2))
@@ -278,7 +278,7 @@ func TestBuild(t *testing.T) {
 func TestBuildHeterogeneousListOfStructs(t *testing.T) {
 	t.Parallel()
 
-	config := config2.NewDefaultConfig()
+	config := config2.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(config)
 
 	rr.AddRecord(RecordWithHeterogeneousListOfStructs(1))

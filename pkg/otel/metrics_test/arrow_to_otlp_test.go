@@ -29,7 +29,7 @@ import (
 func TestSystemCpuTimeConversion(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.NewDefaultConfig()
+	cfg := config.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(cfg)
 	lg := datagen2.NewMetricsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScopes())
 
@@ -60,7 +60,7 @@ func TestSystemCpuTimeConversion(t *testing.T) {
 func TestSystemMemoryUsageConversion(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.NewDefaultConfig()
+	cfg := config.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(cfg)
 	lg := datagen2.NewMetricsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScopes())
 
@@ -91,7 +91,7 @@ func TestSystemMemoryUsageConversion(t *testing.T) {
 func TestSystemCpuLoadAverage1mConversion(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.NewDefaultConfig()
+	cfg := config.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(cfg)
 	lg := datagen2.NewMetricsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScopes())
 

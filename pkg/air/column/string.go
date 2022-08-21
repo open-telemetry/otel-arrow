@@ -15,6 +15,8 @@
 package column
 
 import (
+	"math"
+
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/memory"
@@ -55,8 +57,12 @@ func NewStringColumn(allocator *memory.GoAllocator, name string, metadata arrow.
 	if config.MaxCard > 0 {
 		dictionary = make(map[string]int)
 	}
+	indexType := arrow.PrimitiveTypes.Uint16
+	if config.MaxCard <= math.MaxUint8 {
+		indexType = arrow.PrimitiveTypes.Uint8
+	}
 	dicoType := &arrow.DictionaryType{
-		IndexType: arrow.PrimitiveTypes.Uint8, // ToDo add support for uint16, uint32, uint64
+		IndexType: indexType,
 		ValueType: arrow.BinaryTypes.String,
 		Ordered:   false, // ToDo do test with ordered dictionaries
 	}

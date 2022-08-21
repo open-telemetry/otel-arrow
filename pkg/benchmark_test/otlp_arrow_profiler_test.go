@@ -29,7 +29,7 @@ func TestOtlpArrowMetricsProfiler(t *testing.T) {
 	t.Parallel()
 
 	// Configuration
-	cfg := config.NewDefaultConfig()
+	cfg := config.NewUint8DefaultConfig()
 	multivariateConf := &metrics.MultivariateMetricsConfig{
 		Metrics: make(map[string]string),
 	}

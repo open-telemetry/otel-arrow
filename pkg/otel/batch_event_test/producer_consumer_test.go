@@ -33,7 +33,7 @@ func TestProducerConsumer(t *testing.T) {
 
 	producer := batch_event.NewProducer()
 	consumer := batch_event.NewConsumer()
-	config := cfg.NewDefaultConfig()
+	config := cfg.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(config)
 
 	recordCount := 10

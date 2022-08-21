@@ -32,7 +32,7 @@ func TestIPCWriter(t *testing.T) {
 	//t.Skip("WIP")
 	t.Parallel()
 
-	cfg := config.NewDefaultConfig()
+	cfg := config.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(cfg)
 	lg := datagen.NewTraceGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
 

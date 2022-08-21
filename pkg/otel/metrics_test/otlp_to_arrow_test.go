@@ -26,7 +26,7 @@ import (
 func TestOtlpMetricsToArrowEvents(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.NewDefaultConfig()
+	cfg := config.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(cfg)
 	lg := datagen2.NewMetricsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScopes())
 

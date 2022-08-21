@@ -57,7 +57,7 @@ func main() {
 		profiler.Printf("Dataset '%s'\n", inputFiles[i])
 		ds := dataset.NewRealLogsDataset(inputFiles[i])
 		otlpLogs := otlp.NewLogsProfileable(ds, compressionAlgo)
-		otlpArrowLogsWithDictionary := otlp_arrow.NewLogsProfileable([]string{"With dict"}, ds, config.NewDefaultConfig(), compressionAlgo)
+		otlpArrowLogsWithDictionary := otlp_arrow.NewLogsProfileable([]string{"With dict"}, ds, config.NewUint8DefaultConfig(), compressionAlgo)
 
 		if err := profiler.Profile(otlpLogs, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))

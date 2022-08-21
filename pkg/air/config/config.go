@@ -46,7 +46,7 @@ type DictionaryConfig struct {
 	MaxSortedDictionaries int
 }
 
-func NewDefaultConfig() *Config {
+func NewUint8DefaultConfig() *Config {
 	return &Config{
 		Dictionaries: DictionariesConfig{
 			StringColumns: DictionaryConfig{
@@ -58,6 +58,25 @@ func NewDefaultConfig() *Config {
 			BinaryColumns: DictionaryConfig{
 				MinRowCount:           10,
 				MaxCard:               math.MaxUint8,
+				MaxCardRatio:          0.5,
+				MaxSortedDictionaries: 5,
+			},
+		},
+	}
+}
+
+func NewUint16DefaultConfig() *Config {
+	return &Config{
+		Dictionaries: DictionariesConfig{
+			StringColumns: DictionaryConfig{
+				MinRowCount:           10,
+				MaxCard:               math.MaxUint16,
+				MaxCardRatio:          0.5,
+				MaxSortedDictionaries: 5,
+			},
+			BinaryColumns: DictionaryConfig{
+				MinRowCount:           10,
+				MaxCard:               math.MaxUint16,
 				MaxCardRatio:          0.5,
 				MaxSortedDictionaries: 5,
 			},
