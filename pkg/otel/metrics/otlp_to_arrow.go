@@ -99,7 +99,6 @@ func addGaugeOrSum(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetri
 	return nil
 }
 
-// ToDo initial metric name is lost, it should be recorded as metadata or constant column
 func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, dataPoints []*metricspb.NumberDataPoint, metric_type string, multivariateKey string) error {
 	records := make(map[string]*MultivariateRecord)
 
