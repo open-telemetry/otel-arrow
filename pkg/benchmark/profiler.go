@@ -76,7 +76,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 
 	for _, batchSize := range p.batchSizes {
 		profileable.StartProfiling(p.writer)
-		_, _ = fmt.Fprintf(p.writer, "Profiling '%s' (tags=[%v], batch-size=%d)\n", profileable.Name(), strings.Join(profileable.Tags(), `,`), batchSize)
+		_, _ = fmt.Fprintf(p.writer, "Profiling '%s' (tags=[%v], batch-size=%d, dataset-size=%d)\n", profileable.Name(), strings.Join(profileable.Tags(), `,`), batchSize, profileable.DatasetSize())
 
 		uncompressedSize := NewMetric()
 		compressedSize := NewMetric()

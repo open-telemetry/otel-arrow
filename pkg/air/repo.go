@@ -100,8 +100,8 @@ func (rr *RecordRepository) Metadata() []*RecordBuilderMetadata {
 
 func (rr *RecordRepository) DumpMetadata(f io.Writer) {
 	metadata := rr.Metadata()
-	fmt.Printf("%d Arrow Schema detected\n", len(metadata))
-	//for _, m := range metadata {
-	//	m.Dump(f)
-	//}
+	fmt.Printf("%d Arrow Schema detected.\n", len(metadata))
+	for _, m := range metadata {
+		m.Dump(f)
+	}
 }
