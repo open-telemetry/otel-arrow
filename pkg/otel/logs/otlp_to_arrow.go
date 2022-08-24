@@ -40,7 +40,9 @@ func OtlpLogsToArrowRecords(rr *air.RecordRepository, request *collogspb.ExportL
 				common.AddScope(record, constants.SCOPE_LOGS, scopeLogs.Scope)
 
 				record.I32Field(constants.SEVERITY_NUMBER, int32(log.SeverityNumber))
-				record.StringField(constants.SEVERITY_TEXT, log.SeverityText)
+				if len(log.SeverityText) > 0 {
+					record.StringField(constants.SEVERITY_TEXT, log.SeverityText)
+				}
 				body := common.OtlpAnyValueToValue(log.Body)
 				if body != nil {
 					record.GenericField(constants.BODY, body)

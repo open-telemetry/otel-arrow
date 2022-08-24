@@ -55,12 +55,13 @@ func (c DictionaryType) String() string {
 }
 
 type DictionaryStats struct {
-	Type           DictionaryType
-	NumPath        []int
-	StringPath     string
-	AvgEntryLength float64
-	Cardinality    int
-	TotalEntry     int
+	Type             DictionaryType
+	NumPath          []int
+	StringPath       string
+	AvgEntryLength   float64
+	Cardinality      int
+	TotalEntry       int
+	TotalValueLength int
 }
 
 func (s DictionaryStats) Dump(f *os.File) {

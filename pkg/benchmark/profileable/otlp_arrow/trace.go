@@ -12,7 +12,7 @@ import (
 	"otel-arrow-adapter/pkg/benchmark"
 	"otel-arrow-adapter/pkg/benchmark/dataset"
 	"otel-arrow-adapter/pkg/otel/batch_event"
-	trace2 "otel-arrow-adapter/pkg/otel/trace"
+	"otel-arrow-adapter/pkg/otel/trace"
 )
 
 type TraceProfileable struct {
@@ -67,8 +67,8 @@ func (s *TraceProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 func (s *TraceProfileable) CreateBatch(_ io.Writer, _, _ int) {
 	// Conversion of OTLP metrics to OTLP Arrow events
 	s.batchEvents = make([]*v1.BatchEvent, 0, len(s.traces))
-	for _, trace := range s.traces {
-		records, err := trace2.OtlpTraceToArrowRecords(s.rr, trace)
+	for _, traceReq := range s.traces {
+		records, err := trace.OtlpTraceToArrowRecords(s.rr, traceReq)
 		if err != nil {
 			panic(err)
 		}

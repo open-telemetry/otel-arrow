@@ -326,7 +326,7 @@ func MetricDataAssertEq(d1 interface{}, d2 interface{}, context string) {
 	case *metricspb.Metric_Gauge:
 		MetricGaugeAssertEq(m1, d2.(*metricspb.Metric_Gauge), context)
 	case *metricspb.Metric_Sum:
-		// Todo
+		MetricSumAssertEq(m1, d2.(*metricspb.Metric_Sum), context)
 		break
 	case *metricspb.Metric_Histogram:
 		// Todo
@@ -368,6 +368,36 @@ func MetricGaugeAssertEq(mg1 *metricspb.Metric_Gauge, mg2 *metricspb.Metric_Gaug
 	}
 	for i := range mg1DataPoints {
 		DataPointAssertEq(mg1DataPoints[i], mg2DataPoints[i], context+"["+strconv.Itoa(i)+"]")
+	}
+}
+
+func MetricSumAssertEq(ms1 *metricspb.Metric_Sum, ms2 *metricspb.Metric_Sum, context string) {
+	if ms1 == nil && ms2 == nil {
+		return
+	}
+	if ms1 == nil || ms1.Sum == nil {
+		panic("The first metric sum is nil (context: " + context + ")")
+	}
+	if ms2 == nil || ms2.Sum == nil {
+		panic("The second metric sum is nil (context: " + context + ")")
+	}
+	ms1DataPoints := ms1.Sum.DataPoints
+	ms2DataPoints := ms2.Sum.DataPoints
+	if ms1DataPoints == nil && ms2DataPoints == nil {
+		return
+	}
+	if ms1DataPoints == nil {
+		panic("The first metric sum data points is nil (context: " + context + ")")
+	}
+	if ms2DataPoints == nil {
+		panic("The second metric sum data points is nil (context: " + context + ")")
+	}
+	if len(ms1DataPoints) != len(ms2DataPoints) {
+		panic(fmt.Sprintf("sum data points length mismatch (len(ms1DataPoints)=%d, len(ms2DataPoints)=%d, context: %s)", len(ms1DataPoints), len(ms2DataPoints), context))
+	}
+	for i := range ms1DataPoints {
+		// ToDo datapoints are not necessarily in the same order, so we need to consider that for the assertion
+		DataPointAssertEq(ms1DataPoints[i], ms2DataPoints[i], context+"["+strconv.Itoa(i)+"]")
 	}
 }
 
@@ -416,9 +446,31 @@ func NumberDataPointValueAssertEq(v1 interface{}, v2 interface{}, context string
 }
 
 func NumberDataPointValueAsDoubleAssertEq(v1 *metricspb.NumberDataPoint_AsDouble, v2 *metricspb.NumberDataPoint_AsDouble, context string) {
-	// ToDo
+	if v1 == nil && v2 == nil {
+		return
+	}
+	if v1 == nil {
+		panic("The first data point double value is nil (context: " + context + ")")
+	}
+	if v2 == nil {
+		panic("The second data point int value is nil (context: " + context + ")")
+	}
+	if v1.AsDouble != v2.AsDouble {
+		panic(fmt.Sprintf("data point value mismatch (v1.AsDouble=%f, v2.AsDouble=%f, context: %s)", v1.AsDouble, v2.AsDouble, context))
+	}
 }
 
 func NumberDataPointValueAsIntAssertEq(v1 *metricspb.NumberDataPoint_AsInt, v2 *metricspb.NumberDataPoint_AsInt, context string) {
-	// ToDo
+	if v1 == nil && v2 == nil {
+		return
+	}
+	if v1 == nil {
+		panic("The first data point int value is nil (context: " + context + ")")
+	}
+	if v2 == nil {
+		panic("The second data point int value is nil (context: " + context + ")")
+	}
+	if v1.AsInt != v2.AsInt {
+		panic(fmt.Sprintf("data point value mismatch (v1.AsInt=%d, v2.AsInt=%d, context: %s)", v1.AsInt, v2.AsInt, context))
+	}
 }

@@ -29,17 +29,17 @@ func TestIsDictionary(t *testing.T) {
 		MaxSortedDictionaries: 5,
 	}
 
-	if !config.IsDictionary(10, 1) {
+	if !config.IsDictionary(10, 1, 10) {
 		t.Errorf("Expected a dictionary")
 	}
-	if !config.IsDictionary(10, 2) {
+	if !config.IsDictionary(10, 2, 10) {
 		t.Errorf("Expected a dictionary")
 	}
 
-	if config.IsDictionary(5, 1) {
+	if config.IsDictionary(5, 1, 5) {
 		t.Errorf("Didn't expect a dictionary (too few rows)")
 	}
-	if config.IsDictionary(10, 3) {
+	if config.IsDictionary(10, 3, 10) {
 		t.Errorf("Didn't rxpect a dictionary (too many unique values")
 	}
 }

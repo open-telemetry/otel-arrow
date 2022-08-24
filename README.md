@@ -56,8 +56,7 @@ The input files must be one or more OTLP traces (ExportTraceServiceRequest) enco
 
 ## Integration with the OpenTelemetry Collector
 
-TBD
-
+### From OTEL Arrow to ExportTraceServiceRequest
 
 ## Status [WIP]
 
@@ -171,4 +170,5 @@ This capability will be used to implement an exporter into the existing collecto
   - [ ] Update OTEP 0156.
 
 **Feedback to implement**
-  - [ ] Feedback provided by @atoulme 
+  - [ ] @jmacd's feedback
+  - [ ] @atoulme's feedback 

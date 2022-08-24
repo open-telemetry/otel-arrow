@@ -105,8 +105,9 @@ func (c *Config) ConfigWithoutDictionarySupport() *Config {
 
 // IsDictionary returns true if the dictionary parameters passed in parameter satisfy the current
 // dictionary configuration.
-func (d *DictionaryConfig) IsDictionary(rowCount, card int) bool {
+func (d *DictionaryConfig) IsDictionary(rowCount, card int, totalValueLength int) bool {
 	return rowCount >= d.MinRowCount &&
+		totalValueLength > 0 &&
 		card <= d.MaxCard &&
 		float64(card)/float64(rowCount) <= d.MaxCardRatio
 }

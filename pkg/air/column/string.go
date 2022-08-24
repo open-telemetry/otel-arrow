@@ -132,12 +132,13 @@ func (c *StringColumn) DictionaryStats(parentPath string) *stats.DictionaryStats
 			stringPath = parentPath + "." + c.dicoField.Name
 		}
 		return &stats.DictionaryStats{
-			Type:           stats.StringDic,
-			NumPath:        c.fieldPath,
-			StringPath:     stringPath,
-			Cardinality:    c.DictionaryLen(),
-			AvgEntryLength: c.AvgValueLength(),
-			TotalEntry:     c.totalRowCount,
+			Type:             stats.StringDic,
+			NumPath:          c.fieldPath,
+			StringPath:       stringPath,
+			Cardinality:      c.DictionaryLen(),
+			AvgEntryLength:   c.AvgValueLength(),
+			TotalEntry:       c.totalRowCount,
+			TotalValueLength: c.totalValueLength,
 		}
 	}
 	return nil
@@ -176,7 +177,7 @@ func (c *StringColumn) Clear() {
 
 // NewArrowField creates a schema field
 func (c *StringColumn) NewArrowField() *arrow.Field {
-	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen()) {
+	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen(), c.totalValueLength) {
 		return c.dicoField
 	} else {
 		return c.stringField
@@ -185,7 +186,7 @@ func (c *StringColumn) NewArrowField() *arrow.Field {
 
 // NewArray creates and initializes a new Arrow Array for the column.
 func (c *StringColumn) NewArray(_ *memory.GoAllocator) arrow.Array {
-	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen()) {
+	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen(), c.totalValueLength) {
 		c.dicoBuilder.Reserve(len(c.data))
 		for _, value := range c.data {
 			if value != nil {

@@ -162,12 +162,13 @@ func (c *BinaryColumn) DictionaryStats(parentPath string) *stats.DictionaryStats
 			stringPath = parentPath + "." + c.name
 		}
 		return &stats.DictionaryStats{
-			Type:           stats.BinaryDic,
-			NumPath:        c.fieldPath,
-			StringPath:     stringPath,
-			Cardinality:    c.DictionaryLen(),
-			AvgEntryLength: c.AvgValueLength(),
-			TotalEntry:     c.totalRowCount,
+			Type:             stats.BinaryDic,
+			NumPath:          c.fieldPath,
+			StringPath:       stringPath,
+			Cardinality:      c.DictionaryLen(),
+			AvgEntryLength:   c.AvgValueLength(),
+			TotalEntry:       c.totalRowCount,
+			TotalValueLength: c.totalValueLength,
 		}
 	}
 	return nil
@@ -180,7 +181,7 @@ func (c *BinaryColumn) Clear() {
 
 // NewArrowField creates a Binary schema field.
 func (c *BinaryColumn) NewArrowField() *arrow.Field {
-	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen()) {
+	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen(), c.totalValueLength) {
 		return &arrow.Field{Name: c.name, Type: c.dictionaryType, Metadata: c.metadata}
 	} else {
 		return &arrow.Field{Name: c.name, Type: arrow.BinaryTypes.Binary, Metadata: c.metadata}
@@ -189,7 +190,7 @@ func (c *BinaryColumn) NewArrowField() *arrow.Field {
 
 // NewArray creates and initializes a new Arrow Array for the column.
 func (c *BinaryColumn) NewArray(_ *memory.GoAllocator) arrow.Array {
-	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen()) {
+	if c.dictionary != nil && c.config.IsDictionary(c.totalRowCount, c.DictionaryLen(), c.totalValueLength) {
 		c.dicoBuilder.Reserve(len(c.data))
 		for _, value := range c.data {
 			if value != nil {

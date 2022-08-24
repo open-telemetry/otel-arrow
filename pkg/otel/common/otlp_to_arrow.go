@@ -109,8 +109,12 @@ func AddScope(record *air.Record, scopeKey string, scope *commonpb.Instrumentati
 func ScopeField(scopeKey string, scope *commonpb.InstrumentationScope) *rfield.Field {
 	var fields []*rfield.Field
 
-	fields = append(fields, rfield.NewStringField(constants.NAME, scope.Name))
-	fields = append(fields, rfield.NewStringField(constants.VERSION, scope.Version))
+	if len(scope.Name) > 0 {
+		fields = append(fields, rfield.NewStringField(constants.NAME, scope.Name))
+	}
+	if len(scope.Version) > 0 {
+		fields = append(fields, rfield.NewStringField(constants.VERSION, scope.Version))
+	}
 	attributes := NewAttributes(scope.Attributes)
 	if attributes != nil {
 		fields = append(fields, attributes)

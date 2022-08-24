@@ -229,9 +229,9 @@ func (rb *RecordBuilder) Optimize() bool {
 				continue
 			}
 
-			if ds.Type == stats.StringDic && rb.config.Dictionaries.StringColumns.IsDictionary(ds.TotalEntry, ds.Cardinality) {
+			if ds.Type == stats.StringDic && rb.config.Dictionaries.StringColumns.IsDictionary(ds.TotalEntry, ds.Cardinality, ds.TotalValueLength) {
 				dictionaryStats = append(dictionaryStats, ds)
-			} else if ds.Type == stats.BinaryDic && rb.config.Dictionaries.BinaryColumns.IsDictionary(ds.TotalEntry, ds.Cardinality) {
+			} else if ds.Type == stats.BinaryDic && rb.config.Dictionaries.BinaryColumns.IsDictionary(ds.TotalEntry, ds.Cardinality, ds.TotalValueLength) {
 				dictionaryStats = append(dictionaryStats, ds)
 			}
 		}

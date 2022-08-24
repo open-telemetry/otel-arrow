@@ -92,7 +92,9 @@ func AddTraces(rr *air.RecordRepository, request *coltracepb.ExportTraceServiceR
 				// Status
 				if span.Status != nil {
 					record.I32Field(constants.STATUS, int32(span.Status.Code))
-					record.StringField(constants.STATUS_MESSAGE, span.Status.Message)
+					if len(span.Status.Message) > 0 {
+						record.StringField(constants.STATUS_MESSAGE, span.Status.Message)
+					}
 				}
 
 				rr.AddRecord(record)
