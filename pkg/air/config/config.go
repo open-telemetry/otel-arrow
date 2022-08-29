@@ -18,8 +18,27 @@ import "math"
 
 // Config defines configuration for RecordRepository.
 type Config struct {
+	TraceEncoding TraceEncoding
+	Attribute     Attribute
+
 	// Configuration for the dictionaries
 	Dictionaries DictionariesConfig
+}
+
+type TraceEncoding struct {
+	Hierarchical bool
+}
+
+type AttributeEncoding int8
+
+const (
+	AttributesAsStructs AttributeEncoding = iota
+	AttributesAsLists
+	AttributesAsListStructs
+)
+
+type Attribute struct {
+	Encoding AttributeEncoding
 }
 
 // DictionariesConfig defines configuration for binary and string dictionaries.

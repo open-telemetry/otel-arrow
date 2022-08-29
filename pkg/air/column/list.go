@@ -97,7 +97,7 @@ func MakeListColumn(allocator *memory.GoAllocator, listName string, metadata arr
 		fieldPaths = fps
 		values = NewStructColumn(stringFieldPath, etype.Name(), metadata, t, columns)
 
-	// List of list of not yet supported
+	// List of list not yet supported
 
 	default:
 		panic(fmt.Sprintf("ListColumn: unsupported data type %s", etype.Name()))

@@ -396,7 +396,8 @@ func (f *Field) WriteSignature(sig *strings.Builder) {
 		sig.WriteString("}")
 	case *List:
 		sig.WriteString("[")
-		sig.WriteString(DataTypeSignature(v.EType()))
+		eType := v.EType()
+		sig.WriteString(DataTypeSignature(eType))
 		sig.WriteString("]")
 	default:
 		panic("unknown field value type")

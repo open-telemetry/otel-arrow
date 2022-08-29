@@ -1398,7 +1398,7 @@ func listDataType(values []Value) arrow.DataType {
 		for _, dataType := range dataTypeSet {
 			dataTypes = append(dataTypes, dataType)
 		}
-		return CoerceDataType(&dataTypes)
+		return CoerceDataType(dataTypes)
 	} else {
 		return arrow.Null
 	}

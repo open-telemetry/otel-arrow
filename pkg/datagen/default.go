@@ -55,23 +55,23 @@ func DefaultAttributes() []*commonpb.KeyValue {
 		//		},
 		//	}}},
 		//},
-		{
-			Key: "tags_kv_list",
-			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_KvlistValue{
-				KvlistValue: &commonpb.KeyValueList{
-					Values: []*commonpb.KeyValue{
-						{
-							Key:   "state",
-							Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: STATES[rand.Intn(len(STATES))]}},
-						},
-						{
-							Key:   "duration",
-							Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: int64(rand.Intn(100))}},
-						},
-					},
-				},
-			}},
-		},
+		//{
+		//	Key: "tags_kv_list",
+		//	Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_KvlistValue{
+		//		KvlistValue: &commonpb.KeyValueList{
+		//			Values: []*commonpb.KeyValue{
+		//				{
+		//					Key:   "state",
+		//					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: STATES[rand.Intn(len(STATES))]}},
+		//				},
+		//				{
+		//					Key:   "duration",
+		//					Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: int64(rand.Intn(100))}},
+		//				},
+		//			},
+		//		},
+		//	}},
+		//},
 		{
 			Key: "trace_id",
 			Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_BytesValue{

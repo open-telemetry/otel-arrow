@@ -19,12 +19,13 @@ import (
 
 	collogspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	"otel-arrow-adapter/pkg/air"
+	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/otel/common"
 	"otel-arrow-adapter/pkg/otel/constants"
 )
 
 // OtlpLogsToArrowRecords converts an OTLP ResourceLogs to one or more Arrow records
-func OtlpLogsToArrowRecords(rr *air.RecordRepository, request *collogspb.ExportLogsServiceRequest) ([]arrow.Record, error) {
+func OtlpLogsToArrowRecords(rr *air.RecordRepository, request *collogspb.ExportLogsServiceRequest, cfg *config.Config) ([]arrow.Record, error) {
 	for _, resourceLogs := range request.ResourceLogs {
 		for _, scopeLogs := range resourceLogs.ScopeLogs {
 			for _, log := range scopeLogs.LogRecords {
@@ -36,8 +37,8 @@ func OtlpLogsToArrowRecords(rr *air.RecordRepository, request *collogspb.ExportL
 				if log.ObservedTimeUnixNano > 0 {
 					record.U64Field(constants.OBSERVED_TIME_UNIX_NANO, log.ObservedTimeUnixNano)
 				}
-				common.AddResource(record, resourceLogs.Resource)
-				common.AddScope(record, constants.SCOPE_LOGS, scopeLogs.Scope)
+				common.AddResource(record, resourceLogs.Resource, cfg)
+				common.AddScope(record, constants.SCOPE_LOGS, scopeLogs.Scope, cfg)
 
 				record.I32Field(constants.SEVERITY_NUMBER, int32(log.SeverityNumber))
 				if len(log.SeverityText) > 0 {
@@ -47,7 +48,7 @@ func OtlpLogsToArrowRecords(rr *air.RecordRepository, request *collogspb.ExportL
 				if body != nil {
 					record.GenericField(constants.BODY, body)
 				}
-				attributes := common.NewAttributes(log.Attributes)
+				attributes := common.NewAttributes(log.Attributes, cfg)
 				if attributes != nil {
 					record.AddField(attributes)
 				}

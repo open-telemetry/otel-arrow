@@ -35,9 +35,10 @@ import (
 // ===== Real trace dataset =====
 
 type RealTraceDataset struct {
-	spans []SpanAPI
-	s2r   map[*oteltrace.Span]*oteltrace.ResourceSpans
-	s2s   map[*oteltrace.Span]*oteltrace.ScopeSpans
+	spans       []SpanAPI
+	s2r         map[*oteltrace.Span]*oteltrace.ResourceSpans
+	s2s         map[*oteltrace.Span]*oteltrace.ScopeSpans
+	sizeInBytes int
 }
 
 type SpanAPI struct {
@@ -62,8 +63,9 @@ func NewRealTraceDataset(path string, sortOrder []string) *RealTraceDataset {
 	}
 
 	ds := &RealTraceDataset{
-		s2r: map[*oteltrace.Span]*oteltrace.ResourceSpans{},
-		s2s: map[*oteltrace.Span]*oteltrace.ScopeSpans{},
+		s2r:         map[*oteltrace.Span]*oteltrace.ResourceSpans{},
+		s2s:         map[*oteltrace.Span]*oteltrace.ScopeSpans{},
+		sizeInBytes: len(data),
 	}
 
 	for _, rs := range otlp.ResourceSpans {
@@ -86,6 +88,10 @@ func NewRealTraceDataset(path string, sortOrder []string) *RealTraceDataset {
 	}
 
 	return ds
+}
+
+func (d *RealTraceDataset) SizeInBytes() int {
+	return d.sizeInBytes
 }
 
 func (d *RealTraceDataset) Len() int {

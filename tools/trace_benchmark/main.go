@@ -51,26 +51,46 @@ func main() {
 	for i := range inputFiles {
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
 		//profiler := benchmark.NewProfiler([]int{1000, 5000, 10000, 25000})
-		profiler := benchmark.NewProfiler([]int{10000}, "output/trace_benchmark.log")
+		profiler := benchmark.NewProfiler([]int{1000, 2000}, "output/trace_benchmark.log")
 		compressionAlgo := benchmark.Zstd()
 		maxIter := uint64(3)
-		profiler.Printf("Dataset '%s'\n", inputFiles[i])
 		ds := dataset.NewRealTraceDataset(inputFiles[i], []string{"trace_id"})
+		profiler.Printf("Dataset '%s' (%d bytes) loaded\n", inputFiles[i], ds.SizeInBytes())
 		otlpTraces := otlp.NewTraceProfileable(ds, compressionAlgo)
-		//otlpArrowTracesWithoutDictionary := otlp_arrow.NewTraceProfileable([]string{"No dict"}, dataset, config.NewConfigWithoutDictionary(), compressionAlgo)
-		otlpArrowTracesWithUint8Dictionary := otlp_arrow.NewTraceProfileable([]string{"uint8 dict"}, ds, config.NewUint8DefaultConfig(), compressionAlgo)
-		otlpArrowTracesWithUint16Dictionary := otlp_arrow.NewTraceProfileable([]string{"uint16 dict"}, ds, config.NewUint16DefaultConfig(), compressionAlgo)
+
+		conf := config.NewUint16DefaultConfig()
+		conf.TraceEncoding.Hierarchical = false
+		conf.Attribute.Encoding = config.AttributesAsStructs
+		otlpArrowTracesWithUint16Dictionary := otlp_arrow.NewTraceProfileable([]string{"uint16 dict", "attrs_as_structs"}, ds, conf, compressionAlgo)
+		conf = config.NewUint16DefaultConfig()
+		conf.TraceEncoding.Hierarchical = false
+		conf.Attribute.Encoding = config.AttributesAsListStructs
+		otlpArrowTracesWithUint16DictionaryAsListStructs := otlp_arrow.NewTraceProfileable([]string{"uint16 dict", "attrs_as_list_structs"}, ds, conf, compressionAlgo)
+
+		conf = config.NewUint16DefaultConfig()
+		conf.TraceEncoding.Hierarchical = true
+		conf.Attribute.Encoding = config.AttributesAsStructs
+		otlpArrowTracesWithUint16DictionaryHierarchical := otlp_arrow.NewTraceProfileable([]string{"uint16 dict", "attrs_as_structs", "hierarchical"}, ds, conf, compressionAlgo)
+		conf = config.NewUint16DefaultConfig()
+		conf.TraceEncoding.Hierarchical = true
+		conf.Attribute.Encoding = config.AttributesAsListStructs
+		otlpArrowTracesWithUint16DictionaryAsListStructsHierarchical := otlp_arrow.NewTraceProfileable([]string{"uint16 dict", "attrs_as_list_structs", "hierarchical"}, ds, conf, compressionAlgo)
 
 		if err := profiler.Profile(otlpTraces, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
 		}
-		//if err := profiler.Profile(otlpArrowTracesWithoutDictionary, maxIter); err != nil {
-		//	panic(fmt.Errorf("expected no error, got %v", err))
-		//}
-		if err := profiler.Profile(otlpArrowTracesWithUint8Dictionary, maxIter); err != nil {
+
+		if err := profiler.Profile(otlpArrowTracesWithUint16Dictionary, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
 		}
-		if err := profiler.Profile(otlpArrowTracesWithUint16Dictionary, maxIter); err != nil {
+		if err := profiler.Profile(otlpArrowTracesWithUint16DictionaryAsListStructs, maxIter); err != nil {
+			panic(fmt.Errorf("expected no error, got %v", err))
+		}
+
+		if err := profiler.Profile(otlpArrowTracesWithUint16DictionaryHierarchical, maxIter); err != nil {
+			panic(fmt.Errorf("expected no error, got %v", err))
+		}
+		if err := profiler.Profile(otlpArrowTracesWithUint16DictionaryAsListStructsHierarchical, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
 		}
 

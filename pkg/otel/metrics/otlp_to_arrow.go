@@ -21,6 +21,7 @@ import (
 	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/metrics/v1"
 	"otel-arrow-adapter/pkg/air"
+	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/air/rfield"
 	"otel-arrow-adapter/pkg/otel/common"
 	"otel-arrow-adapter/pkg/otel/constants"
@@ -44,7 +45,7 @@ func NewMultivariateMetricsConfig() *MultivariateMetricsConfig {
 }
 
 // OtlpMetricsToArrowRecords converts an OTLP ResourceMetrics to one or more Arrow records.
-func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request *collogspb.ExportMetricsServiceRequest, multivariateConf *MultivariateMetricsConfig) ([]arrow.Record, error) {
+func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request *collogspb.ExportMetricsServiceRequest, multivariateConf *MultivariateMetricsConfig, cfg *config.Config) ([]arrow.Record, error) {
 	result := []arrow.Record{}
 	for _, resourceMetrics := range request.ResourceMetrics {
 		for _, scopeMetrics := range resourceMetrics.ScopeMetrics {
@@ -52,27 +53,27 @@ func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request *collogspb.Expo
 				if metric.Data != nil {
 					switch t := metric.Data.(type) {
 					case *metricspb.Metric_Gauge:
-						err := addGaugeOrSum(rr, resourceMetrics, scopeMetrics, metric, t.Gauge.DataPoints, constants.GAUGE_METRICS, multivariateConf)
+						err := addGaugeOrSum(rr, resourceMetrics, scopeMetrics, metric, t.Gauge.DataPoints, constants.GAUGE_METRICS, multivariateConf, cfg)
 						if err != nil {
 							return nil, err
 						}
 					case *metricspb.Metric_Sum:
-						err := addGaugeOrSum(rr, resourceMetrics, scopeMetrics, metric, t.Sum.DataPoints, constants.SUM_METRICS, multivariateConf)
+						err := addGaugeOrSum(rr, resourceMetrics, scopeMetrics, metric, t.Sum.DataPoints, constants.SUM_METRICS, multivariateConf, cfg)
 						if err != nil {
 							return nil, err
 						}
 					case *metricspb.Metric_Histogram:
-						err := addHistogram(rr, resourceMetrics, scopeMetrics, metric, t.Histogram)
+						err := addHistogram(rr, resourceMetrics, scopeMetrics, metric, t.Histogram, cfg)
 						if err != nil {
 							return nil, err
 						}
 					case *metricspb.Metric_Summary:
-						err := addSummary(rr, resourceMetrics, scopeMetrics, metric, t.Summary)
+						err := addSummary(rr, resourceMetrics, scopeMetrics, metric, t.Summary, cfg)
 						if err != nil {
 							return nil, err
 						}
 					case *metricspb.Metric_ExponentialHistogram:
-						err := addExpHistogram(rr, resourceMetrics, scopeMetrics, metric, t.ExponentialHistogram)
+						err := addExpHistogram(rr, resourceMetrics, scopeMetrics, metric, t.ExponentialHistogram, cfg)
 						if err != nil {
 							return nil, err
 						}
@@ -91,15 +92,15 @@ func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request *collogspb.Expo
 	return result, nil
 }
 
-func addGaugeOrSum(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, dataPoints []*metricspb.NumberDataPoint, metric_type string, config *MultivariateMetricsConfig) error {
+func addGaugeOrSum(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, dataPoints []*metricspb.NumberDataPoint, metric_type string, config *MultivariateMetricsConfig, cfg *config.Config) error {
 	if mvKey, ok := config.Metrics[metric.Name]; ok {
-		return multivariateMetric(rr, resMetrics, scopeMetrics, metric, dataPoints, metric_type, mvKey)
+		return multivariateMetric(rr, resMetrics, scopeMetrics, metric, dataPoints, metric_type, mvKey, cfg)
 	}
-	univariateMetric(rr, resMetrics, scopeMetrics, metric, dataPoints, metric_type)
+	univariateMetric(rr, resMetrics, scopeMetrics, metric, dataPoints, metric_type, cfg)
 	return nil
 }
 
-func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, dataPoints []*metricspb.NumberDataPoint, metric_type string, multivariateKey string) error {
+func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, dataPoints []*metricspb.NumberDataPoint, metric_type string, multivariateKey string, cfg *config.Config) error {
 	records := make(map[string]*MultivariateRecord)
 
 	for _, ndp := range dataPoints {
@@ -121,10 +122,10 @@ func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.Resource
 
 		if newEntry {
 			if resMetrics.Resource != nil {
-				record.fields = append(record.fields, common.ResourceField(resMetrics.Resource))
+				record.fields = append(record.fields, common.ResourceField(resMetrics.Resource, cfg))
 			}
 			if scopeMetrics.Scope != nil {
-				record.fields = append(record.fields, common.ScopeField(constants.SCOPE_METRICS, scopeMetrics.Scope))
+				record.fields = append(record.fields, common.ScopeField(constants.SCOPE_METRICS, scopeMetrics.Scope, cfg))
 			}
 			timeUnixNanoField := rfield.NewU64Field(constants.TIME_UNIX_NANO, ndp.TimeUnixNano)
 			record.fields = append(record.fields, timeUnixNanoField)
@@ -185,15 +186,15 @@ func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.Resource
 	return nil
 }
 
-func univariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, dataPoints []*metricspb.NumberDataPoint, metric_type string) {
+func univariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, dataPoints []*metricspb.NumberDataPoint, metric_type string, cfg *config.Config) {
 	for _, ndp := range dataPoints {
 		record := air.NewRecord()
 
 		if resMetrics.Resource != nil {
-			common.AddResource(record, resMetrics.Resource)
+			common.AddResource(record, resMetrics.Resource, cfg)
 		}
 		if scopeMetrics.Scope != nil {
-			common.AddScope(record, constants.SCOPE_METRICS, scopeMetrics.Scope)
+			common.AddScope(record, constants.SCOPE_METRICS, scopeMetrics.Scope, cfg)
 		}
 
 		record.U64Field(constants.TIME_UNIX_NANO, ndp.TimeUnixNano)
@@ -201,7 +202,7 @@ func univariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMe
 			record.U64Field(constants.START_TIME_UNIX_NANO, ndp.StartTimeUnixNano)
 		}
 
-		if attributes := common.NewAttributes(ndp.Attributes); attributes != nil {
+		if attributes := common.NewAttributes(ndp.Attributes, cfg); attributes != nil {
 			record.AddField(attributes)
 		}
 
@@ -240,15 +241,15 @@ func univariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMe
 	}
 }
 
-func addSummary(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, summary *metricspb.Summary) error {
+func addSummary(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, summary *metricspb.Summary, cfg *config.Config) error {
 	for _, sdp := range summary.DataPoints {
 		record := air.NewRecord()
 
 		if resMetrics.Resource != nil {
-			common.AddResource(record, resMetrics.Resource)
+			common.AddResource(record, resMetrics.Resource, cfg)
 		}
 		if scopeMetrics.Scope != nil {
-			common.AddScope(record, constants.SCOPE_METRICS, scopeMetrics.Scope)
+			common.AddScope(record, constants.SCOPE_METRICS, scopeMetrics.Scope, cfg)
 		}
 
 		record.U64Field(constants.TIME_UNIX_NANO, sdp.TimeUnixNano)
@@ -256,7 +257,7 @@ func addSummary(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics,
 			record.U64Field(constants.START_TIME_UNIX_NANO, sdp.StartTimeUnixNano)
 		}
 
-		if attributes := common.NewAttributes(sdp.Attributes); attributes != nil {
+		if attributes := common.NewAttributes(sdp.Attributes, cfg); attributes != nil {
 			record.AddField(attributes)
 		}
 
@@ -287,15 +288,15 @@ func addSummary(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics,
 	return nil
 }
 
-func addHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, histogram *metricspb.Histogram) error {
+func addHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, histogram *metricspb.Histogram, cfg *config.Config) error {
 	for _, sdp := range histogram.DataPoints {
 		record := air.NewRecord()
 
 		if resMetrics.Resource != nil {
-			common.AddResource(record, resMetrics.Resource)
+			common.AddResource(record, resMetrics.Resource, cfg)
 		}
 		if scopeMetrics.Scope != nil {
-			common.AddScope(record, constants.SCOPE_METRICS, scopeMetrics.Scope)
+			common.AddScope(record, constants.SCOPE_METRICS, scopeMetrics.Scope, cfg)
 		}
 
 		record.U64Field(constants.TIME_UNIX_NANO, sdp.TimeUnixNano)
@@ -303,7 +304,7 @@ func addHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetric
 			record.U64Field(constants.START_TIME_UNIX_NANO, sdp.StartTimeUnixNano)
 		}
 
-		if attributes := common.NewAttributes(sdp.Attributes); attributes != nil {
+		if attributes := common.NewAttributes(sdp.Attributes, cfg); attributes != nil {
 			record.AddField(attributes)
 		}
 
@@ -349,15 +350,15 @@ func addHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetric
 	return nil
 }
 
-func addExpHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, histogram *metricspb.ExponentialHistogram) error {
+func addExpHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, histogram *metricspb.ExponentialHistogram, cfg *config.Config) error {
 	for _, sdp := range histogram.DataPoints {
 		record := air.NewRecord()
 
 		if resMetrics.Resource != nil {
-			common.AddResource(record, resMetrics.Resource)
+			common.AddResource(record, resMetrics.Resource, cfg)
 		}
 		if scopeMetrics.Scope != nil {
-			common.AddScope(record, constants.SCOPE_METRICS, scopeMetrics.Scope)
+			common.AddScope(record, constants.SCOPE_METRICS, scopeMetrics.Scope, cfg)
 		}
 
 		record.U64Field(constants.TIME_UNIX_NANO, sdp.TimeUnixNano)
@@ -365,7 +366,7 @@ func addExpHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMet
 			record.U64Field(constants.START_TIME_UNIX_NANO, sdp.StartTimeUnixNano)
 		}
 
-		if attributes := common.NewAttributes(sdp.Attributes); attributes != nil {
+		if attributes := common.NewAttributes(sdp.Attributes, cfg); attributes != nil {
 			record.AddField(attributes)
 		}
 

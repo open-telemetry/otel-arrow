@@ -109,11 +109,9 @@ func DataTypeSignature(dataType arrow.DataType) string {
 // * Lists and scalars are coerced to a list of a compatible scalar
 // * Structs contain the union of all fields
 // * All other types are coerced to `Utf8`.
-func CoerceDataType(dataTypes *[]arrow.DataType) arrow.DataType {
-	dataType := (*dataTypes)[0]
-
+func CoerceDataType(dataTypes []arrow.DataType) arrow.DataType {
 	areAllStructs := true
-	for _, otherDataType := range *dataTypes {
+	for _, otherDataType := range dataTypes {
 		if otherDataType.ID() != arrow.STRUCT {
 			areAllStructs = false
 			break
@@ -121,10 +119,10 @@ func CoerceDataType(dataTypes *[]arrow.DataType) arrow.DataType {
 	}
 	if areAllStructs {
 		fields := map[string]arrow.DataType{}
-		for _, dataType := range *dataTypes {
+		for _, dataType := range dataTypes {
 			for _, field := range dataType.(*arrow.StructType).Fields() {
-				if dataType, found := fields[field.Name]; found {
-					fields[field.Name] = CoerceDataType(&[]arrow.DataType{dataType, field.Type})
+				if fieldDataType, found := fields[field.Name]; found {
+					fields[field.Name] = CoerceDataType([]arrow.DataType{fieldDataType, field.Type})
 				} else {
 					fields[field.Name] = field.Type
 				}
@@ -142,31 +140,22 @@ func CoerceDataType(dataTypes *[]arrow.DataType) arrow.DataType {
 		}
 		// ToDo check if it's possible to get rid of this sort as the incoming dataTypes are already sorted. Note: the fields map removes this incoming sort.
 		sort.Sort(ArrowFields(structFields))
-		return arrow.StructOf(structFields...)
+		dataType := arrow.StructOf(structFields...)
+		return dataType
 	} else {
-		areAllEqual := true
-		for _, otherDataType := range *dataTypes {
-			if dataType.ID() != otherDataType.ID() {
-				areAllEqual = false
-				break
-			}
+		dataType := dataTypes[0]
+		for i := 1; i < len(dataTypes); i++ {
+			dataType = CoerceDataTypes(dataType, dataTypes[i])
 		}
 
-		if areAllEqual {
-			return dataType
-		}
-
-		for _, otherDataType := range *dataTypes {
-			dataType = CoerceDataTypes(dataType, otherDataType)
-		}
 		return dataType
 	}
 }
 
 func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.DataType {
 	//exhaustive:ignore
-	switch dataType1.ID() {
-	case arrow.PrimitiveTypes.Uint8.ID():
+	switch dt1 := dataType1.(type) {
+	case *arrow.Uint8Type:
 		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Uint8.ID():
@@ -182,7 +171,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 		default:
 			return arrow.BinaryTypes.String
 		}
-	case arrow.PrimitiveTypes.Int8.ID():
+	case *arrow.Int8Type:
 		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Int8.ID():
@@ -198,7 +187,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 		default:
 			return arrow.BinaryTypes.String
 		}
-	case arrow.PrimitiveTypes.Uint16.ID():
+	case *arrow.Uint16Type:
 		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Uint8.ID():
@@ -214,7 +203,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 		default:
 			return arrow.BinaryTypes.String
 		}
-	case arrow.PrimitiveTypes.Int16.ID():
+	case *arrow.Int16Type:
 		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Int8.ID():
@@ -230,7 +219,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 		default:
 			return arrow.BinaryTypes.String
 		}
-	case arrow.PrimitiveTypes.Uint32.ID():
+	case *arrow.Uint32Type:
 		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Uint8.ID():
@@ -246,7 +235,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 		default:
 			return arrow.BinaryTypes.String
 		}
-	case arrow.PrimitiveTypes.Int32.ID():
+	case *arrow.Int32Type:
 		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Int8.ID():
@@ -262,7 +251,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 		default:
 			return arrow.BinaryTypes.String
 		}
-	case arrow.PrimitiveTypes.Uint64.ID():
+	case *arrow.Uint64Type:
 		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Uint8.ID():
@@ -278,7 +267,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 		default:
 			return arrow.BinaryTypes.String
 		}
-	case arrow.PrimitiveTypes.Int64.ID():
+	case *arrow.Int64Type:
 		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Int8.ID():
@@ -294,7 +283,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 		default:
 			return arrow.BinaryTypes.String
 		}
-	case arrow.PrimitiveTypes.Float32.ID():
+	case *arrow.Float32Type:
 		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Float32.ID():
@@ -304,7 +293,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 		default:
 			return arrow.BinaryTypes.String
 		}
-	case arrow.PrimitiveTypes.Float64.ID():
+	case *arrow.Float64Type:
 		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Float32.ID():
@@ -314,7 +303,7 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 		default:
 			return arrow.BinaryTypes.String
 		}
-	case arrow.FixedWidthTypes.Boolean.ID():
+	case *arrow.BooleanType:
 		//exhaustive:ignore
 		switch dataType2.ID() {
 		case arrow.PrimitiveTypes.Uint8.ID():
@@ -338,8 +327,22 @@ func CoerceDataTypes(dataType1 arrow.DataType, dataType2 arrow.DataType) arrow.D
 		default:
 			return arrow.BinaryTypes.String
 		}
-	case arrow.BinaryTypes.Binary.ID():
+	case *arrow.BinaryType:
 		return arrow.BinaryTypes.Binary
+	case *arrow.StructType:
+		switch dataType2.(type) {
+		case *arrow.StructType:
+			return CoerceDataType([]arrow.DataType{dataType1, dataType2})
+		default:
+			panic("coercion not implemented")
+		}
+	case *arrow.ListType:
+		switch dt2 := dataType2.(type) {
+		case *arrow.ListType:
+			return arrow.ListOf(CoerceDataType([]arrow.DataType{dt1.Elem(), dt2.Elem()}))
+		default:
+			panic("coercion not implemented")
+		}
 	default:
 		return arrow.BinaryTypes.String
 	}

@@ -20,6 +20,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"otel-arrow-adapter/pkg/air"
+	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/air/rfield"
 )
 
@@ -268,5 +269,252 @@ func TestRecordSchemaId(t *testing.T) {
 	expectedSchemaId := "a:{b:Str,c:{a:[{f2_3_4_1:Str,f2_3_4_2:I8,f2_3_4_3:Str}],t:Str,x:[I64],y:[Str],z:[I64]},e:Str},b:Str"
 	if id != expectedSchemaId {
 		t.Errorf("Expected: %s\nGot: %s", expectedSchemaId, id)
+	}
+}
+
+func TestRecordWithNestedListSchemaId(t *testing.T) {
+	t.Parallel()
+
+	rr := air.NewRecordRepository(config.NewUint16DefaultConfig())
+
+	resourceSpans := rfield.List{
+		Values: []rfield.Value{
+			rfield.NewStruct([]*rfield.Field{
+				rfield.NewStringField("schema_url", "abc"),
+				rfield.NewListField("spans", rfield.List{
+					Values: []rfield.Value{
+						rfield.NewStruct([]*rfield.Field{
+							rfield.NewU64Field("start_time", 123),
+							rfield.NewU64Field("end_time", 124),
+							rfield.NewStringField("name", "bla"),
+							rfield.NewI32Field("flags", 1),
+							rfield.NewStringField("trace_state", "abc"),
+							rfield.NewBinaryField("parent_span_id", []byte("123")),
+							rfield.NewBinaryField("span_id", []byte("123")),
+						}),
+						rfield.NewStruct([]*rfield.Field{
+							rfield.NewU64Field("start_time", 123),
+							rfield.NewU64Field("end_time", 124),
+							rfield.NewStringField("name", "bla"),
+							rfield.NewI32Field("flags", 1),
+							rfield.NewStringField("trace_state", "abc"),
+							rfield.NewBinaryField("span_id", []byte("123")),
+						}),
+						rfield.NewStruct([]*rfield.Field{
+							rfield.NewU64Field("start_time", 123),
+							rfield.NewU64Field("end_time", 124),
+							rfield.NewStringField("name", "bla"),
+							rfield.NewI32Field("flags", 1),
+							rfield.NewStringField("trace_state", "abc"),
+							rfield.NewBinaryField("span_id", []byte("123")),
+							rfield.NewListField("events", rfield.List{
+								Values: []rfield.Value{
+									rfield.NewStruct([]*rfield.Field{
+										rfield.NewStringField("a", "a"),
+										rfield.NewStringField("b", "b"),
+										rfield.NewU64Field("ts", 12),
+										rfield.NewStringField("c", "c"),
+									}),
+									rfield.NewStruct([]*rfield.Field{
+										rfield.NewStringField("a", "a"),
+										rfield.NewStringField("b", "b"),
+										rfield.NewStringField("c", "c"),
+									}),
+									rfield.NewStruct([]*rfield.Field{
+										rfield.NewStringField("a", "a"),
+										rfield.NewU64Field("ts", 12),
+										rfield.NewStringField("d", "d"),
+									}),
+								},
+							}),
+						}),
+					},
+				}),
+			}),
+			rfield.NewStruct([]*rfield.Field{
+				rfield.NewStringField("schema_url", "abc"),
+				rfield.NewListField("spans", rfield.List{
+					Values: []rfield.Value{
+						rfield.NewStruct([]*rfield.Field{
+							rfield.NewU64Field("end_time", 124),
+							rfield.NewStringField("name", "bla"),
+							rfield.NewI32Field("flags", 1),
+							rfield.NewStringField("trace_state", "abc"),
+							rfield.NewBinaryField("parent_span_id", []byte("123")),
+							rfield.NewBinaryField("span_id", []byte("123")),
+						}),
+						rfield.NewStruct([]*rfield.Field{
+							rfield.NewU64Field("end_time", 124),
+							rfield.NewStringField("name", "bla"),
+							rfield.NewI32Field("flags", 1),
+							rfield.NewStringField("trace_state", "abc"),
+							rfield.NewBinaryField("span_id", []byte("123")),
+						}),
+						rfield.NewStruct([]*rfield.Field{
+							rfield.NewU64Field("end_time", 124),
+							rfield.NewStringField("name", "bla"),
+							rfield.NewI32Field("flags", 1),
+							rfield.NewStringField("trace_state", "abc"),
+							rfield.NewBinaryField("span_id", []byte("123")),
+							rfield.NewListField("events", rfield.List{
+								Values: []rfield.Value{
+									rfield.NewStruct([]*rfield.Field{
+										rfield.NewStringField("a", "a"),
+										rfield.NewStringField("b", "b"),
+										rfield.NewU64Field("ts", 12),
+										rfield.NewStringField("c", "c"),
+									}),
+									rfield.NewStruct([]*rfield.Field{
+										rfield.NewStringField("a", "a"),
+										rfield.NewStringField("b", "b"),
+										rfield.NewStringField("c", "c"),
+									}),
+									rfield.NewStruct([]*rfield.Field{
+										rfield.NewStringField("a", "a"),
+										rfield.NewU64Field("ts", 12),
+										rfield.NewStringField("d", "d"),
+									}),
+								},
+							}),
+						}),
+					},
+				}),
+			}),
+		},
+	}
+
+	record := air.NewRecord()
+	record.ListField("resource_spans", resourceSpans)
+	record.Normalize()
+	id := record.SchemaId()
+
+	if id != "resource_spans:[{schema_url:Str,spans:[{end_time:U64,events:[{a:Str,b:Str,c:Str,d:Str,ts:U64}],flags:I32,name:Str,parent_span_id:Bin,span_id:Bin,start_time:U64,trace_state:Str}]}]" {
+		t.Errorf("invalid schema id")
+	}
+	rr.AddRecord(record)
+
+	resourceSpans = rfield.List{
+		Values: []rfield.Value{
+			rfield.NewStruct([]*rfield.Field{
+				rfield.NewStringField("schema_url", "abc"),
+				rfield.NewListField("spans", rfield.List{
+					Values: []rfield.Value{
+						rfield.NewStruct([]*rfield.Field{
+							rfield.NewU64Field("start_time", 123),
+							rfield.NewU64Field("end_time", 124),
+							rfield.NewStringField("name", "bla"),
+							rfield.NewI32Field("flags", 1),
+							rfield.NewStringField("trace_state", "abc"),
+							rfield.NewBinaryField("parent_span_id", []byte("123")),
+							rfield.NewBinaryField("span_id", []byte("123")),
+						}),
+						rfield.NewStruct([]*rfield.Field{
+							rfield.NewU64Field("start_time", 123),
+							rfield.NewU64Field("end_time", 124),
+							rfield.NewStringField("name", "bla"),
+							rfield.NewI32Field("flags", 1),
+							rfield.NewStringField("trace_state", "abc"),
+							rfield.NewBinaryField("span_id", []byte("123")),
+						}),
+						rfield.NewStruct([]*rfield.Field{
+							rfield.NewU64Field("start_time", 123),
+							rfield.NewU64Field("end_time", 124),
+							rfield.NewStringField("name", "bla"),
+							rfield.NewI32Field("flags", 1),
+							rfield.NewStringField("trace_state", "abc"),
+							rfield.NewBinaryField("span_id", []byte("123")),
+							rfield.NewListField("events", rfield.List{
+								Values: []rfield.Value{
+									rfield.NewStruct([]*rfield.Field{
+										rfield.NewStringField("a", "a"),
+										rfield.NewStringField("b", "b"),
+										rfield.NewU64Field("ts", 12),
+										rfield.NewStringField("c", "c"),
+									}),
+									rfield.NewStruct([]*rfield.Field{
+										rfield.NewStringField("a", "a"),
+										rfield.NewStringField("b", "b"),
+										rfield.NewStringField("c", "c"),
+									}),
+									rfield.NewStruct([]*rfield.Field{
+										rfield.NewStringField("a", "a"),
+										rfield.NewU64Field("ts", 12),
+										rfield.NewStringField("d", "d"),
+									}),
+								},
+							}),
+						}),
+					},
+				}),
+			}),
+			rfield.NewStruct([]*rfield.Field{
+				rfield.NewStringField("schema_url", "abc"),
+				rfield.NewListField("spans", rfield.List{
+					Values: []rfield.Value{
+						rfield.NewStruct([]*rfield.Field{
+							rfield.NewU64Field("end_time", 124),
+							rfield.NewStringField("name", "bla"),
+							rfield.NewI32Field("flags", 1),
+							rfield.NewStringField("trace_state", "abc"),
+							rfield.NewBinaryField("parent_span_id", []byte("123")),
+							rfield.NewBinaryField("span_id", []byte("123")),
+						}),
+						rfield.NewStruct([]*rfield.Field{
+							rfield.NewU64Field("end_time", 124),
+							rfield.NewStringField("name", "bla"),
+							rfield.NewI32Field("flags", 1),
+							rfield.NewStringField("trace_state", "abc"),
+							rfield.NewBinaryField("span_id", []byte("123")),
+						}),
+						rfield.NewStruct([]*rfield.Field{
+							rfield.NewU64Field("end_time", 124),
+							rfield.NewStringField("name", "bla"),
+							rfield.NewI32Field("flags", 1),
+							rfield.NewStringField("trace_state", "abc"),
+							rfield.NewBinaryField("span_id", []byte("123")),
+							rfield.NewListField("events", rfield.List{
+								Values: []rfield.Value{
+									rfield.NewStruct([]*rfield.Field{
+										rfield.NewStringField("a", "a"),
+										rfield.NewStringField("b", "b"),
+										rfield.NewU64Field("ts", 12),
+										rfield.NewStringField("c", "c"),
+									}),
+									rfield.NewStruct([]*rfield.Field{
+										rfield.NewStringField("a", "a"),
+										rfield.NewStringField("b", "b"),
+										rfield.NewStringField("c", "c"),
+									}),
+									rfield.NewStruct([]*rfield.Field{
+										rfield.NewStringField("a", "a"),
+										rfield.NewU64Field("ts", 12),
+										rfield.NewStringField("d", "d"),
+									}),
+								},
+							}),
+						}),
+					},
+				}),
+			}),
+		},
+	}
+
+	record = air.NewRecord()
+	record.ListField("resource_spans", resourceSpans)
+	record.Normalize()
+	id = record.SchemaId()
+
+	if id != "resource_spans:[{schema_url:Str,spans:[{end_time:U64,events:[{a:Str,b:Str,c:Str,d:Str,ts:U64}],flags:I32,name:Str,parent_span_id:Bin,span_id:Bin,start_time:U64,trace_state:Str}]}]" {
+		t.Errorf("invalid schema id")
+	}
+	rr.AddRecord(record)
+
+	arrowRecords, err := rr.BuildRecords()
+	if err != nil {
+		t.Errorf("failed to build records: %v", err)
+	}
+
+	if len(arrowRecords) != 1 {
+		t.Errorf("invalid number of records")
 	}
 }

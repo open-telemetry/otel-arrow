@@ -68,7 +68,7 @@ func (s *MetricsProfileable) CreateBatch(_ io.Writer, _, _ int) {
 	// Conversion of OTLP metrics to OTLP Arrow events
 	s.batchEvents = make([]*v1.BatchEvent, 0, len(s.metrics))
 	for _, metricsServiceRequest := range s.metrics {
-		records, err := metrics.OtlpMetricsToArrowRecords(s.rr, metricsServiceRequest, s.multivariateConfig)
+		records, err := metrics.OtlpMetricsToArrowRecords(s.rr, metricsServiceRequest, s.multivariateConfig, s.config)
 		if err != nil {
 			panic(err)
 		}

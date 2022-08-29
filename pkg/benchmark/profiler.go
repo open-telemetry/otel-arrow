@@ -283,13 +283,19 @@ func (p *Profiler) PrintCompressionRatio() {
 	}
 	table.SetHeaderColor(headerColors...)
 
+	uncompressedTotal := make(map[string]int64)
+	compressedTotal := make(map[string]int64)
+
 	values := make(map[string]*Summary)
 	for _, result := range p.benchmarks {
 		for _, summary := range result.summaries {
 			key := fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "compressed_size_byte")
 			values[key] = summary.compressedSizeByte
+			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "total_compressed_size_byte")
+			compressedTotal[key] = int64(summary.compressedSizeByte.Total(3))
 			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "uncompressed_size_byte")
 			values[key] = summary.uncompressedSizeByte
+			uncompressedTotal[key] = int64(summary.uncompressedSizeByte.Total(3))
 		}
 	}
 
@@ -298,6 +304,19 @@ func (p *Profiler) PrintCompressionRatio() {
 	p.AddSection("Compressed size (bytes)", "compressed_size_byte", table, values, transform)
 
 	table.Render()
+
+	fmt.Printf("\n\n")
+	fmt.Printf("Total uncompressed (bytes)\n")
+	for key, result := range uncompressedTotal {
+		fmt.Printf("\t%s: %d\n", key, result)
+	}
+
+	fmt.Printf("\n\n")
+	fmt.Printf("Total compressed data transferred (bytes)\n")
+	for key, result := range uncompressedTotal {
+		fmt.Printf("\t%s: %d\n", key, result)
+	}
+	fmt.Printf("\n\n")
 }
 
 func (p *Profiler) AddSection(label string, step string, table *tablewriter.Table, values map[string]*Summary, transform func(float64) float64) {

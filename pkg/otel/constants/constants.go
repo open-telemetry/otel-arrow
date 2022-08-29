@@ -23,6 +23,7 @@ const METADATA_METRIC_DESCRIPTION = "md"
 
 // All constants used a column names.
 
+const RESOURCE_SPANS = "resource_spans"
 const TIME_UNIX_NANO string = "time_unix_nano"
 const START_TIME_UNIX_NANO string = "start_time_unix_nano"
 const END_TIME_UNIX_NANO string = "end_time_unix_nano"
@@ -42,6 +43,7 @@ const RESOURCE string = "resource"
 const SCOPE_METRICS string = "scope_metrics"
 const SCOPE_LOGS string = "scope_logs"
 const SCOPE_SPANS string = "scope_spans"
+const SPANS string = "spans"
 const NAME string = "name"
 const KIND string = "kind"
 const VERSION string = "version"
