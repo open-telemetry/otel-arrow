@@ -305,18 +305,18 @@ func (p *Profiler) PrintCompressionRatio() {
 
 	table.Render()
 
-	fmt.Printf("\n\n")
-	fmt.Printf("Total uncompressed (bytes)\n")
-	for key, result := range uncompressedTotal {
-		fmt.Printf("\t%s: %d\n", key, result)
-	}
-
-	fmt.Printf("\n\n")
-	fmt.Printf("Total compressed data transferred (bytes)\n")
-	for key, result := range uncompressedTotal {
-		fmt.Printf("\t%s: %d\n", key, result)
-	}
-	fmt.Printf("\n\n")
+	//fmt.Printf("\n\n")
+	//fmt.Printf("Total uncompressed (bytes)\n")
+	//for key, result := range uncompressedTotal {
+	//	fmt.Printf("\t%s: %d\n", key, result)
+	//}
+	//
+	//fmt.Printf("\n\n")
+	//fmt.Printf("Total compressed data transferred (bytes)\n")
+	//for key, result := range uncompressedTotal {
+	//	fmt.Printf("\t%s: %d\n", key, result)
+	//}
+	//fmt.Printf("\n\n")
 }
 
 func (p *Profiler) AddSection(label string, step string, table *tablewriter.Table, values map[string]*Summary, transform func(float64) float64) {
