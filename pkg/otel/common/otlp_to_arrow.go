@@ -17,6 +17,8 @@ package common
 import (
 	"fmt"
 
+	"github.com/apache/arrow/go/v9/arrow"
+
 	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
 	"otel-arrow-adapter/pkg/air"
@@ -173,6 +175,12 @@ func NewAttributesAsListStructs(attributes []*commonpb.KeyValue) *rfield.Field {
 
 	attributeTuples := make([]AttributeTuple, 0, len(attributes))
 
+	stringCount := 0
+	i64Count := 0
+	f64Count := 0
+	boolCount := 0
+	binaryCount := 0
+
 	for _, attribute := range attributes {
 		value := OtlpAnyValueToValue(attribute.Value)
 		if value != nil {
@@ -182,26 +190,31 @@ func NewAttributesAsListStructs(attributes []*commonpb.KeyValue) *rfield.Field {
 					key: attribute.Key,
 					str: v.Value,
 				})
+				stringCount++
 			case *rfield.I64:
 				attributeTuples = append(attributeTuples, AttributeTuple{
 					key: attribute.Key,
 					i64: v.Value,
 				})
+				i64Count++
 			case *rfield.F64:
 				attributeTuples = append(attributeTuples, AttributeTuple{
 					key: attribute.Key,
 					f64: v.Value,
 				})
+				f64Count++
 			case *rfield.Bool:
 				attributeTuples = append(attributeTuples, AttributeTuple{
 					key:  attribute.Key,
 					bool: v.Value,
 				})
+				boolCount++
 			case *rfield.Binary:
 				attributeTuples = append(attributeTuples, AttributeTuple{
 					key:    attribute.Key,
 					binary: v.Value,
 				})
+				binaryCount++
 			default:
 				panic(fmt.Sprintf("unexpected type: %T", v))
 			}
@@ -213,19 +226,45 @@ func NewAttributesAsListStructs(attributes []*commonpb.KeyValue) *rfield.Field {
 		for _, attribute := range attributeTuples {
 			fields := make([]*rfield.Field, 0, len(attributeTuples))
 			fields = append(fields, &rfield.Field{Name: "key", Value: &rfield.String{Value: &attribute.key}})
-			fields = append(fields, &rfield.Field{Name: "string", Value: &rfield.String{Value: attribute.str}})
-			fields = append(fields, &rfield.Field{Name: "i64", Value: &rfield.I64{Value: attribute.i64}})
-			fields = append(fields, &rfield.Field{Name: "f64", Value: &rfield.F64{Value: attribute.f64}})
-			fields = append(fields, &rfield.Field{Name: "bool", Value: &rfield.Bool{Value: attribute.bool}})
-			fields = append(fields, &rfield.Field{Name: "binary", Value: &rfield.Binary{Value: attribute.binary}})
+			if stringCount > 0 {
+				fields = append(fields, &rfield.Field{Name: "string", Value: &rfield.String{Value: attribute.str}})
+			}
+			if i64Count > 0 {
+				fields = append(fields, &rfield.Field{Name: "i64", Value: &rfield.I64{Value: attribute.i64}})
+			}
+			if f64Count > 0 {
+				fields = append(fields, &rfield.Field{Name: "f64", Value: &rfield.F64{Value: attribute.f64}})
+			}
+			if boolCount > 0 {
+				fields = append(fields, &rfield.Field{Name: "bool", Value: &rfield.Bool{Value: attribute.bool}})
+			}
+			if binaryCount > 0 {
+				fields = append(fields, &rfield.Field{Name: "binary", Value: &rfield.Binary{Value: attribute.binary}})
+			}
 			values = append(values, &rfield.Struct{Fields: fields})
 		}
 	}
 
 	if len(values) > 0 {
-		attrs := rfield.NewListField(constants.ATTRIBUTES, rfield.List{
-			Values: values,
-		})
+		fieldStruct := make([]arrow.Field, 0, 6)
+		if binaryCount > 0 {
+			fieldStruct = append(fieldStruct, arrow.Field{Name: "binary", Type: arrow.BinaryTypes.Binary, Nullable: true, Metadata: arrow.Metadata{}})
+		}
+		if boolCount > 0 {
+			fieldStruct = append(fieldStruct, arrow.Field{Name: "bool", Type: arrow.FixedWidthTypes.Boolean, Nullable: true, Metadata: arrow.Metadata{}})
+		}
+		if f64Count > 0 {
+			fieldStruct = append(fieldStruct, arrow.Field{Name: "f64", Type: arrow.PrimitiveTypes.Float64, Nullable: true, Metadata: arrow.Metadata{}})
+		}
+		if i64Count > 0 {
+			fieldStruct = append(fieldStruct, arrow.Field{Name: "i64", Type: arrow.PrimitiveTypes.Int64, Nullable: true, Metadata: arrow.Metadata{}})
+		}
+		fieldStruct = append(fieldStruct, arrow.Field{Name: "key", Type: arrow.BinaryTypes.String, Nullable: true, Metadata: arrow.Metadata{}})
+		if stringCount > 0 {
+			fieldStruct = append(fieldStruct, arrow.Field{Name: "string", Type: arrow.BinaryTypes.String, Nullable: true, Metadata: arrow.Metadata{}})
+		}
+		etype := arrow.StructOf(fieldStruct...)
+		attrs := rfield.NewListField(constants.ATTRIBUTES, *rfield.UnsafeNewList(etype, values))
 		return attrs
 	}
 	return nil

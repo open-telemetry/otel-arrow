@@ -1365,7 +1365,7 @@ type List struct {
 	Values []Value
 }
 
-func NewList(etype arrow.DataType, values []Value) *List {
+func UnsafeNewList(etype arrow.DataType, values []Value) *List {
 	return &List{
 		etype:  etype,
 		Values: values,

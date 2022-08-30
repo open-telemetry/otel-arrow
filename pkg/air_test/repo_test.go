@@ -327,7 +327,7 @@ func RecordWithHeterogeneousListOfStructs(ts uint64) *air.Record {
 							{Name: "attr8", Value: rfield.NewU32(8)},
 							{Name: "attr10", Value: rfield.NewF32(10.0)},
 							{Name: "attr12", Value: rfield.NewBinary([]byte("12"))},
-							{Name: "attr14", Value: rfield.NewList(&arrow.Int8Type{}, []rfield.Value{
+							{Name: "attr14", Value: rfield.UnsafeNewList(&arrow.Int8Type{}, []rfield.Value{
 								rfield.NewI8(14),
 								rfield.NewI8(14),
 								&rfield.I8{
