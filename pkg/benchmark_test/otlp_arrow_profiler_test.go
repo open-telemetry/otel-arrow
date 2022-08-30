@@ -36,13 +36,14 @@ func TestOtlpArrowMetricsProfiler(t *testing.T) {
 	multivariateConf.Metrics["system.cpu.time"] = "state"
 	multivariateConf.Metrics["system.memory.usage"] = "state"
 
+	maxIter := uint64(10)
 	systemToProfile := otlp_arrow.NewMetricsProfileable([]string{"multivariate"}, dataset.NewFakeMetricsDataset(1000), cfg, multivariateConf, benchmark.Zstd())
 	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, "tmpfile")
-	if err := profiler.Profile(systemToProfile, 10); err != nil {
+	if err := profiler.Profile(systemToProfile, maxIter); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
 	profiler.CheckProcessingResults()
-	profiler.PrintResults()
+	profiler.PrintResults(maxIter)
 	profiler.ExportMetricsTimesCSV("otlp_arrow_metrics")
 	profiler.ExportMetricsBytesCSV("otlp_arrow_metrics")
 }

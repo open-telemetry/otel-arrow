@@ -140,7 +140,7 @@ func (m *Metric) Percentile(pct float64) float64 {
 	return lo + (hi-lo)*d
 }
 
-func (s *Summary) Total(maxIter int) float64 {
+func (s *Summary) Total(maxIter uint64) float64 {
 	sum := 0.0
 	for _, value := range s.Values {
 		sum += value

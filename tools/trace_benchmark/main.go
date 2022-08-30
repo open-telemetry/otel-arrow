@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/dustin/go-humanize"
+
 	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/benchmark"
 	"otel-arrow-adapter/pkg/benchmark/dataset"
@@ -53,9 +55,9 @@ func main() {
 		//profiler := benchmark.NewProfiler([]int{1000, 5000, 10000, 25000})
 		profiler := benchmark.NewProfiler([]int{1000, 2000}, "output/trace_benchmark.log")
 		compressionAlgo := benchmark.Zstd()
-		maxIter := uint64(3)
+		maxIter := uint64(1)
 		ds := dataset.NewRealTraceDataset(inputFiles[i], []string{"trace_id"})
-		profiler.Printf("Dataset '%s' (%d bytes) loaded\n", inputFiles[i], ds.SizeInBytes())
+		profiler.Printf("Dataset '%s' (%s) loaded\n", inputFiles[i], humanize.Bytes(uint64(ds.SizeInBytes())))
 		otlpTraces := otlp.NewTraceProfileable(ds, compressionAlgo)
 
 		conf := config.NewUint16DefaultConfig()
@@ -95,7 +97,7 @@ func main() {
 		}
 
 		profiler.CheckProcessingResults()
-		profiler.PrintResults()
+		profiler.PrintResults(maxIter)
 
 		profiler.ExportMetricsTimesCSV(fmt.Sprintf("%d_traces_benchmark_results", i))
 		profiler.ExportMetricsBytesCSV(fmt.Sprintf("%d_traces_benchmark_results", i))

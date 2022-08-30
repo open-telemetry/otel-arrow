@@ -56,13 +56,14 @@ func TestOtlpTracesProfiler(t *testing.T) {
 	t.Skip("Too long test")
 	t.Parallel()
 
+	maxIter := uint64(10)
 	systemToProfile := otlp.NewTraceProfileable(dataset.NewFakeTraceDataset(1000), benchmark.Zstd())
 	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, "tmpfile")
-	if err := profiler.Profile(systemToProfile, 10); err != nil {
+	if err := profiler.Profile(systemToProfile, maxIter); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
 	profiler.CheckProcessingResults()
-	profiler.PrintResults()
+	profiler.PrintResults(maxIter)
 	//profiler.ExportMetricsTimesCSV("otlp_traces")
 	//profiler.ExportMetricsBytesCSV("otlp_traces")
 }
@@ -75,13 +76,14 @@ func TestOtlpLightstepTracesProfiler(t *testing.T) {
 		"trace_id",
 	})
 
+	maxIter := uint64(10)
 	systemToProfile := otlp.NewTraceProfileable(benchdata, benchmark.Zstd())
 	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, "tmpfile")
-	if err := profiler.Profile(systemToProfile, 10); err != nil {
+	if err := profiler.Profile(systemToProfile, maxIter); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
 	profiler.CheckProcessingResults()
-	profiler.PrintResults()
+	profiler.PrintResults(maxIter)
 	//profiler.ExportMetricsTimesCSV("otlp_traces")
 	//profiler.ExportMetricsBytesCSV("otlp_traces")
 }

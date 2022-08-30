@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dustin/go-humanize"
 	"github.com/olekukonko/tablewriter"
 )
 
@@ -214,12 +215,12 @@ func (p *Profiler) CheckProcessingResults() {
 	}
 }
 
-func (p *Profiler) PrintResults() {
-	p.PrintStepsTiming()
-	p.PrintCompressionRatio()
+func (p *Profiler) PrintResults(maxIter uint64) {
+	p.PrintStepsTiming(maxIter)
+	p.PrintCompressionRatio(maxIter)
 }
 
-func (p *Profiler) PrintStepsTiming() {
+func (p *Profiler) PrintStepsTiming(_maxIter uint64) {
 	_, _ = fmt.Fprintf(p.writer, "\n")
 	headers := []string{"Steps"}
 	for _, benchmark := range p.benchmarks {
@@ -267,7 +268,7 @@ func (p *Profiler) PrintStepsTiming() {
 	table.Render()
 }
 
-func (p *Profiler) PrintCompressionRatio() {
+func (p *Profiler) PrintCompressionRatio(maxIter uint64) {
 	_, _ = fmt.Fprintf(p.writer, "\n")
 	headers := []string{"Steps"}
 	for _, benchmark := range p.benchmarks {
@@ -292,31 +293,18 @@ func (p *Profiler) PrintCompressionRatio() {
 			key := fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "compressed_size_byte")
 			values[key] = summary.compressedSizeByte
 			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "total_compressed_size_byte")
-			compressedTotal[key] = int64(summary.compressedSizeByte.Total(3))
+			compressedTotal[key] = int64(summary.compressedSizeByte.Total(maxIter))
 			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "uncompressed_size_byte")
 			values[key] = summary.uncompressedSizeByte
-			uncompressedTotal[key] = int64(summary.uncompressedSizeByte.Total(3))
+			uncompressedTotal[key] = int64(summary.uncompressedSizeByte.Total(maxIter))
 		}
 	}
 
 	transform := func(value float64) float64 { return math.Trunc(value) }
-	p.AddSection("Uncompressed size (bytes)", "uncompressed_size_byte", table, values, transform)
-	p.AddSection("Compressed size (bytes)", "compressed_size_byte", table, values, transform)
+	p.AddSectionWithTotal("Uncompressed size (bytes)", "uncompressed_size_byte", table, values, transform, maxIter)
+	p.AddSectionWithTotal("Compressed size (bytes)", "compressed_size_byte", table, values, transform, maxIter)
 
 	table.Render()
-
-	//fmt.Printf("\n\n")
-	//fmt.Printf("Total uncompressed (bytes)\n")
-	//for key, result := range uncompressedTotal {
-	//	fmt.Printf("\t%s: %d\n", key, result)
-	//}
-	//
-	//fmt.Printf("\n\n")
-	//fmt.Printf("Total compressed data transferred (bytes)\n")
-	//for key, result := range uncompressedTotal {
-	//	fmt.Printf("\t%s: %d\n", key, result)
-	//}
-	//fmt.Printf("\n\n")
 }
 
 func (p *Profiler) AddSection(label string, step string, table *tablewriter.Table, values map[string]*Summary, transform func(float64) float64) {
@@ -350,6 +338,44 @@ func (p *Profiler) AddSection(label string, step string, table *tablewriter.Tabl
 					row = append(row, fmt.Sprintf("%.3f %s", value, improvement))
 				} else {
 					row = append(row, fmt.Sprintf("%.5f %s", value, improvement))
+				}
+			}
+		}
+		table.Append(row)
+	}
+}
+
+func (p *Profiler) AddSectionWithTotal(label string, step string, table *tablewriter.Table, values map[string]*Summary, transform func(float64) float64, maxIter uint64) {
+	labels := []string{label}
+	colors := []tablewriter.Colors{tablewriter.Color(tablewriter.Normal, tablewriter.FgGreenColor)}
+	for i := 0; i < len(p.benchmarks); i++ {
+		labels = append(labels, "")
+		colors = append(colors, tablewriter.Color())
+	}
+	table.Rich(labels, colors)
+
+	for _, batchSize := range p.batchSizes {
+		row := []string{fmt.Sprintf("batch_size: %d", batchSize)}
+		refImplName := ""
+		for _, result := range p.benchmarks {
+			key := fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, batchSize, step)
+			improvement := ""
+
+			if refImplName == "" {
+				refImplName = fmt.Sprintf("%s:%s", result.benchName, result.tags)
+			} else {
+				refKey := fmt.Sprintf("%s:%d:%s", refImplName, batchSize, step)
+				improvement = fmt.Sprintf("(x%.2f)", values[refKey].P99/values[key].P99)
+			}
+
+			value := transform(values[key].P99)
+			if value == math.Trunc(value) {
+				row = append(row, fmt.Sprintf("%d %s (total: %s)", int64(value), improvement, humanize.Bytes(uint64(values[key].Total(maxIter)))))
+			} else {
+				if value >= 1.0 {
+					row = append(row, fmt.Sprintf("%.3f %s (total: %s)", value, improvement, humanize.Bytes(uint64(values[key].Total(maxIter)))))
+				} else {
+					row = append(row, fmt.Sprintf("%.5f %s (total: %s)", value, improvement, humanize.Bytes(uint64(values[key].Total(maxIter)))))
 				}
 			}
 		}

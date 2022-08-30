@@ -67,7 +67,7 @@ func main() {
 		}
 
 		profiler.CheckProcessingResults()
-		profiler.PrintResults()
+		profiler.PrintResults(maxIter)
 
 		profiler.ExportMetricsTimesCSV(fmt.Sprintf("%d_logs_benchmark_results", i))
 		profiler.ExportMetricsBytesCSV(fmt.Sprintf("%d_logs_benchmark_results", i))
