@@ -20,8 +20,11 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/apache/arrow/go/v9/arrow"
+
+	"otel-arrow-adapter/pkg/air/common"
 )
 
 type Value interface {
@@ -30,7 +33,7 @@ type Value interface {
 	ValueByPath(path []int) Value
 	StringPath(path []int) string
 	Compare(other Value) int
-
+	WriteSignature(sig *strings.Builder)
 	AsBool() (*bool, error)
 
 	AsU8() (*uint8, error)
@@ -86,6 +89,9 @@ func (v *Bool) Compare(other Value) int {
 	} else {
 		return -1
 	}
+}
+func (v *Bool) WriteSignature(sig *strings.Builder) {
+	sig.WriteString(common.BOOL_SIG)
 }
 func (v *Bool) AsBool() (*bool, error) {
 	return v.Value, nil
@@ -214,6 +220,9 @@ func (v *I8) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *I8) WriteSignature(sig *strings.Builder) {
+	sig.WriteString(common.I8_SIG)
+}
 func (v *I8) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert signed integer to bool")
 }
@@ -313,6 +322,9 @@ func (v *I16) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *I16) WriteSignature(sig *strings.Builder) {
+	sig.WriteString(common.I16_SIG)
+}
 func (v *I16) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert signed integer to bool")
 }
@@ -408,6 +420,9 @@ func (v *I32) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *I32) WriteSignature(sig *strings.Builder) {
+	sig.WriteString(common.I32_SIG)
+}
 func (v *I32) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert signed integer to bool")
 }
@@ -499,6 +514,9 @@ func (v *I64) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *I64) WriteSignature(sig *strings.Builder) {
+	sig.WriteString(common.I64_SIG)
+}
 func (v *I64) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert signed integer to bool")
 }
@@ -585,6 +603,9 @@ func (v *U8) Compare(other Value) int {
 	} else {
 		return -1
 	}
+}
+func (v *U8) WriteSignature(sig *strings.Builder) {
+	sig.WriteString(common.U8_SIG)
 }
 func (v *U8) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert unsigned integer to bool")
@@ -697,6 +718,9 @@ func (v *U16) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *U16) WriteSignature(sig *strings.Builder) {
+	sig.WriteString(common.U16_SIG)
+}
 func (v *U16) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert unsigned integer to bool")
 }
@@ -800,6 +824,9 @@ func (v *U32) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *U32) WriteSignature(sig *strings.Builder) {
+	sig.WriteString(common.U32_SIG)
+}
 func (v *U32) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert unsigned integer to bool")
 }
@@ -895,6 +922,9 @@ func (v *U64) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *U64) WriteSignature(sig *strings.Builder) {
+	sig.WriteString(common.U64_SIG)
+}
 func (v *U64) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert unsigned integer to bool")
 }
@@ -981,6 +1011,9 @@ func (v *F32) Compare(other Value) int {
 	} else {
 		return -1
 	}
+}
+func (v *F32) WriteSignature(sig *strings.Builder) {
+	sig.WriteString(common.F32_SIG)
 }
 func (v *F32) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert float32 to bool")
@@ -1073,6 +1106,9 @@ func (v *F64) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *F64) WriteSignature(sig *strings.Builder) {
+	sig.WriteString(common.F64_SIG)
+}
 func (v *F64) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert float64 to bool")
 }
@@ -1162,6 +1198,9 @@ func (v *String) Compare(other Value) int {
 		return -1
 	}
 }
+func (v *String) WriteSignature(sig *strings.Builder) {
+	sig.WriteString(common.STRING_SIG)
+}
 func (v *String) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert string to bool")
 }
@@ -1232,6 +1271,9 @@ func (v *Binary) Compare(other Value) int {
 	}
 	otherValue := other.(*Binary).Value
 	return bytes.Compare(v.Value, otherValue)
+}
+func (v *Binary) WriteSignature(sig *strings.Builder) {
+	sig.WriteString(common.BINARY_SIG)
 }
 func (v *Binary) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert binary to bool")
@@ -1319,6 +1361,16 @@ func (v *Struct) StringPath(path []int) string {
 }
 func (v *Struct) Compare(_ Value) int {
 	panic("struct comparison not implemented")
+}
+func (v *Struct) WriteSignature(sig *strings.Builder) {
+	sig.WriteString("{")
+	for i, f := range v.Fields {
+		if i > 0 {
+			sig.WriteByte(',')
+		}
+		f.WriteSignature(sig)
+	}
+	sig.WriteString("}")
 }
 func (v *Struct) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert struct to bool")
@@ -1429,6 +1481,12 @@ func (v *List) StringPath(path []int) string {
 }
 func (v *List) Compare(_ Value) int {
 	panic("struct comparison not implemented")
+}
+func (v *List) WriteSignature(sig *strings.Builder) {
+	sig.WriteString("[")
+	eType := v.EType()
+	sig.WriteString(DataTypeSignature(eType))
+	sig.WriteString("]")
 }
 func (v *List) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert list to bool")

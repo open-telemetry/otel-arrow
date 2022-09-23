@@ -18,8 +18,6 @@ import (
 	"strings"
 
 	"github.com/apache/arrow/go/v9/arrow"
-
-	"otel-arrow-adapter/pkg/air/common"
 )
 
 type Fields []*Field
@@ -358,50 +356,8 @@ func (f *Field) Normalize() {
 func (f *Field) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(f.Name)
 	sig.WriteString(":")
-	switch v := f.Value.(type) {
-	case *Bool:
-		sig.WriteString(common.BOOL_SIG)
-	case *I8:
-		sig.WriteString(common.I8_SIG)
-	case *I16:
-		sig.WriteString(common.I16_SIG)
-	case *I32:
-		sig.WriteString(common.I32_SIG)
-	case *I64:
-		sig.WriteString(common.I64_SIG)
-	case *U8:
-		sig.WriteString(common.U8_SIG)
-	case *U16:
-		sig.WriteString(common.U16_SIG)
-	case *U32:
-		sig.WriteString(common.U32_SIG)
-	case *U64:
-		sig.WriteString(common.U64_SIG)
-	case *F32:
-		sig.WriteString(common.F32_SIG)
-	case *F64:
-		sig.WriteString(common.F64_SIG)
-	case *String:
-		sig.WriteString(common.STRING_SIG)
-	case *Binary:
-		sig.WriteString(common.BINARY_SIG)
-	case *Struct:
-		sig.WriteString("{")
-		for i, f := range v.Fields {
-			if i > 0 {
-				sig.WriteByte(',')
-			}
-			f.WriteSignature(sig)
-		}
-		sig.WriteString("}")
-	case *List:
-		sig.WriteString("[")
-		eType := v.EType()
-		sig.WriteString(DataTypeSignature(eType))
-		sig.WriteString("]")
-	default:
-		panic("unknown field value type")
-	}
+	f.Value.WriteSignature(sig)
+
 	if f.metadata != nil {
 		sig.WriteString("<")
 		for i, key := range f.metadata.Keys {

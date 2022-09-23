@@ -25,9 +25,13 @@ type Config struct {
 	Dictionaries DictionariesConfig
 }
 
-type TraceEncoding struct {
-	Hierarchical bool
-}
+type TraceEncoding int8
+
+const (
+	Flat TraceEncoding = iota
+	Hierarchical
+	Hybrid
+)
 
 type AttributeEncoding int8
 
