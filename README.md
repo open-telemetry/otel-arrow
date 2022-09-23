@@ -56,6 +56,11 @@ The input files must be one or more OTLP traces (ExportTraceServiceRequest) enco
 
 ## Integration with the OpenTelemetry Collector
 
+Two experimental repositories have been created to develop the integration with the collector.
+* [experimental-arrow-proto](https://github.com/open-telemetry/experimental-arrow-proto)
+* [experimental-arrow-collector](https://github.com/open-telemetry/experimental-arrow-collector)
+
+
 ### From OTEL Arrow to ExportTraceServiceRequest
 
 ## Status [WIP]
