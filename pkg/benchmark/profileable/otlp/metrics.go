@@ -3,9 +3,9 @@ package otlp
 import (
 	"io"
 
-	"google.golang.org/protobuf/proto"
+	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 
-	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	"otel-arrow-adapter/pkg/benchmark"
 	"otel-arrow-adapter/pkg/benchmark/dataset"
 )
@@ -13,7 +13,7 @@ import (
 type MetricsProfileable struct {
 	compression benchmark.CompressionAlgorithm
 	dataset     dataset.MetricsDataset
-	metrics     []*v1.ExportMetricsServiceRequest
+	metrics     []pmetric.Metrics
 }
 
 func NewMetricsProfileable(dataset dataset.MetricsDataset, compression benchmark.CompressionAlgorithm) *MetricsProfileable {
@@ -42,7 +42,8 @@ func (s *MetricsProfileable) Process(io.Writer) string { return "" }
 func (s *MetricsProfileable) Serialize(io.Writer) ([][]byte, error) {
 	buffers := make([][]byte, len(s.metrics))
 	for i, m := range s.metrics {
-		bytes, err := proto.Marshal(m)
+		r := pmetricotlp.NewRequestFromMetrics(m)
+		bytes, err := r.MarshalProto()
 		if err != nil {
 			return nil, err
 		}
@@ -51,13 +52,13 @@ func (s *MetricsProfileable) Serialize(io.Writer) ([][]byte, error) {
 	return buffers, nil
 }
 func (s *MetricsProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
-	s.metrics = make([]*v1.ExportMetricsServiceRequest, len(buffers))
+	s.metrics = make([]pmetric.Metrics, len(buffers))
 	for i, b := range buffers {
-		m := &v1.ExportMetricsServiceRequest{}
-		if err := proto.Unmarshal(b, m); err != nil {
+		r := pmetricotlp.NewRequest()
+		if err := r.UnmarshalProto(b); err != nil {
 			panic(err)
 		}
-		s.metrics[i] = m
+		s.metrics[i] = r.Metrics()
 	}
 }
 func (s *MetricsProfileable) Clear() {

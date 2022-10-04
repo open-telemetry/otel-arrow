@@ -19,180 +19,147 @@ import (
 
 	"golang.org/x/exp/rand"
 
-	coltracepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
-	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
-	resourcepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
-	tracepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/trace/v1"
+	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/ptrace"
 )
 
 var EVENT_NAMES = []string{"empty", "dns-lookup", "tcp-connect", "tcp-handshake", "tcp-send", "tcp-receive", "tcp-close", "http-send", "http-receive", "http-close", "message-send", "message-receive", "message-close", "grpc-send", "grpc-receive", "grpc-close", "grpc-status", "grpc-trailers", "unknown"}
 var TRACE_STATES = []string{"started", "ended", "unknown"}
 
 type TraceGenerator struct {
-	resourceAttributes    [][]*commonpb.KeyValue
-	defaultSchemaUrl      string
-	instrumentationScopes []*commonpb.InstrumentationScope
-	dataGenerator         *DataGenerator
+	*DataGenerator
 }
 
-func NewTraceGenerator(resourceAttributes [][]*commonpb.KeyValue, instrumentationScopes []*commonpb.InstrumentationScope) *TraceGenerator {
-	return &TraceGenerator{
-		resourceAttributes:    resourceAttributes,
-		defaultSchemaUrl:      "",
-		instrumentationScopes: instrumentationScopes,
-		dataGenerator:         NewDataGenerator(uint64(time.Now().UnixNano() / int64(time.Millisecond))),
+type Span = ptrace.Span
+
+func shuffleSpans(sl ptrace.SpanSlice, fs ...func(Span)) {
+	span := sl.AppendEmpty()
+	rand.Shuffle(len(fs), func(i, j int) {
+		fs[i], fs[j] = fs[j], fs[i]
+	})
+	for _, f := range fs {
+		f(span)
 	}
 }
 
-func (lg *TraceGenerator) Generate(batchSize int, collectInterval time.Duration) *coltracepb.ExportTraceServiceRequest {
-	resourceAttrs := lg.resourceAttributes[rand.Intn(len(lg.resourceAttributes))]
-	scopeAttrs := lg.instrumentationScopes[rand.Intn(len(lg.instrumentationScopes))]
-	spans := make([]*tracepb.Span, 0, batchSize)
+func NewTraceGenerator(resourceAttributes []pcommon.Map, instrumentationScopes []pcommon.InstrumentationScope) *TraceGenerator {
+	return &TraceGenerator{
+		DataGenerator: NewDataGenerator(uint64(time.Now().UnixNano()/int64(time.Millisecond)), resourceAttributes, instrumentationScopes),
+	}
+}
+
+func (tg *TraceGenerator) Generate(batchSize int, collectInterval time.Duration) ptrace.Traces {
+	result := ptrace.NewTraces()
+
+	resourceSpans := result.ResourceSpans().AppendEmpty()
+	pick(tg.resourceAttributes).CopyTo(resourceSpans.Resource().Attributes())
+
+	scopeSpans := resourceSpans.ScopeSpans().AppendEmpty()
+	pick(tg.instrumentationScopes).CopyTo(scopeSpans.Scope())
+
+	spans := scopeSpans.Spans()
 
 	rand.Seed(uint64(time.Now().UnixNano()))
 	for i := 0; i < batchSize; i++ {
-		lg.dataGenerator.AdvanceTime(collectInterval)
-		spans = append(spans, Spans(lg.dataGenerator)...)
+		tg.AdvanceTime(collectInterval)
+		tg.Spans(spans)
 	}
 
-	return &coltracepb.ExportTraceServiceRequest{
-		ResourceSpans: []*tracepb.ResourceSpans{
-			{
-				Resource: &resourcepb.Resource{
-					Attributes:             resourceAttrs,
-					DroppedAttributesCount: 0,
-				},
-				SchemaUrl: lg.defaultSchemaUrl,
-				ScopeSpans: []*tracepb.ScopeSpans{
-					{
-						Scope:     scopeAttrs,
-						Spans:     spans,
-						SchemaUrl: "",
-					},
-				},
-			},
-		},
-	}
+	return result
 }
 
-func Spans(dataGenerator *DataGenerator) []*tracepb.Span {
-	dataGenerator.NextId8Bits()
-	dataGenerator.NextId16Bits()
+func (dg *DataGenerator) Spans(spans ptrace.SpanSlice) {
+	dg.NextId8Bytes()
+	dg.NextId16Bytes()
 
-	traceId := dataGenerator.Id16Bits()
-	rootSpanId := dataGenerator.Id8Bits()
-	rootStartTime := dataGenerator.CurrentTime()
-	rootEndTime := dataGenerator.CurrentTime() + 1 + uint64(rand.Intn(6))
+	traceId := dg.Id16Bytes()
+	rootSpanId := dg.Id8Bytes()
+	rootStartTime := dg.CurrentTime()
+	rootEndTime := dg.CurrentTime() + 1 + pcommon.Timestamp(rand.Intn(6))
 
-	dataGenerator.AdvanceTime(time.Duration(rand.Intn(10)))
+	dg.AdvanceTime(time.Duration(rand.Intn(10)))
 
-	dataGenerator.NextId8Bits()
-	userAccountSpanId := dataGenerator.Id8Bits()
-	userAccountStartTime := dataGenerator.CurrentTime()
-	userAccountEndTime := dataGenerator.CurrentTime() + uint64(rand.Intn(6))
+	dg.NextId8Bytes()
+	userAccountSpanId := dg.Id8Bytes()
+	userAccountStartTime := dg.CurrentTime()
+	userAccountEndTime := dg.CurrentTime() + pcommon.Timestamp(rand.Intn(6))
 
-	dataGenerator.NextId8Bits()
-	userPreferencesSpanId := dataGenerator.Id8Bits()
-	userPreferenceStartTime := dataGenerator.CurrentTime()
-	userPreferenceEndTime := dataGenerator.CurrentTime() + uint64(rand.Intn(4))
+	dg.NextId8Bytes()
+	userPreferencesSpanId := dg.Id8Bytes()
+	userPreferenceStartTime := dg.CurrentTime()
+	userPreferenceEndTime := dg.CurrentTime() + pcommon.Timestamp(rand.Intn(4))
 
-	spans := []*tracepb.Span{
-		{
-			TraceId:                traceId,
-			SpanId:                 rootSpanId,
-			Name:                   "GET /user-info",
-			StartTimeUnixNano:      rootStartTime,
-			EndTimeUnixNano:        rootEndTime,
-			Kind:                   tracepb.Span_SPAN_KIND_SERVER,
-			Attributes:             DefaultAttributes(),
-			DroppedAttributesCount: 0,
-			Events:                 events(dataGenerator),
-			DroppedEventsCount:     0,
-			Links:                  links(dataGenerator),
-			DroppedLinksCount:      0,
-			Status: &tracepb.Status{
-				Code:    tracepb.Status_STATUS_CODE_OK,
-				Message: "OK",
-			},
+	shuffleSpans(spans,
+		func(s Span) {
+			s.SetTraceID(traceId)
+			s.SetSpanID(rootSpanId)
+			s.SetName("GET /user-info")
+			s.SetStartTimestamp(rootStartTime)
+			s.SetEndTimestamp(rootEndTime)
+			s.SetKind(ptrace.SpanKindServer)
+			DefaultAttributes().CopyTo(s.Attributes())
+			dg.events(s.Events())
+			dg.links(s.Links())
+			s.Status().SetCode(ptrace.StatusCodeOk)
+			s.Status().SetMessage("OK")
 		},
-		{
-			TraceId:                traceId,
-			SpanId:                 userAccountSpanId,
-			Name:                   "user-account",
-			StartTimeUnixNano:      userAccountStartTime,
-			EndTimeUnixNano:        userAccountEndTime,
-			Kind:                   tracepb.Span_SPAN_KIND_SERVER,
-			Attributes:             DefaultAttributes(),
-			DroppedAttributesCount: 0,
-			Events:                 events(dataGenerator),
-			DroppedEventsCount:     0,
-			Links:                  links(dataGenerator),
-			DroppedLinksCount:      0,
-			Status: &tracepb.Status{
-				Code:    tracepb.Status_STATUS_CODE_OK,
-				Message: "OK",
-			},
+		func(s Span) {
+			s.SetTraceID(traceId)
+			s.SetSpanID(userAccountSpanId)
+			s.SetName("user-account")
+			s.SetStartTimestamp(userAccountStartTime)
+			s.SetEndTimestamp(userAccountEndTime)
+			s.SetKind(ptrace.SpanKindServer)
+			DefaultAttributes().CopyTo(s.Attributes())
+			dg.events(s.Events())
+			dg.links(s.Links())
+			s.Status().SetCode(ptrace.StatusCodeError)
+			s.Status().SetMessage("Error")
 		},
-		{
-			TraceId:                traceId,
-			SpanId:                 userPreferencesSpanId,
-			Name:                   "user-preferences",
-			StartTimeUnixNano:      userPreferenceStartTime,
-			EndTimeUnixNano:        userPreferenceEndTime,
-			Kind:                   tracepb.Span_SPAN_KIND_SERVER,
-			Attributes:             DefaultAttributes(),
-			DroppedAttributesCount: 0,
-			Events:                 events(dataGenerator),
-			DroppedEventsCount:     0,
-			Links:                  links(dataGenerator),
-			DroppedLinksCount:      0,
-			Status: &tracepb.Status{
-				Code:    tracepb.Status_STATUS_CODE_OK,
-				Message: "OK",
-			},
+		func(s Span) {
+			s.SetTraceID(traceId)
+			s.SetSpanID(userPreferencesSpanId)
+			s.SetName("user-preferences")
+			s.SetStartTimestamp(userPreferenceStartTime)
+			s.SetEndTimestamp(userPreferenceEndTime)
+			s.SetKind(ptrace.SpanKindServer)
+			DefaultAttributes().CopyTo(s.Attributes())
+			dg.events(s.Events())
+			dg.links(s.Links())
+			s.Status().SetCode(ptrace.StatusCodeOk)
+			s.Status().SetMessage("OK")
 		},
-	}
-
-	rand.Shuffle(len(spans), func(i, j int) { spans[i], spans[j] = spans[j], spans[i] })
-
-	return spans
+	)
 }
 
 // events returns a slice of events for the span.
-func events(dataGenerator *DataGenerator) []*tracepb.Span_Event {
+func (dg *DataGenerator) events(ses ptrace.SpanEventSlice) {
 	eventCount := rand.Intn(8) + 2
-	events := make([]*tracepb.Span_Event, eventCount)
+
 	for i := 0; i < eventCount; i++ {
-		name := EVENT_NAMES[rand.Intn(len(EVENT_NAMES))]
+		name := pick(EVENT_NAMES)
 		attributes := DefaultSpanEventAttributes()
 		if name == "empty" {
-			attributes = nil
+			attributes = pcommon.NewMap()
 		}
-		events[i] = &tracepb.Span_Event{
-			TimeUnixNano:           dataGenerator.CurrentTime() + uint64(rand.Intn(5)),
-			Name:                   name,
-			Attributes:             attributes,
-			DroppedAttributesCount: 0,
-		}
+		event := ses.AppendEmpty()
+		event.SetTimestamp(dg.CurrentTime() + pcommon.Timestamp(rand.Intn(5)))
+		event.SetName(name)
+		attributes.CopyTo(event.Attributes())
 	}
-	return events
 }
 
 // links returns a slice of links for the span.
-func links(dataGenerator *DataGenerator) []*tracepb.Span_Link {
+func (dg *DataGenerator) links(sls ptrace.SpanLinkSlice) {
 	linkCount := rand.Intn(8) + 2
-	dataGenerator.NextId16Bits()
+	dg.NextId16Bytes()
 
-	links := make([]*tracepb.Span_Link, linkCount)
 	for i := 0; i < linkCount; i++ {
-		dataGenerator.NextId8Bits()
-		links[i] = &tracepb.Span_Link{
-			TraceId:                dataGenerator.Id16Bits(),
-			SpanId:                 dataGenerator.Id8Bits(),
-			TraceState:             TRACE_STATES[rand.Intn(len(TRACE_STATES))],
-			Attributes:             DefaultSpanLinkAttributes(),
-			DroppedAttributesCount: 0,
-		}
+		dg.NextId8Bytes()
+		sl := sls.AppendEmpty()
+		sl.SetTraceID(dg.Id16Bytes())
+		sl.SetSpanID(dg.Id8Bytes())
+		sl.SetTraceState(ptrace.TraceState(pick(TRACE_STATES)))
+		DefaultSpanLinkAttributes().CopyTo(sl.Attributes())
 	}
-	return links
 }

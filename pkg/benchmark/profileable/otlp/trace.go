@@ -3,17 +3,17 @@ package otlp
 import (
 	"io"
 
-	"google.golang.org/protobuf/proto"
-
-	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"otel-arrow-adapter/pkg/benchmark"
 	"otel-arrow-adapter/pkg/benchmark/dataset"
+
+	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 )
 
 type TraceProfileable struct {
 	compression benchmark.CompressionAlgorithm
 	dataset     dataset.TraceDataset
-	traces      []*v1.ExportTraceServiceRequest
+	traces      []ptrace.Traces
 }
 
 func NewTraceProfileable(dataset dataset.TraceDataset, compression benchmark.CompressionAlgorithm) *TraceProfileable {
@@ -41,8 +41,10 @@ func (s *TraceProfileable) CreateBatch(_ io.Writer, startAt, size int) {
 func (s *TraceProfileable) Process(io.Writer) string { return "" }
 func (s *TraceProfileable) Serialize(io.Writer) ([][]byte, error) {
 	buffers := make([][]byte, len(s.traces))
-	for i, m := range s.traces {
-		bytes, err := proto.Marshal(m)
+	for i, t := range s.traces {
+		r := ptraceotlp.NewRequestFromTraces(t)
+
+		bytes, err := r.MarshalProto()
 		if err != nil {
 			return nil, err
 		}
@@ -51,13 +53,13 @@ func (s *TraceProfileable) Serialize(io.Writer) ([][]byte, error) {
 	return buffers, nil
 }
 func (s *TraceProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
-	s.traces = make([]*v1.ExportTraceServiceRequest, len(buffers))
+	s.traces = make([]ptrace.Traces, len(buffers))
 	for i, b := range buffers {
-		m := &v1.ExportTraceServiceRequest{}
-		if err := proto.Unmarshal(b, m); err != nil {
+		r := ptraceotlp.NewRequest()
+		if err := r.UnmarshalProto(b); err != nil {
 			panic(err)
 		}
-		s.traces[i] = m
+		s.traces[i] = r.Traces()
 	}
 }
 func (s *TraceProfileable) Clear() {

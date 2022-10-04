@@ -19,262 +19,238 @@ package common
 
 import (
 	"fmt"
-	"sort"
+	"strings"
 
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
 
-	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
-	resourcepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/otel/constants"
+
+	"go.opentelemetry.io/collector/pdata/pcommon"
 )
 
-type Attributes []*commonpb.KeyValue
-
-// Sort interface
-func (d Attributes) Less(i, j int) bool {
-	return d[i].Key < d[j].Key
-}
-func (d Attributes) Len() int      { return len(d) }
-func (d Attributes) Swap(i, j int) { d[i], d[j] = d[j], d[i] }
-
-func AttributesId(attrs []*commonpb.KeyValue) string {
-	sort.Sort(Attributes(attrs))
-	attrsId := "{"
-	for i, attr := range attrs {
-		if i > 0 {
-			attrsId += ","
+func AttributesId(attrs pcommon.Map) string {
+	var attrsId strings.Builder
+	attrs.Sort()
+	attrsId.WriteString("{")
+	attrs.Range(func(k string, v pcommon.Value) bool {
+		if attrsId.Len() > 1 {
+			attrsId.WriteString(",")
 		}
-		attrsId += attr.Key + ":" + ValueId(attr.Value)
-	}
-	attrsId += "}"
-	return attrsId
+		attrsId.WriteString(k)
+		attrsId.WriteString(":")
+		attrsId.WriteString(ValueId(v))
+		return true
+	})
+	attrsId.WriteString("}")
+	return attrsId.String()
 }
 
-func NewResourceFrom(record arrow.Record, row int) (*resourcepb.Resource, error) {
+func NewResourceFrom(record arrow.Record, row int) (pcommon.Resource, error) {
+	r := pcommon.NewResource()
 	resourceField, resourceArray := air.FieldArray(record, constants.RESOURCE)
 	if resourceArray == nil {
-		return nil, nil
+		return r, nil
 	}
 	droppedAttributesCount, err := air.U32FromStruct(resourceField, resourceArray, row, constants.DROPPED_ATTRIBUTES_COUNT)
 	if err != nil {
-		return nil, err
+		return r, err
 	}
 	attrField, attrArray, err := air.FieldArrayOfStruct(resourceField, resourceArray, constants.ATTRIBUTES)
 	if err != nil {
-		return nil, err
+		return r, err
 	}
-	var attributes []*commonpb.KeyValue
 	if attrField != nil {
-		attributes, err = AttributesFrom(attrField.Type, attrArray, row)
+		if err = CopyAttributesFrom(r.Attributes(), attrField.Type, attrArray, row); err != nil {
+			return r, err
+		}
 	}
-	if err != nil {
-		return nil, err
-	}
-	return &resourcepb.Resource{
-		Attributes:             attributes,
-		DroppedAttributesCount: droppedAttributesCount,
-	}, nil
+	r.SetDroppedAttributesCount(droppedAttributesCount)
+	return r, nil
 }
 
-func NewInstrumentationScopeFrom(record arrow.Record, row int, scope string) (*commonpb.InstrumentationScope, error) {
+func NewInstrumentationScopeFrom(record arrow.Record, row int, scope string) (pcommon.InstrumentationScope, error) {
+	s := pcommon.NewInstrumentationScope()
 	scopeField, scopeArray := air.FieldArray(record, scope)
 	if scopeArray == nil {
-		return nil, nil
+		return s, nil
 	}
 	name, err := air.StringFromStruct(scopeField, scopeArray, row, constants.NAME)
 	if err != nil {
-		return nil, err
+		return s, err
 	}
 	version, err := air.StringFromStruct(scopeField, scopeArray, row, constants.VERSION)
 	if err != nil {
-		return nil, err
+		return s, err
 	}
 	droppedAttributesCount, err := air.U32FromStruct(scopeField, scopeArray, row, constants.DROPPED_ATTRIBUTES_COUNT)
 	if err != nil {
-		return nil, err
+		return s, err
 	}
 	attrField, attrArray, err := air.FieldArrayOfStruct(scopeField, scopeArray, constants.ATTRIBUTES)
 	if err != nil {
-		return nil, err
+		return s, err
 	}
-	var attributes []*commonpb.KeyValue
 	if attrField != nil {
-		attributes, err = AttributesFrom(attrField.Type, attrArray, row)
+		if err = CopyAttributesFrom(s.Attributes(), attrField.Type, attrArray, row); err != nil {
+			return s, err
+		}
 	}
-	if err != nil {
-		return nil, err
-	}
-	return &commonpb.InstrumentationScope{
-		Name:                   name,
-		Version:                version,
-		Attributes:             attributes,
-		DroppedAttributesCount: droppedAttributesCount,
-	}, nil
+	s.SetName(name)
+	s.SetVersion(version)
+	s.SetDroppedAttributesCount(droppedAttributesCount)
+	return s, nil
 }
 
-func ResourceId(r *resourcepb.Resource) string {
-	if r == nil {
-		return ""
-	}
-	return AttributesId(r.Attributes) + "|" + fmt.Sprintf("dac:%d", r.DroppedAttributesCount)
+func ResourceId(r pcommon.Resource) string {
+	return AttributesId(r.Attributes()) + "|" + fmt.Sprintf("dac:%d", r.DroppedAttributesCount())
 }
 
-func ScopeId(is *commonpb.InstrumentationScope) string {
-	if is == nil {
-		return ""
-	}
-	return "name:" + is.Name + "|version:" + is.Version + "|" + AttributesId(is.Attributes) + "|" + fmt.Sprintf("dac:%d", is.DroppedAttributesCount)
+func ScopeId(is pcommon.InstrumentationScope) string {
+	return "name:" + is.Name() + "|version:" + is.Version() + "|" + AttributesId(is.Attributes()) + "|" + fmt.Sprintf("dac:%d", is.DroppedAttributesCount())
 }
 
-func ValueId(v *commonpb.AnyValue) string {
-	switch v.Value.(type) {
-	case *commonpb.AnyValue_StringValue:
-		return v.GetStringValue()
-	case *commonpb.AnyValue_IntValue:
-		return fmt.Sprintf("%d", v.GetIntValue())
-	case *commonpb.AnyValue_DoubleValue:
-		return fmt.Sprintf("%f", v.GetDoubleValue())
-	case *commonpb.AnyValue_BoolValue:
-		return fmt.Sprintf("%t", v.GetBoolValue())
-	case *commonpb.AnyValue_BytesValue:
-		return fmt.Sprintf("%x", v.GetBytesValue())
-	case *commonpb.AnyValue_KvlistValue:
-		return AttributesId(v.GetKvlistValue().Values)
-	case *commonpb.AnyValue_ArrayValue:
-		values := v.GetArrayValue().Values
+func ValueId(v pcommon.Value) string {
+	switch v.Type() {
+	case pcommon.ValueTypeString:
+		return v.StringVal()
+	case pcommon.ValueTypeInt:
+		return fmt.Sprintf("%d", v.IntVal())
+	case pcommon.ValueTypeDouble:
+		return fmt.Sprintf("%f", v.DoubleVal())
+	case pcommon.ValueTypeBool:
+		return fmt.Sprintf("%t", v.BoolVal())
+	case pcommon.ValueTypeMap:
+		return AttributesId(v.MapVal())
+	case pcommon.ValueTypeBytes:
+		return fmt.Sprintf("%x", v.BytesVal().AsRaw())
+	case pcommon.ValueTypeSlice:
+		values := v.SliceVal()
 		valueId := "["
-		for i := 0; i < len(values); i++ {
-			if i > 0 {
+		for i := 0; i < values.Len(); i++ {
+			if len(valueId) > 1 {
 				valueId += ","
 			}
-			valueId += ValueId(values[i])
+			valueId += ValueId(values.At(i))
 		}
 		valueId += "]"
 		return valueId
 	default:
+		// includes pcommon.ValueTypeEmpty
 		panic("unsupported value type")
 	}
 }
 
-func AttributesFrom(dt arrow.DataType, arr arrow.Array, row int) ([]*commonpb.KeyValue, error) {
+func CopyAttributesFrom(a pcommon.Map, dt arrow.DataType, arr arrow.Array, row int) error {
 	structType, ok := dt.(*arrow.StructType)
 	if !ok {
-		return nil, fmt.Errorf("attributes is not a struct")
+		return fmt.Errorf("attributes is not a struct")
 	}
 	attrArray := arr.(*array.Struct)
-	kvs := make([]*commonpb.KeyValue, 0, attrArray.NumField())
+	a.EnsureCapacity(attrArray.NumField())
 	for i := 0; i < attrArray.NumField(); i++ {
 		valueField := structType.Field(i)
-		value, err := KeyValueFrom(&valueField, attrArray.Field(i), row)
-		if err != nil {
-			return nil, err
+
+		newV := a.PutEmpty(valueField.Name)
+
+		if err := CopyValueFrom(newV, valueField.Type, attrArray.Field(i), row); err != nil {
+			return err
 		}
-		kvs = append(kvs, value)
 	}
-	return kvs, nil
+	return nil
 }
 
-func AnyValueFrom(dt arrow.DataType, arr arrow.Array, row int) (*commonpb.AnyValue, error) {
+func CopyValueFrom(dest pcommon.Value, dt arrow.DataType, arr arrow.Array, row int) error {
 	switch t := dt.(type) {
 	case *arrow.BooleanType:
 		v, err := air.BoolFromArray(arr, row)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		return &commonpb.AnyValue{Value: &commonpb.AnyValue_BoolValue{BoolValue: v}}, nil
+		dest.SetBoolVal(v)
+		return nil
 	case *arrow.Float64Type:
 		v, err := air.F64FromArray(arr, row)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		return &commonpb.AnyValue{Value: &commonpb.AnyValue_DoubleValue{DoubleValue: v}}, nil
+		dest.SetDoubleVal(v)
+		return nil
 	case *arrow.Int64Type:
 		v, err := air.I64FromArray(arr, row)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		return &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: v}}, nil
+		dest.SetIntVal(v)
+		return nil
 	case *arrow.StringType:
 		v, err := air.StringFromArray(arr, row)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		return &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: v}}, nil
+		dest.SetStringVal(v)
+		return nil
 	case *arrow.BinaryType:
 		v, err := air.BinaryFromArray(arr, row)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		return &commonpb.AnyValue{Value: &commonpb.AnyValue_BytesValue{BytesValue: v}}, nil
+		dest.SetEmptyBytesVal().FromRaw(v)
+		return nil
 	case *arrow.StructType:
-		structKvs, err := AttributesFrom(dt, arr, row)
-		if err != nil {
-			return nil, err
+		if err := CopyAttributesFrom(dest.SetEmptyMapVal(), dt, arr, row); err != nil {
+			return err
 		}
-		return &commonpb.AnyValue{Value: &commonpb.AnyValue_KvlistValue{KvlistValue: &commonpb.KeyValueList{
-			Values: structKvs,
-		}}}, nil
+		return nil
 	case *arrow.ListType:
 		arrList, ok := arr.(*array.List)
 		if !ok {
-			return nil, fmt.Errorf("array is not a list")
+			return fmt.Errorf("array is not a list")
 		}
-		values, err := ArrayValueFrom(arrList, row)
-		if err != nil {
-			return nil, err
+		if err := SetArrayValue(dest.SetEmptySliceVal(), arrList, row); err != nil {
+			return err
 		}
-		return &commonpb.AnyValue{Value: &commonpb.AnyValue_ArrayValue{ArrayValue: &commonpb.ArrayValue{
-			Values: values,
-		}}}, nil
+		return nil
 	case *arrow.DictionaryType:
 		switch t.ValueType.(type) {
 		case *arrow.StringType:
 			v, err := air.StringFromArray(arr, row)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			return &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: v}}, nil
+			dest.SetStringVal(v)
+			return nil
 		case *arrow.BinaryType:
 			v, err := air.BinaryFromArray(arr, row)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			return &commonpb.AnyValue{Value: &commonpb.AnyValue_BytesValue{BytesValue: v}}, nil
+			dest.SetEmptyBytesVal().FromRaw(v)
+			return nil
 		default:
-			return nil, fmt.Errorf("unsupported dictionary value type %T", t.ValueType)
+			return fmt.Errorf("unsupported dictionary value type %T", t.ValueType)
 		}
 	default:
-		return nil, fmt.Errorf("%T is not a supported value type", t)
+		return fmt.Errorf("%T is not a supported value type", t)
 	}
 }
 
-func KeyValueFrom(field *arrow.Field, arr arrow.Array, row int) (*commonpb.KeyValue, error) {
-	value, err := AnyValueFrom(field.Type, arr, row)
-	if err != nil {
-		return nil, err
-	}
-	return &commonpb.KeyValue{Key: field.Name, Value: value}, nil
-}
-
-func ArrayValueFrom(arrList *array.List, row int) ([]*commonpb.AnyValue, error) {
+func SetArrayValue(result pcommon.Slice, arrList *array.List, row int) error {
 	start := int(arrList.Offsets()[row])
 	end := int(arrList.Offsets()[row+1])
-	result := make([]*commonpb.AnyValue, 0, end-start)
+	result.EnsureCapacity(end - start)
 
 	arrItems := arrList.ListValues()
 	for ; start < end; start++ {
+		v := result.AppendEmpty()
 		if arrList.IsNull(start) {
-			result = append(result, nil)
 			continue
 		}
-		v, err := AnyValueFrom(arrList.DataType(), arrItems, start)
-		if err != nil {
-			return nil, err
+		if err := CopyValueFrom(v, arrList.DataType(), arrItems, start); err != nil {
+			return err
 		}
-		result = append(result, v)
 	}
 
-	return result, nil
+	return nil
 }

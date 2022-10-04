@@ -17,282 +17,155 @@ package datagen
 import (
 	"time"
 
-	collogspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/metrics/v1"
-	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
-	metricspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/metrics/v1"
-	resourcepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
+	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 )
 
+var cpuStates = []string{"idle", "user", "system", "iowait", "interrupt"}
+
 type MetricsGenerator struct {
-	resourceAttributes    [][]*commonpb.KeyValue
-	defaultSchemaUrl      string
-	instrumentationScopes []*commonpb.InstrumentationScope
-	dataGenerator         *DataGenerator
-	generation            int
+	*DataGenerator
+	generation int
 }
 
-func NewMetricsGenerator(resourceAttributes [][]*commonpb.KeyValue, instrumentationScopes []*commonpb.InstrumentationScope) *MetricsGenerator {
+func NewMetricsGenerator(resourceAttributes []pcommon.Map, instrumentationScopes []pcommon.InstrumentationScope) *MetricsGenerator {
 	return &MetricsGenerator{
-		resourceAttributes:    resourceAttributes,
-		defaultSchemaUrl:      "",
-		instrumentationScopes: instrumentationScopes,
-		dataGenerator:         NewDataGenerator(uint64(time.Now().UnixNano() / int64(time.Millisecond))),
-		generation:            0,
+		DataGenerator: NewDataGenerator(uint64(time.Now().UnixNano()/int64(time.Millisecond)), resourceAttributes, instrumentationScopes),
+		generation:    0,
 	}
 }
 
-func (lg *MetricsGenerator) Generate(batchSize int, collectInterval time.Duration) *collogspb.ExportMetricsServiceRequest {
-	var resourceMetrics []*metricspb.ResourceMetrics
+func (mg *MetricsGenerator) newResult() (pmetric.Metrics, pmetric.MetricSlice) {
+	result := pmetric.NewMetrics()
 
-	var metrics []*metricspb.Metric
+	resourceMetrics := result.ResourceMetrics().AppendEmpty()
+	mg.resourceAttributes[mg.generation%len(mg.resourceAttributes)].
+		CopyTo(resourceMetrics.Resource().Attributes())
+	scopeMetrics := resourceMetrics.ScopeMetrics().AppendEmpty()
+	mg.instrumentationScopes[mg.generation%len(mg.instrumentationScopes)].
+		CopyTo(scopeMetrics.Scope())
+	return result, scopeMetrics.Metrics()
+}
+
+func (mg *MetricsGenerator) Generate(batchSize int, collectInterval time.Duration) pmetric.Metrics {
+	result, metrics := mg.newResult()
+
+	// Note: the OTLP data model calls for aggregation of the
+	// points, this is repeating metrics.  nevertheless, the
+	// conversion to Arrow should handle this case.
+	for i := 0; i < batchSize; i++ {
+		mg.AdvanceTime(collectInterval)
+
+		mg.SystemCpuTime(metrics.AppendEmpty(), 1)
+		mg.SystemMemoryUsage(metrics.AppendEmpty())
+		mg.SystemCpuLoadAverage1m(metrics.AppendEmpty())
+	}
+
+	mg.generation++
+
+	return result
+}
+
+func (mg *MetricsGenerator) GenerateSystemCpuTime(batchSize int, collectInterval time.Duration) pmetric.Metrics {
+	result, metrics := mg.newResult()
 
 	for i := 0; i < batchSize; i++ {
-		lg.dataGenerator.AdvanceTime(collectInterval)
+		mg.AdvanceTime(collectInterval)
 
-		metrics = append(metrics, SystemCpuTime(lg.dataGenerator, 1))
-		metrics = append(metrics, SystemMemoryUsage(lg.dataGenerator))
-		metrics = append(metrics, SystemCpuLoadAverage1m(lg.dataGenerator))
+		mg.SystemCpuTime(metrics.AppendEmpty(), 1)
 	}
-	resourceMetrics = append(resourceMetrics, &metricspb.ResourceMetrics{
-		Resource: &resourcepb.Resource{
-			Attributes:             lg.resourceAttributes[lg.generation%len(lg.resourceAttributes)],
-			DroppedAttributesCount: 0,
-		},
-		SchemaUrl: lg.defaultSchemaUrl,
-		ScopeMetrics: []*metricspb.ScopeMetrics{
-			{
-				Scope:     lg.instrumentationScopes[lg.generation%len(lg.instrumentationScopes)],
-				Metrics:   metrics,
-				SchemaUrl: "",
-			},
-		},
-	})
 
-	lg.generation++
+	mg.generation++
 
-	return &collogspb.ExportMetricsServiceRequest{
-		ResourceMetrics: resourceMetrics,
-	}
+	return result
 }
 
-func (lg *MetricsGenerator) GenerateSystemCpuTime(batchSize int, collectInterval time.Duration) *collogspb.ExportMetricsServiceRequest {
-	var resourceMetrics []*metricspb.ResourceMetrics
-
-	var metrics []*metricspb.Metric
+func (mg *MetricsGenerator) GenerateSystemMemoryUsage(batchSize int, collectInterval time.Duration) pmetric.Metrics {
+	result, metrics := mg.newResult()
 
 	for i := 0; i < batchSize; i++ {
-		lg.dataGenerator.AdvanceTime(collectInterval)
+		mg.AdvanceTime(collectInterval)
 
-		metrics = append(metrics, SystemCpuTime(lg.dataGenerator, 1))
+		mg.SystemMemoryUsage(metrics.AppendEmpty())
 	}
-	resourceMetrics = append(resourceMetrics, &metricspb.ResourceMetrics{
-		Resource: &resourcepb.Resource{
-			Attributes:             lg.resourceAttributes[lg.generation%len(lg.resourceAttributes)],
-			DroppedAttributesCount: 0,
-		},
-		SchemaUrl: lg.defaultSchemaUrl,
-		ScopeMetrics: []*metricspb.ScopeMetrics{
-			{
-				Scope:     lg.instrumentationScopes[lg.generation%len(lg.instrumentationScopes)],
-				Metrics:   metrics,
-				SchemaUrl: "",
-			},
-		},
-	})
+	mg.generation++
 
-	lg.generation++
-
-	return &collogspb.ExportMetricsServiceRequest{
-		ResourceMetrics: resourceMetrics,
-	}
+	return result
 }
 
-func (lg *MetricsGenerator) GenerateSystemMemoryUsage(batchSize int, collectInterval time.Duration) *collogspb.ExportMetricsServiceRequest {
-	var resourceMetrics []*metricspb.ResourceMetrics
-
-	var metrics []*metricspb.Metric
+func (mg *MetricsGenerator) GenerateSystemCpuLoadAverage1m(batchSize int, collectInterval time.Duration) pmetric.Metrics {
+	result, metrics := mg.newResult()
 
 	for i := 0; i < batchSize; i++ {
-		lg.dataGenerator.AdvanceTime(collectInterval)
+		mg.AdvanceTime(collectInterval)
 
-		metrics = append(metrics, SystemMemoryUsage(lg.dataGenerator))
+		mg.SystemCpuLoadAverage1m(metrics.AppendEmpty())
 	}
-	resourceMetrics = append(resourceMetrics, &metricspb.ResourceMetrics{
-		Resource: &resourcepb.Resource{
-			Attributes:             lg.resourceAttributes[lg.generation%len(lg.resourceAttributes)],
-			DroppedAttributesCount: 0,
-		},
-		SchemaUrl: lg.defaultSchemaUrl,
-		ScopeMetrics: []*metricspb.ScopeMetrics{
-			{
-				Scope:     lg.instrumentationScopes[lg.generation%len(lg.instrumentationScopes)],
-				Metrics:   metrics,
-				SchemaUrl: "",
-			},
-		},
-	})
 
-	lg.generation++
+	mg.generation++
 
-	return &collogspb.ExportMetricsServiceRequest{
-		ResourceMetrics: resourceMetrics,
-	}
+	return result
 }
 
-func (lg *MetricsGenerator) GenerateSystemCpuLoadAverage1m(batchSize int, collectInterval time.Duration) *collogspb.ExportMetricsServiceRequest {
-	var resourceMetrics []*metricspb.ResourceMetrics
+func (dg *DataGenerator) SystemCpuTime(metric pmetric.Metric, cpuCount int) {
+	metric.SetName("system.cpu.time")
+	metric.SetUnit("s")
 
-	var metrics []*metricspb.Metric
-
-	for i := 0; i < batchSize; i++ {
-		lg.dataGenerator.AdvanceTime(collectInterval)
-
-		metrics = append(metrics, SystemCpuLoadAverage1m(lg.dataGenerator))
-	}
-	resourceMetrics = append(resourceMetrics, &metricspb.ResourceMetrics{
-		Resource: &resourcepb.Resource{
-			Attributes:             lg.resourceAttributes[lg.generation%len(lg.resourceAttributes)],
-			DroppedAttributesCount: 0,
-		},
-		SchemaUrl: lg.defaultSchemaUrl,
-		ScopeMetrics: []*metricspb.ScopeMetrics{
-			{
-				Scope:     lg.instrumentationScopes[lg.generation%len(lg.instrumentationScopes)],
-				Metrics:   metrics,
-				SchemaUrl: "",
-			},
-		},
-	})
-
-	lg.generation++
-
-	return &collogspb.ExportMetricsServiceRequest{
-		ResourceMetrics: resourceMetrics,
-	}
-}
-
-func SystemCpuTime(dg *DataGenerator, cpuCount int) *metricspb.Metric {
-	cpuStates := CpuStates()
-	var dataPoint []*metricspb.NumberDataPoint
+	sum := metric.SetEmptySum()
+	// TODO
+	// sum.SetAggregationTemporality(pmetric.MetricAggregationTemporalityCumulative)
+	// sum.SetIsMonotonic(true)
+	points := sum.DataPoints()
 
 	for cpu := 0; cpu < cpuCount; cpu++ {
 		for _, state := range cpuStates {
-			dataPoint = append(dataPoint, &metricspb.NumberDataPoint{
-				Attributes: []*commonpb.KeyValue{
-					{
-						Key:   "state",
-						Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: state}},
-					},
-					{
-						Key:   "cpu",
-						Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: int64(cpu)}},
-					},
-				},
-				StartTimeUnixNano: dg.PrevTime(),
-				TimeUnixNano:      dg.CurrentTime(),
-				Flags:             0,
-				Value: &metricspb.NumberDataPoint_AsDouble{
-					AsDouble: dg.GenF64Range(0.0, 1.0),
-				},
-			})
+			dataPoint := points.AppendEmpty()
+			dataPoint.Attributes().PutString("state", state)
+			dataPoint.Attributes().PutInt("cpu", int64(cpu))
+			dataPoint.SetStartTimestamp(dg.PrevTime())
+			dataPoint.SetTimestamp(dg.CurrentTime())
+			dataPoint.SetDoubleVal(dg.GenF64Range(0.0, 1.0))
 		}
 	}
-	return &metricspb.Metric{
-		Name:        "system.cpu.time",
-		Description: "",
-		Unit:        "s",
-		Data: &metricspb.Metric_Sum{
-			Sum: &metricspb.Sum{
-				DataPoints:             dataPoint,
-				AggregationTemporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE,
-				IsMonotonic:            false,
-			},
-		},
-	}
 }
 
-func SystemMemoryUsage(dg *DataGenerator) *metricspb.Metric {
-	return &metricspb.Metric{
-		Name:        "system.memory.usage",
-		Description: "Bytes of memory in use.",
-		Unit:        "By",
-		Data: &metricspb.Metric_Sum{
-			Sum: &metricspb.Sum{
-				DataPoints: []*metricspb.NumberDataPoint{
-					{
-						Attributes: []*commonpb.KeyValue{
-							{
-								Key:   "state",
-								Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "used"}},
-							},
-						},
-						StartTimeUnixNano: dg.PrevTime(),
-						TimeUnixNano:      dg.CurrentTime(),
-						Flags:             0,
-						Value: &metricspb.NumberDataPoint_AsInt{
-							AsInt: dg.GenI64Range(10_000_000_000, 13_000_000_000),
-						},
-					},
-					{
-						Attributes: []*commonpb.KeyValue{
-							{
-								Key:   "state",
-								Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "free"}},
-							},
-						},
-						StartTimeUnixNano: dg.PrevTime(),
-						TimeUnixNano:      dg.CurrentTime(),
-						Flags:             0,
-						Value: &metricspb.NumberDataPoint_AsInt{
-							AsInt: dg.GenI64Range(300_000_000, 500_000_000),
-						},
-					},
-					{
-						Attributes: []*commonpb.KeyValue{
-							{
-								Key:   "state",
-								Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "inactive"}},
-							},
-						},
-						StartTimeUnixNano: dg.PrevTime(),
-						TimeUnixNano:      dg.CurrentTime(),
-						Flags:             0,
-						Value: &metricspb.NumberDataPoint_AsInt{
-							AsInt: 4_000_000_000,
-						},
-					},
-				},
-				AggregationTemporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE,
-				IsMonotonic:            false,
-			},
-		},
-	}
+func (dg *DataGenerator) SystemMemoryUsage(metric pmetric.Metric) {
+	metric.SetName("system.memory.usage")
+	metric.SetDescription("Bytes of memory in use.")
+	metric.SetUnit("By")
+	sum := metric.SetEmptySum()
+	// TODO
+	// sum.SetAggregationTemporality(pmetric.MetricAggregationTemporalityCumulative)
+	// sum.SetIsMonotonic(false)
+	points := sum.DataPoints()
+
+	p1 := points.AppendEmpty()
+	p1.Attributes().PutString("state", "used")
+	p1.SetStartTimestamp(dg.PrevTime())
+	p1.SetTimestamp(dg.CurrentTime())
+	p1.SetIntVal(dg.GenI64Range(10_000_000_000, 13_000_000_000))
+
+	p2 := points.AppendEmpty()
+	p2.Attributes().PutString("state", "free")
+	p2.SetStartTimestamp(dg.PrevTime())
+	p2.SetTimestamp(dg.CurrentTime())
+	p2.SetIntVal(dg.GenI64Range(300_000_000, 500_000_000))
+
+	p3 := points.AppendEmpty()
+	p3.Attributes().PutString("state", "inactive")
+	p3.SetStartTimestamp(dg.PrevTime())
+	p3.SetTimestamp(dg.CurrentTime())
+	p3.SetIntVal(4_000_000_000)
 }
 
-func SystemCpuLoadAverage1m(dg *DataGenerator) *metricspb.Metric {
-	return &metricspb.Metric{
-		Name:        "system.cpu.load_average.1m",
-		Description: "Average CPU Load over 1 minute.",
-		Unit:        "1",
-		Data: &metricspb.Metric_Sum{
-			Sum: &metricspb.Sum{
-				DataPoints: []*metricspb.NumberDataPoint{
-					{
-						StartTimeUnixNano: dg.PrevTime(),
-						TimeUnixNano:      dg.CurrentTime(),
-						Flags:             0,
-						Value: &metricspb.NumberDataPoint_AsDouble{
-							AsDouble: dg.GenF64Range(1.0, 100.0),
-						},
-					},
-				},
-				AggregationTemporality: metricspb.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE,
-				IsMonotonic:            false,
-			},
-		},
-	}
-}
+func (dg *DataGenerator) SystemCpuLoadAverage1m(metric pmetric.Metric) {
+	metric.SetName("system.cpu.load_average.1m")
+	metric.SetDescription("Average CPU Load over 1 minute.")
+	metric.SetUnit("1")
 
-func CpuStates() [5]string {
-	return [...]string{"idle", "user", "system", "iowait", "interrupt"}
+	point := metric.SetEmptyGauge().DataPoints().AppendEmpty()
+
+	point.SetStartTimestamp(dg.PrevTime())
+	point.SetTimestamp(dg.CurrentTime())
+	point.SetDoubleVal(dg.GenF64Range(1.0, 100.0))
 }

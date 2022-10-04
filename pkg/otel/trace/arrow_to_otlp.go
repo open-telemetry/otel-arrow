@@ -23,170 +23,163 @@ import (
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
 
-	coltrace "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
-	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
-	tracepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/trace/v1"
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/otel/common"
 	"otel-arrow-adapter/pkg/otel/constants"
+
+	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/ptrace"
 )
 
-func ArrowRecordsToOtlpTrace(record arrow.Record) (*coltrace.ExportTraceServiceRequest, error) {
-	request := coltrace.ExportTraceServiceRequest{
-		ResourceSpans: []*tracepb.ResourceSpans{},
-	}
+func ArrowRecordsToOtlpTrace(record arrow.Record) (ptrace.Traces, error) {
+	request := ptrace.NewTraces()
 
-	resourceSpans := map[string]*tracepb.ResourceSpans{}
-	scopeSpans := map[string]*tracepb.ScopeSpans{}
+	resourceSpans := map[string]ptrace.ResourceSpans{}
+	scopeSpans := map[string]ptrace.ScopeSpans{}
 
 	numRows := int(record.NumRows())
 	for i := 0; i < numRows; i++ {
 		resource, err := common.NewResourceFrom(record, i)
 		if err != nil {
-			return nil, err
+			return request, err
 		}
 		resId := common.ResourceId(resource)
-		if _, ok := resourceSpans[resId]; !ok {
-			rs := &tracepb.ResourceSpans{
-				Resource:   resource,
-				ScopeSpans: []*tracepb.ScopeSpans{},
-				SchemaUrl:  "",
-			}
+		rs, ok := resourceSpans[resId]
+		if !ok {
+			rs = request.ResourceSpans().AppendEmpty()
+			resource.CopyTo(rs.Resource())
+			// TODO: SchemaURL
 			resourceSpans[resId] = rs
 		}
-		rs := resourceSpans[resId]
 
 		scope, err := common.NewInstrumentationScopeFrom(record, i, constants.SCOPE_SPANS)
 		if err != nil {
-			return nil, err
+			return request, err
 		}
 		scopeSpanId := resId + "|" + common.ScopeId(scope)
-		if _, ok := scopeSpans[scopeSpanId]; !ok {
-			ss := &tracepb.ScopeSpans{
-				Scope:     scope,
-				Spans:     []*tracepb.Span{},
-				SchemaUrl: "",
-			}
+		ss, ok := scopeSpans[scopeSpanId]
+		if !ok {
+			ss = rs.ScopeSpans().AppendEmpty()
+			scope.CopyTo(ss.Scope())
+			// TODO: SchemaURL
 			scopeSpans[scopeSpanId] = ss
-			rs.ScopeSpans = append(rs.ScopeSpans, ss)
 		}
-		ss := scopeSpans[scopeSpanId]
 
-		span, err := NewSpanFrom(record, i)
+		span := ss.Spans().AppendEmpty()
+		err = SetSpanFrom(span, record, i)
 		if err != nil {
-			return nil, err
+			return request, err
 		}
-		ss.Spans = append(ss.Spans, span)
 	}
 
-	for _, resourceSpan := range resourceSpans {
-		request.ResourceSpans = append(request.ResourceSpans, resourceSpan)
-	}
-
-	return &request, nil
+	return request, nil
 }
 
-func NewSpanFrom(record arrow.Record, row int) (*tracepb.Span, error) {
+func SetSpanFrom(span ptrace.Span, record arrow.Record, row int) error {
 	traceId, err := air.BinaryFromRecord(record, row, constants.TRACE_ID)
 	if err != nil {
-		return nil, err
+		return err
+	}
+	if len(traceId) != 16 {
+		return fmt.Errorf("TraceID field should be 16 bytes")
 	}
 	spanId, err := air.BinaryFromRecord(record, row, constants.SPAN_ID)
 	if err != nil {
-		return nil, err
+		return err
+	}
+	if len(spanId) != 8 {
+		return fmt.Errorf("SpanID field should be 8 bytes")
 	}
 	traceState, err := air.StringFromRecord(record, row, constants.TRACE_STATE)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	parentSpanId, err := air.BinaryFromRecord(record, row, constants.PARENT_SPAN_ID)
 	if err != nil {
-		return nil, err
+		return err
+	}
+	if len(parentSpanId) != 8 {
+		return fmt.Errorf("SpanID field should be 8 bytes")
 	}
 	name, err := air.StringFromRecord(record, row, constants.NAME)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	kind, err := air.I32FromRecord(record, row, constants.KIND)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	startTimeUnixNano, err := air.U64FromRecord(record, row, constants.START_TIME_UNIX_NANO)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	endTimeUnixNano, err := air.U64FromRecord(record, row, constants.END_TIME_UNIX_NANO)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	droppedAttributesCount, err := air.U32FromRecord(record, row, constants.DROPPED_ATTRIBUTES_COUNT)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	droppedEventsCount, err := air.U32FromRecord(record, row, constants.DROPPED_EVENTS_COUNT)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	droppedLinksCount, err := air.U32FromRecord(record, row, constants.DROPPED_LINKS_COUNT)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	message, err := air.StringFromRecord(record, row, constants.STATUS_MESSAGE)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	code, err := air.I32FromRecord(record, row, constants.STATUS_CODE)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	attrField, attrColumn := air.FieldArray(record, constants.ATTRIBUTES)
-	attributes := []*commonpb.KeyValue(nil)
-	if attrColumn != nil {
-		attributes, err = common.AttributesFrom(attrField.Type, attrColumn, row)
-		if err != nil {
-			return nil, err
+	if attrField, attrColumn := air.FieldArray(record, constants.ATTRIBUTES); attrColumn != nil {
+		if err = common.CopyAttributesFrom(span.Attributes(), attrField.Type, attrColumn, row); err != nil {
+			return err
 		}
 	}
-	events, err := EventsFrom(record, row)
-	if err != nil {
-		return nil, err
+	if err := CopyEventsFrom(span.Events(), record, row); err != nil {
+		return err
 	}
-	links, err := LinksFrom(record, row)
-	if err != nil {
-		return nil, err
+	if err := CopyLinksFrom(span.Links(), record, row); err != nil {
+		return err
 	}
+	var tid pcommon.TraceID
+	var sid pcommon.SpanID
+	var psid pcommon.SpanID
+	copy(tid[:], traceId)
+	copy(sid[:], spanId)
+	copy(psid[:], parentSpanId)
 
-	return &tracepb.Span{
-		TraceId:                traceId,
-		SpanId:                 spanId,
-		TraceState:             traceState,
-		ParentSpanId:           parentSpanId,
-		Name:                   name,
-		Kind:                   tracepb.Span_SpanKind(kind),
-		StartTimeUnixNano:      startTimeUnixNano,
-		EndTimeUnixNano:        endTimeUnixNano,
-		Attributes:             attributes,
-		DroppedAttributesCount: droppedAttributesCount,
-		Events:                 events,
-		DroppedEventsCount:     droppedEventsCount,
-		Links:                  links,
-		DroppedLinksCount:      droppedLinksCount,
-		Status: &tracepb.Status{
-			Message: message,
-			Code:    tracepb.Status_StatusCode(code),
-		},
-	}, nil
+	span.SetTraceID(tid)
+	span.SetSpanID(sid)
+	span.TraceStateStruct().FromRaw(traceState)
+	span.SetParentSpanID(psid)
+	span.SetName(name)
+	span.SetKind(ptrace.SpanKind(kind))
+	span.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
+	span.SetEndTimestamp(pcommon.Timestamp(endTimeUnixNano))
+	span.SetDroppedAttributesCount(droppedAttributesCount)
+	span.SetDroppedEventsCount(droppedEventsCount)
+	span.SetDroppedLinksCount(droppedLinksCount)
+	span.Status().SetCode(ptrace.StatusCode(code))
+	span.Status().SetMessage(message)
+	return nil
 }
 
-func EventsFrom(record arrow.Record, row int) ([]*tracepb.Span_Event, error) {
+func CopyEventsFrom(result ptrace.SpanEventSlice, record arrow.Record, row int) error {
 	eventsColumn := air.Array(record, constants.SPAN_EVENTS)
 	if eventsColumn == nil {
-		return nil, nil
+		return nil
 	}
 	switch eventList := eventsColumn.(type) {
 	case *array.List:
 		if eventList.IsNull(row) {
-			return nil, nil
+			return nil
 		}
 		switch events := eventList.ListValues().(type) {
 		case *array.Struct:
@@ -197,65 +190,60 @@ func EventsFrom(record arrow.Record, row int) ([]*tracepb.Span_Event, error) {
 			nameId, nameFound := dt.FieldIdx(constants.NAME)
 			attributesField, attributesId, attributesFound := air.FieldOfStruct(dt, constants.ATTRIBUTES)
 			droppedAttributesCountId, droppedAttributesCountFound := dt.FieldIdx(constants.DROPPED_ATTRIBUTES_COUNT)
-			result := make([]*tracepb.Span_Event, 0, end-start)
 
 			for ; start < end; start++ {
+				event := result.AppendEmpty()
 				if events.IsNull(start) {
-					result = append(result, nil)
 					continue
 				}
-				event := tracepb.Span_Event{}
 				if timeUnixNanoFound {
 					column := events.Field(timeUnixNanoId)
 					value, err := air.U64FromArray(column, start)
 					if err != nil {
-						return nil, err
+						return err
 					}
-					event.TimeUnixNano = value
+					event.SetTimestamp(pcommon.Timestamp(value))
 				}
 				if nameFound {
 					column := events.Field(nameId)
 					value, err := air.StringFromArray(column, start)
 					if err != nil {
-						return nil, err
+						return err
 					}
-					event.Name = value
+					event.SetName(value)
 				}
 				if attributesFound {
-					value, err := common.AttributesFrom(attributesField.Type, events.Field(attributesId), start)
-					if err != nil {
-						return nil, err
+					if err := common.CopyAttributesFrom(event.Attributes(), attributesField.Type, events.Field(attributesId), start); err != nil {
+						return err
 					}
-					event.Attributes = value
 				}
 				if droppedAttributesCountFound {
 					column := events.Field(droppedAttributesCountId)
 					value, err := air.U32FromArray(column, start)
 					if err != nil {
-						return nil, err
+						return err
 					}
-					event.DroppedAttributesCount = value
+					event.SetDroppedAttributesCount(value)
 				}
-				result = append(result, &event)
 			}
-			return result, nil
+			return nil
 		default:
-			return nil, fmt.Errorf("expecting a struct array for the column events but got %T", events)
+			return fmt.Errorf("expecting a struct array for the column events but got %T", events)
 		}
 	default:
-		return nil, fmt.Errorf("expecting a list array for the column events but got %T", eventList)
+		return fmt.Errorf("expecting a list array for the column events but got %T", eventList)
 	}
 }
 
-func LinksFrom(record arrow.Record, row int) ([]*tracepb.Span_Link, error) {
+func CopyLinksFrom(result ptrace.SpanLinkSlice, record arrow.Record, row int) error {
 	linksColumn := air.Array(record, constants.SPAN_LINKS)
 	if linksColumn == nil {
-		return nil, nil
+		return nil
 	}
 	switch linkList := linksColumn.(type) {
 	case *array.List:
 		if linkList.IsNull(row) {
-			return nil, nil
+			return nil
 		}
 		switch links := linkList.ListValues().(type) {
 		case *array.Struct:
@@ -267,61 +255,69 @@ func LinksFrom(record arrow.Record, row int) ([]*tracepb.Span_Link, error) {
 			traceStateId, traceStateFound := dt.FieldIdx(constants.TRACE_STATE)
 			attributesField, attributesId, attributesFound := air.FieldOfStruct(dt, constants.ATTRIBUTES)
 			droppedAttributesCountId, droppedAttributesCountFound := dt.FieldIdx(constants.DROPPED_ATTRIBUTES_COUNT)
-			result := make([]*tracepb.Span_Link, 0, end-start)
 
 			for ; start < end; start++ {
+				link := result.AppendEmpty()
+
 				if links.IsNull(start) {
-					result = append(result, nil)
 					continue
 				}
 
-				link := tracepb.Span_Link{}
 				if traceIdFound {
 					column := links.Field(traceIdId)
 					value, err := air.BinaryFromArray(column, start)
 					if err != nil {
-						return nil, err
+						return err
 					}
-					link.TraceId = value
+					if len(value) == 16 {
+						var tid pcommon.TraceID
+						copy(tid[:], value)
+						link.SetTraceID(tid)
+					} else {
+						return fmt.Errorf("invalid TraceID len")
+					}
 				}
 				if spanIdFound {
 					column := links.Field(spanIdId)
 					value, err := air.BinaryFromArray(column, start)
 					if err != nil {
-						return nil, err
+						return err
 					}
-					link.SpanId = value
+					if len(value) == 8 {
+						var sid pcommon.SpanID
+						copy(sid[:], value)
+						link.SetSpanID(sid)
+					} else {
+						return fmt.Errorf("invalid SpanID len")
+					}
 				}
 				if traceStateFound {
 					column := links.Field(traceStateId)
 					value, err := air.StringFromArray(column, start)
 					if err != nil {
-						return nil, err
+						return err
 					}
-					link.TraceState = value
+					link.SetTraceState(ptrace.TraceState(value))
 				}
 				if attributesFound {
-					value, err := common.AttributesFrom(attributesField.Type, links.Field(attributesId), start)
-					if err != nil {
-						return nil, err
+					if err := common.CopyAttributesFrom(link.Attributes(), attributesField.Type, links.Field(attributesId), start); err != nil {
+						return err
 					}
-					link.Attributes = value
 				}
 				if droppedAttributesCountFound {
 					column := links.Field(droppedAttributesCountId)
 					value, err := air.U32FromArray(column, start)
 					if err != nil {
-						return nil, err
+						return err
 					}
-					link.DroppedAttributesCount = value
+					link.SetDroppedAttributesCount(value)
 				}
-				result = append(result, &link)
 			}
-			return result, nil
+			return nil
 		default:
-			return nil, fmt.Errorf("expecting a struct array for the column links but got %T", links)
+			return fmt.Errorf("expecting a struct array for the column links but got %T", links)
 		}
 	default:
-		return nil, fmt.Errorf("expecting a list array for the column links but got %T", linkList)
+		return fmt.Errorf("expecting a list array for the column links but got %T", linkList)
 	}
 }

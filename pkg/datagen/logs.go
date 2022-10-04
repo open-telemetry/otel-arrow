@@ -19,138 +19,73 @@ import (
 
 	"github.com/brianvoe/gofakeit/v6"
 
-	collogspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/logs/v1"
-	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
-	logspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/logs/v1"
-	resourcepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/resource/v1"
+	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/plog"
 )
 
 type LogsGenerator struct {
-	resourceAttributes    [][]*commonpb.KeyValue
-	defaultSchemaUrl      string
-	instrumentationScopes []*commonpb.InstrumentationScope
-	dataGenerator         *DataGenerator
-	generation            int
+	*DataGenerator
+
+	generation int
 }
 
-func NewLogsGenerator(resourceAttributes [][]*commonpb.KeyValue, instrumentationScopes []*commonpb.InstrumentationScope) *LogsGenerator {
+func NewLogsGenerator(resourceAttributes []pcommon.Map, instrumentationScopes []pcommon.InstrumentationScope) *LogsGenerator {
 	return &LogsGenerator{
-		resourceAttributes:    resourceAttributes,
-		defaultSchemaUrl:      "",
-		instrumentationScopes: instrumentationScopes,
-		dataGenerator:         NewDataGenerator(uint64(time.Now().UnixNano() / int64(time.Millisecond))),
-		generation:            0,
+		DataGenerator: NewDataGenerator(uint64(time.Now().UnixNano()/int64(time.Millisecond)), resourceAttributes, instrumentationScopes),
+		generation:    0,
 	}
 }
 
-func (lg *LogsGenerator) Generate(batchSize int, collectInterval time.Duration) *collogspb.ExportLogsServiceRequest {
-	var resourceLogs []*logspb.ResourceLogs
+func (lg *LogsGenerator) Generate(batchSize int, collectInterval time.Duration) plog.Logs {
+	result := plog.NewLogs()
 
 	for i := 0; i < batchSize; i++ {
-		var logRecords []*logspb.LogRecord
+		resourceLogs := result.ResourceLogs().AppendEmpty()
+		lg.resourceAttributes[lg.generation%len(lg.resourceAttributes)].
+			CopyTo(resourceLogs.Resource().Attributes())
 
-		lg.dataGenerator.AdvanceTime(collectInterval)
-		lg.dataGenerator.NextId8Bits()
-		lg.dataGenerator.NextId16Bits()
+		scopeLogs := resourceLogs.ScopeLogs().AppendEmpty()
+		lg.instrumentationScopes[lg.generation%len(lg.instrumentationScopes)].
+			CopyTo(scopeLogs.Scope())
 
-		logRecords = append(logRecords, LogDebugRecord(lg.dataGenerator))
-		logRecords = append(logRecords, LogInfoRecord(lg.dataGenerator))
-		logRecords = append(logRecords, LogWarnRecord(lg.dataGenerator))
-		logRecords = append(logRecords, LogErrorRecord(lg.dataGenerator))
+		logRecords := scopeLogs.LogRecords()
 
-		resourceLogs = append(resourceLogs, &logspb.ResourceLogs{
-			Resource: &resourcepb.Resource{
-				Attributes:             lg.resourceAttributes[lg.generation%len(lg.resourceAttributes)],
-				DroppedAttributesCount: 0,
-			},
-			SchemaUrl: lg.defaultSchemaUrl,
-			ScopeLogs: []*logspb.ScopeLogs{
-				{
-					Scope:      lg.instrumentationScopes[lg.generation%len(lg.instrumentationScopes)],
-					LogRecords: logRecords,
-					SchemaUrl:  "",
-				},
-			},
-		})
+		lg.AdvanceTime(collectInterval)
+		lg.NextId8Bytes()
+		lg.NextId16Bytes()
+
+		lg.LogDebugRecord(logRecords.AppendEmpty())
+		lg.LogInfoRecord(logRecords.AppendEmpty())
+		lg.LogWarnRecord(logRecords.AppendEmpty())
+		lg.LogErrorRecord(logRecords.AppendEmpty())
 	}
 
-	return &collogspb.ExportLogsServiceRequest{
-		ResourceLogs: resourceLogs,
-	}
+	return result
 }
 
-func LogDebugRecord(dataGenerator *DataGenerator) *logspb.LogRecord {
-	return &logspb.LogRecord{
-		TimeUnixNano:         dataGenerator.CurrentTime(),
-		ObservedTimeUnixNano: dataGenerator.CurrentTime(),
-		SeverityNumber:       logspb.SeverityNumber_SEVERITY_NUMBER_DEBUG,
-		SeverityText:         "DEBUG",
-		Body: &commonpb.AnyValue{
-			Value: &commonpb.AnyValue_StringValue{
-				StringValue: gofakeit.LoremIpsumSentence(10),
-			},
-		},
-		Attributes:             DefaultAttributes(),
-		DroppedAttributesCount: 0,
-		Flags:                  0,
-		TraceId:                dataGenerator.Id16Bits(),
-		SpanId:                 dataGenerator.Id8Bits(),
-	}
+func (dg *DataGenerator) LogDebugRecord(log plog.LogRecord) {
+	dg.logRecord(log, plog.SeverityNumberDebug, "DEBUG")
 }
 
-func LogInfoRecord(dataGenerator *DataGenerator) *logspb.LogRecord {
-	return &logspb.LogRecord{
-		TimeUnixNano:         dataGenerator.CurrentTime(),
-		ObservedTimeUnixNano: dataGenerator.CurrentTime(),
-		SeverityNumber:       logspb.SeverityNumber_SEVERITY_NUMBER_INFO,
-		SeverityText:         "INFO",
-		Body: &commonpb.AnyValue{
-			Value: &commonpb.AnyValue_StringValue{
-				StringValue: gofakeit.LoremIpsumSentence(10),
-			},
-		},
-		Attributes:             DefaultAttributes(),
-		DroppedAttributesCount: 0,
-		Flags:                  0,
-		TraceId:                dataGenerator.Id16Bits(),
-		SpanId:                 dataGenerator.Id8Bits(),
-	}
+func (dg *DataGenerator) LogInfoRecord(log plog.LogRecord) {
+	dg.logRecord(log, plog.SeverityNumberInfo, "INFO")
 }
 
-func LogWarnRecord(dataGenerator *DataGenerator) *logspb.LogRecord {
-	return &logspb.LogRecord{
-		TimeUnixNano:         dataGenerator.CurrentTime(),
-		ObservedTimeUnixNano: dataGenerator.CurrentTime(),
-		SeverityNumber:       logspb.SeverityNumber_SEVERITY_NUMBER_WARN,
-		SeverityText:         "WARN",
-		Body: &commonpb.AnyValue{
-			Value: &commonpb.AnyValue_StringValue{
-				StringValue: gofakeit.LoremIpsumSentence(10),
-			},
-		},
-		Attributes:             DefaultAttributes(),
-		DroppedAttributesCount: 0,
-		Flags:                  0,
-		TraceId:                dataGenerator.Id16Bits(),
-		SpanId:                 dataGenerator.Id8Bits(),
-	}
+func (dg *DataGenerator) LogWarnRecord(log plog.LogRecord) {
+	dg.logRecord(log, plog.SeverityNumberWarn, "INFO")
 }
 
-func LogErrorRecord(dataGenerator *DataGenerator) *logspb.LogRecord {
-	return &logspb.LogRecord{
-		TimeUnixNano:         dataGenerator.CurrentTime(),
-		ObservedTimeUnixNano: dataGenerator.CurrentTime(),
-		SeverityNumber:       logspb.SeverityNumber_SEVERITY_NUMBER_ERROR,
-		SeverityText:         "ERROR",
-		Body: &commonpb.AnyValue{
-			Value: &commonpb.AnyValue_StringValue{
-				StringValue: gofakeit.LoremIpsumSentence(10),
-			},
-		},
-		Attributes:             DefaultAttributes(),
-		DroppedAttributesCount: 0,
-		Flags:                  0,
-		TraceId:                dataGenerator.Id16Bits(),
-		SpanId:                 dataGenerator.Id8Bits(),
-	}
+func (dg *DataGenerator) LogErrorRecord(log plog.LogRecord) {
+	dg.logRecord(log, plog.SeverityNumberError, "INFO")
+}
+
+func (dg *DataGenerator) logRecord(log plog.LogRecord, sev plog.SeverityNumber, txt string) {
+	log.SetTimestamp(dg.CurrentTime())
+	log.SetObservedTimestamp(dg.CurrentTime())
+	log.SetSeverityNumber(sev)
+	log.SetSeverityText(txt)
+	log.Body().SetStringVal(gofakeit.LoremIpsumSentence(10))
+	DefaultAttributes().CopyTo(log.Attributes())
+	log.SetTraceID(dg.Id16Bytes())
+	log.SetSpanID(dg.Id8Bytes())
 }

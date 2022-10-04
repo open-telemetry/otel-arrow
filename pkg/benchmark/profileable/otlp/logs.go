@@ -3,17 +3,17 @@ package otlp
 import (
 	"io"
 
-	"google.golang.org/protobuf/proto"
-
-	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	"otel-arrow-adapter/pkg/benchmark"
 	"otel-arrow-adapter/pkg/benchmark/dataset"
+
+	plog "go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 )
 
 type LogsProfileable struct {
 	compression benchmark.CompressionAlgorithm
 	dataset     dataset.LogsDataset
-	logs        []*v1.ExportLogsServiceRequest
+	logs        []plog.Logs
 }
 
 func NewLogsProfileable(dataset dataset.LogsDataset, compression benchmark.CompressionAlgorithm) *LogsProfileable {
@@ -41,8 +41,9 @@ func (s *LogsProfileable) CreateBatch(_ io.Writer, startAt, size int) {
 func (s *LogsProfileable) Process(io.Writer) string { return "" }
 func (s *LogsProfileable) Serialize(io.Writer) ([][]byte, error) {
 	buffers := make([][]byte, len(s.logs))
-	for i, m := range s.logs {
-		bytes, err := proto.Marshal(m)
+	for i, l := range s.logs {
+		r := plogotlp.NewRequestFromLogs(l)
+		bytes, err := r.MarshalProto()
 		if err != nil {
 			return nil, err
 		}
@@ -51,13 +52,13 @@ func (s *LogsProfileable) Serialize(io.Writer) ([][]byte, error) {
 	return buffers, nil
 }
 func (s *LogsProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
-	s.logs = make([]*v1.ExportLogsServiceRequest, len(buffers))
+	s.logs = make([]plog.Logs, len(buffers))
 	for i, b := range buffers {
-		m := &v1.ExportLogsServiceRequest{}
-		if err := proto.Unmarshal(b, m); err != nil {
+		r := plogotlp.NewRequest()
+		if err := r.UnmarshalProto(b); err != nil {
 			panic(err)
 		}
-		s.logs[i] = m
+		s.logs[i] = r.Logs()
 	}
 }
 func (s *LogsProfileable) Clear() {

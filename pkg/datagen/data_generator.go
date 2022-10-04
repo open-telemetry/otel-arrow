@@ -19,51 +19,58 @@ import (
 	"time"
 
 	"github.com/brianvoe/gofakeit/v6"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 )
 
 type DataGenerator struct {
-	prevTime    uint64
-	currentTime uint64
-	id8Bits     []byte
-	id16Bits    []byte
+	prevTime    pcommon.Timestamp
+	currentTime pcommon.Timestamp
+	id8Bytes    pcommon.SpanID
+	id16Bytes   pcommon.TraceID
+
+	resourceAttributes    []pcommon.Map
+	instrumentationScopes []pcommon.InstrumentationScope
 }
 
-func NewDataGenerator(currentTime uint64) *DataGenerator {
-	return &DataGenerator{
-		prevTime:    currentTime,
-		currentTime: currentTime,
-		id8Bits:     GenId(8),
-		id16Bits:    GenId(16),
+func NewDataGenerator(currentTime uint64, resourceAttributes []pcommon.Map, instrumentationScopes []pcommon.InstrumentationScope) *DataGenerator {
+	dg := &DataGenerator{
+		prevTime:              pcommon.Timestamp(currentTime),
+		currentTime:           pcommon.Timestamp(currentTime),
+		resourceAttributes:    resourceAttributes,
+		instrumentationScopes: instrumentationScopes,
 	}
+	dg.NextId8Bytes()
+	dg.NextId16Bytes()
+	return dg
 }
 
-func (dg *DataGenerator) PrevTime() uint64 {
+func (dg *DataGenerator) PrevTime() pcommon.Timestamp {
 	return dg.prevTime
 }
 
-func (dg *DataGenerator) CurrentTime() uint64 {
+func (dg *DataGenerator) CurrentTime() pcommon.Timestamp {
 	return dg.currentTime
 }
 
 func (dg *DataGenerator) AdvanceTime(timeDelta time.Duration) {
 	dg.prevTime = dg.currentTime
-	dg.currentTime += uint64(timeDelta)
+	dg.currentTime += pcommon.Timestamp(timeDelta)
 }
 
-func (dg *DataGenerator) NextId8Bits() {
-	dg.id8Bits = GenId(8)
+func (dg *DataGenerator) NextId8Bytes() {
+	copy(dg.id8Bytes[:], GenId(8))
 }
 
-func (dg *DataGenerator) NextId16Bits() {
-	dg.id16Bits = GenId(16)
+func (dg *DataGenerator) NextId16Bytes() {
+	copy(dg.id16Bytes[:], GenId(16))
 }
 
-func (dg *DataGenerator) Id8Bits() []byte {
-	return dg.id8Bits
+func (dg *DataGenerator) Id8Bytes() pcommon.SpanID {
+	return dg.id8Bytes
 }
 
-func (dg *DataGenerator) Id16Bits() []byte {
-	return dg.id16Bits
+func (dg *DataGenerator) Id16Bytes() pcommon.TraceID {
+	return dg.id16Bytes
 }
 
 func (dg *DataGenerator) GenF64Range(min float64, max float64) float64 {

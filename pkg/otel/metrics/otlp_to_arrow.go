@@ -17,14 +17,14 @@ package metrics
 import (
 	"fmt"
 
-	collogspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/metrics/v1"
-	commonpb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
-	metricspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/metrics/v1"
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/air/rfield"
 	"otel-arrow-adapter/pkg/otel/common"
 	"otel-arrow-adapter/pkg/otel/constants"
+
+	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	"github.com/apache/arrow/go/v9/arrow"
 )
@@ -45,42 +45,50 @@ func NewMultivariateMetricsConfig() *MultivariateMetricsConfig {
 }
 
 // OtlpMetricsToArrowRecords converts an OTLP ResourceMetrics to one or more Arrow records.
-func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request *collogspb.ExportMetricsServiceRequest, multivariateConf *MultivariateMetricsConfig, cfg *config.Config) ([]arrow.Record, error) {
+func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request pmetric.Metrics, multivariateConf *MultivariateMetricsConfig, cfg *config.Config) ([]arrow.Record, error) {
 	result := []arrow.Record{}
-	for _, resourceMetrics := range request.ResourceMetrics {
-		for _, scopeMetrics := range resourceMetrics.ScopeMetrics {
-			for _, metric := range scopeMetrics.Metrics {
-				if metric.Data != nil {
-					switch t := metric.Data.(type) {
-					case *metricspb.Metric_Gauge:
-						err := addGaugeOrSum(rr, resourceMetrics, scopeMetrics, metric, t.Gauge.DataPoints, constants.GAUGE_METRICS, multivariateConf, cfg)
-						if err != nil {
-							return nil, err
-						}
-					case *metricspb.Metric_Sum:
-						err := addGaugeOrSum(rr, resourceMetrics, scopeMetrics, metric, t.Sum.DataPoints, constants.SUM_METRICS, multivariateConf, cfg)
-						if err != nil {
-							return nil, err
-						}
-					case *metricspb.Metric_Histogram:
-						err := addHistogram(rr, resourceMetrics, scopeMetrics, metric, t.Histogram, cfg)
-						if err != nil {
-							return nil, err
-						}
-					case *metricspb.Metric_Summary:
-						err := addSummary(rr, resourceMetrics, scopeMetrics, metric, t.Summary, cfg)
-						if err != nil {
-							return nil, err
-						}
-					case *metricspb.Metric_ExponentialHistogram:
-						err := addExpHistogram(rr, resourceMetrics, scopeMetrics, metric, t.ExponentialHistogram, cfg)
-						if err != nil {
-							return nil, err
-						}
-					default:
-						panic(fmt.Sprintf("Unsupported metric type: %v", metric.Data))
+
+	for i := 0; i < request.ResourceMetrics().Len(); i++ {
+		resourceMetrics := request.ResourceMetrics().At(i)
+		resource := resourceMetrics.Resource()
+
+		for j := 0; j < resourceMetrics.ScopeMetrics().Len(); j++ {
+			scopeMetrics := resourceMetrics.ScopeMetrics().At(j)
+			scope := scopeMetrics.Scope()
+
+			for k := 0; k < scopeMetrics.Metrics().Len(); k++ {
+				metric := scopeMetrics.Metrics().At(k)
+
+				switch metric.DataType() {
+				case pmetric.MetricDataTypeGauge:
+					err := addGaugeOrSum(rr, resource, scope, metric, metric.Gauge().DataPoints(), constants.GAUGE_METRICS, multivariateConf, cfg)
+					if err != nil {
+						return nil, err
 					}
+				case pmetric.MetricDataTypeSum:
+					err := addGaugeOrSum(rr, resource, scope, metric, metric.Sum().DataPoints(), constants.SUM_METRICS, multivariateConf, cfg)
+					if err != nil {
+						return nil, err
+					}
+				case pmetric.MetricDataTypeHistogram:
+					err := addHistogram(rr, resource, scope, metric, metric.Histogram(), cfg)
+					if err != nil {
+						return nil, err
+					}
+				case pmetric.MetricDataTypeExponentialHistogram:
+					err := addExpHistogram(rr, resource, scope, metric, metric.ExponentialHistogram(), cfg)
+					if err != nil {
+						return nil, err
+					}
+				case pmetric.MetricDataTypeSummary:
+					err := addSummary(rr, resource, scope, metric, metric.Summary(), cfg)
+					if err != nil {
+						return nil, err
+					}
+				default:
+					panic(fmt.Sprintf("Unsupported metric type: %v", metric.DataType()))
 				}
+
 			}
 			records, err := rr.BuildRecords()
 			if err != nil {
@@ -92,24 +100,26 @@ func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request *collogspb.Expo
 	return result, nil
 }
 
-func addGaugeOrSum(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, dataPoints []*metricspb.NumberDataPoint, metric_type string, config *MultivariateMetricsConfig, cfg *config.Config) error {
-	if mvKey, ok := config.Metrics[metric.Name]; ok {
-		return multivariateMetric(rr, resMetrics, scopeMetrics, metric, dataPoints, metric_type, mvKey, cfg)
+func addGaugeOrSum(rr *air.RecordRepository, res pcommon.Resource, scope pcommon.InstrumentationScope, metric pmetric.Metric, dataPoints pmetric.NumberDataPointSlice, metric_type string, config *MultivariateMetricsConfig, cfg *config.Config) error {
+	// TODO: Missing Temporality and IsMonotonic for Sums here.
+	if mvKey, ok := config.Metrics[metric.Name()]; ok {
+		return multivariateMetric(rr, res, scope, metric, dataPoints, metric_type, mvKey, cfg)
 	}
-	univariateMetric(rr, resMetrics, scopeMetrics, metric, dataPoints, metric_type, cfg)
+	univariateMetric(rr, res, scope, metric, dataPoints, metric_type, cfg)
 	return nil
 }
 
-func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, dataPoints []*metricspb.NumberDataPoint, metric_type string, multivariateKey string, cfg *config.Config) error {
+func multivariateMetric(rr *air.RecordRepository, res pcommon.Resource, scope pcommon.InstrumentationScope, metric pmetric.Metric, dataPoints pmetric.NumberDataPointSlice, metric_type string, multivariateKey string, cfg *config.Config) error {
 	records := make(map[string]*MultivariateRecord)
 
-	for _, ndp := range dataPoints {
-		sig := DataPointSig(ndp, multivariateKey)
+	for i := 0; i < dataPoints.Len(); i++ {
+		ndp := dataPoints.At(i)
+		sig := DataPointSig[pmetric.NumberDataPoint](ndp, multivariateKey)
 		newEntry := false
 		stringSig := string(sig)
 		record := records[stringSig]
 
-		var multivariateMetricName *string
+		var multivariateMetricName string
 
 		if record == nil {
 			newEntry = true
@@ -121,42 +131,34 @@ func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.Resource
 		}
 
 		if newEntry {
-			if resMetrics.Resource != nil {
-				record.fields = append(record.fields, common.ResourceField(resMetrics.Resource, cfg))
-			}
-			if scopeMetrics.Scope != nil {
-				record.fields = append(record.fields, common.ScopeField(constants.SCOPE_METRICS, scopeMetrics.Scope, cfg))
-			}
-			timeUnixNanoField := rfield.NewU64Field(constants.TIME_UNIX_NANO, ndp.TimeUnixNano)
+			record.fields = append(record.fields, common.ResourceField(res, cfg))
+			record.fields = append(record.fields, common.ScopeField(constants.SCOPE_METRICS, scope, cfg))
+			timeUnixNanoField := rfield.NewU64Field(constants.TIME_UNIX_NANO, uint64(ndp.Timestamp()))
 			record.fields = append(record.fields, timeUnixNanoField)
-			if ndp.StartTimeUnixNano > 0 {
-				startTimeUnixNano := rfield.NewU64Field(constants.START_TIME_UNIX_NANO, ndp.StartTimeUnixNano)
+			if ts := ndp.StartTimestamp(); ts > 0 {
+				startTimeUnixNano := rfield.NewU64Field(constants.START_TIME_UNIX_NANO, uint64(ts))
 				record.fields = append(record.fields, startTimeUnixNano)
 			}
-			ma, err := AddMultivariateValue(ndp.Attributes, multivariateKey, &record.fields)
+			ma, err := AddMultivariateValue(ndp.Attributes(), multivariateKey, &record.fields)
 			if err != nil {
 				return err
 			}
 			multivariateMetricName = ma
 		} else {
-			ma, err := ExtractMultivariateValue(ndp.Attributes, multivariateKey)
+			ma, err := ExtractMultivariateValue(ndp.Attributes(), multivariateKey)
 			if err != nil {
 				return err
 			}
 			multivariateMetricName = ma
 		}
 
-		if multivariateMetricName == nil {
-			multivariateMetricName = new(string)
-		}
-
-		switch t := ndp.Value.(type) {
-		case *metricspb.NumberDataPoint_AsDouble:
-			field := rfield.NewF64Field(*multivariateMetricName, t.AsDouble)
+		switch ndp.ValueType() {
+		case pmetric.NumberDataPointValueTypeDouble:
+			field := rfield.NewF64Field(multivariateMetricName, ndp.DoubleVal())
 			field.AddMetadata(constants.METADATA_METRIC_MULTIVARIATE_ATTR, multivariateKey)
 			record.metrics = append(record.metrics, field)
-		case *metricspb.NumberDataPoint_AsInt:
-			field := rfield.NewI64Field(*multivariateMetricName, t.AsInt)
+		case pmetric.NumberDataPointValueTypeInt:
+			field := rfield.NewI64Field(multivariateMetricName, ndp.IntVal())
 			field.AddMetadata(constants.METADATA_METRIC_MULTIVARIATE_ATTR, multivariateKey)
 			record.metrics = append(record.metrics, field)
 		default:
@@ -168,15 +170,15 @@ func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.Resource
 		if len(record.fields) == 0 && len(record.metrics) == 0 {
 			continue
 		}
-		metricField := rfield.NewStructField(metric.Name, rfield.Struct{
+		metricField := rfield.NewStructField(metric.Name(), rfield.Struct{
 			Fields: record.metrics,
 		})
 		metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metric_type)
-		if len(metric.Description) > 0 {
-			metricField.AddMetadata(constants.METADATA_METRIC_DESCRIPTION, metric.Description)
+		if metric.Description() != "" {
+			metricField.AddMetadata(constants.METADATA_METRIC_DESCRIPTION, metric.Description())
 		}
-		if len(metric.Unit) > 0 {
-			metricField.AddMetadata(constants.METADATA_METRIC_UNIT, metric.Unit)
+		if metric.Unit() != "" {
+			metricField.AddMetadata(constants.METADATA_METRIC_UNIT, metric.Unit())
 		}
 		record.fields = append(record.fields, rfield.NewStructField(constants.METRICS, rfield.Struct{
 			Fields: []*rfield.Field{metricField},
@@ -186,101 +188,95 @@ func multivariateMetric(rr *air.RecordRepository, resMetrics *metricspb.Resource
 	return nil
 }
 
-func univariateMetric(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, dataPoints []*metricspb.NumberDataPoint, metric_type string, cfg *config.Config) {
-	for _, ndp := range dataPoints {
+func univariateMetric(rr *air.RecordRepository, res pcommon.Resource, scope pcommon.InstrumentationScope, metric pmetric.Metric, dataPoints pmetric.NumberDataPointSlice, metric_type string, cfg *config.Config) {
+	for i := 0; i < dataPoints.Len(); i++ {
+		ndp := dataPoints.At(i)
 		record := air.NewRecord()
 
-		if resMetrics.Resource != nil {
-			common.AddResource(record, resMetrics.Resource, cfg)
-		}
-		if scopeMetrics.Scope != nil {
-			common.AddScope(record, constants.SCOPE_METRICS, scopeMetrics.Scope, cfg)
+		common.AddResource(record, res, cfg)
+		common.AddScope(record, constants.SCOPE_METRICS, scope, cfg)
+
+		record.U64Field(constants.TIME_UNIX_NANO, uint64(ndp.Timestamp()))
+		if ts := ndp.StartTimestamp(); ts > 0 {
+			record.U64Field(constants.START_TIME_UNIX_NANO, uint64(ts))
 		}
 
-		record.U64Field(constants.TIME_UNIX_NANO, ndp.TimeUnixNano)
-		if ndp.StartTimeUnixNano > 0 {
-			record.U64Field(constants.START_TIME_UNIX_NANO, ndp.StartTimeUnixNano)
-		}
-
-		if attributes := common.NewAttributes(ndp.Attributes, cfg); attributes != nil {
+		if attributes := common.NewAttributes(ndp.Attributes(), cfg); attributes != nil {
 			record.AddField(attributes)
 		}
 
-		if ndp.Value != nil {
-			switch t := ndp.Value.(type) {
-			case *metricspb.NumberDataPoint_AsDouble:
-				metricField := rfield.NewF64Field(metric.Name, t.AsDouble)
-				metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metric_type)
-				if len(metric.Description) > 0 {
-					metricField.AddMetadata(constants.METADATA_METRIC_DESCRIPTION, metric.Description)
-				}
-				if len(metric.Unit) > 0 {
-					metricField.AddMetadata(constants.METADATA_METRIC_UNIT, metric.Unit)
-				}
-				record.StructField(constants.METRICS, rfield.Struct{
-					Fields: []*rfield.Field{metricField},
-				})
-			case *metricspb.NumberDataPoint_AsInt:
-				metricField := rfield.NewI64Field(metric.Name, t.AsInt)
-				metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metric_type)
-				record.StructField(constants.METRICS, rfield.Struct{
-					Fields: []*rfield.Field{metricField},
-				})
-			default:
-				panic("Unsupported number data point value type")
+		switch ndp.ValueType() {
+		case pmetric.NumberDataPointValueTypeDouble:
+			metricField := rfield.NewF64Field(metric.Name(), ndp.DoubleVal())
+			metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metric_type)
+			if metric.Description() != "" {
+				metricField.AddMetadata(constants.METADATA_METRIC_DESCRIPTION, metric.Description())
 			}
+			if metric.Unit() != "" {
+				metricField.AddMetadata(constants.METADATA_METRIC_UNIT, metric.Unit())
+			}
+			record.StructField(constants.METRICS, rfield.Struct{
+				Fields: []*rfield.Field{metricField},
+			})
+		case pmetric.NumberDataPointValueTypeInt:
+			metricField := rfield.NewI64Field(metric.Name(), ndp.IntVal())
+			metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metric_type)
+			record.StructField(constants.METRICS, rfield.Struct{
+				Fields: []*rfield.Field{metricField},
+			})
+		default:
+			panic("Unsupported number data point value type")
 		}
 
 		// ToDo Exemplar
 
-		if ndp.Flags > 0 {
-			record.U32Field(constants.FLAGS, ndp.Flags)
+		if ndp.Flags() != 0 {
+			record.U32Field(constants.FLAGS, uint32(ndp.Flags()))
 		}
 
 		rr.AddRecord(record)
 	}
 }
 
-func addSummary(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, summary *metricspb.Summary, cfg *config.Config) error {
-	for _, sdp := range summary.DataPoints {
+func addSummary(rr *air.RecordRepository, res pcommon.Resource, scope pcommon.InstrumentationScope, metric pmetric.Metric, summary pmetric.Summary, cfg *config.Config) error {
+	for i := 0; i < summary.DataPoints().Len(); i++ {
+		sdp := summary.DataPoints().At(i)
+
 		record := air.NewRecord()
 
-		if resMetrics.Resource != nil {
-			common.AddResource(record, resMetrics.Resource, cfg)
-		}
-		if scopeMetrics.Scope != nil {
-			common.AddScope(record, constants.SCOPE_METRICS, scopeMetrics.Scope, cfg)
+		common.AddResource(record, res, cfg)
+		common.AddScope(record, constants.SCOPE_METRICS, scope, cfg)
+
+		record.U64Field(constants.TIME_UNIX_NANO, uint64(sdp.Timestamp()))
+		if sdp.StartTimestamp() > 0 {
+			record.U64Field(constants.START_TIME_UNIX_NANO, uint64(sdp.StartTimestamp()))
 		}
 
-		record.U64Field(constants.TIME_UNIX_NANO, sdp.TimeUnixNano)
-		if sdp.StartTimeUnixNano > 0 {
-			record.U64Field(constants.START_TIME_UNIX_NANO, sdp.StartTimeUnixNano)
-		}
-
-		if attributes := common.NewAttributes(sdp.Attributes, cfg); attributes != nil {
+		if attributes := common.NewAttributes(sdp.Attributes(), cfg); attributes != nil {
 			record.AddField(attributes)
 		}
 
 		var summaryFields []*rfield.Field
 
-		summaryFields = append(summaryFields, rfield.NewU64Field(constants.SUMMARY_COUNT, sdp.Count))
-		summaryFields = append(summaryFields, rfield.NewF64Field(constants.SUMMARY_SUM, sdp.Sum))
+		summaryFields = append(summaryFields, rfield.NewU64Field(constants.SUMMARY_COUNT, sdp.Count()))
+		summaryFields = append(summaryFields, rfield.NewF64Field(constants.SUMMARY_SUM, sdp.Sum()))
 
 		var items []rfield.Value
-		for _, quantile := range sdp.QuantileValues {
+		for j := 0; j < sdp.QuantileValues().Len(); j++ {
+			quantile := sdp.QuantileValues().At(j)
 			items = append(items, &rfield.Struct{
 				Fields: []*rfield.Field{
-					rfield.NewF64Field(constants.SUMMARY_QUANTILE, quantile.Quantile),
-					rfield.NewF64Field(constants.SUMMARY_VALUE, quantile.Value),
+					rfield.NewF64Field(constants.SUMMARY_QUANTILE, quantile.Quantile()),
+					rfield.NewF64Field(constants.SUMMARY_VALUE, quantile.Value()),
 				},
 			})
 		}
 		summaryFields = append(summaryFields, rfield.NewListField(constants.SUMMARY_QUANTILE_VALUES, rfield.List{Values: items}))
 
-		record.StructField(fmt.Sprintf("%s_%s", constants.SUMMARY_METRICS, metric.Name), rfield.Struct{Fields: summaryFields})
+		record.StructField(fmt.Sprintf("%s_%s", constants.SUMMARY_METRICS, metric.Name()), rfield.Struct{Fields: summaryFields})
 
-		if sdp.Flags > 0 {
-			record.U32Field(constants.FLAGS, sdp.Flags)
+		if sdp.Flags() != 0 {
+			record.U32Field(constants.FLAGS, uint32(sdp.Flags()))
 		}
 
 		rr.AddRecord(record)
@@ -288,58 +284,57 @@ func addSummary(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics,
 	return nil
 }
 
-func addHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, histogram *metricspb.Histogram, cfg *config.Config) error {
-	for _, sdp := range histogram.DataPoints {
+func addHistogram(rr *air.RecordRepository, res pcommon.Resource, scope pcommon.InstrumentationScope, metric pmetric.Metric, histogram pmetric.Histogram, cfg *config.Config) error {
+	for i := 0; i < histogram.DataPoints().Len(); i++ {
+		hdp := histogram.DataPoints().At(i)
 		record := air.NewRecord()
 
-		if resMetrics.Resource != nil {
-			common.AddResource(record, resMetrics.Resource, cfg)
-		}
-		if scopeMetrics.Scope != nil {
-			common.AddScope(record, constants.SCOPE_METRICS, scopeMetrics.Scope, cfg)
+		common.AddResource(record, res, cfg)
+		common.AddScope(record, constants.SCOPE_METRICS, scope, cfg)
+
+		record.U64Field(constants.TIME_UNIX_NANO, uint64(hdp.Timestamp()))
+		if ts := hdp.StartTimestamp(); ts != 0 {
+			record.U64Field(constants.START_TIME_UNIX_NANO, uint64(ts))
 		}
 
-		record.U64Field(constants.TIME_UNIX_NANO, sdp.TimeUnixNano)
-		if sdp.StartTimeUnixNano > 0 {
-			record.U64Field(constants.START_TIME_UNIX_NANO, sdp.StartTimeUnixNano)
-		}
-
-		if attributes := common.NewAttributes(sdp.Attributes, cfg); attributes != nil {
+		if attributes := common.NewAttributes(hdp.Attributes(), cfg); attributes != nil {
 			record.AddField(attributes)
 		}
 
 		// Builds fields of the histogram struct
 		var histoFields []*rfield.Field
 
-		histoFields = append(histoFields, rfield.NewU64Field(constants.HISTOGRAM_COUNT, sdp.Count))
-		if sdp.Sum != nil {
-			histoFields = append(histoFields, rfield.NewF64Field(constants.HISTOGRAM_SUM, *sdp.Sum))
+		histoFields = append(histoFields, rfield.NewU64Field(constants.HISTOGRAM_COUNT, hdp.Count()))
+		if hdp.HasSum() {
+			histoFields = append(histoFields, rfield.NewF64Field(constants.HISTOGRAM_SUM, hdp.Sum()))
 		}
-		if sdp.Min != nil {
-			histoFields = append(histoFields, rfield.NewF64Field(constants.HISTOGRAM_MIN, *sdp.Min))
+		if hdp.HasMin() {
+			histoFields = append(histoFields, rfield.NewF64Field(constants.HISTOGRAM_MIN, hdp.Min()))
 		}
-		if sdp.Max != nil {
-			histoFields = append(histoFields, rfield.NewF64Field(constants.HISTOGRAM_MAX, *sdp.Max))
+		if hdp.HasMax() {
+			histoFields = append(histoFields, rfield.NewF64Field(constants.HISTOGRAM_MAX, hdp.Max()))
 		}
 		var bucketCounts []rfield.Value
-		for _, count := range sdp.BucketCounts {
+		for i := 0; i < hdp.BucketCounts().Len(); i++ {
+			count := hdp.BucketCounts().At(i)
 			bucketCounts = append(bucketCounts, rfield.NewU64(count))
 		}
 		if bucketCounts != nil {
 			histoFields = append(histoFields, rfield.NewListField(constants.HISTOGRAM_BUCKET_COUNTS, rfield.List{Values: bucketCounts}))
 		}
 		var explicitBounds []rfield.Value
-		for _, count := range sdp.ExplicitBounds {
+		for i := 0; i < hdp.ExplicitBounds().Len(); i++ {
+			count := hdp.ExplicitBounds().At(i)
 			explicitBounds = append(explicitBounds, rfield.NewF64(count))
 		}
 		if explicitBounds != nil {
 			histoFields = append(histoFields, rfield.NewListField(constants.HISTOGRAM_EXPLICIT_BOUNDS, rfield.List{Values: explicitBounds}))
 		}
 
-		record.StructField(fmt.Sprintf("%s_%s", constants.HISTOGRAM, metric.Name), rfield.Struct{Fields: histoFields})
+		record.StructField(fmt.Sprintf("%s_%s", constants.HISTOGRAM, metric.Name()), rfield.Struct{Fields: histoFields})
 
-		if sdp.Flags > 0 {
-			record.U32Field(constants.FLAGS, sdp.Flags)
+		if hdp.Flags() != 0 {
+			record.U32Field(constants.FLAGS, uint32(hdp.Flags()))
 		}
 
 		rr.AddRecord(record)
@@ -350,80 +345,84 @@ func addHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetric
 	return nil
 }
 
-func addExpHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMetrics, scopeMetrics *metricspb.ScopeMetrics, metric *metricspb.Metric, histogram *metricspb.ExponentialHistogram, cfg *config.Config) error {
-	for _, sdp := range histogram.DataPoints {
+func addExpHistogram(rr *air.RecordRepository, res pcommon.Resource, scope pcommon.InstrumentationScope, metric pmetric.Metric, histogram pmetric.ExponentialHistogram, cfg *config.Config) error {
+	for i := 0; i < histogram.DataPoints().Len(); i++ {
+		hdp := histogram.DataPoints().At(i)
 		record := air.NewRecord()
 
-		if resMetrics.Resource != nil {
-			common.AddResource(record, resMetrics.Resource, cfg)
-		}
-		if scopeMetrics.Scope != nil {
-			common.AddScope(record, constants.SCOPE_METRICS, scopeMetrics.Scope, cfg)
+		common.AddResource(record, res, cfg)
+		common.AddScope(record, constants.SCOPE_METRICS, scope, cfg)
+
+		record.U64Field(constants.TIME_UNIX_NANO, uint64(hdp.Timestamp()))
+		if hdp.StartTimestamp() > 0 {
+			record.U64Field(constants.START_TIME_UNIX_NANO, uint64(hdp.StartTimestamp()))
 		}
 
-		record.U64Field(constants.TIME_UNIX_NANO, sdp.TimeUnixNano)
-		if sdp.StartTimeUnixNano > 0 {
-			record.U64Field(constants.START_TIME_UNIX_NANO, sdp.StartTimeUnixNano)
-		}
-
-		if attributes := common.NewAttributes(sdp.Attributes, cfg); attributes != nil {
+		if attributes := common.NewAttributes(hdp.Attributes(), cfg); attributes != nil {
 			record.AddField(attributes)
 		}
 
 		// Builds fields of the histogram struct
 		var histoFields []*rfield.Field
 
-		histoFields = append(histoFields, rfield.NewU64Field(constants.HISTOGRAM_COUNT, sdp.Count))
-		if sdp.Sum != nil {
-			histoFields = append(histoFields, rfield.NewF64Field(constants.HISTOGRAM_SUM, *sdp.Sum))
+		histoFields = append(histoFields, rfield.NewU64Field(constants.HISTOGRAM_COUNT, hdp.Count()))
+		if hdp.HasSum() {
+			histoFields = append(histoFields, rfield.NewF64Field(constants.HISTOGRAM_SUM, hdp.Sum()))
 		}
-		if sdp.Min != nil {
-			histoFields = append(histoFields, rfield.NewF64Field(constants.HISTOGRAM_MIN, *sdp.Min))
+		if hdp.HasMin() {
+			histoFields = append(histoFields, rfield.NewF64Field(constants.HISTOGRAM_MIN, hdp.Min()))
 		}
-		if sdp.Max != nil {
-			histoFields = append(histoFields, rfield.NewF64Field(constants.HISTOGRAM_MAX, *sdp.Max))
+		if hdp.HasMax() {
+			histoFields = append(histoFields, rfield.NewF64Field(constants.HISTOGRAM_MAX, hdp.Max()))
 		}
-		histoFields = append(histoFields, rfield.NewI32Field(constants.EXP_HISTOGRAM_SCALE, sdp.Scale))
-		histoFields = append(histoFields, rfield.NewU64Field(constants.EXP_HISTOGRAM_ZERO_COUNT, sdp.ZeroCount))
+		histoFields = append(histoFields, rfield.NewI32Field(constants.EXP_HISTOGRAM_SCALE, hdp.Scale()))
+		histoFields = append(histoFields, rfield.NewU64Field(constants.EXP_HISTOGRAM_ZERO_COUNT, hdp.ZeroCount()))
 
-		if sdp.Positive != nil {
+		if hdp.Positive().BucketCounts().Len() != 0 {
 			var bucketCounts []rfield.Value
-			for _, count := range sdp.Positive.BucketCounts {
+			for i := 0; i < hdp.Positive().BucketCounts().Len(); i++ {
+				count := hdp.Positive().BucketCounts().At(i)
 				bucketCounts = append(bucketCounts, rfield.NewU64(count))
 			}
 			if bucketCounts != nil {
 				histoFields = append(histoFields, rfield.NewStructField(constants.EXP_HISTOGRAM_POSITIVE, rfield.Struct{Fields: []*rfield.Field{
-					rfield.NewI32Field(constants.EXP_HISTOGRAM_OFFSET, sdp.Positive.Offset),
+					rfield.NewI32Field(constants.EXP_HISTOGRAM_OFFSET, hdp.Positive().Offset()),
 					rfield.NewListField(constants.HISTOGRAM_BUCKET_COUNTS, rfield.List{Values: bucketCounts}),
 				}}))
 			} else {
+				// Reviewers notes: not sure what the
+				// OTLP means in this case, having
+				// Offset and no bucket counts?
 				histoFields = append(histoFields, rfield.NewStructField(constants.EXP_HISTOGRAM_POSITIVE, rfield.Struct{Fields: []*rfield.Field{
-					rfield.NewI32Field(constants.EXP_HISTOGRAM_OFFSET, sdp.Positive.Offset),
+					rfield.NewI32Field(constants.EXP_HISTOGRAM_OFFSET, hdp.Positive().Offset()),
 				}}))
 			}
 		}
 
-		if sdp.Negative != nil {
+		if hdp.Negative().BucketCounts().Len() != 0 {
 			var bucketCounts []rfield.Value
-			for _, count := range sdp.Negative.BucketCounts {
+			for i := 0; i < hdp.Negative().BucketCounts().Len(); i++ {
+				count := hdp.Negative().BucketCounts().At(i)
 				bucketCounts = append(bucketCounts, rfield.NewU64(count))
 			}
 			if bucketCounts != nil {
 				histoFields = append(histoFields, rfield.NewStructField(constants.EXP_HISTOGRAM_NEGATIVE, rfield.Struct{Fields: []*rfield.Field{
-					rfield.NewI32Field(constants.EXP_HISTOGRAM_OFFSET, sdp.Negative.Offset),
+					rfield.NewI32Field(constants.EXP_HISTOGRAM_OFFSET, hdp.Negative().Offset()),
 					rfield.NewListField(constants.HISTOGRAM_BUCKET_COUNTS, rfield.List{Values: bucketCounts}),
 				}}))
 			} else {
+				// Note: See comments above; probably safe to eliminate the offset
+				// if the counts are empty.
 				histoFields = append(histoFields, rfield.NewStructField(constants.EXP_HISTOGRAM_NEGATIVE, rfield.Struct{Fields: []*rfield.Field{
-					rfield.NewI32Field(constants.EXP_HISTOGRAM_OFFSET, sdp.Negative.Offset),
+					rfield.NewI32Field(constants.EXP_HISTOGRAM_OFFSET, hdp.Negative().Offset()),
 				}}))
 			}
 		}
 
-		record.StructField(fmt.Sprintf("%s_%s", constants.EXP_HISTOGRAM, metric.Name), rfield.Struct{Fields: histoFields})
+		record.StructField(fmt.Sprintf("%s_%s", constants.EXP_HISTOGRAM, metric.Name()), rfield.Struct{Fields: histoFields})
 
-		if sdp.Flags > 0 {
-			record.U32Field(constants.FLAGS, sdp.Flags)
+		if hdp.Flags() != 0 {
+			record.U32Field(constants.FLAGS, uint32(hdp.Flags()))
 		}
 
 		rr.AddRecord(record)
@@ -434,44 +433,39 @@ func addExpHistogram(rr *air.RecordRepository, resMetrics *metricspb.ResourceMet
 	return nil
 }
 
-/*
-	Positive *ExponentialHistogramDataPoint_Buckets `protobuf:"bytes,8,opt,name=positive,proto3" json:"positive,omitempty"`
-	Negative *ExponentialHistogramDataPoint_Buckets `protobuf:"bytes,9,opt,name=negative,proto3" json:"negative,omitempty"`
-*/
-
-func ExtractMultivariateValue(attributes []*commonpb.KeyValue, multivariateKey string) (*string, error) {
-	for _, attribute := range attributes {
-		if attribute.GetKey() == multivariateKey {
-			value := attribute.GetValue().Value
-			switch t := value.(type) {
-			case *commonpb.AnyValue_StringValue:
-				return &t.StringValue, nil
-			default:
-				return nil, fmt.Errorf("Unsupported multivariate value type: %v", value)
-			}
+func ExtractMultivariateValue(attributes pcommon.Map, multivariateKey string) (res string, err error) {
+	attributes.Range(func(key string, value pcommon.Value) bool {
+		if key != multivariateKey {
+			return true
 		}
-	}
-	return nil, nil
+		switch value.Type() {
+		case pcommon.ValueTypeString:
+			res = value.StringVal()
+		default:
+			err = fmt.Errorf("Unsupported multivariate value type: %v", value)
+		}
+		return false
+	})
+	return
 }
 
-func AddMultivariateValue(attributes []*commonpb.KeyValue, multivariateKey string, fields *[]*rfield.Field) (*string, error) {
-	var multivariateValue *string
-	attributeFields := make([]*rfield.Field, 0, len(attributes))
-	for _, attribute := range attributes {
-		if attribute.Value != nil {
-			if attribute.GetKey() == multivariateKey {
-				value := attribute.GetValue().Value
-				switch t := value.(type) {
-				case *commonpb.AnyValue_StringValue:
-					multivariateValue = &t.StringValue
-					continue
-				default:
-					return nil, fmt.Errorf("Unsupported multivariate value type: %v", value)
-				}
+func AddMultivariateValue(attributes pcommon.Map, multivariateKey string, fields *[]*rfield.Field) (res string, err error) {
+	var multivariateValue string
+	attributeFields := make([]*rfield.Field, 0, attributes.Len())
+	attributes.Range(func(key string, value pcommon.Value) bool {
+		if key == multivariateKey {
+			switch value.Type() {
+			case pcommon.ValueTypeString:
+				multivariateValue = value.StringVal()
+				return true
+			default:
+				err = fmt.Errorf("Unsupported multivariate value type: %v", value)
 			}
 		}
-		attributeFields = append(attributeFields, rfield.NewField(attribute.GetKey(), common.OtlpAnyValueToValue(attribute.GetValue())))
-	}
+
+		attributeFields = append(attributeFields, rfield.NewField(key, common.OtlpAnyValueToValue(value)))
+		return true
+	})
 	if len(attributeFields) > 0 {
 		*fields = append(*fields, rfield.NewStructField(constants.ATTRIBUTES, rfield.Struct{Fields: attributeFields}))
 	}

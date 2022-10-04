@@ -19,7 +19,7 @@ import (
 
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/air/config"
-	datagen2 "otel-arrow-adapter/pkg/datagen"
+	"otel-arrow-adapter/pkg/datagen"
 	"otel-arrow-adapter/pkg/otel/metrics"
 )
 
@@ -28,7 +28,7 @@ func TestOtlpMetricsToArrowEvents(t *testing.T) {
 
 	cfg := config.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(cfg)
-	lg := datagen2.NewMetricsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScopes())
+	lg := datagen.NewMetricsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
 
 	multivariateConf := metrics.MultivariateMetricsConfig{
 		Metrics: make(map[string]string),
@@ -37,7 +37,7 @@ func TestOtlpMetricsToArrowEvents(t *testing.T) {
 	multivariateConf.Metrics["system.memory.usage"] = "state"
 
 	request := lg.Generate(10, 100)
-	multiSchemaRecords, err := metrics.OtlpMetricsToArrowRecords(rr, request, &multivariateConf)
+	multiSchemaRecords, err := metrics.OtlpMetricsToArrowRecords(rr, request, &multivariateConf, cfg)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}

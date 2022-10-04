@@ -23,368 +23,299 @@ import (
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/array"
 
-	colmetrics "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/metrics/v1"
-	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
-	metricspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/metrics/v1"
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/otel/common"
 	"otel-arrow-adapter/pkg/otel/constants"
+
+	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 )
 
-func ArrowRecordsToOtlpMetrics(record arrow.Record) (*colmetrics.ExportMetricsServiceRequest, error) {
-	request := colmetrics.ExportMetricsServiceRequest{
-		ResourceMetrics: []*metricspb.ResourceMetrics{},
-	}
+func ArrowRecordsToOtlpMetrics(record arrow.Record) (pmetric.Metrics, error) {
+	request := pmetric.NewMetrics()
 
-	resourceMetrics := map[string]*metricspb.ResourceMetrics{}
-	scopeMetrics := map[string]*metricspb.ScopeMetrics{}
+	resourceMetrics := map[string]pmetric.ResourceMetrics{}
+	scopeMetrics := map[string]pmetric.ScopeMetrics{}
 
 	numRows := int(record.NumRows())
 	for i := 0; i < numRows; i++ {
 		resource, err := common.NewResourceFrom(record, i)
 		if err != nil {
-			return nil, err
+			return request, err
 		}
 		resId := common.ResourceId(resource)
-		if _, ok := resourceMetrics[resId]; !ok {
-			rs := &metricspb.ResourceMetrics{
-				Resource:     resource,
-				ScopeMetrics: []*metricspb.ScopeMetrics{},
-				SchemaUrl:    "",
-			}
-			resourceMetrics[resId] = rs
+		rm, ok := resourceMetrics[resId]
+		if !ok {
+			rm = request.ResourceMetrics().AppendEmpty()
+			// TODO: SchemaURL
+			resource.CopyTo(rm.Resource())
+			resourceMetrics[resId] = rm
 		}
-		rs := resourceMetrics[resId]
 
 		scope, err := common.NewInstrumentationScopeFrom(record, i, constants.SCOPE_METRICS)
 		if err != nil {
-			return nil, err
+			return request, err
 		}
 		scopeSpanId := resId + "|" + common.ScopeId(scope)
-		if _, ok := scopeMetrics[scopeSpanId]; !ok {
-			ss := &metricspb.ScopeMetrics{
-				Scope:     scope,
-				Metrics:   []*metricspb.Metric{},
-				SchemaUrl: "",
-			}
-			scopeMetrics[scopeSpanId] = ss
-			rs.ScopeMetrics = append(rs.ScopeMetrics, ss)
+		sm, ok := scopeMetrics[scopeSpanId]
+		if !ok {
+			sm = rm.ScopeMetrics().AppendEmpty()
+			scope.CopyTo(sm.Scope())
+			// TODO: SchemaURL
+			scopeMetrics[scopeSpanId] = sm
 		}
-		ss := scopeMetrics[scopeSpanId]
-
-		metrics, err := NewMetrics(record, i)
-		if err != nil {
-			return nil, err
+		if err := SetMetricsFrom(sm.Metrics(), record, i); err != nil {
+			return request, err
 		}
-		ss.Metrics = append(ss.Metrics, metrics...)
 	}
 
-	for _, resMetrics := range resourceMetrics {
-		request.ResourceMetrics = append(request.ResourceMetrics, resMetrics)
-	}
-
-	return &request, nil
+	return request, nil
 }
 
-func NewMetrics(record arrow.Record, row int) ([]*metricspb.Metric, error) {
-	metrics := []*metricspb.Metric{}
-
+func SetMetricsFrom(metrics pmetric.MetricSlice, record arrow.Record, row int) error {
 	timeUnixNano, err := air.U64FromRecord(record, row, constants.TIME_UNIX_NANO)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	startTimeUnixNano, err := air.U64FromRecord(record, row, constants.START_TIME_UNIX_NANO)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	flags, err := air.U32FromRecord(record, row, constants.FLAGS)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	metricsField, arr := air.FieldArray(record, constants.METRICS)
 	if metricsField == nil {
-		return nil, fmt.Errorf("no metrics found")
+		return fmt.Errorf("no metrics found")
 	}
-	if metricsType, ok := metricsField.Type.(*arrow.StructType); ok {
-		metricsArr, ok := arr.(*array.Struct)
-		if !ok {
-			return nil, fmt.Errorf("metrics array is not a struct")
-		}
+	metricsType, ok := metricsField.Type.(*arrow.StructType)
+	if !ok {
+		return fmt.Errorf("metrics type is not a struct")
+	}
+	metricsArr, ok := arr.(*array.Struct)
+	if !ok {
+		return fmt.Errorf("metrics array is not a struct")
+	}
 
-		attrsField, attrsArray := air.FieldArray(record, constants.ATTRIBUTES)
-		var attributes []*v1.KeyValue
-		if attrsField != nil {
-			attrs, err := common.AttributesFrom(attrsField.Type, attrsArray, row)
+	attrsField, attrsArray := air.FieldArray(record, constants.ATTRIBUTES)
+	attributes := pcommon.NewMap()
+	if attrsField != nil {
+		if err := common.CopyAttributesFrom(attributes, attrsField.Type, attrsArray, row); err != nil {
+			return err
+		}
+	}
+	for i := range metricsType.Fields() {
+		field := &metricsType.Fields()[i]
+		metricType := metricMetadata(field, constants.METADATA_METRIC_TYPE)
+		metricArr := metricsArr.Field(i)
+
+		switch metricType {
+		case constants.SUM_METRICS:
+			err := collectSumMetrics(metrics, timeUnixNano, startTimeUnixNano, flags, field, metricArr, row, attributes)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			attributes = attrs
-		}
-		for i, metricField := range metricsType.Fields() {
-			metricType := metricMetadata(&metricField, constants.METADATA_METRIC_TYPE)
-			metricArr := metricsArr.Field(i)
-
-			switch metricType {
-			case constants.SUM_METRICS:
-				sumMetrics, err := collectSumMetrics(timeUnixNano, startTimeUnixNano, flags, metricField, metricArr, row, attributes)
-				if err != nil {
-					return nil, err
-				}
-				metrics = append(metrics, sumMetrics...)
-			case constants.GAUGE_METRICS:
-				gaugeMetrics, err := collectGaugeMetrics(timeUnixNano, startTimeUnixNano, flags, metricField, metricArr, row, attributes)
-				if err != nil {
-					return nil, err
-				}
-				metrics = append(metrics, gaugeMetrics...)
-			default:
-				return nil, fmt.Errorf("unsupported metric type: %s", metricType)
+		case constants.GAUGE_METRICS:
+			err := collectGaugeMetrics(metrics, timeUnixNano, startTimeUnixNano, flags, field, metricArr, row, attributes)
+			if err != nil {
+				return err
 			}
+		default:
+			return fmt.Errorf("unsupported metric type: %s", metricType)
 		}
-
-		return metrics, nil
-
-	} else {
-		return nil, fmt.Errorf("metrics type is not a struct")
 	}
+
+	return nil
 }
 
-func collectSumMetrics(timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, metricField arrow.Field, metricArr arrow.Array, row int, attributes []*v1.KeyValue) ([]*metricspb.Metric, error) {
+func collectSumMetrics(metrics pmetric.MetricSlice, timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, metricField *arrow.Field, metricArr arrow.Array, row int, attributes pcommon.Map) error {
 	metricName := metricField.Name
+
+	if _, is := metricField.Type.(*arrow.StructType); is {
+		return collectMultivariateSumMetrics(
+			metrics, timeUnixNano, startTimeUnixNano, flags,
+			metricField, metricArr, metricName, row, attributes,
+		)
+	}
+
+	m := metrics.AppendEmpty()
+	m.SetName(metricName)
+	m.SetDescription(metricMetadata(metricField, constants.METADATA_METRIC_DESCRIPTION))
+	m.SetUnit(metricMetadata(metricField, constants.METADATA_METRIC_UNIT))
+
+	sum := m.SetEmptySum()
+	// TODO: Add isMonotonic
+	// TODO: Add temporality
+	// sum.SetIsMonotonic(true)
+	// sum.SetAggregationTemporality(pmetric.MetricAggregationTemporalityCumulative)
+
 	switch dt := metricField.Type.(type) {
 	case *arrow.Int64Type:
-		dp, err := collectI64NumberDataPoint(timeUnixNano, startTimeUnixNano, flags, metricArr, row, attributes)
-		if err != nil {
-			return nil, err
-		}
-		return []*metricspb.Metric{{
-			Name:        metricName,
-			Description: metricMetadata(&metricField, constants.METADATA_METRIC_DESCRIPTION),
-			Unit:        metricMetadata(&metricField, constants.METADATA_METRIC_UNIT),
-			Data: &metricspb.Metric_Sum{
-				Sum: &metricspb.Sum{
-					DataPoints:             []*metricspb.NumberDataPoint{dp},
-					AggregationTemporality: 0,     // ToDo Add aggregation temporality
-					IsMonotonic:            false, // ToDo Add is monotonic
-				},
-			},
-		}}, nil
+		return collectI64NumberDataPoint(
+			sum.DataPoints(), timeUnixNano, startTimeUnixNano,
+			flags, metricArr, row, attributes,
+		)
+
 	case *arrow.Float64Type:
-		dp, err := collectF64NumberDataPoint(timeUnixNano, startTimeUnixNano, flags, metricArr, row, attributes)
-		if err != nil {
-			return nil, err
-		}
-		return []*metricspb.Metric{{
-			Name:        metricName,
-			Description: metricMetadata(&metricField, constants.METADATA_METRIC_DESCRIPTION),
-			Unit:        metricMetadata(&metricField, constants.METADATA_METRIC_UNIT),
-			Data: &metricspb.Metric_Sum{
-				Sum: &metricspb.Sum{
-					DataPoints:             []*metricspb.NumberDataPoint{dp},
-					AggregationTemporality: 0,     // ToDo Add aggregation temporality
-					IsMonotonic:            false, // ToDo Add is monotonic
-				},
-			},
-		}}, nil
-	case *arrow.StructType:
-		mm, err := collectMultivariateSumMetrics(timeUnixNano, startTimeUnixNano, flags, &metricField, metricArr, metricName, row, attributes)
-		if err != nil {
-			return nil, err
-		}
-		return mm, nil
+		return collectF64NumberDataPoint(
+			sum.DataPoints(), timeUnixNano, startTimeUnixNano,
+			flags, metricArr, row, attributes,
+		)
+
 	default:
-		return nil, fmt.Errorf("unsupported metric type: %T", dt)
+		return fmt.Errorf("unsupported metric type: %T", dt)
 	}
 }
 
-func collectGaugeMetrics(timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, metricField arrow.Field, metricArr arrow.Array, row int, attributes []*v1.KeyValue) ([]*metricspb.Metric, error) {
+func collectGaugeMetrics(metrics pmetric.MetricSlice, timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, metricField *arrow.Field, metricArr arrow.Array, row int, attributes pcommon.Map) error {
 	metricName := metricField.Name
+
+	if _, is := metricField.Type.(*arrow.StructType); is {
+		return collectMultivariateGaugeMetrics(
+			metrics, timeUnixNano, startTimeUnixNano, flags,
+			metricField, metricArr, metricName, row, attributes,
+		)
+	}
+
+	m := metrics.AppendEmpty()
+	m.SetName(metricName)
+	m.SetDescription(metricMetadata(metricField, constants.METADATA_METRIC_DESCRIPTION))
+	m.SetUnit(metricMetadata(metricField, constants.METADATA_METRIC_UNIT))
+
+	gauge := m.SetEmptyGauge()
+
 	switch dt := metricField.Type.(type) {
 	case *arrow.Int64Type:
-		dp, err := collectI64NumberDataPoint(timeUnixNano, startTimeUnixNano, flags, metricArr, row, attributes)
-		if err != nil {
-			return nil, err
-		}
-		return []*metricspb.Metric{{
-			Name:        metricName,
-			Description: metricMetadata(&metricField, constants.METADATA_METRIC_DESCRIPTION),
-			Unit:        metricMetadata(&metricField, constants.METADATA_METRIC_UNIT),
-			Data: &metricspb.Metric_Gauge{
-				Gauge: &metricspb.Gauge{
-					DataPoints: []*metricspb.NumberDataPoint{dp},
-				},
-			},
-		}}, nil
+		return collectI64NumberDataPoint(
+			gauge.DataPoints(), timeUnixNano, startTimeUnixNano,
+			flags, metricArr, row, attributes,
+		)
+
 	case *arrow.Float64Type:
-		dp, err := collectF64NumberDataPoint(timeUnixNano, startTimeUnixNano, flags, metricArr, row, attributes)
-		if err != nil {
-			return nil, err
-		}
-		return []*metricspb.Metric{{
-			Name:        metricName,
-			Description: metricMetadata(&metricField, constants.METADATA_METRIC_DESCRIPTION),
-			Unit:        metricMetadata(&metricField, constants.METADATA_METRIC_UNIT),
-			Data: &metricspb.Metric_Gauge{
-				Gauge: &metricspb.Gauge{
-					DataPoints: []*metricspb.NumberDataPoint{dp},
-				},
-			},
-		}}, nil
-	case *arrow.StructType:
-		mm, err := collectMultivariateGaugeMetrics(timeUnixNano, startTimeUnixNano, flags, &metricField, metricArr, metricName, row, attributes)
-		if err != nil {
-			return nil, err
-		}
-		return mm, nil
+		return collectF64NumberDataPoint(
+			gauge.DataPoints(), timeUnixNano, startTimeUnixNano,
+			flags, metricArr, row, attributes,
+		)
+
 	default:
-		return nil, fmt.Errorf("unsupported metric type: %T", dt)
+		return fmt.Errorf("unsupported metric type: %T", dt)
 	}
+
 }
 
-func collectI64NumberDataPoint(timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, metricArr arrow.Array, row int, attributes []*v1.KeyValue) (*metricspb.NumberDataPoint, error) {
+func collectI64NumberDataPoint(points pmetric.NumberDataPointSlice, timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, metricArr arrow.Array, row int, attributes pcommon.Map) error {
 	v, err := air.I64FromArray(metricArr, row)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return &metricspb.NumberDataPoint{
-		Attributes:        attributes,
-		StartTimeUnixNano: startTimeUnixNano,
-		TimeUnixNano:      timeUnixNano,
-		Value: &metricspb.NumberDataPoint_AsInt{
-			AsInt: v,
-		},
-		Exemplars: nil, // ToDo Add exemplars
-		Flags:     flags,
-	}, nil
+	p := points.AppendEmpty()
+	attributes.CopyTo(p.Attributes())
+	p.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
+	p.SetTimestamp(pcommon.Timestamp(timeUnixNano))
+	p.SetFlags(pmetric.MetricDataPointFlags(flags))
+	p.SetIntVal(v)
+	// TODO: Exemplars
+	return nil
 }
 
-func collectF64NumberDataPoint(timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, metricArr arrow.Array, row int, attributes []*v1.KeyValue) (*metricspb.NumberDataPoint, error) {
+func collectF64NumberDataPoint(points pmetric.NumberDataPointSlice, timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, metricArr arrow.Array, row int, attributes pcommon.Map) error {
 	v, err := air.F64FromArray(metricArr, row)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return &metricspb.NumberDataPoint{
-		Attributes:        attributes,
-		StartTimeUnixNano: startTimeUnixNano,
-		TimeUnixNano:      timeUnixNano,
-		Value: &metricspb.NumberDataPoint_AsDouble{
-			AsDouble: v,
-		},
-		Exemplars: nil, // ToDo Add exemplars
-		Flags:     flags,
-	}, nil
+	p := points.AppendEmpty()
+	attributes.CopyTo(p.Attributes())
+	p.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
+	p.SetTimestamp(pcommon.Timestamp(timeUnixNano))
+	p.SetFlags(pmetric.MetricDataPointFlags(flags))
+	p.SetDoubleVal(v)
+	// TODO: Exemplars
+	return nil
 }
 
-func collectMultivariateSumMetrics(timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, field *arrow.Field, arr arrow.Array, name string, row int, attributes []*v1.KeyValue) ([]*metricspb.Metric, error) {
-	metricFields := field.Type.(*arrow.StructType).Fields()
-	multivariateArr, ok := arr.(*array.Struct)
-	if !ok {
-		return nil, fmt.Errorf("metrics array is not a struct")
-	}
+func collectMultivariateSumMetrics(metrics pmetric.MetricSlice, timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, inputField *arrow.Field, inputArr arrow.Array, name string, row int, attributes pcommon.Map) error {
+	multiFields := inputField.Type.(*arrow.StructType).Fields()
+	multiStruct := inputArr.(*array.Struct) // Note: type assertion in caller
+	m := metrics.AppendEmpty()
+	m.SetName(name)
+	m.SetDescription(metricMetadata(inputField, constants.METADATA_METRIC_DESCRIPTION))
+	m.SetUnit(metricMetadata(inputField, constants.METADATA_METRIC_UNIT))
 
-	dataPoints := make([]*metricspb.NumberDataPoint, 0, len(metricFields))
-	for i, metricField := range metricFields {
-		metricArr := multivariateArr.Field(i)
+	sum := m.SetEmptySum()
+	// TODO: Add isMonotonic
+	// TODO: Add temporality
+	// sum.SetIsMonotonic(true)
+	// sum.SetAggregationTemporality(pmetric.MetricAggregationTemporalityCumulative)
 
-		extAttributes := make([]*v1.KeyValue, len(attributes)+1)
-		copy(extAttributes, attributes)
-		extAttributes[len(attributes)] = &v1.KeyValue{
-			Key: metricMetadata(&metricField, constants.METADATA_METRIC_MULTIVARIATE_ATTR),
-			Value: &v1.AnyValue{
-				Value: &v1.AnyValue_StringValue{
-					StringValue: metricField.Name,
-				},
-			},
-		}
+	for i := range multiFields {
+		field := &multiFields[i]
+		arr := multiStruct.Field(i)
 
-		switch dt := metricField.Type.(type) {
+		extAttributes := pcommon.NewMap()
+		extAttributes.EnsureCapacity(attributes.Len() + 1)
+		attributes.CopyTo(extAttributes)
+
+		extAttributes.PutString(
+			metricMetadata(field, constants.METADATA_METRIC_MULTIVARIATE_ATTR),
+			field.Name,
+		)
+
+		switch dt := field.Type.(type) {
 		case *arrow.Int64Type:
-			dp, err := collectI64NumberDataPoint(timeUnixNano, startTimeUnixNano, flags, metricArr, row, extAttributes)
-			if err != nil {
-				return nil, err
+			if err := collectI64NumberDataPoint(sum.DataPoints(), timeUnixNano, startTimeUnixNano, flags, arr, row, extAttributes); err != nil {
+				return err
 			}
-			dataPoints = append(dataPoints, dp)
 		case *arrow.Float64Type:
-			dp, err := collectF64NumberDataPoint(timeUnixNano, startTimeUnixNano, flags, metricArr, row, extAttributes)
-			if err != nil {
-				return nil, err
+			if err := collectF64NumberDataPoint(sum.DataPoints(), timeUnixNano, startTimeUnixNano, flags, arr, row, extAttributes); err != nil {
+				return err
 			}
-			dataPoints = append(dataPoints, dp)
 		default:
-			return nil, fmt.Errorf("unsupported metric type: %T", dt)
+			return fmt.Errorf("unsupported metric type: %T", dt)
 		}
 	}
 
-	return []*metricspb.Metric{
-		{
-			Name:        name,
-			Description: metricMetadata(field, constants.METADATA_METRIC_DESCRIPTION),
-			Unit:        metricMetadata(field, constants.METADATA_METRIC_UNIT),
-			Data: &metricspb.Metric_Sum{
-				Sum: &metricspb.Sum{
-					DataPoints:             dataPoints,
-					AggregationTemporality: 0,     // ToDo Add aggregation temporality
-					IsMonotonic:            false, // ToDo Add is monotonic
-				},
-			},
-		},
-	}, nil
+	return nil
 }
 
-func collectMultivariateGaugeMetrics(timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, field *arrow.Field, arr arrow.Array, name string, row int, attributes []*v1.KeyValue) ([]*metricspb.Metric, error) {
-	metricFields := field.Type.(*arrow.StructType).Fields()
-	multivariateArr, ok := arr.(*array.Struct)
-	if !ok {
-		return nil, fmt.Errorf("metrics array is not a struct")
-	}
+func collectMultivariateGaugeMetrics(metrics pmetric.MetricSlice, timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, inputField *arrow.Field, inputArr arrow.Array, name string, row int, attributes pcommon.Map) error {
+	multiFields := inputField.Type.(*arrow.StructType).Fields()
+	multiStruct := inputArr.(*array.Struct) // Note: type assertion in caller
+	m := metrics.AppendEmpty()
+	m.SetName(name)
+	m.SetDescription(metricMetadata(inputField, constants.METADATA_METRIC_DESCRIPTION))
+	m.SetUnit(metricMetadata(inputField, constants.METADATA_METRIC_UNIT))
 
-	dataPoints := make([]*metricspb.NumberDataPoint, 0, len(metricFields))
-	for i, metricField := range metricFields {
-		metricArr := multivariateArr.Field(i)
+	gauge := m.SetEmptyGauge()
 
-		extAttributes := make([]*v1.KeyValue, len(attributes)+1)
-		copy(extAttributes, attributes)
-		extAttributes[len(attributes)] = &v1.KeyValue{
-			Key: metricMetadata(&metricField, constants.METADATA_METRIC_MULTIVARIATE_ATTR),
-			Value: &v1.AnyValue{
-				Value: &v1.AnyValue_StringValue{
-					StringValue: metricField.Name,
-				},
-			},
-		}
+	for i := range multiFields {
+		field := &multiFields[i]
+		arr := multiStruct.Field(i)
 
-		switch dt := metricField.Type.(type) {
+		extAttributes := pcommon.NewMap()
+		extAttributes.EnsureCapacity(attributes.Len() + 1)
+		attributes.CopyTo(extAttributes)
+
+		extAttributes.PutString(
+			metricMetadata(field, constants.METADATA_METRIC_MULTIVARIATE_ATTR),
+			field.Name,
+		)
+
+		switch dt := field.Type.(type) {
 		case *arrow.Int64Type:
-			dp, err := collectI64NumberDataPoint(timeUnixNano, startTimeUnixNano, flags, metricArr, row, extAttributes)
-			if err != nil {
-				return nil, err
+			if err := collectI64NumberDataPoint(gauge.DataPoints(), timeUnixNano, startTimeUnixNano, flags, arr, row, extAttributes); err != nil {
+				return err
 			}
-			dataPoints = append(dataPoints, dp)
 		case *arrow.Float64Type:
-			dp, err := collectF64NumberDataPoint(timeUnixNano, startTimeUnixNano, flags, metricArr, row, extAttributes)
-			if err != nil {
-				return nil, err
+			if err := collectF64NumberDataPoint(gauge.DataPoints(), timeUnixNano, startTimeUnixNano, flags, arr, row, extAttributes); err != nil {
+				return err
 			}
-			dataPoints = append(dataPoints, dp)
 		default:
-			return nil, fmt.Errorf("unsupported metric type: %T", dt)
+			return fmt.Errorf("unsupported metric type: %T", dt)
 		}
 	}
 
-	return []*metricspb.Metric{
-		{
-			Name:        name,
-			Description: metricMetadata(field, constants.METADATA_METRIC_DESCRIPTION),
-			Unit:        metricMetadata(field, constants.METADATA_METRIC_UNIT),
-			Data: &metricspb.Metric_Sum{
-				Sum: &metricspb.Sum{
-					DataPoints:             dataPoints,
-					AggregationTemporality: 0,     // ToDo Add aggregation temporality
-					IsMonotonic:            false, // ToDo Add is monotonic
-				},
-			},
-		},
-	}, nil
+	return nil
 }
 
 func metricMetadata(field *arrow.Field, metadata string) string {

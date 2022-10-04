@@ -6,20 +6,21 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/events/v1"
-	tracepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/benchmark"
 	"otel-arrow-adapter/pkg/benchmark/dataset"
 	"otel-arrow-adapter/pkg/otel/batch_event"
 	"otel-arrow-adapter/pkg/otel/trace"
+
+	"go.opentelemetry.io/collector/pdata/ptrace"
 )
 
 type TraceProfileable struct {
 	tags        []string
 	compression benchmark.CompressionAlgorithm
 	dataset     dataset.TraceDataset
-	traces      []*tracepb.ExportTraceServiceRequest
+	traces      []ptrace.Traces
 	rr          *air.RecordRepository
 	producer    *batch_event.Producer
 	consumer    *batch_event.Consumer

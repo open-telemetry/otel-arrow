@@ -17,13 +17,11 @@ package metrics_test
 import (
 	"testing"
 
-	"github.com/davecgh/go-spew/spew"
-
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/air/config"
-	datagen2 "otel-arrow-adapter/pkg/datagen"
-	"otel-arrow-adapter/pkg/otel/common"
+	"otel-arrow-adapter/pkg/datagen"
 	"otel-arrow-adapter/pkg/otel/metrics"
+	"otel-arrow-adapter/pkg/otel/oteltest"
 )
 
 func TestSystemCpuTimeConversion(t *testing.T) {
@@ -31,7 +29,7 @@ func TestSystemCpuTimeConversion(t *testing.T) {
 
 	cfg := config.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(cfg)
-	lg := datagen2.NewMetricsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScopes())
+	lg := datagen.NewMetricsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
 
 	multivariateConf := metrics.MultivariateMetricsConfig{
 		Metrics: make(map[string]string),
@@ -40,9 +38,8 @@ func TestSystemCpuTimeConversion(t *testing.T) {
 	multivariateConf.Metrics["system.memory.usage"] = "state"
 
 	request := lg.GenerateSystemCpuTime(1, 100)
-	spew.Dump(request)
 
-	multiSchemaRecords, err := metrics.OtlpMetricsToArrowRecords(rr, request, &multivariateConf)
+	multiSchemaRecords, err := metrics.OtlpMetricsToArrowRecords(rr, request, &multivariateConf, cfg)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
@@ -52,8 +49,9 @@ func TestSystemCpuTimeConversion(t *testing.T) {
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
-		spew.Dump(req)
-		common.MetricsRequestAssertEq(request, req)
+		if diff := oteltest.DiffMetrics(request, req); diff != "" {
+			t.Error("Unexpected diff: ", diff)
+		}
 	}
 }
 
@@ -62,7 +60,7 @@ func TestSystemMemoryUsageConversion(t *testing.T) {
 
 	cfg := config.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(cfg)
-	lg := datagen2.NewMetricsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScopes())
+	lg := datagen.NewMetricsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
 
 	multivariateConf := metrics.MultivariateMetricsConfig{
 		Metrics: make(map[string]string),
@@ -71,9 +69,8 @@ func TestSystemMemoryUsageConversion(t *testing.T) {
 	multivariateConf.Metrics["system.memory.usage"] = "state"
 
 	request := lg.GenerateSystemMemoryUsage(1, 100)
-	spew.Dump(request)
 
-	multiSchemaRecords, err := metrics.OtlpMetricsToArrowRecords(rr, request, &multivariateConf)
+	multiSchemaRecords, err := metrics.OtlpMetricsToArrowRecords(rr, request, &multivariateConf, cfg)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
@@ -83,8 +80,9 @@ func TestSystemMemoryUsageConversion(t *testing.T) {
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
-		spew.Dump(req)
-		common.MetricsRequestAssertEq(request, req)
+		if diff := oteltest.DiffMetrics(request, req); diff != "" {
+			t.Error("Unexpected diff: ", diff)
+		}
 	}
 }
 
@@ -93,7 +91,7 @@ func TestSystemCpuLoadAverage1mConversion(t *testing.T) {
 
 	cfg := config.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(cfg)
-	lg := datagen2.NewMetricsGenerator(datagen2.DefaultResourceAttributes(), datagen2.DefaultInstrumentationScopes())
+	lg := datagen.NewMetricsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
 
 	multivariateConf := metrics.MultivariateMetricsConfig{
 		Metrics: make(map[string]string),
@@ -102,9 +100,8 @@ func TestSystemCpuLoadAverage1mConversion(t *testing.T) {
 	multivariateConf.Metrics["system.memory.usage"] = "state"
 
 	request := lg.GenerateSystemCpuLoadAverage1m(1, 100)
-	spew.Dump(request)
 
-	multiSchemaRecords, err := metrics.OtlpMetricsToArrowRecords(rr, request, &multivariateConf)
+	multiSchemaRecords, err := metrics.OtlpMetricsToArrowRecords(rr, request, &multivariateConf, cfg)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
@@ -114,7 +111,8 @@ func TestSystemCpuLoadAverage1mConversion(t *testing.T) {
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
-		spew.Dump(req)
-		common.MetricsRequestAssertEq(request, req)
+		if diff := oteltest.DiffMetrics(request, req); diff != "" {
+			t.Error("Unexpected diff: ", diff)
+		}
 	}
 }

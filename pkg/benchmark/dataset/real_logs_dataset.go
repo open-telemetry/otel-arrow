@@ -21,21 +21,19 @@ import (
 	"log"
 	"os"
 
-	"google.golang.org/protobuf/proto"
-
-	collogs "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/logs/v1"
-	logspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/logs/v1"
+	plog "go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 )
 
-// RealLogsDataset represents a dataset of real logs read from an ExportLogsServiceRequest serialized to a binary file.
+// RealLogsDataset represents a dataset of real logs read from an Logs serialized to a binary file.
 type RealLogsDataset struct {
 	logs []logUnit
 }
 
 type logUnit struct {
-	logRecord *logspb.LogRecord
-	resource  *logspb.ResourceLogs
-	scope     *logspb.ScopeLogs
+	logRecord plog.LogRecord
+	resource  plog.ResourceLogs
+	scope     plog.ScopeLogs
 }
 
 // NewRealLogsDataset creates a new RealLogsDataset from a binary file.
@@ -44,16 +42,21 @@ func NewRealLogsDataset(path string) *RealLogsDataset {
 	if err != nil {
 		log.Fatal("read file:", err)
 	}
-	var otlp collogs.ExportLogsServiceRequest
-	if err := proto.Unmarshal(data, &otlp); err != nil {
+	otlp := plogotlp.NewRequest()
+
+	if err := otlp.UnmarshalProto(data); err != nil {
 		log.Fatal("unmarshal:", err)
 	}
 
 	ds := &RealLogsDataset{logs: []logUnit{}}
+	logs := otlp.Logs()
 
-	for _, rl := range otlp.ResourceLogs {
-		for _, sl := range rl.ScopeLogs {
-			for _, lr := range sl.LogRecords {
+	for ri := 0; ri < logs.ResourceLogs().Len(); ri++ {
+		rl := logs.ResourceLogs().At(ri)
+		for si := 0; si < rl.ScopeLogs().Len(); si++ {
+			sl := rl.ScopeLogs().At(si)
+			for li := 0; li < sl.LogRecords().Len(); li++ {
+				lr := sl.LogRecords().At(li)
 				ds.logs = append(ds.logs, logUnit{logRecord: lr, resource: rl, scope: sl})
 			}
 		}
@@ -68,41 +71,34 @@ func (d *RealLogsDataset) Len() int {
 }
 
 // Logs returns a subset of log records from the original dataset.
-func (d *RealLogsDataset) Logs(offset, size int) []*collogs.ExportLogsServiceRequest {
-	resourceLogs := map[*logspb.ResourceLogs]map[*logspb.ScopeLogs][]*logspb.LogRecord{}
+func (d *RealLogsDataset) Logs(offset, size int) []plog.Logs {
+	resourceLogs := map[plog.ResourceLogs]map[plog.ScopeLogs][]plog.LogRecord{}
 
 	for _, logRecord := range d.logs[offset : offset+size] {
-		if rl, ok := resourceLogs[logRecord.resource]; !ok {
-			resourceLogs[logRecord.resource] = map[*logspb.ScopeLogs][]*logspb.LogRecord{}
-		} else if _, ok := rl[logRecord.scope]; !ok {
-			rl[logRecord.scope] = []*logspb.LogRecord{}
+		if _, ok := resourceLogs[logRecord.resource]; !ok {
+			resourceLogs[logRecord.resource] = map[plog.ScopeLogs][]plog.LogRecord{}
 		}
 
-		logs := resourceLogs[logRecord.resource][logRecord.scope]
-		logs = append(logs, logRecord.logRecord)
+		resourceLogs[logRecord.resource][logRecord.scope] =
+			append(resourceLogs[logRecord.resource][logRecord.scope], logRecord.logRecord)
 	}
 
-	request := collogs.ExportLogsServiceRequest{
-		ResourceLogs: make([]*logspb.ResourceLogs, 0, len(resourceLogs)),
-	}
+	request := plog.NewLogs()
 
 	for rl, sl := range resourceLogs {
+		outRl := request.ResourceLogs().AppendEmpty()
+		rl.Resource().CopyTo(outRl.Resource())
 
-		scopeLogs := make([]*logspb.ScopeLogs, 0, len(sl))
 		for sl, lrs := range sl {
-			scopeLogs = append(scopeLogs, &logspb.ScopeLogs{
-				Scope:      sl.Scope,
-				LogRecords: lrs,
-				SchemaUrl:  sl.SchemaUrl,
-			})
-		}
+			outSl := outRl.ScopeLogs().AppendEmpty()
+			sl.Scope().CopyTo(outSl.Scope())
 
-		request.ResourceLogs = append(request.ResourceLogs, &logspb.ResourceLogs{
-			Resource:  rl.Resource,
-			ScopeLogs: scopeLogs,
-			SchemaUrl: rl.SchemaUrl,
-		})
+			for _, lr := range lrs {
+				outLr := outSl.LogRecords().AppendEmpty()
+				lr.CopyTo(outLr)
+			}
+		}
 	}
 
-	return []*collogs.ExportLogsServiceRequest{&request}
+	return []plog.Logs{request}
 }

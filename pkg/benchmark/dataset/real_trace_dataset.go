@@ -21,28 +21,24 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"otel-arrow-adapter/pkg/otel/common"
 	"sort"
 	"strings"
 
 	"golang.org/x/exp/rand"
-	"google.golang.org/protobuf/proto"
 
-	coltrace "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
-	otelcommon "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/common/v1"
-	oteltrace "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/trace/v1"
+	"go.opentelemetry.io/collector/pdata/pcommon"
+	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 )
 
 // ===== Real trace dataset =====
 
 type RealTraceDataset struct {
-	spans       []SpanAPI
-	s2r         map[*oteltrace.Span]*oteltrace.ResourceSpans
-	s2s         map[*oteltrace.Span]*oteltrace.ScopeSpans
+	spans       []ptrace.Span
+	s2r         map[ptrace.Span]pcommon.Resource
+	s2s         map[ptrace.Span]pcommon.InstrumentationScope
 	sizeInBytes int
-}
-
-type SpanAPI struct {
-	*oteltrace.Span
 }
 
 type spanSorter struct {
@@ -57,23 +53,31 @@ func NewRealTraceDataset(path string, sortOrder []string) *RealTraceDataset {
 	if err != nil {
 		log.Fatal("read file:", err)
 	}
-	var otlp coltrace.ExportTraceServiceRequest
-	if err := proto.Unmarshal(data, &otlp); err != nil {
-		log.Fatal("unmarshal:", err)
+	otlp := ptraceotlp.NewRequest()
+	if err := otlp.UnmarshalProto(data); err != nil {
+		log.Fatalf("in %q unmarshal: %v", path, err)
 	}
 
 	ds := &RealTraceDataset{
-		s2r:         map[*oteltrace.Span]*oteltrace.ResourceSpans{},
-		s2s:         map[*oteltrace.Span]*oteltrace.ScopeSpans{},
+		s2r:         map[ptrace.Span]pcommon.Resource{},
+		s2s:         map[ptrace.Span]pcommon.InstrumentationScope{},
 		sizeInBytes: len(data),
 	}
+	traces := otlp.Traces()
 
-	for _, rs := range otlp.ResourceSpans {
-		for _, ss := range rs.ScopeSpans {
-			for _, s := range ss.Spans {
-				ds.spans = append(ds.spans, SpanAPI{Span: s})
-				ds.s2r[s] = rs
-				ds.s2s[s] = ss
+	for i := 0; i < traces.ResourceSpans().Len(); i++ {
+		rs := traces.ResourceSpans().At(i)
+
+		for j := 0; j < rs.ScopeSpans().Len(); j++ {
+
+			ss := rs.ScopeSpans().At(j)
+
+			for k := 0; k < ss.Spans().Len(); k++ {
+				s := ss.Spans().At(k)
+
+				ds.spans = append(ds.spans, s)
+				ds.s2r[s] = rs.Resource()
+				ds.s2s[s] = ss.Scope()
 			}
 		}
 	}
@@ -98,79 +102,83 @@ func (d *RealTraceDataset) Len() int {
 	return len(d.spans)
 }
 
-func (d *RealTraceDataset) Traces(offset, size int) []*coltrace.ExportTraceServiceRequest {
-	var otlp coltrace.ExportTraceServiceRequest
-
-	ssm := map[*oteltrace.ScopeSpans]*oteltrace.ScopeSpans{}
-	rsm := map[*oteltrace.ResourceSpans]*oteltrace.ResourceSpans{}
+func (d *RealTraceDataset) Traces(offset, size int) []ptrace.Traces {
+	otlp := ptrace.NewTraces()
+	ssm := map[string]ptrace.ScopeSpans{}
+	rsm := map[string]ptrace.ResourceSpans{}
 
 	for _, span := range d.spans[offset : offset+size] {
-		inscope := d.s2s[span.Span]
-		outscope := ssm[inscope]
+		inres := d.s2r[span]
+		inscope := d.s2s[span]
 
-		if outscope == nil {
-			outscope = &oteltrace.ScopeSpans{}
-			ssm[inscope] = outscope
+		inscopeID := ResourceAndScopeId(inres, inscope)
+		outscope, ok := ssm[inscopeID]
 
-			inres := d.s2r[span.Span]
-			outres := rsm[inres]
+		if !ok {
+			inres := d.s2r[span]
+			inresID := common.ResourceId(inres)
+			outres, ok := rsm[inresID]
 
-			if outres == nil {
-				outres = &oteltrace.ResourceSpans{}
-				otlp.ResourceSpans = append(otlp.ResourceSpans, outres)
-				outres.Resource = inres.Resource
+			if !ok {
+				outres = otlp.ResourceSpans().AppendEmpty()
+				inres.CopyTo(outres.Resource())
+				rsm[inresID] = outres
 			}
 
-			outres.ScopeSpans = append(outres.ScopeSpans, outscope)
-			outscope.Scope = inscope.Scope
+			outscope = outres.ScopeSpans().AppendEmpty()
+			inscope.CopyTo(outscope.Scope())
+			ssm[inscopeID] = outscope
 		}
 
-		outscope.Spans = append(outscope.Spans, span.Span)
+		span.CopyTo(outscope.Spans().AppendEmpty())
 	}
 
-	return []*coltrace.ExportTraceServiceRequest{&otlp}
+	return []ptrace.Traces{otlp}
 }
 
-func v2s(v *otelcommon.AnyValue) string {
-	switch t := v.Value.(type) {
-	case *otelcommon.AnyValue_StringValue:
-		return t.StringValue
-	case *otelcommon.AnyValue_BoolValue:
-		return fmt.Sprint(t.BoolValue)
-	case *otelcommon.AnyValue_IntValue:
-		return fmt.Sprint(t.IntValue)
-	case *otelcommon.AnyValue_DoubleValue:
-		return fmt.Sprint(t.DoubleValue)
-	case *otelcommon.AnyValue_ArrayValue:
-		return fmt.Sprint(t.ArrayValue)
-	case *otelcommon.AnyValue_KvlistValue:
-		return fmt.Sprint(t.KvlistValue)
-	case *otelcommon.AnyValue_BytesValue:
-		return string(t.BytesValue)
+func v2s(v pcommon.Value) string {
+	switch v.Type() {
+	case pcommon.ValueTypeString:
+		return v.StringVal()
+	case pcommon.ValueTypeBool:
+		return fmt.Sprint(v.BoolVal())
+	case pcommon.ValueTypeInt:
+		return fmt.Sprint(v.IntVal())
+	case pcommon.ValueTypeDouble:
+		return fmt.Sprint(v.DoubleVal())
+	default:
+		panic(fmt.Sprint("unsupported sorting value:", v.Type()))
 	}
-	panic("unknown type")
 }
 
-func (d *RealTraceDataset) Get(field string, span SpanAPI) string {
+func (d *RealTraceDataset) getSortkey(field string, span ptrace.Span) (result string) {
 	switch field {
 	case "trace_id":
-		return string(span.TraceId)
+		return span.TraceID().HexString()
 	case "span_id":
-		return string(span.SpanId)
+		return span.SpanID().HexString()
 	default:
 		// scan attributes next
 	}
-	for _, attr := range span.Attributes {
-		if attr.Key == field {
-			return v2s(attr.Value)
+
+	span.Attributes().Range(func(key string, value pcommon.Value) bool {
+		if key == field {
+			result = v2s(value)
+			return false
 		}
+		return true
+	})
+	if result != "" {
+		return result
 	}
-	for _, attr := range d.s2r[span.Span].Resource.Attributes {
-		if attr.Key == field {
-			return v2s(attr.Value)
+	d.s2r[span].Attributes().Range(func(key string, value pcommon.Value) bool {
+		if key == field {
+			result = v2s(value)
+			return false
 		}
-	}
-	panic(fmt.Sprintf("missing Get lookup: %v %v", field, span))
+		return true
+	})
+	panic(fmt.Sprintf("missing getSortkey lookup: %v %v", field, span))
 }
 
 func (ss spanSorter) Len() int {
@@ -182,5 +190,5 @@ func (ss spanSorter) Swap(i, j int) {
 }
 
 func (ss spanSorter) Less(i, j int) bool {
-	return strings.Compare(ss.Get(ss.field, ss.spans[i]), ss.Get(ss.field, ss.spans[j])) < 0
+	return strings.Compare(ss.getSortkey(ss.field, ss.spans[i]), ss.getSortkey(ss.field, ss.spans[j])) < 0
 }

@@ -23,9 +23,9 @@ import (
 	"os"
 	"path"
 
-	"google.golang.org/protobuf/proto"
-
 	"otel-arrow-adapter/pkg/datagen"
+
+	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 )
 
 var help = flag.Bool("help", false, "Show help")
@@ -48,10 +48,10 @@ func main() {
 
 	// Generate the dataset.
 	generator := datagen.NewMetricsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
-	request := generator.Generate(batchSize, 100)
+	request := pmetricotlp.NewRequestFromMetrics(generator.Generate(batchSize, 100))
 
 	// Marshal the request to bytes.
-	msg, err := proto.Marshal(request)
+	msg, err := request.MarshalProto()
 	if err != nil {
 		log.Fatal("marshaling error: ", err)
 	}

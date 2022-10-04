@@ -20,17 +20,17 @@ import (
 
 	"github.com/apache/arrow/go/v9/arrow"
 
-	coltracepb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/trace/v1"
-	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/trace/v1"
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/air/rfield"
 	"otel-arrow-adapter/pkg/otel/common"
 	"otel-arrow-adapter/pkg/otel/constants"
+
+	"go.opentelemetry.io/collector/pdata/ptrace"
 )
 
 // OtlpTraceToArrowRecords converts an OTLP trace to one or more Arrow records.
-func OtlpTraceToArrowRecords(rr *air.RecordRepository, request *coltracepb.ExportTraceServiceRequest, cfg *config.Config) ([]arrow.Record, error) {
+func OtlpTraceToArrowRecords(rr *air.RecordRepository, request ptrace.Traces, cfg *config.Config) ([]arrow.Record, error) {
 	switch cfg.TraceEncoding {
 	case config.Flat:
 		AddFlattenTraces(rr, request, cfg)
@@ -39,7 +39,7 @@ func OtlpTraceToArrowRecords(rr *air.RecordRepository, request *coltracepb.Expor
 	case config.Hybrid:
 		AddHybridTraces(rr, request, cfg)
 	default:
-		panic(fmt.Sprintf("unknown trace encoding: %s", cfg.TraceEncoding))
+		panic(fmt.Sprintf("unknown trace encoding: %v", cfg.TraceEncoding))
 	}
 
 	records, err := rr.BuildRecords()
@@ -50,64 +50,72 @@ func OtlpTraceToArrowRecords(rr *air.RecordRepository, request *coltracepb.Expor
 	return records, nil
 }
 
-func AddFlattenTraces(rr *air.RecordRepository, request *coltracepb.ExportTraceServiceRequest, cfg *config.Config) {
-	for _, resourceSpans := range request.ResourceSpans {
-		for _, scopeSpans := range resourceSpans.ScopeSpans {
-			for _, span := range scopeSpans.Spans {
+func AddFlattenTraces(rr *air.RecordRepository, request ptrace.Traces, cfg *config.Config) {
+	for i := 0; i < request.ResourceSpans().Len(); i++ {
+		resourceSpans := request.ResourceSpans().At(i)
+
+		for j := 0; j < resourceSpans.ScopeSpans().Len(); j++ {
+			scopeSpans := resourceSpans.ScopeSpans().At(j)
+
+			for k := 0; k < scopeSpans.Spans().Len(); k++ {
+				span := scopeSpans.Spans().At(k)
+
 				record := air.NewRecord()
 
-				if span.StartTimeUnixNano > 0 {
-					record.U64Field(constants.START_TIME_UNIX_NANO, span.StartTimeUnixNano)
+				if ts := span.StartTimestamp(); ts > 0 {
+					record.U64Field(constants.START_TIME_UNIX_NANO, uint64(ts))
 				}
-				if span.EndTimeUnixNano > 0 {
-					record.U64Field(constants.END_TIME_UNIX_NANO, span.EndTimeUnixNano)
+				if ts := span.EndTimestamp(); ts > 0 {
+					record.U64Field(constants.END_TIME_UNIX_NANO, uint64(ts))
 				}
-				common.AddResource(record, resourceSpans.Resource, cfg)
-				common.AddScope(record, constants.SCOPE_SPANS, scopeSpans.Scope, cfg)
+				common.AddResource(record, resourceSpans.Resource(), cfg)
+				common.AddScope(record, constants.SCOPE_SPANS, scopeSpans.Scope(), cfg)
 
-				if span.TraceId != nil && len(span.TraceId) > 0 {
-					record.BinaryField(constants.TRACE_ID, span.TraceId)
+				if tid := span.TraceID(); !tid.IsEmpty() {
+					record.BinaryField(constants.TRACE_ID, tid[:])
 				}
-				if span.SpanId != nil && len(span.SpanId) > 0 {
-					record.BinaryField(constants.SPAN_ID, span.SpanId)
+
+				if sid := span.SpanID(); !sid.IsEmpty() {
+					record.BinaryField(constants.SPAN_ID, sid[:])
 				}
-				if len(span.TraceState) > 0 {
-					record.StringField(constants.TRACE_STATE, span.TraceState)
+
+				if len(span.TraceState()) > 0 {
+					record.StringField(constants.TRACE_STATE, string(span.TraceState()))
 				}
-				if span.ParentSpanId != nil && len(span.ParentSpanId) > 0 {
-					record.BinaryField(constants.PARENT_SPAN_ID, span.SpanId)
+				if psid := span.ParentSpanID(); !psid.IsEmpty() {
+					record.BinaryField(constants.PARENT_SPAN_ID, psid[:])
 				}
-				if len(span.Name) > 0 {
-					record.StringField(constants.NAME, span.Name)
+				if len(span.Name()) > 0 {
+					record.StringField(constants.NAME, span.Name())
 				}
-				record.I32Field(constants.KIND, int32(span.Kind))
-				attributes := common.NewAttributes(span.Attributes, cfg)
+				record.I32Field(constants.KIND, int32(span.Kind()))
+				attributes := common.NewAttributes(span.Attributes(), cfg)
 				if attributes != nil {
 					record.AddField(attributes)
 				}
 
-				if span.DroppedAttributesCount > 0 {
-					record.U32Field(constants.DROPPED_ATTRIBUTES_COUNT, uint32(span.DroppedAttributesCount))
+				if dc := span.DroppedAttributesCount(); dc > 0 {
+					record.U32Field(constants.DROPPED_ATTRIBUTES_COUNT, uint32(dc))
 				}
 
 				// Events
-				AddEvents(record, span.Events, cfg)
-				if span.DroppedEventsCount > 0 {
-					record.U32Field(constants.DROPPED_EVENTS_COUNT, uint32(span.DroppedEventsCount))
+				AddEvents(record, span.Events(), cfg)
+				if dc := span.DroppedEventsCount(); dc > 0 {
+					record.U32Field(constants.DROPPED_EVENTS_COUNT, uint32(dc))
 				}
 
 				// Links
-				AddLinksAsListOfStructs(record, span.Links, cfg)
-				if span.DroppedLinksCount > 0 {
-					record.U32Field(constants.DROPPED_LINKS_COUNT, uint32(span.DroppedLinksCount))
+				AddLinksAsListOfStructs(record, span.Links(), cfg)
+				if dc := span.DroppedLinksCount(); dc > 0 {
+					record.U32Field(constants.DROPPED_LINKS_COUNT, uint32(dc))
 				}
 
 				// Status
-				if span.Status != nil {
-					record.I32Field(constants.STATUS, int32(span.Status.Code))
-					if len(span.Status.Message) > 0 {
-						record.StringField(constants.STATUS_MESSAGE, span.Status.Message)
-					}
+				if span.Status().Code() != 0 {
+					record.I32Field(constants.STATUS, int32(span.Status().Code()))
+				}
+				if msg := span.Status().Message(); msg != "" {
+					record.StringField(constants.STATUS_MESSAGE, span.Status().Message())
 				}
 
 				rr.AddRecord(record)
@@ -116,89 +124,93 @@ func AddFlattenTraces(rr *air.RecordRepository, request *coltracepb.ExportTraceS
 	}
 }
 
-func AddHierarchicalTraces(rr *air.RecordRepository, request *coltracepb.ExportTraceServiceRequest, cfg *config.Config) {
+func AddHierarchicalTraces(rr *air.RecordRepository, request ptrace.Traces, cfg *config.Config) {
 	record := air.NewRecord()
-	resSpansValues := make([]rfield.Value, 0, len(request.ResourceSpans))
+	resSpansValues := make([]rfield.Value, 0, request.ResourceSpans().Len())
 
-	for _, resourceSpans := range request.ResourceSpans {
+	for i := 0; i < request.ResourceSpans().Len(); i++ {
+		resourceSpans := request.ResourceSpans().At(i)
 		resFields := make([]*rfield.Field, 0, 3)
 
 		// Resource field
-		resFields = append(resFields, common.ResourceField(resourceSpans.Resource, cfg))
+		resFields = append(resFields, common.ResourceField(resourceSpans.Resource(), cfg))
 
 		// Schema URL
-		if len(resourceSpans.SchemaUrl) > 0 {
-			resFields = append(resFields, rfield.NewStringField(constants.SCHEMA_URL, resourceSpans.SchemaUrl))
+		if resourceSpans.SchemaUrl() != "" {
+			resFields = append(resFields, rfield.NewStringField(constants.SCHEMA_URL, resourceSpans.SchemaUrl()))
 		}
 
 		// Scope spans
-		scopeSpansValues := make([]rfield.Value, 0, len(resourceSpans.ScopeSpans))
-		for _, scopeSpans := range resourceSpans.ScopeSpans {
+		scopeSpansValues := make([]rfield.Value, 0, resourceSpans.ScopeSpans().Len())
+		for j := 0; j < resourceSpans.ScopeSpans().Len(); j++ {
+			scopeSpans := resourceSpans.ScopeSpans().At(j)
+
 			fields := make([]*rfield.Field, 0, 3)
-			fields = append(fields, common.ScopeField(constants.SCOPE_SPANS, scopeSpans.Scope, cfg))
-			if len(scopeSpans.SchemaUrl) > 0 {
-				fields = append(fields, rfield.NewStringField(constants.SCHEMA_URL, scopeSpans.SchemaUrl))
+			fields = append(fields, common.ScopeField(constants.SCOPE_SPANS, scopeSpans.Scope(), cfg))
+			if scopeSpans.SchemaUrl() != "" {
+				fields = append(fields, rfield.NewStringField(constants.SCHEMA_URL, scopeSpans.SchemaUrl()))
 			}
 
-			spanValues := make([]rfield.Value, 0, len(scopeSpans.Spans))
-			for _, span := range scopeSpans.Spans {
-				fields := make([]*rfield.Field, 0, 10)
-				if span.StartTimeUnixNano > 0 {
-					fields = append(fields, rfield.NewU64Field(constants.START_TIME_UNIX_NANO, span.StartTimeUnixNano))
-				}
-				if span.EndTimeUnixNano > 0 {
-					fields = append(fields, rfield.NewU64Field(constants.END_TIME_UNIX_NANO, span.EndTimeUnixNano))
-				}
+			spanValues := make([]rfield.Value, 0, scopeSpans.Spans().Len())
+			for k := 0; k < scopeSpans.Spans().Len(); k++ {
+				span := scopeSpans.Spans().At(k)
 
-				if span.TraceId != nil && len(span.TraceId) > 0 {
-					fields = append(fields, rfield.NewBinaryField(constants.TRACE_ID, span.TraceId))
+				fields := make([]*rfield.Field, 0, 10)
+				if ts := span.StartTimestamp(); ts > 0 {
+					fields = append(fields, rfield.NewU64Field(constants.START_TIME_UNIX_NANO, uint64(ts)))
 				}
-				if span.SpanId != nil && len(span.SpanId) > 0 {
-					fields = append(fields, rfield.NewBinaryField(constants.SPAN_ID, span.SpanId))
+				if ts := span.EndTimestamp(); ts > 0 {
+					fields = append(fields, rfield.NewU64Field(constants.END_TIME_UNIX_NANO, uint64(ts)))
 				}
-				if len(span.TraceState) > 0 {
-					fields = append(fields, rfield.NewStringField(constants.TRACE_STATE, span.TraceState))
+				if tid := span.TraceID(); !tid.IsEmpty() {
+					fields = append(fields, rfield.NewBinaryField(constants.TRACE_ID, tid[:]))
 				}
-				if span.ParentSpanId != nil && len(span.ParentSpanId) > 0 {
-					fields = append(fields, rfield.NewBinaryField(constants.PARENT_SPAN_ID, span.SpanId))
+				if sid := span.SpanID(); !sid.IsEmpty() {
+					fields = append(fields, rfield.NewBinaryField(constants.SPAN_ID, sid[:]))
 				}
-				if len(span.Name) > 0 {
-					fields = append(fields, rfield.NewStringField(constants.NAME, span.Name))
+				if span.TraceState() != "" {
+					fields = append(fields, rfield.NewStringField(constants.TRACE_STATE, string(span.TraceState())))
 				}
-				fields = append(fields, rfield.NewI32Field(constants.KIND, int32(span.Kind)))
-				attributes := common.NewAttributes(span.Attributes, cfg)
+				if psid := span.ParentSpanID(); !psid.IsEmpty() {
+					fields = append(fields, rfield.NewBinaryField(constants.PARENT_SPAN_ID, psid[:]))
+				}
+				if span.Name() != "" {
+					fields = append(fields, rfield.NewStringField(constants.NAME, span.Name()))
+				}
+				fields = append(fields, rfield.NewI32Field(constants.KIND, int32(span.Kind())))
+				attributes := common.NewAttributes(span.Attributes(), cfg)
 				if attributes != nil {
 					fields = append(fields, attributes)
 				}
 
-				if span.DroppedAttributesCount > 0 {
-					fields = append(fields, rfield.NewU32Field(constants.DROPPED_ATTRIBUTES_COUNT, uint32(span.DroppedAttributesCount)))
+				if dc := span.DroppedAttributesCount(); dc > 0 {
+					fields = append(fields, rfield.NewU32Field(constants.DROPPED_ATTRIBUTES_COUNT, uint32(dc)))
 				}
 
 				// Events
-				eventsField := EventsField(span.Events, cfg)
+				eventsField := EventsField(span.Events(), cfg)
 				if eventsField != nil {
 					fields = append(fields, eventsField)
 				}
-				if span.DroppedEventsCount > 0 {
-					fields = append(fields, rfield.NewU32Field(constants.DROPPED_EVENTS_COUNT, uint32(span.DroppedEventsCount)))
+				if dc := span.DroppedEventsCount(); dc > 0 {
+					fields = append(fields, rfield.NewU32Field(constants.DROPPED_EVENTS_COUNT, uint32(dc)))
 				}
 
 				// Links
-				linksField := LinksAsListOfStructsField(span.Links, cfg)
+				linksField := LinksAsListOfStructsField(span.Links(), cfg)
 				if linksField != nil {
 					fields = append(fields, linksField)
 				}
-				if span.DroppedLinksCount > 0 {
-					fields = append(fields, rfield.NewU32Field(constants.DROPPED_LINKS_COUNT, uint32(span.DroppedLinksCount)))
+				if dc := span.DroppedLinksCount(); dc > 0 {
+					fields = append(fields, rfield.NewU32Field(constants.DROPPED_LINKS_COUNT, uint32(dc)))
 				}
 
 				// Status
-				if span.Status != nil {
-					fields = append(fields, rfield.NewI32Field(constants.STATUS, int32(span.Status.Code)))
-					if len(span.Status.Message) > 0 {
-						fields = append(fields, rfield.NewStringField(constants.STATUS_MESSAGE, span.Status.Message))
-					}
+				if span.Status().Code() != 0 {
+					fields = append(fields, rfield.NewI32Field(constants.STATUS, int32(span.Status().Code())))
+				}
+				if msg := span.Status().Message(); msg != "" {
+					fields = append(fields, rfield.NewStringField(constants.STATUS_MESSAGE, msg))
 				}
 
 				spanValues = append(spanValues, rfield.NewStruct(fields))
@@ -215,88 +227,92 @@ func AddHierarchicalTraces(rr *air.RecordRepository, request *coltracepb.ExportT
 	rr.AddRecord(record)
 }
 
-func AddHybridTraces(rr *air.RecordRepository, request *coltracepb.ExportTraceServiceRequest, cfg *config.Config) {
+func AddHybridTraces(rr *air.RecordRepository, request ptrace.Traces, cfg *config.Config) {
 	similarResSpans := make(map[string][]rfield.Value)
 
-	for _, resourceSpans := range request.ResourceSpans {
+	for i := 0; i < request.ResourceSpans().Len(); i++ {
+		resourceSpans := request.ResourceSpans().At(i)
 		resFields := make([]*rfield.Field, 0, 3)
 
 		// Resource field
-		resFields = append(resFields, common.ResourceField(resourceSpans.Resource, cfg))
+		resFields = append(resFields, common.ResourceField(resourceSpans.Resource(), cfg))
 
 		// Schema URL
-		if len(resourceSpans.SchemaUrl) > 0 {
-			resFields = append(resFields, rfield.NewStringField(constants.SCHEMA_URL, resourceSpans.SchemaUrl))
+		if resourceSpans.SchemaUrl() != "" {
+			resFields = append(resFields, rfield.NewStringField(constants.SCHEMA_URL, resourceSpans.SchemaUrl()))
 		}
 
 		// Scope spans
 		similarScopeSpans := make(map[string][]rfield.Value)
-		for _, scopeSpans := range resourceSpans.ScopeSpans {
+		for j := 0; j < resourceSpans.ScopeSpans().Len(); j++ {
+			scopeSpans := resourceSpans.ScopeSpans().At(j)
 			fields := make([]*rfield.Field, 0, 3)
-			fields = append(fields, common.ScopeField(constants.SCOPE_SPANS, scopeSpans.Scope, cfg))
-			if len(scopeSpans.SchemaUrl) > 0 {
-				fields = append(fields, rfield.NewStringField(constants.SCHEMA_URL, scopeSpans.SchemaUrl))
+			fields = append(fields, common.ScopeField(constants.SCOPE_SPANS, scopeSpans.Scope(), cfg))
+			if scopeSpans.SchemaUrl() != "" {
+				fields = append(fields, rfield.NewStringField(constants.SCHEMA_URL, scopeSpans.SchemaUrl()))
 			}
 
 			similarSpans := make(map[string][]rfield.Value)
-			for _, span := range scopeSpans.Spans {
+			for k := 0; k < scopeSpans.Spans().Len(); k++ {
+				span := scopeSpans.Spans().At(k)
+
 				fields := make([]*rfield.Field, 0, 10)
-				if span.StartTimeUnixNano > 0 {
-					fields = append(fields, rfield.NewU64Field(constants.START_TIME_UNIX_NANO, span.StartTimeUnixNano))
+				if ts := span.StartTimestamp(); ts > 0 {
+					fields = append(fields, rfield.NewU64Field(constants.START_TIME_UNIX_NANO, uint64(ts)))
 				}
-				if span.EndTimeUnixNano > 0 {
-					fields = append(fields, rfield.NewU64Field(constants.END_TIME_UNIX_NANO, span.EndTimeUnixNano))
+				if ts := span.EndTimestamp(); ts > 0 {
+					fields = append(fields, rfield.NewU64Field(constants.END_TIME_UNIX_NANO, uint64(ts)))
 				}
 
-				if span.TraceId != nil && len(span.TraceId) > 0 {
-					fields = append(fields, rfield.NewBinaryField(constants.TRACE_ID, span.TraceId))
+				if tid := span.TraceID(); !tid.IsEmpty() {
+					fields = append(fields, rfield.NewBinaryField(constants.TRACE_ID, tid[:]))
 				}
-				if span.SpanId != nil && len(span.SpanId) > 0 {
-					fields = append(fields, rfield.NewBinaryField(constants.SPAN_ID, span.SpanId))
+				if sid := span.SpanID(); !sid.IsEmpty() {
+					fields = append(fields, rfield.NewBinaryField(constants.SPAN_ID, sid[:]))
 				}
-				if len(span.TraceState) > 0 {
-					fields = append(fields, rfield.NewStringField(constants.TRACE_STATE, span.TraceState))
+				if span.TraceState() != "" {
+					fields = append(fields, rfield.NewStringField(constants.TRACE_STATE, string(span.TraceState())))
 				}
-				if span.ParentSpanId != nil && len(span.ParentSpanId) > 0 {
-					fields = append(fields, rfield.NewBinaryField(constants.PARENT_SPAN_ID, span.SpanId))
+				if psid := span.ParentSpanID(); !psid.IsEmpty() {
+					fields = append(fields, rfield.NewBinaryField(constants.PARENT_SPAN_ID, psid[:]))
 				}
-				if len(span.Name) > 0 {
-					fields = append(fields, rfield.NewStringField(constants.NAME, span.Name))
+				if span.Name() != "" {
+					fields = append(fields, rfield.NewStringField(constants.NAME, span.Name()))
 				}
-				fields = append(fields, rfield.NewI32Field(constants.KIND, int32(span.Kind)))
-				attributes := common.NewAttributes(span.Attributes, cfg)
+				fields = append(fields, rfield.NewI32Field(constants.KIND, int32(span.Kind())))
+				attributes := common.NewAttributes(span.Attributes(), cfg)
 				if attributes != nil {
 					fields = append(fields, attributes)
 				}
 
-				if span.DroppedAttributesCount > 0 {
-					fields = append(fields, rfield.NewU32Field(constants.DROPPED_ATTRIBUTES_COUNT, uint32(span.DroppedAttributesCount)))
+				if dc := span.DroppedAttributesCount(); dc > 0 {
+					fields = append(fields, rfield.NewU32Field(constants.DROPPED_ATTRIBUTES_COUNT, uint32(dc)))
 				}
 
 				// Events
-				eventsField := EventsField(span.Events, cfg)
+				eventsField := EventsField(span.Events(), cfg)
 				if eventsField != nil {
 					fields = append(fields, eventsField)
 				}
-				if span.DroppedEventsCount > 0 {
-					fields = append(fields, rfield.NewU32Field(constants.DROPPED_EVENTS_COUNT, uint32(span.DroppedEventsCount)))
+				if dc := span.DroppedEventsCount(); dc > 0 {
+					fields = append(fields, rfield.NewU32Field(constants.DROPPED_EVENTS_COUNT, uint32(dc)))
 				}
 
 				// Links
-				linksField := LinksAsListOfStructsField(span.Links, cfg)
+				linksField := LinksAsListOfStructsField(span.Links(), cfg)
 				if linksField != nil {
 					fields = append(fields, linksField)
 				}
-				if span.DroppedLinksCount > 0 {
-					fields = append(fields, rfield.NewU32Field(constants.DROPPED_LINKS_COUNT, uint32(span.DroppedLinksCount)))
+				if dc := span.DroppedLinksCount(); dc > 0 {
+					fields = append(fields, rfield.NewU32Field(constants.DROPPED_LINKS_COUNT, uint32(dc)))
 				}
 
 				// Status
-				if span.Status != nil {
-					fields = append(fields, rfield.NewI32Field(constants.STATUS, int32(span.Status.Code)))
-					if len(span.Status.Message) > 0 {
-						fields = append(fields, rfield.NewStringField(constants.STATUS_MESSAGE, span.Status.Message))
-					}
+				if span.Status().Code() != 0 {
+					fields = append(fields, rfield.NewI32Field(constants.STATUS, int32(span.Status().Code())))
+				}
+				if span.Status().Message() != "" {
+					fields = append(fields, rfield.NewStringField(constants.STATUS_MESSAGE, span.Status().Message()))
 				}
 
 				spanValue := rfield.NewStruct(fields)
@@ -332,35 +348,36 @@ func AddHybridTraces(rr *air.RecordRepository, request *coltracepb.ExportTraceSe
 	}
 }
 
-func AddEvents(record *air.Record, events []*v1.Span_Event, cfg *config.Config) {
+func AddEvents(record *air.Record, events ptrace.SpanEventSlice, cfg *config.Config) {
 	eventsField := EventsField(events, cfg)
 	if eventsField != nil {
 		record.AddField(eventsField)
 	}
 }
 
-func EventsField(events []*v1.Span_Event, cfg *config.Config) *rfield.Field {
-	if events == nil {
+func EventsField(events ptrace.SpanEventSlice, cfg *config.Config) *rfield.Field {
+	if events.Len() == 0 {
 		return nil
 	}
 
-	convertedEvents := make([]rfield.Value, 0, len(events))
+	convertedEvents := make([]rfield.Value, 0, events.Len())
 
-	for _, event := range events {
+	for i := 0; i < events.Len(); i++ {
+		event := events.At(i)
 		fields := make([]*rfield.Field, 0, 4)
 
-		if event.TimeUnixNano > 0 {
-			fields = append(fields, rfield.NewU64Field(constants.TIME_UNIX_NANO, event.TimeUnixNano))
+		if ts := event.Timestamp(); ts > 0 {
+			fields = append(fields, rfield.NewU64Field(constants.TIME_UNIX_NANO, uint64(ts)))
 		}
-		if len(event.Name) > 0 {
-			fields = append(fields, rfield.NewStringField(constants.NAME, event.Name))
+		if event.Name() != "" {
+			fields = append(fields, rfield.NewStringField(constants.NAME, event.Name()))
 		}
-		attributes := common.NewAttributes(event.Attributes, cfg)
+		attributes := common.NewAttributes(event.Attributes(), cfg)
 		if attributes != nil {
 			fields = append(fields, attributes)
 		}
-		if event.DroppedAttributesCount > 0 {
-			fields = append(fields, rfield.NewU32Field(constants.DROPPED_ATTRIBUTES_COUNT, uint32(event.DroppedAttributesCount)))
+		if dc := event.DroppedAttributesCount(); dc > 0 {
+			fields = append(fields, rfield.NewU32Field(constants.DROPPED_ATTRIBUTES_COUNT, uint32(dc)))
 		}
 		convertedEvents = append(convertedEvents, &rfield.Struct{
 			Fields: fields,
@@ -371,39 +388,39 @@ func EventsField(events []*v1.Span_Event, cfg *config.Config) *rfield.Field {
 	})
 }
 
-func AddLinksAsListOfStructs(record *air.Record, links []*v1.Span_Link, cfg *config.Config) {
+func AddLinksAsListOfStructs(record *air.Record, links ptrace.SpanLinkSlice, cfg *config.Config) {
 	linksField := LinksAsListOfStructsField(links, cfg)
 	if linksField != nil {
 		record.AddField(linksField)
 	}
 }
 
-func LinksAsListOfStructsField(links []*v1.Span_Link, cfg *config.Config) *rfield.Field {
-	if links == nil {
+func LinksAsListOfStructsField(links ptrace.SpanLinkSlice, cfg *config.Config) *rfield.Field {
+	if links.Len() == 0 {
 		return nil
 	}
 
-	convertedLinks := make([]rfield.Value, 0, len(links))
+	convertedLinks := make([]rfield.Value, 0, links.Len())
 
-	for _, link := range links {
+	for i := 0; i < links.Len(); i++ {
+		link := links.At(i)
 		fields := make([]*rfield.Field, 0, 4)
 
-		if link.TraceId != nil && len(link.TraceId) > 0 {
-			fields = append(fields, rfield.NewBinaryField(constants.TRACE_ID, link.TraceId))
+		if tid := link.TraceID(); !tid.IsEmpty() {
+			fields = append(fields, rfield.NewBinaryField(constants.TRACE_ID, tid[:]))
 		}
-		if link.SpanId != nil && len(link.SpanId) > 0 {
-			fields = append(fields, rfield.NewBinaryField(constants.SPAN_ID, link.SpanId))
+		if sid := link.SpanID(); !sid.IsEmpty() {
+			fields = append(fields, rfield.NewBinaryField(constants.SPAN_ID, sid[:]))
 		}
-		if len(link.TraceState) > 0 {
-			fields = append(fields, rfield.NewStringField(constants.TRACE_STATE, link.TraceState))
+		if link.TraceState() != "" {
+			fields = append(fields, rfield.NewStringField(constants.TRACE_STATE, string(link.TraceState())))
 		}
-		//attributes := common.NewAttributes(link.Attributes)
-		attributes := common.NewAttributes(link.Attributes, cfg)
+		attributes := common.NewAttributes(link.Attributes(), cfg)
 		if attributes != nil {
 			fields = append(fields, attributes)
 		}
-		if link.DroppedAttributesCount > 0 {
-			fields = append(fields, rfield.NewU32Field(constants.DROPPED_ATTRIBUTES_COUNT, uint32(link.DroppedAttributesCount)))
+		if dc := link.DroppedAttributesCount(); dc > 0 {
+			fields = append(fields, rfield.NewU32Field(constants.DROPPED_ATTRIBUTES_COUNT, uint32(dc)))
 		}
 		convertedLinks = append(convertedLinks, &rfield.Struct{
 			Fields: fields,
@@ -414,7 +431,7 @@ func LinksAsListOfStructsField(links []*v1.Span_Link, cfg *config.Config) *rfiel
 	})
 }
 
-func AddLinksAsStructOfLists(record *air.Record, links []*v1.Span_Link) {
+func AddLinksAsStructOfLists(record *air.Record, links []ptrace.SpanLink) {
 	if links == nil {
 		return
 	}
@@ -422,34 +439,34 @@ func AddLinksAsStructOfLists(record *air.Record, links []*v1.Span_Link) {
 	fields := make([]*rfield.Field, 5)
 
 	for pos, link := range links {
-		if link.TraceId != nil && len(link.TraceId) > 0 {
+		if tid := link.TraceID(); !tid.IsEmpty() {
 			if fields[0] == nil {
 				fields[0] = rfield.NewListField(constants.TRACE_ID, rfield.List{Values: make([]rfield.Value, len(links))})
 				for i := 0; i < pos; i++ {
 					fields[0].Value.(*rfield.List).Values[pos] = nil
 				}
 			}
-			fields[0].Value.(*rfield.List).Values[pos] = &rfield.Binary{Value: link.TraceId}
+			fields[0].Value.(*rfield.List).Values[pos] = &rfield.Binary{Value: tid[:]}
 		}
-		if link.SpanId != nil && len(link.SpanId) > 0 {
+		if sid := link.SpanID(); !sid.IsEmpty() {
 			if fields[1] == nil {
 				fields[1] = rfield.NewListField(constants.SPAN_ID, rfield.List{Values: make([]rfield.Value, len(links))})
 				for i := 0; i < pos; i++ {
 					fields[1].Value.(*rfield.List).Values[pos] = nil
 				}
 			}
-			fields[1].Value.(*rfield.List).Values[pos] = &rfield.Binary{Value: link.SpanId}
+			fields[1].Value.(*rfield.List).Values[pos] = &rfield.Binary{Value: sid[:]}
 		}
-		if len(link.TraceState) > 0 {
+		if link.TraceState() != "" {
 			if fields[2] == nil {
 				fields[2] = rfield.NewListField(constants.TRACE_STATE, rfield.List{Values: make([]rfield.Value, len(links))})
 				for i := 0; i < pos; i++ {
 					fields[2].Value.(*rfield.List).Values[pos] = nil
 				}
 			}
-			fields[2].Value.(*rfield.List).Values[pos] = rfield.NewString(link.TraceState)
+			fields[2].Value.(*rfield.List).Values[pos] = rfield.NewString(string(link.TraceState()))
 		}
-		attributes := common.AttributesValue(link.Attributes)
+		attributes := common.AttributesValue(link.Attributes())
 		if attributes != nil {
 			if fields[3] == nil {
 				fields[3] = rfield.NewListField(constants.ATTRIBUTES, rfield.List{Values: make([]rfield.Value, len(links))})
@@ -459,14 +476,14 @@ func AddLinksAsStructOfLists(record *air.Record, links []*v1.Span_Link) {
 			}
 			fields[3].Value.(*rfield.List).Values[pos] = attributes
 		}
-		if link.DroppedAttributesCount > 0 {
+		if dc := link.DroppedAttributesCount(); dc > 0 {
 			if fields[4] == nil {
 				fields[4] = rfield.NewListField(constants.DROPPED_ATTRIBUTES_COUNT, rfield.List{Values: make([]rfield.Value, len(links))})
 				for i := 0; i < pos; i++ {
 					fields[4].Value.(*rfield.List).Values[pos] = nil
 				}
 			}
-			fields[4].Value.(*rfield.List).Values[pos] = rfield.NewU32(link.DroppedAttributesCount)
+			fields[4].Value.(*rfield.List).Values[pos] = rfield.NewU32(dc)
 		}
 	}
 	nonEmptyFields := make([]*rfield.Field, 0, len(fields))

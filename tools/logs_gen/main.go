@@ -23,7 +23,7 @@ import (
 	"os"
 	"path"
 
-	"google.golang.org/protobuf/proto"
+	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 
 	"otel-arrow-adapter/pkg/datagen"
 )
@@ -48,10 +48,10 @@ func main() {
 
 	// Generate the dataset.
 	generator := datagen.NewLogsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
-	request := generator.Generate(batchSize, 100)
+	request := plogotlp.NewRequestFromLogs(generator.Generate(batchSize, 100))
 
 	// Marshal the request to bytes.
-	msg, err := proto.Marshal(request)
+	msg, err := request.MarshalProto()
 	if err != nil {
 		log.Fatal("marshaling error: ", err)
 	}
