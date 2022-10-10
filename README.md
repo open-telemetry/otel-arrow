@@ -1,4 +1,4 @@
-# otel-arrow-adapter
+# OTEL Arrow Adapter
 
 Adapter used to convert OTEL batches to/from OTEL Arrow batches in both directions.
 
@@ -35,14 +35,6 @@ These command line tools are used to compare the performance of OTLP and OTLP Ar
 takes as input a set of OTLP entities encoded as protobuf binary files and produces an evaluation report and a set of 
 data files (CSV format).
 
-### Metrics [WIP]
-
-This tool compares the performance of OTLP and OTLP Arrow representations for metrics.
-
-### Logs [WIP]
-
-This tool compares the performance of OTLP and OTLP Arrow representations for metrics.
-
 ### Traces
 
 This tool compares the performance of OTLP and OTLP Arrow representations for metrics.
@@ -53,6 +45,13 @@ $ go run tools/trace_benchmark/main.go <INPUT FILES>
 
 The input files must be one or more OTLP traces (ExportTraceServiceRequest) encoded as protobuf binary files.
 
+### Metrics [WIP]
+
+This tool compares the performance of OTLP and OTLP Arrow representations for metrics.
+
+### Logs [WIP]
+
+This tool compares the performance of OTLP and OTLP Arrow representations for metrics.
 
 ## Integration with the OpenTelemetry Collector
 
@@ -177,3 +176,13 @@ This capability will be used to implement an exporter into the existing collecto
 **Feedback to implement**
   - [ ] @jmacd's feedback
   - [ ] @atoulme's feedback 
+
+## Contributing
+
+Pull requests are welcome. For major changes, please open an issue
+first to discuss what you would like to change. For more information, please
+read [CONTRIBUTING](CONTRIBUTING.md).
+
+## License
+
+OTEL Arrow Adapter is licensed under Apache 2.0.
