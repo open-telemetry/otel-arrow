@@ -21,11 +21,11 @@ import (
 	"fmt"
 	"testing"
 
-	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/events/v1"
-	"otel-arrow-adapter/pkg/air"
-	cfg "otel-arrow-adapter/pkg/air/config"
-	"otel-arrow-adapter/pkg/air/rfield"
-	"otel-arrow-adapter/pkg/otel/batch_event"
+	v1 "github.com/lquerel/otel-arrow-adapter/api/collector/arrow/v1"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air"
+	cfg "github.com/lquerel/otel-arrow-adapter/pkg/air/config"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/rfield"
+	"github.com/lquerel/otel-arrow-adapter/pkg/otel/batch_event"
 )
 
 func TestProducerConsumer(t *testing.T) {

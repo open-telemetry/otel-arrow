@@ -24,7 +24,7 @@ import (
 	"sort"
 	"strings"
 
-	"otel-arrow-adapter/pkg/otel/common"
+	"github.com/lquerel/otel-arrow-adapter/pkg/otel/common"
 
 	"golang.org/x/exp/rand"
 

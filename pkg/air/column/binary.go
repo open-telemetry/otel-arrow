@@ -21,9 +21,9 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/memory"
 
-	"otel-arrow-adapter/pkg/air/config"
-	"otel-arrow-adapter/pkg/air/rfield"
-	"otel-arrow-adapter/pkg/air/stats"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/config"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/rfield"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/stats"
 )
 
 // BinaryColumn is a column of binary data.

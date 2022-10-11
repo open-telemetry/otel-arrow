@@ -17,7 +17,7 @@ package config_test
 import (
 	"testing"
 
-	config2 "otel-arrow-adapter/pkg/air/config"
+	config2 "github.com/lquerel/otel-arrow-adapter/pkg/air/config"
 )
 
 func TestIsDictionary(t *testing.T) {

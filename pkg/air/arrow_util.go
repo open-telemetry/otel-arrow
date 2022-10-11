@@ -26,7 +26,7 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	"otel-arrow-adapter/pkg/air/common"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/common"
 )
 
 type SortableField struct {

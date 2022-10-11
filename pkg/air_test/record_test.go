@@ -19,9 +19,9 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 
-	"otel-arrow-adapter/pkg/air"
-	"otel-arrow-adapter/pkg/air/config"
-	"otel-arrow-adapter/pkg/air/rfield"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/config"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/rfield"
 )
 
 func TestValue(t *testing.T) {

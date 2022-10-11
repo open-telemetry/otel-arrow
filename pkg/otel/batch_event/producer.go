@@ -24,8 +24,8 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/ipc"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	coleventspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/events/v1"
-	"otel-arrow-adapter/pkg/otel/traces"
+	coleventspb "github.com/lquerel/otel-arrow-adapter/api/collector/arrow/v1"
+	"github.com/lquerel/otel-arrow-adapter/pkg/otel/traces"
 )
 
 type Producer struct {

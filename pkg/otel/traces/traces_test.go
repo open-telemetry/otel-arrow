@@ -20,8 +20,8 @@ import (
 
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
-	"otel-arrow-adapter/pkg/datagen"
-	"otel-arrow-adapter/pkg/otel/assert"
+	"github.com/lquerel/otel-arrow-adapter/pkg/datagen"
+	"github.com/lquerel/otel-arrow-adapter/pkg/otel/assert"
 )
 
 // TestOtlpToOtlpArrowConversion tests the conversion of OTLP traces to Arrow and back to OTLP.

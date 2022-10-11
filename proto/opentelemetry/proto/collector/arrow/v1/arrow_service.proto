@@ -1,11 +1,13 @@
 syntax = "proto3";
 
-package opentelemetry.proto.collector.events.v1;
+package opentelemetry.proto.collector.arrow.v1;
 
 option java_multiple_files = true;
-option java_package = "io.opentelemetry.proto.collector.events.v1";
-option java_outer_classname = "EventsServiceProto";
-option go_package = "go.opentelemetry.io/proto/otlp/collector/events/v1";
+option java_package = "io.opentelemetry.proto.collector.arrow.v1";
+option java_outer_classname = "ArrowServiceProto";
+
+// Note the following is temporary
+option go_package = "github.com/lquerel/otel-arrow-adapter/api/collector/arrow/v1";
 
 service EventsService {
   // The EventStream endpoint is a bi-directional stream used to send batch of events (`BatchEvent`) from the exporter

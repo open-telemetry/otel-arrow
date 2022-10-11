@@ -3,8 +3,8 @@ package otlp
 import (
 	"io"
 
-	"otel-arrow-adapter/pkg/benchmark"
-	"otel-arrow-adapter/pkg/benchmark/dataset"
+	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark"
+	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark/dataset"
 
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"

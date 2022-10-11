@@ -20,8 +20,8 @@ import (
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/memory"
 
-	value2 "otel-arrow-adapter/pkg/air/column"
-	"otel-arrow-adapter/pkg/air/config"
+	value2 "github.com/lquerel/otel-arrow-adapter/pkg/air/column"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/config"
 )
 
 func TestStringColumn(t *testing.T) {

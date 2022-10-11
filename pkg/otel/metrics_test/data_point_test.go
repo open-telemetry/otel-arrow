@@ -17,7 +17,7 @@ package metrics
 import (
 	"testing"
 
-	"otel-arrow-adapter/pkg/otel/metrics"
+	"github.com/lquerel/otel-arrow-adapter/pkg/otel/metrics"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pmetric"

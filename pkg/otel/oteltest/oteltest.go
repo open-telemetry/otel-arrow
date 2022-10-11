@@ -17,7 +17,7 @@ package oteltest
 import (
 	"bytes"
 	"encoding/json"
-	"otel-arrow-adapter/pkg/otel/metrics"
+	"github.com/lquerel/otel-arrow-adapter/pkg/otel/metrics"
 	"sort"
 
 	"github.com/google/go-cmp/cmp"

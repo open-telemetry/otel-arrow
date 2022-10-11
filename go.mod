@@ -1,9 +1,9 @@
-module otel-arrow-adapter
+module github.com/lquerel/otel-arrow-adapter
 
 go 1.18
 
 require (
-	github.com/apache/arrow/go/v9 v9.0.0-00010101000000-000000000000
+	github.com/apache/arrow/go/v9 v9.0.0
 	github.com/brianvoe/gofakeit/v6 v6.17.0
 	github.com/davecgh/go-spew v1.1.1
 	github.com/dustin/go-humanize v1.0.0
@@ -14,6 +14,7 @@ require (
 	github.com/stretchr/testify v1.8.0
 	go.opentelemetry.io/collector/pdata v0.60.0
 	golang.org/x/exp v0.0.0-20211216164055-b2b84827b756
+	google.golang.org/grpc v1.49.0
 	google.golang.org/protobuf v1.28.1
 )
 
@@ -43,8 +44,5 @@ require (
 	golang.org/x/tools v0.1.10 // indirect
 	golang.org/x/xerrors v0.0.0-20220411194840-2f41105eb62f // indirect
 	google.golang.org/genproto v0.0.0-20220126215142-9970aeb2e350 // indirect
-	google.golang.org/grpc v1.49.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/apache/arrow/go/v9 => github.com/lquerel/arrow/go/v9 v9.0.0-20220708002903-441b5440ea47

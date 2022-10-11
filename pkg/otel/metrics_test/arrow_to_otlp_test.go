@@ -17,11 +17,11 @@ package metrics_test
 import (
 	"testing"
 
-	"otel-arrow-adapter/pkg/air"
-	"otel-arrow-adapter/pkg/air/config"
-	"otel-arrow-adapter/pkg/datagen"
-	"otel-arrow-adapter/pkg/otel/metrics"
-	"otel-arrow-adapter/pkg/otel/oteltest"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/config"
+	"github.com/lquerel/otel-arrow-adapter/pkg/datagen"
+	"github.com/lquerel/otel-arrow-adapter/pkg/otel/metrics"
+	"github.com/lquerel/otel-arrow-adapter/pkg/otel/oteltest"
 )
 
 func TestSystemCpuTimeConversion(t *testing.T) {

@@ -17,10 +17,10 @@ package logs_test
 import (
 	"testing"
 
-	"otel-arrow-adapter/pkg/air"
-	"otel-arrow-adapter/pkg/air/config"
-	"otel-arrow-adapter/pkg/datagen"
-	"otel-arrow-adapter/pkg/otel/logs"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/config"
+	"github.com/lquerel/otel-arrow-adapter/pkg/datagen"
+	"github.com/lquerel/otel-arrow-adapter/pkg/otel/logs"
 )
 
 func TestOtlpLogsToArrowEvents(t *testing.T) {

@@ -21,10 +21,10 @@ import (
 	"github.com/apache/arrow/go/v9/arrow"
 	"github.com/apache/arrow/go/v9/arrow/memory"
 
-	"otel-arrow-adapter/pkg/air/config"
-	"otel-arrow-adapter/pkg/air/dictionary"
-	"otel-arrow-adapter/pkg/air/rfield"
-	"otel-arrow-adapter/pkg/air/stats"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/config"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/dictionary"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/rfield"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/stats"
 )
 
 // Column is a generic interface to interact with all types of column.

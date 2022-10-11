@@ -20,7 +20,7 @@ package value
 import (
 	"testing"
 
-	"otel-arrow-adapter/pkg/air/rfield"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/rfield"
 )
 
 func TestListDataType(t *testing.T) {

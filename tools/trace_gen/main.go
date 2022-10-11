@@ -23,7 +23,7 @@ import (
 	"os"
 	"path"
 
-	"otel-arrow-adapter/pkg/datagen"
+	"github.com/lquerel/otel-arrow-adapter/pkg/datagen"
 
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 )

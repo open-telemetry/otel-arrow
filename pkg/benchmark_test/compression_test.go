@@ -17,7 +17,7 @@ package benchmark
 import (
 	"testing"
 
-	"otel-arrow-adapter/pkg/benchmark"
+	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark"
 )
 
 func TestLz4(t *testing.T) {

@@ -19,7 +19,7 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/memory"
 
-	"otel-arrow-adapter/pkg/air/rfield"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/rfield"
 )
 
 // F32Column is a column of float32 data.

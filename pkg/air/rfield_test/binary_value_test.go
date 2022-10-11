@@ -19,7 +19,7 @@ import (
 
 	"github.com/apache/arrow/go/v9/arrow"
 
-	"otel-arrow-adapter/pkg/air/rfield"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/rfield"
 )
 
 func TestCoerceFromString(t *testing.T) {

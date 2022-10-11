@@ -20,8 +20,8 @@ package batch_event
 import (
 	"github.com/apache/arrow/go/v9/arrow"
 
-	v1 "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/events/v1"
-	"otel-arrow-adapter/pkg/air"
+	v1 "github.com/lquerel/otel-arrow-adapter/api/collector/arrow/v1"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air"
 )
 
 type RecordMessage struct {

@@ -25,11 +25,11 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/ipc"
 	"github.com/apache/arrow/go/v9/arrow/memory"
 
-	"otel-arrow-adapter/pkg/air/column"
-	config2 "otel-arrow-adapter/pkg/air/config"
-	"otel-arrow-adapter/pkg/air/dictionary"
-	"otel-arrow-adapter/pkg/air/rfield"
-	"otel-arrow-adapter/pkg/air/stats"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/column"
+	config2 "github.com/lquerel/otel-arrow-adapter/pkg/air/config"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/dictionary"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/rfield"
+	"github.com/lquerel/otel-arrow-adapter/pkg/air/stats"
 )
 
 type OrderBy struct {
