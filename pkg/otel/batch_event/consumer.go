@@ -21,12 +21,15 @@ import (
 	"bytes"
 
 	"github.com/apache/arrow/go/v9/arrow/ipc"
+	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	coleventspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/events/v1"
+	"otel-arrow-adapter/pkg/otel/traces"
 )
 
 type Consumer struct {
-	streamConsumers map[string]*streamConsumer
+	streamConsumers   map[string]*streamConsumer
+	otlpTraceProducer *traces.OtlpProducer
 }
 
 type streamConsumer struct {
@@ -37,8 +40,28 @@ type streamConsumer struct {
 // NewConsumer creates a new BatchEvent consumer.
 func NewConsumer() *Consumer {
 	return &Consumer{
-		streamConsumers: make(map[string]*streamConsumer),
+		streamConsumers:   make(map[string]*streamConsumer),
+		otlpTraceProducer: traces.NewOtlpProducer(),
 	}
+}
+
+// TracesFrom produces an array of ptrace.Traces from a BatchEvent message.
+func (c *Consumer) TracesFrom(batchEvent *coleventspb.BatchEvent) ([]ptrace.Traces, error) {
+	records, err := c.Consume(batchEvent)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []ptrace.Traces
+	for i := 1; i < len(records); i++ {
+		record := records[i]
+		tracesArr, err := c.otlpTraceProducer.ProduceFrom(record.record)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, tracesArr...)
+	}
+	return result, nil
 }
 
 // Consume takes a BatchEvent protobuf message and returns an array of RecordMessage.

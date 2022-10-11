@@ -39,7 +39,7 @@ func ArrowRecordsToOtlpMetrics(record arrow.Record) (pmetric.Metrics, error) {
 
 	numRows := int(record.NumRows())
 	for i := 0; i < numRows; i++ {
-		resource, err := common.NewResourceFrom(record, i)
+		resource, err := common.NewResourceFromOld(record, i)
 		if err != nil {
 			return request, err
 		}
@@ -85,9 +85,9 @@ func SetMetricsFrom(metrics pmetric.MetricSlice, record arrow.Record, row int) e
 	if err != nil {
 		return err
 	}
-	metricsField, arr := air.FieldArray(record, constants.METRICS)
-	if metricsField == nil {
-		return fmt.Errorf("no metrics found")
+	metricsField, arr, err := air.FieldArray(record, constants.METRICS)
+	if err != nil {
+		return err
 	}
 	metricsType, ok := metricsField.Type.(*arrow.StructType)
 	if !ok {
@@ -98,12 +98,13 @@ func SetMetricsFrom(metrics pmetric.MetricSlice, record arrow.Record, row int) e
 		return fmt.Errorf("metrics array is not a struct")
 	}
 
-	attrsField, attrsArray := air.FieldArray(record, constants.ATTRIBUTES)
+	attrsField, attrsArray, err := air.FieldArray(record, constants.ATTRIBUTES)
+	if err != nil {
+		return err
+	}
 	attributes := pcommon.NewMap()
-	if attrsField != nil {
-		if err := common.CopyAttributesFrom(attributes, attrsField.Type, attrsArray, row); err != nil {
-			return err
-		}
+	if err := common.CopyAttributesFrom(attributes, attrsField.Type, attrsArray, row); err != nil {
+		return err
 	}
 	for i := range metricsType.Fields() {
 		field := &metricsType.Fields()[i]

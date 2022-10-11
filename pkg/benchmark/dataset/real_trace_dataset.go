@@ -21,9 +21,10 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"otel-arrow-adapter/pkg/otel/common"
 	"sort"
 	"strings"
+
+	"otel-arrow-adapter/pkg/otel/common"
 
 	"golang.org/x/exp/rand"
 
@@ -32,7 +33,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 )
 
-// ===== Real trace dataset =====
+// ===== Real traces dataset =====
 
 type RealTraceDataset struct {
 	spans       []ptrace.Span

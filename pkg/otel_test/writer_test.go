@@ -25,7 +25,7 @@ import (
 	"otel-arrow-adapter/pkg/air"
 	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/datagen"
-	"otel-arrow-adapter/pkg/otel/trace"
+	"otel-arrow-adapter/pkg/otel/traces"
 )
 
 func TestIPCWriter(t *testing.T) {
@@ -37,7 +37,7 @@ func TestIPCWriter(t *testing.T) {
 	lg := datagen.NewTraceGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
 
 	request := lg.Generate(10, 100)
-	records, err := trace.OtlpTraceToArrowRecords(rr, request, cfg)
+	records, err := traces.OtlpTracesToArrowRecords(rr, request, cfg)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}

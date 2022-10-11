@@ -38,7 +38,7 @@ func ArrowRecordsToOtlpLogs(record arrow.Record) (plog.Logs, error) {
 
 	numRows := int(record.NumRows())
 	for i := 0; i < numRows; i++ {
-		resource, err := common.NewResourceFrom(record, i)
+		resource, err := common.NewResourceFromOld(record, i)
 		if err != nil {
 			return request, err
 		}
@@ -98,15 +98,19 @@ func SetLogRecordFrom(logRecord plog.LogRecord, record arrow.Record, row int) er
 	} else {
 		lr.SetSeverityText(severityText)
 	}
-	if bodyField, bodyArray := air.FieldArray(record, constants.BODY); bodyArray != nil {
-		if err := common.CopyValueFrom(lr.Body(), bodyField.Type, bodyArray, row); err != nil {
-			return err
-		}
+	bodyField, bodyArray, err := air.FieldArray(record, constants.BODY)
+	if err != nil {
+		return err
 	}
-	if attrField, attrColumn := air.FieldArray(record, constants.ATTRIBUTES); attrColumn != nil {
-		if err := common.CopyAttributesFrom(lr.Attributes(), attrField.Type, attrColumn, row); err != nil {
-			return err
-		}
+	if err := common.CopyValueFrom(lr.Body(), bodyField.Type, bodyArray, row); err != nil {
+		return err
+	}
+	attrField, attrColumn, err := air.FieldArray(record, constants.ATTRIBUTES)
+	if err != nil {
+		return err
+	}
+	if err := common.CopyAttributesFrom(lr.Attributes(), attrField.Type, attrColumn, row); err != nil {
+		return err
 	}
 	if dc, err := air.U32FromRecord(record, row, constants.DROPPED_ATTRIBUTES_COUNT); err != nil {
 		return err

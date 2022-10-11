@@ -22,12 +22,15 @@ import (
 	"fmt"
 
 	"github.com/apache/arrow/go/v9/arrow/ipc"
+	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	coleventspb "otel-arrow-adapter/api/go.opentelemetry.io/proto/otlp/collector/events/v1"
+	"otel-arrow-adapter/pkg/otel/traces"
 )
 
 type Producer struct {
-	streamProducers map[string]*streamProducer
+	streamProducers         map[string]*streamProducer
+	otlpArrowTracesProducer *traces.OtlpArrowProducer
 }
 
 type streamProducer struct {
@@ -40,8 +43,26 @@ type streamProducer struct {
 // NewProducer creates a new BatchEvent producer.
 func NewProducer() *Producer {
 	return &Producer{
-		streamProducers: make(map[string]*streamProducer),
+		streamProducers:         make(map[string]*streamProducer),
+		otlpArrowTracesProducer: traces.NewOtlpArrowProducer(),
 	}
+}
+
+// BatchEventsFrom produces a BatchEvent message from a ptrace.Traces messages.
+func (p *Producer) BatchEventsFrom(traces ptrace.Traces) ([]*coleventspb.BatchEvent, error) {
+	records, err := p.otlpArrowTracesProducer.ProduceFrom(traces)
+	if err != nil {
+		return nil, err
+	}
+	batchEvents := make([]*coleventspb.BatchEvent, len(records))
+	for i, record := range records {
+		batchEvent, err := p.Produce(NewTraceMessage(record, coleventspb.DeliveryType_BEST_EFFORT))
+		if err != nil {
+			return nil, err
+		}
+		batchEvents[i] = batchEvent
+	}
+	return batchEvents, nil
 }
 
 // Produce takes an RecordMessage and returns the corresponding BatchEvent protobuf message.

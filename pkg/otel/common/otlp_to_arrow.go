@@ -16,10 +16,13 @@ package common
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/apache/arrow/go/v9/arrow"
 
 	"otel-arrow-adapter/pkg/air"
+	"otel-arrow-adapter/pkg/air/common"
 	"otel-arrow-adapter/pkg/air/config"
 	"otel-arrow-adapter/pkg/air/rfield"
 	"otel-arrow-adapter/pkg/otel/constants"
@@ -185,31 +188,31 @@ func NewAttributesAsListStructs(attributes pcommon.Map) *rfield.Field {
 			switch v := value.(type) {
 			case *rfield.String:
 				attributeTuples = append(attributeTuples, AttributeTuple{
-					key: key,
+					key: common.STRING_SIG + "|" + key,
 					str: v.Value,
 				})
 				stringCount++
 			case *rfield.I64:
 				attributeTuples = append(attributeTuples, AttributeTuple{
-					key: key,
+					key: common.I64_SIG + "|" + key,
 					i64: v.Value,
 				})
 				i64Count++
 			case *rfield.F64:
 				attributeTuples = append(attributeTuples, AttributeTuple{
-					key: key,
+					key: common.F64_SIG + "|" + key,
 					f64: v.Value,
 				})
 				f64Count++
 			case *rfield.Bool:
 				attributeTuples = append(attributeTuples, AttributeTuple{
-					key:  key,
+					key:  common.BOOL_SIG + "|" + key,
 					bool: v.Value,
 				})
 				boolCount++
 			case *rfield.Binary:
 				attributeTuples = append(attributeTuples, AttributeTuple{
-					key:    key,
+					key:    common.BINARY_SIG + "|" + key,
 					binary: v.Value,
 				})
 				binaryCount++
@@ -220,10 +223,12 @@ func NewAttributesAsListStructs(attributes pcommon.Map) *rfield.Field {
 		return true
 	})
 	values := make([]rfield.Value, 0, attributes.Len())
-	if len(attributeTuples) > 0 {
-		// ToDo remove attribute tuples and create the structs directly as the sorting of attributeTuples doesn't improve compression ratio
-		for _, attribute := range attributeTuples {
-			fields := make([]*rfield.Field, 0, len(attributeTuples))
+	attrCount := len(attributeTuples)
+	if attrCount > 0 {
+		// TODO remove attribute tuples and create the structs directly as the sorting of attributeTuples doesn't improve compression ratio
+		for i := 0; i < attrCount; i++ {
+			attribute := attributeTuples[i]
+			fields := make([]*rfield.Field, 0, attrCount)
 			fields = append(fields, &rfield.Field{Name: "key", Value: &rfield.String{Value: &attribute.key}})
 			if stringCount > 0 {
 				fields = append(fields, &rfield.Field{Name: "string", Value: &rfield.String{Value: attribute.str}})
@@ -300,10 +305,10 @@ func AddResource(record *air.Record, resource pcommon.Resource, cfg *config.Conf
 	}
 }
 
+// ResourceField returns an AIR representation of the resource fields (i.e. attributes, dropped_attributes_count).
 func ResourceField(resource pcommon.Resource, cfg *config.Config) *rfield.Field {
 	var resourceFields []*rfield.Field
 
-	// ToDo test attributes := NewAttributes(resource.Attributes)
 	attributes := NewAttributes(resource.Attributes(), cfg)
 	if attributes != nil {
 		resourceFields = append(resourceFields, attributes)
@@ -319,6 +324,37 @@ func ResourceField(resource pcommon.Resource, cfg *config.Config) *rfield.Field 
 		return field
 	} else {
 		return nil
+	}
+}
+
+// ResourceFieldWithSig returns an AIR representation of the resource fields (i.e. attributes, dropped_attributes_count)
+// and a signature of the resource fields (i.e. attributes).
+func ResourceFieldWithSig(resource pcommon.Resource, cfg *config.Config) (*rfield.Field, string) {
+	var resourceFields []*rfield.Field
+	var sig strings.Builder
+
+	attributes := NewAttributes(resource.Attributes(), cfg)
+	if attributes != nil {
+		resourceFields = append(resourceFields, attributes)
+		// compute signature for the resource based on its attributes.
+		attributes.Normalize()
+		attributes.WriteSignature(&sig)
+	}
+
+	if resource.DroppedAttributesCount() > 0 {
+		resourceFields = append(resourceFields, rfield.NewU32Field(constants.DROPPED_ATTRIBUTES_COUNT, resource.DroppedAttributesCount()))
+		sig.WriteString(",dropped_attributes_count:")
+		sig.WriteString(strconv.FormatUint(uint64(resource.DroppedAttributesCount()), 10))
+	}
+
+	// returns the AIR representation of the resource fields and the signature or nil if there are no resource fields.
+	if len(resourceFields) > 0 {
+		field := rfield.NewStructField(constants.RESOURCE, rfield.Struct{
+			Fields: resourceFields,
+		})
+		return field, sig.String()
+	} else {
+		return nil, ""
 	}
 }
 
@@ -338,7 +374,6 @@ func ScopeField(scopeKey string, scope pcommon.InstrumentationScope, cfg *config
 	if len(scope.Version()) > 0 {
 		fields = append(fields, rfield.NewStringField(constants.VERSION, scope.Version()))
 	}
-	// todo attributes := NewAttributes(scope.Attributes)
 	attributes := NewAttributes(scope.Attributes(), cfg)
 	if attributes != nil {
 		fields = append(fields, attributes)

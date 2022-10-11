@@ -57,6 +57,8 @@ func (tg *TraceGenerator) Generate(batchSize int, collectInterval time.Duration)
 	scopeSpans := resourceSpans.ScopeSpans().AppendEmpty()
 	pick(tg.instrumentationScopes).CopyTo(scopeSpans.Scope())
 
+	resourceSpans.SetSchemaUrl("https://opentelemetry.io/schemas/1.0.0")
+
 	spans := scopeSpans.Spans()
 
 	rand.Seed(uint64(time.Now().UnixNano()))

@@ -86,7 +86,7 @@ func (d *FakeLogsDataset) Logs(_, size int) []plog.Logs {
 	return []plog.Logs{d.generator.Generate(size, 100)}
 }
 
-// ===== Fake trace dataset =====
+// ===== Fake traces dataset =====
 
 // FakeTraceDataset is an implementation of TraceDataset returning fake traces.
 type FakeTraceDataset struct {

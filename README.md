@@ -55,12 +55,14 @@ This tool compares the performance of OTLP and OTLP Arrow representations for me
 
 ## Integration with the OpenTelemetry Collector
 
-Two experimental repositories have been created to develop the integration with the collector.
-* [experimental-arrow-proto](https://github.com/open-telemetry/experimental-arrow-proto)
+The integration of this package with the OpenTelemetry Collector is done in the following experimental repository:
 * [experimental-arrow-collector](https://github.com/open-telemetry/experimental-arrow-collector)
 
+### Traces 
 
-### From OTEL Arrow to ExportTraceServiceRequest
+Below some utility functions in package `pkg/otel/traces` than can be used to convert OTLP traces to/from OTLP Arrow traces:
+* `OtlpArrowProducer` takes OTLP Traces and produces OTLP Arrow Traces.
+* `OtlpProducer` takes OTLP Arrow Traces and produces OTLP Traces.
 
 ## Status [WIP]
 
