@@ -24,10 +24,12 @@ import (
 	"github.com/lquerel/otel-arrow-adapter/pkg/air"
 )
 
+type PayloadType = v1.OtlpArrowPayloadType
+
 type RecordMessage struct {
 	batchId      string
 	subStreamId  string
-	recordType   v1.OtlpArrowPayloadType
+	payloadType  PayloadType
 	record       arrow.Record
 	deliveryType v1.DeliveryType
 }
@@ -35,7 +37,7 @@ type RecordMessage struct {
 func NewMetricsMessage(record arrow.Record, deliveryType v1.DeliveryType) *RecordMessage {
 	return &RecordMessage{
 		subStreamId:  air.SchemaToId(record.Schema()),
-		recordType:   v1.OtlpArrowPayloadType_METRICS,
+		payloadType:  v1.OtlpArrowPayloadType_METRICS,
 		record:       record,
 		deliveryType: deliveryType,
 	}
@@ -45,7 +47,7 @@ func NewLogsMessage(record arrow.Record, deliveryType v1.DeliveryType) *RecordMe
 	record.Schema()
 	return &RecordMessage{
 		subStreamId:  air.SchemaToId(record.Schema()),
-		recordType:   v1.OtlpArrowPayloadType_LOGS,
+		payloadType:  v1.OtlpArrowPayloadType_LOGS,
 		record:       record,
 		deliveryType: deliveryType,
 	}
@@ -54,7 +56,7 @@ func NewLogsMessage(record arrow.Record, deliveryType v1.DeliveryType) *RecordMe
 func NewTraceMessage(record arrow.Record, deliveryType v1.DeliveryType) *RecordMessage {
 	return &RecordMessage{
 		subStreamId:  air.SchemaToId(record.Schema()),
-		recordType:   v1.OtlpArrowPayloadType_SPANS,
+		payloadType:  v1.OtlpArrowPayloadType_SPANS,
 		record:       record,
 		deliveryType: deliveryType,
 	}
@@ -62,4 +64,8 @@ func NewTraceMessage(record arrow.Record, deliveryType v1.DeliveryType) *RecordM
 
 func (ibe *RecordMessage) Record() arrow.Record {
 	return ibe.record
+}
+
+func (ibe *RecordMessage) PayloadType() PayloadType {
+	return ibe.payloadType
 }

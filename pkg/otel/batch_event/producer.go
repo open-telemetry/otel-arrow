@@ -99,7 +99,7 @@ func (p *Producer) Produce(rm *RecordMessage) (*coleventspb.BatchEvent, error) {
 		SubStreamId: sp.subStreamId,
 		OtlpArrowPayloads: []*coleventspb.OtlpArrowPayload{
 			{
-				Type:   rm.recordType,
+				Type:   rm.payloadType,
 				Schema: buf,
 			},
 		},
