@@ -161,7 +161,7 @@ func (dg *DataGenerator) links(sls ptrace.SpanLinkSlice) {
 		sl := sls.AppendEmpty()
 		sl.SetTraceID(dg.Id16Bytes())
 		sl.SetSpanID(dg.Id8Bytes())
-		sl.SetTraceState(ptrace.TraceState(pick(TRACE_STATES)))
+		sl.TraceState().FromRaw(pick(TRACE_STATES))
 		DefaultSpanLinkAttributes().CopyTo(sl.Attributes())
 	}
 }

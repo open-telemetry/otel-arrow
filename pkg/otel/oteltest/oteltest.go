@@ -17,8 +17,9 @@ package oteltest
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/lquerel/otel-arrow-adapter/pkg/otel/metrics"
 	"sort"
+
+	"github.com/lquerel/otel-arrow-adapter/pkg/otel/metrics"
 
 	"github.com/google/go-cmp/cmp"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -74,18 +75,18 @@ func sortMetrics(x pmetric.Metrics) {
 			sm.Scope().Attributes().Sort()
 			for mi := 0; mi < sm.Metrics().Len(); mi++ {
 				m := sm.Metrics().At(mi)
-				switch m.DataType() {
-				case pmetric.MetricDataTypeGauge:
+				switch m.Type() {
+				case pmetric.MetricTypeGauge:
 					sortPoints[pmetric.NumberDataPoint, pmetric.NumberDataPoint](
 						m.Gauge().DataPoints(),
 					)
-				case pmetric.MetricDataTypeSum:
+				case pmetric.MetricTypeSum:
 					sortPoints[pmetric.NumberDataPoint, pmetric.NumberDataPoint](
 						m.Sum().DataPoints(),
 					)
-				case pmetric.MetricDataTypeHistogram,
-					pmetric.MetricDataTypeExponentialHistogram,
-					pmetric.MetricDataTypeSummary:
+				case pmetric.MetricTypeHistogram,
+					pmetric.MetricTypeExponentialHistogram,
+					pmetric.MetricTypeSummary:
 					panic("unsupported case")
 				}
 			}

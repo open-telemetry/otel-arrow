@@ -124,7 +124,7 @@ func (dg *DataGenerator) SystemCpuTime(metric pmetric.Metric, cpuCount int) {
 			dataPoint.Attributes().PutInt("cpu", int64(cpu))
 			dataPoint.SetStartTimestamp(dg.PrevTime())
 			dataPoint.SetTimestamp(dg.CurrentTime())
-			dataPoint.SetDoubleVal(dg.GenF64Range(0.0, 1.0))
+			dataPoint.SetDoubleValue(dg.GenF64Range(0.0, 1.0))
 		}
 	}
 }
@@ -143,19 +143,19 @@ func (dg *DataGenerator) SystemMemoryUsage(metric pmetric.Metric) {
 	p1.Attributes().PutString("state", "used")
 	p1.SetStartTimestamp(dg.PrevTime())
 	p1.SetTimestamp(dg.CurrentTime())
-	p1.SetIntVal(dg.GenI64Range(10_000_000_000, 13_000_000_000))
+	p1.SetIntValue(dg.GenI64Range(10_000_000_000, 13_000_000_000))
 
 	p2 := points.AppendEmpty()
 	p2.Attributes().PutString("state", "free")
 	p2.SetStartTimestamp(dg.PrevTime())
 	p2.SetTimestamp(dg.CurrentTime())
-	p2.SetIntVal(dg.GenI64Range(300_000_000, 500_000_000))
+	p2.SetIntValue(dg.GenI64Range(300_000_000, 500_000_000))
 
 	p3 := points.AppendEmpty()
 	p3.Attributes().PutString("state", "inactive")
 	p3.SetStartTimestamp(dg.PrevTime())
 	p3.SetTimestamp(dg.CurrentTime())
-	p3.SetIntVal(4_000_000_000)
+	p3.SetIntValue(4_000_000_000)
 }
 
 func (dg *DataGenerator) SystemCpuLoadAverage1m(metric pmetric.Metric) {
@@ -167,5 +167,5 @@ func (dg *DataGenerator) SystemCpuLoadAverage1m(metric pmetric.Metric) {
 
 	point.SetStartTimestamp(dg.PrevTime())
 	point.SetTimestamp(dg.CurrentTime())
-	point.SetDoubleVal(dg.GenF64Range(1.0, 100.0))
+	point.SetDoubleValue(dg.GenF64Range(1.0, 100.0))
 }

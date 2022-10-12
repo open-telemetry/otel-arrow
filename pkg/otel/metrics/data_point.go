@@ -70,23 +70,23 @@ func SliceSig(sig []byte, sl pcommon.Slice) []byte {
 func ValueSig(sig []byte, value pcommon.Value) []byte {
 	switch value.Type() {
 	case pcommon.ValueTypeBool:
-		sig = append(sig, BoolToByte(value.BoolVal()))
+		sig = append(sig, BoolToByte(value.Bool()))
 	case pcommon.ValueTypeInt:
 		var buf [8]byte
-		binary.LittleEndian.PutUint64(buf[:], uint64(value.IntVal()))
+		binary.LittleEndian.PutUint64(buf[:], uint64(value.Int()))
 		sig = append(sig, buf[:]...)
 	case pcommon.ValueTypeDouble:
 		var buf [8]byte
-		binary.LittleEndian.PutUint64(buf[:], math.Float64bits(value.DoubleVal()))
+		binary.LittleEndian.PutUint64(buf[:], math.Float64bits(value.Double()))
 		sig = append(sig, buf[:]...)
 	case pcommon.ValueTypeBytes:
-		sig = append(sig, value.BytesVal().AsRaw()...)
-	case pcommon.ValueTypeString:
-		sig = append(sig, []byte(value.StringVal())...)
+		sig = append(sig, value.Bytes().AsRaw()...)
+	case pcommon.ValueTypeStr:
+		sig = append(sig, []byte(value.Str())...)
 	case pcommon.ValueTypeSlice:
-		sig = SliceSig(sig, value.SliceVal())
+		sig = SliceSig(sig, value.Slice())
 	case pcommon.ValueTypeMap:
-		sig = MapSig(sig, value.MapVal(), "")
+		sig = MapSig(sig, value.Map(), "")
 	default:
 		panic("unsupported value type")
 	}

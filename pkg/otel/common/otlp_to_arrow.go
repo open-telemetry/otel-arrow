@@ -392,18 +392,18 @@ func OtlpAnyValueToValue(value pcommon.Value) rfield.Value {
 	switch value.Type() {
 	case pcommon.ValueTypeEmpty:
 		return nil
-	case pcommon.ValueTypeString:
-		return rfield.NewString(value.StringVal())
+	case pcommon.ValueTypeStr:
+		return rfield.NewString(value.Str())
 	case pcommon.ValueTypeInt:
-		return rfield.NewI64(value.IntVal())
+		return rfield.NewI64(value.Int())
 	case pcommon.ValueTypeDouble:
-		return rfield.NewF64(value.DoubleVal())
+		return rfield.NewF64(value.Double())
 	case pcommon.ValueTypeBool:
-		return rfield.NewBool(value.BoolVal())
+		return rfield.NewBool(value.Bool())
 	case pcommon.ValueTypeBytes:
-		return &rfield.Binary{Value: value.BytesVal().AsRaw()}
+		return &rfield.Binary{Value: value.Bytes().AsRaw()}
 	case pcommon.ValueTypeSlice:
-		values := value.SliceVal()
+		values := value.Slice()
 		fieldValues := make([]rfield.Value, 0, values.Len())
 
 		for i := 0; i < values.Len(); i++ {
@@ -416,7 +416,7 @@ func OtlpAnyValueToValue(value pcommon.Value) rfield.Value {
 		}
 		return &rfield.List{Values: fieldValues}
 	case pcommon.ValueTypeMap:
-		values := value.MapVal()
+		values := value.Map()
 		if values.Len() == 0 {
 			return nil
 		}

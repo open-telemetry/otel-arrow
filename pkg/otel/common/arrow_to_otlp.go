@@ -173,20 +173,20 @@ func ScopeId(is pcommon.InstrumentationScope) string {
 
 func ValueId(v pcommon.Value) string {
 	switch v.Type() {
-	case pcommon.ValueTypeString:
-		return v.StringVal()
+	case pcommon.ValueTypeStr:
+		return v.Str()
 	case pcommon.ValueTypeInt:
-		return fmt.Sprintf("%d", v.IntVal())
+		return fmt.Sprintf("%d", v.Int())
 	case pcommon.ValueTypeDouble:
-		return fmt.Sprintf("%f", v.DoubleVal())
+		return fmt.Sprintf("%f", v.Double())
 	case pcommon.ValueTypeBool:
-		return fmt.Sprintf("%t", v.BoolVal())
+		return fmt.Sprintf("%t", v.Bool())
 	case pcommon.ValueTypeMap:
-		return AttributesId(v.MapVal())
+		return AttributesId(v.Map())
 	case pcommon.ValueTypeBytes:
-		return fmt.Sprintf("%x", v.BytesVal().AsRaw())
+		return fmt.Sprintf("%x", v.Bytes().AsRaw())
 	case pcommon.ValueTypeSlice:
-		values := v.SliceVal()
+		values := v.Slice()
 		valueId := "["
 		for i := 0; i < values.Len(); i++ {
 			if len(valueId) > 1 {
@@ -228,38 +228,38 @@ func CopyValueFrom(dest pcommon.Value, dt arrow.DataType, arr arrow.Array, row i
 		if err != nil {
 			return err
 		}
-		dest.SetBoolVal(v)
+		dest.SetBool(v)
 		return nil
 	case *arrow.Float64Type:
 		v, err := air.F64FromArray(arr, row)
 		if err != nil {
 			return err
 		}
-		dest.SetDoubleVal(v)
+		dest.SetDouble(v)
 		return nil
 	case *arrow.Int64Type:
 		v, err := air.I64FromArray(arr, row)
 		if err != nil {
 			return err
 		}
-		dest.SetIntVal(v)
+		dest.SetInt(v)
 		return nil
 	case *arrow.StringType:
 		v, err := air.StringFromArray(arr, row)
 		if err != nil {
 			return err
 		}
-		dest.SetStringVal(v)
+		dest.SetStr(v)
 		return nil
 	case *arrow.BinaryType:
 		v, err := air.BinaryFromArray(arr, row)
 		if err != nil {
 			return err
 		}
-		dest.SetEmptyBytesVal().FromRaw(v)
+		dest.SetEmptyBytes().FromRaw(v)
 		return nil
 	case *arrow.StructType:
-		if err := CopyAttributesFrom(dest.SetEmptyMapVal(), dt, arr, row); err != nil {
+		if err := CopyAttributesFrom(dest.SetEmptyMap(), dt, arr, row); err != nil {
 			return err
 		}
 		return nil
@@ -268,7 +268,7 @@ func CopyValueFrom(dest pcommon.Value, dt arrow.DataType, arr arrow.Array, row i
 		if !ok {
 			return fmt.Errorf("array is not a list")
 		}
-		if err := SetArrayValue(dest.SetEmptySliceVal(), arrList, row); err != nil {
+		if err := SetArrayValue(dest.SetEmptySlice(), arrList, row); err != nil {
 			return err
 		}
 		return nil
@@ -279,14 +279,14 @@ func CopyValueFrom(dest pcommon.Value, dt arrow.DataType, arr arrow.Array, row i
 			if err != nil {
 				return err
 			}
-			dest.SetStringVal(v)
+			dest.SetStr(v)
 			return nil
 		case *arrow.BinaryType:
 			v, err := air.BinaryFromArray(arr, row)
 			if err != nil {
 				return err
 			}
-			dest.SetEmptyBytesVal().FromRaw(v)
+			dest.SetEmptyBytes().FromRaw(v)
 			return nil
 		default:
 			return fmt.Errorf("unsupported dictionary value type %T", t.ValueType)

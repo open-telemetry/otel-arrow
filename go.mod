@@ -12,7 +12,7 @@ require (
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/pierrec/lz4 v2.0.5+incompatible
 	github.com/stretchr/testify v1.8.0
-	go.opentelemetry.io/collector/pdata v0.60.0
+	go.opentelemetry.io/collector/pdata v0.61.1-0.20221006213454-09221fd266f4
 	golang.org/x/exp v0.0.0-20211216164055-b2b84827b756
 	google.golang.org/grpc v1.49.0
 	google.golang.org/protobuf v1.28.1

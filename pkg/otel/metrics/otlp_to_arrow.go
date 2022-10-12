@@ -59,34 +59,34 @@ func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request pmetric.Metrics
 			for k := 0; k < scopeMetrics.Metrics().Len(); k++ {
 				metric := scopeMetrics.Metrics().At(k)
 
-				switch metric.DataType() {
-				case pmetric.MetricDataTypeGauge:
+				switch metric.Type() {
+				case pmetric.MetricTypeGauge:
 					err := addGaugeOrSum(rr, resource, scope, metric, metric.Gauge().DataPoints(), constants.GAUGE_METRICS, multivariateConf, cfg)
 					if err != nil {
 						return nil, err
 					}
-				case pmetric.MetricDataTypeSum:
+				case pmetric.MetricTypeSum:
 					err := addGaugeOrSum(rr, resource, scope, metric, metric.Sum().DataPoints(), constants.SUM_METRICS, multivariateConf, cfg)
 					if err != nil {
 						return nil, err
 					}
-				case pmetric.MetricDataTypeHistogram:
+				case pmetric.MetricTypeHistogram:
 					err := addHistogram(rr, resource, scope, metric, metric.Histogram(), cfg)
 					if err != nil {
 						return nil, err
 					}
-				case pmetric.MetricDataTypeExponentialHistogram:
+				case pmetric.MetricTypeExponentialHistogram:
 					err := addExpHistogram(rr, resource, scope, metric, metric.ExponentialHistogram(), cfg)
 					if err != nil {
 						return nil, err
 					}
-				case pmetric.MetricDataTypeSummary:
+				case pmetric.MetricTypeSummary:
 					err := addSummary(rr, resource, scope, metric, metric.Summary(), cfg)
 					if err != nil {
 						return nil, err
 					}
 				default:
-					panic(fmt.Sprintf("Unsupported metric type: %v", metric.DataType()))
+					panic(fmt.Sprintf("Unsupported metric type: %v", metric.Type()))
 				}
 
 			}
@@ -154,11 +154,11 @@ func multivariateMetric(rr *air.RecordRepository, res pcommon.Resource, scope pc
 
 		switch ndp.ValueType() {
 		case pmetric.NumberDataPointValueTypeDouble:
-			field := rfield.NewF64Field(multivariateMetricName, ndp.DoubleVal())
+			field := rfield.NewF64Field(multivariateMetricName, ndp.DoubleValue())
 			field.AddMetadata(constants.METADATA_METRIC_MULTIVARIATE_ATTR, multivariateKey)
 			record.metrics = append(record.metrics, field)
 		case pmetric.NumberDataPointValueTypeInt:
-			field := rfield.NewI64Field(multivariateMetricName, ndp.IntVal())
+			field := rfield.NewI64Field(multivariateMetricName, ndp.IntValue())
 			field.AddMetadata(constants.METADATA_METRIC_MULTIVARIATE_ATTR, multivariateKey)
 			record.metrics = append(record.metrics, field)
 		default:
@@ -207,7 +207,7 @@ func univariateMetric(rr *air.RecordRepository, res pcommon.Resource, scope pcom
 
 		switch ndp.ValueType() {
 		case pmetric.NumberDataPointValueTypeDouble:
-			metricField := rfield.NewF64Field(metric.Name(), ndp.DoubleVal())
+			metricField := rfield.NewF64Field(metric.Name(), ndp.DoubleValue())
 			metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metric_type)
 			if metric.Description() != "" {
 				metricField.AddMetadata(constants.METADATA_METRIC_DESCRIPTION, metric.Description())
@@ -219,7 +219,7 @@ func univariateMetric(rr *air.RecordRepository, res pcommon.Resource, scope pcom
 				Fields: []*rfield.Field{metricField},
 			})
 		case pmetric.NumberDataPointValueTypeInt:
-			metricField := rfield.NewI64Field(metric.Name(), ndp.IntVal())
+			metricField := rfield.NewI64Field(metric.Name(), ndp.IntValue())
 			metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metric_type)
 			record.StructField(constants.METRICS, rfield.Struct{
 				Fields: []*rfield.Field{metricField},
@@ -439,8 +439,8 @@ func ExtractMultivariateValue(attributes pcommon.Map, multivariateKey string) (r
 			return true
 		}
 		switch value.Type() {
-		case pcommon.ValueTypeString:
-			res = value.StringVal()
+		case pcommon.ValueTypeStr:
+			res = value.Str()
 		default:
 			err = fmt.Errorf("Unsupported multivariate value type: %v", value)
 		}
@@ -455,8 +455,8 @@ func AddMultivariateValue(attributes pcommon.Map, multivariateKey string, fields
 	attributes.Range(func(key string, value pcommon.Value) bool {
 		if key == multivariateKey {
 			switch value.Type() {
-			case pcommon.ValueTypeString:
-				multivariateValue = value.StringVal()
+			case pcommon.ValueTypeStr:
+				multivariateValue = value.Str()
 				return true
 			default:
 				err = fmt.Errorf("Unsupported multivariate value type: %v", value)

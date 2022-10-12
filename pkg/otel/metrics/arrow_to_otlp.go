@@ -215,7 +215,7 @@ func collectI64NumberDataPoint(points pmetric.NumberDataPointSlice, timeUnixNano
 	p.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
 	p.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 	p.SetFlags(pmetric.MetricDataPointFlags(flags))
-	p.SetIntVal(v)
+	p.SetIntValue(v)
 	// TODO: Exemplars
 	return nil
 }
@@ -230,7 +230,7 @@ func collectF64NumberDataPoint(points pmetric.NumberDataPointSlice, timeUnixNano
 	p.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
 	p.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 	p.SetFlags(pmetric.MetricDataPointFlags(flags))
-	p.SetDoubleVal(v)
+	p.SetDoubleValue(v)
 	// TODO: Exemplars
 	return nil
 }

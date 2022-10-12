@@ -84,7 +84,7 @@ func (dg *DataGenerator) logRecord(log plog.LogRecord, sev plog.SeverityNumber, 
 	log.SetObservedTimestamp(dg.CurrentTime())
 	log.SetSeverityNumber(sev)
 	log.SetSeverityText(txt)
-	log.Body().SetStringVal(gofakeit.LoremIpsumSentence(10))
+	log.Body().SetStr(gofakeit.LoremIpsumSentence(10))
 	DefaultAttributes().CopyTo(log.Attributes())
 	log.SetTraceID(dg.Id16Bytes())
 	log.SetSpanID(dg.Id8Bytes())

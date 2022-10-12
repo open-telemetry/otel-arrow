@@ -139,14 +139,14 @@ func (d *RealTraceDataset) Traces(offset, size int) []ptrace.Traces {
 
 func v2s(v pcommon.Value) string {
 	switch v.Type() {
-	case pcommon.ValueTypeString:
-		return v.StringVal()
+	case pcommon.ValueTypeStr:
+		return v.Str()
 	case pcommon.ValueTypeBool:
-		return fmt.Sprint(v.BoolVal())
+		return fmt.Sprint(v.Bool())
 	case pcommon.ValueTypeInt:
-		return fmt.Sprint(v.IntVal())
+		return fmt.Sprint(v.Int())
 	case pcommon.ValueTypeDouble:
-		return fmt.Sprint(v.DoubleVal())
+		return fmt.Sprint(v.Double())
 	default:
 		panic(fmt.Sprint("unsupported sorting value:", v.Type()))
 	}

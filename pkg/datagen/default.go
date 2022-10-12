@@ -82,7 +82,7 @@ func DefaultAttributes() pcommon.Map {
 
 		func(attrs Attrs) {
 			attrs.PutEmpty("group_id").
-				SetEmptyBytesVal().
+				SetEmptyBytes().
 				FromRaw([]byte(pick(GROUP_IDS)))
 		},
 	)

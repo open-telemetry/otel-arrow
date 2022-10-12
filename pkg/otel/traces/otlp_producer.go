@@ -200,7 +200,7 @@ func SetSpanFrom(span ptrace.Span, los *air.ListOfStructs, row int) error {
 
 	span.SetTraceID(tid)
 	span.SetSpanID(sid)
-	span.TraceStateStruct().FromRaw(traceState)
+	span.TraceState().FromRaw(traceState)
 	span.SetParentSpanID(psid)
 	span.SetName(name)
 	span.SetKind(ptrace.SpanKind(kind))
@@ -320,7 +320,7 @@ func CopyLinksFrom(result ptrace.SpanLinkSlice, los *air.ListOfStructs, row int)
 			if err != nil {
 				return err
 			}
-			link.SetTraceState(ptrace.TraceState(value))
+			link.TraceState().FromRaw(value)
 		}
 		if attributesFound {
 			attrs, err := linkLos.ListOfStructsById(linkIdx, attributesId, constants.ATTRIBUTES)

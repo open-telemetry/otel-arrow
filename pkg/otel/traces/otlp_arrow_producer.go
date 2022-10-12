@@ -273,8 +273,8 @@ func spans(scopeSpans ptrace.ScopeSpans, cfg *config.Config) (spans []rfield.Val
 		if sid := span.SpanID(); !sid.IsEmpty() {
 			fields = append(fields, rfield.NewBinaryField(constants.SPAN_ID, sid[:]))
 		}
-		if span.TraceState() != "" {
-			fields = append(fields, rfield.NewStringField(constants.TRACE_STATE, string(span.TraceState())))
+		if ts := span.TraceState().AsRaw(); ts != "" {
+			fields = append(fields, rfield.NewStringField(constants.TRACE_STATE, ts))
 		}
 		if psid := span.ParentSpanID(); !psid.IsEmpty() {
 			fields = append(fields, rfield.NewBinaryField(constants.PARENT_SPAN_ID, psid[:]))
@@ -393,8 +393,8 @@ func links(links ptrace.SpanLinkSlice, cfg *config.Config) *rfield.Field {
 		if sid := link.SpanID(); !sid.IsEmpty() {
 			fields = append(fields, rfield.NewBinaryField(constants.SPAN_ID, sid[:]))
 		}
-		if link.TraceState() != "" {
-			fields = append(fields, rfield.NewStringField(constants.TRACE_STATE, string(link.TraceState())))
+		if ts := link.TraceState().AsRaw(); ts != "" {
+			fields = append(fields, rfield.NewStringField(constants.TRACE_STATE, ts))
 		}
 		attributes := common.NewAttributes(link.Attributes(), cfg)
 		if attributes != nil {
