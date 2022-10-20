@@ -47,52 +47,58 @@ type NameType struct {
 	Type string
 }
 
-// DataTypeSignature returns the canonical arrow.DataType signature of the data type.
-func DataTypeSignature(dataType arrow.DataType) string {
+// WriteDataTypeSignature writes the canonical arrow.DataType signature of the data type.
+func WriteDataTypeSignature(dataType arrow.DataType, sig *strings.Builder) {
 	switch dataType.ID() {
 	case arrow.BOOL:
-		return common.BOOL_SIG
+		sig.WriteString(common.BOOL_SIG)
 	case arrow.UINT8:
-		return common.U8_SIG
+		sig.WriteString(common.U8_SIG)
 	case arrow.UINT16:
-		return common.U16_SIG
+		sig.WriteString(common.U16_SIG)
 	case arrow.UINT32:
-		return common.U32_SIG
+		sig.WriteString(common.U32_SIG)
 	case arrow.UINT64:
-		return common.U64_SIG
+		sig.WriteString(common.U64_SIG)
 	case arrow.INT8:
-		return common.I8_SIG
+		sig.WriteString(common.I8_SIG)
 	case arrow.INT16:
-		return common.I16_SIG
+		sig.WriteString(common.I16_SIG)
 	case arrow.INT32:
-		return common.I32_SIG
+		sig.WriteString(common.I32_SIG)
 	case arrow.INT64:
-		return common.I64_SIG
+		sig.WriteString(common.I64_SIG)
 	case arrow.FLOAT32:
-		return common.F32_SIG
+		sig.WriteString(common.F32_SIG)
 	case arrow.FLOAT64:
-		return common.F64_SIG
+		sig.WriteString(common.F64_SIG)
 	case arrow.STRING:
-		return common.STRING_SIG
+		sig.WriteString(common.STRING_SIG)
 	case arrow.BINARY:
-		return common.BINARY_SIG
+		sig.WriteString(common.BINARY_SIG)
 	case arrow.LIST:
-		return "[" + DataTypeSignature(dataType.(*arrow.ListType).Elem()) + "]"
+		sig.WriteString("[")
+		WriteDataTypeSignature(dataType.(*arrow.ListType).Elem(), sig)
+		sig.WriteString("]")
 	case arrow.STRUCT:
-		var fields []*NameType
 		structDataType := dataType.(*arrow.StructType)
+		fields := make([]*NameType, 0, len(structDataType.Fields()))
 		for _, field := range structDataType.Fields() {
 			fields = append(fields, &NameType{
 				Name: field.Name,
 				Type: DataTypeSignature(field.Type),
 			})
 		}
+		// TODO check if it's possible to get rid of this sort as the incoming dataTypes are potentially already sorted.
+		// TODO getting rid of this sort will allow to remove this local allocations.
 		sort.Sort(NameTypes(fields))
 		fieldSigs := make([]string, 0, len(fields))
 		for _, field := range fields {
 			fieldSigs = append(fieldSigs, field.Name+":"+field.Type)
 		}
-		return "{" + strings.Join(fieldSigs, ",") + "}"
+		sig.WriteString("{")
+		sig.WriteString(strings.Join(fieldSigs, ","))
+		sig.WriteString("}")
 	case arrow.DATE32, arrow.DATE64, arrow.DECIMAL128, arrow.DECIMAL256, arrow.DENSE_UNION, arrow.SPARSE_UNION,
 		arrow.INTERVAL, arrow.TIME32, arrow.TIME64, arrow.DICTIONARY, arrow.FIXED_SIZE_LIST, arrow.MAP,
 		arrow.FIXED_SIZE_BINARY, arrow.INTERVAL_DAY_TIME, arrow.INTERVAL_MONTHS, arrow.INTERVAL_MONTH_DAY_NANO,
@@ -102,6 +108,13 @@ func DataTypeSignature(dataType arrow.DataType) string {
 	default:
 		panic("unknown data type '" + dataType.ID().String() + "'")
 	}
+}
+
+// DataTypeSignature returns the canonical arrow.DataType signature of the data type.
+func DataTypeSignature(dataType arrow.DataType) string {
+	var sig strings.Builder
+	WriteDataTypeSignature(dataType, &sig)
+	return sig.String()
 }
 
 // CoerceDataType coerces an heterogeneous set of [`DataType`] into a single one. Rules:

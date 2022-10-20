@@ -332,7 +332,7 @@ func (f *Field) AddMetadata(key string, value string) {
 		}
 	} else {
 		// Insertion sort (naive implementation as we don't expect many keys)
-		// Metadata must be sorted by keys to be able to build a canonical signature (see WriteSignature).
+		// Metadata must be sorted by keys to be able to build a canonical signature (see WriteSigType).
 		i := 0
 		for ; i < len(f.metadata.Keys); i++ {
 			if f.metadata.Keys[i] > key {
@@ -353,7 +353,8 @@ func (f *Field) Normalize() {
 	f.Value.Normalize()
 }
 
-func (f *Field) WriteSignature(sig *strings.Builder) {
+// WriteSigType writes the field signature type to the given writer.
+func (f *Field) WriteSigType(sig *strings.Builder) {
 	sig.WriteString(f.Name)
 	sig.WriteString(":")
 	f.Value.WriteSignature(sig)
@@ -370,4 +371,26 @@ func (f *Field) WriteSignature(sig *strings.Builder) {
 		}
 		sig.WriteString(">")
 	}
+}
+
+// WriteSig writes the field signature (type + data) to the given writer.
+func (f *Field) WriteSig(sig *strings.Builder) {
+	sig.WriteString(f.Name)
+	sig.WriteString(":")
+	f.Value.WriteSignature(sig)
+
+	if f.metadata != nil {
+		sig.WriteString("<")
+		for i, key := range f.metadata.Keys {
+			if i > 0 {
+				sig.WriteByte(',')
+			}
+			sig.WriteString(key)
+			sig.WriteByte('=')
+			sig.WriteString(f.metadata.Values[i])
+		}
+		sig.WriteString(">")
+	}
+	sig.WriteString("=")
+	f.Value.WriteData(sig)
 }

@@ -338,7 +338,7 @@ func ResourceFieldWithSig(resource pcommon.Resource, cfg *config.Config) (*rfiel
 		resourceFields = append(resourceFields, attributes)
 		// compute signature for the resource based on its attributes.
 		attributes.Normalize()
-		attributes.WriteSignature(&sig)
+		attributes.WriteSig(&sig)
 	}
 
 	if resource.DroppedAttributesCount() > 0 {

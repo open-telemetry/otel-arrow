@@ -226,13 +226,13 @@ func GroupSpans(resourceSpans ptrace.ResourceSpans, cfg *config.Config) (scopeSp
 
 		scopeField := common.ScopeField(constants.SCOPE, scopeSpans.Scope(), cfg)
 		scopeField.Normalize()
-		scopeField.WriteSignature(&sig)
+		scopeField.WriteSig(&sig)
 
 		var schemaField *rfield.Field
 		if scopeSpans.SchemaUrl() != "" {
 			schemaField = rfield.NewStringField(constants.SCHEMA_URL, scopeSpans.SchemaUrl())
 			sig.WriteString(",")
-			schemaField.WriteSignature(&sig)
+			schemaField.WriteSig(&sig)
 		}
 
 		// Create a new entry in the map if the signature is not already present

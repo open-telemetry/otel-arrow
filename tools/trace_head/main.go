@@ -20,20 +20,23 @@ import (
 	"os"
 	"path"
 
-	"github.com/lquerel/otel-arrow-adapter/pkg/datagen"
-
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
+
+	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark/dataset"
 )
 
 var help = flag.Bool("help", false, "Show help")
-var outputFile = "./data/otlp_traces.pb"
-var batchSize = 50000
 
-// This tool generates a trace dataset in the OpenTelemetry Protocol format from a fake traces generator.
+var inputFile = "./data/otlp_traces.pb"
+var outputFile = "./data/nth_first_otlp_traces.pb"
+var spanCount = 10000
+
+// This tool extracts the first n spans from a protobuf file of traces (i.e. kind of `head` command for spans).
 func main() {
 	// Define the flags.
+	flag.StringVar(&inputFile, "input", outputFile, "Input file")
 	flag.StringVar(&outputFile, "output", outputFile, "Output file")
-	flag.IntVar(&batchSize, "batchsize", batchSize, "Batch size")
+	flag.IntVar(&spanCount, "span_count", spanCount, "Number of spans")
 
 	// Parse the flag
 	flag.Parse()
@@ -44,12 +47,11 @@ func main() {
 		os.Exit(0)
 	}
 
-	// Generate the dataset.
-	generator := datagen.NewTraceGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
-	request := ptraceotlp.NewRequestFromTraces(generator.Generate(batchSize, 100))
-
-	// Marshal the request to bytes.
-	msg, err := request.MarshalProto()
+	// Extract the first n spans
+	ds := dataset.NewRealTraceDataset(inputFile, []string{"trace_id"})
+	traces := ds.Traces(0, spanCount)
+	request := ptraceotlp.NewRequestFromTraces(traces[0])
+	pb, err := request.MarshalProto()
 	if err != nil {
 		log.Fatal("marshaling error: ", err)
 	}
@@ -61,7 +63,7 @@ func main() {
 			log.Fatal("error creating directory: ", err)
 		}
 	}
-	err = os.WriteFile(outputFile, msg, 0644)
+	err = os.WriteFile(outputFile, pb, 0644)
 	if err != nil {
 		log.Fatal("write error: ", err)
 	}

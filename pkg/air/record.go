@@ -69,7 +69,7 @@ func (r Record) SchemaId() string {
 		if i > 0 {
 			sig.WriteByte(',')
 		}
-		f.WriteSignature(&sig)
+		f.WriteSigType(&sig)
 	}
 	return sig.String()
 }

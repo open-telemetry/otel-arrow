@@ -81,7 +81,7 @@ func SetMetricsFrom(metrics pmetric.MetricSlice, record arrow.Record, row int) e
 	if err != nil {
 		return err
 	}
-	flags, err := air.U32FromRecord(record, row, constants.FLAGS)
+	flags, err := air.OptionalU32FromRecord(record, row, constants.FLAGS)
 	if err != nil {
 		return err
 	}
@@ -98,13 +98,15 @@ func SetMetricsFrom(metrics pmetric.MetricSlice, record arrow.Record, row int) e
 		return fmt.Errorf("metrics array is not a struct")
 	}
 
-	attrsField, attrsArray, err := air.FieldArray(record, constants.ATTRIBUTES)
+	attrsField, attrsArray, err := air.OptionalFieldArray(record, constants.ATTRIBUTES)
 	if err != nil {
 		return err
 	}
 	attributes := pcommon.NewMap()
-	if err := common.CopyAttributesFrom(attributes, attrsField.Type, attrsArray, row); err != nil {
-		return err
+	if attrsField != nil {
+		if err := common.CopyAttributesFrom(attributes, attrsField.Type, attrsArray, row); err != nil {
+			return err
+		}
 	}
 	for i := range metricsType.Fields() {
 		field := &metricsType.Fields()[i]
@@ -257,7 +259,7 @@ func collectMultivariateSumMetrics(metrics pmetric.MetricSlice, timeUnixNano uin
 		extAttributes.EnsureCapacity(attributes.Len() + 1)
 		attributes.CopyTo(extAttributes)
 
-		extAttributes.PutString(
+		extAttributes.PutStr(
 			metricMetadata(field, constants.METADATA_METRIC_MULTIVARIATE_ATTR),
 			field.Name,
 		)
@@ -297,7 +299,7 @@ func collectMultivariateGaugeMetrics(metrics pmetric.MetricSlice, timeUnixNano u
 		extAttributes.EnsureCapacity(attributes.Len() + 1)
 		attributes.CopyTo(extAttributes)
 
-		extAttributes.PutString(
+		extAttributes.PutStr(
 			metricMetadata(field, constants.METADATA_METRIC_MULTIVARIATE_ATTR),
 			field.Name,
 		)

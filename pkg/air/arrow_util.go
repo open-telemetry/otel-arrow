@@ -141,6 +141,18 @@ func FieldArray(record arrow.Record, column string) (*arrow.Field, arrow.Array, 
 	return &field, record.Column(fieldIdsWithSameName[0]), nil
 }
 
+func OptionalFieldArray(record arrow.Record, column string) (*arrow.Field, arrow.Array, error) {
+	fieldIdsWithSameName := record.Schema().FieldIndices(column)
+	if fieldIdsWithSameName == nil {
+		return nil, nil, nil
+	}
+	if len(fieldIdsWithSameName) != 1 {
+		return nil, nil, fmt.Errorf("column %q is ambiguous (multiple columns with the same name)", column)
+	}
+	field := record.Schema().Field(fieldIdsWithSameName[0])
+	return &field, record.Column(fieldIdsWithSameName[0]), nil
+}
+
 func StructFromRecord(record arrow.Record, column string) (*arrow.StructType, *array.Struct, error) {
 	fieldIdsWithSameName := record.Schema().FieldIndices(column)
 	if fieldIdsWithSameName == nil {
@@ -375,7 +387,7 @@ func (los *ListOfStructs) CopyAttributesFrom(attr pcommon.Map) error {
 			if err != nil {
 				return err
 			}
-			attr.PutString(key, value)
+			attr.PutStr(key, value)
 		case common.BINARY_SIG:
 			value, err := los.BinaryFieldByName("binary", i)
 			if err != nil {
@@ -494,6 +506,17 @@ func Array(record arrow.Record, column string) (arrow.Array, error) {
 	return record.Column(fieldIdsWithSameName[0]), nil
 }
 
+func OptionalArray(record arrow.Record, column string) (arrow.Array, error) {
+	fieldIdsWithSameName := record.Schema().FieldIndices(column)
+	if fieldIdsWithSameName == nil {
+		return nil, nil
+	}
+	if len(fieldIdsWithSameName) != 1 {
+		return nil, fmt.Errorf("column %q is ambiguous (multiple columns with the same name)", column)
+	}
+	return record.Column(fieldIdsWithSameName[0]), nil
+}
+
 func FieldOfStruct(dt *arrow.StructType, column string) (*arrow.Field, int, bool) {
 	idx, found := dt.FieldIdx(column)
 	if !found {
@@ -591,6 +614,17 @@ func U32FromRecord(record arrow.Record, row int, column string) (uint32, error) 
 	arr, err := Array(record, column)
 	if err != nil {
 		return 0, err
+	}
+	return U32FromArray(arr, row)
+}
+
+func OptionalU32FromRecord(record arrow.Record, row int, column string) (uint32, error) {
+	arr, err := OptionalArray(record, column)
+	if err != nil {
+		return 0, err
+	}
+	if arr == nil {
+		return 0, nil
 	}
 	return U32FromArray(arr, row)
 }

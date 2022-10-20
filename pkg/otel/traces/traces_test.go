@@ -20,15 +20,16 @@ import (
 
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
+	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/lquerel/otel-arrow-adapter/pkg/datagen"
 	"github.com/lquerel/otel-arrow-adapter/pkg/otel/assert"
 )
 
-// TestOtlpToOtlpArrowConversion tests the conversion of OTLP traces to Arrow and back to OTLP.
-//
+// TestConversionFromSyntheticData tests the conversion of OTLP traces to Arrow and back to OTLP.
+// The initial OTLP traces are generated from a synthetic dataset.
 // This test is based on the JSON serialization of the initial generated OTLP traces compared to the JSON serialization
 // of the OTLP traces generated from the Arrow records.
-func TestOtlpToOtlpArrowConversion(t *testing.T) {
+func TestConversionFromSyntheticData(t *testing.T) {
 	t.Parallel()
 
 	tracesGen := datagen.NewTraceGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
@@ -56,6 +57,47 @@ func TestOtlpToOtlpArrowConversion(t *testing.T) {
 			actualRequests[i] = ptraceotlp.NewRequestFromTraces(t)
 		}
 
+		assert.Equiv(t, []json.Marshaler{expectedRequest}, actualRequests)
+	}
+}
+
+// TestConversionFromRealData tests the conversion of OTLP traces to Arrow and back to OTLP.
+// The initial OTLP traces are generated from a real dataset (anonymized).
+// This test is based on the JSON serialization of the initial generated OTLP traces compared to the JSON serialization
+// of the OTLP traces generated from the Arrow records.
+func TestConversionFromRealData(t *testing.T) {
+	t.Parallel()
+
+	// Load a real OTLP traces request.
+	ds := dataset.NewRealTraceDataset("../../../data/nth_first_otlp_traces.pb", []string{"trace_id"})
+
+	batch_sizes := []int{1, 10, 100, 1000, 5000, 10000}
+	for _, batch_size := range batch_sizes {
+		traces := ds.Traces(0, batch_size)
+		expectedRequest := ptraceotlp.NewRequestFromTraces(traces[0])
+
+		// Convert the OTLP traces request to Arrow.
+		otlpArrowProducer := NewOtlpArrowProducer()
+		records, err := otlpArrowProducer.ProduceFrom(expectedRequest.Traces())
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Convert the Arrow records back to OTLP.
+		otlpProducer := NewOtlpProducer()
+		var actualRequests []json.Marshaler
+		for _, record := range records {
+			traces, err := otlpProducer.ProduceFrom(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			for _, t := range traces {
+				actualRequests = append(actualRequests, ptraceotlp.NewRequestFromTraces(t))
+			}
+		}
+
+		// Check the equivalence of the initial and the generated OTLP traces.
 		assert.Equiv(t, []json.Marshaler{expectedRequest}, actualRequests)
 	}
 }

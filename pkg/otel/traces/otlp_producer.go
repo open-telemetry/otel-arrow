@@ -170,13 +170,19 @@ func SetSpanFrom(span ptrace.Span, los *air.ListOfStructs, row int) error {
 	if err != nil {
 		return err
 	}
-	message, err := air.StringFromStruct(statusDt, statusArr, row, constants.STATUS_MESSAGE)
-	if err != nil {
-		return err
-	}
-	code, err := air.I32FromStruct(statusDt, statusArr, row, constants.STATUS_CODE)
-	if err != nil {
-		return err
+	if statusDt != nil {
+		// Status exists
+		message, err := air.StringFromStruct(statusDt, statusArr, row, constants.STATUS_MESSAGE)
+		if err != nil {
+			return err
+		}
+		span.Status().SetMessage(message)
+
+		code, err := air.I32FromStruct(statusDt, statusArr, row, constants.STATUS_CODE)
+		if err != nil {
+			return err
+		}
+		span.Status().SetCode(ptrace.StatusCode(code))
 	}
 	attrs, err := los.ListOfStructsByName(constants.ATTRIBUTES, row)
 	if err != nil {
@@ -209,8 +215,6 @@ func SetSpanFrom(span ptrace.Span, los *air.ListOfStructs, row int) error {
 	span.SetDroppedAttributesCount(droppedAttributesCount)
 	span.SetDroppedEventsCount(droppedEventsCount)
 	span.SetDroppedLinksCount(droppedLinksCount)
-	span.Status().SetCode(ptrace.StatusCode(code))
-	span.Status().SetMessage(message)
 	return nil
 }
 
@@ -220,6 +224,10 @@ func CopyEventsFrom(result ptrace.SpanEventSlice, los *air.ListOfStructs, row in
 
 	if err != nil {
 		return err
+	}
+	if eventLos == nil {
+		// No events found
+		return nil
 	}
 
 	timeUnixNanoId, timeUnixNanoFound := eventLos.FieldIdx(constants.TIME_UNIX_NANO)
@@ -274,6 +282,10 @@ func CopyLinksFrom(result ptrace.SpanLinkSlice, los *air.ListOfStructs, row int)
 
 	if err != nil {
 		return err
+	}
+	if linkLos == nil {
+		// No links found
+		return nil
 	}
 
 	traceIdId, traceIdFound := linkLos.FieldIdx(constants.TRACE_ID)

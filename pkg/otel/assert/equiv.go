@@ -111,7 +111,7 @@ func vPaths(marshaler []json.Marshaler) ([]string, error) {
 	}
 
 	vPaths := make([]string, 0, len(vPathMap))
-	for vPath, _ := range vPathMap {
+	for vPath := range vPathMap {
 		vPaths = append(vPaths, vPath)
 	}
 
@@ -127,7 +127,8 @@ func exportAllVPaths(traces map[string]interface{}, currentVPath string, vPaths 
 		switch v := value.(type) {
 		case []interface{}:
 			for i := 0; i < len(v); i++ {
-				arrayVPath := localVPath + fmt.Sprintf("[%d]", i)
+				// TODO: this is an approximation that is good enough for now, medium-term we should compute the index key based on a signature of the non-array fields.
+				arrayVPath := localVPath + "[_]"
 				exportAllVPaths(v[i].(map[string]interface{}), arrayVPath, vPaths)
 			}
 		case []string:

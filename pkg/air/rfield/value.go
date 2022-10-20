@@ -34,6 +34,7 @@ type Value interface {
 	StringPath(path []int) string
 	Compare(other Value) int
 	WriteSignature(sig *strings.Builder)
+	WriteData(sig *strings.Builder)
 	AsBool() (*bool, error)
 
 	AsU8() (*uint8, error)
@@ -92,6 +93,11 @@ func (v *Bool) Compare(other Value) int {
 }
 func (v *Bool) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(common.BOOL_SIG)
+}
+func (v *Bool) WriteData(sig *strings.Builder) {
+	if v.Value != nil {
+		sig.WriteString(fmt.Sprintf("%v", *v.Value))
+	}
 }
 func (v *Bool) AsBool() (*bool, error) {
 	return v.Value, nil
@@ -223,6 +229,11 @@ func (v *I8) Compare(other Value) int {
 func (v *I8) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(common.I8_SIG)
 }
+func (v *I8) WriteData(sig *strings.Builder) {
+	if v.Value != nil {
+		sig.WriteString(fmt.Sprintf("%d", *v.Value))
+	}
+}
 func (v *I8) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert signed integer to bool")
 }
@@ -325,6 +336,11 @@ func (v *I16) Compare(other Value) int {
 func (v *I16) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(common.I16_SIG)
 }
+func (v *I16) WriteData(sig *strings.Builder) {
+	if v.Value != nil {
+		sig.WriteString(fmt.Sprintf("%d", *v.Value))
+	}
+}
 func (v *I16) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert signed integer to bool")
 }
@@ -423,6 +439,11 @@ func (v *I32) Compare(other Value) int {
 func (v *I32) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(common.I32_SIG)
 }
+func (v *I32) WriteData(sig *strings.Builder) {
+	if v.Value != nil {
+		sig.WriteString(fmt.Sprintf("%d", *v.Value))
+	}
+}
 func (v *I32) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert signed integer to bool")
 }
@@ -517,6 +538,11 @@ func (v *I64) Compare(other Value) int {
 func (v *I64) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(common.I64_SIG)
 }
+func (v *I64) WriteData(sig *strings.Builder) {
+	if v.Value != nil {
+		sig.WriteString(fmt.Sprintf("%d", *v.Value))
+	}
+}
 func (v *I64) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert signed integer to bool")
 }
@@ -606,6 +632,11 @@ func (v *U8) Compare(other Value) int {
 }
 func (v *U8) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(common.U8_SIG)
+}
+func (v *U8) WriteData(sig *strings.Builder) {
+	if v.Value != nil {
+		sig.WriteString(fmt.Sprintf("%d", *v.Value))
+	}
 }
 func (v *U8) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert unsigned integer to bool")
@@ -721,6 +752,11 @@ func (v *U16) Compare(other Value) int {
 func (v *U16) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(common.U16_SIG)
 }
+func (v *U16) WriteData(sig *strings.Builder) {
+	if v.Value != nil {
+		sig.WriteString(fmt.Sprintf("%d", *v.Value))
+	}
+}
 func (v *U16) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert unsigned integer to bool")
 }
@@ -827,6 +863,11 @@ func (v *U32) Compare(other Value) int {
 func (v *U32) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(common.U32_SIG)
 }
+func (v *U32) WriteData(sig *strings.Builder) {
+	if v.Value != nil {
+		sig.WriteString(fmt.Sprintf("%d", *v.Value))
+	}
+}
 func (v *U32) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert unsigned integer to bool")
 }
@@ -925,6 +966,11 @@ func (v *U64) Compare(other Value) int {
 func (v *U64) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(common.U64_SIG)
 }
+func (v *U64) WriteData(sig *strings.Builder) {
+	if v.Value != nil {
+		sig.WriteString(fmt.Sprintf("%d", *v.Value))
+	}
+}
 func (v *U64) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert unsigned integer to bool")
 }
@@ -1014,6 +1060,11 @@ func (v *F32) Compare(other Value) int {
 }
 func (v *F32) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(common.F32_SIG)
+}
+func (v *F32) WriteData(sig *strings.Builder) {
+	if v.Value != nil {
+		sig.WriteString(fmt.Sprintf("%f", *v.Value))
+	}
 }
 func (v *F32) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert float32 to bool")
@@ -1109,6 +1160,11 @@ func (v *F64) Compare(other Value) int {
 func (v *F64) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(common.F64_SIG)
 }
+func (v *F64) WriteData(sig *strings.Builder) {
+	if v.Value != nil {
+		sig.WriteString(fmt.Sprintf("%f", *v.Value))
+	}
+}
 func (v *F64) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert float64 to bool")
 }
@@ -1201,6 +1257,11 @@ func (v *String) Compare(other Value) int {
 func (v *String) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(common.STRING_SIG)
 }
+func (v *String) WriteData(sig *strings.Builder) {
+	if v.Value != nil {
+		sig.WriteString(*v.Value)
+	}
+}
 func (v *String) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert string to bool")
 }
@@ -1274,6 +1335,11 @@ func (v *Binary) Compare(other Value) int {
 }
 func (v *Binary) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(common.BINARY_SIG)
+}
+func (v *Binary) WriteData(sig *strings.Builder) {
+	if v.Value != nil {
+		sig.WriteString(fmt.Sprintf("%x", v.Value))
+	}
 }
 func (v *Binary) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert binary to bool")
@@ -1368,7 +1434,17 @@ func (v *Struct) WriteSignature(sig *strings.Builder) {
 		if i > 0 {
 			sig.WriteByte(',')
 		}
-		f.WriteSignature(sig)
+		f.WriteSigType(sig)
+	}
+	sig.WriteString("}")
+}
+func (v *Struct) WriteData(sig *strings.Builder) {
+	sig.WriteString("{")
+	for i, f := range v.Fields {
+		if i > 0 {
+			sig.WriteByte(',')
+		}
+		f.Value.WriteData(sig)
 	}
 	sig.WriteString("}")
 }
@@ -1485,7 +1561,17 @@ func (v *List) Compare(_ Value) int {
 func (v *List) WriteSignature(sig *strings.Builder) {
 	sig.WriteString("[")
 	eType := v.EType()
-	sig.WriteString(DataTypeSignature(eType))
+	WriteDataTypeSignature(eType, sig)
+	sig.WriteString("]")
+}
+func (v *List) WriteData(sig *strings.Builder) {
+	sig.WriteString("[")
+	for i := 0; i < len(v.Values); i++ {
+		if i > 0 {
+			sig.WriteString(", ")
+		}
+		v.Values[i].WriteData(sig)
+	}
 	sig.WriteString("]")
 }
 func (v *List) AsBool() (*bool, error) {
