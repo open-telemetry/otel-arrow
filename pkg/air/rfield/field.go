@@ -374,6 +374,7 @@ func (f *Field) WriteSigType(sig *strings.Builder) {
 }
 
 // WriteSig writes the field signature (type + data) to the given writer.
+// Important note: the field is supposed to be normalized before calling this method.
 func (f *Field) WriteSig(sig *strings.Builder) {
 	sig.WriteString(f.Name)
 	sig.WriteString(":")

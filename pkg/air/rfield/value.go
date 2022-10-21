@@ -1559,10 +1559,10 @@ func (v *List) Compare(_ Value) int {
 	panic("struct comparison not implemented")
 }
 func (v *List) WriteSignature(sig *strings.Builder) {
-	sig.WriteString("[")
+	sig.WriteByte('[')
 	eType := v.EType()
 	WriteDataTypeSignature(eType, sig)
-	sig.WriteString("]")
+	sig.WriteByte(']')
 }
 func (v *List) WriteData(sig *strings.Builder) {
 	sig.WriteString("[")

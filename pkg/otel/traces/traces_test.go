@@ -67,6 +67,7 @@ func TestConversionFromSyntheticData(t *testing.T) {
 // of the OTLP traces generated from the Arrow records.
 func TestConversionFromRealData(t *testing.T) {
 	t.Parallel()
+	t.Skip("Testing based on production data that is not stored in the")
 
 	// Load a real OTLP traces request.
 	ds := dataset.NewRealTraceDataset("../../../data/nth_first_otlp_traces.pb", []string{"trace_id"})

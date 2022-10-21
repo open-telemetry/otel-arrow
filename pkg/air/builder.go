@@ -78,6 +78,7 @@ type RecordBuilderMetadata struct {
 }
 
 // Constructs a new `RecordBuilder` from a Record.
+// Important: the record is supposed to be normalized before the call to this method.
 func NewRecordBuilderWithRecord(allocator *memory.GoAllocator, record *Record, config *config2.Config) *RecordBuilder {
 	var buf bytes.Buffer
 

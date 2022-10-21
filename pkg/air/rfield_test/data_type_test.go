@@ -89,7 +89,7 @@ func TestWriteDataTypeSignature(t *testing.T) {
 		)},
 		arrow.Field{Name: "d", Type: arrow.ListOfField(arrow.Field{Name: "item", Type: arrow.PrimitiveTypes.Uint8})},
 	))
-	if sig != "{a:I8,b:Str,c:U8,d:[U8],e:{f:Bol,g:Str}}" {
+	if sig != "{c:U8,a:I8,b:Str,e:{g:Str,f:Bol},d:[U8]}" { // DataTypeSignature doesn't guarantee the order of the fields
 		t.Errorf("Unexpected signature: %s", sig)
 	}
 

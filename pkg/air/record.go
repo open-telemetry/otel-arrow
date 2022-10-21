@@ -74,6 +74,8 @@ func (r Record) SchemaId() string {
 	return sig.String()
 }
 
+// FieldDataTypes returns the data types of the fields.
+// Important note: the record is supposed to be normalized before calling this method.
 func (r Record) FieldDataTypes() map[string]arrow.DataType {
 	fieldDataTypes := make(map[string]arrow.DataType, len(r.fields))
 	for _, f := range r.fields {

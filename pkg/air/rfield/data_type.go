@@ -77,28 +77,21 @@ func WriteDataTypeSignature(dataType arrow.DataType, sig *strings.Builder) {
 	case arrow.BINARY:
 		sig.WriteString(common.BINARY_SIG)
 	case arrow.LIST:
-		sig.WriteString("[")
+		sig.WriteByte('[')
 		WriteDataTypeSignature(dataType.(*arrow.ListType).Elem(), sig)
-		sig.WriteString("]")
+		sig.WriteByte(']')
 	case arrow.STRUCT:
 		structDataType := dataType.(*arrow.StructType)
-		fields := make([]*NameType, 0, len(structDataType.Fields()))
-		for _, field := range structDataType.Fields() {
-			fields = append(fields, &NameType{
-				Name: field.Name,
-				Type: DataTypeSignature(field.Type),
-			})
+		sig.WriteByte('{')
+		for i, field := range structDataType.Fields() {
+			if i > 0 {
+				sig.WriteByte(',')
+			}
+			sig.WriteString(field.Name)
+			sig.WriteByte(':')
+			WriteDataTypeSignature(field.Type, sig)
 		}
-		// TODO check if it's possible to get rid of this sort as the incoming dataTypes are potentially already sorted.
-		// TODO getting rid of this sort will allow to remove this local allocations.
-		sort.Sort(NameTypes(fields))
-		fieldSigs := make([]string, 0, len(fields))
-		for _, field := range fields {
-			fieldSigs = append(fieldSigs, field.Name+":"+field.Type)
-		}
-		sig.WriteString("{")
-		sig.WriteString(strings.Join(fieldSigs, ","))
-		sig.WriteString("}")
+		sig.WriteByte('}')
 	case arrow.DATE32, arrow.DATE64, arrow.DECIMAL128, arrow.DECIMAL256, arrow.DENSE_UNION, arrow.SPARSE_UNION,
 		arrow.INTERVAL, arrow.TIME32, arrow.TIME64, arrow.DICTIONARY, arrow.FIXED_SIZE_LIST, arrow.MAP,
 		arrow.FIXED_SIZE_BINARY, arrow.INTERVAL_DAY_TIME, arrow.INTERVAL_MONTHS, arrow.INTERVAL_MONTH_DAY_NANO,
