@@ -10,7 +10,7 @@ import (
 	"github.com/lquerel/otel-arrow-adapter/pkg/air/config"
 	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark"
 	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark/dataset"
-	"github.com/lquerel/otel-arrow-adapter/pkg/otel/batch_event"
+	"github.com/lquerel/otel-arrow-adapter/pkg/otel/arrow_record"
 	"github.com/lquerel/otel-arrow-adapter/pkg/otel/metrics"
 
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -22,8 +22,8 @@ type MetricsProfileable struct {
 	dataset            dataset.MetricsDataset
 	metrics            []pmetric.Metrics
 	rr                 *air.RecordRepository
-	producer           *batch_event.Producer
-	batchEvents        []*v1.BatchEvent
+	producer           *arrow_record.Producer
+	batchArrowRecords  []*v1.BatchArrowRecords
 	config             *config.Config
 	multivariateConfig *metrics.MultivariateMetricsConfig
 }
@@ -34,8 +34,8 @@ func NewMetricsProfileable(tags []string, dataset dataset.MetricsDataset, config
 		dataset:            dataset,
 		compression:        compression,
 		rr:                 nil,
-		producer:           batch_event.NewProducer(),
-		batchEvents:        make([]*v1.BatchEvent, 0, 10),
+		producer:           arrow_record.NewProducer(),
+		batchArrowRecords:  make([]*v1.BatchArrowRecords, 0, 10),
 		config:             config,
 		multivariateConfig: multivariateConfig,
 	}
@@ -66,28 +66,22 @@ func (s *MetricsProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	s.metrics = s.dataset.Metrics(startAt, size)
 }
 func (s *MetricsProfileable) CreateBatch(_ io.Writer, _, _ int) {
-	// Conversion of OTLP metrics to OTLP Arrow events
-	s.batchEvents = make([]*v1.BatchEvent, 0, len(s.metrics))
+	// Conversion of OTLP metrics to OTLP Arrow Records
+	s.batchArrowRecords = make([]*v1.BatchArrowRecords, 0, len(s.metrics))
 	for _, metricsServiceRequest := range s.metrics {
 		records, err := metrics.OtlpMetricsToArrowRecords(s.rr, metricsServiceRequest, s.multivariateConfig, s.config)
 		if err != nil {
 			panic(err)
 		}
-		for _, record := range records {
-			//fmt.Fprintf(writer, "IPC Message\n")
-			//fmt.Fprintf(writer, "\t- schema id = %s\n", schemaId)
-			//fmt.Fprintf(writer, "\t- record #row = %d\n", record.Column(0).Len())
-			batchEvent, err := s.producer.Produce(batch_event.NewMetricsMessage(record, v1.DeliveryType_BEST_EFFORT))
-			if err != nil {
-				panic(err)
-			}
-			//fmt.Fprintf(writer, "\t- batch-id = %s\n", batchEvent.BatchId)
-			//fmt.Fprintf(writer, "\t- sub-stream-id = %s\n", batchEvent.SubStreamId)
-			//for _, p := range batchEvent.OtlpArrowPayloads {
-			//	fmt.Fprintf(writer, "\t- IPC message size = %d\n", len(p.Schema))
-			//}
-			s.batchEvents = append(s.batchEvents, batchEvent)
+		rms := make([]*arrow_record.RecordMessage, len(records))
+		for i, record := range records {
+			rms[i] = arrow_record.NewMetricsMessage(record, v1.DeliveryType_BEST_EFFORT)
 		}
+		bar, err := s.producer.Produce(rms, v1.DeliveryType_BEST_EFFORT)
+		if err != nil {
+			panic(err)
+		}
+		s.batchArrowRecords = append(s.batchArrowRecords, bar)
 	}
 }
 func (s *MetricsProfileable) Process(io.Writer) string {
@@ -95,8 +89,8 @@ func (s *MetricsProfileable) Process(io.Writer) string {
 	return ""
 }
 func (s *MetricsProfileable) Serialize(io.Writer) ([][]byte, error) {
-	buffers := make([][]byte, len(s.batchEvents))
-	for i, be := range s.batchEvents {
+	buffers := make([][]byte, len(s.batchArrowRecords))
+	for i, be := range s.batchArrowRecords {
 		bytes, err := proto.Marshal(be)
 		if err != nil {
 			return nil, err
@@ -106,17 +100,17 @@ func (s *MetricsProfileable) Serialize(io.Writer) ([][]byte, error) {
 	return buffers, nil
 }
 func (s *MetricsProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
-	s.batchEvents = make([]*v1.BatchEvent, len(buffers))
+	s.batchArrowRecords = make([]*v1.BatchArrowRecords, len(buffers))
 	for i, b := range buffers {
-		be := &v1.BatchEvent{}
+		be := &v1.BatchArrowRecords{}
 		if err := proto.Unmarshal(b, be); err != nil {
 			panic(err)
 		}
-		s.batchEvents[i] = be
+		s.batchArrowRecords[i] = be
 	}
 }
 func (s *MetricsProfileable) Clear() {
 	s.metrics = nil
-	s.batchEvents = s.batchEvents[:0]
+	s.batchArrowRecords = s.batchArrowRecords[:0]
 }
 func (s *MetricsProfileable) ShowStats() {}

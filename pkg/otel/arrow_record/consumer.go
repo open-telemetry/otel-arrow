@@ -15,7 +15,7 @@
  *
  */
 
-package batch_event
+package arrow_record
 
 import (
 	"bytes"
@@ -23,10 +23,11 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/ipc"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	coleventspb "github.com/lquerel/otel-arrow-adapter/api/collector/arrow/v1"
+	colarspb "github.com/lquerel/otel-arrow-adapter/api/collector/arrow/v1"
 	"github.com/lquerel/otel-arrow-adapter/pkg/otel/traces"
 )
 
+// Consumer is a BatchArrowRecords consumer.
 type Consumer struct {
 	streamConsumers   map[string]*streamConsumer
 	otlpTraceProducer *traces.OtlpProducer
@@ -37,7 +38,7 @@ type streamConsumer struct {
 	ipcReader *ipc.Reader
 }
 
-// NewConsumer creates a new BatchEvent consumer.
+// NewConsumer creates a new BatchArrowRecords consumer.
 func NewConsumer() *Consumer {
 	return &Consumer{
 		streamConsumers:   make(map[string]*streamConsumer),
@@ -45,9 +46,9 @@ func NewConsumer() *Consumer {
 	}
 }
 
-// TracesFrom produces an array of ptrace.Traces from a BatchEvent message.
-func (c *Consumer) TracesFrom(batchEvent *coleventspb.BatchEvent) ([]ptrace.Traces, error) {
-	records, err := c.Consume(batchEvent)
+// TracesFrom produces an array of ptrace.Traces from a BatchArrowRecords message.
+func (c *Consumer) TracesFrom(bar *colarspb.BatchArrowRecords) ([]ptrace.Traces, error) {
+	records, err := c.Consume(bar)
 	if err != nil {
 		return nil, err
 	}
@@ -64,23 +65,24 @@ func (c *Consumer) TracesFrom(batchEvent *coleventspb.BatchEvent) ([]ptrace.Trac
 	return result, nil
 }
 
-// Consume takes a BatchEvent protobuf message and returns an array of RecordMessage.
-func (c *Consumer) Consume(event *coleventspb.BatchEvent) ([]*RecordMessage, error) {
-	// Retrieves (or creates) the stream consumer for the sub-stream id defined in the BatchEvent message.
-	sc := c.streamConsumers[event.SubStreamId]
-	if sc == nil {
-		bufReader := bytes.NewReader([]byte{})
-		sc = &streamConsumer{
-			bufReader: bufReader,
-		}
-		c.streamConsumers[event.SubStreamId] = sc
-	}
+// Consume takes a BatchArrowRecords protobuf message and returns an array of RecordMessage.
+func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*RecordMessage, error) {
 
 	var ibes []*RecordMessage
 
 	// Transform each individual OtlpArrowPayload into RecordMessage
-	for _, payload := range event.OtlpArrowPayloads {
-		sc.bufReader.Reset(payload.Schema) // ToDo change the protobuf definition to contain a single ipc_message
+	for _, payload := range bar.OtlpArrowPayloads {
+		// Retrieves (or creates) the stream consumer for the sub-stream id defined in the BatchArrowRecords message.
+		sc := c.streamConsumers[payload.SubStreamId]
+		if sc == nil {
+			bufReader := bytes.NewReader([]byte{})
+			sc = &streamConsumer{
+				bufReader: bufReader,
+			}
+			c.streamConsumers[payload.SubStreamId] = sc
+		}
+
+		sc.bufReader.Reset(payload.Record)
 		if sc.ipcReader == nil {
 			ipcReader, err := ipc.NewReader(sc.bufReader)
 			if err != nil {
@@ -92,10 +94,10 @@ func (c *Consumer) Consume(event *coleventspb.BatchEvent) ([]*RecordMessage, err
 		if sc.ipcReader.Next() {
 			rec := sc.ipcReader.Record()
 			ibes = append(ibes, &RecordMessage{
-				batchId:      event.BatchId,
+				batchId:      bar.BatchId,
 				payloadType:  payload.GetType(),
 				record:       rec,
-				deliveryType: event.DeliveryType,
+				deliveryType: bar.DeliveryType,
 			})
 		}
 	}

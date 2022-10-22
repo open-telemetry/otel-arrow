@@ -9,7 +9,7 @@ import (
 	"github.com/lquerel/otel-arrow-adapter/pkg/air/config"
 	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark"
 	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark/dataset"
-	"github.com/lquerel/otel-arrow-adapter/pkg/otel/batch_event"
+	"github.com/lquerel/otel-arrow-adapter/pkg/otel/arrow_record"
 	"github.com/lquerel/otel-arrow-adapter/pkg/otel/traces"
 
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -21,9 +21,9 @@ type TraceProfileable struct {
 	dataset           dataset.TraceDataset
 	traces            []ptrace.Traces
 	otlpArrowProducer *traces.OtlpArrowProducer
-	producer          *batch_event.Producer
-	consumer          *batch_event.Consumer
-	batchEvents       []*v1.BatchEvent
+	producer          *arrow_record.Producer
+	consumer          *arrow_record.Consumer
+	batchArrowRecords []*v1.BatchArrowRecords
 	config            *config.Config
 }
 
@@ -33,9 +33,9 @@ func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *co
 		dataset:           dataset,
 		compression:       compression,
 		otlpArrowProducer: nil,
-		producer:          batch_event.NewProducer(),
-		consumer:          batch_event.NewConsumer(),
-		batchEvents:       make([]*v1.BatchEvent, 0, 10),
+		producer:          arrow_record.NewProducerWithConfig(config),
+		consumer:          arrow_record.NewConsumer(),
+		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
 		config:            config,
 	}
 }
@@ -65,14 +65,14 @@ func (s *TraceProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	s.traces = s.dataset.Traces(startAt, size)
 }
 func (s *TraceProfileable) CreateBatch(_ io.Writer, _, _ int) {
-	// Conversion of OTLP metrics to OTLP Arrow events
-	s.batchEvents = make([]*v1.BatchEvent, 0, len(s.traces))
+	// Conversion of OTLP metrics to OTLP Arrow Records
+	s.batchArrowRecords = make([]*v1.BatchArrowRecords, 0, len(s.traces))
 	for _, traceReq := range s.traces {
-		batchEvents, err := s.producer.BatchEventsFrom(traceReq)
+		bar, err := s.producer.BatchArrowRecordsFrom(traceReq)
 		if err != nil {
 			panic(err)
 		}
-		s.batchEvents = append(s.batchEvents, batchEvents...)
+		s.batchArrowRecords = append(s.batchArrowRecords, bar)
 	}
 }
 func (s *TraceProfileable) Process(io.Writer) string {
@@ -80,8 +80,8 @@ func (s *TraceProfileable) Process(io.Writer) string {
 	return ""
 }
 func (s *TraceProfileable) Serialize(io.Writer) ([][]byte, error) {
-	buffers := make([][]byte, len(s.batchEvents))
-	for i, be := range s.batchEvents {
+	buffers := make([][]byte, len(s.batchArrowRecords))
+	for i, be := range s.batchArrowRecords {
 		bytes, err := proto.Marshal(be)
 		if err != nil {
 			return nil, err
@@ -92,13 +92,13 @@ func (s *TraceProfileable) Serialize(io.Writer) ([][]byte, error) {
 }
 
 func (s *TraceProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
-	s.batchEvents = make([]*v1.BatchEvent, len(buffers))
+	s.batchArrowRecords = make([]*v1.BatchArrowRecords, len(buffers))
 	for i, b := range buffers {
-		be := &v1.BatchEvent{}
+		be := &v1.BatchArrowRecords{}
 		if err := proto.Unmarshal(b, be); err != nil {
 			panic(err)
 		}
-		s.batchEvents[i] = be
+		s.batchArrowRecords[i] = be
 
 		// ToDo TMP
 		//ibes, err := s.consumer.Consume(be)
@@ -118,6 +118,6 @@ func (s *TraceProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
 }
 func (s *TraceProfileable) Clear() {
 	s.traces = nil
-	s.batchEvents = s.batchEvents[:0]
+	s.batchArrowRecords = s.batchArrowRecords[:0]
 }
 func (s *TraceProfileable) ShowStats() {}

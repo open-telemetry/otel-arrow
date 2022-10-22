@@ -23,7 +23,7 @@ import (
 	"github.com/lquerel/otel-arrow-adapter/pkg/otel/metrics"
 )
 
-func TestOtlpMetricsToArrowEvents(t *testing.T) {
+func TestOtlpMetricsToArrowRecords(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewUint8DefaultConfig()

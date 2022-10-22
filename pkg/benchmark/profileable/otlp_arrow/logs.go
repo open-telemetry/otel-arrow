@@ -10,32 +10,32 @@ import (
 	"github.com/lquerel/otel-arrow-adapter/pkg/air/config"
 	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark"
 	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark/dataset"
-	"github.com/lquerel/otel-arrow-adapter/pkg/otel/batch_event"
+	"github.com/lquerel/otel-arrow-adapter/pkg/otel/arrow_record"
 	"github.com/lquerel/otel-arrow-adapter/pkg/otel/logs"
 
 	"go.opentelemetry.io/collector/pdata/plog"
 )
 
 type LogsProfileable struct {
-	tags        []string
-	compression benchmark.CompressionAlgorithm
-	dataset     dataset.LogsDataset
-	logs        []plog.Logs
-	rr          *air.RecordRepository
-	producer    *batch_event.Producer
-	batchEvents []*v1.BatchEvent
-	config      *config.Config
+	tags              []string
+	compression       benchmark.CompressionAlgorithm
+	dataset           dataset.LogsDataset
+	logs              []plog.Logs
+	rr                *air.RecordRepository
+	producer          *arrow_record.Producer
+	batchArrowRecords []*v1.BatchArrowRecords
+	config            *config.Config
 }
 
 func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *config.Config, compression benchmark.CompressionAlgorithm) *LogsProfileable {
 	return &LogsProfileable{
-		tags:        tags,
-		dataset:     dataset,
-		compression: compression,
-		rr:          nil,
-		producer:    batch_event.NewProducer(),
-		batchEvents: make([]*v1.BatchEvent, 0, 10),
-		config:      config,
+		tags:              tags,
+		dataset:           dataset,
+		compression:       compression,
+		rr:                nil,
+		producer:          arrow_record.NewProducer(),
+		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
+		config:            config,
 	}
 }
 
@@ -64,28 +64,22 @@ func (s *LogsProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	s.logs = s.dataset.Logs(startAt, size)
 }
 func (s *LogsProfileable) CreateBatch(_ io.Writer, _, _ int) {
-	// Conversion of OTLP metrics to OTLP Arrow events
-	s.batchEvents = make([]*v1.BatchEvent, 0, len(s.logs))
+	// Conversion of OTLP metrics to OTLP Arrow Records
+	s.batchArrowRecords = make([]*v1.BatchArrowRecords, 0, len(s.logs))
 	for _, log := range s.logs {
 		records, err := logs.OtlpLogsToArrowRecords(s.rr, log, s.config)
 		if err != nil {
 			panic(err)
 		}
-		for _, record := range records {
-			//fmt.Fprintf(writer, "IPC Message\n")
-			//fmt.Fprintf(writer, "\t- schema id = %s\n", schemaId)
-			//fmt.Fprintf(writer, "\t- record #row = %d\n", record.Column(0).Len())
-			batchEvent, err := s.producer.Produce(batch_event.NewLogsMessage(record, v1.DeliveryType_BEST_EFFORT))
-			if err != nil {
-				panic(err)
-			}
-			//fmt.Fprintf(writer, "\t- batch-id = %s\n", batchEvent.BatchId)
-			//fmt.Fprintf(writer, "\t- sub-stream-id = %s\n", batchEvent.SubStreamId)
-			//for _, p := range batchEvent.OtlpArrowPayloads {
-			//	fmt.Fprintf(writer, "\t- IPC message size = %d\n", len(p.Schema))
-			//}
-			s.batchEvents = append(s.batchEvents, batchEvent)
+		rms := make([]*arrow_record.RecordMessage, len(records))
+		for i, record := range records {
+			rms[i] = arrow_record.NewLogsMessage(record, v1.DeliveryType_BEST_EFFORT)
 		}
+		bar, err := s.producer.Produce(rms, v1.DeliveryType_BEST_EFFORT)
+		if err != nil {
+			panic(err)
+		}
+		s.batchArrowRecords = append(s.batchArrowRecords, bar)
 	}
 }
 func (s *LogsProfileable) Process(io.Writer) string {
@@ -93,8 +87,8 @@ func (s *LogsProfileable) Process(io.Writer) string {
 	return ""
 }
 func (s *LogsProfileable) Serialize(io.Writer) ([][]byte, error) {
-	buffers := make([][]byte, len(s.batchEvents))
-	for i, be := range s.batchEvents {
+	buffers := make([][]byte, len(s.batchArrowRecords))
+	for i, be := range s.batchArrowRecords {
 		bytes, err := proto.Marshal(be)
 		if err != nil {
 			return nil, err
@@ -104,17 +98,17 @@ func (s *LogsProfileable) Serialize(io.Writer) ([][]byte, error) {
 	return buffers, nil
 }
 func (s *LogsProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
-	s.batchEvents = make([]*v1.BatchEvent, len(buffers))
+	s.batchArrowRecords = make([]*v1.BatchArrowRecords, len(buffers))
 	for i, b := range buffers {
-		be := &v1.BatchEvent{}
-		if err := proto.Unmarshal(b, be); err != nil {
+		bar := &v1.BatchArrowRecords{}
+		if err := proto.Unmarshal(b, bar); err != nil {
 			panic(err)
 		}
-		s.batchEvents[i] = be
+		s.batchArrowRecords[i] = bar
 	}
 }
 func (s *LogsProfileable) Clear() {
 	s.logs = nil
-	s.batchEvents = s.batchEvents[:0]
+	s.batchArrowRecords = s.batchArrowRecords[:0]
 }
 func (s *LogsProfileable) ShowStats() {}

@@ -4,6 +4,21 @@ Adapter used to convert OTEL batches to/from OTEL Arrow batches in both directio
 
 See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md) for more details on the OTEL Arrow protocol.
 
+## Developers 
+
+### How to change the protobuf specification
+
+To (re)generate the ArrowStreamService gRPC service, you need to install the `protoc` compiler and the `protoc-gen-grpc` plugin.
+```shell
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.2
+export PATH="$PATH:$(go env GOPATH)/bin"
+cd ./proto
+./generate.sh
+```
+Once the `*.pb.go` files are generated, you need to replace the content of the `api/collector/arrow/v1` directory by the
+generated files present in the `./proto/api/collector/arrow/v1` directory.
+
 ## Packages
 
 | Package       | Description                                                                                                                  |
@@ -131,10 +146,10 @@ This capability will be used to implement an exporter into the existing collecto
     - [X] Events
 
 **Protocol**
-  - [X] OTLP proto [WIP change a little bit the BatchEvent specification]
+  - [X] OTLP proto 
   - [X] Event service
-  - [x] BatchEvent producer
-  - [X] BatchEvent consumer
+  - [x] BatchArrowRecords producer
+  - [X] BatchArrowRecords consumer
   - [ ] gRPC service implementation (most likely to be implemented in the OpenTelemetry collector itself)
 
 **Benchmarking tools** 

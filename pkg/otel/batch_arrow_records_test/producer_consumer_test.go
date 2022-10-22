@@ -25,14 +25,14 @@ import (
 	"github.com/lquerel/otel-arrow-adapter/pkg/air"
 	cfg "github.com/lquerel/otel-arrow-adapter/pkg/air/config"
 	"github.com/lquerel/otel-arrow-adapter/pkg/air/rfield"
-	"github.com/lquerel/otel-arrow-adapter/pkg/otel/batch_event"
+	"github.com/lquerel/otel-arrow-adapter/pkg/otel/arrow_record"
 )
 
 func TestProducerConsumer(t *testing.T) {
 	t.Parallel()
 
-	producer := batch_event.NewProducer()
-	consumer := batch_event.NewConsumer()
+	producer := arrow_record.NewProducer()
+	consumer := arrow_record.NewConsumer()
 	config := cfg.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(config)
 
@@ -49,25 +49,27 @@ func TestProducerConsumer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, record := range records {
-		recordMesssage := batch_event.NewTraceMessage(record, v1.DeliveryType_BEST_EFFORT)
-		batchEvent, err := producer.Produce(recordMesssage)
-		if err != nil {
-			t.Fatal(err)
-		}
-		recordMessages, err := consumer.Consume(batchEvent)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(recordMessages) != 1 {
-			t.Errorf("Expected 1 record message, got %d", len(recordMessages))
-		}
-		if recordMessages[0].Record().NumCols() != 5 {
-			t.Errorf("Expected 5 columns, got %d", recordMessages[0].Record().NumCols())
-		}
-		if recordMessages[0].Record().NumRows() != int64(recordCount) {
-			t.Errorf("Expected %d rows, got %d", recordCount, recordMessages[0].Record().NumRows())
-		}
+	rms := make([]*arrow_record.RecordMessage, len(records))
+	for i, record := range records {
+		rms[i] = arrow_record.NewTraceMessage(record, v1.DeliveryType_BEST_EFFORT)
+	}
+
+	bar, err := producer.Produce(rms, v1.DeliveryType_BEST_EFFORT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordMessages, err := consumer.Consume(bar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recordMessages) != 1 {
+		t.Errorf("Expected 1 record message, got %d", len(recordMessages))
+	}
+	if recordMessages[0].Record().NumCols() != 5 {
+		t.Errorf("Expected 5 columns, got %d", recordMessages[0].Record().NumCols())
+	}
+	if recordMessages[0].Record().NumRows() != int64(recordCount) {
+		t.Errorf("Expected %d rows, got %d", recordCount, recordMessages[0].Record().NumRows())
 	}
 
 	for _, ts := range tsValues {
@@ -78,25 +80,27 @@ func TestProducerConsumer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, record := range records {
-		recordMesssage := batch_event.NewTraceMessage(record, v1.DeliveryType_BEST_EFFORT)
-		batchEvent, err := producer.Produce(recordMesssage)
-		if err != nil {
-			t.Fatal(err)
-		}
-		recordMessages, err := consumer.Consume(batchEvent)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(recordMessages) != 1 {
-			t.Errorf("Expected 1 record message, got %d", len(recordMessages))
-		}
-		if recordMessages[0].Record().NumCols() != 5 {
-			t.Errorf("Expected 5 columns, got %d", recordMessages[0].Record().NumCols())
-		}
-		if recordMessages[0].Record().NumRows() != int64(recordCount) {
-			t.Errorf("Expected %d rows, got %d", recordCount, recordMessages[0].Record().NumRows())
-		}
+	rms = make([]*arrow_record.RecordMessage, len(records))
+	for i, record := range records {
+		rms[i] = arrow_record.NewTraceMessage(record, v1.DeliveryType_BEST_EFFORT)
+	}
+
+	bar, err = producer.Produce(rms, v1.DeliveryType_BEST_EFFORT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordMessages, err = consumer.Consume(bar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recordMessages) != 1 {
+		t.Errorf("Expected 1 record message, got %d", len(recordMessages))
+	}
+	if recordMessages[0].Record().NumCols() != 5 {
+		t.Errorf("Expected 5 columns, got %d", recordMessages[0].Record().NumCols())
+	}
+	if recordMessages[0].Record().NumRows() != int64(recordCount) {
+		t.Errorf("Expected %d rows, got %d", recordCount, recordMessages[0].Record().NumRows())
 	}
 }
 

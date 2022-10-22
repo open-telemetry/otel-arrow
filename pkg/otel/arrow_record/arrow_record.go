@@ -15,7 +15,7 @@
  *
  */
 
-package batch_event
+package arrow_record
 
 import (
 	"github.com/apache/arrow/go/v9/arrow"
