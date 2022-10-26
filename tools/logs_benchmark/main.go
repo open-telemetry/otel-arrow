@@ -22,11 +22,11 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/lquerel/otel-arrow-adapter/pkg/air/config"
-	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark"
-	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark/dataset"
-	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark/profileable/otlp"
-	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark/profileable/otlp_arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/air/config"
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/otlp"
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/otlp_arrow"
 )
 
 var help = flag.Bool("help", false, "Show help")

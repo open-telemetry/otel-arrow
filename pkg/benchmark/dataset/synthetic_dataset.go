@@ -18,8 +18,8 @@
 package dataset
 
 import (
-	"github.com/lquerel/otel-arrow-adapter/pkg/datagen"
-	"github.com/lquerel/otel-arrow-adapter/pkg/otel/common"
+	"github.com/f5/otel-arrow-adapter/pkg/datagen"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"

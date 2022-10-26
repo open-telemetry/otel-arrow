@@ -20,9 +20,9 @@ import (
 
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
-	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark/dataset"
-	"github.com/lquerel/otel-arrow-adapter/pkg/datagen"
-	"github.com/lquerel/otel-arrow-adapter/pkg/otel/assert"
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
+	"github.com/f5/otel-arrow-adapter/pkg/datagen"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
 )
 
 // TestConversionFromSyntheticData tests the conversion of OTLP traces to Arrow and back to OTLP.

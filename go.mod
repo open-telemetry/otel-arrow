@@ -1,4 +1,4 @@
-module github.com/lquerel/otel-arrow-adapter
+module github.com/f5/otel-arrow-adapter
 
 go 1.18
 

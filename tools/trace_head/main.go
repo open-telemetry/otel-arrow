@@ -22,7 +22,7 @@ import (
 
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
-	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark/dataset"
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 )
 
 var help = flag.Bool("help", false, "Show help")

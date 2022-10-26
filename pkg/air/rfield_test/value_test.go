@@ -17,7 +17,7 @@ package value_test
 import (
 	"testing"
 
-	"github.com/lquerel/otel-arrow-adapter/pkg/air/rfield"
+	"github.com/f5/otel-arrow-adapter/pkg/air/rfield"
 )
 
 func TestNormalize(t *testing.T) {

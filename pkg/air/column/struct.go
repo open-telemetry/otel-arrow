@@ -21,8 +21,8 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/apache/arrow/go/v9/arrow/memory"
 
-	"github.com/lquerel/otel-arrow-adapter/pkg/air/rfield"
-	"github.com/lquerel/otel-arrow-adapter/pkg/air/stats"
+	"github.com/f5/otel-arrow-adapter/pkg/air/rfield"
+	"github.com/f5/otel-arrow-adapter/pkg/air/stats"
 )
 
 type ArrowFields []*arrow.Field

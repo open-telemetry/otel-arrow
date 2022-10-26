@@ -17,8 +17,8 @@ package air_test
 import (
 	"fmt"
 
-	"github.com/lquerel/otel-arrow-adapter/pkg/air"
-	"github.com/lquerel/otel-arrow-adapter/pkg/air/rfield"
+	"github.com/f5/otel-arrow-adapter/pkg/air"
+	"github.com/f5/otel-arrow-adapter/pkg/air/rfield"
 )
 
 func GenSimpleRecord(ts int64) *air.Record {

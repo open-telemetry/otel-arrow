@@ -19,7 +19,7 @@ import (
 	"encoding/json"
 	"sort"
 
-	"github.com/lquerel/otel-arrow-adapter/pkg/otel/metrics"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics"
 
 	"github.com/google/go-cmp/cmp"
 	"go.opentelemetry.io/collector/pdata/pmetric"

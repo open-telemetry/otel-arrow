@@ -24,7 +24,7 @@ import (
 
 	"github.com/apache/arrow/go/v9/arrow"
 
-	"github.com/lquerel/otel-arrow-adapter/pkg/air/common"
+	"github.com/f5/otel-arrow-adapter/pkg/air/common"
 )
 
 type Value interface {

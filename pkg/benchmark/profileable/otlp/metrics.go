@@ -6,8 +6,8 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 
-	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark"
-	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark/dataset"
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 )
 
 type MetricsProfileable struct {

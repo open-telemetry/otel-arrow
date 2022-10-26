@@ -21,11 +21,11 @@ import (
 	"fmt"
 	"testing"
 
-	v1 "github.com/lquerel/otel-arrow-adapter/api/collector/arrow/v1"
-	"github.com/lquerel/otel-arrow-adapter/pkg/air"
-	cfg "github.com/lquerel/otel-arrow-adapter/pkg/air/config"
-	"github.com/lquerel/otel-arrow-adapter/pkg/air/rfield"
-	"github.com/lquerel/otel-arrow-adapter/pkg/otel/arrow_record"
+	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	"github.com/f5/otel-arrow-adapter/pkg/air"
+	cfg "github.com/f5/otel-arrow-adapter/pkg/air/config"
+	"github.com/f5/otel-arrow-adapter/pkg/air/rfield"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 )
 
 func TestProducerConsumer(t *testing.T) {

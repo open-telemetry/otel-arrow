@@ -5,13 +5,13 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	v1 "github.com/lquerel/otel-arrow-adapter/api/collector/arrow/v1"
-	"github.com/lquerel/otel-arrow-adapter/pkg/air"
-	"github.com/lquerel/otel-arrow-adapter/pkg/air/config"
-	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark"
-	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark/dataset"
-	"github.com/lquerel/otel-arrow-adapter/pkg/otel/arrow_record"
-	"github.com/lquerel/otel-arrow-adapter/pkg/otel/metrics"
+	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	"github.com/f5/otel-arrow-adapter/pkg/air"
+	"github.com/f5/otel-arrow-adapter/pkg/air/config"
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics"
 
 	"go.opentelemetry.io/collector/pdata/pmetric"
 )

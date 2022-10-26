@@ -21,9 +21,9 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/ipc"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	colarspb "github.com/lquerel/otel-arrow-adapter/api/collector/arrow/v1"
-	"github.com/lquerel/otel-arrow-adapter/pkg/air/config"
-	"github.com/lquerel/otel-arrow-adapter/pkg/otel/traces"
+	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	"github.com/f5/otel-arrow-adapter/pkg/air/config"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/traces"
 )
 
 // Producer is a BatchArrowRecords producer.

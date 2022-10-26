@@ -17,10 +17,10 @@ package metrics_test
 import (
 	"testing"
 
-	"github.com/lquerel/otel-arrow-adapter/pkg/air"
-	"github.com/lquerel/otel-arrow-adapter/pkg/air/config"
-	"github.com/lquerel/otel-arrow-adapter/pkg/datagen"
-	"github.com/lquerel/otel-arrow-adapter/pkg/otel/metrics"
+	"github.com/f5/otel-arrow-adapter/pkg/air"
+	"github.com/f5/otel-arrow-adapter/pkg/air/config"
+	"github.com/f5/otel-arrow-adapter/pkg/datagen"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics"
 )
 
 func TestOtlpMetricsToArrowRecords(t *testing.T) {

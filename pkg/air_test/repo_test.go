@@ -25,9 +25,9 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/array"
 	"github.com/davecgh/go-spew/spew"
 
-	"github.com/lquerel/otel-arrow-adapter/pkg/air"
-	config2 "github.com/lquerel/otel-arrow-adapter/pkg/air/config"
-	"github.com/lquerel/otel-arrow-adapter/pkg/air/rfield"
+	"github.com/f5/otel-arrow-adapter/pkg/air"
+	config2 "github.com/f5/otel-arrow-adapter/pkg/air/config"
+	"github.com/f5/otel-arrow-adapter/pkg/air/rfield"
 )
 
 func TestAddRecord(t *testing.T) {

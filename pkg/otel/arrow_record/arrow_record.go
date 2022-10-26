@@ -15,13 +15,13 @@
  *
  */
 
-package arrow_record
+package arrow_record // import "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 
 import (
 	"github.com/apache/arrow/go/v9/arrow"
 
-	v1 "github.com/lquerel/otel-arrow-adapter/api/collector/arrow/v1"
-	"github.com/lquerel/otel-arrow-adapter/pkg/air"
+	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	"github.com/f5/otel-arrow-adapter/pkg/air"
 )
 
 type PayloadType = v1.OtlpArrowPayloadType

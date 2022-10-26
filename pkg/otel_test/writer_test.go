@@ -22,9 +22,9 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/ipc"
 	"github.com/davecgh/go-spew/spew"
 
-	"github.com/lquerel/otel-arrow-adapter/pkg/air/config"
-	"github.com/lquerel/otel-arrow-adapter/pkg/datagen"
-	"github.com/lquerel/otel-arrow-adapter/pkg/otel/traces"
+	"github.com/f5/otel-arrow-adapter/pkg/air/config"
+	"github.com/f5/otel-arrow-adapter/pkg/datagen"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/traces"
 )
 
 func TestIPCWriter(t *testing.T) {

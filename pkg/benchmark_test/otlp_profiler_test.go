@@ -17,9 +17,9 @@ package benchmark
 import (
 	"testing"
 
-	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark"
-	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark/dataset"
-	"github.com/lquerel/otel-arrow-adapter/pkg/benchmark/profileable/otlp"
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/otlp"
 )
 
 func TestOtlpMetricsProfiler(t *testing.T) {
