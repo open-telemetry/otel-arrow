@@ -12,17 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package traces
+package traces_test
 
 import (
 	"encoding/json"
 	"testing"
 
+	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
+	"github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
+	common_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	common_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	traces_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
+	traces_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/traces/otlp"
 )
 
 // TestConversionFromSyntheticData tests the conversion of OTLP traces to Arrow and back to OTLP.
@@ -32,20 +38,20 @@ import (
 func TestConversionFromSyntheticData(t *testing.T) {
 	t.Parallel()
 
-	tracesGen := datagen.NewTraceGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
+	tracesGen := datagen.NewTracesGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
 
 	// Generate a random OTLP traces request.
 	expectedRequest := ptraceotlp.NewRequestFromTraces(tracesGen.Generate(10, 100))
 
 	// Convert the OTLP traces request to Arrow.
-	otlpArrowProducer := NewOtlpArrowProducer()
-	records, err := otlpArrowProducer.ProduceFrom(expectedRequest.Traces())
+	otlpArrowProducer := common_arrow.NewOtlpArrowProducer[ptrace.ScopeSpans]()
+	records, err := otlpArrowProducer.ProduceFrom(traces_arrow.Wrap(expectedRequest.Traces()))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Convert the Arrow records back to OTLP.
-	otlpProducer := NewOtlpProducer()
+	otlpProducer := common_otlp.New[ptrace.Traces, ptrace.Span](traces_otlp.SpansProducer{})
 	for _, record := range records {
 		traces, err := otlpProducer.ProduceFrom(record)
 		if err != nil {
@@ -67,7 +73,7 @@ func TestConversionFromSyntheticData(t *testing.T) {
 // of the OTLP traces generated from the Arrow records.
 func TestConversionFromRealData(t *testing.T) {
 	t.Parallel()
-	t.Skip("Testing based on production data that is not stored in the")
+	//t.Skip("Testing based on production data that is not stored in the")
 
 	// Load a real OTLP traces request.
 	ds := dataset.NewRealTraceDataset("../../../data/nth_first_otlp_traces.pb", []string{"trace_id"})
@@ -78,14 +84,17 @@ func TestConversionFromRealData(t *testing.T) {
 		expectedRequest := ptraceotlp.NewRequestFromTraces(traces[0])
 
 		// Convert the OTLP traces request to Arrow.
-		otlpArrowProducer := NewOtlpArrowProducer()
-		records, err := otlpArrowProducer.ProduceFrom(expectedRequest.Traces())
+		cfg := config.NewUint16DefaultConfig()
+		//cfg.Attribute.Encoding = config.AttributesAsStructs
+		cfg.Attribute.Encoding = config.AttributesAsListStructs
+		otlpArrowProducer := common_arrow.NewOtlpArrowProducerWithConfig[ptrace.ScopeSpans](cfg)
+		records, err := otlpArrowProducer.ProduceFrom(traces_arrow.Wrap(expectedRequest.Traces()))
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		// Convert the Arrow records back to OTLP.
-		otlpProducer := NewOtlpProducer()
+		otlpProducer := common_otlp.New[ptrace.Traces, ptrace.Span](traces_otlp.SpansProducer{})
 		var actualRequests []json.Marshaler
 		for _, record := range records {
 			traces, err := otlpProducer.ProduceFrom(record)

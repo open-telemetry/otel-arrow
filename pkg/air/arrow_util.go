@@ -233,6 +233,14 @@ func (los *ListOfStructs) FieldIdx(name string) (int, bool) {
 	return los.dt.FieldIdx(name)
 }
 
+func (los *ListOfStructs) Field(name string) (arrow.Array, bool) {
+	id, ok := los.dt.FieldIdx(name)
+	if !ok {
+		return nil, false
+	}
+	return los.arr.Field(id), true
+}
+
 func (los *ListOfStructs) StringFieldById(fieldId int, row int) (string, error) {
 	column := los.arr.Field(fieldId)
 	return StringFromArray(column, row)

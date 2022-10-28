@@ -23,13 +23,14 @@ import (
 
 	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	"github.com/f5/otel-arrow-adapter/pkg/air/config"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/traces"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	traces_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
 )
 
 // Producer is a BatchArrowRecords producer.
 type Producer struct {
 	streamProducers         map[string]*streamProducer
-	otlpArrowTracesProducer *traces.OtlpArrowProducer
+	otlpArrowTracesProducer *arrow.OtlpArrowProducer[ptrace.ScopeSpans]
 	batchId                 int64
 }
 
@@ -43,7 +44,7 @@ type streamProducer struct {
 func NewProducer() *Producer {
 	return &Producer{
 		streamProducers:         make(map[string]*streamProducer),
-		otlpArrowTracesProducer: traces.NewOtlpArrowProducer(),
+		otlpArrowTracesProducer: arrow.NewOtlpArrowProducer[ptrace.ScopeSpans](),
 		batchId:                 0,
 	}
 }
@@ -52,14 +53,14 @@ func NewProducer() *Producer {
 func NewProducerWithConfig(cfg *config.Config) *Producer {
 	return &Producer{
 		streamProducers:         make(map[string]*streamProducer),
-		otlpArrowTracesProducer: traces.NewOtlpArrowProducerWith(cfg),
+		otlpArrowTracesProducer: arrow.NewOtlpArrowProducerWithConfig[ptrace.ScopeSpans](cfg),
 		batchId:                 0,
 	}
 }
 
 // BatchArrowRecordsFrom produces a BatchArrowRecords message from a ptrace.Traces messages.
-func (p *Producer) BatchArrowRecordsFrom(traces ptrace.Traces) (*colarspb.BatchArrowRecords, error) {
-	records, err := p.otlpArrowTracesProducer.ProduceFrom(traces)
+func (p *Producer) BatchArrowRecordsFrom(ts ptrace.Traces) (*colarspb.BatchArrowRecords, error) {
+	records, err := p.otlpArrowTracesProducer.ProduceFrom(traces_arrow.Wrap(ts))
 	if err != nil {
 		return nil, err
 	}

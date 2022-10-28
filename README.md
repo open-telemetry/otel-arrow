@@ -146,11 +146,10 @@ This capability will be used to implement an exporter into the existing collecto
     - [X] Events
 
 **Protocol**
-  - [X] OTLP proto 
-  - [X] Event service
+  - [X] BatchArrowRecords proto 
+  - [X] Arrow Stream service
   - [x] BatchArrowRecords producer
   - [X] BatchArrowRecords consumer
-  - [ ] gRPC service implementation (most likely to be implemented in the OpenTelemetry collector itself)
 
 **Benchmarking tools** 
   - Synthetic data generator
@@ -174,8 +173,8 @@ This capability will be used to implement an exporter into the existing collecto
     - [X] traces_benchmark 
   - [ ] Assertions to check the correctness of the OTLP_ARROW representation
     - [ ] [WIP] Metrics
-    - [ ] Logs
-    - [ ] Trace
+    - [X] Logs
+    - [X] Trace
 
 **Performance**
   - [ ] Performance and memory optimizations

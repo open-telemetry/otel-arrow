@@ -12,107 +12,81 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package traces
+package otlp
 
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v9/arrow"
-
 	"github.com/f5/otel-arrow-adapter/pkg/air"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/traces"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
 
-// OtlpProducer produces OTLP traces from OTLP Arrow traces.
-type OtlpProducer struct {
+type TopLevelWrapper struct {
+	traces ptrace.Traces
 }
 
-// NewOtlpProducer creates a new OtlpProducer.
-func NewOtlpProducer() *OtlpProducer {
-	return &OtlpProducer{}
+func (w TopLevelWrapper) ResourceEntities() otlp.ResourceEntitiesSlice[ptrace.Span] {
+	return ResourceSpansSliceWrapper{slice: w.traces.ResourceSpans()}
 }
 
-// ProduceFrom produces OTLP Traces from an Arrow Record.
-func (p *OtlpProducer) ProduceFrom(record arrow.Record) ([]ptrace.Traces, error) {
-	return ArrowRecordToOtlpTraces(record)
+func (w TopLevelWrapper) Unwrap() ptrace.Traces {
+	return w.traces
 }
 
-// ArrowRecordToOtlpTraces converts an Arrow Record to an OTLP Trace.
-// TODO: add a reference to the OTEP 0156 section that describes this mapping.
-func ArrowRecordToOtlpTraces(record arrow.Record) ([]ptrace.Traces, error) {
-	// Each first level row in the Arrow Record represents a Traces entity.
-	tracesCount := int(record.NumRows())
-	allTraces := make([]ptrace.Traces, 0, tracesCount)
-
-	for traceIdx := 0; traceIdx < tracesCount; traceIdx++ {
-		traces := ptrace.NewTraces()
-
-		arrowResSpans, err := air.ListOfStructsFromRecord(record, constants.RESOURCE_SPANS, traceIdx)
-		if err != nil {
-			return allTraces, err
-		}
-		traces.ResourceSpans().EnsureCapacity(arrowResSpans.End() - arrowResSpans.Start())
-
-		for resSpanIdx := arrowResSpans.Start(); resSpanIdx < arrowResSpans.End(); resSpanIdx++ {
-			resSpan := traces.ResourceSpans().AppendEmpty()
-
-			resource, err := common.NewResourceFrom(arrowResSpans, resSpanIdx)
-			if err != nil {
-				return allTraces, err
-			}
-			resource.CopyTo(resSpan.Resource())
-
-			schemaUrl, err := arrowResSpans.StringFieldByName(constants.SCHEMA_URL, resSpanIdx)
-			if err != nil {
-				return allTraces, err
-			}
-			resSpan.SetSchemaUrl(schemaUrl)
-
-			arrowScopeSpans, err := arrowResSpans.ListOfStructsByName(constants.SCOPE_SPANS, resSpanIdx)
-			if err != nil {
-				return allTraces, err
-			}
-			for scopeSpanIdx := arrowScopeSpans.Start(); scopeSpanIdx < arrowScopeSpans.End(); scopeSpanIdx++ {
-				scopeSpan := resSpan.ScopeSpans().AppendEmpty()
-
-				scope, err := common.NewScopeFrom(arrowScopeSpans, scopeSpanIdx)
-				if err != nil {
-					return allTraces, err
-				}
-				scope.CopyTo(scopeSpan.Scope())
-
-				schemaUrl, err := arrowScopeSpans.StringFieldByName(constants.SCHEMA_URL, scopeSpanIdx)
-				if err != nil {
-					return allTraces, err
-				}
-				scopeSpan.SetSchemaUrl(schemaUrl)
-
-				arrowSpans, err := arrowScopeSpans.ListOfStructsByName(constants.SPANS, scopeSpanIdx)
-				if err != nil {
-					return allTraces, err
-				}
-				for spanIdx := arrowSpans.Start(); spanIdx < arrowSpans.End(); spanIdx++ {
-					span := scopeSpan.Spans().AppendEmpty()
-					err = SetSpanFrom(span, arrowSpans, spanIdx)
-					if err != nil {
-						return allTraces, err
-					}
-				}
-			}
-		}
-
-		allTraces = append(allTraces, traces)
-	}
-
-	return allTraces, nil
+type ResourceSpansSliceWrapper struct {
+	slice ptrace.ResourceSpansSlice
 }
 
-// SetSpanFrom initializes a Span from an Arrow representation.
-func SetSpanFrom(span ptrace.Span, los *air.ListOfStructs, row int) error {
+func (s ResourceSpansSliceWrapper) EnsureCapacity(newCap int) {
+	s.slice.EnsureCapacity(newCap)
+}
+
+func (s ResourceSpansSliceWrapper) AppendEmpty() otlp.ResourceEntities[ptrace.Span] {
+	return ResourceSpansWrapper{resourceSpans: s.slice.AppendEmpty()}
+}
+
+type ResourceSpansWrapper struct {
+	resourceSpans ptrace.ResourceSpans
+}
+
+func (w ResourceSpansWrapper) Resource() pcommon.Resource {
+	return w.resourceSpans.Resource()
+}
+func (w ResourceSpansWrapper) SetSchemaUrl(schemaUrl string) {
+	w.resourceSpans.SetSchemaUrl(schemaUrl)
+}
+func (w ResourceSpansWrapper) ScopeEntities() otlp.ScopeEntities[ptrace.Span] {
+	return ScopeSpansWrapper{scopeSpans: w.resourceSpans.ScopeSpans().AppendEmpty()}
+}
+
+type ScopeSpansWrapper struct {
+	scopeSpans ptrace.ScopeSpans
+}
+
+func (w ScopeSpansWrapper) Scope() pcommon.InstrumentationScope {
+	return w.scopeSpans.Scope()
+}
+func (w ScopeSpansWrapper) SetSchemaUrl(schemaUrl string) {
+	w.scopeSpans.SetSchemaUrl(schemaUrl)
+}
+func (w ScopeSpansWrapper) Entity() ptrace.Span {
+	return w.scopeSpans.Spans().AppendEmpty()
+}
+
+type SpansProducer struct {
+	traces.Constants
+}
+
+func (p SpansProducer) NewTopLevelEntities() otlp.TopLevelEntities[ptrace.Traces, ptrace.Span] {
+	return TopLevelWrapper{ptrace.NewTraces()}
+}
+func (p SpansProducer) EntityProducer(scopeSpan otlp.ScopeEntities[ptrace.Span], los *air.ListOfStructs, row int) error {
+	span := scopeSpan.Entity()
 	traceId, err := los.BinaryFieldByName(constants.TRACE_ID, row)
 	if err != nil {
 		return err

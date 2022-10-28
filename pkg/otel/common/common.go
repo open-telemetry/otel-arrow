@@ -1,17 +1,3 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 package common
 
 import (
@@ -20,14 +6,13 @@ import (
 	"strings"
 
 	"github.com/apache/arrow/go/v9/arrow"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	"github.com/f5/otel-arrow-adapter/pkg/air"
 	"github.com/f5/otel-arrow-adapter/pkg/air/common"
 	"github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/air/rfield"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
-
-	"go.opentelemetry.io/collector/pdata/pcommon"
 )
 
 func NewAttributes(attributes pcommon.Map, cfg *config.Config) *rfield.Field {
@@ -171,21 +156,23 @@ func (f AttributeTuples) Len() int      { return len(f) }
 func (f AttributeTuples) Swap(i, j int) { f[i], f[j] = f[j], f[i] }
 
 // Pre-initialized empty fields (one per supported type)
-
-var EmptyStringField = rfield.Field{Name: "string", Value: &rfield.String{Value: nil}}
-var EmptyI64Field = rfield.Field{Name: "i64", Value: &rfield.I64{Value: nil}}
-var EmptyF64Field = rfield.Field{Name: "f64", Value: &rfield.F64{Value: nil}}
-var EmptyBoolField = rfield.Field{Name: "bool", Value: &rfield.Bool{Value: nil}}
-var EmptyBinaryField = rfield.Field{Name: "binary", Value: &rfield.Binary{Value: nil}}
+var (
+	EmptyStringField = rfield.Field{Name: "string", Value: &rfield.String{Value: nil}}
+	EmptyI64Field    = rfield.Field{Name: "i64", Value: &rfield.I64{Value: nil}}
+	EmptyF64Field    = rfield.Field{Name: "f64", Value: &rfield.F64{Value: nil}}
+	EmptyBoolField   = rfield.Field{Name: "bool", Value: &rfield.Bool{Value: nil}}
+	EmptyBinaryField = rfield.Field{Name: "binary", Value: &rfield.Binary{Value: nil}}
+)
 
 // Pre-initialized arrow field type (one per supported type + one for the key)
-
-var ArrowKeyField = arrow.Field{Name: "key", Type: arrow.BinaryTypes.String, Nullable: true, Metadata: arrow.Metadata{}}
-var ArrowBinaryField = arrow.Field{Name: "binary", Type: arrow.BinaryTypes.Binary, Nullable: true, Metadata: arrow.Metadata{}}
-var ArrowBoolField = arrow.Field{Name: "bool", Type: arrow.FixedWidthTypes.Boolean, Nullable: true, Metadata: arrow.Metadata{}}
-var ArrowF64Field = arrow.Field{Name: "f64", Type: arrow.PrimitiveTypes.Float64, Nullable: true, Metadata: arrow.Metadata{}}
-var ArrowI64Field = arrow.Field{Name: "i64", Type: arrow.PrimitiveTypes.Int64, Nullable: true, Metadata: arrow.Metadata{}}
-var ArrowStringField = arrow.Field{Name: "string", Type: arrow.BinaryTypes.String, Nullable: true, Metadata: arrow.Metadata{}}
+var (
+	ArrowKeyField    = arrow.Field{Name: "key", Type: arrow.BinaryTypes.String, Nullable: true, Metadata: arrow.Metadata{}}
+	ArrowBinaryField = arrow.Field{Name: "binary", Type: arrow.BinaryTypes.Binary, Nullable: true, Metadata: arrow.Metadata{}}
+	ArrowBoolField   = arrow.Field{Name: "bool", Type: arrow.FixedWidthTypes.Boolean, Nullable: true, Metadata: arrow.Metadata{}}
+	ArrowF64Field    = arrow.Field{Name: "f64", Type: arrow.PrimitiveTypes.Float64, Nullable: true, Metadata: arrow.Metadata{}}
+	ArrowI64Field    = arrow.Field{Name: "i64", Type: arrow.PrimitiveTypes.Int64, Nullable: true, Metadata: arrow.Metadata{}}
+	ArrowStringField = arrow.Field{Name: "string", Type: arrow.BinaryTypes.String, Nullable: true, Metadata: arrow.Metadata{}}
+)
 
 // NewAttributesAsListStructs creates a new attributes field represented as a list of structs.
 // [

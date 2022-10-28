@@ -42,7 +42,7 @@ func shuffleSpans(sl ptrace.SpanSlice, fs ...func(Span)) {
 	}
 }
 
-func NewTraceGenerator(resourceAttributes []pcommon.Map, instrumentationScopes []pcommon.InstrumentationScope) *TraceGenerator {
+func NewTracesGenerator(resourceAttributes []pcommon.Map, instrumentationScopes []pcommon.InstrumentationScope) *TraceGenerator {
 	return &TraceGenerator{
 		DataGenerator: NewDataGenerator(uint64(time.Now().UnixNano()/int64(time.Millisecond)), resourceAttributes, instrumentationScopes),
 	}

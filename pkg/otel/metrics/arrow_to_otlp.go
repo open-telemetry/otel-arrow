@@ -24,7 +24,7 @@ import (
 	"github.com/apache/arrow/go/v9/arrow/array"
 
 	"github.com/f5/otel-arrow-adapter/pkg/air"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
+	common_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -39,11 +39,11 @@ func ArrowRecordsToOtlpMetrics(record arrow.Record) (pmetric.Metrics, error) {
 
 	numRows := int(record.NumRows())
 	for i := 0; i < numRows; i++ {
-		resource, err := common.NewResourceFromOld(record, i)
+		resource, err := common_arrow.NewResourceFromOld(record, i)
 		if err != nil {
 			return request, err
 		}
-		resId := common.ResourceId(resource)
+		resId := common_arrow.ResourceId(resource)
 		rm, ok := resourceMetrics[resId]
 		if !ok {
 			rm = request.ResourceMetrics().AppendEmpty()
@@ -52,11 +52,11 @@ func ArrowRecordsToOtlpMetrics(record arrow.Record) (pmetric.Metrics, error) {
 			resourceMetrics[resId] = rm
 		}
 
-		scope, err := common.NewInstrumentationScopeFrom(record, i, constants.SCOPE_METRICS)
+		scope, err := common_arrow.NewInstrumentationScopeFrom(record, i, constants.SCOPE_METRICS)
 		if err != nil {
 			return request, err
 		}
-		scopeSpanId := resId + "|" + common.ScopeId(scope)
+		scopeSpanId := resId + "|" + common_arrow.ScopeId(scope)
 		sm, ok := scopeMetrics[scopeSpanId]
 		if !ok {
 			sm = rm.ScopeMetrics().AppendEmpty()
@@ -104,7 +104,7 @@ func SetMetricsFrom(metrics pmetric.MetricSlice, record arrow.Record, row int) e
 	}
 	attributes := pcommon.NewMap()
 	if attrsField != nil {
-		if err := common.CopyAttributesFrom(attributes, attrsField.Type, attrsArray, row); err != nil {
+		if err := common_arrow.CopyAttributesFrom(attributes, attrsField.Type, attrsArray, row); err != nil {
 			return err
 		}
 	}

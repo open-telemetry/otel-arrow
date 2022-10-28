@@ -24,7 +24,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 
 	"golang.org/x/exp/rand"
 
@@ -117,7 +117,7 @@ func (d *RealTraceDataset) Traces(offset, size int) []ptrace.Traces {
 
 		if !ok {
 			inres := d.s2r[span]
-			inresID := common.ResourceId(inres)
+			inresID := arrow.ResourceId(inres)
 			outres, ok := rsm[inresID]
 
 			if !ok {

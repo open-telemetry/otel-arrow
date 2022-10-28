@@ -68,7 +68,6 @@ func (rr *RecordRepository) BuildRecords() ([]arrow.Record, error) {
 	rr.Optimize()
 
 	recordBatches := []arrow.Record{}
-
 	for _, builder := range rr.builders {
 		if !builder.IsEmpty() {
 			record, err := builder.BuildRecord(rr.allocator)

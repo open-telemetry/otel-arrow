@@ -45,7 +45,7 @@ func main() {
 	}
 
 	// Generate the dataset.
-	generator := datagen.NewTraceGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
+	generator := datagen.NewTracesGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
 	request := ptraceotlp.NewRequestFromTraces(generator.Generate(batchSize, 100))
 
 	// Marshal the request to bytes.

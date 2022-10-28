@@ -24,13 +24,14 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/traces"
+	common_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	traces_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/traces/otlp"
 )
 
 // Consumer is a BatchArrowRecords consumer.
 type Consumer struct {
 	streamConsumers   map[string]*streamConsumer
-	otlpTraceProducer *traces.OtlpProducer
+	otlpTraceProducer *common_otlp.Producer[ptrace.Traces, ptrace.Span]
 }
 
 type streamConsumer struct {
@@ -42,7 +43,7 @@ type streamConsumer struct {
 func NewConsumer() *Consumer {
 	return &Consumer{
 		streamConsumers:   make(map[string]*streamConsumer),
-		otlpTraceProducer: traces.NewOtlpProducer(),
+		otlpTraceProducer: common_otlp.New[ptrace.Traces, ptrace.Span](traces_otlp.SpansProducer{}),
 	}
 }
 
