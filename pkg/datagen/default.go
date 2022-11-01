@@ -47,10 +47,10 @@ func shuffleAttrs(fs ...func(Attrs)) pcommon.Map {
 
 func DefaultAttributes() pcommon.Map {
 	return shuffleAttrs(
-		func(attrs Attrs) { attrs.PutString("hostname", pick(HOSTNAMES)) },
+		func(attrs Attrs) { attrs.PutStr("hostname", pick(HOSTNAMES)) },
 		func(attrs Attrs) { attrs.PutBool("up", pick(UPS)) },
 		func(attrs Attrs) { attrs.PutInt("status", pick(STATUS)) },
-		func(attrs Attrs) { attrs.PutString("version", pick(VERSIONS)) },
+		func(attrs Attrs) { attrs.PutStr("version", pick(VERSIONS)) },
 
 		// ToDo reintroduce tags_arrays once list are fully supported
 		//{
@@ -91,22 +91,22 @@ func DefaultAttributes() pcommon.Map {
 func DefaultResourceAttributes() []pcommon.Map {
 	return []pcommon.Map{
 		shuffleAttrs(
-			func(attrs Attrs) { attrs.PutString("hostname", "host1.mydomain.com") },
-			func(attrs Attrs) { attrs.PutString("ip", "192.168.0.1") },
+			func(attrs Attrs) { attrs.PutStr("hostname", "host1.mydomain.com") },
+			func(attrs Attrs) { attrs.PutStr("ip", "192.168.0.1") },
 			func(attrs Attrs) { attrs.PutBool("up", true) },
 			func(attrs Attrs) { attrs.PutInt("status", 200) },
 			func(attrs Attrs) { attrs.PutDouble("version", 1.0) },
 		),
 		shuffleAttrs(
-			func(attrs Attrs) { attrs.PutString("hostname", "host2.mydomain.com") },
-			func(attrs Attrs) { attrs.PutString("ip", "192.168.0.2") },
+			func(attrs Attrs) { attrs.PutStr("hostname", "host2.mydomain.com") },
+			func(attrs Attrs) { attrs.PutStr("ip", "192.168.0.2") },
 			func(attrs Attrs) { attrs.PutBool("up", true) },
 			func(attrs Attrs) { attrs.PutInt("status", 200) },
 			func(attrs Attrs) { attrs.PutDouble("version", 1.0) },
 		),
 		shuffleAttrs(
-			func(attrs Attrs) { attrs.PutString("hostname", "host3.mydomain.com") },
-			func(attrs Attrs) { attrs.PutString("ip", "192.168.0.3") },
+			func(attrs Attrs) { attrs.PutStr("hostname", "host3.mydomain.com") },
+			func(attrs Attrs) { attrs.PutStr("ip", "192.168.0.3") },
 			func(attrs Attrs) { attrs.PutBool("up", false) },
 			func(attrs Attrs) { attrs.PutInt("status", 500) },
 			func(attrs Attrs) { attrs.PutDouble("version", 1.5) },
@@ -128,8 +128,8 @@ func DefaultInstrumentationScopes() []pcommon.InstrumentationScope {
 
 func DefaultSpanEventAttributes() pcommon.Map {
 	return shuffleAttrs(
-		func(attrs Attrs) { attrs.PutString("hostname", pick(HOSTNAMES)) },
-		func(attrs Attrs) { attrs.PutString("version", pick(VERSIONS)) },
+		func(attrs Attrs) { attrs.PutStr("hostname", pick(HOSTNAMES)) },
+		func(attrs Attrs) { attrs.PutStr("version", pick(VERSIONS)) },
 		func(attrs Attrs) { attrs.PutBool("up", pick(UPS)) },
 		func(attrs Attrs) { attrs.PutInt("status", pick(STATUS)) },
 	)
@@ -137,7 +137,7 @@ func DefaultSpanEventAttributes() pcommon.Map {
 
 func DefaultSpanLinkAttributes() pcommon.Map {
 	return shuffleAttrs(
-		func(attrs Attrs) { attrs.PutString("hostname", pick(HOSTNAMES)) },
+		func(attrs Attrs) { attrs.PutStr("hostname", pick(HOSTNAMES)) },
 		func(attrs Attrs) { attrs.PutBool("up", pick(UPS)) },
 		func(attrs Attrs) { attrs.PutInt("status", pick(STATUS)) },
 	)

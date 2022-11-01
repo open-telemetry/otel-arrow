@@ -34,7 +34,7 @@ func TestDataPointSig(t *testing.T) {
 	attrs.PutDouble("k4", 1.)
 	attrs.PutInt("k1", 2)
 	attrs.PutBool("k3", false)
-	attrs.PutString("k5", "bla")
+	attrs.PutStr("k5", "bla")
 	attrs.PutEmptyBytes("k2").FromRaw([]byte{1, 2, 3})
 	k8val := attrs.PutEmptyMap("k8")
 	k8val.PutDouble("k4", 1)

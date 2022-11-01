@@ -120,7 +120,7 @@ func (dg *DataGenerator) SystemCpuTime(metric pmetric.Metric, cpuCount int) {
 	for cpu := 0; cpu < cpuCount; cpu++ {
 		for _, state := range cpuStates {
 			dataPoint := points.AppendEmpty()
-			dataPoint.Attributes().PutString("state", state)
+			dataPoint.Attributes().PutStr("state", state)
 			dataPoint.Attributes().PutInt("cpu", int64(cpu))
 			dataPoint.SetStartTimestamp(dg.PrevTime())
 			dataPoint.SetTimestamp(dg.CurrentTime())
@@ -140,19 +140,19 @@ func (dg *DataGenerator) SystemMemoryUsage(metric pmetric.Metric) {
 	points := sum.DataPoints()
 
 	p1 := points.AppendEmpty()
-	p1.Attributes().PutString("state", "used")
+	p1.Attributes().PutStr("state", "used")
 	p1.SetStartTimestamp(dg.PrevTime())
 	p1.SetTimestamp(dg.CurrentTime())
 	p1.SetIntValue(dg.GenI64Range(10_000_000_000, 13_000_000_000))
 
 	p2 := points.AppendEmpty()
-	p2.Attributes().PutString("state", "free")
+	p2.Attributes().PutStr("state", "free")
 	p2.SetStartTimestamp(dg.PrevTime())
 	p2.SetTimestamp(dg.CurrentTime())
 	p2.SetIntValue(dg.GenI64Range(300_000_000, 500_000_000))
 
 	p3 := points.AppendEmpty()
-	p3.Attributes().PutString("state", "inactive")
+	p3.Attributes().PutStr("state", "inactive")
 	p3.SetStartTimestamp(dg.PrevTime())
 	p3.SetTimestamp(dg.CurrentTime())
 	p3.SetIntValue(4_000_000_000)
