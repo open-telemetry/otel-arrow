@@ -58,22 +58,13 @@ func main() {
 		otlpTraces := otlp.NewTraceProfileable(ds, compressionAlgo)
 
 		conf := config.NewUint16DefaultConfig()
-		conf.TraceEncoding = config.Hybrid
-		conf.Attribute.Encoding = config.AttributesAsStructs
-		otlpArrowTracesWithUint16DictionaryHybrid := otlp_arrow.NewTraceProfileable([]string{"uint16 dict", "attrs_as_structs", "hybrid"}, ds, conf, compressionAlgo)
-		conf = config.NewUint16DefaultConfig()
-		conf.TraceEncoding = config.Hybrid
-		conf.Attribute.Encoding = config.AttributesAsListStructs
-		otlpArrowTracesWithUint16DictionaryAsListStructsHybrid := otlp_arrow.NewTraceProfileable([]string{"uint16 dict", "attrs_as_list_structs", "hybrid"}, ds, conf, compressionAlgo)
+		otlpArrowTraces := otlp_arrow.NewTraceProfileable([]string{"uint16 dict"}, ds, conf, compressionAlgo)
 
 		if err := profiler.Profile(otlpTraces, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
 		}
 
-		if err := profiler.Profile(otlpArrowTracesWithUint16DictionaryHybrid, maxIter); err != nil {
-			panic(fmt.Errorf("expected no error, got %v", err))
-		}
-		if err := profiler.Profile(otlpArrowTracesWithUint16DictionaryAsListStructsHybrid, maxIter); err != nil {
+		if err := profiler.Profile(otlpArrowTraces, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
 		}
 

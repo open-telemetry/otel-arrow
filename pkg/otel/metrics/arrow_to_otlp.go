@@ -20,11 +20,12 @@ package metrics
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v9/arrow"
-	"github.com/apache/arrow/go/v9/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
 
-	"github.com/f5/otel-arrow-adapter/pkg/air"
+	arrow2 "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	common_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -52,7 +53,7 @@ func ArrowRecordsToOtlpMetrics(record arrow.Record) (pmetric.Metrics, error) {
 			resourceMetrics[resId] = rm
 		}
 
-		scope, err := common_arrow.NewInstrumentationScopeFrom(record, i, constants.SCOPE_METRICS)
+		scope, err := otlp.NewScopeFromRecord(record, i, constants.SCOPE_METRICS)
 		if err != nil {
 			return request, err
 		}
@@ -73,19 +74,19 @@ func ArrowRecordsToOtlpMetrics(record arrow.Record) (pmetric.Metrics, error) {
 }
 
 func SetMetricsFrom(metrics pmetric.MetricSlice, record arrow.Record, row int) error {
-	timeUnixNano, err := air.U64FromRecord(record, row, constants.TIME_UNIX_NANO)
+	timeUnixNano, err := arrow2.U64FromRecord(record, row, constants.TIME_UNIX_NANO)
 	if err != nil {
 		return err
 	}
-	startTimeUnixNano, err := air.U64FromRecord(record, row, constants.START_TIME_UNIX_NANO)
+	startTimeUnixNano, err := arrow2.U64FromRecord(record, row, constants.START_TIME_UNIX_NANO)
 	if err != nil {
 		return err
 	}
-	flags, err := air.OptionalU32FromRecord(record, row, constants.FLAGS)
+	flags, err := arrow2.OptionalU32FromRecord(record, row, constants.FLAGS)
 	if err != nil {
 		return err
 	}
-	metricsField, arr, err := air.FieldArray(record, constants.METRICS)
+	metricsField, arr, err := arrow2.FieldArray(record, constants.METRICS)
 	if err != nil {
 		return err
 	}
@@ -98,7 +99,7 @@ func SetMetricsFrom(metrics pmetric.MetricSlice, record arrow.Record, row int) e
 		return fmt.Errorf("metrics array is not a struct")
 	}
 
-	attrsField, attrsArray, err := air.OptionalFieldArray(record, constants.ATTRIBUTES)
+	attrsField, attrsArray, err := arrow2.OptionalFieldArray(record, constants.ATTRIBUTES)
 	if err != nil {
 		return err
 	}
@@ -208,7 +209,7 @@ func collectGaugeMetrics(metrics pmetric.MetricSlice, timeUnixNano uint64, start
 }
 
 func collectI64NumberDataPoint(points pmetric.NumberDataPointSlice, timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, metricArr arrow.Array, row int, attributes pcommon.Map) error {
-	v, err := air.I64FromArray(metricArr, row)
+	v, err := arrow2.I64FromArray(metricArr, row)
 	if err != nil {
 		return err
 	}
@@ -223,7 +224,7 @@ func collectI64NumberDataPoint(points pmetric.NumberDataPointSlice, timeUnixNano
 }
 
 func collectF64NumberDataPoint(points pmetric.NumberDataPointSlice, timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, metricArr arrow.Array, row int, attributes pcommon.Map) error {
-	v, err := air.F64FromArray(metricArr, row)
+	v, err := arrow2.F64FromArray(metricArr, row)
 	if err != nil {
 		return err
 	}

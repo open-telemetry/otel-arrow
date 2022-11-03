@@ -17,8 +17,8 @@ package value_test
 import (
 	"testing"
 
-	"github.com/apache/arrow/go/v9/arrow"
-	"github.com/apache/arrow/go/v9/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 
 	value2 "github.com/f5/otel-arrow-adapter/pkg/air/column"
 	"github.com/f5/otel-arrow-adapter/pkg/air/config"

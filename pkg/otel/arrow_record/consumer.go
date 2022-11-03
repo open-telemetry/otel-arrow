@@ -20,18 +20,18 @@ package arrow_record
 import (
 	"bytes"
 
-	"github.com/apache/arrow/go/v9/arrow/ipc"
+	"github.com/apache/arrow/go/v10/arrow/ipc"
+	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
-	common_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	logs_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/logs/otlp"
 	traces_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/traces/otlp"
 )
 
 // Consumer is a BatchArrowRecords consumer.
 type Consumer struct {
-	streamConsumers   map[string]*streamConsumer
-	otlpTraceProducer *common_otlp.Producer[ptrace.Traces, ptrace.Span]
+	streamConsumers map[string]*streamConsumer
 }
 
 type streamConsumer struct {
@@ -42,26 +42,54 @@ type streamConsumer struct {
 // NewConsumer creates a new BatchArrowRecords consumer.
 func NewConsumer() *Consumer {
 	return &Consumer{
-		streamConsumers:   make(map[string]*streamConsumer),
-		otlpTraceProducer: common_otlp.New[ptrace.Traces, ptrace.Span](traces_otlp.SpansProducer{}),
+		streamConsumers: make(map[string]*streamConsumer),
 	}
 }
 
-// TracesFrom produces an array of ptrace.Traces from a BatchArrowRecords message.
+// LogsFrom produces an array of [plog.Logs] from a BatchArrowRecords message.
+func (c *Consumer) LogsFrom(bar *colarspb.BatchArrowRecords) ([]plog.Logs, error) {
+	records, err := c.Consume(bar)
+	if err != nil {
+		return nil, err
+	}
+
+	record2Logs := func(record *RecordMessage) (plog.Logs, error) {
+		defer record.record.Release()
+		return logs_otlp.LogsFrom(record.record)
+	}
+
+	var result []plog.Logs
+	for i := 1; i < len(records); i++ {
+		record := records[i]
+		logs, err := record2Logs(record)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, logs)
+	}
+	return result, nil
+}
+
+// TracesFrom produces an array of [ptrace.Traces] from a BatchArrowRecords message.
 func (c *Consumer) TracesFrom(bar *colarspb.BatchArrowRecords) ([]ptrace.Traces, error) {
 	records, err := c.Consume(bar)
 	if err != nil {
 		return nil, err
 	}
 
+	record2Traces := func(record *RecordMessage) (ptrace.Traces, error) {
+		defer record.record.Release()
+		return traces_otlp.TracesFrom(record.record)
+	}
+
 	var result []ptrace.Traces
 	for i := 1; i < len(records); i++ {
 		record := records[i]
-		tracesArr, err := c.otlpTraceProducer.ProduceFrom(record.record)
+		traces, err := record2Traces(record)
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, tracesArr...)
+		result = append(result, traces)
 	}
 	return result, nil
 }

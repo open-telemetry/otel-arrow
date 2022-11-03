@@ -98,8 +98,8 @@ func DiffMetrics(x, y pmetric.Metrics) string {
 	sortMetrics(x)
 	sortMetrics(y)
 
-	rx := pmetricotlp.NewRequestFromMetrics(x)
-	ry := pmetricotlp.NewRequestFromMetrics(y)
+	rx := pmetricotlp.NewExportRequestFromMetrics(x)
+	ry := pmetricotlp.NewExportRequestFromMetrics(y)
 
 	dx, err := rx.MarshalJSON()
 	if err != nil {

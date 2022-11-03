@@ -18,8 +18,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/apache/arrow/go/v9/arrow"
-	"github.com/apache/arrow/go/v9/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 
 	config2 "github.com/f5/otel-arrow-adapter/pkg/air/config"
 )

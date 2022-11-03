@@ -19,6 +19,7 @@ import (
 
 	"github.com/f5/otel-arrow-adapter/pkg/air"
 	"github.com/f5/otel-arrow-adapter/pkg/air/config"
+	"github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics"
 )
@@ -45,7 +46,7 @@ func TestOtlpMetricsToArrowRecords(t *testing.T) {
 		t.Errorf("Expected 3 record, got %d", len(multiSchemaRecords))
 	}
 	for _, record := range multiSchemaRecords {
-		schemaId := air.SchemaToId(record.Schema())
+		schemaId := arrow.SchemaToId(record.Schema())
 		switch schemaId {
 		case "metrics:{system.cpu.load_average.1m:F64},resource:{attributes:{hostname:Dic<U8,Str>,ip:Dic<U8,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U8,Str>,version:Dic<U8,Str>},start_time_unix_nano:U64,time_unix_nano:U64":
 			if record.NumCols() != 5 {

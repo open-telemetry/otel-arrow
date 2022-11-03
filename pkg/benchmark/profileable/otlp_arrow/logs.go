@@ -3,17 +3,17 @@ package otlp_arrow
 import (
 	"io"
 
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"google.golang.org/protobuf/proto"
+
+	"go.opentelemetry.io/collector/pdata/plog"
 
 	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	"github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	logs_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
-
-	"go.opentelemetry.io/collector/pdata/plog"
 )
 
 type LogsProfileable struct {
@@ -21,10 +21,10 @@ type LogsProfileable struct {
 	compression       benchmark.CompressionAlgorithm
 	dataset           dataset.LogsDataset
 	logs              []plog.Logs
-	arrowProducer     *arrow.OtlpArrowProducer[plog.ScopeLogs]
 	producer          *arrow_record.Producer
 	batchArrowRecords []*v1.BatchArrowRecords
 	config            *config.Config
+	pool              *memory.GoAllocator
 }
 
 func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *config.Config, compression benchmark.CompressionAlgorithm) *LogsProfileable {
@@ -32,10 +32,10 @@ func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *conf
 		tags:              tags,
 		dataset:           dataset,
 		compression:       compression,
-		arrowProducer:     nil,
 		producer:          arrow_record.NewProducer(),
 		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
 		config:            config,
+		pool:              memory.NewGoAllocator(),
 	}
 }
 
@@ -52,13 +52,8 @@ func (s *LogsProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *LogsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
 }
-func (s *LogsProfileable) StartProfiling(_ io.Writer) {
-	s.arrowProducer = arrow.NewOtlpArrowProducerWithConfig[plog.ScopeLogs](s.config)
-}
-func (s *LogsProfileable) EndProfiling(writer io.Writer) {
-	s.arrowProducer.DumpMetadata(writer)
-	s.arrowProducer = nil
-}
+func (s *LogsProfileable) StartProfiling(_ io.Writer)       {}
+func (s *LogsProfileable) EndProfiling(_ io.Writer)         {}
 func (s *LogsProfileable) InitBatchSize(_ io.Writer, _ int) {}
 func (s *LogsProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	s.logs = s.dataset.Logs(startAt, size)
@@ -67,13 +62,16 @@ func (s *LogsProfileable) CreateBatch(_ io.Writer, _, _ int) {
 	// Conversion of OTLP metrics to OTLP Arrow Records
 	s.batchArrowRecords = make([]*v1.BatchArrowRecords, 0, len(s.logs))
 	for _, log := range s.logs {
-		records, err := s.arrowProducer.ProduceFrom(logs_arrow.Wrap(log))
+		lb := logs_arrow.NewLogsBuilder(s.pool)
+		if err := lb.Append(log); err != nil {
+			panic(err)
+		}
+		record, err := lb.Build()
 		if err != nil {
 			panic(err)
 		}
-		rms := make([]*arrow_record.RecordMessage, len(records))
-		for i, record := range records {
-			rms[i] = arrow_record.NewLogsMessage(record, v1.DeliveryType_BEST_EFFORT)
+		rms := []*arrow_record.RecordMessage{
+			arrow_record.NewLogsMessage(record, v1.DeliveryType_BEST_EFFORT),
 		}
 		bar, err := s.producer.Produce(rms, v1.DeliveryType_BEST_EFFORT)
 		if err != nil {

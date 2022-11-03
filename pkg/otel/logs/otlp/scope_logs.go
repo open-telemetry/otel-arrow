@@ -1,0 +1,84 @@
+package otlp
+
+import (
+	"github.com/apache/arrow/go/v10/arrow"
+	"go.opentelemetry.io/collector/pdata/plog"
+
+	arrow_utils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+)
+
+type ScopeLogsIds struct {
+	Id           int
+	SchemaUrl    int
+	ScopeIds     *otlp.ScopeIds
+	LogRecordIds *LogRecordIds
+}
+
+func NewScopeLogsIds(dt *arrow.StructType) (*ScopeLogsIds, error) {
+	id, scopeSpansDT, err := arrow_utils.ListOfStructsFieldIdFromStruct(dt, constants.SCOPE_LOGS)
+	if err != nil {
+		return nil, err
+	}
+
+	schemaId, _, err := arrow_utils.FieldIdFromStruct(scopeSpansDT, constants.SCHEMA_URL)
+	if err != nil {
+		return nil, err
+	}
+
+	scopeIds, err := otlp.NewScopeIds(scopeSpansDT)
+	if err != nil {
+		return nil, err
+	}
+
+	spansIds, err := NewLogRecordIds(scopeSpansDT)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ScopeLogsIds{
+		Id:           id,
+		SchemaUrl:    schemaId,
+		ScopeIds:     scopeIds,
+		LogRecordIds: spansIds,
+	}, nil
+}
+
+func AppendScopeLogsInto(resLogs plog.ResourceLogs, arrowResLogs *arrow_utils.ListOfStructs, resLogsIdx int, ids *ScopeLogsIds) error {
+	arrowScopeLogs, err := arrowResLogs.ListOfStructsById(resLogsIdx, ids.Id)
+	if err != nil {
+		return err
+	}
+	scopeLogsSlice := resLogs.ScopeLogs()
+	scopeLogsSlice.EnsureCapacity(arrowScopeLogs.End() - arrowResLogs.Start())
+
+	for scopeLogsIdx := arrowScopeLogs.Start(); scopeLogsIdx < arrowScopeLogs.End(); scopeLogsIdx++ {
+		scopeLogs := scopeLogsSlice.AppendEmpty()
+
+		if err = otlp.UpdateScopeWith(scopeLogs.Scope(), arrowScopeLogs, scopeLogsIdx, ids.ScopeIds); err != nil {
+			return err
+		}
+
+		schemaUrl, err := arrowScopeLogs.StringFieldById(ids.SchemaUrl, scopeLogsIdx)
+		if err != nil {
+			return err
+		}
+		scopeLogs.SetSchemaUrl(schemaUrl)
+
+		arrowLogs, err := arrowScopeLogs.ListOfStructsById(scopeLogsIdx, ids.LogRecordIds.Id)
+		if err != nil {
+			return err
+		}
+		logsSlice := scopeLogs.LogRecords()
+		logsSlice.EnsureCapacity(arrowLogs.End() - arrowLogs.Start())
+		for logIdx := arrowLogs.Start(); logIdx < arrowLogs.End(); logIdx++ {
+			err = AppendLogRecordInto(logsSlice, arrowLogs, logIdx, ids.LogRecordIds)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}

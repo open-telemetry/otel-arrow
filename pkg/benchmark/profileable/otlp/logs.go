@@ -42,7 +42,7 @@ func (s *LogsProfileable) Process(io.Writer) string { return "" }
 func (s *LogsProfileable) Serialize(io.Writer) ([][]byte, error) {
 	buffers := make([][]byte, len(s.logs))
 	for i, l := range s.logs {
-		r := plogotlp.NewRequestFromLogs(l)
+		r := plogotlp.NewExportRequestFromLogs(l)
 		bytes, err := r.MarshalProto()
 		if err != nil {
 			return nil, err
@@ -54,7 +54,7 @@ func (s *LogsProfileable) Serialize(io.Writer) ([][]byte, error) {
 func (s *LogsProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
 	s.logs = make([]plog.Logs, len(buffers))
 	for i, b := range buffers {
-		r := plogotlp.NewRequest()
+		r := plogotlp.NewExportRequest()
 		if err := r.UnmarshalProto(b); err != nil {
 			panic(err)
 		}

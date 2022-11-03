@@ -18,13 +18,11 @@ import (
 	"encoding/json"
 	"testing"
 
-	"go.opentelemetry.io/collector/pdata/plog"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
-	common_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-	common_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	logs_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
 	logs_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/logs/otlp"
 )
@@ -39,28 +37,26 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	logsGen := datagen.NewLogsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
 
 	// Generate a random OTLP logs request.
-	expectedRequest := plogotlp.NewRequestFromLogs(logsGen.Generate(10, 100))
+	expectedRequest := plogotlp.NewExportRequestFromLogs(logsGen.Generate(10, 100))
 
 	// Convert the OTLP logs request to Arrow.
-	otlpArrowProducer := common_arrow.NewOtlpArrowProducer[plog.ScopeLogs]()
-	records, err := otlpArrowProducer.ProduceFrom(logs_arrow.Wrap(expectedRequest.Logs()))
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	defer pool.AssertSize(t, 0)
+	lb := logs_arrow.NewLogsBuilder(pool)
+	err := lb.Append(expectedRequest.Logs())
 	if err != nil {
 		t.Fatal(err)
 	}
+	record, err := lb.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer record.Release()
 
 	// Convert the Arrow records back to OTLP.
-	otlpProducer := common_otlp.New[plog.Logs, plog.LogRecord](logs_otlp.LogsProducer{})
-	for _, record := range records {
-		traces, err := otlpProducer.ProduceFrom(record)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		actualRequests := make([]json.Marshaler, len(traces))
-		for i, t := range traces {
-			actualRequests[i] = plogotlp.NewRequestFromLogs(t)
-		}
-
-		assert.Equiv(t, []json.Marshaler{expectedRequest}, actualRequests)
+	logs, err := logs_otlp.LogsFrom(record)
+	if err != nil {
+		t.Fatal(err)
 	}
+	assert.Equiv(t, []json.Marshaler{expectedRequest}, []json.Marshaler{plogotlp.NewExportRequestFromLogs(logs)})
 }

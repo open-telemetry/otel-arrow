@@ -18,20 +18,21 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/apache/arrow/go/v9/arrow/ipc"
+	"github.com/apache/arrow/go/v10/arrow/ipc"
+	"github.com/apache/arrow/go/v10/arrow/memory"
+	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
-	"github.com/f5/otel-arrow-adapter/pkg/air/config"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	logs_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
 	traces_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
 )
 
 // Producer is a BatchArrowRecords producer.
 type Producer struct {
-	streamProducers         map[string]*streamProducer
-	otlpArrowTracesProducer *arrow.OtlpArrowProducer[ptrace.ScopeSpans]
-	batchId                 int64
+	pool            *memory.GoAllocator
+	streamProducers map[string]*streamProducer
+	batchId         int64
 }
 
 type streamProducer struct {
@@ -43,32 +44,46 @@ type streamProducer struct {
 // NewProducer creates a new BatchArrowRecords producer.
 func NewProducer() *Producer {
 	return &Producer{
-		streamProducers:         make(map[string]*streamProducer),
-		otlpArrowTracesProducer: arrow.NewOtlpArrowProducer[ptrace.ScopeSpans](),
-		batchId:                 0,
+		pool:            memory.NewGoAllocator(),
+		streamProducers: make(map[string]*streamProducer),
+		batchId:         0,
 	}
 }
 
-// NewProducerWithConfig create a new BatchArrowRecords producer with the given configuration.
-func NewProducerWithConfig(cfg *config.Config) *Producer {
-	return &Producer{
-		streamProducers:         make(map[string]*streamProducer),
-		otlpArrowTracesProducer: arrow.NewOtlpArrowProducerWithConfig[ptrace.ScopeSpans](cfg),
-		batchId:                 0,
+// BatchArrowRecordsFromLogs produces a BatchArrowRecords message from a [plog.Logs] messages.
+func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrowRecords, error) {
+	lb := logs_arrow.NewLogsBuilder(p.pool)
+	if err := lb.Append(ls); err != nil {
+		return nil, err
 	}
-}
-
-// BatchArrowRecordsFrom produces a BatchArrowRecords message from a ptrace.Traces messages.
-func (p *Producer) BatchArrowRecordsFrom(ts ptrace.Traces) (*colarspb.BatchArrowRecords, error) {
-	records, err := p.otlpArrowTracesProducer.ProduceFrom(traces_arrow.Wrap(ts))
+	record, err := lb.Build()
 	if err != nil {
 		return nil, err
 	}
+	defer record.Release()
 
-	rms := make([]*RecordMessage, len(records))
-	for i, record := range records {
-		rms[i] = NewTraceMessage(record, colarspb.DeliveryType_BEST_EFFORT)
+	rms := []*RecordMessage{NewTraceMessage(record, colarspb.DeliveryType_BEST_EFFORT)}
+
+	bar, err := p.Produce(rms, colarspb.DeliveryType_BEST_EFFORT)
+	if err != nil {
+		return nil, err
 	}
+	return bar, nil
+}
+
+// BatchArrowRecordsFromTraces produces a BatchArrowRecords message from a [ptrace.Traces] messages.
+func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.BatchArrowRecords, error) {
+	tb := traces_arrow.NewTracesBuilder(p.pool)
+	if err := tb.Append(ts); err != nil {
+		return nil, err
+	}
+	record, err := tb.Build()
+	if err != nil {
+		return nil, err
+	}
+	defer record.Release()
+
+	rms := []*RecordMessage{NewTraceMessage(record, colarspb.DeliveryType_BEST_EFFORT)}
 
 	bar, err := p.Produce(rms, colarspb.DeliveryType_BEST_EFFORT)
 	if err != nil {
@@ -97,6 +112,7 @@ func (p *Producer) Produce(rms []*RecordMessage, deliveryType colarspb.DeliveryT
 			sp.ipcWriter = ipc.NewWriter(&sp.output, ipc.WithSchema(rm.record.Schema()))
 		}
 		err := sp.ipcWriter.Write(rm.record)
+		rm.record.Release()
 		if err != nil {
 			return nil, err
 		}

@@ -34,12 +34,12 @@ func TestEquiv(t *testing.T) {
 	rs.SetSchemaUrl("http://foo.bar")
 
 	expectedTraces := []json.Marshaler{
-		ptraceotlp.NewRequestFromTraces(traces),
+		ptraceotlp.NewExportRequestFromTraces(traces),
 	}
 
 	actualTraces := []json.Marshaler{
-		ptraceotlp.NewRequestFromTraces(traces),
-		ptraceotlp.NewRequestFromTraces(traces),
+		ptraceotlp.NewExportRequestFromTraces(traces),
+		ptraceotlp.NewExportRequestFromTraces(traces),
 	}
 	Equiv(t, expectedTraces, actualTraces)
 
@@ -49,7 +49,7 @@ func TestEquiv(t *testing.T) {
 	rs.Resource().Attributes().PutStr("baz", "qux")
 	rs.SetSchemaUrl("http://foo.bar")
 	actualTraces = []json.Marshaler{
-		ptraceotlp.NewRequestFromTraces(traces),
+		ptraceotlp.NewExportRequestFromTraces(traces),
 	}
 	NotEquiv(t, expectedTraces, actualTraces)
 }

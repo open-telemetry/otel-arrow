@@ -42,7 +42,7 @@ func (s *MetricsProfileable) Process(io.Writer) string { return "" }
 func (s *MetricsProfileable) Serialize(io.Writer) ([][]byte, error) {
 	buffers := make([][]byte, len(s.metrics))
 	for i, m := range s.metrics {
-		r := pmetricotlp.NewRequestFromMetrics(m)
+		r := pmetricotlp.NewExportRequestFromMetrics(m)
 		bytes, err := r.MarshalProto()
 		if err != nil {
 			return nil, err
@@ -54,7 +54,7 @@ func (s *MetricsProfileable) Serialize(io.Writer) ([][]byte, error) {
 func (s *MetricsProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
 	s.metrics = make([]pmetric.Metrics, len(buffers))
 	for i, b := range buffers {
-		r := pmetricotlp.NewRequest()
+		r := pmetricotlp.NewExportRequest()
 		if err := r.UnmarshalProto(b); err != nil {
 			panic(err)
 		}

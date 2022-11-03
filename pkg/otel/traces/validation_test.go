@@ -18,15 +18,12 @@ import (
 	"encoding/json"
 	"testing"
 
-	"go.opentelemetry.io/collector/pdata/ptrace"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
-	"github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
-	common_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-	common_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	traces_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
 	traces_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/traces/otlp"
 )
@@ -41,30 +38,28 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	tracesGen := datagen.NewTracesGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
 
 	// Generate a random OTLP traces request.
-	expectedRequest := ptraceotlp.NewRequestFromTraces(tracesGen.Generate(10, 100))
+	expectedRequest := ptraceotlp.NewExportRequestFromTraces(tracesGen.Generate(10, 100))
 
 	// Convert the OTLP traces request to Arrow.
-	otlpArrowProducer := common_arrow.NewOtlpArrowProducer[ptrace.ScopeSpans]()
-	records, err := otlpArrowProducer.ProduceFrom(traces_arrow.Wrap(expectedRequest.Traces()))
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	defer pool.AssertSize(t, 0)
+	tb := traces_arrow.NewTracesBuilder(pool)
+	err := tb.Append(expectedRequest.Traces())
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// Convert the Arrow records back to OTLP.
-	otlpProducer := common_otlp.New[ptrace.Traces, ptrace.Span](traces_otlp.SpansProducer{})
-	for _, record := range records {
-		traces, err := otlpProducer.ProduceFrom(record)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		actualRequests := make([]json.Marshaler, len(traces))
-		for i, t := range traces {
-			actualRequests[i] = ptraceotlp.NewRequestFromTraces(t)
-		}
-
-		assert.Equiv(t, []json.Marshaler{expectedRequest}, actualRequests)
+	record, err := tb.Build()
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer record.Release()
+
+	// Convert the Arrow record back to OTLP.
+	traces, err := traces_otlp.TracesFrom(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assert.Equiv(t, []json.Marshaler{expectedRequest}, []json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)})
 }
 
 // TestConversionFromRealData tests the conversion of OTLP traces to Arrow and back to OTLP.
@@ -73,41 +68,39 @@ func TestConversionFromSyntheticData(t *testing.T) {
 // of the OTLP traces generated from the Arrow records.
 func TestConversionFromRealData(t *testing.T) {
 	t.Parallel()
-	//t.Skip("Testing based on production data that is not stored in the")
+	t.Skip("Testing based on production data that is not stored in the")
 
 	// Load a real OTLP traces request.
 	ds := dataset.NewRealTraceDataset("../../../data/nth_first_otlp_traces.pb", []string{"trace_id"})
 
-	batch_sizes := []int{1, 10, 100, 1000, 5000, 10000}
-	for _, batch_size := range batch_sizes {
-		traces := ds.Traces(0, batch_size)
-		expectedRequest := ptraceotlp.NewRequestFromTraces(traces[0])
+	batchSizes := []int{1, 10, 100, 1000, 5000, 10000}
+	for _, batchSize := range batchSizes {
+		tracesList := ds.Traces(0, batchSize)
+		expectedRequest := ptraceotlp.NewExportRequestFromTraces(tracesList[0])
 
 		// Convert the OTLP traces request to Arrow.
-		cfg := config.NewUint16DefaultConfig()
-		//cfg.Attribute.Encoding = config.AttributesAsStructs
-		cfg.Attribute.Encoding = config.AttributesAsListStructs
-		otlpArrowProducer := common_arrow.NewOtlpArrowProducerWithConfig[ptrace.ScopeSpans](cfg)
-		records, err := otlpArrowProducer.ProduceFrom(traces_arrow.Wrap(expectedRequest.Traces()))
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Convert the Arrow records back to OTLP.
-		otlpProducer := common_otlp.New[ptrace.Traces, ptrace.Span](traces_otlp.SpansProducer{})
-		var actualRequests []json.Marshaler
-		for _, record := range records {
-			traces, err := otlpProducer.ProduceFrom(record)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			for _, t := range traces {
-				actualRequests = append(actualRequests, ptraceotlp.NewRequestFromTraces(t))
-			}
-		}
-
-		// Check the equivalence of the initial and the generated OTLP traces.
-		assert.Equiv(t, []json.Marshaler{expectedRequest}, actualRequests)
+		checkTracesConversion(t, expectedRequest)
 	}
+}
+
+func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportRequest) {
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	defer pool.AssertSize(t, 0)
+	tb := traces_arrow.NewTracesBuilder(pool)
+	err := tb.Append(expectedRequest.Traces())
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := tb.Build()
+	defer record.Release()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Convert the Arrow records back to OTLP.
+	traces, err := traces_otlp.TracesFrom(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assert.Equiv(t, []json.Marshaler{expectedRequest}, []json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)})
 }

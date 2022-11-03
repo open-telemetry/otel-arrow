@@ -42,7 +42,7 @@ func (s *TraceProfileable) Process(io.Writer) string { return "" }
 func (s *TraceProfileable) Serialize(io.Writer) ([][]byte, error) {
 	buffers := make([][]byte, len(s.traces))
 	for i, t := range s.traces {
-		r := ptraceotlp.NewRequestFromTraces(t)
+		r := ptraceotlp.NewExportRequestFromTraces(t)
 
 		bytes, err := r.MarshalProto()
 		if err != nil {
@@ -55,7 +55,7 @@ func (s *TraceProfileable) Serialize(io.Writer) ([][]byte, error) {
 func (s *TraceProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
 	s.traces = make([]ptrace.Traces, len(buffers))
 	for i, b := range buffers {
-		r := ptraceotlp.NewRequest()
+		r := ptraceotlp.NewExportRequest()
 		if err := r.UnmarshalProto(b); err != nil {
 			panic(err)
 		}
