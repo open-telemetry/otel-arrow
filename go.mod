@@ -7,6 +7,7 @@ require (
 	github.com/brianvoe/gofakeit/v6 v6.17.0
 	github.com/davecgh/go-spew v1.1.1
 	github.com/dustin/go-humanize v1.0.0
+	github.com/golang/mock v1.6.0
 	github.com/google/go-cmp v0.5.8
 	github.com/klauspost/compress v1.15.9
 	github.com/olekukonko/tablewriter v0.0.5
