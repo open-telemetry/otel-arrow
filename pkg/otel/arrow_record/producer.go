@@ -28,6 +28,16 @@ import (
 	traces_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
 )
 
+// ProducerAPI is the interface of a Producer consdiering all signals.
+// This is useful for mock testing.
+type ProducerAPI interface {
+	BatchArrowRecordsFromTraces(ptrace.Traces) (*colarspb.BatchArrowRecords, error)
+	BatchArrowRecordsFromLogs(plog.Logs) (*colarspb.BatchArrowRecords, error)
+	// TODO: ...FromMetrics
+}
+
+var _ ProducerAPI = &Producer{}
+
 // Producer is a BatchArrowRecords producer.
 type Producer struct {
 	pool            *memory.GoAllocator

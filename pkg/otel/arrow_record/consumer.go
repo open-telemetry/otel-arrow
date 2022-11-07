@@ -29,6 +29,15 @@ import (
 	traces_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/traces/otlp"
 )
 
+// ConsumerAPI is the interface of a Consumer consdiering all signals.
+// This is useful for mock testing.
+type ConsumerAPI interface {
+	LogsFrom(*colarspb.BatchArrowRecords) ([]plog.Logs, error)
+	TracesFrom(*colarspb.BatchArrowRecords) ([]ptrace.Traces, error)
+}
+
+var _ ConsumerAPI = &Consumer{}
+
 // Consumer is a BatchArrowRecords consumer.
 type Consumer struct {
 	streamConsumers map[string]*streamConsumer
