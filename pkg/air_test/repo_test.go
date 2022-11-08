@@ -21,8 +21,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v11/arrow/array"
 	"github.com/davecgh/go-spew/spew"
 
 	"github.com/f5/otel-arrow-adapter/pkg/air"

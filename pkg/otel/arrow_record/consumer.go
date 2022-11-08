@@ -20,7 +20,7 @@ package arrow_record
 import (
 	"bytes"
 
-	"github.com/apache/arrow/go/v10/arrow/ipc"
+	"github.com/apache/arrow/go/v11/arrow/ipc"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 

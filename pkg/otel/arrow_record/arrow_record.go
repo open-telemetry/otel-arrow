@@ -18,7 +18,7 @@
 package arrow_record // import "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 
 import (
-	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v11/arrow"
 
 	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	arrow2 "github.com/f5/otel-arrow-adapter/pkg/arrow"

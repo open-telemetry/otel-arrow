@@ -22,8 +22,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	"github.com/f5/otel-arrow-adapter/pkg/air/common"

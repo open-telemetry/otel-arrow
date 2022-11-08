@@ -6,8 +6,8 @@ github.com/OneOfOne/xxhash v1.2.2/go.mod h1:HSdplMjZKSmBqAxg5vPj2TmRDmfkzw+cTzAE
 github.com/andybalholm/brotli v1.0.4 h1:V7DdXeJtZscaqfNuAdSRuRFzuiKlHSC/Zh3zl9qY3JY=
 github.com/andybalholm/brotli v1.0.4/go.mod h1:fO7iG3H7G2nSZ7m0zPUDn85XEX2GTukHGRSepvi9Eig=
 github.com/antihax/optional v1.0.0/go.mod h1:uupD/76wgC+ih3iEmQUL+0Ugr19nfwCT1kdvxnR2qWY=
-github.com/apache/arrow/go/v10 v10.0.0 h1:39wWBr/2gJ7EWt+HGIq5v0V4/5eUvARvEKthSffKviU=
-github.com/apache/arrow/go/v10 v10.0.0/go.mod h1:YvhnlEePVnBS4+0z3fhPfUy7W1Ikj0Ih0vcRo/gZ1M0=
+github.com/apache/arrow/go/v11 v11.0.0-20221108144011-89a65b06a199 h1:bqrZRAGaf5gEai8himdntwKW+J5PPts7dZvfAu0kN9U=
+github.com/apache/arrow/go/v11 v11.0.0-20221108144011-89a65b06a199/go.mod h1:Q32o+NHZTzx1r3xbYklfUu7RxiRlN78ZCqMFrspF7To=
 github.com/apache/thrift v0.16.0 h1:qEy6UW60iVOlUy+b9ZR0d5WzUWYGOo4HfopoyBaNmoY=
 github.com/apache/thrift v0.16.0/go.mod h1:PHK3hniurgQaNMZYaCLEqXKsYK8upmhPbmdP2FXSqgU=
 github.com/brianvoe/gofakeit/v6 v6.17.0 h1:obbQTJeHfktJtiZzq0Q1bEpsNUs+yHrYlPVWt7BtmJ4=

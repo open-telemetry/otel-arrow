@@ -18,8 +18,8 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/apache/arrow/go/v10/arrow/ipc"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v11/arrow/ipc"
+	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
