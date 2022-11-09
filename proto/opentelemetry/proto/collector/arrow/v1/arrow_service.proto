@@ -7,7 +7,7 @@ option java_package = "io.opentelemetry.proto.collector.arrow.v1";
 option java_outer_classname = "ArrowServiceProto";
 
 // Note the following is temporary
-option go_package = "github.com/lquerel/otel-arrow-adapter/api/collector/arrow/v1";
+option go_package = "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1";
 
 service ArrowStreamService {
   // The ArrowStream endpoint is a bi-directional stream used to send batch of `BatchArrowRecords` from the exporter

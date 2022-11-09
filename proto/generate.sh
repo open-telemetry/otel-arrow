@@ -19,8 +19,8 @@ mv api/github.com/f5/otel-arrow-adapter/api/collector api
 rm -rf api/github.com
 
 # Generate the mock files
-go install github.com/golang/mock@latest
-go get github.com/golang/mock@latest
+go get github.com/golang/mock
+go install github.com/golang/mock
 mkdir -p api/collector/arrow/v1/mock
-mockgen -package mock github.com/f5/otel-arrow-adapter/api/collector/arrow/v1 ArrowStreamServiceClient,ArrowStreamService_ArrowStreamClient > api/collector/arrow/v1/mock/arrow_service_mock.go
+mockgen -package mock github.com/f5/otel-arrow-adapter/api/collector/arrow/v1 ArrowStreamServiceClient,ArrowStreamService_ArrowStreamClient,ArrowStreamServiceServer,ArrowStreamService_ArrowStreamServer > api/collector/arrow/v1/mock/arrow_service_mock.go
 go mod tidy
