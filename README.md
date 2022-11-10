@@ -1,8 +1,17 @@
-# OTEL Arrow Adapter
+# OTLP Arrow Encoder/Decoder package
 
 Adapter used to convert OTEL batches to/from OTEL Arrow batches in both directions.
 
-See [OTEP 0156](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md) for more details on the OTEL Arrow protocol.
+This package is still experimental and subject to change. It is currently used by an [experimental OTLP/Arrow gRPC 
+exporter and receiver](https://github.com/open-telemetry/experimental-arrow-collector).
+
+Other important links:
+- [Project Roadmap](https://github.com/f5/otel-arrow-adapter/milestones?direction=asc&sort=due_date&state=open).
+- [Project Board](https://github.com/orgs/f5/projects/1/views/2) describing the current state of the project.
+- [Arrow schemas](docs/arrow_schema.md) used by this package.
+- The underlying [OTEP](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md) describing the 
+rationale, specifications and different phases of this project.
+
 
 ## Developers 
 
