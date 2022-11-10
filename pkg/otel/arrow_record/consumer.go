@@ -68,8 +68,7 @@ func (c *Consumer) LogsFrom(bar *colarspb.BatchArrowRecords) ([]plog.Logs, error
 	}
 
 	var result []plog.Logs
-	for i := 1; i < len(records); i++ {
-		record := records[i]
+	for _, record := range records {
 		logs, err := record2Logs(record)
 		if err != nil {
 			return nil, err
@@ -92,8 +91,7 @@ func (c *Consumer) TracesFrom(bar *colarspb.BatchArrowRecords) ([]ptrace.Traces,
 	}
 
 	var result []ptrace.Traces
-	for i := 1; i < len(records); i++ {
-		record := records[i]
+	for _, record := range records {
 		traces, err := record2Traces(record)
 		if err != nil {
 			return nil, err
