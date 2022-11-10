@@ -35,7 +35,7 @@ func UpdateValueFrom(v pcommon.Value, vArr *array.SparseUnion, row int) error {
 		}
 		v.SetEmptyBytes().FromRaw(val)
 	default:
-		return fmt.Errorf("unknow type code `%d` in any value union array", tcode)
+		return fmt.Errorf("UpdateValueFrom: unknow type code `%d` in any value union array", tcode)
 	}
 
 	return nil

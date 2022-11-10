@@ -288,6 +288,32 @@ func ListOfStructsFromRecordBis(record arrow.Record, fieldId int, row int) (*Lis
 	}
 }
 
+func ListOfStructsFromStruct(parent *array.Struct, fieldId int, row int) (*ListOfStructs, error) {
+	arr := parent.Field(fieldId)
+	if listArr, ok := arr.(*array.List); ok {
+		if listArr.IsNull(row) {
+			return nil, nil
+		}
+		switch structArr := listArr.ListValues().(type) {
+		case *array.Struct:
+			dt := structArr.DataType().(*arrow.StructType)
+			start := int(listArr.Offsets()[row])
+			end := int(listArr.Offsets()[row+1])
+
+			return &ListOfStructs{
+				dt:    dt,
+				arr:   structArr,
+				start: start,
+				end:   end,
+			}, nil
+		default:
+			return nil, fmt.Errorf("field id %d is not a list of structs", fieldId)
+		}
+	} else {
+		return nil, fmt.Errorf("field id %d is not a list", fieldId)
+	}
+}
+
 func (los *ListOfStructs) Start() int {
 	return los.start
 }
