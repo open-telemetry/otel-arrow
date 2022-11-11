@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
 	"github.com/stretchr/testify/require"
@@ -23,6 +24,7 @@ func TestProducerConsumerTraces(t *testing.T) {
 
 	batch, err := producer.BatchArrowRecordsFromTraces(traces)
 	require.NoError(t, err)
+	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPANS, batch.OtlpArrowPayloads[0].Type)
 
 	consumer := NewConsumer()
 	received, err := consumer.TracesFrom(batch)
@@ -46,6 +48,7 @@ func TestProducerConsumerLogs(t *testing.T) {
 
 	batch, err := producer.BatchArrowRecordsFromLogs(logs)
 	require.NoError(t, err)
+	require.Equal(t, arrowpb.OtlpArrowPayloadType_LOGS, batch.OtlpArrowPayloads[0].Type)
 
 	consumer := NewConsumer()
 	received, err := consumer.LogsFrom(batch)

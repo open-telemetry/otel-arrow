@@ -72,7 +72,7 @@ func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrow
 	}
 	defer record.Release()
 
-	rms := []*RecordMessage{NewTraceMessage(record, colarspb.DeliveryType_BEST_EFFORT)}
+	rms := []*RecordMessage{NewLogsMessage(record, colarspb.DeliveryType_BEST_EFFORT)}
 
 	bar, err := p.Produce(rms, colarspb.DeliveryType_BEST_EFFORT)
 	if err != nil {
