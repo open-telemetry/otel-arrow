@@ -46,10 +46,20 @@ func NewScopeSpansIds(dt *arrow.StructType) (*ScopeSpansIds, error) {
 }
 
 func AppendScopeSpansInto(resSpans ptrace.ResourceSpans, arrowResSpans *arrow_utils.ListOfStructs, resSpansIdx int, ids *ScopeSpansIds) error {
+	if arrowResSpans == nil {
+		return nil
+	}
+
 	arrowScopeSpans, err := arrowResSpans.ListOfStructsById(resSpansIdx, ids.Id)
 	if err != nil {
 		return err
 	}
+
+	if arrowScopeSpans == nil {
+		// No scope spans
+		return nil
+	}
+
 	scopeSpansSlice := resSpans.ScopeSpans()
 	scopeSpansSlice.EnsureCapacity(arrowScopeSpans.End() - arrowResSpans.Start())
 
