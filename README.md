@@ -112,7 +112,7 @@ This capability will be used to implement a receiver into the existing collector
   - **General**.
     - [X] Complex attributes
     - [X] Complex body
-    - [ ] Schema URL
+    - [X] Schema URL
     - [X] Description
     - [X] Unit
   - **OTLP metrics --> OTLP_ARROW events**
@@ -122,8 +122,8 @@ This capability will be used to implement a receiver into the existing collector
     - [X] Histogram
     - [X] Exponential histogram
     - [X] Univariate metrics to multivariate metrics
-    - [ ] Aggregation temporality
-    - [ ] Exemplar
+    - [X] Aggregation temporality
+    - [X] Exemplar
   - **OTLP logs --> OTLP_ARROW events**
     - [X] Logs
   - **OTLP trace --> OTLP_ARROW events**
@@ -140,14 +140,14 @@ This capability will be used to implement an exporter into the existing collecto
     - [X] Description
     - [X] Unit
   - **OTLP_ARROW events --> OTLP metrics**
-    - [ ] Gauge
+    - [X] Gauge
     - [X] Sum
-    - [ ] Summary
-    - [ ] Histogram
-    - [ ] Exponential histogram
-    - [ ] Univariate metrics to multivariate metrics
-    - [ ] Aggregation temporality
-    - [ ] Exemplar
+    - [X] Summary
+    - [X] Histogram
+    - [X] Exponential histogram
+    - [X] Univariate metrics to multivariate metrics
+    - [X] Aggregation temporality
+    - [X] Exemplar
   - **OTLP_ARROW events --> OTLP logs**
     - [X] Logs
   - **OTLP_ARROW events --> OTLP trace**
@@ -181,14 +181,14 @@ This capability will be used to implement an exporter into the existing collecto
     - [X] logs_benchmark 
     - [X] metrics_benchmark [WIP define a way to specify the multivariate metrics configuration]  
     - [X] traces_benchmark 
-  - [ ] Assertions to check the correctness of the OTLP_ARROW representation
-    - [ ] [WIP] Metrics
+  - [X] Assertions to check the correctness of the OTLP_ARROW representation
+    - [X] Metrics
     - [X] Logs
     - [X] Trace
 
 **Performance**
   - [ ] Performance and memory optimizations
-  - [ ] Check memory leaks (e.g. Arrow related memory leaks)
+  - [X] Check memory leaks (e.g. Arrow related memory leaks)
 
 **CI**
   - [X] GitHub Actions to build, test, check at every commit.
