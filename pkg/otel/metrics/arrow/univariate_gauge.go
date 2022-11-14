@@ -11,14 +11,14 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
-// UnivariateMetricDT is the Arrow Data Type describing a univariate gauge.
 var (
+	// UnivariateGaugeDT is the Arrow Data Type describing a univariate gauge.
 	UnivariateGaugeDT = arrow.StructOf(
 		arrow.Field{Name: constants.DATA_POINTS, Type: arrow.ListOf(UnivariateNumberDataPointDT)},
 	)
 )
 
-// UnivariateMetricBuilder is a builder for gauge metrics.
+// UnivariateGaugeBuilder is a builder for gauge metrics.
 type UnivariateGaugeBuilder struct {
 	released bool
 
@@ -28,12 +28,12 @@ type UnivariateGaugeBuilder struct {
 	dpb  *NumberDataPointBuilder // number data point builder
 }
 
-// NewUnivariateMetricBuilder creates a new UnivariateMetricBuilder with a given memory allocator.
+// NewUnivariateGaugeBuilder creates a new UnivariateMetricBuilder with a given memory allocator.
 func NewUnivariateGaugeBuilder(pool memory.Allocator) *UnivariateGaugeBuilder {
 	return UnivariateGaugeBuilderFrom(array.NewStructBuilder(pool, UnivariateGaugeDT))
 }
 
-// UnivariateMetricBuilderFrom creates a new UnivariateMetricBuilder from an existing StructBuilder.
+// UnivariateGaugeBuilderFrom creates a new UnivariateMetricBuilder from an existing StructBuilder.
 func UnivariateGaugeBuilderFrom(ndpb *array.StructBuilder) *UnivariateGaugeBuilder {
 	return &UnivariateGaugeBuilder{
 		released: false,
@@ -49,7 +49,7 @@ func UnivariateGaugeBuilderFrom(ndpb *array.StructBuilder) *UnivariateGaugeBuild
 // Once the array is no longer needed, Release() should be called to free the memory.
 func (b *UnivariateGaugeBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("UnivariateMetricBuilder: Build() called after Release()")
+		return nil, fmt.Errorf("UnivariateGaugeBuilder: Build() called after Release()")
 	}
 
 	defer b.Release()
@@ -69,7 +69,7 @@ func (b *UnivariateGaugeBuilder) Release() {
 // Append appends a new univariate gauge to the builder.
 func (b *UnivariateGaugeBuilder) Append(gauge pmetric.Gauge) error {
 	if b.released {
-		return fmt.Errorf("UnivariateMetricBuilder: Append() called after Release()")
+		return fmt.Errorf("UnivariateGaugeBuilder: Append() called after Release()")
 	}
 
 	b.builder.Append(true)

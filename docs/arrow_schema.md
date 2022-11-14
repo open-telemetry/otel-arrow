@@ -28,10 +28,20 @@ attributes: &attributes                                 # arrow type = map
         bool: bool 
         binary: binary | binary_dictionary
 
+# Exemplar Arrow Schema (declaration used in other schemas)
+exemplars: &exemplars
+  - attributes: *attributes
+    time_unix_nano: uint64
+    value:                        # arrow type = dense union
+      i64: int64
+      f64: float64
+    span_id: 8_bytes_binary | 8_bytes_binary_dictionary
+    trace_id: 16_bytes_binary | 16_bytes_binary_dictionary
+
 
 # Metrics Arrow Schema
 # OTLP univariate metrics are represented with the following Arrow Schema.
-# TODO: Histogram, Exponential Histogram, Multivariate metrics
+# TODO: Multivariate metrics
 
 resource_metrics:
     - resource: 
@@ -58,14 +68,7 @@ resource_metrics:
                         value:                            # arrow type = dense union
                           i64: int64 
                           f64: float64 
-                        exemplars: 
-                          - attributes: *attributes
-                            time_unix_nano: uint64
-                            value:                        # arrow type = dense union
-                              i64: int64
-                              f64: float64
-                            span_id: 8_bytes_binary | 8_bytes_binary_dictionary 
-                            trace_id: 16_bytes_binary | 16_bytes_binary_dictionary 
+                        exemplars: *exemplars
                         flags: uint32
                   sum: 
                     data_points: 
@@ -75,14 +78,7 @@ resource_metrics:
                         value:                            # arrow type = dense union
                           i64: int64
                           f64: float64
-                        exemplars: 
-                          - attributes: *attributes
-                            time_unix_nano: uint64
-                            value:                        # arrow type = dense union
-                              i64: int64
-                              f64: float64
-                            span_id: 8_bytes_binary | 8_bytes_binary_dictionary
-                            trace_id: 16_bytes_binary | 16_bytes_binary_dictionary
+                        exemplars: *exemplars
                         flags: uint32
                     aggregation_temporality: int32
                     is_monotonic: bool
@@ -97,6 +93,40 @@ resource_metrics:
                           - quantile: float64
                             value: float64
                         flags: uint32
+                  histogram:
+                    data_points:
+                      - attributes: *attributes
+                        start_time_unix_nano: uint64
+                        time_unix_nano: uint64
+                        count: uint64
+                        sum: float64
+                        bucket_counts: []uint64
+                        explicit_bounds: []float64
+                        exemplars: *exemplars
+                        flags: uint32
+                        min: float64
+                        max: float64
+                    aggregation_temporality: int32
+                  exp_histogram:
+                    data_points:
+                      - attributes: *attributes
+                        start_time_unix_nano: uint64
+                        time_unix_nano: uint64
+                        count: uint64
+                        sum: float64
+                        scale: int32
+                        zero_count: uint64
+                        positive:
+                          offset: int32
+                          bucket_counts: []uint64
+                        negative:
+                          offset: int32
+                          bucket_counts: []uint64
+                        exemplars: *exemplars
+                        flags: uint32
+                        min: float64
+                        max: float64
+                    aggregation_temporality: int32
 
 
 # Logs Arrow Schema

@@ -577,6 +577,22 @@ func (los *ListOfStructs) OldListOfStructsById(row int, fieldId int, fieldName s
 	}
 }
 
+func (los *ListOfStructs) ListValuesById(row int, fieldId int) (arr arrow.Array, start int, end int, err error) {
+	column := los.arr.Field(fieldId)
+	switch listArr := column.(type) {
+	case *array.List:
+		if listArr.IsNull(row) {
+			return nil, 0, 0, nil
+		}
+		start = int(listArr.Offsets()[row])
+		end = int(listArr.Offsets()[row+1])
+		arr = listArr.ListValues()
+	default:
+		err = fmt.Errorf("field id %d is not a list", fieldId)
+	}
+	return
+}
+
 func (los *ListOfStructs) ListOfStructsById(row int, fieldId int) (*ListOfStructs, error) {
 	column := los.arr.Field(fieldId)
 	switch listArr := column.(type) {

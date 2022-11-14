@@ -59,6 +59,8 @@ func (mg *MetricsGenerator) Generate(batchSize int, collectInterval time.Duratio
 		mg.SystemCpuTime(metrics.AppendEmpty(), 1)
 		mg.SystemMemoryUsage(metrics.AppendEmpty())
 		mg.SystemCpuLoadAverage1m(metrics.AppendEmpty())
+		mg.FakeHistogram(metrics.AppendEmpty())
+		mg.FakeExpHistogram(metrics.AppendEmpty())
 	}
 
 	mg.generation++
@@ -166,4 +168,85 @@ func (dg *DataGenerator) SystemCpuLoadAverage1m(metric pmetric.Metric) {
 	point.SetStartTimestamp(dg.PrevTime())
 	point.SetTimestamp(dg.CurrentTime())
 	point.SetDoubleValue(dg.GenF64Range(1.0, 100.0))
+}
+
+// FakeHistogram generates a fake histogram metric.
+// All field are purposely filled with random values.
+func (dg *DataGenerator) FakeHistogram(metric pmetric.Metric) {
+	metric.SetName("fake.histogram")
+	metric.SetDescription("A histogram with a few buckets.")
+	metric.SetUnit("1")
+
+	histogram := metric.SetEmptyHistogram()
+	histogram.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+
+	dps := histogram.DataPoints()
+	dps.EnsureCapacity(10)
+
+	for i := 0; i < 10; i++ {
+		dp := dps.AppendEmpty()
+		dp.SetStartTimestamp(dg.PrevTime())
+		dp.SetTimestamp(dg.CurrentTime())
+		dp.SetCount(uint64(dg.GenI64Range(0, 100)))
+		dp.SetSum(dg.GenF64Range(0, 100))
+
+		bcs := dp.BucketCounts()
+		bcs.EnsureCapacity(10)
+		for j := 0; j < 10; j++ {
+			bcs.Append(uint64(dg.GenI64Range(0, 100)))
+		}
+
+		ebs := dp.ExplicitBounds()
+		ebs.EnsureCapacity(10)
+		for j := 0; j < 10; j++ {
+			ebs.Append(dg.GenF64Range(0, 100))
+		}
+		dp.SetFlags(pmetric.DataPointFlags(dg.GenI64Range(1, 50)))
+		dp.SetMin(dg.GenF64Range(0, 100))
+		dp.SetMax(dg.GenF64Range(0, 100))
+	}
+}
+
+// FakeExpHistogram generates a fake exponential histogram metric.
+// All field are purposely filled with random values.
+func (dg *DataGenerator) FakeExpHistogram(metric pmetric.Metric) {
+	metric.SetName("fake.exp_histogram")
+	metric.SetDescription("An exponential histogram with a few buckets.")
+	metric.SetUnit("1")
+
+	histogram := metric.SetEmptyExponentialHistogram()
+	histogram.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+
+	dps := histogram.DataPoints()
+	dps.EnsureCapacity(10)
+
+	for i := 0; i < 10; i++ {
+		dp := dps.AppendEmpty()
+		dp.SetStartTimestamp(dg.PrevTime())
+		dp.SetTimestamp(dg.CurrentTime())
+		dp.SetCount(uint64(dg.GenI64Range(0, 100)))
+		dp.SetSum(dg.GenF64Range(0, 100))
+		dp.SetScale(int32(dg.GenI64Range(-10, 10)))
+		dp.SetZeroCount(uint64(dg.GenI64Range(0, 100)))
+
+		positive := dp.Positive()
+		positive.SetOffset(int32(dg.GenI64Range(-100, 100)))
+		buckets := positive.BucketCounts()
+		buckets.EnsureCapacity(10)
+		for j := 0; j < 10; j++ {
+			buckets.Append(uint64(dg.GenI64Range(0, 100)))
+		}
+
+		negative := dp.Negative()
+		negative.SetOffset(int32(dg.GenI64Range(-100, 100)))
+		buckets = negative.BucketCounts()
+		buckets.EnsureCapacity(10)
+		for j := 0; j < 10; j++ {
+			buckets.Append(uint64(dg.GenI64Range(0, 100)))
+		}
+
+		dp.SetFlags(pmetric.DataPointFlags(dg.GenI64Range(1, 50)))
+		dp.SetMin(dg.GenF64Range(0, 100))
+		dp.SetMax(dg.GenF64Range(0, 100))
+	}
 }
