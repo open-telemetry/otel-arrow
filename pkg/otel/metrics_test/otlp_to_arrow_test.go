@@ -15,6 +15,7 @@
 package metrics_test
 
 import (
+	"math/rand"
 	"testing"
 
 	"github.com/f5/otel-arrow-adapter/pkg/air"
@@ -29,7 +30,9 @@ func TestOtlpMetricsToArrowRecords(t *testing.T) {
 
 	cfg := config.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(cfg)
-	lg := datagen.NewMetricsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+
+	lg := datagen.NewMetricsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
 	multivariateConf := metrics.MultivariateMetricsConfig{
 		Metrics: make(map[string]string),

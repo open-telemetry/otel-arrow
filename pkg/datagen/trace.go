@@ -17,8 +17,6 @@ package datagen
 import (
 	"time"
 
-	"golang.org/x/exp/rand"
-
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
@@ -32,9 +30,9 @@ type TraceGenerator struct {
 
 type Span = ptrace.Span
 
-func shuffleSpans(sl ptrace.SpanSlice, fs ...func(Span)) {
+func (e TestEntropy) shuffleSpans(sl ptrace.SpanSlice, fs ...func(Span)) {
 	span := sl.AppendEmpty()
-	rand.Shuffle(len(fs), func(i, j int) {
+	e.rng.Shuffle(len(fs), func(i, j int) {
 		fs[i], fs[j] = fs[j], fs[i]
 	})
 	for _, f := range fs {
@@ -42,9 +40,9 @@ func shuffleSpans(sl ptrace.SpanSlice, fs ...func(Span)) {
 	}
 }
 
-func NewTracesGenerator(resourceAttributes []pcommon.Map, instrumentationScopes []pcommon.InstrumentationScope) *TraceGenerator {
+func NewTracesGenerator(entropy TestEntropy, resourceAttributes []pcommon.Map, instrumentationScopes []pcommon.InstrumentationScope) *TraceGenerator {
 	return &TraceGenerator{
-		DataGenerator: NewDataGenerator(uint64(time.Now().UnixNano()/int64(time.Millisecond)), resourceAttributes, instrumentationScopes),
+		DataGenerator: NewDataGenerator(entropy, resourceAttributes, instrumentationScopes),
 	}
 }
 
@@ -52,16 +50,15 @@ func (tg *TraceGenerator) Generate(batchSize int, collectInterval time.Duration)
 	result := ptrace.NewTraces()
 
 	resourceSpans := result.ResourceSpans().AppendEmpty()
-	pick(tg.resourceAttributes).CopyTo(resourceSpans.Resource().Attributes())
+	pick(tg.TestEntropy, tg.resourceAttributes).CopyTo(resourceSpans.Resource().Attributes())
 
 	scopeSpans := resourceSpans.ScopeSpans().AppendEmpty()
-	pick(tg.instrumentationScopes).CopyTo(scopeSpans.Scope())
+	pick(tg.TestEntropy, tg.instrumentationScopes).CopyTo(scopeSpans.Scope())
 
 	resourceSpans.SetSchemaUrl("https://opentelemetry.io/schemas/1.0.0")
 
 	spans := scopeSpans.Spans()
 
-	rand.Seed(uint64(time.Now().UnixNano()))
 	for i := 0; i < batchSize; i++ {
 		tg.AdvanceTime(collectInterval)
 		tg.Spans(spans)
@@ -77,21 +74,21 @@ func (dg *DataGenerator) Spans(spans ptrace.SpanSlice) {
 	traceId := dg.Id16Bytes()
 	rootSpanId := dg.Id8Bytes()
 	rootStartTime := dg.CurrentTime()
-	rootEndTime := dg.CurrentTime() + 1 + pcommon.Timestamp(rand.Intn(6))
+	rootEndTime := dg.CurrentTime() + 1 + pcommon.Timestamp(dg.rng.Intn(6))
 
-	dg.AdvanceTime(time.Duration(rand.Intn(10)))
+	dg.AdvanceTime(time.Duration(dg.rng.Intn(10)))
 
 	dg.NextId8Bytes()
 	userAccountSpanId := dg.Id8Bytes()
 	userAccountStartTime := dg.CurrentTime()
-	userAccountEndTime := dg.CurrentTime() + pcommon.Timestamp(rand.Intn(6))
+	userAccountEndTime := dg.CurrentTime() + pcommon.Timestamp(dg.rng.Intn(6))
 
 	dg.NextId8Bytes()
 	userPreferencesSpanId := dg.Id8Bytes()
 	userPreferenceStartTime := dg.CurrentTime()
-	userPreferenceEndTime := dg.CurrentTime() + pcommon.Timestamp(rand.Intn(4))
+	userPreferenceEndTime := dg.CurrentTime() + pcommon.Timestamp(dg.rng.Intn(4))
 
-	shuffleSpans(spans,
+	dg.shuffleSpans(spans,
 		func(s Span) {
 			s.SetTraceID(traceId)
 			s.SetSpanID(rootSpanId)
@@ -99,7 +96,7 @@ func (dg *DataGenerator) Spans(spans ptrace.SpanSlice) {
 			s.SetStartTimestamp(rootStartTime)
 			s.SetEndTimestamp(rootEndTime)
 			s.SetKind(ptrace.SpanKindServer)
-			DefaultAttributes().CopyTo(s.Attributes())
+			dg.NewStandardAttributes().CopyTo(s.Attributes())
 			dg.events(s.Events())
 			dg.links(s.Links())
 			s.Status().SetCode(ptrace.StatusCodeOk)
@@ -112,7 +109,7 @@ func (dg *DataGenerator) Spans(spans ptrace.SpanSlice) {
 			s.SetStartTimestamp(userAccountStartTime)
 			s.SetEndTimestamp(userAccountEndTime)
 			s.SetKind(ptrace.SpanKindServer)
-			DefaultAttributes().CopyTo(s.Attributes())
+			dg.NewStandardAttributes().CopyTo(s.Attributes())
 			dg.events(s.Events())
 			dg.links(s.Links())
 			s.Status().SetCode(ptrace.StatusCodeError)
@@ -125,7 +122,7 @@ func (dg *DataGenerator) Spans(spans ptrace.SpanSlice) {
 			s.SetStartTimestamp(userPreferenceStartTime)
 			s.SetEndTimestamp(userPreferenceEndTime)
 			s.SetKind(ptrace.SpanKindServer)
-			DefaultAttributes().CopyTo(s.Attributes())
+			dg.NewStandardAttributes().CopyTo(s.Attributes())
 			dg.events(s.Events())
 			dg.links(s.Links())
 			s.Status().SetCode(ptrace.StatusCodeOk)
@@ -136,16 +133,16 @@ func (dg *DataGenerator) Spans(spans ptrace.SpanSlice) {
 
 // events returns a slice of events for the span.
 func (dg *DataGenerator) events(ses ptrace.SpanEventSlice) {
-	eventCount := rand.Intn(8) + 2
+	eventCount := dg.rng.Intn(8) + 2
 
 	for i := 0; i < eventCount; i++ {
-		name := pick(EVENT_NAMES)
-		attributes := DefaultSpanEventAttributes()
+		name := pick(dg.TestEntropy, EVENT_NAMES)
+		attributes := dg.NewStandardSpanEventAttributes()
 		if name == "empty" {
 			attributes = pcommon.NewMap()
 		}
 		event := ses.AppendEmpty()
-		event.SetTimestamp(dg.CurrentTime() + pcommon.Timestamp(rand.Intn(5)))
+		event.SetTimestamp(dg.CurrentTime() + pcommon.Timestamp(dg.rng.Intn(5)))
 		event.SetName(name)
 		attributes.CopyTo(event.Attributes())
 	}
@@ -153,7 +150,7 @@ func (dg *DataGenerator) events(ses ptrace.SpanEventSlice) {
 
 // links returns a slice of links for the span.
 func (dg *DataGenerator) links(sls ptrace.SpanLinkSlice) {
-	linkCount := rand.Intn(8) + 2
+	linkCount := dg.rng.Intn(8) + 2
 	dg.NextId16Bytes()
 
 	for i := 0; i < linkCount; i++ {
@@ -161,7 +158,7 @@ func (dg *DataGenerator) links(sls ptrace.SpanLinkSlice) {
 		sl := sls.AppendEmpty()
 		sl.SetTraceID(dg.Id16Bytes())
 		sl.SetSpanID(dg.Id8Bytes())
-		sl.TraceState().FromRaw(pick(TRACE_STATES))
-		DefaultSpanLinkAttributes().CopyTo(sl.Attributes())
+		sl.TraceState().FromRaw(pick(dg.TestEntropy, TRACE_STATES))
+		dg.NewStandardSpanLinkAttributes().CopyTo(sl.Attributes())
 	}
 }

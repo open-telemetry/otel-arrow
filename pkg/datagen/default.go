@@ -15,8 +15,6 @@
 package datagen
 
 import (
-	"golang.org/x/exp/rand"
-
 	"go.opentelemetry.io/collector/pdata/pcommon"
 )
 
@@ -30,13 +28,13 @@ var GROUP_IDS = []string{"group1", "group2", "group3", "group4", "group5"}
 type Attrs = pcommon.Map
 type AttrFunc func(Attrs)
 
-func pick[N any](from []N) N {
-	return from[rand.Intn(len(from))]
+func pick[N any](entropy TestEntropy, from []N) N {
+	return from[entropy.rng.Intn(len(from))]
 }
 
-func shuffleAttrs(fs ...func(Attrs)) pcommon.Map {
+func (e TestEntropy) shuffleAttrs(fs ...func(Attrs)) pcommon.Map {
 	attrs := pcommon.NewMap()
-	rand.Shuffle(len(fs), func(i, j int) {
+	e.rng.Shuffle(len(fs), func(i, j int) {
 		fs[i], fs[j] = fs[j], fs[i]
 	})
 	for _, f := range fs {
@@ -45,12 +43,12 @@ func shuffleAttrs(fs ...func(Attrs)) pcommon.Map {
 	return attrs
 }
 
-func DefaultAttributes() pcommon.Map {
-	return shuffleAttrs(
-		func(attrs Attrs) { attrs.PutStr("hostname", pick(HOSTNAMES)) },
-		func(attrs Attrs) { attrs.PutBool("up", pick(UPS)) },
-		func(attrs Attrs) { attrs.PutInt("status", pick(STATUS)) },
-		func(attrs Attrs) { attrs.PutStr("version", pick(VERSIONS)) },
+func (e TestEntropy) NewStandardAttributes() pcommon.Map {
+	return e.shuffleAttrs(
+		func(attrs Attrs) { attrs.PutStr("hostname", pick(e, HOSTNAMES)) },
+		func(attrs Attrs) { attrs.PutBool("up", pick(e, UPS)) },
+		func(attrs Attrs) { attrs.PutInt("status", pick(e, STATUS)) },
+		func(attrs Attrs) { attrs.PutStr("version", pick(e, VERSIONS)) },
 
 		// ToDo reintroduce tags_arrays once list are fully supported
 		//{
@@ -83,28 +81,28 @@ func DefaultAttributes() pcommon.Map {
 		func(attrs Attrs) {
 			attrs.PutEmpty("group_id").
 				SetEmptyBytes().
-				FromRaw([]byte(pick(GROUP_IDS)))
+				FromRaw([]byte(pick(e, GROUP_IDS)))
 		},
 	)
 }
 
-func DefaultResourceAttributes() []pcommon.Map {
+func (e TestEntropy) NewStandardResourceAttributes() []pcommon.Map {
 	return []pcommon.Map{
-		shuffleAttrs(
+		e.shuffleAttrs(
 			func(attrs Attrs) { attrs.PutStr("hostname", "host1.mydomain.com") },
 			func(attrs Attrs) { attrs.PutStr("ip", "192.168.0.1") },
 			func(attrs Attrs) { attrs.PutBool("up", true) },
 			func(attrs Attrs) { attrs.PutInt("status", 200) },
 			func(attrs Attrs) { attrs.PutDouble("version", 1.0) },
 		),
-		shuffleAttrs(
+		e.shuffleAttrs(
 			func(attrs Attrs) { attrs.PutStr("hostname", "host2.mydomain.com") },
 			func(attrs Attrs) { attrs.PutStr("ip", "192.168.0.2") },
 			func(attrs Attrs) { attrs.PutBool("up", true) },
 			func(attrs Attrs) { attrs.PutInt("status", 200) },
 			func(attrs Attrs) { attrs.PutDouble("version", 1.0) },
 		),
-		shuffleAttrs(
+		e.shuffleAttrs(
 			func(attrs Attrs) { attrs.PutStr("hostname", "host3.mydomain.com") },
 			func(attrs Attrs) { attrs.PutStr("ip", "192.168.0.3") },
 			func(attrs Attrs) { attrs.PutBool("up", false) },
@@ -114,7 +112,7 @@ func DefaultResourceAttributes() []pcommon.Map {
 	}
 }
 
-func DefaultInstrumentationScopes() []pcommon.InstrumentationScope {
+func (_ TestEntropy) NewStandardInstrumentationScopes() []pcommon.InstrumentationScope {
 	s1 := pcommon.NewInstrumentationScope()
 	s1.SetName("fake_generator")
 	s1.SetVersion("1.0.0")
@@ -126,19 +124,19 @@ func DefaultInstrumentationScopes() []pcommon.InstrumentationScope {
 	return []pcommon.InstrumentationScope{s1, s2}
 }
 
-func DefaultSpanEventAttributes() pcommon.Map {
-	return shuffleAttrs(
-		func(attrs Attrs) { attrs.PutStr("hostname", pick(HOSTNAMES)) },
-		func(attrs Attrs) { attrs.PutStr("version", pick(VERSIONS)) },
-		func(attrs Attrs) { attrs.PutBool("up", pick(UPS)) },
-		func(attrs Attrs) { attrs.PutInt("status", pick(STATUS)) },
+func (e TestEntropy) NewStandardSpanEventAttributes() pcommon.Map {
+	return e.shuffleAttrs(
+		func(attrs Attrs) { attrs.PutStr("hostname", pick(e, HOSTNAMES)) },
+		func(attrs Attrs) { attrs.PutStr("version", pick(e, VERSIONS)) },
+		func(attrs Attrs) { attrs.PutBool("up", pick(e, UPS)) },
+		func(attrs Attrs) { attrs.PutInt("status", pick(e, STATUS)) },
 	)
 }
 
-func DefaultSpanLinkAttributes() pcommon.Map {
-	return shuffleAttrs(
-		func(attrs Attrs) { attrs.PutStr("hostname", pick(HOSTNAMES)) },
-		func(attrs Attrs) { attrs.PutBool("up", pick(UPS)) },
-		func(attrs Attrs) { attrs.PutInt("status", pick(STATUS)) },
+func (e TestEntropy) NewStandardSpanLinkAttributes() pcommon.Map {
+	return e.shuffleAttrs(
+		func(attrs Attrs) { attrs.PutStr("hostname", pick(e, HOSTNAMES)) },
+		func(attrs Attrs) { attrs.PutBool("up", pick(e, UPS)) },
+		func(attrs Attrs) { attrs.PutInt("status", pick(e, STATUS)) },
 	)
 }

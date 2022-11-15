@@ -20,6 +20,7 @@ package main
 import (
 	"flag"
 	"log"
+	"math/rand"
 	"os"
 	"path"
 
@@ -47,7 +48,8 @@ func main() {
 	}
 
 	// Generate the dataset.
-	generator := datagen.NewLogsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	generator := datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 	request := plogotlp.NewRequestFromLogs(generator.Generate(batchSize, 100))
 
 	// Marshal the request to bytes.

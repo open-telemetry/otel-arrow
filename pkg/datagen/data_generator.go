@@ -18,11 +18,35 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/brianvoe/gofakeit/v6"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 )
 
+type TestEntropy struct {
+	rng   *rand.Rand
+	start int64
+}
+
+func NewTestEntropy(seed int64) TestEntropy {
+	rng := rand.New(rand.NewSource(seed))
+
+	// let the start time happen in 2022 as the first rng draw.
+	start := time.Date(2022, time.January, 1, 0, 0, 0, 0, time.UTC).
+		Add(time.Hour * 24 * time.Duration(rng.Intn(365))).
+		UnixNano()
+
+	return TestEntropy{
+		rng:   rng,
+		start: start,
+	}
+}
+
+func (te TestEntropy) Start() int64 {
+	return te.start
+}
+
 type DataGenerator struct {
+	TestEntropy
+
 	prevTime    pcommon.Timestamp
 	currentTime pcommon.Timestamp
 	id8Bytes    pcommon.SpanID
@@ -32,10 +56,11 @@ type DataGenerator struct {
 	instrumentationScopes []pcommon.InstrumentationScope
 }
 
-func NewDataGenerator(currentTime uint64, resourceAttributes []pcommon.Map, instrumentationScopes []pcommon.InstrumentationScope) *DataGenerator {
+func NewDataGenerator(entropy TestEntropy, resourceAttributes []pcommon.Map, instrumentationScopes []pcommon.InstrumentationScope) *DataGenerator {
 	dg := &DataGenerator{
-		prevTime:              pcommon.Timestamp(currentTime),
-		currentTime:           pcommon.Timestamp(currentTime),
+		TestEntropy:           entropy,
+		prevTime:              pcommon.Timestamp(entropy.Start()),
+		currentTime:           pcommon.Timestamp(entropy.Start()),
 		resourceAttributes:    resourceAttributes,
 		instrumentationScopes: instrumentationScopes,
 	}
@@ -58,11 +83,11 @@ func (dg *DataGenerator) AdvanceTime(timeDelta time.Duration) {
 }
 
 func (dg *DataGenerator) NextId8Bytes() {
-	copy(dg.id8Bytes[:], GenId(8))
+	copy(dg.id8Bytes[:], dg.GenId(8))
 }
 
 func (dg *DataGenerator) NextId16Bytes() {
-	copy(dg.id16Bytes[:], GenId(16))
+	copy(dg.id16Bytes[:], dg.GenId(16))
 }
 
 func (dg *DataGenerator) Id8Bytes() pcommon.SpanID {
@@ -74,13 +99,15 @@ func (dg *DataGenerator) Id16Bytes() pcommon.TraceID {
 }
 
 func (dg *DataGenerator) GenF64Range(min float64, max float64) float64 {
-	return min + rand.Float64()*(max-min)
+	return min + dg.rng.Float64()*(max-min)
 }
 
 func (dg *DataGenerator) GenI64Range(min int64, max int64) int64 {
-	return min + int64(rand.Float64()*float64(max-min))
+	return min + int64(dg.rng.Float64()*float64(max-min))
 }
 
-func GenId(len uint) []byte {
-	return []byte(gofakeit.DigitN(len))
+func (e TestEntropy) GenId(len uint) []byte {
+	d := make([]byte, len)
+	_, _ = e.rng.Read(d)
+	return d
 }
