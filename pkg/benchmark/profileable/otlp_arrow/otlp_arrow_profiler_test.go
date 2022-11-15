@@ -12,20 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package benchmark
+package otlp_arrow
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
-	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/otlp_arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics"
 )
 
 func TestOtlpArrowMetricsProfiler(t *testing.T) {
-	t.Skip("Skipping this test because it's not fully implemented yet")
+	// t.Skip("Skipping this test because it's not fully implemented yet")
 	t.Parallel()
 
 	// Configuration
@@ -37,8 +37,8 @@ func TestOtlpArrowMetricsProfiler(t *testing.T) {
 	multivariateConf.Metrics["system.memory.usage"] = "state"
 
 	maxIter := uint64(10)
-	systemToProfile := otlp_arrow.NewMetricsProfileable([]string{"multivariate"}, dataset.NewFakeMetricsDataset(1000), cfg, multivariateConf, benchmark.Zstd())
-	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, "tmpfile")
+	systemToProfile := NewMetricsProfileable([]string{"multivariate"}, dataset.NewFakeMetricsDataset(1000), cfg, multivariateConf, benchmark.Zstd())
+	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, filepath.Join(t.TempDir(), "tmpfile"))
 	if err := profiler.Profile(systemToProfile, maxIter); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}

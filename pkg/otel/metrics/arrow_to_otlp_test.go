@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package metrics_test
+package metrics
 
 import (
 	"testing"
@@ -20,8 +20,6 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/air"
 	"github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/oteltest"
 )
 
 func TestSystemCpuTimeConversion(t *testing.T) {
@@ -31,7 +29,7 @@ func TestSystemCpuTimeConversion(t *testing.T) {
 	rr := air.NewRecordRepository(cfg)
 	lg := datagen.NewMetricsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
 
-	multivariateConf := metrics.MultivariateMetricsConfig{
+	multivariateConf := MultivariateMetricsConfig{
 		Metrics: make(map[string]string),
 	}
 	multivariateConf.Metrics["system.cpu.time"] = "state"
@@ -39,17 +37,17 @@ func TestSystemCpuTimeConversion(t *testing.T) {
 
 	request := lg.GenerateSystemCpuTime(1, 100)
 
-	multiSchemaRecords, err := metrics.OtlpMetricsToArrowRecords(rr, request, &multivariateConf, cfg)
+	multiSchemaRecords, err := OtlpMetricsToArrowRecords(rr, request, &multivariateConf, cfg)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
 
 	for _, record := range multiSchemaRecords {
-		req, err := metrics.ArrowRecordsToOtlpMetrics(record)
+		req, err := ArrowRecordsToOtlpMetrics(record)
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
-		if diff := oteltest.DiffMetrics(request, req); diff != "" {
+		if diff := DiffMetrics(request, req); diff != "" {
 			t.Error("Unexpected diff: ", diff)
 		}
 	}
@@ -62,7 +60,7 @@ func TestSystemMemoryUsageConversion(t *testing.T) {
 	rr := air.NewRecordRepository(cfg)
 	lg := datagen.NewMetricsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
 
-	multivariateConf := metrics.MultivariateMetricsConfig{
+	multivariateConf := MultivariateMetricsConfig{
 		Metrics: make(map[string]string),
 	}
 	multivariateConf.Metrics["system.cpu.time"] = "state"
@@ -70,17 +68,17 @@ func TestSystemMemoryUsageConversion(t *testing.T) {
 
 	request := lg.GenerateSystemMemoryUsage(1, 100)
 
-	multiSchemaRecords, err := metrics.OtlpMetricsToArrowRecords(rr, request, &multivariateConf, cfg)
+	multiSchemaRecords, err := OtlpMetricsToArrowRecords(rr, request, &multivariateConf, cfg)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
 
 	for _, record := range multiSchemaRecords {
-		req, err := metrics.ArrowRecordsToOtlpMetrics(record)
+		req, err := ArrowRecordsToOtlpMetrics(record)
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
-		if diff := oteltest.DiffMetrics(request, req); diff != "" {
+		if diff := DiffMetrics(request, req); diff != "" {
 			t.Error("Unexpected diff: ", diff)
 		}
 	}
@@ -93,7 +91,7 @@ func TestSystemCpuLoadAverage1mConversion(t *testing.T) {
 	rr := air.NewRecordRepository(cfg)
 	lg := datagen.NewMetricsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
 
-	multivariateConf := metrics.MultivariateMetricsConfig{
+	multivariateConf := MultivariateMetricsConfig{
 		Metrics: make(map[string]string),
 	}
 	multivariateConf.Metrics["system.cpu.time"] = "state"
@@ -101,17 +99,17 @@ func TestSystemCpuLoadAverage1mConversion(t *testing.T) {
 
 	request := lg.GenerateSystemCpuLoadAverage1m(1, 100)
 
-	multiSchemaRecords, err := metrics.OtlpMetricsToArrowRecords(rr, request, &multivariateConf, cfg)
+	multiSchemaRecords, err := OtlpMetricsToArrowRecords(rr, request, &multivariateConf, cfg)
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
 
 	for _, record := range multiSchemaRecords {
-		req, err := metrics.ArrowRecordsToOtlpMetrics(record)
+		req, err := ArrowRecordsToOtlpMetrics(record)
 		if err != nil {
 			t.Errorf("Unexpected error: %v", err)
 		}
-		if diff := oteltest.DiffMetrics(request, req); diff != "" {
+		if diff := DiffMetrics(request, req); diff != "" {
 			t.Error("Unexpected diff: ", diff)
 		}
 	}

@@ -12,14 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package air_test
+package air
 
 import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
 
-	"github.com/f5/otel-arrow-adapter/pkg/air"
 	"github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/air/rfield"
 )
@@ -27,7 +26,7 @@ import (
 func TestValue(t *testing.T) {
 	t.Parallel()
 
-	record := air.NewRecord()
+	record := NewRecord()
 	record.StringField("b", "b")
 	record.StructField("a", rfield.Struct{
 		Fields: []*rfield.Field{
@@ -141,7 +140,7 @@ func TestRecordNormalize(t *testing.T) {
 	t.Parallel()
 
 	emptyString := ""
-	record := air.NewRecord()
+	record := NewRecord()
 	record.StringField("b", "")
 	record.StructField("a", rfield.Struct{
 		Fields: []*rfield.Field{
@@ -173,7 +172,7 @@ func TestRecordNormalize(t *testing.T) {
 	})
 	record.Normalize()
 
-	expected_record := air.NewRecord()
+	expected_record := NewRecord()
 	expected_record.StructField("a", rfield.Struct{
 		Fields: []*rfield.Field{
 			{Name: "b", Value: &rfield.String{Value: &emptyString}},
@@ -204,7 +203,7 @@ func TestRecordNormalize(t *testing.T) {
 	})
 	expected_record.StringField("b", "")
 
-	if !cmp.Equal(record, expected_record, cmp.AllowUnexported(air.Record{}, rfield.Struct{}, rfield.List{}, rfield.Field{}, rfield.Metadata{})) {
+	if !cmp.Equal(record, expected_record, cmp.AllowUnexported(Record{}, rfield.Struct{}, rfield.List{}, rfield.Field{}, rfield.Metadata{})) {
 		t.Errorf("Expected: %+v\nGot: %+v", expected_record, record)
 	}
 }
@@ -214,7 +213,7 @@ func TestRecordSchemaId(t *testing.T) {
 
 	vTrue := true
 	emptyString := ""
-	record := air.NewRecord()
+	record := NewRecord()
 	record.StringField("b", "")
 	record.StructField("a", rfield.Struct{
 		Fields: []*rfield.Field{
@@ -275,7 +274,7 @@ func TestRecordSchemaId(t *testing.T) {
 func TestRecordWithNestedListSchemaId(t *testing.T) {
 	t.Parallel()
 
-	rr := air.NewRecordRepository(config.NewUint16DefaultConfig())
+	rr := NewRecordRepository(config.NewUint16DefaultConfig())
 
 	resourceSpans := rfield.List{
 		Values: []rfield.Value{
@@ -383,7 +382,7 @@ func TestRecordWithNestedListSchemaId(t *testing.T) {
 		},
 	}
 
-	record := air.NewRecord()
+	record := NewRecord()
 	record.ListField("resource_spans", resourceSpans)
 	record.Normalize()
 	id := record.SchemaId()
@@ -499,7 +498,7 @@ func TestRecordWithNestedListSchemaId(t *testing.T) {
 		},
 	}
 
-	record = air.NewRecord()
+	record = NewRecord()
 	record.ListField("resource_spans", resourceSpans)
 	record.Normalize()
 	id = record.SchemaId()

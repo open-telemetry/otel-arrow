@@ -12,14 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package oteltest
+package metrics
 
 import (
 	"bytes"
 	"encoding/json"
 	"sort"
-
-	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics"
 
 	"github.com/google/go-cmp/cmp"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -27,18 +25,18 @@ import (
 )
 
 type otelCopier[T any] interface {
-	metrics.DataPoint
+	DataPoint
 	CopyTo(T)
 }
 
-type otelPointSlice[PT metrics.DataPoint, ST otelCopier[PT]] interface {
+type otelPointSlice[PT DataPoint, ST otelCopier[PT]] interface {
 	At(int) ST
 	Len() int
 	RemoveIf(func(PT) bool)
 	AppendEmpty() PT
 }
 
-func sortPoints[PT metrics.DataPoint, ST otelCopier[PT]](slice otelPointSlice[PT, ST]) {
+func sortPoints[PT DataPoint, ST otelCopier[PT]](slice otelPointSlice[PT, ST]) {
 	num := slice.Len()
 	var tmp []ST
 	for i := 0; i < num; i++ {
@@ -53,8 +51,8 @@ func sortPoints[PT metrics.DataPoint, ST otelCopier[PT]](slice otelPointSlice[PT
 		// are not about to remove that key.  DataPointSig takes that argument
 		// to compute the schema that will result after ignoring the multivariate
 		// key.
-		asig := metrics.DataPointSig(a, "")
-		bsig := metrics.DataPointSig(b, "")
+		asig := DataPointSig(a, "")
+		bsig := DataPointSig(b, "")
 
 		return bytes.Compare(asig, bsig) < 0
 	})
