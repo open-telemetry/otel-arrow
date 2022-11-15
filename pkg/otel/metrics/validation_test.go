@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"encoding/json"
+	"math/rand"
 	"testing"
 
 	"github.com/apache/arrow/go/v11/arrow/memory"
@@ -20,7 +21,9 @@ import (
 func TestConversionFromSyntheticData(t *testing.T) {
 	t.Parallel()
 
-	metricsGen := datagen.NewMetricsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+
+	metricsGen := datagen.NewMetricsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
 	// Generate a random OTLP metrics request.
 	expectedRequest := pmetricotlp.NewExportRequestFromMetrics(metricsGen.Generate(10, 100))

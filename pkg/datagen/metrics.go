@@ -28,9 +28,9 @@ type MetricsGenerator struct {
 	generation int
 }
 
-func NewMetricsGenerator(resourceAttributes []pcommon.Map, instrumentationScopes []pcommon.InstrumentationScope) *MetricsGenerator {
+func NewMetricsGenerator(entropy TestEntropy, resourceAttributes []pcommon.Map, instrumentationScopes []pcommon.InstrumentationScope) *MetricsGenerator {
 	return &MetricsGenerator{
-		DataGenerator: NewDataGenerator(uint64(time.Now().UnixNano()/int64(time.Millisecond)), resourceAttributes, instrumentationScopes),
+		DataGenerator: NewDataGenerator(entropy, resourceAttributes, instrumentationScopes),
 		generation:    0,
 	}
 }

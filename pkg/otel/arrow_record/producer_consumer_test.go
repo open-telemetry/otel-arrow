@@ -2,6 +2,7 @@ package arrow_record
 
 import (
 	"encoding/json"
+	"math/rand"
 	"fmt"
 	"testing"
 	"time"
@@ -17,12 +18,65 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/air/rfield"
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
+	"google.golang.org/protobuf/proto"
 )
 
+func FuzzProducerConsumerTraces(f *testing.F) {
+	const numSeeds = 5
+
+	ent := datagen.NewTestEntropy(12345)
+
+	for i := 0; i < numSeeds; i++ {
+		dg := datagen.NewTracesGenerator(
+			ent,
+			ent.NewStandardResourceAttributes(),
+			ent.NewStandardInstrumentationScopes(),
+		)
+		traces1 := dg.Generate(i+1, time.Minute)
+		traces2 := dg.Generate(i+1, time.Minute)
+
+		producer := NewProducer()
+
+		batch1, err1 := producer.BatchArrowRecordsFromTraces(traces1)
+		require.NoError(f, err1)
+		batch2, err2 := producer.BatchArrowRecordsFromTraces(traces2)
+		require.NoError(f, err2)
+
+		b1b, err1 := proto.Marshal(batch1)
+		b2b, err2 := proto.Marshal(batch2)
+
+		f.Add(b1b, b2b)
+	}
+
+	f.Fuzz(func(t *testing.T, b1, b2 []byte) {
+		var b1b arrowpb.BatchArrowRecords
+		var b2b arrowpb.BatchArrowRecords
+
+		if err := proto.Unmarshal(b1, &b1b); err != nil {
+			return
+		}
+		if err := proto.Unmarshal(b2, &b1b); err != nil {
+			return
+		}
+
+		consumer := NewConsumer()
+
+		if _, err := consumer.TracesFrom(&b1b); err != nil {
+			return
+		}
+		if _, err := consumer.TracesFrom(&b2b); err != nil {
+			return
+		}
+	})
+}
+
 func TestProducerConsumerTraces(t *testing.T) {
+	ent := datagen.NewTestEntropy(int64(rand.Uint64()))
+
 	dg := datagen.NewTracesGenerator(
-		datagen.DefaultResourceAttributes(),
-		datagen.DefaultInstrumentationScopes(),
+		ent,
+		ent.NewStandardResourceAttributes(),
+		ent.NewStandardInstrumentationScopes(),
 	)
 	traces := dg.Generate(10, time.Minute)
 
@@ -44,9 +98,12 @@ func TestProducerConsumerTraces(t *testing.T) {
 }
 
 func TestProducerConsumerLogs(t *testing.T) {
+	ent := datagen.NewTestEntropy(int64(rand.Uint64()))
+
 	dg := datagen.NewLogsGenerator(
-		datagen.DefaultResourceAttributes(),
-		datagen.DefaultInstrumentationScopes(),
+		ent,
+		ent.NewStandardResourceAttributes(),
+		ent.NewStandardInstrumentationScopes(),
 	)
 	logs := dg.Generate(10, time.Minute)
 

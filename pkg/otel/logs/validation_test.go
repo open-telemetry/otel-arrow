@@ -16,6 +16,7 @@ package logs_test
 
 import (
 	"encoding/json"
+	"math/rand"
 	"testing"
 
 	"github.com/apache/arrow/go/v11/arrow/memory"
@@ -34,7 +35,8 @@ import (
 func TestConversionFromSyntheticData(t *testing.T) {
 	t.Parallel()
 
-	logsGen := datagen.NewLogsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	logsGen := datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
 	// Generate a random OTLP logs request.
 	expectedRequest := plogotlp.NewExportRequestFromLogs(logsGen.Generate(10, 100))

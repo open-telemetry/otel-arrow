@@ -16,6 +16,7 @@ package traces_test
 
 import (
 	"encoding/json"
+	"math/rand"
 	"testing"
 
 	"github.com/apache/arrow/go/v11/arrow/memory"
@@ -35,7 +36,9 @@ import (
 func TestConversionFromSyntheticData(t *testing.T) {
 	t.Parallel()
 
-	tracesGen := datagen.NewTracesGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+
+	tracesGen := datagen.NewTracesGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
 	// Generate a random OTLP traces request.
 	expectedRequest := ptraceotlp.NewExportRequestFromTraces(tracesGen.Generate(10, 100))
