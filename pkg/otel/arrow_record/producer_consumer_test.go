@@ -2,8 +2,8 @@ package arrow_record
 
 import (
 	"encoding/json"
-	"math/rand"
 	"fmt"
+	"math/rand"
 	"testing"
 	"time"
 
@@ -12,13 +12,14 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
+	"google.golang.org/protobuf/proto"
+
 	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	"github.com/f5/otel-arrow-adapter/pkg/air"
 	cfg "github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/air/rfield"
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
-	"google.golang.org/protobuf/proto"
 )
 
 func FuzzProducerConsumerTraces(f *testing.F) {
@@ -125,9 +126,12 @@ func TestProducerConsumerLogs(t *testing.T) {
 }
 
 func TestProducerConsumerMetrics(t *testing.T) {
+	ent := datagen.NewTestEntropy(int64(rand.Uint64()))
+
 	dg := datagen.NewMetricsGenerator(
-		datagen.DefaultResourceAttributes(),
-		datagen.DefaultInstrumentationScopes(),
+		ent,
+		ent.NewStandardResourceAttributes(),
+		ent.NewStandardInstrumentationScopes(),
 	)
 	metrics := dg.Generate(10, time.Minute)
 
