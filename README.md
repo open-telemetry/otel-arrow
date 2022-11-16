@@ -30,6 +30,27 @@ generated files present in the `./proto/api/collector/arrow/v1` directory.
 
 ## Testing and validation
 
+The testing of this package and the validation of the OTLP Arrow encoding/decoding are the object of particular 
+attention because of the central position of this package in the future OTEL collector.
+
+Concerning the test, the plan is to:
+- reach at least 80% of the tested code (probably more),
+- implement fuzz tests on the encoding and decoding of OTLP Arrow messages,
+- implement integration tests with the experimental collector.
+
+Concerning the encoding/decoding validation, the plan is to:
+- compare the OTLP entities before and after their conversion to OTLP Arrow entities.
+- test the conversion procedure of the production data via a CLI tool or directly via the integration in the 
+experimental collector.
+
+A validation of the compression ratio stability is also part of the objectives. This validation will be performed on production data.
+
+## Security
+
+> TBD 
+
+A thread model will be defined to identify the security risks of this package. 
+
 ## Packages
 
 | Package       | Description                                                                                                                  |
