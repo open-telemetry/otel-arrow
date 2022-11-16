@@ -42,7 +42,7 @@ var _ ProducerAPI = &Producer{}
 
 // Producer is a BatchArrowRecords producer.
 type Producer struct {
-	pool            *memory.GoAllocator
+	pool            memory.Allocator
 	streamProducers map[string]*streamProducer
 	batchId         int64
 }
@@ -57,6 +57,15 @@ type streamProducer struct {
 func NewProducer() *Producer {
 	return &Producer{
 		pool:            memory.NewGoAllocator(),
+		streamProducers: make(map[string]*streamProducer),
+		batchId:         0,
+	}
+}
+
+// NewProducerWithPool creates a new BatchArrowRecords producer with a custom memory pool.
+func NewProducerWithPool(pool memory.Allocator) *Producer {
+	return &Producer{
+		pool:            pool,
 		streamProducers: make(map[string]*streamProducer),
 		batchId:         0,
 	}
@@ -111,10 +120,12 @@ func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.Batc
 		return nil, err
 	}
 	record, err := tb.Build()
+	if record != nil {
+		defer record.Release()
+	}
 	if err != nil {
 		return nil, err
 	}
-	defer record.Release()
 
 	rms := []*RecordMessage{NewTraceMessage(record, colarspb.DeliveryType_BEST_EFFORT)}
 

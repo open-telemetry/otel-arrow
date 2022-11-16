@@ -42,6 +42,7 @@ encoding or decoding phases, ...). Below the main risks identified so far:
 - high cardinality data causing dictionary overflow (over multiple messages).
 - ... TBD 
 
+Check this issue for complementary information: https://github.com/open-telemetry/opentelemetry-specification/issues/1891 
 
 ## Developers
 

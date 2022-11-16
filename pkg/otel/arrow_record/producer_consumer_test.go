@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/apache/arrow/go/v11/arrow/memory"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
-
 	"google.golang.org/protobuf/proto"
 
 	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
@@ -81,7 +81,10 @@ func TestProducerConsumerTraces(t *testing.T) {
 	)
 	traces := dg.Generate(10, time.Minute)
 
-	producer := NewProducer()
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	//defer pool.AssertSize(t, 0)
+
+	producer := NewProducerWithPool(pool)
 
 	batch, err := producer.BatchArrowRecordsFromTraces(traces)
 	require.NoError(t, err)
