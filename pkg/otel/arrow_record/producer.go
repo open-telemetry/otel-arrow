@@ -35,7 +35,7 @@ import (
 type ProducerAPI interface {
 	BatchArrowRecordsFromTraces(ptrace.Traces) (*colarspb.BatchArrowRecords, error)
 	BatchArrowRecordsFromLogs(plog.Logs) (*colarspb.BatchArrowRecords, error)
-	// TODO: ...FromMetrics
+	BatchArrowRecordsFromMetrics(pmetric.Metrics) (*colarspb.BatchArrowRecords, error)
 }
 
 var _ ProducerAPI = &Producer{}

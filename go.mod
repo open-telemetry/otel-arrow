@@ -3,6 +3,7 @@ module github.com/f5/otel-arrow-adapter
 go 1.18
 
 require (
+	github.com/apache/arrow/go/arrow v0.0.0-20211112161151-bc219186db40
 	github.com/apache/arrow/go/v11 v11.0.0-20221116153901-e38141421d43
 	github.com/brianvoe/gofakeit/v6 v6.17.0
 	github.com/davecgh/go-spew v1.1.1
@@ -14,14 +15,12 @@ require (
 	github.com/pierrec/lz4 v2.0.5+incompatible
 	github.com/stretchr/testify v1.8.1
 	go.opentelemetry.io/collector/pdata v0.63.1
-	golang.org/x/exp v0.0.0-20220827204233-334a2380cb91
 	google.golang.org/grpc v1.50.1
 	google.golang.org/protobuf v1.28.1
 )
 
 require (
 	github.com/andybalholm/brotli v1.0.4 // indirect
-	github.com/apache/arrow/go/arrow v0.0.0-20211112161151-bc219186db40 // indirect
 	github.com/apache/thrift v0.16.0 // indirect
 	github.com/goccy/go-json v0.9.11 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect

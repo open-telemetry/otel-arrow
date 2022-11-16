@@ -38,6 +38,7 @@ import (
 type ConsumerAPI interface {
 	LogsFrom(*colarspb.BatchArrowRecords) ([]plog.Logs, error)
 	TracesFrom(*colarspb.BatchArrowRecords) ([]ptrace.Traces, error)
+	MetricsFrom(*colarspb.BatchArrowRecords) ([]pmetric.Metrics, error)
 }
 
 var _ ConsumerAPI = &Consumer{}
