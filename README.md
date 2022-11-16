@@ -47,9 +47,12 @@ A validation of the compression ratio stability is also part of the objectives. 
 
 ## Security
 
-> TBD 
-
-A thread model will be defined to identify the security risks of this package. 
+A thread model is being defined [WIP] (what can go wrong at the protocol level, during the encoding or decoding phases, 
+...). Below the main risks identified so far:
+- invalid, or compromised inputs causing security or reliability issues.
+- very large input data causing denial of service.
+- high cardinality data causing dictionary overflow (over multiple messages).
+- ... TBD 
 
 ## Packages
 
