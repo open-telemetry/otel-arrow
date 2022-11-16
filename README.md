@@ -1,8 +1,11 @@
 # OTLP Arrow Encoder/Decoder package
 
-Adapter used to convert OTEL batches to/from OTEL Arrow batches in both directions.
+This package is a reference implementation of the OTLP Arrow Encoder/Decoder specified in this [OTEP](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md.
+All OTLP entities are covered (metrics, logs, and traces) as well as all sub-elements such as events, links, gauge, sum, 
+summary, histograms, ... The overall goal is to optimize the compression ratio for telemetry data transmission as well 
+as the end-to-end performance between telemetry data producers and receivers.
 
-This package is still experimental and subject to change. It is currently used by an [experimental OTLP/Arrow gRPC 
+**This package is still experimental and subject to change.** It is currently used by an [experimental OTLP/Arrow gRPC 
 exporter and receiver](https://github.com/open-telemetry/experimental-arrow-collector).
 
 Other important links:
@@ -12,21 +15,6 @@ Other important links:
 - The underlying [OTEP](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md) describing the 
 rationale, specifications and different phases of this project.
 
-
-## Developers 
-
-### How to change the protobuf specification
-
-To (re)generate the ArrowStreamService gRPC service, you need to install the `protoc` compiler and the `protoc-gen-grpc` plugin.
-```shell
-go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.2
-export PATH="$PATH:$(go env GOPATH)/bin"
-cd ./proto
-./generate.sh
-```
-Once the `*.pb.go` files are generated, you need to replace the content of the `api/collector/arrow/v1` directory by the
-generated files present in the `./proto/api/collector/arrow/v1` directory.
 
 ## Testing and validation
 
@@ -53,6 +41,23 @@ encoding or decoding phases, ...). Below the main risks identified so far:
 - very large input data causing denial of service.
 - high cardinality data causing dictionary overflow (over multiple messages).
 - ... TBD 
+
+
+## Developers
+
+### How to change the protobuf specification
+
+To (re)generate the ArrowStreamService gRPC service, you need to install the `protoc` compiler and the `protoc-gen-grpc` plugin.
+```shell
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.2
+export PATH="$PATH:$(go env GOPATH)/bin"
+cd ./proto
+./generate.sh
+```
+Once the `*.pb.go` files are generated, you need to replace the content of the `api/collector/arrow/v1` directory by the
+generated files present in the `./proto/api/collector/arrow/v1` directory.
+
 
 ## Packages
 
