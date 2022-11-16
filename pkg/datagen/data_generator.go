@@ -158,13 +158,7 @@ func (dg *DataGenerator) HasMetricUnit() bool {
 }
 
 func (dg *DataGenerator) HasHistogramSum() bool {
-	if dg.config.ProbHistogramHasSum == 1.0 {
-		return true
-	} else if dg.config.ProbHistogramHasSum == 0.0 {
-		return false
-	} else {
-		return dg.rng.Float64() < dg.config.ProbHistogramHasSum
-	}
+	return dg.rng.Float64() < dg.config.ProbHistogramHasSum
 }
 
 func (dg *DataGenerator) HasHistogramMin() bool {
