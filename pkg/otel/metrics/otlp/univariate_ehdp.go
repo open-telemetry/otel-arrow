@@ -165,11 +165,13 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 		}
 		ehdpVal.SetCount(count)
 
-		sum, err := ehdp.F64FieldById(ids.Sum, ehdpIdx)
+		sum, err := ehdp.F64OrNilFieldById(ids.Sum, ehdpIdx)
 		if err != nil {
 			return err
 		}
-		ehdpVal.SetSum(sum)
+		if sum != nil {
+			ehdpVal.SetSum(*sum)
+		}
 
 		scale, err := ehdp.I32FieldById(ids.Scale, ehdpIdx)
 		if err != nil {
@@ -218,17 +220,21 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 		}
 		ehdpVal.SetFlags(pmetric.DataPointFlags(flags))
 
-		min, err := ehdp.F64FieldById(ids.Min, ehdpIdx)
+		min, err := ehdp.F64OrNilFieldById(ids.Min, ehdpIdx)
 		if err != nil {
 			return err
 		}
-		ehdpVal.SetMin(min)
+		if min != nil {
+			ehdpVal.SetMin(*min)
+		}
 
-		max, err := ehdp.F64FieldById(ids.Max, ehdpIdx)
+		max, err := ehdp.F64OrNilFieldById(ids.Max, ehdpIdx)
 		if err != nil {
 			return err
 		}
-		ehdpVal.SetMax(max)
+		if max != nil {
+			ehdpVal.SetMax(*max)
+		}
 	}
 
 	return nil

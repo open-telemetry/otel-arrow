@@ -16,14 +16,12 @@ package benchmark
 
 import (
 	"testing"
-
-	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 )
 
 func TestLz4(t *testing.T) {
 	t.Parallel()
 
-	lz4 := benchmark.Lz4()
+	lz4 := Lz4()
 	compressed, err := lz4.Compress([]byte("This is an example of text to compress.This is an example of text to compress.This is an example of text to compress."))
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
@@ -40,7 +38,7 @@ func TestLz4(t *testing.T) {
 func TestZstd(t *testing.T) {
 	t.Parallel()
 
-	zstd := benchmark.Zstd()
+	zstd := Zstd()
 	compressed, err := zstd.Compress([]byte("This is an example of text to compress.This is an example of text to compress.This is an example of text to compress."))
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)

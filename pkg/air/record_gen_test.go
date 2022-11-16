@@ -12,17 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package air_test
+package air
 
 import (
 	"fmt"
 
-	"github.com/f5/otel-arrow-adapter/pkg/air"
 	"github.com/f5/otel-arrow-adapter/pkg/air/rfield"
 )
 
-func GenSimpleRecord(ts int64) *air.Record {
-	record := air.NewRecord()
+func GenSimpleRecord(ts int64) *Record {
+	record := NewRecord()
 	record.I64Field("ts", ts)
 	record.StringField("a", "a")
 	record.StringField("b", "b")
@@ -30,8 +29,8 @@ func GenSimpleRecord(ts int64) *air.Record {
 	return record
 }
 
-func GenComplexRecord(ts int64) *air.Record {
-	record := air.NewRecord()
+func GenComplexRecord(ts int64) *Record {
+	record := NewRecord()
 	record.I64Field("ts", ts)
 	record.StructField("a", rfield.Struct{
 		Fields: []*rfield.Field{
@@ -44,8 +43,8 @@ func GenComplexRecord(ts int64) *air.Record {
 	return record
 }
 
-func GenRecord(ts int64, value_a, value_b, value_c int) *air.Record {
-	record := air.NewRecord()
+func GenRecord(ts int64, value_a, value_b, value_c int) *Record {
+	record := NewRecord()
 	record.I64Field("ts", ts)
 	record.StringField("c", fmt.Sprintf("c_%d", value_c))
 	record.StringField("a", fmt.Sprintf("a___%d", value_a))

@@ -17,8 +17,6 @@ package metrics
 import (
 	"testing"
 
-	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics"
-
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 )
@@ -43,7 +41,7 @@ func TestDataPointSig(t *testing.T) {
 	k7val.PutDouble("k4", 1)
 	k7val.PutInt("k1", 2)
 
-	sig := metrics.DataPointSig[pmetric.NumberDataPoint](ndp, "k5")
+	sig := DataPointSig[pmetric.NumberDataPoint](ndp, "k5")
 
 	expected := []byte{1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 107, 49, 2, 0, 0, 0, 0, 0, 0, 0, 107, 50, 1, 2, 3, 107, 51, 0, 107, 52, 0, 0, 0, 0, 0, 0, 240, 63, 107, 55, 107, 49, 2, 0, 0, 0, 0, 0, 0, 0, 107, 52, 0, 0, 0, 0, 0, 0, 240, 63, 107, 56, 107, 49, 2, 0, 0, 0, 0, 0, 0, 0, 107, 52, 0, 0, 0, 0, 0, 0, 240, 63}
 

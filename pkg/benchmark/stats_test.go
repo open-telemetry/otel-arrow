@@ -12,18 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package benchmark_test
+package benchmark
 
 import (
 	"testing"
-
-	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 )
 
 func TestSummary(t *testing.T) {
 	t.Parallel()
 
-	metric := benchmark.NewMetric()
+	metric := NewMetric()
 
 	// Sample
 	metric.Record(3.0)

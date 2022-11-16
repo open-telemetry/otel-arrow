@@ -368,6 +368,11 @@ func (los *ListOfStructs) F64FieldById(fieldId int, row int) (float64, error) {
 	return F64FromArray(column, row)
 }
 
+func (los *ListOfStructs) F64OrNilFieldById(fieldId int, row int) (*float64, error) {
+	column := los.arr.Field(fieldId)
+	return F64OrNilFromArray(column, row)
+}
+
 func (los *ListOfStructs) BoolFieldById(fieldId int, row int) (bool, error) {
 	column := los.arr.Field(fieldId)
 	return BoolFromArray(column, row)
@@ -709,6 +714,24 @@ func F64FromArray(arr arrow.Array, row int) (float64, error) {
 			}
 		default:
 			return 0.0, fmt.Errorf("column is not of type f64")
+		}
+	}
+}
+
+func F64OrNilFromArray(arr arrow.Array, row int) (*float64, error) {
+	if arr == nil {
+		return nil, nil
+	} else {
+		switch arr := arr.(type) {
+		case *array.Float64:
+			if arr.IsNull(row) {
+				return nil, nil
+			} else {
+				v := arr.Value(row)
+				return &v, nil
+			}
+		default:
+			return nil, fmt.Errorf("column is not of type f64")
 		}
 	}
 }

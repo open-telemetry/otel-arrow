@@ -138,11 +138,13 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 		}
 		hdpVal.SetCount(count)
 
-		sum, err := hdp.F64FieldById(ids.Sum, hdpIdx)
+		sum, err := hdp.F64OrNilFieldById(ids.Sum, hdpIdx)
 		if err != nil {
 			return err
 		}
-		hdpVal.SetSum(sum)
+		if sum != nil {
+			hdpVal.SetSum(*sum)
+		}
 
 		bucketCounts, start, end, err := hdp.ListValuesById(hdpIdx, ids.BucketCounts)
 		if values, ok := bucketCounts.(*array.Uint64); ok {
@@ -181,17 +183,21 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 		}
 		hdpVal.SetFlags(pmetric.DataPointFlags(flags))
 
-		min, err := hdp.F64FieldById(ids.Min, hdpIdx)
+		min, err := hdp.F64OrNilFieldById(ids.Min, hdpIdx)
 		if err != nil {
 			return err
 		}
-		hdpVal.SetMin(min)
+		if min != nil {
+			hdpVal.SetMin(*min)
+		}
 
-		max, err := hdp.F64FieldById(ids.Max, hdpIdx)
+		max, err := hdp.F64OrNilFieldById(ids.Max, hdpIdx)
 		if err != nil {
 			return err
 		}
-		hdpVal.SetMax(max)
+		if max != nil {
+			hdpVal.SetMax(*max)
+		}
 	}
 
 	return nil

@@ -23,11 +23,13 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/ipc"
 	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	common "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	logs_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/logs/otlp"
+	metrics_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/otlp"
 	traces_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/traces/otlp"
 )
 
@@ -60,6 +62,29 @@ func NewConsumer() *Consumer {
 		// TODO: configure this limit with a functional option
 		memLimit: 20 << 20,
 	}
+}
+
+// MetricsFrom produces an array of [pmetric.Metrics] from a BatchArrowRecords message.
+func (c *Consumer) MetricsFrom(bar *colarspb.BatchArrowRecords) ([]pmetric.Metrics, error) {
+	records, err := c.Consume(bar)
+	if err != nil {
+		return nil, err
+	}
+
+	record2Metrics := func(record *RecordMessage) (pmetric.Metrics, error) {
+		defer record.record.Release()
+		return metrics_otlp.MetricsFrom(record.record)
+	}
+
+	var result []pmetric.Metrics
+	for _, record := range records {
+		metrics, err := record2Metrics(record)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, metrics)
+	}
+	return result, nil
 }
 
 // LogsFrom produces an array of [plog.Logs] from a BatchArrowRecords message.

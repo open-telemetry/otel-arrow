@@ -12,22 +12,21 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package benchmark
+package otlp
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
-	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/otlp"
 )
 
 func TestOtlpMetricsProfiler(t *testing.T) {
-	t.Skip("Too long test")
 	t.Parallel()
 
-	systemToProfile := otlp.NewMetricsProfileable(dataset.NewFakeMetricsDataset(1000), benchmark.Zstd())
-	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, "tmpfile")
+	systemToProfile := NewMetricsProfileable(dataset.NewFakeMetricsDataset(1000), benchmark.Zstd())
+	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, filepath.Join(t.TempDir(), "tmpfile"))
 	if err := profiler.Profile(systemToProfile, 10); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -38,11 +37,10 @@ func TestOtlpMetricsProfiler(t *testing.T) {
 }
 
 func TestOtlpLogsProfiler(t *testing.T) {
-	t.Skip("Too long test")
 	t.Parallel()
 
-	systemToProfile := otlp.NewLogsProfileable(dataset.NewFakeLogsDataset(1000), benchmark.Zstd())
-	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, "tmpfile")
+	systemToProfile := NewLogsProfileable(dataset.NewFakeLogsDataset(1000), benchmark.Zstd())
+	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, filepath.Join(t.TempDir(), "tmpfile"))
 	if err := profiler.Profile(systemToProfile, 10); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -53,12 +51,11 @@ func TestOtlpLogsProfiler(t *testing.T) {
 }
 
 func TestOtlpTracesProfiler(t *testing.T) {
-	t.Skip("Too long test")
 	t.Parallel()
 
 	maxIter := uint64(10)
-	systemToProfile := otlp.NewTraceProfileable(dataset.NewFakeTraceDataset(1000), benchmark.Zstd())
-	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, "tmpfile")
+	systemToProfile := NewTraceProfileable(dataset.NewFakeTraceDataset(1000), benchmark.Zstd())
+	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, filepath.Join(t.TempDir(), "tmpfile"))
 	if err := profiler.Profile(systemToProfile, maxIter); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -77,7 +74,7 @@ func TestOtlpLightstepTracesProfiler(t *testing.T) {
 	})
 
 	maxIter := uint64(10)
-	systemToProfile := otlp.NewTraceProfileable(benchdata, benchmark.Zstd())
+	systemToProfile := NewTraceProfileable(benchdata, benchmark.Zstd())
 	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, "tmpfile")
 	if err := profiler.Profile(systemToProfile, maxIter); err != nil {
 		t.Errorf("expected no error, got %v", err)

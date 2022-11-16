@@ -56,7 +56,7 @@ resource_metrics:
             dropped_attributes_count: uint32
           schema_url: string | string_dictionary
           metrics: 
-            - name: string | string_dictionary
+            - name: string | string_dictionary            # required
               description: string | string_dictionary
               unit: string | string_dictionary 
               data:                                       # arrow type = sparse union
@@ -64,7 +64,7 @@ resource_metrics:
                     data_points: 
                       - attributes: *attributes
                         start_time_unix_nano: uint64
-                        time_unix_nano: uint64
+                        time_unix_nano: uint64            # required
                         value:                            # arrow type = dense union
                           i64: int64 
                           f64: float64 
@@ -74,7 +74,7 @@ resource_metrics:
                     data_points: 
                       - attributes: *attributes
                         start_time_unix_nano: uint64
-                        time_unix_nano: uint64
+                        time_unix_nano: uint64            # required
                         value:                            # arrow type = dense union
                           i64: int64
                           f64: float64
@@ -86,7 +86,7 @@ resource_metrics:
                     data_points: 
                       - attributes: *attributes
                         start_time_unix_nano: uint64
-                        time_unix_nano: uint64
+                        time_unix_nano: uint64            # required
                         count: uint64
                         sum: float64
                         quantile: 
@@ -178,13 +178,13 @@ resource_spans:
           dropped_attributes_count: uint32
         schema_url: string | string_dictionary 
         spans:
-          - start_time_unix_nano: uint64 
-            end_time_unix_nano: uint64
-            trace_id: 16_bytes_binary | 16_bytes_binary_dictionary 
-            span_id: 8_bytes_binary | 8_bytes_binary_dictionary 
+          - start_time_unix_nano: uint64                                  # required 
+            end_time_unix_nano: uint64                                    # required
+            trace_id: 16_bytes_binary | 16_bytes_binary_dictionary        # required
+            span_id: 8_bytes_binary | 8_bytes_binary_dictionary           # required
             trace_state: string | string_dictionary 
             parent_span_id: 8_bytes_binary | 8_bytes_binary_dictionary 
-            name: string | string_dictionary
+            name: string | string_dictionary                              # required
             kind: int32 
             attributes: *attributes
             dropped_attributes_count: uint32 
