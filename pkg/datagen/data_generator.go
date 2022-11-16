@@ -166,13 +166,7 @@ func (dg *DataGenerator) HasHistogramMin() bool {
 }
 
 func (dg *DataGenerator) HasHistogramMax() bool {
-	if dg.config.ProbHistogramHasMax == 1.0 {
-		return true
-	} else if dg.config.ProbHistogramHasMax == 0.0 {
-		return false
-	} else {
-		return dg.rng.Float64() < dg.config.ProbHistogramHasMax
-	}
+	return dg.rng.Float64() < dg.config.ProbHistogramHasMax
 }
 
 func (dg *DataGenerator) GenBool() bool {
