@@ -177,7 +177,7 @@ func TestProducerConsumerTraces(t *testing.T) {
 	traces := dg.Generate(10, time.Minute)
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
-	//defer pool.AssertSize(t, 0)
+	defer pool.AssertSize(t, 0)
 
 	producer := NewProducerWithPool(pool)
 
@@ -206,7 +206,10 @@ func TestProducerConsumerLogs(t *testing.T) {
 	)
 	logs := dg.Generate(10, time.Minute)
 
-	producer := NewProducer()
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	defer pool.AssertSize(t, 0)
+
+	producer := NewProducerWithPool(pool)
 
 	batch, err := producer.BatchArrowRecordsFromLogs(logs)
 	require.NoError(t, err)
@@ -233,7 +236,10 @@ func TestProducerConsumerMetrics(t *testing.T) {
 	)
 	metrics := dg.Generate(10, time.Minute)
 
-	producer := NewProducer()
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	defer pool.AssertSize(t, 0)
+
+	producer := NewProducerWithPool(pool)
 
 	batch, err := producer.BatchArrowRecordsFromMetrics(metrics)
 	require.NoError(t, err)
@@ -253,7 +259,10 @@ func TestProducerConsumerMetrics(t *testing.T) {
 func TestProducerConsumer(t *testing.T) {
 	t.Parallel()
 
-	producer := NewProducer()
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	defer pool.AssertSize(t, 0)
+
+	producer := NewProducerWithPool(pool)
 	consumer := NewConsumer()
 	config := cfg.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(config)
