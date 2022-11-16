@@ -1,2 +1,2 @@
 mockgen:
-	mockgen -package mock . ConsumerAPI,ProducerAPI > mock/mock.go 
+	mockgen -package mock . ProducerAPI,ConsumerAPI > mock/mock.go 
