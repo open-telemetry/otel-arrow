@@ -18,6 +18,8 @@
 package dataset
 
 import (
+	"math/rand"
+
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 
@@ -55,7 +57,8 @@ type FakeMetricsDataset struct {
 }
 
 func NewFakeMetricsDataset(len int) *FakeMetricsDataset {
-	return &FakeMetricsDataset{len: len, generator: datagen.NewMetricsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())}
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	return &FakeMetricsDataset{len: len, generator: datagen.NewMetricsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
 }
 
 func (d *FakeMetricsDataset) Len() int {
@@ -75,7 +78,8 @@ type FakeLogsDataset struct {
 }
 
 func NewFakeLogsDataset(len int) *FakeLogsDataset {
-	return &FakeLogsDataset{len: len, generator: datagen.NewLogsGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())}
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	return &FakeLogsDataset{len: len, generator: datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
 }
 
 func (d *FakeLogsDataset) Len() int {
@@ -95,7 +99,8 @@ type FakeTraceDataset struct {
 }
 
 func NewFakeTraceDataset(len int) *FakeTraceDataset {
-	return &FakeTraceDataset{len: len, generator: datagen.NewTracesGenerator(datagen.DefaultResourceAttributes(), datagen.DefaultInstrumentationScopes())}
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	return &FakeTraceDataset{len: len, generator: datagen.NewTracesGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
 }
 
 func (d *FakeTraceDataset) Len() int {

@@ -20,13 +20,12 @@ package dataset
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"sort"
 	"strings"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-
-	"golang.org/x/exp/rand"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"

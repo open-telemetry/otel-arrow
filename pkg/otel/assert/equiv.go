@@ -128,8 +128,13 @@ func exportAllVPaths(traces map[string]interface{}, currentVPath string, vPaths 
 		case []interface{}:
 			for i := 0; i < len(v); i++ {
 				// TODO: this is an approximation that is good enough for now, medium-term we should compute the index key based on a signature of the non-array fields.
-				arrayVPath := localVPath + "[_]"
-				exportAllVPaths(v[i].(map[string]interface{}), arrayVPath, vPaths)
+				if vMap, ok := v[i].(map[string]interface{}); ok {
+					arrayVPath := localVPath + "[_]"
+					exportAllVPaths(vMap, arrayVPath, vPaths)
+				} else {
+					arrayVPath := fmt.Sprintf("%s[%d]=%s", localVPath, i, fmt.Sprint(v[i]))
+					vPaths[arrayVPath] = true
+				}
 			}
 		case []string:
 			vPaths[localVPath+"="+strings.Join(v, ",")] = true

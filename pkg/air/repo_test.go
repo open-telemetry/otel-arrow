@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package air_test
+package air
 
 import (
 	"fmt"
@@ -25,7 +25,6 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"github.com/davecgh/go-spew/spew"
 
-	"github.com/f5/otel-arrow-adapter/pkg/air"
 	config2 "github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/air/rfield"
 	arrow2 "github.com/f5/otel-arrow-adapter/pkg/arrow"
@@ -34,7 +33,7 @@ import (
 func TestAddRecord(t *testing.T) {
 	t.Parallel()
 
-	rr := air.NewRecordRepository(config2.NewUint8DefaultConfig())
+	rr := NewRecordRepository(config2.NewUint8DefaultConfig())
 	rr.AddRecord(GenSimpleRecord(0))
 	rr.AddRecord(GenComplexRecord(1))
 	rr.AddRecord(GenSimpleRecord(2))
@@ -98,7 +97,7 @@ func TestOptimize(t *testing.T) {
 			},
 		},
 	}
-	rr := air.NewRecordRepository(&config)
+	rr := NewRecordRepository(&config)
 
 	for i := 0; i < 100; i++ {
 		rr.AddRecord(GenRecord(int64(i), i%15, i%2, i))
@@ -183,7 +182,7 @@ func TestBuild(t *testing.T) {
 			},
 		},
 	}
-	rr := air.NewRecordRepository(&config)
+	rr := NewRecordRepository(&config)
 
 	recordCount := 100
 
@@ -280,7 +279,7 @@ func TestBuildHeterogeneousListOfStructs(t *testing.T) {
 	t.Parallel()
 
 	config := config2.NewUint8DefaultConfig()
-	rr := air.NewRecordRepository(config)
+	rr := NewRecordRepository(config)
 
 	rr.AddRecord(RecordWithHeterogeneousListOfStructs(1))
 
@@ -292,8 +291,8 @@ func TestBuildHeterogeneousListOfStructs(t *testing.T) {
 	spew.Dump(records)
 }
 
-func RecordWithHeterogeneousListOfStructs(ts uint64) *air.Record {
-	record := air.NewRecord()
+func RecordWithHeterogeneousListOfStructs(ts uint64) *Record {
+	record := NewRecord()
 	record.U64Field("ts", ts)
 	record.ListField("events", rfield.List{
 		Values: []rfield.Value{

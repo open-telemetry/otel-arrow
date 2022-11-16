@@ -429,6 +429,161 @@ func TestMetrics(t *testing.T) {
 	require.JSONEq(t, expected, string(json))
 }
 
+func TestExponentialHistogramDataPointBuckets(t *testing.T) {
+	t.Parallel()
+
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	defer pool.AssertSize(t, 0)
+	b := NewEHistogramDataPointBucketsBuilder(pool)
+
+	if err := b.Append(ExponentialHistogramDataPointBuckets1()); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Append(ExponentialHistogramDataPointBuckets2()); err != nil {
+		t.Fatal(err)
+	}
+	arr, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer arr.Release()
+
+	json, err := arr.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := `[{"bucket_counts":[1,2],"offset":1}
+,{"bucket_counts":[3,4],"offset":2}
+]`
+
+	require.JSONEq(t, expected, string(json))
+}
+
+func TestExponentialHistogramDataPoint(t *testing.T) {
+	t.Parallel()
+
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	defer pool.AssertSize(t, 0)
+	b := NewEHistogramDataPointBuilder(pool)
+
+	if err := b.Append(ExponentialHistogramDataPoint1()); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Append(ExponentialHistogramDataPoint2()); err != nil {
+		t.Fatal(err)
+	}
+	arr, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer arr.Release()
+
+	json, err := arr.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := `[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"count":1,"exemplars":null,"flags":1,"max":2.5,"min":1.5,"negative":{"bucket_counts":[3,4],"offset":2},"positive":{"bucket_counts":[1,2],"offset":1},"scale":1,"start_time_unix_nano":1,"sum":1.5,"time_unix_nano":2,"zero_count":1}
+,{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"count":2,"exemplars":null,"flags":2,"max":3.5,"min":2.5,"negative":{"bucket_counts":[3,4],"offset":2},"positive":{"bucket_counts":[1,2],"offset":1},"scale":2,"start_time_unix_nano":2,"sum":2.5,"time_unix_nano":3,"zero_count":2}
+]`
+
+	require.JSONEq(t, expected, string(json))
+}
+
+func TestHistogramDataPoint(t *testing.T) {
+	t.Parallel()
+
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	defer pool.AssertSize(t, 0)
+	b := NewHistogramDataPointBuilder(pool)
+
+	if err := b.Append(HistogramDataPoint1()); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Append(HistogramDataPoint2()); err != nil {
+		t.Fatal(err)
+	}
+	arr, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer arr.Release()
+
+	json, err := arr.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := `[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"bucket_counts":[1,2],"count":1,"exemplars":null,"explicit_bounds":[1.5,2.5],"flags":1,"max":2.5,"min":1.5,"start_time_unix_nano":1,"sum":1.5,"time_unix_nano":2}
+,{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"bucket_counts":[3,4],"count":2,"exemplars":null,"explicit_bounds":[2.5,3.5],"flags":2,"max":3.5,"min":2.5,"start_time_unix_nano":2,"sum":2.5,"time_unix_nano":3}
+]`
+
+	require.JSONEq(t, expected, string(json))
+}
+
+func TestHistogram(t *testing.T) {
+	t.Parallel()
+
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	defer pool.AssertSize(t, 0)
+	b := NewUnivariateHistogramBuilder(pool)
+
+	if err := b.Append(Histogram1()); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Append(Histogram2()); err != nil {
+		t.Fatal(err)
+	}
+	arr, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer arr.Release()
+
+	json, err := arr.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := `[{"aggregation_temporality":1,"data_points":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"bucket_counts":[1,2],"count":1,"exemplars":null,"explicit_bounds":[1.5,2.5],"flags":1,"max":2.5,"min":1.5,"start_time_unix_nano":1,"sum":1.5,"time_unix_nano":2},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"bucket_counts":[3,4],"count":2,"exemplars":null,"explicit_bounds":[2.5,3.5],"flags":2,"max":3.5,"min":2.5,"start_time_unix_nano":2,"sum":2.5,"time_unix_nano":3}]}
+,{"aggregation_temporality":2,"data_points":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"bucket_counts":[3,4],"count":2,"exemplars":null,"explicit_bounds":[2.5,3.5],"flags":2,"max":3.5,"min":2.5,"start_time_unix_nano":2,"sum":2.5,"time_unix_nano":3}]}
+]`
+
+	require.JSONEq(t, expected, string(json))
+}
+
+func TestExponentialHistogram(t *testing.T) {
+	t.Parallel()
+
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	defer pool.AssertSize(t, 0)
+	b := NewUnivariateEHistogramBuilder(pool)
+
+	if err := b.Append(ExpHistogram1()); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Append(ExpHistogram2()); err != nil {
+		t.Fatal(err)
+	}
+	arr, err := b.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer arr.Release()
+
+	json, err := arr.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expected := `[{"aggregation_temporality":1,"data_points":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"count":1,"exemplars":null,"flags":1,"max":2.5,"min":1.5,"negative":{"bucket_counts":[3,4],"offset":2},"positive":{"bucket_counts":[1,2],"offset":1},"scale":1,"start_time_unix_nano":1,"sum":1.5,"time_unix_nano":2,"zero_count":1},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"count":2,"exemplars":null,"flags":2,"max":3.5,"min":2.5,"negative":{"bucket_counts":[3,4],"offset":2},"positive":{"bucket_counts":[1,2],"offset":1},"scale":2,"start_time_unix_nano":2,"sum":2.5,"time_unix_nano":3,"zero_count":2}]}
+,{"aggregation_temporality":2,"data_points":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"count":1,"exemplars":null,"flags":1,"max":2.5,"min":1.5,"negative":{"bucket_counts":[3,4],"offset":2},"positive":{"bucket_counts":[1,2],"offset":1},"scale":1,"start_time_unix_nano":1,"sum":1.5,"time_unix_nano":2,"zero_count":1}]}
+]`
+
+	require.JSONEq(t, expected, string(json))
+}
+
 // NDP1 returns a pmetric.NumberDataPoint (sample 1).
 func NDP1() pmetric.NumberDataPoint {
 	dp := pmetric.NewNumberDataPoint()
@@ -665,4 +820,132 @@ func Metrics2() pmetric.Metrics {
 	rms.EnsureCapacity(1)
 	ResourceMetrics2().CopyTo(rms.AppendEmpty())
 	return m
+}
+
+func ExponentialHistogramDataPointBuckets1() pmetric.ExponentialHistogramDataPointBuckets {
+	b := pmetric.NewExponentialHistogramDataPointBuckets()
+	b.SetOffset(1)
+	bcs := b.BucketCounts()
+	bcs.EnsureCapacity(2)
+	bcs.Append(1, 2)
+	return b
+}
+
+func ExponentialHistogramDataPointBuckets2() pmetric.ExponentialHistogramDataPointBuckets {
+	b := pmetric.NewExponentialHistogramDataPointBuckets()
+	b.SetOffset(2)
+	bcs := b.BucketCounts()
+	bcs.EnsureCapacity(2)
+	bcs.Append(3, 4)
+	return b
+}
+
+func ExponentialHistogramDataPoint1() pmetric.ExponentialHistogramDataPoint {
+	dp := pmetric.NewExponentialHistogramDataPoint()
+	internal.Attrs1().CopyTo(dp.Attributes())
+	dp.SetStartTimestamp(1)
+	dp.SetTimestamp(2)
+	dp.SetCount(1)
+	dp.SetSum(1.5)
+	ExponentialHistogramDataPointBuckets1().CopyTo(dp.Positive())
+	ExponentialHistogramDataPointBuckets2().CopyTo(dp.Negative())
+	dp.SetFlags(1)
+	dp.SetScale(1)
+	dp.SetZeroCount(1)
+	dp.SetMin(1.5)
+	dp.SetMax(2.5)
+	return dp
+}
+
+func ExponentialHistogramDataPoint2() pmetric.ExponentialHistogramDataPoint {
+	dp := pmetric.NewExponentialHistogramDataPoint()
+	internal.Attrs2().CopyTo(dp.Attributes())
+	dp.SetStartTimestamp(2)
+	dp.SetTimestamp(3)
+	dp.SetCount(2)
+	dp.SetSum(2.5)
+	ExponentialHistogramDataPointBuckets1().CopyTo(dp.Positive())
+	ExponentialHistogramDataPointBuckets2().CopyTo(dp.Negative())
+	dp.SetFlags(2)
+	dp.SetScale(2)
+	dp.SetZeroCount(2)
+	dp.SetMin(2.5)
+	dp.SetMax(3.5)
+	return dp
+}
+
+func HistogramDataPoint1() pmetric.HistogramDataPoint {
+	dp := pmetric.NewHistogramDataPoint()
+	internal.Attrs1().CopyTo(dp.Attributes())
+	dp.SetStartTimestamp(1)
+	dp.SetTimestamp(2)
+	dp.SetCount(1)
+	dp.SetSum(1.5)
+	bcs := dp.BucketCounts()
+	bcs.EnsureCapacity(2)
+	bcs.Append(1, 2)
+	ebs := dp.ExplicitBounds()
+	ebs.EnsureCapacity(2)
+	ebs.Append(1.5, 2.5)
+	dp.SetFlags(1)
+	dp.SetMin(1.5)
+	dp.SetMax(2.5)
+	return dp
+}
+
+func HistogramDataPoint2() pmetric.HistogramDataPoint {
+	dp := pmetric.NewHistogramDataPoint()
+	internal.Attrs2().CopyTo(dp.Attributes())
+	dp.SetStartTimestamp(2)
+	dp.SetTimestamp(3)
+	dp.SetCount(2)
+	dp.SetSum(2.5)
+	bcs := dp.BucketCounts()
+	bcs.EnsureCapacity(2)
+	bcs.Append(3, 4)
+	ebs := dp.ExplicitBounds()
+	ebs.EnsureCapacity(2)
+	ebs.Append(2.5, 3.5)
+	dp.SetFlags(2)
+	dp.SetMin(2.5)
+	dp.SetMax(3.5)
+	return dp
+}
+
+func Histogram1() pmetric.Histogram {
+	h := pmetric.NewHistogram()
+	h.SetAggregationTemporality(1)
+	dps := h.DataPoints()
+	dps.EnsureCapacity(2)
+	HistogramDataPoint1().CopyTo(dps.AppendEmpty())
+	HistogramDataPoint2().CopyTo(dps.AppendEmpty())
+	return h
+}
+
+func Histogram2() pmetric.Histogram {
+	h := pmetric.NewHistogram()
+	h.SetAggregationTemporality(2)
+	dps := h.DataPoints()
+	dps.EnsureCapacity(1)
+	HistogramDataPoint2().CopyTo(dps.AppendEmpty())
+	return h
+}
+
+func ExpHistogram1() pmetric.ExponentialHistogram {
+	h := pmetric.NewExponentialHistogram()
+	h.SetAggregationTemporality(1)
+	dps := h.DataPoints()
+	dps.EnsureCapacity(2)
+	ExponentialHistogramDataPoint1().CopyTo(dps.AppendEmpty())
+	ExponentialHistogramDataPoint2().CopyTo(dps.AppendEmpty())
+	return h
+}
+
+func ExpHistogram2() pmetric.ExponentialHistogram {
+	h := pmetric.NewExponentialHistogram()
+	h.SetAggregationTemporality(2)
+	dps := h.DataPoints()
+	dps.EnsureCapacity(1)
+	ExponentialHistogramDataPoint1().CopyTo(dps.AppendEmpty())
+	return h
 }

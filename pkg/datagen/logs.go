@@ -29,9 +29,9 @@ type LogsGenerator struct {
 	generation int
 }
 
-func NewLogsGenerator(resourceAttributes []pcommon.Map, instrumentationScopes []pcommon.InstrumentationScope) *LogsGenerator {
+func NewLogsGenerator(entropy TestEntropy, resourceAttributes []pcommon.Map, instrumentationScopes []pcommon.InstrumentationScope) *LogsGenerator {
 	return &LogsGenerator{
-		DataGenerator: NewDataGenerator(uint64(time.Now().UnixNano()/int64(time.Millisecond)), resourceAttributes, instrumentationScopes),
+		DataGenerator: NewDataGenerator(entropy, resourceAttributes, instrumentationScopes),
 		generation:    0,
 	}
 }
@@ -85,7 +85,7 @@ func (dg *DataGenerator) logRecord(log plog.LogRecord, sev plog.SeverityNumber, 
 	log.SetSeverityNumber(sev)
 	log.SetSeverityText(txt)
 	log.Body().SetStr(gofakeit.LoremIpsumSentence(10))
-	DefaultAttributes().CopyTo(log.Attributes())
+	dg.NewStandardAttributes().CopyTo(log.Attributes())
 	log.SetTraceID(dg.Id16Bytes())
 	log.SetSpanID(dg.Id8Bytes())
 }

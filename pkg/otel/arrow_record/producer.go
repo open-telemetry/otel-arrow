@@ -21,10 +21,12 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/ipc"
 	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	logs_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
+	metrics_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
 	traces_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
 )
 
@@ -40,7 +42,7 @@ var _ ProducerAPI = &Producer{}
 
 // Producer is a BatchArrowRecords producer.
 type Producer struct {
-	pool            *memory.GoAllocator
+	pool            memory.Allocator
 	streamProducers map[string]*streamProducer
 	batchId         int64
 }
@@ -58,6 +60,36 @@ func NewProducer() *Producer {
 		streamProducers: make(map[string]*streamProducer),
 		batchId:         0,
 	}
+}
+
+// NewProducerWithPool creates a new BatchArrowRecords producer with a custom memory pool.
+func NewProducerWithPool(pool memory.Allocator) *Producer {
+	return &Producer{
+		pool:            pool,
+		streamProducers: make(map[string]*streamProducer),
+		batchId:         0,
+	}
+}
+
+// BatchArrowRecordsFromMetrics produces a BatchArrowRecords message from a [pmetric.Metrics] messages.
+func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colarspb.BatchArrowRecords, error) {
+	mb := metrics_arrow.NewMetricsBuilder(p.pool)
+	if err := mb.Append(metrics); err != nil {
+		return nil, err
+	}
+	record, err := mb.Build()
+	if err != nil {
+		return nil, err
+	}
+	defer record.Release()
+
+	rms := []*RecordMessage{NewMetricsMessage(record, colarspb.DeliveryType_BEST_EFFORT)}
+
+	bar, err := p.Produce(rms, colarspb.DeliveryType_BEST_EFFORT)
+	if err != nil {
+		return nil, err
+	}
+	return bar, nil
 }
 
 // BatchArrowRecordsFromLogs produces a BatchArrowRecords message from a [plog.Logs] messages.
@@ -88,10 +120,12 @@ func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.Batc
 		return nil, err
 	}
 	record, err := tb.Build()
+	if record != nil {
+		defer record.Release()
+	}
 	if err != nil {
 		return nil, err
 	}
-	defer record.Release()
 
 	rms := []*RecordMessage{NewTraceMessage(record, colarspb.DeliveryType_BEST_EFFORT)}
 

@@ -13,11 +13,11 @@ import (
 
 // Constants used to identify the type of univariate metric in the union.
 const (
-	GaugeCode   int8 = 0
-	SumCode     int8 = 1
-	SummaryCode int8 = 2
-	// HistogramCode int8 = 3
-	// ExponentialHistogramCode int8 = 4
+	GaugeCode        int8 = 0
+	SumCode          int8 = 1
+	SummaryCode      int8 = 2
+	HistogramCode    int8 = 3
+	ExpHistogramCode int8 = 4
 )
 
 // UnivariateMetricDT is the Arrow Data Type describing a univariate metric.
@@ -26,13 +26,15 @@ var (
 		{Name: constants.GAUGE_METRICS, Type: UnivariateGaugeDT},
 		{Name: constants.SUM_METRICS, Type: UnivariateSumDT},
 		{Name: constants.SUMMARY_METRICS, Type: UnivariateSummaryDT},
-		// {Name: constants.HISTOGRAM_METRICS, Type: UnivariateHistogramDT},
-		// {Name: constants.EXPONENTIAL_HISTOGRAM_METRICS, Type: UnivariateExponentialHistogramDT},
+		{Name: constants.HISTOGRAM_METRICS, Type: UnivariateHistogramDT},
+		{Name: constants.EXP_HISTOGRAM_METRICS, Type: UnivariateEHistogramDT},
 	},
 		[]arrow.UnionTypeCode{
 			GaugeCode,
 			SumCode,
 			SummaryCode,
+			HistogramCode,
+			ExpHistogramCode,
 		},
 	)
 )
@@ -43,9 +45,11 @@ type UnivariateMetricBuilder struct {
 
 	builder *array.SparseUnionBuilder
 
-	gb  *UnivariateGaugeBuilder   // univariate gauge builder
-	sb  *UnivariateSumBuilder     // univariate sum builder
-	syb *UnivariateSummaryBuilder // univariate summary builder
+	gb  *UnivariateGaugeBuilder      // univariate gauge builder
+	sb  *UnivariateSumBuilder        // univariate sum builder
+	syb *UnivariateSummaryBuilder    // univariate summary builder
+	hb  *UnivariateHistogramBuilder  // univariate histogram builder
+	ehb *UnivariateEHistogramBuilder // univariate exponential histogram builder
 }
 
 // NewUnivariateMetricBuilder creates a new UnivariateMetricBuilder with a given memory allocator.
@@ -62,6 +66,8 @@ func UnivariateMetricBuilderFrom(umb *array.SparseUnionBuilder) *UnivariateMetri
 		gb:  UnivariateGaugeBuilderFrom(umb.Child(0).(*array.StructBuilder)),
 		sb:  UnivariateSumBuilderFrom(umb.Child(1).(*array.StructBuilder)),
 		syb: UnivariateSummaryBuilderFrom(umb.Child(2).(*array.StructBuilder)),
+		hb:  UnivariateHistogramBuilderFrom(umb.Child(3).(*array.StructBuilder)),
+		ehb: UnivariateEHistogramBuilderFrom(umb.Child(4).(*array.StructBuilder)),
 	}
 }
 
@@ -101,6 +107,8 @@ func (b *UnivariateMetricBuilder) Append(metric pmetric.Metric) error {
 		}
 		b.sb.AppendNull()
 		b.syb.AppendNull()
+		b.hb.AppendNull()
+		b.ehb.AppendNull()
 	case pmetric.MetricTypeSum:
 		b.builder.Append(SumCode)
 		if err := b.sb.Append(metric.Sum()); err != nil {
@@ -108,6 +116,8 @@ func (b *UnivariateMetricBuilder) Append(metric pmetric.Metric) error {
 		}
 		b.gb.AppendNull()
 		b.syb.AppendNull()
+		b.hb.AppendNull()
+		b.ehb.AppendNull()
 	case pmetric.MetricTypeSummary:
 		b.builder.Append(SummaryCode)
 		if err := b.syb.Append(metric.Summary()); err != nil {
@@ -115,10 +125,26 @@ func (b *UnivariateMetricBuilder) Append(metric pmetric.Metric) error {
 		}
 		b.gb.AppendNull()
 		b.sb.AppendNull()
-		// case pmetric.MetricTypeHistogram:
-		// 	b.builder.Append(HistogramCode)
-		// case pmetric.MetricTypeExponentialHistogram:
-		// 	b.builder.Append(ExponentialHistogramCode)
+		b.hb.AppendNull()
+		b.ehb.AppendNull()
+	case pmetric.MetricTypeHistogram:
+		b.builder.Append(HistogramCode)
+		if err := b.hb.Append(metric.Histogram()); err != nil {
+			return err
+		}
+		b.gb.AppendNull()
+		b.sb.AppendNull()
+		b.syb.AppendNull()
+		b.ehb.AppendNull()
+	case pmetric.MetricTypeExponentialHistogram:
+		b.builder.Append(ExpHistogramCode)
+		if err := b.ehb.Append(metric.ExponentialHistogram()); err != nil {
+			return err
+		}
+		b.gb.AppendNull()
+		b.sb.AppendNull()
+		b.syb.AppendNull()
+		b.hb.AppendNull()
 	}
 
 	return nil

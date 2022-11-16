@@ -28,9 +28,13 @@ type MetricsGenerator struct {
 	generation int
 }
 
-func NewMetricsGenerator(resourceAttributes []pcommon.Map, instrumentationScopes []pcommon.InstrumentationScope) *MetricsGenerator {
+func NewMetricsGenerator(entropy TestEntropy, resourceAttributes []pcommon.Map, instrumentationScopes []pcommon.InstrumentationScope) *MetricsGenerator {
+	return NewMetricsGeneratorWithDataGenerator(NewDataGenerator(entropy, resourceAttributes, instrumentationScopes))
+}
+
+func NewMetricsGeneratorWithDataGenerator(dataGenerator *DataGenerator) *MetricsGenerator {
 	return &MetricsGenerator{
-		DataGenerator: NewDataGenerator(uint64(time.Now().UnixNano()/int64(time.Millisecond)), resourceAttributes, instrumentationScopes),
+		DataGenerator: dataGenerator,
 		generation:    0,
 	}
 }
@@ -59,6 +63,8 @@ func (mg *MetricsGenerator) Generate(batchSize int, collectInterval time.Duratio
 		mg.SystemCpuTime(metrics.AppendEmpty(), 1)
 		mg.SystemMemoryUsage(metrics.AppendEmpty())
 		mg.SystemCpuLoadAverage1m(metrics.AppendEmpty())
+		mg.FakeHistogram(metrics.AppendEmpty())
+		mg.FakeExpHistogram(metrics.AppendEmpty())
 	}
 
 	mg.generation++
@@ -109,7 +115,9 @@ func (mg *MetricsGenerator) GenerateSystemCpuLoadAverage1m(batchSize int, collec
 
 func (dg *DataGenerator) SystemCpuTime(metric pmetric.Metric, cpuCount int) {
 	metric.SetName("system.cpu.time")
-	metric.SetUnit("s")
+	if dg.HasMetricUnit() {
+		metric.SetUnit("s")
+	}
 
 	sum := metric.SetEmptySum()
 	//sum.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
@@ -130,8 +138,13 @@ func (dg *DataGenerator) SystemCpuTime(metric pmetric.Metric, cpuCount int) {
 
 func (dg *DataGenerator) SystemMemoryUsage(metric pmetric.Metric) {
 	metric.SetName("system.memory.usage")
-	metric.SetDescription("Bytes of memory in use.")
-	metric.SetUnit("By")
+	// Generate description and unit only half of the time.
+	if dg.HasMetricDescription() {
+		metric.SetDescription("Bytes of memory in use.")
+	}
+	if dg.HasMetricUnit() {
+		metric.SetUnit("By")
+	}
 	sum := metric.SetEmptySum()
 	//sum.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
 	//sum.SetIsMonotonic(false)
@@ -158,12 +171,120 @@ func (dg *DataGenerator) SystemMemoryUsage(metric pmetric.Metric) {
 
 func (dg *DataGenerator) SystemCpuLoadAverage1m(metric pmetric.Metric) {
 	metric.SetName("system.cpu.load_average.1m")
-	metric.SetDescription("Average CPU Load over 1 minute.")
-	metric.SetUnit("1")
+	// Generate description and unit only half of the time.
+	if dg.HasMetricDescription() {
+		metric.SetDescription("Average CPU Load over 1 minute.")
+	}
+	if dg.HasMetricUnit() {
+		metric.SetUnit("1")
+	}
 
 	point := metric.SetEmptyGauge().DataPoints().AppendEmpty()
 
 	point.SetStartTimestamp(dg.PrevTime())
 	point.SetTimestamp(dg.CurrentTime())
 	point.SetDoubleValue(dg.GenF64Range(1.0, 100.0))
+}
+
+// FakeHistogram generates a fake histogram metric.
+// All field are purposely filled with random values.
+func (dg *DataGenerator) FakeHistogram(metric pmetric.Metric) {
+	metric.SetName("fake.histogram")
+	// Generate description and unit only half of the time.
+	if dg.HasMetricDescription() {
+		metric.SetDescription("A histogram with a few buckets.")
+	}
+	if dg.HasMetricUnit() {
+		metric.SetUnit("1")
+	}
+
+	histogram := metric.SetEmptyHistogram()
+	histogram.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+
+	dps := histogram.DataPoints()
+	dps.EnsureCapacity(10)
+
+	for i := 0; i < 10; i++ {
+		dp := dps.AppendEmpty()
+		dp.SetStartTimestamp(dg.PrevTime())
+		dp.SetTimestamp(dg.CurrentTime())
+		dp.SetCount(uint64(dg.GenI64Range(0, 100)))
+		if dg.HasHistogramSum() {
+			dp.SetSum(dg.GenF64Range(0, 100))
+		}
+
+		bcs := dp.BucketCounts()
+		bcs.EnsureCapacity(10)
+		for j := 0; j < 10; j++ {
+			bcs.Append(uint64(dg.GenI64Range(0, 100)))
+		}
+
+		ebs := dp.ExplicitBounds()
+		ebs.EnsureCapacity(10)
+		for j := 0; j < 10; j++ {
+			ebs.Append(dg.GenF64Range(0, 100))
+		}
+		dp.SetFlags(pmetric.DataPointFlags(dg.GenI64Range(1, 50)))
+		if dg.HasHistogramMin() {
+			dp.SetMin(dg.GenF64Range(0, 100))
+		}
+		if dg.HasHistogramMax() {
+			dp.SetMax(dg.GenF64Range(0, 100))
+		}
+	}
+}
+
+// FakeExpHistogram generates a fake exponential histogram metric.
+// All field are purposely filled with random values.
+func (dg *DataGenerator) FakeExpHistogram(metric pmetric.Metric) {
+	metric.SetName("fake.exp_histogram")
+	// Generate description and unit only half of the time.
+	if dg.HasMetricDescription() {
+		metric.SetDescription("An exponential histogram with a few buckets.")
+	}
+	if dg.HasMetricUnit() {
+		metric.SetUnit("1")
+	}
+
+	histogram := metric.SetEmptyExponentialHistogram()
+	histogram.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+
+	dps := histogram.DataPoints()
+	dps.EnsureCapacity(10)
+
+	for i := 0; i < 10; i++ {
+		dp := dps.AppendEmpty()
+		dp.SetStartTimestamp(dg.PrevTime())
+		dp.SetTimestamp(dg.CurrentTime())
+		dp.SetCount(uint64(dg.GenI64Range(0, 100)))
+		if dg.HasHistogramSum() {
+			dp.SetSum(dg.GenF64Range(0, 100))
+		}
+		dp.SetScale(int32(dg.GenI64Range(-10, 10)))
+		dp.SetZeroCount(uint64(dg.GenI64Range(0, 100)))
+
+		positive := dp.Positive()
+		positive.SetOffset(int32(dg.GenI64Range(-100, 100)))
+		buckets := positive.BucketCounts()
+		buckets.EnsureCapacity(10)
+		for j := 0; j < 10; j++ {
+			buckets.Append(uint64(dg.GenI64Range(0, 100)))
+		}
+
+		negative := dp.Negative()
+		negative.SetOffset(int32(dg.GenI64Range(-100, 100)))
+		buckets = negative.BucketCounts()
+		buckets.EnsureCapacity(10)
+		for j := 0; j < 10; j++ {
+			buckets.Append(uint64(dg.GenI64Range(0, 100)))
+		}
+
+		dp.SetFlags(pmetric.DataPointFlags(dg.GenI64Range(1, 50)))
+		if dg.HasHistogramMin() {
+			dp.SetMin(dg.GenF64Range(0, 100))
+		}
+		if dg.HasHistogramMax() {
+			dp.SetMax(dg.GenF64Range(0, 100))
+		}
+	}
 }
