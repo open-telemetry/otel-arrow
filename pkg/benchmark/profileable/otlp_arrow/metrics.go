@@ -3,15 +3,16 @@ package otlp_arrow
 import (
 	"io"
 
+	"github.com/apache/arrow/go/v11/arrow/memory"
 	"google.golang.org/protobuf/proto"
 
-	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
-	"github.com/f5/otel-arrow-adapter/pkg/air"
+	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	"github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics"
+	metrics_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
 
 	"go.opentelemetry.io/collector/pdata/pmetric"
 )
@@ -21,11 +22,11 @@ type MetricsProfileable struct {
 	compression        benchmark.CompressionAlgorithm
 	dataset            dataset.MetricsDataset
 	metrics            []pmetric.Metrics
-	rr                 *air.RecordRepository
 	producer           *arrow_record.Producer
-	batchArrowRecords  []*v1.BatchArrowRecords
+	batchArrowRecords  []*colarspb.BatchArrowRecords
 	config             *config.Config
 	multivariateConfig *metrics.MultivariateMetricsConfig
+	pool               *memory.GoAllocator
 }
 
 func NewMetricsProfileable(tags []string, dataset dataset.MetricsDataset, config *config.Config, multivariateConfig *metrics.MultivariateMetricsConfig, compression benchmark.CompressionAlgorithm) *MetricsProfileable {
@@ -33,11 +34,11 @@ func NewMetricsProfileable(tags []string, dataset dataset.MetricsDataset, config
 		tags:               tags,
 		dataset:            dataset,
 		compression:        compression,
-		rr:                 nil,
 		producer:           arrow_record.NewProducer(),
-		batchArrowRecords:  make([]*v1.BatchArrowRecords, 0, 10),
+		batchArrowRecords:  make([]*colarspb.BatchArrowRecords, 0, 10),
 		config:             config,
 		multivariateConfig: multivariateConfig,
+		pool:               memory.NewGoAllocator(),
 	}
 }
 
@@ -54,30 +55,28 @@ func (s *MetricsProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *MetricsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
 }
-func (s *MetricsProfileable) StartProfiling(_ io.Writer) {
-	s.rr = air.NewRecordRepository(s.config)
-}
-func (s *MetricsProfileable) EndProfiling(writer io.Writer) {
-	s.rr.DumpMetadata(writer)
-	s.rr = nil
-}
+func (s *MetricsProfileable) StartProfiling(_ io.Writer)       {}
+func (s *MetricsProfileable) EndProfiling(_ io.Writer)         {}
 func (s *MetricsProfileable) InitBatchSize(_ io.Writer, _ int) {}
 func (s *MetricsProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	s.metrics = s.dataset.Metrics(startAt, size)
 }
 func (s *MetricsProfileable) CreateBatch(_ io.Writer, _, _ int) {
 	// Conversion of OTLP metrics to OTLP Arrow Records
-	s.batchArrowRecords = make([]*v1.BatchArrowRecords, 0, len(s.metrics))
+	s.batchArrowRecords = make([]*colarspb.BatchArrowRecords, 0, len(s.metrics))
 	for _, metricsServiceRequest := range s.metrics {
-		records, err := metrics.OtlpMetricsToArrowRecords(s.rr, metricsServiceRequest, s.multivariateConfig, s.config)
+		mb := metrics_arrow.NewMetricsBuilder(s.pool)
+		if err := mb.Append(metricsServiceRequest); err != nil {
+			panic(err)
+		}
+		record, err := mb.Build()
 		if err != nil {
 			panic(err)
 		}
-		rms := make([]*arrow_record.RecordMessage, len(records))
-		for i, record := range records {
-			rms[i] = arrow_record.NewMetricsMessage(record, v1.DeliveryType_BEST_EFFORT)
+		rms := []*arrow_record.RecordMessage{
+			arrow_record.NewMetricsMessage(record, colarspb.DeliveryType_BEST_EFFORT),
 		}
-		bar, err := s.producer.Produce(rms, v1.DeliveryType_BEST_EFFORT)
+		bar, err := s.producer.Produce(rms, colarspb.DeliveryType_BEST_EFFORT)
 		if err != nil {
 			panic(err)
 		}
@@ -100,9 +99,9 @@ func (s *MetricsProfileable) Serialize(io.Writer) ([][]byte, error) {
 	return buffers, nil
 }
 func (s *MetricsProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
-	s.batchArrowRecords = make([]*v1.BatchArrowRecords, len(buffers))
+	s.batchArrowRecords = make([]*colarspb.BatchArrowRecords, len(buffers))
 	for i, b := range buffers {
-		be := &v1.BatchArrowRecords{}
+		be := &colarspb.BatchArrowRecords{}
 		if err := proto.Unmarshal(b, be); err != nil {
 			panic(err)
 		}

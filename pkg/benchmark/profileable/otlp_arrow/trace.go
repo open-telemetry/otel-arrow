@@ -23,7 +23,6 @@ type TraceProfileable struct {
 	dataset           dataset.TraceDataset
 	traces            []ptrace.Traces
 	producer          *arrow_record.Producer
-	consumer          *arrow_record.Consumer
 	batchArrowRecords []*v1.BatchArrowRecords
 	config            *config.Config
 	pool              *memory.GoAllocator
@@ -35,7 +34,6 @@ func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *co
 		dataset:           dataset,
 		compression:       compression,
 		producer:          arrow_record.NewProducer(),
-		consumer:          arrow_record.NewConsumer(),
 		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
 		config:            config,
 		pool:              memory.NewGoAllocator(),

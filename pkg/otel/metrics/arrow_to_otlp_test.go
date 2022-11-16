@@ -30,7 +30,12 @@ func TestSystemCpuTimeConversion(t *testing.T) {
 	rr := air.NewRecordRepository(cfg)
 	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
 
-	lg := datagen.NewMetricsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
+	dg := datagen.NewDataGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes()).
+		WithConfig(datagen.Config{
+			ProbMetricDescription: 0.5,
+			ProbMetricUnit:        0.5,
+		})
+	lg := datagen.NewMetricsGeneratorWithDataGenerator(dg)
 
 	multivariateConf := MultivariateMetricsConfig{
 		Metrics: make(map[string]string),
@@ -62,7 +67,13 @@ func TestSystemMemoryUsageConversion(t *testing.T) {
 	cfg := config.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(cfg)
 	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
-	lg := datagen.NewMetricsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
+
+	dg := datagen.NewDataGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes()).
+		WithConfig(datagen.Config{
+			ProbMetricDescription: 0.5,
+			ProbMetricUnit:        0.5,
+		})
+	lg := datagen.NewMetricsGeneratorWithDataGenerator(dg)
 
 	multivariateConf := MultivariateMetricsConfig{
 		Metrics: make(map[string]string),
@@ -95,7 +106,12 @@ func TestSystemCpuLoadAverage1mConversion(t *testing.T) {
 	rr := air.NewRecordRepository(cfg)
 	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
 
-	lg := datagen.NewMetricsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
+	dg := datagen.NewDataGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes()).
+		WithConfig(datagen.Config{
+			ProbMetricDescription: 0.5,
+			ProbMetricUnit:        0.5,
+		})
+	lg := datagen.NewMetricsGeneratorWithDataGenerator(dg)
 
 	multivariateConf := MultivariateMetricsConfig{
 		Metrics: make(map[string]string),

@@ -27,7 +27,7 @@ import (
 func TestOtlpMetricsToArrowRecords(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.NewUint8DefaultConfig()
+	cfg := config.NewUint16DefaultConfig()
 	rr := air.NewRecordRepository(cfg)
 	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
 
@@ -50,35 +50,35 @@ func TestOtlpMetricsToArrowRecords(t *testing.T) {
 	for _, record := range multiSchemaRecords {
 		schemaId := arrow.SchemaToId(record.Schema())
 		switch schemaId {
-		case "metrics:{system.cpu.load_average.1m:F64},resource:{attributes:{hostname:Dic<U8,Str>,ip:Dic<U8,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U8,Str>,version:Dic<U8,Str>},start_time_unix_nano:U64,time_unix_nano:U64":
+		case "metrics:{system.cpu.load_average.1m:F64},resource:{attributes:{hostname:Dic<U16,Str>,ip:Dic<U16,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U16,Str>,version:Dic<U16,Str>},start_time_unix_nano:U64,time_unix_nano:U64":
 			if record.NumCols() != 5 {
 				t.Errorf("Expected 6 fields, got %d", record.NumCols())
 			}
 			if record.NumRows() != 10 {
 				t.Errorf("Expected 10 rows, got %d", record.NumRows())
 			}
-		case "attributes:{cpu:I64},metrics:{system.cpu.time:{idle:F64,interrupt:F64,iowait:F64,system:F64,user:F64}},resource:{attributes:{hostname:Dic<U8,Str>,ip:Dic<U8,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U8,Str>,version:Dic<U8,Str>},start_time_unix_nano:U64,time_unix_nano:U64":
+		case "attributes:{cpu:I64},metrics:{system.cpu.time:{idle:F64,interrupt:F64,iowait:F64,system:F64,user:F64}},resource:{attributes:{hostname:Dic<U16,Str>,ip:Dic<U16,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U16,Str>,version:Dic<U16,Str>},start_time_unix_nano:U64,time_unix_nano:U64":
 			if record.NumCols() != 6 {
 				t.Errorf("Expected 5 fields, got %d", record.NumCols())
 			}
 			if record.NumRows() != 10 {
 				t.Errorf("Expected 10 rows, got %d", record.NumRows())
 			}
-		case "metrics:{system.memory.usage:{free:I64,inactive:I64,used:I64}},resource:{attributes:{hostname:Dic<U8,Str>,ip:Dic<U8,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U8,Str>,version:Dic<U8,Str>},start_time_unix_nano:U64,time_unix_nano:U64":
+		case "metrics:{system.memory.usage:{free:I64,inactive:I64,used:I64}},resource:{attributes:{hostname:Dic<U16,Str>,ip:Dic<U16,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U16,Str>,version:Dic<U16,Str>},start_time_unix_nano:U64,time_unix_nano:U64":
 			if record.NumCols() != 5 {
 				t.Errorf("Expected 5 fields, got %d", record.NumCols())
 			}
 			if record.NumRows() != 10 {
 				t.Errorf("Expected 10 rows, got %d", record.NumRows())
 			}
-		case "flags:U32,histogram_fake.histogram:{bucket_counts:[U64],count:U64,explicit_bounds:[F64],max:F64,min:F64,sum:F64},resource:{attributes:{hostname:Dic<U8,Str>,ip:Dic<U8,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U8,Str>,version:Dic<U8,Str>},start_time_unix_nano:U64,time_unix_nano:U64":
+		case "flags:U32,histogram_fake.histogram:{bucket_counts:[U64],count:U64,explicit_bounds:[F64],max:F64,min:F64,sum:F64},resource:{attributes:{hostname:Dic<U16,Str>,ip:Dic<U16,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U16,Str>,version:Dic<U16,Str>},start_time_unix_nano:U64,time_unix_nano:U64":
 			if record.NumCols() != 6 {
 				t.Errorf("Expected 6 fields, got %d", record.NumCols())
 			}
 			if record.NumRows() != 100 {
 				t.Errorf("Expected 100 rows, got %d", record.NumRows())
 			}
-		case "exp_histogram_fake.exp_histogram:{count:U64,max:F64,min:F64,negative:{bucket_counts:[U64],offset:I32},positive:{bucket_counts:[U64],offset:I32},scale:I32,sum:F64,zero_count:U64},flags:U32,resource:{attributes:{hostname:Dic<U8,Str>,ip:Dic<U8,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U8,Str>,version:Dic<U8,Str>},start_time_unix_nano:U64,time_unix_nano:U64":
+		case "exp_histogram_fake.exp_histogram:{count:U64,max:F64,min:F64,negative:{bucket_counts:[U64],offset:I32},positive:{bucket_counts:[U64],offset:I32},scale:I32,sum:F64,zero_count:U64},flags:U32,resource:{attributes:{hostname:Dic<U16,Str>,ip:Dic<U16,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U16,Str>,version:Dic<U16,Str>},start_time_unix_nano:U64,time_unix_nano:U64":
 			if record.NumCols() != 6 {
 				t.Errorf("Expected 6 fields, got %d", record.NumCols())
 			}

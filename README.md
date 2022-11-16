@@ -28,6 +28,8 @@ cd ./proto
 Once the `*.pb.go` files are generated, you need to replace the content of the `api/collector/arrow/v1` directory by the
 generated files present in the `./proto/api/collector/arrow/v1` directory.
 
+## Testing and validation
+
 ## Packages
 
 | Package       | Description                                                                                                                  |
