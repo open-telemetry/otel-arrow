@@ -54,6 +54,8 @@ type streamProducer struct {
 }
 
 // NewProducer creates a new BatchArrowRecords producer.
+//
+// The method close MUST be called when the producer is not used anymore to release the memory and avoid memory leaks.
 func NewProducer() *Producer {
 	return &Producer{
 		pool:            memory.NewGoAllocator(),
@@ -63,6 +65,8 @@ func NewProducer() *Producer {
 }
 
 // NewProducerWithPool creates a new BatchArrowRecords producer with a custom memory pool.
+//
+// The method close MUST be called when the producer is not used anymore to release the memory and avoid memory leaks.
 func NewProducerWithPool(pool memory.Allocator) *Producer {
 	return &Producer{
 		pool:            pool,
@@ -136,39 +140,55 @@ func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.Batc
 	return bar, nil
 }
 
+// Close closes all stream producers.
+func (p *Producer) Close() error {
+	for _, sp := range p.streamProducers {
+		if err := sp.ipcWriter.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Produce takes a slice of RecordMessage and returns the corresponding BatchArrowRecords protobuf message.
 func (p *Producer) Produce(rms []*RecordMessage, deliveryType colarspb.DeliveryType) (*colarspb.BatchArrowRecords, error) {
 	oapl := make([]*colarspb.OtlpArrowPayload, len(rms))
 
 	for i, rm := range rms {
-		// Retrieves (or creates) the stream Producer for the sub-stream id defined in the RecordMessage.
-		sp := p.streamProducers[rm.subStreamId]
-		if sp == nil {
-			var buf bytes.Buffer
-			sp = &streamProducer{
-				output:      buf,
-				subStreamId: fmt.Sprintf("%d", len(p.streamProducers)),
+		err := func() error {
+			// Retrieves (or creates) the stream Producer for the sub-stream id defined in the RecordMessage.
+			sp := p.streamProducers[rm.subStreamId]
+			if sp == nil {
+				var buf bytes.Buffer
+				sp = &streamProducer{
+					output:      buf,
+					subStreamId: fmt.Sprintf("%d", len(p.streamProducers)),
+				}
+				p.streamProducers[rm.subStreamId] = sp
 			}
-			p.streamProducers[rm.subStreamId] = sp
-		}
 
-		if sp.ipcWriter == nil {
-			sp.ipcWriter = ipc.NewWriter(&sp.output, ipc.WithSchema(rm.record.Schema()))
-		}
-		err := sp.ipcWriter.Write(rm.record)
-		rm.record.Release()
+			if sp.ipcWriter == nil {
+				sp.ipcWriter = ipc.NewWriter(&sp.output, ipc.WithSchema(rm.record.Schema()))
+			}
+			defer rm.record.Release()
+			err := sp.ipcWriter.Write(rm.record)
+			if err != nil {
+				return err
+			}
+			buf := sp.output.Bytes()
+
+			// Reset the buffer
+			sp.output.Reset()
+
+			oapl[i] = &colarspb.OtlpArrowPayload{
+				SubStreamId: sp.subStreamId,
+				Type:        rm.payloadType,
+				Record:      buf,
+			}
+			return nil
+		}()
 		if err != nil {
 			return nil, err
-		}
-		buf := sp.output.Bytes()
-
-		// Reset the buffer
-		sp.output.Reset()
-
-		oapl[i] = &colarspb.OtlpArrowPayload{
-			SubStreamId: sp.subStreamId,
-			Type:        rm.payloadType,
-			Record:      buf,
 		}
 	}
 
