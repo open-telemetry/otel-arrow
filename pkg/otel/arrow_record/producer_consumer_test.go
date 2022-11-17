@@ -32,25 +32,32 @@ func FuzzConsumerTraces(f *testing.F) {
 	ent := datagen.NewTestEntropy(12345)
 
 	for i := 0; i < numSeeds; i++ {
-		dg := datagen.NewTracesGenerator(
-			ent,
-			ent.NewStandardResourceAttributes(),
-			ent.NewStandardInstrumentationScopes(),
-		)
-		traces1 := dg.Generate(i+1, time.Minute)
-		traces2 := dg.Generate(i+1, time.Minute)
+		func() {
+			dg := datagen.NewTracesGenerator(
+				ent,
+				ent.NewStandardResourceAttributes(),
+				ent.NewStandardInstrumentationScopes(),
+			)
+			traces1 := dg.Generate(i+1, time.Minute)
+			traces2 := dg.Generate(i+1, time.Minute)
 
-		producer := NewProducer()
+			producer := NewProducer()
+			defer func() {
+				if err := producer.Close(); err != nil {
+					f.Error("unexpected fail", err)
+				}
+			}()
 
-		batch1, err1 := producer.BatchArrowRecordsFromTraces(traces1)
-		require.NoError(f, err1)
-		batch2, err2 := producer.BatchArrowRecordsFromTraces(traces2)
-		require.NoError(f, err2)
+			batch1, err1 := producer.BatchArrowRecordsFromTraces(traces1)
+			require.NoError(f, err1)
+			batch2, err2 := producer.BatchArrowRecordsFromTraces(traces2)
+			require.NoError(f, err2)
 
-		b1b, err1 := proto.Marshal(batch1)
-		b2b, err2 := proto.Marshal(batch2)
+			b1b, err1 := proto.Marshal(batch1)
+			b2b, err2 := proto.Marshal(batch2)
 
-		f.Add(b1b, b2b)
+			f.Add(b1b, b2b)
+		}()
 	}
 
 	f.Fuzz(func(t *testing.T, b1, b2 []byte) {
@@ -114,6 +121,11 @@ func FuzzProducerTraces2(f *testing.F) {
 		}
 
 		producer := NewProducer()
+		defer func() {
+			if err := producer.Close(); err != nil {
+				t.Error("unexpected fail", err)
+			}
+		}()
 
 		if _, err := producer.BatchArrowRecordsFromTraces(e1.Traces()); err != nil {
 			return
@@ -156,6 +168,11 @@ func FuzzProducerTraces1(f *testing.F) {
 		}
 
 		producer := NewProducer()
+		defer func() {
+			if err := producer.Close(); err != nil {
+				t.Error("unexpected fail", err)
+			}
+		}()
 
 		if _, err := producer.BatchArrowRecordsFromTraces(traces1); err != nil {
 			t.Error("unexpected fail", err)
@@ -176,10 +193,16 @@ func TestProducerConsumerTraces(t *testing.T) {
 	)
 	traces := dg.Generate(10, time.Minute)
 
+	// Check memory leak issue.
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
-	//defer pool.AssertSize(t, 0)
+	defer pool.AssertSize(t, 0)
 
 	producer := NewProducerWithPool(pool)
+	defer func() {
+		if err := producer.Close(); err != nil {
+			t.Error("unexpected fail", err)
+		}
+	}()
 
 	batch, err := producer.BatchArrowRecordsFromTraces(traces)
 	require.NoError(t, err)
@@ -206,7 +229,16 @@ func TestProducerConsumerLogs(t *testing.T) {
 	)
 	logs := dg.Generate(10, time.Minute)
 
-	producer := NewProducer()
+	// Check memory leak issue.
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	defer pool.AssertSize(t, 0)
+
+	producer := NewProducerWithPool(pool)
+	defer func() {
+		if err := producer.Close(); err != nil {
+			t.Error("unexpected fail", err)
+		}
+	}()
 
 	batch, err := producer.BatchArrowRecordsFromLogs(logs)
 	require.NoError(t, err)
@@ -233,7 +265,16 @@ func TestProducerConsumerMetrics(t *testing.T) {
 	)
 	metrics := dg.Generate(10, time.Minute)
 
-	producer := NewProducer()
+	// Check memory leak issue.
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	defer pool.AssertSize(t, 0)
+
+	producer := NewProducerWithPool(pool)
+	defer func() {
+		if err := producer.Close(); err != nil {
+			t.Error("unexpected fail", err)
+		}
+	}()
 
 	batch, err := producer.BatchArrowRecordsFromMetrics(metrics)
 	require.NoError(t, err)
@@ -253,7 +294,17 @@ func TestProducerConsumerMetrics(t *testing.T) {
 func TestProducerConsumer(t *testing.T) {
 	t.Parallel()
 
-	producer := NewProducer()
+	// Check memory leak issue.
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	defer pool.AssertSize(t, 0)
+
+	producer := NewProducerWithPool(pool)
+	defer func() {
+		if err := producer.Close(); err != nil {
+			t.Error("unexpected fail", err)
+		}
+	}()
+
 	consumer := NewConsumer()
 	config := cfg.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(config)
