@@ -153,7 +153,12 @@ func (p *Producer) Produce(rms []*RecordMessage, deliveryType colarspb.DeliveryT
 		}
 
 		if sp.ipcWriter == nil {
-			sp.ipcWriter = ipc.NewWriter(&sp.output, ipc.WithSchema(rm.record.Schema()))
+			sp.ipcWriter = ipc.NewWriter(
+				&sp.output,
+				ipc.WithAllocator(p.pool), // use allocator of the `Producer`
+				ipc.WithSchema(rm.record.Schema()),
+				ipc.WithDictionaryDeltas(true), // enable dictionary deltas
+			)
 		}
 		err := sp.ipcWriter.Write(rm.record)
 		rm.record.Release()
