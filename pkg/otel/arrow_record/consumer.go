@@ -39,6 +39,7 @@ type ConsumerAPI interface {
 	LogsFrom(*colarspb.BatchArrowRecords) ([]plog.Logs, error)
 	TracesFrom(*colarspb.BatchArrowRecords) ([]ptrace.Traces, error)
 	MetricsFrom(*colarspb.BatchArrowRecords) ([]pmetric.Metrics, error)
+	Close() error
 }
 
 var _ ConsumerAPI = &Consumer{}
@@ -176,4 +177,14 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*RecordMessage, e
 	}
 
 	return ibes, nil
+}
+
+// Close closes the consumer and all its sub-stream ipc readers.
+func (c *Consumer) Close() error {
+	for _, sc := range c.streamConsumers {
+		if sc.ipcReader != nil {
+			sc.ipcReader.Release()
+		}
+	}
+	return nil
 }

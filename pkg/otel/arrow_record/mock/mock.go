@@ -82,6 +82,20 @@ func (mr *MockProducerAPIMockRecorder) BatchArrowRecordsFromTraces(arg0 interfac
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BatchArrowRecordsFromTraces", reflect.TypeOf((*MockProducerAPI)(nil).BatchArrowRecordsFromTraces), arg0)
 }
 
+// Close mocks base method.
+func (m *MockProducerAPI) Close() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Close")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Close indicates an expected call of Close.
+func (mr *MockProducerAPIMockRecorder) Close() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Close", reflect.TypeOf((*MockProducerAPI)(nil).Close))
+}
+
 // MockConsumerAPI is a mock of ConsumerAPI interface.
 type MockConsumerAPI struct {
 	ctrl     *gomock.Controller
@@ -103,6 +117,20 @@ func NewMockConsumerAPI(ctrl *gomock.Controller) *MockConsumerAPI {
 // EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockConsumerAPI) EXPECT() *MockConsumerAPIMockRecorder {
 	return m.recorder
+}
+
+// Close mocks base method.
+func (m *MockConsumerAPI) Close() error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Close")
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Close indicates an expected call of Close.
+func (mr *MockConsumerAPIMockRecorder) Close() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Close", reflect.TypeOf((*MockConsumerAPI)(nil).Close))
 }
 
 // LogsFrom mocks base method.
