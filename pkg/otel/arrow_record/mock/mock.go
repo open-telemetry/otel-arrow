@@ -10,6 +10,7 @@ import (
 	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	gomock "github.com/golang/mock/gomock"
 	plog "go.opentelemetry.io/collector/pdata/plog"
+	pmetric "go.opentelemetry.io/collector/pdata/pmetric"
 	ptrace "go.opentelemetry.io/collector/pdata/ptrace"
 )
 
@@ -49,6 +50,21 @@ func (m *MockProducerAPI) BatchArrowRecordsFromLogs(arg0 plog.Logs) (*v1.BatchAr
 func (mr *MockProducerAPIMockRecorder) BatchArrowRecordsFromLogs(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BatchArrowRecordsFromLogs", reflect.TypeOf((*MockProducerAPI)(nil).BatchArrowRecordsFromLogs), arg0)
+}
+
+// BatchArrowRecordsFromMetrics mocks base method.
+func (m *MockProducerAPI) BatchArrowRecordsFromMetrics(arg0 pmetric.Metrics) (*v1.BatchArrowRecords, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "BatchArrowRecordsFromMetrics", arg0)
+	ret0, _ := ret[0].(*v1.BatchArrowRecords)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// BatchArrowRecordsFromMetrics indicates an expected call of BatchArrowRecordsFromMetrics.
+func (mr *MockProducerAPIMockRecorder) BatchArrowRecordsFromMetrics(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "BatchArrowRecordsFromMetrics", reflect.TypeOf((*MockProducerAPI)(nil).BatchArrowRecordsFromMetrics), arg0)
 }
 
 // BatchArrowRecordsFromTraces mocks base method.
@@ -102,6 +118,21 @@ func (m *MockConsumerAPI) LogsFrom(arg0 *v1.BatchArrowRecords) ([]plog.Logs, err
 func (mr *MockConsumerAPIMockRecorder) LogsFrom(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LogsFrom", reflect.TypeOf((*MockConsumerAPI)(nil).LogsFrom), arg0)
+}
+
+// MetricsFrom mocks base method.
+func (m *MockConsumerAPI) MetricsFrom(arg0 *v1.BatchArrowRecords) ([]pmetric.Metrics, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MetricsFrom", arg0)
+	ret0, _ := ret[0].([]pmetric.Metrics)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// MetricsFrom indicates an expected call of MetricsFrom.
+func (mr *MockConsumerAPIMockRecorder) MetricsFrom(arg0 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MetricsFrom", reflect.TypeOf((*MockConsumerAPI)(nil).MetricsFrom), arg0)
 }
 
 // TracesFrom mocks base method.
