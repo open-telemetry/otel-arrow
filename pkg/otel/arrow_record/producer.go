@@ -36,6 +36,7 @@ type ProducerAPI interface {
 	BatchArrowRecordsFromTraces(ptrace.Traces) (*colarspb.BatchArrowRecords, error)
 	BatchArrowRecordsFromLogs(plog.Logs) (*colarspb.BatchArrowRecords, error)
 	BatchArrowRecordsFromMetrics(pmetric.Metrics) (*colarspb.BatchArrowRecords, error)
+	Close() error
 }
 
 var _ ProducerAPI = &Producer{}
