@@ -45,10 +45,10 @@ type MetricSetBuilder struct {
 
 	builder *array.StructBuilder
 
-	nb  *array.BinaryDictionaryBuilder // metric name builder
-	db  *array.BinaryDictionaryBuilder // metric description builder
-	ub  *array.BinaryDictionaryBuilder // metric unit builder
-	dtb *UnivariateMetricBuilder       // univariate metric builder
+	nb  *acommon.AdaptiveDictionaryBuilder // metric name builder
+	db  *acommon.AdaptiveDictionaryBuilder // metric description builder
+	ub  *acommon.AdaptiveDictionaryBuilder // metric unit builder
+	dtb *UnivariateMetricBuilder           // univariate metric builder
 }
 
 // NewMetricSetBuilder creates a new SpansBuilder with a given allocator.
@@ -64,9 +64,9 @@ func MetricSetBuilderFrom(sb *array.StructBuilder) *MetricSetBuilder {
 	return &MetricSetBuilder{
 		released: false,
 		builder:  sb,
-		nb:       sb.FieldBuilder(0).(*array.BinaryDictionaryBuilder),
-		db:       sb.FieldBuilder(1).(*array.BinaryDictionaryBuilder),
-		ub:       sb.FieldBuilder(2).(*array.BinaryDictionaryBuilder),
+		nb:       acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(0)),
+		db:       acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(1)),
+		ub:       acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(2)),
 		dtb:      UnivariateMetricBuilderFrom(sb.FieldBuilder(3).(*array.SparseUnionBuilder)),
 	}
 }

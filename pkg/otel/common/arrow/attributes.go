@@ -22,9 +22,9 @@ var (
 type AttributesBuilder struct {
 	released bool
 
-	builder *array.MapBuilder              // map builder
-	kb      *array.BinaryDictionaryBuilder // key builder
-	ib      *AnyValueBuilder               // item any value builder
+	builder *array.MapBuilder          // map builder
+	kb      *AdaptiveDictionaryBuilder // key builder
+	ib      *AnyValueBuilder           // item any value builder
 }
 
 // NewAttributesBuilder creates a new AttributesBuilder with a given allocator.
@@ -43,7 +43,7 @@ func AttributesBuilderFrom(mb *array.MapBuilder) *AttributesBuilder {
 	return &AttributesBuilder{
 		released: false,
 		builder:  mb,
-		kb:       mb.KeyBuilder().(*array.BinaryDictionaryBuilder),
+		kb:       AdaptiveDictionaryBuilderFrom(mb.KeyBuilder()),
 		ib:       ib,
 	}
 }

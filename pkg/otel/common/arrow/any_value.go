@@ -46,11 +46,11 @@ type AnyValueBuilder struct {
 
 	builder *array.SparseUnionBuilder // any value builder
 
-	strBuilder    *array.BinaryDictionaryBuilder // string builder
-	i64Builder    *array.Int64Builder            // int64 builder
-	f64Builder    *array.Float64Builder          // float64 builder
-	boolBuilder   *array.BooleanBuilder          // bool builder
-	binaryBuilder *array.BinaryDictionaryBuilder // binary builder
+	strBuilder    *AdaptiveDictionaryBuilder // string builder
+	i64Builder    *array.Int64Builder        // int64 builder
+	f64Builder    *array.Float64Builder      // float64 builder
+	boolBuilder   *array.BooleanBuilder      // bool builder
+	binaryBuilder *AdaptiveDictionaryBuilder // binary builder
 }
 
 // AnyValueBuilderFrom creates a new AnyValueBuilder from an existing SparseUnionBuilder.
@@ -58,11 +58,11 @@ func AnyValueBuilderFrom(av *array.SparseUnionBuilder) *AnyValueBuilder {
 	return &AnyValueBuilder{
 		released:      false,
 		builder:       av,
-		strBuilder:    av.Child(0).(*array.BinaryDictionaryBuilder),
+		strBuilder:    AdaptiveDictionaryBuilderFrom(av.Child(0)),
 		i64Builder:    av.Child(1).(*array.Int64Builder),
 		f64Builder:    av.Child(2).(*array.Float64Builder),
 		boolBuilder:   av.Child(3).(*array.BooleanBuilder),
-		binaryBuilder: av.Child(4).(*array.BinaryDictionaryBuilder),
+		binaryBuilder: AdaptiveDictionaryBuilderFrom(av.Child(4)),
 	}
 }
 
@@ -188,7 +188,7 @@ func (b *AnyValueBuilder) appendBinary(v []byte) error {
 	if v == nil {
 		b.binaryBuilder.AppendNull()
 	} else {
-		if err := b.binaryBuilder.Append(v); err != nil {
+		if err := b.binaryBuilder.AppendBinary(v); err != nil {
 			return err
 		}
 	}

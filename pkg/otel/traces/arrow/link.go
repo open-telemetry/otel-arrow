@@ -27,11 +27,11 @@ var (
 type LinkBuilder struct {
 	released bool
 	builder  *array.StructBuilder
-	tib      *array.FixedSizeBinaryDictionaryBuilder // trace id builder
-	sib      *array.FixedSizeBinaryDictionaryBuilder // span id builder
-	tsb      *array.BinaryDictionaryBuilder          // trace state builder
-	ab       *acommon.AttributesBuilder              // attributes builder
-	dacb     *array.Uint32Builder                    // dropped attributes count builder
+	tib      *acommon.AdaptiveDictionaryBuilder // trace id builder
+	sib      *acommon.AdaptiveDictionaryBuilder // span id builder
+	tsb      *acommon.AdaptiveDictionaryBuilder // trace state builder
+	ab       *acommon.AttributesBuilder         // attributes builder
+	dacb     *array.Uint32Builder               // dropped attributes count builder
 }
 
 func NewLinkBuilder(pool memory.Allocator) *LinkBuilder {
@@ -42,9 +42,9 @@ func LinkBuilderFrom(lb *array.StructBuilder) *LinkBuilder {
 	return &LinkBuilder{
 		released: false,
 		builder:  lb,
-		tib:      lb.FieldBuilder(0).(*array.FixedSizeBinaryDictionaryBuilder),
-		sib:      lb.FieldBuilder(1).(*array.FixedSizeBinaryDictionaryBuilder),
-		tsb:      lb.FieldBuilder(2).(*array.BinaryDictionaryBuilder),
+		tib:      acommon.AdaptiveDictionaryBuilderFrom(lb.FieldBuilder(0)),
+		sib:      acommon.AdaptiveDictionaryBuilderFrom(lb.FieldBuilder(1)),
+		tsb:      acommon.AdaptiveDictionaryBuilderFrom(lb.FieldBuilder(2)),
 		ab:       acommon.AttributesBuilderFrom(lb.FieldBuilder(3).(*array.MapBuilder)),
 		dacb:     lb.FieldBuilder(4).(*array.Uint32Builder),
 	}
@@ -58,11 +58,11 @@ func (b *LinkBuilder) Append(link ptrace.SpanLink) error {
 
 	b.builder.Append(true)
 	tid := link.TraceID()
-	if err := b.tib.Append(tid[:]); err != nil {
+	if err := b.tib.AppendBinary(tid[:]); err != nil {
 		return err
 	}
 	sid := link.SpanID()
-	if err := b.sib.Append(sid[:]); err != nil {
+	if err := b.sib.AppendBinary(sid[:]); err != nil {
 		return err
 	}
 	traceState := link.TraceState().AsRaw()

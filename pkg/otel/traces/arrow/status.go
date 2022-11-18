@@ -23,8 +23,8 @@ var (
 type StatusBuilder struct {
 	released bool
 	builder  *array.StructBuilder
-	scb      *array.Int32Builder            // status code builder
-	smb      *array.BinaryDictionaryBuilder // status message builder
+	scb      *array.Int32Builder                // status code builder
+	smb      *acommon.AdaptiveDictionaryBuilder // status message builder
 }
 
 func NewStatusBuilder(pool memory.Allocator) *StatusBuilder {
@@ -36,7 +36,7 @@ func StatusBuilderFrom(sb *array.StructBuilder) *StatusBuilder {
 		released: false,
 		builder:  sb,
 		scb:      sb.FieldBuilder(0).(*array.Int32Builder),
-		smb:      sb.FieldBuilder(1).(*array.BinaryDictionaryBuilder),
+		smb:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(1)),
 	}
 }
 

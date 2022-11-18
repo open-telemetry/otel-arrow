@@ -26,10 +26,10 @@ type ResourceSpansBuilder struct {
 
 	builder *array.StructBuilder // builder for the resource spans struct
 
-	rb   *acommon.ResourceBuilder       // resource builder
-	schb *array.BinaryDictionaryBuilder // schema url builder
-	spsb *array.ListBuilder             // scope span list builder
-	spb  *ScopeSpansBuilder             // scope span builder
+	rb   *acommon.ResourceBuilder           // resource builder
+	schb *acommon.AdaptiveDictionaryBuilder // schema url builder
+	spsb *array.ListBuilder                 // scope span list builder
+	spb  *ScopeSpansBuilder                 // scope span builder
 }
 
 // NewResourceSpansBuilder creates a new ResourceSpansBuilder with a given allocator.
@@ -47,7 +47,7 @@ func ResourceSpansBuilderFrom(builder *array.StructBuilder) *ResourceSpansBuilde
 		released: false,
 		builder:  builder,
 		rb:       acommon.ResourceBuilderFrom(builder.FieldBuilder(0).(*array.StructBuilder)),
-		schb:     builder.FieldBuilder(1).(*array.BinaryDictionaryBuilder),
+		schb:     acommon.AdaptiveDictionaryBuilderFrom(builder.FieldBuilder(1)),
 		spsb:     builder.FieldBuilder(2).(*array.ListBuilder),
 		spb:      ScopeSpansBuilderFrom(builder.FieldBuilder(2).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
 	}

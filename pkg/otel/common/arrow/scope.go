@@ -24,10 +24,10 @@ var (
 type ScopeBuilder struct {
 	released bool
 	builder  *array.StructBuilder
-	nb       *array.BinaryDictionaryBuilder // Name builder
-	vb       *array.BinaryDictionaryBuilder // Version builder
-	ab       *AttributesBuilder             // Attributes builder
-	dacb     *array.Uint32Builder           // Dropped attributes count builder
+	nb       *AdaptiveDictionaryBuilder // Name builder
+	vb       *AdaptiveDictionaryBuilder // Version builder
+	ab       *AttributesBuilder         // Attributes builder
+	dacb     *array.Uint32Builder       // Dropped attributes count builder
 }
 
 // NewScopeBuilder creates a new instrumentation scope array builder with a given allocator.
@@ -40,8 +40,8 @@ func ScopeBuilderFrom(sb *array.StructBuilder) *ScopeBuilder {
 	return &ScopeBuilder{
 		released: false,
 		builder:  sb,
-		nb:       sb.FieldBuilder(0).(*array.BinaryDictionaryBuilder),
-		vb:       sb.FieldBuilder(1).(*array.BinaryDictionaryBuilder),
+		nb:       AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(0)),
+		vb:       AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(1)),
 		ab:       AttributesBuilderFrom(sb.FieldBuilder(2).(*array.MapBuilder)),
 		dacb:     sb.FieldBuilder(3).(*array.Uint32Builder),
 	}

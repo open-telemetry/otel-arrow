@@ -26,10 +26,10 @@ type ResourceLogsBuilder struct {
 
 	builder *array.StructBuilder // builder for the resource logs struct
 
-	rb   *acommon.ResourceBuilder       // resource builder
-	schb *array.BinaryDictionaryBuilder // schema url builder
-	slsb *array.ListBuilder             // scope logs list builder
-	slb  *ScopeLogsBuilder              // scope logs builder
+	rb   *acommon.ResourceBuilder           // resource builder
+	schb *acommon.AdaptiveDictionaryBuilder // schema url builder
+	slsb *array.ListBuilder                 // scope logs list builder
+	slb  *ScopeLogsBuilder                  // scope logs builder
 }
 
 // NewResourceLogsBuilder creates a new ResourceLogsBuilder with a given allocator.
@@ -47,7 +47,7 @@ func ResourceLogsBuilderFrom(builder *array.StructBuilder) *ResourceLogsBuilder 
 		released: false,
 		builder:  builder,
 		rb:       acommon.ResourceBuilderFrom(builder.FieldBuilder(0).(*array.StructBuilder)),
-		schb:     builder.FieldBuilder(1).(*array.BinaryDictionaryBuilder),
+		schb:     acommon.AdaptiveDictionaryBuilderFrom(builder.FieldBuilder(1)),
 		slsb:     builder.FieldBuilder(2).(*array.ListBuilder),
 		slb:      ScopeLogsBuilderFrom(builder.FieldBuilder(2).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
 	}

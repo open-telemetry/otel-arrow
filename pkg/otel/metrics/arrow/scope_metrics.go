@@ -27,10 +27,10 @@ type ScopeMetricsBuilder struct {
 
 	builder *array.StructBuilder
 
-	scb  *acommon.ScopeBuilder          // scope builder
-	schb *array.BinaryDictionaryBuilder // schema url builder
-	smb  *array.ListBuilder             // metrics list builder
-	mb   *MetricSetBuilder              // metrics builder
+	scb  *acommon.ScopeBuilder              // scope builder
+	schb *acommon.AdaptiveDictionaryBuilder // schema url builder
+	smb  *array.ListBuilder                 // metrics list builder
+	mb   *MetricSetBuilder                  // metrics builder
 }
 
 // NewScopeMetricsBuilder creates a new ResourceMetricsBuilder with a given allocator.
@@ -47,7 +47,7 @@ func ScopeMetricsBuilderFrom(builder *array.StructBuilder) *ScopeMetricsBuilder 
 		released: false,
 		builder:  builder,
 		scb:      acommon.ScopeBuilderFrom(builder.FieldBuilder(0).(*array.StructBuilder)),
-		schb:     builder.FieldBuilder(1).(*array.BinaryDictionaryBuilder),
+		schb:     acommon.AdaptiveDictionaryBuilderFrom(builder.FieldBuilder(1)),
 		smb:      builder.FieldBuilder(2).(*array.ListBuilder),
 		mb:       MetricSetBuilderFrom(builder.FieldBuilder(2).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
 	}

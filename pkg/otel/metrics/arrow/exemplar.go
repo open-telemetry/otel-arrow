@@ -30,11 +30,11 @@ type ExemplarBuilder struct {
 
 	builder *array.StructBuilder // exemplar value builder
 
-	ab   *acommon.AttributesBuilder              // attributes builder
-	tunb *array.Uint64Builder                    // time unix nano builder
-	mvb  *MetricValueBuilder                     // metric value builder
-	sib  *array.FixedSizeBinaryDictionaryBuilder // span id builder
-	tib  *array.FixedSizeBinaryDictionaryBuilder // trace id builder
+	ab   *acommon.AttributesBuilder         // attributes builder
+	tunb *array.Uint64Builder               // time unix nano builder
+	mvb  *MetricValueBuilder                // metric value builder
+	sib  *acommon.AdaptiveDictionaryBuilder // span id builder
+	tib  *acommon.AdaptiveDictionaryBuilder // trace id builder
 }
 
 // NewExemplarBuilder creates a new ExemplarBuilder with a given memory allocator.
@@ -51,8 +51,8 @@ func ExemplarBuilderFrom(ex *array.StructBuilder) *ExemplarBuilder {
 		ab:   acommon.AttributesBuilderFrom(ex.FieldBuilder(0).(*array.MapBuilder)),
 		tunb: ex.FieldBuilder(1).(*array.Uint64Builder),
 		mvb:  MetricValueBuilderFrom(ex.FieldBuilder(2).(*array.DenseUnionBuilder)),
-		sib:  ex.FieldBuilder(3).(*array.FixedSizeBinaryDictionaryBuilder),
-		tib:  ex.FieldBuilder(4).(*array.FixedSizeBinaryDictionaryBuilder),
+		sib:  acommon.AdaptiveDictionaryBuilderFrom(ex.FieldBuilder(3)),
+		tib:  acommon.AdaptiveDictionaryBuilderFrom(ex.FieldBuilder(4)),
 	}
 }
 
@@ -84,11 +84,11 @@ func (b *ExemplarBuilder) Append(ex pmetric.Exemplar) error {
 		return err
 	}
 	sid := ex.SpanID()
-	if err := b.sib.Append(sid[:]); err != nil {
+	if err := b.sib.AppendBinary(sid[:]); err != nil {
 		return err
 	}
 	tid := ex.TraceID()
-	if err := b.tib.Append(tid[:]); err != nil {
+	if err := b.tib.AppendBinary(tid[:]); err != nil {
 		return err
 	}
 

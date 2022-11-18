@@ -25,10 +25,10 @@ var (
 type EventBuilder struct {
 	released bool
 	builder  *array.StructBuilder
-	tunb     *array.Uint64Builder           // time_unix_nano builder
-	nb       *array.BinaryDictionaryBuilder // name builder
-	ab       *acommon.AttributesBuilder     // attributes builder
-	dacb     *array.Uint32Builder           // dropped_attributes_count builder
+	tunb     *array.Uint64Builder               // time_unix_nano builder
+	nb       *acommon.AdaptiveDictionaryBuilder // name builder
+	ab       *acommon.AttributesBuilder         // attributes builder
+	dacb     *array.Uint32Builder               // dropped_attributes_count builder
 }
 
 func NewEventBuilder(pool memory.Allocator) *EventBuilder {
@@ -40,7 +40,7 @@ func EventBuilderFrom(eb *array.StructBuilder) *EventBuilder {
 		released: false,
 		builder:  eb,
 		tunb:     eb.FieldBuilder(0).(*array.Uint64Builder),
-		nb:       eb.FieldBuilder(1).(*array.BinaryDictionaryBuilder),
+		nb:       acommon.AdaptiveDictionaryBuilderFrom(eb.FieldBuilder(1)),
 		ab:       acommon.AttributesBuilderFrom(eb.FieldBuilder(2).(*array.MapBuilder)),
 		dacb:     eb.FieldBuilder(3).(*array.Uint32Builder),
 	}

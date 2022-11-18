@@ -20,6 +20,7 @@ import (
 // TestDictionaryOverflow tests the manage of dictionary overflow both side producer and consumer.
 // Dictionary keys are configured as uint16 in the schema, so the maximum number of values is 65536.
 func TestDictionaryOverflow(t *testing.T) {
+	t.Skip("too long")
 	producer := NewProducer()
 	consumer := NewConsumer()
 
