@@ -168,21 +168,20 @@ func (p *Producer) Produce(rms []*RecordMessage, deliveryType colarspb.DeliveryT
 				p.streamProducers[rm.subStreamId] = sp
 			}
 
-		if sp.ipcWriter == nil {
-			sp.ipcWriter = ipc.NewWriter(
-				&sp.output,
-				ipc.WithAllocator(p.pool), // use allocator of the `Producer`
-				ipc.WithSchema(rm.record.Schema()),
-				ipc.WithDictionaryDeltas(true), // enable dictionary deltas
-			)
-		}
-		err := sp.ipcWriter.Write(rm.record)
-		rm.record.Release()
-		if err != nil {
-			return nil, err
-		}
-		buf := sp.output.Bytes()
-
+			if sp.ipcWriter == nil {
+				sp.ipcWriter = ipc.NewWriter(
+					&sp.output,
+					ipc.WithAllocator(p.pool), // use allocator of the `Producer`
+					ipc.WithSchema(rm.record.Schema()),
+					ipc.WithDictionaryDeltas(true), // enable dictionary deltas
+				)
+			}
+			err := sp.ipcWriter.Write(rm.record)
+			rm.record.Release()
+			if err != nil {
+				return err
+			}
+			buf := sp.output.Bytes()
 
 			// Reset the buffer
 			sp.output.Reset()

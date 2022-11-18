@@ -139,33 +139,44 @@ func TestDictionaryDeltas2(t *testing.T) {
 	bufReader := bytes.NewReader([]byte{})
 	var ipcReader *ipc.Reader
 
-	for i := 0; i < 300; i++ {
-		bldr := array.NewBuilder(pool, schema.Field(0).Type).(*array.BinaryDictionaryBuilder)
-		defer bldr.Release()
-		for j := 0; j < i+1; j++ {
-			if j == 257 {
-				println("stop")
-			}
-			bldr.AppendString(fmt.Sprintf(`value_%d"`, j))
-
+	recbldr := array.NewRecordBuilder(pool, schema)
+	bldr := recbldr.Field(0).(*array.BinaryDictionaryBuilder)
+	defer bldr.Release()
+	for j := 0; j < 200; j++ {
+		if err := bldr.AppendString(fmt.Sprintf(`value_%d"`, j)); err != nil {
+			t.Fatal(err)
 		}
-
-		arr := bldr.NewArray()
-		defer arr.Release()
-
-		// Create a first record with field = "value_0"
-		record := array.NewRecord(schema, []arrow.Array{arr}, 1)
-		defer record.Release()
-
-		expectedJson, err := record.MarshalJSON()
-		require.NoError(t, err)
-		// Serialize and deserialize the record via an IPC stream
-		json, reader, err := encodeDecodeIpcStream(t, record, &bufWriter, ipcWriter, bufReader, ipcReader)
-		ipcReader = reader
-		require.NoError(t, err)
-		// Compare the expected JSON with the actual JSON
-		require.JSONEq(t, string(expectedJson), string(json))
 	}
+	for j := 0; j < 500; j++ {
+		if err := bldr.AppendString(fmt.Sprintf(`value_%d"`, j)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Create a first record with field = "value_0"
+	record := recbldr.NewRecord()
+	defer record.Release()
+
+	arr := record.Column(0).(*array.Dictionary)
+	println(arr.Len())
+	println(arr.Dictionary().Len())
+	println(arr.Offset())
+	println(arr.Data().Len())
+	println(arr.Indices().Len())
+
+	json, err := record.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	println(string(json))
+
+	expectedJson, err := record.MarshalJSON()
+	require.NoError(t, err)
+	// Serialize and deserialize the record via an IPC stream
+	json, reader, err := encodeDecodeIpcStream(t, record, &bufWriter, ipcWriter, bufReader, ipcReader)
+	ipcReader = reader
+	require.NoError(t, err)
+	// Compare the expected JSON with the actual JSON
+	require.JSONEq(t, string(expectedJson), string(json))
 	ipcReader.Release()
 }
 
