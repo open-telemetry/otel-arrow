@@ -32,11 +32,11 @@ type SchemaUpdate struct {
 
 // NewAdaptiveSchema creates a new AdaptiveSchema from an arrow.Schema.
 func NewAdaptiveSchema(schema *arrow.Schema) *AdaptiveSchema {
-	dictionaries := make([]dictionaryField, 0, 10)
+	var dictionaries []dictionaryField
 	fields := schema.Fields()
 	for i := 0; i < len(fields); i++ {
 		ids := []int{i}
-		dictionaries = collectDictionaries(fields[i].Name, ids, &fields[i], dictionaries)
+		dictionaries = append(dictionaries, collectDictionaries(fields[i].Name, ids, &fields[i], dictionaries)...)
 	}
 	return &AdaptiveSchema{schema: schema, dictionaries: dictionaries}
 }
@@ -63,6 +63,7 @@ func (m *AdaptiveSchema) DetectDictionaryOverflow(record arrow.Record) (overflow
 				oldDict: d.dictionary,
 				newDict: promoteDictionaryType(observedSize, d.dictionary),
 			})
+			println("overflow detected for field `" + d.name + "`")
 		}
 	}
 	return
@@ -126,7 +127,7 @@ func updateField(f *arrow.Field, dictMap map[*arrow.DictionaryType]*arrow.Dictio
 	case *arrow.MapType:
 		keyField := t.KeyField()
 		newKeyField := updateField(&keyField, dictMap)
-		valueField := t.ValueField()
+		valueField := t.ItemField()
 		newValueField := updateField(&valueField, dictMap)
 		return arrow.Field{Name: f.Name, Type: arrow.MapOf(newKeyField.Type, newValueField.Type), Nullable: f.Nullable, Metadata: f.Metadata}
 	default:
@@ -143,14 +144,20 @@ func getDictionary(arr arrow.Array, ids []int) *array.Dictionary {
 	case *array.Struct:
 		return getDictionary(arr.Field(ids[0]), ids[1:])
 	case *array.List:
-		return getDictionary(arr.ListValues(), ids[1:])
+		return getDictionary(arr.ListValues(), ids)
 	case *array.SparseUnion:
 		return getDictionary(arr.Field(ids[0]), ids[1:])
 	case *array.DenseUnion:
 		return getDictionary(arr.Field(ids[0]), ids[1:])
 	case *array.Map:
-		return getDictionary(arr.ListValues(), ids[1:])
-
+		switch ids[0] {
+		case 0: // key
+			return getDictionary(arr.Keys(), ids[1:])
+		case 1: // value
+			return getDictionary(arr.Items(), ids[1:])
+		default:
+			panic("getDictionary: invalid map field id")
+		}
 	default:
 		panic("unsupported array type `" + arr.DataType().Name() + "`")
 	}
@@ -189,8 +196,17 @@ func collectDictionaries(prefix string, ids []int, field *arrow.Field, dictionar
 			dictionaries = collectDictionaries(prefix+"."+fields[i].Name, childIds, &fields[i], dictionaries)
 		}
 	case *arrow.MapType:
+		childIds := make([]int, len(ids)+1)
+		copy(childIds, ids)
+		childIds[len(ids)] = 0
+		keyField := t.KeyField()
+		dictionaries = collectDictionaries(prefix+".key", childIds, &keyField, dictionaries)
+
+		childIds = make([]int, len(ids)+1)
+		copy(childIds, ids)
+		childIds[len(ids)] = 1
 		itemField := t.ItemField()
-		dictionaries = collectDictionaries(prefix, ids, &itemField, dictionaries)
+		dictionaries = collectDictionaries(prefix+".value", childIds, &itemField, dictionaries)
 	}
 
 	return dictionaries

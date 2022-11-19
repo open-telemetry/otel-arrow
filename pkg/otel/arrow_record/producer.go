@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	logs_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
 	metrics_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
 	traces_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
@@ -46,6 +47,9 @@ type Producer struct {
 	pool            memory.Allocator
 	streamProducers map[string]*streamProducer
 	batchId         int64
+	metricsSchema   *acommon.AdaptiveSchema
+	logsSchema      *acommon.AdaptiveSchema
+	tracesSchema    *acommon.AdaptiveSchema
 }
 
 type streamProducer struct {
@@ -62,6 +66,9 @@ func NewProducer() *Producer {
 		pool:            memory.NewGoAllocator(),
 		streamProducers: make(map[string]*streamProducer),
 		batchId:         0,
+		metricsSchema:   acommon.NewAdaptiveSchema(metrics_arrow.Schema),
+		logsSchema:      acommon.NewAdaptiveSchema(logs_arrow.Schema),
+		tracesSchema:    acommon.NewAdaptiveSchema(traces_arrow.Schema),
 	}
 }
 
@@ -73,6 +80,9 @@ func NewProducerWithPool(pool memory.Allocator) *Producer {
 		pool:            pool,
 		streamProducers: make(map[string]*streamProducer),
 		batchId:         0,
+		metricsSchema:   acommon.NewAdaptiveSchema(metrics_arrow.Schema),
+		logsSchema:      acommon.NewAdaptiveSchema(logs_arrow.Schema),
+		tracesSchema:    acommon.NewAdaptiveSchema(traces_arrow.Schema),
 	}
 }
 
@@ -120,7 +130,7 @@ func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrow
 
 // BatchArrowRecordsFromTraces produces a BatchArrowRecords message from a [ptrace.Traces] messages.
 func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.BatchArrowRecords, error) {
-	tb := traces_arrow.NewTracesBuilder(p.pool)
+	tb := traces_arrow.NewTracesBuilder(p.pool, p.tracesSchema)
 	if err := tb.Append(ts); err != nil {
 		return nil, err
 	}

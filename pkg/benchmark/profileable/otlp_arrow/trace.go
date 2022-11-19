@@ -14,6 +14,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	traces_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
 )
 
@@ -26,6 +27,7 @@ type TraceProfileable struct {
 	batchArrowRecords []*v1.BatchArrowRecords
 	config            *config.Config
 	pool              *memory.GoAllocator
+	schema            *acommon.AdaptiveSchema
 }
 
 func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *config.Config, compression benchmark.CompressionAlgorithm) *TraceProfileable {
@@ -37,6 +39,7 @@ func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *co
 		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
 		config:            config,
 		pool:              memory.NewGoAllocator(),
+		schema:            acommon.NewAdaptiveSchema(traces_arrow.Schema),
 	}
 }
 
@@ -63,7 +66,7 @@ func (s *TraceProfileable) CreateBatch(_ io.Writer, _, _ int) {
 	// Conversion of OTLP metrics to OTLP Arrow Records
 	s.batchArrowRecords = make([]*v1.BatchArrowRecords, 0, len(s.traces))
 	for _, traceReq := range s.traces {
-		tb := traces_arrow.NewTracesBuilder(s.pool)
+		tb := traces_arrow.NewTracesBuilder(s.pool, s.schema)
 		if err := tb.Append(traceReq); err != nil {
 			panic(err)
 		}

@@ -8,6 +8,7 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -22,16 +23,21 @@ var (
 type TracesBuilder struct {
 	released bool
 
-	builder *array.ListBuilder    // resource spans list builder
-	rsp     *ResourceSpansBuilder // resource spans builder
+	schema  *acommon.AdaptiveSchema // Trace schema
+	builder *array.RecordBuilder    // Record builder
+	rsb     *array.ListBuilder      // Resource spans builder
+	rsp     *ResourceSpansBuilder   // resource spans builder
 }
 
 // NewTracesBuilder creates a new TracesBuilder with a given allocator.
-func NewTracesBuilder(pool memory.Allocator) *TracesBuilder {
-	rsb := array.NewListBuilder(pool, ResourceSpansDT)
+func NewTracesBuilder(pool memory.Allocator, schema *acommon.AdaptiveSchema) *TracesBuilder {
+	builder := array.NewRecordBuilder(pool, schema.Schema())
+	rsb := builder.Field(0).(*array.ListBuilder)
 	return &TracesBuilder{
 		released: false,
-		builder:  rsb,
+		schema:   schema,
+		builder:  builder,
+		rsb:      rsb,
 		rsp:      ResourceSpansBuilderFrom(rsb.ValueBuilder().(*array.StructBuilder)),
 	}
 }
@@ -47,9 +53,14 @@ func (b *TracesBuilder) Build() (arrow.Record, error) {
 
 	defer b.Release()
 
-	arr := b.builder.NewArray()
-	defer arr.Release()
-	return array.NewRecord(Schema, []arrow.Array{arr}, int64(arr.Len())), nil
+	record := b.builder.NewRecord()
+
+	overflowDetected, updates := b.schema.DetectDictionaryOverflow(record)
+	if overflowDetected {
+		b.schema.UpdateSchema(updates)
+	}
+
+	return record, nil
 }
 
 // Append appends a new set of resource spans to the builder.
@@ -61,7 +72,7 @@ func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 	rs := traces.ResourceSpans()
 	rc := rs.Len()
 	if rc > 0 {
-		b.builder.Append(true)
+		b.rsb.Append(true)
 		b.builder.Reserve(rc)
 		for i := 0; i < rc; i++ {
 			if err := b.rsp.Append(rs.At(i)); err != nil {
@@ -69,7 +80,7 @@ func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 			}
 		}
 	} else {
-		b.builder.AppendNull()
+		b.rsb.AppendNull()
 	}
 	return nil
 }

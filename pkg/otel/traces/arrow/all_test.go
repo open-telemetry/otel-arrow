@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/internal"
 )
 
@@ -201,7 +202,8 @@ func TestTraces(t *testing.T) {
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	tb := NewTracesBuilder(pool)
+	traceSchema := acommon.NewAdaptiveSchema(Schema)
+	tb := NewTracesBuilder(pool, traceSchema)
 
 	if err := tb.Append(Traces()); err != nil {
 		t.Fatal(err)

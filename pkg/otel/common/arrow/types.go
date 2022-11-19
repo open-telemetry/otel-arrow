@@ -4,25 +4,25 @@ import "github.com/apache/arrow/go/v11/arrow"
 
 var (
 	DictU16String = &arrow.DictionaryType{
-		IndexType: arrow.PrimitiveTypes.Uint16,
+		IndexType: arrow.PrimitiveTypes.Uint8,
 		ValueType: arrow.BinaryTypes.String,
 		Ordered:   false,
 	}
 
 	DictU16Binary = &arrow.DictionaryType{
-		IndexType: arrow.PrimitiveTypes.Uint16,
+		IndexType: arrow.PrimitiveTypes.Uint8,
 		ValueType: arrow.BinaryTypes.Binary,
 		Ordered:   false,
 	}
 
 	DictU16Fixed16Binary = &arrow.DictionaryType{
-		IndexType: arrow.PrimitiveTypes.Uint16,
+		IndexType: arrow.PrimitiveTypes.Uint8,
 		ValueType: &arrow.FixedSizeBinaryType{ByteWidth: 16},
 		Ordered:   false,
 	}
 
 	DictU16Fixed8Binary = &arrow.DictionaryType{
-		IndexType: arrow.PrimitiveTypes.Uint16,
+		IndexType: arrow.PrimitiveTypes.Uint8,
 		ValueType: &arrow.FixedSizeBinaryType{ByteWidth: 8},
 		Ordered:   false,
 	}

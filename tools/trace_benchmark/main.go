@@ -50,7 +50,7 @@ func main() {
 	for i := range inputFiles {
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
 		//profiler := benchmark.NewProfiler([]int{1000, 5000, 10000, 25000})
-		profiler := benchmark.NewProfiler([]int{1000, 2000}, "output/trace_benchmark.log")
+		profiler := benchmark.NewProfiler([]int{1000, 2000, 10000}, "output/trace_benchmark.log")
 		compressionAlgo := benchmark.Zstd()
 		maxIter := uint64(1)
 		ds := dataset.NewRealTraceDataset(inputFiles[i], []string{"trace_id"})
