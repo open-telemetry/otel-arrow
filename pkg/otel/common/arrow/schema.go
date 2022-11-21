@@ -1,6 +1,7 @@
 package arrow
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/apache/arrow/go/v11/arrow"
@@ -508,4 +509,16 @@ func indexUpperLimit(dt arrow.DataType) uint64 {
 	default:
 		panic("unsupported index type `" + dt.Name() + "`")
 	}
+}
+
+// DictionaryOverflowError is returned when the cardinality of a dictionary (or several)
+// exceeds the maximum allowed value.
+//
+// This error is returned by the TracesBuilder.Build method. This error is retryable.
+type DictionaryOverflowError struct {
+	FieldNames []string
+}
+
+func (e *DictionaryOverflowError) Error() string {
+	return fmt.Sprintf("dictionary overflow for fields: %v", e.FieldNames)
 }

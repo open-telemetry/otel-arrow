@@ -161,6 +161,10 @@ func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.Batc
 	var record arrow.Record
 	dictionaryOverflowCount := 0
 
+	// Build an Arrow Record from an OTEL [ptrace.Traces] object.
+	//
+	// If a dictionary overflow is observed (see AdaptiveSchema, index type), during
+	// the conversion, the record must be build again with an updated schema.
 	for {
 		tb, err := traces_arrow.NewTracesBuilder(p.pool, p.tracesSchema)
 		if err != nil {
@@ -174,7 +178,7 @@ func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.Batc
 			defer record.Release()
 		}
 		if err != nil {
-			var overflowErr *traces_arrow.DictionaryOverflowError
+			var overflowErr *acommon.DictionaryOverflowError
 			switch {
 			case errors.As(err, &overflowErr):
 				dictionaryOverflowCount++
@@ -286,6 +290,48 @@ func (p *Producer) Produce(rms []*RecordMessage, deliveryType colarspb.DeliveryT
 		OtlpArrowPayloads: oapl,
 		DeliveryType:      deliveryType,
 	}, nil
+}
+
+func RecordBuilder[T pmetric.Metrics | plog.Logs | ptrace.Traces](builder func() (acommon.EntityBuilder[T], error), entity T) (record arrow.Record, err error) {
+	dictionaryOverflowCount := 0
+
+	// Build an Arrow Record from an OTEL entity.
+	//
+	// If a dictionary overflow is observed (see AdaptiveSchema, index type), during
+	// the conversion, the record must be build again with an updated schema.
+	for {
+		tb, err := builder()
+		if err != nil {
+			return
+		}
+		if err := tb.Append(entity); err != nil {
+			return
+		}
+		record, err = tb.Build()
+		if record != nil {
+			defer record.Release()
+		}
+		if err != nil {
+			var overflowErr *acommon.DictionaryOverflowError
+			switch {
+			case errors.As(err, &overflowErr):
+				dictionaryOverflowCount++
+				// 4 is the maximum number of dictionary overflow errors we can handle.
+				// uint8 --> uint16
+				// uint16 --> uint32
+				// uint32 --> uint64
+				// uint64 --> string | binary
+				if dictionaryOverflowCount > 4 {
+					panic("Dictionary overflowed too many times. This shouldn't happen.")
+				}
+			default:
+				return
+			}
+		} else {
+			break
+		}
+	}
+	return
 }
 
 func WithAllocator(allocator memory.Allocator) Option {
