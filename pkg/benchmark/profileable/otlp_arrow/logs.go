@@ -13,7 +13,6 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
-	logs_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
 )
 
 type LogsProfileable struct {
@@ -62,18 +61,7 @@ func (s *LogsProfileable) CreateBatch(_ io.Writer, _, _ int) {
 	// Conversion of OTLP metrics to OTLP Arrow Records
 	s.batchArrowRecords = make([]*v1.BatchArrowRecords, 0, len(s.logs))
 	for _, log := range s.logs {
-		lb := logs_arrow.NewLogsBuilder(s.pool)
-		if err := lb.Append(log); err != nil {
-			panic(err)
-		}
-		record, err := lb.Build()
-		if err != nil {
-			panic(err)
-		}
-		rms := []*arrow_record.RecordMessage{
-			arrow_record.NewLogsMessage(record, v1.DeliveryType_BEST_EFFORT),
-		}
-		bar, err := s.producer.Produce(rms, v1.DeliveryType_BEST_EFFORT)
+		bar, err := s.producer.BatchArrowRecordsFromLogs(log)
 		if err != nil {
 			panic(err)
 		}

@@ -14,9 +14,9 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
 )
 
-// TestWithNoDictionary
+// TestTracesWithNoDictionary
 // Initial dictionary index size is 0 ==> no dictionary.
-func TestWithNoDictionary(t *testing.T) {
+func TestTracesWithNoDictionary(t *testing.T) {
 	t.Parallel()
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
@@ -51,11 +51,11 @@ func TestWithNoDictionary(t *testing.T) {
 	require.Equal(t, 0, len(dictWithOverflow))
 }
 
-// TestSingleBatchWithDictionaryOverflow
+// TestTracesSingleBatchWithDictionaryOverflow
 // Initial dictionary size uint8.
 // First batch of uint8 + 1 spans ==> dictionary overflow on 3 fields.
 // Other consecutive batches should not trigger any other dictionary overflow.
-func TestSingleBatchWithDictionaryOverflow(t *testing.T) {
+func TestTracesSingleBatchWithDictionaryOverflow(t *testing.T) {
 	t.Parallel()
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
@@ -94,12 +94,12 @@ func TestSingleBatchWithDictionaryOverflow(t *testing.T) {
 	require.Equal(t, "uint16", dictWithOverflow["resource_spans.scope_spans.spans.attributes.value.binary"])
 }
 
-// TestMultiBatchWithDictionaryOverflow
+// TestTracesMultiBatchWithDictionaryOverflow
 // Initial dictionary size uint8.
 // First and second batch of uint8/2 spans (each) ==> no dictionary overflow.
 // Third batch should trigger dictionary overflow.
 // All other consecutive batches should not trigger any other dictionary overflow.
-func TestMultiBatchWithDictionaryOverflow(t *testing.T) {
+func TestTracesMultiBatchWithDictionaryOverflow(t *testing.T) {
 	t.Parallel()
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
@@ -138,11 +138,11 @@ func TestMultiBatchWithDictionaryOverflow(t *testing.T) {
 	require.Equal(t, "uint16", dictWithOverflow["resource_spans.scope_spans.spans.attributes.value.binary"])
 }
 
-// TestSingleBatchWithDictionaryLimit
+// TestTracesSingleBatchWithDictionaryLimit
 // Initial dictionary size uint8.
 // Limit dictionary index size is uint8.
 // First batch of uint8 + 1 spans ==> dictionary index type limit reached so fallback to utf8 or binary.
-func TestSingleBatchWithDictionaryLimit(t *testing.T) {
+func TestTracesSingleBatchWithDictionaryLimit(t *testing.T) {
 	t.Parallel()
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())

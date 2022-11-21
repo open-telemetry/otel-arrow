@@ -40,7 +40,7 @@ type LogRecordBuilder struct {
 	tib   *acommon.AdaptiveDictionaryBuilder // trace id builder
 	sib   *acommon.AdaptiveDictionaryBuilder // span id builder
 	snb   *array.Int32Builder                // severity number builder
-	stb   *array.BinaryDictionaryBuilder     // severity text builder
+	stb   *acommon.AdaptiveDictionaryBuilder // severity text builder
 	bb    *acommon.AnyValueBuilder           // body builder (LOL)
 	ab    *acommon.AttributesBuilder         // attributes builder
 	dacb  *array.Uint32Builder               // dropped attributes count builder
@@ -65,7 +65,7 @@ func LogRecordBuilderFrom(sb *array.StructBuilder) *LogRecordBuilder {
 		tib:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(2)),
 		sib:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(3)),
 		snb:      sb.FieldBuilder(4).(*array.Int32Builder),
-		stb:      sb.FieldBuilder(5).(*array.BinaryDictionaryBuilder),
+		stb:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(5)),
 		bb:       acommon.AnyValueBuilderFrom(sb.FieldBuilder(6).(*array.SparseUnionBuilder)),
 		ab:       acommon.AttributesBuilderFrom(sb.FieldBuilder(7).(*array.MapBuilder)),
 		dacb:     sb.FieldBuilder(8).(*array.Uint32Builder),

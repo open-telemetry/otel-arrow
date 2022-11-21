@@ -73,13 +73,27 @@ type Option func(*Config)
 //
 // The method close MUST be called when the producer is not used anymore to release the memory and avoid memory leaks.
 func NewProducer() *Producer {
+	cfg := &Config{
+		pool:           memory.NewGoAllocator(),
+		initIndexSize:  math.MaxUint16,
+		limitIndexSize: math.MaxUint16,
+	}
 	return &Producer{
-		pool:            memory.NewGoAllocator(),
+		pool:            cfg.pool,
 		streamProducers: make(map[string]*streamProducer),
 		batchId:         0,
-		metricsSchema:   acommon.NewAdaptiveSchema(metrics_arrow.Schema),
-		logsSchema:      acommon.NewAdaptiveSchema(logs_arrow.Schema),
-		tracesSchema:    acommon.NewAdaptiveSchema(traces_arrow.Schema),
+		metricsSchema: acommon.NewAdaptiveSchema(
+			metrics_arrow.Schema,
+			acommon.WithDictInitIndexSize(cfg.initIndexSize),
+			acommon.WithDictLimitIndexSize(cfg.limitIndexSize)),
+		logsSchema: acommon.NewAdaptiveSchema(
+			logs_arrow.Schema,
+			acommon.WithDictInitIndexSize(cfg.initIndexSize),
+			acommon.WithDictLimitIndexSize(cfg.limitIndexSize)),
+		tracesSchema: acommon.NewAdaptiveSchema(
+			traces_arrow.Schema,
+			acommon.WithDictInitIndexSize(cfg.initIndexSize),
+			acommon.WithDictLimitIndexSize(cfg.limitIndexSize)),
 	}
 }
 
@@ -137,15 +151,17 @@ func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colar
 
 // BatchArrowRecordsFromLogs produces a BatchArrowRecords message from a [plog.Logs] messages.
 func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrowRecords, error) {
-	lb := logs_arrow.NewLogsBuilder(p.pool)
-	if err := lb.Append(ls); err != nil {
-		return nil, err
-	}
-	record, err := lb.Build()
+	record, err := RecordBuilder[plog.Logs](func() (acommon.EntityBuilder[plog.Logs], error) {
+		return logs_arrow.NewLogsBuilder(p.pool, p.logsSchema)
+	}, ls)
+	defer func() {
+		if record != nil {
+			record.Release()
+		}
+	}()
 	if err != nil {
 		return nil, err
 	}
-	defer record.Release()
 
 	rms := []*RecordMessage{NewLogsMessage(record, colarspb.DeliveryType_BEST_EFFORT)}
 
@@ -158,44 +174,16 @@ func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrow
 
 // BatchArrowRecordsFromTraces produces a BatchArrowRecords message from a [ptrace.Traces] messages.
 func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.BatchArrowRecords, error) {
-	var record arrow.Record
-	dictionaryOverflowCount := 0
-
-	// Build an Arrow Record from an OTEL [ptrace.Traces] object.
-	//
-	// If a dictionary overflow is observed (see AdaptiveSchema, index type), during
-	// the conversion, the record must be build again with an updated schema.
-	for {
-		tb, err := traces_arrow.NewTracesBuilder(p.pool, p.tracesSchema)
-		if err != nil {
-			return nil, err
-		}
-		if err := tb.Append(ts); err != nil {
-			return nil, err
-		}
-		record, err = tb.Build()
+	record, err := RecordBuilder[ptrace.Traces](func() (acommon.EntityBuilder[ptrace.Traces], error) {
+		return traces_arrow.NewTracesBuilder(p.pool, p.tracesSchema)
+	}, ts)
+	defer func() {
 		if record != nil {
-			defer record.Release()
+			record.Release()
 		}
-		if err != nil {
-			var overflowErr *acommon.DictionaryOverflowError
-			switch {
-			case errors.As(err, &overflowErr):
-				dictionaryOverflowCount++
-				// 4 is the maximum number of dictionary overflow errors we can handle.
-				// uint8 --> uint16
-				// uint16 --> uint32
-				// uint32 --> uint64
-				// uint64 --> string | binary
-				if dictionaryOverflowCount > 4 {
-					panic("Dictionary overflowed too many times. This shouldn't happen.")
-				}
-			default:
-				return nil, err
-			}
-		} else {
-			break
-		}
+	}()
+	if err != nil {
+		return nil, err
 	}
 
 	rms := []*RecordMessage{NewTraceMessage(record, colarspb.DeliveryType_BEST_EFFORT)}
@@ -300,19 +288,21 @@ func RecordBuilder[T pmetric.Metrics | plog.Logs | ptrace.Traces](builder func()
 	// If a dictionary overflow is observed (see AdaptiveSchema, index type), during
 	// the conversion, the record must be build again with an updated schema.
 	for {
-		tb, err := builder()
-		if err != nil {
+		var tb acommon.EntityBuilder[T]
+		if tb, err = builder(); err != nil {
 			return
 		}
-		if err := tb.Append(entity); err != nil {
+		if err = tb.Append(entity); err != nil {
 			return
 		}
 		record, err = tb.Build()
-		if record != nil {
-			defer record.Release()
-		}
 		if err != nil {
 			var overflowErr *acommon.DictionaryOverflowError
+
+			if record != nil {
+				record.Release()
+			}
+
 			switch {
 			case errors.As(err, &overflowErr):
 				dictionaryOverflowCount++
