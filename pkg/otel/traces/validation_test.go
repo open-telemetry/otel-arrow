@@ -48,8 +48,12 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 	traceSchema := acommon.NewAdaptiveSchema(traces_arrow.Schema)
-	tb := traces_arrow.NewTracesBuilder(pool, traceSchema)
-	err := tb.Append(expectedRequest.Traces())
+	defer traceSchema.Release()
+	tb, err := traces_arrow.NewTracesBuilder(pool, traceSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tb.Append(expectedRequest.Traces())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,8 +96,11 @@ func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportReques
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 	traceSchema := acommon.NewAdaptiveSchema(traces_arrow.Schema)
-	tb := traces_arrow.NewTracesBuilder(pool, traceSchema)
-	err := tb.Append(expectedRequest.Traces())
+	tb, err := traces_arrow.NewTracesBuilder(pool, traceSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tb.Append(expectedRequest.Traces())
 	if err != nil {
 		t.Fatal(err)
 	}

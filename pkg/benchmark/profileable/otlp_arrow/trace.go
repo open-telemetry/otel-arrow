@@ -66,7 +66,10 @@ func (s *TraceProfileable) CreateBatch(_ io.Writer, _, _ int) {
 	// Conversion of OTLP metrics to OTLP Arrow Records
 	s.batchArrowRecords = make([]*v1.BatchArrowRecords, 0, len(s.traces))
 	for _, traceReq := range s.traces {
-		tb := traces_arrow.NewTracesBuilder(s.pool, s.schema)
+		tb, err := traces_arrow.NewTracesBuilder(s.pool, s.schema)
+		if err != nil {
+			panic(err)
+		}
 		if err := tb.Append(traceReq); err != nil {
 			panic(err)
 		}

@@ -203,7 +203,9 @@ func TestTraces(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 	traceSchema := acommon.NewAdaptiveSchema(Schema)
-	tb := NewTracesBuilder(pool, traceSchema)
+	defer traceSchema.Release()
+	tb, err := NewTracesBuilder(pool, traceSchema)
+	require.NoError(t, err)
 
 	if err := tb.Append(Traces()); err != nil {
 		t.Fatal(err)

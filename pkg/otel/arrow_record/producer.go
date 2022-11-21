@@ -130,7 +130,10 @@ func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrow
 
 // BatchArrowRecordsFromTraces produces a BatchArrowRecords message from a [ptrace.Traces] messages.
 func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.BatchArrowRecords, error) {
-	tb := traces_arrow.NewTracesBuilder(p.pool, p.tracesSchema)
+	tb, err := traces_arrow.NewTracesBuilder(p.pool, p.tracesSchema)
+	if err != nil {
+		return nil, err
+	}
 	if err := tb.Append(ts); err != nil {
 		return nil, err
 	}
@@ -153,6 +156,9 @@ func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.Batc
 
 // Close closes all stream producers.
 func (p *Producer) Close() error {
+	p.metricsSchema.Release()
+	p.logsSchema.Release()
+	p.tracesSchema.Release()
 	for _, sp := range p.streamProducers {
 		if err := sp.ipcWriter.Close(); err != nil {
 			return err

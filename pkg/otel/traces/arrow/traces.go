@@ -30,8 +30,12 @@ type TracesBuilder struct {
 }
 
 // NewTracesBuilder creates a new TracesBuilder with a given allocator.
-func NewTracesBuilder(pool memory.Allocator, schema *acommon.AdaptiveSchema) *TracesBuilder {
+func NewTracesBuilder(pool memory.Allocator, schema *acommon.AdaptiveSchema) (*TracesBuilder, error) {
 	builder := array.NewRecordBuilder(pool, schema.Schema())
+	err := schema.InitDictionaryBuilders(builder)
+	if err != nil {
+		return nil, err
+	}
 	rsb := builder.Field(0).(*array.ListBuilder)
 	return &TracesBuilder{
 		released: false,
@@ -39,7 +43,7 @@ func NewTracesBuilder(pool memory.Allocator, schema *acommon.AdaptiveSchema) *Tr
 		builder:  builder,
 		rsb:      rsb,
 		rsp:      ResourceSpansBuilderFrom(rsb.ValueBuilder().(*array.StructBuilder)),
-	}
+	}, nil
 }
 
 // Build builds an Arrow Record from the builder.
@@ -55,7 +59,7 @@ func (b *TracesBuilder) Build() (arrow.Record, error) {
 
 	record := b.builder.NewRecord()
 
-	overflowDetected, updates := b.schema.DetectDictionaryOverflow(record)
+	overflowDetected, updates := b.schema.Analyze(record)
 	if overflowDetected {
 		b.schema.UpdateSchema(updates)
 	}

@@ -56,7 +56,7 @@ func TestSchemaWithStruct(t *testing.T) {
 
 	record := recbldr.NewRecord()
 
-	overflowDetected, schemaUpdates := sm.DetectDictionaryOverflow(record)
+	overflowDetected, schemaUpdates := sm.Analyze(record)
 	require.True(t, overflowDetected)
 	require.Len(t, schemaUpdates, 2)
 
@@ -114,7 +114,7 @@ func TestSchemaWithMap(t *testing.T) {
 
 	record := recbldr.NewRecord()
 
-	overflowDetected, schemaUpdates := sm.DetectDictionaryOverflow(record)
+	overflowDetected, schemaUpdates := sm.Analyze(record)
 	require.True(t, overflowDetected)
 	require.Len(t, schemaUpdates, 2)
 
@@ -173,7 +173,7 @@ func TestSchemaWithUnion(t *testing.T) {
 
 	record := recbldr.NewRecord()
 
-	overflowDetected, schemaUpdates := sm.DetectDictionaryOverflow(record)
+	overflowDetected, schemaUpdates := sm.Analyze(record)
 	require.True(t, overflowDetected)
 	require.Len(t, schemaUpdates, 1)
 
