@@ -197,7 +197,7 @@ func TestProducerConsumerTraces(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	producer := NewProducerWithPool(pool)
+	producer := NewProducerWithOptions(WithAllocator(pool))
 	defer func() {
 		if err := producer.Close(); err != nil {
 			t.Error("unexpected fail", err)
@@ -233,7 +233,7 @@ func TestProducerConsumerLogs(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	producer := NewProducerWithPool(pool)
+	producer := NewProducerWithOptions(WithAllocator(pool))
 	defer func() {
 		if err := producer.Close(); err != nil {
 			t.Error("unexpected fail", err)
@@ -269,7 +269,7 @@ func TestProducerConsumerMetrics(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	producer := NewProducerWithPool(pool)
+	producer := NewProducerWithOptions(WithAllocator(pool))
 	defer func() {
 		if err := producer.Close(); err != nil {
 			t.Error("unexpected fail", err)
@@ -298,7 +298,7 @@ func TestProducerConsumer(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	producer := NewProducerWithPool(pool)
+	producer := NewProducerWithOptions(WithAllocator(pool))
 	defer func() {
 		if err := producer.Close(); err != nil {
 			t.Error("unexpected fail", err)

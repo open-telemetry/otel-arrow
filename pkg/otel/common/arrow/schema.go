@@ -1,7 +1,6 @@
 package arrow
 
 import (
-	"fmt"
 	"math"
 
 	"github.com/apache/arrow/go/v11/arrow"
@@ -16,6 +15,9 @@ type AdaptiveSchema struct {
 	cfg          config             // configuration
 	schema       *arrow.Schema      // current schema
 	dictionaries []*dictionaryField // list of all dictionary fields
+	// map of dictionary fields that have overflowed (used for test purpose)
+	// map = path -> dictionary index type
+	dictionariesWithOverflow map[string]string
 }
 
 type dictionaryField struct {
@@ -31,7 +33,7 @@ type dictionaryField struct {
 // dictionary type and the new dictionary
 type SchemaUpdate struct {
 	// index of the dictionary field in the adaptive schema
-	dictIdx int
+	DictIdx int
 	// old dictionary type
 	oldDict *arrow.DictionaryType
 	// new dictionary type (promoted to a larger index type or string/binary)
@@ -42,7 +44,8 @@ type SchemaUpdate struct {
 }
 
 type config struct {
-	maxIndexSize uint64
+	initIndexSize  uint64
+	limitIndexSize uint64
 }
 
 // Option is a function that configures the AdaptiveSchema.
@@ -52,7 +55,8 @@ type Option func(*config)
 // and a list of options.
 func NewAdaptiveSchema(schema *arrow.Schema, options ...Option) *AdaptiveSchema {
 	cfg := config{
-		maxIndexSize: math.MaxUint16, // default to uint16
+		initIndexSize:  math.MaxUint16, // default to uint16
+		limitIndexSize: math.MaxUint16, // default to uint16
 	}
 	var dictionaries []*dictionaryField
 
@@ -60,12 +64,14 @@ func NewAdaptiveSchema(schema *arrow.Schema, options ...Option) *AdaptiveSchema 
 		opt(&cfg)
 	}
 
+	schema = initSchema(schema, &cfg)
+
 	fields := schema.Fields()
 	for i := 0; i < len(fields); i++ {
 		ids := []int{i}
 		dictionaries = append(dictionaries, collectDictionaries(fields[i].Name, ids, &fields[i], dictionaries)...)
 	}
-	return &AdaptiveSchema{cfg: cfg, schema: schema, dictionaries: dictionaries}
+	return &AdaptiveSchema{cfg: cfg, schema: schema, dictionaries: dictionaries, dictionariesWithOverflow: make(map[string]string)}
 }
 
 // Schema returns the current schema.
@@ -97,15 +103,15 @@ func (m *AdaptiveSchema) Analyze(record arrow.Record) (overflowDetected bool, up
 			overflowDetected = true
 			newDict, newUpperLimit := m.promoteDictionaryType(observedSize, d.dictionary)
 			updates = append(updates, &SchemaUpdate{
-				dictIdx:       dictIdx,
+				DictIdx:       dictIdx,
 				oldDict:       d.dictionary,
 				newDict:       newDict,
 				newUpperLimit: newUpperLimit,
 			})
 			if newDict == nil {
-				println("replacing dictionary field  `" + d.path + "` with string/binary")
+				m.dictionariesWithOverflow[d.path] = d.dictionary.ValueType.Name()
 			} else {
-				println("overflow detected for field `" + d.path + "` promoted to " + newDict.IndexType.Name())
+				m.dictionariesWithOverflow[d.path] = newDict.IndexType.Name()
 			}
 		}
 	}
@@ -117,15 +123,24 @@ func (m *AdaptiveSchema) UpdateSchema(updates []*SchemaUpdate) {
 	m.rebuildSchema(updates)
 
 	// update dictionaries based on the updates
-	newDicts := make([]*dictionaryField, 0, len(m.dictionaries))
 	for _, u := range updates {
-		if u.newDict != nil {
-			m.dictionaries[u.dictIdx].upperLimit = u.newUpperLimit
-			m.dictionaries[u.dictIdx].dictionary = u.newDict
-			newDicts = append(newDicts, m.dictionaries[u.dictIdx])
+		m.dictionaries[u.DictIdx].upperLimit = u.newUpperLimit
+		m.dictionaries[u.DictIdx].dictionary = u.newDict
+		if u.newDict == nil {
+			prevDict := m.dictionaries[u.DictIdx].init
+			if prevDict != nil {
+				prevDict.Release()
+				m.dictionaries[u.DictIdx].init = nil
+			}
 		}
 	}
-	m.dictionaries = newDicts
+
+	// remove dictionary fields that have been replaced by string/binary
+	for i := len(m.dictionaries) - 1; i >= 0; i-- {
+		if m.dictionaries[i].init == nil {
+			m.dictionaries = append(m.dictionaries[:i], m.dictionaries[i+1:]...)
+		}
+	}
 }
 
 // InitDictionaryBuilders initializes the dictionary builders with the initial dictionary values
@@ -162,27 +177,29 @@ func (m *AdaptiveSchema) Release() {
 	}
 }
 
-func WithUint8MaxIndexSize() Option {
+// DictionaryPath returns the path of the dictionary field at the given index.
+func (m *AdaptiveSchema) DictionaryPath(idx int) string {
+	if idx < 0 || idx >= len(m.dictionaries) {
+		return ""
+	}
+	return m.dictionaries[idx].path
+}
+
+// DictionariesWithOverflow returns a map of dictionary fields that have overflowed and the
+// corresponding last promoted type.
+func (m *AdaptiveSchema) DictionariesWithOverflow() map[string]string {
+	return m.dictionariesWithOverflow
+}
+
+func WithDictInitIndexSize(size uint64) Option {
 	return func(cfg *config) {
-		cfg.maxIndexSize = math.MaxUint8
+		cfg.initIndexSize = size
 	}
 }
 
-func WithUint16MaxIndexSize() Option {
+func WithDictLimitIndexSize(size uint64) Option {
 	return func(cfg *config) {
-		cfg.maxIndexSize = math.MaxUint16
-	}
-}
-
-func WithUint32MaxIndexSize() Option {
-	return func(cfg *config) {
-		cfg.maxIndexSize = math.MaxUint32
-	}
-}
-
-func WithUint64MaxIndexSize() Option {
-	return func(cfg *config) {
-		cfg.maxIndexSize = math.MaxUint64
+		cfg.limitIndexSize = size
 	}
 }
 
@@ -217,10 +234,37 @@ func (m *AdaptiveSchema) promoteDictionaryType(observedSize uint64, existingDT *
 		upperLimit = math.MaxUint64
 	}
 
-	if upperLimit > m.cfg.maxIndexSize {
+	if upperLimit > m.cfg.limitIndexSize {
 		dictType = nil
 	}
 	return
+}
+
+func initSchema(schema *arrow.Schema, cfg *config) *arrow.Schema {
+	var indexType arrow.DataType
+	switch {
+	case cfg.initIndexSize == 0:
+		indexType = nil
+	case cfg.initIndexSize == math.MaxUint8:
+		indexType = arrow.PrimitiveTypes.Uint8
+	case cfg.initIndexSize == math.MaxUint16:
+		indexType = arrow.PrimitiveTypes.Uint16
+	case cfg.initIndexSize == math.MaxUint32:
+		indexType = arrow.PrimitiveTypes.Uint32
+	case cfg.initIndexSize == math.MaxUint64:
+		indexType = arrow.PrimitiveTypes.Uint64
+	default:
+		panic("initSchema: unsupported initial index size")
+	}
+
+	oldFields := schema.Fields()
+	newFields := make([]arrow.Field, len(oldFields))
+	for i := 0; i < len(oldFields); i++ {
+		newFields[i] = initField(&oldFields[i], indexType)
+	}
+
+	metadata := schema.Metadata()
+	return arrow.NewSchema(newFields, &metadata)
 }
 
 func (m *AdaptiveSchema) rebuildSchema(updates []*SchemaUpdate) {
@@ -241,6 +285,55 @@ func (m *AdaptiveSchema) rebuildSchema(updates []*SchemaUpdate) {
 	m.schema = arrow.NewSchema(newFields, &metadata)
 }
 
+func initField(f *arrow.Field, indexType arrow.DataType) arrow.Field {
+	switch t := f.Type.(type) {
+	case *arrow.DictionaryType:
+		if indexType == nil {
+			return arrow.Field{Name: f.Name, Type: t.ValueType, Nullable: f.Nullable, Metadata: f.Metadata}
+		} else {
+			dictType := &arrow.DictionaryType{
+				IndexType: indexType,
+				ValueType: t.ValueType,
+				Ordered:   t.Ordered,
+			}
+			return arrow.Field{Name: f.Name, Type: dictType, Nullable: f.Nullable, Metadata: f.Metadata}
+		}
+	case *arrow.StructType:
+		oldFields := t.Fields()
+		newFields := make([]arrow.Field, len(oldFields))
+		for i := 0; i < len(oldFields); i++ {
+			newFields[i] = initField(&oldFields[i], indexType)
+		}
+		return arrow.Field{Name: f.Name, Type: arrow.StructOf(newFields...), Nullable: f.Nullable, Metadata: f.Metadata}
+	case *arrow.ListType:
+		elemField := t.ElemField()
+		newField := initField(&elemField, indexType)
+		return arrow.Field{Name: f.Name, Type: arrow.ListOf(newField.Type), Nullable: f.Nullable, Metadata: f.Metadata}
+	case *arrow.SparseUnionType:
+		oldFields := t.Fields()
+		newFields := make([]arrow.Field, len(oldFields))
+		for i := 0; i < len(oldFields); i++ {
+			newFields[i] = initField(&oldFields[i], indexType)
+		}
+		return arrow.Field{Name: f.Name, Type: arrow.SparseUnionOf(newFields, t.TypeCodes()), Nullable: f.Nullable, Metadata: f.Metadata}
+	case *arrow.DenseUnionType:
+		oldFields := t.Fields()
+		newFields := make([]arrow.Field, len(oldFields))
+		for i := 0; i < len(oldFields); i++ {
+			newFields[i] = initField(&oldFields[i], indexType)
+		}
+		return arrow.Field{Name: f.Name, Type: arrow.DenseUnionOf(newFields, t.TypeCodes()), Nullable: f.Nullable, Metadata: f.Metadata}
+	case *arrow.MapType:
+		keyField := t.KeyField()
+		newKeyField := initField(&keyField, indexType)
+		valueField := t.ItemField()
+		newValueField := initField(&valueField, indexType)
+		return arrow.Field{Name: f.Name, Type: arrow.MapOf(newKeyField.Type, newValueField.Type), Nullable: f.Nullable, Metadata: f.Metadata}
+	default:
+		return *f
+	}
+}
+
 func updateField(f *arrow.Field, dictMap map[*arrow.DictionaryType]*arrow.DictionaryType) arrow.Field {
 	switch t := f.Type.(type) {
 	case *arrow.DictionaryType:
@@ -248,7 +341,6 @@ func updateField(f *arrow.Field, dictMap map[*arrow.DictionaryType]*arrow.Dictio
 			if newDict != nil {
 				return arrow.Field{Name: f.Name, Type: newDict, Nullable: f.Nullable, Metadata: f.Metadata}
 			} else {
-				fmt.Printf("updateField: replacing dictionary field %q with string or binary field\n", f.Name)
 				return arrow.Field{Name: f.Name, Type: t.ValueType, Nullable: f.Nullable, Metadata: f.Metadata}
 			}
 		} else {

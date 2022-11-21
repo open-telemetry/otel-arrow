@@ -19,6 +19,18 @@ var (
 	}, nil)
 )
 
+// DictionaryOverflowError is returned when the cardinality of a dictionary (or several)
+// exceeds the maximum allowed value.
+//
+// This error is returned by the TracesBuilder.Build method. This error is retryable.
+type DictionaryOverflowError struct {
+	FieldNames []string
+}
+
+func (e *DictionaryOverflowError) Error() string {
+	return fmt.Sprintf("dictionary overflow for fields: %v", e.FieldNames)
+}
+
 // TracesBuilder is a helper to build a list of resource spans.
 type TracesBuilder struct {
 	released bool
@@ -50,6 +62,9 @@ func NewTracesBuilder(pool memory.Allocator, schema *acommon.AdaptiveSchema) (*T
 //
 // Once the array is no longer needed, Release() must be called to free the
 // memory allocated by the record.
+//
+// This method returns a DictionaryOverflowError if the cardinality of a dictionary
+// (or several) exceeds the maximum allowed value.
 func (b *TracesBuilder) Build() (arrow.Record, error) {
 	if b.released {
 		return nil, fmt.Errorf("resource spans builder already released")
@@ -61,7 +76,17 @@ func (b *TracesBuilder) Build() (arrow.Record, error) {
 
 	overflowDetected, updates := b.schema.Analyze(record)
 	if overflowDetected {
+		record.Release()
+
+		// Build a list of fields that overflowed
+		var fieldNames []string
+		for _, update := range updates {
+			fieldNames = append(fieldNames, b.schema.DictionaryPath(update.DictIdx))
+		}
+
 		b.schema.UpdateSchema(updates)
+
+		return nil, &DictionaryOverflowError{FieldNames: fieldNames}
 	}
 
 	return record, nil

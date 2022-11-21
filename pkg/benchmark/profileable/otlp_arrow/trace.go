@@ -8,7 +8,6 @@ import (
 
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	"github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
@@ -66,21 +65,7 @@ func (s *TraceProfileable) CreateBatch(_ io.Writer, _, _ int) {
 	// Conversion of OTLP metrics to OTLP Arrow Records
 	s.batchArrowRecords = make([]*v1.BatchArrowRecords, 0, len(s.traces))
 	for _, traceReq := range s.traces {
-		tb, err := traces_arrow.NewTracesBuilder(s.pool, s.schema)
-		if err != nil {
-			panic(err)
-		}
-		if err := tb.Append(traceReq); err != nil {
-			panic(err)
-		}
-		record, err := tb.Build()
-		if err != nil {
-			panic(err)
-		}
-		rms := []*arrow_record.RecordMessage{
-			arrow_record.NewTraceMessage(record, colarspb.DeliveryType_BEST_EFFORT),
-		}
-		bar, err := s.producer.Produce(rms, colarspb.DeliveryType_BEST_EFFORT)
+		bar, err := s.producer.BatchArrowRecordsFromTraces(traceReq)
 		if err != nil {
 			panic(err)
 		}

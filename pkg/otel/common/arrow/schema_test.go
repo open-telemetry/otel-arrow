@@ -2,6 +2,7 @@ package arrow
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/apache/arrow/go/v11/arrow"
@@ -34,7 +35,7 @@ func TestSchemaWithStruct(t *testing.T) {
 	}, nil)
 
 	pool := memory.NewGoAllocator()
-	sm := NewAdaptiveSchema(schema)
+	sm := NewAdaptiveSchema(schema, WithDictInitIndexSize(math.MaxUint8))
 	recbldr := array.NewRecordBuilder(pool, sm.Schema())
 	field1 := recbldr.Field(0).(*array.BinaryDictionaryBuilder)
 	field2 := recbldr.Field(1).(*array.StructBuilder)
@@ -92,7 +93,7 @@ func TestSchemaWithMap(t *testing.T) {
 	}, nil)
 
 	pool := memory.NewGoAllocator()
-	sm := NewAdaptiveSchema(schema)
+	sm := NewAdaptiveSchema(schema, WithDictInitIndexSize(math.MaxUint8))
 	recbldr := array.NewRecordBuilder(pool, sm.Schema())
 	field1 := recbldr.Field(0).(*array.BinaryDictionaryBuilder)
 	field2 := recbldr.Field(1).(*array.MapBuilder)
@@ -153,7 +154,7 @@ func TestSchemaWithUnion(t *testing.T) {
 	}, nil)
 
 	pool := memory.NewGoAllocator()
-	sm := NewAdaptiveSchema(schema)
+	sm := NewAdaptiveSchema(schema, WithDictInitIndexSize(math.MaxUint8))
 	recbldr := array.NewRecordBuilder(pool, sm.Schema())
 	field1 := recbldr.Field(0).(*array.BinaryDictionaryBuilder)
 	field2 := recbldr.Field(1).(*array.SparseUnionBuilder)

@@ -38,6 +38,9 @@ func (b *AdaptiveDictionaryBuilder) AppendBinary(v []byte) error {
 		return b.Append(v)
 	case *array.FixedSizeBinaryDictionaryBuilder:
 		return b.Append(v)
+	case *array.FixedSizeBinaryBuilder:
+		b.Append(v)
+		return nil
 	case *array.BinaryBuilder:
 		b.Append(v)
 		return nil

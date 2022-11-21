@@ -16,8 +16,11 @@ package arrow_record
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"math"
 
+	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/ipc"
 	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/plog"
@@ -58,6 +61,14 @@ type streamProducer struct {
 	subStreamId string
 }
 
+type Config struct {
+	pool           memory.Allocator
+	initIndexSize  uint64
+	limitIndexSize uint64
+}
+
+type Option func(*Config)
+
 // NewProducer creates a new BatchArrowRecords producer.
 //
 // The method close MUST be called when the producer is not used anymore to release the memory and avoid memory leaks.
@@ -72,17 +83,34 @@ func NewProducer() *Producer {
 	}
 }
 
-// NewProducerWithPool creates a new BatchArrowRecords producer with a custom memory pool.
+// NewProducerWithOptions creates a new BatchArrowRecords producer with a set of options.
 //
 // The method close MUST be called when the producer is not used anymore to release the memory and avoid memory leaks.
-func NewProducerWithPool(pool memory.Allocator) *Producer {
+func NewProducerWithOptions(options ...Option) *Producer {
+	cfg := &Config{
+		pool:           memory.NewGoAllocator(),
+		initIndexSize:  math.MaxUint16,
+		limitIndexSize: math.MaxUint16,
+	}
+	for _, opt := range options {
+		opt(cfg)
+	}
 	return &Producer{
-		pool:            pool,
+		pool:            cfg.pool,
 		streamProducers: make(map[string]*streamProducer),
 		batchId:         0,
-		metricsSchema:   acommon.NewAdaptiveSchema(metrics_arrow.Schema),
-		logsSchema:      acommon.NewAdaptiveSchema(logs_arrow.Schema),
-		tracesSchema:    acommon.NewAdaptiveSchema(traces_arrow.Schema),
+		metricsSchema: acommon.NewAdaptiveSchema(
+			metrics_arrow.Schema,
+			acommon.WithDictInitIndexSize(cfg.initIndexSize),
+			acommon.WithDictLimitIndexSize(cfg.limitIndexSize)),
+		logsSchema: acommon.NewAdaptiveSchema(
+			logs_arrow.Schema,
+			acommon.WithDictInitIndexSize(cfg.initIndexSize),
+			acommon.WithDictLimitIndexSize(cfg.limitIndexSize)),
+		tracesSchema: acommon.NewAdaptiveSchema(
+			traces_arrow.Schema,
+			acommon.WithDictInitIndexSize(cfg.initIndexSize),
+			acommon.WithDictLimitIndexSize(cfg.limitIndexSize)),
 	}
 }
 
@@ -130,19 +158,40 @@ func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrow
 
 // BatchArrowRecordsFromTraces produces a BatchArrowRecords message from a [ptrace.Traces] messages.
 func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.BatchArrowRecords, error) {
-	tb, err := traces_arrow.NewTracesBuilder(p.pool, p.tracesSchema)
-	if err != nil {
-		return nil, err
-	}
-	if err := tb.Append(ts); err != nil {
-		return nil, err
-	}
-	record, err := tb.Build()
-	if record != nil {
-		defer record.Release()
-	}
-	if err != nil {
-		return nil, err
+	var record arrow.Record
+	dictionaryOverflowCount := 0
+
+	for {
+		tb, err := traces_arrow.NewTracesBuilder(p.pool, p.tracesSchema)
+		if err != nil {
+			return nil, err
+		}
+		if err := tb.Append(ts); err != nil {
+			return nil, err
+		}
+		record, err = tb.Build()
+		if record != nil {
+			defer record.Release()
+		}
+		if err != nil {
+			var overflowErr *traces_arrow.DictionaryOverflowError
+			switch {
+			case errors.As(err, &overflowErr):
+				dictionaryOverflowCount++
+				// 4 is the maximum number of dictionary overflow errors we can handle.
+				// uint8 --> uint16
+				// uint16 --> uint32
+				// uint32 --> uint64
+				// uint64 --> string | binary
+				if dictionaryOverflowCount > 4 {
+					panic("Dictionary overflowed too many times. This shouldn't happen.")
+				}
+			default:
+				return nil, err
+			}
+		} else {
+			break
+		}
 	}
 
 	rms := []*RecordMessage{NewTraceMessage(record, colarspb.DeliveryType_BEST_EFFORT)}
@@ -152,6 +201,21 @@ func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.Batc
 		return nil, err
 	}
 	return bar, nil
+}
+
+// TracesAdaptiveSchema returns the adaptive schema used to encode traces.
+func (p *Producer) TracesAdaptiveSchema() *acommon.AdaptiveSchema {
+	return p.tracesSchema
+}
+
+// LogsAdaptiveSchema returns the adaptive schema used to encode logs.
+func (p *Producer) LogsAdaptiveSchema() *acommon.AdaptiveSchema {
+	return p.logsSchema
+}
+
+// MetricsAdaptiveSchema returns the adaptive schema used to encode metrics.
+func (p *Producer) MetricsAdaptiveSchema() *acommon.AdaptiveSchema {
+	return p.metricsSchema
 }
 
 // Close closes all stream producers.
@@ -222,4 +286,65 @@ func (p *Producer) Produce(rms []*RecordMessage, deliveryType colarspb.DeliveryT
 		OtlpArrowPayloads: oapl,
 		DeliveryType:      deliveryType,
 	}, nil
+}
+
+func WithAllocator(allocator memory.Allocator) Option {
+	return func(cfg *Config) {
+		cfg.pool = allocator
+	}
+}
+
+func WithNoDictionary() Option {
+	return func(cfg *Config) {
+		cfg.initIndexSize = 0
+		cfg.limitIndexSize = 0
+	}
+}
+
+func WithUint8InitDictIndex() Option {
+	return func(cfg *Config) {
+		cfg.initIndexSize = math.MaxUint8
+	}
+}
+
+func WithUint16InitDictIndex() Option {
+	return func(cfg *Config) {
+		cfg.initIndexSize = math.MaxUint16
+	}
+}
+
+func WithUint32LinitDictIndex() Option {
+	return func(cfg *Config) {
+		cfg.initIndexSize = math.MaxUint32
+	}
+}
+
+func WithUint64InitDictIndex() Option {
+	return func(cfg *Config) {
+		cfg.initIndexSize = math.MaxUint64
+	}
+}
+
+func WithUint8LimitDictIndex() Option {
+	return func(cfg *Config) {
+		cfg.limitIndexSize = math.MaxUint8
+	}
+}
+
+func WithUint16LimitDictIndex() Option {
+	return func(cfg *Config) {
+		cfg.limitIndexSize = math.MaxUint16
+	}
+}
+
+func WithUint32LimitDictIndex() Option {
+	return func(cfg *Config) {
+		cfg.limitIndexSize = math.MaxUint32
+	}
+}
+
+func WithUint64LimitDictIndex() Option {
+	return func(cfg *Config) {
+		cfg.limitIndexSize = math.MaxUint64
+	}
 }
