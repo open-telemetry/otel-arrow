@@ -16,7 +16,7 @@ import (
 var (
 	EventDT = arrow.StructOf([]arrow.Field{
 		{Name: constants.TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
-		{Name: constants.NAME, Type: acommon.DictU16String},
+		{Name: constants.NAME, Type: acommon.DefaultDictString},
 		{Name: constants.ATTRIBUTES, Type: acommon.AttributesDT},
 		{Name: constants.DROPPED_ATTRIBUTES_COUNT, Type: arrow.PrimitiveTypes.Uint32},
 	}...)

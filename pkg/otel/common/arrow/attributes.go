@@ -12,7 +12,7 @@ import (
 // Arrow data types used to build the attribute map.
 var (
 	// KDT is the Arrow key data type.
-	KDT = DictU16String
+	KDT = DefaultDictString
 
 	// AttributesDT is the Arrow attribute data type.
 	AttributesDT = arrow.MapOf(KDT, AnyValueDT)

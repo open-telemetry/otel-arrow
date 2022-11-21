@@ -16,7 +16,7 @@ import (
 var (
 	StatusDT = arrow.StructOf([]arrow.Field{
 		{Name: constants.STATUS_CODE, Type: arrow.PrimitiveTypes.Int32},
-		{Name: constants.STATUS_MESSAGE, Type: acommon.DictU16String},
+		{Name: constants.STATUS_MESSAGE, Type: acommon.DefaultDictString},
 	}...)
 )
 

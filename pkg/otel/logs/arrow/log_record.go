@@ -18,10 +18,10 @@ var (
 	LogRecordDT = arrow.StructOf([]arrow.Field{
 		{Name: constants.TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
 		{Name: constants.OBSERVED_TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
-		{Name: constants.TRACE_ID, Type: acommon.DictU16Fixed16Binary},
-		{Name: constants.SPAN_ID, Type: acommon.DictU16Fixed8Binary},
+		{Name: constants.TRACE_ID, Type: acommon.DefaultDictFixed16Binary},
+		{Name: constants.SPAN_ID, Type: acommon.DefaultDictFixed8Binary},
 		{Name: constants.SEVERITY_NUMBER, Type: arrow.PrimitiveTypes.Int32},
-		{Name: constants.SEVERITY_TEXT, Type: acommon.DictU16String},
+		{Name: constants.SEVERITY_TEXT, Type: acommon.DefaultDictString},
 		{Name: constants.BODY, Type: acommon.AnyValueDT},
 		{Name: constants.ATTRIBUTES, Type: acommon.AttributesDT},
 		{Name: constants.DROPPED_ATTRIBUTES_COUNT, Type: arrow.PrimitiveTypes.Uint32},

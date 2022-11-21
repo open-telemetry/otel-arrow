@@ -14,8 +14,8 @@ import (
 // ScopeDT is the Arrow Data Type describing a scope.
 var (
 	ScopeDT = arrow.StructOf([]arrow.Field{
-		{Name: constants.NAME, Type: DictU16String},
-		{Name: constants.VERSION, Type: DictU16String},
+		{Name: constants.NAME, Type: DefaultDictString},
+		{Name: constants.VERSION, Type: DefaultDictString},
 		{Name: constants.ATTRIBUTES, Type: AttributesDT},
 		{Name: constants.DROPPED_ATTRIBUTES_COUNT, Type: arrow.PrimitiveTypes.Uint32},
 	}...)

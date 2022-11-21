@@ -15,10 +15,10 @@ import (
 // LinkDT is the Arrow Data Type describing a link event.
 var (
 	LinkDT = arrow.StructOf([]arrow.Field{
-		{Name: constants.TRACE_ID, Type: acommon.DictU16Fixed16Binary},
+		{Name: constants.TRACE_ID, Type: acommon.DefaultDictFixed16Binary},
 		// TODO: Not sure a dictionary if needed here
-		{Name: constants.SPAN_ID, Type: acommon.DictU16Fixed8Binary},
-		{Name: constants.TRACE_STATE, Type: acommon.DictU16String},
+		{Name: constants.SPAN_ID, Type: acommon.DefaultDictFixed8Binary},
+		{Name: constants.TRACE_STATE, Type: acommon.DefaultDictString},
 		{Name: constants.ATTRIBUTES, Type: acommon.AttributesDT},
 		{Name: constants.DROPPED_ATTRIBUTES_COUNT, Type: arrow.PrimitiveTypes.Uint32},
 	}...)

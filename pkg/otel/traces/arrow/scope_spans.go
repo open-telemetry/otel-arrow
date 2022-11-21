@@ -16,7 +16,7 @@ import (
 var (
 	ScopeSpansDT = arrow.StructOf([]arrow.Field{
 		{Name: constants.SCOPE, Type: acommon.ScopeDT},
-		{Name: constants.SCHEMA_URL, Type: acommon.DictU16String},
+		{Name: constants.SCHEMA_URL, Type: acommon.DefaultDictString},
 		{Name: constants.SPANS, Type: arrow.ListOf(SpanDT)},
 	}...)
 )

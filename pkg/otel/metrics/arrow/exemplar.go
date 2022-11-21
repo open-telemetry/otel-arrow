@@ -19,8 +19,8 @@ var (
 		arrow.Field{Name: constants.TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
 		arrow.Field{Name: constants.METRIC_VALUE, Type: MetricValueDT},
 		// TODO: Not sure a dictionary if needed here
-		arrow.Field{Name: constants.SPAN_ID, Type: acommon.DictU16Fixed8Binary},
-		arrow.Field{Name: constants.TRACE_ID, Type: acommon.DictU16Fixed16Binary},
+		arrow.Field{Name: constants.SPAN_ID, Type: acommon.DefaultDictFixed8Binary},
+		arrow.Field{Name: constants.TRACE_ID, Type: acommon.DefaultDictFixed16Binary},
 	)
 )
 

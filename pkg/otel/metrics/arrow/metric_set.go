@@ -15,18 +15,18 @@ import (
 var (
 	// UnivariateMetricSetDT is the Arrow Data Type describing a set of univariate metrics.
 	UnivariateMetricSetDT = arrow.StructOf(
-		arrow.Field{Name: constants.NAME, Type: acommon.DictU16String},
-		arrow.Field{Name: constants.DESCRIPTION, Type: acommon.DictU16String},
-		arrow.Field{Name: constants.UNIT, Type: acommon.DictU16String},
+		arrow.Field{Name: constants.NAME, Type: acommon.DefaultDictString},
+		arrow.Field{Name: constants.DESCRIPTION, Type: acommon.DefaultDictString},
+		arrow.Field{Name: constants.UNIT, Type: acommon.DefaultDictString},
 		arrow.Field{Name: constants.DATA, Type: UnivariateMetricDT},
 	)
 
 	// MultivariateMetricsDT is the Arrow Data Type describing a set of multivariate metrics.
 	// Multivariate metrics are metrics sharing the same attributes, start time, and end time.
 	MultivariateMetricsDT = arrow.StructOf([]arrow.Field{
-		{Name: constants.NAME, Type: acommon.DictU16String},
-		{Name: constants.DESCRIPTION, Type: acommon.DictU16String},
-		{Name: constants.UNIT, Type: acommon.DictU16String},
+		{Name: constants.NAME, Type: acommon.DefaultDictString},
+		{Name: constants.DESCRIPTION, Type: acommon.DefaultDictString},
+		{Name: constants.UNIT, Type: acommon.DefaultDictString},
 		// TODO
 		// attributes
 		// start time
