@@ -1,19 +1,16 @@
-/*
- * // Copyright The OpenTelemetry Authors
- * //
- * // Licensed under the Apache License, Version 2.0 (the "License");
- * // you may not use this file except in compliance with the License.
- * // You may obtain a copy of the License at
- * //
- * //       http://www.apache.org/licenses/LICENSE-2.0
- * //
- * // Unless required by applicable law or agreed to in writing, software
- * // distributed under the License is distributed on an "AS IS" BASIS,
- * // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * // See the License for the specific language governing permissions and
- * // limitations under the License.
- *
- */
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package metrics
 
@@ -239,8 +236,15 @@ func collectF64NumberDataPoint(points pmetric.NumberDataPointSlice, timeUnixNano
 }
 
 func collectMultivariateSumMetrics(metrics pmetric.MetricSlice, timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, inputField *arrow.Field, inputArr arrow.Array, name string, row int, attributes pcommon.Map) error {
-	multiFields := inputField.Type.(*arrow.StructType).Fields()
-	multiStruct := inputArr.(*array.Struct) // Note: type assertion in caller
+	inputStruct, ok := inputField.Type.(*arrow.StructType)
+	if !ok {
+		return fmt.Errorf("expected struct type, got %T", inputField.Type)
+	}
+	multiFields := inputStruct.Fields()
+	multiStruct, ok := inputArr.(*array.Struct) // Note: type assertion in caller
+	if !ok {
+		return fmt.Errorf("expected array struct, got %T", inputArr)
+	}
 	m := metrics.AppendEmpty()
 	m.SetName(name)
 	m.SetDescription(metricMetadata(inputField, constants.METADATA_METRIC_DESCRIPTION))
@@ -283,8 +287,15 @@ func collectMultivariateSumMetrics(metrics pmetric.MetricSlice, timeUnixNano uin
 }
 
 func collectMultivariateGaugeMetrics(metrics pmetric.MetricSlice, timeUnixNano uint64, startTimeUnixNano uint64, flags uint32, inputField *arrow.Field, inputArr arrow.Array, name string, row int, attributes pcommon.Map) error {
-	multiFields := inputField.Type.(*arrow.StructType).Fields()
-	multiStruct := inputArr.(*array.Struct) // Note: type assertion in caller
+	inputStruct, ok := inputField.Type.(*arrow.StructType)
+	if !ok {
+		return fmt.Errorf("expected struct type, got %T", inputField.Type)
+	}
+	multiFields := inputStruct.Fields()
+	multiStruct, ok := inputArr.(*array.Struct) // Note: type assertion in caller
+	if !ok {
+		return fmt.Errorf("expected array struct, got %T", inputArr)
+	}
 	m := metrics.AppendEmpty()
 	m.SetName(name)
 	m.SetDescription(metricMetadata(inputField, constants.METADATA_METRIC_DESCRIPTION))

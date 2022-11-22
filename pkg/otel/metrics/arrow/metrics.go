@@ -36,7 +36,10 @@ func NewMetricsBuilder(pool memory.Allocator, schema *acommon.AdaptiveSchema) (*
 	if err != nil {
 		return nil, err
 	}
-	rmb := builder.Field(0).(*array.ListBuilder)
+	rmb, ok := builder.Field(0).(*array.ListBuilder)
+	if !ok {
+		return nil, fmt.Errorf("expected field 0 to be a list builder, got %T", builder.Field(0))
+	}
 	return &MetricsBuilder{
 		released: false,
 		schema:   schema,

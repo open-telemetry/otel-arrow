@@ -290,8 +290,14 @@ func (c *Columns) UpdateColumn(fieldPath *rfield.FieldPath, expectedFieldDT arro
 		c.ListColumns[fieldPath.Current].Push(fieldPath, field.Value.(*rfield.List).Values)
 		c.length = c.ListColumns[fieldPath.Current].Len()
 	case *arrow.StructType:
-		structDT := expectedFieldDT.(*arrow.StructType)
-		t := field.Value.(*rfield.Struct)
+		structDT, ok := expectedFieldDT.(*arrow.StructType)
+		if !ok {
+			panic(fmt.Sprintf("expected struct type, got %T", expectedFieldDT))
+		}
+		t, ok := field.Value.(*rfield.Struct)
+		if !ok {
+			panic(fmt.Sprintf("expected rfield struct, got %T", field.Value))
+		}
 		if len(t.Fields) == len(structDT.Fields()) {
 			for fieldPos := range t.Fields {
 				c.StructColumns[fieldPath.Current].Push(fieldPath.Children[fieldPos], structDT.Fields()[fieldPos].Type, t.Fields[fieldPos])

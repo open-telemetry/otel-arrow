@@ -36,7 +36,10 @@ func NewTracesBuilder(pool memory.Allocator, schema *acommon.AdaptiveSchema) (*T
 	if err != nil {
 		return nil, err
 	}
-	rsb := builder.Field(0).(*array.ListBuilder)
+	rsb, ok := builder.Field(0).(*array.ListBuilder)
+	if !ok {
+		return nil, fmt.Errorf("expected field 0 to be a list builder, got %T", builder.Field(0))
+	}
 	return &TracesBuilder{
 		released: false,
 		schema:   schema,

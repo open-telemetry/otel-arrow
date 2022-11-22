@@ -37,7 +37,7 @@ import (
 func TestConversionFromSyntheticData(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec	// only used for testing
 	logsGen := datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
 	// Generate a random OTLP logs request.

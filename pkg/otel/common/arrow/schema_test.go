@@ -37,10 +37,10 @@ func TestSchemaWithStruct(t *testing.T) {
 	pool := memory.NewGoAllocator()
 	sm := NewAdaptiveSchema(schema, WithDictInitIndexSize(math.MaxUint8))
 	recbldr := array.NewRecordBuilder(pool, sm.Schema())
-	field1 := recbldr.Field(0).(*array.BinaryDictionaryBuilder)
-	field2 := recbldr.Field(1).(*array.StructBuilder)
-	field2_1 := recbldr.Field(1).(*array.StructBuilder).FieldBuilder(0).(*array.BinaryDictionaryBuilder)
-	field2_2 := recbldr.Field(1).(*array.StructBuilder).FieldBuilder(1).(*array.BinaryDictionaryBuilder)
+	field1, _ := recbldr.Field(0).(*array.BinaryDictionaryBuilder)
+	field2, _ := recbldr.Field(1).(*array.StructBuilder)
+	field2_1, _ := recbldr.Field(1).(*array.StructBuilder).FieldBuilder(0).(*array.BinaryDictionaryBuilder)
+	field2_2, _ := recbldr.Field(1).(*array.StructBuilder).FieldBuilder(1).(*array.BinaryDictionaryBuilder)
 
 	for j := 0; j < 500; j++ {
 		if err := field1.AppendString(fmt.Sprintf(`value_%d"`, j%100)); err != nil {
@@ -95,10 +95,10 @@ func TestSchemaWithMap(t *testing.T) {
 	pool := memory.NewGoAllocator()
 	sm := NewAdaptiveSchema(schema, WithDictInitIndexSize(math.MaxUint8))
 	recbldr := array.NewRecordBuilder(pool, sm.Schema())
-	field1 := recbldr.Field(0).(*array.BinaryDictionaryBuilder)
-	field2 := recbldr.Field(1).(*array.MapBuilder)
-	field2_1 := recbldr.Field(1).(*array.MapBuilder).KeyBuilder().(*array.BinaryDictionaryBuilder)
-	field2_2 := recbldr.Field(1).(*array.MapBuilder).ItemBuilder().(*array.BinaryDictionaryBuilder)
+	field1, _ := recbldr.Field(0).(*array.BinaryDictionaryBuilder)
+	field2, _ := recbldr.Field(1).(*array.MapBuilder)
+	field2_1, _ := recbldr.Field(1).(*array.MapBuilder).KeyBuilder().(*array.BinaryDictionaryBuilder)
+	field2_2, _ := recbldr.Field(1).(*array.MapBuilder).ItemBuilder().(*array.BinaryDictionaryBuilder)
 
 	for j := 0; j < 500; j++ {
 		if err := field1.AppendString(fmt.Sprintf(`value_%d"`, j%100)); err != nil {
@@ -156,10 +156,10 @@ func TestSchemaWithUnion(t *testing.T) {
 	pool := memory.NewGoAllocator()
 	sm := NewAdaptiveSchema(schema, WithDictInitIndexSize(math.MaxUint8))
 	recbldr := array.NewRecordBuilder(pool, sm.Schema())
-	field1 := recbldr.Field(0).(*array.BinaryDictionaryBuilder)
-	field2 := recbldr.Field(1).(*array.SparseUnionBuilder)
-	field2_1 := recbldr.Field(1).(*array.SparseUnionBuilder).Child(0).(*array.BinaryDictionaryBuilder)
-	field2_2 := recbldr.Field(1).(*array.SparseUnionBuilder).Child(1).(*array.BinaryDictionaryBuilder)
+	field1, _ := recbldr.Field(0).(*array.BinaryDictionaryBuilder)
+	field2, _ := recbldr.Field(1).(*array.SparseUnionBuilder)
+	field2_1, _ := recbldr.Field(1).(*array.SparseUnionBuilder).Child(0).(*array.BinaryDictionaryBuilder)
+	field2_2, _ := recbldr.Field(1).(*array.SparseUnionBuilder).Child(1).(*array.BinaryDictionaryBuilder)
 
 	for j := 0; j < 500; j++ {
 		if err := field1.AppendString(fmt.Sprintf(`value_%d"`, j%100)); err != nil {

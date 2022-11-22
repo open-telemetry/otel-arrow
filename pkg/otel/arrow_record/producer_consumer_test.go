@@ -186,7 +186,7 @@ func FuzzProducerTraces1(f *testing.F) {
 }
 
 func TestProducerConsumerTraces(t *testing.T) {
-	ent := datagen.NewTestEntropy(int64(rand.Uint64()))
+	ent := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
 
 	dg := datagen.NewTracesGenerator(
 		ent,
@@ -223,7 +223,7 @@ func TestProducerConsumerTraces(t *testing.T) {
 }
 
 func TestProducerConsumerLogs(t *testing.T) {
-	ent := datagen.NewTestEntropy(int64(rand.Uint64()))
+	ent := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
 
 	dg := datagen.NewLogsGenerator(
 		ent,
@@ -260,7 +260,7 @@ func TestProducerConsumerLogs(t *testing.T) {
 }
 
 func TestProducerConsumerMetrics(t *testing.T) {
-	ent := datagen.NewTestEntropy(int64(rand.Uint64()))
+	ent := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
 
 	dg := datagen.NewMetricsGenerator(
 		ent,

@@ -56,10 +56,10 @@ type FakeMetricsDataset struct {
 	generator *datagen.MetricsGenerator
 }
 
-func NewFakeMetricsDataset(len int) *FakeMetricsDataset {
+func NewFakeMetricsDataset(size int) *FakeMetricsDataset {
 	//#nosec G404 -- This is a false positive, this random number generator is not used for test purposes
 	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
-	return &FakeMetricsDataset{len: len, generator: datagen.NewMetricsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
+	return &FakeMetricsDataset{len: size, generator: datagen.NewMetricsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
 }
 
 func (d *FakeMetricsDataset) Len() int {
@@ -78,10 +78,10 @@ type FakeLogsDataset struct {
 	generator *datagen.LogsGenerator
 }
 
-func NewFakeLogsDataset(len int) *FakeLogsDataset {
+func NewFakeLogsDataset(size int) *FakeLogsDataset {
 	//#nosec G404 -- This is a false positive, this random number generator is not used for test purposes
 	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
-	return &FakeLogsDataset{len: len, generator: datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
+	return &FakeLogsDataset{len: size, generator: datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
 }
 
 func (d *FakeLogsDataset) Len() int {
@@ -100,10 +100,10 @@ type FakeTraceDataset struct {
 	generator *datagen.TraceGenerator
 }
 
-func NewFakeTraceDataset(len int) *FakeTraceDataset {
+func NewFakeTraceDataset(size int) *FakeTraceDataset {
 	//#nosec G404 -- This is a false positive, this random number generator is not used for test purposes
 	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
-	return &FakeTraceDataset{len: len, generator: datagen.NewTracesGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
+	return &FakeTraceDataset{len: size, generator: datagen.NewTracesGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
 }
 
 func (d *FakeTraceDataset) Len() int {

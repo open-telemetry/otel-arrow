@@ -78,7 +78,7 @@ func (c *Consumer) MetricsFrom(bar *colarspb.BatchArrowRecords) ([]pmetric.Metri
 		return metrics_otlp.MetricsFrom(record.record)
 	}
 
-	var result []pmetric.Metrics
+	result := make([]pmetric.Metrics, 0, len(records))
 	for _, record := range records {
 		metrics, err := record2Metrics(record)
 		if err != nil {
@@ -101,7 +101,7 @@ func (c *Consumer) LogsFrom(bar *colarspb.BatchArrowRecords) ([]plog.Logs, error
 		return logs_otlp.LogsFrom(record.record)
 	}
 
-	var result []plog.Logs
+	result := make([]plog.Logs, 0, len(records))
 	for _, record := range records {
 		logs, err := record2Logs(record)
 		if err != nil {
@@ -124,7 +124,7 @@ func (c *Consumer) TracesFrom(bar *colarspb.BatchArrowRecords) ([]ptrace.Traces,
 		return traces_otlp.TracesFrom(record.record)
 	}
 
-	var result []ptrace.Traces
+	result := make([]ptrace.Traces, 0, len(records))
 	for _, record := range records {
 		traces, err := record2Traces(record)
 		if err != nil {

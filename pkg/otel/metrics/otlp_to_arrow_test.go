@@ -29,7 +29,7 @@ func TestOtlpMetricsToArrowRecords(t *testing.T) {
 
 	cfg := config.NewUint16DefaultConfig()
 	rr := air.NewRecordRepository(cfg)
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
 
 	lg := datagen.NewMetricsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 

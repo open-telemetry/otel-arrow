@@ -36,7 +36,10 @@ func NewLogsBuilder(pool memory.Allocator, schema *acommon.AdaptiveSchema) (*Log
 	if err != nil {
 		return nil, err
 	}
-	rlb := builder.Field(0).(*array.ListBuilder)
+	rlb, ok := builder.Field(0).(*array.ListBuilder)
+	if !ok {
+		return nil, fmt.Errorf("expected field 0 to be a list, got %T", builder.Field(0))
+	}
 	return &LogsBuilder{
 		released: false,
 		schema:   schema,

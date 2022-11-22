@@ -37,7 +37,7 @@ import (
 func TestConversionFromSyntheticData(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
 
 	tracesGen := datagen.NewTracesGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
@@ -92,7 +92,7 @@ func TestConversionFromRealData(t *testing.T) {
 	}
 }
 
-func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportRequest) { //nolint:unused
+func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportRequest) { //nolint:unused // only used for testing
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 	traceSchema := acommon.NewAdaptiveSchema(traces_arrow.Schema)

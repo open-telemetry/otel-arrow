@@ -15,6 +15,7 @@
 package rfield
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -81,7 +82,10 @@ func WriteDataTypeSignature(dataType arrow.DataType, sig *strings.Builder) {
 		WriteDataTypeSignature(dataType.(*arrow.ListType).Elem(), sig)
 		sig.WriteByte(']')
 	case arrow.STRUCT:
-		structDataType := dataType.(*arrow.StructType)
+		structDataType, ok := dataType.(*arrow.StructType)
+		if !ok {
+			panic(fmt.Sprintf("expected *arrow.StructType, got %T", dataType))
+		}
 		sig.WriteByte('{')
 		for i, field := range structDataType.Fields() {
 			if i > 0 {

@@ -115,7 +115,10 @@ func CopyAttributesFrom(a pcommon.Map, dt arrow.DataType, arr arrow.Array, row i
 	if !ok {
 		return fmt.Errorf("attributes is not a struct")
 	}
-	attrArray := arr.(*array.Struct)
+	attrArray, ok := arr.(*array.Struct)
+	if !ok {
+		return fmt.Errorf("attributes is not a struct array, but %T", arr)
+	}
 	a.EnsureCapacity(attrArray.NumField())
 	for i := 0; i < attrArray.NumField(); i++ {
 		valueField := structType.Field(i)

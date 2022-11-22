@@ -25,7 +25,7 @@ import (
 func TestBackAndForthConversion(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
 
 	dg := datagen.NewDataGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes()).
 		WithConfig(datagen.Config{

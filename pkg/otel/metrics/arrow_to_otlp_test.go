@@ -28,7 +28,7 @@ func TestSystemCpuTimeConversion(t *testing.T) {
 
 	cfg := config.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(cfg)
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
 
 	dg := datagen.NewDataGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes()).
 		WithConfig(datagen.Config{
@@ -66,7 +66,7 @@ func TestSystemMemoryUsageConversion(t *testing.T) {
 
 	cfg := config.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(cfg)
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
 
 	dg := datagen.NewDataGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes()).
 		WithConfig(datagen.Config{
@@ -104,7 +104,7 @@ func TestSystemCpuLoadAverage1mConversion(t *testing.T) {
 
 	cfg := config.NewUint8DefaultConfig()
 	rr := air.NewRecordRepository(cfg)
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
 
 	dg := datagen.NewDataGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes()).
 		WithConfig(datagen.Config{

@@ -221,7 +221,7 @@ func TestBuild(t *testing.T) {
 		if record.NumRows() != int64(recordCount) {
 			t.Errorf("Expected %d rows, got %d", recordCount, record.NumRows())
 		}
-		d := record.Column(4).(*array.Struct)
+		d, _ := record.Column(4).(*array.Struct)
 		if record.ColumnName(0) != "ts" {
 			t.Errorf("Expected column name to be ts, got %s", record.ColumnName(0))
 		}
@@ -345,8 +345,8 @@ func RecordWithHeterogeneousListOfStructs(ts uint64) *Record {
 }
 
 func String(dictionary *array.Dictionary) string {
-	indices := dictionary.Indices().(*array.Uint8)
-	dicValues := dictionary.Dictionary().(*array.String)
+	indices, _ := dictionary.Indices().(*array.Uint8)
+	dicValues, _ := dictionary.Dictionary().(*array.String)
 	output := "["
 	for i := 0; i < dictionary.Len(); i++ {
 		if i > 0 {
