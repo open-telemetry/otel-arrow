@@ -130,15 +130,17 @@ func NewProducerWithOptions(options ...Option) *Producer {
 
 // BatchArrowRecordsFromMetrics produces a BatchArrowRecords message from a [pmetric.Metrics] messages.
 func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colarspb.BatchArrowRecords, error) {
-	mb := metrics_arrow.NewMetricsBuilder(p.pool)
-	if err := mb.Append(metrics); err != nil {
-		return nil, err
-	}
-	record, err := mb.Build()
+	record, err := RecordBuilder[pmetric.Metrics](func() (acommon.EntityBuilder[pmetric.Metrics], error) {
+		return metrics_arrow.NewMetricsBuilder(p.pool, p.metricsSchema)
+	}, metrics)
+	defer func() {
+		if record != nil {
+			record.Release()
+		}
+	}()
 	if err != nil {
 		return nil, err
 	}
-	defer record.Release()
 
 	rms := []*RecordMessage{NewMetricsMessage(record, colarspb.DeliveryType_BEST_EFFORT)}
 

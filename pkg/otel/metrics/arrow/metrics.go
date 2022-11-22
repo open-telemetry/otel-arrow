@@ -8,6 +8,7 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -22,18 +23,27 @@ var (
 type MetricsBuilder struct {
 	released bool
 
-	builder *array.ListBuilder      // resource metrics list builder
+	schema  *acommon.AdaptiveSchema // Metrics schema
+	builder *array.RecordBuilder    // Record builder
+	rmb     *array.ListBuilder      // resource metrics list builder
 	rmp     *ResourceMetricsBuilder // resource metrics builder
 }
 
 // NewMetricsBuilder creates a new MetricsBuilder with a given allocator.
-func NewMetricsBuilder(pool memory.Allocator) *MetricsBuilder {
-	rsb := array.NewListBuilder(pool, ResourceMetricsDT)
+func NewMetricsBuilder(pool memory.Allocator, schema *acommon.AdaptiveSchema) (*MetricsBuilder, error) {
+	builder := array.NewRecordBuilder(pool, schema.Schema())
+	err := schema.InitDictionaryBuilders(builder)
+	if err != nil {
+		return nil, err
+	}
+	rmb := builder.Field(0).(*array.ListBuilder)
 	return &MetricsBuilder{
 		released: false,
-		builder:  rsb,
-		rmp:      ResourceMetricsBuilderFrom(rsb.ValueBuilder().(*array.StructBuilder)),
-	}
+		schema:   schema,
+		builder:  builder,
+		rmb:      rmb,
+		rmp:      ResourceMetricsBuilderFrom(rmb.ValueBuilder().(*array.StructBuilder)),
+	}, nil
 }
 
 // Build builds an Arrow Record from the builder.
@@ -47,9 +57,24 @@ func (b *MetricsBuilder) Build() (arrow.Record, error) {
 
 	defer b.Release()
 
-	arr := b.builder.NewArray()
-	defer arr.Release()
-	return array.NewRecord(Schema, []arrow.Array{arr}, int64(arr.Len())), nil
+	record := b.builder.NewRecord()
+
+	overflowDetected, updates := b.schema.Analyze(record)
+	if overflowDetected {
+		record.Release()
+
+		// Build a list of fields that overflowed
+		var fieldNames []string
+		for _, update := range updates {
+			fieldNames = append(fieldNames, b.schema.DictionaryPath(update.DictIdx))
+		}
+
+		b.schema.UpdateSchema(updates)
+
+		return nil, &acommon.DictionaryOverflowError{FieldNames: fieldNames}
+	}
+
+	return record, nil
 }
 
 // Append appends a new set of resource metrics to the builder.
@@ -61,7 +86,7 @@ func (b *MetricsBuilder) Append(metrics pmetric.Metrics) error {
 	rm := metrics.ResourceMetrics()
 	rc := rm.Len()
 	if rc > 0 {
-		b.builder.Append(true)
+		b.rmb.Append(true)
 		b.builder.Reserve(rc)
 		for i := 0; i < rc; i++ {
 			if err := b.rmp.Append(rm.At(i)); err != nil {
@@ -69,7 +94,7 @@ func (b *MetricsBuilder) Append(metrics pmetric.Metrics) error {
 			}
 		}
 	} else {
-		b.builder.AppendNull()
+		b.rmb.AppendNull()
 	}
 	return nil
 }

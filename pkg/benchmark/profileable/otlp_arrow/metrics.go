@@ -6,15 +6,14 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/memory"
 	"google.golang.org/protobuf/proto"
 
+	"go.opentelemetry.io/collector/pdata/pmetric"
+
 	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	"github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics"
-	metrics_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
-
-	"go.opentelemetry.io/collector/pdata/pmetric"
 )
 
 type MetricsProfileable struct {
@@ -65,18 +64,7 @@ func (s *MetricsProfileable) CreateBatch(_ io.Writer, _, _ int) {
 	// Conversion of OTLP metrics to OTLP Arrow Records
 	s.batchArrowRecords = make([]*colarspb.BatchArrowRecords, 0, len(s.metrics))
 	for _, metricsServiceRequest := range s.metrics {
-		mb := metrics_arrow.NewMetricsBuilder(s.pool)
-		if err := mb.Append(metricsServiceRequest); err != nil {
-			panic(err)
-		}
-		record, err := mb.Build()
-		if err != nil {
-			panic(err)
-		}
-		rms := []*arrow_record.RecordMessage{
-			arrow_record.NewMetricsMessage(record, colarspb.DeliveryType_BEST_EFFORT),
-		}
-		bar, err := s.producer.Produce(rms, colarspb.DeliveryType_BEST_EFFORT)
+		bar, err := s.producer.BatchArrowRecordsFromMetrics(metricsServiceRequest)
 		if err != nil {
 			panic(err)
 		}
