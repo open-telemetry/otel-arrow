@@ -50,6 +50,7 @@ type TestEntropy struct {
 }
 
 func NewTestEntropy(seed int64) TestEntropy {
+	//#nosec G404 -- This is a false positive, this random number generator is not used for test purposes
 	rng := rand.New(rand.NewSource(seed))
 
 	// let the start time happen in 2022 as the first rng draw.

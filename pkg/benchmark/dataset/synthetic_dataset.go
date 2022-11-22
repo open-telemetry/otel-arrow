@@ -57,6 +57,7 @@ type FakeMetricsDataset struct {
 }
 
 func NewFakeMetricsDataset(len int) *FakeMetricsDataset {
+	//#nosec G404 -- This is a false positive, this random number generator is not used for test purposes
 	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
 	return &FakeMetricsDataset{len: len, generator: datagen.NewMetricsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
 }
@@ -78,6 +79,7 @@ type FakeLogsDataset struct {
 }
 
 func NewFakeLogsDataset(len int) *FakeLogsDataset {
+	//#nosec G404 -- This is a false positive, this random number generator is not used for test purposes
 	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
 	return &FakeLogsDataset{len: len, generator: datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
 }
@@ -99,6 +101,7 @@ type FakeTraceDataset struct {
 }
 
 func NewFakeTraceDataset(len int) *FakeTraceDataset {
+	//#nosec G404 -- This is a false positive, this random number generator is not used for test purposes
 	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
 	return &FakeTraceDataset{len: len, generator: datagen.NewTracesGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
 }

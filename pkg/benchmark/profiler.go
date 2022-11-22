@@ -23,6 +23,7 @@ import (
 	"math"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -46,7 +47,7 @@ func NewProfiler(batchSizes []int, logfile string) *Profiler {
 		}
 	}
 
-	file, _ := os.OpenFile(logfile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	file, _ := os.OpenFile(filepath.Clean(logfile), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
 	mw := io.MultiWriter(os.Stdout, file)
 	dt := time.Now()
 	_, _ = fmt.Fprintln(mw, "\n================================================================================")
@@ -385,7 +386,7 @@ func (p *Profiler) AddSectionWithTotal(label string, step string, table *tablewr
 
 func (p *Profiler) ExportMetricsTimesCSV(filePrefix string) {
 	filename := fmt.Sprintf("%s/%s_times.csv", p.outputDir, filePrefix)
-	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(filepath.Clean(filename), os.O_CREATE|os.O_WRONLY, 0600)
 
 	if err != nil {
 		log.Fatalf("failed creating file: %s", err)
@@ -447,7 +448,7 @@ func (p *Profiler) ExportMetricsTimesCSV(filePrefix string) {
 
 func (p *Profiler) ExportMetricsBytesCSV(filePrefix string) {
 	filename := fmt.Sprintf("%s/%s_bytes.csv", p.outputDir, filePrefix)
-	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(filepath.Clean(filename), os.O_CREATE|os.O_WRONLY, 0600)
 
 	if err != nil {
 		log.Fatalf("failed creating file: %s", err)

@@ -18,9 +18,11 @@
 package main
 
 import (
+	"crypto/rand"
 	"flag"
 	"log"
-	"math/rand"
+	"math"
+	"math/big"
 	"os"
 	"path"
 
@@ -48,7 +50,11 @@ func main() {
 	}
 
 	// Generate the dataset.
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	v, err := rand.Int(rand.Reader, big.NewInt(math.MaxInt64))
+	if err != nil {
+		log.Fatalf("Failed to generate random number - %v", err)
+	}
+	entropy := datagen.NewTestEntropy(v.Int64())
 
 	generator := datagen.NewMetricsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 	request := pmetricotlp.NewRequestFromMetrics(generator.Generate(batchSize, 100))
@@ -66,7 +72,7 @@ func main() {
 			log.Fatal("error creating directory: ", err)
 		}
 	}
-	err = os.WriteFile(outputFile, msg, 0644)
+	err = os.WriteFile(outputFile, msg, 0600)
 	if err != nil {
 		log.Fatal("write error: ", err)
 	}

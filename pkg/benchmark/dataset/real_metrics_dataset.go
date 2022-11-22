@@ -20,6 +20,7 @@ package dataset
 import (
 	"log"
 	"os"
+	"path/filepath"
 
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
@@ -38,7 +39,7 @@ type metrics struct {
 
 // NewRealMetricsDataset creates a new RealMetricsDataset from a binary file.
 func NewRealMetricsDataset(path string) *RealMetricsDataset {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		log.Fatal("read file:", err)
 	}

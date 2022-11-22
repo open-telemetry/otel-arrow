@@ -22,6 +22,7 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -49,7 +50,7 @@ type spanSorter struct {
 var _ sort.Interface = spanSorter{}
 
 func NewRealTraceDataset(path string, sortOrder []string) *RealTraceDataset {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		log.Fatal("read file:", err)
 	}

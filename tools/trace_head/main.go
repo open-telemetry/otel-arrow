@@ -63,7 +63,7 @@ func main() {
 			log.Fatal("error creating directory: ", err)
 		}
 	}
-	err = os.WriteFile(outputFile, pb, 0644)
+	err = os.WriteFile(outputFile, pb, 0600)
 	if err != nil {
 		log.Fatal("write error: ", err)
 	}
