@@ -87,7 +87,7 @@ func NewUnivariateMetricIds(parentDT *arrow.StructType) (*UnivariateMetricIds, e
 }
 
 func UpdateUnivariateMetricFrom(metric pmetric.Metric, los *arrow_utils.ListOfStructs, row int, ids *UnivariateMetricIds) error {
-	arr, ok := los.FieldById(ids.Id).(*array.SparseUnion)
+	arr, ok := los.FieldByID(ids.Id).(*array.SparseUnion)
 	if !ok {
 		return fmt.Errorf("field %q is not a sparse union", constants.DATA)
 	}

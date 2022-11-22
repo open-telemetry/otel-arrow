@@ -38,47 +38,47 @@ type StatusIds struct {
 }
 
 func NewSpansIds(scopeSpansDT *arrow.StructType) (*SpansIds, error) {
-	id, spanDT, err := arrow_utils.ListOfStructsFieldIdFromStruct(scopeSpansDT, constants.SPANS)
+	id, spanDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(scopeSpansDT, constants.SPANS)
 	if err != nil {
 		return nil, err
 	}
 
-	traceId, _, err := arrow_utils.FieldIdFromStruct(spanDT, constants.TRACE_ID)
+	traceId, _, err := arrow_utils.FieldIDFromStruct(spanDT, constants.TRACE_ID)
 	if err != nil {
 		return nil, err
 	}
 
-	spanId, _, err := arrow_utils.FieldIdFromStruct(spanDT, constants.SPAN_ID)
+	spanId, _, err := arrow_utils.FieldIDFromStruct(spanDT, constants.SPAN_ID)
 	if err != nil {
 		return nil, err
 	}
 
-	traceState, _, err := arrow_utils.FieldIdFromStruct(spanDT, constants.TRACE_STATE)
+	traceState, _, err := arrow_utils.FieldIDFromStruct(spanDT, constants.TRACE_STATE)
 	if err != nil {
 		return nil, err
 	}
 
-	parentSpanId, _, err := arrow_utils.FieldIdFromStruct(spanDT, constants.PARENT_SPAN_ID)
+	parentSpanId, _, err := arrow_utils.FieldIDFromStruct(spanDT, constants.PARENT_SPAN_ID)
 	if err != nil {
 		return nil, err
 	}
 
-	name, _, err := arrow_utils.FieldIdFromStruct(spanDT, constants.NAME)
+	name, _, err := arrow_utils.FieldIDFromStruct(spanDT, constants.NAME)
 	if err != nil {
 		return nil, err
 	}
 
-	kind, _, err := arrow_utils.FieldIdFromStruct(spanDT, constants.KIND)
+	kind, _, err := arrow_utils.FieldIDFromStruct(spanDT, constants.KIND)
 	if err != nil {
 		return nil, err
 	}
 
-	startTimeUnixNano, _, err := arrow_utils.FieldIdFromStruct(spanDT, constants.START_TIME_UNIX_NANO)
+	startTimeUnixNano, _, err := arrow_utils.FieldIDFromStruct(spanDT, constants.START_TIME_UNIX_NANO)
 	if err != nil {
 		return nil, err
 	}
 
-	endTimeUnixNano, _, err := arrow_utils.FieldIdFromStruct(spanDT, constants.END_TIME_UNIX_NANO)
+	endTimeUnixNano, _, err := arrow_utils.FieldIDFromStruct(spanDT, constants.END_TIME_UNIX_NANO)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +88,7 @@ func NewSpansIds(scopeSpansDT *arrow.StructType) (*SpansIds, error) {
 		return nil, err
 	}
 
-	droppedAttributesCount, _, err := arrow_utils.FieldIdFromStruct(spanDT, constants.DROPPED_ATTRIBUTES_COUNT)
+	droppedAttributesCount, _, err := arrow_utils.FieldIDFromStruct(spanDT, constants.DROPPED_ATTRIBUTES_COUNT)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +98,7 @@ func NewSpansIds(scopeSpansDT *arrow.StructType) (*SpansIds, error) {
 		return nil, err
 	}
 
-	droppedEventsCount, _, err := arrow_utils.FieldIdFromStruct(spanDT, constants.DROPPED_EVENTS_COUNT)
+	droppedEventsCount, _, err := arrow_utils.FieldIDFromStruct(spanDT, constants.DROPPED_EVENTS_COUNT)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +108,7 @@ func NewSpansIds(scopeSpansDT *arrow.StructType) (*SpansIds, error) {
 		return nil, err
 	}
 
-	droppedLinksCount, _, err := arrow_utils.FieldIdFromStruct(spanDT, constants.DROPPED_LINKS_COUNT)
+	droppedLinksCount, _, err := arrow_utils.FieldIDFromStruct(spanDT, constants.DROPPED_LINKS_COUNT)
 	if err != nil {
 		return nil, err
 	}
@@ -139,17 +139,17 @@ func NewSpansIds(scopeSpansDT *arrow.StructType) (*SpansIds, error) {
 }
 
 func NewStatusIds(spansDT *arrow.StructType) (*StatusIds, error) {
-	statusId, statusDT, err := arrow_utils.StructFieldIdFromStruct(spansDT, constants.STATUS)
+	statusId, statusDT, err := arrow_utils.StructFieldIDFromStruct(spansDT, constants.STATUS)
 	if err != nil {
 		return nil, err
 	}
 
-	code, _, err := arrow_utils.FieldIdFromStruct(statusDT, constants.STATUS_CODE)
+	code, _, err := arrow_utils.FieldIDFromStruct(statusDT, constants.STATUS_CODE)
 	if err != nil {
 		return nil, err
 	}
 
-	message, _, err := arrow_utils.FieldIdFromStruct(statusDT, constants.STATUS_MESSAGE)
+	message, _, err := arrow_utils.FieldIDFromStruct(statusDT, constants.STATUS_MESSAGE)
 	if err != nil {
 		return nil, err
 	}
@@ -163,60 +163,60 @@ func NewStatusIds(spansDT *arrow.StructType) (*StatusIds, error) {
 
 func AppendSpanInto(spans ptrace.SpanSlice, los *arrow_utils.ListOfStructs, row int, ids *SpansIds) error {
 	span := spans.AppendEmpty()
-	traceId, err := los.FixedSizeBinaryFieldById(ids.TraceId, row)
+	traceId, err := los.FixedSizeBinaryFieldByID(ids.TraceId, row)
 	if err != nil {
 		return err
 	}
 	if len(traceId) != 16 {
 		return fmt.Errorf("trace_id field should be 16 bytes")
 	}
-	spanId, err := los.FixedSizeBinaryFieldById(ids.SpanId, row)
+	spanId, err := los.FixedSizeBinaryFieldByID(ids.SpanId, row)
 	if err != nil {
 		return err
 	}
 	if len(spanId) != 8 {
 		return fmt.Errorf("span_id field should be 8 bytes")
 	}
-	traceState, err := los.StringFieldById(ids.TraceState, row)
+	traceState, err := los.StringFieldByID(ids.TraceState, row)
 	if err != nil {
 		return err
 	}
-	parentSpanId, err := los.FixedSizeBinaryFieldById(ids.ParentSpanId, row)
+	parentSpanId, err := los.FixedSizeBinaryFieldByID(ids.ParentSpanId, row)
 	if err != nil {
 		return err
 	}
 	if parentSpanId != nil && len(parentSpanId) != 8 {
 		return fmt.Errorf("parent_span_id field should be 8 bytes")
 	}
-	name, err := los.StringFieldById(ids.Name, row)
+	name, err := los.StringFieldByID(ids.Name, row)
 	if err != nil {
 		return err
 	}
-	kind, err := los.I32FieldById(ids.Kind, row)
+	kind, err := los.I32FieldByID(ids.Kind, row)
 	if err != nil {
 		return err
 	}
-	startTimeUnixNano, err := los.U64FieldById(ids.StartTimeUnixNano, row)
+	startTimeUnixNano, err := los.U64FieldByID(ids.StartTimeUnixNano, row)
 	if err != nil {
 		return err
 	}
-	endTimeUnixNano, err := los.U64FieldById(ids.EndTimeUnixNano, row)
+	endTimeUnixNano, err := los.U64FieldByID(ids.EndTimeUnixNano, row)
 	if err != nil {
 		return err
 	}
-	droppedAttributesCount, err := los.U32FieldById(ids.DropAttributesCount, row)
+	droppedAttributesCount, err := los.U32FieldByID(ids.DropAttributesCount, row)
 	if err != nil {
 		return err
 	}
-	droppedEventsCount, err := los.U32FieldById(ids.DropEventsCount, row)
+	droppedEventsCount, err := los.U32FieldByID(ids.DropEventsCount, row)
 	if err != nil {
 		return err
 	}
-	droppedLinksCount, err := los.U32FieldById(ids.DropLinksCount, row)
+	droppedLinksCount, err := los.U32FieldByID(ids.DropLinksCount, row)
 	if err != nil {
 		return err
 	}
-	statusDt, statusArr, err := los.StructById(ids.Status.Id, row)
+	statusDt, statusArr, err := los.StructByID(ids.Status.Id, row)
 	if err != nil {
 		return err
 	}

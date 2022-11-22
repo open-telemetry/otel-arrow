@@ -17,12 +17,12 @@ type ResourceMetricsIds struct {
 }
 
 func NewResourceMetricsIds(schema *arrow.Schema) (*ResourceMetricsIds, error) {
-	id, rsDT, err := arrow_utils.ListOfStructsFieldIdFromSchema(schema, constants.RESOURCE_METRICS)
+	id, rsDT, err := arrow_utils.ListOfStructsFieldIDFromSchema(schema, constants.RESOURCE_METRICS)
 	if err != nil {
 		return nil, err
 	}
 
-	schemaId, _, err := arrow_utils.FieldIdFromStruct(rsDT, constants.SCHEMA_URL)
+	schemaId, _, err := arrow_utils.FieldIDFromStruct(rsDT, constants.SCHEMA_URL)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +63,7 @@ func AppendResourceMetricsInto(metrics pmetric.Metrics, record arrow.Record, met
 				return err
 			}
 
-			schemaUrl, err := arrowResEnts.StringFieldById(metricsIds.ResourceMetrics.SchemaUrl, resMetricsIdx)
+			schemaUrl, err := arrowResEnts.StringFieldByID(metricsIds.ResourceMetrics.SchemaUrl, resMetricsIdx)
 			if err != nil {
 				return err
 			}

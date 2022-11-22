@@ -17,12 +17,12 @@ type ScopeSpansIds struct {
 }
 
 func NewScopeSpansIds(dt *arrow.StructType) (*ScopeSpansIds, error) {
-	id, scopeSpansDT, err := arrow_utils.ListOfStructsFieldIdFromStruct(dt, constants.SCOPE_SPANS)
+	id, scopeSpansDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(dt, constants.SCOPE_SPANS)
 	if err != nil {
 		return nil, err
 	}
 
-	schemaId, _, err := arrow_utils.FieldIdFromStruct(scopeSpansDT, constants.SCHEMA_URL)
+	schemaId, _, err := arrow_utils.FieldIDFromStruct(scopeSpansDT, constants.SCHEMA_URL)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +70,7 @@ func AppendScopeSpansInto(resSpans ptrace.ResourceSpans, arrowResSpans *arrow_ut
 			return err
 		}
 
-		schemaUrl, err := arrowScopeSpans.StringFieldById(ids.SchemaUrl, scopeSpansIdx)
+		schemaUrl, err := arrowScopeSpans.StringFieldByID(ids.SchemaUrl, scopeSpansIdx)
 		if err != nil {
 			return err
 		}

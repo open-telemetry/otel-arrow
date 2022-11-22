@@ -82,7 +82,6 @@ func TestAddRecord(t *testing.T) {
 			}
 		}
 	}
-	//spew.Dump(rr.Metadata())
 }
 
 func TestOptimize(t *testing.T) {
@@ -167,7 +166,6 @@ func TestOptimize(t *testing.T) {
 			}
 		}
 	}
-	//spew.Dump(rr.Metadata())
 }
 
 func TestBuild(t *testing.T) {
@@ -214,7 +212,7 @@ func TestBuild(t *testing.T) {
 	// "a" because it's cardinality is 15 (satisfy the configuration).
 	// "c" is not sorted because it's cardinality is 100 (doesn't satisfy the configuration).
 	for _, record := range records {
-		schemaId := arrow2.SchemaToId(record.Schema())
+		schemaId := arrow2.SchemaToID(record.Schema())
 		if schemaId != "a:Dic<U8,Str>,b:Dic<U8,Str>,c:Dic<U8,Str>,d:{a:Dic<U8,Str>,b:Dic<U8,Str>,c:[I64],d:[{a:I64,b:F64,c:Dic<U8,Str>}]},ts:I64" {
 			t.Errorf("Expected schemaId to be a:Str,b:Str,c:Str,d:{a:Str,b:Str},ts:I64, got %s", schemaId)
 		}

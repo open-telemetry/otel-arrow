@@ -45,15 +45,15 @@ linters:
     - prealloc
     - predeclared
 #    - revive
-#    - staticcheck
-#    - structcheck
+    - staticcheck
+    - structcheck
 #    - stylecheck
 #    - thelper
-#    - tparallel
-#    - typecheck
-#    - unconvert
+    - tparallel
+    - typecheck
+    - unconvert
 #    - unparam
-#    - varcheck
+    - varcheck
 #    - whitespace
 #    - wsl
 

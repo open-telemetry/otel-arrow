@@ -17,12 +17,12 @@ type ScopeLogsIds struct {
 }
 
 func NewScopeLogsIds(dt *arrow.StructType) (*ScopeLogsIds, error) {
-	id, scopeSpansDT, err := arrow_utils.ListOfStructsFieldIdFromStruct(dt, constants.SCOPE_LOGS)
+	id, scopeSpansDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(dt, constants.SCOPE_LOGS)
 	if err != nil {
 		return nil, err
 	}
 
-	schemaId, _, err := arrow_utils.FieldIdFromStruct(scopeSpansDT, constants.SCHEMA_URL)
+	schemaId, _, err := arrow_utils.FieldIDFromStruct(scopeSpansDT, constants.SCHEMA_URL)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +60,7 @@ func AppendScopeLogsInto(resLogs plog.ResourceLogs, arrowResLogs *arrow_utils.Li
 			return err
 		}
 
-		schemaUrl, err := arrowScopeLogs.StringFieldById(ids.SchemaUrl, scopeLogsIdx)
+		schemaUrl, err := arrowScopeLogs.StringFieldByID(ids.SchemaUrl, scopeLogsIdx)
 		if err != nil {
 			return err
 		}

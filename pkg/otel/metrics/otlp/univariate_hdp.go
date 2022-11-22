@@ -29,7 +29,7 @@ type UnivariateHistogramDataPointIds struct {
 }
 
 func NewUnivariateHistogramDataPointIds(parentDT *arrow.StructType) (*UnivariateHistogramDataPointIds, error) {
-	id, hdpDT, err := arrow_utils.ListOfStructsFieldIdFromStruct(parentDT, constants.DATA_POINTS)
+	id, hdpDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(parentDT, constants.DATA_POINTS)
 	if err != nil {
 		return nil, err
 	}
@@ -121,24 +121,24 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 			return err
 		}
 
-		startTimeUnixNano, err := hdp.U64FieldById(ids.StartTimeUnixNano, hdpIdx)
+		startTimeUnixNano, err := hdp.U64FieldByID(ids.StartTimeUnixNano, hdpIdx)
 		if err != nil {
 			return err
 		}
 		hdpVal.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
-		timeUnixNano, err := hdp.U64FieldById(ids.TimeUnixNano, hdpIdx)
+		timeUnixNano, err := hdp.U64FieldByID(ids.TimeUnixNano, hdpIdx)
 		if err != nil {
 			return err
 		}
 		hdpVal.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 
-		count, err := hdp.U64FieldById(ids.Count, hdpIdx)
+		count, err := hdp.U64FieldByID(ids.Count, hdpIdx)
 		if err != nil {
 			return err
 		}
 		hdpVal.SetCount(count)
 
-		sum, err := hdp.F64OrNilFieldById(ids.Sum, hdpIdx)
+		sum, err := hdp.F64OrNilFieldByID(ids.Sum, hdpIdx)
 		if err != nil {
 			return err
 		}
@@ -183,13 +183,13 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 			return err
 		}
 
-		flags, err := hdp.U32FieldById(ids.Flags, hdpIdx)
+		flags, err := hdp.U32FieldByID(ids.Flags, hdpIdx)
 		if err != nil {
 			return err
 		}
 		hdpVal.SetFlags(pmetric.DataPointFlags(flags))
 
-		min, err := hdp.F64OrNilFieldById(ids.Min, hdpIdx)
+		min, err := hdp.F64OrNilFieldByID(ids.Min, hdpIdx)
 		if err != nil {
 			return err
 		}
@@ -197,7 +197,7 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 			hdpVal.SetMin(*min)
 		}
 
-		max, err := hdp.F64OrNilFieldById(ids.Max, hdpIdx)
+		max, err := hdp.F64OrNilFieldByID(ids.Max, hdpIdx)
 		if err != nil {
 			return err
 		}

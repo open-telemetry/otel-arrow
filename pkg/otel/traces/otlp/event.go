@@ -21,7 +21,7 @@ type EventIds struct {
 }
 
 func NewEventIds(spansDT *arrow.StructType) (*EventIds, error) {
-	id, eventDT, err := arrow_utils.ListOfStructsFieldIdFromStruct(spansDT, constants.SPAN_EVENTS)
+	id, eventDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(spansDT, constants.SPAN_EVENTS)
 	if err != nil {
 		return nil, err
 	}
@@ -70,12 +70,12 @@ func AppendEventsInto(spans ptrace.SpanEventSlice, arrowSpans *arrow_utils.ListO
 			continue
 		}
 
-		timeUnixNano, err := events.U64FieldById(ids.TimeUnixNano, eventIdx)
+		timeUnixNano, err := events.U64FieldByID(ids.TimeUnixNano, eventIdx)
 		if err != nil {
 			return err
 		}
 		event.SetTimestamp(pcommon.Timestamp(timeUnixNano))
-		name, err := events.StringFieldById(ids.Name, eventIdx)
+		name, err := events.StringFieldByID(ids.Name, eventIdx)
 		if err != nil {
 			return err
 		}
@@ -83,7 +83,7 @@ func AppendEventsInto(spans ptrace.SpanEventSlice, arrowSpans *arrow_utils.ListO
 		if err = otlp.AppendAttributesInto(event.Attributes(), events.Array(), eventIdx, ids.Attributes); err != nil {
 			return err
 		}
-		dac, err := events.U32FieldById(ids.DroppedAttributesCount, eventIdx)
+		dac, err := events.U32FieldByID(ids.DroppedAttributesCount, eventIdx)
 		if err != nil {
 			return err
 		}

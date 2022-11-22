@@ -18,19 +18,19 @@ type ScopeIds struct {
 }
 
 func NewScopeIds(resSpansDT *arrow.StructType) (*ScopeIds, error) {
-	scopeId, scopeDT, err := arrow_utils.StructFieldIdFromStruct(resSpansDT, constants.SCOPE)
+	scopeID, scopeDT, err := arrow_utils.StructFieldIDFromStruct(resSpansDT, constants.SCOPE)
 	if err != nil {
 		return nil, err
 	}
-	nameId, _, err := arrow_utils.FieldIdFromStruct(scopeDT, constants.NAME)
+	nameID, _, err := arrow_utils.FieldIDFromStruct(scopeDT, constants.NAME)
 	if err != nil {
 		return nil, err
 	}
-	versionId, _, err := arrow_utils.FieldIdFromStruct(scopeDT, constants.VERSION)
+	versionID, _, err := arrow_utils.FieldIDFromStruct(scopeDT, constants.VERSION)
 	if err != nil {
 		return nil, err
 	}
-	droppedAttributesCountId, _, err := arrow_utils.FieldIdFromStruct(scopeDT, constants.DROPPED_ATTRIBUTES_COUNT)
+	droppedAttributesCountID, _, err := arrow_utils.FieldIDFromStruct(scopeDT, constants.DROPPED_ATTRIBUTES_COUNT)
 	if err != nil {
 		return nil, err
 	}
@@ -39,17 +39,17 @@ func NewScopeIds(resSpansDT *arrow.StructType) (*ScopeIds, error) {
 		return nil, err
 	}
 	return &ScopeIds{
-		Id:                     scopeId,
-		Name:                   nameId,
-		Version:                versionId,
-		DroppedAttributesCount: droppedAttributesCountId,
+		Id:                     scopeID,
+		Name:                   nameID,
+		Version:                versionID,
+		DroppedAttributesCount: droppedAttributesCountID,
 		Attributes:             attributeIds,
 	}, nil
 }
 
 // UpdateScopeWith appends a scope into a given scope spans from an Arrow list of structs.
 func UpdateScopeWith(s pcommon.InstrumentationScope, listOfStructs *arrow_utils.ListOfStructs, row int, ids *ScopeIds) error {
-	_, scopeArray, err := listOfStructs.StructById(ids.Id, row)
+	_, scopeArray, err := listOfStructs.StructByID(ids.Id, row)
 	if err != nil {
 		return err
 	}

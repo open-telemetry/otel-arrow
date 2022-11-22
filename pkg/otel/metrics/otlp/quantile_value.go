@@ -17,7 +17,7 @@ type QuantileValueIds struct {
 }
 
 func NewQuantileValueIds(parentDT *arrow.StructType) (*QuantileValueIds, error) {
-	id, quantileValueDT, err := arrow_utils.ListOfStructsFieldIdFromStruct(parentDT, constants.SUMMARY_QUANTILE_VALUES)
+	id, quantileValueDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(parentDT, constants.SUMMARY_QUANTILE_VALUES)
 	if err != nil {
 		return nil, err
 	}
@@ -55,13 +55,13 @@ func AppendQuantileValuesInto(quantileSlice pmetric.SummaryDataPointValueAtQuant
 			continue
 		}
 
-		quantile, err := quantileValues.F64FieldById(ids.Quantile, quantileIdx)
+		quantile, err := quantileValues.F64FieldByID(ids.Quantile, quantileIdx)
 		if err != nil {
 			return err
 		}
 		quantileValue.SetQuantile(quantile)
 
-		value, err := quantileValues.F64FieldById(ids.Value, quantileIdx)
+		value, err := quantileValues.F64FieldByID(ids.Value, quantileIdx)
 		if err != nil {
 			return err
 		}

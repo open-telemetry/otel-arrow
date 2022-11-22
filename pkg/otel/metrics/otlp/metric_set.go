@@ -17,22 +17,22 @@ type MetricSetIds struct {
 }
 
 func NewMetricSetIds(parentDT *arrow.StructType) (*MetricSetIds, error) {
-	id, metricSetDT, err := arrow_utils.ListOfStructsFieldIdFromStruct(parentDT, constants.METRICS)
+	id, metricSetDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(parentDT, constants.METRICS)
 	if err != nil {
 		return nil, err
 	}
 
-	name, _, err := arrow_utils.FieldIdFromStruct(metricSetDT, constants.NAME)
+	name, _, err := arrow_utils.FieldIDFromStruct(metricSetDT, constants.NAME)
 	if err != nil {
 		return nil, err
 	}
 
-	description, _, err := arrow_utils.FieldIdFromStruct(metricSetDT, constants.DESCRIPTION)
+	description, _, err := arrow_utils.FieldIDFromStruct(metricSetDT, constants.DESCRIPTION)
 	if err != nil {
 		return nil, err
 	}
 
-	unit, _, err := arrow_utils.FieldIdFromStruct(metricSetDT, constants.UNIT)
+	unit, _, err := arrow_utils.FieldIDFromStruct(metricSetDT, constants.UNIT)
 	if err != nil {
 		return nil, err
 	}
@@ -54,19 +54,19 @@ func NewMetricSetIds(parentDT *arrow.StructType) (*MetricSetIds, error) {
 func AppendMetricSetInto(metrics pmetric.MetricSlice, los *arrow_utils.ListOfStructs, row int, ids *MetricSetIds) error {
 	metric := metrics.AppendEmpty()
 
-	name, err := los.StringFieldById(ids.Name, row)
+	name, err := los.StringFieldByID(ids.Name, row)
 	if err != nil {
 		return err
 	}
 	metric.SetName(name)
 
-	description, err := los.StringFieldById(ids.Description, row)
+	description, err := los.StringFieldByID(ids.Description, row)
 	if err != nil {
 		return err
 	}
 	metric.SetDescription(description)
 
-	unit, err := los.StringFieldById(ids.Unit, row)
+	unit, err := los.StringFieldByID(ids.Unit, row)
 	if err != nil {
 		return err
 	}

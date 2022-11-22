@@ -17,12 +17,12 @@ type ScopeMetricsIds struct {
 }
 
 func NewScopeMetricsIds(dt *arrow.StructType) (*ScopeMetricsIds, error) {
-	id, scopeMetricsDT, err := arrow_utils.ListOfStructsFieldIdFromStruct(dt, constants.SCOPE_METRICS)
+	id, scopeMetricsDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(dt, constants.SCOPE_METRICS)
 	if err != nil {
 		return nil, err
 	}
 
-	schemaId, _, err := arrow_utils.FieldIdFromStruct(scopeMetricsDT, constants.SCHEMA_URL)
+	schemaId, _, err := arrow_utils.FieldIDFromStruct(scopeMetricsDT, constants.SCHEMA_URL)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +60,7 @@ func AppendScopeMetricsInto(resMetrics pmetric.ResourceMetrics, arrowResMetrics 
 			return err
 		}
 
-		schemaUrl, err := arrowScopeMetrics.StringFieldById(ids.SchemaUrl, scopeMetricsIdx)
+		schemaUrl, err := arrowScopeMetrics.StringFieldByID(ids.SchemaUrl, scopeMetricsIdx)
 		if err != nil {
 			return err
 		}

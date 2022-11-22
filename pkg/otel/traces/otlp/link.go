@@ -22,22 +22,22 @@ type LinkIds struct {
 }
 
 func NewLinkIds(spanDT *arrow.StructType) (*LinkIds, error) {
-	id, linkDT, err := arrow_utils.ListOfStructsFieldIdFromStruct(spanDT, constants.SPAN_LINKS)
+	id, linkDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(spanDT, constants.SPAN_LINKS)
 	if err != nil {
 		return nil, err
 	}
 
-	traceId, _, err := arrow_utils.FieldIdFromStruct(linkDT, constants.TRACE_ID)
+	traceId, _, err := arrow_utils.FieldIDFromStruct(linkDT, constants.TRACE_ID)
 	if err != nil {
 		return nil, err
 	}
 
-	spanId, _, err := arrow_utils.FieldIdFromStruct(linkDT, constants.SPAN_ID)
+	spanId, _, err := arrow_utils.FieldIDFromStruct(linkDT, constants.SPAN_ID)
 	if err != nil {
 		return nil, err
 	}
 
-	traceState, _, err := arrow_utils.FieldIdFromStruct(linkDT, constants.TRACE_STATE)
+	traceState, _, err := arrow_utils.FieldIDFromStruct(linkDT, constants.TRACE_STATE)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +47,7 @@ func NewLinkIds(spanDT *arrow.StructType) (*LinkIds, error) {
 		return nil, err
 	}
 
-	droppedAttributesCount, _, err := arrow_utils.FieldIdFromStruct(linkDT, constants.DROPPED_ATTRIBUTES_COUNT)
+	droppedAttributesCount, _, err := arrow_utils.FieldIDFromStruct(linkDT, constants.DROPPED_ATTRIBUTES_COUNT)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +81,7 @@ func AppendLinksInto(result ptrace.SpanLinkSlice, los *arrow_utils.ListOfStructs
 			continue
 		}
 
-		traceId, err := linkLos.FixedSizeBinaryFieldById(ids.TraceId, linkIdx)
+		traceId, err := linkLos.FixedSizeBinaryFieldByID(ids.TraceId, linkIdx)
 		if err != nil {
 			return err
 		}
@@ -93,7 +93,7 @@ func AppendLinksInto(result ptrace.SpanLinkSlice, los *arrow_utils.ListOfStructs
 			return fmt.Errorf("invalid TraceID len")
 		}
 
-		spanId, err := linkLos.FixedSizeBinaryFieldById(ids.SpanId, linkIdx)
+		spanId, err := linkLos.FixedSizeBinaryFieldByID(ids.SpanId, linkIdx)
 		if err != nil {
 			return err
 		}
@@ -105,7 +105,7 @@ func AppendLinksInto(result ptrace.SpanLinkSlice, los *arrow_utils.ListOfStructs
 			return fmt.Errorf("invalid SpanID len")
 		}
 
-		traceState, err := linkLos.StringFieldById(ids.TraceState, linkIdx)
+		traceState, err := linkLos.StringFieldByID(ids.TraceState, linkIdx)
 		if err != nil {
 			return err
 		}
@@ -114,7 +114,7 @@ func AppendLinksInto(result ptrace.SpanLinkSlice, los *arrow_utils.ListOfStructs
 		if err = otlp.AppendAttributesInto(link.Attributes(), linkLos.Array(), linkIdx, ids.Attributes); err != nil {
 			return err
 		}
-		dac, err := linkLos.U32FieldById(ids.DroppedAttributesCount, linkIdx)
+		dac, err := linkLos.U32FieldByID(ids.DroppedAttributesCount, linkIdx)
 		if err != nil {
 			return err
 		}

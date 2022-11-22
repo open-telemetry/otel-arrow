@@ -17,12 +17,12 @@ type ResourceLogsIds struct {
 }
 
 func NewResourceLogsIds(schema *arrow.Schema) (*ResourceLogsIds, error) {
-	id, dt, err := arrow_utils.ListOfStructsFieldIdFromSchema(schema, constants.RESOURCE_LOGS)
+	id, dt, err := arrow_utils.ListOfStructsFieldIDFromSchema(schema, constants.RESOURCE_LOGS)
 	if err != nil {
 		return nil, err
 	}
 
-	schemaId, _, err := arrow_utils.FieldIdFromStruct(dt, constants.SCHEMA_URL)
+	schemaId, _, err := arrow_utils.FieldIDFromStruct(dt, constants.SCHEMA_URL)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +63,7 @@ func AppendResourceLogsInto(logs plog.Logs, record arrow.Record, ids *LogsIds) e
 				return err
 			}
 
-			schemaUrl, err := arrowResLogs.StringFieldById(ids.ResourceLogs.SchemaUrl, resLogsIdx)
+			schemaUrl, err := arrowResLogs.StringFieldByID(ids.ResourceLogs.SchemaUrl, resLogsIdx)
 			if err != nil {
 				return err
 			}

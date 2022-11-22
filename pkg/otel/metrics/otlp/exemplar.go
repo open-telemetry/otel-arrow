@@ -23,7 +23,7 @@ type ExemplarIds struct {
 }
 
 func NewExemplarIds(ndp *arrow.StructType) (*ExemplarIds, error) {
-	id, exemplarDT, err := arrow_utils.ListOfStructsFieldIdFromStruct(ndp, constants.EXEMPLARS)
+	id, exemplarDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(ndp, constants.EXEMPLARS)
 	if err != nil {
 		return nil, err
 	}
@@ -82,13 +82,13 @@ func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, ndp *arrow_utils.L
 		if err := otlp.AppendAttributesInto(exemplar.FilteredAttributes(), exemplars.Array(), exemplarIdx, ids.Attributes); err != nil {
 			return err
 		}
-		timeUnixNano, err := exemplars.U64FieldById(ids.TimeUnixNano, exemplarIdx)
+		timeUnixNano, err := exemplars.U64FieldByID(ids.TimeUnixNano, exemplarIdx)
 		if err != nil {
 			return err
 		}
 		exemplar.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 
-		spanId, err := exemplars.FixedSizeBinaryFieldById(ids.SpanId, exemplarIdx)
+		spanId, err := exemplars.FixedSizeBinaryFieldByID(ids.SpanId, exemplarIdx)
 		if err != nil {
 			return err
 		}
@@ -100,7 +100,7 @@ func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, ndp *arrow_utils.L
 			return fmt.Errorf("invalid span id length %d", len(spanId))
 		}
 
-		traceId, err := exemplars.FixedSizeBinaryFieldById(ids.TraceId, exemplarIdx)
+		traceId, err := exemplars.FixedSizeBinaryFieldByID(ids.TraceId, exemplarIdx)
 		if err != nil {
 			return err
 		}
@@ -112,7 +112,7 @@ func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, ndp *arrow_utils.L
 			return fmt.Errorf("invalid trace id length %d", len(traceId))
 		}
 
-		value := exemplars.FieldById(ids.ValueId)
+		value := exemplars.FieldByID(ids.ValueId)
 		if valueArr, ok := value.(*array.DenseUnion); ok {
 			if err := UpdateValueFromExemplar(exemplar, valueArr, exemplarIdx); err != nil {
 				return err

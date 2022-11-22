@@ -36,7 +36,7 @@ type RecordMessage struct {
 
 func NewMetricsMessage(record arrow.Record, deliveryType v1.DeliveryType) *RecordMessage {
 	return &RecordMessage{
-		subStreamId:  arrow2.SchemaToId(record.Schema()),
+		subStreamId:  arrow2.SchemaToID(record.Schema()),
 		payloadType:  v1.OtlpArrowPayloadType_METRICS,
 		record:       record,
 		deliveryType: deliveryType,
@@ -46,7 +46,7 @@ func NewMetricsMessage(record arrow.Record, deliveryType v1.DeliveryType) *Recor
 func NewLogsMessage(record arrow.Record, deliveryType v1.DeliveryType) *RecordMessage {
 	record.Schema()
 	return &RecordMessage{
-		subStreamId:  arrow2.SchemaToId(record.Schema()),
+		subStreamId:  arrow2.SchemaToID(record.Schema()),
 		payloadType:  v1.OtlpArrowPayloadType_LOGS,
 		record:       record,
 		deliveryType: deliveryType,
@@ -55,7 +55,7 @@ func NewLogsMessage(record arrow.Record, deliveryType v1.DeliveryType) *RecordMe
 
 func NewTraceMessage(record arrow.Record, deliveryType v1.DeliveryType) *RecordMessage {
 	return &RecordMessage{
-		subStreamId:  arrow2.SchemaToId(record.Schema()),
+		subStreamId:  arrow2.SchemaToID(record.Schema()),
 		payloadType:  v1.OtlpArrowPayloadType_SPANS,
 		record:       record,
 		deliveryType: deliveryType,

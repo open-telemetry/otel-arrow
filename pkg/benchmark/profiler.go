@@ -158,20 +158,20 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 				afterDeserialization := time.Now()
 				profileable.Clear()
 
-				batchCeation.Record(float64(afterBatchCreation.Sub(start).Seconds()))
-				processing.Record(float64(afterProcessing.Sub(afterBatchCreation).Seconds()))
-				serialization.Record(float64(afterSerialization.Sub(afterProcessing).Seconds()))
-				compression.Record(float64(afterCompression.Sub(afterSerialization).Seconds()))
-				decompression.Record(float64(afterDecompression.Sub(afterCompression).Seconds()))
-				deserialization.Record(float64(afterDeserialization.Sub(afterDecompression).Seconds()))
+				batchCeation.Record(afterBatchCreation.Sub(start).Seconds())
+				processing.Record(afterProcessing.Sub(afterBatchCreation).Seconds())
+				serialization.Record(afterSerialization.Sub(afterProcessing).Seconds())
+				compression.Record(afterCompression.Sub(afterSerialization).Seconds())
+				decompression.Record(afterDecompression.Sub(afterCompression).Seconds())
+				deserialization.Record(afterDeserialization.Sub(afterDecompression).Seconds())
 
 				totalTime.Record(
-					float64(afterBatchCreation.Sub(start).Seconds()) +
-						float64(afterProcessing.Sub(afterBatchCreation).Seconds()) +
-						float64(afterSerialization.Sub(afterProcessing).Seconds()) +
-						float64(afterCompression.Sub(afterSerialization).Seconds()) +
-						float64(afterDecompression.Sub(afterCompression).Seconds()) +
-						float64(afterDeserialization.Sub(afterDecompression).Seconds()),
+					afterBatchCreation.Sub(start).Seconds() +
+						afterProcessing.Sub(afterBatchCreation).Seconds() +
+						afterSerialization.Sub(afterProcessing).Seconds() +
+						afterCompression.Sub(afterSerialization).Seconds() +
+						afterDecompression.Sub(afterCompression).Seconds() +
+						afterDeserialization.Sub(afterDecompression).Seconds(),
 				)
 			}
 		}
@@ -221,7 +221,7 @@ func (p *Profiler) PrintResults(maxIter uint64) {
 	p.PrintCompressionRatio(maxIter)
 }
 
-func (p *Profiler) PrintStepsTiming(_maxIter uint64) {
+func (p *Profiler) PrintStepsTiming(_ uint64) {
 	_, _ = fmt.Fprintf(p.writer, "\n")
 	headers := []string{"Steps"}
 	for _, benchmark := range p.benchmarks {

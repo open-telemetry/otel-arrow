@@ -24,7 +24,7 @@ type UnivariateSdpIds struct {
 }
 
 func NewUnivariateSdpIds(parentDT *arrow.StructType) (*UnivariateSdpIds, error) {
-	id, sdpDT, err := arrow_utils.ListOfStructsFieldIdFromStruct(parentDT, constants.DATA_POINTS)
+	id, sdpDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(parentDT, constants.DATA_POINTS)
 	if err != nil {
 		return nil, err
 	}
@@ -92,25 +92,25 @@ func AppendUnivariateSdpInto(ndpSlice pmetric.SummaryDataPointSlice, ndp *arrow_
 			return err
 		}
 
-		startTimeUnixNano, err := ndp.U64FieldById(ids.StartTimeUnixNano, idx)
+		startTimeUnixNano, err := ndp.U64FieldByID(ids.StartTimeUnixNano, idx)
 		if err != nil {
 			return err
 		}
 		sdpValue.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
 
-		timeUnixNano, err := ndp.U64FieldById(ids.TimeUnixNano, idx)
+		timeUnixNano, err := ndp.U64FieldByID(ids.TimeUnixNano, idx)
 		if err != nil {
 			return err
 		}
 		sdpValue.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 
-		count, err := ndp.U64FieldById(ids.Count, idx)
+		count, err := ndp.U64FieldByID(ids.Count, idx)
 		if err != nil {
 			return err
 		}
 		sdpValue.SetCount(count)
 
-		sum, err := ndp.F64FieldById(ids.Sum, idx)
+		sum, err := ndp.F64FieldByID(ids.Sum, idx)
 		if err != nil {
 			return err
 		}
@@ -125,7 +125,7 @@ func AppendUnivariateSdpInto(ndpSlice pmetric.SummaryDataPointSlice, ndp *arrow_
 			return err
 		}
 
-		flags, err := ndp.U32FieldById(ids.Flags, idx)
+		flags, err := ndp.U32FieldByID(ids.Flags, idx)
 		if err != nil {
 			return err
 		}

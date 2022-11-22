@@ -580,7 +580,7 @@ func (v *I64) AsString() (*string, error) {
 	if v.Value == nil {
 		return nil, nil
 	}
-	val := strconv.FormatInt(int64(*v.Value), 10)
+	val := strconv.FormatInt(*v.Value, 10)
 	return &val, nil
 }
 func (v *I64) AsBinary() ([]byte, error) {
@@ -1008,7 +1008,7 @@ func (v *U64) AsString() (*string, error) {
 	if v.Value == nil {
 		return nil, nil
 	}
-	val := strconv.FormatUint(uint64(*v.Value), 10)
+	val := strconv.FormatUint(*v.Value, 10)
 	return &val, nil
 }
 func (v *U64) AsBinary() ([]byte, error) {

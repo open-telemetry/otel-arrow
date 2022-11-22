@@ -48,7 +48,7 @@ func TestOtlpMetricsToArrowRecords(t *testing.T) {
 		t.Errorf("Expected 5 record, got %d", len(multiSchemaRecords))
 	}
 	for _, record := range multiSchemaRecords {
-		schemaId := arrow.SchemaToId(record.Schema())
+		schemaId := arrow.SchemaToID(record.Schema())
 		switch schemaId {
 		case "metrics:{system.cpu.load_average.1m:F64},resource:{attributes:{hostname:Dic<U16,Str>,ip:Dic<U16,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U16,Str>,version:Dic<U16,Str>},start_time_unix_nano:U64,time_unix_nano:U64":
 			if record.NumCols() != 5 {

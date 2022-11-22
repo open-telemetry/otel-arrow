@@ -33,7 +33,7 @@ type UnivariateEHistogramDataPointIds struct {
 
 // NewUnivariateEHistogramDataPointIds returns a new UnivariateEHistogramDataPointIds struct.
 func NewUnivariateEHistogramDataPointIds(parentDT *arrow.StructType) (*UnivariateEHistogramDataPointIds, error) {
-	id, ehdpDT, err := arrow_utils.ListOfStructsFieldIdFromStruct(parentDT, constants.DATA_POINTS)
+	id, ehdpDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(parentDT, constants.DATA_POINTS)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func NewUnivariateEHistogramDataPointIds(parentDT *arrow.StructType) (*Univariat
 		return nil, fmt.Errorf("field %q not found", constants.EXP_HISTOGRAM_ZERO_COUNT)
 	}
 
-	positiveId, positiveDT, err := arrow_utils.StructFieldIdFromStruct(ehdpDT, constants.EXP_HISTOGRAM_POSITIVE)
+	positiveId, positiveDT, err := arrow_utils.StructFieldIDFromStruct(ehdpDT, constants.EXP_HISTOGRAM_POSITIVE)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +82,7 @@ func NewUnivariateEHistogramDataPointIds(parentDT *arrow.StructType) (*Univariat
 		return nil, err
 	}
 
-	negativeId, negativeDT, err := arrow_utils.StructFieldIdFromStruct(ehdpDT, constants.EXP_HISTOGRAM_NEGATIVE)
+	negativeId, negativeDT, err := arrow_utils.StructFieldIDFromStruct(ehdpDT, constants.EXP_HISTOGRAM_NEGATIVE)
 	if err != nil {
 		return nil, err
 	}
@@ -147,25 +147,25 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 			return err
 		}
 
-		startTimeUnixNano, err := ehdp.U64FieldById(ids.StartTimeUnixNano, ehdpIdx)
+		startTimeUnixNano, err := ehdp.U64FieldByID(ids.StartTimeUnixNano, ehdpIdx)
 		if err != nil {
 			return err
 		}
 		ehdpVal.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
 
-		timeUnixNano, err := ehdp.U64FieldById(ids.TimeUnixNano, ehdpIdx)
+		timeUnixNano, err := ehdp.U64FieldByID(ids.TimeUnixNano, ehdpIdx)
 		if err != nil {
 			return err
 		}
 		ehdpVal.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 
-		count, err := ehdp.U64FieldById(ids.Count, ehdpIdx)
+		count, err := ehdp.U64FieldByID(ids.Count, ehdpIdx)
 		if err != nil {
 			return err
 		}
 		ehdpVal.SetCount(count)
 
-		sum, err := ehdp.F64OrNilFieldById(ids.Sum, ehdpIdx)
+		sum, err := ehdp.F64OrNilFieldByID(ids.Sum, ehdpIdx)
 		if err != nil {
 			return err
 		}
@@ -173,19 +173,19 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 			ehdpVal.SetSum(*sum)
 		}
 
-		scale, err := ehdp.I32FieldById(ids.Scale, ehdpIdx)
+		scale, err := ehdp.I32FieldByID(ids.Scale, ehdpIdx)
 		if err != nil {
 			return err
 		}
 		ehdpVal.SetScale(scale)
 
-		zeroCount, err := ehdp.U64FieldById(ids.ZeroCount, ehdpIdx)
+		zeroCount, err := ehdp.U64FieldByID(ids.ZeroCount, ehdpIdx)
 		if err != nil {
 			return err
 		}
 		ehdpVal.SetZeroCount(zeroCount)
 
-		_, positive, err := ehdp.StructById(ids.Positive.Id, ehdpIdx)
+		_, positive, err := ehdp.StructByID(ids.Positive.Id, ehdpIdx)
 		if err != nil {
 			return err
 		}
@@ -195,7 +195,7 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 			}
 		}
 
-		_, negative, err := ehdp.StructById(ids.Negative.Id, ehdpIdx)
+		_, negative, err := ehdp.StructByID(ids.Negative.Id, ehdpIdx)
 		if err != nil {
 			return err
 		}
@@ -214,13 +214,13 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 			return err
 		}
 
-		flags, err := ehdp.U32FieldById(ids.Flags, ehdpIdx)
+		flags, err := ehdp.U32FieldByID(ids.Flags, ehdpIdx)
 		if err != nil {
 			return err
 		}
 		ehdpVal.SetFlags(pmetric.DataPointFlags(flags))
 
-		min, err := ehdp.F64OrNilFieldById(ids.Min, ehdpIdx)
+		min, err := ehdp.F64OrNilFieldByID(ids.Min, ehdpIdx)
 		if err != nil {
 			return err
 		}
@@ -228,7 +228,7 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 			ehdpVal.SetMin(*min)
 		}
 
-		max, err := ehdp.F64OrNilFieldById(ids.Max, ehdpIdx)
+		max, err := ehdp.F64OrNilFieldByID(ids.Max, ehdpIdx)
 		if err != nil {
 			return err
 		}
