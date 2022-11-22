@@ -21,7 +21,7 @@ import (
 	"log"
 	"os"
 
-	plog "go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 )
 
