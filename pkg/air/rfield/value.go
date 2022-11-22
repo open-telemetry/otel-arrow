@@ -70,7 +70,7 @@ func NewBool(value bool) *Bool {
 }
 func (v *Bool) DataType() arrow.DataType { return arrow.FixedWidthTypes.Boolean }
 func (v *Bool) ValueByPath(path []int) Value {
-	if path == nil || len(path) == 0 {
+	if len(path) == 0 {
 		return v
 	}
 	return nil
@@ -201,7 +201,7 @@ func NewI8(value int8) *I8 {
 
 func (v *I8) DataType() arrow.DataType { return arrow.PrimitiveTypes.Int8 }
 func (v *I8) ValueByPath(path []int) Value {
-	if path == nil || len(path) == 0 {
+	if len(path) == 0 {
 		return v
 	}
 	return nil
@@ -308,7 +308,7 @@ func NewI16(value int16) *I16 {
 }
 func (v *I16) DataType() arrow.DataType { return arrow.PrimitiveTypes.Int16 }
 func (v *I16) ValueByPath(path []int) Value {
-	if path == nil || len(path) == 0 {
+	if len(path) == 0 {
 		return v
 	}
 	return nil
@@ -411,7 +411,7 @@ func NewI32(value int32) *I32 {
 }
 func (v *I32) DataType() arrow.DataType { return arrow.PrimitiveTypes.Int32 }
 func (v *I32) ValueByPath(path []int) Value {
-	if path == nil || len(path) == 0 {
+	if len(path) == 0 {
 		return v
 	}
 	return nil
@@ -510,7 +510,7 @@ func NewI64(value int64) *I64 {
 }
 func (v *I64) DataType() arrow.DataType { return arrow.PrimitiveTypes.Int64 }
 func (v *I64) ValueByPath(path []int) Value {
-	if path == nil || len(path) == 0 {
+	if len(path) == 0 {
 		return v
 	}
 	return nil
@@ -605,7 +605,7 @@ func NewU8(value uint8) *U8 {
 }
 func (v *U8) DataType() arrow.DataType { return arrow.PrimitiveTypes.Uint8 }
 func (v *U8) ValueByPath(path []int) Value {
-	if path == nil || len(path) == 0 {
+	if len(path) == 0 {
 		return v
 	}
 	return nil
@@ -724,7 +724,7 @@ func NewU16(value uint16) *U16 {
 }
 func (v *U16) DataType() arrow.DataType { return arrow.PrimitiveTypes.Uint16 }
 func (v *U16) ValueByPath(path []int) Value {
-	if path == nil || len(path) == 0 {
+	if len(path) == 0 {
 		return v
 	}
 	return nil
@@ -835,7 +835,7 @@ func NewU32(value uint32) *U32 {
 }
 func (v *U32) DataType() arrow.DataType { return arrow.PrimitiveTypes.Uint32 }
 func (v *U32) ValueByPath(path []int) Value {
-	if path == nil || len(path) == 0 {
+	if len(path) == 0 {
 		return v
 	}
 	return nil
@@ -938,7 +938,7 @@ func NewU64(value uint64) *U64 {
 }
 func (v *U64) DataType() arrow.DataType { return arrow.PrimitiveTypes.Uint64 }
 func (v *U64) ValueByPath(path []int) Value {
-	if path == nil || len(path) == 0 {
+	if len(path) == 0 {
 		return v
 	}
 	return nil
@@ -1033,7 +1033,7 @@ func NewF32(value float32) *F32 {
 }
 func (v *F32) DataType() arrow.DataType { return arrow.PrimitiveTypes.Float32 }
 func (v *F32) ValueByPath(path []int) Value {
-	if path == nil || len(path) == 0 {
+	if len(path) == 0 {
 		return v
 	}
 	return nil
@@ -1132,7 +1132,7 @@ func NewF64(value float64) *F64 {
 }
 func (v *F64) DataType() arrow.DataType { return arrow.PrimitiveTypes.Float64 }
 func (v *F64) ValueByPath(path []int) Value {
-	if path == nil || len(path) == 0 {
+	if len(path) == 0 {
 		return v
 	}
 	return nil
@@ -1229,7 +1229,7 @@ func NewString(value string) *String {
 }
 func (v *String) DataType() arrow.DataType { return arrow.BinaryTypes.String }
 func (v *String) ValueByPath(path []int) Value {
-	if path == nil || len(path) == 0 {
+	if len(path) == 0 {
 		return v
 	}
 	return nil
@@ -1318,7 +1318,7 @@ func NewBinary(value []byte) *Binary {
 }
 func (v *Binary) DataType() arrow.DataType { return arrow.BinaryTypes.Binary }
 func (v *Binary) ValueByPath(path []int) Value {
-	if path == nil || len(path) == 0 {
+	if len(path) == 0 {
 		return v
 	}
 	return nil
@@ -1414,13 +1414,13 @@ func (v *Struct) Normalize() {
 	}
 }
 func (v *Struct) ValueByPath(path []int) Value {
-	if path == nil || len(path) == 0 {
+	if len(path) == 0 {
 		return v
 	}
 	return v.Fields[path[0]].ValueByPath(path[1:])
 }
 func (v *Struct) StringPath(path []int) string {
-	if path == nil || len(path) == 0 {
+	if len(path) == 0 {
 		return ""
 	}
 	return v.Fields[path[0]].StringPath(path[1:])
@@ -1539,13 +1539,13 @@ func (v *List) Normalize() {
 	}
 }
 func (v *List) ValueByPath(path []int) Value {
-	if path == nil || len(path) == 0 {
+	if len(path) == 0 {
 		return v
 	}
 	return v.Values[path[0]].ValueByPath(path[1:])
 }
 func (v *List) StringPath(path []int) string {
-	if path == nil || len(path) == 0 {
+	if len(path) == 0 {
 		return ""
 	}
 	subPath := v.Values[path[0]].StringPath(path[1:])

@@ -258,9 +258,7 @@ func (rb *RecordBuilder) Optimize() bool {
 				FieldPaths: numPaths,
 			}
 			orderByClause := make([]string, 0, len(numPaths))
-			for _, path := range stringPaths {
-				orderByClause = append(orderByClause, path)
-			}
+			orderByClause = append(orderByClause, stringPaths...)
 			rb.orderByClause = orderByClause
 			rb.optimized = true
 			rb.recordList = []*Record{}

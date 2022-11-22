@@ -2,7 +2,6 @@ package common
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/apache/arrow/go/v11/arrow"
@@ -138,12 +137,7 @@ func NewAttributesAsLists(attributes pcommon.Map) *rfield.Field {
 }
 
 type AttributeTuple struct {
-	key    string
-	i64    *int64
-	f64    *float64
-	str    *string
-	bool   *bool
-	binary []byte
+	key string
 }
 
 type AttributeTuples []AttributeTuple
@@ -346,30 +340,6 @@ func NewAttributesAsListStructs(attributes pcommon.Map) *rfield.Field {
 	return nil
 }
 
-func AttributesValue(attributes pcommon.Map) rfield.Value {
-	if attributes.Len() == 0 {
-		return nil
-	}
-
-	attributeFields := make([]*rfield.Field, 0, attributes.Len())
-
-	attributes.Range(func(key string, v pcommon.Value) bool {
-		if value := OtlpAnyValueToValue(v); value != nil {
-			attributeFields = append(attributeFields, &rfield.Field{
-				Name:  key,
-				Value: value,
-			})
-		}
-		return true
-	})
-	if len(attributeFields) == 0 {
-		return nil
-	}
-	return &rfield.Struct{
-		Fields: attributeFields,
-	}
-}
-
 func AddResource(record *air.Record, resource pcommon.Resource, cfg *config.Config) {
 	resourceField := ResourceField(resource, cfg)
 	if resourceField != nil {
@@ -396,37 +366,6 @@ func ResourceField(resource pcommon.Resource, cfg *config.Config) *rfield.Field 
 		return field
 	} else {
 		return nil
-	}
-}
-
-// ResourceFieldWithSig returns an AIR representation of the resource fields (i.e. attributes, dropped_attributes_count)
-// and a signature of the resource fields (i.e. attributes).
-func ResourceFieldWithSig(resource pcommon.Resource, cfg *config.Config) (*rfield.Field, string) {
-	var resourceFields []*rfield.Field
-	var sig strings.Builder
-
-	attributes := NewAttributes(resource.Attributes(), cfg)
-	if attributes != nil {
-		resourceFields = append(resourceFields, attributes)
-		// compute signature for the resource based on its attributes.
-		attributes.Normalize()
-		attributes.WriteSig(&sig)
-	}
-
-	if resource.DroppedAttributesCount() > 0 {
-		resourceFields = append(resourceFields, rfield.NewU32Field(constants.DROPPED_ATTRIBUTES_COUNT, resource.DroppedAttributesCount()))
-		sig.WriteString(",dropped_attributes_count:")
-		sig.WriteString(strconv.FormatUint(uint64(resource.DroppedAttributesCount()), 10))
-	}
-
-	// returns the AIR representation of the resource fields and the signature or nil if there are no resource fields.
-	if len(resourceFields) > 0 {
-		field := rfield.NewStructField(constants.RESOURCE, rfield.Struct{
-			Fields: resourceFields,
-		})
-		return field, sig.String()
-	} else {
-		return nil, ""
 	}
 }
 

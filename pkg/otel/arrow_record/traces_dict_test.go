@@ -26,9 +26,17 @@ func TestTracesWithNoDictionary(t *testing.T) {
 		WithAllocator(pool),
 		WithNoDictionary(),
 	)
-	defer producer.Close()
+	defer func() {
+		if err := producer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 	consumer := NewConsumer()
-	defer consumer.Close()
+	defer func() {
+		if err := consumer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 
 	for i := 0; i < 10; i++ {
 		traces := GenerateTraces(0, math.MaxUint8+1)
@@ -37,6 +45,7 @@ func TestTracesWithNoDictionary(t *testing.T) {
 		require.NotNil(t, batch)
 
 		received, err := consumer.TracesFrom(batch)
+		require.NoError(t, err)
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
@@ -66,9 +75,17 @@ func TestTracesSingleBatchWithDictionaryOverflow(t *testing.T) {
 		WithUint8InitDictIndex(),
 		WithUint32LimitDictIndex(),
 	)
-	defer producer.Close()
+	defer func() {
+		if err := producer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 	consumer := NewConsumer()
-	defer consumer.Close()
+	defer func() {
+		if err := consumer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 
 	for i := 0; i < 10; i++ {
 		traces := GenerateTraces(0, math.MaxUint8+1)
@@ -77,6 +94,7 @@ func TestTracesSingleBatchWithDictionaryOverflow(t *testing.T) {
 		require.NotNil(t, batch)
 
 		received, err := consumer.TracesFrom(batch)
+		require.NoError(t, err)
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
@@ -110,9 +128,17 @@ func TestTracesMultiBatchWithDictionaryOverflow(t *testing.T) {
 		WithUint8InitDictIndex(),
 		WithUint32LimitDictIndex(),
 	)
-	defer producer.Close()
+	defer func() {
+		if err := producer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 	consumer := NewConsumer()
-	defer consumer.Close()
+	defer func() {
+		if err := consumer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 
 	for i := 0; i < 10; i++ {
 		traces := GenerateTraces(i*((math.MaxUint8/2)+1), (math.MaxUint8/2)+1)
@@ -121,6 +147,7 @@ func TestTracesMultiBatchWithDictionaryOverflow(t *testing.T) {
 		require.NotNil(t, batch)
 
 		received, err := consumer.TracesFrom(batch)
+		require.NoError(t, err)
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
@@ -153,9 +180,17 @@ func TestTracesSingleBatchWithDictionaryLimit(t *testing.T) {
 		WithUint8InitDictIndex(),
 		WithUint8LimitDictIndex(),
 	)
-	defer producer.Close()
+	defer func() {
+		if err := producer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 	consumer := NewConsumer()
-	defer consumer.Close()
+	defer func() {
+		if err := consumer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 
 	for i := 0; i < 10; i++ {
 		traces := GenerateTraces(0, math.MaxUint8+1)
@@ -164,6 +199,7 @@ func TestTracesSingleBatchWithDictionaryLimit(t *testing.T) {
 		require.NotNil(t, batch)
 
 		received, err := consumer.TracesFrom(batch)
+		require.NoError(t, err)
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(

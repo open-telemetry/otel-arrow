@@ -27,9 +27,17 @@ func TestMetricsWithNoDictionary(t *testing.T) {
 		WithAllocator(pool),
 		WithNoDictionary(),
 	)
-	defer producer.Close()
+	defer func() {
+		if err := producer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 	consumer := NewConsumer()
-	defer consumer.Close()
+	defer func() {
+		if err := consumer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 
 	for i := 0; i < 10; i++ {
 		metrics := GenerateMetrics(0, math.MaxUint8+1)
@@ -38,6 +46,7 @@ func TestMetricsWithNoDictionary(t *testing.T) {
 		require.NotNil(t, batch)
 
 		received, err := consumer.MetricsFrom(batch)
+		require.NoError(t, err)
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
@@ -67,9 +76,17 @@ func TestMetricsSingleBatchWithDictionaryOverflow(t *testing.T) {
 		WithUint8InitDictIndex(),
 		WithUint32LimitDictIndex(),
 	)
-	defer producer.Close()
+	defer func() {
+		if err := producer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 	consumer := NewConsumer()
-	defer consumer.Close()
+	defer func() {
+		if err := consumer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 
 	for i := 0; i < 10; i++ {
 		metrics := GenerateMetrics(0, math.MaxUint8+1)
@@ -78,6 +95,7 @@ func TestMetricsSingleBatchWithDictionaryOverflow(t *testing.T) {
 		require.NotNil(t, batch)
 
 		received, err := consumer.MetricsFrom(batch)
+		require.NoError(t, err)
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
@@ -110,9 +128,17 @@ func TestMetricsMultiBatchWithDictionaryOverflow(t *testing.T) {
 		WithUint8InitDictIndex(),
 		WithUint32LimitDictIndex(),
 	)
-	defer producer.Close()
+	defer func() {
+		if err := producer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 	consumer := NewConsumer()
-	defer consumer.Close()
+	defer func() {
+		if err := consumer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 
 	for i := 0; i < 10; i++ {
 		metrics := GenerateMetrics(i*((math.MaxUint8/2)+1), (math.MaxUint8/2)+1)
@@ -121,6 +147,7 @@ func TestMetricsMultiBatchWithDictionaryOverflow(t *testing.T) {
 		require.NotNil(t, batch)
 
 		received, err := consumer.MetricsFrom(batch)
+		require.NoError(t, err)
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
@@ -152,9 +179,17 @@ func TestMetricsSingleBatchWithDictionaryLimit(t *testing.T) {
 		WithUint8InitDictIndex(),
 		WithUint8LimitDictIndex(),
 	)
-	defer producer.Close()
+	defer func() {
+		if err := producer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 	consumer := NewConsumer()
-	defer consumer.Close()
+	defer func() {
+		if err := consumer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 
 	for i := 0; i < 10; i++ {
 		metrics := GenerateMetrics(0, math.MaxUint8+1)
@@ -163,6 +198,7 @@ func TestMetricsSingleBatchWithDictionaryLimit(t *testing.T) {
 		require.NotNil(t, batch)
 
 		received, err := consumer.MetricsFrom(batch)
+		require.NoError(t, err)
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(

@@ -43,7 +43,7 @@ func NewRealLogsDataset(path string) *RealLogsDataset {
 	if err != nil {
 		log.Fatal("read file:", err)
 	}
-	otlp := plogotlp.NewRequest()
+	otlp := plogotlp.NewExportRequest()
 
 	if err := otlp.UnmarshalProto(data); err != nil {
 		log.Fatal("unmarshal:", err)

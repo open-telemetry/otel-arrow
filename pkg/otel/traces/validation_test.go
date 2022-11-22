@@ -92,7 +92,7 @@ func TestConversionFromRealData(t *testing.T) {
 	}
 }
 
-func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportRequest) {
+func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportRequest) { //nolint:unused
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 	traceSchema := acommon.NewAdaptiveSchema(traces_arrow.Schema)

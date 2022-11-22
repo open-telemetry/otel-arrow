@@ -57,7 +57,7 @@ func main() {
 	entropy := datagen.NewTestEntropy(v.Int64())
 
 	generator := datagen.NewMetricsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
-	request := pmetricotlp.NewRequestFromMetrics(generator.Generate(batchSize, 100))
+	request := pmetricotlp.NewExportRequestFromMetrics(generator.Generate(batchSize, 100))
 
 	// Marshal the request to bytes.
 	msg, err := request.MarshalProto()

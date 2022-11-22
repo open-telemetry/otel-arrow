@@ -84,10 +84,7 @@ func (b *AttributesBuilder) Append(attrs pcommon.Map) error {
 
 		// Append the value
 		err = b.ib.Append(v)
-		if err != nil {
-			return false
-		}
-		return true
+		return err == nil
 	})
 	return err
 }

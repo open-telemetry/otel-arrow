@@ -54,7 +54,7 @@ func NewRealTraceDataset(path string, sortOrder []string) *RealTraceDataset {
 	if err != nil {
 		log.Fatal("read file:", err)
 	}
-	otlp := ptraceotlp.NewRequest()
+	otlp := ptraceotlp.NewExportRequest()
 	if err := otlp.UnmarshalProto(data); err != nil {
 		log.Fatalf("in %q unmarshal: %v", path, err)
 	}

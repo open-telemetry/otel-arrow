@@ -43,7 +43,7 @@ func NewRealMetricsDataset(path string) *RealMetricsDataset {
 	if err != nil {
 		log.Fatal("read file:", err)
 	}
-	otlp := pmetricotlp.NewRequest()
+	otlp := pmetricotlp.NewExportRequest()
 	if err := otlp.UnmarshalProto(data); err != nil {
 		log.Fatal("unmarshal:", err)
 	}

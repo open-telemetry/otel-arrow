@@ -55,6 +55,8 @@ func FuzzConsumerTraces(f *testing.F) {
 
 			b1b, err1 := proto.Marshal(batch1)
 			b2b, err2 := proto.Marshal(batch2)
+			require.NoError(f, err1)
+			require.NoError(f, err2)
 
 			f.Add(b1b, b2b)
 		}()
@@ -210,6 +212,7 @@ func TestProducerConsumerTraces(t *testing.T) {
 
 	consumer := NewConsumer()
 	received, err := consumer.TracesFrom(batch)
+	require.NoError(t, err)
 	require.Equal(t, 1, len(received))
 
 	assert.Equiv(
@@ -246,6 +249,7 @@ func TestProducerConsumerLogs(t *testing.T) {
 
 	consumer := NewConsumer()
 	received, err := consumer.LogsFrom(batch)
+	require.NoError(t, err)
 	require.Equal(t, 1, len(received))
 
 	assert.Equiv(
@@ -282,6 +286,7 @@ func TestProducerConsumerMetrics(t *testing.T) {
 
 	consumer := NewConsumer()
 	received, err := consumer.MetricsFrom(batch)
+	require.NoError(t, err)
 	require.Equal(t, 1, len(received))
 
 	assert.Equiv(

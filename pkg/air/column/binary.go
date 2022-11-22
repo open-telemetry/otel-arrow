@@ -45,7 +45,6 @@ type BinaryColumn struct {
 	// Total length of the values in the column.
 	totalValueLength int
 
-	field          *arrow.Field
 	binaryBuilder  *array.BinaryBuilder
 	dicoBuilder    *array.BinaryDictionaryBuilder
 	dictionaryType *arrow.DictionaryType

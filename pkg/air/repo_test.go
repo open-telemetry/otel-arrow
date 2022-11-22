@@ -24,6 +24,7 @@ import (
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"github.com/davecgh/go-spew/spew"
+	"github.com/stretchr/testify/require"
 
 	config2 "github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/air/rfield"
@@ -198,20 +199,15 @@ func TestBuild(t *testing.T) {
 	for _, ts := range tsValues {
 		rr.AddRecord(GenRecord(ts, int(ts%15), int(ts%2), int(ts)))
 	}
-	records, err := rr.BuildRecords()
-
-	if err != nil {
-		t.Errorf("Expected no error, got %v", err)
-	}
+	_, err := rr.BuildRecords()
+	require.NoError(t, err)
 
 	// Inserts `recordCount` records again, so the optimizations (e.g. sorting) will be applied.
 	for _, ts := range tsValues {
 		rr.AddRecord(GenRecord(ts, int(ts%15), int(ts%2), int(ts)))
 	}
-	records, err = rr.BuildRecords() // BuildRecord will build an Arrow Record with the sorted columns determined in the first batch.
-	if err != nil {
-		t.Errorf("Expected no error, got %v", err)
-	}
+	records, err := rr.BuildRecords() // BuildRecord will build an Arrow Record with the sorted columns determined in the first batch.
+	require.NoError(t, err)
 
 	// Columns "b" and "a" must be sorted.
 	// "b" because it's cardinality is 2.

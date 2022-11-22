@@ -147,6 +147,9 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 		}
 
 		bucketCounts, start, end, err := hdp.ListValuesById(hdpIdx, ids.BucketCounts)
+		if err != nil {
+			return err
+		}
 		if values, ok := bucketCounts.(*array.Uint64); ok {
 			bucketCountsSlice := hdpVal.BucketCounts()
 			bucketCountsSlice.EnsureCapacity(end - start)
@@ -158,6 +161,9 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 		}
 
 		explicitBounds, start, end, err := hdp.ListValuesById(hdpIdx, ids.ExplicitBounds)
+		if err != nil {
+			return err
+		}
 		if values, ok := explicitBounds.(*array.Float64); ok {
 			explicitBoundsSlice := hdpVal.ExplicitBounds()
 			explicitBoundsSlice.EnsureCapacity(end - start)

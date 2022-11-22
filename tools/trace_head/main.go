@@ -50,7 +50,7 @@ func main() {
 	// Extract the first n spans
 	ds := dataset.NewRealTraceDataset(inputFile, []string{"trace_id"})
 	traces := ds.Traces(0, spanCount)
-	request := ptraceotlp.NewRequestFromTraces(traces[0])
+	request := ptraceotlp.NewExportRequestFromTraces(traces[0])
 	pb, err := request.MarshalProto()
 	if err != nil {
 		log.Fatal("marshaling error: ", err)

@@ -26,9 +26,17 @@ func TestLogsWithNoDictionary(t *testing.T) {
 		WithAllocator(pool),
 		WithNoDictionary(),
 	)
-	defer producer.Close()
+	defer func() {
+		if err := producer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 	consumer := NewConsumer()
-	defer consumer.Close()
+	defer func() {
+		if err := consumer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 
 	for i := 0; i < 10; i++ {
 		logs := GenerateLogs(0, math.MaxUint8+1)
@@ -37,6 +45,7 @@ func TestLogsWithNoDictionary(t *testing.T) {
 		require.NotNil(t, batch)
 
 		received, err := consumer.LogsFrom(batch)
+		require.NoError(t, err)
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
@@ -66,9 +75,17 @@ func TestLogsSingleBatchWithDictionaryOverflow(t *testing.T) {
 		WithUint8InitDictIndex(),
 		WithUint32LimitDictIndex(),
 	)
-	defer producer.Close()
+	defer func() {
+		if err := producer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 	consumer := NewConsumer()
-	defer consumer.Close()
+	defer func() {
+		if err := consumer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 
 	for i := 0; i < 10; i++ {
 		logs := GenerateLogs(0, math.MaxUint8+1)
@@ -77,6 +94,7 @@ func TestLogsSingleBatchWithDictionaryOverflow(t *testing.T) {
 		require.NotNil(t, batch)
 
 		received, err := consumer.LogsFrom(batch)
+		require.NoError(t, err)
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
@@ -111,9 +129,17 @@ func TestLogsMultiBatchWithDictionaryOverflow(t *testing.T) {
 		WithUint8InitDictIndex(),
 		WithUint32LimitDictIndex(),
 	)
-	defer producer.Close()
+	defer func() {
+		if err := producer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 	consumer := NewConsumer()
-	defer consumer.Close()
+	defer func() {
+		if err := consumer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 
 	for i := 0; i < 10; i++ {
 		logs := GenerateLogs(i*((math.MaxUint8/2)+1), (math.MaxUint8/2)+1)
@@ -122,6 +148,7 @@ func TestLogsMultiBatchWithDictionaryOverflow(t *testing.T) {
 		require.NotNil(t, batch)
 
 		received, err := consumer.LogsFrom(batch)
+		require.NoError(t, err)
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
@@ -155,9 +182,17 @@ func TestLogsSingleBatchWithDictionaryLimit(t *testing.T) {
 		WithUint8InitDictIndex(),
 		WithUint8LimitDictIndex(),
 	)
-	defer producer.Close()
+	defer func() {
+		if err := producer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 	consumer := NewConsumer()
-	defer consumer.Close()
+	defer func() {
+		if err := consumer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
 
 	for i := 0; i < 10; i++ {
 		logs := GenerateLogs(0, math.MaxUint8+1)
@@ -166,6 +201,7 @@ func TestLogsSingleBatchWithDictionaryLimit(t *testing.T) {
 		require.NotNil(t, batch)
 
 		received, err := consumer.LogsFrom(batch)
+		require.NoError(t, err)
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
