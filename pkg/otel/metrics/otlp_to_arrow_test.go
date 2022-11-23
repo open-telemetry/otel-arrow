@@ -50,21 +50,21 @@ func TestOtlpMetricsToArrowRecords(t *testing.T) {
 	for _, record := range multiSchemaRecords {
 		schemaId := arrow.SchemaToID(record.Schema())
 		switch schemaId {
-		case "metrics:{system.cpu.load_average.1m:F64},resource:{attributes:{hostname:Dic<U16,Str>,ip:Dic<U16,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U16,Str>,version:Dic<U16,Str>},start_time_unix_nano:U64,time_unix_nano:U64":
+		case "resource:{attributes:{hostname:Dic<U16,Str>,ip:Dic<U16,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U16,Str>,version:Dic<U16,Str>},start_time_unix_nano:U64,time_unix_nano:U64,univariate_metrics:{system.cpu.load_average.1m:F64}":
 			if record.NumCols() != 5 {
 				t.Errorf("Expected 6 fields, got %d", record.NumCols())
 			}
 			if record.NumRows() != 10 {
 				t.Errorf("Expected 10 rows, got %d", record.NumRows())
 			}
-		case "attributes:{cpu:I64},metrics:{system.cpu.time:{idle:F64,interrupt:F64,iowait:F64,system:F64,user:F64}},resource:{attributes:{hostname:Dic<U16,Str>,ip:Dic<U16,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U16,Str>,version:Dic<U16,Str>},start_time_unix_nano:U64,time_unix_nano:U64":
+		case "attributes:{cpu:I64},resource:{attributes:{hostname:Dic<U16,Str>,ip:Dic<U16,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U16,Str>,version:Dic<U16,Str>},start_time_unix_nano:U64,time_unix_nano:U64,univariate_metrics:{system.cpu.time:{idle:F64,interrupt:F64,iowait:F64,system:F64,user:F64}}":
 			if record.NumCols() != 6 {
 				t.Errorf("Expected 5 fields, got %d", record.NumCols())
 			}
 			if record.NumRows() != 10 {
 				t.Errorf("Expected 10 rows, got %d", record.NumRows())
 			}
-		case "metrics:{system.memory.usage:{free:I64,inactive:I64,used:I64}},resource:{attributes:{hostname:Dic<U16,Str>,ip:Dic<U16,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U16,Str>,version:Dic<U16,Str>},start_time_unix_nano:U64,time_unix_nano:U64":
+		case "resource:{attributes:{hostname:Dic<U16,Str>,ip:Dic<U16,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U16,Str>,version:Dic<U16,Str>},start_time_unix_nano:U64,time_unix_nano:U64,univariate_metrics:{system.memory.usage:{free:I64,inactive:I64,used:I64}}":
 			if record.NumCols() != 5 {
 				t.Errorf("Expected 5 fields, got %d", record.NumCols())
 			}
