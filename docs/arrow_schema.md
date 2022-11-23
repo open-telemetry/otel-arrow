@@ -130,8 +130,8 @@ resource_metrics:
                         max: float64
                     aggregation_temporality: int32
           multivariate_metrics:                       # Not yet implemented (native support of multivariate metrics)
-            attributes: *attributes               
-            start_time_unix_nano: uint64         
+            attributes: *attributes                   # All multivariate metrics shared the same attributes
+            start_time_unix_nano: uint64              # All multivariate metrics shared the same timestamps
             time_unix_nano: uint64                    # required
             data:                                     # arrow type = sparse union
               - gauge:
