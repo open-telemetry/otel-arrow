@@ -4,7 +4,7 @@ import (
 	"github.com/apache/arrow/go/v11/arrow"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	arrow_utils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
@@ -17,12 +17,12 @@ type ScopeMetricsIds struct {
 }
 
 func NewScopeMetricsIds(dt *arrow.StructType) (*ScopeMetricsIds, error) {
-	id, scopeMetricsDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(dt, constants.SCOPE_METRICS)
+	id, scopeMetricsDT, err := arrowutils.ListOfStructsFieldIDFromStruct(dt, constants.SCOPE_METRICS)
 	if err != nil {
 		return nil, err
 	}
 
-	schemaId, _, err := arrow_utils.FieldIDFromStruct(scopeMetricsDT, constants.SCHEMA_URL)
+	schemaId, _, err := arrowutils.FieldIDFromStruct(scopeMetricsDT, constants.SCHEMA_URL)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +45,7 @@ func NewScopeMetricsIds(dt *arrow.StructType) (*ScopeMetricsIds, error) {
 	}, nil
 }
 
-func AppendScopeMetricsInto(resMetrics pmetric.ResourceMetrics, arrowResMetrics *arrow_utils.ListOfStructs, resMetricsIdx int, ids *ScopeMetricsIds) error {
+func AppendScopeMetricsInto(resMetrics pmetric.ResourceMetrics, arrowResMetrics *arrowutils.ListOfStructs, resMetricsIdx int, ids *ScopeMetricsIds) error {
 	arrowScopeMetrics, err := arrowResMetrics.ListOfStructsById(resMetricsIdx, ids.Id)
 	if err != nil {
 		return err

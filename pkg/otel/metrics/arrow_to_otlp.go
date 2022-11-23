@@ -21,7 +21,7 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/array"
 
 	arrow2 "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	common_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	commonarrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 
@@ -37,11 +37,11 @@ func ArrowRecordsToOtlpMetrics(record arrow.Record) (pmetric.Metrics, error) {
 
 	numRows := int(record.NumRows())
 	for i := 0; i < numRows; i++ {
-		resource, err := common_arrow.NewResourceFromOld(record, i)
+		resource, err := commonarrow.NewResourceFromOld(record, i)
 		if err != nil {
 			return request, err
 		}
-		resId := common_arrow.ResourceId(resource)
+		resId := commonarrow.ResourceID(resource)
 		rm, ok := resourceMetrics[resId]
 		if !ok {
 			rm = request.ResourceMetrics().AppendEmpty()
@@ -54,7 +54,7 @@ func ArrowRecordsToOtlpMetrics(record arrow.Record) (pmetric.Metrics, error) {
 		if err != nil {
 			return request, err
 		}
-		scopeSpanId := resId + "|" + common_arrow.ScopeId(scope)
+		scopeSpanId := resId + "|" + commonarrow.ScopeID(scope)
 		sm, ok := scopeMetrics[scopeSpanId]
 		if !ok {
 			sm = rm.ScopeMetrics().AppendEmpty()
@@ -102,7 +102,7 @@ func SetMetricsFrom(metrics pmetric.MetricSlice, record arrow.Record, row int) e
 	}
 	attributes := pcommon.NewMap()
 	if attrsField != nil {
-		if err := common_arrow.CopyAttributesFrom(attributes, attrsField.Type, attrsArray, row); err != nil {
+		if err := commonarrow.CopyAttributesFrom(attributes, attrsField.Type, attrsArray, row); err != nil {
 			return err
 		}
 	}

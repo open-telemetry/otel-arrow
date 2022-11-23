@@ -50,7 +50,7 @@ linters:
 #    - stylecheck
 #    - thelper
     - tparallel
-    - typecheck
+#    - typecheck
     - unconvert
 #    - unparam
     - varcheck

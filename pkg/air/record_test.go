@@ -172,8 +172,8 @@ func TestRecordNormalize(t *testing.T) {
 	})
 	record.Normalize()
 
-	expected_record := NewRecord()
-	expected_record.StructField("a", rfield.Struct{
+	expectedRecord := NewRecord()
+	expectedRecord.StructField("a", rfield.Struct{
 		Fields: []*rfield.Field{
 			{Name: "b", Value: &rfield.String{Value: &emptyString}},
 			{Name: "c", Value: &rfield.Struct{
@@ -201,10 +201,10 @@ func TestRecordNormalize(t *testing.T) {
 			{Name: "e", Value: &rfield.String{Value: &emptyString}},
 		},
 	})
-	expected_record.StringField("b", "")
+	expectedRecord.StringField("b", "")
 
-	if !cmp.Equal(record, expected_record, cmp.AllowUnexported(Record{}, rfield.Struct{}, rfield.List{}, rfield.Field{}, rfield.Metadata{})) {
-		t.Errorf("Expected: %+v\nGot: %+v", expected_record, record)
+	if !cmp.Equal(record, expectedRecord, cmp.AllowUnexported(Record{}, rfield.Struct{}, rfield.List{}, rfield.Field{}, rfield.Metadata{})) {
+		t.Errorf("Expected: %+v\nGot: %+v", expectedRecord, record)
 	}
 }
 

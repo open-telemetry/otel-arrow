@@ -29,9 +29,9 @@ import (
 
 	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-	logs_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
-	metrics_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
-	traces_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
+	logsarrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
+	metricsarrow "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
+	tracesarrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
 )
 
 // ProducerAPI is the interface of a Producer consdiering all signals.
@@ -73,28 +73,7 @@ type Option func(*Config)
 //
 // The method close MUST be called when the producer is not used anymore to release the memory and avoid memory leaks.
 func NewProducer() *Producer {
-	cfg := &Config{
-		pool:           memory.NewGoAllocator(),
-		initIndexSize:  math.MaxUint16,
-		limitIndexSize: math.MaxUint16,
-	}
-	return &Producer{
-		pool:            cfg.pool,
-		streamProducers: make(map[string]*streamProducer),
-		batchId:         0,
-		metricsSchema: acommon.NewAdaptiveSchema(
-			metrics_arrow.Schema,
-			acommon.WithDictInitIndexSize(cfg.initIndexSize),
-			acommon.WithDictLimitIndexSize(cfg.limitIndexSize)),
-		logsSchema: acommon.NewAdaptiveSchema(
-			logs_arrow.Schema,
-			acommon.WithDictInitIndexSize(cfg.initIndexSize),
-			acommon.WithDictLimitIndexSize(cfg.limitIndexSize)),
-		tracesSchema: acommon.NewAdaptiveSchema(
-			traces_arrow.Schema,
-			acommon.WithDictInitIndexSize(cfg.initIndexSize),
-			acommon.WithDictLimitIndexSize(cfg.limitIndexSize)),
-	}
+	return NewProducerWithOptions( /* use default options */ )
 }
 
 // NewProducerWithOptions creates a new BatchArrowRecords producer with a set of options.
@@ -114,15 +93,15 @@ func NewProducerWithOptions(options ...Option) *Producer {
 		streamProducers: make(map[string]*streamProducer),
 		batchId:         0,
 		metricsSchema: acommon.NewAdaptiveSchema(
-			metrics_arrow.Schema,
+			metricsarrow.Schema,
 			acommon.WithDictInitIndexSize(cfg.initIndexSize),
 			acommon.WithDictLimitIndexSize(cfg.limitIndexSize)),
 		logsSchema: acommon.NewAdaptiveSchema(
-			logs_arrow.Schema,
+			logsarrow.Schema,
 			acommon.WithDictInitIndexSize(cfg.initIndexSize),
 			acommon.WithDictLimitIndexSize(cfg.limitIndexSize)),
 		tracesSchema: acommon.NewAdaptiveSchema(
-			traces_arrow.Schema,
+			tracesarrow.Schema,
 			acommon.WithDictInitIndexSize(cfg.initIndexSize),
 			acommon.WithDictLimitIndexSize(cfg.limitIndexSize)),
 	}
@@ -131,13 +110,11 @@ func NewProducerWithOptions(options ...Option) *Producer {
 // BatchArrowRecordsFromMetrics produces a BatchArrowRecords message from a [pmetric.Metrics] messages.
 func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colarspb.BatchArrowRecords, error) {
 	record, err := RecordBuilder[pmetric.Metrics](func() (acommon.EntityBuilder[pmetric.Metrics], error) {
-		return metrics_arrow.NewMetricsBuilder(p.pool, p.metricsSchema)
+		return metricsarrow.NewMetricsBuilder(p.pool, p.metricsSchema)
 	}, metrics)
-	defer func() {
-		if record != nil {
-			record.Release()
-		}
-	}()
+	if record != nil {
+		defer record.Release()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +131,7 @@ func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colar
 // BatchArrowRecordsFromLogs produces a BatchArrowRecords message from a [plog.Logs] messages.
 func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrowRecords, error) {
 	record, err := RecordBuilder[plog.Logs](func() (acommon.EntityBuilder[plog.Logs], error) {
-		return logs_arrow.NewLogsBuilder(p.pool, p.logsSchema)
+		return logsarrow.NewLogsBuilder(p.pool, p.logsSchema)
 	}, ls)
 	defer func() {
 		if record != nil {
@@ -177,7 +154,7 @@ func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrow
 // BatchArrowRecordsFromTraces produces a BatchArrowRecords message from a [ptrace.Traces] messages.
 func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.BatchArrowRecords, error) {
 	record, err := RecordBuilder[ptrace.Traces](func() (acommon.EntityBuilder[ptrace.Traces], error) {
-		return traces_arrow.NewTracesBuilder(p.pool, p.tracesSchema)
+		return tracesarrow.NewTracesBuilder(p.pool, p.tracesSchema)
 	}, ts)
 	defer func() {
 		if record != nil {

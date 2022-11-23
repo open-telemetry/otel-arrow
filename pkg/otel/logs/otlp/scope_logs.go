@@ -4,7 +4,7 @@ import (
 	"github.com/apache/arrow/go/v11/arrow"
 	"go.opentelemetry.io/collector/pdata/plog"
 
-	arrow_utils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
@@ -17,12 +17,12 @@ type ScopeLogsIds struct {
 }
 
 func NewScopeLogsIds(dt *arrow.StructType) (*ScopeLogsIds, error) {
-	id, scopeSpansDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(dt, constants.SCOPE_LOGS)
+	id, scopeSpansDT, err := arrowutils.ListOfStructsFieldIDFromStruct(dt, constants.SCOPE_LOGS)
 	if err != nil {
 		return nil, err
 	}
 
-	schemaId, _, err := arrow_utils.FieldIDFromStruct(scopeSpansDT, constants.SCHEMA_URL)
+	schemaId, _, err := arrowutils.FieldIDFromStruct(scopeSpansDT, constants.SCHEMA_URL)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +45,7 @@ func NewScopeLogsIds(dt *arrow.StructType) (*ScopeLogsIds, error) {
 	}, nil
 }
 
-func AppendScopeLogsInto(resLogs plog.ResourceLogs, arrowResLogs *arrow_utils.ListOfStructs, resLogsIdx int, ids *ScopeLogsIds) error {
+func AppendScopeLogsInto(resLogs plog.ResourceLogs, arrowResLogs *arrowutils.ListOfStructs, resLogsIdx int, ids *ScopeLogsIds) error {
 	arrowScopeLogs, err := arrowResLogs.ListOfStructsById(resLogsIdx, ids.Id)
 	if err != nil {
 		return err

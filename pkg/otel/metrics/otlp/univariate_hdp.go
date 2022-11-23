@@ -8,7 +8,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	arrow_utils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
@@ -29,7 +29,7 @@ type UnivariateHistogramDataPointIds struct {
 }
 
 func NewUnivariateHistogramDataPointIds(parentDT *arrow.StructType) (*UnivariateHistogramDataPointIds, error) {
-	id, hdpDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(parentDT, constants.DATA_POINTS)
+	id, hdpDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.DATA_POINTS)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +105,7 @@ func NewUnivariateHistogramDataPointIds(parentDT *arrow.StructType) (*Univariate
 	}, nil
 }
 
-func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointSlice, hdp *arrow_utils.ListOfStructs, ids *UnivariateHistogramDataPointIds) error {
+func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointSlice, hdp *arrowutils.ListOfStructs, ids *UnivariateHistogramDataPointIds) error {
 	if hdp == nil {
 		return nil
 	}

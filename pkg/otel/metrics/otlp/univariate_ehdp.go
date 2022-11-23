@@ -7,7 +7,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	arrow_utils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
@@ -33,7 +33,7 @@ type UnivariateEHistogramDataPointIds struct {
 
 // NewUnivariateEHistogramDataPointIds returns a new UnivariateEHistogramDataPointIds struct.
 func NewUnivariateEHistogramDataPointIds(parentDT *arrow.StructType) (*UnivariateEHistogramDataPointIds, error) {
-	id, ehdpDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(parentDT, constants.DATA_POINTS)
+	id, ehdpDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.DATA_POINTS)
 	if err != nil {
 		return nil, err
 	}
@@ -43,50 +43,50 @@ func NewUnivariateEHistogramDataPointIds(parentDT *arrow.StructType) (*Univariat
 		return nil, err
 	}
 
-	startTimeUnixNanoId, found := ehdpDT.FieldIdx(constants.START_TIME_UNIX_NANO)
+	startTimeUnixNanoID, found := ehdpDT.FieldIdx(constants.START_TIME_UNIX_NANO)
 	if !found {
 		return nil, fmt.Errorf("field %q not found", constants.START_TIME_UNIX_NANO)
 	}
 
-	timeUnixNanoId, found := ehdpDT.FieldIdx(constants.TIME_UNIX_NANO)
+	timeUnixNanoID, found := ehdpDT.FieldIdx(constants.TIME_UNIX_NANO)
 	if !found {
 		return nil, fmt.Errorf("field %q not found", constants.TIME_UNIX_NANO)
 	}
 
-	countId, found := ehdpDT.FieldIdx(constants.HISTOGRAM_COUNT)
+	countID, found := ehdpDT.FieldIdx(constants.HISTOGRAM_COUNT)
 	if !found {
 		return nil, fmt.Errorf("field %q not found", constants.HISTOGRAM_COUNT)
 	}
 
-	sumId, found := ehdpDT.FieldIdx(constants.HISTOGRAM_SUM)
+	sumID, found := ehdpDT.FieldIdx(constants.HISTOGRAM_SUM)
 	if !found {
 		return nil, fmt.Errorf("field %q not found", constants.HISTOGRAM_SUM)
 	}
 
-	scaleId, found := ehdpDT.FieldIdx(constants.EXP_HISTOGRAM_SCALE)
+	scaleID, found := ehdpDT.FieldIdx(constants.EXP_HISTOGRAM_SCALE)
 	if !found {
 		return nil, fmt.Errorf("field %q not found", constants.EXP_HISTOGRAM_SCALE)
 	}
 
-	zeroCountId, found := ehdpDT.FieldIdx(constants.EXP_HISTOGRAM_ZERO_COUNT)
+	zeroCountID, found := ehdpDT.FieldIdx(constants.EXP_HISTOGRAM_ZERO_COUNT)
 	if !found {
 		return nil, fmt.Errorf("field %q not found", constants.EXP_HISTOGRAM_ZERO_COUNT)
 	}
 
-	positiveId, positiveDT, err := arrow_utils.StructFieldIDFromStruct(ehdpDT, constants.EXP_HISTOGRAM_POSITIVE)
+	positiveID, positiveDT, err := arrowutils.StructFieldIDFromStruct(ehdpDT, constants.EXP_HISTOGRAM_POSITIVE)
 	if err != nil {
 		return nil, err
 	}
-	positive, err := NewEHistogramDataPointBucketsIds(positiveId, positiveDT)
+	positive, err := NewEHistogramDataPointBucketsIds(positiveID, positiveDT)
 	if err != nil {
 		return nil, err
 	}
 
-	negativeId, negativeDT, err := arrow_utils.StructFieldIDFromStruct(ehdpDT, constants.EXP_HISTOGRAM_NEGATIVE)
+	negativeID, negativeDT, err := arrowutils.StructFieldIDFromStruct(ehdpDT, constants.EXP_HISTOGRAM_NEGATIVE)
 	if err != nil {
 		return nil, err
 	}
-	negative, err := NewEHistogramDataPointBucketsIds(negativeId, negativeDT)
+	negative, err := NewEHistogramDataPointBucketsIds(negativeID, negativeDT)
 	if err != nil {
 		return nil, err
 	}
@@ -96,17 +96,17 @@ func NewUnivariateEHistogramDataPointIds(parentDT *arrow.StructType) (*Univariat
 		return nil, err
 	}
 
-	flagsId, found := ehdpDT.FieldIdx(constants.FLAGS)
+	flagsID, found := ehdpDT.FieldIdx(constants.FLAGS)
 	if !found {
 		return nil, fmt.Errorf("field %q not found", constants.FLAGS)
 	}
 
-	minId, found := ehdpDT.FieldIdx(constants.HISTOGRAM_MIN)
+	minID, found := ehdpDT.FieldIdx(constants.HISTOGRAM_MIN)
 	if !found {
 		return nil, fmt.Errorf("field %q not found", constants.HISTOGRAM_MIN)
 	}
 
-	maxId, found := ehdpDT.FieldIdx(constants.HISTOGRAM_MAX)
+	maxID, found := ehdpDT.FieldIdx(constants.HISTOGRAM_MAX)
 	if !found {
 		return nil, fmt.Errorf("field %q not found", constants.HISTOGRAM_MAX)
 	}
@@ -114,24 +114,24 @@ func NewUnivariateEHistogramDataPointIds(parentDT *arrow.StructType) (*Univariat
 	return &UnivariateEHistogramDataPointIds{
 		Id:                id,
 		Attributes:        attributes,
-		StartTimeUnixNano: startTimeUnixNanoId,
-		TimeUnixNano:      timeUnixNanoId,
-		Count:             countId,
-		Sum:               sumId,
-		Scale:             scaleId,
-		ZeroCount:         zeroCountId,
+		StartTimeUnixNano: startTimeUnixNanoID,
+		TimeUnixNano:      timeUnixNanoID,
+		Count:             countID,
+		Sum:               sumID,
+		Scale:             scaleID,
+		ZeroCount:         zeroCountID,
 		Positive:          positive,
 		Negative:          negative,
 		Exemplars:         exemplars,
-		Flags:             flagsId,
-		Min:               minId,
-		Max:               maxId,
+		Flags:             flagsID,
+		Min:               minID,
+		Max:               maxID,
 	}, nil
 }
 
 // AppendUnivariateEHistogramDataPointInto appends exponential histogram data points into the
 // given slice of ExponentialHistogramDataPoint decoded from the ehdp array.
-func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistogramDataPointSlice, ehdp *arrow_utils.ListOfStructs, ids *UnivariateEHistogramDataPointIds) error {
+func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistogramDataPointSlice, ehdp *arrowutils.ListOfStructs, ids *UnivariateEHistogramDataPointIds) error {
 	if ehdp == nil {
 		return nil
 	}

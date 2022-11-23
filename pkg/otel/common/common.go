@@ -142,7 +142,6 @@ type AttributeTuple struct {
 
 type AttributeTuples []AttributeTuple
 
-// Sort interface
 func (f AttributeTuples) Less(i, j int) bool {
 	return f[i].key < f[j].key
 }

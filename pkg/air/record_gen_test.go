@@ -43,16 +43,16 @@ func GenComplexRecord(ts int64) *Record {
 	return record
 }
 
-func GenRecord(ts int64, value_a, value_b, value_c int) *Record {
+func GenRecord(ts int64, valueA, valueB, valueC int) *Record {
 	record := NewRecord()
 	record.I64Field("ts", ts)
-	record.StringField("c", fmt.Sprintf("c_%d", value_c))
-	record.StringField("a", fmt.Sprintf("a___%d", value_a))
-	record.StringField("b", fmt.Sprintf("b__%d", value_b))
+	record.StringField("c", fmt.Sprintf("c_%d", valueC))
+	record.StringField("a", fmt.Sprintf("a___%d", valueA))
+	record.StringField("b", fmt.Sprintf("b__%d", valueB))
 	record.StructField("d", rfield.Struct{
 		Fields: []*rfield.Field{
-			{Name: "a", Value: rfield.NewString(fmt.Sprintf("a_%d", value_a))},
-			{Name: "b", Value: rfield.NewString(fmt.Sprintf("b_%d", value_b))},
+			{Name: "a", Value: rfield.NewString(fmt.Sprintf("a_%d", valueA))},
+			{Name: "b", Value: rfield.NewString(fmt.Sprintf("b_%d", valueB))},
 			{Name: "c", Value: &rfield.List{Values: []rfield.Value{
 				rfield.NewI64(1),
 				rfield.NewI64(2),

@@ -7,7 +7,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	arrow_utils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
@@ -24,7 +24,7 @@ type UnivariateSdpIds struct {
 }
 
 func NewUnivariateSdpIds(parentDT *arrow.StructType) (*UnivariateSdpIds, error) {
-	id, sdpDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(parentDT, constants.DATA_POINTS)
+	id, sdpDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.DATA_POINTS)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +76,7 @@ func NewUnivariateSdpIds(parentDT *arrow.StructType) (*UnivariateSdpIds, error) 
 	}, nil
 }
 
-func AppendUnivariateSdpInto(ndpSlice pmetric.SummaryDataPointSlice, ndp *arrow_utils.ListOfStructs, ids *UnivariateSdpIds) error {
+func AppendUnivariateSdpInto(ndpSlice pmetric.SummaryDataPointSlice, ndp *arrowutils.ListOfStructs, ids *UnivariateSdpIds) error {
 	if ndp == nil {
 		return nil
 	}

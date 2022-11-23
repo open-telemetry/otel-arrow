@@ -31,7 +31,7 @@ func TestEquiv(t *testing.T) {
 	rs.Resource().Attributes().PutInt("foo2", 123)
 	rs.Resource().Attributes().PutDouble("foo3", 123.0)
 	rs.Resource().Attributes().PutBool("foo4", true)
-	rs.SetSchemaUrl("http://foo.bar")
+	rs.SetSchemaUrl("https://foo.bar")
 
 	expectedTraces := []json.Marshaler{
 		ptraceotlp.NewExportRequestFromTraces(traces),
@@ -47,7 +47,7 @@ func TestEquiv(t *testing.T) {
 	rs = traces.ResourceSpans().AppendEmpty()
 	rs.Resource().Attributes().PutStr("foo", "bar")
 	rs.Resource().Attributes().PutStr("baz", "qux")
-	rs.SetSchemaUrl("http://foo.bar")
+	rs.SetSchemaUrl("https://foo.bar")
 	actualTraces = []json.Marshaler{
 		ptraceotlp.NewExportRequestFromTraces(traces),
 	}

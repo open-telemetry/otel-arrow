@@ -217,8 +217,8 @@ func (c *BinaryColumn) NewArray(_ *memory.GoAllocator) arrow.Array {
 	}
 }
 
-func (c *BinaryColumn) Metadata() *ColumnMetadata {
-	return &ColumnMetadata{
+func (c *BinaryColumn) Metadata() *Metadata {
+	return &Metadata{
 		Field: c.NewArrowField(),
 		Len:   c.Len(),
 		Dictionary: &DictionaryMetadata{

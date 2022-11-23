@@ -84,8 +84,8 @@ func (c *BoolColumn) NewArray(_ *memory.GoAllocator) arrow.Array {
 	return c.builder.NewArray()
 }
 
-func (c *BoolColumn) Metadata() *ColumnMetadata {
-	return &ColumnMetadata{
+func (c *BoolColumn) Metadata() *Metadata {
+	return &Metadata{
 		Field: c.NewArrowField(),
 		Len:   c.Len(),
 	}

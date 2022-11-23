@@ -117,7 +117,7 @@ func (d *RealTraceDataset) Traces(offset, size int) []ptrace.Traces {
 
 		if !ok {
 			inres := d.s2r[span]
-			inresID := arrow.ResourceId(inres)
+			inresID := arrow.ResourceID(inres)
 			outres, ok := rsm[inresID]
 
 			if !ok {

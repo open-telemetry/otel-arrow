@@ -26,8 +26,8 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-	logs_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
-	logs_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/logs/otlp"
+	logsarrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
+	logsotlp "github.com/f5/otel-arrow-adapter/pkg/otel/logs/otlp"
 )
 
 // TestConversionFromSyntheticData tests the conversion of OTLP logs to Arrow and back to OTLP.
@@ -46,9 +46,9 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	// Convert the OTLP logs request to Arrow.
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	logsSchema := acommon.NewAdaptiveSchema(logs_arrow.Schema)
+	logsSchema := acommon.NewAdaptiveSchema(logsarrow.Schema)
 	defer logsSchema.Release()
-	lb, err := logs_arrow.NewLogsBuilder(pool, logsSchema)
+	lb, err := logsarrow.NewLogsBuilder(pool, logsSchema)
 	require.NoError(t, err)
 	err = lb.Append(expectedRequest.Logs())
 	require.NoError(t, err)
@@ -57,7 +57,7 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	defer record.Release()
 
 	// Convert the Arrow records back to OTLP.
-	logs, err := logs_otlp.LogsFrom(record)
+	logs, err := logsotlp.LogsFrom(record)
 	require.NoError(t, err)
 	assert.Equiv(t, []json.Marshaler{expectedRequest}, []json.Marshaler{plogotlp.NewExportRequestFromLogs(logs)})
 }

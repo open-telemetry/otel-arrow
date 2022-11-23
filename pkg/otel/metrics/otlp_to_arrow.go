@@ -46,7 +46,7 @@ func NewMultivariateMetricsConfig() *MultivariateMetricsConfig {
 
 // OtlpMetricsToArrowRecords converts an OTLP ResourceMetrics to one or more Arrow records.
 func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request pmetric.Metrics, multivariateConf *MultivariateMetricsConfig, cfg *config.Config) ([]arrow.Record, error) {
-	result := []arrow.Record{}
+	var result []arrow.Record
 
 	for i := 0; i < request.ResourceMetrics().Len(); i++ {
 		resourceMetrics := request.ResourceMetrics().At(i)
@@ -100,16 +100,16 @@ func OtlpMetricsToArrowRecords(rr *air.RecordRepository, request pmetric.Metrics
 	return result, nil
 }
 
-func addGaugeOrSum(rr *air.RecordRepository, res pcommon.Resource, scope pcommon.InstrumentationScope, metric pmetric.Metric, dataPoints pmetric.NumberDataPointSlice, metric_type string, config *MultivariateMetricsConfig, cfg *config.Config) error {
+func addGaugeOrSum(rr *air.RecordRepository, res pcommon.Resource, scope pcommon.InstrumentationScope, metric pmetric.Metric, dataPoints pmetric.NumberDataPointSlice, metricType string, config *MultivariateMetricsConfig, cfg *config.Config) error {
 	// TODO: Missing Temporality and IsMonotonic for Sums here.
 	if mvKey, ok := config.Metrics[metric.Name()]; ok {
-		return multivariateMetric(rr, res, scope, metric, dataPoints, metric_type, mvKey, cfg)
+		return multivariateMetric(rr, res, scope, metric, dataPoints, metricType, mvKey, cfg)
 	}
-	univariateMetric(rr, res, scope, metric, dataPoints, metric_type, cfg)
+	univariateMetric(rr, res, scope, metric, dataPoints, metricType, cfg)
 	return nil
 }
 
-func multivariateMetric(rr *air.RecordRepository, res pcommon.Resource, scope pcommon.InstrumentationScope, metric pmetric.Metric, dataPoints pmetric.NumberDataPointSlice, metric_type string, multivariateKey string, cfg *config.Config) error {
+func multivariateMetric(rr *air.RecordRepository, res pcommon.Resource, scope pcommon.InstrumentationScope, metric pmetric.Metric, dataPoints pmetric.NumberDataPointSlice, metricType string, multivariateKey string, cfg *config.Config) error {
 	records := make(map[string]*MultivariateRecord)
 
 	for i := 0; i < dataPoints.Len(); i++ {
@@ -173,7 +173,7 @@ func multivariateMetric(rr *air.RecordRepository, res pcommon.Resource, scope pc
 		metricField := rfield.NewStructField(metric.Name(), rfield.Struct{
 			Fields: record.metrics,
 		})
-		metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metric_type)
+		metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metricType)
 		if metric.Description() != "" {
 			metricField.AddMetadata(constants.METADATA_METRIC_DESCRIPTION, metric.Description())
 		}
@@ -188,7 +188,7 @@ func multivariateMetric(rr *air.RecordRepository, res pcommon.Resource, scope pc
 	return nil
 }
 
-func univariateMetric(rr *air.RecordRepository, res pcommon.Resource, scope pcommon.InstrumentationScope, metric pmetric.Metric, dataPoints pmetric.NumberDataPointSlice, metric_type string, cfg *config.Config) {
+func univariateMetric(rr *air.RecordRepository, res pcommon.Resource, scope pcommon.InstrumentationScope, metric pmetric.Metric, dataPoints pmetric.NumberDataPointSlice, metricType string, cfg *config.Config) {
 	for i := 0; i < dataPoints.Len(); i++ {
 		ndp := dataPoints.At(i)
 		record := air.NewRecord()
@@ -208,7 +208,7 @@ func univariateMetric(rr *air.RecordRepository, res pcommon.Resource, scope pcom
 		switch ndp.ValueType() {
 		case pmetric.NumberDataPointValueTypeDouble:
 			metricField := rfield.NewF64Field(metric.Name(), ndp.DoubleValue())
-			metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metric_type)
+			metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metricType)
 			if metric.Description() != "" {
 				metricField.AddMetadata(constants.METADATA_METRIC_DESCRIPTION, metric.Description())
 			}
@@ -220,7 +220,7 @@ func univariateMetric(rr *air.RecordRepository, res pcommon.Resource, scope pcom
 			})
 		case pmetric.NumberDataPointValueTypeInt:
 			metricField := rfield.NewI64Field(metric.Name(), ndp.IntValue())
-			metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metric_type)
+			metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metricType)
 			record.StructField(constants.METRICS, rfield.Struct{
 				Fields: []*rfield.Field{metricField},
 			})
@@ -442,7 +442,7 @@ func ExtractMultivariateValue(attributes pcommon.Map, multivariateKey string) (r
 		case pcommon.ValueTypeStr:
 			res = value.Str()
 		default:
-			err = fmt.Errorf("Unsupported multivariate value type: %v", value)
+			err = fmt.Errorf("unsupported multivariate value type: %v", value)
 		}
 		return false
 	})
@@ -459,7 +459,7 @@ func AddMultivariateValue(attributes pcommon.Map, multivariateKey string, fields
 				multivariateValue = value.Str()
 				return true
 			default:
-				err = fmt.Errorf("Unsupported multivariate value type: %v", value)
+				err = fmt.Errorf("unsupported multivariate value type: %v", value)
 			}
 		}
 

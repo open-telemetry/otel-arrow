@@ -89,7 +89,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 		compression := NewMetric()
 		decompression := NewMetric()
 		totalTime := NewMetric()
-		processingResults := []string{}
+		var processingResults []string
 
 		profileable.InitBatchSize(p.writer, batchSize)
 
@@ -150,7 +150,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 				}
 				afterDecompression := time.Now()
 				if !bytesEqual(buffers, uncompressedBuffers) {
-					return fmt.Errorf("Buffers are not equal after decompression")
+					return fmt.Errorf("buffers are not equal after decompression")
 				}
 
 				// Deserialization

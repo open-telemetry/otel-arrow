@@ -12,8 +12,8 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
-// QuantileValueDT is the Arrow Data Type describing a univariate number data point.
 var (
+	// UnivariateNumberDataPointDT is the data type for a single univariate number data point.
 	UnivariateNumberDataPointDT = arrow.StructOf(
 		arrow.Field{Name: constants.ATTRIBUTES, Type: acommon.AttributesDT},
 		arrow.Field{Name: constants.START_TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
@@ -24,7 +24,7 @@ var (
 	)
 )
 
-// QuantileValueBuilder is a builder for a data point.
+// NumberDataPointBuilder is a builder for number data points.
 type NumberDataPointBuilder struct {
 	released bool
 
@@ -39,12 +39,12 @@ type NumberDataPointBuilder struct {
 	fb    *array.Uint32Builder       // flags builder
 }
 
-// NewQuantileValueBuilder creates a new QuantileValueBuilder with a given memory allocator.
+// NewNumberDataPointBuilder creates a new NumberDataPointBuilder with a given memory allocator.
 func NewNumberDataPointBuilder(pool memory.Allocator) *NumberDataPointBuilder {
 	return NumberDataPointBuilderFrom(array.NewStructBuilder(pool, UnivariateNumberDataPointDT))
 }
 
-// QuantileValueBuilderFrom creates a new QuantileValueBuilder from an existing StructBuilder.
+// NumberDataPointBuilderFrom creates a new NumberDataPointBuilder from an existing StructBuilder.
 func NumberDataPointBuilderFrom(ndpb *array.StructBuilder) *NumberDataPointBuilder {
 	return &NumberDataPointBuilder{
 		released: false,

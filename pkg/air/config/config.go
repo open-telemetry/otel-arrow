@@ -27,12 +27,6 @@ type Config struct {
 
 type TraceEncoding int8
 
-const (
-	Flat TraceEncoding = iota
-	Hierarchical
-	Hybrid
-)
-
 type AttributeEncoding int8
 
 const (

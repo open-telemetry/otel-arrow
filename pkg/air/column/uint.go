@@ -125,8 +125,8 @@ func (c *U8Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
 	}
 }
 
-func (c *U8Column) Metadata() *ColumnMetadata {
-	return &ColumnMetadata{
+func (c *U8Column) Metadata() *Metadata {
+	return &Metadata{
 		Field: c.NewArrowField(),
 		Len:   c.Len(),
 	}
@@ -179,8 +179,8 @@ func (c *U16Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
 	}
 }
 
-func (c *U16Column) Metadata() *ColumnMetadata {
-	return &ColumnMetadata{
+func (c *U16Column) Metadata() *Metadata {
+	return &Metadata{
 		Field: c.NewArrowField(),
 		Len:   c.Len(),
 	}
@@ -233,8 +233,8 @@ func (c *U32Column) NewArray(_ *memory.GoAllocator) arrow.Array {
 	return c.builder.NewArray()
 }
 
-func (c *U32Column) Metadata() *ColumnMetadata {
-	return &ColumnMetadata{
+func (c *U32Column) Metadata() *Metadata {
+	return &Metadata{
 		Field: c.NewArrowField(),
 		Len:   c.Len(),
 	}
@@ -287,8 +287,8 @@ func (c *U64Column) NewArray(_ *memory.GoAllocator) arrow.Array {
 	return c.builder.NewArray()
 }
 
-func (c *U64Column) Metadata() *ColumnMetadata {
-	return &ColumnMetadata{
+func (c *U64Column) Metadata() *Metadata {
+	return &Metadata{
 		Field: c.NewArrowField(),
 		Len:   c.Len(),
 	}

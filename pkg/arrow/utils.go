@@ -36,7 +36,6 @@ type SortableField struct {
 
 type Fields []SortableField
 
-// Sort interface
 func (d Fields) Less(i, j int) bool {
 	return *d[i].name < *d[j].name
 }
@@ -550,6 +549,7 @@ func (los *ListOfStructs) CopyAttributesFrom(attr pcommon.Map) error {
 	return nil
 }
 
+// OldListOfStructsById
 // TODO remove this function
 func (los *ListOfStructs) OldListOfStructsById(row int, fieldID int, fieldName string) (*ListOfStructs, error) {
 	column := los.arr.Field(fieldID)
@@ -795,6 +795,7 @@ func OptionalU32FromRecord(record arrow.Record, row int, column string) (uint32,
 	return U32FromArray(arr, row)
 }
 
+// U32FromStructOld
 // TODO remove this function
 func U32FromStructOld(fieldType *arrow.StructType, structArr *array.Struct, row int, column string) (uint32, error) {
 	_, id, found := FieldOfStruct(fieldType, column)
@@ -861,6 +862,7 @@ func StringFromArray(arr arrow.Array, row int) (string, error) {
 	}
 }
 
+// OldStringFromStruct
 // TODO remove this function
 func OldStringFromStruct(fieldType *arrow.StructType, arr arrow.Array, row int, column string) (string, error) {
 	structArr, ok := arr.(*array.Struct)

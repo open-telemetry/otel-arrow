@@ -27,7 +27,6 @@ import (
 
 type ArrowFields []*arrow.Field
 
-// Sort interface
 func (d ArrowFields) Less(i, j int) bool {
 	return d[i].Name < d[j].Name
 }
@@ -197,8 +196,8 @@ func (c *StructColumn) Type() arrow.DataType {
 }
 
 // Metadata returns the metadata of the column.
-func (c *StructColumn) Metadata() *ColumnMetadata {
-	return &ColumnMetadata{
+func (c *StructColumn) Metadata() *Metadata {
+	return &Metadata{
 		Field:    c.NewArrowField(),
 		Len:      0,
 		Children: c.columns.Metadata(),

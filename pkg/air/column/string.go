@@ -83,7 +83,7 @@ func NewStringColumn(allocator *memory.GoAllocator, name string, metadata arrow.
 	}
 }
 
-// ColumnName returns the name of the column.
+// Name returns the name of the column.
 func (c *StringColumn) Name() string {
 	return c.stringField.Name
 }
@@ -214,8 +214,8 @@ func (c *StringColumn) NewArray(_ *memory.GoAllocator) arrow.Array {
 	}
 }
 
-func (c *StringColumn) Metadata() *ColumnMetadata {
-	return &ColumnMetadata{
+func (c *StringColumn) Metadata() *Metadata {
+	return &Metadata{
 		Field: c.NewArrowField(),
 		Len:   c.Len(),
 		Dictionary: &DictionaryMetadata{

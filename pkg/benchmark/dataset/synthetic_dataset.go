@@ -45,7 +45,7 @@ type TraceDataset interface {
 }
 
 func ResourceAndScopeId(r pcommon.Resource, is pcommon.InstrumentationScope) string {
-	return arrow.ResourceId(r) + "|" + arrow.ScopeId(is)
+	return arrow.ResourceID(r) + "|" + arrow.ScopeID(is)
 }
 
 // ===== Fake metrics dataset =====

@@ -36,7 +36,7 @@ const (
 	minBuilderCapacity = 1 << 5
 )
 
-// ListColumn is a column of list data.
+// ListColumnBase is a column of list data.
 type ListColumnBase struct {
 	name       string         // name of the column.
 	etype      arrow.DataType // data type of the list's elements.
@@ -280,10 +280,10 @@ func (c *ListColumnBase) NewArray(allocator *memory.GoAllocator) arrow.Array {
 }
 
 // Metadata returns the metadata of the column.
-func (c *ListColumnBase) Metadata() *ColumnMetadata {
-	children := make(map[string]*ColumnMetadata)
+func (c *ListColumnBase) Metadata() *Metadata {
+	children := make(map[string]*Metadata)
 	children[c.values.Name()] = c.values.Metadata()
-	return &ColumnMetadata{
+	return &Metadata{
 		Field:    c.NewArrowField(),
 		Len:      c.Len(),
 		Children: children,

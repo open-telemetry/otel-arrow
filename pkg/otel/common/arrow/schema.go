@@ -88,7 +88,7 @@ func (m *AdaptiveSchema) Schema() *arrow.Schema {
 //
 // Returns true if any of the dictionaries have overflowed and false
 // otherwise.
-func (m *AdaptiveSchema) Analyze(record arrow.Record) (overflowDetected bool, updates []*SchemaUpdate) {
+func (m *AdaptiveSchema) Analyze(record arrow.Record) (overflowDetected bool, updates []SchemaUpdate) {
 	arrays := record.Columns()
 	overflowDetected = false
 
@@ -103,7 +103,7 @@ func (m *AdaptiveSchema) Analyze(record arrow.Record) (overflowDetected bool, up
 		if observedSize > d.upperLimit {
 			overflowDetected = true
 			newDict, newUpperLimit := m.promoteDictionaryType(observedSize, d.dictionary)
-			updates = append(updates, &SchemaUpdate{
+			updates = append(updates, SchemaUpdate{
 				DictIdx:       dictIdx,
 				oldDict:       d.dictionary,
 				newDict:       newDict,
@@ -120,7 +120,7 @@ func (m *AdaptiveSchema) Analyze(record arrow.Record) (overflowDetected bool, up
 }
 
 // UpdateSchema updates the schema with the provided updates.
-func (m *AdaptiveSchema) UpdateSchema(updates []*SchemaUpdate) {
+func (m *AdaptiveSchema) UpdateSchema(updates []SchemaUpdate) {
 	m.rebuildSchema(updates)
 
 	// update dictionaries based on the updates
@@ -189,6 +189,7 @@ func (m *AdaptiveSchema) DictionaryPath(idx int) string {
 // DictionariesWithOverflow returns a map of dictionary fields that have overflowed and the
 // corresponding last promoted type.
 func (m *AdaptiveSchema) DictionariesWithOverflow() map[string]string {
+	// TODO find a less "intrusive" way to test which dictionaries have overflowed, consider how to remove test-specific functionality from the code
 	return m.dictionariesWithOverflow
 }
 
@@ -268,7 +269,7 @@ func initSchema(schema *arrow.Schema, cfg *config) *arrow.Schema {
 	return arrow.NewSchema(newFields, &metadata)
 }
 
-func (m *AdaptiveSchema) rebuildSchema(updates []*SchemaUpdate) {
+func (m *AdaptiveSchema) rebuildSchema(updates []SchemaUpdate) {
 	// Mapping old dictionary type to new dictionary type
 	// Used to identify the dictionary builders that need to be updated
 	oldToNewDicts := make(map[*arrow.DictionaryType]*arrow.DictionaryType)

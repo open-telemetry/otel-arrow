@@ -38,7 +38,7 @@ func TestTracesWithNoDictionary(t *testing.T) {
 		}
 	}()
 
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 300; i++ {
 		traces := GenerateTraces(0, math.MaxUint8+1)
 		batch, err := producer.BatchArrowRecordsFromTraces(traces)
 		require.NoError(t, err)

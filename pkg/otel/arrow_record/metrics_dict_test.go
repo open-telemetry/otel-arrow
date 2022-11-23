@@ -39,7 +39,7 @@ func TestMetricsWithNoDictionary(t *testing.T) {
 		}
 	}()
 
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 300; i++ {
 		metrics := GenerateMetrics(0, math.MaxUint8+1)
 		batch, err := producer.BatchArrowRecordsFromMetrics(metrics)
 		require.NoError(t, err)

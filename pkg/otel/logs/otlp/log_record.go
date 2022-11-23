@@ -8,7 +8,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 
-	arrow_utils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
@@ -17,8 +17,8 @@ type LogRecordIds struct {
 	Id                   int
 	TimeUnixNano         int
 	ObservedTimeUnixNano int
-	TraceId              int
-	SpanId               int
+	TraceID              int
+	SpanID               int
 	SeverityNumber       int
 	SeverityText         int
 	Body                 int
@@ -28,42 +28,42 @@ type LogRecordIds struct {
 }
 
 func NewLogRecordIds(scopeLogsDT *arrow.StructType) (*LogRecordIds, error) {
-	id, logDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(scopeLogsDT, constants.LOGS)
+	id, logDT, err := arrowutils.ListOfStructsFieldIDFromStruct(scopeLogsDT, constants.LOGS)
 	if err != nil {
 		return nil, err
 	}
 
-	timeUnixNano, _, err := arrow_utils.FieldIDFromStruct(logDT, constants.TIME_UNIX_NANO)
+	timeUnixNano, _, err := arrowutils.FieldIDFromStruct(logDT, constants.TIME_UNIX_NANO)
 	if err != nil {
 		return nil, err
 	}
 
-	observedTimeUnixNano, _, err := arrow_utils.FieldIDFromStruct(logDT, constants.OBSERVED_TIME_UNIX_NANO)
+	observedTimeUnixNano, _, err := arrowutils.FieldIDFromStruct(logDT, constants.OBSERVED_TIME_UNIX_NANO)
 	if err != nil {
 		return nil, err
 	}
 
-	traceId, _, err := arrow_utils.FieldIDFromStruct(logDT, constants.TRACE_ID)
+	traceID, _, err := arrowutils.FieldIDFromStruct(logDT, constants.TRACE_ID)
 	if err != nil {
 		return nil, err
 	}
 
-	spanId, _, err := arrow_utils.FieldIDFromStruct(logDT, constants.SPAN_ID)
+	spanID, _, err := arrowutils.FieldIDFromStruct(logDT, constants.SPAN_ID)
 	if err != nil {
 		return nil, err
 	}
 
-	severityNumber, _, err := arrow_utils.FieldIDFromStruct(logDT, constants.SEVERITY_NUMBER)
+	severityNumber, _, err := arrowutils.FieldIDFromStruct(logDT, constants.SEVERITY_NUMBER)
 	if err != nil {
 		return nil, err
 	}
 
-	severityText, _, err := arrow_utils.FieldIDFromStruct(logDT, constants.SEVERITY_TEXT)
+	severityText, _, err := arrowutils.FieldIDFromStruct(logDT, constants.SEVERITY_TEXT)
 	if err != nil {
 		return nil, err
 	}
 
-	body, _, err := arrow_utils.FieldIDFromStruct(logDT, constants.BODY)
+	body, _, err := arrowutils.FieldIDFromStruct(logDT, constants.BODY)
 	if err != nil {
 		return nil, err
 	}
@@ -73,12 +73,12 @@ func NewLogRecordIds(scopeLogsDT *arrow.StructType) (*LogRecordIds, error) {
 		return nil, err
 	}
 
-	droppedAttributesCount, _, err := arrow_utils.FieldIDFromStruct(logDT, constants.DROPPED_ATTRIBUTES_COUNT)
+	droppedAttributesCount, _, err := arrowutils.FieldIDFromStruct(logDT, constants.DROPPED_ATTRIBUTES_COUNT)
 	if err != nil {
 		return nil, err
 	}
 
-	flags, _, err := arrow_utils.FieldIDFromStruct(logDT, constants.FLAGS)
+	flags, _, err := arrowutils.FieldIDFromStruct(logDT, constants.FLAGS)
 	if err != nil {
 		return nil, err
 	}
@@ -87,8 +87,8 @@ func NewLogRecordIds(scopeLogsDT *arrow.StructType) (*LogRecordIds, error) {
 		Id:                   id,
 		TimeUnixNano:         timeUnixNano,
 		ObservedTimeUnixNano: observedTimeUnixNano,
-		TraceId:              traceId,
-		SpanId:               spanId,
+		TraceID:              traceID,
+		SpanID:               spanID,
 		SeverityNumber:       severityNumber,
 		SeverityText:         severityText,
 		Body:                 body,
@@ -98,7 +98,7 @@ func NewLogRecordIds(scopeLogsDT *arrow.StructType) (*LogRecordIds, error) {
 	}, nil
 }
 
-func AppendLogRecordInto(logs plog.LogRecordSlice, los *arrow_utils.ListOfStructs, row int, ids *LogRecordIds) error {
+func AppendLogRecordInto(logs plog.LogRecordSlice, los *arrowutils.ListOfStructs, row int, ids *LogRecordIds) error {
 	logRecord := logs.AppendEmpty()
 
 	timeUnixNano, err := los.U64FieldByID(ids.TimeUnixNano, row)
@@ -110,18 +110,18 @@ func AppendLogRecordInto(logs plog.LogRecordSlice, los *arrow_utils.ListOfStruct
 		return err
 	}
 
-	traceId, err := los.FixedSizeBinaryFieldByID(ids.TraceId, row)
+	traceID, err := los.FixedSizeBinaryFieldByID(ids.TraceID, row)
 	if err != nil {
 		return err
 	}
-	if len(traceId) != 16 {
+	if len(traceID) != 16 {
 		return fmt.Errorf("trace_id field should be 16 bytes")
 	}
-	spanId, err := los.FixedSizeBinaryFieldByID(ids.SpanId, row)
+	spanID, err := los.FixedSizeBinaryFieldByID(ids.SpanID, row)
 	if err != nil {
 		return err
 	}
-	if len(spanId) != 8 {
+	if len(spanID) != 8 {
 		return fmt.Errorf("span_id field should be 8 bytes")
 	}
 
@@ -159,8 +159,8 @@ func AppendLogRecordInto(logs plog.LogRecordSlice, los *arrow_utils.ListOfStruct
 
 	var tid pcommon.TraceID
 	var sid pcommon.SpanID
-	copy(tid[:], traceId)
-	copy(sid[:], spanId)
+	copy(tid[:], traceID)
+	copy(sid[:], spanID)
 
 	logRecord.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 	logRecord.SetObservedTimestamp(pcommon.Timestamp(observedTimeUnixNano))

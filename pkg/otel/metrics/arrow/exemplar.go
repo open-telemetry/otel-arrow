@@ -69,7 +69,7 @@ func (b *ExemplarBuilder) Build() (*array.Struct, error) {
 	return b.builder.NewStructArray(), nil
 }
 
-// Append appends a exemplar to the builder.
+// Append appends an exemplar to the builder.
 func (b *ExemplarBuilder) Append(ex pmetric.Exemplar) error {
 	if b.released {
 		return fmt.Errorf("exemplar builder already released")

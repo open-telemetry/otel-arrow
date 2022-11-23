@@ -7,37 +7,37 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	arrow_utils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
 type LinkIds struct {
 	Id                     int
-	TraceId                int
-	SpanId                 int
+	TraceID                int
+	SpanID                 int
 	TraceState             int
 	Attributes             *otlp.AttributeIds
 	DroppedAttributesCount int
 }
 
 func NewLinkIds(spanDT *arrow.StructType) (*LinkIds, error) {
-	id, linkDT, err := arrow_utils.ListOfStructsFieldIDFromStruct(spanDT, constants.SPAN_LINKS)
+	id, linkDT, err := arrowutils.ListOfStructsFieldIDFromStruct(spanDT, constants.SPAN_LINKS)
 	if err != nil {
 		return nil, err
 	}
 
-	traceId, _, err := arrow_utils.FieldIDFromStruct(linkDT, constants.TRACE_ID)
+	traceId, _, err := arrowutils.FieldIDFromStruct(linkDT, constants.TRACE_ID)
 	if err != nil {
 		return nil, err
 	}
 
-	spanId, _, err := arrow_utils.FieldIDFromStruct(linkDT, constants.SPAN_ID)
+	spanId, _, err := arrowutils.FieldIDFromStruct(linkDT, constants.SPAN_ID)
 	if err != nil {
 		return nil, err
 	}
 
-	traceState, _, err := arrow_utils.FieldIDFromStruct(linkDT, constants.TRACE_STATE)
+	traceState, _, err := arrowutils.FieldIDFromStruct(linkDT, constants.TRACE_STATE)
 	if err != nil {
 		return nil, err
 	}
@@ -47,15 +47,15 @@ func NewLinkIds(spanDT *arrow.StructType) (*LinkIds, error) {
 		return nil, err
 	}
 
-	droppedAttributesCount, _, err := arrow_utils.FieldIDFromStruct(linkDT, constants.DROPPED_ATTRIBUTES_COUNT)
+	droppedAttributesCount, _, err := arrowutils.FieldIDFromStruct(linkDT, constants.DROPPED_ATTRIBUTES_COUNT)
 	if err != nil {
 		return nil, err
 	}
 
 	return &LinkIds{
 		Id:                     id,
-		TraceId:                traceId,
-		SpanId:                 spanId,
+		TraceID:                traceId,
+		SpanID:                 spanId,
 		TraceState:             traceState,
 		Attributes:             attributeIds,
 		DroppedAttributesCount: droppedAttributesCount,
@@ -63,7 +63,7 @@ func NewLinkIds(spanDT *arrow.StructType) (*LinkIds, error) {
 }
 
 // AppendLinksInto initializes a Span's Links from an Arrow representation.
-func AppendLinksInto(result ptrace.SpanLinkSlice, los *arrow_utils.ListOfStructs, row int, ids *LinkIds) error {
+func AppendLinksInto(result ptrace.SpanLinkSlice, los *arrowutils.ListOfStructs, row int, ids *LinkIds) error {
 	linkLos, err := los.ListOfStructsById(row, ids.Id)
 
 	if err != nil {
@@ -81,7 +81,7 @@ func AppendLinksInto(result ptrace.SpanLinkSlice, los *arrow_utils.ListOfStructs
 			continue
 		}
 
-		traceId, err := linkLos.FixedSizeBinaryFieldByID(ids.TraceId, linkIdx)
+		traceId, err := linkLos.FixedSizeBinaryFieldByID(ids.TraceID, linkIdx)
 		if err != nil {
 			return err
 		}
@@ -93,7 +93,7 @@ func AppendLinksInto(result ptrace.SpanLinkSlice, los *arrow_utils.ListOfStructs
 			return fmt.Errorf("invalid TraceID len")
 		}
 
-		spanId, err := linkLos.FixedSizeBinaryFieldByID(ids.SpanId, linkIdx)
+		spanId, err := linkLos.FixedSizeBinaryFieldByID(ids.SpanID, linkIdx)
 		if err != nil {
 			return err
 		}

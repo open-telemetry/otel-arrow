@@ -995,7 +995,7 @@ func (v *U64) AsI16() (*int16, error) {
 func (v *U64) AsI32() (*int32, error) {
 	return nil, fmt.Errorf("cannot convert uint64 column to int32")
 }
-func (c *U64) AsI64() (*int64, error) {
+func (v *U64) AsI64() (*int64, error) {
 	return nil, fmt.Errorf("cannot convert uint64 column to int64")
 }
 func (v *U64) AsF32() (*float32, error) {
@@ -1090,7 +1090,7 @@ func (v *F32) AsI16() (*int16, error) {
 func (v *F32) AsI32() (*int32, error) {
 	return nil, fmt.Errorf("cannot convert f32 column to int32")
 }
-func (c *F32) AsI64() (*int64, error) {
+func (v *F32) AsI64() (*int64, error) {
 	return nil, fmt.Errorf("cannot convert f32 column to int64")
 }
 func (v *F32) AsF32() (*float32, error) {
@@ -1130,87 +1130,87 @@ type F64 struct {
 func NewF64(value float64) *F64 {
 	return &F64{Value: &value}
 }
-func (v *F64) DataType() arrow.DataType { return arrow.PrimitiveTypes.Float64 }
-func (v *F64) ValueByPath(path []int) Value {
+func (f *F64) DataType() arrow.DataType { return arrow.PrimitiveTypes.Float64 }
+func (f *F64) ValueByPath(path []int) Value {
 	if len(path) == 0 {
-		return v
+		return f
 	}
 	return nil
 }
-func (v *F64) StringPath(_ []int) string {
+func (f *F64) StringPath(_ []int) string {
 	return ""
 }
-func (v *F64) Compare(other Value) int {
-	if other == nil || other.DataType() != v.DataType() {
+func (f *F64) Compare(other Value) int {
+	if other == nil || other.DataType() != f.DataType() {
 		panic("invalid comparison")
 	}
 	otherValue := other.(*F64).Value
-	if *v.Value == *otherValue {
+	if *f.Value == *otherValue {
 		return 0
-	} else if v.Value == nil {
+	} else if f.Value == nil {
 		return -1
 	} else if otherValue == nil {
 		return 1
-	} else if *v.Value > *otherValue {
+	} else if *f.Value > *otherValue {
 		return 1
 	} else {
 		return -1
 	}
 }
-func (v *F64) WriteSignature(sig *strings.Builder) {
+func (f *F64) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(common.F64_SIG)
 }
-func (v *F64) WriteData(sig *strings.Builder) {
-	if v.Value != nil {
-		sig.WriteString(fmt.Sprintf("%f", *v.Value))
+func (f *F64) WriteData(sig *strings.Builder) {
+	if f.Value != nil {
+		sig.WriteString(fmt.Sprintf("%f", *f.Value))
 	}
 }
-func (v *F64) AsBool() (*bool, error) {
+func (f *F64) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert float64 to bool")
 }
-func (v *F64) AsU8() (*uint8, error) {
+func (f *F64) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert f64 to uint8")
 }
-func (v *F64) AsU16() (*uint16, error) {
+func (f *F64) AsU16() (*uint16, error) {
 	return nil, fmt.Errorf("cannot convert f64 to uint16")
 }
-func (v *F64) AsU32() (*uint32, error) {
+func (f *F64) AsU32() (*uint32, error) {
 	return nil, fmt.Errorf("cannot convert f64 to uint16")
 }
-func (v *F64) AsU64() (*uint64, error) {
+func (f *F64) AsU64() (*uint64, error) {
 	return nil, fmt.Errorf("cannot convert f64 to uint16")
 }
-func (v *F64) AsI8() (*int8, error) {
+func (f *F64) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert f64 column to int8")
 }
-func (v *F64) AsI16() (*int16, error) {
+func (f *F64) AsI16() (*int16, error) {
 	return nil, fmt.Errorf("cannot convert f64 column to int16")
 }
-func (v *F64) AsI32() (*int32, error) {
+func (f *F64) AsI32() (*int32, error) {
 	return nil, fmt.Errorf("cannot convert f64 column to int32")
 }
-func (c *F64) AsI64() (*int64, error) {
+func (f *F64) AsI64() (*int64, error) {
 	return nil, fmt.Errorf("cannot convert f64 column to int64")
 }
-func (v *F64) AsF32() (*float32, error) {
+func (f *F64) AsF32() (*float32, error) {
 	return nil, fmt.Errorf("cannot convert f64 to float32")
 }
-func (v *F64) AsF64() (*float64, error) {
-	return v.Value, nil
+func (f *F64) AsF64() (*float64, error) {
+	return f.Value, nil
 }
-func (v *F64) AsString() (*string, error) {
-	if v.Value == nil {
+func (f *F64) AsString() (*string, error) {
+	if f.Value == nil {
 		return nil, nil
 	}
-	val := fmt.Sprintf("%f", *v.Value)
+	val := fmt.Sprintf("%f", *f.Value)
 	return &val, nil
 }
-func (v *F64) AsBinary() ([]byte, error) {
-	if v.Value == nil {
+func (f *F64) AsBinary() ([]byte, error) {
+	if f.Value == nil {
 		return nil, nil
 	}
 	buf := new(bytes.Buffer)
-	err := binary.Write(buf, binary.LittleEndian, *v.Value)
+	err := binary.Write(buf, binary.LittleEndian, *f.Value)
 	if err != nil {
 		return nil, err
 	}
@@ -1227,82 +1227,82 @@ func NewString(value string) *String {
 		Value: &value,
 	}
 }
-func (v *String) DataType() arrow.DataType { return arrow.BinaryTypes.String }
-func (v *String) ValueByPath(path []int) Value {
+func (s *String) DataType() arrow.DataType { return arrow.BinaryTypes.String }
+func (s *String) ValueByPath(path []int) Value {
 	if len(path) == 0 {
-		return v
+		return s
 	}
 	return nil
 }
-func (v *String) StringPath(_ []int) string {
+func (s *String) StringPath(_ []int) string {
 	return ""
 }
-func (v *String) Compare(other Value) int {
-	if other == nil || other.DataType() != v.DataType() {
+func (s *String) Compare(other Value) int {
+	if other == nil || other.DataType() != s.DataType() {
 		panic("invalid comparison")
 	}
 	otherValue := other.(*String).Value
-	if *v.Value == *otherValue {
+	if *s.Value == *otherValue {
 		return 0
-	} else if v.Value == nil {
+	} else if s.Value == nil {
 		return -1
 	} else if otherValue == nil {
 		return 1
-	} else if *v.Value > *otherValue {
+	} else if *s.Value > *otherValue {
 		return 1
 	} else {
 		return -1
 	}
 }
-func (v *String) WriteSignature(sig *strings.Builder) {
+func (s *String) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(common.STRING_SIG)
 }
-func (v *String) WriteData(sig *strings.Builder) {
-	if v.Value != nil {
-		sig.WriteString(*v.Value)
+func (s *String) WriteData(sig *strings.Builder) {
+	if s.Value != nil {
+		sig.WriteString(*s.Value)
 	}
 }
-func (v *String) AsBool() (*bool, error) {
+func (s *String) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert string to bool")
 }
-func (v *String) AsU8() (*uint8, error) {
+func (s *String) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert string to uint8")
 }
-func (v *String) AsU16() (*uint16, error) {
+func (s *String) AsU16() (*uint16, error) {
 	return nil, fmt.Errorf("cannot convert string to uint16")
 }
-func (v *String) AsU32() (*uint32, error) {
+func (s *String) AsU32() (*uint32, error) {
 	return nil, fmt.Errorf("cannot convert string to uint16")
 }
-func (v *String) AsU64() (*uint64, error) {
+func (s *String) AsU64() (*uint64, error) {
 	return nil, fmt.Errorf("cannot convert string to uint16")
 }
-func (v *String) AsI8() (*int8, error) {
+func (s *String) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert string column to int8")
 }
-func (v *String) AsI16() (*int16, error) {
+func (s *String) AsI16() (*int16, error) {
 	return nil, fmt.Errorf("cannot convert string column to int16")
 }
-func (v *String) AsI32() (*int32, error) {
+func (s *String) AsI32() (*int32, error) {
 	return nil, fmt.Errorf("cannot convert string column to int32")
 }
-func (c *String) AsI64() (*int64, error) {
+func (s *String) AsI64() (*int64, error) {
 	return nil, fmt.Errorf("cannot convert string column to int64")
 }
-func (v *String) AsF32() (*float32, error) {
+func (s *String) AsF32() (*float32, error) {
 	return nil, fmt.Errorf("cannot convert string to float32")
 }
-func (v *String) AsF64() (*float64, error) {
+func (s *String) AsF64() (*float64, error) {
 	return nil, fmt.Errorf("cannot convert string to float64")
 }
-func (v *String) AsString() (*string, error) {
-	return v.Value, nil
+func (s *String) AsString() (*string, error) {
+	return s.Value, nil
 }
-func (v *String) AsBinary() ([]byte, error) {
-	if v.Value == nil {
+func (s *String) AsBinary() ([]byte, error) {
+	if s.Value == nil {
 		return nil, nil
 	} else {
-		return []byte(*v.Value), nil
+		return []byte(*s.Value), nil
 	}
 }
 
@@ -1316,70 +1316,70 @@ func NewBinary(value []byte) *Binary {
 		Value: value,
 	}
 }
-func (v *Binary) DataType() arrow.DataType { return arrow.BinaryTypes.Binary }
-func (v *Binary) ValueByPath(path []int) Value {
+func (b *Binary) DataType() arrow.DataType { return arrow.BinaryTypes.Binary }
+func (b *Binary) ValueByPath(path []int) Value {
 	if len(path) == 0 {
-		return v
+		return b
 	}
 	return nil
 }
-func (v *Binary) StringPath(_ []int) string {
+func (b *Binary) StringPath(_ []int) string {
 	return ""
 }
-func (v *Binary) Compare(other Value) int {
-	if other == nil || other.DataType() != v.DataType() {
+func (b *Binary) Compare(other Value) int {
+	if other == nil || other.DataType() != b.DataType() {
 		panic("invalid comparison")
 	}
 	otherValue := other.(*Binary).Value
-	return bytes.Compare(v.Value, otherValue)
+	return bytes.Compare(b.Value, otherValue)
 }
-func (v *Binary) WriteSignature(sig *strings.Builder) {
+func (b *Binary) WriteSignature(sig *strings.Builder) {
 	sig.WriteString(common.BINARY_SIG)
 }
-func (v *Binary) WriteData(sig *strings.Builder) {
-	if v.Value != nil {
-		sig.WriteString(fmt.Sprintf("%x", v.Value))
+func (b *Binary) WriteData(sig *strings.Builder) {
+	if b.Value != nil {
+		sig.WriteString(fmt.Sprintf("%x", b.Value))
 	}
 }
-func (v *Binary) AsBool() (*bool, error) {
+func (b *Binary) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert binary to bool")
 }
-func (v *Binary) AsU8() (*uint8, error) {
+func (b *Binary) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert binary to uint8")
 }
-func (v *Binary) AsU16() (*uint16, error) {
+func (b *Binary) AsU16() (*uint16, error) {
 	return nil, fmt.Errorf("cannot convert binary to uint16")
 }
-func (v *Binary) AsU32() (*uint32, error) {
+func (b *Binary) AsU32() (*uint32, error) {
 	return nil, fmt.Errorf("cannot convert binary to uint16")
 }
-func (v *Binary) AsU64() (*uint64, error) {
+func (b *Binary) AsU64() (*uint64, error) {
 	return nil, fmt.Errorf("cannot convert binary to uint16")
 }
-func (v *Binary) AsI8() (*int8, error) {
+func (b *Binary) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert binary column to int8")
 }
-func (v *Binary) AsI16() (*int16, error) {
+func (b *Binary) AsI16() (*int16, error) {
 	return nil, fmt.Errorf("cannot convert binary column to int16")
 }
-func (v *Binary) AsI32() (*int32, error) {
+func (b *Binary) AsI32() (*int32, error) {
 	return nil, fmt.Errorf("cannot convert binary column to int32")
 }
-func (c *Binary) AsI64() (*int64, error) {
+func (b *Binary) AsI64() (*int64, error) {
 	return nil, fmt.Errorf("cannot convert binary column to int64")
 }
-func (v *Binary) AsF32() (*float32, error) {
+func (b *Binary) AsF32() (*float32, error) {
 	return nil, fmt.Errorf("cannot convert binary to float32")
 }
-func (v *Binary) AsF64() (*float64, error) {
+func (b *Binary) AsF64() (*float64, error) {
 	return nil, fmt.Errorf("cannot convert binary to float64")
 }
-func (v *Binary) AsString() (*string, error) {
-	val := string(v.Value)
+func (b *Binary) AsString() (*string, error) {
+	val := string(b.Value)
 	return &val, nil
 }
-func (v *Binary) AsBinary() ([]byte, error) {
-	return v.Value, nil
+func (b *Binary) AsBinary() ([]byte, error) {
+	return b.Value, nil
 }
 
 type Struct struct {
@@ -1391,9 +1391,9 @@ func NewStruct(fields []*Field) *Struct {
 		Fields: fields,
 	}
 }
-func (v *Struct) DataType() arrow.DataType {
-	fields := make([]arrow.Field, 0, len(v.Fields))
-	for _, field := range v.Fields {
+func (st *Struct) DataType() arrow.DataType {
+	fields := make([]arrow.Field, 0, len(st.Fields))
+	for _, field := range st.Fields {
 		fieldMetadata := field.Metadata()
 		if fieldMetadata == nil {
 			arrowField := arrow.Field{Name: field.Name, Type: field.Value.DataType(), Nullable: true, Metadata: arrow.Metadata{}}
@@ -1405,32 +1405,32 @@ func (v *Struct) DataType() arrow.DataType {
 	}
 	return arrow.StructOf(fields...)
 }
-func (v *Struct) Normalize() {
+func (st *Struct) Normalize() {
 	// Sort all the fields by name
-	sort.Sort(Fields(v.Fields))
+	sort.Sort(Fields(st.Fields))
 	// Normalize recursively all the fields
-	for _, field := range v.Fields {
+	for _, field := range st.Fields {
 		field.Normalize()
 	}
 }
-func (v *Struct) ValueByPath(path []int) Value {
+func (st *Struct) ValueByPath(path []int) Value {
 	if len(path) == 0 {
-		return v
+		return st
 	}
-	return v.Fields[path[0]].ValueByPath(path[1:])
+	return st.Fields[path[0]].ValueByPath(path[1:])
 }
-func (v *Struct) StringPath(path []int) string {
+func (st *Struct) StringPath(path []int) string {
 	if len(path) == 0 {
 		return ""
 	}
-	return v.Fields[path[0]].StringPath(path[1:])
+	return st.Fields[path[0]].StringPath(path[1:])
 }
-func (v *Struct) Compare(_ Value) int {
+func (st *Struct) Compare(_ Value) int {
 	panic("struct comparison not implemented")
 }
-func (v *Struct) WriteSignature(sig *strings.Builder) {
+func (st *Struct) WriteSignature(sig *strings.Builder) {
 	sig.WriteString("{")
-	for i, f := range v.Fields {
+	for i, f := range st.Fields {
 		if i > 0 {
 			sig.WriteByte(',')
 		}
@@ -1438,9 +1438,9 @@ func (v *Struct) WriteSignature(sig *strings.Builder) {
 	}
 	sig.WriteString("}")
 }
-func (v *Struct) WriteData(sig *strings.Builder) {
+func (st *Struct) WriteData(sig *strings.Builder) {
 	sig.WriteString("{")
-	for i, f := range v.Fields {
+	for i, f := range st.Fields {
 		if i > 0 {
 			sig.WriteByte(',')
 		}
@@ -1448,43 +1448,43 @@ func (v *Struct) WriteData(sig *strings.Builder) {
 	}
 	sig.WriteString("}")
 }
-func (v *Struct) AsBool() (*bool, error) {
+func (st *Struct) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert struct to bool")
 }
-func (v *Struct) AsU8() (*uint8, error) {
+func (st *Struct) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert struct to uint8")
 }
-func (v *Struct) AsU16() (*uint16, error) {
+func (st *Struct) AsU16() (*uint16, error) {
 	return nil, fmt.Errorf("cannot convert struct to uint16")
 }
-func (v *Struct) AsU32() (*uint32, error) {
+func (st *Struct) AsU32() (*uint32, error) {
 	return nil, fmt.Errorf("cannot convert struct to uint16")
 }
-func (v *Struct) AsU64() (*uint64, error) {
+func (st *Struct) AsU64() (*uint64, error) {
 	return nil, fmt.Errorf("cannot convert struct to uint16")
 }
-func (v *Struct) AsI8() (*int8, error) {
+func (st *Struct) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert struct column to int8")
 }
-func (v *Struct) AsI16() (*int16, error) {
+func (st *Struct) AsI16() (*int16, error) {
 	return nil, fmt.Errorf("cannot convert struct column to int16")
 }
-func (v *Struct) AsI32() (*int32, error) {
+func (st *Struct) AsI32() (*int32, error) {
 	return nil, fmt.Errorf("cannot convert struct column to int32")
 }
-func (c *Struct) AsI64() (*int64, error) {
+func (st *Struct) AsI64() (*int64, error) {
 	return nil, fmt.Errorf("cannot convert struct column to int64")
 }
-func (v *Struct) AsF32() (*float32, error) {
+func (st *Struct) AsF32() (*float32, error) {
 	return nil, fmt.Errorf("cannot convert struct to float32")
 }
-func (v *Struct) AsF64() (*float64, error) {
+func (st *Struct) AsF64() (*float64, error) {
 	return nil, fmt.Errorf("cannot convert struct to float64")
 }
-func (v *Struct) AsString() (*string, error) {
+func (st *Struct) AsString() (*string, error) {
 	return nil, fmt.Errorf("cannot convert struct to string")
 }
-func (v *Struct) AsBinary() ([]byte, error) {
+func (st *Struct) AsBinary() ([]byte, error) {
 	return nil, fmt.Errorf("cannot convert struct to binary")
 }
 
@@ -1499,15 +1499,15 @@ func UnsafeNewList(etype arrow.DataType, values []Value) *List {
 		Values: values,
 	}
 }
-func (v *List) DataType() arrow.DataType {
-	return arrow.ListOf(v.EType())
+func (l *List) DataType() arrow.DataType {
+	return arrow.ListOf(l.EType())
 }
 
-func (v *List) EType() arrow.DataType {
-	if v.etype == nil {
-		v.etype = listDataType(v.Values)
+func (l *List) EType() arrow.DataType {
+	if l.etype == nil {
+		l.etype = listDataType(l.Values)
 	}
-	return v.etype
+	return l.etype
 }
 
 func listDataType(values []Value) arrow.DataType {
@@ -1532,85 +1532,85 @@ func listDataType(values []Value) arrow.DataType {
 	}
 }
 
-func (v *List) Normalize() {
+func (l *List) Normalize() {
 	// Normalize recursively all the value
-	for _, value := range v.Values {
+	for _, value := range l.Values {
 		value.Normalize()
 	}
 }
-func (v *List) ValueByPath(path []int) Value {
+func (l *List) ValueByPath(path []int) Value {
 	if len(path) == 0 {
-		return v
+		return l
 	}
-	return v.Values[path[0]].ValueByPath(path[1:])
+	return l.Values[path[0]].ValueByPath(path[1:])
 }
-func (v *List) StringPath(path []int) string {
+func (l *List) StringPath(path []int) string {
 	if len(path) == 0 {
 		return ""
 	}
-	subPath := v.Values[path[0]].StringPath(path[1:])
+	subPath := l.Values[path[0]].StringPath(path[1:])
 	if subPath != "" {
 		return "[]" + subPath
 	} else {
 		return "[]"
 	}
 }
-func (v *List) Compare(_ Value) int {
+func (l *List) Compare(_ Value) int {
 	panic("struct comparison not implemented")
 }
-func (v *List) WriteSignature(sig *strings.Builder) {
+func (l *List) WriteSignature(sig *strings.Builder) {
 	sig.WriteByte('[')
-	eType := v.EType()
+	eType := l.EType()
 	WriteDataTypeSignature(eType, sig)
 	sig.WriteByte(']')
 }
-func (v *List) WriteData(sig *strings.Builder) {
+func (l *List) WriteData(sig *strings.Builder) {
 	sig.WriteString("[")
-	for i := 0; i < len(v.Values); i++ {
+	for i := 0; i < len(l.Values); i++ {
 		if i > 0 {
 			sig.WriteString(", ")
 		}
-		v.Values[i].WriteData(sig)
+		l.Values[i].WriteData(sig)
 	}
 	sig.WriteString("]")
 }
-func (v *List) AsBool() (*bool, error) {
+func (l *List) AsBool() (*bool, error) {
 	return nil, fmt.Errorf("cannot convert list to bool")
 }
-func (v *List) AsU8() (*uint8, error) {
+func (l *List) AsU8() (*uint8, error) {
 	return nil, fmt.Errorf("cannot convert list to uint8")
 }
-func (v *List) AsU16() (*uint16, error) {
+func (l *List) AsU16() (*uint16, error) {
 	return nil, fmt.Errorf("cannot convert list to uint16")
 }
-func (v *List) AsU32() (*uint32, error) {
+func (l *List) AsU32() (*uint32, error) {
 	return nil, fmt.Errorf("cannot convert list to uint16")
 }
-func (v *List) AsU64() (*uint64, error) {
+func (l *List) AsU64() (*uint64, error) {
 	return nil, fmt.Errorf("cannot convert list to uint16")
 }
-func (v *List) AsI8() (*int8, error) {
+func (l *List) AsI8() (*int8, error) {
 	return nil, fmt.Errorf("cannot convert list column to int8")
 }
-func (v *List) AsI16() (*int16, error) {
+func (l *List) AsI16() (*int16, error) {
 	return nil, fmt.Errorf("cannot convert list column to int16")
 }
-func (v *List) AsI32() (*int32, error) {
+func (l *List) AsI32() (*int32, error) {
 	return nil, fmt.Errorf("cannot convert list column to int32")
 }
-func (c *List) AsI64() (*int64, error) {
+func (l *List) AsI64() (*int64, error) {
 	return nil, fmt.Errorf("cannot convert list column to int64")
 }
-func (v *List) AsF32() (*float32, error) {
+func (l *List) AsF32() (*float32, error) {
 	return nil, fmt.Errorf("cannot convert list to float32")
 }
-func (v *List) AsF64() (*float64, error) {
+func (l *List) AsF64() (*float64, error) {
 	return nil, fmt.Errorf("cannot convert list to float64")
 }
-func (v *List) AsString() (*string, error) {
+func (l *List) AsString() (*string, error) {
 	return nil, fmt.Errorf("cannot convert list to string")
 }
-func (v *List) AsBinary() ([]byte, error) {
+func (l *List) AsBinary() ([]byte, error) {
 	return nil, fmt.Errorf("cannot convert list to binary")
 }
 

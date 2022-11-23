@@ -88,7 +88,7 @@ func (c *F32Column) Len() int {
 func (c *F32Column) Clear() {
 }
 
-// NewArrowField creates a F32 schema field.
+// NewArrowField creates an F32 schema field.
 func (c *F32Column) NewArrowField() *arrow.Field {
 	return c.field
 }
@@ -98,8 +98,8 @@ func (c *F32Column) NewArray(_ *memory.GoAllocator) arrow.Array {
 	return c.builder.NewArray()
 }
 
-func (c *F32Column) Metadata() *ColumnMetadata {
-	return &ColumnMetadata{
+func (c *F32Column) Metadata() *Metadata {
+	return &Metadata{
 		Field: c.NewArrowField(),
 		Len:   c.Len(),
 	}
@@ -153,8 +153,8 @@ func (c *F64Column) NewArray(_ *memory.GoAllocator) arrow.Array {
 	return c.builder.NewArray()
 }
 
-func (c *F64Column) Metadata() *ColumnMetadata {
-	return &ColumnMetadata{
+func (c *F64Column) Metadata() *Metadata {
+	return &Metadata{
 		Field: c.NewArrowField(),
 		Len:   c.Len(),
 	}

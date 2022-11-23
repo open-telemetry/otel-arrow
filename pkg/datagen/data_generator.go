@@ -174,8 +174,8 @@ func (dg *DataGenerator) GenBool() bool {
 	return dg.rng.Intn(2) == 0
 }
 
-func (e TestEntropy) GenId(size uint) []byte {
+func (te TestEntropy) GenId(size uint) []byte {
 	d := make([]byte, size)
-	_, _ = e.rng.Read(d)
+	_, _ = te.rng.Read(d)
 	return d
 }

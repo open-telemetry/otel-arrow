@@ -22,7 +22,6 @@ import (
 
 type Fields []*Field
 
-// Sort interface
 func (f Fields) Less(i, j int) bool {
 	return f[i].Name < f[j].Name
 }
