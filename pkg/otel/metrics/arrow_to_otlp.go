@@ -83,7 +83,7 @@ func SetMetricsFrom(metrics pmetric.MetricSlice, record arrow.Record, row int) e
 	if err != nil {
 		return err
 	}
-	metricsField, arr, err := arrow2.FieldArray(record, constants.METRICS)
+	metricsField, arr, err := arrow2.FieldArray(record, constants.UNIVARIATE_METRICS)
 	if err != nil {
 		return err
 	}

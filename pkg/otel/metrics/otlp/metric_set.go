@@ -17,7 +17,7 @@ type MetricSetIds struct {
 }
 
 func NewMetricSetIds(parentDT *arrow.StructType) (*MetricSetIds, error) {
-	id, metricSetDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.METRICS)
+	id, metricSetDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.UNIVARIATE_METRICS)
 	if err != nil {
 		return nil, err
 	}

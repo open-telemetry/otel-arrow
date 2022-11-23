@@ -54,7 +54,16 @@ resource_metrics:
             attributes: *attributes
             dropped_attributes_count: uint32
           schema_url: string | string_dictionary
-          univariate_metrics:                             # Standard OTLP metrics as defined in OTEL spec v1 
+          # This section represents the standard OTLP metrics as defined in OTEL v1 
+          # specifications.
+          #
+          # Named univariate metrics as their representation allow to represent each
+          # metric as independent measurement with their own specific timestamps and
+          # attributes.
+          #
+          # Shared attributes and timestamps are optional and only used for optimization
+          # purposes.
+          univariate_metrics:                             
             - name: string | string_dictionary            # required
               description: string | string_dictionary
               unit: string | string_dictionary 
@@ -129,7 +138,14 @@ resource_metrics:
                         min: float64
                         max: float64
                     aggregation_temporality: int32
-          multivariate_metrics:                       # Not yet implemented (native support of multivariate metrics)
+          # Native support of multivariate metrics (not yet implemented)
+          #
+          # Multivariate metrics are related metrics sharing the same context, i.e. the same
+          # attributes and timestamps.
+          #
+          # Each metrics is defined by a name, a set of data points, and optionally a description
+          # and a unit.
+          multivariate_metrics:                       
             attributes: *attributes                   # All multivariate metrics shared the same attributes
             start_time_unix_nano: uint64              # All multivariate metrics shared the same timestamps
             time_unix_nano: uint64                    # required
