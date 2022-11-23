@@ -6,6 +6,8 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/memory"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 )
 
 // An empty trace should not cause an error.
@@ -15,11 +17,14 @@ func TestEmptyTrace(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	builder := NewTracesBuilder(pool)
+	schema := acommon.NewAdaptiveSchema(Schema)
+	defer schema.Release()
+	builder, err := NewTracesBuilder(pool, schema)
+	require.NoError(t, err)
 	defer builder.Release()
 
 	trace := ptrace.NewTraces()
-	err := builder.Append(trace)
+	err = builder.Append(trace)
 	require.NoError(t, err)
 
 	record, err := builder.Build()
@@ -35,14 +40,17 @@ func TestEmptyResource(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	builder := NewTracesBuilder(pool)
+	schema := acommon.NewAdaptiveSchema(Schema)
+	defer schema.Release()
+	builder, err := NewTracesBuilder(pool, schema)
+	require.NoError(t, err)
 	defer builder.Release()
 
 	trace := ptrace.NewTraces()
 	rs := trace.ResourceSpans().AppendEmpty()
 	require.NotNil(t, rs)
 
-	err := builder.Append(trace)
+	err = builder.Append(trace)
 	require.NoError(t, err)
 
 	record, err := builder.Build()
@@ -58,7 +66,10 @@ func TestEmptyResourceAttribute(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	builder := NewTracesBuilder(pool)
+	schema := acommon.NewAdaptiveSchema(Schema)
+	defer schema.Release()
+	builder, err := NewTracesBuilder(pool, schema)
+	require.NoError(t, err)
 	defer builder.Release()
 
 	trace := ptrace.NewTraces()
@@ -66,7 +77,7 @@ func TestEmptyResourceAttribute(t *testing.T) {
 	r := rs.Resource()
 	require.NotNil(t, r)
 
-	err := builder.Append(trace)
+	err = builder.Append(trace)
 	require.NoError(t, err)
 
 	record, err := builder.Build()
@@ -82,7 +93,10 @@ func TestEmptyScopeSpan(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	builder := NewTracesBuilder(pool)
+	schema := acommon.NewAdaptiveSchema(Schema)
+	defer schema.Release()
+	builder, err := NewTracesBuilder(pool, schema)
+	require.NoError(t, err)
 	defer builder.Release()
 
 	trace := ptrace.NewTraces()
@@ -90,7 +104,7 @@ func TestEmptyScopeSpan(t *testing.T) {
 	ss := rs.ScopeSpans().AppendEmpty()
 	require.NotNil(t, ss)
 
-	err := builder.Append(trace)
+	err = builder.Append(trace)
 	require.NoError(t, err)
 
 	record, err := builder.Build()
@@ -106,7 +120,10 @@ func TestEmptyScope(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	builder := NewTracesBuilder(pool)
+	schema := acommon.NewAdaptiveSchema(Schema)
+	defer schema.Release()
+	builder, err := NewTracesBuilder(pool, schema)
+	require.NoError(t, err)
 	defer builder.Release()
 
 	trace := ptrace.NewTraces()
@@ -115,7 +132,7 @@ func TestEmptyScope(t *testing.T) {
 	s := ss.Scope()
 	require.NotNil(t, s)
 
-	err := builder.Append(trace)
+	err = builder.Append(trace)
 	require.NoError(t, err)
 
 	record, err := builder.Build()
@@ -131,7 +148,10 @@ func TestEmptyScopeAttribute(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	builder := NewTracesBuilder(pool)
+	schema := acommon.NewAdaptiveSchema(Schema)
+	defer schema.Release()
+	builder, err := NewTracesBuilder(pool, schema)
+	require.NoError(t, err)
 	defer builder.Release()
 
 	trace := ptrace.NewTraces()
@@ -141,7 +161,7 @@ func TestEmptyScopeAttribute(t *testing.T) {
 	a := s.Attributes()
 	require.NotNil(t, a)
 
-	err := builder.Append(trace)
+	err = builder.Append(trace)
 	require.NoError(t, err)
 
 	record, err := builder.Build()
@@ -157,7 +177,10 @@ func TestEmptySpans(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	builder := NewTracesBuilder(pool)
+	schema := acommon.NewAdaptiveSchema(Schema)
+	defer schema.Release()
+	builder, err := NewTracesBuilder(pool, schema)
+	require.NoError(t, err)
 	defer builder.Release()
 
 	trace := ptrace.NewTraces()
@@ -165,7 +188,7 @@ func TestEmptySpans(t *testing.T) {
 	ss := rs.ScopeSpans().AppendEmpty()
 	require.NotNil(t, ss)
 
-	err := builder.Append(trace)
+	err = builder.Append(trace)
 	require.NoError(t, err)
 
 	record, err := builder.Build()
@@ -181,7 +204,10 @@ func TestEmptySpanAttribute(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	builder := NewTracesBuilder(pool)
+	schema := acommon.NewAdaptiveSchema(Schema)
+	defer schema.Release()
+	builder, err := NewTracesBuilder(pool, schema)
+	require.NoError(t, err)
 	defer builder.Release()
 
 	trace := ptrace.NewTraces()
@@ -191,7 +217,7 @@ func TestEmptySpanAttribute(t *testing.T) {
 	a := sp.Attributes()
 	require.NotNil(t, a)
 
-	err := builder.Append(trace)
+	err = builder.Append(trace)
 	require.NoError(t, err)
 
 	record, err := builder.Build()
@@ -207,7 +233,10 @@ func TestEmptySpanStatus(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	builder := NewTracesBuilder(pool)
+	schema := acommon.NewAdaptiveSchema(Schema)
+	defer schema.Release()
+	builder, err := NewTracesBuilder(pool, schema)
+	require.NoError(t, err)
 	defer builder.Release()
 
 	trace := ptrace.NewTraces()
@@ -217,7 +246,7 @@ func TestEmptySpanStatus(t *testing.T) {
 	s := sp.Status()
 	require.NotNil(t, s)
 
-	err := builder.Append(trace)
+	err = builder.Append(trace)
 	require.NoError(t, err)
 
 	record, err := builder.Build()
@@ -233,7 +262,10 @@ func TestEmptySpanLink(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	builder := NewTracesBuilder(pool)
+	schema := acommon.NewAdaptiveSchema(Schema)
+	defer schema.Release()
+	builder, err := NewTracesBuilder(pool, schema)
+	require.NoError(t, err)
 	defer builder.Release()
 
 	trace := ptrace.NewTraces()
@@ -243,7 +275,7 @@ func TestEmptySpanLink(t *testing.T) {
 	l := sp.Links().AppendEmpty()
 	require.NotNil(t, l)
 
-	err := builder.Append(trace)
+	err = builder.Append(trace)
 	require.NoError(t, err)
 
 	record, err := builder.Build()
@@ -259,7 +291,10 @@ func TestEmptySpanEvent(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	builder := NewTracesBuilder(pool)
+	schema := acommon.NewAdaptiveSchema(Schema)
+	defer schema.Release()
+	builder, err := NewTracesBuilder(pool, schema)
+	require.NoError(t, err)
 	defer builder.Release()
 
 	trace := ptrace.NewTraces()
@@ -269,7 +304,7 @@ func TestEmptySpanEvent(t *testing.T) {
 	e := sp.Events().AppendEmpty()
 	require.NotNil(t, e)
 
-	err := builder.Append(trace)
+	err = builder.Append(trace)
 	require.NoError(t, err)
 
 	record, err := builder.Build()

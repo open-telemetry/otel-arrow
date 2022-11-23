@@ -20,8 +20,9 @@ package dataset
 import (
 	"log"
 	"os"
+	"path/filepath"
 
-	plog "go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 )
 
@@ -38,11 +39,11 @@ type logUnit struct {
 
 // NewRealLogsDataset creates a new RealLogsDataset from a binary file.
 func NewRealLogsDataset(path string) *RealLogsDataset {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		log.Fatal("read file:", err)
 	}
-	otlp := plogotlp.NewRequest()
+	otlp := plogotlp.NewExportRequest()
 
 	if err := otlp.UnmarshalProto(data); err != nil {
 		log.Fatal("unmarshal:", err)

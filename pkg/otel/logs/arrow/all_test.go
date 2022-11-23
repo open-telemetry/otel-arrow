@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/plog"
 
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/internal"
 )
 
@@ -108,21 +109,20 @@ func TestLogs(t *testing.T) {
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	tb := NewLogsBuilder(pool)
+	logsSchema := acommon.NewAdaptiveSchema(Schema)
+	defer logsSchema.Release()
+	tb, err := NewLogsBuilder(pool, logsSchema)
+	require.NoError(t, err)
 
-	if err := tb.Append(Logs()); err != nil {
-		t.Fatal(err)
-	}
+	err = tb.Append(Logs())
+	require.NoError(t, err)
+
 	record, err := tb.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer record.Release()
 
 	json, err := record.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	expected := `[{"resource_logs":[{"resource":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":0},"schema_url":"schema1","scope_logs":[{"logs":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"body":[0,"body1"],"dropped_attributes_count":0,"flags":1,"observed_time_unix_nano":2,"severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":1,"trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":4,"severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":3,"trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":0,"name":"scope1","version":"1.0.1"}},{"logs":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":4,"severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":3,"trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]},{"resource":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1},"schema_url":"schema2","scope_logs":[{"logs":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":4,"severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":3,"trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}]}
 ]`

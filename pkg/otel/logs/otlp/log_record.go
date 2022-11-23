@@ -8,7 +8,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 
-	arrow_utils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
@@ -17,8 +17,8 @@ type LogRecordIds struct {
 	Id                   int
 	TimeUnixNano         int
 	ObservedTimeUnixNano int
-	TraceId              int
-	SpanId               int
+	TraceID              int
+	SpanID               int
 	SeverityNumber       int
 	SeverityText         int
 	Body                 int
@@ -28,42 +28,42 @@ type LogRecordIds struct {
 }
 
 func NewLogRecordIds(scopeLogsDT *arrow.StructType) (*LogRecordIds, error) {
-	id, logDT, err := arrow_utils.ListOfStructsFieldIdFromStruct(scopeLogsDT, constants.LOGS)
+	id, logDT, err := arrowutils.ListOfStructsFieldIDFromStruct(scopeLogsDT, constants.LOGS)
 	if err != nil {
 		return nil, err
 	}
 
-	timeUnixNano, _, err := arrow_utils.FieldIdFromStruct(logDT, constants.TIME_UNIX_NANO)
+	timeUnixNano, _, err := arrowutils.FieldIDFromStruct(logDT, constants.TIME_UNIX_NANO)
 	if err != nil {
 		return nil, err
 	}
 
-	observedTimeUnixNano, _, err := arrow_utils.FieldIdFromStruct(logDT, constants.OBSERVED_TIME_UNIX_NANO)
+	observedTimeUnixNano, _, err := arrowutils.FieldIDFromStruct(logDT, constants.OBSERVED_TIME_UNIX_NANO)
 	if err != nil {
 		return nil, err
 	}
 
-	traceId, _, err := arrow_utils.FieldIdFromStruct(logDT, constants.TRACE_ID)
+	traceID, _, err := arrowutils.FieldIDFromStruct(logDT, constants.TRACE_ID)
 	if err != nil {
 		return nil, err
 	}
 
-	spanId, _, err := arrow_utils.FieldIdFromStruct(logDT, constants.SPAN_ID)
+	spanID, _, err := arrowutils.FieldIDFromStruct(logDT, constants.SPAN_ID)
 	if err != nil {
 		return nil, err
 	}
 
-	severityNumber, _, err := arrow_utils.FieldIdFromStruct(logDT, constants.SEVERITY_NUMBER)
+	severityNumber, _, err := arrowutils.FieldIDFromStruct(logDT, constants.SEVERITY_NUMBER)
 	if err != nil {
 		return nil, err
 	}
 
-	severityText, _, err := arrow_utils.FieldIdFromStruct(logDT, constants.SEVERITY_TEXT)
+	severityText, _, err := arrowutils.FieldIDFromStruct(logDT, constants.SEVERITY_TEXT)
 	if err != nil {
 		return nil, err
 	}
 
-	body, _, err := arrow_utils.FieldIdFromStruct(logDT, constants.BODY)
+	body, _, err := arrowutils.FieldIDFromStruct(logDT, constants.BODY)
 	if err != nil {
 		return nil, err
 	}
@@ -73,12 +73,12 @@ func NewLogRecordIds(scopeLogsDT *arrow.StructType) (*LogRecordIds, error) {
 		return nil, err
 	}
 
-	droppedAttributesCount, _, err := arrow_utils.FieldIdFromStruct(logDT, constants.DROPPED_ATTRIBUTES_COUNT)
+	droppedAttributesCount, _, err := arrowutils.FieldIDFromStruct(logDT, constants.DROPPED_ATTRIBUTES_COUNT)
 	if err != nil {
 		return nil, err
 	}
 
-	flags, _, err := arrow_utils.FieldIdFromStruct(logDT, constants.FLAGS)
+	flags, _, err := arrowutils.FieldIDFromStruct(logDT, constants.FLAGS)
 	if err != nil {
 		return nil, err
 	}
@@ -87,8 +87,8 @@ func NewLogRecordIds(scopeLogsDT *arrow.StructType) (*LogRecordIds, error) {
 		Id:                   id,
 		TimeUnixNano:         timeUnixNano,
 		ObservedTimeUnixNano: observedTimeUnixNano,
-		TraceId:              traceId,
-		SpanId:               spanId,
+		TraceID:              traceID,
+		SpanID:               spanID,
 		SeverityNumber:       severityNumber,
 		SeverityText:         severityText,
 		Body:                 body,
@@ -98,43 +98,43 @@ func NewLogRecordIds(scopeLogsDT *arrow.StructType) (*LogRecordIds, error) {
 	}, nil
 }
 
-func AppendLogRecordInto(logs plog.LogRecordSlice, los *arrow_utils.ListOfStructs, row int, ids *LogRecordIds) error {
+func AppendLogRecordInto(logs plog.LogRecordSlice, los *arrowutils.ListOfStructs, row int, ids *LogRecordIds) error {
 	logRecord := logs.AppendEmpty()
 
-	timeUnixNano, err := los.U64FieldById(ids.TimeUnixNano, row)
+	timeUnixNano, err := los.U64FieldByID(ids.TimeUnixNano, row)
 	if err != nil {
 		return err
 	}
-	observedTimeUnixNano, err := los.U64FieldById(ids.ObservedTimeUnixNano, row)
+	observedTimeUnixNano, err := los.U64FieldByID(ids.ObservedTimeUnixNano, row)
 	if err != nil {
 		return err
 	}
 
-	traceId, err := los.FixedSizeBinaryFieldById(ids.TraceId, row)
+	traceID, err := los.FixedSizeBinaryFieldByID(ids.TraceID, row)
 	if err != nil {
 		return err
 	}
-	if len(traceId) != 16 {
+	if len(traceID) != 16 {
 		return fmt.Errorf("trace_id field should be 16 bytes")
 	}
-	spanId, err := los.FixedSizeBinaryFieldById(ids.SpanId, row)
+	spanID, err := los.FixedSizeBinaryFieldByID(ids.SpanID, row)
 	if err != nil {
 		return err
 	}
-	if len(spanId) != 8 {
+	if len(spanID) != 8 {
 		return fmt.Errorf("span_id field should be 8 bytes")
 	}
 
-	severityNumber, err := los.I32FieldById(ids.SeverityNumber, row)
+	severityNumber, err := los.I32FieldByID(ids.SeverityNumber, row)
 	if err != nil {
 		return err
 	}
-	severityText, err := los.StringFieldById(ids.SeverityText, row)
+	severityText, err := los.StringFieldByID(ids.SeverityText, row)
 	if err != nil {
 		return err
 	}
 
-	body := los.FieldById(ids.Body)
+	body := los.FieldByID(ids.Body)
 	if anyValueArr, ok := body.(*array.SparseUnion); ok {
 		if err := otlp.UpdateValueFrom(logRecord.Body(), anyValueArr, row); err != nil {
 			return err
@@ -147,20 +147,20 @@ func AppendLogRecordInto(logs plog.LogRecordSlice, los *arrow_utils.ListOfStruct
 	if err != nil {
 		return err
 	}
-	droppedAttributesCount, err := los.U32FieldById(ids.DropAttributesCount, row)
+	droppedAttributesCount, err := los.U32FieldByID(ids.DropAttributesCount, row)
 	if err != nil {
 		return err
 	}
 
-	flags, err := los.U32FieldById(ids.Flags, row)
+	flags, err := los.U32FieldByID(ids.Flags, row)
 	if err != nil {
 		return err
 	}
 
 	var tid pcommon.TraceID
 	var sid pcommon.SpanID
-	copy(tid[:], traceId)
-	copy(sid[:], spanId)
+	copy(tid[:], traceID)
+	copy(sid[:], spanID)
 
 	logRecord.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 	logRecord.SetObservedTimestamp(pcommon.Timestamp(observedTimeUnixNano))

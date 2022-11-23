@@ -8,13 +8,13 @@ import (
 
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	"github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
-	traces_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	tracesarrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
 )
 
 type TraceProfileable struct {
@@ -26,6 +26,7 @@ type TraceProfileable struct {
 	batchArrowRecords []*v1.BatchArrowRecords
 	config            *config.Config
 	pool              *memory.GoAllocator
+	schema            *acommon.AdaptiveSchema
 }
 
 func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *config.Config, compression benchmark.CompressionAlgorithm) *TraceProfileable {
@@ -37,6 +38,7 @@ func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *co
 		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
 		config:            config,
 		pool:              memory.NewGoAllocator(),
+		schema:            acommon.NewAdaptiveSchema(tracesarrow.Schema),
 	}
 }
 
@@ -63,18 +65,7 @@ func (s *TraceProfileable) CreateBatch(_ io.Writer, _, _ int) {
 	// Conversion of OTLP metrics to OTLP Arrow Records
 	s.batchArrowRecords = make([]*v1.BatchArrowRecords, 0, len(s.traces))
 	for _, traceReq := range s.traces {
-		tb := traces_arrow.NewTracesBuilder(s.pool)
-		if err := tb.Append(traceReq); err != nil {
-			panic(err)
-		}
-		record, err := tb.Build()
-		if err != nil {
-			panic(err)
-		}
-		rms := []*arrow_record.RecordMessage{
-			arrow_record.NewTraceMessage(record, colarspb.DeliveryType_BEST_EFFORT),
-		}
-		bar, err := s.producer.Produce(rms, colarspb.DeliveryType_BEST_EFFORT)
+		bar, err := s.producer.BatchArrowRecordsFromTraces(traceReq)
 		if err != nil {
 			panic(err)
 		}

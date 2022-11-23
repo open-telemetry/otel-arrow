@@ -28,7 +28,7 @@ type I8Column struct {
 	builder *array.Int8Builder
 }
 
-// U8Column is a column of int8 data.
+// I16Column is a column of int16 data.
 type I16Column struct {
 	field   *arrow.Field
 	builder *array.Int16Builder
@@ -124,8 +124,8 @@ func (c *I8Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
 		c.Push(v)
 	}
 }
-func (c *I8Column) Metadata() *ColumnMetadata {
-	return &ColumnMetadata{
+func (c *I8Column) Metadata() *Metadata {
+	return &Metadata{
 		Field: c.NewArrowField(),
 		Len:   c.Len(),
 	}
@@ -177,8 +177,8 @@ func (c *I16Column) PushFromValues(_ *rfield.FieldPath, data []rfield.Value) {
 		c.Push(v)
 	}
 }
-func (c *I16Column) Metadata() *ColumnMetadata {
-	return &ColumnMetadata{
+func (c *I16Column) Metadata() *Metadata {
+	return &Metadata{
 		Field: c.NewArrowField(),
 		Len:   c.Len(),
 	}
@@ -230,8 +230,8 @@ func (c *I32Column) NewArrowField() *arrow.Field {
 func (c *I32Column) NewArray(_ *memory.GoAllocator) arrow.Array {
 	return c.builder.NewArray()
 }
-func (c *I32Column) Metadata() *ColumnMetadata {
-	return &ColumnMetadata{
+func (c *I32Column) Metadata() *Metadata {
+	return &Metadata{
 		Field: c.NewArrowField(),
 		Len:   c.Len(),
 	}
@@ -287,8 +287,8 @@ func (c *I64Column) Build(allocator *memory.GoAllocator) (*arrow.Field, arrow.Ar
 func (c *I64Column) NewArray(_ *memory.GoAllocator) arrow.Array {
 	return c.builder.NewArray()
 }
-func (c *I64Column) Metadata() *ColumnMetadata {
-	return &ColumnMetadata{
+func (c *I64Column) Metadata() *Metadata {
+	return &Metadata{
 		Field: c.NewArrowField(),
 		Len:   c.Len(),
 	}

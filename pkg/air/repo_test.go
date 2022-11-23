@@ -24,6 +24,7 @@ import (
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"github.com/davecgh/go-spew/spew"
+	"github.com/stretchr/testify/require"
 
 	config2 "github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/air/rfield"
@@ -81,7 +82,6 @@ func TestAddRecord(t *testing.T) {
 			}
 		}
 	}
-	//spew.Dump(rr.Metadata())
 }
 
 func TestOptimize(t *testing.T) {
@@ -166,7 +166,6 @@ func TestOptimize(t *testing.T) {
 			}
 		}
 	}
-	//spew.Dump(rr.Metadata())
 }
 
 func TestBuild(t *testing.T) {
@@ -198,34 +197,29 @@ func TestBuild(t *testing.T) {
 	for _, ts := range tsValues {
 		rr.AddRecord(GenRecord(ts, int(ts%15), int(ts%2), int(ts)))
 	}
-	records, err := rr.BuildRecords()
-
-	if err != nil {
-		t.Errorf("Expected no error, got %v", err)
-	}
+	_, err := rr.BuildRecords()
+	require.NoError(t, err)
 
 	// Inserts `recordCount` records again, so the optimizations (e.g. sorting) will be applied.
 	for _, ts := range tsValues {
 		rr.AddRecord(GenRecord(ts, int(ts%15), int(ts%2), int(ts)))
 	}
-	records, err = rr.BuildRecords() // BuildRecord will build an Arrow Record with the sorted columns determined in the first batch.
-	if err != nil {
-		t.Errorf("Expected no error, got %v", err)
-	}
+	records, err := rr.BuildRecords() // BuildRecord will build an Arrow Record with the sorted columns determined in the first batch.
+	require.NoError(t, err)
 
 	// Columns "b" and "a" must be sorted.
 	// "b" because it's cardinality is 2.
 	// "a" because it's cardinality is 15 (satisfy the configuration).
 	// "c" is not sorted because it's cardinality is 100 (doesn't satisfy the configuration).
 	for _, record := range records {
-		schemaId := arrow2.SchemaToId(record.Schema())
+		schemaId := arrow2.SchemaToID(record.Schema())
 		if schemaId != "a:Dic<U8,Str>,b:Dic<U8,Str>,c:Dic<U8,Str>,d:{a:Dic<U8,Str>,b:Dic<U8,Str>,c:[I64],d:[{a:I64,b:F64,c:Dic<U8,Str>}]},ts:I64" {
 			t.Errorf("Expected schemaId to be a:Str,b:Str,c:Str,d:{a:Str,b:Str},ts:I64, got %s", schemaId)
 		}
 		if record.NumRows() != int64(recordCount) {
 			t.Errorf("Expected %d rows, got %d", recordCount, record.NumRows())
 		}
-		d := record.Column(4).(*array.Struct)
+		d, _ := record.Column(4).(*array.Struct)
 		if record.ColumnName(0) != "ts" {
 			t.Errorf("Expected column name to be ts, got %s", record.ColumnName(0))
 		}
@@ -349,8 +343,8 @@ func RecordWithHeterogeneousListOfStructs(ts uint64) *Record {
 }
 
 func String(dictionary *array.Dictionary) string {
-	indices := dictionary.Indices().(*array.Uint8)
-	dicValues := dictionary.Dictionary().(*array.String)
+	indices, _ := dictionary.Indices().(*array.Uint8)
+	dicValues, _ := dictionary.Dictionary().(*array.String)
 	output := "["
 	for i := 0; i < dictionary.Len(); i++ {
 		if i > 0 {

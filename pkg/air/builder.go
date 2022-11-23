@@ -36,7 +36,7 @@ type OrderBy struct {
 	FieldPaths [][]int
 }
 
-// A Record builder.
+// RecordBuilder is a builder for Arrow Record.
 // Must be fed with homogeneous records.
 type RecordBuilder struct {
 	// The configuration of the builder.
@@ -70,14 +70,14 @@ type RecordBuilder struct {
 
 type RecordBuilderMetadata struct {
 	SchemaId        string
-	Columns         map[string]*column.ColumnMetadata
+	Columns         map[string]*column.Metadata
 	RecordListLen   int
 	Optimized       bool
 	OrderBy         []string
 	DictionaryStats []*stats.DictionaryStats
 }
 
-// Constructs a new `RecordBuilder` from a Record.
+// NewRecordBuilderWithRecord constructs a new `RecordBuilder` from a Record.
 // Important: the record is supposed to be normalized before the call to this method.
 func NewRecordBuilderWithRecord(allocator *memory.GoAllocator, record *Record, config *config2.Config) *RecordBuilder {
 	var buf bytes.Buffer
@@ -258,9 +258,7 @@ func (rb *RecordBuilder) Optimize() bool {
 				FieldPaths: numPaths,
 			}
 			orderByClause := make([]string, 0, len(numPaths))
-			for _, path := range stringPaths {
-				orderByClause = append(orderByClause, path)
-			}
+			orderByClause = append(orderByClause, stringPaths...)
 			rb.orderByClause = orderByClause
 			rb.optimized = true
 			rb.recordList = []*Record{}

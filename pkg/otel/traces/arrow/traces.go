@@ -8,6 +8,7 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -22,24 +23,39 @@ var (
 type TracesBuilder struct {
 	released bool
 
-	builder *array.ListBuilder    // resource spans list builder
-	rsp     *ResourceSpansBuilder // resource spans builder
+	schema  *acommon.AdaptiveSchema // Trace schema
+	builder *array.RecordBuilder    // Record builder
+	rsb     *array.ListBuilder      // Resource spans builder
+	rsp     *ResourceSpansBuilder   // resource spans builder
 }
 
 // NewTracesBuilder creates a new TracesBuilder with a given allocator.
-func NewTracesBuilder(pool memory.Allocator) *TracesBuilder {
-	rsb := array.NewListBuilder(pool, ResourceSpansDT)
+func NewTracesBuilder(pool memory.Allocator, schema *acommon.AdaptiveSchema) (*TracesBuilder, error) {
+	builder := array.NewRecordBuilder(pool, schema.Schema())
+	err := schema.InitDictionaryBuilders(builder)
+	if err != nil {
+		return nil, err
+	}
+	rsb, ok := builder.Field(0).(*array.ListBuilder)
+	if !ok {
+		return nil, fmt.Errorf("expected field 0 to be a list builder, got %T", builder.Field(0))
+	}
 	return &TracesBuilder{
 		released: false,
-		builder:  rsb,
+		schema:   schema,
+		builder:  builder,
+		rsb:      rsb,
 		rsp:      ResourceSpansBuilderFrom(rsb.ValueBuilder().(*array.StructBuilder)),
-	}
+	}, nil
 }
 
 // Build builds an Arrow Record from the builder.
 //
 // Once the array is no longer needed, Release() must be called to free the
 // memory allocated by the record.
+//
+// This method returns a DictionaryOverflowError if the cardinality of a dictionary
+// (or several) exceeds the maximum allowed value.
 func (b *TracesBuilder) Build() (arrow.Record, error) {
 	if b.released {
 		return nil, fmt.Errorf("resource spans builder already released")
@@ -47,9 +63,24 @@ func (b *TracesBuilder) Build() (arrow.Record, error) {
 
 	defer b.Release()
 
-	arr := b.builder.NewArray()
-	defer arr.Release()
-	return array.NewRecord(Schema, []arrow.Array{arr}, int64(arr.Len())), nil
+	record := b.builder.NewRecord()
+
+	overflowDetected, updates := b.schema.Analyze(record)
+	if overflowDetected {
+		record.Release()
+
+		// Build a list of fields that overflowed
+		var fieldNames []string
+		for _, update := range updates {
+			fieldNames = append(fieldNames, b.schema.DictionaryPath(update.DictIdx))
+		}
+
+		b.schema.UpdateSchema(updates)
+
+		return nil, &acommon.DictionaryOverflowError{FieldNames: fieldNames}
+	}
+
+	return record, nil
 }
 
 // Append appends a new set of resource spans to the builder.
@@ -61,7 +92,7 @@ func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 	rs := traces.ResourceSpans()
 	rc := rs.Len()
 	if rc > 0 {
-		b.builder.Append(true)
+		b.rsb.Append(true)
 		b.builder.Reserve(rc)
 		for i := 0; i < rc; i++ {
 			if err := b.rsp.Append(rs.At(i)); err != nil {
@@ -69,7 +100,7 @@ func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 			}
 		}
 	} else {
-		b.builder.AppendNull()
+		b.rsb.AppendNull()
 	}
 	return nil
 }

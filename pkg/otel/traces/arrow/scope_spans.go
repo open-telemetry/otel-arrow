@@ -16,7 +16,7 @@ import (
 var (
 	ScopeSpansDT = arrow.StructOf([]arrow.Field{
 		{Name: constants.SCOPE, Type: acommon.ScopeDT},
-		{Name: constants.SCHEMA_URL, Type: acommon.DictU16String},
+		{Name: constants.SCHEMA_URL, Type: acommon.DefaultDictString},
 		{Name: constants.SPANS, Type: arrow.ListOf(SpanDT)},
 	}...)
 )
@@ -27,10 +27,10 @@ type ScopeSpansBuilder struct {
 
 	builder *array.StructBuilder
 
-	scb  *acommon.ScopeBuilder          // scope builder
-	schb *array.BinaryDictionaryBuilder // schema url builder
-	ssb  *array.ListBuilder             // span list builder
-	sb   *SpanBuilder                   // span builder
+	scb  *acommon.ScopeBuilder              // scope builder
+	schb *acommon.AdaptiveDictionaryBuilder // schema url builder
+	ssb  *array.ListBuilder                 // span list builder
+	sb   *SpanBuilder                       // span builder
 }
 
 // NewScopeSpansBuilder creates a new ResourceSpansBuilder with a given allocator.
@@ -47,7 +47,7 @@ func ScopeSpansBuilderFrom(builder *array.StructBuilder) *ScopeSpansBuilder {
 		released: false,
 		builder:  builder,
 		scb:      acommon.ScopeBuilderFrom(builder.FieldBuilder(0).(*array.StructBuilder)),
-		schb:     builder.FieldBuilder(1).(*array.BinaryDictionaryBuilder),
+		schb:     acommon.AdaptiveDictionaryBuilderFrom(builder.FieldBuilder(1)),
 		ssb:      builder.FieldBuilder(2).(*array.ListBuilder),
 		sb:       SpanBuilderFrom(builder.FieldBuilder(2).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
 	}

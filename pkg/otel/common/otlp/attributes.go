@@ -7,7 +7,7 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	arrow_utils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -34,10 +34,13 @@ func AppendAttributesInto(attrs pcommon.Map, parentArr *array.Struct, row int, a
 	attrs.EnsureCapacity(end - start)
 
 	keys := marr.Keys()
-	values := marr.Items().(*array.SparseUnion)
+	values, ok := marr.Items().(*array.SparseUnion)
+	if !ok {
+		return fmt.Errorf("`attributes` is not an Arrow sparse union")
+	}
 
 	for i := start; i < end; i++ {
-		key, err := arrow_utils.StringFromArray(keys, i)
+		key, err := arrowutils.StringFromArray(keys, i)
 		if err != nil {
 			return err
 		}

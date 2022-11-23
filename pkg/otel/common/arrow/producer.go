@@ -40,13 +40,14 @@ func AttributesId(attrs pcommon.Map) string {
 		}
 		attrsId.WriteString(k)
 		attrsId.WriteString(":")
-		attrsId.WriteString(ValueId(v))
+		attrsId.WriteString(ValueID(v))
 		return true
 	})
 	attrsId.WriteString("}")
 	return attrsId.String()
 }
 
+// NewResourceFromOld
 // TODO replace this implementation with the one used for traces.
 func NewResourceFromOld(record arrow.Record, row int) (pcommon.Resource, error) {
 	r := pcommon.NewResource()
@@ -71,15 +72,15 @@ func NewResourceFromOld(record arrow.Record, row int) (pcommon.Resource, error) 
 	return r, nil
 }
 
-func ResourceId(r pcommon.Resource) string {
+func ResourceID(r pcommon.Resource) string {
 	return AttributesId(r.Attributes()) + "|" + fmt.Sprintf("dac:%d", r.DroppedAttributesCount())
 }
 
-func ScopeId(is pcommon.InstrumentationScope) string {
+func ScopeID(is pcommon.InstrumentationScope) string {
 	return "name:" + is.Name() + "|version:" + is.Version() + "|" + AttributesId(is.Attributes()) + "|" + fmt.Sprintf("dac:%d", is.DroppedAttributesCount())
 }
 
-func ValueId(v pcommon.Value) string {
+func ValueID(v pcommon.Value) string {
 	switch v.Type() {
 	case pcommon.ValueTypeStr:
 		return v.Str()
@@ -95,15 +96,15 @@ func ValueId(v pcommon.Value) string {
 		return fmt.Sprintf("%x", v.Bytes().AsRaw())
 	case pcommon.ValueTypeSlice:
 		values := v.Slice()
-		valueId := "["
+		valueID := "["
 		for i := 0; i < values.Len(); i++ {
-			if len(valueId) > 1 {
-				valueId += ","
+			if len(valueID) > 1 {
+				valueID += ","
 			}
-			valueId += ValueId(values.At(i))
+			valueID += ValueID(values.At(i))
 		}
-		valueId += "]"
-		return valueId
+		valueID += "]"
+		return valueID
 	default:
 		// includes pcommon.ValueTypeEmpty
 		panic("unsupported value type")
@@ -115,7 +116,10 @@ func CopyAttributesFrom(a pcommon.Map, dt arrow.DataType, arr arrow.Array, row i
 	if !ok {
 		return fmt.Errorf("attributes is not a struct")
 	}
-	attrArray := arr.(*array.Struct)
+	attrArray, ok := arr.(*array.Struct)
+	if !ok {
+		return fmt.Errorf("attributes is not a struct array, but %T", arr)
+	}
 	a.EnsureCapacity(attrArray.NumField())
 	for i := 0; i < attrArray.NumField(); i++ {
 		valueField := structType.Field(i)

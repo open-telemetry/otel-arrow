@@ -15,18 +15,18 @@ import (
 var (
 	// UnivariateMetricSetDT is the Arrow Data Type describing a set of univariate metrics.
 	UnivariateMetricSetDT = arrow.StructOf(
-		arrow.Field{Name: constants.NAME, Type: acommon.DictU16String},
-		arrow.Field{Name: constants.DESCRIPTION, Type: acommon.DictU16String},
-		arrow.Field{Name: constants.UNIT, Type: acommon.DictU16String},
+		arrow.Field{Name: constants.NAME, Type: acommon.DefaultDictString},
+		arrow.Field{Name: constants.DESCRIPTION, Type: acommon.DefaultDictString},
+		arrow.Field{Name: constants.UNIT, Type: acommon.DefaultDictString},
 		arrow.Field{Name: constants.DATA, Type: UnivariateMetricDT},
 	)
 
 	// MultivariateMetricsDT is the Arrow Data Type describing a set of multivariate metrics.
 	// Multivariate metrics are metrics sharing the same attributes, start time, and end time.
 	MultivariateMetricsDT = arrow.StructOf([]arrow.Field{
-		{Name: constants.NAME, Type: acommon.DictU16String},
-		{Name: constants.DESCRIPTION, Type: acommon.DictU16String},
-		{Name: constants.UNIT, Type: acommon.DictU16String},
+		{Name: constants.NAME, Type: acommon.DefaultDictString},
+		{Name: constants.DESCRIPTION, Type: acommon.DefaultDictString},
+		{Name: constants.UNIT, Type: acommon.DefaultDictString},
 		// TODO
 		// attributes
 		// start time
@@ -45,10 +45,10 @@ type MetricSetBuilder struct {
 
 	builder *array.StructBuilder
 
-	nb  *array.BinaryDictionaryBuilder // metric name builder
-	db  *array.BinaryDictionaryBuilder // metric description builder
-	ub  *array.BinaryDictionaryBuilder // metric unit builder
-	dtb *UnivariateMetricBuilder       // univariate metric builder
+	nb  *acommon.AdaptiveDictionaryBuilder // metric name builder
+	db  *acommon.AdaptiveDictionaryBuilder // metric description builder
+	ub  *acommon.AdaptiveDictionaryBuilder // metric unit builder
+	dtb *UnivariateMetricBuilder           // univariate metric builder
 }
 
 // NewMetricSetBuilder creates a new SpansBuilder with a given allocator.
@@ -64,9 +64,9 @@ func MetricSetBuilderFrom(sb *array.StructBuilder) *MetricSetBuilder {
 	return &MetricSetBuilder{
 		released: false,
 		builder:  sb,
-		nb:       sb.FieldBuilder(0).(*array.BinaryDictionaryBuilder),
-		db:       sb.FieldBuilder(1).(*array.BinaryDictionaryBuilder),
-		ub:       sb.FieldBuilder(2).(*array.BinaryDictionaryBuilder),
+		nb:       acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(0)),
+		db:       acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(1)),
+		ub:       acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(2)),
 		dtb:      UnivariateMetricBuilderFrom(sb.FieldBuilder(3).(*array.SparseUnionBuilder)),
 	}
 }

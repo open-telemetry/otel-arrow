@@ -20,12 +20,14 @@ import (
 	"testing"
 
 	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
-	logs_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
-	logs_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/logs/otlp"
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	logsarrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
+	logsotlp "github.com/f5/otel-arrow-adapter/pkg/otel/logs/otlp"
 )
 
 // TestConversionFromSyntheticData tests the conversion of OTLP logs to Arrow and back to OTLP.
@@ -35,7 +37,7 @@ import (
 func TestConversionFromSyntheticData(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec	// only used for testing
 	logsGen := datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
 	// Generate a random OTLP logs request.
@@ -44,21 +46,18 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	// Convert the OTLP logs request to Arrow.
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	lb := logs_arrow.NewLogsBuilder(pool)
-	err := lb.Append(expectedRequest.Logs())
-	if err != nil {
-		t.Fatal(err)
-	}
+	logsSchema := acommon.NewAdaptiveSchema(logsarrow.Schema)
+	defer logsSchema.Release()
+	lb, err := logsarrow.NewLogsBuilder(pool, logsSchema)
+	require.NoError(t, err)
+	err = lb.Append(expectedRequest.Logs())
+	require.NoError(t, err)
 	record, err := lb.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer record.Release()
 
 	// Convert the Arrow records back to OTLP.
-	logs, err := logs_otlp.LogsFrom(record)
-	if err != nil {
-		t.Fatal(err)
-	}
+	logs, err := logsotlp.LogsFrom(record)
+	require.NoError(t, err)
 	assert.Equiv(t, []json.Marshaler{expectedRequest}, []json.Marshaler{plogotlp.NewExportRequestFromLogs(logs)})
 }

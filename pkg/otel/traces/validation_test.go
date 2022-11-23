@@ -25,8 +25,9 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
-	traces_arrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
-	traces_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/traces/otlp"
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	tracesarrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
+	tracesotlp "github.com/f5/otel-arrow-adapter/pkg/otel/traces/otlp"
 )
 
 // TestConversionFromSyntheticData tests the conversion of OTLP traces to Arrow and back to OTLP.
@@ -36,7 +37,7 @@ import (
 func TestConversionFromSyntheticData(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
 
 	tracesGen := datagen.NewTracesGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
@@ -46,8 +47,13 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	// Convert the OTLP traces request to Arrow.
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	tb := traces_arrow.NewTracesBuilder(pool)
-	err := tb.Append(expectedRequest.Traces())
+	traceSchema := acommon.NewAdaptiveSchema(tracesarrow.Schema)
+	defer traceSchema.Release()
+	tb, err := tracesarrow.NewTracesBuilder(pool, traceSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tb.Append(expectedRequest.Traces())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +64,7 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	defer record.Release()
 
 	// Convert the Arrow record back to OTLP.
-	traces, err := traces_otlp.TracesFrom(record)
+	traces, err := tracesotlp.TracesFrom(record)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,11 +92,15 @@ func TestConversionFromRealData(t *testing.T) {
 	}
 }
 
-func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportRequest) {
+func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportRequest) { //nolint:unused // only used for testing
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	tb := traces_arrow.NewTracesBuilder(pool)
-	err := tb.Append(expectedRequest.Traces())
+	traceSchema := acommon.NewAdaptiveSchema(tracesarrow.Schema)
+	tb, err := tracesarrow.NewTracesBuilder(pool, traceSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = tb.Append(expectedRequest.Traces())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +111,7 @@ func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportReques
 	}
 
 	// Convert the Arrow records back to OTLP.
-	traces, err := traces_otlp.TracesFrom(record)
+	traces, err := tracesotlp.TracesFrom(record)
 	if err != nil {
 		t.Fatal(err)
 	}

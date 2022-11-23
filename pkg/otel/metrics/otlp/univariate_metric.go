@@ -7,7 +7,7 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	arrow_utils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 	ametric "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
 )
@@ -86,8 +86,8 @@ func NewUnivariateMetricIds(parentDT *arrow.StructType) (*UnivariateMetricIds, e
 	}, nil
 }
 
-func UpdateUnivariateMetricFrom(metric pmetric.Metric, los *arrow_utils.ListOfStructs, row int, ids *UnivariateMetricIds) error {
-	arr, ok := los.FieldById(ids.Id).(*array.SparseUnion)
+func UpdateUnivariateMetricFrom(metric pmetric.Metric, los *arrowutils.ListOfStructs, row int, ids *UnivariateMetricIds) error {
+	arr, ok := los.FieldByID(ids.Id).(*array.SparseUnion)
 	if !ok {
 		return fmt.Errorf("field %q is not a sparse union", constants.DATA)
 	}

@@ -67,7 +67,7 @@ func (rr *RecordRepository) RecordBuilderCount() int {
 func (rr *RecordRepository) BuildRecords() ([]arrow.Record, error) {
 	rr.Optimize()
 
-	recordBatches := []arrow.Record{}
+	var recordBatches []arrow.Record
 	for _, builder := range rr.builders {
 		if !builder.IsEmpty() {
 			record, err := builder.BuildRecord(rr.allocator)
@@ -97,7 +97,7 @@ func (rr *RecordRepository) Metadata() []*RecordBuilderMetadata {
 	return metadata
 }
 
-func (rr *RecordRepository) DumpMetadata(f io.Writer) {
+func (rr *RecordRepository) DumpMetadata(_ io.Writer) {
 	metadata := rr.Metadata()
 	fmt.Printf("%d Arrow Schema detected.\n", len(metadata))
 	//for _, m := range metadata {

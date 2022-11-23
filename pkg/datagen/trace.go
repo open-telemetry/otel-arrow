@@ -30,9 +30,9 @@ type TraceGenerator struct {
 
 type Span = ptrace.Span
 
-func (e TestEntropy) shuffleSpans(sl ptrace.SpanSlice, fs ...func(Span)) {
+func (te TestEntropy) shuffleSpans(sl ptrace.SpanSlice, fs ...func(Span)) {
 	span := sl.AppendEmpty()
-	e.rng.Shuffle(len(fs), func(i, j int) {
+	te.rng.Shuffle(len(fs), func(i, j int) {
 		fs[i], fs[j] = fs[j], fs[i]
 	})
 	for _, f := range fs {

@@ -7,7 +7,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	arrow_utils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
@@ -21,16 +21,16 @@ type EventIds struct {
 }
 
 func NewEventIds(spansDT *arrow.StructType) (*EventIds, error) {
-	id, eventDT, err := arrow_utils.ListOfStructsFieldIdFromStruct(spansDT, constants.SPAN_EVENTS)
+	id, eventDT, err := arrowutils.ListOfStructsFieldIDFromStruct(spansDT, constants.SPAN_EVENTS)
 	if err != nil {
 		return nil, err
 	}
 
-	timeUnixNanoId, timeUnixNanoFound := eventDT.FieldIdx(constants.TIME_UNIX_NANO)
+	timeUnixNanoID, timeUnixNanoFound := eventDT.FieldIdx(constants.TIME_UNIX_NANO)
 	if !timeUnixNanoFound {
 		return nil, fmt.Errorf("field %s not found", constants.TIME_UNIX_NANO)
 	}
-	nameId, nameFound := eventDT.FieldIdx(constants.NAME)
+	nameID, nameFound := eventDT.FieldIdx(constants.NAME)
 	if !nameFound {
 		return nil, fmt.Errorf("field %s not found", constants.NAME)
 	}
@@ -38,22 +38,22 @@ func NewEventIds(spansDT *arrow.StructType) (*EventIds, error) {
 	if !droppedAttributesCountFound {
 		return nil, fmt.Errorf("field %s not found", constants.DROPPED_ATTRIBUTES_COUNT)
 	}
-	attributesId, err := otlp.NewAttributeIds(eventDT)
+	attributesID, err := otlp.NewAttributeIds(eventDT)
 	if err != nil {
 		return nil, err
 	}
 
 	return &EventIds{
 		Id:                     id,
-		TimeUnixNano:           timeUnixNanoId,
-		Name:                   nameId,
-		Attributes:             attributesId,
+		TimeUnixNano:           timeUnixNanoID,
+		Name:                   nameID,
+		Attributes:             attributesID,
 		DroppedAttributesCount: droppedAttributesCountId,
 	}, nil
 }
 
 // AppendEventsInto initializes a Span's Events from an Arrow representation.
-func AppendEventsInto(spans ptrace.SpanEventSlice, arrowSpans *arrow_utils.ListOfStructs, spanIdx int, ids *EventIds) error {
+func AppendEventsInto(spans ptrace.SpanEventSlice, arrowSpans *arrowutils.ListOfStructs, spanIdx int, ids *EventIds) error {
 	events, err := arrowSpans.ListOfStructsById(spanIdx, ids.Id)
 	if err != nil {
 		return err
@@ -70,12 +70,12 @@ func AppendEventsInto(spans ptrace.SpanEventSlice, arrowSpans *arrow_utils.ListO
 			continue
 		}
 
-		timeUnixNano, err := events.U64FieldById(ids.TimeUnixNano, eventIdx)
+		timeUnixNano, err := events.U64FieldByID(ids.TimeUnixNano, eventIdx)
 		if err != nil {
 			return err
 		}
 		event.SetTimestamp(pcommon.Timestamp(timeUnixNano))
-		name, err := events.StringFieldById(ids.Name, eventIdx)
+		name, err := events.StringFieldByID(ids.Name, eventIdx)
 		if err != nil {
 			return err
 		}
@@ -83,7 +83,7 @@ func AppendEventsInto(spans ptrace.SpanEventSlice, arrowSpans *arrow_utils.ListO
 		if err = otlp.AppendAttributesInto(event.Attributes(), events.Array(), eventIdx, ids.Attributes); err != nil {
 			return err
 		}
-		dac, err := events.U32FieldById(ids.DroppedAttributesCount, eventIdx)
+		dac, err := events.U32FieldByID(ids.DroppedAttributesCount, eventIdx)
 		if err != nil {
 			return err
 		}

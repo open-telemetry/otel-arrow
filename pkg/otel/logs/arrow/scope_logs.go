@@ -16,7 +16,7 @@ import (
 var (
 	ScopeLogsDT = arrow.StructOf([]arrow.Field{
 		{Name: constants.SCOPE, Type: acommon.ScopeDT},
-		{Name: constants.SCHEMA_URL, Type: acommon.DictU16String},
+		{Name: constants.SCHEMA_URL, Type: acommon.DefaultDictString},
 		{Name: constants.LOGS, Type: arrow.ListOf(LogRecordDT)},
 	}...)
 )
@@ -27,10 +27,10 @@ type ScopeLogsBuilder struct {
 
 	builder *array.StructBuilder
 
-	scb  *acommon.ScopeBuilder          // scope builder
-	schb *array.BinaryDictionaryBuilder // schema url builder
-	lrsb *array.ListBuilder             // log recprd list builder
-	lrb  *LogRecordBuilder              // log record builder
+	scb  *acommon.ScopeBuilder              // scope builder
+	schb *acommon.AdaptiveDictionaryBuilder // schema url builder
+	lrsb *array.ListBuilder                 // log recprd list builder
+	lrb  *LogRecordBuilder                  // log record builder
 }
 
 // NewScopeLogsBuilder creates a new ResourceLogsBuilder with a given allocator.
@@ -47,7 +47,7 @@ func ScopeLogsBuilderFrom(builder *array.StructBuilder) *ScopeLogsBuilder {
 		released: false,
 		builder:  builder,
 		scb:      acommon.ScopeBuilderFrom(builder.FieldBuilder(0).(*array.StructBuilder)),
-		schb:     builder.FieldBuilder(1).(*array.BinaryDictionaryBuilder),
+		schb:     acommon.AdaptiveDictionaryBuilderFrom(builder.FieldBuilder(1)),
 		lrsb:     builder.FieldBuilder(2).(*array.ListBuilder),
 		lrb:      LogRecordBuilderFrom(builder.FieldBuilder(2).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
 	}

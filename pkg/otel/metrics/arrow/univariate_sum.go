@@ -32,12 +32,12 @@ type UnivariateSumBuilder struct {
 	imb  *array.BooleanBuilder   // is_monotonic builder
 }
 
-// NewUnivariateSummaryBuilder creates a new UnivariateSumBuilder with a given memory allocator.
+// NewUnivariateSumBuilder creates a new UnivariateSumBuilder with a given memory allocator.
 func NewUnivariateSumBuilder(pool memory.Allocator) *UnivariateSumBuilder {
 	return UnivariateSumBuilderFrom(array.NewStructBuilder(pool, UnivariateSumDT))
 }
 
-// UnivariateSummaryBuilderFrom creates a new UnivariateSumBuilder from an existing StructBuilder.
+// UnivariateSumBuilderFrom creates a new UnivariateSumBuilder from an existing StructBuilder.
 func UnivariateSumBuilderFrom(ndpb *array.StructBuilder) *UnivariateSumBuilder {
 	return &UnivariateSumBuilder{
 		released: false,

@@ -15,6 +15,7 @@
 package rfield
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -25,17 +26,14 @@ import (
 
 type NameTypes []*NameType
 
-// Sort interface for Arrow Fields
 type ArrowFields []arrow.Field
 
-// Sort interface
 func (f ArrowFields) Less(i, j int) bool {
 	return f[i].Name < f[j].Name
 }
 func (f ArrowFields) Len() int      { return len(f) }
 func (f ArrowFields) Swap(i, j int) { f[i], f[j] = f[j], f[i] }
 
-// Sort interface
 func (f NameTypes) Less(i, j int) bool {
 	return f[i].Name < f[j].Name
 }
@@ -81,7 +79,10 @@ func WriteDataTypeSignature(dataType arrow.DataType, sig *strings.Builder) {
 		WriteDataTypeSignature(dataType.(*arrow.ListType).Elem(), sig)
 		sig.WriteByte(']')
 	case arrow.STRUCT:
-		structDataType := dataType.(*arrow.StructType)
+		structDataType, ok := dataType.(*arrow.StructType)
+		if !ok {
+			panic(fmt.Sprintf("expected *arrow.StructType, got %T", dataType))
+		}
 		sig.WriteByte('{')
 		for i, field := range structDataType.Fields() {
 			if i > 0 {

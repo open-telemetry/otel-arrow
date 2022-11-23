@@ -45,7 +45,6 @@ type BinaryColumn struct {
 	// Total length of the values in the column.
 	totalValueLength int
 
-	field          *arrow.Field
 	binaryBuilder  *array.BinaryBuilder
 	dicoBuilder    *array.BinaryDictionaryBuilder
 	dictionaryType *arrow.DictionaryType
@@ -218,8 +217,8 @@ func (c *BinaryColumn) NewArray(_ *memory.GoAllocator) arrow.Array {
 	}
 }
 
-func (c *BinaryColumn) Metadata() *ColumnMetadata {
-	return &ColumnMetadata{
+func (c *BinaryColumn) Metadata() *Metadata {
+	return &Metadata{
 		Field: c.NewArrowField(),
 		Len:   c.Len(),
 		Dictionary: &DictionaryMetadata{

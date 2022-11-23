@@ -6,7 +6,7 @@ import (
 	"github.com/apache/arrow/go/v11/arrow"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	arrow_utils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -17,7 +17,7 @@ type QuantileValueIds struct {
 }
 
 func NewQuantileValueIds(parentDT *arrow.StructType) (*QuantileValueIds, error) {
-	id, quantileValueDT, err := arrow_utils.ListOfStructsFieldIdFromStruct(parentDT, constants.SUMMARY_QUANTILE_VALUES)
+	id, quantileValueDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.SUMMARY_QUANTILE_VALUES)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +39,7 @@ func NewQuantileValueIds(parentDT *arrow.StructType) (*QuantileValueIds, error) 
 	}, nil
 }
 
-func AppendQuantileValuesInto(quantileSlice pmetric.SummaryDataPointValueAtQuantileSlice, ndp *arrow_utils.ListOfStructs, ndpIdx int, ids *QuantileValueIds) error {
+func AppendQuantileValuesInto(quantileSlice pmetric.SummaryDataPointValueAtQuantileSlice, ndp *arrowutils.ListOfStructs, ndpIdx int, ids *QuantileValueIds) error {
 	quantileValues, err := ndp.ListOfStructsById(ndpIdx, ids.Id)
 	if err != nil {
 		return err
@@ -55,13 +55,13 @@ func AppendQuantileValuesInto(quantileSlice pmetric.SummaryDataPointValueAtQuant
 			continue
 		}
 
-		quantile, err := quantileValues.F64FieldById(ids.Quantile, quantileIdx)
+		quantile, err := quantileValues.F64FieldByID(ids.Quantile, quantileIdx)
 		if err != nil {
 			return err
 		}
 		quantileValue.SetQuantile(quantile)
 
-		value, err := quantileValues.F64FieldById(ids.Value, quantileIdx)
+		value, err := quantileValues.F64FieldByID(ids.Value, quantileIdx)
 		if err != nil {
 			return err
 		}

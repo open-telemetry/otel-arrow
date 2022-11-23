@@ -5,12 +5,16 @@ import (
 	"math/rand"
 	"testing"
 
+	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	ametrics "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics/otlp"
 )
 
@@ -21,7 +25,7 @@ import (
 func TestBackAndForthConversion(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
 
 	dg := datagen.NewDataGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes()).
 		WithConfig(datagen.Config{
@@ -39,21 +43,20 @@ func TestBackAndForthConversion(t *testing.T) {
 	// Convert the OTLP metrics request to Arrow.
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	lb := arrow.NewMetricsBuilder(pool)
-	err := lb.Append(expectedRequest.Metrics())
-	if err != nil {
-		t.Fatal(err)
-	}
-	record, err := lb.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
+	metricsSchema := acommon.NewAdaptiveSchema(ametrics.Schema)
+	defer metricsSchema.Release()
+	lb, err := ametrics.NewMetricsBuilder(pool, metricsSchema)
+	require.NoError(t, err)
+	err = lb.Append(expectedRequest.Metrics())
+	require.NoError(t, err)
+	var record arrow.Record
+	record, err = lb.Build()
+	require.NoError(t, err)
 	defer record.Release()
 
 	// Convert the Arrow records back to OTLP.
-	metrics, err := otlp.MetricsFrom(record)
-	if err != nil {
-		t.Fatal(err)
-	}
+	var metrics pmetric.Metrics
+	metrics, err = otlp.MetricsFrom(record)
+	require.NoError(t, err)
 	assert.Equiv(t, []json.Marshaler{expectedRequest}, []json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(metrics)})
 }

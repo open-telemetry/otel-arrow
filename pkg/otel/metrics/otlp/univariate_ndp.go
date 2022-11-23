@@ -8,7 +8,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	arrow_utils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
@@ -24,7 +24,7 @@ type UnivariateNdpIds struct {
 }
 
 func NewUnivariateNdpIds(parentDT *arrow.StructType) (*UnivariateNdpIds, error) {
-	id, univariateNdpDT, err := arrow_utils.ListOfStructsFieldIdFromStruct(parentDT, constants.DATA_POINTS)
+	id, univariateNdpDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.DATA_POINTS)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +70,7 @@ func NewUnivariateNdpIds(parentDT *arrow.StructType) (*UnivariateNdpIds, error) 
 	}, nil
 }
 
-func AppendUnivariateNdpInto(ndpSlice pmetric.NumberDataPointSlice, ndp *arrow_utils.ListOfStructs, ids *UnivariateNdpIds) error {
+func AppendUnivariateNdpInto(ndpSlice pmetric.NumberDataPointSlice, ndp *arrowutils.ListOfStructs, ids *UnivariateNdpIds) error {
 	if ndp == nil {
 		return nil
 	}
@@ -86,18 +86,18 @@ func AppendUnivariateNdpInto(ndpSlice pmetric.NumberDataPointSlice, ndp *arrow_u
 			return err
 		}
 
-		startTimeUnixNano, err := ndp.U64FieldById(ids.StartTimeUnixNano, ndpIdx)
+		startTimeUnixNano, err := ndp.U64FieldByID(ids.StartTimeUnixNano, ndpIdx)
 		if err != nil {
 			return err
 		}
 		ndpValue.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
-		timeUnixNano, err := ndp.U64FieldById(ids.TimeUnixNano, ndpIdx)
+		timeUnixNano, err := ndp.U64FieldByID(ids.TimeUnixNano, ndpIdx)
 		if err != nil {
 			return err
 		}
 		ndpValue.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 
-		value := ndp.FieldById(ids.MetricValue)
+		value := ndp.FieldByID(ids.MetricValue)
 		if valueArr, ok := value.(*array.DenseUnion); ok {
 			if err := UpdateValueFromNumberDataPoint(ndpValue, valueArr, ndpIdx); err != nil {
 				return err
@@ -106,7 +106,7 @@ func AppendUnivariateNdpInto(ndpSlice pmetric.NumberDataPointSlice, ndp *arrow_u
 			return fmt.Errorf("value field shound be a DenseUnion")
 		}
 
-		flags, err := ndp.U32FieldById(ids.Flags, ndpIdx)
+		flags, err := ndp.U32FieldByID(ids.Flags, ndpIdx)
 		if err != nil {
 			return err
 		}

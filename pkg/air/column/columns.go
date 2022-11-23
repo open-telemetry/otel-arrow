@@ -43,7 +43,7 @@ type Column interface {
 	NewArrowField() *arrow.Field
 	// NewArray returns a new array for the column.
 	NewArray(allocator *memory.GoAllocator) arrow.Array
-	Metadata() *ColumnMetadata
+	Metadata() *Metadata
 }
 
 type Columns struct {
@@ -77,14 +77,14 @@ type DictionaryMetadata struct {
 	TotalEntry int
 }
 
-type ColumnMetadata struct {
+type Metadata struct {
 	Field      *arrow.Field
 	Len        int
-	Children   map[string]*ColumnMetadata
+	Children   map[string]*Metadata
 	Dictionary *DictionaryMetadata
 }
 
-func (m ColumnMetadata) Dump(prefix string, f io.Writer) {
+func (m Metadata) Dump(prefix string, f io.Writer) {
 	_, err := fmt.Fprintf(f, "%s- %s(%s)", prefix, m.Field.Name, m.Field.Type)
 	if err != nil {
 		panic(err)
@@ -290,8 +290,14 @@ func (c *Columns) UpdateColumn(fieldPath *rfield.FieldPath, expectedFieldDT arro
 		c.ListColumns[fieldPath.Current].Push(fieldPath, field.Value.(*rfield.List).Values)
 		c.length = c.ListColumns[fieldPath.Current].Len()
 	case *arrow.StructType:
-		structDT := expectedFieldDT.(*arrow.StructType)
-		t := field.Value.(*rfield.Struct)
+		structDT, ok := expectedFieldDT.(*arrow.StructType)
+		if !ok {
+			panic(fmt.Sprintf("expected struct type, got %T", expectedFieldDT))
+		}
+		t, ok := field.Value.(*rfield.Struct)
+		if !ok {
+			panic(fmt.Sprintf("expected rfield struct, got %T", field.Value))
+		}
 		if len(t.Fields) == len(structDT.Fields()) {
 			for fieldPos := range t.Fields {
 				c.StructColumns[fieldPath.Current].Push(fieldPath.Children[fieldPos], structDT.Fields()[fieldPos].Type, t.Fields[fieldPos])
@@ -522,8 +528,8 @@ func (c *Columns) IsEmpty() bool {
 	return len(c.I8Columns) == 0 && len(c.I16Columns) == 0 && len(c.I32Columns) == 0 && len(c.I64Columns) == 0 && len(c.U8Columns) == 0 && len(c.U16Columns) == 0 && len(c.U32Columns) == 0 && len(c.U64Columns) == 0 && len(c.F32Columns) == 0 && len(c.F64Columns) == 0 && len(c.BooleanColumns) == 0 && len(c.StringColumns) == 0 && len(c.BinaryColumns) == 0 && len(c.ListColumns) == 0 && len(c.StructColumns) == 0
 }
 
-func (c *Columns) Metadata() map[string]*ColumnMetadata {
-	metadata := make(map[string]*ColumnMetadata)
+func (c *Columns) Metadata() map[string]*Metadata {
+	metadata := make(map[string]*Metadata)
 
 	for _, column := range c.I8Columns {
 		metadata[column.Name()] = column.Metadata()

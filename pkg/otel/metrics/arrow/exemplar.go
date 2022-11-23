@@ -19,8 +19,8 @@ var (
 		arrow.Field{Name: constants.TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
 		arrow.Field{Name: constants.METRIC_VALUE, Type: MetricValueDT},
 		// TODO: Not sure a dictionary if needed here
-		arrow.Field{Name: constants.SPAN_ID, Type: acommon.DictU16Fixed8Binary},
-		arrow.Field{Name: constants.TRACE_ID, Type: acommon.DictU16Fixed16Binary},
+		arrow.Field{Name: constants.SPAN_ID, Type: acommon.DefaultDictFixed8Binary},
+		arrow.Field{Name: constants.TRACE_ID, Type: acommon.DefaultDictFixed16Binary},
 	)
 )
 
@@ -30,11 +30,11 @@ type ExemplarBuilder struct {
 
 	builder *array.StructBuilder // exemplar value builder
 
-	ab   *acommon.AttributesBuilder              // attributes builder
-	tunb *array.Uint64Builder                    // time unix nano builder
-	mvb  *MetricValueBuilder                     // metric value builder
-	sib  *array.FixedSizeBinaryDictionaryBuilder // span id builder
-	tib  *array.FixedSizeBinaryDictionaryBuilder // trace id builder
+	ab   *acommon.AttributesBuilder         // attributes builder
+	tunb *array.Uint64Builder               // time unix nano builder
+	mvb  *MetricValueBuilder                // metric value builder
+	sib  *acommon.AdaptiveDictionaryBuilder // span id builder
+	tib  *acommon.AdaptiveDictionaryBuilder // trace id builder
 }
 
 // NewExemplarBuilder creates a new ExemplarBuilder with a given memory allocator.
@@ -51,8 +51,8 @@ func ExemplarBuilderFrom(ex *array.StructBuilder) *ExemplarBuilder {
 		ab:   acommon.AttributesBuilderFrom(ex.FieldBuilder(0).(*array.MapBuilder)),
 		tunb: ex.FieldBuilder(1).(*array.Uint64Builder),
 		mvb:  MetricValueBuilderFrom(ex.FieldBuilder(2).(*array.DenseUnionBuilder)),
-		sib:  ex.FieldBuilder(3).(*array.FixedSizeBinaryDictionaryBuilder),
-		tib:  ex.FieldBuilder(4).(*array.FixedSizeBinaryDictionaryBuilder),
+		sib:  acommon.AdaptiveDictionaryBuilderFrom(ex.FieldBuilder(3)),
+		tib:  acommon.AdaptiveDictionaryBuilderFrom(ex.FieldBuilder(4)),
 	}
 }
 
@@ -69,7 +69,7 @@ func (b *ExemplarBuilder) Build() (*array.Struct, error) {
 	return b.builder.NewStructArray(), nil
 }
 
-// Append appends a exemplar to the builder.
+// Append appends an exemplar to the builder.
 func (b *ExemplarBuilder) Append(ex pmetric.Exemplar) error {
 	if b.released {
 		return fmt.Errorf("exemplar builder already released")
@@ -84,11 +84,11 @@ func (b *ExemplarBuilder) Append(ex pmetric.Exemplar) error {
 		return err
 	}
 	sid := ex.SpanID()
-	if err := b.sib.Append(sid[:]); err != nil {
+	if err := b.sib.AppendBinary(sid[:]); err != nil {
 		return err
 	}
 	tid := ex.TraceID()
-	if err := b.tib.Append(tid[:]); err != nil {
+	if err := b.tib.AppendBinary(tid[:]); err != nil {
 		return err
 	}
 

@@ -28,9 +28,9 @@ import (
 
 	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	common "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-	logs_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/logs/otlp"
-	metrics_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/otlp"
-	traces_otlp "github.com/f5/otel-arrow-adapter/pkg/otel/traces/otlp"
+	logsotlp "github.com/f5/otel-arrow-adapter/pkg/otel/logs/otlp"
+	metricsotlp "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/otlp"
+	tracesotlp "github.com/f5/otel-arrow-adapter/pkg/otel/traces/otlp"
 )
 
 // ConsumerAPI is the interface of a Consumer consdiering all signals.
@@ -75,10 +75,10 @@ func (c *Consumer) MetricsFrom(bar *colarspb.BatchArrowRecords) ([]pmetric.Metri
 
 	record2Metrics := func(record *RecordMessage) (pmetric.Metrics, error) {
 		defer record.record.Release()
-		return metrics_otlp.MetricsFrom(record.record)
+		return metricsotlp.MetricsFrom(record.record)
 	}
 
-	var result []pmetric.Metrics
+	result := make([]pmetric.Metrics, 0, len(records))
 	for _, record := range records {
 		metrics, err := record2Metrics(record)
 		if err != nil {
@@ -98,10 +98,10 @@ func (c *Consumer) LogsFrom(bar *colarspb.BatchArrowRecords) ([]plog.Logs, error
 
 	record2Logs := func(record *RecordMessage) (plog.Logs, error) {
 		defer record.record.Release()
-		return logs_otlp.LogsFrom(record.record)
+		return logsotlp.LogsFrom(record.record)
 	}
 
-	var result []plog.Logs
+	result := make([]plog.Logs, 0, len(records))
 	for _, record := range records {
 		logs, err := record2Logs(record)
 		if err != nil {
@@ -121,10 +121,10 @@ func (c *Consumer) TracesFrom(bar *colarspb.BatchArrowRecords) ([]ptrace.Traces,
 
 	record2Traces := func(record *RecordMessage) (ptrace.Traces, error) {
 		defer record.record.Release()
-		return traces_otlp.TracesFrom(record.record)
+		return tracesotlp.TracesFrom(record.record)
 	}
 
-	var result []ptrace.Traces
+	result := make([]ptrace.Traces, 0, len(records))
 	for _, record := range records {
 		traces, err := record2Traces(record)
 		if err != nil {
@@ -154,7 +154,11 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*RecordMessage, e
 
 		sc.bufReader.Reset(payload.Record)
 		if sc.ipcReader == nil {
-			ipcReader, err := ipc.NewReader(sc.bufReader, ipc.WithAllocator(common.NewLimitedAllocator(memory.NewGoAllocator(), c.memLimit)))
+			ipcReader, err := ipc.NewReader(
+				sc.bufReader,
+				ipc.WithAllocator(common.NewLimitedAllocator(memory.NewGoAllocator(), c.memLimit)),
+				ipc.WithDictionaryDeltas(true),
+			)
 			if err != nil {
 				return nil, err
 			}

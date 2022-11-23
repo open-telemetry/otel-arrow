@@ -7,7 +7,7 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	arrow_utils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -53,7 +53,7 @@ func UpdateUnivariateSumFrom(sum pmetric.Sum, arr *array.Struct, row int, ids *U
 	}
 	sum.SetIsMonotonic(imArr.Value(row))
 
-	los, err := arrow_utils.ListOfStructsFromStruct(arr, ids.DataPoints.Id, row)
+	los, err := arrowutils.ListOfStructsFromStruct(arr, ids.DataPoints.Id, row)
 	if err != nil {
 		return err
 	}

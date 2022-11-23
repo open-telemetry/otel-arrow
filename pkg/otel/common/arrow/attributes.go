@@ -12,7 +12,7 @@ import (
 // Arrow data types used to build the attribute map.
 var (
 	// KDT is the Arrow key data type.
-	KDT = DictU16String
+	KDT = DefaultDictString
 
 	// AttributesDT is the Arrow attribute data type.
 	AttributesDT = arrow.MapOf(KDT, AnyValueDT)
@@ -22,9 +22,9 @@ var (
 type AttributesBuilder struct {
 	released bool
 
-	builder *array.MapBuilder              // map builder
-	kb      *array.BinaryDictionaryBuilder // key builder
-	ib      *AnyValueBuilder               // item any value builder
+	builder *array.MapBuilder          // map builder
+	kb      *AdaptiveDictionaryBuilder // key builder
+	ib      *AnyValueBuilder           // item any value builder
 }
 
 // NewAttributesBuilder creates a new AttributesBuilder with a given allocator.
@@ -43,7 +43,7 @@ func AttributesBuilderFrom(mb *array.MapBuilder) *AttributesBuilder {
 	return &AttributesBuilder{
 		released: false,
 		builder:  mb,
-		kb:       mb.KeyBuilder().(*array.BinaryDictionaryBuilder),
+		kb:       AdaptiveDictionaryBuilderFrom(mb.KeyBuilder()),
 		ib:       ib,
 	}
 }
@@ -84,10 +84,7 @@ func (b *AttributesBuilder) Append(attrs pcommon.Map) error {
 
 		// Append the value
 		err = b.ib.Append(v)
-		if err != nil {
-			return false
-		}
-		return true
+		return err == nil
 	})
 	return err
 }

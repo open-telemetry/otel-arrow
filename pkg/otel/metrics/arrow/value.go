@@ -18,7 +18,7 @@ const (
 )
 
 var (
-	// ExemplarDT is an Arrow Data Type representing an OTLP metric value.
+	// MetricValueDT is an Arrow Data Type representing an OTLP metric value.
 	MetricValueDT = arrow.DenseUnionOf([]arrow.Field{
 		{Name: constants.I64_METRIC_VALUE, Type: arrow.PrimitiveTypes.Int64},
 		{Name: constants.F64_METRIC_VALUE, Type: arrow.PrimitiveTypes.Float64},
@@ -28,7 +28,7 @@ var (
 	})
 )
 
-// ExemplarBuilder is a helper to build an Arrow array containing a collection of OTLP metric value.
+// MetricValueBuilder is a helper to build an Arrow array containing a collection of OTLP metric value.
 type MetricValueBuilder struct {
 	released bool
 
@@ -38,12 +38,12 @@ type MetricValueBuilder struct {
 	f64Builder *array.Float64Builder // float64 builder
 }
 
-// NewExemplarBuilder creates a new ExemplarBuilder with a given memory allocator.
+// NewMetricValueBuilder creates a new MetricValueBuilder with a given memory allocator.
 func NewMetricValueBuilder(pool memory.Allocator) *MetricValueBuilder {
 	return MetricValueBuilderFrom(array.NewDenseUnionBuilder(pool, MetricValueDT))
 }
 
-// ExemplarBuilderFrom creates a new ExemplarBuilder from an existing DenseUnionBuilder.
+// MetricValueBuilderFrom creates a new MetricValueBuilder from an existing DenseUnionBuilder.
 func MetricValueBuilderFrom(mv *array.DenseUnionBuilder) *MetricValueBuilder {
 	return &MetricValueBuilder{
 		released:   false,

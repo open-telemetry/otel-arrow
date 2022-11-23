@@ -23,13 +23,13 @@ var (
 	// Any values are represented as a sparse union of the following variants: str, i64, f64, bool, binary.
 	AnyValueDT = arrow.SparseUnionOf([]arrow.Field{
 		// TODO manage case where the cardinality of the dictionary is too high (> 2^16).
-		{Name: "str", Type: DictU16String},
+		{Name: "str", Type: DefaultDictString},
 		{Name: "i64", Type: arrow.PrimitiveTypes.Int64},
 		{Name: "f64", Type: arrow.PrimitiveTypes.Float64},
 		{Name: "bool", Type: arrow.FixedWidthTypes.Boolean},
 		// TODO manage case where the cardinality of the dictionary is too high (> 2^16).
-		{Name: "binary", Type: DictU16Binary},
-		// Future extension {Name: "cbor", Type: DictU16Binary},
+		{Name: "binary", Type: DefaultDictBinary},
+		// Future extension {Name: "cbor", Type: DefaultDictBinary},
 	}, []int8{
 		StrCode,
 		I64Code,
@@ -46,11 +46,11 @@ type AnyValueBuilder struct {
 
 	builder *array.SparseUnionBuilder // any value builder
 
-	strBuilder    *array.BinaryDictionaryBuilder // string builder
-	i64Builder    *array.Int64Builder            // int64 builder
-	f64Builder    *array.Float64Builder          // float64 builder
-	boolBuilder   *array.BooleanBuilder          // bool builder
-	binaryBuilder *array.BinaryDictionaryBuilder // binary builder
+	strBuilder    *AdaptiveDictionaryBuilder // string builder
+	i64Builder    *array.Int64Builder        // int64 builder
+	f64Builder    *array.Float64Builder      // float64 builder
+	boolBuilder   *array.BooleanBuilder      // bool builder
+	binaryBuilder *AdaptiveDictionaryBuilder // binary builder
 }
 
 // AnyValueBuilderFrom creates a new AnyValueBuilder from an existing SparseUnionBuilder.
@@ -58,11 +58,11 @@ func AnyValueBuilderFrom(av *array.SparseUnionBuilder) *AnyValueBuilder {
 	return &AnyValueBuilder{
 		released:      false,
 		builder:       av,
-		strBuilder:    av.Child(0).(*array.BinaryDictionaryBuilder),
+		strBuilder:    AdaptiveDictionaryBuilderFrom(av.Child(0)),
 		i64Builder:    av.Child(1).(*array.Int64Builder),
 		f64Builder:    av.Child(2).(*array.Float64Builder),
 		boolBuilder:   av.Child(3).(*array.BooleanBuilder),
-		binaryBuilder: av.Child(4).(*array.BinaryDictionaryBuilder),
+		binaryBuilder: AdaptiveDictionaryBuilderFrom(av.Child(4)),
 	}
 }
 
@@ -188,7 +188,7 @@ func (b *AnyValueBuilder) appendBinary(v []byte) error {
 	if v == nil {
 		b.binaryBuilder.AppendNull()
 	} else {
-		if err := b.binaryBuilder.Append(v); err != nil {
+		if err := b.binaryBuilder.AppendBinary(v); err != nil {
 			return err
 		}
 	}

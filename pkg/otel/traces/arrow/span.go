@@ -17,11 +17,11 @@ var (
 	SpanDT = arrow.StructOf([]arrow.Field{
 		{Name: constants.START_TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
 		{Name: constants.END_TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
-		{Name: constants.TRACE_ID, Type: acommon.DictU16Fixed16Binary},
-		{Name: constants.SPAN_ID, Type: acommon.DictU16Fixed8Binary},
-		{Name: constants.TRACE_STATE, Type: acommon.DictU16String},
-		{Name: constants.PARENT_SPAN_ID, Type: acommon.DictU16Fixed8Binary},
-		{Name: constants.NAME, Type: acommon.DictU16String},
+		{Name: constants.TRACE_ID, Type: acommon.DefaultDictFixed16Binary},
+		{Name: constants.SPAN_ID, Type: acommon.DefaultDictFixed8Binary},
+		{Name: constants.TRACE_STATE, Type: acommon.DefaultDictString},
+		{Name: constants.PARENT_SPAN_ID, Type: acommon.DefaultDictFixed8Binary},
+		{Name: constants.NAME, Type: acommon.DefaultDictString},
 		{Name: constants.KIND, Type: arrow.PrimitiveTypes.Int32},
 		{Name: constants.ATTRIBUTES, Type: acommon.AttributesDT},
 		{Name: constants.DROPPED_ATTRIBUTES_COUNT, Type: arrow.PrimitiveTypes.Uint32},
@@ -39,23 +39,23 @@ type SpanBuilder struct {
 
 	builder *array.StructBuilder
 
-	stunb *array.Uint64Builder                    // start time unix nano builder
-	etunb *array.Uint64Builder                    // end time unix nano builder
-	tib   *array.FixedSizeBinaryDictionaryBuilder // trace id builder
-	sib   *array.FixedSizeBinaryDictionaryBuilder // span id builder
-	tsb   *array.BinaryDictionaryBuilder          // trace state builder
-	psib  *array.FixedSizeBinaryDictionaryBuilder // parent span id builder
-	nb    *array.BinaryDictionaryBuilder          // name builder
-	kb    *array.Int32Builder                     // kind builder
-	ab    *acommon.AttributesBuilder              // attributes builder
-	dacb  *array.Uint32Builder                    // dropped attributes count builder
-	sesb  *array.ListBuilder                      // span event list builder
-	seb   *EventBuilder                           // span event builder
-	decb  *array.Uint32Builder                    // dropped events count builder
-	slsb  *array.ListBuilder                      // span link list builder
-	slb   *LinkBuilder                            // span link builder
-	dlcb  *array.Uint32Builder                    // dropped links count builder
-	sb    *StatusBuilder                          // status builder
+	stunb *array.Uint64Builder               // start time unix nano builder
+	etunb *array.Uint64Builder               // end time unix nano builder
+	tib   *acommon.AdaptiveDictionaryBuilder // trace id builder
+	sib   *acommon.AdaptiveDictionaryBuilder // span id builder
+	tsb   *acommon.AdaptiveDictionaryBuilder // trace state builder
+	psib  *acommon.AdaptiveDictionaryBuilder // parent span id builder
+	nb    *acommon.AdaptiveDictionaryBuilder // name builder
+	kb    *array.Int32Builder                // kind builder
+	ab    *acommon.AttributesBuilder         // attributes builder
+	dacb  *array.Uint32Builder               // dropped attributes count builder
+	sesb  *array.ListBuilder                 // span event list builder
+	seb   *EventBuilder                      // span event builder
+	decb  *array.Uint32Builder               // dropped events count builder
+	slsb  *array.ListBuilder                 // span link list builder
+	slb   *LinkBuilder                       // span link builder
+	dlcb  *array.Uint32Builder               // dropped links count builder
+	sb    *StatusBuilder                     // status builder
 }
 
 // NewSpanBuilder creates a new SpansBuilder with a given allocator.
@@ -73,11 +73,11 @@ func SpanBuilderFrom(sb *array.StructBuilder) *SpanBuilder {
 		builder:  sb,
 		stunb:    sb.FieldBuilder(0).(*array.Uint64Builder),
 		etunb:    sb.FieldBuilder(1).(*array.Uint64Builder),
-		tib:      sb.FieldBuilder(2).(*array.FixedSizeBinaryDictionaryBuilder),
-		sib:      sb.FieldBuilder(3).(*array.FixedSizeBinaryDictionaryBuilder),
-		tsb:      sb.FieldBuilder(4).(*array.BinaryDictionaryBuilder),
-		psib:     sb.FieldBuilder(5).(*array.FixedSizeBinaryDictionaryBuilder),
-		nb:       sb.FieldBuilder(6).(*array.BinaryDictionaryBuilder),
+		tib:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(2)),
+		sib:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(3)),
+		tsb:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(4)),
+		psib:     acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(5)),
+		nb:       acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(6)),
 		kb:       sb.FieldBuilder(7).(*array.Int32Builder),
 		ab:       acommon.AttributesBuilderFrom(sb.FieldBuilder(8).(*array.MapBuilder)),
 		dacb:     sb.FieldBuilder(9).(*array.Uint32Builder),
@@ -114,11 +114,11 @@ func (b *SpanBuilder) Append(span ptrace.Span) error {
 	b.stunb.Append(uint64(span.StartTimestamp()))
 	b.etunb.Append(uint64(span.EndTimestamp()))
 	tib := span.TraceID()
-	if err := b.tib.Append(tib[:]); err != nil {
+	if err := b.tib.AppendBinary(tib[:]); err != nil {
 		return err
 	}
 	sib := span.SpanID()
-	if err := b.sib.Append(sib[:]); err != nil {
+	if err := b.sib.AppendBinary(sib[:]); err != nil {
 		return err
 	}
 	traceState := span.TraceState().AsRaw()
@@ -130,7 +130,7 @@ func (b *SpanBuilder) Append(span ptrace.Span) error {
 		}
 	}
 	psib := span.ParentSpanID()
-	if err := b.psib.Append(psib[:]); err != nil {
+	if err := b.psib.AppendBinary(psib[:]); err != nil {
 		return err
 	}
 	name := span.Name()

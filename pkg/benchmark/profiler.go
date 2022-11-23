@@ -23,6 +23,7 @@ import (
 	"math"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -46,7 +47,7 @@ func NewProfiler(batchSizes []int, logfile string) *Profiler {
 		}
 	}
 
-	file, _ := os.OpenFile(logfile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	file, _ := os.OpenFile(filepath.Clean(logfile), os.O_RDWR|os.O_CREATE|os.O_APPEND, 0600)
 	mw := io.MultiWriter(os.Stdout, file)
 	dt := time.Now()
 	_, _ = fmt.Fprintln(mw, "\n================================================================================")
@@ -88,7 +89,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 		compression := NewMetric()
 		decompression := NewMetric()
 		totalTime := NewMetric()
-		processingResults := []string{}
+		var processingResults []string
 
 		profileable.InitBatchSize(p.writer, batchSize)
 
@@ -149,7 +150,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 				}
 				afterDecompression := time.Now()
 				if !bytesEqual(buffers, uncompressedBuffers) {
-					return fmt.Errorf("Buffers are not equal after decompression")
+					return fmt.Errorf("buffers are not equal after decompression")
 				}
 
 				// Deserialization
@@ -157,20 +158,20 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 				afterDeserialization := time.Now()
 				profileable.Clear()
 
-				batchCeation.Record(float64(afterBatchCreation.Sub(start).Seconds()))
-				processing.Record(float64(afterProcessing.Sub(afterBatchCreation).Seconds()))
-				serialization.Record(float64(afterSerialization.Sub(afterProcessing).Seconds()))
-				compression.Record(float64(afterCompression.Sub(afterSerialization).Seconds()))
-				decompression.Record(float64(afterDecompression.Sub(afterCompression).Seconds()))
-				deserialization.Record(float64(afterDeserialization.Sub(afterDecompression).Seconds()))
+				batchCeation.Record(afterBatchCreation.Sub(start).Seconds())
+				processing.Record(afterProcessing.Sub(afterBatchCreation).Seconds())
+				serialization.Record(afterSerialization.Sub(afterProcessing).Seconds())
+				compression.Record(afterCompression.Sub(afterSerialization).Seconds())
+				decompression.Record(afterDecompression.Sub(afterCompression).Seconds())
+				deserialization.Record(afterDeserialization.Sub(afterDecompression).Seconds())
 
 				totalTime.Record(
-					float64(afterBatchCreation.Sub(start).Seconds()) +
-						float64(afterProcessing.Sub(afterBatchCreation).Seconds()) +
-						float64(afterSerialization.Sub(afterProcessing).Seconds()) +
-						float64(afterCompression.Sub(afterSerialization).Seconds()) +
-						float64(afterDecompression.Sub(afterCompression).Seconds()) +
-						float64(afterDeserialization.Sub(afterDecompression).Seconds()),
+					afterBatchCreation.Sub(start).Seconds() +
+						afterProcessing.Sub(afterBatchCreation).Seconds() +
+						afterSerialization.Sub(afterProcessing).Seconds() +
+						afterCompression.Sub(afterSerialization).Seconds() +
+						afterDecompression.Sub(afterCompression).Seconds() +
+						afterDeserialization.Sub(afterDecompression).Seconds(),
 				)
 			}
 		}
@@ -220,7 +221,7 @@ func (p *Profiler) PrintResults(maxIter uint64) {
 	p.PrintCompressionRatio(maxIter)
 }
 
-func (p *Profiler) PrintStepsTiming(_maxIter uint64) {
+func (p *Profiler) PrintStepsTiming(_ uint64) {
 	_, _ = fmt.Fprintf(p.writer, "\n")
 	headers := []string{"Steps"}
 	for _, benchmark := range p.benchmarks {
@@ -385,7 +386,7 @@ func (p *Profiler) AddSectionWithTotal(label string, step string, table *tablewr
 
 func (p *Profiler) ExportMetricsTimesCSV(filePrefix string) {
 	filename := fmt.Sprintf("%s/%s_times.csv", p.outputDir, filePrefix)
-	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(filepath.Clean(filename), os.O_CREATE|os.O_WRONLY, 0600)
 
 	if err != nil {
 		log.Fatalf("failed creating file: %s", err)
@@ -447,7 +448,7 @@ func (p *Profiler) ExportMetricsTimesCSV(filePrefix string) {
 
 func (p *Profiler) ExportMetricsBytesCSV(filePrefix string) {
 	filename := fmt.Sprintf("%s/%s_bytes.csv", p.outputDir, filePrefix)
-	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(filepath.Clean(filename), os.O_CREATE|os.O_WRONLY, 0600)
 
 	if err != nil {
 		log.Fatalf("failed creating file: %s", err)
