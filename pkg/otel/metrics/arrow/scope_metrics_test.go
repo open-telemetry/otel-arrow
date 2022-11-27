@@ -6,6 +6,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+
+	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 )
 
 func TestIntersectAttrs(t *testing.T) {
@@ -30,7 +32,7 @@ func TestIntersectAttrs(t *testing.T) {
 	attrs.PutBool("e", true)
 	attrs.PutEmptyBytes("f").Append([]byte("6")...)
 	attrs.PutEmptyMap("g").PutStr("g1", "7")
-	sharedAttrsCount := sharedAttrs.IntersectWith(attrs)
+	sharedAttrsCount := sharedAttrs.IntersectWithMap(attrs)
 	require.Equal(t, 7, sharedAttrsCount)
 
 	// 1 attribute is missing from attrs
@@ -41,7 +43,7 @@ func TestIntersectAttrs(t *testing.T) {
 	attrs.PutDouble("d", 4.0)
 	attrs.PutBool("e", true)
 	attrs.PutEmptyBytes("f").Append([]byte("6")...)
-	sharedAttrsCount = sharedAttrs.IntersectWith(attrs)
+	sharedAttrsCount = sharedAttrs.IntersectWithMap(attrs)
 	require.Equal(t, 6, sharedAttrsCount)
 	require.False(t, sharedAttrs.Has("g"))
 
@@ -53,7 +55,7 @@ func TestIntersectAttrs(t *testing.T) {
 	attrs.PutDouble("d", 4.0)
 	attrs.PutBool("e", false)
 	attrs.PutEmptyBytes("f").Append([]byte("6")...)
-	sharedAttrsCount = sharedAttrs.IntersectWith(attrs)
+	sharedAttrsCount = sharedAttrs.IntersectWithMap(attrs)
 	require.Equal(t, 5, sharedAttrsCount)
 	require.False(t, sharedAttrs.Has("e"))
 
@@ -65,7 +67,7 @@ func TestIntersectAttrs(t *testing.T) {
 	attrs.PutDouble("d", 4.0)
 	attrs.PutEmptyBytes("f").Append([]byte("6")...)
 	attrs.PutBool("h", false)
-	sharedAttrsCount = sharedAttrs.IntersectWith(attrs)
+	sharedAttrsCount = sharedAttrs.IntersectWithMap(attrs)
 	require.Equal(t, 5, sharedAttrsCount)
 	require.False(t, sharedAttrs.Has("h"))
 
@@ -78,7 +80,7 @@ func TestIntersectAttrs(t *testing.T) {
 	attrs.PutInt("c", 4)
 	attrs.PutEmptyBytes("f").Append([]byte("6")...)
 	attrs.PutBool("h", false)
-	sharedAttrsCount = sharedAttrs.IntersectWith(attrs)
+	sharedAttrsCount = sharedAttrs.IntersectWithMap(attrs)
 	require.Equal(t, 3, sharedAttrsCount)
 	require.True(t, sharedAttrs.Has("a"))
 	require.True(t, sharedAttrs.Has("b"))
@@ -88,28 +90,97 @@ func TestIntersectAttrs(t *testing.T) {
 	attrs = pcommon.NewMap()
 	attrs.PutStr("x", "1")
 	attrs.PutStr("y", "2")
-	sharedAttrsCount = sharedAttrs.IntersectWith(attrs)
+	sharedAttrsCount = sharedAttrs.IntersectWithMap(attrs)
 	require.Equal(t, 0, sharedAttrsCount)
 
 	// Empty attributes
 	attrs = pcommon.NewMap()
-	sharedAttrsCount = sharedAttrs.IntersectWith(attrs)
+	sharedAttrsCount = sharedAttrs.IntersectWithMap(attrs)
 	require.Equal(t, 0, sharedAttrsCount)
 }
 
-func TestSharedData(t *testing.T) {
+func TestScopeMetricsSharedData(t *testing.T) {
 	t.Parallel()
 
-	metric := SystemMemoryUsage(0, 10)
-	sharedData, err := NewSharedDataFrom(metric)
+	entropy := datagen.NewTestEntropy(0)
+	dg := datagen.NewMetricsGeneratorFromEntropy(entropy)
+	metrics := dg.GenerateMetricSlice(1, 1)
+	sharedData, err := NewMetricsSharedData(metrics)
 	require.NoError(t, err)
-	require.NotNil(t, sharedData.startTime)
-	require.NotNil(t, sharedData.time)
-	require.NotNil(t, sharedData.attributes)
-	require.Equal(t, 1, sharedData.attributes.Len())
+
+	require.NotNil(t, sharedData.StartTime)
+	require.NotNil(t, sharedData.Time)
+	require.NotNil(t, sharedData.Attributes)
+	require.Equal(t, 1, sharedData.Attributes.Len()) // cpu attribute
+
+	require.Equal(t, 5, len(sharedData.Metrics))
+
+	require.Nil(t, sharedData.Metrics[0].StartTime)
+	require.Nil(t, sharedData.Metrics[0].Time)
+	require.Equal(t, 0, len(sharedData.Metrics[0].Attributes.attributes))
+
+	require.Nil(t, sharedData.Metrics[1].StartTime)
+	require.Nil(t, sharedData.Metrics[1].Time)
+	require.Equal(t, 0, len(sharedData.Metrics[1].Attributes.attributes))
+
+	require.Nil(t, sharedData.Metrics[2].StartTime)
+	require.Nil(t, sharedData.Metrics[2].Time)
+	require.Equal(t, 0, len(sharedData.Metrics[2].Attributes.attributes))
+
+	require.Nil(t, sharedData.Metrics[3].StartTime)
+	require.Nil(t, sharedData.Metrics[3].Time)
+	require.Equal(t, 1, len(sharedData.Metrics[3].Attributes.attributes)) // freq attribute
+
+	require.Nil(t, sharedData.Metrics[4].StartTime)
+	require.Nil(t, sharedData.Metrics[4].Time)
+	require.Equal(t, 1, len(sharedData.Metrics[4].Attributes.attributes)) // freq attribute
 }
 
-func SystemMemoryUsage(startTs, currentTs pcommon.Timestamp) pmetric.Metric {
+func TestMetricSharedData(t *testing.T) {
+	t.Parallel()
+
+	metric := SingleSystemMemoryUsage(0, 10)
+	sharedData, err := NewMetricSharedData(metric)
+	require.NoError(t, err)
+	require.Equal(t, 1, sharedData.NumDP)
+	require.NotNil(t, sharedData.StartTime)
+	require.NotNil(t, sharedData.Time)
+	require.NotNil(t, sharedData.Attributes)
+	require.Equal(t, 2, sharedData.Attributes.Len())
+
+	metric = MultiSystemMemoryUsage(0, 10)
+	sharedData, err = NewMetricSharedData(metric)
+	require.NoError(t, err)
+	require.Equal(t, 3, sharedData.NumDP)
+	require.NotNil(t, sharedData.StartTime)
+	require.NotNil(t, sharedData.Time)
+	require.NotNil(t, sharedData.Attributes)
+	require.Equal(t, 1, sharedData.Attributes.Len())
+}
+
+func SingleSystemMemoryUsage(startTs, currentTs pcommon.Timestamp) pmetric.Metric {
+	metric := pmetric.NewMetric()
+	metric.SetName("system.memory.usage")
+	metric.SetDescription("Bytes of memory in use.")
+	metric.SetUnit("By")
+
+	sum := metric.SetEmptySum()
+	sum.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+	sum.SetIsMonotonic(false)
+
+	points := sum.DataPoints()
+
+	p1 := points.AppendEmpty()
+	p1.Attributes().PutStr("host", "my-host")
+	p1.Attributes().PutStr("state", "used")
+	p1.SetStartTimestamp(startTs)
+	p1.SetTimestamp(currentTs)
+	p1.SetIntValue(10)
+
+	return metric
+}
+
+func MultiSystemMemoryUsage(startTs, currentTs pcommon.Timestamp) pmetric.Metric {
 	metric := pmetric.NewMetric()
 	metric.SetName("system.memory.usage")
 	metric.SetDescription("Bytes of memory in use.")

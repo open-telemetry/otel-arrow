@@ -11,7 +11,6 @@ import (
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics"
 )
 
 // ScopeMetricsDT is the Arrow Data Type describing a scope span.
@@ -33,6 +32,12 @@ type ScopeMetricsBuilder struct {
 	schb *acommon.AdaptiveDictionaryBuilder // schema url builder
 	smb  *array.ListBuilder                 // metrics list builder
 	mb   *MetricSetBuilder                  // metrics builder
+}
+
+type DataPoint interface {
+	Attributes() pcommon.Map
+	Timestamp() pcommon.Timestamp
+	StartTimestamp() pcommon.Timestamp
 }
 
 // NewScopeMetricsBuilder creates a new ResourceMetricsBuilder with a given allocator.
@@ -115,46 +120,107 @@ func (b *ScopeMetricsBuilder) Release() {
 	}
 }
 
-type SharedData struct {
-	startTime  *pcommon.Timestamp
-	time       *pcommon.Timestamp
-	attributes *SharedAttributes
+type ScopeMetricsSharedData struct {
+	StartTime  *pcommon.Timestamp
+	Time       *pcommon.Timestamp
+	Attributes *SharedAttributes
+	Metrics    []*MetricSharedData
 }
 
-func NewSharedDataFrom(metric pmetric.Metric) (sharedData *SharedData, err error) {
-	sharedData = &SharedData{}
+type MetricSharedData struct {
+	// number of data points
+	NumDP      int
+	StartTime  *pcommon.Timestamp
+	Time       *pcommon.Timestamp
+	Attributes *SharedAttributes
+}
+
+func NewMetricsSharedData(metrics pmetric.MetricSlice) (sharedData *ScopeMetricsSharedData, err error) {
+	if metrics.Len() > 0 {
+		msd, err := NewMetricSharedData(metrics.At(0))
+		if err != nil {
+			return nil, err
+		}
+		sharedData = &ScopeMetricsSharedData{Metrics: make([]*MetricSharedData, metrics.Len())}
+		sharedData.StartTime = msd.StartTime
+		sharedData.Time = msd.Time
+		sharedData.Attributes = msd.Attributes.Clone()
+		sharedData.Metrics[0] = msd
+	}
+	for i := 1; i < metrics.Len(); i++ {
+		msd, err := NewMetricSharedData(metrics.At(i))
+		if err != nil {
+			return nil, err
+		}
+		sharedData.Metrics[i] = msd
+		if msd.StartTime != nil && uint64(*sharedData.StartTime) != uint64(*msd.StartTime) {
+			sharedData.StartTime = nil
+		}
+		if msd.Time != nil && uint64(*sharedData.Time) != uint64(*msd.Time) {
+			sharedData.Time = nil
+		}
+		if sharedData.Attributes.Len() > 0 {
+			sharedData.Attributes.IntersectWith(msd.Attributes)
+		}
+	}
+	if sharedData != nil {
+		if sharedData.StartTime != nil {
+			for i := 0; i < len(sharedData.Metrics); i++ {
+				sharedData.Metrics[i].StartTime = nil
+			}
+		}
+		if sharedData.Time != nil {
+			for i := 0; i < len(sharedData.Metrics); i++ {
+				sharedData.Metrics[i].Time = nil
+			}
+		}
+		for k := range sharedData.Attributes.attributes {
+			for i := 0; i < len(sharedData.Metrics); i++ {
+				delete(sharedData.Metrics[i].Attributes.attributes, k)
+			}
+		}
+		if sharedData.Attributes.Len() == 0 {
+			sharedData.Attributes = nil
+		}
+	}
+	return
+}
+
+func NewMetricSharedData(metric pmetric.Metric) (sharedData *MetricSharedData, err error) {
+	sharedData = &MetricSharedData{}
 	var dpLen func() int
-	var dpAt func(int) metrics.DataPoint
+	var dpAt func(int) DataPoint
 
 	switch metric.Type() {
 	case pmetric.MetricTypeGauge:
 		dps := metric.Gauge().DataPoints()
 		dpLen = func() int { return dps.Len() }
-		dpAt = func(i int) metrics.DataPoint { return dps.At(i) }
+		dpAt = func(i int) DataPoint { return dps.At(i) }
 	case pmetric.MetricTypeSum:
 		dps := metric.Sum().DataPoints()
 		dpLen = func() int { return dps.Len() }
-		dpAt = func(i int) metrics.DataPoint { return dps.At(i) }
+		dpAt = func(i int) DataPoint { return dps.At(i) }
 	case pmetric.MetricTypeHistogram:
 		dps := metric.Histogram().DataPoints()
 		dpLen = func() int { return dps.Len() }
-		dpAt = func(i int) metrics.DataPoint { return dps.At(i) }
+		dpAt = func(i int) DataPoint { return dps.At(i) }
 	case pmetric.MetricTypeSummary:
 		dps := metric.Summary().DataPoints()
 		dpLen = func() int { return dps.Len() }
-		dpAt = func(i int) metrics.DataPoint { return dps.At(i) }
+		dpAt = func(i int) DataPoint { return dps.At(i) }
 	case pmetric.MetricTypeExponentialHistogram:
 		dps := metric.ExponentialHistogram().DataPoints()
 		dpLen = func() int { return dps.Len() }
-		dpAt = func(i int) metrics.DataPoint { return dps.At(i) }
+		dpAt = func(i int) DataPoint { return dps.At(i) }
 	default:
 		err = fmt.Errorf("unknown metric type: %v", metric.Type())
 		return
 	}
 
-	if dpLen() > 0 {
+	sharedData.NumDP = dpLen()
+	if sharedData.NumDP > 0 {
 		initSharedDataFrom(sharedData, dpAt(0))
-		for i := 1; i < dpLen(); i++ {
+		for i := 1; i < sharedData.NumDP; i++ {
 			updateSharedDataWith(sharedData, dpAt(i))
 		}
 	}
@@ -162,22 +228,22 @@ func NewSharedDataFrom(metric pmetric.Metric) (sharedData *SharedData, err error
 	return
 }
 
-func initSharedDataFrom(sharedData *SharedData, initDataPoint metrics.DataPoint) {
+func initSharedDataFrom(sharedData *MetricSharedData, initDataPoint DataPoint) {
 	startTime := initDataPoint.StartTimestamp()
-	sharedData.startTime = &startTime
+	sharedData.StartTime = &startTime
 	time := initDataPoint.Timestamp()
-	sharedData.time = &time
-	sharedData.attributes = NewSharedAttributesFrom(initDataPoint.Attributes())
+	sharedData.Time = &time
+	sharedData.Attributes = NewSharedAttributesFrom(initDataPoint.Attributes())
 }
 
-func updateSharedDataWith(sharedData *SharedData, dp metrics.DataPoint) int {
-	if sharedData.startTime != nil && uint64(*sharedData.startTime) != uint64(dp.StartTimestamp()) {
-		sharedData.startTime = nil
+func updateSharedDataWith(sharedData *MetricSharedData, dp DataPoint) int {
+	if sharedData.StartTime != nil && uint64(*sharedData.StartTime) != uint64(dp.StartTimestamp()) {
+		sharedData.StartTime = nil
 	}
-	if sharedData.time != nil && uint64(*sharedData.time) != uint64(dp.Timestamp()) {
-		sharedData.time = nil
+	if sharedData.Time != nil && uint64(*sharedData.Time) != uint64(dp.Timestamp()) {
+		sharedData.Time = nil
 	}
-	return sharedData.attributes.IntersectWith(dp.Attributes())
+	return sharedData.Attributes.IntersectWithMap(dp.Attributes())
 }
 
 // SharedAttributes is a data structure representing the shared attributes of a set of metrics.
@@ -197,11 +263,34 @@ func NewSharedAttributesFrom(attrs pcommon.Map) *SharedAttributes {
 	}
 }
 
-// IntersectWith intersects the current SharedAttributes with a [pcommon.Map] of attributes
+func (sa *SharedAttributes) Clone() *SharedAttributes {
+	attributes := make(map[string]pcommon.Value)
+	for k, v := range sa.attributes {
+		attributes[k] = v
+	}
+	return &SharedAttributes{
+		attributes: attributes,
+	}
+}
+
+// IntersectWithMap intersects the current SharedAttributes with a [pcommon.Map] of attributes
 // and returns the number of shared attributes after the intersection.
-func (sa *SharedAttributes) IntersectWith(attrs pcommon.Map) int {
+func (sa *SharedAttributes) IntersectWithMap(attrs pcommon.Map) int {
 	for k, v := range sa.attributes {
 		if otherV, ok := attrs.Get(k); ok {
+			if !v.Equal(otherV) {
+				delete(sa.attributes, k)
+			}
+		} else {
+			delete(sa.attributes, k)
+		}
+	}
+	return len(sa.attributes)
+}
+
+func (sa *SharedAttributes) IntersectWith(other *SharedAttributes) int {
+	for k, v := range sa.attributes {
+		if otherV, ok := other.attributes[k]; ok {
 			if !v.Equal(otherV) {
 				delete(sa.attributes, k)
 			}

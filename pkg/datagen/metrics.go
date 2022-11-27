@@ -32,6 +32,14 @@ func NewMetricsGenerator(entropy TestEntropy, resourceAttributes []pcommon.Map, 
 	return NewMetricsGeneratorWithDataGenerator(NewDataGenerator(entropy, resourceAttributes, instrumentationScopes))
 }
 
+func NewMetricsGeneratorFromEntropy(entropy TestEntropy) *MetricsGenerator {
+	return NewMetricsGeneratorWithDataGenerator(NewDataGenerator(
+		entropy,
+		entropy.NewStandardResourceAttributes(),
+		entropy.NewStandardInstrumentationScopes()),
+	)
+}
+
 func NewMetricsGeneratorWithDataGenerator(dataGenerator *DataGenerator) *MetricsGenerator {
 	return &MetricsGenerator{
 		DataGenerator: dataGenerator,
@@ -70,6 +78,24 @@ func (mg *MetricsGenerator) Generate(batchSize int, collectInterval time.Duratio
 	mg.generation++
 
 	return result
+}
+
+func (mg *MetricsGenerator) GenerateMetricSlice(batchSize int, collectInterval time.Duration) pmetric.MetricSlice {
+	metrics := pmetric.NewMetricSlice()
+
+	for i := 0; i < batchSize; i++ {
+		mg.AdvanceTime(collectInterval)
+
+		mg.SystemCpuTime(metrics.AppendEmpty(), 1)
+		mg.SystemMemoryUsage(metrics.AppendEmpty())
+		mg.SystemCpuLoadAverage1m(metrics.AppendEmpty())
+		mg.FakeHistogram(metrics.AppendEmpty())
+		mg.FakeExpHistogram(metrics.AppendEmpty())
+	}
+
+	mg.generation++
+
+	return metrics
 }
 
 func (mg *MetricsGenerator) GenerateSystemCpuTime(batchSize int, collectInterval time.Duration) pmetric.Metrics {
@@ -152,18 +178,21 @@ func (dg *DataGenerator) SystemMemoryUsage(metric pmetric.Metric) {
 
 	p1 := points.AppendEmpty()
 	p1.Attributes().PutStr("state", "used")
+	p1.Attributes().PutInt("cpu", 0)
 	p1.SetStartTimestamp(dg.PrevTime())
 	p1.SetTimestamp(dg.CurrentTime())
 	p1.SetIntValue(dg.GenI64Range(10_000_000_000, 13_000_000_000))
 
 	p2 := points.AppendEmpty()
 	p2.Attributes().PutStr("state", "free")
+	p2.Attributes().PutInt("cpu", 0)
 	p2.SetStartTimestamp(dg.PrevTime())
 	p2.SetTimestamp(dg.CurrentTime())
 	p2.SetIntValue(dg.GenI64Range(300_000_000, 500_000_000))
 
 	p3 := points.AppendEmpty()
 	p3.Attributes().PutStr("state", "inactive")
+	p3.Attributes().PutInt("cpu", 0)
 	p3.SetStartTimestamp(dg.PrevTime())
 	p3.SetTimestamp(dg.CurrentTime())
 	p3.SetIntValue(4_000_000_000)
@@ -184,6 +213,10 @@ func (dg *DataGenerator) SystemCpuLoadAverage1m(metric pmetric.Metric) {
 	point.SetStartTimestamp(dg.PrevTime())
 	point.SetTimestamp(dg.CurrentTime())
 	point.SetDoubleValue(dg.GenF64Range(1.0, 100.0))
+
+	attrs := point.Attributes()
+	attrs.EnsureCapacity(2)
+	attrs.PutInt("cpu", 0)
 }
 
 // FakeHistogram generates a fake histogram metric.
@@ -208,6 +241,12 @@ func (dg *DataGenerator) FakeHistogram(metric pmetric.Metric) {
 		dp := dps.AppendEmpty()
 		dp.SetStartTimestamp(dg.PrevTime())
 		dp.SetTimestamp(dg.CurrentTime())
+
+		attrs := dp.Attributes()
+		attrs.EnsureCapacity(2)
+		attrs.PutStr("freq", "3GHz")
+		attrs.PutInt("cpu", 0)
+
 		dp.SetCount(uint64(dg.GenI64Range(0, 100)))
 		if dg.HasHistogramSum() {
 			dp.SetSum(dg.GenF64Range(0, 100))
@@ -256,6 +295,12 @@ func (dg *DataGenerator) FakeExpHistogram(metric pmetric.Metric) {
 		dp := dps.AppendEmpty()
 		dp.SetStartTimestamp(dg.PrevTime())
 		dp.SetTimestamp(dg.CurrentTime())
+
+		attrs := dp.Attributes()
+		attrs.EnsureCapacity(2)
+		attrs.PutStr("freq", "3GHz")
+		attrs.PutInt("cpu", 0)
+
 		dp.SetCount(uint64(dg.GenI64Range(0, 100)))
 		if dg.HasHistogramSum() {
 			dp.SetSum(dg.GenF64Range(0, 100))
