@@ -131,7 +131,7 @@ func NewUnivariateEHistogramDataPointIds(parentDT *arrow.StructType) (*Univariat
 
 // AppendUnivariateEHistogramDataPointInto appends exponential histogram data points into the
 // given slice of ExponentialHistogramDataPoint decoded from the ehdp array.
-func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistogramDataPointSlice, ehdp *arrowutils.ListOfStructs, ids *UnivariateEHistogramDataPointIds) error {
+func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistogramDataPointSlice, ehdp *arrowutils.ListOfStructs, ids *UnivariateEHistogramDataPointIds, smdata *SharedData, mdata *SharedData) error {
 	if ehdp == nil {
 		return nil
 	}
@@ -143,21 +143,46 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 			continue
 		}
 
-		if err := otlp.AppendAttributesInto(ehdpVal.Attributes(), ehdp.Array(), ehdpIdx, ids.Attributes); err != nil {
+		attrs := ehdpVal.Attributes()
+		if err := otlp.AppendAttributesInto(attrs, ehdp.Array(), ehdpIdx, ids.Attributes); err != nil {
 			return err
+		}
+		smdata.Attributes.Range(func(k string, v pcommon.Value) bool {
+			v.CopyTo(attrs.PutEmpty(k))
+			return true
+		})
+		mdata.Attributes.Range(func(k string, v pcommon.Value) bool {
+			v.CopyTo(attrs.PutEmpty(k))
+			return true
+		})
+
+		if smdata.StartTime != nil {
+			ehdpVal.SetStartTimestamp(*smdata.StartTime)
+		} else {
+			if mdata.StartTime != nil {
+				ehdpVal.SetStartTimestamp(*mdata.StartTime)
+			} else {
+				startTimeUnixNano, err := ehdp.U64FieldByID(ids.StartTimeUnixNano, ehdpIdx)
+				if err != nil {
+					return err
+				}
+				ehdpVal.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
+			}
 		}
 
-		startTimeUnixNano, err := ehdp.U64FieldByID(ids.StartTimeUnixNano, ehdpIdx)
-		if err != nil {
-			return err
+		if smdata.Time != nil {
+			ehdpVal.SetTimestamp(*smdata.Time)
+		} else {
+			if mdata.Time != nil {
+				ehdpVal.SetTimestamp(*mdata.Time)
+			} else {
+				timeUnixNano, err := ehdp.U64FieldByID(ids.TimeUnixNano, ehdpIdx)
+				if err != nil {
+					return err
+				}
+				ehdpVal.SetTimestamp(pcommon.Timestamp(timeUnixNano))
+			}
 		}
-		ehdpVal.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
-
-		timeUnixNano, err := ehdp.U64FieldByID(ids.TimeUnixNano, ehdpIdx)
-		if err != nil {
-			return err
-		}
-		ehdpVal.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 
 		count, err := ehdp.U64FieldByID(ids.Count, ehdpIdx)
 		if err != nil {

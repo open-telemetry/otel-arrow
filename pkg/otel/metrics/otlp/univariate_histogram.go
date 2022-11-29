@@ -33,7 +33,7 @@ func NewUnivariateHistogramIds(parentDT *arrow.StructType) (*UnivariateHistogram
 	}, nil
 }
 
-func UpdateUnivariateHistogramFrom(histogram pmetric.Histogram, arr *array.Struct, row int, ids *UnivariateHistogramIds) error {
+func UpdateUnivariateHistogramFrom(histogram pmetric.Histogram, arr *array.Struct, row int, ids *UnivariateHistogramIds, smdata *SharedData, mdata *SharedData) error {
 	atArr, ok := arr.Field(ids.AggregationTemporality).(*array.Int32)
 	if !ok {
 		return fmt.Errorf("field %q is not an int64", constants.AGGREGATION_TEMPORALITY)
@@ -44,5 +44,5 @@ func UpdateUnivariateHistogramFrom(histogram pmetric.Histogram, arr *array.Struc
 	if err != nil {
 		return err
 	}
-	return AppendUnivariateHistogramDataPointInto(histogram.DataPoints(), los, ids.DataPoints)
+	return AppendUnivariateHistogramDataPointInto(histogram.DataPoints(), los, ids.DataPoints, smdata, mdata)
 }

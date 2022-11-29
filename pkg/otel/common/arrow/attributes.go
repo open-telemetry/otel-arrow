@@ -7,6 +7,8 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pcommon"
+
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 )
 
 // Arrow data types used to build the attribute map.
@@ -76,6 +78,53 @@ func (b *AttributesBuilder) Append(attrs pcommon.Map) error {
 
 	var err error
 	attrs.Range(func(key string, v pcommon.Value) bool {
+		// Append the key
+		err := b.kb.AppendString(key)
+		if err != nil {
+			return false
+		}
+
+		// Append the value
+		err = b.ib.Append(v)
+		return err == nil
+	})
+	return err
+}
+
+func (b *AttributesBuilder) AppendUniqueAttributes(attrs pcommon.Map, smattrs *common.SharedAttributes, mattrs *common.SharedAttributes) error {
+	if b.released {
+		return fmt.Errorf("attribute builder already released")
+	}
+
+	uniqueAttrsCount := attrs.Len()
+	if smattrs != nil {
+		uniqueAttrsCount -= smattrs.Len()
+	}
+	if mattrs != nil {
+		uniqueAttrsCount -= mattrs.Len()
+	}
+	if uniqueAttrsCount == 0 {
+		b.append0Attrs()
+		return nil
+	}
+	b.appendNAttrs(uniqueAttrsCount)
+
+	var err error
+	attrs.Range(func(key string, v pcommon.Value) bool {
+		// Skip the current attribute if it is a scope metric shared attribute
+		// or a metric shared attribute
+		smattrsFound := false
+		mattrsFound := false
+		if smattrs != nil {
+			_, smattrsFound = smattrs.Attributes[key]
+		}
+		if mattrs != nil {
+			_, mattrsFound = mattrs.Attributes[key]
+		}
+		if smattrsFound || mattrsFound {
+			return true
+		}
+
 		// Append the key
 		err := b.kb.AppendString(key)
 		if err != nil {

@@ -83,17 +83,25 @@ func (b *NumberDataPointBuilder) Release() {
 }
 
 // Append appends a new data point to the builder.
-func (b *NumberDataPointBuilder) Append(ndp pmetric.NumberDataPoint) error {
+func (b *NumberDataPointBuilder) Append(ndp pmetric.NumberDataPoint, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
 		return fmt.Errorf("QuantileValueBuilder: Append() called after Release()")
 	}
 
 	b.builder.Append(true)
-	if err := b.ab.Append(ndp.Attributes()); err != nil {
+	if err := b.ab.AppendUniqueAttributes(ndp.Attributes(), smdata.Attributes, mdata.Attributes); err != nil {
 		return err
 	}
-	b.stunb.Append(uint64(ndp.StartTimestamp()))
-	b.tunb.Append(uint64(ndp.Timestamp()))
+	if smdata.StartTime == nil && mdata.StartTime == nil {
+		b.stunb.Append(uint64(ndp.StartTimestamp()))
+	} else {
+		b.stunb.AppendNull()
+	}
+	if smdata.Time == nil && mdata.Time == nil {
+		b.tunb.Append(uint64(ndp.Timestamp()))
+	} else {
+		b.tunb.AppendNull()
+	}
 	if err := b.mvb.AppendNumberDataPointValue(ndp); err != nil {
 		return err
 	}

@@ -70,7 +70,7 @@ func (b *UnivariateHistogramBuilder) Release() {
 }
 
 // Append appends a new histogram to the builder.
-func (b *UnivariateHistogramBuilder) Append(histogram pmetric.Histogram) error {
+func (b *UnivariateHistogramBuilder) Append(histogram pmetric.Histogram, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
 		return fmt.Errorf("UnivariateHistogramBuilder: Append() called after Release()")
 	}
@@ -82,7 +82,7 @@ func (b *UnivariateHistogramBuilder) Append(histogram pmetric.Histogram) error {
 		b.hdplb.Append(true)
 		b.hdplb.Reserve(dpc)
 		for i := 0; i < dpc; i++ {
-			if err := b.hdpb.Append(dps.At(i)); err != nil {
+			if err := b.hdpb.Append(dps.At(i), smdata, mdata); err != nil {
 				return err
 			}
 		}

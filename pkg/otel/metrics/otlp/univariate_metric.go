@@ -86,7 +86,7 @@ func NewUnivariateMetricIds(parentDT *arrow.StructType) (*UnivariateMetricIds, e
 	}, nil
 }
 
-func UpdateUnivariateMetricFrom(metric pmetric.Metric, los *arrowutils.ListOfStructs, row int, ids *UnivariateMetricIds) error {
+func UpdateUnivariateMetricFrom(metric pmetric.Metric, los *arrowutils.ListOfStructs, row int, ids *UnivariateMetricIds, smdata *SharedData, mdata *SharedData) error {
 	arr, ok := los.FieldByID(ids.Id).(*array.SparseUnion)
 	if !ok {
 		return fmt.Errorf("field %q is not a sparse union", constants.DATA)
@@ -94,15 +94,15 @@ func UpdateUnivariateMetricFrom(metric pmetric.Metric, los *arrowutils.ListOfStr
 	tcode := int8(arr.ChildID(row))
 	switch tcode {
 	case ametric.GaugeCode:
-		return UpdateUnivariateGaugeFrom(metric.SetEmptyGauge(), arr.Field(int(tcode)).(*array.Struct), row, ids.UnivariateGaugeIds)
+		return UpdateUnivariateGaugeFrom(metric.SetEmptyGauge(), arr.Field(int(tcode)).(*array.Struct), row, ids.UnivariateGaugeIds, smdata, mdata)
 	case ametric.SumCode:
-		return UpdateUnivariateSumFrom(metric.SetEmptySum(), arr.Field(int(tcode)).(*array.Struct), row, ids.UnivariateSumIds)
+		return UpdateUnivariateSumFrom(metric.SetEmptySum(), arr.Field(int(tcode)).(*array.Struct), row, ids.UnivariateSumIds, smdata, mdata)
 	case ametric.SummaryCode:
-		return UpdateUnivariateSummaryFrom(metric.SetEmptySummary(), arr.Field(int(tcode)).(*array.Struct), row, ids.UnivariateSummaryIds)
+		return UpdateUnivariateSummaryFrom(metric.SetEmptySummary(), arr.Field(int(tcode)).(*array.Struct), row, ids.UnivariateSummaryIds, smdata, mdata)
 	case ametric.HistogramCode:
-		return UpdateUnivariateHistogramFrom(metric.SetEmptyHistogram(), arr.Field(int(tcode)).(*array.Struct), row, ids.UnivariateHistogramIds)
+		return UpdateUnivariateHistogramFrom(metric.SetEmptyHistogram(), arr.Field(int(tcode)).(*array.Struct), row, ids.UnivariateHistogramIds, smdata, mdata)
 	case ametric.ExpHistogramCode:
-		return UpdateUnivariateEHistogramFrom(metric.SetEmptyExponentialHistogram(), arr.Field(int(tcode)).(*array.Struct), row, ids.UnivariateEHistogramIds)
+		return UpdateUnivariateEHistogramFrom(metric.SetEmptyExponentialHistogram(), arr.Field(int(tcode)).(*array.Struct), row, ids.UnivariateEHistogramIds, smdata, mdata)
 	default:
 		return fmt.Errorf("UpdateUnivariateMetricFrom: unknown type code %d", tcode)
 	}

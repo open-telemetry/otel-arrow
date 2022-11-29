@@ -9,6 +9,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
@@ -19,6 +20,9 @@ var (
 		{Name: constants.SCOPE, Type: acommon.ScopeDT},
 		{Name: constants.SCHEMA_URL, Type: acommon.DefaultDictString},
 		{Name: constants.UNIVARIATE_METRICS, Type: arrow.ListOf(UnivariateMetricSetDT)},
+		{Name: constants.SHARED_ATTRIBUTES, Type: acommon.AttributesDT},
+		{Name: constants.SHARED_START_TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
+		{Name: constants.SHARED_TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
 	}...)
 )
 
@@ -28,10 +32,13 @@ type ScopeMetricsBuilder struct {
 
 	builder *array.StructBuilder
 
-	scb  *acommon.ScopeBuilder              // scope builder
-	schb *acommon.AdaptiveDictionaryBuilder // schema url builder
-	smb  *array.ListBuilder                 // metrics list builder
-	mb   *MetricSetBuilder                  // metrics builder
+	scb    *acommon.ScopeBuilder              // scope builder
+	schb   *acommon.AdaptiveDictionaryBuilder // schema url builder
+	smb    *array.ListBuilder                 // metrics list builder
+	mb     *MetricSetBuilder                  // metrics builder
+	sab    *acommon.AttributesBuilder         // shared attributes builder
+	sstunb *array.Uint64Builder               // shared start time unix nano builder
+	stunb  *array.Uint64Builder               // shared time unix nano builder
 }
 
 type DataPoint interface {
@@ -57,6 +64,9 @@ func ScopeMetricsBuilderFrom(builder *array.StructBuilder) *ScopeMetricsBuilder 
 		schb:     acommon.AdaptiveDictionaryBuilderFrom(builder.FieldBuilder(1)),
 		smb:      builder.FieldBuilder(2).(*array.ListBuilder),
 		mb:       MetricSetBuilderFrom(builder.FieldBuilder(2).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
+		sab:      acommon.AttributesBuilderFrom(builder.FieldBuilder(3).(*array.MapBuilder)),
+		sstunb:   builder.FieldBuilder(4).(*array.Uint64Builder),
+		stunb:    builder.FieldBuilder(5).(*array.Uint64Builder),
 	}
 }
 
@@ -91,19 +101,46 @@ func (b *ScopeMetricsBuilder) Append(sm pmetric.ScopeMetrics) error {
 			return err
 		}
 	}
+
 	metrics := sm.Metrics()
+	sharedData, err := NewMetricsSharedData(metrics)
+	if err != nil {
+		return err
+	}
 	mc := metrics.Len()
 	if mc > 0 {
 		b.smb.Append(true)
 		b.smb.Reserve(mc)
 		for i := 0; i < mc; i++ {
-			if err := b.mb.Append(metrics.At(i)); err != nil {
+			if err := b.mb.Append(metrics.At(i), sharedData, sharedData.Metrics[i]); err != nil {
 				return err
 			}
 		}
 	} else {
 		b.smb.Append(false)
 	}
+
+	attrs := pcommon.NewMap()
+	if sharedData.Attributes != nil && sharedData.Attributes.Len() > 0 {
+		sharedData.Attributes.CopyTo(attrs)
+	}
+	err = b.sab.Append(attrs)
+	if err != nil {
+		return err
+	}
+
+	if sharedData.StartTime != nil {
+		b.sstunb.Append(uint64(*sharedData.StartTime))
+	} else {
+		b.sstunb.AppendNull()
+	}
+
+	if sharedData.Time != nil {
+		b.stunb.Append(uint64(*sharedData.Time))
+	} else {
+		b.stunb.AppendNull()
+	}
+
 	return nil
 }
 
@@ -123,7 +160,7 @@ func (b *ScopeMetricsBuilder) Release() {
 type ScopeMetricsSharedData struct {
 	StartTime  *pcommon.Timestamp
 	Time       *pcommon.Timestamp
-	Attributes *SharedAttributes
+	Attributes *common.SharedAttributes
 	Metrics    []*MetricSharedData
 }
 
@@ -132,7 +169,7 @@ type MetricSharedData struct {
 	NumDP      int
 	StartTime  *pcommon.Timestamp
 	Time       *pcommon.Timestamp
-	Attributes *SharedAttributes
+	Attributes *common.SharedAttributes
 }
 
 func NewMetricsSharedData(metrics pmetric.MetricSlice) (sharedData *ScopeMetricsSharedData, err error) {
@@ -153,10 +190,10 @@ func NewMetricsSharedData(metrics pmetric.MetricSlice) (sharedData *ScopeMetrics
 			return nil, err
 		}
 		sharedData.Metrics[i] = msd
-		if msd.StartTime != nil && uint64(*sharedData.StartTime) != uint64(*msd.StartTime) {
+		if msd.StartTime != nil && sharedData.StartTime != nil && uint64(*sharedData.StartTime) != uint64(*msd.StartTime) {
 			sharedData.StartTime = nil
 		}
-		if msd.Time != nil && uint64(*sharedData.Time) != uint64(*msd.Time) {
+		if msd.Time != nil && sharedData.Time != nil && uint64(*sharedData.Time) != uint64(*msd.Time) {
 			sharedData.Time = nil
 		}
 		if sharedData.Attributes.Len() > 0 {
@@ -174,9 +211,9 @@ func NewMetricsSharedData(metrics pmetric.MetricSlice) (sharedData *ScopeMetrics
 				sharedData.Metrics[i].Time = nil
 			}
 		}
-		for k := range sharedData.Attributes.attributes {
+		for k := range sharedData.Attributes.Attributes {
 			for i := 0; i < len(sharedData.Metrics); i++ {
-				delete(sharedData.Metrics[i].Attributes.attributes, k)
+				delete(sharedData.Metrics[i].Attributes.Attributes, k)
 			}
 		}
 		if sharedData.Attributes.Len() == 0 {
@@ -233,7 +270,7 @@ func initSharedDataFrom(sharedData *MetricSharedData, initDataPoint DataPoint) {
 	sharedData.StartTime = &startTime
 	time := initDataPoint.Timestamp()
 	sharedData.Time = &time
-	sharedData.Attributes = NewSharedAttributesFrom(initDataPoint.Attributes())
+	sharedData.Attributes = common.NewSharedAttributesFrom(initDataPoint.Attributes())
 }
 
 func updateSharedDataWith(sharedData *MetricSharedData, dp DataPoint) int {
@@ -244,70 +281,4 @@ func updateSharedDataWith(sharedData *MetricSharedData, dp DataPoint) int {
 		sharedData.Time = nil
 	}
 	return sharedData.Attributes.IntersectWithMap(dp.Attributes())
-}
-
-// SharedAttributes is a data structure representing the shared attributes of a set of metrics.
-type SharedAttributes struct {
-	attributes map[string]pcommon.Value
-}
-
-// NewSharedAttributesFrom creates a new SharedAttributes from a [pcommon.Map] of attributes.
-func NewSharedAttributesFrom(attrs pcommon.Map) *SharedAttributes {
-	attributes := make(map[string]pcommon.Value)
-	attrs.Range(func(k string, v pcommon.Value) bool {
-		attributes[k] = v
-		return true
-	})
-	return &SharedAttributes{
-		attributes: attributes,
-	}
-}
-
-func (sa *SharedAttributes) Clone() *SharedAttributes {
-	attributes := make(map[string]pcommon.Value)
-	for k, v := range sa.attributes {
-		attributes[k] = v
-	}
-	return &SharedAttributes{
-		attributes: attributes,
-	}
-}
-
-// IntersectWithMap intersects the current SharedAttributes with a [pcommon.Map] of attributes
-// and returns the number of shared attributes after the intersection.
-func (sa *SharedAttributes) IntersectWithMap(attrs pcommon.Map) int {
-	for k, v := range sa.attributes {
-		if otherV, ok := attrs.Get(k); ok {
-			if !v.Equal(otherV) {
-				delete(sa.attributes, k)
-			}
-		} else {
-			delete(sa.attributes, k)
-		}
-	}
-	return len(sa.attributes)
-}
-
-func (sa *SharedAttributes) IntersectWith(other *SharedAttributes) int {
-	for k, v := range sa.attributes {
-		if otherV, ok := other.attributes[k]; ok {
-			if !v.Equal(otherV) {
-				delete(sa.attributes, k)
-			}
-		} else {
-			delete(sa.attributes, k)
-		}
-	}
-	return len(sa.attributes)
-}
-
-// Has returns true if the current SharedAttributes has the given attribute.
-func (sa *SharedAttributes) Has(k string) bool {
-	_, ok := sa.attributes[k]
-	return ok
-}
-
-// Len returns the number of attributes in the current SharedAttributes.
-func (sa *SharedAttributes) Len() int {
-	return len(sa.attributes)
 }

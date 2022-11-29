@@ -105,7 +105,7 @@ func NewUnivariateHistogramDataPointIds(parentDT *arrow.StructType) (*Univariate
 	}, nil
 }
 
-func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointSlice, hdp *arrowutils.ListOfStructs, ids *UnivariateHistogramDataPointIds) error {
+func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointSlice, hdp *arrowutils.ListOfStructs, ids *UnivariateHistogramDataPointIds, smdata *SharedData, mdata *SharedData) error {
 	if hdp == nil {
 		return nil
 	}
@@ -117,20 +117,46 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 			continue
 		}
 
-		if err := otlp.AppendAttributesInto(hdpVal.Attributes(), hdp.Array(), hdpIdx, ids.Attributes); err != nil {
+		attrs := hdpVal.Attributes()
+		if err := otlp.AppendAttributesInto(attrs, hdp.Array(), hdpIdx, ids.Attributes); err != nil {
 			return err
+		}
+		smdata.Attributes.Range(func(k string, v pcommon.Value) bool {
+			v.CopyTo(attrs.PutEmpty(k))
+			return true
+		})
+		mdata.Attributes.Range(func(k string, v pcommon.Value) bool {
+			v.CopyTo(attrs.PutEmpty(k))
+			return true
+		})
+
+		if smdata.StartTime != nil {
+			hdpVal.SetStartTimestamp(*smdata.StartTime)
+		} else {
+			if mdata.StartTime != nil {
+				hdpVal.SetStartTimestamp(*mdata.StartTime)
+			} else {
+				startTimeUnixNano, err := hdp.U64FieldByID(ids.StartTimeUnixNano, hdpIdx)
+				if err != nil {
+					return err
+				}
+				hdpVal.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
+			}
 		}
 
-		startTimeUnixNano, err := hdp.U64FieldByID(ids.StartTimeUnixNano, hdpIdx)
-		if err != nil {
-			return err
+		if smdata.Time != nil {
+			hdpVal.SetTimestamp(*smdata.Time)
+		} else {
+			if mdata.Time != nil {
+				hdpVal.SetTimestamp(*mdata.Time)
+			} else {
+				timeUnixNano, err := hdp.U64FieldByID(ids.TimeUnixNano, hdpIdx)
+				if err != nil {
+					return err
+				}
+				hdpVal.SetTimestamp(pcommon.Timestamp(timeUnixNano))
+			}
 		}
-		hdpVal.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
-		timeUnixNano, err := hdp.U64FieldByID(ids.TimeUnixNano, hdpIdx)
-		if err != nil {
-			return err
-		}
-		hdpVal.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 
 		count, err := hdp.U64FieldByID(ids.Count, hdpIdx)
 		if err != nil {

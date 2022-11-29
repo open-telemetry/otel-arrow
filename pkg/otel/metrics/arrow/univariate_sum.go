@@ -73,7 +73,7 @@ func (b *UnivariateSumBuilder) Release() {
 }
 
 // Append appends a new univariate sum to the builder.
-func (b *UnivariateSumBuilder) Append(sum pmetric.Sum) error {
+func (b *UnivariateSumBuilder) Append(sum pmetric.Sum, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
 		return fmt.Errorf("UnivariateMetricBuilder: Append() called after Release()")
 	}
@@ -85,7 +85,7 @@ func (b *UnivariateSumBuilder) Append(sum pmetric.Sum) error {
 		b.dplb.Append(true)
 		b.dplb.Reserve(dpc)
 		for i := 0; i < dpc; i++ {
-			if err := b.dpb.Append(dps.At(i)); err != nil {
+			if err := b.dpb.Append(dps.At(i), smdata, mdata); err != nil {
 				return err
 			}
 		}

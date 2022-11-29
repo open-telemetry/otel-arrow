@@ -94,3 +94,7 @@ const IS_MONOTONIC string = "is_monotonic"
 const AGGREGATION_TEMPORALITY string = "aggregation_temporality"
 const HISTOGRAM_METRICS string = "histogram"
 const EXP_HISTOGRAM_METRICS string = "exp_histogram"
+
+const SHARED_ATTRIBUTES string = "shared_attributes"
+const SHARED_START_TIME_UNIX_NANO string = "shared_start_time_unix_nano"
+const SHARED_TIME_UNIX_NANO string = "shared_time_unix_nano"

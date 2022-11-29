@@ -104,17 +104,25 @@ func (b *EHistogramDataPointBuilder) Release() {
 }
 
 // Append appends a new histogram data point to the builder.
-func (b *EHistogramDataPointBuilder) Append(hdp pmetric.ExponentialHistogramDataPoint) error {
+func (b *EHistogramDataPointBuilder) Append(hdp pmetric.ExponentialHistogramDataPoint, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
 		return fmt.Errorf("EHistogramDataPointBuilder: Append() called after Release()")
 	}
 
 	b.builder.Append(true)
-	if err := b.ab.Append(hdp.Attributes()); err != nil {
+	if err := b.ab.AppendUniqueAttributes(hdp.Attributes(), smdata.Attributes, mdata.Attributes); err != nil {
 		return err
 	}
-	b.stunb.Append(uint64(hdp.StartTimestamp()))
-	b.tunb.Append(uint64(hdp.Timestamp()))
+	if smdata.StartTime == nil && mdata.StartTime == nil {
+		b.stunb.Append(uint64(hdp.StartTimestamp()))
+	} else {
+		b.stunb.AppendNull()
+	}
+	if smdata.Time == nil && mdata.Time == nil {
+		b.tunb.Append(uint64(hdp.Timestamp()))
+	} else {
+		b.tunb.AppendNull()
+	}
 	b.hcb.Append(hdp.Count())
 	if hdp.HasSum() {
 		b.hsb.Append(hdp.Sum())

@@ -196,6 +196,14 @@ func FieldIDFromStruct(dt *arrow.StructType, fieldName string) (int, *arrow.Data
 	return id, &field.Type, nil
 }
 
+func OptionalFieldIDFromStruct(dt *arrow.StructType, fieldName string) (id int) {
+	id, found := dt.FieldIdx(fieldName)
+	if !found {
+		id = -1
+	}
+	return
+}
+
 func FieldArray(record arrow.Record, column string) (*arrow.Field, arrow.Array, error) {
 	fieldIdsWithSameName := record.Schema().FieldIndices(column)
 	if fieldIdsWithSameName == nil {
@@ -346,6 +354,19 @@ func (los *ListOfStructs) U32FieldByID(fieldID int, row int) (uint32, error) {
 func (los *ListOfStructs) U64FieldByID(fieldID int, row int) (uint64, error) {
 	column := los.arr.Field(fieldID)
 	return U64FromArray(column, row)
+}
+
+func (los *ListOfStructs) OptionalTimestampFieldByID(fieldID int, row int) *pcommon.Timestamp {
+	column := los.arr.Field(fieldID)
+	if column.IsNull(row) {
+		return nil
+	}
+	ts, err := U64FromArray(column, row)
+	if err != nil {
+		return nil
+	}
+	timestamp := pcommon.Timestamp(ts)
+	return &timestamp
 }
 
 func (los *ListOfStructs) I32FieldByID(fieldID int, row int) (int32, error) {

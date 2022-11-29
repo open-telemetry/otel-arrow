@@ -23,10 +23,10 @@ func NewUnivariateGaugeIds(parentDT *arrow.StructType) (*UnivariateGaugeIds, err
 	}, nil
 }
 
-func UpdateUnivariateGaugeFrom(gauge pmetric.Gauge, arr *array.Struct, row int, ids *UnivariateGaugeIds) error {
+func UpdateUnivariateGaugeFrom(gauge pmetric.Gauge, arr *array.Struct, row int, ids *UnivariateGaugeIds, smdata *SharedData, mdata *SharedData) error {
 	los, err := arrowutils.ListOfStructsFromStruct(arr, ids.DataPoints.Id, row)
 	if err != nil {
 		return err
 	}
-	return AppendUnivariateNdpInto(gauge.DataPoints(), los, ids.DataPoints)
+	return AppendUnivariateNdpInto(gauge.DataPoints(), los, ids.DataPoints, smdata, mdata)
 }

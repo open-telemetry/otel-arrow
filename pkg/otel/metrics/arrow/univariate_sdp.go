@@ -86,17 +86,27 @@ func (b *UnivariateSummaryDataPointBuilder) Release() {
 }
 
 // Append appends a new summary data point to the builder.
-func (b *UnivariateSummaryDataPointBuilder) Append(sdp pmetric.SummaryDataPoint) error {
+func (b *UnivariateSummaryDataPointBuilder) Append(sdp pmetric.SummaryDataPoint, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
 		return fmt.Errorf("UnivariateSummaryDataPointBuilder: Append() called after Release()")
 	}
 
 	b.builder.Append(true)
-	if err := b.ab.Append(sdp.Attributes()); err != nil {
+	if err := b.ab.AppendUniqueAttributes(sdp.Attributes(), smdata.Attributes, mdata.Attributes); err != nil {
 		return err
 	}
-	b.stunb.Append(uint64(sdp.StartTimestamp()))
-	b.tunb.Append(uint64(sdp.Timestamp()))
+
+	if smdata.StartTime == nil && mdata.StartTime == nil {
+		b.stunb.Append(uint64(sdp.StartTimestamp()))
+	} else {
+		b.stunb.AppendNull()
+	}
+	if smdata.Time == nil && mdata.Time == nil {
+		b.tunb.Append(uint64(sdp.Timestamp()))
+	} else {
+		b.tunb.AppendNull()
+	}
+
 	b.scb.Append(sdp.Count())
 	b.ssb.Append(sdp.Sum())
 	qvs := sdp.QuantileValues()

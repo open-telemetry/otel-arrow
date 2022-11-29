@@ -67,7 +67,7 @@ func (b *UnivariateGaugeBuilder) Release() {
 }
 
 // Append appends a new univariate gauge to the builder.
-func (b *UnivariateGaugeBuilder) Append(gauge pmetric.Gauge) error {
+func (b *UnivariateGaugeBuilder) Append(gauge pmetric.Gauge, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
 		return fmt.Errorf("UnivariateGaugeBuilder: Append() called after Release()")
 	}
@@ -79,7 +79,7 @@ func (b *UnivariateGaugeBuilder) Append(gauge pmetric.Gauge) error {
 		b.dplb.Append(true)
 		b.dplb.Reserve(dpc)
 		for i := 0; i < dpc; i++ {
-			if err := b.dpb.Append(dps.At(i)); err != nil {
+			if err := b.dpb.Append(dps.At(i), smdata, mdata); err != nil {
 				return err
 			}
 		}

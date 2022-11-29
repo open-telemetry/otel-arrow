@@ -23,6 +23,14 @@ func NewAttributeIds(structDT *arrow.StructType) (*AttributeIds, error) {
 	return &AttributeIds{Id: id}, nil
 }
 
+func NewSharedAttributeIds(structDT *arrow.StructType) *AttributeIds {
+	id, found := structDT.FieldIdx(constants.SHARED_ATTRIBUTES)
+	if !found {
+		return nil
+	}
+	return &AttributeIds{Id: id}
+}
+
 func AppendAttributesInto(attrs pcommon.Map, parentArr *array.Struct, row int, attributeIds *AttributeIds) error {
 	marr, start, end, err := attributesFromStruct(attributeIds.Id, parentArr, row)
 	if err != nil {

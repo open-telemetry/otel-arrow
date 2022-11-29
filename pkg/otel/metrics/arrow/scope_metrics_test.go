@@ -8,6 +8,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 )
 
 func TestIntersectAttrs(t *testing.T) {
@@ -21,7 +22,7 @@ func TestIntersectAttrs(t *testing.T) {
 	initMap.PutBool("e", true)
 	initMap.PutEmptyBytes("f").Append([]byte("6")...)
 	initMap.PutEmptyMap("g").PutStr("g1", "7")
-	sharedAttrs := NewSharedAttributesFrom(initMap)
+	sharedAttrs := common.NewSharedAttributesFrom(initMap)
 
 	// All attributes in common
 	attrs := pcommon.NewMap()
@@ -117,23 +118,23 @@ func TestScopeMetricsSharedData(t *testing.T) {
 
 	require.Nil(t, sharedData.Metrics[0].StartTime)
 	require.Nil(t, sharedData.Metrics[0].Time)
-	require.Equal(t, 0, len(sharedData.Metrics[0].Attributes.attributes))
+	require.Equal(t, 0, len(sharedData.Metrics[0].Attributes.Attributes))
 
 	require.Nil(t, sharedData.Metrics[1].StartTime)
 	require.Nil(t, sharedData.Metrics[1].Time)
-	require.Equal(t, 0, len(sharedData.Metrics[1].Attributes.attributes))
+	require.Equal(t, 0, len(sharedData.Metrics[1].Attributes.Attributes))
 
 	require.Nil(t, sharedData.Metrics[2].StartTime)
 	require.Nil(t, sharedData.Metrics[2].Time)
-	require.Equal(t, 0, len(sharedData.Metrics[2].Attributes.attributes))
+	require.Equal(t, 0, len(sharedData.Metrics[2].Attributes.Attributes))
 
 	require.Nil(t, sharedData.Metrics[3].StartTime)
 	require.Nil(t, sharedData.Metrics[3].Time)
-	require.Equal(t, 1, len(sharedData.Metrics[3].Attributes.attributes)) // freq attribute
+	require.Equal(t, 1, len(sharedData.Metrics[3].Attributes.Attributes)) // freq attribute
 
 	require.Nil(t, sharedData.Metrics[4].StartTime)
 	require.Nil(t, sharedData.Metrics[4].Time)
-	require.Equal(t, 1, len(sharedData.Metrics[4].Attributes.attributes)) // freq attribute
+	require.Equal(t, 1, len(sharedData.Metrics[4].Attributes.Attributes)) // freq attribute
 }
 
 func TestMetricSharedData(t *testing.T) {
