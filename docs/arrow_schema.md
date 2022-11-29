@@ -72,6 +72,9 @@ resource_metrics:
               shared_time_unix_nano: uint64               # required if not defined in data points
               data:                                       # arrow type = sparse union
                 - gauge: 
+                    shared_attributes: *attributes              # attributes inherited by data points if not defined locally 
+                    shared_start_time_unix_nano: uint64         # start time inherited by data points if not defined locally
+                    shared_time_unix_nano: uint64               # required if not defined in data points
                     data_points: 
                       - attributes: *attributes
                         start_time_unix_nano: uint64
@@ -81,7 +84,10 @@ resource_metrics:
                           f64: float64 
                         exemplars: *exemplars
                         flags: uint32
-                  sum: 
+                  sum:
+                    shared_attributes: *attributes              # attributes inherited by data points if not defined locally 
+                    shared_start_time_unix_nano: uint64         # start time inherited by data points if not defined locally
+                    shared_time_unix_nano: uint64               # required if not defined in data points
                     data_points: 
                       - attributes: *attributes
                         start_time_unix_nano: uint64
@@ -93,7 +99,10 @@ resource_metrics:
                         flags: uint32
                     aggregation_temporality: int32
                     is_monotonic: bool
-                  summary: 
+                  summary:
+                    shared_attributes: *attributes              # attributes inherited by data points if not defined locally 
+                    shared_start_time_unix_nano: uint64         # start time inherited by data points if not defined locally
+                    shared_time_unix_nano: uint64               # required if not defined in data points
                     data_points: 
                       - attributes: *attributes
                         start_time_unix_nano: uint64
@@ -105,6 +114,9 @@ resource_metrics:
                             value: float64
                         flags: uint32
                   histogram:
+                    shared_attributes: *attributes              # attributes inherited by data points if not defined locally 
+                    shared_start_time_unix_nano: uint64         # start time inherited by data points if not defined locally
+                    shared_time_unix_nano: uint64               # required if not defined in data points
                     data_points:
                       - attributes: *attributes
                         start_time_unix_nano: uint64
@@ -119,6 +131,9 @@ resource_metrics:
                         max: float64
                     aggregation_temporality: int32
                   exp_histogram:
+                    shared_attributes: *attributes              # attributes inherited by data points if not defined locally 
+                    shared_start_time_unix_nano: uint64         # start time inherited by data points if not defined locally
+                    shared_time_unix_nano: uint64               # required if not defined in data points
                     data_points:
                       - attributes: *attributes
                         start_time_unix_nano: uint64
