@@ -249,6 +249,13 @@ func (dg *DataGenerator) SystemCpuLoadAverage1m(metric pmetric.Metric) {
 	attrs := point.Attributes()
 	attrs.EnsureCapacity(2)
 	attrs.PutInt("cpu", 0)
+	attrs.PutStr("cpu_id", "cpu-0")
+	attrs.PutStr("cpu_arch", "x86-64")
+	attrs.PutStr("cpu_vendor", "intel")
+	attrs.PutStr("cpu_model", "i7")
+	attrs.PutStr("cpu_mhz", "2.4")
+	attrs.PutStr("cpu_cores", "4")
+	attrs.PutStr("cpu_logical_processors", "8")
 }
 
 // FakeHistogram generates a fake histogram metric.

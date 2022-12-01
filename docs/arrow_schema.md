@@ -125,10 +125,10 @@ resource_metrics:
                         sum: float64
                         bucket_counts: []uint64
                         explicit_bounds: []float64
-                        exemplars: *exemplars
-                        flags: uint32
                         min: float64
                         max: float64
+                        exemplars: *exemplars
+                        flags: uint32
                     aggregation_temporality: int32
                   exp_histogram:
                     shared_attributes: *attributes              # attributes inherited by data points if not defined locally 
@@ -148,10 +148,10 @@ resource_metrics:
                         negative:
                           offset: int32
                           bucket_counts: []uint64
-                        exemplars: *exemplars
-                        flags: uint32
                         min: float64
                         max: float64
+                        exemplars: *exemplars
+                        flags: uint32
                     aggregation_temporality: int32
           # Native support of multivariate metrics (not yet implemented)
           #
@@ -164,73 +164,68 @@ resource_metrics:
             attributes: *attributes                   # All multivariate metrics shared the same attributes
             start_time_unix_nano: uint64              # All multivariate metrics shared the same timestamps
             time_unix_nano: uint64                    # required
-            data:                                     # arrow type = sparse union
+            metrics:                                     # arrow type = sparse union
               - gauge:
                   name: string | string_dictionary            # required
                   description: string | string_dictionary
                   unit: string | string_dictionary 
-                  data_points:
-                    - value:                            # arrow type = dense union
-                        i64: int64
-                        f64: float64
-                      exemplars: *exemplars
-                      flags: uint32
+                  value:                                    # arrow type = dense union
+                    i64: int64 
+                    f64: float64
+                  exemplars: *exemplars
+                  flags: uint32  
                 sum:
                   name: string | string_dictionary            # required
                   description: string | string_dictionary
                   unit: string | string_dictionary
-                  data_points:
-                    - value:                          # arrow type = dense union
-                        i64: int64
-                        f64: float64
-                      exemplars: *exemplars
-                      flags: uint32
+                  value:                                    # arrow type = dense union
+                    i64: int64
+                    f64: float64
+                  exemplars: *exemplars
+                  flags: uint32
                   aggregation_temporality: int32
                   is_monotonic: bool
                 summary:
                   name: string | string_dictionary            # required
                   description: string | string_dictionary
                   unit: string | string_dictionary
-                  data_points:
-                    - count: uint64
-                      sum: float64
-                      quantile:
-                        - quantile: float64
-                          value: float64
-                      flags: uint32
+                  count: uint64 
+                  sum: float64
+                  quantile: 
+                    - quantile: float64
+                      value: float64
+                  flags: uint32
                 histogram:
                   name: string | string_dictionary            # required
                   description: string | string_dictionary
                   unit: string | string_dictionary
-                  data_points:
-                    - count: uint64
-                      sum: float64
-                      bucket_counts: []uint64
-                      explicit_bounds: []float64
-                      exemplars: *exemplars
-                      flags: uint32
-                      min: float64
-                      max: float64
+                  count: uint64
+                  sum: float64
+                  bucket_counts: []uint64
+                  explicit_bounds: []float64
+                  exemplars: *exemplars
+                  flags: uint32
+                  min: float64
+                  max: float64
                   aggregation_temporality: int32
                 exp_histogram:
                   name: string | string_dictionary            # required
                   description: string | string_dictionary
                   unit: string | string_dictionary
-                  data_points:
-                    - count: uint64
-                      sum: float64
-                      scale: int32
-                      zero_count: uint64
-                      positive:
-                        offset: int32
-                        bucket_counts: []uint64
-                      negative:
-                        offset: int32
-                        bucket_counts: []uint64
-                      exemplars: *exemplars
-                      flags: uint32
-                      min: float64
-                      max: float64
+                  count: uint64
+                  sum: float64
+                  scale: int32
+                  zero_count: uint64
+                  positive:
+                    offset: int32
+                    bucket_counts: []uint64
+                  negative:
+                    offset: int32
+                    bucket_counts: []uint64
+                  exemplars: *exemplars
+                  flags: uint32
+                  min: float64
+                  max: float64
                   aggregation_temporality: int32
 
 

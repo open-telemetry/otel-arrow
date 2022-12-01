@@ -133,7 +133,9 @@ func (b *AttributesBuilder) AppendUniqueAttributes(attrs pcommon.Map, smattrs *c
 
 		// Append the value
 		err = b.ib.Append(v)
-		return err == nil
+
+		uniqueAttrsCount--
+		return err == nil && uniqueAttrsCount > 0
 	})
 	return err
 }
