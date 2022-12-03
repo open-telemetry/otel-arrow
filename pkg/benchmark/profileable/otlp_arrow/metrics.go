@@ -3,7 +3,7 @@ package otlp_arrow
 import (
 	"io"
 
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"google.golang.org/protobuf/proto"
 
 	"go.opentelemetry.io/collector/pdata/pmetric"

@@ -22,8 +22,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	"github.com/f5/otel-arrow-adapter/pkg/air/common"
@@ -961,4 +961,86 @@ func FixedSizeBinaryFromArray(arr arrow.Array, row int) ([]byte, error) {
 			return nil, fmt.Errorf("column is not of type binary")
 		}
 	}
+}
+
+// DumpRecordInfo is a utility function to display the structure and few other attributes of an
+// Apache Record.
+// This function is test/debug purpose only.
+func DumpRecordInfo(record arrow.Record) {
+	schema := record.Schema()
+	columnCount := 0
+	emptyColumnCount := 0
+	for i := 0; i < int(record.NumCols()); i++ {
+		field := schema.Field(i)
+		arr := record.Column(i)
+		fmt.Printf("Field %q type: %q, null-count: %d, length: %d\n", field.Name, field.Type.Name(), arr.NullN(), arr.Len())
+		columnCount++
+		if arr.Len() == arr.NullN() {
+			emptyColumnCount++
+		}
+		cc, scc := DumArrayInfo("\t", &field, arr)
+		columnCount += cc
+		emptyColumnCount += scc
+	}
+	fmt.Printf("#columns: %d\n", columnCount)
+	fmt.Printf("# empty columns: %d\n", emptyColumnCount)
+}
+
+// DumArrayInfo is a utility function to display the structure and few other attributes of an
+// // Apache Array.
+// // This function is test/debug purpose only.
+func DumArrayInfo(indent string, field *arrow.Field, arr arrow.Array) (int, int) {
+	columnCount := 1
+	emptyColumnCount := 0
+	if arr.Len() == arr.NullN() {
+		emptyColumnCount++
+	}
+	switch f := field.Type.(type) {
+	case *arrow.StructType:
+		arr := arr.(*array.Struct)
+		fmt.Printf("%sField %q type: %q, null-count: %d, length: %d\n", indent, field.Name, field.Type.Name(), arr.NullN(), arr.Len())
+		for i := 0; i < arr.NumField(); i++ {
+			subField := f.Field(i)
+			cc, ecc := DumArrayInfo(indent+"\t", &subField, arr.Field(i))
+			columnCount += cc
+			emptyColumnCount += ecc
+		}
+	case *arrow.ListType:
+		arr := arr.(*array.List)
+		fmt.Printf("%sField %q type: %q, null-count: %d, length: %d\n", indent, field.Name, field.Type.Name(), arr.NullN(), arr.Len())
+		subField := f.ElemField()
+		cc, ecc := DumArrayInfo(indent+"\t", &subField, arr.ListValues())
+		columnCount += cc
+		emptyColumnCount += ecc
+	case *arrow.MapType:
+		arr := arr.(*array.Map)
+		fmt.Printf("%sField %q type: %q, null-count: %d, length: %d\n", indent, field.Name, field.Type.Name(), arr.NullN(), arr.Len())
+		subField := f.KeyField()
+		cc, ecc := DumArrayInfo(indent+"\t", &subField, arr.Keys())
+		columnCount += cc
+		emptyColumnCount += ecc
+		subField = f.ValueField()
+		cc, ecc = DumArrayInfo(indent+"\t", &subField, arr.ListValues())
+		columnCount += cc
+		emptyColumnCount += ecc
+	case *arrow.SparseUnionType:
+		arr := arr.(*array.SparseUnion)
+		fmt.Printf("%sField %q type: %q, null-count: %d, length: %d\n", indent, field.Name, field.Type.Name(), arr.NullN(), arr.Len())
+		for i, variant := range f.Fields() {
+			cc, ecc := DumArrayInfo(indent+"\t", &variant, arr.Field(i))
+			columnCount += cc
+			emptyColumnCount += ecc
+		}
+	case *arrow.DenseUnionType:
+		arr := arr.(*array.DenseUnion)
+		fmt.Printf("%sField %q type: %q, null-count: %d, length: %d\n", indent, field.Name, field.Type.Name(), arr.NullN(), arr.Len())
+		for i, variant := range f.Fields() {
+			cc, ecc := DumArrayInfo(indent+"\t", &variant, arr.Field(i))
+			columnCount += cc
+			emptyColumnCount += ecc
+		}
+	default:
+		fmt.Printf("%sField %q type: %q, null-count: %d, length: %d\n", indent, field.Name, field.Type.Name(), arr.NullN(), arr.Len())
+	}
+	return columnCount, emptyColumnCount
 }

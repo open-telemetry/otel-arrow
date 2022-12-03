@@ -50,7 +50,7 @@ func TestOtlpMetricsToArrowRecords(t *testing.T) {
 	for _, record := range multiSchemaRecords {
 		schemaId := arrow.SchemaToID(record.Schema())
 		switch schemaId {
-		case "attributes:{cpu:I64},resource:{attributes:{hostname:Dic<U16,Str>,ip:Dic<U16,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U16,Str>,version:Dic<U16,Str>},start_time_unix_nano:U64,time_unix_nano:U64,univariate_metrics:{system.cpu.load_average.1m:F64}":
+		case "attributes:{cpu:I64,cpu_arch:Dic<U16,Str>,cpu_cores:Dic<U16,Str>,cpu_id:Dic<U16,Str>,cpu_logical_processors:Dic<U16,Str>,cpu_mhz:Dic<U16,Str>,cpu_model:Dic<U16,Str>,cpu_vendor:Dic<U16,Str>},resource:{attributes:{hostname:Dic<U16,Str>,ip:Dic<U16,Str>,status:I64,up:Bol,version:F64}},scope_metrics:{name:Dic<U16,Str>,version:Dic<U16,Str>},start_time_unix_nano:U64,time_unix_nano:U64,univariate_metrics:{system.cpu.load_average.1m:F64}":
 			if record.NumCols() != 6 {
 				t.Errorf("Expected 6 fields, got %d", record.NumCols())
 			}

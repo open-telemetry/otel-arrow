@@ -112,17 +112,17 @@ func TestScopeMetricsSharedData(t *testing.T) {
 	require.NotNil(t, sharedData.StartTime)
 	require.NotNil(t, sharedData.Time)
 	require.NotNil(t, sharedData.Attributes)
-	require.Equal(t, 1, sharedData.Attributes.Len()) // cpu attribute
+	require.Equal(t, 8, sharedData.Attributes.Len()) // cpu attribute
 
 	require.Equal(t, 5, len(sharedData.Metrics))
 
 	require.Nil(t, sharedData.Metrics[0].StartTime)
 	require.Nil(t, sharedData.Metrics[0].Time)
-	require.Equal(t, 7, len(sharedData.Metrics[0].Attributes.Attributes))
+	require.Equal(t, 0, len(sharedData.Metrics[0].Attributes.Attributes))
 
 	require.Nil(t, sharedData.Metrics[1].StartTime)
 	require.Nil(t, sharedData.Metrics[1].Time)
-	require.Equal(t, 7, len(sharedData.Metrics[1].Attributes.Attributes))
+	require.Equal(t, 0, len(sharedData.Metrics[1].Attributes.Attributes))
 
 	require.Nil(t, sharedData.Metrics[2].StartTime)
 	require.Nil(t, sharedData.Metrics[2].Time)
@@ -130,11 +130,11 @@ func TestScopeMetricsSharedData(t *testing.T) {
 
 	require.Nil(t, sharedData.Metrics[3].StartTime)
 	require.Nil(t, sharedData.Metrics[3].Time)
-	require.Equal(t, 8, len(sharedData.Metrics[3].Attributes.Attributes)) // freq attribute
+	require.Equal(t, 1, len(sharedData.Metrics[3].Attributes.Attributes)) // freq attribute
 
 	require.Nil(t, sharedData.Metrics[4].StartTime)
 	require.Nil(t, sharedData.Metrics[4].Time)
-	require.Equal(t, 8, len(sharedData.Metrics[4].Attributes.Attributes)) // freq attribute
+	require.Equal(t, 1, len(sharedData.Metrics[4].Attributes.Attributes)) // freq attribute
 }
 
 func TestMetricSharedData(t *testing.T) {

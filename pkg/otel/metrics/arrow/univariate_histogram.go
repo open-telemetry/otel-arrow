@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -89,7 +89,11 @@ func (b *UnivariateHistogramBuilder) Append(histogram pmetric.Histogram, smdata 
 	} else {
 		b.hdplb.Append(false)
 	}
-	b.atb.Append(int32(histogram.AggregationTemporality()))
+	if histogram.AggregationTemporality() == pmetric.AggregationTemporalityUnspecified {
+		b.atb.AppendNull()
+	} else {
+		b.atb.Append(int32(histogram.AggregationTemporality()))
+	}
 
 	return nil
 }

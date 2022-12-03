@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
@@ -151,7 +151,11 @@ func (b *EHistogramDataPointBuilder) Append(hdp pmetric.ExponentialHistogramData
 	} else {
 		b.elb.Append(false)
 	}
-	b.fb.Append(uint32(hdp.Flags()))
+	if hdp.Flags() != 0 {
+		b.fb.Append(uint32(hdp.Flags()))
+	} else {
+		b.fb.AppendNull()
+	}
 
 	if hdp.HasMin() {
 		b.hmib.Append(hdp.Min())

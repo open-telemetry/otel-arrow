@@ -1,7 +1,7 @@
 package otlp
 
 import (
-	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v10/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 

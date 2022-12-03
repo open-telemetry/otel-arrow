@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -48,13 +48,13 @@ func ScopeBuilderFrom(sb *array.StructBuilder) *ScopeBuilder {
 }
 
 // Append appends a new instrumentation scope to the builder.
-func (b *ScopeBuilder) Append(resource pcommon.InstrumentationScope) error {
+func (b *ScopeBuilder) Append(scope pcommon.InstrumentationScope) error {
 	if b.released {
 		return fmt.Errorf("scope builder already released")
 	}
 
 	b.builder.Append(true)
-	name := resource.Name()
+	name := scope.Name()
 	if name == "" {
 		b.nb.AppendNull()
 	} else {
@@ -62,7 +62,7 @@ func (b *ScopeBuilder) Append(resource pcommon.InstrumentationScope) error {
 			return err
 		}
 	}
-	version := resource.Version()
+	version := scope.Version()
 	if version == "" {
 		b.vb.AppendNull()
 	} else {
@@ -70,10 +70,14 @@ func (b *ScopeBuilder) Append(resource pcommon.InstrumentationScope) error {
 			return err
 		}
 	}
-	if err := b.ab.Append(resource.Attributes()); err != nil {
+	if err := b.ab.Append(scope.Attributes()); err != nil {
 		return err
 	}
-	b.dacb.Append(resource.DroppedAttributesCount())
+	if scope.DroppedAttributesCount() > 0 {
+		b.dacb.Append(scope.DroppedAttributesCount())
+	} else {
+		b.dacb.AppendNull()
+	}
 	return nil
 }
 

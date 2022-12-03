@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -52,7 +52,11 @@ func (b *ResourceBuilder) Append(resource pcommon.Resource) error {
 	if err := b.ab.Append(resource.Attributes()); err != nil {
 		return err
 	}
-	b.dacb.Append(resource.DroppedAttributesCount())
+	if resource.DroppedAttributesCount() > 0 {
+		b.dacb.Append(resource.DroppedAttributesCount())
+	} else {
+		b.dacb.AppendNull()
+	}
 	return nil
 }
 

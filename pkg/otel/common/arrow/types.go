@@ -1,6 +1,6 @@
 package arrow
 
-import "github.com/apache/arrow/go/v11/arrow"
+import "github.com/apache/arrow/go/v10/arrow"
 
 var (
 	DefaultDictString = &arrow.DictionaryType{

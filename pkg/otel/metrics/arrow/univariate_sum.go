@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -92,8 +92,16 @@ func (b *UnivariateSumBuilder) Append(sum pmetric.Sum, smdata *ScopeMetricsShare
 	} else {
 		b.dplb.Append(false)
 	}
-	b.atb.Append(int32(sum.AggregationTemporality()))
-	b.imb.Append(sum.IsMonotonic())
+	if sum.AggregationTemporality() == pmetric.AggregationTemporalityUnspecified {
+		b.atb.AppendNull()
+	} else {
+		b.atb.Append(int32(sum.AggregationTemporality()))
+	}
+	if sum.IsMonotonic() {
+		b.imb.Append(sum.IsMonotonic())
+	} else {
+		b.imb.AppendNull()
+	}
 
 	return nil
 }
