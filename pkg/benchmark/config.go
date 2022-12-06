@@ -12,12 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/*
-Package air is an Arrow Intermediate Representation used to translate row-oriented data into column-oriented data.
+package benchmark
 
-The idea is to represent each row-oriented entity as a record composed of fields (more or less complex). These records
-are then injected into the RecordRepository to build one or more batches of data in columnar format. A series of
-optimizations is performed during this process to improve the compression rate of the Arrow records, e.g. automatic
-creation of Arrow dictionaries for string and binary fields, sorting the records according to one or more columns.
-*/
-package air
+type Config struct{}

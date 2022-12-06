@@ -9,7 +9,6 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog"
 
 	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
-	"github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
@@ -22,11 +21,11 @@ type LogsProfileable struct {
 	logs              []plog.Logs
 	producer          *arrow_record.Producer
 	batchArrowRecords []*v1.BatchArrowRecords
-	config            *config.Config
+	config            *benchmark.Config
 	pool              *memory.GoAllocator
 }
 
-func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *config.Config, compression benchmark.CompressionAlgorithm) *LogsProfileable {
+func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *benchmark.Config, compression benchmark.CompressionAlgorithm) *LogsProfileable {
 	return &LogsProfileable{
 		tags:              tags,
 		dataset:           dataset,

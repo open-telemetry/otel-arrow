@@ -21,12 +21,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
-
-	arrow2 "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
-
 	"go.opentelemetry.io/collector/pdata/pcommon"
 )
 
@@ -45,31 +39,6 @@ func AttributesId(attrs pcommon.Map) string {
 	})
 	attrsId.WriteString("}")
 	return attrsId.String()
-}
-
-// NewResourceFromOld
-// TODO replace this implementation with the one used for traces.
-func NewResourceFromOld(record arrow.Record, row int) (pcommon.Resource, error) {
-	r := pcommon.NewResource()
-	resourceField, resourceArray, err := arrow2.StructFromRecord(record, constants.RESOURCE)
-	if err != nil {
-		return r, err
-	}
-	droppedAttributesCount, err := arrow2.U32FromStructOld(resourceField, resourceArray, row, constants.DROPPED_ATTRIBUTES_COUNT)
-	if err != nil {
-		return r, err
-	}
-	attrField, attrArray, err := arrow2.FieldArrayOfStruct(resourceField, resourceArray, constants.ATTRIBUTES)
-	if err != nil {
-		return r, err
-	}
-	if attrField != nil {
-		if err = CopyAttributesFrom(r.Attributes(), attrField.Type, attrArray, row); err != nil {
-			return r, err
-		}
-	}
-	r.SetDroppedAttributesCount(droppedAttributesCount)
-	return r, nil
 }
 
 func ResourceID(r pcommon.Resource) string {
@@ -109,120 +78,4 @@ func ValueID(v pcommon.Value) string {
 		// includes pcommon.ValueTypeEmpty
 		panic("unsupported value type")
 	}
-}
-
-func CopyAttributesFrom(a pcommon.Map, dt arrow.DataType, arr arrow.Array, row int) error {
-	structType, ok := dt.(*arrow.StructType)
-	if !ok {
-		return fmt.Errorf("attributes is not a struct")
-	}
-	attrArray, ok := arr.(*array.Struct)
-	if !ok {
-		return fmt.Errorf("attributes is not a struct array, but %T", arr)
-	}
-	a.EnsureCapacity(attrArray.NumField())
-	for i := 0; i < attrArray.NumField(); i++ {
-		valueField := structType.Field(i)
-
-		newV := a.PutEmpty(valueField.Name)
-
-		if err := CopyValueFrom(newV, valueField.Type, attrArray.Field(i), row); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func CopyValueFrom(dest pcommon.Value, dt arrow.DataType, arr arrow.Array, row int) error {
-	switch t := dt.(type) {
-	case *arrow.BooleanType:
-		v, err := arrow2.BoolFromArray(arr, row)
-		if err != nil {
-			return err
-		}
-		dest.SetBool(v)
-		return nil
-	case *arrow.Float64Type:
-		v, err := arrow2.F64FromArray(arr, row)
-		if err != nil {
-			return err
-		}
-		dest.SetDouble(v)
-		return nil
-	case *arrow.Int64Type:
-		v, err := arrow2.I64FromArray(arr, row)
-		if err != nil {
-			return err
-		}
-		dest.SetInt(v)
-		return nil
-	case *arrow.StringType:
-		v, err := arrow2.StringFromArray(arr, row)
-		if err != nil {
-			return err
-		}
-		dest.SetStr(v)
-		return nil
-	case *arrow.BinaryType:
-		v, err := arrow2.BinaryFromArray(arr, row)
-		if err != nil {
-			return err
-		}
-		dest.SetEmptyBytes().FromRaw(v)
-		return nil
-	case *arrow.StructType:
-		if err := CopyAttributesFrom(dest.SetEmptyMap(), dt, arr, row); err != nil {
-			return err
-		}
-		return nil
-	case *arrow.ListType:
-		arrList, ok := arr.(*array.List)
-		if !ok {
-			return fmt.Errorf("array is not a list")
-		}
-		if err := SetArrayValue(dest.SetEmptySlice(), arrList, row); err != nil {
-			return err
-		}
-		return nil
-	case *arrow.DictionaryType:
-		switch t.ValueType.(type) {
-		case *arrow.StringType:
-			v, err := arrow2.StringFromArray(arr, row)
-			if err != nil {
-				return err
-			}
-			dest.SetStr(v)
-			return nil
-		case *arrow.BinaryType:
-			v, err := arrow2.BinaryFromArray(arr, row)
-			if err != nil {
-				return err
-			}
-			dest.SetEmptyBytes().FromRaw(v)
-			return nil
-		default:
-			return fmt.Errorf("unsupported dictionary value type %T", t.ValueType)
-		}
-	default:
-		return fmt.Errorf("%T is not a supported value type", t)
-	}
-}
-
-func SetArrayValue(result pcommon.Slice, arrList *array.List, row int) error {
-	start := int(arrList.Offsets()[row])
-	end := int(arrList.Offsets()[row+1])
-	result.EnsureCapacity(end - start)
-
-	arrItems := arrList.ListValues()
-	for ; start < end; start++ {
-		v := result.AppendEmpty()
-		if arrList.IsNull(start) {
-			continue
-		}
-		if err := CopyValueFrom(v, arrList.DataType(), arrItems, start); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }

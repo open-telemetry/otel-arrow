@@ -5,7 +5,6 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -74,37 +73,4 @@ func UpdateScopeWith(s pcommon.InstrumentationScope, listOfStructs *arrowutils.L
 	s.SetVersion(version)
 	s.SetDroppedAttributesCount(droppedAttributesCount)
 	return nil
-}
-
-func NewScopeFromRecord(record arrow.Record, row int, scope string) (pcommon.InstrumentationScope, error) {
-	s := pcommon.NewInstrumentationScope()
-	scopeField, scopeArray, err := arrowutils.StructFromRecord(record, scope)
-	if err != nil {
-		return s, err
-	}
-	name, err := arrowutils.OldStringFromStruct(scopeField, scopeArray, row, constants.NAME)
-	if err != nil {
-		return s, err
-	}
-	version, err := arrowutils.OldStringFromStruct(scopeField, scopeArray, row, constants.VERSION)
-	if err != nil {
-		return s, err
-	}
-	droppedAttributesCount, err := arrowutils.U32FromStructOld(scopeField, scopeArray, row, constants.DROPPED_ATTRIBUTES_COUNT)
-	if err != nil {
-		return s, err
-	}
-	attrField, attrArray, err := arrowutils.FieldArrayOfStruct(scopeField, scopeArray, constants.ATTRIBUTES)
-	if err != nil {
-		return s, err
-	}
-	if attrField != nil {
-		if err = carrow.CopyAttributesFrom(s.Attributes(), attrField.Type, attrArray, row); err != nil {
-			return s, err
-		}
-	}
-	s.SetName(name)
-	s.SetVersion(version)
-	s.SetDroppedAttributesCount(droppedAttributesCount)
-	return s, nil
 }

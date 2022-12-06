@@ -18,10 +18,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics"
 )
 
 func TestOtlpArrowMetricsProfiler(t *testing.T) {
@@ -29,15 +27,10 @@ func TestOtlpArrowMetricsProfiler(t *testing.T) {
 	t.Parallel()
 
 	// Configuration
-	cfg := config.NewUint8DefaultConfig()
-	multivariateConf := &metrics.MultivariateMetricsConfig{
-		Metrics: make(map[string]string),
-	}
-	multivariateConf.Metrics["system.cpu.time"] = "state"
-	multivariateConf.Metrics["system.memory.usage"] = "state"
+	cfg := &benchmark.Config{}
 
 	maxIter := uint64(10)
-	systemToProfile := NewMetricsProfileable([]string{"multivariate"}, dataset.NewFakeMetricsDataset(1000), cfg, multivariateConf, benchmark.Zstd())
+	systemToProfile := NewMetricsProfileable([]string{"multivariate"}, dataset.NewFakeMetricsDataset(1000), cfg, benchmark.Zstd())
 	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, filepath.Join(t.TempDir(), "tmpfile"))
 	if err := profiler.Profile(systemToProfile, maxIter); err != nil {
 		t.Errorf("expected no error, got %v", err)

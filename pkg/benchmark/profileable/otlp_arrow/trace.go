@@ -9,7 +9,6 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
-	"github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
@@ -24,12 +23,12 @@ type TraceProfileable struct {
 	traces            []ptrace.Traces
 	producer          *arrow_record.Producer
 	batchArrowRecords []*v1.BatchArrowRecords
-	config            *config.Config
+	config            *benchmark.Config
 	pool              *memory.GoAllocator
 	schema            *acommon.AdaptiveSchema
 }
 
-func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *config.Config, compression benchmark.CompressionAlgorithm) *TraceProfileable {
+func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *benchmark.Config, compression benchmark.CompressionAlgorithm) *TraceProfileable {
 	return &TraceProfileable{
 		tags:              tags,
 		dataset:           dataset,

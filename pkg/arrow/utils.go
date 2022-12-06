@@ -25,9 +25,21 @@ import (
 	"github.com/apache/arrow/go/v10/arrow"
 	"github.com/apache/arrow/go/v10/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
-
-	"github.com/f5/otel-arrow-adapter/pkg/air/common"
 )
+
+const BOOL_SIG = "Bol"
+const U8_SIG = "U8"
+const U16_SIG = "U16"
+const U32_SIG = "U32"
+const U64_SIG = "U64"
+const I8_SIG = "I8"
+const I16_SIG = "I16"
+const I32_SIG = "I32"
+const I64_SIG = "I64"
+const F32_SIG = "F32"
+const F64_SIG = "F64"
+const BINARY_SIG = "Bin"
+const STRING_SIG = "Str"
 
 type SortableField struct {
 	name  *string
@@ -75,31 +87,31 @@ func DataTypeToID(dt arrow.DataType) string {
 	id := ""
 	switch t := dt.(type) {
 	case *arrow.BooleanType:
-		id += common.BOOL_SIG
+		id += BOOL_SIG
 	case *arrow.Int8Type:
-		id += common.I8_SIG
+		id += I8_SIG
 	case *arrow.Int16Type:
-		id += common.I16_SIG
+		id += I16_SIG
 	case *arrow.Int32Type:
-		id += common.I32_SIG
+		id += I32_SIG
 	case *arrow.Int64Type:
-		id += common.I64_SIG
+		id += I64_SIG
 	case *arrow.Uint8Type:
-		id += common.U8_SIG
+		id += U8_SIG
 	case *arrow.Uint16Type:
-		id += common.U16_SIG
+		id += U16_SIG
 	case *arrow.Uint32Type:
-		id += common.U32_SIG
+		id += U32_SIG
 	case *arrow.Uint64Type:
-		id += common.U64_SIG
+		id += U64_SIG
 	case *arrow.Float32Type:
-		id += common.F32_SIG
+		id += F32_SIG
 	case *arrow.Float64Type:
-		id += common.F64_SIG
+		id += F64_SIG
 	case *arrow.StringType:
-		id += common.STRING_SIG
+		id += STRING_SIG
 	case *arrow.BinaryType:
-		id += common.BINARY_SIG
+		id += BINARY_SIG
 	case *arrow.StructType:
 		id += "{"
 		fields := sortedFields(t.Fields())
@@ -202,50 +214,6 @@ func OptionalFieldIDFromStruct(dt *arrow.StructType, fieldName string) (id int) 
 		id = -1
 	}
 	return
-}
-
-func FieldArray(record arrow.Record, column string) (*arrow.Field, arrow.Array, error) {
-	fieldIdsWithSameName := record.Schema().FieldIndices(column)
-	if fieldIdsWithSameName == nil {
-		return nil, nil, fmt.Errorf("column %q not found", column)
-	}
-	if len(fieldIdsWithSameName) != 1 {
-		return nil, nil, fmt.Errorf("column %q is ambiguous (multiple columns with the same name)", column)
-	}
-	field := record.Schema().Field(fieldIdsWithSameName[0])
-	return &field, record.Column(fieldIdsWithSameName[0]), nil
-}
-
-func OptionalFieldArray(record arrow.Record, column string) (*arrow.Field, arrow.Array, error) {
-	fieldIdsWithSameName := record.Schema().FieldIndices(column)
-	if fieldIdsWithSameName == nil {
-		return nil, nil, nil
-	}
-	if len(fieldIdsWithSameName) != 1 {
-		return nil, nil, fmt.Errorf("column %q is ambiguous (multiple columns with the same name)", column)
-	}
-	field := record.Schema().Field(fieldIdsWithSameName[0])
-	return &field, record.Column(fieldIdsWithSameName[0]), nil
-}
-
-func StructFromRecord(record arrow.Record, column string) (*arrow.StructType, *array.Struct, error) {
-	fieldIdsWithSameName := record.Schema().FieldIndices(column)
-	if fieldIdsWithSameName == nil {
-		return nil, nil, fmt.Errorf("column %q not found", column)
-	}
-	if len(fieldIdsWithSameName) != 1 {
-		return nil, nil, fmt.Errorf("column %q is ambiguous (multiple columns with the same name)", column)
-	}
-	field := record.Schema().Field(fieldIdsWithSameName[0])
-	dt, ok := field.Type.(*arrow.StructType)
-	if !ok {
-		return nil, nil, fmt.Errorf("column %q is not a struct", column)
-	}
-	if dt != nil {
-		return dt, record.Column(fieldIdsWithSameName[0]).(*array.Struct), nil
-	} else {
-		return nil, nil, fmt.Errorf("column %q is not a struct", column)
-	}
 }
 
 type ListOfStructs struct {
@@ -535,31 +503,31 @@ func (los *ListOfStructs) CopyAttributesFrom(attr pcommon.Map) error {
 		key = key[idx+1:]
 		// TODO replace field name strings with constants
 		switch sig {
-		case common.STRING_SIG:
+		case STRING_SIG:
 			value, err := los.StringFieldByName("string", i)
 			if err != nil {
 				return err
 			}
 			attr.PutStr(key, value)
-		case common.BINARY_SIG:
+		case BINARY_SIG:
 			value, err := los.BinaryFieldByName("binary", i)
 			if err != nil {
 				return err
 			}
 			attr.PutEmptyBytes(key).FromRaw(value)
-		case common.I64_SIG:
+		case I64_SIG:
 			value, err := los.I64FieldByName("i64", i)
 			if err != nil {
 				return err
 			}
 			attr.PutInt(key, value)
-		case common.F64_SIG:
+		case F64_SIG:
 			value, err := los.F64FieldByName("f64", i)
 			if err != nil {
 				return err
 			}
 			attr.PutDouble(key, value)
-		case common.BOOL_SIG:
+		case BOOL_SIG:
 			value, err := los.BoolFieldByName("bool", i)
 			if err != nil {
 				return err
@@ -664,22 +632,6 @@ func (los *ListOfStructs) Array() *array.Struct {
 	return los.arr
 }
 
-func FieldArrayOfStruct(fieldType *arrow.StructType, arr arrow.Array, column string) (*arrow.Field, arrow.Array, error) {
-	structArr, ok := arr.(*array.Struct)
-	if !ok {
-		return nil, nil, fmt.Errorf("array %q is not a struct", column)
-	}
-	if structArr != nil {
-		fieldOfStruct, id, found := FieldOfStruct(fieldType, column)
-		if !found {
-			return nil, nil, nil
-		}
-		return fieldOfStruct, structArr.Field(id), nil
-	} else {
-		return nil, nil, fmt.Errorf("column array is not of type struct")
-	}
-}
-
 func Array(record arrow.Record, column string) (arrow.Array, error) {
 	fieldIdsWithSameName := record.Schema().FieldIndices(column)
 	if fieldIdsWithSameName == nil {
@@ -689,26 +641,6 @@ func Array(record arrow.Record, column string) (arrow.Array, error) {
 		return nil, fmt.Errorf("column %q is ambiguous (multiple columns with the same name)", column)
 	}
 	return record.Column(fieldIdsWithSameName[0]), nil
-}
-
-func OptionalArray(record arrow.Record, column string) (arrow.Array, error) {
-	fieldIdsWithSameName := record.Schema().FieldIndices(column)
-	if fieldIdsWithSameName == nil {
-		return nil, nil
-	}
-	if len(fieldIdsWithSameName) != 1 {
-		return nil, fmt.Errorf("column %q is ambiguous (multiple columns with the same name)", column)
-	}
-	return record.Column(fieldIdsWithSameName[0]), nil
-}
-
-func FieldOfStruct(dt *arrow.StructType, column string) (*arrow.Field, int, bool) {
-	idx, found := dt.FieldIdx(column)
-	if !found {
-		return nil, 0, false
-	}
-	field := dt.Field(idx)
-	return &field, idx, true
 }
 
 func BoolFromArray(arr arrow.Array, row int) (bool, error) {
@@ -780,14 +712,6 @@ func U64FromArray(arr arrow.Array, row int) (uint64, error) {
 	}
 }
 
-func U64FromRecord(record arrow.Record, row int, column string) (uint64, error) {
-	arr, err := Array(record, column)
-	if err != nil {
-		return 0, err
-	}
-	return U64FromArray(arr, row)
-}
-
 func U32FromArray(arr arrow.Array, row int) (uint32, error) {
 	if arr == nil {
 		return 0, nil
@@ -803,27 +727,6 @@ func U32FromArray(arr arrow.Array, row int) (uint32, error) {
 			return 0, fmt.Errorf("column is not of type uint32")
 		}
 	}
-}
-
-func OptionalU32FromRecord(record arrow.Record, row int, column string) (uint32, error) {
-	arr, err := OptionalArray(record, column)
-	if err != nil {
-		return 0, err
-	}
-	if arr == nil {
-		return 0, nil
-	}
-	return U32FromArray(arr, row)
-}
-
-// U32FromStructOld
-// TODO remove this function
-func U32FromStructOld(fieldType *arrow.StructType, structArr *array.Struct, row int, column string) (uint32, error) {
-	_, id, found := FieldOfStruct(fieldType, column)
-	if !found {
-		return 0, nil
-	}
-	return U32FromArray(structArr.Field(id), row)
 }
 
 func U32FromStruct(structArr *array.Struct, row int, fieldID int) (uint32, error) {
@@ -880,24 +783,6 @@ func StringFromArray(arr arrow.Array, row int) (string, error) {
 		default:
 			return "", fmt.Errorf("column is not of type string")
 		}
-	}
-}
-
-// OldStringFromStruct
-// TODO remove this function
-func OldStringFromStruct(fieldType *arrow.StructType, arr arrow.Array, row int, column string) (string, error) {
-	structArr, ok := arr.(*array.Struct)
-	if !ok {
-		return "", fmt.Errorf("array %q is not of type struct", column)
-	}
-	if structArr != nil {
-		_, id, found := FieldOfStruct(fieldType, column)
-		if !found {
-			return "", nil
-		}
-		return StringFromArray(structArr.Field(id), row)
-	} else {
-		return "", fmt.Errorf("column array is not of type struct")
 	}
 }
 
