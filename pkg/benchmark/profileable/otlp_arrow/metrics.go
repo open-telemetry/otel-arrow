@@ -9,35 +9,31 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
-	"github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics"
 )
 
 type MetricsProfileable struct {
-	tags               []string
-	compression        benchmark.CompressionAlgorithm
-	dataset            dataset.MetricsDataset
-	metrics            []pmetric.Metrics
-	producer           *arrow_record.Producer
-	batchArrowRecords  []*colarspb.BatchArrowRecords
-	config             *config.Config
-	multivariateConfig *metrics.MultivariateMetricsConfig
-	pool               *memory.GoAllocator
+	tags              []string
+	compression       benchmark.CompressionAlgorithm
+	dataset           dataset.MetricsDataset
+	metrics           []pmetric.Metrics
+	producer          *arrow_record.Producer
+	batchArrowRecords []*colarspb.BatchArrowRecords
+	config            *benchmark.Config
+	pool              *memory.GoAllocator
 }
 
-func NewMetricsProfileable(tags []string, dataset dataset.MetricsDataset, config *config.Config, multivariateConfig *metrics.MultivariateMetricsConfig, compression benchmark.CompressionAlgorithm) *MetricsProfileable {
+func NewMetricsProfileable(tags []string, dataset dataset.MetricsDataset, config *benchmark.Config, compression benchmark.CompressionAlgorithm) *MetricsProfileable {
 	return &MetricsProfileable{
-		tags:               tags,
-		dataset:            dataset,
-		compression:        compression,
-		producer:           arrow_record.NewProducer(),
-		batchArrowRecords:  make([]*colarspb.BatchArrowRecords, 0, 10),
-		config:             config,
-		multivariateConfig: multivariateConfig,
-		pool:               memory.NewGoAllocator(),
+		tags:              tags,
+		dataset:           dataset,
+		compression:       compression,
+		producer:          arrow_record.NewProducer(),
+		batchArrowRecords: make([]*colarspb.BatchArrowRecords, 0, 10),
+		config:            config,
+		pool:              memory.NewGoAllocator(),
 	}
 }
 

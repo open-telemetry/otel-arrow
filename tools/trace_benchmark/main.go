@@ -21,7 +21,6 @@ import (
 
 	"github.com/dustin/go-humanize"
 
-	"github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/otlp"
@@ -57,7 +56,7 @@ func main() {
 		profiler.Printf("Dataset '%s' (%s) loaded\n", inputFiles[i], humanize.Bytes(uint64(ds.SizeInBytes())))
 		otlpTraces := otlp.NewTraceProfileable(ds, compressionAlgo)
 
-		conf := config.NewUint16DefaultConfig()
+		conf := &benchmark.Config{}
 		otlpArrowTraces := otlp_arrow.NewTraceProfileable([]string{"uint16 dict"}, ds, conf, compressionAlgo)
 
 		if err := profiler.Profile(otlpTraces, maxIter); err != nil {

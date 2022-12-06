@@ -19,12 +19,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/f5/otel-arrow-adapter/pkg/air/config"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/otlp_arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics"
 )
 
 var help = flag.Bool("help", false, "Show help")
@@ -45,9 +43,6 @@ func main() {
 		inputFiles = append(inputFiles, "./data/otlp_metrics.pb")
 	}
 
-	multivariateConf := metrics.NewMultivariateMetricsConfig()
-	// ToDo Multivariate metrics configuration TBD somewhere
-
 	// Compare the performance for each input file
 	for i := range inputFiles {
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
@@ -58,7 +53,7 @@ func main() {
 		profiler.Printf("Dataset '%s'\n", inputFiles[i])
 		ds := dataset.NewRealMetricsDataset(inputFiles[i])
 		otlpMetrics := otlp.NewMetricsProfileable(ds, compressionAlgo)
-		otlpArrowMetricsWithDictionary := otlp_arrow.NewMetricsProfileable([]string{"With dict"}, ds, config.NewUint8DefaultConfig(), multivariateConf, compressionAlgo)
+		otlpArrowMetricsWithDictionary := otlp_arrow.NewMetricsProfileable([]string{"With dict"}, ds, &benchmark.Config{}, compressionAlgo)
 
 		if err := profiler.Profile(otlpMetrics, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
