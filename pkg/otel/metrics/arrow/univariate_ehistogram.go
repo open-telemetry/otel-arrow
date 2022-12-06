@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -70,7 +70,7 @@ func (b *UnivariateEHistogramBuilder) Release() {
 }
 
 // Append appends a new histogram to the builder.
-func (b *UnivariateEHistogramBuilder) Append(eh pmetric.ExponentialHistogram) error {
+func (b *UnivariateEHistogramBuilder) Append(eh pmetric.ExponentialHistogram, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
 		return fmt.Errorf("UnivariateEHistogramBuilder: Append() called after Release()")
 	}
@@ -82,14 +82,18 @@ func (b *UnivariateEHistogramBuilder) Append(eh pmetric.ExponentialHistogram) er
 		b.hdplb.Append(true)
 		b.hdplb.Reserve(dpc)
 		for i := 0; i < dpc; i++ {
-			if err := b.hdpb.Append(dps.At(i)); err != nil {
+			if err := b.hdpb.Append(dps.At(i), smdata, mdata); err != nil {
 				return err
 			}
 		}
 	} else {
 		b.hdplb.Append(false)
 	}
-	b.atb.Append(int32(eh.AggregationTemporality()))
+	if eh.AggregationTemporality() == pmetric.AggregationTemporalityUnspecified {
+		b.atb.AppendNull()
+	} else {
+		b.atb.Append(int32(eh.AggregationTemporality()))
+	}
 
 	return nil
 }

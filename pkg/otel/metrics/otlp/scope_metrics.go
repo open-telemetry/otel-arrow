@@ -1,7 +1,8 @@
 package otlp
 
 import (
-	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v10/arrow"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
@@ -10,10 +11,13 @@ import (
 )
 
 type ScopeMetricsIds struct {
-	Id           int
-	SchemaUrl    int
-	ScopeIds     *otlp.ScopeIds
-	MetricSetIds *MetricSetIds
+	Id                 int
+	SchemaUrl          int
+	ScopeIds           *otlp.ScopeIds
+	MetricSetIds       *MetricSetIds
+	SharedAttributeIds *otlp.AttributeIds
+	SharedStartTimeID  int
+	SharedTimeID       int
 }
 
 func NewScopeMetricsIds(dt *arrow.StructType) (*ScopeMetricsIds, error) {
@@ -37,11 +41,18 @@ func NewScopeMetricsIds(dt *arrow.StructType) (*ScopeMetricsIds, error) {
 		return nil, err
 	}
 
+	sharedAttrIds := otlp.NewSharedAttributeIds(scopeMetricsDT)
+	startTimeID := arrowutils.OptionalFieldIDFromStruct(scopeMetricsDT, constants.SHARED_START_TIME_UNIX_NANO)
+	timeID := arrowutils.OptionalFieldIDFromStruct(scopeMetricsDT, constants.SHARED_TIME_UNIX_NANO)
+
 	return &ScopeMetricsIds{
-		Id:           id,
-		SchemaUrl:    schemaId,
-		ScopeIds:     scopeIds,
-		MetricSetIds: metricSetIds,
+		Id:                 id,
+		SchemaUrl:          schemaId,
+		ScopeIds:           scopeIds,
+		MetricSetIds:       metricSetIds,
+		SharedAttributeIds: sharedAttrIds,
+		SharedStartTimeID:  startTimeID,
+		SharedTimeID:       timeID,
 	}, nil
 }
 
@@ -66,6 +77,21 @@ func AppendScopeMetricsInto(resMetrics pmetric.ResourceMetrics, arrowResMetrics 
 		}
 		scopeMetrics.SetSchemaUrl(schemaUrl)
 
+		sdata := &SharedData{}
+		if ids.SharedAttributeIds != nil {
+			sdata.Attributes = pcommon.NewMap()
+			err = otlp.AppendAttributesInto(sdata.Attributes, arrowScopeMetrics.Array(), scopeMetricsIdx, ids.SharedAttributeIds)
+			if err != nil {
+				return err
+			}
+		}
+		if ids.SharedStartTimeID != -1 {
+			sdata.StartTime = arrowScopeMetrics.OptionalTimestampFieldByID(ids.SharedStartTimeID, scopeMetricsIdx)
+		}
+		if ids.SharedTimeID != -1 {
+			sdata.Time = arrowScopeMetrics.OptionalTimestampFieldByID(ids.SharedTimeID, scopeMetricsIdx)
+		}
+
 		arrowMetrics, err := arrowScopeMetrics.ListOfStructsById(scopeMetricsIdx, ids.MetricSetIds.Id)
 		if err != nil {
 			return err
@@ -73,7 +99,7 @@ func AppendScopeMetricsInto(resMetrics pmetric.ResourceMetrics, arrowResMetrics 
 		metricsSlice := scopeMetrics.Metrics()
 		metricsSlice.EnsureCapacity(arrowMetrics.End() - arrowMetrics.Start())
 		for entityIdx := arrowMetrics.Start(); entityIdx < arrowMetrics.End(); entityIdx++ {
-			err = AppendMetricSetInto(metricsSlice, arrowMetrics, entityIdx, ids.MetricSetIds)
+			err = AppendMetricSetInto(metricsSlice, arrowMetrics, entityIdx, ids.MetricSetIds, sdata)
 			if err != nil {
 				return err
 			}

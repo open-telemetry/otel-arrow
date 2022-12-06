@@ -15,6 +15,7 @@
 package datagen
 
 import (
+	"fmt"
 	"time"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -30,6 +31,14 @@ type MetricsGenerator struct {
 
 func NewMetricsGenerator(entropy TestEntropy, resourceAttributes []pcommon.Map, instrumentationScopes []pcommon.InstrumentationScope) *MetricsGenerator {
 	return NewMetricsGeneratorWithDataGenerator(NewDataGenerator(entropy, resourceAttributes, instrumentationScopes))
+}
+
+func NewMetricsGeneratorFromEntropy(entropy TestEntropy) *MetricsGenerator {
+	return NewMetricsGeneratorWithDataGenerator(NewDataGenerator(
+		entropy,
+		entropy.NewStandardResourceAttributes(),
+		entropy.NewStandardInstrumentationScopes()),
+	)
 }
 
 func NewMetricsGeneratorWithDataGenerator(dataGenerator *DataGenerator) *MetricsGenerator {
@@ -70,6 +79,24 @@ func (mg *MetricsGenerator) Generate(batchSize int, collectInterval time.Duratio
 	mg.generation++
 
 	return result
+}
+
+func (mg *MetricsGenerator) GenerateMetricSlice(batchSize int, collectInterval time.Duration) pmetric.MetricSlice {
+	metrics := pmetric.NewMetricSlice()
+
+	for i := 0; i < batchSize; i++ {
+		mg.AdvanceTime(collectInterval)
+
+		mg.SystemCpuTime(metrics.AppendEmpty(), 1)
+		mg.SystemMemoryUsage(metrics.AppendEmpty())
+		mg.SystemCpuLoadAverage1m(metrics.AppendEmpty())
+		mg.FakeHistogram(metrics.AppendEmpty())
+		mg.FakeExpHistogram(metrics.AppendEmpty())
+	}
+
+	mg.generation++
+
+	return metrics
 }
 
 func (mg *MetricsGenerator) GenerateSystemCpuTime(batchSize int, collectInterval time.Duration) pmetric.Metrics {
@@ -127,8 +154,17 @@ func (dg *DataGenerator) SystemCpuTime(metric pmetric.Metric, cpuCount int) {
 	for cpu := 0; cpu < cpuCount; cpu++ {
 		for _, state := range cpuStates {
 			dataPoint := points.AppendEmpty()
+
 			dataPoint.Attributes().PutStr("state", state)
 			dataPoint.Attributes().PutInt("cpu", int64(cpu))
+			dataPoint.Attributes().PutStr("cpu_id", fmt.Sprintf("cpu-%d", cpu))
+			dataPoint.Attributes().PutStr("cpu_arch", "x86-64")
+			dataPoint.Attributes().PutStr("cpu_vendor", "intel")
+			dataPoint.Attributes().PutStr("cpu_model", "i7")
+			dataPoint.Attributes().PutStr("cpu_mhz", "2.4")
+			dataPoint.Attributes().PutStr("cpu_cores", "4")
+			dataPoint.Attributes().PutStr("cpu_logical_processors", "8")
+
 			dataPoint.SetStartTimestamp(dg.PrevTime())
 			dataPoint.SetTimestamp(dg.CurrentTime())
 			dataPoint.SetDoubleValue(dg.GenF64Range(0.0, 1.0))
@@ -152,18 +188,43 @@ func (dg *DataGenerator) SystemMemoryUsage(metric pmetric.Metric) {
 
 	p1 := points.AppendEmpty()
 	p1.Attributes().PutStr("state", "used")
+	p1.Attributes().PutInt("cpu", 0)
+	p1.Attributes().PutStr("cpu_model", "i7")
+	p1.Attributes().PutStr("cpu_mhz", "2.4")
+	p1.Attributes().PutStr("cpu_cores", "4")
+	p1.Attributes().PutStr("cpu_logical_processors", "8")
+	p1.Attributes().PutStr("cpu_id", "cpu-0")
+	p1.Attributes().PutStr("cpu_arch", "x86-64")
+	p1.Attributes().PutStr("cpu_vendor", "intel")
+
 	p1.SetStartTimestamp(dg.PrevTime())
 	p1.SetTimestamp(dg.CurrentTime())
 	p1.SetIntValue(dg.GenI64Range(10_000_000_000, 13_000_000_000))
 
 	p2 := points.AppendEmpty()
 	p2.Attributes().PutStr("state", "free")
+	p2.Attributes().PutInt("cpu", 0)
+	p2.Attributes().PutStr("cpu_id", "cpu-0")
+	p2.Attributes().PutStr("cpu_arch", "x86-64")
+	p2.Attributes().PutStr("cpu_cores", "4")
+	p2.Attributes().PutStr("cpu_logical_processors", "8")
+	p2.Attributes().PutStr("cpu_vendor", "intel")
+	p2.Attributes().PutStr("cpu_model", "i7")
+	p2.Attributes().PutStr("cpu_mhz", "2.4")
 	p2.SetStartTimestamp(dg.PrevTime())
 	p2.SetTimestamp(dg.CurrentTime())
 	p2.SetIntValue(dg.GenI64Range(300_000_000, 500_000_000))
 
 	p3 := points.AppendEmpty()
 	p3.Attributes().PutStr("state", "inactive")
+	p3.Attributes().PutInt("cpu", 0)
+	p3.Attributes().PutStr("cpu_id", "cpu-0")
+	p3.Attributes().PutStr("cpu_arch", "x86-64")
+	p3.Attributes().PutStr("cpu_vendor", "intel")
+	p3.Attributes().PutStr("cpu_model", "i7")
+	p3.Attributes().PutStr("cpu_mhz", "2.4")
+	p3.Attributes().PutStr("cpu_cores", "4")
+	p3.Attributes().PutStr("cpu_logical_processors", "8")
 	p3.SetStartTimestamp(dg.PrevTime())
 	p3.SetTimestamp(dg.CurrentTime())
 	p3.SetIntValue(4_000_000_000)
@@ -184,6 +245,17 @@ func (dg *DataGenerator) SystemCpuLoadAverage1m(metric pmetric.Metric) {
 	point.SetStartTimestamp(dg.PrevTime())
 	point.SetTimestamp(dg.CurrentTime())
 	point.SetDoubleValue(dg.GenF64Range(1.0, 100.0))
+
+	attrs := point.Attributes()
+	attrs.EnsureCapacity(2)
+	attrs.PutInt("cpu", 0)
+	attrs.PutStr("cpu_id", "cpu-0")
+	attrs.PutStr("cpu_arch", "x86-64")
+	attrs.PutStr("cpu_vendor", "intel")
+	attrs.PutStr("cpu_model", "i7")
+	attrs.PutStr("cpu_mhz", "2.4")
+	attrs.PutStr("cpu_cores", "4")
+	attrs.PutStr("cpu_logical_processors", "8")
 }
 
 // FakeHistogram generates a fake histogram metric.
@@ -208,6 +280,19 @@ func (dg *DataGenerator) FakeHistogram(metric pmetric.Metric) {
 		dp := dps.AppendEmpty()
 		dp.SetStartTimestamp(dg.PrevTime())
 		dp.SetTimestamp(dg.CurrentTime())
+
+		attrs := dp.Attributes()
+		attrs.EnsureCapacity(2)
+		attrs.PutStr("freq", "3GHz")
+		attrs.PutInt("cpu", 0)
+		attrs.PutStr("cpu_id", "cpu-0")
+		attrs.PutStr("cpu_arch", "x86-64")
+		attrs.PutStr("cpu_vendor", "intel")
+		attrs.PutStr("cpu_model", "i7")
+		attrs.PutStr("cpu_mhz", "2.4")
+		attrs.PutStr("cpu_cores", "4")
+		attrs.PutStr("cpu_logical_processors", "8")
+
 		dp.SetCount(uint64(dg.GenI64Range(0, 100)))
 		if dg.HasHistogramSum() {
 			dp.SetSum(dg.GenF64Range(0, 100))
@@ -256,6 +341,19 @@ func (dg *DataGenerator) FakeExpHistogram(metric pmetric.Metric) {
 		dp := dps.AppendEmpty()
 		dp.SetStartTimestamp(dg.PrevTime())
 		dp.SetTimestamp(dg.CurrentTime())
+
+		attrs := dp.Attributes()
+		attrs.EnsureCapacity(2)
+		attrs.PutStr("freq", "3GHz")
+		attrs.PutInt("cpu", 0)
+		attrs.PutStr("cpu_id", "cpu-0")
+		attrs.PutStr("cpu_arch", "x86-64")
+		attrs.PutStr("cpu_vendor", "intel")
+		attrs.PutStr("cpu_model", "i7")
+		attrs.PutStr("cpu_mhz", "2.4")
+		attrs.PutStr("cpu_cores", "4")
+		attrs.PutStr("cpu_logical_processors", "8")
+
 		dp.SetCount(uint64(dg.GenI64Range(0, 100)))
 		if dg.HasHistogramSum() {
 			dp.SetSum(dg.GenF64Range(0, 100))

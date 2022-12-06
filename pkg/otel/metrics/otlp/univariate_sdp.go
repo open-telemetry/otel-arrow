@@ -3,7 +3,7 @@ package otlp
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v10/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
@@ -76,7 +76,7 @@ func NewUnivariateSdpIds(parentDT *arrow.StructType) (*UnivariateSdpIds, error) 
 	}, nil
 }
 
-func AppendUnivariateSdpInto(ndpSlice pmetric.SummaryDataPointSlice, ndp *arrowutils.ListOfStructs, ids *UnivariateSdpIds) error {
+func AppendUnivariateSdpInto(ndpSlice pmetric.SummaryDataPointSlice, ndp *arrowutils.ListOfStructs, ids *UnivariateSdpIds, smdata *SharedData, mdata *SharedData) error {
 	if ndp == nil {
 		return nil
 	}
@@ -88,21 +88,46 @@ func AppendUnivariateSdpInto(ndpSlice pmetric.SummaryDataPointSlice, ndp *arrowu
 			continue
 		}
 
-		if err := otlp.AppendAttributesInto(sdpValue.Attributes(), ndp.Array(), idx, ids.Attributes); err != nil {
+		attrs := sdpValue.Attributes()
+		if err := otlp.AppendAttributesInto(attrs, ndp.Array(), idx, ids.Attributes); err != nil {
 			return err
+		}
+		smdata.Attributes.Range(func(k string, v pcommon.Value) bool {
+			v.CopyTo(attrs.PutEmpty(k))
+			return true
+		})
+		mdata.Attributes.Range(func(k string, v pcommon.Value) bool {
+			v.CopyTo(attrs.PutEmpty(k))
+			return true
+		})
+
+		if smdata.StartTime != nil {
+			sdpValue.SetStartTimestamp(*smdata.StartTime)
+		} else {
+			if mdata.StartTime != nil {
+				sdpValue.SetStartTimestamp(*mdata.StartTime)
+			} else {
+				startTimeUnixNano, err := ndp.U64FieldByID(ids.StartTimeUnixNano, idx)
+				if err != nil {
+					return err
+				}
+				sdpValue.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
+			}
 		}
 
-		startTimeUnixNano, err := ndp.U64FieldByID(ids.StartTimeUnixNano, idx)
-		if err != nil {
-			return err
+		if smdata.Time != nil {
+			sdpValue.SetTimestamp(*smdata.Time)
+		} else {
+			if mdata.StartTime != nil {
+				sdpValue.SetTimestamp(*mdata.Time)
+			} else {
+				timeUnixNano, err := ndp.U64FieldByID(ids.TimeUnixNano, idx)
+				if err != nil {
+					return err
+				}
+				sdpValue.SetTimestamp(pcommon.Timestamp(timeUnixNano))
+			}
 		}
-		sdpValue.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
-
-		timeUnixNano, err := ndp.U64FieldByID(ids.TimeUnixNano, idx)
-		if err != nil {
-			return err
-		}
-		sdpValue.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 
 		count, err := ndp.U64FieldByID(ids.Count, idx)
 		if err != nil {

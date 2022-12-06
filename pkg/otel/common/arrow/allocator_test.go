@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"github.com/stretchr/testify/require"
 )
 

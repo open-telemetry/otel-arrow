@@ -17,8 +17,8 @@ package metrics
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
 
 	arrow2 "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	commonarrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
@@ -83,7 +83,7 @@ func SetMetricsFrom(metrics pmetric.MetricSlice, record arrow.Record, row int) e
 	if err != nil {
 		return err
 	}
-	metricsField, arr, err := arrow2.FieldArray(record, constants.METRICS)
+	metricsField, arr, err := arrow2.FieldArray(record, constants.UNIVARIATE_METRICS)
 	if err != nil {
 		return err
 	}

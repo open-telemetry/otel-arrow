@@ -3,9 +3,10 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow/memory"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
@@ -19,6 +20,9 @@ var (
 		arrow.Field{Name: constants.DESCRIPTION, Type: acommon.DefaultDictString},
 		arrow.Field{Name: constants.UNIT, Type: acommon.DefaultDictString},
 		arrow.Field{Name: constants.DATA, Type: UnivariateMetricDT},
+		arrow.Field{Name: constants.SHARED_ATTRIBUTES, Type: acommon.AttributesDT},
+		arrow.Field{Name: constants.SHARED_START_TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
+		arrow.Field{Name: constants.SHARED_TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
 	)
 
 	// MultivariateMetricsDT is the Arrow Data Type describing a set of multivariate metrics.
@@ -28,14 +32,6 @@ var (
 		{Name: constants.DESCRIPTION, Type: acommon.DefaultDictString},
 		{Name: constants.UNIT, Type: acommon.DefaultDictString},
 		// TODO
-		// attributes
-		// start time
-		// end time
-		// [metrics]
-		// - sub-name
-		// - value
-		// - exemplars
-		// - flags
 	}...)
 )
 
@@ -45,10 +41,13 @@ type MetricSetBuilder struct {
 
 	builder *array.StructBuilder
 
-	nb  *acommon.AdaptiveDictionaryBuilder // metric name builder
-	db  *acommon.AdaptiveDictionaryBuilder // metric description builder
-	ub  *acommon.AdaptiveDictionaryBuilder // metric unit builder
-	dtb *UnivariateMetricBuilder           // univariate metric builder
+	nb     *acommon.AdaptiveDictionaryBuilder // metric name builder
+	db     *acommon.AdaptiveDictionaryBuilder // metric description builder
+	ub     *acommon.AdaptiveDictionaryBuilder // metric unit builder
+	dtb    *UnivariateMetricBuilder           // univariate metric builder
+	sab    *acommon.AttributesBuilder         // shared attributes builder
+	sstunb *array.Uint64Builder               // shared start time unix nano builder
+	stunb  *array.Uint64Builder               // shared time unix nano builder
 }
 
 // NewMetricSetBuilder creates a new SpansBuilder with a given allocator.
@@ -68,6 +67,9 @@ func MetricSetBuilderFrom(sb *array.StructBuilder) *MetricSetBuilder {
 		db:       acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(1)),
 		ub:       acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(2)),
 		dtb:      UnivariateMetricBuilderFrom(sb.FieldBuilder(3).(*array.SparseUnionBuilder)),
+		sab:      acommon.AttributesBuilderFrom(sb.FieldBuilder(4).(*array.MapBuilder)),
+		sstunb:   sb.FieldBuilder(5).(*array.Uint64Builder),
+		stunb:    sb.FieldBuilder(6).(*array.Uint64Builder),
 	}
 }
 
@@ -85,7 +87,7 @@ func (b *MetricSetBuilder) Build() (*array.Struct, error) {
 }
 
 // Append appends a new metric to the builder.
-func (b *MetricSetBuilder) Append(metric pmetric.Metric) error {
+func (b *MetricSetBuilder) Append(metric pmetric.Metric, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
 		return fmt.Errorf("metric set builder already released")
 	}
@@ -116,8 +118,29 @@ func (b *MetricSetBuilder) Append(metric pmetric.Metric) error {
 			return err
 		}
 	}
-	if err := b.dtb.Append(metric); err != nil {
+	if err := b.dtb.Append(metric, smdata, mdata); err != nil {
 		return err
+	}
+
+	attrs := pcommon.NewMap()
+	if mdata.Attributes != nil && mdata.Attributes.Len() > 0 {
+		mdata.Attributes.CopyTo(attrs)
+	}
+	err := b.sab.Append(attrs)
+	if err != nil {
+		return err
+	}
+
+	if mdata != nil && mdata.StartTime != nil {
+		b.sstunb.Append(uint64(*mdata.StartTime))
+	} else {
+		b.sstunb.AppendNull()
+	}
+
+	if mdata != nil && mdata.Time != nil {
+		b.stunb.Append(uint64(*mdata.Time))
+	} else {
+		b.stunb.AppendNull()
 	}
 
 	return nil

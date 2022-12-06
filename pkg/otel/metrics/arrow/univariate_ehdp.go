@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
@@ -104,17 +104,25 @@ func (b *EHistogramDataPointBuilder) Release() {
 }
 
 // Append appends a new histogram data point to the builder.
-func (b *EHistogramDataPointBuilder) Append(hdp pmetric.ExponentialHistogramDataPoint) error {
+func (b *EHistogramDataPointBuilder) Append(hdp pmetric.ExponentialHistogramDataPoint, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
 		return fmt.Errorf("EHistogramDataPointBuilder: Append() called after Release()")
 	}
 
 	b.builder.Append(true)
-	if err := b.ab.Append(hdp.Attributes()); err != nil {
+	if err := b.ab.AppendUniqueAttributes(hdp.Attributes(), smdata.Attributes, mdata.Attributes); err != nil {
 		return err
 	}
-	b.stunb.Append(uint64(hdp.StartTimestamp()))
-	b.tunb.Append(uint64(hdp.Timestamp()))
+	if smdata.StartTime == nil && mdata.StartTime == nil {
+		b.stunb.Append(uint64(hdp.StartTimestamp()))
+	} else {
+		b.stunb.AppendNull()
+	}
+	if smdata.Time == nil && mdata.Time == nil {
+		b.tunb.Append(uint64(hdp.Timestamp()))
+	} else {
+		b.tunb.AppendNull()
+	}
 	b.hcb.Append(hdp.Count())
 	if hdp.HasSum() {
 		b.hsb.Append(hdp.Sum())
@@ -143,7 +151,11 @@ func (b *EHistogramDataPointBuilder) Append(hdp pmetric.ExponentialHistogramData
 	} else {
 		b.elb.Append(false)
 	}
-	b.fb.Append(uint32(hdp.Flags()))
+	if hdp.Flags() != 0 {
+		b.fb.Append(uint32(hdp.Flags()))
+	} else {
+		b.fb.AppendNull()
+	}
 
 	if hdp.HasMin() {
 		b.hmib.Append(hdp.Min())

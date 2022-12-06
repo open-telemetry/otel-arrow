@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
@@ -108,8 +108,8 @@ func TestMetricsSingleBatchWithDictionaryOverflow(t *testing.T) {
 	schema := producer.MetricsAdaptiveSchema()
 	dictWithOverflow := schema.DictionariesWithOverflow()
 	require.Equal(t, 2, len(dictWithOverflow))
-	require.Equal(t, "uint16", dictWithOverflow["resource_metrics.scope_metrics.metrics.name"])
-	require.Equal(t, "uint16", dictWithOverflow["resource_metrics.scope_metrics.metrics.description"])
+	require.Equal(t, "uint16", dictWithOverflow["resource_metrics.scope_metrics.univariate_metrics.name"])
+	require.Equal(t, "uint16", dictWithOverflow["resource_metrics.scope_metrics.univariate_metrics.description"])
 }
 
 // TestMetricsMultiBatchWithDictionaryOverflow
@@ -160,8 +160,8 @@ func TestMetricsMultiBatchWithDictionaryOverflow(t *testing.T) {
 	schema := producer.MetricsAdaptiveSchema()
 	dictWithOverflow := schema.DictionariesWithOverflow()
 	require.Equal(t, 2, len(dictWithOverflow))
-	require.Equal(t, "uint16", dictWithOverflow["resource_metrics.scope_metrics.metrics.name"])
-	require.Equal(t, "uint16", dictWithOverflow["resource_metrics.scope_metrics.metrics.description"])
+	require.Equal(t, "uint16", dictWithOverflow["resource_metrics.scope_metrics.univariate_metrics.name"])
+	require.Equal(t, "uint16", dictWithOverflow["resource_metrics.scope_metrics.univariate_metrics.description"])
 }
 
 // TestMetricsSingleBatchWithDictionaryLimit
@@ -211,8 +211,8 @@ func TestMetricsSingleBatchWithDictionaryLimit(t *testing.T) {
 	schema := producer.MetricsAdaptiveSchema()
 	dictWithOverflow := schema.DictionariesWithOverflow()
 	require.Equal(t, 2, len(dictWithOverflow))
-	require.Equal(t, "utf8", dictWithOverflow["resource_metrics.scope_metrics.metrics.name"])
-	require.Equal(t, "utf8", dictWithOverflow["resource_metrics.scope_metrics.metrics.description"])
+	require.Equal(t, "utf8", dictWithOverflow["resource_metrics.scope_metrics.univariate_metrics.name"])
+	require.Equal(t, "utf8", dictWithOverflow["resource_metrics.scope_metrics.univariate_metrics.description"])
 }
 
 func GenerateMetrics(initValue int, metricCount int) pmetric.Metrics {

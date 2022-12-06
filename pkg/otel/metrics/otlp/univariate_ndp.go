@@ -3,8 +3,8 @@ package otlp
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
@@ -70,7 +70,7 @@ func NewUnivariateNdpIds(parentDT *arrow.StructType) (*UnivariateNdpIds, error) 
 	}, nil
 }
 
-func AppendUnivariateNdpInto(ndpSlice pmetric.NumberDataPointSlice, ndp *arrowutils.ListOfStructs, ids *UnivariateNdpIds) error {
+func AppendUnivariateNdpInto(ndpSlice pmetric.NumberDataPointSlice, ndp *arrowutils.ListOfStructs, ids *UnivariateNdpIds, smdata *SharedData, mdata *SharedData) error {
 	if ndp == nil {
 		return nil
 	}
@@ -82,20 +82,45 @@ func AppendUnivariateNdpInto(ndpSlice pmetric.NumberDataPointSlice, ndp *arrowut
 			continue
 		}
 
-		if err := otlp.AppendAttributesInto(ndpValue.Attributes(), ndp.Array(), ndpIdx, ids.Attributes); err != nil {
+		attrs := ndpValue.Attributes()
+		if err := otlp.AppendAttributesInto(attrs, ndp.Array(), ndpIdx, ids.Attributes); err != nil {
 			return err
 		}
+		smdata.Attributes.Range(func(k string, v pcommon.Value) bool {
+			v.CopyTo(attrs.PutEmpty(k))
+			return true
+		})
+		mdata.Attributes.Range(func(k string, v pcommon.Value) bool {
+			v.CopyTo(attrs.PutEmpty(k))
+			return true
+		})
 
-		startTimeUnixNano, err := ndp.U64FieldByID(ids.StartTimeUnixNano, ndpIdx)
-		if err != nil {
-			return err
+		if smdata.StartTime != nil {
+			ndpValue.SetStartTimestamp(*smdata.StartTime)
+		} else {
+			if mdata.StartTime != nil {
+				ndpValue.SetStartTimestamp(*mdata.StartTime)
+			} else {
+				startTimeUnixNano, err := ndp.U64FieldByID(ids.StartTimeUnixNano, ndpIdx)
+				if err != nil {
+					return err
+				}
+				ndpValue.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
+			}
 		}
-		ndpValue.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
-		timeUnixNano, err := ndp.U64FieldByID(ids.TimeUnixNano, ndpIdx)
-		if err != nil {
-			return err
+		if smdata.Time != nil {
+			ndpValue.SetTimestamp(*smdata.Time)
+		} else {
+			if mdata.Time != nil {
+				ndpValue.SetTimestamp(*mdata.Time)
+			} else {
+				timeUnixNano, err := ndp.U64FieldByID(ids.TimeUnixNano, ndpIdx)
+				if err != nil {
+					return err
+				}
+				ndpValue.SetTimestamp(pcommon.Timestamp(timeUnixNano))
+			}
 		}
-		ndpValue.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 
 		value := ndp.FieldByID(ids.MetricValue)
 		if valueArr, ok := value.(*array.DenseUnion); ok {

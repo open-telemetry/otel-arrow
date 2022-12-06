@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -94,7 +94,7 @@ func (b *UnivariateMetricBuilder) Release() {
 }
 
 // Append appends a new univariate metric to the builder.
-func (b *UnivariateMetricBuilder) Append(metric pmetric.Metric) error {
+func (b *UnivariateMetricBuilder) Append(metric pmetric.Metric, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
 		return fmt.Errorf("UnivariateMetricBuilder: Append() called after Release()")
 	}
@@ -102,7 +102,7 @@ func (b *UnivariateMetricBuilder) Append(metric pmetric.Metric) error {
 	switch metric.Type() {
 	case pmetric.MetricTypeGauge:
 		b.builder.Append(GaugeCode)
-		if err := b.gb.Append(metric.Gauge()); err != nil {
+		if err := b.gb.Append(metric.Gauge(), smdata, mdata); err != nil {
 			return err
 		}
 		b.sb.AppendNull()
@@ -111,7 +111,7 @@ func (b *UnivariateMetricBuilder) Append(metric pmetric.Metric) error {
 		b.ehb.AppendNull()
 	case pmetric.MetricTypeSum:
 		b.builder.Append(SumCode)
-		if err := b.sb.Append(metric.Sum()); err != nil {
+		if err := b.sb.Append(metric.Sum(), smdata, mdata); err != nil {
 			return err
 		}
 		b.gb.AppendNull()
@@ -120,7 +120,7 @@ func (b *UnivariateMetricBuilder) Append(metric pmetric.Metric) error {
 		b.ehb.AppendNull()
 	case pmetric.MetricTypeSummary:
 		b.builder.Append(SummaryCode)
-		if err := b.syb.Append(metric.Summary()); err != nil {
+		if err := b.syb.Append(metric.Summary(), smdata, mdata); err != nil {
 			return err
 		}
 		b.gb.AppendNull()
@@ -129,7 +129,7 @@ func (b *UnivariateMetricBuilder) Append(metric pmetric.Metric) error {
 		b.ehb.AppendNull()
 	case pmetric.MetricTypeHistogram:
 		b.builder.Append(HistogramCode)
-		if err := b.hb.Append(metric.Histogram()); err != nil {
+		if err := b.hb.Append(metric.Histogram(), smdata, mdata); err != nil {
 			return err
 		}
 		b.gb.AppendNull()
@@ -138,7 +138,7 @@ func (b *UnivariateMetricBuilder) Append(metric pmetric.Metric) error {
 		b.ehb.AppendNull()
 	case pmetric.MetricTypeExponentialHistogram:
 		b.builder.Append(ExpHistogramCode)
-		if err := b.ehb.Append(metric.ExponentialHistogram()); err != nil {
+		if err := b.ehb.Append(metric.ExponentialHistogram(), smdata, mdata); err != nil {
 			return err
 		}
 		b.gb.AppendNull()

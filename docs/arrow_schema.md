@@ -41,7 +41,6 @@ exemplars: &exemplars
 
 # Metrics Arrow Schema
 # OTLP univariate metrics are represented with the following Arrow Schema.
-# TODO: Multivariate metrics
 
 resource_metrics:
     - resource: 
@@ -55,22 +54,40 @@ resource_metrics:
             attributes: *attributes
             dropped_attributes_count: uint32
           schema_url: string | string_dictionary
-          metrics: 
+          # This section represents the standard OTLP metrics as defined in OTEL v1 
+          # specifications.
+          #
+          # Named univariate metrics as their representation allow to represent each
+          # metric as independent measurement with their own specific timestamps and
+          # attributes.
+          #
+          # Shared attributes and timestamps are optional and only used for optimization
+          # purposes.
+          univariate_metrics:                             
             - name: string | string_dictionary            # required
               description: string | string_dictionary
               unit: string | string_dictionary 
+              shared_attributes: *attributes              # attributes inherited by data points if not defined locally 
+              shared_start_time_unix_nano: uint64         # start time inherited by data points if not defined locally
+              shared_time_unix_nano: uint64               # required if not defined in data points
               data:                                       # arrow type = sparse union
                 - gauge: 
+                    shared_attributes: *attributes              # attributes inherited by data points if not defined locally 
+                    shared_start_time_unix_nano: uint64         # start time inherited by data points if not defined locally
+                    shared_time_unix_nano: uint64               # required if not defined in data points
                     data_points: 
                       - attributes: *attributes
                         start_time_unix_nano: uint64
-                        time_unix_nano: uint64            # required
+                        time_unix_nano: uint64            # required if not defined as a shared field in the metric
                         value:                            # arrow type = dense union
                           i64: int64 
                           f64: float64 
                         exemplars: *exemplars
                         flags: uint32
-                  sum: 
+                  sum:
+                    shared_attributes: *attributes              # attributes inherited by data points if not defined locally 
+                    shared_start_time_unix_nano: uint64         # start time inherited by data points if not defined locally
+                    shared_time_unix_nano: uint64               # required if not defined in data points
                     data_points: 
                       - attributes: *attributes
                         start_time_unix_nano: uint64
@@ -82,7 +99,10 @@ resource_metrics:
                         flags: uint32
                     aggregation_temporality: int32
                     is_monotonic: bool
-                  summary: 
+                  summary:
+                    shared_attributes: *attributes              # attributes inherited by data points if not defined locally 
+                    shared_start_time_unix_nano: uint64         # start time inherited by data points if not defined locally
+                    shared_time_unix_nano: uint64               # required if not defined in data points
                     data_points: 
                       - attributes: *attributes
                         start_time_unix_nano: uint64
@@ -94,6 +114,9 @@ resource_metrics:
                             value: float64
                         flags: uint32
                   histogram:
+                    shared_attributes: *attributes              # attributes inherited by data points if not defined locally 
+                    shared_start_time_unix_nano: uint64         # start time inherited by data points if not defined locally
+                    shared_time_unix_nano: uint64               # required if not defined in data points
                     data_points:
                       - attributes: *attributes
                         start_time_unix_nano: uint64
@@ -102,12 +125,15 @@ resource_metrics:
                         sum: float64
                         bucket_counts: []uint64
                         explicit_bounds: []float64
-                        exemplars: *exemplars
-                        flags: uint32
                         min: float64
                         max: float64
+                        exemplars: *exemplars
+                        flags: uint32
                     aggregation_temporality: int32
                   exp_histogram:
+                    shared_attributes: *attributes              # attributes inherited by data points if not defined locally 
+                    shared_start_time_unix_nano: uint64         # start time inherited by data points if not defined locally
+                    shared_time_unix_nano: uint64               # required if not defined in data points
                     data_points:
                       - attributes: *attributes
                         start_time_unix_nano: uint64
@@ -122,11 +148,85 @@ resource_metrics:
                         negative:
                           offset: int32
                           bucket_counts: []uint64
-                        exemplars: *exemplars
-                        flags: uint32
                         min: float64
                         max: float64
+                        exemplars: *exemplars
+                        flags: uint32
                     aggregation_temporality: int32
+          # Native support of multivariate metrics (not yet implemented)
+          #
+          # Multivariate metrics are related metrics sharing the same context, i.e. the same
+          # attributes and timestamps.
+          #
+          # Each metrics is defined by a name, a set of data points, and optionally a description
+          # and a unit.
+          multivariate_metrics:                       
+            attributes: *attributes                   # All multivariate metrics shared the same attributes
+            start_time_unix_nano: uint64              # All multivariate metrics shared the same timestamps
+            time_unix_nano: uint64                    # required
+            metrics:                                     # arrow type = sparse union
+              - gauge:
+                  name: string | string_dictionary            # required
+                  description: string | string_dictionary
+                  unit: string | string_dictionary 
+                  value:                                    # arrow type = dense union
+                    i64: int64 
+                    f64: float64
+                  exemplars: *exemplars
+                  flags: uint32  
+                sum:
+                  name: string | string_dictionary            # required
+                  description: string | string_dictionary
+                  unit: string | string_dictionary
+                  value:                                    # arrow type = dense union
+                    i64: int64
+                    f64: float64
+                  exemplars: *exemplars
+                  flags: uint32
+                  aggregation_temporality: int32
+                  is_monotonic: bool
+                summary:
+                  name: string | string_dictionary            # required
+                  description: string | string_dictionary
+                  unit: string | string_dictionary
+                  count: uint64 
+                  sum: float64
+                  quantile: 
+                    - quantile: float64
+                      value: float64
+                  flags: uint32
+                histogram:
+                  name: string | string_dictionary            # required
+                  description: string | string_dictionary
+                  unit: string | string_dictionary
+                  count: uint64
+                  sum: float64
+                  bucket_counts: []uint64
+                  explicit_bounds: []float64
+                  exemplars: *exemplars
+                  flags: uint32
+                  min: float64
+                  max: float64
+                  aggregation_temporality: int32
+                exp_histogram:
+                  name: string | string_dictionary            # required
+                  description: string | string_dictionary
+                  unit: string | string_dictionary
+                  count: uint64
+                  sum: float64
+                  scale: int32
+                  zero_count: uint64
+                  positive:
+                    offset: int32
+                    bucket_counts: []uint64
+                  negative:
+                    offset: int32
+                    bucket_counts: []uint64
+                  exemplars: *exemplars
+                  flags: uint32
+                  min: float64
+                  max: float64
+                  aggregation_temporality: int32
 
 
 # Logs Arrow Schema

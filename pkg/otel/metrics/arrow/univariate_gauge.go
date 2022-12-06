@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -67,7 +67,7 @@ func (b *UnivariateGaugeBuilder) Release() {
 }
 
 // Append appends a new univariate gauge to the builder.
-func (b *UnivariateGaugeBuilder) Append(gauge pmetric.Gauge) error {
+func (b *UnivariateGaugeBuilder) Append(gauge pmetric.Gauge, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
 		return fmt.Errorf("UnivariateGaugeBuilder: Append() called after Release()")
 	}
@@ -79,7 +79,7 @@ func (b *UnivariateGaugeBuilder) Append(gauge pmetric.Gauge) error {
 		b.dplb.Append(true)
 		b.dplb.Reserve(dpc)
 		for i := 0; i < dpc; i++ {
-			if err := b.dpb.Append(dps.At(i)); err != nil {
+			if err := b.dpb.Append(dps.At(i), smdata, mdata); err != nil {
 				return err
 			}
 		}

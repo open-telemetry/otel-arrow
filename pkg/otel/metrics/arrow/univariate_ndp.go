@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
@@ -83,17 +83,25 @@ func (b *NumberDataPointBuilder) Release() {
 }
 
 // Append appends a new data point to the builder.
-func (b *NumberDataPointBuilder) Append(ndp pmetric.NumberDataPoint) error {
+func (b *NumberDataPointBuilder) Append(ndp pmetric.NumberDataPoint, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
 		return fmt.Errorf("QuantileValueBuilder: Append() called after Release()")
 	}
 
 	b.builder.Append(true)
-	if err := b.ab.Append(ndp.Attributes()); err != nil {
+	if err := b.ab.AppendUniqueAttributes(ndp.Attributes(), smdata.Attributes, mdata.Attributes); err != nil {
 		return err
 	}
-	b.stunb.Append(uint64(ndp.StartTimestamp()))
-	b.tunb.Append(uint64(ndp.Timestamp()))
+	if smdata.StartTime == nil && mdata.StartTime == nil {
+		b.stunb.Append(uint64(ndp.StartTimestamp()))
+	} else {
+		b.stunb.AppendNull()
+	}
+	if smdata.Time == nil && mdata.Time == nil {
+		b.tunb.Append(uint64(ndp.Timestamp()))
+	} else {
+		b.tunb.AppendNull()
+	}
 	if err := b.mvb.AppendNumberDataPointValue(ndp); err != nil {
 		return err
 	}
@@ -110,6 +118,10 @@ func (b *NumberDataPointBuilder) Append(ndp pmetric.NumberDataPoint) error {
 	} else {
 		b.elb.Append(false)
 	}
-	b.fb.Append(uint32(ndp.Flags()))
+	if ndp.Flags() == 0 {
+		b.fb.AppendNull()
+	} else {
+		b.fb.Append(uint32(ndp.Flags()))
+	}
 	return nil
 }

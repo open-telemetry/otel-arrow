@@ -3,8 +3,8 @@ package otlp
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
@@ -33,7 +33,7 @@ func NewUnivariateEHistogramIds(parentDT *arrow.StructType) (*UnivariateEHistogr
 	}, nil
 }
 
-func UpdateUnivariateEHistogramFrom(ehistogram pmetric.ExponentialHistogram, arr *array.Struct, row int, ids *UnivariateEHistogramIds) error {
+func UpdateUnivariateEHistogramFrom(ehistogram pmetric.ExponentialHistogram, arr *array.Struct, row int, ids *UnivariateEHistogramIds, smdata *SharedData, mdata *SharedData) error {
 	atArr, ok := arr.Field(ids.AggregationTemporality).(*array.Int32)
 	if !ok {
 		return fmt.Errorf("field %q is not an int64", constants.AGGREGATION_TEMPORALITY)
@@ -44,5 +44,5 @@ func UpdateUnivariateEHistogramFrom(ehistogram pmetric.ExponentialHistogram, arr
 	if err != nil {
 		return err
 	}
-	return AppendUnivariateEHistogramDataPointInto(ehistogram.DataPoints(), los, ids.DataPoints)
+	return AppendUnivariateEHistogramDataPointInto(ehistogram.DataPoints(), los, ids.DataPoints, smdata, mdata)
 }

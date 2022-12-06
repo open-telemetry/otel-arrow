@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
@@ -86,17 +86,27 @@ func (b *UnivariateSummaryDataPointBuilder) Release() {
 }
 
 // Append appends a new summary data point to the builder.
-func (b *UnivariateSummaryDataPointBuilder) Append(sdp pmetric.SummaryDataPoint) error {
+func (b *UnivariateSummaryDataPointBuilder) Append(sdp pmetric.SummaryDataPoint, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
 		return fmt.Errorf("UnivariateSummaryDataPointBuilder: Append() called after Release()")
 	}
 
 	b.builder.Append(true)
-	if err := b.ab.Append(sdp.Attributes()); err != nil {
+	if err := b.ab.AppendUniqueAttributes(sdp.Attributes(), smdata.Attributes, mdata.Attributes); err != nil {
 		return err
 	}
-	b.stunb.Append(uint64(sdp.StartTimestamp()))
-	b.tunb.Append(uint64(sdp.Timestamp()))
+
+	if smdata.StartTime == nil && mdata.StartTime == nil {
+		b.stunb.Append(uint64(sdp.StartTimestamp()))
+	} else {
+		b.stunb.AppendNull()
+	}
+	if smdata.Time == nil && mdata.Time == nil {
+		b.tunb.Append(uint64(sdp.Timestamp()))
+	} else {
+		b.tunb.AppendNull()
+	}
+
 	b.scb.Append(sdp.Count())
 	b.ssb.Append(sdp.Sum())
 	qvs := sdp.QuantileValues()
@@ -112,6 +122,10 @@ func (b *UnivariateSummaryDataPointBuilder) Append(sdp pmetric.SummaryDataPoint)
 	} else {
 		b.qvlb.Append(false)
 	}
-	b.fb.Append(uint32(sdp.Flags()))
+	if sdp.Flags() != 0 {
+		b.fb.Append(uint32(sdp.Flags()))
+	} else {
+		b.fb.AppendNull()
+	}
 	return nil
 }

@@ -3,8 +3,8 @@ package otlp
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
@@ -21,6 +21,14 @@ func NewAttributeIds(structDT *arrow.StructType) (*AttributeIds, error) {
 		return nil, fmt.Errorf("`attributes` field not found in Arrow struct")
 	}
 	return &AttributeIds{Id: id}, nil
+}
+
+func NewSharedAttributeIds(structDT *arrow.StructType) *AttributeIds {
+	id, found := structDT.FieldIdx(constants.SHARED_ATTRIBUTES)
+	if !found {
+		return nil
+	}
+	return &AttributeIds{Id: id}
 }
 
 func AppendAttributesInto(attrs pcommon.Map, parentArr *array.Struct, row int, attributeIds *AttributeIds) error {

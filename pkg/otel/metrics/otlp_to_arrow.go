@@ -26,7 +26,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v10/arrow"
 )
 
 type MultivariateMetricsConfig struct {
@@ -180,7 +180,7 @@ func multivariateMetric(rr *air.RecordRepository, res pcommon.Resource, scope pc
 		if metric.Unit() != "" {
 			metricField.AddMetadata(constants.METADATA_METRIC_UNIT, metric.Unit())
 		}
-		record.fields = append(record.fields, rfield.NewStructField(constants.METRICS, rfield.Struct{
+		record.fields = append(record.fields, rfield.NewStructField(constants.UNIVARIATE_METRICS, rfield.Struct{
 			Fields: []*rfield.Field{metricField},
 		}))
 		rr.AddRecord(air.NewRecordFromFields(record.fields))
@@ -215,13 +215,13 @@ func univariateMetric(rr *air.RecordRepository, res pcommon.Resource, scope pcom
 			if metric.Unit() != "" {
 				metricField.AddMetadata(constants.METADATA_METRIC_UNIT, metric.Unit())
 			}
-			record.StructField(constants.METRICS, rfield.Struct{
+			record.StructField(constants.UNIVARIATE_METRICS, rfield.Struct{
 				Fields: []*rfield.Field{metricField},
 			})
 		case pmetric.NumberDataPointValueTypeInt:
 			metricField := rfield.NewI64Field(metric.Name(), ndp.IntValue())
 			metricField.AddMetadata(constants.METADATA_METRIC_TYPE, metricType)
-			record.StructField(constants.METRICS, rfield.Struct{
+			record.StructField(constants.UNIVARIATE_METRICS, rfield.Struct{
 				Fields: []*rfield.Field{metricField},
 			})
 		default:

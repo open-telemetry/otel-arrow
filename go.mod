@@ -4,7 +4,7 @@ go 1.18
 
 require (
 	github.com/apache/arrow/go/arrow v0.0.0-20211112161151-bc219186db40
-	github.com/apache/arrow/go/v11 v11.0.0-20221116153901-e38141421d43
+	github.com/apache/arrow/go/v10 v10.0.1
 	github.com/brianvoe/gofakeit/v6 v6.17.0
 	github.com/davecgh/go-spew v1.1.1
 	github.com/dustin/go-humanize v1.0.0

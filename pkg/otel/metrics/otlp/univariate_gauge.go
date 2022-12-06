@@ -1,8 +1,8 @@
 package otlp
 
 import (
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
@@ -23,10 +23,10 @@ func NewUnivariateGaugeIds(parentDT *arrow.StructType) (*UnivariateGaugeIds, err
 	}, nil
 }
 
-func UpdateUnivariateGaugeFrom(gauge pmetric.Gauge, arr *array.Struct, row int, ids *UnivariateGaugeIds) error {
+func UpdateUnivariateGaugeFrom(gauge pmetric.Gauge, arr *array.Struct, row int, ids *UnivariateGaugeIds, smdata *SharedData, mdata *SharedData) error {
 	los, err := arrowutils.ListOfStructsFromStruct(arr, ids.DataPoints.Id, row)
 	if err != nil {
 		return err
 	}
-	return AppendUnivariateNdpInto(gauge.DataPoints(), los, ids.DataPoints)
+	return AppendUnivariateNdpInto(gauge.DataPoints(), los, ids.DataPoints, smdata, mdata)
 }

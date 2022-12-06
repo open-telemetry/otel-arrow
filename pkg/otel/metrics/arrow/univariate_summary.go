@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -67,7 +67,7 @@ func (b *UnivariateSummaryBuilder) Release() {
 }
 
 // Append appends a new univariate summary to the builder.
-func (b *UnivariateSummaryBuilder) Append(summary pmetric.Summary) error {
+func (b *UnivariateSummaryBuilder) Append(summary pmetric.Summary, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
 		return fmt.Errorf("UnivariateSummaryBuilder: Append() called after Release()")
 	}
@@ -78,7 +78,7 @@ func (b *UnivariateSummaryBuilder) Append(summary pmetric.Summary) error {
 	if dpc > 0 {
 		b.dplb.Append(true)
 		for i := 0; i < dpc; i++ {
-			if err := b.dpb.Append(dps.At(i)); err != nil {
+			if err := b.dpb.Append(dps.At(i), smdata, mdata); err != nil {
 				return err
 			}
 		}

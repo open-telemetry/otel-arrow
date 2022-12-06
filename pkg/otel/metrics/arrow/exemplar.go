@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
@@ -83,13 +83,23 @@ func (b *ExemplarBuilder) Append(ex pmetric.Exemplar) error {
 	if err := b.mvb.AppendExemplarValue(ex); err != nil {
 		return err
 	}
+
 	sid := ex.SpanID()
-	if err := b.sib.AppendBinary(sid[:]); err != nil {
-		return err
+	if sid.IsEmpty() {
+		b.sib.AppendNull()
+	} else {
+		if err := b.sib.AppendBinary(sid[:]); err != nil {
+			return err
+		}
 	}
+
 	tid := ex.TraceID()
-	if err := b.tib.AppendBinary(tid[:]); err != nil {
-		return err
+	if tid.IsEmpty() {
+		b.tib.AppendNull()
+	} else {
+		if err := b.tib.AppendBinary(tid[:]); err != nil {
+			return err
+		}
 	}
 
 	return nil

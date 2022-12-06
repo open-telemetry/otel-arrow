@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v10/arrow"
+	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v10/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -73,7 +73,7 @@ func (b *UnivariateSumBuilder) Release() {
 }
 
 // Append appends a new univariate sum to the builder.
-func (b *UnivariateSumBuilder) Append(sum pmetric.Sum) error {
+func (b *UnivariateSumBuilder) Append(sum pmetric.Sum, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
 		return fmt.Errorf("UnivariateMetricBuilder: Append() called after Release()")
 	}
@@ -85,15 +85,23 @@ func (b *UnivariateSumBuilder) Append(sum pmetric.Sum) error {
 		b.dplb.Append(true)
 		b.dplb.Reserve(dpc)
 		for i := 0; i < dpc; i++ {
-			if err := b.dpb.Append(dps.At(i)); err != nil {
+			if err := b.dpb.Append(dps.At(i), smdata, mdata); err != nil {
 				return err
 			}
 		}
 	} else {
 		b.dplb.Append(false)
 	}
-	b.atb.Append(int32(sum.AggregationTemporality()))
-	b.imb.Append(sum.IsMonotonic())
+	if sum.AggregationTemporality() == pmetric.AggregationTemporalityUnspecified {
+		b.atb.AppendNull()
+	} else {
+		b.atb.Append(int32(sum.AggregationTemporality()))
+	}
+	if sum.IsMonotonic() {
+		b.imb.Append(sum.IsMonotonic())
+	} else {
+		b.imb.AppendNull()
+	}
 
 	return nil
 }
