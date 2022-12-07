@@ -25,11 +25,11 @@ type LogsProfileable struct {
 	pool              *memory.GoAllocator
 }
 
-func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *benchmark.Config, compression benchmark.CompressionAlgorithm) *LogsProfileable {
+func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *benchmark.Config) *LogsProfileable {
 	return &LogsProfileable{
 		tags:              tags,
 		dataset:           dataset,
-		compression:       compression,
+		compression:       benchmark.NoCompression(),
 		producer:          arrow_record.NewProducer(),
 		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
 		config:            config,
@@ -42,7 +42,11 @@ func (s *LogsProfileable) Name() string {
 }
 
 func (s *LogsProfileable) Tags() []string {
-	tags := []string{s.compression.String()}
+	var tags []string
+	compression := s.compression.String()
+	if compression != "" {
+		tags = append(tags, compression)
+	}
 	tags = append(tags, s.tags...)
 	return tags
 }

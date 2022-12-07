@@ -57,7 +57,7 @@ func main() {
 		otlpTraces := otlp.NewTraceProfileable(ds, compressionAlgo)
 
 		conf := &benchmark.Config{}
-		otlpArrowTraces := otlp_arrow.NewTraceProfileable([]string{"uint16 dict"}, ds, conf, compressionAlgo)
+		otlpArrowTraces := otlp_arrow.NewTraceProfileable([]string{"uint16 dict"}, ds, conf)
 
 		if err := profiler.Profile(otlpTraces, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))

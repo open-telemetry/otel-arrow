@@ -276,12 +276,28 @@ func TestProducerConsumerMetrics(t *testing.T) {
 		}
 	}()
 
+	// First round.
 	batch, err := producer.BatchArrowRecordsFromMetrics(metrics)
 	require.NoError(t, err)
 	require.Equal(t, arrowpb.OtlpArrowPayloadType_METRICS, batch.OtlpArrowPayloads[0].Type)
 
 	consumer := NewConsumer()
 	received, err := consumer.MetricsFrom(batch)
+	require.NoError(t, err)
+	require.Equal(t, 1, len(received))
+
+	assert.Equiv(
+		t,
+		[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(metrics)},
+		[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(received[0])},
+	)
+
+	// Second round (emit same data).
+	batch, err = producer.BatchArrowRecordsFromMetrics(metrics)
+	require.NoError(t, err)
+	require.Equal(t, arrowpb.OtlpArrowPayloadType_METRICS, batch.OtlpArrowPayloads[0].Type)
+
+	received, err = consumer.MetricsFrom(batch)
 	require.NoError(t, err)
 	require.Equal(t, 1, len(received))
 

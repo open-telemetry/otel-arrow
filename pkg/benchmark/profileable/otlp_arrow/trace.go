@@ -28,11 +28,11 @@ type TraceProfileable struct {
 	schema            *acommon.AdaptiveSchema
 }
 
-func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *benchmark.Config, compression benchmark.CompressionAlgorithm) *TraceProfileable {
+func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *benchmark.Config) *TraceProfileable {
 	return &TraceProfileable{
 		tags:              tags,
 		dataset:           dataset,
-		compression:       compression,
+		compression:       benchmark.NoCompression(),
 		producer:          arrow_record.NewProducer(),
 		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
 		config:            config,
@@ -46,7 +46,11 @@ func (s *TraceProfileable) Name() string {
 }
 
 func (s *TraceProfileable) Tags() []string {
-	tags := []string{s.compression.String()}
+	var tags []string
+	compression := s.compression.String()
+	if compression != "" {
+		tags = append(tags, compression)
+	}
 	tags = append(tags, s.tags...)
 	return tags
 }

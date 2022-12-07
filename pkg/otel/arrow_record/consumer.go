@@ -158,6 +158,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*RecordMessage, e
 				sc.bufReader,
 				ipc.WithAllocator(common.NewLimitedAllocator(memory.NewGoAllocator(), c.memLimit)),
 				ipc.WithDictionaryDeltas(true),
+				ipc.WithZstd(),
 			)
 			if err != nil {
 				return nil, err

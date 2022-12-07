@@ -104,3 +104,21 @@ func (c *ZstdCompressionAlgo) Decompress(data []byte) ([]byte, error) {
 func (c *ZstdCompressionAlgo) String() string {
 	return "Zstd"
 }
+
+type NoCompressionAlgo struct{}
+
+func NoCompression() CompressionAlgorithm {
+	return &NoCompressionAlgo{}
+}
+
+func (c *NoCompressionAlgo) Compress(data []byte) ([]byte, error) {
+	return data, nil
+}
+
+func (c *NoCompressionAlgo) Decompress(data []byte) ([]byte, error) {
+	return data, nil
+}
+
+func (c *NoCompressionAlgo) String() string {
+	return ""
+}

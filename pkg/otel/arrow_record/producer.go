@@ -225,6 +225,7 @@ func (p *Producer) Produce(rms []*RecordMessage, deliveryType colarspb.DeliveryT
 					ipc.WithAllocator(p.pool), // use allocator of the `Producer`
 					ipc.WithSchema(rm.record.Schema()),
 					ipc.WithDictionaryDeltas(true), // enable dictionary deltas
+					ipc.WithZstd(),
 				)
 			}
 			err := sp.ipcWriter.Write(rm.record)
