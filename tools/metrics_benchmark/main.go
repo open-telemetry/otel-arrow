@@ -40,7 +40,7 @@ func main() {
 	// Define default input file
 	inputFiles := flag.Args()
 	if len(inputFiles) == 0 {
-		inputFiles = append(inputFiles, "./data/otlp_metrics.pb")
+		inputFiles = append(inputFiles, "./data/multivariate-metrics.pb")
 	}
 
 	warmUpIter := uint64(2)
