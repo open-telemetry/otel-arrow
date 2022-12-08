@@ -72,7 +72,7 @@ func (b *TracesBuilder) Build() (arrow.Record, error) {
 		// Build a list of fields that overflowed
 		var fieldNames []string
 		for _, update := range updates {
-			fieldNames = append(fieldNames, b.schema.DictionaryPath(update.DictIdx))
+			fieldNames = append(fieldNames, update.DictPath)
 		}
 
 		b.schema.UpdateSchema(updates)
