@@ -13,9 +13,12 @@ import (
 // dictionary values for each dictionary field so that the dictionary builders
 // can be initialized with the initial dictionary values.
 type AdaptiveSchema struct {
-	cfg          config             // configuration
-	schema       *arrow.Schema      // current schema
-	dictionaries []*dictionaryField // list of all dictionary fields
+	cfg    config        // configuration
+	schema *arrow.Schema // current schema
+
+	// list of all dictionary fields
+	dictionaries []*dictionaryField
+
 	// map of dictionary fields that have overflowed (used for test purpose)
 	// map = path -> dictionary index type
 	dictionariesWithOverflow map[string]string

@@ -32,7 +32,7 @@ func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *be
 	return &TraceProfileable{
 		tags:              tags,
 		dataset:           dataset,
-		compression:       benchmark.NoCompression(),
+		compression:       benchmark.Zstd(), // ToDo replace Zstd with NoCompression when this bug will be fixed: https://github.com/apache/arrow/issues/14883
 		producer:          arrow_record.NewProducer(),
 		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
 		config:            config,

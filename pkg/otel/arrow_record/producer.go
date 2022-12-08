@@ -225,7 +225,7 @@ func (p *Producer) Produce(rms []*RecordMessage, deliveryType colarspb.DeliveryT
 					ipc.WithAllocator(p.pool), // use allocator of the `Producer`
 					ipc.WithSchema(rm.record.Schema()),
 					ipc.WithDictionaryDeltas(true), // enable dictionary deltas
-					ipc.WithZstd(),
+					// ToDo add ipc.WithZstd() when this Arrow bug will be fixed https://github.com/apache/arrow/issues/14883
 				)
 			}
 			err := sp.ipcWriter.Write(rm.record)

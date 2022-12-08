@@ -29,7 +29,7 @@ func NewMetricsProfileable(tags []string, dataset dataset.MetricsDataset, config
 	return &MetricsProfileable{
 		tags:              tags,
 		dataset:           dataset,
-		compression:       benchmark.NoCompression(),
+		compression:       benchmark.Zstd(), // ToDo replace Zstd with NoCompression when this bug will be fixed: https://github.com/apache/arrow/issues/14883
 		producer:          arrow_record.NewProducer(),
 		batchArrowRecords: make([]*colarspb.BatchArrowRecords, 0, 10),
 		config:            config,
