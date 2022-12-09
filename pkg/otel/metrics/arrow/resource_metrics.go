@@ -104,10 +104,6 @@ func (b *ResourceMetricsBuilder) Append(sm pmetric.ResourceMetrics) error {
 func (b *ResourceMetricsBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.rb.Release()
-		b.schb.Release()
-		b.spsb.Release()
-		b.smb.Release()
 
 		b.released = true
 	}

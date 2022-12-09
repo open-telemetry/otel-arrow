@@ -115,12 +115,6 @@ func (b *AnyValueBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
 
-		b.strBuilder.Release()
-		b.i64Builder.Release()
-		b.f64Builder.Release()
-		b.boolBuilder.Release()
-		b.binaryBuilder.Release()
-
 		b.released = true
 	}
 }

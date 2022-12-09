@@ -98,10 +98,6 @@ func (b *ScopeBuilder) Build() (*array.Struct, error) {
 func (b *ScopeBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.nb.Release()
-		b.vb.Release()
-		b.ab.Release()
-		b.dacb.Release()
 
 		b.released = true
 	}

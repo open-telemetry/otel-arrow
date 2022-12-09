@@ -110,12 +110,6 @@ func (b *ExemplarBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
 
-		b.ab.Release()
-		b.tunb.Release()
-		b.mvb.Release()
-		b.sib.Release()
-		b.tib.Release()
-
 		b.released = true
 	}
 }

@@ -184,23 +184,6 @@ func (b *SpanBuilder) Append(span ptrace.Span) error {
 func (b *SpanBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.stunb.Release()
-		b.etunb.Release()
-		b.tib.Release()
-		b.sib.Release()
-		b.tsb.Release()
-		b.psib.Release()
-		b.nb.Release()
-		b.kb.Release()
-		b.ab.Release()
-		b.dacb.Release()
-		b.sesb.Release()
-		b.seb.Release()
-		b.decb.Release()
-		b.slsb.Release()
-		b.slb.Release()
-		b.dlcb.Release()
-		b.sb.Release()
 
 		b.released = true
 	}

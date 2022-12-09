@@ -104,10 +104,6 @@ func (b *ScopeSpansBuilder) Append(ss ptrace.ScopeSpans) error {
 func (b *ScopeSpansBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.scb.Release()
-		b.schb.Release()
-		b.ssb.Release()
-		b.sb.Release()
 
 		b.released = true
 	}

@@ -104,10 +104,6 @@ func (b *ScopeLogsBuilder) Append(sl plog.ScopeLogs) error {
 func (b *ScopeLogsBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.scb.Release()
-		b.schb.Release()
-		b.lrsb.Release()
-		b.lrb.Release()
 
 		b.released = true
 	}

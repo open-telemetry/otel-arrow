@@ -103,9 +103,6 @@ func (b *MetricValueBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
 
-		b.i64Builder.Release()
-		b.f64Builder.Release()
-
 		b.released = true
 	}
 }

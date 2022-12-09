@@ -86,10 +86,6 @@ func (b *EventBuilder) Build() (*array.Struct, error) {
 func (b *EventBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.tunb.Release()
-		b.nb.Release()
-		b.ab.Release()
-		b.dacb.Release()
 
 		b.released = true
 	}

@@ -76,8 +76,6 @@ func (b *StatusBuilder) Build() (*array.Struct, error) {
 func (b *StatusBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.scb.Release()
-		b.smb.Release()
 
 		b.released = true
 	}

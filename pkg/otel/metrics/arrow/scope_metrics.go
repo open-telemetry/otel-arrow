@@ -148,10 +148,6 @@ func (b *ScopeMetricsBuilder) Append(sm pmetric.ScopeMetrics) error {
 func (b *ScopeMetricsBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.scb.Release()
-		b.schb.Release()
-		b.smb.Release()
-		b.mb.Release()
 
 		b.released = true
 	}

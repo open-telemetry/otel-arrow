@@ -106,7 +106,7 @@ func (b *MetricsBuilder) Append(metrics pmetric.Metrics) error {
 func (b *MetricsBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.rmp.Release()
+
 		b.released = true
 	}
 }

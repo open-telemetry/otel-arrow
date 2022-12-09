@@ -144,8 +144,6 @@ func (b *AttributesBuilder) AppendUniqueAttributes(attrs pcommon.Map, smattrs *c
 func (b *AttributesBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.kb.Release()
-		b.ib.Release()
 
 		b.released = true
 	}

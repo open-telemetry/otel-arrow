@@ -4,8 +4,7 @@ go 1.18
 
 require (
 	github.com/apache/arrow/go/arrow v0.0.0-20211112161151-bc219186db40
-	github.com/apache/arrow/go/v11 v11.0.0-20221208202605-d1a550c28cd6
-	//github.com/apache/arrow/go/v10 v10.0.1
+	github.com/apache/arrow/go/v11 v11.0.0-20221209182902-0e14d1001b1e
 	github.com/brianvoe/gofakeit/v6 v6.17.0
 	github.com/dustin/go-humanize v1.0.0
 	github.com/golang/mock v1.6.0
@@ -51,5 +50,3 @@ require (
 	google.golang.org/genproto v0.0.0-20220126215142-9970aeb2e350 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-//replace github.com/apache/arrow/go/v11 => ../../oss/arrow-zeroshade/arrow/go

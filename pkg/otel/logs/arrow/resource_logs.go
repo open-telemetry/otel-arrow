@@ -104,10 +104,6 @@ func (b *ResourceLogsBuilder) Append(rs plog.ResourceLogs) error {
 func (b *ResourceLogsBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.rb.Release()
-		b.schb.Release()
-		b.slsb.Release()
-		b.slb.Release()
 
 		b.released = true
 	}

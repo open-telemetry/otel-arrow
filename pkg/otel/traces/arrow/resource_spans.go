@@ -104,10 +104,6 @@ func (b *ResourceSpansBuilder) Append(ss ptrace.ResourceSpans) error {
 func (b *ResourceSpansBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.rb.Release()
-		b.schb.Release()
-		b.spsb.Release()
-		b.spb.Release()
 
 		b.released = true
 	}

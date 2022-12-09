@@ -158,7 +158,6 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*RecordMessage, e
 				sc.bufReader,
 				ipc.WithAllocator(common.NewLimitedAllocator(memory.NewGoAllocator(), c.memLimit)),
 				ipc.WithDictionaryDeltas(true),
-				// ToDo add ipc.WithZstd() when this Arrow bug will be fixed https://github.com/apache/arrow/issues/14883
 				ipc.WithZstd(),
 			)
 			if err != nil {
@@ -169,6 +168,10 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*RecordMessage, e
 
 		if sc.ipcReader.Next() {
 			rec := sc.ipcReader.Record()
+			// The record returned by Reader.Record() is owned by the Reader.
+			// We need to retain it to be able to use it after the Reader is closed
+			// or after the next call to Reader.Next().
+			rec.Retain()
 			ibes = append(ibes, &RecordMessage{
 				batchId:      bar.BatchId,
 				payloadType:  payload.GetType(),

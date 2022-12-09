@@ -106,7 +106,7 @@ func (b *LogsBuilder) Append(logs plog.Logs) error {
 func (b *LogsBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.rlp.Release()
+
 		b.released = true
 	}
 }

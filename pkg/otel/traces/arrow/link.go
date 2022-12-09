@@ -97,11 +97,6 @@ func (b *LinkBuilder) Build() (*array.Struct, error) {
 func (b *LinkBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.tib.Release()
-		b.sib.Release()
-		b.tsb.Release()
-		b.ab.Release()
-		b.dacb.Release()
 
 		b.released = true
 	}

@@ -128,16 +128,6 @@ func (b *LogRecordBuilder) Append(log plog.LogRecord) error {
 func (b *LogRecordBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.tunb.Release()
-		b.otunb.Release()
-		b.tib.Release()
-		b.sib.Release()
-		b.snb.Release()
-		b.stb.Release()
-		b.bb.Release()
-		b.ab.Release()
-		b.dacb.Release()
-		b.fb.Release()
 
 		b.released = true
 	}

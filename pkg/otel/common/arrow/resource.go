@@ -77,8 +77,6 @@ func (b *ResourceBuilder) Build() (*array.Struct, error) {
 func (b *ResourceBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.ab.Release()
-		b.dacb.Release()
 
 		b.released = true
 	}
