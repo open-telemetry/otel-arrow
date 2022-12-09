@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v11/arrow/array"
+	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -98,10 +98,6 @@ func (b *ScopeBuilder) Build() (*array.Struct, error) {
 func (b *ScopeBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.nb.Release()
-		b.vb.Release()
-		b.ab.Release()
-		b.dacb.Release()
 
 		b.released = true
 	}

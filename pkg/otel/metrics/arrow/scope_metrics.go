@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v11/arrow/array"
+	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
@@ -148,10 +148,6 @@ func (b *ScopeMetricsBuilder) Append(sm pmetric.ScopeMetrics) error {
 func (b *ScopeMetricsBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.scb.Release()
-		b.schb.Release()
-		b.smb.Release()
-		b.mb.Release()
 
 		b.released = true
 	}

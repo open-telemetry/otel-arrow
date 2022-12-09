@@ -3,7 +3,7 @@ package otlp_arrow
 import (
 	"io"
 
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v11/arrow/memory"
 	"google.golang.org/protobuf/proto"
 
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -25,11 +25,11 @@ type MetricsProfileable struct {
 	pool              *memory.GoAllocator
 }
 
-func NewMetricsProfileable(tags []string, dataset dataset.MetricsDataset, config *benchmark.Config, compression benchmark.CompressionAlgorithm) *MetricsProfileable {
+func NewMetricsProfileable(tags []string, dataset dataset.MetricsDataset, config *benchmark.Config) *MetricsProfileable {
 	return &MetricsProfileable{
 		tags:              tags,
 		dataset:           dataset,
-		compression:       compression,
+		compression:       benchmark.NoCompression(),
 		producer:          arrow_record.NewProducer(),
 		batchArrowRecords: make([]*colarspb.BatchArrowRecords, 0, 10),
 		config:            config,
@@ -42,7 +42,11 @@ func (s *MetricsProfileable) Name() string {
 }
 
 func (s *MetricsProfileable) Tags() []string {
-	tags := []string{s.compression.String()}
+	var tags []string
+	compression := s.compression.String()
+	if compression != "" {
+		tags = append(tags, compression)
+	}
 	tags = append(tags, s.tags...)
 	return tags
 }

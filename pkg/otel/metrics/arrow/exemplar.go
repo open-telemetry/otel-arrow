@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v11/arrow/array"
+	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
@@ -109,12 +109,6 @@ func (b *ExemplarBuilder) Append(ex pmetric.Exemplar) error {
 func (b *ExemplarBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-
-		b.ab.Release()
-		b.tunb.Release()
-		b.mvb.Release()
-		b.sib.Release()
-		b.tib.Release()
 
 		b.released = true
 	}

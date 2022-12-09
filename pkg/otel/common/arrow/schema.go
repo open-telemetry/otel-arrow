@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v11/arrow/array"
 )
 
 // AdaptiveSchema is a wrapper around [arrow.Schema] that can be used to detect
@@ -13,9 +13,12 @@ import (
 // dictionary values for each dictionary field so that the dictionary builders
 // can be initialized with the initial dictionary values.
 type AdaptiveSchema struct {
-	cfg          config             // configuration
-	schema       *arrow.Schema      // current schema
-	dictionaries []*dictionaryField // list of all dictionary fields
+	cfg    config        // configuration
+	schema *arrow.Schema // current schema
+
+	// list of all dictionary fields
+	dictionaries map[string]*dictionaryField
+
 	// map of dictionary fields that have overflowed (used for test purpose)
 	// map = path -> dictionary index type
 	dictionariesWithOverflow map[string]string
@@ -33,8 +36,8 @@ type dictionaryField struct {
 // It contains the index of the dictionary field that needs to be updated, the old
 // dictionary type and the new dictionary
 type SchemaUpdate struct {
-	// index of the dictionary field in the adaptive schema
-	DictIdx int
+	// path of the dictionary field in the adaptive schema
+	DictPath string
 	// old dictionary type
 	oldDict *arrow.DictionaryType
 	// new dictionary type (promoted to a larger index type or string/binary)
@@ -59,7 +62,7 @@ func NewAdaptiveSchema(schema *arrow.Schema, options ...Option) *AdaptiveSchema 
 		initIndexSize:  math.MaxUint16, // default to uint16
 		limitIndexSize: math.MaxUint16, // default to uint16
 	}
-	var dictionaries []*dictionaryField
+	dictionaries := make(map[string]*dictionaryField)
 
 	for _, opt := range options {
 		opt(&cfg)
@@ -70,7 +73,7 @@ func NewAdaptiveSchema(schema *arrow.Schema, options ...Option) *AdaptiveSchema 
 	fields := schema.Fields()
 	for i := 0; i < len(fields); i++ {
 		ids := []int{i}
-		dictionaries = append(dictionaries, collectDictionaries(fields[i].Name, ids, &fields[i], dictionaries)...)
+		collectDictionaries(fields[i].Name, ids, &fields[i], &dictionaries)
 	}
 	return &AdaptiveSchema{cfg: cfg, schema: schema, dictionaries: dictionaries, dictionariesWithOverflow: make(map[string]string)}
 }
@@ -92,7 +95,7 @@ func (m *AdaptiveSchema) Analyze(record arrow.Record) (overflowDetected bool, up
 	arrays := record.Columns()
 	overflowDetected = false
 
-	for dictIdx, d := range m.dictionaries {
+	for dictPath, d := range m.dictionaries {
 		dict := getDictionaryArray(arrays[d.ids[0]], d.ids[1:])
 		if d.init != nil {
 			d.init.Release()
@@ -104,7 +107,7 @@ func (m *AdaptiveSchema) Analyze(record arrow.Record) (overflowDetected bool, up
 			overflowDetected = true
 			newDict, newUpperLimit := m.promoteDictionaryType(observedSize, d.dictionary)
 			updates = append(updates, SchemaUpdate{
-				DictIdx:       dictIdx,
+				DictPath:      dictPath,
 				oldDict:       d.dictionary,
 				newDict:       newDict,
 				newUpperLimit: newUpperLimit,
@@ -125,21 +128,21 @@ func (m *AdaptiveSchema) UpdateSchema(updates []SchemaUpdate) {
 
 	// update dictionaries based on the updates
 	for _, u := range updates {
-		m.dictionaries[u.DictIdx].upperLimit = u.newUpperLimit
-		m.dictionaries[u.DictIdx].dictionary = u.newDict
+		m.dictionaries[u.DictPath].upperLimit = u.newUpperLimit
+		m.dictionaries[u.DictPath].dictionary = u.newDict
 		if u.newDict == nil {
-			prevDict := m.dictionaries[u.DictIdx].init
+			prevDict := m.dictionaries[u.DictPath].init
 			if prevDict != nil {
 				prevDict.Release()
-				m.dictionaries[u.DictIdx].init = nil
+				m.dictionaries[u.DictPath].init = nil
 			}
 		}
 	}
 
 	// remove dictionary fields that have been replaced by string/binary
-	for i := len(m.dictionaries) - 1; i >= 0; i-- {
-		if m.dictionaries[i].init == nil {
-			m.dictionaries = append(m.dictionaries[:i], m.dictionaries[i+1:]...)
+	for path, dict := range m.dictionaries {
+		if dict.init == nil {
+			delete(m.dictionaries, path)
 		}
 	}
 }
@@ -176,14 +179,6 @@ func (m *AdaptiveSchema) Release() {
 			d.init.Release()
 		}
 	}
-}
-
-// DictionaryPath returns the path of the dictionary field at the given index.
-func (m *AdaptiveSchema) DictionaryPath(idx int) string {
-	if idx < 0 || idx >= len(m.dictionaries) {
-		return ""
-	}
-	return m.dictionaries[idx].path
 }
 
 // DictionariesWithOverflow returns a map of dictionary fields that have overflowed and the
@@ -441,28 +436,28 @@ func getDictionaryBuilder(builder array.Builder, ids []int) array.DictionaryBuil
 }
 
 // collectDictionaries collects recursively all dictionary fields in the schema and returns a list of them.
-func collectDictionaries(prefix string, ids []int, field *arrow.Field, dictionaries []*dictionaryField) []*dictionaryField {
+func collectDictionaries(prefix string, ids []int, field *arrow.Field, dictionaries *map[string]*dictionaryField) {
 	switch t := field.Type.(type) {
 	case *arrow.DictionaryType:
-		dictionaries = append(dictionaries, &dictionaryField{path: prefix, ids: ids, upperLimit: indexUpperLimit(t.IndexType), dictionary: field.Type.(*arrow.DictionaryType)})
+		(*dictionaries)[prefix] = &dictionaryField{path: prefix, ids: ids, upperLimit: indexUpperLimit(t.IndexType), dictionary: field.Type.(*arrow.DictionaryType)}
 	case *arrow.StructType:
 		fields := t.Fields()
 		for i := 0; i < len(fields); i++ {
 			childIds := make([]int, len(ids)+1)
 			copy(childIds, ids)
 			childIds[len(ids)] = i
-			dictionaries = collectDictionaries(prefix+"."+fields[i].Name, childIds, &fields[i], dictionaries)
+			collectDictionaries(prefix+"."+fields[i].Name, childIds, &fields[i], dictionaries)
 		}
 	case *arrow.ListType:
 		field := t.ElemField()
-		dictionaries = collectDictionaries(prefix, ids, &field, dictionaries)
+		collectDictionaries(prefix, ids, &field, dictionaries)
 	case *arrow.SparseUnionType:
 		fields := t.Fields()
 		for i := 0; i < len(fields); i++ {
 			childIds := make([]int, len(ids)+1)
 			copy(childIds, ids)
 			childIds[len(ids)] = i
-			dictionaries = collectDictionaries(prefix+"."+fields[i].Name, childIds, &fields[i], dictionaries)
+			collectDictionaries(prefix+"."+fields[i].Name, childIds, &fields[i], dictionaries)
 		}
 	case *arrow.DenseUnionType:
 		fields := t.Fields()
@@ -470,23 +465,21 @@ func collectDictionaries(prefix string, ids []int, field *arrow.Field, dictionar
 			childIds := make([]int, len(ids)+1)
 			copy(childIds, ids)
 			childIds[len(ids)] = i
-			dictionaries = collectDictionaries(prefix+"."+fields[i].Name, childIds, &fields[i], dictionaries)
+			collectDictionaries(prefix+"."+fields[i].Name, childIds, &fields[i], dictionaries)
 		}
 	case *arrow.MapType:
 		childIds := make([]int, len(ids)+1)
 		copy(childIds, ids)
 		childIds[len(ids)] = 0
 		keyField := t.KeyField()
-		dictionaries = collectDictionaries(prefix+".key", childIds, &keyField, dictionaries)
+		collectDictionaries(prefix+".key", childIds, &keyField, dictionaries)
 
 		childIds = make([]int, len(ids)+1)
 		copy(childIds, ids)
 		childIds[len(ids)] = 1
 		itemField := t.ItemField()
-		dictionaries = collectDictionaries(prefix+".value", childIds, &itemField, dictionaries)
+		collectDictionaries(prefix+".value", childIds, &itemField, dictionaries)
 	}
-
-	return dictionaries
 }
 
 func indexUpperLimit(dt arrow.DataType) uint64 {

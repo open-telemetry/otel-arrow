@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v11/arrow/array"
+	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/plog"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
@@ -128,16 +128,6 @@ func (b *LogRecordBuilder) Append(log plog.LogRecord) error {
 func (b *LogRecordBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.tunb.Release()
-		b.otunb.Release()
-		b.tib.Release()
-		b.sib.Release()
-		b.snb.Release()
-		b.stb.Release()
-		b.bb.Release()
-		b.ab.Release()
-		b.dacb.Release()
-		b.fb.Release()
 
 		b.released = true
 	}

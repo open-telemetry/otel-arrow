@@ -30,8 +30,8 @@ func TestOtlpArrowMetricsProfiler(t *testing.T) {
 	cfg := &benchmark.Config{}
 
 	maxIter := uint64(10)
-	systemToProfile := NewMetricsProfileable([]string{"multivariate"}, dataset.NewFakeMetricsDataset(1000), cfg, benchmark.Zstd())
-	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, filepath.Join(t.TempDir(), "tmpfile"))
+	systemToProfile := NewMetricsProfileable([]string{"multivariate"}, dataset.NewFakeMetricsDataset(1000), cfg)
+	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, filepath.Join(t.TempDir(), "tmpfile"), 2)
 	if err := profiler.Profile(systemToProfile, maxIter); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}

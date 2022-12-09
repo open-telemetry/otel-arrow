@@ -20,8 +20,8 @@ package arrow_record
 import (
 	"bytes"
 
-	"github.com/apache/arrow/go/v10/arrow/ipc"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v11/arrow/ipc"
+	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -136,6 +136,7 @@ func (c *Consumer) TracesFrom(bar *colarspb.BatchArrowRecords) ([]ptrace.Traces,
 }
 
 // Consume takes a BatchArrowRecords protobuf message and returns an array of RecordMessage.
+// Note: the records wrapped in the RecordMessage must be released after use by the caller.
 func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*RecordMessage, error) {
 
 	var ibes []*RecordMessage
@@ -158,6 +159,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*RecordMessage, e
 				sc.bufReader,
 				ipc.WithAllocator(common.NewLimitedAllocator(memory.NewGoAllocator(), c.memLimit)),
 				ipc.WithDictionaryDeltas(true),
+				ipc.WithZstd(),
 			)
 			if err != nil {
 				return nil, err
@@ -167,6 +169,10 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*RecordMessage, e
 
 		if sc.ipcReader.Next() {
 			rec := sc.ipcReader.Record()
+			// The record returned by Reader.Record() is owned by the Reader.
+			// We need to retain it to be able to use it after the Reader is closed
+			// or after the next call to Reader.Next().
+			rec.Retain()
 			ibes = append(ibes, &RecordMessage{
 				batchId:      bar.BatchId,
 				payloadType:  payload.GetType(),

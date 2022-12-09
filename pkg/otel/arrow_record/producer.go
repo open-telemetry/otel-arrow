@@ -20,9 +20,9 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/ipc"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v11/arrow/ipc"
+	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -109,12 +109,12 @@ func NewProducerWithOptions(options ...Option) *Producer {
 
 // BatchArrowRecordsFromMetrics produces a BatchArrowRecords message from a [pmetric.Metrics] messages.
 func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colarspb.BatchArrowRecords, error) {
+	// Build the record from the logs passed as parameter
+	// Note: The record returned is wrapped into a RecordMessage and will
+	// be released by the Producer.Produce method.
 	record, err := RecordBuilder[pmetric.Metrics](func() (acommon.EntityBuilder[pmetric.Metrics], error) {
 		return metricsarrow.NewMetricsBuilder(p.pool, p.metricsSchema)
 	}, metrics)
-	if record != nil {
-		defer record.Release()
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -130,14 +130,12 @@ func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colar
 
 // BatchArrowRecordsFromLogs produces a BatchArrowRecords message from a [plog.Logs] messages.
 func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrowRecords, error) {
+	// Build the record from the logs passed as parameter
+	// Note: The record returned is wrapped into a RecordMessage and will
+	// be released by the Producer.Produce method.
 	record, err := RecordBuilder[plog.Logs](func() (acommon.EntityBuilder[plog.Logs], error) {
 		return logsarrow.NewLogsBuilder(p.pool, p.logsSchema)
 	}, ls)
-	defer func() {
-		if record != nil {
-			record.Release()
-		}
-	}()
 	if err != nil {
 		return nil, err
 	}
@@ -153,14 +151,12 @@ func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrow
 
 // BatchArrowRecordsFromTraces produces a BatchArrowRecords message from a [ptrace.Traces] messages.
 func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.BatchArrowRecords, error) {
+	// Build the record from the traces passes as parameter
+	// Note: The record returned is wrapped into a RecordMessage and will
+	// be released by the Producer.Produce method.
 	record, err := RecordBuilder[ptrace.Traces](func() (acommon.EntityBuilder[ptrace.Traces], error) {
 		return tracesarrow.NewTracesBuilder(p.pool, p.tracesSchema)
 	}, ts)
-	defer func() {
-		if record != nil {
-			record.Release()
-		}
-	}()
 	if err != nil {
 		return nil, err
 	}
@@ -208,6 +204,8 @@ func (p *Producer) Produce(rms []*RecordMessage, deliveryType colarspb.DeliveryT
 
 	for i, rm := range rms {
 		err := func() error {
+			defer rm.record.Release()
+
 			// Retrieves (or creates) the stream Producer for the sub-stream id defined in the RecordMessage.
 			sp := p.streamProducers[rm.subStreamId]
 			if sp == nil {
@@ -225,10 +223,10 @@ func (p *Producer) Produce(rms []*RecordMessage, deliveryType colarspb.DeliveryT
 					ipc.WithAllocator(p.pool), // use allocator of the `Producer`
 					ipc.WithSchema(rm.record.Schema()),
 					ipc.WithDictionaryDeltas(true), // enable dictionary deltas
+					ipc.WithZstd(),
 				)
 			}
 			err := sp.ipcWriter.Write(rm.record)
-			rm.record.Release()
 			if err != nil {
 				return err
 			}

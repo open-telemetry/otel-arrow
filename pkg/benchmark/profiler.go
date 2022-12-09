@@ -37,9 +37,10 @@ type Profiler struct {
 	benchmarks []*ProfilerResult
 	writer     io.Writer
 	outputDir  string
+	warmUpIter uint64
 }
 
-func NewProfiler(batchSizes []int, logfile string) *Profiler {
+func NewProfiler(batchSizes []int, logfile string, warmUpIter uint64) *Profiler {
 	if _, err := os.Stat(logfile); os.IsNotExist(err) {
 		err = os.MkdirAll(path.Dir(logfile), 0700)
 		if err != nil {
@@ -59,6 +60,7 @@ func NewProfiler(batchSizes []int, logfile string) *Profiler {
 		benchmarks: []*ProfilerResult{},
 		writer:     mw,
 		outputDir:  path.Dir(logfile),
+		warmUpIter: warmUpIter,
 	}
 }
 
@@ -96,7 +98,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 		for _i := uint64(0); _i < maxIter; _i++ {
 			maxBatchCount := uint64(math.Ceil(float64(profileable.DatasetSize()) / float64(batchSize)))
 			startAt := 0
-			for _j := uint64(0); _j < maxBatchCount; _j++ {
+			for batchNum := uint64(0); batchNum < maxBatchCount; batchNum++ {
 				correctedBatchSize := min(profileable.DatasetSize()-startAt, batchSize)
 				profileable.PrepareBatch(p.writer, startAt, correctedBatchSize)
 
@@ -121,7 +123,9 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 				for _, buffer := range buffers {
 					uncompressedSizeBytes += len(buffer)
 				}
-				uncompressedSize.Record(float64(uncompressedSizeBytes))
+				if batchNum >= p.warmUpIter {
+					uncompressedSize.Record(float64(uncompressedSizeBytes))
+				}
 
 				// Compression
 				var compressedBuffers [][]byte
@@ -137,7 +141,9 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 				for _, buffer := range compressedBuffers {
 					compressedSizeBytes += len(buffer)
 				}
-				compressedSize.Record(float64(compressedSizeBytes))
+				if batchNum >= p.warmUpIter {
+					compressedSize.Record(float64(compressedSizeBytes))
+				}
 
 				// Decompression
 				var uncompressedBuffers [][]byte
@@ -158,21 +164,23 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 				afterDeserialization := time.Now()
 				profileable.Clear()
 
-				batchCeation.Record(afterBatchCreation.Sub(start).Seconds())
-				processing.Record(afterProcessing.Sub(afterBatchCreation).Seconds())
-				serialization.Record(afterSerialization.Sub(afterProcessing).Seconds())
-				compression.Record(afterCompression.Sub(afterSerialization).Seconds())
-				decompression.Record(afterDecompression.Sub(afterCompression).Seconds())
-				deserialization.Record(afterDeserialization.Sub(afterDecompression).Seconds())
+				if batchNum >= p.warmUpIter {
+					batchCeation.Record(afterBatchCreation.Sub(start).Seconds())
+					processing.Record(afterProcessing.Sub(afterBatchCreation).Seconds())
+					serialization.Record(afterSerialization.Sub(afterProcessing).Seconds())
+					compression.Record(afterCompression.Sub(afterSerialization).Seconds())
+					decompression.Record(afterDecompression.Sub(afterCompression).Seconds())
+					deserialization.Record(afterDeserialization.Sub(afterDecompression).Seconds())
 
-				totalTime.Record(
-					afterBatchCreation.Sub(start).Seconds() +
-						afterProcessing.Sub(afterBatchCreation).Seconds() +
-						afterSerialization.Sub(afterProcessing).Seconds() +
-						afterCompression.Sub(afterSerialization).Seconds() +
-						afterDecompression.Sub(afterCompression).Seconds() +
-						afterDeserialization.Sub(afterDecompression).Seconds(),
-				)
+					totalTime.Record(
+						afterBatchCreation.Sub(start).Seconds() +
+							afterProcessing.Sub(afterBatchCreation).Seconds() +
+							afterSerialization.Sub(afterProcessing).Seconds() +
+							afterCompression.Sub(afterSerialization).Seconds() +
+							afterDecompression.Sub(afterCompression).Seconds() +
+							afterDeserialization.Sub(afterDecompression).Seconds(),
+					)
+				}
 			}
 		}
 
@@ -371,7 +379,8 @@ func (p *Profiler) AddSectionWithTotal(label string, step string, table *tablewr
 
 			value := transform(values[key].P99)
 			if value == math.Trunc(value) {
-				row = append(row, fmt.Sprintf("%d %s (total: %s)", int64(value), improvement, humanize.Bytes(uint64(values[key].Total(maxIter)))))
+				accumulatedSize := uint64(values[key].Total(maxIter))
+				row = append(row, fmt.Sprintf("%d %s (total: %s)", int64(value), improvement, humanize.Bytes(accumulatedSize)))
 			} else {
 				if value >= 1.0 {
 					row = append(row, fmt.Sprintf("%.3f %s (total: %s)", value, improvement, humanize.Bytes(uint64(values[key].Total(maxIter)))))

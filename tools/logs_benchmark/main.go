@@ -50,13 +50,13 @@ func main() {
 	for i := range inputFiles {
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
 		//profiler := benchmark.NewProfiler([]int{1000, 5000, 10000, 25000})
-		profiler := benchmark.NewProfiler([]int{10000}, "output/logs_benchmark.log")
+		profiler := benchmark.NewProfiler([]int{10000}, "output/logs_benchmark.log", 2)
 		compressionAlgo := benchmark.Zstd()
 		maxIter := uint64(3)
 		profiler.Printf("Dataset '%s'\n", inputFiles[i])
 		ds := dataset.NewRealLogsDataset(inputFiles[i])
 		otlpLogs := otlp.NewLogsProfileable(ds, compressionAlgo)
-		otlpArrowLogsWithDictionary := otlp_arrow.NewLogsProfileable([]string{"With dict"}, ds, &benchmark.Config{}, compressionAlgo)
+		otlpArrowLogsWithDictionary := otlp_arrow.NewLogsProfileable([]string{"With dict"}, ds, &benchmark.Config{})
 
 		if err := profiler.Profile(otlpLogs, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))

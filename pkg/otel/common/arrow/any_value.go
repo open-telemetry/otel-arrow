@@ -3,8 +3,8 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 )
 
@@ -114,12 +114,6 @@ func (b *AnyValueBuilder) Append(av pcommon.Value) error {
 func (b *AnyValueBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-
-		b.strBuilder.Release()
-		b.i64Builder.Release()
-		b.f64Builder.Release()
-		b.boolBuilder.Release()
-		b.binaryBuilder.Release()
 
 		b.released = true
 	}

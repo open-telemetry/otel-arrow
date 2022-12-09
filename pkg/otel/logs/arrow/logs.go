@@ -3,9 +3,9 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v10/arrow"
-	"github.com/apache/arrow/go/v10/arrow/array"
-	"github.com/apache/arrow/go/v10/arrow/memory"
+	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v11/arrow/array"
+	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/plog"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
@@ -69,7 +69,7 @@ func (b *LogsBuilder) Build() (arrow.Record, error) {
 		// Build a list of fields that overflowed
 		var fieldNames []string
 		for _, update := range updates {
-			fieldNames = append(fieldNames, b.schema.DictionaryPath(update.DictIdx))
+			fieldNames = append(fieldNames, update.DictPath)
 		}
 
 		b.schema.UpdateSchema(updates)
@@ -106,7 +106,7 @@ func (b *LogsBuilder) Append(logs plog.Logs) error {
 func (b *LogsBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-		b.rlp.Release()
+
 		b.released = true
 	}
 }

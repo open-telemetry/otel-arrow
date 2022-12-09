@@ -40,20 +40,21 @@ func main() {
 	// Define default input file
 	inputFiles := flag.Args()
 	if len(inputFiles) == 0 {
-		inputFiles = append(inputFiles, "./data/otlp_metrics.pb")
+		inputFiles = append(inputFiles, "./data/multivariate-metrics.pb")
 	}
 
-	// Compare the performance for each input file
+	warmUpIter := uint64(2)
+
+	// Performance comparison for each input file
 	for i := range inputFiles {
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
-		//profiler := benchmark.NewProfiler([]int{1000, 5000, 10000, 25000})
-		profiler := benchmark.NewProfiler([]int{5000, 10000}, "output/metrics_benchmark.log")
+		profiler := benchmark.NewProfiler([]int{1000, 2000}, "output/metrics_benchmark.log", warmUpIter)
 		compressionAlgo := benchmark.Zstd()
 		maxIter := uint64(3)
 		profiler.Printf("Dataset '%s'\n", inputFiles[i])
 		ds := dataset.NewRealMetricsDataset(inputFiles[i])
 		otlpMetrics := otlp.NewMetricsProfileable(ds, compressionAlgo)
-		otlpArrowMetricsWithDictionary := otlp_arrow.NewMetricsProfileable([]string{"With dict"}, ds, &benchmark.Config{}, compressionAlgo)
+		otlpArrowMetricsWithDictionary := otlp_arrow.NewMetricsProfileable([]string{"With dict"}, ds, &benchmark.Config{})
 
 		if err := profiler.Profile(otlpMetrics, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))

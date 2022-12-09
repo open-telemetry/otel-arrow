@@ -3,7 +3,7 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v10/arrow/array"
+	"github.com/apache/arrow/go/v11/arrow/array"
 )
 
 // AdaptiveDictionaryBuilder is a wrapper around arrow builders that
