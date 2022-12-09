@@ -22,11 +22,13 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 )
 
+const WarmUpIter = 2
+
 func TestOtlpMetricsProfiler(t *testing.T) {
 	t.Parallel()
 
 	systemToProfile := NewMetricsProfileable(dataset.NewFakeMetricsDataset(1000), benchmark.Zstd())
-	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, filepath.Join(t.TempDir(), "tmpfile"), 2)
+	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, filepath.Join(t.TempDir(), "tmpfile"), WarmUpIter)
 	if err := profiler.Profile(systemToProfile, 10); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -40,7 +42,7 @@ func TestOtlpLogsProfiler(t *testing.T) {
 	t.Parallel()
 
 	systemToProfile := NewLogsProfileable(dataset.NewFakeLogsDataset(1000), benchmark.Zstd())
-	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, filepath.Join(t.TempDir(), "tmpfile"), 2)
+	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, filepath.Join(t.TempDir(), "tmpfile"), WarmUpIter)
 	if err := profiler.Profile(systemToProfile, 10); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -55,7 +57,7 @@ func TestOtlpTracesProfiler(t *testing.T) {
 
 	maxIter := uint64(10)
 	systemToProfile := NewTraceProfileable(dataset.NewFakeTraceDataset(1000), benchmark.Zstd())
-	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, filepath.Join(t.TempDir(), "tmpfile"), 2)
+	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, filepath.Join(t.TempDir(), "tmpfile"), WarmUpIter)
 	if err := profiler.Profile(systemToProfile, maxIter); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -75,7 +77,7 @@ func TestOtlpLightstepTracesProfiler(t *testing.T) {
 
 	maxIter := uint64(10)
 	systemToProfile := NewTraceProfileable(benchdata, benchmark.Zstd())
-	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, "tmpfile", 2)
+	profiler := benchmark.NewProfiler([]int{10, 100, 1000}, "tmpfile", WarmUpIter)
 	if err := profiler.Profile(systemToProfile, maxIter); err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
