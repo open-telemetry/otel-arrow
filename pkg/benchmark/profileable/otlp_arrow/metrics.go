@@ -27,9 +27,11 @@ type MetricsProfileable struct {
 
 func NewMetricsProfileable(tags []string, dataset dataset.MetricsDataset, config *benchmark.Config) *MetricsProfileable {
 	return &MetricsProfileable{
-		tags:              tags,
-		dataset:           dataset,
-		compression:       benchmark.Zstd(), // ToDo replace Zstd with NoCompression when this bug will be fixed: https://github.com/apache/arrow/issues/14883
+		tags:    tags,
+		dataset: dataset,
+		// ToDo replace Zstd with NoCompression when this bug will be fixed: https://github.com/apache/arrow/issues/14883
+		//compression:       benchmark.Zstd(),
+		compression:       benchmark.NoCompression(),
 		producer:          arrow_record.NewProducer(),
 		batchArrowRecords: make([]*colarspb.BatchArrowRecords, 0, 10),
 		config:            config,

@@ -159,6 +159,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*RecordMessage, e
 				ipc.WithAllocator(common.NewLimitedAllocator(memory.NewGoAllocator(), c.memLimit)),
 				ipc.WithDictionaryDeltas(true),
 				// ToDo add ipc.WithZstd() when this Arrow bug will be fixed https://github.com/apache/arrow/issues/14883
+				ipc.WithZstd(),
 			)
 			if err != nil {
 				return nil, err

@@ -27,9 +27,11 @@ type LogsProfileable struct {
 
 func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *benchmark.Config) *LogsProfileable {
 	return &LogsProfileable{
-		tags:              tags,
-		dataset:           dataset,
-		compression:       benchmark.Zstd(), // ToDo replace Zstd with NoCompression when this bug will be fixed: https://github.com/apache/arrow/issues/14883
+		tags:    tags,
+		dataset: dataset,
+		// ToDo replace Zstd with NoCompression when this bug will be fixed: https://github.com/apache/arrow/issues/14883
+		//compression:       benchmark.Zstd(),
+		compression:       benchmark.NoCompression(),
 		producer:          arrow_record.NewProducer(),
 		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
 		config:            config,

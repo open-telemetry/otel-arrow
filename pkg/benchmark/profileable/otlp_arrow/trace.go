@@ -30,9 +30,11 @@ type TraceProfileable struct {
 
 func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *benchmark.Config) *TraceProfileable {
 	return &TraceProfileable{
-		tags:              tags,
-		dataset:           dataset,
-		compression:       benchmark.Zstd(), // ToDo replace Zstd with NoCompression when this bug will be fixed: https://github.com/apache/arrow/issues/14883
+		tags:    tags,
+		dataset: dataset,
+		// ToDo replace Zstd with NoCompression when this bug will be fixed: https://github.com/apache/arrow/issues/14883
+		//compression:       benchmark.Zstd(),
+		compression:       benchmark.NoCompression(),
 		producer:          arrow_record.NewProducer(),
 		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
 		config:            config,
