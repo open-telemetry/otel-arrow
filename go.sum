@@ -12,8 +12,6 @@ github.com/andybalholm/brotli v1.0.4/go.mod h1:fO7iG3H7G2nSZ7m0zPUDn85XEX2GTukHG
 github.com/antihax/optional v1.0.0/go.mod h1:uupD/76wgC+ih3iEmQUL+0Ugr19nfwCT1kdvxnR2qWY=
 github.com/apache/arrow/go/arrow v0.0.0-20211112161151-bc219186db40 h1:q4dksr6ICHXqG5hm0ZW5IHyeEJXoIJSOZeBLmWPNeIQ=
 github.com/apache/arrow/go/arrow v0.0.0-20211112161151-bc219186db40/go.mod h1:Q7yQnSMnLvcXlZ8RV+jwz/6y1rQTqbX6C82SndT52Zs=
-github.com/apache/arrow/go/v11 v11.0.0-20221208202605-d1a550c28cd6 h1:WyVY9P9Ev8hvbU4psHcC08cTyUx95Acm3Oxkf2rlwc4=
-github.com/apache/arrow/go/v11 v11.0.0-20221208202605-d1a550c28cd6/go.mod h1:Eg5OsL5H+e299f7u5ssuXsuHQVEGC4xei5aX110hRiI=
 github.com/apache/arrow/go/v11 v11.0.0-20221209182902-0e14d1001b1e h1:LqO0j6DCToJ8oKWgU7O4nW7kTwnfTa4oY7YCaVMCaCU=
 github.com/apache/arrow/go/v11 v11.0.0-20221209182902-0e14d1001b1e/go.mod h1:Eg5OsL5H+e299f7u5ssuXsuHQVEGC4xei5aX110hRiI=
 github.com/apache/thrift v0.16.0 h1:qEy6UW60iVOlUy+b9ZR0d5WzUWYGOo4HfopoyBaNmoY=

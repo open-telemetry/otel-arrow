@@ -9,7 +9,6 @@ require (
 	github.com/dustin/go-humanize v1.0.0
 	github.com/golang/mock v1.6.0
 	github.com/google/go-cmp v0.5.8
-	github.com/klauspost/compress v1.15.9
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/pierrec/lz4 v2.0.5+incompatible
 	github.com/stretchr/testify v1.8.1
@@ -17,6 +16,8 @@ require (
 	google.golang.org/grpc v1.51.0
 	google.golang.org/protobuf v1.28.1
 )
+
+require github.com/klauspost/compress v1.15.9
 
 require (
 	github.com/andybalholm/brotli v1.0.4 // indirect
