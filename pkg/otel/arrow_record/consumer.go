@@ -136,6 +136,7 @@ func (c *Consumer) TracesFrom(bar *colarspb.BatchArrowRecords) ([]ptrace.Traces,
 }
 
 // Consume takes a BatchArrowRecords protobuf message and returns an array of RecordMessage.
+// Note: the records wrapped in the RecordMessage must be released after use by the caller.
 func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*RecordMessage, error) {
 
 	var ibes []*RecordMessage
