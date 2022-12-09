@@ -33,9 +33,6 @@ func TestOtlpMetricsProfiler(t *testing.T) {
 		t.Errorf("expected no error, got %v", err)
 	}
 	profiler.CheckProcessingResults()
-	//profiler.PrintResults()
-	//profiler.ExportMetricsTimesCSV("otlp_metrics")
-	//profiler.ExportMetricsBytesCSV("otlp_metrics")
 }
 
 func TestOtlpLogsProfiler(t *testing.T) {
@@ -47,9 +44,6 @@ func TestOtlpLogsProfiler(t *testing.T) {
 		t.Errorf("expected no error, got %v", err)
 	}
 	profiler.CheckProcessingResults()
-	//profiler.PrintResults()
-	//profiler.ExportMetricsTimesCSV("otlp_logs")
-	//profiler.ExportMetricsBytesCSV("otlp_logs")
 }
 
 func TestOtlpTracesProfiler(t *testing.T) {
@@ -62,9 +56,6 @@ func TestOtlpTracesProfiler(t *testing.T) {
 		t.Errorf("expected no error, got %v", err)
 	}
 	profiler.CheckProcessingResults()
-	profiler.PrintResults(maxIter)
-	//profiler.ExportMetricsTimesCSV("otlp_traces")
-	//profiler.ExportMetricsBytesCSV("otlp_traces")
 }
 
 func TestOtlpLightstepTracesProfiler(t *testing.T) {
@@ -82,7 +73,4 @@ func TestOtlpLightstepTracesProfiler(t *testing.T) {
 		t.Errorf("expected no error, got %v", err)
 	}
 	profiler.CheckProcessingResults()
-	profiler.PrintResults(maxIter)
-	//profiler.ExportMetricsTimesCSV("otlp_traces")
-	//profiler.ExportMetricsBytesCSV("otlp_traces")
 }
