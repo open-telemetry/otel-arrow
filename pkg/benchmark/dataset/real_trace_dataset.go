@@ -18,6 +18,7 @@
 package dataset
 
 import (
+	"encoding/hex"
 	"fmt"
 	"log"
 	"math/rand"
@@ -155,9 +156,11 @@ func v2s(v pcommon.Value) string {
 func (d *RealTraceDataset) getSortkey(field string, span ptrace.Span) (result string) {
 	switch field {
 	case "trace_id":
-		return span.TraceID().HexString()
+		tid := span.TraceID()
+		return hex.EncodeToString(tid[:])
 	case "span_id":
-		return span.SpanID().HexString()
+		sid := span.SpanID()
+		return hex.EncodeToString(sid[:])
 	default:
 		// scan attributes next
 	}
