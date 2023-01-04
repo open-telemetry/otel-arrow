@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package otlp
 
 import (
@@ -22,22 +36,22 @@ type MetricSetIds struct {
 }
 
 func NewMetricSetIds(parentDT *arrow.StructType) (*MetricSetIds, error) {
-	id, metricSetDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.UNIVARIATE_METRICS)
+	id, metricSetDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.UnivariateMetrics)
 	if err != nil {
 		return nil, err
 	}
 
-	name, _, err := arrowutils.FieldIDFromStruct(metricSetDT, constants.NAME)
+	name, _, err := arrowutils.FieldIDFromStruct(metricSetDT, constants.Name)
 	if err != nil {
 		return nil, err
 	}
 
-	description, _, err := arrowutils.FieldIDFromStruct(metricSetDT, constants.DESCRIPTION)
+	description, _, err := arrowutils.FieldIDFromStruct(metricSetDT, constants.Description)
 	if err != nil {
 		return nil, err
 	}
 
-	unit, _, err := arrowutils.FieldIDFromStruct(metricSetDT, constants.UNIT)
+	unit, _, err := arrowutils.FieldIDFromStruct(metricSetDT, constants.Unit)
 	if err != nil {
 		return nil, err
 	}
@@ -48,8 +62,8 @@ func NewMetricSetIds(parentDT *arrow.StructType) (*MetricSetIds, error) {
 	}
 
 	sharedAttrIds := otlp.NewSharedAttributeIds(metricSetDT)
-	startTimeID := arrowutils.OptionalFieldIDFromStruct(metricSetDT, constants.SHARED_START_TIME_UNIX_NANO)
-	timeID := arrowutils.OptionalFieldIDFromStruct(metricSetDT, constants.SHARED_TIME_UNIX_NANO)
+	startTimeID := arrowutils.OptionalFieldIDFromStruct(metricSetDT, constants.SharedStartTimeUnixNano)
+	timeID := arrowutils.OptionalFieldIDFromStruct(metricSetDT, constants.SharedTimeUnixNano)
 
 	return &MetricSetIds{
 		Id:                 id,

@@ -20,13 +20,14 @@ payload. The sparse union is used to represent the value type.
 ```yaml
 # Attributes Arrow Schema (declaration used in other schemas)
 attributes: &attributes                                 # arrow type = map
-  - key: string | string_dictionary
+  - key: string_dictionary | string
     value:                                              # arrow type = sparse union
-        str: string | string_dictionary 
-        i64: int64
-        f64: float64
-        bool: bool 
-        binary: binary | binary_dictionary
+      str: string_dictionary | string
+      i64: int64
+      f64: float64
+      bool: bool
+      binary: binary_dictionary | binary
+      cbor: binary_dictionary | binary                  # cbor encoded complex attribute values
 
 # Exemplar Arrow Schema (declaration used in other schemas)
 exemplars: &exemplars
@@ -35,8 +36,8 @@ exemplars: &exemplars
     value:                        # arrow type = dense union
       i64: int64
       f64: float64
-    span_id: 8_bytes_binary | 8_bytes_binary_dictionary
-    trace_id: 16_bytes_binary | 16_bytes_binary_dictionary
+    span_id: 8_bytes_binary_dictionary | 8_bytes_binary
+    trace_id: 16_bytes_binary_dictionary | 16_bytes_binary
 
 
 # Metrics Arrow Schema
@@ -257,6 +258,7 @@ resource_logs:
               f64: float64 
               bool: bool 
               binary: binary | binary_dictionary
+              cbor: binary_dictionary | binary              # cbor encoded complex body value
             attributes: *attributes
             dropped_attributes_count: uint32 
             flags: uint32

@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package arrow
 
 import (
@@ -17,12 +31,12 @@ import (
 // ScopeMetricsDT is the Arrow Data Type describing a scope span.
 var (
 	ScopeMetricsDT = arrow.StructOf([]arrow.Field{
-		{Name: constants.SCOPE, Type: acommon.ScopeDT},
-		{Name: constants.SCHEMA_URL, Type: acommon.DefaultDictString},
-		{Name: constants.UNIVARIATE_METRICS, Type: arrow.ListOf(UnivariateMetricSetDT)},
-		{Name: constants.SHARED_ATTRIBUTES, Type: acommon.AttributesDT},
-		{Name: constants.SHARED_START_TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
-		{Name: constants.SHARED_TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
+		{Name: constants.Scope, Type: acommon.ScopeDT},
+		{Name: constants.SchemaUrl, Type: acommon.DefaultDictString},
+		{Name: constants.UnivariateMetrics, Type: arrow.ListOf(UnivariateMetricSetDT)},
+		{Name: constants.SharedAttributes, Type: acommon.AttributesDT},
+		{Name: constants.SharedStartTimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
+		{Name: constants.SharedTimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
 	}...)
 )
 
@@ -216,7 +230,7 @@ func NewMetricsSharedData(metrics pmetric.MetricSlice) (sharedData *ScopeMetrics
 			sharedData.Attributes = nil
 		}
 	}
-	return
+	return sharedData, err
 }
 
 func NewMetricSharedData(metric pmetric.Metric) (sharedData *MetricSharedData, err error) {
@@ -245,9 +259,11 @@ func NewMetricSharedData(metric pmetric.Metric) (sharedData *MetricSharedData, e
 		dps := metric.ExponentialHistogram().DataPoints()
 		dpLen = func() int { return dps.Len() }
 		dpAt = func(i int) DataPoint { return dps.At(i) }
+	case pmetric.MetricTypeEmpty:
+		// ignore empty metric.
 	default:
 		err = fmt.Errorf("unknown metric type: %v", metric.Type())
-		return
+		return sharedData, err
 	}
 
 	sharedData.NumDP = dpLen()
@@ -258,7 +274,7 @@ func NewMetricSharedData(metric pmetric.Metric) (sharedData *MetricSharedData, e
 		}
 	}
 
-	return
+	return sharedData, err
 }
 
 func initSharedDataFrom(sharedData *MetricSharedData, initDataPoint DataPoint) {

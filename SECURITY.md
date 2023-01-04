@@ -14,3 +14,7 @@ at F5SIRT@f5.com. Mention OTEL Arrow Adapter in the subject line.
 
 For more information visit
 [https://www.f5.com/services/support/report-a-vulnerability](https://www.f5.com/services/support/report-a-vulnerability)
+
+## Threat Model
+
+See the following [threat model assessment](docs/threat_model_assessment.md) for more details.

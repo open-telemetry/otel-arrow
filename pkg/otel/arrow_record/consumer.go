@@ -1,19 +1,16 @@
-/*
- * // Copyright The OpenTelemetry Authors
- * //
- * // Licensed under the Apache License, Version 2.0 (the "License");
- * // you may not use this file except in compliance with the License.
- * // You may obtain a copy of the License at
- * //
- * //       http://www.apache.org/licenses/LICENSE-2.0
- * //
- * // Unless required by applicable law or agreed to in writing, software
- * // distributed under the License is distributed on an "AS IS" BASIS,
- * // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * // See the License for the specific language governing permissions and
- * // limitations under the License.
- *
- */
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package arrow_record
 
@@ -33,7 +30,11 @@ import (
 	tracesotlp "github.com/f5/otel-arrow-adapter/pkg/otel/traces/otlp"
 )
 
-// ConsumerAPI is the interface of a Consumer consdiering all signals.
+// This file implements a generic consumer API used to decode BatchArrowRecords messages into
+// their corresponding OTLP representations (i.e. pmetric.Metrics, plog.Logs, ptrace.Traces).
+// The consumer API is used by the OTLP Arrow receiver.
+
+// ConsumerAPI is the interface of a Consumer considering all signals.
 // This is useful for mock testing.
 type ConsumerAPI interface {
 	LogsFrom(*colarspb.BatchArrowRecords) ([]plog.Logs, error)
@@ -56,7 +57,8 @@ type streamConsumer struct {
 	ipcReader *ipc.Reader
 }
 
-// NewConsumer creates a new BatchArrowRecords consumer.
+// NewConsumer creates a new BatchArrowRecords consumer, i.e. a decoder consuming BatchArrowRecords and returning
+// the corresponding OTLP representation (pmetric,Metrics, plog.Logs, ptrace.Traces).
 func NewConsumer() *Consumer {
 	return &Consumer{
 		streamConsumers: make(map[string]*streamConsumer),
@@ -138,7 +140,6 @@ func (c *Consumer) TracesFrom(bar *colarspb.BatchArrowRecords) ([]ptrace.Traces,
 // Consume takes a BatchArrowRecords protobuf message and returns an array of RecordMessage.
 // Note: the records wrapped in the RecordMessage must be released after use by the caller.
 func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*RecordMessage, error) {
-
 	var ibes []*RecordMessage
 
 	// Transform each individual OtlpArrowPayload into RecordMessage

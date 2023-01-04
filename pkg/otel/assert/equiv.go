@@ -37,6 +37,7 @@ import (
 // necessarily preserve the structure of the original OTLP entity. Resource spans or scope spans can be split or merged
 // during the conversion if the semantic is preserved.
 func Equiv(t *testing.T, expected []json.Marshaler, actual []json.Marshaler) {
+	t.Helper()
 	expectedVPaths, err := vPaths(expected)
 	if err != nil {
 		assert.FailNow(t, "Failed to convert expected traces to canonical representation", err)
@@ -68,6 +69,7 @@ func Equiv(t *testing.T, expected []json.Marshaler, actual []json.Marshaler) {
 
 // NotEquiv asserts that two arrays of json.Marshaler are not equivalent. See Equiv for the definition of equivalence.
 func NotEquiv(t *testing.T, expected []json.Marshaler, actual []json.Marshaler) {
+	t.Helper()
 	expectedVPaths, err := vPaths(expected)
 	if err != nil {
 		assert.FailNow(t, "Failed to convert expected traces to canonical representation", err)

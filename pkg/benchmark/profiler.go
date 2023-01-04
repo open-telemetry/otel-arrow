@@ -98,6 +98,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 		for _i := uint64(0); _i < maxIter; _i++ {
 			maxBatchCount := uint64(math.Ceil(float64(profileable.DatasetSize()) / float64(batchSize)))
 			startAt := 0
+
 			for batchNum := uint64(0); batchNum < maxBatchCount; batchNum++ {
 				correctedBatchSize := min(profileable.DatasetSize()-startAt, batchSize)
 				profileable.PrepareBatch(p.writer, startAt, correctedBatchSize)
@@ -111,6 +112,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 				// Processing
 				result := profileable.Process(p.writer)
 				afterProcessing := time.Now()
+
 				processingResults = append(processingResults, result)
 
 				// Serialization
@@ -120,6 +122,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 				}
 				afterSerialization := time.Now()
 				uncompressedSizeBytes := 0
+
 				for _, buffer := range buffers {
 					uncompressedSizeBytes += len(buffer)
 				}
@@ -134,6 +137,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 					if err != nil {
 						return err
 					}
+
 					compressedBuffers = append(compressedBuffers, compressedBuffer)
 				}
 				afterCompression := time.Now()
@@ -147,21 +151,26 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 
 				// Decompression
 				var uncompressedBuffers [][]byte
+
 				for _, buffer := range compressedBuffers {
 					uncompressedBuffer, err := profileable.CompressionAlgorithm().Decompress(buffer)
 					if err != nil {
 						return err
 					}
+
 					uncompressedBuffers = append(uncompressedBuffers, uncompressedBuffer)
 				}
 				afterDecompression := time.Now()
+
 				if !bytesEqual(buffers, uncompressedBuffers) {
 					return fmt.Errorf("buffers are not equal after decompression")
 				}
 
 				// Deserialization
 				profileable.Deserialize(p.writer, buffers)
+
 				afterDeserialization := time.Now()
+
 				profileable.Clear()
 
 				if batchNum >= p.warmUpIter {
@@ -199,6 +208,7 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 			totalTimeSec:         totalTime.ComputeSummary(),
 			processingResults:    processingResults,
 		})
+
 		profileable.EndProfiling(p.writer)
 	}
 
@@ -232,6 +242,7 @@ func (p *Profiler) PrintResults(maxIter uint64) {
 func (p *Profiler) PrintStepsTiming(_ uint64) {
 	_, _ = fmt.Fprintf(p.writer, "\n")
 	headers := []string{"Steps"}
+
 	for _, benchmark := range p.benchmarks {
 		headers = append(headers, fmt.Sprintf("%s %s - p99", benchmark.benchName, benchmark.tags))
 	}
@@ -240,12 +251,15 @@ func (p *Profiler) PrintStepsTiming(_ uint64) {
 	table.SetHeader(headers)
 	table.SetBorder(false)
 	headerColors := []tablewriter.Colors{tablewriter.Color(tablewriter.Normal, tablewriter.FgGreenColor)}
+
 	for i := 0; i < len(p.benchmarks); i++ {
 		headerColors = append(headerColors, tablewriter.Color())
 	}
+
 	table.SetHeaderColor(headerColors...)
 
 	values := make(map[string]*Summary)
+
 	for _, result := range p.benchmarks {
 		for _, summary := range result.summaries {
 			key := fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "batch_creation_sec")
@@ -288,15 +302,18 @@ func (p *Profiler) PrintCompressionRatio(maxIter uint64) {
 	table.SetHeader(headers)
 	table.SetBorder(false)
 	headerColors := []tablewriter.Colors{tablewriter.Color(tablewriter.Normal, tablewriter.FgGreenColor)}
+
 	for i := 0; i < len(p.benchmarks); i++ {
 		headerColors = append(headerColors, tablewriter.Color())
 	}
+
 	table.SetHeaderColor(headerColors...)
 
 	uncompressedTotal := make(map[string]int64)
 	compressedTotal := make(map[string]int64)
 
 	values := make(map[string]*Summary)
+
 	for _, result := range p.benchmarks {
 		for _, summary := range result.summaries {
 			key := fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "compressed_size_byte")
@@ -350,6 +367,7 @@ func (p *Profiler) AddSection(label string, step string, table *tablewriter.Tabl
 				}
 			}
 		}
+
 		table.Append(row)
 	}
 }
@@ -389,6 +407,7 @@ func (p *Profiler) AddSectionWithTotal(label string, step string, table *tablewr
 				}
 			}
 		}
+
 		table.Append(row)
 	}
 }
@@ -424,18 +443,22 @@ func (p *Profiler) ExportMetricsTimesCSV(filePrefix string) {
 			if err != nil {
 				panic(fmt.Sprintf("failed writing to file: %s", err))
 			}
+
 			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],1_Serialization\n", batchSize, serializationMs, result.benchName, result.tags))
 			if err != nil {
 				panic(fmt.Sprintf("failed writing to file: %s", err))
 			}
+
 			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],2_Compression\n", batchSize, compressionMs, result.benchName, result.tags))
 			if err != nil {
 				panic(fmt.Sprintf("failed writing to file: %s", err))
 			}
+
 			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],3_Decompression\n", batchSize, decompressionMs, result.benchName, result.tags))
 			if err != nil {
 				panic(fmt.Sprintf("failed writing to file: %s", err))
 			}
+
 			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],4_Deserialization\n", batchSize, deserializationMs, result.benchName, result.tags))
 			if err != nil {
 				panic(fmt.Sprintf("failed writing to file: %s", err))
@@ -447,6 +470,7 @@ func (p *Profiler) ExportMetricsTimesCSV(filePrefix string) {
 	if err != nil {
 		panic(fmt.Sprintf("failed flushing the file: %s", err))
 	}
+
 	err = file.Close()
 	if err != nil {
 		panic(fmt.Sprintf("failed closing the file: %s", err))
@@ -483,6 +507,7 @@ func (p *Profiler) ExportMetricsBytesCSV(filePrefix string) {
 				uncompressedSizeByte := result.summaries[batchIdx].uncompressedSizeByte.Values[sampleIdx]
 
 				line += fmt.Sprintf(",%f,%f,%s [%s]\n", compressedSizeByte, uncompressedSizeByte, result.benchName, result.tags)
+
 				_, err = dataWriter.WriteString(line)
 				if err != nil {
 					panic(fmt.Sprintf("failed writing to file: %s", err))
@@ -507,6 +532,7 @@ func min(a, b int) int {
 	if a < b {
 		return a
 	}
+
 	return b
 }
 
@@ -514,11 +540,13 @@ func bytesEqual(buffers1, buffers2 [][]byte) bool {
 	if len(buffers1) != len(buffers2) {
 		return false
 	}
+
 	for i := range buffers1 {
 		if !bytes.Equal(buffers1[i], buffers2[i]) {
 			return false
 		}
 	}
+
 	return true
 }
 

@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package arrow
 
 import (
@@ -15,12 +29,12 @@ import (
 // LinkDT is the Arrow Data Type describing a link event.
 var (
 	LinkDT = arrow.StructOf([]arrow.Field{
-		{Name: constants.TRACE_ID, Type: acommon.DefaultDictFixed16Binary},
+		{Name: constants.TraceId, Type: acommon.DefaultDictFixed16Binary},
 		// TODO: Not sure a dictionary if needed here
-		{Name: constants.SPAN_ID, Type: acommon.DefaultDictFixed8Binary},
-		{Name: constants.TRACE_STATE, Type: acommon.DefaultDictString},
-		{Name: constants.ATTRIBUTES, Type: acommon.AttributesDT},
-		{Name: constants.DROPPED_ATTRIBUTES_COUNT, Type: arrow.PrimitiveTypes.Uint32},
+		{Name: constants.SpanId, Type: acommon.DefaultDictFixed8Binary},
+		{Name: constants.TraceState, Type: acommon.DefaultDictString},
+		{Name: constants.Attributes, Type: acommon.AttributesDT},
+		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32},
 	}...)
 )
 

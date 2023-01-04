@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package otlp
 
 import (
@@ -24,7 +38,7 @@ type UnivariateSdpIds struct {
 }
 
 func NewUnivariateSdpIds(parentDT *arrow.StructType) (*UnivariateSdpIds, error) {
-	id, sdpDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.DATA_POINTS)
+	id, sdpDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.DataPoints)
 	if err != nil {
 		return nil, err
 	}
@@ -34,24 +48,24 @@ func NewUnivariateSdpIds(parentDT *arrow.StructType) (*UnivariateSdpIds, error) 
 		return nil, err
 	}
 
-	startTimeUnixNanoId, found := sdpDT.FieldIdx(constants.START_TIME_UNIX_NANO)
+	startTimeUnixNanoId, found := sdpDT.FieldIdx(constants.StartTimeUnixNano)
 	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.START_TIME_UNIX_NANO)
+		return nil, fmt.Errorf("field %q not found", constants.StartTimeUnixNano)
 	}
 
-	timeUnixNanoId, found := sdpDT.FieldIdx(constants.TIME_UNIX_NANO)
+	timeUnixNanoId, found := sdpDT.FieldIdx(constants.TimeUnixNano)
 	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.TIME_UNIX_NANO)
+		return nil, fmt.Errorf("field %q not found", constants.TimeUnixNano)
 	}
 
-	countId, found := sdpDT.FieldIdx(constants.SUMMARY_COUNT)
+	countId, found := sdpDT.FieldIdx(constants.SummaryCount)
 	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.SUMMARY_COUNT)
+		return nil, fmt.Errorf("field %q not found", constants.SummaryCount)
 	}
 
-	sumId, found := sdpDT.FieldIdx(constants.SUMMARY_SUM)
+	sumId, found := sdpDT.FieldIdx(constants.SummarySum)
 	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.SUMMARY_SUM)
+		return nil, fmt.Errorf("field %q not found", constants.SummarySum)
 	}
 
 	quantileValues, err := NewQuantileValueIds(sdpDT)
@@ -59,9 +73,9 @@ func NewUnivariateSdpIds(parentDT *arrow.StructType) (*UnivariateSdpIds, error) 
 		return nil, err
 	}
 
-	flagsId, found := sdpDT.FieldIdx(constants.FLAGS)
+	flagsId, found := sdpDT.FieldIdx(constants.Flags)
 	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.FLAGS)
+		return nil, fmt.Errorf("field %q not found", constants.Flags)
 	}
 
 	return &UnivariateSdpIds{

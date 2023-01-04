@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package arrow
 
 import (
@@ -20,8 +34,8 @@ const (
 var (
 	// MetricValueDT is an Arrow Data Type representing an OTLP metric value.
 	MetricValueDT = arrow.DenseUnionOf([]arrow.Field{
-		{Name: constants.I64_METRIC_VALUE, Type: arrow.PrimitiveTypes.Int64},
-		{Name: constants.F64_METRIC_VALUE, Type: arrow.PrimitiveTypes.Float64},
+		{Name: constants.I64MetricValue, Type: arrow.PrimitiveTypes.Int64},
+		{Name: constants.F64MetricValue, Type: arrow.PrimitiveTypes.Float64},
 	}, []int8{
 		I64Code,
 		F64Code,
@@ -75,9 +89,11 @@ func (b *MetricValueBuilder) AppendNumberDataPointValue(mdp pmetric.NumberDataPo
 	var err error
 	switch mdp.ValueType() {
 	case pmetric.NumberDataPointValueTypeDouble:
-		err = b.appendF64(mdp.DoubleValue())
+		b.appendF64(mdp.DoubleValue())
 	case pmetric.NumberDataPointValueTypeInt:
-		err = b.appendI64(mdp.IntValue())
+		b.appendI64(mdp.IntValue())
+	case pmetric.NumberDataPointValueTypeEmpty:
+		// ignore empty data point.
 	}
 	return err
 }
@@ -91,9 +107,11 @@ func (b *MetricValueBuilder) AppendExemplarValue(ex pmetric.Exemplar) error {
 	var err error
 	switch ex.ValueType() {
 	case pmetric.ExemplarValueTypeDouble:
-		err = b.appendF64(ex.DoubleValue())
+		b.appendF64(ex.DoubleValue())
 	case pmetric.ExemplarValueTypeInt:
-		err = b.appendI64(ex.IntValue())
+		b.appendI64(ex.IntValue())
+	case pmetric.ExemplarValueTypeEmpty:
+		// ignore empty exemplar.
 	}
 	return err
 }
@@ -108,17 +126,13 @@ func (b *MetricValueBuilder) Release() {
 }
 
 // appendI64 appends a new int64 value to the builder.
-func (b *MetricValueBuilder) appendI64(v int64) error {
+func (b *MetricValueBuilder) appendI64(v int64) {
 	b.builder.Append(I64Code)
 	b.i64Builder.Append(v)
-
-	return nil
 }
 
 // appendF64 appends a new double value to the builder.
-func (b *MetricValueBuilder) appendF64(v float64) error {
+func (b *MetricValueBuilder) appendF64(v float64) {
 	b.builder.Append(F64Code)
 	b.f64Builder.Append(v)
-
-	return nil
 }

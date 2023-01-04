@@ -8,7 +8,6 @@ require (
 	github.com/brianvoe/gofakeit/v6 v6.17.0
 	github.com/dustin/go-humanize v1.0.0
 	github.com/golang/mock v1.6.0
-	github.com/google/go-cmp v0.5.8
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/pierrec/lz4 v2.0.5+incompatible
 	github.com/stretchr/testify v1.8.1

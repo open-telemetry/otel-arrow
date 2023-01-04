@@ -34,7 +34,11 @@ import (
 	tracesarrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
 )
 
-// ProducerAPI is the interface of a Producer consdiering all signals.
+// This file implements a generic producer API used to encode BatchArrowRecords messages from
+// OTLP entities (i.e. pmetric.Metrics, plog.Logs, ptrace.Traces).
+// The producer API is used by the OTLP Arrow exporter.
+
+// ProducerAPI is the interface of a Producer considering all signals.
 // This is useful for mock testing.
 type ProducerAPI interface {
 	BatchArrowRecordsFromTraces(ptrace.Traces) (*colarspb.BatchArrowRecords, error)
@@ -112,7 +116,7 @@ func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colar
 	// Build the record from the logs passed as parameter
 	// Note: The record returned is wrapped into a RecordMessage and will
 	// be released by the Producer.Produce method.
-	record, err := RecordBuilder[pmetric.Metrics](func() (acommon.EntityBuilder[pmetric.Metrics], error) {
+	record, err := recordBuilder[pmetric.Metrics](func() (acommon.EntityBuilder[pmetric.Metrics], error) {
 		return metricsarrow.NewMetricsBuilder(p.pool, p.metricsSchema)
 	}, metrics)
 	if err != nil {
@@ -133,7 +137,7 @@ func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrow
 	// Build the record from the logs passed as parameter
 	// Note: The record returned is wrapped into a RecordMessage and will
 	// be released by the Producer.Produce method.
-	record, err := RecordBuilder[plog.Logs](func() (acommon.EntityBuilder[plog.Logs], error) {
+	record, err := recordBuilder[plog.Logs](func() (acommon.EntityBuilder[plog.Logs], error) {
 		return logsarrow.NewLogsBuilder(p.pool, p.logsSchema)
 	}, ls)
 	if err != nil {
@@ -154,7 +158,7 @@ func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.Batc
 	// Build the record from the traces passes as parameter
 	// Note: The record returned is wrapped into a RecordMessage and will
 	// be released by the Producer.Produce method.
-	record, err := RecordBuilder[ptrace.Traces](func() (acommon.EntityBuilder[ptrace.Traces], error) {
+	record, err := recordBuilder[ptrace.Traces](func() (acommon.EntityBuilder[ptrace.Traces], error) {
 		return tracesarrow.NewTracesBuilder(p.pool, p.tracesSchema)
 	}, ts)
 	if err != nil {
@@ -257,7 +261,7 @@ func (p *Producer) Produce(rms []*RecordMessage, deliveryType colarspb.DeliveryT
 	}, nil
 }
 
-func RecordBuilder[T pmetric.Metrics | plog.Logs | ptrace.Traces](builder func() (acommon.EntityBuilder[T], error), entity T) (record arrow.Record, err error) {
+func recordBuilder[T pmetric.Metrics | plog.Logs | ptrace.Traces](builder func() (acommon.EntityBuilder[T], error), entity T) (record arrow.Record, err error) {
 	dictionaryOverflowCount := 0
 
 	// Build an Arrow Record from an OTEL entity.
@@ -298,15 +302,17 @@ func RecordBuilder[T pmetric.Metrics | plog.Logs | ptrace.Traces](builder func()
 			break
 		}
 	}
-	return
+	return record, err
 }
 
+// WithAllocator sets the allocator to use for the Producer.
 func WithAllocator(allocator memory.Allocator) Option {
 	return func(cfg *Config) {
 		cfg.pool = allocator
 	}
 }
 
+// WithNoDictionary sets the Producer to not use dictionary encoding.
 func WithNoDictionary() Option {
 	return func(cfg *Config) {
 		cfg.initIndexSize = 0
@@ -314,48 +320,56 @@ func WithNoDictionary() Option {
 	}
 }
 
+// WithUint8InitDictIndex sets the Producer to use an uint8 index for all dictionaries.
 func WithUint8InitDictIndex() Option {
 	return func(cfg *Config) {
 		cfg.initIndexSize = math.MaxUint8
 	}
 }
 
+// WithUint16InitDictIndex sets the Producer to use an uint16 index for all dictionaries.
 func WithUint16InitDictIndex() Option {
 	return func(cfg *Config) {
 		cfg.initIndexSize = math.MaxUint16
 	}
 }
 
+// WithUint32LinitDictIndex sets the Producer to use an uint32 index for all dictionaries.
 func WithUint32LinitDictIndex() Option {
 	return func(cfg *Config) {
 		cfg.initIndexSize = math.MaxUint32
 	}
 }
 
+// WithUint64InitDictIndex sets the Producer to use an uint64 index for all dictionaries.
 func WithUint64InitDictIndex() Option {
 	return func(cfg *Config) {
 		cfg.initIndexSize = math.MaxUint64
 	}
 }
 
+// WithUint8LimitDictIndex sets the Producer to fall back to non dictionary encoding if the dictionary size exceeds an uint8 index.
 func WithUint8LimitDictIndex() Option {
 	return func(cfg *Config) {
 		cfg.limitIndexSize = math.MaxUint8
 	}
 }
 
+// WithUint16LimitDictIndex sets the Producer to fall back to non dictionary encoding if the dictionary size exceeds an uint16 index.
 func WithUint16LimitDictIndex() Option {
 	return func(cfg *Config) {
 		cfg.limitIndexSize = math.MaxUint16
 	}
 }
 
+// WithUint32LimitDictIndex sets the Producer to fall back to non dictionary encoding if the dictionary size exceeds an uint32 index.
 func WithUint32LimitDictIndex() Option {
 	return func(cfg *Config) {
 		cfg.limitIndexSize = math.MaxUint32
 	}
 }
 
+// WithUint64LimitDictIndex sets the Producer to fall back to non dictionary encoding if the dictionary size exceeds an uint64 index.
 func WithUint64LimitDictIndex() Option {
 	return func(cfg *Config) {
 		cfg.limitIndexSize = math.MaxUint64

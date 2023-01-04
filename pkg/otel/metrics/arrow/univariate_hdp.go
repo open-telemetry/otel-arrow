@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package arrow
 
 import (
@@ -15,17 +29,17 @@ import (
 // UnivariateHistogramDataPointDT is the Arrow Data Type describing a univariate histogram number data point.
 var (
 	UnivariateHistogramDataPointDT = arrow.StructOf(
-		arrow.Field{Name: constants.ATTRIBUTES, Type: acommon.AttributesDT},
-		arrow.Field{Name: constants.START_TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
-		arrow.Field{Name: constants.TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
-		arrow.Field{Name: constants.HISTOGRAM_COUNT, Type: arrow.PrimitiveTypes.Uint64},
-		arrow.Field{Name: constants.HISTOGRAM_SUM, Type: arrow.PrimitiveTypes.Float64},
-		arrow.Field{Name: constants.HISTOGRAM_BUCKET_COUNTS, Type: arrow.ListOf(arrow.PrimitiveTypes.Uint64)},
-		arrow.Field{Name: constants.HISTOGRAM_EXPLICIT_BOUNDS, Type: arrow.ListOf(arrow.PrimitiveTypes.Float64)},
-		arrow.Field{Name: constants.EXEMPLARS, Type: arrow.ListOf(ExemplarDT)},
-		arrow.Field{Name: constants.FLAGS, Type: arrow.PrimitiveTypes.Uint32},
-		arrow.Field{Name: constants.HISTOGRAM_MIN, Type: arrow.PrimitiveTypes.Float64},
-		arrow.Field{Name: constants.HISTOGRAM_MAX, Type: arrow.PrimitiveTypes.Float64},
+		arrow.Field{Name: constants.Attributes, Type: acommon.AttributesDT},
+		arrow.Field{Name: constants.StartTimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
+		arrow.Field{Name: constants.TimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
+		arrow.Field{Name: constants.HistogramCount, Type: arrow.PrimitiveTypes.Uint64},
+		arrow.Field{Name: constants.HistogramSum, Type: arrow.PrimitiveTypes.Float64},
+		arrow.Field{Name: constants.HistogramBucketCounts, Type: arrow.ListOf(arrow.PrimitiveTypes.Uint64)},
+		arrow.Field{Name: constants.HistogramExplicitBounds, Type: arrow.ListOf(arrow.PrimitiveTypes.Float64)},
+		arrow.Field{Name: constants.Exemplars, Type: arrow.ListOf(ExemplarDT)},
+		arrow.Field{Name: constants.Flags, Type: arrow.PrimitiveTypes.Uint32},
+		arrow.Field{Name: constants.HistogramMin, Type: arrow.PrimitiveTypes.Float64},
+		arrow.Field{Name: constants.HistogramMax, Type: arrow.PrimitiveTypes.Float64},
 	)
 )
 

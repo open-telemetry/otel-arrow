@@ -21,8 +21,8 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
 
-var EVENT_NAMES = []string{"empty", "dns-lookup", "tcp-connect", "tcp-handshake", "tcp-send", "tcp-receive", "tcp-close", "http-send", "http-receive", "http-close", "message-send", "message-receive", "message-close", "grpc-send", "grpc-receive", "grpc-close", "grpc-status", "grpc-trailers", "unknown"}
-var TRACE_STATES = []string{"started", "ended", "unknown"}
+var EventNames = []string{"empty", "dns-lookup", "tcp-connect", "tcp-handshake", "tcp-send", "tcp-receive", "tcp-close", "http-send", "http-receive", "http-close", "message-send", "message-receive", "message-close", "grpc-send", "grpc-receive", "grpc-close", "grpc-status", "grpc-trailers", "unknown"}
+var TraceStates = []string{"started", "ended", "unknown"}
 
 type TraceGenerator struct {
 	*DataGenerator
@@ -136,7 +136,7 @@ func (dg *DataGenerator) events(ses ptrace.SpanEventSlice) {
 	eventCount := dg.rng.Intn(8) + 2
 
 	for i := 0; i < eventCount; i++ {
-		name := pick(dg.TestEntropy, EVENT_NAMES)
+		name := pick(dg.TestEntropy, EventNames)
 		attributes := dg.NewStandardSpanEventAttributes()
 		if name == "empty" {
 			attributes = pcommon.NewMap()
@@ -158,7 +158,7 @@ func (dg *DataGenerator) links(sls ptrace.SpanLinkSlice) {
 		sl := sls.AppendEmpty()
 		sl.SetTraceID(dg.Id16Bytes())
 		sl.SetSpanID(dg.Id8Bytes())
-		sl.TraceState().FromRaw(pick(dg.TestEntropy, TRACE_STATES))
+		sl.TraceState().FromRaw(pick(dg.TestEntropy, TraceStates))
 		dg.NewStandardSpanLinkAttributes().CopyTo(sl.Attributes())
 	}
 }

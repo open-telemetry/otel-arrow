@@ -1,19 +1,16 @@
-/*
- * // Copyright The OpenTelemetry Authors
- * //
- * // Licensed under the Apache License, Version 2.0 (the "License");
- * // you may not use this file except in compliance with the License.
- * // You may obtain a copy of the License at
- * //
- * //       http://www.apache.org/licenses/LICENSE-2.0
- * //
- * // Unless required by applicable law or agreed to in writing, software
- * // distributed under the License is distributed on an "AS IS" BASIS,
- * // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * // See the License for the specific language governing permissions and
- * // limitations under the License.
- *
- */
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
 package dataset
 
@@ -69,9 +66,7 @@ func NewRealTraceDataset(path string, sortOrder []string) *RealTraceDataset {
 
 	for i := 0; i < traces.ResourceSpans().Len(); i++ {
 		rs := traces.ResourceSpans().At(i)
-
 		for j := 0; j < rs.ScopeSpans().Len(); j++ {
-
 			ss := rs.ScopeSpans().At(j)
 
 			for k := 0; k < ss.Spans().Len(); k++ {
@@ -148,6 +143,8 @@ func v2s(v pcommon.Value) string {
 		return fmt.Sprint(v.Int())
 	case pcommon.ValueTypeDouble:
 		return fmt.Sprint(v.Double())
+	case pcommon.ValueTypeBytes, pcommon.ValueTypeEmpty, pcommon.ValueTypeMap, pcommon.ValueTypeSlice:
+		panic(fmt.Sprint("unsupported sorting value:", v.Type()))
 	default:
 		panic(fmt.Sprint("unsupported sorting value:", v.Type()))
 	}

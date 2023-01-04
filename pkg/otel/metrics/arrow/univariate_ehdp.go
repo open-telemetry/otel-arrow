@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package arrow
 
 import (
@@ -15,19 +29,19 @@ import (
 // UnivariateEHistogramDataPointDT is the Arrow Data Type describing a univariate exponential histogram number data point.
 var (
 	UnivariateEHistogramDataPointDT = arrow.StructOf(
-		arrow.Field{Name: constants.ATTRIBUTES, Type: acommon.AttributesDT},
-		arrow.Field{Name: constants.START_TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
-		arrow.Field{Name: constants.TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
-		arrow.Field{Name: constants.HISTOGRAM_COUNT, Type: arrow.PrimitiveTypes.Uint64},
-		arrow.Field{Name: constants.HISTOGRAM_SUM, Type: arrow.PrimitiveTypes.Float64},
-		arrow.Field{Name: constants.EXP_HISTOGRAM_SCALE, Type: arrow.PrimitiveTypes.Int32},
-		arrow.Field{Name: constants.EXP_HISTOGRAM_ZERO_COUNT, Type: arrow.PrimitiveTypes.Uint64},
-		arrow.Field{Name: constants.EXP_HISTOGRAM_POSITIVE, Type: EHistogramDataPointBucketsDT},
-		arrow.Field{Name: constants.EXP_HISTOGRAM_NEGATIVE, Type: EHistogramDataPointBucketsDT},
-		arrow.Field{Name: constants.EXEMPLARS, Type: arrow.ListOf(ExemplarDT)},
-		arrow.Field{Name: constants.FLAGS, Type: arrow.PrimitiveTypes.Uint32},
-		arrow.Field{Name: constants.HISTOGRAM_MIN, Type: arrow.PrimitiveTypes.Float64},
-		arrow.Field{Name: constants.HISTOGRAM_MAX, Type: arrow.PrimitiveTypes.Float64},
+		arrow.Field{Name: constants.Attributes, Type: acommon.AttributesDT},
+		arrow.Field{Name: constants.StartTimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
+		arrow.Field{Name: constants.TimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
+		arrow.Field{Name: constants.HistogramCount, Type: arrow.PrimitiveTypes.Uint64},
+		arrow.Field{Name: constants.HistogramSum, Type: arrow.PrimitiveTypes.Float64},
+		arrow.Field{Name: constants.ExpHistogramScale, Type: arrow.PrimitiveTypes.Int32},
+		arrow.Field{Name: constants.ExpHistogramZeroCount, Type: arrow.PrimitiveTypes.Uint64},
+		arrow.Field{Name: constants.ExpHistogramPositive, Type: EHistogramDataPointBucketsDT},
+		arrow.Field{Name: constants.ExpHistogramNegative, Type: EHistogramDataPointBucketsDT},
+		arrow.Field{Name: constants.Exemplars, Type: arrow.ListOf(ExemplarDT)},
+		arrow.Field{Name: constants.Flags, Type: arrow.PrimitiveTypes.Uint32},
+		arrow.Field{Name: constants.HistogramMin, Type: arrow.PrimitiveTypes.Float64},
+		arrow.Field{Name: constants.HistogramMax, Type: arrow.PrimitiveTypes.Float64},
 	)
 )
 
@@ -123,12 +137,7 @@ func (b *EHistogramDataPointBuilder) Append(hdp pmetric.ExponentialHistogramData
 	} else {
 		b.tunb.AppendNull()
 	}
-	b.hcb.Append(hdp.Count())
-	if hdp.HasSum() {
-		b.hsb.Append(hdp.Sum())
-	} else {
-		b.hsb.AppendNull()
-	}
+	b.AppendCountSum(hdp)
 	b.sb.Append(hdp.Scale())
 	b.zcb.Append(hdp.ZeroCount())
 	if err := b.pb.Append(hdp.Positive()); err != nil {
@@ -138,6 +147,22 @@ func (b *EHistogramDataPointBuilder) Append(hdp pmetric.ExponentialHistogramData
 		return err
 	}
 
+	err := b.AppendExemplars(hdp)
+	if err != nil {
+		return err
+	}
+	if hdp.Flags() != 0 {
+		b.fb.Append(uint32(hdp.Flags()))
+	} else {
+		b.fb.AppendNull()
+	}
+
+	b.AppendMinMax(hdp)
+
+	return nil
+}
+
+func (b *EHistogramDataPointBuilder) AppendExemplars(hdp pmetric.ExponentialHistogramDataPoint) error {
 	exs := hdp.Exemplars()
 	ec := exs.Len()
 	if ec > 0 {
@@ -151,12 +176,19 @@ func (b *EHistogramDataPointBuilder) Append(hdp pmetric.ExponentialHistogramData
 	} else {
 		b.elb.Append(false)
 	}
-	if hdp.Flags() != 0 {
-		b.fb.Append(uint32(hdp.Flags()))
-	} else {
-		b.fb.AppendNull()
-	}
+	return nil
+}
 
+func (b *EHistogramDataPointBuilder) AppendCountSum(hdp pmetric.ExponentialHistogramDataPoint) {
+	b.hcb.Append(hdp.Count())
+	if hdp.HasSum() {
+		b.hsb.Append(hdp.Sum())
+	} else {
+		b.hsb.AppendNull()
+	}
+}
+
+func (b *EHistogramDataPointBuilder) AppendMinMax(hdp pmetric.ExponentialHistogramDataPoint) {
 	if hdp.HasMin() {
 		b.hmib.Append(hdp.Min())
 	} else {
@@ -167,6 +199,4 @@ func (b *EHistogramDataPointBuilder) Append(hdp pmetric.ExponentialHistogramData
 	} else {
 		b.hmab.AppendNull()
 	}
-
-	return nil
 }

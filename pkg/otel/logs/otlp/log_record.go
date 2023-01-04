@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package otlp
 
 import (
@@ -28,42 +42,42 @@ type LogRecordIds struct {
 }
 
 func NewLogRecordIds(scopeLogsDT *arrow.StructType) (*LogRecordIds, error) {
-	id, logDT, err := arrowutils.ListOfStructsFieldIDFromStruct(scopeLogsDT, constants.LOGS)
+	id, logDT, err := arrowutils.ListOfStructsFieldIDFromStruct(scopeLogsDT, constants.Logs)
 	if err != nil {
 		return nil, err
 	}
 
-	timeUnixNano, _, err := arrowutils.FieldIDFromStruct(logDT, constants.TIME_UNIX_NANO)
+	timeUnixNano, _, err := arrowutils.FieldIDFromStruct(logDT, constants.TimeUnixNano)
 	if err != nil {
 		return nil, err
 	}
 
-	observedTimeUnixNano, _, err := arrowutils.FieldIDFromStruct(logDT, constants.OBSERVED_TIME_UNIX_NANO)
+	observedTimeUnixNano, _, err := arrowutils.FieldIDFromStruct(logDT, constants.ObservedTimeUnixNano)
 	if err != nil {
 		return nil, err
 	}
 
-	traceID, _, err := arrowutils.FieldIDFromStruct(logDT, constants.TRACE_ID)
+	traceID, _, err := arrowutils.FieldIDFromStruct(logDT, constants.TraceId)
 	if err != nil {
 		return nil, err
 	}
 
-	spanID, _, err := arrowutils.FieldIDFromStruct(logDT, constants.SPAN_ID)
+	spanID, _, err := arrowutils.FieldIDFromStruct(logDT, constants.SpanId)
 	if err != nil {
 		return nil, err
 	}
 
-	severityNumber, _, err := arrowutils.FieldIDFromStruct(logDT, constants.SEVERITY_NUMBER)
+	severityNumber, _, err := arrowutils.FieldIDFromStruct(logDT, constants.SeverityNumber)
 	if err != nil {
 		return nil, err
 	}
 
-	severityText, _, err := arrowutils.FieldIDFromStruct(logDT, constants.SEVERITY_TEXT)
+	severityText, _, err := arrowutils.FieldIDFromStruct(logDT, constants.SeverityText)
 	if err != nil {
 		return nil, err
 	}
 
-	body, _, err := arrowutils.FieldIDFromStruct(logDT, constants.BODY)
+	body, _, err := arrowutils.FieldIDFromStruct(logDT, constants.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -73,12 +87,12 @@ func NewLogRecordIds(scopeLogsDT *arrow.StructType) (*LogRecordIds, error) {
 		return nil, err
 	}
 
-	droppedAttributesCount, _, err := arrowutils.FieldIDFromStruct(logDT, constants.DROPPED_ATTRIBUTES_COUNT)
+	droppedAttributesCount, _, err := arrowutils.FieldIDFromStruct(logDT, constants.DroppedAttributesCount)
 	if err != nil {
 		return nil, err
 	}
 
-	flags, _, err := arrowutils.FieldIDFromStruct(logDT, constants.FLAGS)
+	flags, _, err := arrowutils.FieldIDFromStruct(logDT, constants.Flags)
 	if err != nil {
 		return nil, err
 	}

@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package otlp
 
 import (
@@ -17,12 +31,12 @@ type ResourceSpansIds struct {
 }
 
 func NewResourceSpansIds(schema *arrow.Schema) (*ResourceSpansIds, error) {
-	id, rsDT, err := arrowutils.ListOfStructsFieldIDFromSchema(schema, constants.RESOURCE_SPANS)
+	id, rsDT, err := arrowutils.ListOfStructsFieldIDFromSchema(schema, constants.ResourceSpans)
 	if err != nil {
 		return nil, err
 	}
 
-	schemaId, _, err := arrowutils.FieldIDFromStruct(rsDT, constants.SCHEMA_URL)
+	schemaId, _, err := arrowutils.FieldIDFromStruct(rsDT, constants.SchemaUrl)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +64,7 @@ func AppendResourceSpansInto(traces ptrace.Traces, record arrow.Record, traceIds
 	resSpansCount := int(record.NumRows())
 
 	for traceIdx := 0; traceIdx < resSpansCount; traceIdx++ {
-		arrowResEnts, err := arrowutils.ListOfStructsFromRecordBis(record, traceIds.ResourceSpans.Id, traceIdx)
+		arrowResEnts, err := arrowutils.ListOfStructsFromRecord(record, traceIds.ResourceSpans.Id, traceIdx)
 		if err != nil {
 			return err
 		}

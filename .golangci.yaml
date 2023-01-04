@@ -12,9 +12,9 @@ linters-settings:
       - performance
       - style
   govet:
-    check-shadowing: true
-    enable:
-      - fieldalignment
+    disable:
+      - fieldalignment # too strict
+      - shadow
   nolintlint:
     require-explanation: true
     require-specific: true
@@ -26,36 +26,31 @@ linters:
     - deadcode
     - depguard
     - dogsled
-#    - dupl
     - errcheck
     - exportloopref
-#    - exhaustive
-#    - goconst
+    - exhaustive
+    - goconst
     - gofmt
     - goimports
-#    - gomnd
-#    - gocyclo
+    - gocyclo
     - gosec
     - gosimple
-#    - govet
+    - govet
     - ineffassign
     - misspell
     - nolintlint
-#    - nakedret
+    - nakedret
     - prealloc
     - predeclared
-#    - revive
     - staticcheck
     - structcheck
-#    - stylecheck
-#    - thelper
+    - thelper
     - tparallel
-#    - typecheck
+    - typecheck
     - unconvert
-#    - unparam
+    - unparam
     - varcheck
-#    - whitespace
-#    - wsl
+    - whitespace
 
 run:
   issues-exit-code: 1

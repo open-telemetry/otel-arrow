@@ -16,8 +16,8 @@ package main
 
 import (
 	"encoding/json"
-	"io/ioutil"
 	"log"
+	"os"
 	"testing"
 	"time"
 
@@ -41,7 +41,7 @@ type Entry struct {
 func TestFile(t *testing.T) {
 	t.Skipf("Not really a test, just a way to run the code without creating a main")
 
-	content, err := ioutil.ReadFile("../../data/multivariate-metrics.json")
+	content, err := os.ReadFile("../../data/multivariate-metrics.json")
 	if err != nil {
 		log.Fatal("Error when opening file: ", err)
 	}
@@ -95,7 +95,7 @@ func TestFile(t *testing.T) {
 	if err != nil {
 		log.Fatal("Error during MarshalProto(): ", err)
 	}
-	err = ioutil.WriteFile("/Users/L.Querel/GolandProjects/otel-arrow-adapter/data/multivariate-metrics.pb", bytes, 0644)
+	err = os.WriteFile("/Users/L.Querel/GolandProjects/otel-arrow-adapter/data/multivariate-metrics.pb", bytes, 0600)
 	if err != nil {
 		log.Fatal("Error during WriteFile(): ", err)
 	}

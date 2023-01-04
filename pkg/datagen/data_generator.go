@@ -93,6 +93,7 @@ func NewDataGenerator(entropy TestEntropy, resourceAttributes []pcommon.Map, ins
 	}
 	dg.NextId8Bytes()
 	dg.NextId16Bytes()
+
 	return dg
 }
 
@@ -177,5 +178,6 @@ func (dg *DataGenerator) GenBool() bool {
 func (te TestEntropy) GenId(size uint) []byte {
 	d := make([]byte, size)
 	_, _ = te.rng.Read(d)
+
 	return d
 }

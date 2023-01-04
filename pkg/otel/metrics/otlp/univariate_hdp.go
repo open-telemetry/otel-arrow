@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package otlp
 
 import (
@@ -29,7 +43,7 @@ type UnivariateHistogramDataPointIds struct {
 }
 
 func NewUnivariateHistogramDataPointIds(parentDT *arrow.StructType) (*UnivariateHistogramDataPointIds, error) {
-	id, hdpDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.DATA_POINTS)
+	id, hdpDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.DataPoints)
 	if err != nil {
 		return nil, err
 	}
@@ -39,34 +53,34 @@ func NewUnivariateHistogramDataPointIds(parentDT *arrow.StructType) (*Univariate
 		return nil, err
 	}
 
-	startTimeUnixNanoId, found := hdpDT.FieldIdx(constants.START_TIME_UNIX_NANO)
+	startTimeUnixNanoId, found := hdpDT.FieldIdx(constants.StartTimeUnixNano)
 	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.START_TIME_UNIX_NANO)
+		return nil, fmt.Errorf("field %q not found", constants.StartTimeUnixNano)
 	}
 
-	timeUnixNanoId, found := hdpDT.FieldIdx(constants.TIME_UNIX_NANO)
+	timeUnixNanoId, found := hdpDT.FieldIdx(constants.TimeUnixNano)
 	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.TIME_UNIX_NANO)
+		return nil, fmt.Errorf("field %q not found", constants.TimeUnixNano)
 	}
 
-	countId, found := hdpDT.FieldIdx(constants.HISTOGRAM_COUNT)
+	countId, found := hdpDT.FieldIdx(constants.HistogramCount)
 	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.HISTOGRAM_COUNT)
+		return nil, fmt.Errorf("field %q not found", constants.HistogramCount)
 	}
 
-	sumId, found := hdpDT.FieldIdx(constants.HISTOGRAM_SUM)
+	sumId, found := hdpDT.FieldIdx(constants.HistogramSum)
 	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.HISTOGRAM_SUM)
+		return nil, fmt.Errorf("field %q not found", constants.HistogramSum)
 	}
 
-	bucketCountsId, found := hdpDT.FieldIdx(constants.HISTOGRAM_BUCKET_COUNTS)
+	bucketCountsId, found := hdpDT.FieldIdx(constants.HistogramBucketCounts)
 	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.HISTOGRAM_BUCKET_COUNTS)
+		return nil, fmt.Errorf("field %q not found", constants.HistogramBucketCounts)
 	}
 
-	explicitBoundsId, found := hdpDT.FieldIdx(constants.HISTOGRAM_EXPLICIT_BOUNDS)
+	explicitBoundsId, found := hdpDT.FieldIdx(constants.HistogramExplicitBounds)
 	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.HISTOGRAM_EXPLICIT_BOUNDS)
+		return nil, fmt.Errorf("field %q not found", constants.HistogramExplicitBounds)
 	}
 
 	exemplars, err := NewExemplarIds(hdpDT)
@@ -74,19 +88,19 @@ func NewUnivariateHistogramDataPointIds(parentDT *arrow.StructType) (*Univariate
 		return nil, err
 	}
 
-	flagsId, found := hdpDT.FieldIdx(constants.FLAGS)
+	flagsId, found := hdpDT.FieldIdx(constants.Flags)
 	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.FLAGS)
+		return nil, fmt.Errorf("field %q not found", constants.Flags)
 	}
 
-	minId, found := hdpDT.FieldIdx(constants.HISTOGRAM_MIN)
+	minId, found := hdpDT.FieldIdx(constants.HistogramMin)
 	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.HISTOGRAM_MIN)
+		return nil, fmt.Errorf("field %q not found", constants.HistogramMin)
 	}
 
-	maxId, found := hdpDT.FieldIdx(constants.HISTOGRAM_MAX)
+	maxId, found := hdpDT.FieldIdx(constants.HistogramMax)
 	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.HISTOGRAM_MAX)
+		return nil, fmt.Errorf("field %q not found", constants.HistogramMax)
 	}
 
 	return &UnivariateHistogramDataPointIds{
@@ -183,7 +197,7 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 				bucketCountsSlice.Append(values.Value(i))
 			}
 		} else {
-			return fmt.Errorf("field %q is not a list of uint64", constants.HISTOGRAM_BUCKET_COUNTS)
+			return fmt.Errorf("field %q is not a list of uint64", constants.HistogramBucketCounts)
 		}
 
 		explicitBounds, start, end, err := hdp.ListValuesById(hdpIdx, ids.ExplicitBounds)
@@ -197,7 +211,7 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 				explicitBoundsSlice.Append(values.Value(i))
 			}
 		} else {
-			return fmt.Errorf("field %q is not a list of float64", constants.HISTOGRAM_EXPLICIT_BOUNDS)
+			return fmt.Errorf("field %q is not a list of float64", constants.HistogramExplicitBounds)
 		}
 
 		exemplars, err := hdp.ListOfStructsById(hdpIdx, ids.Exemplars.Id)

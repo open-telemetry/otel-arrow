@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package otlp
 
 import (
@@ -17,19 +31,19 @@ type QuantileValueIds struct {
 }
 
 func NewQuantileValueIds(parentDT *arrow.StructType) (*QuantileValueIds, error) {
-	id, quantileValueDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.SUMMARY_QUANTILE_VALUES)
+	id, quantileValueDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.SummaryQuantileValues)
 	if err != nil {
 		return nil, err
 	}
 
-	quantile, quantileFound := quantileValueDT.FieldIdx(constants.SUMMARY_QUANTILE)
+	quantile, quantileFound := quantileValueDT.FieldIdx(constants.SummaryQuantile)
 	if !quantileFound {
-		return nil, fmt.Errorf("field %q not found", constants.SUMMARY_QUANTILE)
+		return nil, fmt.Errorf("field %q not found", constants.SummaryQuantile)
 	}
 
-	value, valueFound := quantileValueDT.FieldIdx(constants.SUMMARY_VALUE)
+	value, valueFound := quantileValueDT.FieldIdx(constants.SummaryValue)
 	if !valueFound {
-		return nil, fmt.Errorf("field %q not found", constants.SUMMARY_VALUE)
+		return nil, fmt.Errorf("field %q not found", constants.SummaryValue)
 	}
 
 	return &QuantileValueIds{

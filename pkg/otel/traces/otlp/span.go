@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package otlp
 
 import (
@@ -38,32 +52,32 @@ type StatusIds struct {
 }
 
 func NewSpansIds(scopeSpansDT *arrow.StructType) (*SpansIds, error) {
-	id, spanDT, err := arrowutils.ListOfStructsFieldIDFromStruct(scopeSpansDT, constants.SPANS)
+	id, spanDT, err := arrowutils.ListOfStructsFieldIDFromStruct(scopeSpansDT, constants.Spans)
 	if err != nil {
 		return nil, err
 	}
 
-	traceId, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.TRACE_ID)
+	traceId, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.TraceId)
 	if err != nil {
 		return nil, err
 	}
 
-	spanId, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.SPAN_ID)
+	spanId, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.SpanId)
 	if err != nil {
 		return nil, err
 	}
 
-	traceState, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.TRACE_STATE)
+	traceState, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.TraceState)
 	if err != nil {
 		return nil, err
 	}
 
-	parentSpanId, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.PARENT_SPAN_ID)
+	parentSpanId, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.ParentSpanId)
 	if err != nil {
 		return nil, err
 	}
 
-	name, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.NAME)
+	name, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -73,12 +87,12 @@ func NewSpansIds(scopeSpansDT *arrow.StructType) (*SpansIds, error) {
 		return nil, err
 	}
 
-	startTimeUnixNano, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.START_TIME_UNIX_NANO)
+	startTimeUnixNano, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.StartTimeUnixNano)
 	if err != nil {
 		return nil, err
 	}
 
-	endTimeUnixNano, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.END_TIME_UNIX_NANO)
+	endTimeUnixNano, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.EndTimeUnixNano)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +102,7 @@ func NewSpansIds(scopeSpansDT *arrow.StructType) (*SpansIds, error) {
 		return nil, err
 	}
 
-	droppedAttributesCount, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.DROPPED_ATTRIBUTES_COUNT)
+	droppedAttributesCount, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.DroppedAttributesCount)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +112,7 @@ func NewSpansIds(scopeSpansDT *arrow.StructType) (*SpansIds, error) {
 		return nil, err
 	}
 
-	droppedEventsCount, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.DROPPED_EVENTS_COUNT)
+	droppedEventsCount, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.DroppedEventsCount)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +122,7 @@ func NewSpansIds(scopeSpansDT *arrow.StructType) (*SpansIds, error) {
 		return nil, err
 	}
 
-	droppedLinksCount, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.DROPPED_LINKS_COUNT)
+	droppedLinksCount, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.DroppedLinksCount)
 	if err != nil {
 		return nil, err
 	}
@@ -139,17 +153,17 @@ func NewSpansIds(scopeSpansDT *arrow.StructType) (*SpansIds, error) {
 }
 
 func NewStatusIds(spansDT *arrow.StructType) (*StatusIds, error) {
-	statusId, statusDT, err := arrowutils.StructFieldIDFromStruct(spansDT, constants.STATUS)
+	statusId, statusDT, err := arrowutils.StructFieldIDFromStruct(spansDT, constants.Status)
 	if err != nil {
 		return nil, err
 	}
 
-	code, _, err := arrowutils.FieldIDFromStruct(statusDT, constants.STATUS_CODE)
+	code, _, err := arrowutils.FieldIDFromStruct(statusDT, constants.StatusCode)
 	if err != nil {
 		return nil, err
 	}
 
-	message, _, err := arrowutils.FieldIDFromStruct(statusDT, constants.STATUS_MESSAGE)
+	message, _, err := arrowutils.FieldIDFromStruct(statusDT, constants.StatusMessage)
 	if err != nil {
 		return nil, err
 	}

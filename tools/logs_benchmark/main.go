@@ -24,8 +24,8 @@ import (
 
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/otlp"
-	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/otlp_arrow"
 )
 
 var help = flag.Bool("help", false, "Show help")
@@ -56,7 +56,7 @@ func main() {
 		profiler.Printf("Dataset '%s'\n", inputFiles[i])
 		ds := dataset.NewRealLogsDataset(inputFiles[i])
 		otlpLogs := otlp.NewLogsProfileable(ds, compressionAlgo)
-		otlpArrowLogsWithDictionary := otlp_arrow.NewLogsProfileable([]string{"With dict"}, ds, &benchmark.Config{})
+		otlpArrowLogsWithDictionary := arrow.NewLogsProfileable([]string{"With dict"}, ds, &benchmark.Config{})
 
 		if err := profiler.Profile(otlpLogs, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))

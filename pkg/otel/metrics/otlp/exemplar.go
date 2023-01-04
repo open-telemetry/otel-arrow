@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package otlp
 
 import (
@@ -23,7 +37,7 @@ type ExemplarIds struct {
 }
 
 func NewExemplarIds(ndp *arrow.StructType) (*ExemplarIds, error) {
-	id, exemplarDT, err := arrowutils.ListOfStructsFieldIDFromStruct(ndp, constants.EXEMPLARS)
+	id, exemplarDT, err := arrowutils.ListOfStructsFieldIDFromStruct(ndp, constants.Exemplars)
 	if err != nil {
 		return nil, err
 	}
@@ -33,24 +47,24 @@ func NewExemplarIds(ndp *arrow.StructType) (*ExemplarIds, error) {
 		return nil, err
 	}
 
-	timeUnixNanoId, timeUnixNanoFound := exemplarDT.FieldIdx(constants.TIME_UNIX_NANO)
+	timeUnixNanoId, timeUnixNanoFound := exemplarDT.FieldIdx(constants.TimeUnixNano)
 	if !timeUnixNanoFound {
-		return nil, fmt.Errorf("field %s not found", constants.TIME_UNIX_NANO)
+		return nil, fmt.Errorf("field %s not found", constants.TimeUnixNano)
 	}
 
-	spanIdId, spanIdFound := exemplarDT.FieldIdx(constants.SPAN_ID)
+	spanIdId, spanIdFound := exemplarDT.FieldIdx(constants.SpanId)
 	if !spanIdFound {
-		return nil, fmt.Errorf("field %s not found", constants.SPAN_ID)
+		return nil, fmt.Errorf("field %s not found", constants.SpanId)
 	}
 
-	traceIdId, traceIdFound := exemplarDT.FieldIdx(constants.TRACE_ID)
+	traceIdId, traceIdFound := exemplarDT.FieldIdx(constants.TraceId)
 	if !traceIdFound {
-		return nil, fmt.Errorf("field %s not found", constants.TRACE_ID)
+		return nil, fmt.Errorf("field %s not found", constants.TraceId)
 	}
 
-	valueId, valueFound := exemplarDT.FieldIdx(constants.METRIC_VALUE)
+	valueId, valueFound := exemplarDT.FieldIdx(constants.MetricValue)
 	if !valueFound {
-		return nil, fmt.Errorf("field %s not found", constants.METRIC_VALUE)
+		return nil, fmt.Errorf("field %s not found", constants.MetricValue)
 	}
 
 	return &ExemplarIds{
@@ -68,6 +82,7 @@ func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, ndp *arrowutils.Li
 	if err != nil {
 		return err
 	}
+
 	if exemplars == nil {
 		return nil
 	}
@@ -82,6 +97,7 @@ func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, ndp *arrowutils.Li
 		if err := otlp.AppendAttributesInto(exemplar.FilteredAttributes(), exemplars.Array(), exemplarIdx, ids.Attributes); err != nil {
 			return err
 		}
+
 		timeUnixNano, err := exemplars.U64FieldByID(ids.TimeUnixNano, exemplarIdx)
 		if err != nil {
 			return err
@@ -92,8 +108,10 @@ func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, ndp *arrowutils.Li
 		if err != nil {
 			return err
 		}
+
 		if len(spanId) == 8 {
 			var sid pcommon.SpanID
+
 			copy(sid[:], spanId)
 			exemplar.SetSpanID(sid)
 		} else {
@@ -104,8 +122,10 @@ func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, ndp *arrowutils.Li
 		if err != nil {
 			return err
 		}
+
 		if len(traceId) == 16 {
 			var tid pcommon.TraceID
+
 			copy(tid[:], traceId)
 			exemplar.SetTraceID(tid)
 		} else {
@@ -121,5 +141,6 @@ func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, ndp *arrowutils.Li
 			return fmt.Errorf("value field shound be a DenseUnion")
 		}
 	}
+
 	return nil
 }

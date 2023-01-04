@@ -87,6 +87,8 @@ func ValueSig(sig []byte, value pcommon.Value) []byte {
 		sig = SliceSig(sig, value.Slice())
 	case pcommon.ValueTypeMap:
 		sig = MapSig(sig, value.Map(), "")
+	case pcommon.ValueTypeEmpty:
+		// Do nothing.
 	default:
 		panic("unsupported value type")
 	}

@@ -23,6 +23,8 @@ import (
 
 type PayloadType = v1.OtlpArrowPayloadType
 
+// RecordMessage wraps an Arrow Record with a set of metadata used to identify the batch, sub-stream, and few other
+// properties.
 type RecordMessage struct {
 	batchId      string
 	subStreamId  string
@@ -31,6 +33,8 @@ type RecordMessage struct {
 	deliveryType v1.DeliveryType
 }
 
+// NewMetricsMessage creates a reference to a new RecordMessage from a given Arrow Record representing a collection of
+// metrics.
 func NewMetricsMessage(record arrow.Record, deliveryType v1.DeliveryType) *RecordMessage {
 	return &RecordMessage{
 		subStreamId:  arrow2.SchemaToID(record.Schema()),
@@ -40,6 +44,8 @@ func NewMetricsMessage(record arrow.Record, deliveryType v1.DeliveryType) *Recor
 	}
 }
 
+// NewLogsMessage creates a reference to a new RecordMessage from a given Arrow Record representing a collection of
+// logs.
 func NewLogsMessage(record arrow.Record, deliveryType v1.DeliveryType) *RecordMessage {
 	record.Schema()
 	return &RecordMessage{
@@ -50,6 +56,8 @@ func NewLogsMessage(record arrow.Record, deliveryType v1.DeliveryType) *RecordMe
 	}
 }
 
+// NewTraceMessage creates a reference to a new RecordMessage from a given Arrow Record representing a collection of
+// traces.
 func NewTraceMessage(record arrow.Record, deliveryType v1.DeliveryType) *RecordMessage {
 	return &RecordMessage{
 		subStreamId:  arrow2.SchemaToID(record.Schema()),
@@ -59,10 +67,12 @@ func NewTraceMessage(record arrow.Record, deliveryType v1.DeliveryType) *RecordM
 	}
 }
 
+// Record returns the Arrow Record associated with this RecordMessage.
 func (ibe *RecordMessage) Record() arrow.Record {
 	return ibe.record
 }
 
+// PayloadType returns the type of payload contained in this RecordMessage.
 func (ibe *RecordMessage) PayloadType() PayloadType {
 	return ibe.payloadType
 }

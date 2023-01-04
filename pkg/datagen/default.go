@@ -22,7 +22,7 @@ var HOSTNAMES = []string{"host1.mydomain.com", "host2.org", "host3.thedomain.edu
 var UPS = []bool{true, false}
 var STATUS = []int64{200, 300, 400, 404, 500, 503}
 var VERSIONS = []string{"1.0.0", "1.0.2", "2.0", "1.9.9"}
-var GROUP_IDS = []string{"group1", "group2", "group3", "group4", "group5"}
+var GroupIds = []string{"group1", "group2", "group3", "group4", "group5"}
 
 type Attrs = pcommon.Map
 type AttrFunc func(Attrs)
@@ -80,7 +80,7 @@ func (te TestEntropy) NewStandardAttributes() pcommon.Map {
 		func(attrs Attrs) {
 			attrs.PutEmpty("group_id").
 				SetEmptyBytes().
-				FromRaw([]byte(pick(te, GROUP_IDS)))
+				FromRaw([]byte(pick(te, GroupIds)))
 		},
 	)
 }

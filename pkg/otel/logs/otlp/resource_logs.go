@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package otlp
 
 import (
@@ -17,12 +31,12 @@ type ResourceLogsIds struct {
 }
 
 func NewResourceLogsIds(schema *arrow.Schema) (*ResourceLogsIds, error) {
-	id, dt, err := arrowutils.ListOfStructsFieldIDFromSchema(schema, constants.RESOURCE_LOGS)
+	id, dt, err := arrowutils.ListOfStructsFieldIDFromSchema(schema, constants.ResourceLogs)
 	if err != nil {
 		return nil, err
 	}
 
-	schemaId, _, err := arrowutils.FieldIDFromStruct(dt, constants.SCHEMA_URL)
+	schemaId, _, err := arrowutils.FieldIDFromStruct(dt, constants.SchemaUrl)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +64,7 @@ func AppendResourceLogsInto(logs plog.Logs, record arrow.Record, ids *LogsIds) e
 	resLogsCount := int(record.NumRows())
 
 	for traceIdx := 0; traceIdx < resLogsCount; traceIdx++ {
-		arrowResLogs, err := arrowutils.ListOfStructsFromRecordBis(record, ids.ResourceLogs.Id, traceIdx)
+		arrowResLogs, err := arrowutils.ListOfStructsFromRecord(record, ids.ResourceLogs.Id, traceIdx)
 		if err != nil {
 			return err
 		}

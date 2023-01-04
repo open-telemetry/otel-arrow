@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package arrow
 
 import (
@@ -16,16 +30,16 @@ import (
 var (
 	// LogRecordDT is the Arrow Data Type describing a log record.
 	LogRecordDT = arrow.StructOf([]arrow.Field{
-		{Name: constants.TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
-		{Name: constants.OBSERVED_TIME_UNIX_NANO, Type: arrow.PrimitiveTypes.Uint64},
-		{Name: constants.TRACE_ID, Type: acommon.DefaultDictFixed16Binary},
-		{Name: constants.SPAN_ID, Type: acommon.DefaultDictFixed8Binary},
-		{Name: constants.SEVERITY_NUMBER, Type: arrow.PrimitiveTypes.Int32},
-		{Name: constants.SEVERITY_TEXT, Type: acommon.DefaultDictString},
-		{Name: constants.BODY, Type: acommon.AnyValueDT},
-		{Name: constants.ATTRIBUTES, Type: acommon.AttributesDT},
-		{Name: constants.DROPPED_ATTRIBUTES_COUNT, Type: arrow.PrimitiveTypes.Uint32},
-		{Name: constants.FLAGS, Type: arrow.PrimitiveTypes.Uint32},
+		{Name: constants.TimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
+		{Name: constants.ObservedTimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
+		{Name: constants.TraceId, Type: acommon.DefaultDictFixed16Binary},
+		{Name: constants.SpanId, Type: acommon.DefaultDictFixed8Binary},
+		{Name: constants.SeverityNumber, Type: arrow.PrimitiveTypes.Int32},
+		{Name: constants.SeverityText, Type: acommon.DefaultDictString},
+		{Name: constants.Body, Type: acommon.AnyValueDT},
+		{Name: constants.Attributes, Type: acommon.AttributesDT},
+		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32},
+		{Name: constants.Flags, Type: arrow.PrimitiveTypes.Uint32},
 	}...)
 )
 

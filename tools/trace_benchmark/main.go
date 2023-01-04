@@ -23,8 +23,8 @@ import (
 
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/otlp"
-	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/otlp_arrow"
 )
 
 var help = flag.Bool("help", false, "Show help")
@@ -57,7 +57,7 @@ func main() {
 		otlpTraces := otlp.NewTraceProfileable(ds, compressionAlgo)
 
 		conf := &benchmark.Config{}
-		otlpArrowTraces := otlp_arrow.NewTraceProfileable([]string{"uint16 dict"}, ds, conf)
+		otlpArrowTraces := arrow.NewTraceProfileable([]string{"uint16 dict"}, ds, conf)
 
 		if err := profiler.Profile(otlpTraces, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))

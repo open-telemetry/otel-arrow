@@ -51,6 +51,7 @@ func main() {
 	ds := dataset.NewRealTraceDataset(inputFile, []string{"trace_id"})
 	traces := ds.Traces(0, spanCount)
 	request := ptraceotlp.NewExportRequestFromTraces(traces[0])
+
 	pb, err := request.MarshalProto()
 	if err != nil {
 		log.Fatal("marshaling error: ", err)
@@ -63,6 +64,7 @@ func main() {
 			log.Fatal("error creating directory: ", err)
 		}
 	}
+
 	err = os.WriteFile(outputFile, pb, 0600)
 	if err != nil {
 		log.Fatal("write error: ", err)

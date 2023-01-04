@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package otlp
 
 import (
@@ -17,14 +31,14 @@ type EHistogramDataPointBucketsIds struct {
 }
 
 func NewEHistogramDataPointBucketsIds(parentId int, parentDT *arrow.StructType) (*EHistogramDataPointBucketsIds, error) {
-	offset, found := parentDT.FieldIdx(constants.EXP_HISTOGRAM_OFFSET)
+	offset, found := parentDT.FieldIdx(constants.ExpHistogramOffset)
 	if !found {
-		return nil, fmt.Errorf("missing field %q", constants.EXP_HISTOGRAM_OFFSET)
+		return nil, fmt.Errorf("missing field %q", constants.ExpHistogramOffset)
 	}
 
-	bucketCounts, found := parentDT.FieldIdx(constants.EXP_HISTOGRAM_BUCKET_COUNTS)
+	bucketCounts, found := parentDT.FieldIdx(constants.ExpHistogramBucketCounts)
 	if !found {
-		return nil, fmt.Errorf("missing field %q", constants.EXP_HISTOGRAM_BUCKET_COUNTS)
+		return nil, fmt.Errorf("missing field %q", constants.ExpHistogramBucketCounts)
 	}
 
 	return &EHistogramDataPointBucketsIds{
@@ -44,7 +58,7 @@ func AppendUnivariateEHistogramDataPointBucketsInto(dpBuckets pmetric.Exponentia
 		if i32OffsetArr, ok := offsetArr.(*array.Int32); ok {
 			dpBuckets.SetOffset(i32OffsetArr.Value(row))
 		} else {
-			return fmt.Errorf("field %q is not an int32", constants.EXP_HISTOGRAM_OFFSET)
+			return fmt.Errorf("field %q is not an int32", constants.ExpHistogramOffset)
 		}
 	}
 
@@ -63,7 +77,7 @@ func AppendUnivariateEHistogramDataPointBucketsInto(dpBuckets pmetric.Exponentia
 				}
 			}
 		} else {
-			return fmt.Errorf("field %q is not an int64", constants.EXP_HISTOGRAM_BUCKET_COUNTS)
+			return fmt.Errorf("field %q is not an int64", constants.ExpHistogramBucketCounts)
 		}
 	}
 

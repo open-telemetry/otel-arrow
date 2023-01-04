@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package otlp
 
 import (
@@ -21,22 +35,22 @@ type EventIds struct {
 }
 
 func NewEventIds(spansDT *arrow.StructType) (*EventIds, error) {
-	id, eventDT, err := arrowutils.ListOfStructsFieldIDFromStruct(spansDT, constants.SPAN_EVENTS)
+	id, eventDT, err := arrowutils.ListOfStructsFieldIDFromStruct(spansDT, constants.SpanEvents)
 	if err != nil {
 		return nil, err
 	}
 
-	timeUnixNanoID, timeUnixNanoFound := eventDT.FieldIdx(constants.TIME_UNIX_NANO)
+	timeUnixNanoID, timeUnixNanoFound := eventDT.FieldIdx(constants.TimeUnixNano)
 	if !timeUnixNanoFound {
-		return nil, fmt.Errorf("field %s not found", constants.TIME_UNIX_NANO)
+		return nil, fmt.Errorf("field %s not found", constants.TimeUnixNano)
 	}
-	nameID, nameFound := eventDT.FieldIdx(constants.NAME)
+	nameID, nameFound := eventDT.FieldIdx(constants.Name)
 	if !nameFound {
-		return nil, fmt.Errorf("field %s not found", constants.NAME)
+		return nil, fmt.Errorf("field %s not found", constants.Name)
 	}
-	droppedAttributesCountId, droppedAttributesCountFound := eventDT.FieldIdx(constants.DROPPED_ATTRIBUTES_COUNT)
+	droppedAttributesCountId, droppedAttributesCountFound := eventDT.FieldIdx(constants.DroppedAttributesCount)
 	if !droppedAttributesCountFound {
-		return nil, fmt.Errorf("field %s not found", constants.DROPPED_ATTRIBUTES_COUNT)
+		return nil, fmt.Errorf("field %s not found", constants.DroppedAttributesCount)
 	}
 	attributesID, err := otlp.NewAttributeIds(eventDT)
 	if err != nil {
@@ -74,20 +88,27 @@ func AppendEventsInto(spans ptrace.SpanEventSlice, arrowSpans *arrowutils.ListOf
 		if err != nil {
 			return err
 		}
+
 		event.SetTimestamp(pcommon.Timestamp(timeUnixNano))
+
 		name, err := events.StringFieldByID(ids.Name, eventIdx)
 		if err != nil {
 			return err
 		}
+
 		event.SetName(name)
+
 		if err = otlp.AppendAttributesInto(event.Attributes(), events.Array(), eventIdx, ids.Attributes); err != nil {
 			return err
 		}
+
 		dac, err := events.U32FieldByID(ids.DroppedAttributesCount, eventIdx)
 		if err != nil {
 			return err
 		}
+
 		event.SetDroppedAttributesCount(dac)
 	}
+
 	return nil
 }

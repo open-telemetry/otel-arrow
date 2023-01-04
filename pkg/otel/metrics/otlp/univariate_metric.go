@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package otlp
 
 import (
@@ -22,13 +36,13 @@ type UnivariateMetricIds struct {
 }
 
 func NewUnivariateMetricIds(parentDT *arrow.StructType) (*UnivariateMetricIds, error) {
-	id, found := parentDT.FieldIdx(constants.DATA)
+	id, found := parentDT.FieldIdx(constants.Data)
 	if !found {
-		return nil, fmt.Errorf("field %q not found in struct", constants.DATA)
+		return nil, fmt.Errorf("field %q not found in struct", constants.Data)
 	}
 	dataDT, ok := parentDT.Field(id).Type.(*arrow.SparseUnionType)
 	if !ok {
-		return nil, fmt.Errorf("field %q is not a sparse union", constants.DATA)
+		return nil, fmt.Errorf("field %q is not a sparse union", constants.Data)
 	}
 
 	gaugeDT, ok := dataDT.Fields()[ametric.GaugeCode].Type.(*arrow.StructType)
@@ -89,7 +103,7 @@ func NewUnivariateMetricIds(parentDT *arrow.StructType) (*UnivariateMetricIds, e
 func UpdateUnivariateMetricFrom(metric pmetric.Metric, los *arrowutils.ListOfStructs, row int, ids *UnivariateMetricIds, smdata *SharedData, mdata *SharedData) error {
 	arr, ok := los.FieldByID(ids.Id).(*array.SparseUnion)
 	if !ok {
-		return fmt.Errorf("field %q is not a sparse union", constants.DATA)
+		return fmt.Errorf("field %q is not a sparse union", constants.Data)
 	}
 	tcode := int8(arr.ChildID(row))
 	switch tcode {

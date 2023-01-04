@@ -1,4 +1,18 @@
-package otlp_arrow
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+package arrow
 
 import (
 	"io"
@@ -13,6 +27,8 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 )
+
+const OtlpArrow = "OTLP_ARROW"
 
 type LogsProfileable struct {
 	tags              []string
@@ -38,7 +54,7 @@ func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *benc
 }
 
 func (s *LogsProfileable) Name() string {
-	return "OTLP_ARROW"
+	return OtlpArrow
 }
 
 func (s *LogsProfileable) Tags() []string {

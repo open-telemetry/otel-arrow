@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package otlp
 
 import (
@@ -21,12 +35,12 @@ type ScopeMetricsIds struct {
 }
 
 func NewScopeMetricsIds(dt *arrow.StructType) (*ScopeMetricsIds, error) {
-	id, scopeMetricsDT, err := arrowutils.ListOfStructsFieldIDFromStruct(dt, constants.SCOPE_METRICS)
+	id, scopeMetricsDT, err := arrowutils.ListOfStructsFieldIDFromStruct(dt, constants.ScopeMetrics)
 	if err != nil {
 		return nil, err
 	}
 
-	schemaId, _, err := arrowutils.FieldIDFromStruct(scopeMetricsDT, constants.SCHEMA_URL)
+	schemaId, _, err := arrowutils.FieldIDFromStruct(scopeMetricsDT, constants.SchemaUrl)
 	if err != nil {
 		return nil, err
 	}
@@ -42,8 +56,8 @@ func NewScopeMetricsIds(dt *arrow.StructType) (*ScopeMetricsIds, error) {
 	}
 
 	sharedAttrIds := otlp.NewSharedAttributeIds(scopeMetricsDT)
-	startTimeID := arrowutils.OptionalFieldIDFromStruct(scopeMetricsDT, constants.SHARED_START_TIME_UNIX_NANO)
-	timeID := arrowutils.OptionalFieldIDFromStruct(scopeMetricsDT, constants.SHARED_TIME_UNIX_NANO)
+	startTimeID := arrowutils.OptionalFieldIDFromStruct(scopeMetricsDT, constants.SharedStartTimeUnixNano)
+	timeID := arrowutils.OptionalFieldIDFromStruct(scopeMetricsDT, constants.SharedTimeUnixNano)
 
 	return &ScopeMetricsIds{
 		Id:                 id,
