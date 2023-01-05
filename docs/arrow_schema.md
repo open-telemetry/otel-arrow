@@ -15,7 +15,7 @@ format.
 
 Attributes are represented as a map of key-value pairs. The key is a dictionary encoded string, and the value is a
 sparse union of string, int64, float64, bool, and binary. The dictionary encoding is used to reduce the size of the
-payload. The sparse union is used to represent the value type.
+payload. The sparse union is used to represent the value type in a flexible and extensible way.
 
 ```yaml
 # Attributes Arrow Schema (declaration used in other schemas)
@@ -33,7 +33,7 @@ attributes: &attributes                                 # arrow type = map
 exemplars: &exemplars
   - attributes: *attributes
     time_unix_nano: uint64
-    value:                        # arrow type = dense union
+    value:                                              # arrow type = dense union
       i64: int64
       f64: float64
     span_id: 8_bytes_binary_dictionary | 8_bytes_binary
@@ -42,7 +42,6 @@ exemplars: &exemplars
 
 # Metrics Arrow Schema
 # OTLP univariate metrics are represented with the following Arrow Schema.
-
 resource_metrics:
     - resource: 
         attributes: *attributes
@@ -154,14 +153,29 @@ resource_metrics:
                         exemplars: *exemplars
                         flags: uint32
                     aggregation_temporality: int32
-          # Native support of multivariate metrics (not yet implemented)
-          #
-          # Multivariate metrics are related metrics sharing the same context, i.e. the same
-          # attributes and timestamps.
-          #
-          # Each metrics is defined by a name, a set of data points, and optionally a description
-          # and a unit.
-          multivariate_metrics:                       
+
+# Metrics Arrow Schema
+# OTLP multivariate metrics are represented with the following Arrow Schema.
+resource_metrics:
+  - resource:
+      attributes: *attributes
+      dropped_attributes_count: uint32
+    schema_url: string | string_dictionary
+    scope_metrics:
+      - scope:
+          name: string | string_dictionary
+          version: string | string_dictionary
+          attributes: *attributes
+          dropped_attributes_count: uint32
+        schema_url: string | string_dictionary
+        # Native support of multivariate metrics (not yet implemented)
+        #
+        # Multivariate metrics are related metrics sharing the same context, i.e. the same
+        # attributes and timestamps.
+        #
+        # Each metrics is defined by a name, a set of data points, and optionally a description
+        # and a unit.
+        multivariate_metrics:                       
             attributes: *attributes                   # All multivariate metrics shared the same attributes
             start_time_unix_nano: uint64              # All multivariate metrics shared the same timestamps
             time_unix_nano: uint64                    # required
@@ -232,7 +246,6 @@ resource_metrics:
 
 # Logs Arrow Schema
 # OTLP Logs are represented with the following Arrow Schema.
-
 resource_logs: 
   - resource: 
       attributes: *attributes
@@ -266,7 +279,6 @@ resource_logs:
             
 # Traces Arrow Schema
 # OTLP Traces are represented with the following Arrow Schema.
-
 resource_spans:
   - resource: 
       attributes: *attributes
