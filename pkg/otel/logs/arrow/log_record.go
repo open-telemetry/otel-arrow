@@ -30,11 +30,11 @@ import (
 var (
 	// LogRecordDT is the Arrow Data Type describing a log record.
 	LogRecordDT = arrow.StructOf([]arrow.Field{
-		{Name: constants.TimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
-		{Name: constants.ObservedTimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
+		{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
+		{Name: constants.ObservedTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
 		{Name: constants.TraceId, Type: acommon.DefaultDictFixed16Binary},
 		{Name: constants.SpanId, Type: acommon.DefaultDictFixed8Binary},
-		{Name: constants.SeverityNumber, Type: arrow.PrimitiveTypes.Int32},
+		{Name: constants.SeverityNumber, Type: acommon.DefaultDictInt32},
 		{Name: constants.SeverityText, Type: acommon.DefaultDictString},
 		{Name: constants.Body, Type: acommon.AnyValueDT},
 		{Name: constants.Attributes, Type: acommon.AttributesDT},
@@ -49,11 +49,11 @@ type LogRecordBuilder struct {
 
 	builder *array.StructBuilder
 
-	tunb  *array.Uint64Builder               // time unix nano builder
-	otunb *array.Uint64Builder               // observed time unix nano builder
+	tunb  *array.TimestampBuilder            // time unix nano builder
+	otunb *array.TimestampBuilder            // observed time unix nano builder
 	tib   *acommon.AdaptiveDictionaryBuilder // trace id builder
 	sib   *acommon.AdaptiveDictionaryBuilder // span id builder
-	snb   *array.Int32Builder                // severity number builder
+	snb   *acommon.AdaptiveDictionaryBuilder // severity number builder
 	stb   *acommon.AdaptiveDictionaryBuilder // severity text builder
 	bb    *acommon.AnyValueBuilder           // body builder (LOL)
 	ab    *acommon.AttributesBuilder         // attributes builder
@@ -74,11 +74,11 @@ func LogRecordBuilderFrom(sb *array.StructBuilder) *LogRecordBuilder {
 	return &LogRecordBuilder{
 		released: false,
 		builder:  sb,
-		tunb:     sb.FieldBuilder(0).(*array.Uint64Builder),
-		otunb:    sb.FieldBuilder(1).(*array.Uint64Builder),
+		tunb:     sb.FieldBuilder(0).(*array.TimestampBuilder),
+		otunb:    sb.FieldBuilder(1).(*array.TimestampBuilder),
 		tib:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(2)),
 		sib:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(3)),
-		snb:      sb.FieldBuilder(4).(*array.Int32Builder),
+		snb:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(4)),
 		stb:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(5)),
 		bb:       acommon.AnyValueBuilderFrom(sb.FieldBuilder(6).(*array.SparseUnionBuilder)),
 		ab:       acommon.AttributesBuilderFrom(sb.FieldBuilder(7).(*array.MapBuilder)),
@@ -107,8 +107,8 @@ func (b *LogRecordBuilder) Append(log plog.LogRecord) error {
 	}
 
 	b.builder.Append(true)
-	b.tunb.Append(uint64(log.Timestamp()))
-	b.otunb.Append(uint64(log.ObservedTimestamp()))
+	b.tunb.Append(arrow.Timestamp(log.Timestamp()))
+	b.otunb.Append(arrow.Timestamp(log.ObservedTimestamp()))
 	tib := log.TraceID()
 	if err := b.tib.AppendBinary(tib[:]); err != nil {
 		return err
@@ -117,7 +117,9 @@ func (b *LogRecordBuilder) Append(log plog.LogRecord) error {
 	if err := b.sib.AppendBinary(sib[:]); err != nil {
 		return err
 	}
-	b.snb.Append(int32(log.SeverityNumber()))
+	if err := b.snb.AppendI32(int32(log.SeverityNumber())); err != nil {
+		return err
+	}
 	severityText := log.SeverityText()
 	if severityText == "" {
 		b.stb.AppendNull()

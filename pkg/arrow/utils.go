@@ -40,6 +40,7 @@ const F32Sig = "F32"
 const F64Sig = "F64"
 const BinarySig = "Bin"
 const StringSig = "Str"
+const Timestamp = "Tns" // Timestamp in nanoseconds.
 
 // SortableField is a wrapper around arrow.Field that implements sort.Interface.
 type SortableField struct {
@@ -120,6 +121,8 @@ func DataTypeToID(dt arrow.DataType) string {
 		id += StringSig
 	case *arrow.BinaryType:
 		id += BinarySig
+	case *arrow.TimestampType:
+		id += Timestamp
 	case *arrow.StructType:
 		id += "{"
 		fields := sortedFields(t.Fields())
@@ -354,13 +357,19 @@ func (los *ListOfStructs) U64FieldByID(fieldID int, row int) (uint64, error) {
 	return U64FromArray(column, row)
 }
 
+// TimestampFieldByID returns the timestamp value of a field id for a specific row.
+func (los *ListOfStructs) TimestampFieldByID(fieldID int, row int) (arrow.Timestamp, error) {
+	column := los.arr.Field(fieldID)
+	return TimestampFromArray(column, row)
+}
+
 // OptionalTimestampFieldByID returns the timestamp value of a field id for a specific row or nil if the field is null.
 func (los *ListOfStructs) OptionalTimestampFieldByID(fieldID int, row int) *pcommon.Timestamp {
 	column := los.arr.Field(fieldID)
 	if column.IsNull(row) {
 		return nil
 	}
-	ts, err := U64FromArray(column, row)
+	ts, err := TimestampFromArray(column, row)
 	if err != nil {
 		return nil
 	}
@@ -671,6 +680,24 @@ func U64FromArray(arr arrow.Array, row int) (uint64, error) {
 	}
 }
 
+// TimestampFromArray returns the timestamp value for a specific row in an Arrow array.
+func TimestampFromArray(arr arrow.Array, row int) (arrow.Timestamp, error) {
+	if arr == nil {
+		return 0, nil
+	} else {
+		switch arr := arr.(type) {
+		case *array.Timestamp:
+			if arr.IsNull(row) {
+				return 0, nil
+			} else {
+				return arr.Value(row), nil
+			}
+		default:
+			return 0, fmt.Errorf("column is not of type timestamp")
+		}
+	}
+}
+
 // U32FromArray returns the uint32 value for a specific row in an Arrow array.
 func U32FromArray(arr arrow.Array, row int) (uint32, error) {
 	if arr == nil {
@@ -705,6 +732,13 @@ func I32FromArray(arr arrow.Array, row int) (int32, error) {
 				return 0, nil
 			} else {
 				return arr.Value(row), nil
+			}
+		case *array.Dictionary:
+			i32Arr := arr.Dictionary().(*array.Int32)
+			if arr.IsNull(row) {
+				return 0, nil
+			} else {
+				return i32Arr.Value(arr.GetValueIndex(row)), nil
 			}
 		default:
 			return 0, fmt.Errorf("column is not of type int32")

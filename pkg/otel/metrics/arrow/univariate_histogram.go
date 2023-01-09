@@ -22,6 +22,7 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -29,7 +30,7 @@ var (
 	// UnivariateHistogramDT is the Arrow Data Type describing a univariate histogram.
 	UnivariateHistogramDT = arrow.StructOf(
 		arrow.Field{Name: constants.DataPoints, Type: arrow.ListOf(UnivariateHistogramDataPointDT)},
-		arrow.Field{Name: constants.AggregationTemporality, Type: arrow.PrimitiveTypes.Int32},
+		arrow.Field{Name: constants.AggregationTemporality, Type: acommon.DefaultDictInt32},
 	)
 )
 
@@ -39,9 +40,9 @@ type UnivariateHistogramBuilder struct {
 
 	builder *array.StructBuilder
 
-	hdplb *array.ListBuilder         // data_points builder
-	hdpb  *HistogramDataPointBuilder // histogram data point builder
-	atb   *array.Int32Builder        // aggregation_temporality builder
+	hdplb *array.ListBuilder                 // data_points builder
+	hdpb  *HistogramDataPointBuilder         // histogram data point builder
+	atb   *acommon.AdaptiveDictionaryBuilder // aggregation_temporality builder
 }
 
 // NewUnivariateHistogramBuilder creates a new UnivariateHistogramBuilder with a given memory allocator.
@@ -57,7 +58,7 @@ func UnivariateHistogramBuilderFrom(arr *array.StructBuilder) *UnivariateHistogr
 
 		hdplb: arr.FieldBuilder(0).(*array.ListBuilder),
 		hdpb:  HistogramDataPointBuilderFrom(arr.FieldBuilder(0).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
-		atb:   arr.FieldBuilder(1).(*array.Int32Builder),
+		atb:   acommon.AdaptiveDictionaryBuilderFrom(arr.FieldBuilder(1)),
 	}
 }
 
@@ -106,7 +107,9 @@ func (b *UnivariateHistogramBuilder) Append(histogram pmetric.Histogram, smdata 
 	if histogram.AggregationTemporality() == pmetric.AggregationTemporalityUnspecified {
 		b.atb.AppendNull()
 	} else {
-		b.atb.Append(int32(histogram.AggregationTemporality()))
+		if err := b.atb.AppendI32(int32(histogram.AggregationTemporality())); err != nil {
+			return err
+		}
 	}
 
 	return nil

@@ -89,7 +89,7 @@ type Option func(*config)
 // and a list of options.
 func NewAdaptiveSchema(schema *arrow.Schema, options ...Option) *AdaptiveSchema {
 	cfg := config{
-		initIndexSize:  math.MaxUint16, // default to uint16
+		initIndexSize:  math.MaxUint8,  // default to uint8
 		limitIndexSize: math.MaxUint16, // default to uint16
 	}
 	dictionaries := make(map[string]*dictionaryField)
@@ -200,6 +200,8 @@ func (m *AdaptiveSchema) InitDictionaryBuilders(builder *array.RecordBuilder) (e
 				err = dict.(*array.BinaryDictionaryBuilder).InsertDictValues(init)
 			case *array.FixedSizeBinary:
 				err = dict.(*array.FixedSizeBinaryDictionaryBuilder).InsertDictValues(init)
+			case *array.Int32:
+				err = dict.(*array.Int32DictionaryBuilder).InsertDictValues(init)
 			default:
 				panic("InitDictionaryBuilders: unsupported dictionary type " + init.DataType().Name())
 			}

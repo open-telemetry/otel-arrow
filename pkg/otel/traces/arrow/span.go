@@ -29,14 +29,14 @@ import (
 // SpanDT is the Arrow Data Type describing a span.
 var (
 	SpanDT = arrow.StructOf([]arrow.Field{
-		{Name: constants.StartTimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
-		{Name: constants.EndTimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
+		{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
+		{Name: constants.EndTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
 		{Name: constants.TraceId, Type: acommon.DefaultDictFixed16Binary},
 		{Name: constants.SpanId, Type: acommon.DefaultDictFixed8Binary},
 		{Name: constants.TraceState, Type: acommon.DefaultDictString},
 		{Name: constants.ParentSpanId, Type: acommon.DefaultDictFixed8Binary},
 		{Name: constants.Name, Type: acommon.DefaultDictString},
-		{Name: constants.KIND, Type: arrow.PrimitiveTypes.Int32},
+		{Name: constants.KIND, Type: acommon.DefaultDictInt32},
 		{Name: constants.Attributes, Type: acommon.AttributesDT},
 		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32},
 		{Name: constants.SpanEvents, Type: arrow.ListOf(EventDT)},
@@ -53,14 +53,14 @@ type SpanBuilder struct {
 
 	builder *array.StructBuilder
 
-	stunb *array.Uint64Builder               // start time unix nano builder
-	etunb *array.Uint64Builder               // end time unix nano builder
+	stunb *array.TimestampBuilder            // start time unix nano builder
+	etunb *array.TimestampBuilder            // end time unix nano builder
 	tib   *acommon.AdaptiveDictionaryBuilder // trace id builder
 	sib   *acommon.AdaptiveDictionaryBuilder // span id builder
 	tsb   *acommon.AdaptiveDictionaryBuilder // trace state builder
 	psib  *acommon.AdaptiveDictionaryBuilder // parent span id builder
 	nb    *acommon.AdaptiveDictionaryBuilder // name builder
-	kb    *array.Int32Builder                // kind builder
+	kb    *acommon.AdaptiveDictionaryBuilder // kind builder
 	ab    *acommon.AttributesBuilder         // attributes builder
 	dacb  *array.Uint32Builder               // dropped attributes count builder
 	sesb  *array.ListBuilder                 // span event list builder
@@ -85,14 +85,14 @@ func SpanBuilderFrom(sb *array.StructBuilder) *SpanBuilder {
 	return &SpanBuilder{
 		released: false,
 		builder:  sb,
-		stunb:    sb.FieldBuilder(0).(*array.Uint64Builder),
-		etunb:    sb.FieldBuilder(1).(*array.Uint64Builder),
+		stunb:    sb.FieldBuilder(0).(*array.TimestampBuilder),
+		etunb:    sb.FieldBuilder(1).(*array.TimestampBuilder),
 		tib:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(2)),
 		sib:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(3)),
 		tsb:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(4)),
 		psib:     acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(5)),
 		nb:       acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(6)),
-		kb:       sb.FieldBuilder(7).(*array.Int32Builder),
+		kb:       acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(7)),
 		ab:       acommon.AttributesBuilderFrom(sb.FieldBuilder(8).(*array.MapBuilder)),
 		dacb:     sb.FieldBuilder(9).(*array.Uint32Builder),
 		sesb:     sb.FieldBuilder(10).(*array.ListBuilder),
@@ -125,8 +125,8 @@ func (b *SpanBuilder) Append(span ptrace.Span) error {
 	}
 
 	b.builder.Append(true)
-	b.stunb.Append(uint64(span.StartTimestamp()))
-	b.etunb.Append(uint64(span.EndTimestamp()))
+	b.stunb.Append(arrow.Timestamp(span.StartTimestamp()))
+	b.etunb.Append(arrow.Timestamp(span.EndTimestamp()))
 	tib := span.TraceID()
 	if err := b.tib.AppendBinary(tib[:]); err != nil {
 		return err
@@ -155,7 +155,9 @@ func (b *SpanBuilder) Append(span ptrace.Span) error {
 			return err
 		}
 	}
-	b.kb.Append(int32(span.Kind()))
+	if err := b.kb.AppendI32(int32(span.Kind())); err != nil {
+		return err
+	}
 	if err := b.ab.Append(span.Attributes()); err != nil {
 		return err
 	}

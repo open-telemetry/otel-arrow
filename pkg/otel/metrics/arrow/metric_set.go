@@ -35,8 +35,8 @@ var (
 		arrow.Field{Name: constants.Unit, Type: acommon.DefaultDictString},
 		arrow.Field{Name: constants.Data, Type: UnivariateMetricDT},
 		arrow.Field{Name: constants.SharedAttributes, Type: acommon.AttributesDT},
-		arrow.Field{Name: constants.SharedStartTimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
-		arrow.Field{Name: constants.SharedTimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
+		arrow.Field{Name: constants.SharedStartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
+		arrow.Field{Name: constants.SharedTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
 	)
 )
 
@@ -51,8 +51,8 @@ type MetricSetBuilder struct {
 	ub     *acommon.AdaptiveDictionaryBuilder // metric unit builder
 	dtb    *UnivariateMetricBuilder           // univariate metric builder
 	sab    *acommon.AttributesBuilder         // shared attributes builder
-	sstunb *array.Uint64Builder               // shared start time unix nano builder
-	stunb  *array.Uint64Builder               // shared time unix nano builder
+	sstunb *array.TimestampBuilder            // shared start time unix nano builder
+	stunb  *array.TimestampBuilder            // shared time unix nano builder
 }
 
 // NewMetricSetBuilder creates a new SpansBuilder with a given allocator.
@@ -73,8 +73,8 @@ func MetricSetBuilderFrom(sb *array.StructBuilder) *MetricSetBuilder {
 		ub:       acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(2)),
 		dtb:      UnivariateMetricBuilderFrom(sb.FieldBuilder(3).(*array.SparseUnionBuilder)),
 		sab:      acommon.AttributesBuilderFrom(sb.FieldBuilder(4).(*array.MapBuilder)),
-		sstunb:   sb.FieldBuilder(5).(*array.Uint64Builder),
-		stunb:    sb.FieldBuilder(6).(*array.Uint64Builder),
+		sstunb:   sb.FieldBuilder(5).(*array.TimestampBuilder),
+		stunb:    sb.FieldBuilder(6).(*array.TimestampBuilder),
 	}
 }
 
@@ -137,13 +137,13 @@ func (b *MetricSetBuilder) Append(metric pmetric.Metric, smdata *ScopeMetricsSha
 	}
 
 	if mdata != nil && mdata.StartTime != nil {
-		b.sstunb.Append(uint64(*mdata.StartTime))
+		b.sstunb.Append(arrow.Timestamp(*mdata.StartTime))
 	} else {
 		b.sstunb.AppendNull()
 	}
 
 	if mdata != nil && mdata.Time != nil {
-		b.stunb.Append(uint64(*mdata.Time))
+		b.stunb.Append(arrow.Timestamp(*mdata.Time))
 	} else {
 		b.stunb.AppendNull()
 	}

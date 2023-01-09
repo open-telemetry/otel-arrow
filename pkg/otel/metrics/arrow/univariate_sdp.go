@@ -30,8 +30,8 @@ import (
 var (
 	UnivariateSummaryDataPointDT = arrow.StructOf(
 		arrow.Field{Name: constants.Attributes, Type: acommon.AttributesDT},
-		arrow.Field{Name: constants.StartTimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
-		arrow.Field{Name: constants.TimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
+		arrow.Field{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
+		arrow.Field{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
 		arrow.Field{Name: constants.SummaryCount, Type: arrow.PrimitiveTypes.Uint64},
 		arrow.Field{Name: constants.SummarySum, Type: arrow.PrimitiveTypes.Float64},
 		arrow.Field{Name: constants.SummaryQuantileValues, Type: arrow.ListOf(QuantileValueDT)},
@@ -46,8 +46,8 @@ type UnivariateSummaryDataPointBuilder struct {
 	builder *array.StructBuilder
 
 	ab    *acommon.AttributesBuilder // attributes builder
-	stunb *array.Uint64Builder       // start_time_unix_nano builder
-	tunb  *array.Uint64Builder       // time_unix_nano builder
+	stunb *array.TimestampBuilder    // start_time_unix_nano builder
+	tunb  *array.TimestampBuilder    // time_unix_nano builder
 	scb   *array.Uint64Builder       // count builder
 	ssb   *array.Float64Builder      // sum builder
 	qvlb  *array.ListBuilder         // summary quantile value list builder
@@ -67,8 +67,8 @@ func UnivariateSummaryDataPointBuilderFrom(ndpb *array.StructBuilder) *Univariat
 		builder:  ndpb,
 
 		ab:    acommon.AttributesBuilderFrom(ndpb.FieldBuilder(0).(*array.MapBuilder)),
-		stunb: ndpb.FieldBuilder(1).(*array.Uint64Builder),
-		tunb:  ndpb.FieldBuilder(2).(*array.Uint64Builder),
+		stunb: ndpb.FieldBuilder(1).(*array.TimestampBuilder),
+		tunb:  ndpb.FieldBuilder(2).(*array.TimestampBuilder),
 		scb:   ndpb.FieldBuilder(3).(*array.Uint64Builder),
 		ssb:   ndpb.FieldBuilder(4).(*array.Float64Builder),
 		qvlb:  ndpb.FieldBuilder(5).(*array.ListBuilder),
@@ -111,12 +111,12 @@ func (b *UnivariateSummaryDataPointBuilder) Append(sdp pmetric.SummaryDataPoint,
 	}
 
 	if smdata.StartTime == nil && mdata.StartTime == nil {
-		b.stunb.Append(uint64(sdp.StartTimestamp()))
+		b.stunb.Append(arrow.Timestamp(sdp.StartTimestamp()))
 	} else {
 		b.stunb.AppendNull()
 	}
 	if smdata.Time == nil && mdata.Time == nil {
-		b.tunb.Append(uint64(sdp.Timestamp()))
+		b.tunb.Append(arrow.Timestamp(sdp.Timestamp()))
 	} else {
 		b.tunb.AppendNull()
 	}

@@ -84,7 +84,7 @@ func AppendEventsInto(spans ptrace.SpanEventSlice, arrowSpans *arrowutils.ListOf
 			continue
 		}
 
-		timeUnixNano, err := events.U64FieldByID(ids.TimeUnixNano, eventIdx)
+		timeUnixNano, err := events.TimestampFieldByID(ids.TimeUnixNano, eventIdx)
 		if err != nil {
 			return err
 		}

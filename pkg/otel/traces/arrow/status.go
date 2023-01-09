@@ -29,7 +29,7 @@ import (
 // StatusDT is the Arrow Data Type describing a span status.
 var (
 	StatusDT = arrow.StructOf([]arrow.Field{
-		{Name: constants.StatusCode, Type: arrow.PrimitiveTypes.Int32},
+		{Name: constants.StatusCode, Type: acommon.DefaultDictInt32},
 		{Name: constants.StatusMessage, Type: acommon.DefaultDictString},
 	}...)
 )
@@ -37,7 +37,7 @@ var (
 type StatusBuilder struct {
 	released bool
 	builder  *array.StructBuilder
-	scb      *array.Int32Builder                // status code builder
+	scb      *acommon.AdaptiveDictionaryBuilder // status code builder
 	smb      *acommon.AdaptiveDictionaryBuilder // status message builder
 }
 
@@ -49,7 +49,7 @@ func StatusBuilderFrom(sb *array.StructBuilder) *StatusBuilder {
 	return &StatusBuilder{
 		released: false,
 		builder:  sb,
-		scb:      sb.FieldBuilder(0).(*array.Int32Builder),
+		scb:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(0)),
 		smb:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(1)),
 	}
 }
@@ -61,7 +61,9 @@ func (b *StatusBuilder) Append(status ptrace.Status) error {
 	}
 
 	b.builder.Append(true)
-	b.scb.Append(int32(status.Code()))
+	if err := b.scb.AppendI32(int32(status.Code())); err != nil {
+		return err
+	}
 	message := status.Message()
 	if message == "" {
 		b.smb.AppendNull()

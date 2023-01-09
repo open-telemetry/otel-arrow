@@ -63,6 +63,19 @@ func (b *AdaptiveDictionaryBuilder) AppendBinary(v []byte) error {
 	}
 }
 
+// AppendI32 appends a i32 value to the builder.
+func (b *AdaptiveDictionaryBuilder) AppendI32(v int32) error {
+	switch b := b.builder.(type) {
+	case *array.Int32DictionaryBuilder:
+		return b.Append(v)
+	case *array.Int32Builder:
+		b.Append(v)
+		return nil
+	default:
+		return fmt.Errorf("AdaptiveDictionaryBuilder: unsupported builder type: %T", b)
+	}
+}
+
 // AppendNull appends a null value to the builder.
 func (b *AdaptiveDictionaryBuilder) AppendNull() {
 	b.builder.AppendNull()

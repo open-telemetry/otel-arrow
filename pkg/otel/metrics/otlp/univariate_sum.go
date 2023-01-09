@@ -55,11 +55,12 @@ func NewUnivariateSumIds(parentDT *arrow.StructType) (*UnivariateSumIds, error) 
 }
 
 func UpdateUnivariateSumFrom(sum pmetric.Sum, arr *array.Struct, row int, ids *UnivariateSumIds, smdata *SharedData, mdata *SharedData) error {
-	atArr, ok := arr.Field(ids.AggregationTemporality).(*array.Int32)
-	if !ok {
-		return fmt.Errorf("field %q is not an int64", constants.AggregationTemporality)
+	value, err := arrowutils.I32FromArray(arr.Field(ids.AggregationTemporality), row)
+	if err != nil {
+		return err
 	}
-	sum.SetAggregationTemporality(pmetric.AggregationTemporality(atArr.Value(row)))
+
+	sum.SetAggregationTemporality(pmetric.AggregationTemporality(value))
 
 	imArr, ok := arr.Field(ids.IsMonotonic).(*array.Boolean)
 	if !ok {

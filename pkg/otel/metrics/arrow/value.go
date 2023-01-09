@@ -33,7 +33,7 @@ const (
 
 var (
 	// MetricValueDT is an Arrow Data Type representing an OTLP metric value.
-	MetricValueDT = arrow.DenseUnionOf([]arrow.Field{
+	MetricValueDT = arrow.SparseUnionOf([]arrow.Field{
 		{Name: constants.I64MetricValue, Type: arrow.PrimitiveTypes.Int64},
 		{Name: constants.F64MetricValue, Type: arrow.PrimitiveTypes.Float64},
 	}, []int8{
@@ -46,7 +46,7 @@ var (
 type MetricValueBuilder struct {
 	released bool
 
-	builder *array.DenseUnionBuilder // metric value builder
+	builder *array.SparseUnionBuilder // metric value builder
 
 	i64Builder *array.Int64Builder   // int64 builder
 	f64Builder *array.Float64Builder // float64 builder
@@ -54,11 +54,11 @@ type MetricValueBuilder struct {
 
 // NewMetricValueBuilder creates a new MetricValueBuilder with a given memory allocator.
 func NewMetricValueBuilder(pool memory.Allocator) *MetricValueBuilder {
-	return MetricValueBuilderFrom(array.NewDenseUnionBuilder(pool, MetricValueDT))
+	return MetricValueBuilderFrom(array.NewSparseUnionBuilder(pool, MetricValueDT))
 }
 
-// MetricValueBuilderFrom creates a new MetricValueBuilder from an existing DenseUnionBuilder.
-func MetricValueBuilderFrom(mv *array.DenseUnionBuilder) *MetricValueBuilder {
+// MetricValueBuilderFrom creates a new MetricValueBuilder from an existing SparseUnionBuilder.
+func MetricValueBuilderFrom(mv *array.SparseUnionBuilder) *MetricValueBuilder {
 	return &MetricValueBuilder{
 		released:   false,
 		builder:    mv,
@@ -71,13 +71,13 @@ func MetricValueBuilderFrom(mv *array.DenseUnionBuilder) *MetricValueBuilder {
 //
 // Once the returned array is no longer needed, Release() must be called to free the
 // memory allocated by the array.
-func (b *MetricValueBuilder) Build() (*array.DenseUnion, error) {
+func (b *MetricValueBuilder) Build() (*array.SparseUnion, error) {
 	if b.released {
 		return nil, fmt.Errorf("metric value builder already released")
 	}
 
 	defer b.Release()
-	return b.builder.NewDenseUnionArray(), nil
+	return b.builder.NewSparseUnionArray(), nil
 }
 
 // AppendNumberDataPointValue appends a new metric value to the builder.
@@ -129,10 +129,12 @@ func (b *MetricValueBuilder) Release() {
 func (b *MetricValueBuilder) appendI64(v int64) {
 	b.builder.Append(I64Code)
 	b.i64Builder.Append(v)
+	b.f64Builder.AppendNull()
 }
 
 // appendF64 appends a new double value to the builder.
 func (b *MetricValueBuilder) appendF64(v float64) {
 	b.builder.Append(F64Code)
 	b.f64Builder.Append(v)
+	b.i64Builder.AppendNull()
 }

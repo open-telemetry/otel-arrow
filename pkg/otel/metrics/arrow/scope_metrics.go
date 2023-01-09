@@ -35,8 +35,8 @@ var (
 		{Name: constants.SchemaUrl, Type: acommon.DefaultDictString},
 		{Name: constants.UnivariateMetrics, Type: arrow.ListOf(UnivariateMetricSetDT)},
 		{Name: constants.SharedAttributes, Type: acommon.AttributesDT},
-		{Name: constants.SharedStartTimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
-		{Name: constants.SharedTimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
+		{Name: constants.SharedStartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
+		{Name: constants.SharedTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
 	}...)
 )
 
@@ -51,8 +51,8 @@ type ScopeMetricsBuilder struct {
 	smb    *array.ListBuilder                 // metrics list builder
 	mb     *MetricSetBuilder                  // metrics builder
 	sab    *acommon.AttributesBuilder         // shared attributes builder
-	sstunb *array.Uint64Builder               // shared start time unix nano builder
-	stunb  *array.Uint64Builder               // shared time unix nano builder
+	sstunb *array.TimestampBuilder            // shared start time unix nano builder
+	stunb  *array.TimestampBuilder            // shared time unix nano builder
 }
 
 type DataPoint interface {
@@ -79,8 +79,8 @@ func ScopeMetricsBuilderFrom(builder *array.StructBuilder) *ScopeMetricsBuilder 
 		smb:      builder.FieldBuilder(2).(*array.ListBuilder),
 		mb:       MetricSetBuilderFrom(builder.FieldBuilder(2).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
 		sab:      acommon.AttributesBuilderFrom(builder.FieldBuilder(3).(*array.MapBuilder)),
-		sstunb:   builder.FieldBuilder(4).(*array.Uint64Builder),
-		stunb:    builder.FieldBuilder(5).(*array.Uint64Builder),
+		sstunb:   builder.FieldBuilder(4).(*array.TimestampBuilder),
+		stunb:    builder.FieldBuilder(5).(*array.TimestampBuilder),
 	}
 }
 
@@ -144,13 +144,13 @@ func (b *ScopeMetricsBuilder) Append(sm pmetric.ScopeMetrics) error {
 	}
 
 	if sharedData.StartTime != nil {
-		b.sstunb.Append(uint64(*sharedData.StartTime))
+		b.sstunb.Append(arrow.Timestamp(*sharedData.StartTime))
 	} else {
 		b.sstunb.AppendNull()
 	}
 
 	if sharedData.Time != nil {
-		b.stunb.Append(uint64(*sharedData.Time))
+		b.stunb.Append(arrow.Timestamp(*sharedData.Time))
 	} else {
 		b.stunb.AppendNull()
 	}

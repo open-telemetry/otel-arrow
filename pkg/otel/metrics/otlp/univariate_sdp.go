@@ -121,7 +121,7 @@ func AppendUnivariateSdpInto(ndpSlice pmetric.SummaryDataPointSlice, ndp *arrowu
 			if mdata.StartTime != nil {
 				sdpValue.SetStartTimestamp(*mdata.StartTime)
 			} else {
-				startTimeUnixNano, err := ndp.U64FieldByID(ids.StartTimeUnixNano, idx)
+				startTimeUnixNano, err := ndp.TimestampFieldByID(ids.StartTimeUnixNano, idx)
 				if err != nil {
 					return err
 				}
@@ -135,7 +135,7 @@ func AppendUnivariateSdpInto(ndpSlice pmetric.SummaryDataPointSlice, ndp *arrowu
 			if mdata.StartTime != nil {
 				sdpValue.SetTimestamp(*mdata.Time)
 			} else {
-				timeUnixNano, err := ndp.U64FieldByID(ids.TimeUnixNano, idx)
+				timeUnixNano, err := ndp.TimestampFieldByID(ids.TimeUnixNano, idx)
 				if err != nil {
 					return err
 				}

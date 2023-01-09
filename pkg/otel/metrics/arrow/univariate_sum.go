@@ -22,6 +22,7 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -29,7 +30,7 @@ import (
 var (
 	UnivariateSumDT = arrow.StructOf(
 		arrow.Field{Name: constants.DataPoints, Type: arrow.ListOf(UnivariateNumberDataPointDT)},
-		arrow.Field{Name: constants.AggregationTemporality, Type: arrow.PrimitiveTypes.Int32},
+		arrow.Field{Name: constants.AggregationTemporality, Type: acommon.DefaultDictInt32},
 		arrow.Field{Name: constants.IsMonotonic, Type: arrow.FixedWidthTypes.Boolean},
 	)
 )
@@ -40,10 +41,10 @@ type UnivariateSumBuilder struct {
 
 	builder *array.StructBuilder
 
-	dplb *array.ListBuilder      // data_points builder
-	dpb  *NumberDataPointBuilder // number data point builder
-	atb  *array.Int32Builder     // aggregation_temporality builder
-	imb  *array.BooleanBuilder   // is_monotonic builder
+	dplb *array.ListBuilder                 // data_points builder
+	dpb  *NumberDataPointBuilder            // number data point builder
+	atb  *acommon.AdaptiveDictionaryBuilder // aggregation_temporality builder
+	imb  *array.BooleanBuilder              // is_monotonic builder
 }
 
 // NewUnivariateSumBuilder creates a new UnivariateSumBuilder with a given memory allocator.
@@ -59,7 +60,7 @@ func UnivariateSumBuilderFrom(ndpb *array.StructBuilder) *UnivariateSumBuilder {
 
 		dplb: ndpb.FieldBuilder(0).(*array.ListBuilder),
 		dpb:  NumberDataPointBuilderFrom(ndpb.FieldBuilder(0).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
-		atb:  ndpb.FieldBuilder(1).(*array.Int32Builder),
+		atb:  acommon.AdaptiveDictionaryBuilderFrom(ndpb.FieldBuilder(1)),
 		imb:  ndpb.FieldBuilder(2).(*array.BooleanBuilder),
 	}
 }
@@ -109,7 +110,9 @@ func (b *UnivariateSumBuilder) Append(sum pmetric.Sum, smdata *ScopeMetricsShare
 	if sum.AggregationTemporality() == pmetric.AggregationTemporalityUnspecified {
 		b.atb.AppendNull()
 	} else {
-		b.atb.Append(int32(sum.AggregationTemporality()))
+		if err := b.atb.AppendI32(int32(sum.AggregationTemporality())); err != nil {
+			return err
+		}
 	}
 	if sum.IsMonotonic() {
 		b.imb.Append(sum.IsMonotonic())

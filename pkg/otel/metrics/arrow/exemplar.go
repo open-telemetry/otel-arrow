@@ -30,9 +30,9 @@ var (
 	// ExemplarDT is an Arrow Data Type representing an OTLP metric exemplar.
 	ExemplarDT = arrow.StructOf(
 		arrow.Field{Name: constants.Attributes, Type: acommon.AttributesDT},
-		arrow.Field{Name: constants.TimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
+		arrow.Field{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
 		arrow.Field{Name: constants.MetricValue, Type: MetricValueDT},
-		// TODO: Not sure a dictionary if needed here
+		// TODO Not sure a dictionary if needed here
 		arrow.Field{Name: constants.SpanId, Type: acommon.DefaultDictFixed8Binary},
 		arrow.Field{Name: constants.TraceId, Type: acommon.DefaultDictFixed16Binary},
 	)
@@ -45,7 +45,7 @@ type ExemplarBuilder struct {
 	builder *array.StructBuilder // exemplar value builder
 
 	ab   *acommon.AttributesBuilder         // attributes builder
-	tunb *array.Uint64Builder               // time unix nano builder
+	tunb *array.TimestampBuilder            // time unix nano builder
 	mvb  *MetricValueBuilder                // metric value builder
 	sib  *acommon.AdaptiveDictionaryBuilder // span id builder
 	tib  *acommon.AdaptiveDictionaryBuilder // trace id builder
@@ -63,8 +63,8 @@ func ExemplarBuilderFrom(ex *array.StructBuilder) *ExemplarBuilder {
 		builder:  ex,
 
 		ab:   acommon.AttributesBuilderFrom(ex.FieldBuilder(0).(*array.MapBuilder)),
-		tunb: ex.FieldBuilder(1).(*array.Uint64Builder),
-		mvb:  MetricValueBuilderFrom(ex.FieldBuilder(2).(*array.DenseUnionBuilder)),
+		tunb: ex.FieldBuilder(1).(*array.TimestampBuilder),
+		mvb:  MetricValueBuilderFrom(ex.FieldBuilder(2).(*array.SparseUnionBuilder)),
 		sib:  acommon.AdaptiveDictionaryBuilderFrom(ex.FieldBuilder(3)),
 		tib:  acommon.AdaptiveDictionaryBuilderFrom(ex.FieldBuilder(4)),
 	}
@@ -93,7 +93,7 @@ func (b *ExemplarBuilder) Append(ex pmetric.Exemplar) error {
 	if err := b.ab.Append(ex.FilteredAttributes()); err != nil {
 		return err
 	}
-	b.tunb.Append(uint64(ex.Timestamp()))
+	b.tunb.Append(arrow.Timestamp(ex.Timestamp()))
 	if err := b.mvb.AppendExemplarValue(ex); err != nil {
 		return err
 	}

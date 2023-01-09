@@ -36,12 +36,10 @@ var (
 	// AnyValueDT is an Arrow Data Type representing an OTLP Any Value.
 	// Any values are represented as a sparse union of the following variants: str, i64, f64, bool, binary.
 	AnyValueDT = arrow.SparseUnionOf([]arrow.Field{
-		// TODO manage case where the cardinality of the dictionary is too high (> 2^16).
 		{Name: "str", Type: DefaultDictString},
 		{Name: "i64", Type: arrow.PrimitiveTypes.Int64},
 		{Name: "f64", Type: arrow.PrimitiveTypes.Float64},
 		{Name: "bool", Type: arrow.FixedWidthTypes.Boolean},
-		// TODO manage case where the cardinality of the dictionary is too high (> 2^16).
 		{Name: "binary", Type: DefaultDictBinary},
 		// Future extension {Name: "cbor", Type: DefaultDictBinary},
 	}, []int8{

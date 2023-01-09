@@ -150,7 +150,7 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 			if mdata.StartTime != nil {
 				hdpVal.SetStartTimestamp(*mdata.StartTime)
 			} else {
-				startTimeUnixNano, err := hdp.U64FieldByID(ids.StartTimeUnixNano, hdpIdx)
+				startTimeUnixNano, err := hdp.TimestampFieldByID(ids.StartTimeUnixNano, hdpIdx)
 				if err != nil {
 					return err
 				}
@@ -164,7 +164,7 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 			if mdata.Time != nil {
 				hdpVal.SetTimestamp(*mdata.Time)
 			} else {
-				timeUnixNano, err := hdp.U64FieldByID(ids.TimeUnixNano, hdpIdx)
+				timeUnixNano, err := hdp.TimestampFieldByID(ids.TimeUnixNano, hdpIdx)
 				if err != nil {
 					return err
 				}

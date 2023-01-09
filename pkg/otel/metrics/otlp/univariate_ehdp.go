@@ -176,7 +176,7 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 			if mdata.StartTime != nil {
 				ehdpVal.SetStartTimestamp(*mdata.StartTime)
 			} else {
-				startTimeUnixNano, err := ehdp.U64FieldByID(ids.StartTimeUnixNano, ehdpIdx)
+				startTimeUnixNano, err := ehdp.TimestampFieldByID(ids.StartTimeUnixNano, ehdpIdx)
 				if err != nil {
 					return err
 				}
@@ -190,7 +190,7 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 			if mdata.Time != nil {
 				ehdpVal.SetTimestamp(*mdata.Time)
 			} else {
-				timeUnixNano, err := ehdp.U64FieldByID(ids.TimeUnixNano, ehdpIdx)
+				timeUnixNano, err := ehdp.TimestampFieldByID(ids.TimeUnixNano, ehdpIdx)
 				if err != nil {
 					return err
 				}

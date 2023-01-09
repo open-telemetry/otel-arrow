@@ -48,11 +48,11 @@ func NewUnivariateEHistogramIds(parentDT *arrow.StructType) (*UnivariateEHistogr
 }
 
 func UpdateUnivariateEHistogramFrom(ehistogram pmetric.ExponentialHistogram, arr *array.Struct, row int, ids *UnivariateEHistogramIds, smdata *SharedData, mdata *SharedData) error {
-	atArr, ok := arr.Field(ids.AggregationTemporality).(*array.Int32)
-	if !ok {
-		return fmt.Errorf("field %q is not an int64", constants.AggregationTemporality)
+	value, err := arrowutils.I32FromArray(arr.Field(ids.AggregationTemporality), row)
+	if err != nil {
+		return err
 	}
-	ehistogram.SetAggregationTemporality(pmetric.AggregationTemporality(atArr.Value(row)))
+	ehistogram.SetAggregationTemporality(pmetric.AggregationTemporality(value))
 
 	los, err := arrowutils.ListOfStructsFromStruct(arr, ids.DataPoints.Id, row)
 	if err != nil {

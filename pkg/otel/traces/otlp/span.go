@@ -210,11 +210,11 @@ func AppendSpanInto(spans ptrace.SpanSlice, los *arrowutils.ListOfStructs, row i
 	if err != nil {
 		return err
 	}
-	startTimeUnixNano, err := los.U64FieldByID(ids.StartTimeUnixNano, row)
+	startTimeUnixNano, err := los.TimestampFieldByID(ids.StartTimeUnixNano, row)
 	if err != nil {
 		return err
 	}
-	endTimeUnixNano, err := los.U64FieldByID(ids.EndTimeUnixNano, row)
+	endTimeUnixNano, err := los.TimestampFieldByID(ids.EndTimeUnixNano, row)
 	if err != nil {
 		return err
 	}

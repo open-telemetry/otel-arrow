@@ -115,11 +115,11 @@ func NewLogRecordIds(scopeLogsDT *arrow.StructType) (*LogRecordIds, error) {
 func AppendLogRecordInto(logs plog.LogRecordSlice, los *arrowutils.ListOfStructs, row int, ids *LogRecordIds) error {
 	logRecord := logs.AppendEmpty()
 
-	timeUnixNano, err := los.U64FieldByID(ids.TimeUnixNano, row)
+	timeUnixNano, err := los.TimestampFieldByID(ids.TimeUnixNano, row)
 	if err != nil {
 		return err
 	}
-	observedTimeUnixNano, err := los.U64FieldByID(ids.ObservedTimeUnixNano, row)
+	observedTimeUnixNano, err := los.TimestampFieldByID(ids.ObservedTimeUnixNano, row)
 	if err != nil {
 		return err
 	}

@@ -29,7 +29,7 @@ import (
 // EventDT is the Arrow Data Type describing a span event.
 var (
 	EventDT = arrow.StructOf([]arrow.Field{
-		{Name: constants.TimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
+		{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
 		{Name: constants.Name, Type: acommon.DefaultDictString},
 		{Name: constants.Attributes, Type: acommon.AttributesDT},
 		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32},
@@ -39,7 +39,7 @@ var (
 type EventBuilder struct {
 	released bool
 	builder  *array.StructBuilder
-	tunb     *array.Uint64Builder               // time_unix_nano builder
+	tunb     *array.TimestampBuilder            // time_unix_nano builder
 	nb       *acommon.AdaptiveDictionaryBuilder // name builder
 	ab       *acommon.AttributesBuilder         // attributes builder
 	dacb     *array.Uint32Builder               // dropped_attributes_count builder
@@ -53,7 +53,7 @@ func EventBuilderFrom(eb *array.StructBuilder) *EventBuilder {
 	return &EventBuilder{
 		released: false,
 		builder:  eb,
-		tunb:     eb.FieldBuilder(0).(*array.Uint64Builder),
+		tunb:     eb.FieldBuilder(0).(*array.TimestampBuilder),
 		nb:       acommon.AdaptiveDictionaryBuilderFrom(eb.FieldBuilder(1)),
 		ab:       acommon.AttributesBuilderFrom(eb.FieldBuilder(2).(*array.MapBuilder)),
 		dacb:     eb.FieldBuilder(3).(*array.Uint32Builder),
@@ -67,7 +67,7 @@ func (b *EventBuilder) Append(event ptrace.SpanEvent) error {
 	}
 
 	b.builder.Append(true)
-	b.tunb.Append(uint64(event.Timestamp()))
+	b.tunb.Append(arrow.Timestamp(event.Timestamp()))
 
 	name := event.Name()
 	if name == "" {

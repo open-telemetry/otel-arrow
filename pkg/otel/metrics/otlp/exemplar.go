@@ -98,7 +98,7 @@ func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, ndp *arrowutils.Li
 			return err
 		}
 
-		timeUnixNano, err := exemplars.U64FieldByID(ids.TimeUnixNano, exemplarIdx)
+		timeUnixNano, err := exemplars.TimestampFieldByID(ids.TimeUnixNano, exemplarIdx)
 		if err != nil {
 			return err
 		}
@@ -133,12 +133,12 @@ func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, ndp *arrowutils.Li
 		}
 
 		value := exemplars.FieldByID(ids.ValueID)
-		if valueArr, ok := value.(*array.DenseUnion); ok {
+		if valueArr, ok := value.(*array.SparseUnion); ok {
 			if err := UpdateValueFromExemplar(exemplar, valueArr, exemplarIdx); err != nil {
 				return err
 			}
 		} else {
-			return fmt.Errorf("value field shound be a DenseUnion")
+			return fmt.Errorf("value field shound be a SparseUnion")
 		}
 	}
 

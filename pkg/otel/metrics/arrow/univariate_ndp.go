@@ -30,8 +30,8 @@ var (
 	// UnivariateNumberDataPointDT is the data type for a single univariate number data point.
 	UnivariateNumberDataPointDT = arrow.StructOf(
 		arrow.Field{Name: constants.Attributes, Type: acommon.AttributesDT},
-		arrow.Field{Name: constants.StartTimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
-		arrow.Field{Name: constants.TimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
+		arrow.Field{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
+		arrow.Field{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
 		arrow.Field{Name: constants.MetricValue, Type: MetricValueDT},
 		arrow.Field{Name: constants.Exemplars, Type: arrow.ListOf(ExemplarDT)},
 		arrow.Field{Name: constants.Flags, Type: arrow.PrimitiveTypes.Uint32},
@@ -45,8 +45,8 @@ type NumberDataPointBuilder struct {
 	builder *array.StructBuilder
 
 	ab    *acommon.AttributesBuilder // attributes builder
-	stunb *array.Uint64Builder       // start_time_unix_nano builder
-	tunb  *array.Uint64Builder       // time_unix_nano builder
+	stunb *array.TimestampBuilder    // start_time_unix_nano builder
+	tunb  *array.TimestampBuilder    // time_unix_nano builder
 	mvb   *MetricValueBuilder        // metric_value builder
 	elb   *array.ListBuilder         // exemplars builder
 	eb    *ExemplarBuilder           // exemplar builder
@@ -65,9 +65,9 @@ func NumberDataPointBuilderFrom(ndpb *array.StructBuilder) *NumberDataPointBuild
 		builder:  ndpb,
 
 		ab:    acommon.AttributesBuilderFrom(ndpb.FieldBuilder(0).(*array.MapBuilder)),
-		stunb: ndpb.FieldBuilder(1).(*array.Uint64Builder),
-		tunb:  ndpb.FieldBuilder(2).(*array.Uint64Builder),
-		mvb:   MetricValueBuilderFrom(ndpb.FieldBuilder(3).(*array.DenseUnionBuilder)),
+		stunb: ndpb.FieldBuilder(1).(*array.TimestampBuilder),
+		tunb:  ndpb.FieldBuilder(2).(*array.TimestampBuilder),
+		mvb:   MetricValueBuilderFrom(ndpb.FieldBuilder(3).(*array.SparseUnionBuilder)),
 		elb:   ndpb.FieldBuilder(4).(*array.ListBuilder),
 		eb:    ExemplarBuilderFrom(ndpb.FieldBuilder(4).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
 		fb:    ndpb.FieldBuilder(5).(*array.Uint32Builder),
@@ -107,12 +107,12 @@ func (b *NumberDataPointBuilder) Append(ndp pmetric.NumberDataPoint, smdata *Sco
 		return err
 	}
 	if smdata.StartTime == nil && mdata.StartTime == nil {
-		b.stunb.Append(uint64(ndp.StartTimestamp()))
+		b.stunb.Append(arrow.Timestamp(ndp.StartTimestamp()))
 	} else {
 		b.stunb.AppendNull()
 	}
 	if smdata.Time == nil && mdata.Time == nil {
-		b.tunb.Append(uint64(ndp.Timestamp()))
+		b.tunb.Append(arrow.Timestamp(ndp.Timestamp()))
 	} else {
 		b.tunb.AppendNull()
 	}

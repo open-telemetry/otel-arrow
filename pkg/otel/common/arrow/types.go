@@ -40,4 +40,10 @@ var (
 		ValueType: &arrow.FixedSizeBinaryType{ByteWidth: 8},
 		Ordered:   false,
 	}
+
+	DefaultDictInt32 = &arrow.DictionaryType{
+		IndexType: arrow.PrimitiveTypes.Uint8,
+		ValueType: arrow.PrimitiveTypes.Int32,
+		Ordered:   false,
+	}
 )

@@ -30,8 +30,8 @@ import (
 var (
 	UnivariateEHistogramDataPointDT = arrow.StructOf(
 		arrow.Field{Name: constants.Attributes, Type: acommon.AttributesDT},
-		arrow.Field{Name: constants.StartTimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
-		arrow.Field{Name: constants.TimeUnixNano, Type: arrow.PrimitiveTypes.Uint64},
+		arrow.Field{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
+		arrow.Field{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
 		arrow.Field{Name: constants.HistogramCount, Type: arrow.PrimitiveTypes.Uint64},
 		arrow.Field{Name: constants.HistogramSum, Type: arrow.PrimitiveTypes.Float64},
 		arrow.Field{Name: constants.ExpHistogramScale, Type: arrow.PrimitiveTypes.Int32},
@@ -52,8 +52,8 @@ type EHistogramDataPointBuilder struct {
 	builder *array.StructBuilder
 
 	ab    *acommon.AttributesBuilder         // attributes builder
-	stunb *array.Uint64Builder               // start_time_unix_nano builder
-	tunb  *array.Uint64Builder               // time_unix_nano builder
+	stunb *array.TimestampBuilder            // start_time_unix_nano builder
+	tunb  *array.TimestampBuilder            // time_unix_nano builder
 	hcb   *array.Uint64Builder               // histogram_count builder
 	hsb   *array.Float64Builder              // histogram_sum builder
 	sb    *array.Int32Builder                // scale builder
@@ -79,8 +79,8 @@ func EHistogramDataPointBuilderFrom(b *array.StructBuilder) *EHistogramDataPoint
 		builder:  b,
 
 		ab:    acommon.AttributesBuilderFrom(b.FieldBuilder(0).(*array.MapBuilder)),
-		stunb: b.FieldBuilder(1).(*array.Uint64Builder),
-		tunb:  b.FieldBuilder(2).(*array.Uint64Builder),
+		stunb: b.FieldBuilder(1).(*array.TimestampBuilder),
+		tunb:  b.FieldBuilder(2).(*array.TimestampBuilder),
 		hcb:   b.FieldBuilder(3).(*array.Uint64Builder),
 		hsb:   b.FieldBuilder(4).(*array.Float64Builder),
 		sb:    b.FieldBuilder(5).(*array.Int32Builder),
@@ -128,12 +128,12 @@ func (b *EHistogramDataPointBuilder) Append(hdp pmetric.ExponentialHistogramData
 		return err
 	}
 	if smdata.StartTime == nil && mdata.StartTime == nil {
-		b.stunb.Append(uint64(hdp.StartTimestamp()))
+		b.stunb.Append(arrow.Timestamp(hdp.StartTimestamp()))
 	} else {
 		b.stunb.AppendNull()
 	}
 	if smdata.Time == nil && mdata.Time == nil {
-		b.tunb.Append(uint64(hdp.Timestamp()))
+		b.tunb.Append(arrow.Timestamp(hdp.Timestamp()))
 	} else {
 		b.tunb.AppendNull()
 	}
