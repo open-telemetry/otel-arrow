@@ -9,11 +9,13 @@ as the end-to-end performance between telemetry data producers and receivers.
 exporter and receiver](https://github.com/open-telemetry/experimental-arrow-collector).
 
 Other important links:
+- [OTEP/Specification](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md) describing the
+  motivations, the protocol, the schemas, the benchmark results and the different phases of this project. The OTEP is
+  still [pending, unmerged](https://github.com/open-telemetry/oteps/pull/171).
+- [Donation proposal](https://github.com/open-telemetry/community/issues/1332) under review.
 - [Project Roadmap](https://github.com/f5/otel-arrow-adapter/milestones?direction=asc&sort=due_date&state=open) and [project Board](https://github.com/orgs/f5/projects/1/views/2) describing the current state of the project.
-- [OTEP/Specification](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md) describing the 
-motivations, the protocol, the schemas, the benchmark results and the different phases of this project.
 - [Arrow schemas](docs/arrow_schema.md) used by this package.
-- [Thread model](docs/threat_model_assessment.md).
+- [Threat model](docs/threat_model_assessment.md).
 
 ## Phase 1 (current implementation)
 
