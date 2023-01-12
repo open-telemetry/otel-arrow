@@ -269,8 +269,8 @@ type BatchArrowRecords struct {
 	OtlpArrowPayloads []*OtlpArrowPayload `protobuf:"bytes,2,rep,name=otlp_arrow_payloads,json=otlpArrowPayloads,proto3" json:"otlp_arrow_payloads,omitempty"`
 	// [optional] Delivery type (BEST_EFFORT by default).
 	DeliveryType DeliveryType `protobuf:"varint,3,opt,name=delivery_type,json=deliveryType,proto3,enum=opentelemetry.proto.collector.arrow.v1.DeliveryType" json:"delivery_type,omitempty"`
-	// [optional] Headers associated with this batch.
-	Headers map[string]*StringValues `protobuf:"bytes,4,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
+	// [optional] Headers associated with this batch, encoded using hpack.
+	Headers []byte `protobuf:"bytes,4,opt,name=headers,proto3" json:"headers,omitempty"`
 }
 
 func (x *BatchArrowRecords) Reset() {
@@ -326,58 +326,9 @@ func (x *BatchArrowRecords) GetDeliveryType() DeliveryType {
 	return DeliveryType_BEST_EFFORT
 }
 
-func (x *BatchArrowRecords) GetHeaders() map[string]*StringValues {
+func (x *BatchArrowRecords) GetHeaders() []byte {
 	if x != nil {
 		return x.Headers
-	}
-	return nil
-}
-
-// StringValues is a list of strings, used for HTTP and gRPC headers
-// (and potentially footers).
-type StringValues struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
-	unknownFields protoimpl.UnknownFields
-
-	Value []string `protobuf:"bytes,1,rep,name=value,proto3" json:"value,omitempty"`
-}
-
-func (x *StringValues) Reset() {
-	*x = StringValues{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[1]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
-}
-
-func (x *StringValues) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*StringValues) ProtoMessage() {}
-
-func (x *StringValues) ProtoReflect() protoreflect.Message {
-	mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[1]
-	if protoimpl.UnsafeEnabled && x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use StringValues.ProtoReflect.Descriptor instead.
-func (*StringValues) Descriptor() ([]byte, []int) {
-	return file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *StringValues) GetValue() []string {
-	if x != nil {
-		return x.Value
 	}
 	return nil
 }
@@ -404,7 +355,7 @@ type OtlpArrowPayload struct {
 func (x *OtlpArrowPayload) Reset() {
 	*x = OtlpArrowPayload{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[2]
+		mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[1]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -417,7 +368,7 @@ func (x *OtlpArrowPayload) String() string {
 func (*OtlpArrowPayload) ProtoMessage() {}
 
 func (x *OtlpArrowPayload) ProtoReflect() protoreflect.Message {
-	mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[2]
+	mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[1]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -430,7 +381,7 @@ func (x *OtlpArrowPayload) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OtlpArrowPayload.ProtoReflect.Descriptor instead.
 func (*OtlpArrowPayload) Descriptor() ([]byte, []int) {
-	return file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_rawDescGZIP(), []int{2}
+	return file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *OtlpArrowPayload) GetSubStreamId() string {
@@ -484,7 +435,7 @@ type EncodedData struct {
 func (x *EncodedData) Reset() {
 	*x = EncodedData{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[3]
+		mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[2]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -497,7 +448,7 @@ func (x *EncodedData) String() string {
 func (*EncodedData) ProtoMessage() {}
 
 func (x *EncodedData) ProtoReflect() protoreflect.Message {
-	mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[3]
+	mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[2]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -510,7 +461,7 @@ func (x *EncodedData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EncodedData.ProtoReflect.Descriptor instead.
 func (*EncodedData) Descriptor() ([]byte, []int) {
-	return file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_rawDescGZIP(), []int{3}
+	return file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *EncodedData) GetIpcMessage() []byte {
@@ -539,7 +490,7 @@ type BatchStatus struct {
 func (x *BatchStatus) Reset() {
 	*x = BatchStatus{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[4]
+		mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[3]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -552,7 +503,7 @@ func (x *BatchStatus) String() string {
 func (*BatchStatus) ProtoMessage() {}
 
 func (x *BatchStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[4]
+	mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[3]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -565,7 +516,7 @@ func (x *BatchStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchStatus.ProtoReflect.Descriptor instead.
 func (*BatchStatus) Descriptor() ([]byte, []int) {
-	return file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_rawDescGZIP(), []int{4}
+	return file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *BatchStatus) GetStatuses() []*StatusMessage {
@@ -590,7 +541,7 @@ type StatusMessage struct {
 func (x *StatusMessage) Reset() {
 	*x = StatusMessage{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[5]
+		mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[4]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -603,7 +554,7 @@ func (x *StatusMessage) String() string {
 func (*StatusMessage) ProtoMessage() {}
 
 func (x *StatusMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[5]
+	mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[4]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -616,7 +567,7 @@ func (x *StatusMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StatusMessage.ProtoReflect.Descriptor instead.
 func (*StatusMessage) Descriptor() ([]byte, []int) {
-	return file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_rawDescGZIP(), []int{5}
+	return file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *StatusMessage) GetBatchId() string {
@@ -665,7 +616,7 @@ type RetryInfo struct {
 func (x *RetryInfo) Reset() {
 	*x = RetryInfo{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[6]
+		mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[5]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -678,7 +629,7 @@ func (x *RetryInfo) String() string {
 func (*RetryInfo) ProtoMessage() {}
 
 func (x *RetryInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[6]
+	mi := &file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[5]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -691,7 +642,7 @@ func (x *RetryInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetryInfo.ProtoReflect.Descriptor instead.
 func (*RetryInfo) Descriptor() ([]byte, []int) {
-	return file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_rawDescGZIP(), []int{6}
+	return file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *RetryInfo) GetRetryDelay() int64 {
@@ -710,7 +661,7 @@ var file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_rawDesc = []
 	0x65, 0x72, 0x76, 0x69, 0x63, 0x65, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x12, 0x26, 0x6f, 0x70,
 	0x65, 0x6e, 0x74, 0x65, 0x6c, 0x65, 0x6d, 0x65, 0x74, 0x72, 0x79, 0x2e, 0x70, 0x72, 0x6f, 0x74,
 	0x6f, 0x2e, 0x63, 0x6f, 0x6c, 0x6c, 0x65, 0x63, 0x74, 0x6f, 0x72, 0x2e, 0x61, 0x72, 0x72, 0x6f,
-	0x77, 0x2e, 0x76, 0x31, 0x22, 0xc7, 0x03, 0x0a, 0x11, 0x42, 0x61, 0x74, 0x63, 0x68, 0x41, 0x72,
+	0x77, 0x2e, 0x76, 0x31, 0x22, 0x8d, 0x02, 0x0a, 0x11, 0x42, 0x61, 0x74, 0x63, 0x68, 0x41, 0x72,
 	0x72, 0x6f, 0x77, 0x52, 0x65, 0x63, 0x6f, 0x72, 0x64, 0x73, 0x12, 0x19, 0x0a, 0x08, 0x62, 0x61,
 	0x74, 0x63, 0x68, 0x5f, 0x69, 0x64, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x07, 0x62, 0x61,
 	0x74, 0x63, 0x68, 0x49, 0x64, 0x12, 0x68, 0x0a, 0x13, 0x6f, 0x74, 0x6c, 0x70, 0x5f, 0x61, 0x72,
@@ -725,23 +676,9 @@ var file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_rawDesc = []
 	0x65, 0x6d, 0x65, 0x74, 0x72, 0x79, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x2e, 0x63, 0x6f, 0x6c,
 	0x6c, 0x65, 0x63, 0x74, 0x6f, 0x72, 0x2e, 0x61, 0x72, 0x72, 0x6f, 0x77, 0x2e, 0x76, 0x31, 0x2e,
 	0x44, 0x65, 0x6c, 0x69, 0x76, 0x65, 0x72, 0x79, 0x54, 0x79, 0x70, 0x65, 0x52, 0x0c, 0x64, 0x65,
-	0x6c, 0x69, 0x76, 0x65, 0x72, 0x79, 0x54, 0x79, 0x70, 0x65, 0x12, 0x60, 0x0a, 0x07, 0x68, 0x65,
-	0x61, 0x64, 0x65, 0x72, 0x73, 0x18, 0x04, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x46, 0x2e, 0x6f, 0x70,
-	0x65, 0x6e, 0x74, 0x65, 0x6c, 0x65, 0x6d, 0x65, 0x74, 0x72, 0x79, 0x2e, 0x70, 0x72, 0x6f, 0x74,
-	0x6f, 0x2e, 0x63, 0x6f, 0x6c, 0x6c, 0x65, 0x63, 0x74, 0x6f, 0x72, 0x2e, 0x61, 0x72, 0x72, 0x6f,
-	0x77, 0x2e, 0x76, 0x31, 0x2e, 0x42, 0x61, 0x74, 0x63, 0x68, 0x41, 0x72, 0x72, 0x6f, 0x77, 0x52,
-	0x65, 0x63, 0x6f, 0x72, 0x64, 0x73, 0x2e, 0x48, 0x65, 0x61, 0x64, 0x65, 0x72, 0x73, 0x45, 0x6e,
-	0x74, 0x72, 0x79, 0x52, 0x07, 0x68, 0x65, 0x61, 0x64, 0x65, 0x72, 0x73, 0x1a, 0x70, 0x0a, 0x0c,
-	0x48, 0x65, 0x61, 0x64, 0x65, 0x72, 0x73, 0x45, 0x6e, 0x74, 0x72, 0x79, 0x12, 0x10, 0x0a, 0x03,
-	0x6b, 0x65, 0x79, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x03, 0x6b, 0x65, 0x79, 0x12, 0x4a,
-	0x0a, 0x05, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x18, 0x02, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x34, 0x2e,
-	0x6f, 0x70, 0x65, 0x6e, 0x74, 0x65, 0x6c, 0x65, 0x6d, 0x65, 0x74, 0x72, 0x79, 0x2e, 0x70, 0x72,
-	0x6f, 0x74, 0x6f, 0x2e, 0x63, 0x6f, 0x6c, 0x6c, 0x65, 0x63, 0x74, 0x6f, 0x72, 0x2e, 0x61, 0x72,
-	0x72, 0x6f, 0x77, 0x2e, 0x76, 0x31, 0x2e, 0x53, 0x74, 0x72, 0x69, 0x6e, 0x67, 0x56, 0x61, 0x6c,
-	0x75, 0x65, 0x73, 0x52, 0x05, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x3a, 0x02, 0x38, 0x01, 0x22, 0x24,
-	0x0a, 0x0c, 0x53, 0x74, 0x72, 0x69, 0x6e, 0x67, 0x56, 0x61, 0x6c, 0x75, 0x65, 0x73, 0x12, 0x14,
-	0x0a, 0x05, 0x76, 0x61, 0x6c, 0x75, 0x65, 0x18, 0x01, 0x20, 0x03, 0x28, 0x09, 0x52, 0x05, 0x76,
-	0x61, 0x6c, 0x75, 0x65, 0x22, 0xd6, 0x02, 0x0a, 0x10, 0x4f, 0x74, 0x6c, 0x70, 0x41, 0x72, 0x72,
+	0x6c, 0x69, 0x76, 0x65, 0x72, 0x79, 0x54, 0x79, 0x70, 0x65, 0x12, 0x18, 0x0a, 0x07, 0x68, 0x65,
+	0x61, 0x64, 0x65, 0x72, 0x73, 0x18, 0x04, 0x20, 0x01, 0x28, 0x0c, 0x52, 0x07, 0x68, 0x65, 0x61,
+	0x64, 0x65, 0x72, 0x73, 0x22, 0xd6, 0x02, 0x0a, 0x10, 0x4f, 0x74, 0x6c, 0x70, 0x41, 0x72, 0x72,
 	0x6f, 0x77, 0x50, 0x61, 0x79, 0x6c, 0x6f, 0x61, 0x64, 0x12, 0x22, 0x0a, 0x0d, 0x73, 0x75, 0x62,
 	0x5f, 0x73, 0x74, 0x72, 0x65, 0x61, 0x6d, 0x5f, 0x69, 0x64, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09,
 	0x52, 0x0b, 0x73, 0x75, 0x62, 0x53, 0x74, 0x72, 0x65, 0x61, 0x6d, 0x49, 0x64, 0x12, 0x50, 0x0a,
@@ -845,7 +782,7 @@ func file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_rawDescGZIP
 }
 
 var file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_goTypes = []interface{}{
 	(OtlpArrowPayloadType)(0), // 0: opentelemetry.proto.collector.arrow.v1.OtlpArrowPayloadType
 	(DeliveryType)(0),         // 1: opentelemetry.proto.collector.arrow.v1.DeliveryType
@@ -853,33 +790,29 @@ var file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_goTypes = []
 	(StatusCode)(0),           // 3: opentelemetry.proto.collector.arrow.v1.StatusCode
 	(ErrorCode)(0),            // 4: opentelemetry.proto.collector.arrow.v1.ErrorCode
 	(*BatchArrowRecords)(nil), // 5: opentelemetry.proto.collector.arrow.v1.BatchArrowRecords
-	(*StringValues)(nil),      // 6: opentelemetry.proto.collector.arrow.v1.StringValues
-	(*OtlpArrowPayload)(nil),  // 7: opentelemetry.proto.collector.arrow.v1.OtlpArrowPayload
-	(*EncodedData)(nil),       // 8: opentelemetry.proto.collector.arrow.v1.EncodedData
-	(*BatchStatus)(nil),       // 9: opentelemetry.proto.collector.arrow.v1.BatchStatus
-	(*StatusMessage)(nil),     // 10: opentelemetry.proto.collector.arrow.v1.StatusMessage
-	(*RetryInfo)(nil),         // 11: opentelemetry.proto.collector.arrow.v1.RetryInfo
-	nil,                       // 12: opentelemetry.proto.collector.arrow.v1.BatchArrowRecords.HeadersEntry
+	(*OtlpArrowPayload)(nil),  // 6: opentelemetry.proto.collector.arrow.v1.OtlpArrowPayload
+	(*EncodedData)(nil),       // 7: opentelemetry.proto.collector.arrow.v1.EncodedData
+	(*BatchStatus)(nil),       // 8: opentelemetry.proto.collector.arrow.v1.BatchStatus
+	(*StatusMessage)(nil),     // 9: opentelemetry.proto.collector.arrow.v1.StatusMessage
+	(*RetryInfo)(nil),         // 10: opentelemetry.proto.collector.arrow.v1.RetryInfo
 }
 var file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_depIdxs = []int32{
-	7,  // 0: opentelemetry.proto.collector.arrow.v1.BatchArrowRecords.otlp_arrow_payloads:type_name -> opentelemetry.proto.collector.arrow.v1.OtlpArrowPayload
+	6,  // 0: opentelemetry.proto.collector.arrow.v1.BatchArrowRecords.otlp_arrow_payloads:type_name -> opentelemetry.proto.collector.arrow.v1.OtlpArrowPayload
 	1,  // 1: opentelemetry.proto.collector.arrow.v1.BatchArrowRecords.delivery_type:type_name -> opentelemetry.proto.collector.arrow.v1.DeliveryType
-	12, // 2: opentelemetry.proto.collector.arrow.v1.BatchArrowRecords.headers:type_name -> opentelemetry.proto.collector.arrow.v1.BatchArrowRecords.HeadersEntry
-	0,  // 3: opentelemetry.proto.collector.arrow.v1.OtlpArrowPayload.type:type_name -> opentelemetry.proto.collector.arrow.v1.OtlpArrowPayloadType
-	8,  // 4: opentelemetry.proto.collector.arrow.v1.OtlpArrowPayload.dictionaries:type_name -> opentelemetry.proto.collector.arrow.v1.EncodedData
-	2,  // 5: opentelemetry.proto.collector.arrow.v1.OtlpArrowPayload.compression:type_name -> opentelemetry.proto.collector.arrow.v1.CompressionMethod
-	10, // 6: opentelemetry.proto.collector.arrow.v1.BatchStatus.statuses:type_name -> opentelemetry.proto.collector.arrow.v1.StatusMessage
-	3,  // 7: opentelemetry.proto.collector.arrow.v1.StatusMessage.status_code:type_name -> opentelemetry.proto.collector.arrow.v1.StatusCode
-	4,  // 8: opentelemetry.proto.collector.arrow.v1.StatusMessage.error_code:type_name -> opentelemetry.proto.collector.arrow.v1.ErrorCode
-	11, // 9: opentelemetry.proto.collector.arrow.v1.StatusMessage.retry_info:type_name -> opentelemetry.proto.collector.arrow.v1.RetryInfo
-	6,  // 10: opentelemetry.proto.collector.arrow.v1.BatchArrowRecords.HeadersEntry.value:type_name -> opentelemetry.proto.collector.arrow.v1.StringValues
-	5,  // 11: opentelemetry.proto.collector.arrow.v1.ArrowStreamService.ArrowStream:input_type -> opentelemetry.proto.collector.arrow.v1.BatchArrowRecords
-	9,  // 12: opentelemetry.proto.collector.arrow.v1.ArrowStreamService.ArrowStream:output_type -> opentelemetry.proto.collector.arrow.v1.BatchStatus
-	12, // [12:13] is the sub-list for method output_type
-	11, // [11:12] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	0,  // 2: opentelemetry.proto.collector.arrow.v1.OtlpArrowPayload.type:type_name -> opentelemetry.proto.collector.arrow.v1.OtlpArrowPayloadType
+	7,  // 3: opentelemetry.proto.collector.arrow.v1.OtlpArrowPayload.dictionaries:type_name -> opentelemetry.proto.collector.arrow.v1.EncodedData
+	2,  // 4: opentelemetry.proto.collector.arrow.v1.OtlpArrowPayload.compression:type_name -> opentelemetry.proto.collector.arrow.v1.CompressionMethod
+	9,  // 5: opentelemetry.proto.collector.arrow.v1.BatchStatus.statuses:type_name -> opentelemetry.proto.collector.arrow.v1.StatusMessage
+	3,  // 6: opentelemetry.proto.collector.arrow.v1.StatusMessage.status_code:type_name -> opentelemetry.proto.collector.arrow.v1.StatusCode
+	4,  // 7: opentelemetry.proto.collector.arrow.v1.StatusMessage.error_code:type_name -> opentelemetry.proto.collector.arrow.v1.ErrorCode
+	10, // 8: opentelemetry.proto.collector.arrow.v1.StatusMessage.retry_info:type_name -> opentelemetry.proto.collector.arrow.v1.RetryInfo
+	5,  // 9: opentelemetry.proto.collector.arrow.v1.ArrowStreamService.ArrowStream:input_type -> opentelemetry.proto.collector.arrow.v1.BatchArrowRecords
+	8,  // 10: opentelemetry.proto.collector.arrow.v1.ArrowStreamService.ArrowStream:output_type -> opentelemetry.proto.collector.arrow.v1.BatchStatus
+	10, // [10:11] is the sub-list for method output_type
+	9,  // [9:10] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_init() }
@@ -901,18 +834,6 @@ func file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_init() {
 			}
 		}
 		file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[1].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*StringValues); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
-		file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[2].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*OtlpArrowPayload); i {
 			case 0:
 				return &v.state
@@ -924,7 +845,7 @@ func file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_init() {
 				return nil
 			}
 		}
-		file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[3].Exporter = func(v interface{}, i int) interface{} {
+		file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[2].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*EncodedData); i {
 			case 0:
 				return &v.state
@@ -936,7 +857,7 @@ func file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_init() {
 				return nil
 			}
 		}
-		file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[4].Exporter = func(v interface{}, i int) interface{} {
+		file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[3].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*BatchStatus); i {
 			case 0:
 				return &v.state
@@ -948,7 +869,7 @@ func file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_init() {
 				return nil
 			}
 		}
-		file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[5].Exporter = func(v interface{}, i int) interface{} {
+		file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[4].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*StatusMessage); i {
 			case 0:
 				return &v.state
@@ -960,7 +881,7 @@ func file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_init() {
 				return nil
 			}
 		}
-		file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[6].Exporter = func(v interface{}, i int) interface{} {
+		file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_msgTypes[5].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*RetryInfo); i {
 			case 0:
 				return &v.state
@@ -979,7 +900,7 @@ func file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_opentelemetry_proto_collector_arrow_v1_arrow_service_proto_rawDesc,
 			NumEnums:      5,
-			NumMessages:   8,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

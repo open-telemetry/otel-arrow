@@ -26,14 +26,8 @@ message BatchArrowRecords {
   // [optional] Delivery type (BEST_EFFORT by default).
   DeliveryType delivery_type = 3;
 
-  // [optional] Headers associated with this batch.
-  map<string, StringValues> headers = 4;
-}
-
-// StringValues is a list of strings, used for HTTP and gRPC headers
-// (and potentially footers).
-message StringValues {
-  repeated string value = 1;
+  // [optional] Headers associated with this batch, encoded using hpack.
+  bytes headers = 4;
 }
 
 // Enumeration of all the OTLP Arrow payload types currently supported by the OTLP Arrow protocol.
