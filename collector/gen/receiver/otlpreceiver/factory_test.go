@@ -27,8 +27,9 @@ import (
 	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumertest"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testutil"
 	"go.opentelemetry.io/collector/receiver/receivertest"
+
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testutil"
 )
 
 func TestCreateDefaultConfig(t *testing.T) {

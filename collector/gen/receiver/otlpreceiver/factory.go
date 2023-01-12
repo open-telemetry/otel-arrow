@@ -22,8 +22,9 @@ import (
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/consumer"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/sharedcomponent"
 	"go.opentelemetry.io/collector/receiver"
+
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/sharedcomponent"
 )
 
 const (

@@ -38,7 +38,7 @@ data has not been updated and this collector is still fundamentally row-oriented
 > Note 2: A future phase 2 of this project will focus on implementing end-to-end OTLP arrow to improve the overall
 > performance.
 
-## Benchmark results
+## OTLP Arrow Performance
 
 A comparison of the performance and compression rates between the standard OTLP protocol and the OTLP Arrow protocol is
 given below. Except for the traces, the telemetry data used for these benchmarks are from a synthetic data generator.

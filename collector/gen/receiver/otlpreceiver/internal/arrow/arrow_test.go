@@ -22,6 +22,11 @@ import (
 	"io"
 	"testing"
 
+	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap/zaptest"
+
 	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	arrowCollectorMock "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1/mock"
 	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
@@ -29,10 +34,6 @@ import (
 	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 	arrowRecordMock "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record/mock"
 	otelAssert "github.com/f5/otel-arrow-adapter/pkg/otel/assert"
-	"github.com/golang/mock/gomock"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/zap/zaptest"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"

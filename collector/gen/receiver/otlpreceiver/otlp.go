@@ -22,10 +22,11 @@ import (
 	"net/http"
 	"sync"
 
-	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
-	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+
+	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
@@ -36,6 +37,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"go.opentelemetry.io/collector/receiver"
+
 	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow"
 	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/logs"
 	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/metrics"

@@ -48,8 +48,12 @@ func main() {
 	sdg.printDoc(2)
 }
 
+type ReusableDoc struct {
+	Name string
+	doc  *[]Line
+}
 type SchemaDocGenerator struct {
-	reusableFields  map[string]*[]Line
+	reusableFields  map[string]*ReusableDoc
 	defaultComments map[string]string
 	doc             []Line
 	currentDoc      *[]Line
@@ -57,7 +61,7 @@ type SchemaDocGenerator struct {
 
 func NewSchemaDocGenerator() *SchemaDocGenerator {
 	sdg := SchemaDocGenerator{
-		reusableFields:  make(map[string]*[]Line),
+		reusableFields:  make(map[string]*ReusableDoc),
 		defaultComments: make(map[string]string),
 		doc:             make([]Line, 0, 100),
 	}
@@ -97,10 +101,12 @@ func (sdg *SchemaDocGenerator) printDoc(minSpaceBeforeComment int) {
 		}
 	}
 
-	for _, doc := range sdg.reusableFields {
-		sdg.currentDoc = doc
-		printDocElement()
-		println("---\n")
+	for k, rdoc := range sdg.reusableFields {
+		if k == rdoc.Name {
+			sdg.currentDoc = rdoc.doc
+			printDocElement()
+			println("---\n")
+		}
 	}
 
 	sdg.currentDoc = &sdg.doc
@@ -109,8 +115,12 @@ func (sdg *SchemaDocGenerator) printDoc(minSpaceBeforeComment int) {
 
 func (sdg *SchemaDocGenerator) reusableField(fieldNames ...string) *SchemaDocGenerator {
 	doc := make([]Line, 0, 100)
+	rdoc := ReusableDoc{
+		Name: fieldNames[0],
+		doc:  &doc,
+	}
 	for _, fieldName := range fieldNames {
-		sdg.reusableFields[fieldName] = &doc
+		sdg.reusableFields[fieldName] = &rdoc
 	}
 	return sdg
 }
@@ -131,7 +141,7 @@ func (sdg *SchemaDocGenerator) genFieldDoc(indent string, spacesPerIndent int, i
 	reusableFieldDoc, reusableFieldFound := sdg.reusableFields[field.Name]
 	localCurrentDoc := sdg.currentDoc
 	if reusableFieldFound {
-		sdg.currentDoc = reusableFieldDoc
+		sdg.currentDoc = reusableFieldDoc.doc
 		defer func() { sdg.currentDoc = localCurrentDoc }()
 	}
 
@@ -140,9 +150,9 @@ func (sdg *SchemaDocGenerator) genFieldDoc(indent string, spacesPerIndent int, i
 		yamlType, comment := sdg.arrowTypeToYamlType(field.Type)
 
 		if reusableFieldFound {
-			*localCurrentDoc = append(*localCurrentDoc, Line{indent: indent, field: fmt.Sprintf("%s%s: *%s", prefix, field.Name, field.Name), comment: sdg.genComment(field, comment)})
-			if len(*reusableFieldDoc) == 0 {
-				*reusableFieldDoc = append(*reusableFieldDoc, Line{indent: "", field: fmt.Sprintf("%s%s: &%s", prefix, field.Name, field.Name), comment: sdg.genComment(field, comment)})
+			*localCurrentDoc = append(*localCurrentDoc, Line{indent: indent, field: fmt.Sprintf("%s%s: *%s", prefix, field.Name, reusableFieldDoc.Name), comment: sdg.genComment(field, comment)})
+			if len(*reusableFieldDoc.doc) == 0 {
+				*reusableFieldDoc.doc = append(*reusableFieldDoc.doc, Line{indent: "", field: fmt.Sprintf("%s%s: &%s", prefix, field.Name, reusableFieldDoc.Name), comment: sdg.genComment(field, comment)})
 				indent = ""
 			} else {
 				return
@@ -260,7 +270,7 @@ func (sdg *SchemaDocGenerator) arrowTypeToYamlType(dt arrow.DataType) (string, s
 	case *arrow.FixedSizeBinaryType:
 		return fmt.Sprintf("%d_bytes_binary", t.ByteWidth), "arrow fixed size binary array"
 	case *arrow.StructType:
-		return "struct", ""
+		return "", "struct"
 	}
 	return "", ""
 }

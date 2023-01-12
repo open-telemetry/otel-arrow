@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 	commonarrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 )
 
@@ -48,6 +49,14 @@ func UpdateValueFrom(v pcommon.Value, vArr *array.SparseUnion, row int) error {
 			return err
 		}
 		v.SetEmptyBytes().FromRaw(val)
+	case commonarrow.CborCode:
+		val, err := arrowutils.BinaryFromArray(vArr.Field(int(tcode)), row)
+		if err != nil {
+			return err
+		}
+		if err = common.Deserialize(val, v); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("UpdateValueFrom: unknow type code `%d` in any value union array", tcode)
 	}

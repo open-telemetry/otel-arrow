@@ -20,6 +20,8 @@ import (
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
+
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 )
 
 // Constants used to identify the type of value in the union.
@@ -29,7 +31,7 @@ const (
 	F64Code    int8 = 2
 	BoolCode   int8 = 3
 	BinaryCode int8 = 4
-	// Future extension CborCode int8 = 5
+	CborCode   int8 = 5
 )
 
 var (
@@ -41,14 +43,14 @@ var (
 		{Name: "f64", Type: arrow.PrimitiveTypes.Float64},
 		{Name: "bool", Type: arrow.FixedWidthTypes.Boolean},
 		{Name: "binary", Type: DefaultDictBinary},
-		// Future extension {Name: "cbor", Type: DefaultDictBinary},
+		{Name: "cbor", Type: DefaultDictBinary},
 	}, []int8{
 		StrCode,
 		I64Code,
 		F64Code,
 		BoolCode,
 		BinaryCode,
-		// Future extension CborCode,
+		CborCode,
 	})
 )
 
@@ -63,6 +65,7 @@ type AnyValueBuilder struct {
 	f64Builder    *array.Float64Builder      // float64 builder
 	boolBuilder   *array.BooleanBuilder      // bool builder
 	binaryBuilder *AdaptiveDictionaryBuilder // binary builder
+	cborBuilder   *AdaptiveDictionaryBuilder // cbor builder
 }
 
 // AnyValueBuilderFrom creates a new AnyValueBuilder from an existing SparseUnionBuilder.
@@ -75,6 +78,7 @@ func AnyValueBuilderFrom(av *array.SparseUnionBuilder) *AnyValueBuilder {
 		f64Builder:    av.Child(2).(*array.Float64Builder),
 		boolBuilder:   av.Child(3).(*array.BooleanBuilder),
 		binaryBuilder: AdaptiveDictionaryBuilderFrom(av.Child(4)),
+		cborBuilder:   AdaptiveDictionaryBuilderFrom(av.Child(5)),
 	}
 }
 
@@ -112,11 +116,17 @@ func (b *AnyValueBuilder) Append(av pcommon.Value) error {
 	case pcommon.ValueTypeBytes:
 		err = b.appendBinary(av.Bytes().AsRaw())
 	case pcommon.ValueTypeSlice:
-		// TODO implement this with CBOR encoding
-		err = fmt.Errorf("slice value type not yet supported")
+		cborData, err := common.Serialize(av)
+		if err != nil {
+			break
+		}
+		err = b.appendBinary(cborData)
 	case pcommon.ValueTypeMap:
-		// TODO implement this with CBOR encoding
-		err = fmt.Errorf("map value type not yet supported")
+		cborData, err := common.Serialize(av)
+		if err != nil {
+			break
+		}
+		err = b.appendCbor(cborData)
 	}
 
 	return err
@@ -145,6 +155,7 @@ func (b *AnyValueBuilder) appendStr(v string) error {
 	b.f64Builder.AppendNull()
 	b.boolBuilder.AppendNull()
 	b.binaryBuilder.AppendNull()
+	b.cborBuilder.AppendNull()
 
 	return nil
 }
@@ -158,6 +169,7 @@ func (b *AnyValueBuilder) appendI64(v int64) {
 	b.f64Builder.AppendNull()
 	b.boolBuilder.AppendNull()
 	b.binaryBuilder.AppendNull()
+	b.cborBuilder.AppendNull()
 }
 
 // appendF64 appends a new double value to the builder.
@@ -169,6 +181,7 @@ func (b *AnyValueBuilder) appendF64(v float64) {
 	b.i64Builder.AppendNull()
 	b.boolBuilder.AppendNull()
 	b.binaryBuilder.AppendNull()
+	b.cborBuilder.AppendNull()
 }
 
 // appendBool appends a new bool value to the builder.
@@ -180,6 +193,7 @@ func (b *AnyValueBuilder) appendBool(v bool) {
 	b.i64Builder.AppendNull()
 	b.f64Builder.AppendNull()
 	b.binaryBuilder.AppendNull()
+	b.cborBuilder.AppendNull()
 }
 
 // appendBinary appends a new binary value to the builder.
@@ -197,6 +211,27 @@ func (b *AnyValueBuilder) appendBinary(v []byte) error {
 	b.i64Builder.AppendNull()
 	b.f64Builder.AppendNull()
 	b.boolBuilder.AppendNull()
+	b.cborBuilder.AppendNull()
+
+	return nil
+}
+
+// appendCbor appends a new cbor binary value to the builder.
+func (b *AnyValueBuilder) appendCbor(v []byte) error {
+	b.builder.Append(CborCode)
+	if v == nil {
+		b.cborBuilder.AppendNull()
+	} else {
+		if err := b.cborBuilder.AppendBinary(v); err != nil {
+			return err
+		}
+	}
+
+	b.strBuilder.AppendNull()
+	b.i64Builder.AppendNull()
+	b.f64Builder.AppendNull()
+	b.boolBuilder.AppendNull()
+	b.binaryBuilder.AppendNull()
 
 	return nil
 }

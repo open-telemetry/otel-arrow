@@ -18,6 +18,7 @@ require (
 
 require (
 	github.com/apache/arrow/go/v10 v10.0.1
+	github.com/fxamacker/cbor/v2 v2.4.0
 	github.com/gogo/protobuf v1.3.2
 	github.com/klauspost/compress v1.15.13
 	go.opentelemetry.io/collector v0.68.0
@@ -90,6 +91,7 @@ require (
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/tklauser/go-sysconf v0.3.11 // indirect
 	github.com/tklauser/numcpus v0.6.0 // indirect
+	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yusufpapurcu/wmi v1.2.2 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
 	go.opencensus.io v0.24.0 // indirect

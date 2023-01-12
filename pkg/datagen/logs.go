@@ -58,6 +58,7 @@ func (lg *LogsGenerator) Generate(batchSize int, collectInterval time.Duration) 
 		lg.LogInfoRecord(logRecords.AppendEmpty())
 		lg.LogWarnRecord(logRecords.AppendEmpty())
 		lg.LogErrorRecord(logRecords.AppendEmpty())
+		lg.LogInfoComplexRecord(logRecords.AppendEmpty())
 	}
 
 	return result
@@ -79,12 +80,31 @@ func (dg *DataGenerator) LogErrorRecord(log plog.LogRecord) {
 	dg.logRecord(log, plog.SeverityNumberError, "INFO")
 }
 
+func (dg *DataGenerator) LogInfoComplexRecord(log plog.LogRecord) {
+	dg.complexLogRecord(log, plog.SeverityNumberError, "INFO")
+}
+
 func (dg *DataGenerator) logRecord(log plog.LogRecord, sev plog.SeverityNumber, txt string) {
 	log.SetTimestamp(dg.CurrentTime())
 	log.SetObservedTimestamp(dg.CurrentTime())
 	log.SetSeverityNumber(sev)
 	log.SetSeverityText(txt)
 	log.Body().SetStr(gofakeit.LoremIpsumSentence(10))
+	dg.NewStandardAttributes().CopyTo(log.Attributes())
+	log.SetTraceID(dg.Id16Bytes())
+	log.SetSpanID(dg.Id8Bytes())
+}
+
+func (dg *DataGenerator) complexLogRecord(log plog.LogRecord, sev plog.SeverityNumber, txt string) {
+	log.SetTimestamp(dg.CurrentTime())
+	log.SetObservedTimestamp(dg.CurrentTime())
+	log.SetSeverityNumber(sev)
+	log.SetSeverityText(txt)
+	obj := log.Body().SetEmptyMap()
+	obj.PutStr("attr1", gofakeit.LoremIpsumSentence(10))
+	obj.PutInt("attr2", 1)
+	obj.PutDouble("attr3", 2.0)
+	obj.PutBool("attr4", true)
 	dg.NewStandardAttributes().CopyTo(log.Attributes())
 	log.SetTraceID(dg.Id16Bytes())
 	log.SetSpanID(dg.Id8Bytes())
