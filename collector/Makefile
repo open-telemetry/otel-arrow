@@ -1,4 +1,4 @@
-GO_FILES := $(shell find . -name '*.go')
+GO_FILES := $(shell find gen -name '*.go')
 
 # Function to execute a command. Note the empty line before endef to make sure each command
 # gets executed separately instead of concatenated with previous one.
@@ -11,23 +11,19 @@ endef
 all:
 	echo "Run 'make gen'"
 
-DIR_NAMES := internal exporter receiver cmd
+DIR_NAMES := gen/internal gen/exporter gen/receiver
 SOURCE_DIR := ../../arrow-collector
 
-gen:
+generate:
 	rm -rf ${DIR_NAMES}
-	$(foreach dir, $(DIR_NAMES),$(call exec-command,mkdir $(dir)))
-	cp -r ${SOURCE_DIR}/exporter/otlpexporter exporter
-	rm exporter/otlpexporter/go.{sum,mod}
-	cp -r ${SOURCE_DIR}/receiver/otlpreceiver receiver
-	rm receiver/otlpreceiver/go.{sum,mod}
-	cp -r ${SOURCE_DIR}/internal/testutil internal
-	cp -r ${SOURCE_DIR}/internal/testdata internal
-	cp -r ${SOURCE_DIR}/internal/sharedcomponent internal
-	cp -r ${SOURCE_DIR}/cmd/otelcorecol cmd/otelarrowcol
-	rm cmd/otelarrowcol/go.{sum,mod}
-	rm cmd/otelarrowcol/Makefile
-	rm cmd/otelarrowcol/builder-config.yaml
+	$(foreach dir, $(DIR_NAMES),$(call exec-command,mkdir -p $(dir)))
+	cp -r ${SOURCE_DIR}/exporter/otlpexporter gen/exporter
+	rm gen/exporter/otlpexporter/go.{sum,mod}
+	cp -r ${SOURCE_DIR}/receiver/otlpreceiver gen/receiver
+	rm gen/receiver/otlpreceiver/go.{sum,mod}
+	cp -r ${SOURCE_DIR}/internal/testutil gen/internal
+	cp -r ${SOURCE_DIR}/internal/testdata gen/internal
+	cp -r ${SOURCE_DIR}/internal/sharedcomponent gen/internal
 	$(MAKE) subgen
 
 subgen:

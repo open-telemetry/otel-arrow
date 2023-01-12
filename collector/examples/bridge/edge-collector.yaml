@@ -1,0 +1,34 @@
+receivers:
+  otlp/in:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4999
+
+processors:
+  batch:
+
+exporters:
+  # otlp/out configures an arrow exporter
+  otlp/out:
+    endpoint: 0.0.0.0:5000
+    tls:
+      insecure: true
+    arrow:
+      enabled: true
+      # num_streams can be set to the the number of available CPUs
+      # to maximize throughput.
+      num_streams: 4
+
+  logging:      
+    loglevel: info
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp/in]
+      processors: [batch]
+      exporters: [logging, otlp/out]
+
+  telemetry:
+    metrics:
+      address: localhost:8888

@@ -1,0 +1,68 @@
+receivers:
+  # otlp/stdin is for regular traffic on the default gRPC port
+  otlp/stdin:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4318
+  # otlp/loopback receives OTLP-Arrow traffic on port 4000
+  otlp/loopback:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4000
+      arrow:
+        enabled: true
+
+processors:
+  batch:
+  # the experiment processor routes 1 in 3 requests to the Arrow
+  # loopback exporter
+  experiment:
+    table:
+    - weight: 1
+      exporters: [otlp/arrowout, logging/debug]
+    - weight: 2
+      exporters: [otlp/stdout, logging/info]
+
+exporters:
+  # otlp/stdout sends standard OTLP to an external destination
+  otlp/stdout:
+    endpoint: ingest.lightstep.com:443
+    headers:
+      lightstep-access-token: "${LIGHTSTEP_ACCESS_TOKEN}"
+
+  # otlp/arrowout sends standard OTLP to an external destination
+  otlp/arrowout:
+    endpoint: 127.0.0.1:4000
+    # wait_for_ready ensures the exporter doesn't fallback to standard
+    # OTLP because the exporter has not started.
+    wait_for_ready: true
+    tls:
+      insecure: true
+    arrow:
+      enabled: true
+      num_streams: 1
+
+  logging/info:      
+    loglevel: info
+  logging/debug:      
+    loglevel: debug
+
+service:
+  pipelines:
+    # the normal traces pipeline either routes directly to the
+    # standard output or via the loopback.  it prints an info.
+    traces/normal:
+      receivers: [otlp/stdin]
+      processors: [batch, experiment]
+      exporters: [logging/info, otlp/stdout, otlp/arrowout]
+
+    # experiment processes data send via Arrow through the loopback.
+    # it prints a debug log.
+    traces/experiment:
+      receivers: [otlp/loopback]
+      processors: [batch]
+      exporters: [logging/debug, otlp/stdout]
+
+  telemetry:
+    metrics:
+      address: localhost:8888

@@ -1,0 +1,26 @@
+receivers:
+  # otlp/in configures an arrow receiver
+  otlp/in:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:5000
+      arrow:
+        enabled: true
+
+processors:
+  batch:
+
+exporters:
+  logging:      
+    loglevel: debug
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp/in]
+      processors: [batch]
+      exporters: [logging]
+
+  telemetry:
+    metrics:
+      address: localhost:8889
