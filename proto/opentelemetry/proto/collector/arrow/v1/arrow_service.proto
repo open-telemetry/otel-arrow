@@ -23,9 +23,7 @@ message BatchArrowRecords {
   // [mandatory] A collection of payloads containing the data of the batch.
   repeated OtlpArrowPayload otlp_arrow_payloads = 2;
 
-  // [optional] Delivery type (BEST_EFFORT by default).
-  DeliveryType delivery_type = 3;
-
+  // [optional] Headers associated with this batch, encoded using hpack.
   // [optional] Headers associated with this batch, encoded using hpack.
   bytes headers = 4;
 }
@@ -57,13 +55,6 @@ message OtlpArrowPayload {
 
   // [mandatory]
   CompressionMethod compression = 5;
-}
-
-// The delivery mode used to process the message.
-// The collector must comply with this parameter.
-enum DeliveryType {
-  BEST_EFFORT = 0;
-  // Future extension -> AT_LEAST_ONCE = 1;
 }
 
 // The compression method used to compress the different bytes buffer.

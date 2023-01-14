@@ -175,10 +175,9 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*RecordMessage, e
 			// or after the next call to Reader.Next().
 			rec.Retain()
 			ibes = append(ibes, &RecordMessage{
-				batchId:      bar.BatchId,
-				payloadType:  payload.GetType(),
-				record:       rec,
-				deliveryType: bar.DeliveryType,
+				batchId:     bar.BatchId,
+				payloadType: payload.GetType(),
+				record:      rec,
 			})
 		}
 	}

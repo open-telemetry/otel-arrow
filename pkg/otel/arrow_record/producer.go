@@ -123,9 +123,9 @@ func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colar
 		return nil, err
 	}
 
-	rms := []*RecordMessage{NewMetricsMessage(record, colarspb.DeliveryType_BEST_EFFORT)}
+	rms := []*RecordMessage{NewMetricsMessage(record)}
 
-	bar, err := p.Produce(rms, colarspb.DeliveryType_BEST_EFFORT)
+	bar, err := p.Produce(rms)
 	if err != nil {
 		return nil, err
 	}
@@ -144,9 +144,9 @@ func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrow
 		return nil, err
 	}
 
-	rms := []*RecordMessage{NewLogsMessage(record, colarspb.DeliveryType_BEST_EFFORT)}
+	rms := []*RecordMessage{NewLogsMessage(record)}
 
-	bar, err := p.Produce(rms, colarspb.DeliveryType_BEST_EFFORT)
+	bar, err := p.Produce(rms)
 	if err != nil {
 		return nil, err
 	}
@@ -165,9 +165,9 @@ func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.Batc
 		return nil, err
 	}
 
-	rms := []*RecordMessage{NewTraceMessage(record, colarspb.DeliveryType_BEST_EFFORT)}
+	rms := []*RecordMessage{NewTraceMessage(record)}
 
-	bar, err := p.Produce(rms, colarspb.DeliveryType_BEST_EFFORT)
+	bar, err := p.Produce(rms)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +203,7 @@ func (p *Producer) Close() error {
 }
 
 // Produce takes a slice of RecordMessage and returns the corresponding BatchArrowRecords protobuf message.
-func (p *Producer) Produce(rms []*RecordMessage, deliveryType colarspb.DeliveryType) (*colarspb.BatchArrowRecords, error) {
+func (p *Producer) Produce(rms []*RecordMessage) (*colarspb.BatchArrowRecords, error) {
 	oapl := make([]*colarspb.OtlpArrowPayload, len(rms))
 
 	for i, rm := range rms {
@@ -257,7 +257,6 @@ func (p *Producer) Produce(rms []*RecordMessage, deliveryType colarspb.DeliveryT
 	return &colarspb.BatchArrowRecords{
 		BatchId:           batchId,
 		OtlpArrowPayloads: oapl,
-		DeliveryType:      deliveryType,
 	}, nil
 }
 
