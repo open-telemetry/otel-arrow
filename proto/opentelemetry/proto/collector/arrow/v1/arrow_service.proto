@@ -24,8 +24,7 @@ message BatchArrowRecords {
   repeated OtlpArrowPayload otlp_arrow_payloads = 2;
 
   // [optional] Headers associated with this batch, encoded using hpack.
-  // [optional] Headers associated with this batch, encoded using hpack.
-  bytes headers = 4;
+  bytes headers = 3;
 }
 
 // Enumeration of all the OTLP Arrow payload types currently supported by the OTLP Arrow protocol.
@@ -46,15 +45,12 @@ message OtlpArrowPayload {
   // [mandatory] Type of the OTLP Arrow payload.
   OtlpArrowPayloadType type = 2;
 
-  // [optional] Serialized Arrow dictionaries
-  repeated EncodedData dictionaries = 3;
-
   // [mandatory] Serialized Arrow Record Batch
   // For a description of the Arrow IPC format see: https://arrow.apache.org/docs/format/Columnar.html#serialization-and-interprocess-communication-ipc
-  bytes record = 4;
+  bytes record = 3;
 
   // [mandatory]
-  CompressionMethod compression = 5;
+  CompressionMethod compression = 4;
 }
 
 // The compression method used to compress the different bytes buffer.
