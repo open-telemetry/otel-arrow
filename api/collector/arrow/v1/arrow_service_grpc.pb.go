@@ -23,7 +23,8 @@ const _ = grpc.SupportPackageIsVersion7
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ArrowStreamServiceClient interface {
 	// The ArrowStream endpoint is a bi-directional stream used to send batch of `BatchArrowRecords` from the exporter
-	// to the collector. The collector returns `BatchStatus` messages to acknowledge the `BatchArrowRecords` messages received.
+	// to the collector. The collector returns `BatchStatus` messages to acknowledge the `BatchArrowRecords`
+	// messages received.
 	ArrowStream(ctx context.Context, opts ...grpc.CallOption) (ArrowStreamService_ArrowStreamClient, error)
 }
 
@@ -71,7 +72,8 @@ func (x *arrowStreamServiceArrowStreamClient) Recv() (*BatchStatus, error) {
 // for forward compatibility
 type ArrowStreamServiceServer interface {
 	// The ArrowStream endpoint is a bi-directional stream used to send batch of `BatchArrowRecords` from the exporter
-	// to the collector. The collector returns `BatchStatus` messages to acknowledge the `BatchArrowRecords` messages received.
+	// to the collector. The collector returns `BatchStatus` messages to acknowledge the `BatchArrowRecords`
+	// messages received.
 	ArrowStream(ArrowStreamService_ArrowStreamServer) error
 	mustEmbedUnimplementedArrowStreamServiceServer()
 }

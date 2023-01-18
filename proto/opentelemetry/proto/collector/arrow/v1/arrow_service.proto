@@ -1,3 +1,17 @@
+// Copyright The OpenTelemetry Authors
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//       http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 syntax = "proto3";
 
 package opentelemetry.proto.collector.arrow.v1;
@@ -9,9 +23,12 @@ option java_outer_classname = "ArrowServiceProto";
 // Note the following is temporary
 option go_package = "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1";
 
+// Service that can be used to send `BatchArrowRecords` between one Application instrumented with OpenTelemetry and a
+// collector, or between collectors.
 service ArrowStreamService {
   // The ArrowStream endpoint is a bi-directional stream used to send batch of `BatchArrowRecords` from the exporter
-  // to the collector. The collector returns `BatchStatus` messages to acknowledge the `BatchArrowRecords` messages received.
+  // to the collector. The collector returns `BatchStatus` messages to acknowledge the `BatchArrowRecords`
+  // messages received.
   rpc ArrowStream(stream BatchArrowRecords) returns (stream BatchStatus) {}
 }
 
@@ -46,21 +63,12 @@ message OtlpArrowPayload {
   OtlpArrowPayloadType type = 2;
 
   // [mandatory] Serialized Arrow Record Batch
-  // For a description of the Arrow IPC format see: https://arrow.apache.org/docs/format/Columnar.html#serialization-and-interprocess-communication-ipc
+  // For a description of the Arrow IPC format see:
+  // https://arrow.apache.org/docs/format/Columnar.html#serialization-and-interprocess-communication-ipc
   bytes record = 3;
 }
 
-// Arrow IPC message
-// see: https://arrow.apache.org/docs/format/Columnar.html#serialization-and-interprocess-communication-ipc
-message EncodedData {
-  // Serialized Arrow encoded IPC message
-  bytes ipc_message = 1;
-
-  // Serialized Arrow buffer
-  bytes arrow_data = 2;
-}
-
-// A message sent by a Collector to the exporter that opened the Jodata stream.
+// A message sent by a Collector to the exporter that opened the data stream.
 message BatchStatus {
   repeated StatusMessage statuses = 1;
 }
