@@ -51,7 +51,8 @@ var _ ProducerAPI = &Producer{}
 
 // Producer is a BatchArrowRecords producer.
 type Producer struct {
-	pool            memory.Allocator
+	pool            memory.Allocator // Use a custom memory allocator
+	zstd            bool             // Use IPC ZSTD compression
 	streamProducers map[string]*streamProducer
 	batchId         int64
 	metricsSchema   *acommon.AdaptiveSchema
@@ -69,6 +70,7 @@ type Config struct {
 	pool           memory.Allocator
 	initIndexSize  uint64
 	limitIndexSize uint64
+	zstd           bool // Use IPC ZSTD compression
 }
 
 type Option func(*Config)
@@ -84,16 +86,19 @@ func NewProducer() *Producer {
 //
 // The method close MUST be called when the producer is not used anymore to release the memory and avoid memory leaks.
 func NewProducerWithOptions(options ...Option) *Producer {
+	// Default configuration
 	cfg := &Config{
 		pool:           memory.NewGoAllocator(),
 		initIndexSize:  math.MaxUint16,
 		limitIndexSize: math.MaxUint16,
+		zstd:           true,
 	}
 	for _, opt := range options {
 		opt(cfg)
 	}
 	return &Producer{
 		pool:            cfg.pool,
+		zstd:            cfg.zstd,
 		streamProducers: make(map[string]*streamProducer),
 		batchId:         0,
 		metricsSchema: acommon.NewAdaptiveSchema(
@@ -222,13 +227,15 @@ func (p *Producer) Produce(rms []*RecordMessage) (*colarspb.BatchArrowRecords, e
 			}
 
 			if sp.ipcWriter == nil {
-				sp.ipcWriter = ipc.NewWriter(
-					&sp.output,
+				options := []ipc.Option{
 					ipc.WithAllocator(p.pool), // use allocator of the `Producer`
 					ipc.WithSchema(rm.record.Schema()),
 					ipc.WithDictionaryDeltas(true), // enable dictionary deltas
-					ipc.WithZstd(),
-				)
+				}
+				if p.zstd {
+					options = append(options, ipc.WithZstd())
+				}
+				sp.ipcWriter = ipc.NewWriter(&sp.output, options...)
 			}
 			err := sp.ipcWriter.Write(rm.record)
 			if err != nil {
@@ -372,5 +379,19 @@ func WithUint32LimitDictIndex() Option {
 func WithUint64LimitDictIndex() Option {
 	return func(cfg *Config) {
 		cfg.limitIndexSize = math.MaxUint64
+	}
+}
+
+// WithZstd sets the Producer to use Zstd compression at the Arrow IPC level.
+func WithZstd() Option {
+	return func(cfg *Config) {
+		cfg.zstd = true
+	}
+}
+
+// WithNoZstd sets the Producer to not use Zstd compression at the Arrow IPC level.
+func WithNoZstd() Option {
+	return func(cfg *Config) {
+		cfg.zstd = false
 	}
 }

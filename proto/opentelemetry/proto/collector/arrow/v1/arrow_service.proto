@@ -48,15 +48,6 @@ message OtlpArrowPayload {
   // [mandatory] Serialized Arrow Record Batch
   // For a description of the Arrow IPC format see: https://arrow.apache.org/docs/format/Columnar.html#serialization-and-interprocess-communication-ipc
   bytes record = 3;
-
-  // [mandatory]
-  CompressionMethod compression = 4;
-}
-
-// The compression method used to compress the different bytes buffer.
-enum CompressionMethod {
-  NO_COMPRESSION = 0;
-  ZSTD = 1;
 }
 
 // Arrow IPC message
