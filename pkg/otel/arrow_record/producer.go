@@ -102,14 +102,17 @@ func NewProducerWithOptions(options ...Option) *Producer {
 		streamProducers: make(map[string]*streamProducer),
 		batchId:         0,
 		metricsSchema: acommon.NewAdaptiveSchema(
+			cfg.pool,
 			metricsarrow.Schema,
 			acommon.WithDictInitIndexSize(cfg.initIndexSize),
 			acommon.WithDictLimitIndexSize(cfg.limitIndexSize)),
 		logsSchema: acommon.NewAdaptiveSchema(
+			cfg.pool,
 			logsarrow.Schema,
 			acommon.WithDictInitIndexSize(cfg.initIndexSize),
 			acommon.WithDictLimitIndexSize(cfg.limitIndexSize)),
 		tracesSchema: acommon.NewAdaptiveSchema(
+			cfg.pool,
 			tracesarrow.Schema,
 			acommon.WithDictInitIndexSize(cfg.initIndexSize),
 			acommon.WithDictLimitIndexSize(cfg.limitIndexSize)),
@@ -122,7 +125,7 @@ func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colar
 	// Note: The record returned is wrapped into a RecordMessage and will
 	// be released by the Producer.Produce method.
 	record, err := recordBuilder[pmetric.Metrics](func() (acommon.EntityBuilder[pmetric.Metrics], error) {
-		return metricsarrow.NewMetricsBuilder(p.pool, p.metricsSchema)
+		return metricsarrow.NewMetricsBuilder(p.metricsSchema)
 	}, metrics)
 	if err != nil {
 		return nil, err
@@ -143,7 +146,7 @@ func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrow
 	// Note: The record returned is wrapped into a RecordMessage and will
 	// be released by the Producer.Produce method.
 	record, err := recordBuilder[plog.Logs](func() (acommon.EntityBuilder[plog.Logs], error) {
-		return logsarrow.NewLogsBuilder(p.pool, p.logsSchema)
+		return logsarrow.NewLogsBuilder(p.logsSchema)
 	}, ls)
 	if err != nil {
 		return nil, err
@@ -164,7 +167,7 @@ func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.Batc
 	// Note: The record returned is wrapped into a RecordMessage and will
 	// be released by the Producer.Produce method.
 	record, err := recordBuilder[ptrace.Traces](func() (acommon.EntityBuilder[ptrace.Traces], error) {
-		return tracesarrow.NewTracesBuilder(p.pool, p.tracesSchema)
+		return tracesarrow.NewTracesBuilder(p.tracesSchema)
 	}, ts)
 	if err != nil {
 		return nil, err

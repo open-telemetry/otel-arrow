@@ -67,6 +67,12 @@ func (d *RealMetricsDataset) Len() int {
 	return len(d.metrics)
 }
 
+// Resize resizes the dataset to the specified max size or do nothing if the current size is already lower than the
+// specified max size.
+func (d *RealMetricsDataset) Resize(maxSize int) {
+	d.metrics = d.metrics[:maxSize]
+}
+
 // Metrics returns a subset of metrics from the original dataset.
 func (d *RealMetricsDataset) Metrics(offset, size int) []pmetric.Metrics {
 	resMetrics := map[pmetric.ResourceMetrics]map[pmetric.ScopeMetrics][]pmetric.Metric{}

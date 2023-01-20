@@ -123,9 +123,9 @@ func TestLogs(t *testing.T) {
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	logsSchema := acommon.NewAdaptiveSchema(Schema)
+	logsSchema := acommon.NewAdaptiveSchema(pool, Schema)
 	defer logsSchema.Release()
-	tb, err := NewLogsBuilder(pool, logsSchema)
+	tb, err := NewLogsBuilder(logsSchema)
 	require.NoError(t, err)
 
 	err = tb.Append(Logs())

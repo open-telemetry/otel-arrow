@@ -46,9 +46,9 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	// Convert the OTLP logs request to Arrow.
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	logsSchema := acommon.NewAdaptiveSchema(logsarrow.Schema)
+	logsSchema := acommon.NewAdaptiveSchema(pool, logsarrow.Schema)
 	defer logsSchema.Release()
-	lb, err := logsarrow.NewLogsBuilder(pool, logsSchema)
+	lb, err := logsarrow.NewLogsBuilder(logsSchema)
 	require.NoError(t, err)
 	err = lb.Append(expectedRequest.Logs())
 	require.NoError(t, err)

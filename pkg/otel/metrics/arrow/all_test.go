@@ -441,9 +441,9 @@ func TestMetrics(t *testing.T) {
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	metricsSchema := acommon.NewAdaptiveSchema(Schema)
+	metricsSchema := acommon.NewAdaptiveSchema(pool, Schema)
 	defer metricsSchema.Release()
-	sb, err := NewMetricsBuilder(pool, metricsSchema)
+	sb, err := NewMetricsBuilder(metricsSchema)
 	require.NoError(t, err)
 
 	err = sb.Append(Metrics1())

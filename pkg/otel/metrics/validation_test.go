@@ -57,9 +57,9 @@ func TestBackAndForthConversion(t *testing.T) {
 	// Convert the OTLP metrics request to Arrow.
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	metricsSchema := acommon.NewAdaptiveSchema(ametrics.Schema)
+	metricsSchema := acommon.NewAdaptiveSchema(pool, ametrics.Schema)
 	defer metricsSchema.Release()
-	lb, err := ametrics.NewMetricsBuilder(pool, metricsSchema)
+	lb, err := ametrics.NewMetricsBuilder(metricsSchema)
 	require.NoError(t, err)
 	err = lb.Append(expectedRequest.Metrics())
 	require.NoError(t, err)

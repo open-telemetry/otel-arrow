@@ -14,7 +14,11 @@
 
 package benchmark
 
-import "io"
+import (
+	"fmt"
+	"io"
+	"strings"
+)
 
 type ProfileableSystem interface {
 	Name() string
@@ -36,4 +40,8 @@ type ProfileableSystem interface {
 
 	Clear()
 	ShowStats()
+}
+
+func ProfileableSystemID(ps ProfileableSystem) string {
+	return fmt.Sprintf("%s:%s", ps.Name(), strings.Join(ps.Tags()[:], "+"))
 }

@@ -48,8 +48,7 @@ func main() {
 	// Compare the performance for each input file
 	for i := range inputFiles {
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
-		//profiler := benchmark.NewProfiler([]int{1000, 5000, 10000, 25000})
-		profiler := benchmark.NewProfiler([]int{1000, 2000}, "output/trace_benchmark.log", 2)
+		profiler := benchmark.NewProfiler([]int{10, 100, 1000, 2000, 5000, 10000}, "output/trace_benchmark.log", 2)
 		compressionAlgo := benchmark.Zstd()
 		maxIter := uint64(1)
 		ds := dataset.NewRealTraceDataset(inputFiles[i], []string{"trace_id"})
@@ -57,7 +56,7 @@ func main() {
 		otlpTraces := otlp.NewTraceProfileable(ds, compressionAlgo)
 
 		conf := &benchmark.Config{}
-		otlpArrowTraces := arrow.NewTraceProfileable([]string{"uint16 dict"}, ds, conf)
+		otlpArrowTraces := arrow.NewTraceProfileable([]string{"ZSTD"}, ds, conf)
 
 		if err := profiler.Profile(otlpTraces, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
@@ -68,6 +67,19 @@ func main() {
 		}
 
 		profiler.CheckProcessingResults()
+
+		// Configure the profile output
+		benchmark.CompressionSection.CustomColumnFor(otlpArrowTraces).
+			MetricNotApplicable()
+		benchmark.DecompressionSection.CustomColumnFor(otlpArrowTraces).
+			MetricNotApplicable()
+		benchmark.UncompressedSizeSection.CustomColumnFor(otlpArrowTraces).
+			MetricNotApplicable()
+
+		profiler.Printf("\nTraces dataset summary:\n")
+		profiler.Printf("- #traces: %d\n", ds.Len())
+		profiler.Printf("- size: %s\n", humanize.Bytes(uint64(ds.SizeInBytes())))
+
 		profiler.PrintResults(maxIter)
 
 		profiler.ExportMetricsTimesCSV(fmt.Sprintf("%d_traces_benchmark_results", i))

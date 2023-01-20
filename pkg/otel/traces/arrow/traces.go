@@ -19,7 +19,6 @@ import (
 
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
@@ -44,8 +43,8 @@ type TracesBuilder struct {
 }
 
 // NewTracesBuilder creates a new TracesBuilder with a given allocator.
-func NewTracesBuilder(pool memory.Allocator, schema *acommon.AdaptiveSchema) (*TracesBuilder, error) {
-	builder := array.NewRecordBuilder(pool, schema.Schema())
+func NewTracesBuilder(schema *acommon.AdaptiveSchema) (*TracesBuilder, error) {
+	builder := schema.RecordBuilder()
 	err := schema.InitDictionaryBuilders(builder)
 	if err != nil {
 		return nil, err

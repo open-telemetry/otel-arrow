@@ -26,8 +26,6 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-	tracesarrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
 )
 
 type TraceProfileable struct {
@@ -39,7 +37,6 @@ type TraceProfileable struct {
 	batchArrowRecords []*v1.BatchArrowRecords
 	config            *benchmark.Config
 	pool              *memory.GoAllocator
-	schema            *acommon.AdaptiveSchema
 }
 
 func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *benchmark.Config) *TraceProfileable {
@@ -51,7 +48,6 @@ func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *be
 		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
 		config:            config,
 		pool:              memory.NewGoAllocator(),
-		schema:            acommon.NewAdaptiveSchema(tracesarrow.Schema),
 	}
 }
 

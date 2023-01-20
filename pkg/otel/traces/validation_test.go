@@ -47,9 +47,9 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	// Convert the OTLP traces request to Arrow.
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	traceSchema := acommon.NewAdaptiveSchema(tracesarrow.Schema)
+	traceSchema := acommon.NewAdaptiveSchema(pool, tracesarrow.Schema)
 	defer traceSchema.Release()
-	tb, err := tracesarrow.NewTracesBuilder(pool, traceSchema)
+	tb, err := tracesarrow.NewTracesBuilder(traceSchema)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,8 +97,8 @@ func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportReques
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	traceSchema := acommon.NewAdaptiveSchema(tracesarrow.Schema)
-	tb, err := tracesarrow.NewTracesBuilder(pool, traceSchema)
+	traceSchema := acommon.NewAdaptiveSchema(pool, tracesarrow.Schema)
+	tb, err := tracesarrow.NewTracesBuilder(traceSchema)
 	if err != nil {
 		t.Fatal(err)
 	}

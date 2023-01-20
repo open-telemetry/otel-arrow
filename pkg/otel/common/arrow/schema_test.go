@@ -49,7 +49,7 @@ func TestSchemaWithStruct(t *testing.T) {
 	}, nil)
 
 	pool := memory.NewGoAllocator()
-	sm := NewAdaptiveSchema(schema, WithDictInitIndexSize(math.MaxUint8))
+	sm := NewAdaptiveSchema(pool, schema, WithDictInitIndexSize(math.MaxUint8))
 	recbldr := array.NewRecordBuilder(pool, sm.Schema())
 	field1, _ := recbldr.Field(0).(*array.BinaryDictionaryBuilder)
 	field2, _ := recbldr.Field(1).(*array.StructBuilder)
@@ -107,7 +107,7 @@ func TestSchemaWithMap(t *testing.T) {
 	}, nil)
 
 	pool := memory.NewGoAllocator()
-	sm := NewAdaptiveSchema(schema, WithDictInitIndexSize(math.MaxUint8))
+	sm := NewAdaptiveSchema(pool, schema, WithDictInitIndexSize(math.MaxUint8))
 	recbldr := array.NewRecordBuilder(pool, sm.Schema())
 	field1, _ := recbldr.Field(0).(*array.BinaryDictionaryBuilder)
 	field2, _ := recbldr.Field(1).(*array.MapBuilder)
@@ -168,7 +168,7 @@ func TestSchemaWithUnion(t *testing.T) {
 	}, nil)
 
 	pool := memory.NewGoAllocator()
-	sm := NewAdaptiveSchema(schema, WithDictInitIndexSize(math.MaxUint8))
+	sm := NewAdaptiveSchema(pool, schema, WithDictInitIndexSize(math.MaxUint8))
 	recbldr := array.NewRecordBuilder(pool, sm.Schema())
 	field1, _ := recbldr.Field(0).(*array.BinaryDictionaryBuilder)
 	field2, _ := recbldr.Field(1).(*array.SparseUnionBuilder)
@@ -233,7 +233,7 @@ func TestInitSizeBuilders(t *testing.T) {
 	}, nil)
 
 	pool := memory.NewGoAllocator()
-	sm := NewAdaptiveSchema(schema, WithDictInitIndexSize(math.MaxUint8))
+	sm := NewAdaptiveSchema(pool, schema, WithDictInitIndexSize(math.MaxUint8))
 	recordBuilder := array.NewRecordBuilder(pool, sm.Schema())
 	err := sm.InitDictionaryBuilders(recordBuilder)
 	require.NoError(t, err)

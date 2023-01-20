@@ -20,6 +20,7 @@ import (
 
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
+	"github.com/apache/arrow/go/v11/arrow/memory"
 )
 
 // A window on the last n capacities of each Arrow builder (present in a RecordBuilder) is maintained. The optimal
@@ -33,6 +34,7 @@ const builderCapacityWindowSize = 10
 // dictionary values for each dictionary field so that the dictionary builders
 // can be initialized with the initial dictionary values.
 type AdaptiveSchema struct {
+	pool   memory.Allocator
 	cfg    config        // configuration
 	schema *arrow.Schema // current schema
 
@@ -44,6 +46,8 @@ type AdaptiveSchema struct {
 	dictionariesWithOverflow map[string]string
 
 	fieldCapacities map[string]*BuilderCapacityWindow
+
+	recordBuilder *array.RecordBuilder
 }
 
 // BuilderCapacityWindow is a moving window on builder length observations collected
@@ -87,7 +91,7 @@ type Option func(*config)
 
 // NewAdaptiveSchema creates a new AdaptiveSchema from an [arrow.Schema]
 // and a list of options.
-func NewAdaptiveSchema(schema *arrow.Schema, options ...Option) *AdaptiveSchema {
+func NewAdaptiveSchema(pool memory.Allocator, schema *arrow.Schema, options ...Option) *AdaptiveSchema {
 	cfg := config{
 		initIndexSize:  math.MaxUint8,  // default to uint8
 		limitIndexSize: math.MaxUint16, // default to uint16
@@ -106,17 +110,27 @@ func NewAdaptiveSchema(schema *arrow.Schema, options ...Option) *AdaptiveSchema 
 		collectDictionaries(fields[i].Name, ids, &fields[i], &dictionaries)
 	}
 	return &AdaptiveSchema{
+		pool:                     pool,
 		cfg:                      cfg,
 		schema:                   schema,
 		dictionaries:             dictionaries,
 		dictionariesWithOverflow: make(map[string]string),
 		fieldCapacities:          make(map[string]*BuilderCapacityWindow),
+		recordBuilder:            array.NewRecordBuilder(pool, schema),
 	}
 }
 
 // Schema returns the current schema.
 func (m *AdaptiveSchema) Schema() *arrow.Schema {
 	return m.schema
+}
+
+// RecordBuilder returns a record builder that can be used to build a record corresponding to the current schema.
+// The record builder is reused between calls to RecordBuilder if the schema has not been adapted in between.
+// Note: the caller is responsible for releasing the record builder.
+func (m *AdaptiveSchema) RecordBuilder() *array.RecordBuilder {
+	m.recordBuilder.Retain()
+	return m.recordBuilder
 }
 
 // Analyze detects if any of the dictionary fields in the schema have
@@ -184,6 +198,10 @@ func (m *AdaptiveSchema) UpdateSchema(updates []SchemaUpdate) {
 			delete(m.dictionaries, path)
 		}
 	}
+
+	// Build a new record builder with the updated schema
+	m.recordBuilder.Release()
+	m.recordBuilder = array.NewRecordBuilder(m.pool, m.schema)
 }
 
 // InitDictionaryBuilders initializes the dictionary builders with the initial dictionary values
@@ -223,6 +241,7 @@ func (m *AdaptiveSchema) Release() {
 			d.init.Release()
 		}
 	}
+	m.recordBuilder.Release()
 }
 
 // DictionariesWithOverflow returns a map of dictionary fields that have overflowed and the
@@ -332,9 +351,10 @@ func (m *AdaptiveSchema) rebuildSchema(updates []SchemaUpdate) {
 func (m *AdaptiveSchema) collectSizeBuildersFromRecord(record arrow.Record) {
 	arrays := record.Columns()
 	schema := record.Schema()
+	fields := schema.Fields()
 	for i, arr := range arrays {
-		field := schema.Field(i)
-		m.collectSizeBuildersFromArray(field.Name, &field, arr)
+		field := &fields[i]
+		m.collectSizeBuildersFromArray(field.Name, field, arr)
 	}
 }
 
