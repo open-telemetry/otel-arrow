@@ -18,23 +18,27 @@ import (
 	"fmt"
 
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/config"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
-	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow"
 )
 
 // Config defines configuration for OpenCensus exporter.
 type Config struct {
-	// Deprecated: [v0.68.0] will be removed soon.
-	config.ExporterSettings        `mapstructure:",squash"`
 	exporterhelper.TimeoutSettings `mapstructure:",squash"` // squash ensures fields are correctly decoded in embedded struct.
 	exporterhelper.QueueSettings   `mapstructure:"sending_queue"`
 	exporterhelper.RetrySettings   `mapstructure:"retry_on_failure"`
 
 	configgrpc.GRPCClientSettings `mapstructure:",squash"` // squash ensures fields are correctly decoded in embedded struct.
 
-	Arrow *arrow.Settings `mapstructure:"arrow"`
+	Arrow ArrowSettings `mapstructure:"arrow"`
+}
+
+// ArrowSettings includes whether Arrow is enabled and the number of
+// concurrent Arrow streams.
+type ArrowSettings struct {
+	Enabled          bool `mapstructure:"enabled"`
+	NumStreams       int  `mapstructure:"num_streams"`
+	DisableDowngrade bool `mapstructure:"disable_downgrade"`
 }
 
 var _ component.Config = (*Config)(nil)
@@ -46,6 +50,15 @@ func (cfg *Config) Validate() error {
 	}
 	if err := cfg.Arrow.Validate(); err != nil {
 		return fmt.Errorf("arrow settings has invalid configuration: %w", err)
+	}
+
+	return nil
+}
+
+// Validate returns an error when the number of streams is less than 1.
+func (cfg *ArrowSettings) Validate() error {
+	if cfg.NumStreams < 1 {
+		return fmt.Errorf("stream count must be > 0: %d", cfg.NumStreams)
 	}
 
 	return nil

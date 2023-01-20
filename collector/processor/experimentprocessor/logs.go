@@ -21,11 +21,12 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/processor"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 )
 
-var _ component.LogsProcessor = (*logProcessor)(nil)
+var _ processor.Logs = (*logProcessor)(nil)
 
 type logProcessor struct {
 	logger *zap.Logger

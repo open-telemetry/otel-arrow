@@ -23,8 +23,6 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
-
-	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow"
 )
 
 const (
@@ -55,7 +53,10 @@ func createDefaultConfig() component.Config {
 			// We almost read 0 bytes, so no need to tune ReadBufferSize.
 			WriteBufferSize: 512 * 1024,
 		},
-		Arrow: arrow.NewDefaultSettings(),
+		Arrow: ArrowSettings{
+			NumStreams: 1,
+			Enabled:    false,
+		},
 	}
 }
 

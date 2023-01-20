@@ -15,6 +15,7 @@
 package otlpexporter
 
 import (
+	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -29,8 +30,6 @@ import (
 	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
-
-	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow"
 )
 
 func TestUnmarshalDefaultConfig(t *testing.T) {
@@ -85,9 +84,30 @@ func TestUnmarshalConfig(t *testing.T) {
 				BalancerName:    "round_robin",
 				Auth:            &configauth.Authentication{AuthenticatorID: component.NewID("nop")},
 			},
-			Arrow: &arrow.Settings{
+			Arrow: ArrowSettings{
 				Enabled:    true,
 				NumStreams: 2,
 			},
 		}, cfg)
+}
+
+func TestArrowSettingsValidate(t *testing.T) {
+	settings := func(enabled bool, numStreams int) *ArrowSettings {
+		return &ArrowSettings{Enabled: enabled, NumStreams: numStreams}
+	}
+	require.NoError(t, settings(true, 1).Validate())
+	require.NoError(t, settings(false, 1).Validate())
+	require.NoError(t, settings(true, 2).Validate())
+	require.NoError(t, settings(true, math.MaxInt).Validate())
+
+	require.Error(t, settings(true, 0).Validate())
+	require.Contains(t, settings(true, 0).Validate().Error(), "stream count must be")
+	require.Error(t, settings(false, -1).Validate())
+	require.Error(t, settings(true, math.MinInt).Validate())
+}
+
+func TestDefaultSettingsValid(t *testing.T) {
+	cfg := createDefaultConfig()
+	require.NoError(t, cfg.(*Config).Validate())
+
 }

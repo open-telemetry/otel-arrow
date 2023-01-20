@@ -15,6 +15,7 @@
 package arrow // import "github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow"
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -25,8 +26,10 @@ import (
 	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
+	"golang.org/x/net/http2/hpack"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
 	"go.opentelemetry.io/collector/component"
@@ -43,6 +46,9 @@ type Stream struct {
 
 	// prioritizer has a reference to the stream, this allows it to be severed.
 	prioritizer *streamPrioritizer
+
+	// perRPCCredentials from the auth extension, or nil.
+	perRPCCredentials credentials.PerRPCCredentials
 
 	// telemetry are a copy of the exporter's telemetry settings
 	telemetry component.TelemetrySettings
@@ -68,6 +74,8 @@ type Stream struct {
 type writeItem struct {
 	// records is a ptrace.Traces, plog.Logs, or pmetric.Metrics
 	records interface{}
+	// md is the caller's metadata, derived from its context.
+	md map[string]string
 	// errCh is used by the stream reader to unblock the sender
 	errCh chan error
 }
@@ -77,13 +85,15 @@ func newStream(
 	producer arrowRecord.ProducerAPI,
 	prioritizer *streamPrioritizer,
 	telemetry component.TelemetrySettings,
+	perRPCCredentials credentials.PerRPCCredentials,
 ) *Stream {
 	return &Stream{
-		producer:    producer,
-		prioritizer: prioritizer,
-		telemetry:   telemetry,
-		toWrite:     make(chan writeItem, 1),
-		waiters:     map[string]chan error{},
+		producer:          producer,
+		prioritizer:       prioritizer,
+		perRPCCredentials: perRPCCredentials,
+		telemetry:         telemetry,
+		toWrite:           make(chan writeItem, 1),
+		waiters:           map[string]chan error{},
 	}
 }
 
@@ -180,6 +190,10 @@ func (s *Stream) run(bgctx context.Context, client arrowpb.ArrowStreamServiceCli
 // performs a blocking send().  This returns when the data is in the write buffer,
 // the caller waiting on its error channel.
 func (s *Stream) write(ctx context.Context) {
+	// headers are encoding using hpack, reusing a buffer on each call.
+	var hdrsBuf bytes.Buffer
+	hdrsEnc := hpack.NewEncoder(&hdrsBuf)
+
 	for {
 		// Note: this can't block b/c stream has capacity &
 		// individual streams shut down synchronously.
@@ -203,13 +217,31 @@ func (s *Stream) write(ctx context.Context) {
 
 		batch, err := s.encode(wri.records)
 		if err != nil {
-			// TODO: Is this not permanent?  Another
-			// sequence of data might not produce it.
-			//
-			// This is some kind of internal error.
+			// This is some kind of internal error.  We will restart the
+			// stream and mark this record as a permanent one.
 			wri.errCh <- consumererror.NewPermanent(err)
 			s.telemetry.Logger.Error("arrow encode", zap.Error(err))
 			return
+		}
+
+		// Optionally include outgoing metadata, if present.
+		if len(wri.md) != 0 {
+			hdrsBuf.Reset()
+			for key, val := range wri.md {
+				err := hdrsEnc.WriteField(hpack.HeaderField{
+					Name:  key,
+					Value: val,
+				})
+				if err != nil {
+					// This case is like the encode-failure case
+					// above, we will restart the stream but consider
+					// this a permenent error.
+					wri.errCh <- consumererror.NewPermanent(err)
+					s.telemetry.Logger.Error("hpack encode", zap.Error(err))
+					return
+				}
+			}
+			batch.Headers = hdrsBuf.Bytes()
 		}
 
 		// Let the receiver knows what to look for.
@@ -217,10 +249,9 @@ func (s *Stream) write(ctx context.Context) {
 
 		if err := s.client.Send(batch); err != nil {
 			// The error will be sent to errCh during cleanup for this stream.
-			// TODO: Should we add debug-level logs for EOF and Canceled?
-			if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
-				s.telemetry.Logger.Error("arrow send", zap.Error(err))
-			}
+			// Note there are common cases like EOF and Canceled that we may
+			// wish to suppress in the logs if they become a problem.
+			s.telemetry.Logger.Error("arrow send", zap.Error(err))
 			return
 		}
 	}
@@ -314,8 +345,30 @@ func (s *Stream) processBatchStatus(statuses []*arrowpb.StatusMessage) error {
 // received by the stream reader.
 func (s *Stream) SendAndWait(ctx context.Context, records interface{}) error {
 	errCh := make(chan error, 1)
+
+	// Note that if the OTLP exporter's gRPC Headers field was
+	// set, those (static) headers were used to establish the
+	// stream.  The caller's context was returned by
+	// baseExporter.enhanceContext() includes the static headers
+	// plus optional client metadata.  Here, get whatever
+	// headers that gRPC would have transmitted for a unary RPC
+	// and convey them via the Arrow batch.
+
+	// Note that the "uri" parameter to GetRequestMetadata is
+	// not used by the headersetter extension and is not well
+	// documented.  Since it's an optional list, we omit it.
+	var md map[string]string
+	if s.perRPCCredentials != nil {
+		var err error
+		md, err = s.perRPCCredentials.GetRequestMetadata(ctx)
+		if err != nil {
+			return err
+		}
+	}
+
 	s.toWrite <- writeItem{
 		records: records,
+		md:      md,
 		errCh:   errCh,
 	}
 

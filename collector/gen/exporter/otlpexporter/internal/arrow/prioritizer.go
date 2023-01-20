@@ -35,10 +35,10 @@ type streamPrioritizer struct {
 }
 
 // newStreamPrioritizer constructs a channel-based first-available prioritizer.
-func newStreamPrioritizer(bgctx context.Context, settings Settings) *streamPrioritizer {
+func newStreamPrioritizer(bgctx context.Context, numStreams int) *streamPrioritizer {
 	return &streamPrioritizer{
 		done:    bgctx.Done(),
-		channel: make(chan *Stream, settings.NumStreams),
+		channel: make(chan *Stream, numStreams),
 	}
 }
 

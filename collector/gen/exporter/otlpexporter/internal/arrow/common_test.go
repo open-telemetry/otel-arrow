@@ -20,6 +20,8 @@ import (
 	"io"
 	"testing"
 
+	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	arrowCollectorMock "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1/mock"
 	"github.com/golang/mock/gomock"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -27,23 +29,16 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
-
-	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
-	arrowCollectorMock "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1/mock"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
-
+	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow/grpcmock"
 	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
 )
 
 var (
-	singleStreamSettings = Settings{
-		Enabled:    true,
-		NumStreams: 1,
-	}
-
 	twoTraces  = testdata.GenerateTraces(2)
 	twoMetrics = testdata.GenerateMetrics(2)
 	twoLogs    = testdata.GenerateLogs(2)
@@ -56,11 +51,13 @@ type testChannel interface {
 }
 
 type commonTestCase struct {
-	ctrl          *gomock.Controller
-	telset        component.TelemetrySettings
-	observedLogs  *observer.ObservedLogs
-	serviceClient arrowpb.ArrowStreamServiceClient
-	streamCall    *gomock.Call
+	ctrl                *gomock.Controller
+	telset              component.TelemetrySettings
+	observedLogs        *observer.ObservedLogs
+	serviceClient       arrowpb.ArrowStreamServiceClient
+	streamCall          *gomock.Call
+	perRPCCredentials   credentials.PerRPCCredentials
+	requestMetadataCall *gomock.Call
 }
 
 type noisyTest bool
@@ -82,18 +79,27 @@ func newCommonTestCase(t *testing.T, noisy noisyTest) *commonTestCase {
 	ctrl := gomock.NewController(t)
 	telset, obslogs := newTestTelemetry(t, noisy)
 
+	creds := grpcmock.NewMockPerRPCCredentials(ctrl)
+	creds.EXPECT().RequireTransportSecurity().Times(0) // unused interface method
+	requestMetadataCall := creds.EXPECT().GetRequestMetadata(
+		gomock.Any(), // context.Context
+		gomock.Any(), // ...string (unused `uri` parameter)
+	).Times(0)
+
 	client := arrowCollectorMock.NewMockArrowStreamServiceClient(ctrl)
 
 	streamCall := client.EXPECT().ArrowStream(
 		gomock.Any(), // context.Context
-		gomock.Any(), // grpc.CallOption
+		gomock.Any(), // ...grpc.CallOption
 	).Times(0)
 	return &commonTestCase{
-		ctrl:          ctrl,
-		telset:        telset,
-		observedLogs:  obslogs,
-		serviceClient: client,
-		streamCall:    streamCall,
+		ctrl:                ctrl,
+		telset:              telset,
+		observedLogs:        obslogs,
+		serviceClient:       client,
+		streamCall:          streamCall,
+		perRPCCredentials:   creds,
+		requestMetadataCall: requestMetadataCall,
 	}
 }
 

@@ -17,8 +17,6 @@ package experimentprocessor // import "github.com/f5/otel-arrow-adapter/collecto
 import (
 	"errors"
 	"fmt"
-
-	"go.opentelemetry.io/collector/config"
 )
 
 var (
@@ -30,10 +28,6 @@ var (
 
 // Config defines configuration for the Routing processor.
 type Config struct {
-	// ProcessorSettings are the standard collector settings for processors.
-	// ",squash" ensures fields are correctly decoded in an embedded struct.
-	config.ProcessorSettings `mapstructure:",squash"`
-
 	// Table contains the routing table for this processor.
 	// Required, must be non-empty.
 	Table []RoutingTableItem `mapstructure:"table"`

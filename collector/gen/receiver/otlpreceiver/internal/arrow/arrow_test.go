@@ -15,6 +15,7 @@
 package arrow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,25 +23,29 @@ import (
 	"io"
 	"testing"
 
+	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	arrowCollectorMock "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1/mock"
+	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
+	arrowRecordMock "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record/mock"
+	otelAssert "github.com/f5/otel-arrow-adapter/pkg/otel/assert"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
+	"golang.org/x/net/http2/hpack"
+	"google.golang.org/grpc/metadata"
 
-	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
-	arrowCollectorMock "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1/mock"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow/mock"
-	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
-	arrowRecordMock "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record/mock"
-	otelAssert "github.com/f5/otel-arrow-adapter/pkg/otel/assert"
-
+	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
+	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/consumer"
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/collector/receiver"
+	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow/mock"
 )
 
 type compareJSONTraces struct{ ptrace.Traces }
@@ -62,6 +67,11 @@ func (c compareJSONLogs) MarshalJSON() ([]byte, error) {
 	return m.MarshalLogs(c.Logs)
 }
 
+type consumeResult struct {
+	Ctx  context.Context
+	Data interface{}
+}
+
 type commonTestCase struct {
 	ctrl      *gomock.Controller
 	cancel    context.CancelFunc
@@ -69,7 +79,7 @@ type commonTestCase struct {
 	consumers mockConsumers
 	stream    *arrowCollectorMock.MockArrowStreamService_ArrowStreamServer
 	receive   chan recvResult
-	consume   chan interface{}
+	consume   chan consumeResult
 	streamErr chan error
 
 	testProducer *arrowRecord.Producer
@@ -139,7 +149,10 @@ func (ctc *commonTestCase) doAndReturnGetBatch(ctx context.Context) func() (*arr
 func (ctc *commonTestCase) doAndReturnConsumeTraces(tc testChannel) func(ctx context.Context, traces ptrace.Traces) error {
 	return func(ctx context.Context, traces ptrace.Traces) error {
 		select {
-		case ctc.consume <- traces:
+		case ctc.consume <- consumeResult{
+			Ctx:  ctx,
+			Data: traces,
+		}:
 			return tc.onConsume()
 		case <-ctx.Done():
 			return ctx.Err()
@@ -150,7 +163,10 @@ func (ctc *commonTestCase) doAndReturnConsumeTraces(tc testChannel) func(ctx con
 func (ctc *commonTestCase) doAndReturnConsumeMetrics(tc testChannel) func(ctx context.Context, metrics pmetric.Metrics) error {
 	return func(ctx context.Context, metrics pmetric.Metrics) error {
 		select {
-		case ctc.consume <- metrics:
+		case ctc.consume <- consumeResult{
+			Ctx:  ctx,
+			Data: metrics,
+		}:
 			return tc.onConsume()
 		case <-ctx.Done():
 			return ctx.Err()
@@ -161,7 +177,10 @@ func (ctc *commonTestCase) doAndReturnConsumeMetrics(tc testChannel) func(ctx co
 func (ctc *commonTestCase) doAndReturnConsumeLogs(tc testChannel) func(ctx context.Context, logs plog.Logs) error {
 	return func(ctx context.Context, logs plog.Logs) error {
 		select {
-		case ctc.consume <- logs:
+		case ctc.consume <- consumeResult{
+			Ctx:  ctx,
+			Data: logs,
+		}:
 			return tc.onConsume()
 		case <-ctx.Done():
 			return ctx.Err()
@@ -211,6 +230,9 @@ func newCommonTestCase(t *testing.T, tc testChannel) *commonTestCase {
 	stream := arrowCollectorMock.NewMockArrowStreamService_ArrowStreamServer(ctrl)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx = metadata.NewIncomingContext(ctx, metadata.MD{
+		"stream_ctx": []string{"per-request"},
+	})
 
 	ctc := &commonTestCase{
 		ctrl:         ctrl,
@@ -219,8 +241,8 @@ func newCommonTestCase(t *testing.T, tc testChannel) *commonTestCase {
 		consumers:    newMockConsumers(ctrl),
 		stream:       stream,
 		receive:      make(chan recvResult),
-		consume:      make(chan interface{}),
-		streamErr:    make(chan error, 1),
+		consume:      make(chan consumeResult),
+		streamErr:    make(chan error),
 		testProducer: arrowRecord.NewProducer(),
 		ctxCall:      stream.EXPECT().Context().Times(0),
 		recvCall:     stream.EXPECT().Recv().Times(0),
@@ -303,14 +325,19 @@ func (ctc *commonTestCase) newErrorConsumer() arrowRecord.ConsumerAPI {
 	return cons
 }
 
-func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI) {
+func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, gopts ...func(cfg *configgrpc.GRPCServerSettings)) {
+	gsettings := &configgrpc.GRPCServerSettings{}
+	for _, gf := range gopts {
+		gf(gsettings)
+	}
 	rcvr, err := New(
 		component.NewID("arrowtest"),
 		ctc.consumers,
-		component.ReceiverCreateSettings{
+		receiver.CreateSettings{
 			TelemetrySettings: ctc.telset,
 			BuildInfo:         component.NewDefaultBuildInfo(),
 		},
+		gsettings,
 		newConsumer,
 	)
 	if err != nil {
@@ -336,7 +363,7 @@ func TestReceiverTraces(t *testing.T) {
 	ctc.start(ctc.newRealConsumer)
 	ctc.putBatch(batch, nil)
 
-	assert.EqualValues(t, td, <-ctc.consume)
+	assert.EqualValues(t, td, (<-ctc.consume).Data)
 
 	err = ctc.cancelAndWait()
 	require.Error(t, err)
@@ -356,7 +383,7 @@ func TestReceiverLogs(t *testing.T) {
 	ctc.start(ctc.newRealConsumer)
 	ctc.putBatch(batch, nil)
 
-	assert.EqualValues(t, []json.Marshaler{compareJSONLogs{ld}}, []json.Marshaler{compareJSONLogs{(<-ctc.consume).(plog.Logs)}})
+	assert.EqualValues(t, []json.Marshaler{compareJSONLogs{ld}}, []json.Marshaler{compareJSONLogs{(<-ctc.consume).Data.(plog.Logs)}})
 
 	err = ctc.cancelAndWait()
 	require.Error(t, err)
@@ -379,7 +406,7 @@ func TestReceiverMetrics(t *testing.T) {
 	otelAssert.Equiv(t, []json.Marshaler{
 		compareJSONMetrics{md},
 	}, []json.Marshaler{
-		compareJSONMetrics{(<-ctc.consume).(pmetric.Metrics)},
+		compareJSONMetrics{(<-ctc.consume).Data.(pmetric.Metrics)},
 	})
 
 	err = ctc.cancelAndWait()
@@ -413,7 +440,7 @@ func TestReceiverSendError(t *testing.T) {
 	ctc.start(ctc.newRealConsumer)
 	ctc.putBatch(batch, nil)
 
-	assert.EqualValues(t, ld, <-ctc.consume)
+	assert.EqualValues(t, ld, (<-ctc.consume).Data)
 
 	err = ctc.wait()
 	require.Error(t, err)
@@ -456,19 +483,19 @@ func TestReceiverConsumeError(t *testing.T) {
 			otelAssert.Equiv(t, []json.Marshaler{
 				compareJSONTraces{input},
 			}, []json.Marshaler{
-				compareJSONTraces{(<-ctc.consume).(ptrace.Traces)},
+				compareJSONTraces{(<-ctc.consume).Data.(ptrace.Traces)},
 			})
 		case plog.Logs:
 			otelAssert.Equiv(t, []json.Marshaler{
 				compareJSONLogs{input},
 			}, []json.Marshaler{
-				compareJSONLogs{(<-ctc.consume).(plog.Logs)},
+				compareJSONLogs{(<-ctc.consume).Data.(plog.Logs)},
 			})
 		case pmetric.Metrics:
 			otelAssert.Equiv(t, []json.Marshaler{
 				compareJSONMetrics{input},
 			}, []json.Marshaler{
-				compareJSONMetrics{(<-ctc.consume).(pmetric.Metrics)},
+				compareJSONMetrics{(<-ctc.consume).Data.(pmetric.Metrics)},
 			})
 		}
 
@@ -542,10 +569,87 @@ func TestReceiverEOF(t *testing.T) {
 	}()
 
 	for i := 0; i < times; i++ {
-		actualData = append(actualData, (<-ctc.consume).(ptrace.Traces))
+		actualData = append(actualData, (<-ctc.consume).Data.(ptrace.Traces))
 	}
 
 	assert.EqualValues(t, expectData, actualData)
+
+	err := ctc.wait()
+	require.Error(t, err)
+	require.True(t, errors.Is(err, io.EOF))
+}
+
+func TestReceiverHeaders(t *testing.T) {
+	t.Run("include", func(t *testing.T) { testReceiverHeaders(t, true) })
+	t.Run("noinclude", func(t *testing.T) { testReceiverHeaders(t, false) })
+}
+
+func testReceiverHeaders(t *testing.T, includeMeta bool) {
+	tc := healthyTestChannel{}
+	ctc := newCommonTestCase(t, tc)
+
+	expectData := []map[string][]string{
+		{"k1": []string{"v1"}},
+		nil,
+		{"k2": []string{"v2"}, "k3": []string{"v3"}},
+		nil,
+		{"k1": []string{"v5"}},
+		{"k1": []string{"v1"}, "k3": []string{"v2", "v3", "v4"}},
+		nil,
+	}
+
+	ctc.stream.EXPECT().Send(gomock.Any()).Times(len(expectData)).Return(nil)
+
+	ctc.start(ctc.newRealConsumer, func(gsettings *configgrpc.GRPCServerSettings) {
+		gsettings.IncludeMetadata = includeMeta
+	})
+
+	go func() {
+		var hpb bytes.Buffer
+		hpe := hpack.NewEncoder(&hpb)
+
+		for _, md := range expectData {
+			td := testdata.GenerateTraces(2)
+			batch, err := ctc.testProducer.BatchArrowRecordsFromTraces(td)
+			require.NoError(t, err)
+
+			if len(md) != 0 {
+				hpb.Reset()
+				for key, vals := range md {
+					for _, val := range vals {
+						err := hpe.WriteField(hpack.HeaderField{
+							Name:  key,
+							Value: val,
+						})
+						require.NoError(t, err)
+					}
+				}
+
+				batch.Headers = make([]byte, hpb.Len())
+				copy(batch.Headers, hpb.Bytes())
+			}
+			ctc.putBatch(batch, nil)
+		}
+		close(ctc.receive)
+	}()
+
+	for _, expect := range expectData {
+		info := client.FromContext((<-ctc.consume).Ctx)
+
+		// The static stream context contains one extra variable.
+		if expect == nil {
+			expect = map[string][]string{}
+		}
+		expect["stream_ctx"] = []string{"per-request"}
+
+		for key, vals := range expect {
+			if includeMeta {
+				require.Equal(t, vals, info.Metadata.Get(key))
+			} else {
+				require.Equal(t, []string(nil), info.Metadata.Get(key))
+			}
+		}
+	}
 
 	err := ctc.wait()
 	require.Error(t, err)
@@ -562,4 +666,174 @@ func TestReceiverCancel(t *testing.T) {
 	err := ctc.wait()
 	require.Error(t, err)
 	require.True(t, errors.Is(err, context.Canceled))
+}
+
+func requireContainsAll(t *testing.T, md client.Metadata, exp map[string][]string) {
+	for key, vals := range exp {
+		require.Equal(t, vals, md.Get(key))
+	}
+}
+
+func requireContainsNone(t *testing.T, md client.Metadata, exp map[string][]string) {
+	for key := range exp {
+		require.Equal(t, []string(nil), md.Get(key))
+	}
+}
+
+func TestHeaderReceiverStreamContextOnly(t *testing.T) {
+	expect := map[string][]string{
+		"K": {"k1", "k2"},
+		"L": {"l1"},
+	}
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.MD(expect))
+
+	h := newHeaderReceiver(ctx, true)
+
+	for i := 0; i < 3; i++ {
+		cc, err := h.combineHeaders(ctx, nil)
+
+		require.NoError(t, err)
+		requireContainsAll(t, client.FromContext(cc).Metadata, expect)
+	}
+}
+
+func TestHeaderReceiverNoIncludeMetadata(t *testing.T) {
+	noExpect := map[string][]string{
+		"K": {"k1", "k2"},
+		"L": {"l1"},
+	}
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.MD(noExpect))
+
+	h := newHeaderReceiver(ctx, false)
+
+	for i := 0; i < 3; i++ {
+		cc, err := h.combineHeaders(ctx, nil)
+
+		require.NoError(t, err)
+		requireContainsNone(t, client.FromContext(cc).Metadata, noExpect)
+	}
+}
+
+func TestHeaderReceiverRequestNoStreamMetadata(t *testing.T) {
+	expect := map[string][]string{
+		"K": {"k1", "k2"},
+		"L": {"l1"},
+	}
+
+	var hpb bytes.Buffer
+
+	hpe := hpack.NewEncoder(&hpb)
+
+	ctx := context.Background()
+
+	h := newHeaderReceiver(ctx, true)
+
+	for i := 0; i < 3; i++ {
+		hpb.Reset()
+
+		for key, vals := range expect {
+			for _, val := range vals {
+				err := hpe.WriteField(hpack.HeaderField{
+					Name:  key,
+					Value: val,
+				})
+				require.NoError(t, err)
+			}
+		}
+
+		cc, err := h.combineHeaders(ctx, hpb.Bytes())
+
+		require.NoError(t, err)
+		requireContainsAll(t, client.FromContext(cc).Metadata, expect)
+	}
+}
+
+func TestHeaderReceiverBothMetadata(t *testing.T) {
+	expectK := map[string][]string{
+		"K": {"k1", "k2"},
+	}
+	expectL := map[string][]string{
+		"L": {"l1"},
+		"M": {"m1", "m2"},
+	}
+	expect := map[string][]string{
+		"K": {"k1", "k2"},
+		"L": {"l1"},
+		"M": {"m1", "m2"},
+	}
+
+	var hpb bytes.Buffer
+
+	hpe := hpack.NewEncoder(&hpb)
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.MD(expectK))
+
+	h := newHeaderReceiver(ctx, true)
+
+	for i := 0; i < 3; i++ {
+		hpb.Reset()
+
+		for key, vals := range expectL {
+			for _, val := range vals {
+				err := hpe.WriteField(hpack.HeaderField{
+					Name:  key,
+					Value: val,
+				})
+				require.NoError(t, err)
+			}
+		}
+
+		cc, err := h.combineHeaders(ctx, hpb.Bytes())
+
+		require.NoError(t, err)
+		requireContainsAll(t, client.FromContext(cc).Metadata, expect)
+	}
+}
+
+func TestHeaderReceiverDuplicateMetadata(t *testing.T) {
+	expectStream := map[string][]string{
+		"K": {"k1", "k2"},
+
+		// "M" value does not appear b/c the same header
+		// appears in per-request metadata.
+		"M": {""},
+	}
+	expectRequest := map[string][]string{
+		"L": {"l1"},
+		"M": {"m1", "m2"},
+	}
+	expectCombined := map[string][]string{
+		"K": {"k1", "k2"},
+		"L": {"l1"},
+		"M": {"m1", "m2"},
+	}
+
+	var hpb bytes.Buffer
+
+	hpe := hpack.NewEncoder(&hpb)
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.MD(expectStream))
+
+	h := newHeaderReceiver(ctx, true)
+
+	for i := 0; i < 3; i++ {
+		hpb.Reset()
+
+		for key, vals := range expectRequest {
+			for _, val := range vals {
+				err := hpe.WriteField(hpack.HeaderField{
+					Name:  key,
+					Value: val,
+				})
+				require.NoError(t, err)
+			}
+		}
+
+		cc, err := h.combineHeaders(ctx, hpb.Bytes())
+
+		require.NoError(t, err)
+		requireContainsAll(t, client.FromContext(cc).Metadata, expectCombined)
+	}
 }

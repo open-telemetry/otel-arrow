@@ -21,29 +21,28 @@ import (
 	"runtime"
 	"time"
 
-	arrowPkg "github.com/apache/arrow/go/v10/arrow"
+	arrowPkg "github.com/apache/arrow/go/v11/arrow"
+	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 	"go.uber.org/multierr"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-
-	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
-	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
+	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
-
-	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow"
 )
 
 type baseExporter struct {
@@ -57,8 +56,7 @@ type baseExporter struct {
 	clientConn     *grpc.ClientConn
 	metadata       metadata.MD
 	callOptions    []grpc.CallOption
-
-	settings component.ExporterCreateSettings
+	settings       exporter.CreateSettings
 
 	// Default user-agent header.
 	userAgent string
@@ -79,7 +77,7 @@ func newExporter(cfg component.Config, set exporter.CreateSettings) (*baseExport
 	userAgent := fmt.Sprintf("%s/%s (%s/%s)",
 		set.BuildInfo.Description, set.BuildInfo.Version, runtime.GOOS, runtime.GOARCH)
 
-	if oCfg.Arrow != nil && oCfg.Arrow.Enabled {
+	if oCfg.Arrow.Enabled {
 		userAgent += fmt.Sprintf(" ApacheArrow/%s (NumStreams/%d)", arrowPkg.PkgVersion, oCfg.Arrow.NumStreams)
 	}
 
@@ -100,12 +98,27 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) (err erro
 		grpc.WaitForReady(e.config.GRPCClientSettings.WaitForReady),
 	}
 
-	if e.config.Arrow != nil && e.config.Arrow.Enabled {
+	if e.config.Arrow.Enabled {
+		// Note this sets static outgoing context for all future stream requests.
 		ctx := e.enhanceContext(context.Background())
 
-		e.arrow = arrow.NewExporter(*e.config.Arrow, func() arrowRecord.ProducerAPI {
+		var perRPCCreds credentials.PerRPCCredentials
+		if e.config.GRPCClientSettings.Auth != nil {
+			// Get the auth extension, we'll use it to enrich the request context.
+			authClient, err := e.config.GRPCClientSettings.Auth.GetClientAuthenticator(host.GetExtensions())
+			if err != nil {
+				return err
+			}
+
+			perRPCCreds, err = authClient.PerRPCCredentials()
+			if err != nil {
+				return err
+			}
+		}
+
+		e.arrow = arrow.NewExporter(e.config.Arrow.NumStreams, e.config.Arrow.DisableDowngrade, e.settings.TelemetrySettings, e.callOptions, func() arrowRecord.ProducerAPI {
 			return arrowRecord.NewProducer()
-		}, e.settings.TelemetrySettings, arrowpb.NewArrowStreamServiceClient(e.clientConn), e.callOptions)
+		}, arrowpb.NewArrowStreamServiceClient(e.clientConn), perRPCCreds)
 
 		if err := e.arrow.Start(ctx); err != nil {
 			return err
@@ -129,6 +142,10 @@ func (e *baseExporter) shutdown(ctx context.Context) error {
 // arrowSendAndWait gets an available stream and tries to send using
 // Arrow if it is configured.  A (false, nil) result indicates for the
 // caller to fall back to ordinary OTLP.
+//
+// Note that ctx is has not had enhanceContext() called, meaning it
+// will have outgoing gRPC metadata only when an upstream processor or
+// receiver placed it there.
 func (e *baseExporter) arrowSendAndWait(ctx context.Context, data interface{}) (sent bool, _ error) {
 	if e.arrow == nil {
 		return false, nil
@@ -173,6 +190,7 @@ func (e *baseExporter) enhanceContext(ctx context.Context) context.Context {
 	if e.metadata.Len() > 0 {
 		return metadata.NewOutgoingContext(ctx, e.metadata)
 	}
+
 	return ctx
 }
 

@@ -53,15 +53,17 @@ type streamTestCase struct {
 func newStreamTestCase(t *testing.T) *streamTestCase {
 	ctrl := gomock.NewController(t)
 	producer := arrowRecordMock.NewMockProducerAPI(ctrl)
-	aset := singleStreamSettings
 
 	bg, cancel := context.WithCancel(context.Background())
-	prio := newStreamPrioritizer(bg, aset)
+	prio := newStreamPrioritizer(bg, 1)
 
 	ctc := newCommonTestCase(t, NotNoisy)
 	cts := ctc.newMockStream(bg)
 
-	stream := newStream(producer, prio, ctc.telset)
+	// metadata functionality is tested in exporter_test.go
+	ctc.requestMetadataCall.AnyTimes().Return(nil, nil)
+
+	stream := newStream(producer, prio, ctc.telset, ctc.perRPCCredentials)
 
 	fromTracesCall := producer.EXPECT().BatchArrowRecordsFromTraces(gomock.Any()).Times(0)
 	fromMetricsCall := producer.EXPECT().BatchArrowRecordsFromMetrics(gomock.Any()).Times(0)

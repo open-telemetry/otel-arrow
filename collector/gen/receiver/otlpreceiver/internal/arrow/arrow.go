@@ -21,15 +21,21 @@ import (
 	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 	"go.uber.org/zap"
+	"golang.org/x/net/http2/hpack"
+	"google.golang.org/grpc/metadata"
 
+	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/obsreport"
+	"go.opentelemetry.io/collector/receiver"
 )
 
 const (
-	receiverTransport = "otlp-arrow"
+	receiverTransport   = "otlp-arrow"
+	hpackMaxDynamicSize = 4096
 )
 
 var (
@@ -51,6 +57,7 @@ type Receiver struct {
 
 	telemetry   component.TelemetrySettings
 	obsrecv     *obsreport.Receiver
+	gsettings   *configgrpc.GRPCServerSettings
 	newConsumer func() arrowRecord.ConsumerAPI
 }
 
@@ -58,7 +65,8 @@ type Receiver struct {
 func New(
 	id component.ID,
 	cs Consumers,
-	set component.ReceiverCreateSettings,
+	set receiver.CreateSettings,
+	gsettings *configgrpc.GRPCServerSettings,
 	newConsumer func() arrowRecord.ConsumerAPI,
 ) (*Receiver, error) {
 	obs, err := obsreport.NewReceiver(obsreport.ReceiverSettings{
@@ -74,12 +82,114 @@ func New(
 		obsrecv:     obs,
 		telemetry:   set.TelemetrySettings,
 		newConsumer: newConsumer,
+		gsettings:   gsettings,
 	}, nil
 }
 
+// headerReceiver contains the state necessary to decode per-request metadata
+// from an arrow stream.
+type headerReceiver struct {
+	// decoder maintains state across the stream.
+	decoder *hpack.Decoder
+
+	// client connection info from the stream context, to be extended
+	// with per-request metadata.
+	connInfo client.Info
+
+	// streamHdrs was translated from the incoming context, will be
+	// merged with per-request metadata.  Note that the contents of
+	// this map are equivalent to connInfo.Metadata, however that
+	// library does not let us iterate over the map so we recalculate
+	// this from the gRPC incoming stream context.
+	streamHdrs map[string][]string
+
+	// tmpHdrs is used by the decoder's emit function during Write.
+	tmpHdrs map[string][]string
+}
+
+func newHeaderReceiver(streamCtx context.Context, includeMetadata bool) *headerReceiver {
+	if !includeMetadata {
+		return nil
+	}
+	hr := &headerReceiver{
+		connInfo: client.FromContext(streamCtx),
+	}
+
+	if smd, ok := metadata.FromIncomingContext(streamCtx); ok {
+		hr.streamHdrs = smd
+	}
+
+	// Note the hpack decoder supports additional protections,
+	// such as SetMaxStringLength(), but as we already have limits
+	// on stream request size, this seems unnecessary.
+	hr.decoder = hpack.NewDecoder(hpackMaxDynamicSize, hr.tmpHdrsAppend)
+
+	return hr
+}
+
+// combineHeaders calculates per-request Metadata by combining the stream's
+// client.Info with additional key:values associated with the arrow batch.
+// This is safe to call when h is nil.
+func (h *headerReceiver) combineHeaders(ctx context.Context, hdrsBytes []byte) (context.Context, error) {
+	if h == nil || (len(hdrsBytes) == 0 && len(h.streamHdrs) == 0) {
+		return ctx, nil
+	}
+
+	if len(hdrsBytes) == 0 {
+		return h.newContext(ctx, h.streamHdrs), nil
+	}
+
+	h.tmpHdrs = map[string][]string{}
+
+	// Write calls the emitFunc, appending directly into `tmpHrs`.
+	if _, err := h.decoder.Write(hdrsBytes); err != nil {
+		return ctx, err
+	}
+
+	// Add streamHdrs that were not carried in the per-request headers.
+	for k, v := range h.streamHdrs {
+		// Note: This is done after the per-request metadata is defined
+		// in recognition of a potential for duplicated values stemming
+		// from the Arrow exporter's independent call to the Auth
+		// extension's GetRequestMetadata().  This paired with the
+		// headersetter's return of empty-string values means, we would
+		// end up with an empty-string element for any headersetter
+		// `from_context` rules b/c the stream uses background context.
+		// This allows static headers through.
+		//
+		// See https://github.com/open-telemetry/opentelemetry-collector/issues/6965
+		if _, ok := h.tmpHdrs[k]; !ok {
+			h.tmpHdrs[k] = v
+		}
+	}
+
+	// Release the temporary copy.
+	newHdrs := h.tmpHdrs
+	h.tmpHdrs = nil
+
+	return h.newContext(ctx, newHdrs), nil
+}
+
+// tmpHdrsAppend appends to tmpHdrs, from decoder's emit function.
+func (h *headerReceiver) tmpHdrsAppend(hf hpack.HeaderField) {
+	h.tmpHdrs[hf.Name] = append(h.tmpHdrs[hf.Name], hf.Value)
+}
+
+func (h *headerReceiver) newContext(ctx context.Context, hdrs map[string][]string) context.Context {
+	// Retain the Addr/Auth of the stream connection, update the
+	// per-request metadata from the Arrow batch.
+	return client.NewContext(ctx, client.Info{
+		Addr:     h.connInfo.Addr,
+		Auth:     h.connInfo.Auth,
+		Metadata: client.NewMetadata(hdrs),
+	})
+}
+
 func (r *Receiver) ArrowStream(serverStream arrowpb.ArrowStreamService_ArrowStreamServer) error {
-	ctx := serverStream.Context()
+	streamCtx := serverStream.Context()
 	ac := r.newConsumer()
+	hrcv := newHeaderReceiver(serverStream.Context(), r.gsettings.IncludeMetadata)
+
 	defer func() {
 		if err := ac.Close(); err != nil {
 			r.telemetry.Logger.Error("arrow stream close", zap.Error(err))
@@ -89,20 +199,28 @@ func (r *Receiver) ArrowStream(serverStream arrowpb.ArrowStreamService_ArrowStre
 	for {
 		// See if the context has been canceled.
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-streamCtx.Done():
+			return streamCtx.Err()
 		default:
 		}
 
-		// Receive a batch:
+		// Receive a batch corresponding with one ptrace.Traces, pmetric.Metrics,
+		// or plog.Logs item.
 		req, err := serverStream.Recv()
 		if err != nil {
 			return err
 		}
 
+		// Check for optional headers and set the incoming context.
+		thisCtx, err := hrcv.combineHeaders(streamCtx, req.GetHeaders())
+		if err != nil {
+			// Failing to parse the incoming headers breaks the stream.
+			return err
+		}
+
 		// Process records: an error in this code path does
 		// not necessarily break the stream.
-		err = r.processRecords(ctx, ac, req)
+		err = r.processRecords(thisCtx, ac, req)
 
 		// Note: Statuses can be batched: TODO: should we?
 		resp := &arrowpb.BatchStatus{}
