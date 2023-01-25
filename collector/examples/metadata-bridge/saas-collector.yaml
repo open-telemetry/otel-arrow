@@ -7,8 +7,9 @@ receivers:
         # Port 5000 is the endpoint used in edge-collector.
         endpoint: 127.0.0.1:5000
 
-        # Include metadata so that the exporter can copy it
-        # to the next hop.
+        # include_metadata is required for the receiver to pass
+        # per-request metadata through to the pipeline.  This
+        # is supported for both arrow and standard modes.
         include_metadata: true
 
       # Enable arrow for the bridge.
@@ -29,7 +30,7 @@ exporters:
     # so that it passes through headers set on the edge collector.
     auth:
       authenticator: headers_setter
-
+    
 extensions:
   # Configure the headers_setter extension to propagate the
   # X-Scope-OrgID property in the outgoing context.
@@ -37,15 +38,14 @@ extensions:
     headers:
       - key: X-Scope-OrgID
         from_context: X-Scope-OrgID
+      - key: X-Cluster-Name
+        from_context: X-Cluster-Name
 
 service:
   extensions: [headers_setter]
   pipelines:
     traces:
       receivers: [otlp]
-
-      # Note there is no need to re-apply the batch processor on the
-      # SaaS-side of a bridge.
       processors: []
       exporters: [logging, otlphttp]
 

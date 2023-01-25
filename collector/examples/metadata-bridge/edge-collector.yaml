@@ -6,15 +6,23 @@ receivers:
         # Port 4318 is the standard port for OTLP/gRPC.
         endpoint: 127.0.0.1:4318
 
-processors:
-  # The batch processor will benefit pipelines with small export sizes.
-  batch:
+        # include_metadata is required for the receiver to pass
+        # per-request metadata through the pipeline, in order for the
+        # headers_setter extension to see it.
+        include_metadata: true
+
+extensions:
+  # Configure the headers_setter extension to propagate the
+  # X-Scope-OrgID property in the outgoing context.
+  headers_setter:
+    headers:
+      - key: X-Scope-OrgID
+        from_context: X-Scope-OrgID
 
 exporters:
-  # otlp/arrow is an OTLP-Arrow exporter.
+  # The OTLP/Arrow exporter sends to a local corresponding with
+  # saas-collector.yaml.
   otlp/arrow:
-    # For the sample configuration, the other side of the bridge
-    # runs on port 5000.
     endpoint: 127.0.0.1:5000
 
     # For demonstration purposes, use an insecure port.  This would
@@ -25,8 +33,8 @@ exporters:
 
     # Static headers will be attached to every export.
     headers:
-    - X-Scope-OrgID: example_tenant
-
+    - X-Cluster-Name: yyzz
+        
     # wait_for_ready lets the producer block until the connection
     # is ready.
     wait_for_ready: true
@@ -42,16 +50,26 @@ exporters:
       # to maximize throughput.
       num_streams: 4
 
-  logging:
+    # Associate the headers_setter extension with this exporter.
+    auth:
+      authenticator: headers_setter
+
+  logging:      
     verbosity: normal
 
+processors:
+  # Note we have omitted a batch processor because the batch processor
+  # does not pass through per-request metadata.
+
 service:
+  extensions: [headers_setter]
   pipelines:
     traces:
       receivers: [otlp/standard]
-      processors: [batch]
+      processors: []
       exporters: [logging, otlp/arrow]
 
   telemetry:
+    # Enable a prometheus /metrics endpoint on :8888
     metrics:
       address: 127.0.0.1:8888
