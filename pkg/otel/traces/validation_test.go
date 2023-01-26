@@ -53,6 +53,7 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer tb.Release()
 	err = tb.Append(expectedRequest.Traces())
 	if err != nil {
 		t.Fatal(err)

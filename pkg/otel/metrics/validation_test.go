@@ -61,6 +61,7 @@ func TestBackAndForthConversion(t *testing.T) {
 	defer metricsSchema.Release()
 	lb, err := ametrics.NewMetricsBuilder(metricsSchema)
 	require.NoError(t, err)
+	defer lb.Release()
 	err = lb.Append(expectedRequest.Metrics())
 	require.NoError(t, err)
 	var record arrow.Record

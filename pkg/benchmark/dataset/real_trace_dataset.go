@@ -91,6 +91,10 @@ func NewRealTraceDataset(path string, sortOrder []string) *RealTraceDataset {
 	return ds
 }
 
+func (d *RealTraceDataset) Resize(size int) {
+	d.spans = d.spans[:size]
+}
+
 func (d *RealTraceDataset) SizeInBytes() int {
 	return d.sizeInBytes
 }

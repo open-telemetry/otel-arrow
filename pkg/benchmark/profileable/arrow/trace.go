@@ -68,8 +68,12 @@ func (s *TraceProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *TraceProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
 }
-func (s *TraceProfileable) StartProfiling(_ io.Writer)       {}
-func (s *TraceProfileable) EndProfiling(_ io.Writer)         {}
+func (s *TraceProfileable) StartProfiling(_ io.Writer) {
+	s.producer = arrow_record.NewProducer()
+}
+func (s *TraceProfileable) EndProfiling(_ io.Writer) {
+	s.producer.Close()
+}
 func (s *TraceProfileable) InitBatchSize(_ io.Writer, _ int) {}
 func (s *TraceProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	s.traces = s.dataset.Traces(startAt, size)
@@ -130,4 +134,6 @@ func (s *TraceProfileable) Clear() {
 	s.traces = nil
 	s.batchArrowRecords = s.batchArrowRecords[:0]
 }
-func (s *TraceProfileable) ShowStats() {}
+func (s *TraceProfileable) ShowStats() {
+	s.producer.ShowStats()
+}

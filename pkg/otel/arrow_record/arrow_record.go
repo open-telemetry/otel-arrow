@@ -18,7 +18,6 @@ import (
 	"github.com/apache/arrow/go/v11/arrow"
 
 	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
-	arrow2 "github.com/f5/otel-arrow-adapter/pkg/arrow"
 )
 
 type PayloadType = v1.OtlpArrowPayloadType
@@ -34,9 +33,9 @@ type RecordMessage struct {
 
 // NewMetricsMessage creates a reference to a new RecordMessage from a given Arrow Record representing a collection of
 // metrics.
-func NewMetricsMessage(record arrow.Record) *RecordMessage {
+func NewMetricsMessage(schemaID string, record arrow.Record) *RecordMessage {
 	return &RecordMessage{
-		subStreamId: arrow2.SchemaToID(record.Schema()),
+		subStreamId: schemaID,
 		payloadType: v1.OtlpArrowPayloadType_METRICS,
 		record:      record,
 	}
@@ -44,10 +43,10 @@ func NewMetricsMessage(record arrow.Record) *RecordMessage {
 
 // NewLogsMessage creates a reference to a new RecordMessage from a given Arrow Record representing a collection of
 // logs.
-func NewLogsMessage(record arrow.Record) *RecordMessage {
+func NewLogsMessage(schemaID string, record arrow.Record) *RecordMessage {
 	record.Schema()
 	return &RecordMessage{
-		subStreamId: arrow2.SchemaToID(record.Schema()),
+		subStreamId: schemaID,
 		payloadType: v1.OtlpArrowPayloadType_LOGS,
 		record:      record,
 	}
@@ -55,9 +54,9 @@ func NewLogsMessage(record arrow.Record) *RecordMessage {
 
 // NewTraceMessage creates a reference to a new RecordMessage from a given Arrow Record representing a collection of
 // traces.
-func NewTraceMessage(record arrow.Record) *RecordMessage {
+func NewTraceMessage(schemaID string, record arrow.Record) *RecordMessage {
 	return &RecordMessage{
-		subStreamId: arrow2.SchemaToID(record.Schema()),
+		subStreamId: schemaID,
 		payloadType: v1.OtlpArrowPayloadType_SPANS,
 		record:      record,
 	}

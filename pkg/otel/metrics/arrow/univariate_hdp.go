@@ -179,11 +179,7 @@ func (b *HistogramDataPointBuilder) Append(hdp pmetric.HistogramDataPoint, smdat
 	} else {
 		b.elb.Append(false)
 	}
-	if hdp.Flags() != 0 {
-		b.fb.Append(uint32(hdp.Flags()))
-	} else {
-		b.fb.AppendNull()
-	}
+	b.fb.Append(uint32(hdp.Flags()))
 
 	if hdp.HasMin() {
 		b.hmib.Append(hdp.Min())

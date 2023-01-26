@@ -44,22 +44,29 @@ type MetricsBuilder struct {
 
 // NewMetricsBuilder creates a new MetricsBuilder with a given allocator.
 func NewMetricsBuilder(schema *acommon.AdaptiveSchema) (*MetricsBuilder, error) {
-	builder := schema.RecordBuilder()
-	err := schema.InitDictionaryBuilders(builder)
-	if err != nil {
-		return nil, err
-	}
-	rmb, ok := builder.Field(0).(*array.ListBuilder)
-	if !ok {
-		return nil, fmt.Errorf("expected field 0 to be a list builder, got %T", builder.Field(0))
-	}
-	return &MetricsBuilder{
+	metricsBuilder := &MetricsBuilder{
 		released: false,
 		schema:   schema,
-		builder:  builder,
-		rmb:      rmb,
-		rmp:      ResourceMetricsBuilderFrom(rmb.ValueBuilder().(*array.StructBuilder)),
-	}, nil
+	}
+	if err := metricsBuilder.init(); err != nil {
+		return nil, err
+	}
+	return metricsBuilder, nil
+}
+
+func (b *MetricsBuilder) init() error {
+	if b.builder != nil {
+		b.builder.Release()
+	}
+
+	b.builder = b.schema.RecordBuilder()
+	rmb, ok := b.builder.Field(0).(*array.ListBuilder)
+	if !ok {
+		return fmt.Errorf("expected field 0 to be a list builder, got %T", b.builder.Field(0))
+	}
+	b.rmb = rmb
+	b.rmp = ResourceMetricsBuilderFrom(rmb.ValueBuilder().(*array.StructBuilder))
+	return nil
 }
 
 // Build builds an Arrow Record from the builder.
@@ -71,12 +78,16 @@ func (b *MetricsBuilder) Build() (arrow.Record, error) {
 		return nil, fmt.Errorf("resource metrics builder already released")
 	}
 
-	defer b.Release()
-
 	record := b.builder.NewRecord()
 
 	overflowDetected, updates := b.schema.Analyze(record)
 	if overflowDetected {
+		// Dictionary overflow detected =>
+		// * Update the schema
+		// * Reinitialize the trace builder
+
+		// The existing record is no longer valid, release it.
+		// A new record will be built after the schema update.
 		record.Release()
 
 		// Build a list of fields that overflowed
@@ -86,6 +97,9 @@ func (b *MetricsBuilder) Build() (arrow.Record, error) {
 		}
 
 		b.schema.UpdateSchema(updates)
+		if err := b.init(); err != nil {
+			return nil, err
+		}
 
 		return nil, &acommon.DictionaryOverflowError{FieldNames: fieldNames}
 	}

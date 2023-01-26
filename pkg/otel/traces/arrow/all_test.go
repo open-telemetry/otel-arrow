@@ -220,6 +220,7 @@ func TestTraces(t *testing.T) {
 	defer traceSchema.Release()
 	tb, err := NewTracesBuilder(traceSchema)
 	require.NoError(t, err)
+	defer tb.Release()
 
 	if err := tb.Append(Traces()); err != nil {
 		t.Fatal(err)

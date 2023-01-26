@@ -50,6 +50,7 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	defer logsSchema.Release()
 	lb, err := logsarrow.NewLogsBuilder(logsSchema)
 	require.NoError(t, err)
+	defer lb.Release()
 	err = lb.Append(expectedRequest.Logs())
 	require.NoError(t, err)
 	record, err := lb.Build()

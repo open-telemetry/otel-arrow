@@ -445,6 +445,7 @@ func TestMetrics(t *testing.T) {
 	defer metricsSchema.Release()
 	sb, err := NewMetricsBuilder(metricsSchema)
 	require.NoError(t, err)
+	defer sb.Release()
 
 	err = sb.Append(Metrics1())
 	require.NoError(t, err)

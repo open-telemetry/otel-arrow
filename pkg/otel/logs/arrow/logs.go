@@ -44,22 +44,29 @@ type LogsBuilder struct {
 
 // NewLogsBuilder creates a new LogsBuilder with a given allocator.
 func NewLogsBuilder(schema *acommon.AdaptiveSchema) (*LogsBuilder, error) {
-	builder := schema.RecordBuilder()
-	err := schema.InitDictionaryBuilders(builder)
-	if err != nil {
-		return nil, err
-	}
-	rlb, ok := builder.Field(0).(*array.ListBuilder)
-	if !ok {
-		return nil, fmt.Errorf("expected field 0 to be a list, got %T", builder.Field(0))
-	}
-	return &LogsBuilder{
+	builder := &LogsBuilder{
 		released: false,
 		schema:   schema,
-		builder:  builder,
-		rlb:      rlb,
-		rlp:      ResourceLogsBuilderFrom(rlb.ValueBuilder().(*array.StructBuilder)),
-	}, nil
+	}
+	if err := builder.init(); err != nil {
+		return nil, err
+	}
+	return builder, nil
+}
+
+func (b *LogsBuilder) init() error {
+	if b.builder != nil {
+		b.builder.Release()
+	}
+
+	b.builder = b.schema.RecordBuilder()
+	rlb, ok := b.builder.Field(0).(*array.ListBuilder)
+	if !ok {
+		return fmt.Errorf("expected field 0 to be a list builder, got %T", b.builder.Field(0))
+	}
+	b.rlb = rlb
+	b.rlp = ResourceLogsBuilderFrom(rlb.ValueBuilder().(*array.StructBuilder))
+	return nil
 }
 
 // Build builds an Arrow Record from the builder.
@@ -71,12 +78,16 @@ func (b *LogsBuilder) Build() (arrow.Record, error) {
 		return nil, fmt.Errorf("resource logs builder already released")
 	}
 
-	defer b.Release()
-
 	record := b.builder.NewRecord()
 
 	overflowDetected, updates := b.schema.Analyze(record)
 	if overflowDetected {
+		// Dictionary overflow detected =>
+		// * Update the schema
+		// * Reinitialize the trace builder
+
+		// The existing record is no longer valid, release it.
+		// A new record will be built after the schema update.
 		record.Release()
 
 		// Build a list of fields that overflowed
@@ -86,6 +97,9 @@ func (b *LogsBuilder) Build() (arrow.Record, error) {
 		}
 
 		b.schema.UpdateSchema(updates)
+		if err := b.init(); err != nil {
+			return nil, err
+		}
 
 		return nil, &acommon.DictionaryOverflowError{FieldNames: fieldNames}
 	}

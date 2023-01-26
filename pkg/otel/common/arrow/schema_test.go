@@ -22,6 +22,7 @@ import (
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -234,9 +235,7 @@ func TestInitSizeBuilders(t *testing.T) {
 
 	pool := memory.NewGoAllocator()
 	sm := NewAdaptiveSchema(pool, schema, WithDictInitIndexSize(math.MaxUint8))
-	recordBuilder := array.NewRecordBuilder(pool, sm.Schema())
-	err := sm.InitDictionaryBuilders(recordBuilder)
-	require.NoError(t, err)
+	recordBuilder := sm.RecordBuilder()
 
 	field1, _ := recordBuilder.Field(0).(*array.BinaryDictionaryBuilder)
 	field2, _ := recordBuilder.Field(1).(*array.StructBuilder)
@@ -263,16 +262,36 @@ func TestInitSizeBuilders(t *testing.T) {
 
 	record := recordBuilder.NewRecord()
 
-	// After this point, the builders should have a size based on the previous batch size, i.e. the next
-	// power of 2 after 127 (127 being the last batch size).
-	sm.Analyze(record)
+	overflowDetected, schemaUpdates := sm.Analyze(record)
+	assert.False(t, overflowDetected)
+	assert.Len(t, schemaUpdates, 0)
 
-	recordBuilder = array.NewRecordBuilder(pool, sm.Schema())
-	err = sm.InitDictionaryBuilders(recordBuilder)
-	require.NoError(t, err)
+	recordBuilder = sm.RecordBuilder()
 
-	require.Equal(t, 128, recordBuilder.Field(0).(*array.BinaryDictionaryBuilder).Cap())
-	require.Equal(t, 128, recordBuilder.Field(1).(*array.StructBuilder).Cap())
-	require.Equal(t, 128, recordBuilder.Field(1).(*array.StructBuilder).FieldBuilder(0).(*array.BinaryDictionaryBuilder).Cap())
-	require.Equal(t, 128, recordBuilder.Field(1).(*array.StructBuilder).FieldBuilder(1).(*array.BinaryDictionaryBuilder).Cap())
+	// Test dictionary overflow and transfer of dictionary values to the new RecordBuilder (with a new schema)
+	// Add more than 255 dictinct values to the dictionaries. This should trigger a schema update.
+	for j := 0; j < 300; j++ {
+		if err := field1.AppendString(fmt.Sprintf(`value_%d"`, j%100)); err != nil {
+			t.Fatal(err)
+		}
+		field2.Append(true)
+		if err := field21.AppendString(fmt.Sprintf(`value_%d"`, j)); err != nil {
+			t.Fatal(err)
+		}
+		if err := field22.Append([]byte(fmt.Sprintf(`value_%d"`, j))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record = recordBuilder.NewRecord()
+
+	overflowDetected, schemaUpdates = sm.Analyze(record)
+	assert.True(t, overflowDetected)
+	sm.UpdateSchema(schemaUpdates)
+
+	recordBuilder = sm.RecordBuilder()
+
+	// Tne new RecordBuilder should have the dictionaries initialized with the values from the previous batch.
+	require.Equal(t, 100, recordBuilder.Field(0).(*array.BinaryDictionaryBuilder).NewDictionaryArray().Dictionary().Len())
+	require.Equal(t, 300, recordBuilder.Field(1).(*array.StructBuilder).FieldBuilder(0).(*array.BinaryDictionaryBuilder).NewDictionaryArray().Dictionary().Len())
+	require.Equal(t, 300, recordBuilder.Field(1).(*array.StructBuilder).FieldBuilder(1).(*array.BinaryDictionaryBuilder).NewDictionaryArray().Dictionary().Len())
 }

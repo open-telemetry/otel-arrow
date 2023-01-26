@@ -132,10 +132,6 @@ func (b *NumberDataPointBuilder) Append(ndp pmetric.NumberDataPoint, smdata *Sco
 	} else {
 		b.elb.Append(false)
 	}
-	if ndp.Flags() == 0 {
-		b.fb.AppendNull()
-	} else {
-		b.fb.Append(uint32(ndp.Flags()))
-	}
+	b.fb.Append(uint32(ndp.Flags()))
 	return nil
 }

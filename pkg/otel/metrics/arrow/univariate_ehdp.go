@@ -151,11 +151,7 @@ func (b *EHistogramDataPointBuilder) Append(hdp pmetric.ExponentialHistogramData
 	if err != nil {
 		return err
 	}
-	if hdp.Flags() != 0 {
-		b.fb.Append(uint32(hdp.Flags()))
-	} else {
-		b.fb.AppendNull()
-	}
+	b.fb.Append(uint32(hdp.Flags()))
 
 	b.AppendMinMax(hdp)
 

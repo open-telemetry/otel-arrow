@@ -127,6 +127,7 @@ func TestLogs(t *testing.T) {
 	defer logsSchema.Release()
 	tb, err := NewLogsBuilder(logsSchema)
 	require.NoError(t, err)
+	defer tb.Release()
 
 	err = tb.Append(Logs())
 	require.NoError(t, err)

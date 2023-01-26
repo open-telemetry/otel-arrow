@@ -778,6 +778,6 @@ func (sp *SystemProbe) MeasureUsage() *CpuMemUsage {
 
 func (u *CpuMemUsage) ToString() string {
 	malloc, unitPrefix := humanize.ComputeSI(float64(u.malloc))
-	return fmt.Sprintf("heap{%s, %6.2f%s malloc/s, bw=%s/s, #gc=%2d}",
+	return fmt.Sprintf("heap{%s, %6.2f%s mallocs, bw=%s/s, #gc=%2d}",
 		humanize.Bytes(u.heap), malloc, unitPrefix, humanize.Bytes(uint64(u.bandwidth)), u.gcCount)
 }

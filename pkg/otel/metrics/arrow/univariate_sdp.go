@@ -136,10 +136,6 @@ func (b *UnivariateSummaryDataPointBuilder) Append(sdp pmetric.SummaryDataPoint,
 	} else {
 		b.qvlb.Append(false)
 	}
-	if sdp.Flags() != 0 {
-		b.fb.Append(uint32(sdp.Flags()))
-	} else {
-		b.fb.AppendNull()
-	}
+	b.fb.Append(uint32(sdp.Flags()))
 	return nil
 }
