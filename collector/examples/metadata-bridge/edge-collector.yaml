@@ -10,14 +10,25 @@ receivers:
         # per-request metadata through the pipeline, in order for the
         # headers_setter extension to see it.
         include_metadata: true
+        # perform an auth on the client
+        auth:
+          authenticator: basicauth
 
 extensions:
   # Configure the headers_setter extension to propagate the
-  # X-Scope-OrgID property in the outgoing context.
+  # X-Scope-OrgID and Authorization properties in the outgoing
+  # context.
   headers_setter:
     headers:
       - key: X-Scope-OrgID
         from_context: X-Scope-OrgID
+      - key: Authorization
+        from_context: Authorization
+  # Basicauth uses the Authorization property.
+  basicauth:
+    htpasswd: 
+      inline: |
+        testuser:testpw
 
 exporters:
   # The OTLP/Arrow exporter sends to a local corresponding with
@@ -32,9 +43,17 @@ exporters:
       insecure: true
 
     # Static headers will be attached to every export.
+    # Note authorization is set to
+    #
+    # func(user, pw string) string {
+    #   return "Basic " + base64.StdEncoding.EncodeToString([]byte(user + ":" + pw))
+    # }("arrowstream", "arrowpw")
+    #
+    # which is authorized by the basicauth extension in saas-collector.yaml.
     headers:
     - X-Cluster-Name: yyzz
-        
+    - Authorization: "Basic YXJyb3dzdHJlYW06YXJyb3dwdw=="
+
     # wait_for_ready lets the producer block until the connection
     # is ready.
     wait_for_ready: true
@@ -62,7 +81,7 @@ processors:
   # does not pass through per-request metadata.
 
 service:
-  extensions: [headers_setter]
+  extensions: [headers_setter, basicauth]
   pipelines:
     traces:
       receivers: [otlp/standard]

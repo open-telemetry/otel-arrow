@@ -30,6 +30,7 @@ import (
 
 	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
+	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/http2/hpack"
@@ -44,6 +45,7 @@ import (
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
+	"go.opentelemetry.io/collector/config/configauth"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/confignet"
@@ -51,6 +53,7 @@ import (
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumertest"
+	"go.opentelemetry.io/collector/extension/auth"
 	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
 	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testutil"
 	"go.opentelemetry.io/collector/obsreport/obsreporttest"
@@ -58,6 +61,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"go.opentelemetry.io/collector/receiver"
+	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow/mock"
 	"go.opentelemetry.io/collector/receiver/receivertest"
 	semconv "go.opentelemetry.io/collector/semconv/v1.5.0"
 )
@@ -1205,4 +1209,101 @@ func TestGRPCArrowReceiver(t *testing.T) {
 			require.Equal(t, vals, sink.MDs[idx].Get(key), "for key %s", key)
 		}
 	}
+}
+
+type hostWithExtensions struct {
+	component.Host
+	exts map[component.ID]component.Component
+}
+
+func newHostWithExtensions(exts map[component.ID]component.Component) component.Host {
+	return &hostWithExtensions{
+		Host: componenttest.NewNopHost(),
+		exts: exts,
+	}
+}
+
+func (h *hostWithExtensions) GetExtensions() map[component.ID]component.Component {
+	return h.exts
+}
+
+func newTestAuthExtension(t *testing.T, authFunc func(ctx context.Context, hdrs map[string][]string) (context.Context, error)) auth.Server {
+	ctrl := gomock.NewController(t)
+	as := mock.NewMockServer(ctrl)
+	as.EXPECT().Authenticate(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(authFunc)
+	return as
+}
+
+func TestGRPCArrowReceiverAuth(t *testing.T) {
+	addr := testutil.GetAvailableLocalAddress(t)
+	sink := new(tracesSinkWithMetadata)
+
+	authID := component.NewID("testauth")
+
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig().(*Config)
+	cfg.GRPC.NetAddr.Endpoint = addr
+	cfg.GRPC.IncludeMetadata = true
+	cfg.GRPC.Auth = &configauth.Authentication{
+		AuthenticatorID: authID,
+	}
+	cfg.HTTP = nil
+	cfg.Arrow.Enabled = true
+	id := component.NewID("arrow")
+	ocr := newReceiver(t, factory, cfg, id, sink, nil)
+
+	require.NotNil(t, ocr)
+
+	const errorString = "very much not authorized"
+
+	type inStreamCtx struct{}
+
+	host := newHostWithExtensions(
+		map[component.ID]component.Component{
+			authID: newTestAuthExtension(t, func(ctx context.Context, hdrs map[string][]string) (context.Context, error) {
+				if ctx.Value(inStreamCtx{}) != nil {
+					return ctx, fmt.Errorf(errorString)
+				}
+				return context.WithValue(ctx, inStreamCtx{}, t), nil
+			}),
+		},
+	)
+
+	require.NoError(t, ocr.Start(context.Background(), host))
+
+	cc, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	client := arrowpb.NewArrowStreamServiceClient(cc)
+	stream, err := client.ArrowStream(ctx, grpc.WaitForReady(true))
+	require.NoError(t, err)
+	producer := arrowRecord.NewProducer()
+
+	// Repeatedly send traces via arrow. Expect an auth error.
+	for i := 0; i < 10; i++ {
+		td := testdata.GenerateTraces(2)
+
+		batch, err := producer.BatchArrowRecordsFromTraces(td)
+		require.NoError(t, err)
+
+		err = stream.Send(batch)
+		require.NoError(t, err)
+
+		resp, err := stream.Recv()
+		require.NoError(t, err)
+		// The stream has to be successful to get this far.  The
+		// authenticator fails every data item:
+		require.Equal(t, 1, len(resp.Statuses))
+		require.Equal(t, batch.BatchId, resp.Statuses[0].BatchId)
+		require.Equal(t, arrowpb.StatusCode_ERROR, resp.Statuses[0].StatusCode)
+		require.Equal(t, errorString, resp.Statuses[0].ErrorMessage)
+	}
+
+	assert.NoError(t, cc.Close())
+	require.NoError(t, ocr.Shutdown(context.Background()))
+
+	assert.Equal(t, 0, len(sink.AllTraces()))
 }

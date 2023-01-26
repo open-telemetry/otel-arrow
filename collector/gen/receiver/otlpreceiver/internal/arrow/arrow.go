@@ -29,6 +29,7 @@ import (
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumererror"
+	"go.opentelemetry.io/collector/extension/auth"
 	"go.opentelemetry.io/collector/obsreport"
 	"go.opentelemetry.io/collector/receiver"
 )
@@ -58,6 +59,7 @@ type Receiver struct {
 	telemetry   component.TelemetrySettings
 	obsrecv     *obsreport.Receiver
 	gsettings   *configgrpc.GRPCServerSettings
+	authServer  auth.Server
 	newConsumer func() arrowRecord.ConsumerAPI
 }
 
@@ -67,6 +69,7 @@ func New(
 	cs Consumers,
 	set receiver.CreateSettings,
 	gsettings *configgrpc.GRPCServerSettings,
+	authServer auth.Server,
 	newConsumer func() arrowRecord.ConsumerAPI,
 ) (*Receiver, error) {
 	obs, err := obsreport.NewReceiver(obsreport.ReceiverSettings{
@@ -81,6 +84,7 @@ func New(
 		Consumers:   cs,
 		obsrecv:     obs,
 		telemetry:   set.TelemetrySettings,
+		authServer:  authServer,
 		newConsumer: newConsumer,
 		gsettings:   gsettings,
 	}, nil
@@ -130,20 +134,20 @@ func newHeaderReceiver(streamCtx context.Context, includeMetadata bool) *headerR
 // combineHeaders calculates per-request Metadata by combining the stream's
 // client.Info with additional key:values associated with the arrow batch.
 // This is safe to call when h is nil.
-func (h *headerReceiver) combineHeaders(ctx context.Context, hdrsBytes []byte) (context.Context, error) {
+func (h *headerReceiver) combineHeaders(ctx context.Context, hdrsBytes []byte) (context.Context, map[string][]string, error) {
 	if h == nil || (len(hdrsBytes) == 0 && len(h.streamHdrs) == 0) {
-		return ctx, nil
+		return ctx, nil, nil
 	}
 
 	if len(hdrsBytes) == 0 {
-		return h.newContext(ctx, h.streamHdrs), nil
+		return h.newContext(ctx, h.streamHdrs), h.streamHdrs, nil
 	}
 
 	h.tmpHdrs = map[string][]string{}
 
-	// Write calls the emitFunc, appending directly into `tmpHrs`.
+	// Write calls the emitFunc, appending directly into `tmpHdrs`.
 	if _, err := h.decoder.Write(hdrsBytes); err != nil {
-		return ctx, err
+		return ctx, nil, err
 	}
 
 	// Add streamHdrs that were not carried in the per-request headers.
@@ -167,7 +171,7 @@ func (h *headerReceiver) combineHeaders(ctx context.Context, hdrsBytes []byte) (
 	newHdrs := h.tmpHdrs
 	h.tmpHdrs = nil
 
-	return h.newContext(ctx, newHdrs), nil
+	return h.newContext(ctx, newHdrs), newHdrs, nil
 }
 
 // tmpHdrsAppend appends to tmpHdrs, from decoder's emit function.
@@ -212,15 +216,29 @@ func (r *Receiver) ArrowStream(serverStream arrowpb.ArrowStreamService_ArrowStre
 		}
 
 		// Check for optional headers and set the incoming context.
-		thisCtx, err := hrcv.combineHeaders(streamCtx, req.GetHeaders())
+		thisCtx, authHdrs, err := hrcv.combineHeaders(streamCtx, req.GetHeaders())
 		if err != nil {
 			// Failing to parse the incoming headers breaks the stream.
 			return err
 		}
 
+		var authErr error
+		if r.authServer != nil {
+			var newCtx context.Context
+			if newCtx, err = r.authServer.Authenticate(thisCtx, authHdrs); err != nil {
+				authErr = err
+			} else {
+				thisCtx = newCtx
+			}
+		}
+
 		// Process records: an error in this code path does
 		// not necessarily break the stream.
-		err = r.processRecords(thisCtx, ac, req)
+		if authErr != nil {
+			err = authErr
+		} else {
+			err = r.processRecords(thisCtx, ac, req)
+		}
 
 		// Note: Statuses can be batched: TODO: should we?
 		resp := &arrowpb.BatchStatus{}

@@ -11,6 +11,9 @@ receivers:
         # per-request metadata through to the pipeline.  This
         # is supported for both arrow and standard modes.
         include_metadata: true
+        # perform an auth on the SaaS
+        auth:
+          authenticator: basicauth
 
       # Enable arrow for the bridge.
       arrow:
@@ -40,9 +43,17 @@ extensions:
         from_context: X-Scope-OrgID
       - key: X-Cluster-Name
         from_context: X-Cluster-Name
+      - key: Authorization
+        from_context: Authorization
+  # Configure basic auth for incoming data.
+  basicauth:
+    htpasswd: 
+      inline: |
+        testuser:testpw
+        arrowstream:arrowpw
 
 service:
-  extensions: [headers_setter]
+  extensions: [headers_setter, basicauth]
   pipelines:
     traces:
       receivers: [otlp]

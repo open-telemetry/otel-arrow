@@ -31,6 +31,7 @@ import (
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/extension/auth"
 	"go.opentelemetry.io/collector/obsreport"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
@@ -151,7 +152,15 @@ func (r *otlpReceiver) startProtocolServers(host component.Host) error {
 		}
 
 		if r.cfg.Arrow != nil && r.cfg.Arrow.Enabled {
-			r.arrowReceiver, err = arrow.New(r.settings.ID, arrow.Consumers(r), r.settings, r.cfg.GRPC, func() arrowRecord.ConsumerAPI {
+			var authServer auth.Server
+			if r.cfg.GRPC.Auth != nil {
+				authServer, err = r.cfg.GRPC.Auth.GetServerAuthenticator(host.GetExtensions())
+				if err != nil {
+					return err
+				}
+			}
+
+			r.arrowReceiver, err = arrow.New(r.settings.ID, arrow.Consumers(r), r.settings, r.cfg.GRPC, authServer, func() arrowRecord.ConsumerAPI {
 				return arrowRecord.NewConsumer()
 			})
 			if err != nil {

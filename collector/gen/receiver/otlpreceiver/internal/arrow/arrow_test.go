@@ -40,6 +40,7 @@ import (
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/extension/auth"
 	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -325,10 +326,11 @@ func (ctc *commonTestCase) newErrorConsumer() arrowRecord.ConsumerAPI {
 	return cons
 }
 
-func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, gopts ...func(cfg *configgrpc.GRPCServerSettings)) {
+func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opts ...func(*configgrpc.GRPCServerSettings, *auth.Server)) {
+	var authServer auth.Server
 	gsettings := &configgrpc.GRPCServerSettings{}
-	for _, gf := range gopts {
-		gf(gsettings)
+	for _, gf := range opts {
+		gf(gsettings, &authServer)
 	}
 	rcvr, err := New(
 		component.NewID("arrowtest"),
@@ -338,6 +340,7 @@ func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, gop
 			BuildInfo:         component.NewDefaultBuildInfo(),
 		},
 		gsettings,
+		authServer,
 		newConsumer,
 	)
 	if err != nil {
@@ -579,7 +582,7 @@ func TestReceiverEOF(t *testing.T) {
 	require.True(t, errors.Is(err, io.EOF))
 }
 
-func TestReceiverHeaders(t *testing.T) {
+func TestReceiverHeadersNoAuth(t *testing.T) {
 	t.Run("include", func(t *testing.T) { testReceiverHeaders(t, true) })
 	t.Run("noinclude", func(t *testing.T) { testReceiverHeaders(t, false) })
 }
@@ -600,7 +603,7 @@ func testReceiverHeaders(t *testing.T, includeMeta bool) {
 
 	ctc.stream.EXPECT().Send(gomock.Any()).Times(len(expectData)).Return(nil)
 
-	ctc.start(ctc.newRealConsumer, func(gsettings *configgrpc.GRPCServerSettings) {
+	ctc.start(ctc.newRealConsumer, func(gsettings *configgrpc.GRPCServerSettings, _ *auth.Server) {
 		gsettings.IncludeMetadata = includeMeta
 	})
 
@@ -691,7 +694,7 @@ func TestHeaderReceiverStreamContextOnly(t *testing.T) {
 	h := newHeaderReceiver(ctx, true)
 
 	for i := 0; i < 3; i++ {
-		cc, err := h.combineHeaders(ctx, nil)
+		cc, _, err := h.combineHeaders(ctx, nil)
 
 		require.NoError(t, err)
 		requireContainsAll(t, client.FromContext(cc).Metadata, expect)
@@ -709,7 +712,7 @@ func TestHeaderReceiverNoIncludeMetadata(t *testing.T) {
 	h := newHeaderReceiver(ctx, false)
 
 	for i := 0; i < 3; i++ {
-		cc, err := h.combineHeaders(ctx, nil)
+		cc, _, err := h.combineHeaders(ctx, nil)
 
 		require.NoError(t, err)
 		requireContainsNone(t, client.FromContext(cc).Metadata, noExpect)
@@ -743,7 +746,7 @@ func TestHeaderReceiverRequestNoStreamMetadata(t *testing.T) {
 			}
 		}
 
-		cc, err := h.combineHeaders(ctx, hpb.Bytes())
+		cc, _, err := h.combineHeaders(ctx, hpb.Bytes())
 
 		require.NoError(t, err)
 		requireContainsAll(t, client.FromContext(cc).Metadata, expect)
@@ -785,7 +788,7 @@ func TestHeaderReceiverBothMetadata(t *testing.T) {
 			}
 		}
 
-		cc, err := h.combineHeaders(ctx, hpb.Bytes())
+		cc, _, err := h.combineHeaders(ctx, hpb.Bytes())
 
 		require.NoError(t, err)
 		requireContainsAll(t, client.FromContext(cc).Metadata, expect)
@@ -831,9 +834,157 @@ func TestHeaderReceiverDuplicateMetadata(t *testing.T) {
 			}
 		}
 
-		cc, err := h.combineHeaders(ctx, hpb.Bytes())
+		cc, _, err := h.combineHeaders(ctx, hpb.Bytes())
 
 		require.NoError(t, err)
 		requireContainsAll(t, client.FromContext(cc).Metadata, expectCombined)
+	}
+}
+
+func TestReceiverAuthHeadersStream(t *testing.T) {
+	t.Run("no-metadata", func(t *testing.T) { testReceiverAuthHeaders(t, false, false) })
+	t.Run("per-stream", func(t *testing.T) { testReceiverAuthHeaders(t, true, false) })
+	t.Run("per-data", func(t *testing.T) { testReceiverAuthHeaders(t, true, true) })
+}
+
+func testReceiverAuthHeaders(t *testing.T, includeMeta bool, dataAuth bool) {
+	tc := healthyTestChannel{}
+	ctc := newCommonTestCase(t, tc)
+
+	expectData := []map[string][]string{
+		{"auth": []string{"true"}},
+		nil,
+		{"auth": []string{"false"}},
+		nil,
+	}
+
+	var recvBatches []*arrowpb.BatchStatus
+
+	ctc.stream.EXPECT().Send(gomock.Any()).Times(len(expectData)).DoAndReturn(func(batch *arrowpb.BatchStatus) error {
+		recvBatches = append(recvBatches, batch)
+		return nil
+	})
+
+	var authCall *gomock.Call
+	ctc.start(ctc.newRealConsumer, func(gsettings *configgrpc.GRPCServerSettings, authPtr *auth.Server) {
+		gsettings.IncludeMetadata = includeMeta
+
+		as := mock.NewMockServer(ctc.ctrl)
+		*authPtr = as
+
+		authCall = as.EXPECT().Authenticate(gomock.Any(), gomock.Any()).AnyTimes()
+	})
+
+	dataCount := 0
+
+	authCall.DoAndReturn(func(ctx context.Context, hdrs map[string][]string) (context.Context, error) {
+		dataCount++
+		if !dataAuth {
+			return ctx, nil
+		}
+
+		ok := false
+		for _, val := range hdrs["auth"] {
+			ok = ok || (val == "true")
+		}
+
+		if ok {
+			newmd := map[string][]string{}
+			for k, v := range hdrs {
+				newmd[k] = v
+			}
+			newmd["has_auth"] = []string{":+1:", ":100:"}
+			return client.NewContext(ctx, client.Info{
+				Metadata: client.NewMetadata(newmd),
+			}), nil
+		}
+		return ctx, fmt.Errorf("not authorized")
+	})
+
+	go func() {
+		var hpb bytes.Buffer
+		hpe := hpack.NewEncoder(&hpb)
+
+		for _, md := range expectData {
+			td := testdata.GenerateTraces(2)
+			batch, err := ctc.testProducer.BatchArrowRecordsFromTraces(td)
+			require.NoError(t, err)
+
+			if len(md) != 0 {
+
+				hpb.Reset()
+				for key, vals := range md {
+					for _, val := range vals {
+						err := hpe.WriteField(hpack.HeaderField{
+							Name:  key,
+							Value: val,
+						})
+						require.NoError(t, err)
+					}
+				}
+
+				batch.Headers = make([]byte, hpb.Len())
+				copy(batch.Headers, hpb.Bytes())
+			}
+			ctc.putBatch(batch, nil)
+		}
+		close(ctc.receive)
+	}()
+
+	var expectErrs []bool
+
+	for _, expect := range expectData {
+		// The static stream context contains one extra variable.
+		if expect == nil {
+			expect = map[string][]string{}
+		}
+		expect["stream_ctx"] = []string{"per-request"}
+
+		expectErr := false
+		if dataAuth {
+			hasAuth := false
+			for _, val := range expect["auth"] {
+				hasAuth = hasAuth || (val == "true")
+			}
+			if hasAuth {
+				expect["has_auth"] = []string{":+1:", ":100:"}
+			} else {
+				expectErr = true
+			}
+		}
+
+		expectErrs = append(expectErrs, expectErr)
+
+		if expectErr {
+			continue
+		}
+
+		info := client.FromContext((<-ctc.consume).Ctx)
+
+		for key, vals := range expect {
+			if includeMeta {
+				require.Equal(t, vals, info.Metadata.Get(key))
+			} else {
+				require.Equal(t, []string(nil), info.Metadata.Get(key))
+			}
+		}
+	}
+
+	err := ctc.wait()
+	require.Error(t, err)
+	require.True(t, errors.Is(err, io.EOF))
+
+	require.Equal(t, len(expectData), dataCount)
+
+	require.Equal(t, len(recvBatches), dataCount)
+
+	for idx, batch := range recvBatches {
+		if expectErrs[idx] {
+			require.Equal(t, 1, len(batch.Statuses))
+			require.Equal(t, arrowpb.StatusCode_ERROR, batch.Statuses[0].StatusCode)
+		} else {
+			require.Equal(t, 1, len(batch.Statuses))
+			require.Equal(t, arrowpb.StatusCode_OK, batch.Statuses[0].StatusCode)
+		}
 	}
 }
