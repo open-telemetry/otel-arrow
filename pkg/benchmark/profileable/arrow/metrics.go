@@ -34,6 +34,7 @@ type MetricsProfileable struct {
 	dataset           dataset.MetricsDataset
 	metrics           []pmetric.Metrics
 	producer          *arrow_record.Producer
+	consumer          *arrow_record.Consumer
 	batchArrowRecords []*colarspb.BatchArrowRecords
 	config            *benchmark.Config
 	pool              *memory.GoAllocator
@@ -43,8 +44,9 @@ func NewMetricsProfileable(tags []string, dataset dataset.MetricsDataset, config
 	return &MetricsProfileable{
 		tags:              tags,
 		dataset:           dataset,
-		compression:       benchmark.NoCompression(),
-		producer:          arrow_record.NewProducer(),
+		compression:       benchmark.Zstd(),
+		producer:          arrow_record.NewProducerWithOptions(arrow_record.WithNoZstd()),
+		consumer:          arrow_record.NewConsumer(),
 		batchArrowRecords: make([]*colarspb.BatchArrowRecords, 0, 10),
 		config:            config,
 		pool:              memory.NewGoAllocator(),
@@ -74,8 +76,11 @@ func (s *MetricsProfileable) InitBatchSize(_ io.Writer, _ int) {}
 func (s *MetricsProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	s.metrics = s.dataset.Metrics(startAt, size)
 }
-func (s *MetricsProfileable) CreateBatch(_ io.Writer, _, _ int) {
-	// Conversion of OTLP metrics to OTLP Arrow Records
+func (s *MetricsProfileable) ConvertOtlpToOtlpArrow(_ io.Writer, _, _ int) {
+	// In the OTLP Arrow exporter, incoming OTLP messages must be converted to
+	// OTLP Arrow messages.
+	// This step contains the conversion from OTLP to OTLP Arrow, the conversion to Arrow IPC,
+	// and the compression.
 	s.batchArrowRecords = make([]*colarspb.BatchArrowRecords, 0, len(s.metrics))
 	for _, metricsServiceRequest := range s.metrics {
 		bar, err := s.producer.BatchArrowRecordsFromMetrics(metricsServiceRequest)
@@ -90,6 +95,8 @@ func (s *MetricsProfileable) Process(io.Writer) string {
 	return ""
 }
 func (s *MetricsProfileable) Serialize(io.Writer) ([][]byte, error) {
+	// In the OTLP Arrow exporter, OTLP Arrow messages are serialized via the
+	// standard protobuf serialization process.
 	buffers := make([][]byte, len(s.batchArrowRecords))
 	for i, be := range s.batchArrowRecords {
 		bytes, err := proto.Marshal(be)
@@ -110,6 +117,19 @@ func (s *MetricsProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
 		s.batchArrowRecords[i] = be
 	}
 }
+
+func (s *MetricsProfileable) ConvertOtlpArrowToOtlp(_ io.Writer) {
+	for _, batchArrowRecords := range s.batchArrowRecords {
+		metrics, err := s.consumer.MetricsFrom(batchArrowRecords)
+		if err != nil {
+			panic(err)
+		}
+		if len(metrics) == 0 {
+			panic("no metrics")
+		}
+	}
+}
+
 func (s *MetricsProfileable) Clear() {
 	s.metrics = nil
 	s.batchArrowRecords = s.batchArrowRecords[:0]

@@ -36,6 +36,7 @@ type LogsProfileable struct {
 	dataset           dataset.LogsDataset
 	logs              []plog.Logs
 	producer          *arrow_record.Producer
+	consumer          *arrow_record.Consumer
 	batchArrowRecords []*v1.BatchArrowRecords
 	config            *benchmark.Config
 	pool              *memory.GoAllocator
@@ -45,8 +46,9 @@ func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *benc
 	return &LogsProfileable{
 		tags:              tags,
 		dataset:           dataset,
-		compression:       benchmark.NoCompression(),
-		producer:          arrow_record.NewProducer(),
+		compression:       benchmark.Zstd(),
+		producer:          arrow_record.NewProducerWithOptions(arrow_record.WithNoZstd()),
+		consumer:          arrow_record.NewConsumer(),
 		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
 		config:            config,
 		pool:              memory.NewGoAllocator(),
@@ -76,8 +78,11 @@ func (s *LogsProfileable) InitBatchSize(_ io.Writer, _ int) {}
 func (s *LogsProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	s.logs = s.dataset.Logs(startAt, size)
 }
-func (s *LogsProfileable) CreateBatch(_ io.Writer, _, _ int) {
-	// Conversion of OTLP metrics to OTLP Arrow Records
+func (s *LogsProfileable) ConvertOtlpToOtlpArrow(_ io.Writer, _, _ int) {
+	// In the OTLP Arrow exporter, incoming OTLP messages must be converted to
+	// OTLP Arrow messages.
+	// This step contains the conversion from OTLP to OTLP Arrow, the conversion to Arrow IPC,
+	// and the compression.
 	s.batchArrowRecords = make([]*v1.BatchArrowRecords, 0, len(s.logs))
 	for _, log := range s.logs {
 		bar, err := s.producer.BatchArrowRecordsFromLogs(log)
@@ -92,6 +97,8 @@ func (s *LogsProfileable) Process(io.Writer) string {
 	return ""
 }
 func (s *LogsProfileable) Serialize(io.Writer) ([][]byte, error) {
+	// In the OTLP Arrow exporter, OTLP Arrow messages are serialized via the
+	// standard protobuf serialization process.
 	buffers := make([][]byte, len(s.batchArrowRecords))
 	for i, be := range s.batchArrowRecords {
 		bytes, err := proto.Marshal(be)
@@ -103,6 +110,8 @@ func (s *LogsProfileable) Serialize(io.Writer) ([][]byte, error) {
 	return buffers, nil
 }
 func (s *LogsProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
+	// In the OTLP Arrow exporter, OTLP Arrow messages are deserialized via the
+	// standard protobuf deserialization process.
 	s.batchArrowRecords = make([]*v1.BatchArrowRecords, len(buffers))
 	for i, b := range buffers {
 		bar := &v1.BatchArrowRecords{}
@@ -110,6 +119,17 @@ func (s *LogsProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
 			panic(err)
 		}
 		s.batchArrowRecords[i] = bar
+	}
+}
+func (s *LogsProfileable) ConvertOtlpArrowToOtlp(_ io.Writer) {
+	for _, batchArrowRecords := range s.batchArrowRecords {
+		logs, err := s.consumer.LogsFrom(batchArrowRecords)
+		if err != nil {
+			panic(err)
+		}
+		if len(logs) == 0 {
+			panic("no logs")
+		}
 	}
 }
 func (s *LogsProfileable) Clear() {

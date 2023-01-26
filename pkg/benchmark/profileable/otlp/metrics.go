@@ -41,19 +41,36 @@ func (s *MetricsProfileable) Name() string {
 func (s *MetricsProfileable) Tags() []string {
 	return []string{s.compression.String()}
 }
+
 func (s *MetricsProfileable) DatasetSize() int { return s.dataset.Len() }
+
 func (s *MetricsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
 }
-func (s *MetricsProfileable) StartProfiling(io.Writer)           {}
-func (s *MetricsProfileable) EndProfiling(io.Writer)             {}
-func (s *MetricsProfileable) InitBatchSize(_ io.Writer, _ int)   {}
-func (s *MetricsProfileable) PrepareBatch(_ io.Writer, _, _ int) {}
-func (s *MetricsProfileable) CreateBatch(_ io.Writer, startAt, size int) {
+
+func (s *MetricsProfileable) StartProfiling(io.Writer) {}
+
+func (s *MetricsProfileable) EndProfiling(io.Writer) {}
+
+func (s *MetricsProfileable) InitBatchSize(_ io.Writer, _ int) {}
+
+func (s *MetricsProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	s.metrics = s.dataset.Metrics(startAt, size)
 }
-func (s *MetricsProfileable) Process(io.Writer) string { return "" }
+
+func (s *MetricsProfileable) ConvertOtlpToOtlpArrow(_ io.Writer, _, _ int) {
+	// In the standard OTLP exporter the incoming messages are already OTLP messages,
+	// so we don't need to create or convert them.
+}
+
+func (s *MetricsProfileable) Process(io.Writer) string {
+	// Not used in this benchmark
+	return ""
+}
+
 func (s *MetricsProfileable) Serialize(io.Writer) ([][]byte, error) {
+	// In the standard OTLP exporter, the incoming messages are serialized before being
+	// sent via the standard protobuf serialization process.
 	buffers := make([][]byte, len(s.metrics))
 	for i, m := range s.metrics {
 		r := pmetricotlp.NewExportRequestFromMetrics(m)
@@ -65,7 +82,10 @@ func (s *MetricsProfileable) Serialize(io.Writer) ([][]byte, error) {
 	}
 	return buffers, nil
 }
+
 func (s *MetricsProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
+	// In the standard OTLP receiver the incoming messages are deserialized before being
+	// sent to the collector pipeline.
 	s.metrics = make([]pmetric.Metrics, len(buffers))
 	for i, b := range buffers {
 		r := pmetricotlp.NewExportRequest()
@@ -75,7 +95,13 @@ func (s *MetricsProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
 		s.metrics[i] = r.Metrics()
 	}
 }
+
+func (s *MetricsProfileable) ConvertOtlpArrowToOtlp(_ io.Writer) {
+	// In the standard OTLP receiver the incoming messages are already OTLP messages.
+}
+
 func (s *MetricsProfileable) Clear() {
 	s.metrics = nil
 }
+
 func (s *MetricsProfileable) ShowStats() {}

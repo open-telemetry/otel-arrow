@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/dustin/go-humanize"
+
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/arrow"
@@ -48,13 +50,13 @@ func main() {
 	// Performance comparison for each input file
 	for i := range inputFiles {
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
-		profiler := benchmark.NewProfiler([]int{1, 10, 100, 1000, 2000}, "output/metrics_benchmark.log", warmUpIter)
+		profiler := benchmark.NewProfiler([]int{ /*1, 10, 100,*/ 1000, 2000}, "output/metrics_benchmark.log", warmUpIter)
 		compressionAlgo := benchmark.Zstd()
 		maxIter := uint64(3)
-		profiler.Printf("Dataset '%s'\n", inputFiles[i])
 		ds := dataset.NewRealMetricsDataset(inputFiles[i])
+		profiler.Printf("Dataset '%s' (%s) loaded\n", inputFiles[i], humanize.Bytes(uint64(ds.SizeInBytes())))
 		otlpMetrics := otlp.NewMetricsProfileable(ds, compressionAlgo)
-		otlpArrowMetrics := arrow.NewMetricsProfileable([]string{"ZSTD"}, ds, &benchmark.Config{})
+		otlpArrowMetrics := arrow.NewMetricsProfileable([]string{}, ds, &benchmark.Config{})
 
 		if err := profiler.Profile(otlpMetrics, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
@@ -66,11 +68,7 @@ func main() {
 		profiler.CheckProcessingResults()
 
 		// Configure the profile output
-		benchmark.CompressionSection.CustomColumnFor(otlpArrowMetrics).
-			MetricNotApplicable()
-		benchmark.DecompressionSection.CustomColumnFor(otlpArrowMetrics).
-			MetricNotApplicable()
-		benchmark.UncompressedSizeSection.CustomColumnFor(otlpArrowMetrics).
+		benchmark.OtlpArrowConversionSection.CustomColumnFor(otlpMetrics).
 			MetricNotApplicable()
 
 		profiler.Printf("\nMetrics dataset summary:\n")

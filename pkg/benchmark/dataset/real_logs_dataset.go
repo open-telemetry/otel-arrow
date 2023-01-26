@@ -25,7 +25,8 @@ import (
 
 // RealLogsDataset represents a dataset of real logs read from a Logs serialized to a binary file.
 type RealLogsDataset struct {
-	logs []logUnit
+	logs        []logUnit
+	sizeInBytes int
 }
 
 type logUnit struct {
@@ -46,7 +47,10 @@ func NewRealLogsDataset(path string) *RealLogsDataset {
 		log.Fatal("unmarshal:", err)
 	}
 
-	ds := &RealLogsDataset{logs: []logUnit{}}
+	ds := &RealLogsDataset{
+		logs:        []logUnit{},
+		sizeInBytes: len(data),
+	}
 	logs := otlp.Logs()
 
 	for ri := 0; ri < logs.ResourceLogs().Len(); ri++ {
@@ -61,6 +65,10 @@ func NewRealLogsDataset(path string) *RealLogsDataset {
 	}
 
 	return ds
+}
+
+func (d *RealLogsDataset) SizeInBytes() int {
+	return d.sizeInBytes
 }
 
 // Len returns the number of log records in the dataset.

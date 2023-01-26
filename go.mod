@@ -19,7 +19,7 @@ require (
 require (
 	github.com/fxamacker/cbor/v2 v2.4.0
 	github.com/gogo/protobuf v1.3.2
-	github.com/klauspost/compress v1.15.13
+	github.com/klauspost/compress v1.15.15
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.69.0
 	go.opentelemetry.io/collector v0.69.1
 	go.opentelemetry.io/collector/component v0.69.1

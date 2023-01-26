@@ -32,18 +32,19 @@ type Summary struct {
 }
 
 type BatchSummary struct {
-	batchSize            int
-	uncompressedSizeByte *Summary
-	compressedSizeByte   *Summary
-	batchCreationSec     *Summary
-	processingSec        *Summary
-	serializationSec     *Summary
-	deserializationSec   *Summary
-	compressionSec       *Summary
-	decompressionSec     *Summary
-	totalTimeSec         *Summary
-	processingResults    []string
-	cpuMemUsage          *CpuMemUsage
+	batchSize              int
+	uncompressedSizeByte   *Summary
+	compressedSizeByte     *Summary
+	otlpArrowConversionSec *Summary
+	processingSec          *Summary
+	serializationSec       *Summary
+	deserializationSec     *Summary
+	compressionSec         *Summary
+	decompressionSec       *Summary
+	totalTimeSec           *Summary
+	processingResults      []string
+	cpuMemUsage            *CpuMemUsage
+	otlpConversionSec      *Summary
 }
 
 type ProfilerResult struct {

@@ -25,7 +25,8 @@ import (
 
 // RealMetricsDataset represents a dataset of real metrics read from a Metrics serialized to a binary file.
 type RealMetricsDataset struct {
-	metrics []metrics
+	metrics     []metrics
+	sizeInBytes int
 }
 
 type metrics struct {
@@ -46,7 +47,10 @@ func NewRealMetricsDataset(path string) *RealMetricsDataset {
 	}
 	mdata := otlp.Metrics()
 
-	ds := &RealMetricsDataset{metrics: []metrics{}}
+	ds := &RealMetricsDataset{
+		metrics:     []metrics{},
+		sizeInBytes: len(data),
+	}
 
 	for ri := 0; ri < mdata.ResourceMetrics().Len(); ri++ {
 		rm := mdata.ResourceMetrics().At(ri)
@@ -60,6 +64,10 @@ func NewRealMetricsDataset(path string) *RealMetricsDataset {
 	}
 
 	return ds
+}
+
+func (d *RealMetricsDataset) SizeInBytes() int {
+	return d.sizeInBytes
 }
 
 // Len returns the number of metrics in the dataset.

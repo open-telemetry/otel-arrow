@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dustin/go-humanize"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 
@@ -69,8 +70,7 @@ func main() {
 		maxIter := uint64(3)
 
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
-		profiler := benchmark.NewProfiler([]int{10, 100, 1000, 2000, 5000, 10000}, "output/logs_benchmark.log", 2)
-		profiler.Printf("Dataset '%s'\n", inputFiles[i])
+		profiler := benchmark.NewProfiler([]int{ /*10, 100,*/ 1000, 2000, 5000, 10000}, "output/logs_benchmark.log", 2)
 
 		// Build dataset from CSV file or from OTLP protobuf file
 		if strings.HasSuffix(inputFile, ".csv") {
@@ -80,9 +80,10 @@ func main() {
 		} else {
 			log.Fatal("Unsupported input file format (only .csv and .pb are supported)")
 		}
+		profiler.Printf("Dataset '%s' (%s) loaded\n", inputFiles[i], humanize.Bytes(uint64(ds.SizeInBytes())))
 
 		otlpLogs := otlp.NewLogsProfileable(ds, compressionAlgo)
-		otlpArrowLogs := arrow.NewLogsProfileable([]string{"ZSTD"}, ds, &benchmark.Config{})
+		otlpArrowLogs := arrow.NewLogsProfileable([]string{}, ds, &benchmark.Config{})
 
 		if err := profiler.Profile(otlpLogs, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
@@ -94,11 +95,7 @@ func main() {
 		profiler.CheckProcessingResults()
 
 		// Configure the profile output
-		benchmark.CompressionSection.CustomColumnFor(otlpArrowLogs).
-			MetricNotApplicable()
-		benchmark.DecompressionSection.CustomColumnFor(otlpArrowLogs).
-			MetricNotApplicable()
-		benchmark.UncompressedSizeSection.CustomColumnFor(otlpArrowLogs).
+		benchmark.OtlpArrowConversionSection.CustomColumnFor(otlpLogs).
 			MetricNotApplicable()
 
 		profiler.Printf("\nLogs dataset summary:\n")
@@ -131,7 +128,8 @@ type LogsPerSource struct {
 }
 
 type CsvLogsDataset struct {
-	logs []plog.Logs
+	logs        []plog.Logs
+	sizeInBytes int
 }
 
 func (ds *CsvLogsDataset) Len() int {
@@ -209,10 +207,15 @@ func CsvToLogsDataset(file string) dataset.LogsDataset {
 	}
 
 	ds := CsvLogsDataset{
-		logs: []plog.Logs{logs},
+		logs:        []plog.Logs{logs},
+		sizeInBytes: 0,
 	}
 
 	return &ds
+}
+
+func (d *CsvLogsDataset) SizeInBytes() int {
+	return d.sizeInBytes
 }
 
 // ReadCsvRowSchema returns the schema of a CSV file based on the first line of the file.

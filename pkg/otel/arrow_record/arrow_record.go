@@ -15,7 +15,10 @@
 package arrow_record
 
 import (
+	"fmt"
+
 	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v11/arrow/array"
 
 	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 )
@@ -63,11 +66,49 @@ func NewTraceMessage(schemaID string, record arrow.Record) *RecordMessage {
 }
 
 // Record returns the Arrow Record associated with this RecordMessage.
-func (ibe *RecordMessage) Record() arrow.Record {
-	return ibe.record
+func (rm *RecordMessage) Record() arrow.Record {
+	return rm.record
 }
 
 // PayloadType returns the type of payload contained in this RecordMessage.
-func (ibe *RecordMessage) PayloadType() PayloadType {
-	return ibe.payloadType
+func (rm *RecordMessage) PayloadType() PayloadType {
+	return rm.payloadType
+}
+
+func (rm *RecordMessage) ShowStats() {
+	schema := rm.record.Schema()
+	columns := rm.record.Columns()
+	for i, field := range schema.Fields() {
+		ShowFieldStats("", &field, columns[i])
+	}
+}
+
+func ShowFieldStats(indent string, field *arrow.Field, column arrow.Array) {
+	fmt.Printf("%s%s:%s len=%d, nulls=%d\n", indent, field.Name, field.Type.Name(), column.Len(), column.NullN())
+
+	switch dt := column.DataType().(type) {
+	case *arrow.StructType:
+		for i, child := range dt.Fields() {
+			ShowFieldStats(indent+"  ", &child, column.(*array.Struct).Field(i))
+		}
+	case *arrow.ListType:
+		elemField := dt.ElemField()
+		ShowFieldStats("  ", &elemField, column.(*array.List).ListValues())
+	case *arrow.DenseUnionType:
+		for i, child := range dt.Fields() {
+			ShowFieldStats(indent+"  ", &child, column.(*array.DenseUnion).Field(i))
+		}
+	case *arrow.SparseUnionType:
+		for i, child := range dt.Fields() {
+			ShowFieldStats(indent+"  ", &child, column.(*array.SparseUnion).Field(i))
+		}
+	case *arrow.MapType:
+		keyField := dt.KeyField()
+		valueField := dt.ValueField()
+		ShowFieldStats(indent+"  ", &keyField, column.(*array.Map).Keys())
+		ShowFieldStats(indent+"  ", &valueField, column.(*array.Map).Items())
+	case *arrow.DictionaryType:
+	default:
+		fmt.Printf("Field %s%s:%s not supported\n", indent, field.Name, dt.Name())
+	}
 }

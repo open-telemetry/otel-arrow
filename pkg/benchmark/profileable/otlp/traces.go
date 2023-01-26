@@ -20,61 +20,61 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 
-	"go.opentelemetry.io/collector/pdata/plog"
-	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
+	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 )
 
-const Otlp = "OTLP"
-
-type LogsProfileable struct {
+type TracesProfileable struct {
 	compression benchmark.CompressionAlgorithm
-	dataset     dataset.LogsDataset
-	logs        []plog.Logs
+	dataset     dataset.TraceDataset
+	traces      []ptrace.Traces
 }
 
-func NewLogsProfileable(dataset dataset.LogsDataset, compression benchmark.CompressionAlgorithm) *LogsProfileable {
-	return &LogsProfileable{dataset: dataset, compression: compression}
+func NewTraceProfileable(dataset dataset.TraceDataset, compression benchmark.CompressionAlgorithm) *TracesProfileable {
+	return &TracesProfileable{dataset: dataset, compression: compression}
 }
 
-func (s *LogsProfileable) Name() string {
-	return Otlp
+func (s *TracesProfileable) Name() string {
+	return "OTLP"
 }
 
-func (s *LogsProfileable) Tags() []string {
+func (s *TracesProfileable) Tags() []string {
 	return []string{s.compression.String()}
 }
 
-func (s *LogsProfileable) DatasetSize() int { return s.dataset.Len() }
+func (s *TracesProfileable) DatasetSize() int { return s.dataset.Len() }
 
-func (s *LogsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
+func (s *TracesProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
 }
 
-func (s *LogsProfileable) StartProfiling(io.Writer) {}
+func (s *TracesProfileable) StartProfiling(io.Writer) {}
 
-func (s *LogsProfileable) EndProfiling(io.Writer) {}
+func (s *TracesProfileable) EndProfiling(io.Writer) {}
 
-func (s *LogsProfileable) InitBatchSize(_ io.Writer, _ int) {}
+func (s *TracesProfileable) InitBatchSize(_ io.Writer, _ int) {}
 
-func (s *LogsProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
-	s.logs = s.dataset.Logs(startAt, size)
+func (s *TracesProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
+	s.traces = s.dataset.Traces(startAt, size)
 }
-func (s *LogsProfileable) ConvertOtlpToOtlpArrow(_ io.Writer, _, _ int) {
+
+func (s *TracesProfileable) ConvertOtlpToOtlpArrow(_ io.Writer, _, _ int) {
 	// In the standard OTLP exporter the incoming messages are already OTLP messages,
 	// so we don't need to create or convert them.
 }
 
-func (s *LogsProfileable) Process(io.Writer) string {
+func (s *TracesProfileable) Process(io.Writer) string {
 	// Not used in this benchmark
 	return ""
 }
 
-func (s *LogsProfileable) Serialize(io.Writer) ([][]byte, error) {
+func (s *TracesProfileable) Serialize(io.Writer) ([][]byte, error) {
 	// In the standard OTLP exporter, the incoming messages are serialized before being
 	// sent via the standard protobuf serialization process.
-	buffers := make([][]byte, len(s.logs))
-	for i, l := range s.logs {
-		r := plogotlp.NewExportRequestFromLogs(l)
+	buffers := make([][]byte, len(s.traces))
+	for i, t := range s.traces {
+		r := ptraceotlp.NewExportRequestFromTraces(t)
+
 		bytes, err := r.MarshalProto()
 		if err != nil {
 			return nil, err
@@ -84,25 +84,25 @@ func (s *LogsProfileable) Serialize(io.Writer) ([][]byte, error) {
 	return buffers, nil
 }
 
-func (s *LogsProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
+func (s *TracesProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
 	// In the standard OTLP receiver the incoming messages are deserialized before being
 	// sent to the collector pipeline.
-	s.logs = make([]plog.Logs, len(buffers))
+	s.traces = make([]ptrace.Traces, len(buffers))
 	for i, b := range buffers {
-		r := plogotlp.NewExportRequest()
+		r := ptraceotlp.NewExportRequest()
 		if err := r.UnmarshalProto(b); err != nil {
 			panic(err)
 		}
-		s.logs[i] = r.Logs()
+		s.traces[i] = r.Traces()
 	}
 }
 
-func (s *LogsProfileable) ConvertOtlpArrowToOtlp(_ io.Writer) {
+func (s *TracesProfileable) ConvertOtlpArrowToOtlp(_ io.Writer) {
 	// In the standard OTLP receiver the incoming messages are already OTLP messages.
 }
 
-func (s *LogsProfileable) Clear() {
-	s.logs = nil
+func (s *TracesProfileable) Clear() {
+	s.traces = nil
 }
 
-func (s *LogsProfileable) ShowStats() {}
+func (s *TracesProfileable) ShowStats() {}

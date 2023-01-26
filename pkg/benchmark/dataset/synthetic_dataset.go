@@ -34,6 +34,7 @@ type MetricsDataset interface {
 type LogsDataset interface {
 	Len() int
 	Logs(start, size int) []plog.Logs
+	SizeInBytes() int
 }
 
 type TraceDataset interface {
@@ -79,6 +80,10 @@ func NewFakeLogsDataset(size int) *FakeLogsDataset {
 	//#nosec G404 -- This is a false positive, this random number generator is not used for test purposes
 	entropy := datagen.NewTestEntropy(int64(rand.Uint64()))
 	return &FakeLogsDataset{len: size, generator: datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())}
+}
+
+func (d *FakeLogsDataset) SizeInBytes() int {
+	return 0
 }
 
 func (d *FakeLogsDataset) Len() int {

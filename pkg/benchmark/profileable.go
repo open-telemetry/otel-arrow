@@ -31,12 +31,13 @@ type ProfileableSystem interface {
 
 	InitBatchSize(writer io.Writer, batchSize int)
 	PrepareBatch(writer io.Writer, startAt, size int)
-	CreateBatch(writer io.Writer, startAt, size int)
+	ConvertOtlpToOtlpArrow(writer io.Writer, startAt, size int)
 
 	Process(writer io.Writer) string
 
 	Serialize(writer io.Writer) ([][]byte, error)
 	Deserialize(writer io.Writer, buffers [][]byte)
+	ConvertOtlpArrowToOtlp(writer io.Writer)
 
 	Clear()
 	ShowStats()

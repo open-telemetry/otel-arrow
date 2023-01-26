@@ -15,6 +15,7 @@
 package arrow
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/apache/arrow/go/v11/arrow"
@@ -22,6 +23,10 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
+)
+
+var (
+	errInvalidVariantCode = errors.New("invalid any_value variant code")
 )
 
 // Constants used to identify the type of value in the union.
@@ -33,6 +38,44 @@ const (
 	BinaryCode int8 = 4
 	CborCode   int8 = 5
 )
+
+// AnyValueConfig configures the AnyValueBuilder and defines the
+// variants that must be enabled at the schema level.
+type AnyValueConfig struct {
+	variantCodes []int8
+}
+
+// Schema returns the SparseUnion data type for a specific configuration.
+func (c *AnyValueConfig) Schema() (*arrow.SparseUnionType, error) {
+	fields := make([]arrow.Field, len(c.variantCodes))
+	codes := make([]int8, len(c.variantCodes))
+
+	for i, code := range c.variantCodes {
+		switch code {
+		case StrCode:
+			fields[i] = arrow.Field{Name: "str", Type: DefaultDictString}
+			codes[i] = StrCode
+		case I64Code:
+			fields[i] = arrow.Field{Name: "i64", Type: arrow.PrimitiveTypes.Int64}
+			codes[i] = I64Code
+		case F64Code:
+			fields[i] = arrow.Field{Name: "f64", Type: arrow.PrimitiveTypes.Float64}
+			codes[i] = F64Code
+		case BoolCode:
+			fields[i] = arrow.Field{Name: "bool", Type: arrow.FixedWidthTypes.Boolean}
+			codes[i] = BoolCode
+		case BinaryCode:
+			fields[i] = arrow.Field{Name: "binary", Type: DefaultDictBinary}
+			codes[i] = BinaryCode
+		case CborCode:
+			fields[i] = arrow.Field{Name: "cbor", Type: DefaultDictBinary}
+			codes[i] = CborCode
+		default:
+			return nil, fmt.Errorf("invalid any_value variant code `%d`: %w", code, errInvalidVariantCode)
+		}
+	}
+	return arrow.SparseUnionOf(fields, codes), nil
+}
 
 var (
 	// AnyValueDT is an Arrow Data Type representing an OTLP Any Value.

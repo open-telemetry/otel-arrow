@@ -28,34 +28,36 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 )
 
-type TraceProfileable struct {
+type TracesProfileable struct {
 	tags              []string
 	compression       benchmark.CompressionAlgorithm
 	dataset           dataset.TraceDataset
 	traces            []ptrace.Traces
 	producer          *arrow_record.Producer
+	consumer          *arrow_record.Consumer
 	batchArrowRecords []*v1.BatchArrowRecords
 	config            *benchmark.Config
 	pool              *memory.GoAllocator
 }
 
-func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *benchmark.Config) *TraceProfileable {
-	return &TraceProfileable{
+func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *benchmark.Config) *TracesProfileable {
+	return &TracesProfileable{
 		tags:              tags,
 		dataset:           dataset,
-		compression:       benchmark.NoCompression(),
-		producer:          arrow_record.NewProducer(),
+		compression:       benchmark.Zstd(),
+		producer:          arrow_record.NewProducerWithOptions(arrow_record.WithNoZstd()),
+		consumer:          arrow_record.NewConsumer(),
 		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
 		config:            config,
 		pool:              memory.NewGoAllocator(),
 	}
 }
 
-func (s *TraceProfileable) Name() string {
+func (s *TracesProfileable) Name() string {
 	return "OTLP_ARROW"
 }
 
-func (s *TraceProfileable) Tags() []string {
+func (s *TracesProfileable) Tags() []string {
 	var tags []string
 	compression := s.compression.String()
 	if compression != "" {
@@ -64,22 +66,25 @@ func (s *TraceProfileable) Tags() []string {
 	tags = append(tags, s.tags...)
 	return tags
 }
-func (s *TraceProfileable) DatasetSize() int { return s.dataset.Len() }
-func (s *TraceProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
+func (s *TracesProfileable) DatasetSize() int { return s.dataset.Len() }
+func (s *TracesProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
 }
-func (s *TraceProfileable) StartProfiling(_ io.Writer) {
-	s.producer = arrow_record.NewProducer()
+func (s *TracesProfileable) StartProfiling(_ io.Writer)       {
+	s.producer = arrow_record.NewProducerWithOptions(arrow_record.WithNoZstd())
 }
-func (s *TraceProfileable) EndProfiling(_ io.Writer) {
+func (s *TracesProfileable) EndProfiling(_ io.Writer)         {
 	s.producer.Close()
 }
-func (s *TraceProfileable) InitBatchSize(_ io.Writer, _ int) {}
-func (s *TraceProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
+func (s *TracesProfileable) InitBatchSize(_ io.Writer, _ int) {}
+func (s *TracesProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	s.traces = s.dataset.Traces(startAt, size)
 }
-func (s *TraceProfileable) CreateBatch(_ io.Writer, _, _ int) {
-	// Conversion of OTLP metrics to OTLP Arrow Records
+func (s *TracesProfileable) ConvertOtlpToOtlpArrow(_ io.Writer, _, _ int) {
+	// In the OTLP Arrow exporter, incoming OTLP messages must be converted to
+	// OTLP Arrow messages.
+	// This step contains the conversion from OTLP to OTLP Arrow, the conversion to Arrow IPC,
+	// and the compression.
 	s.batchArrowRecords = make([]*v1.BatchArrowRecords, 0, len(s.traces))
 	for _, traceReq := range s.traces {
 		bar, err := s.producer.BatchArrowRecordsFromTraces(traceReq)
@@ -89,11 +94,13 @@ func (s *TraceProfileable) CreateBatch(_ io.Writer, _, _ int) {
 		s.batchArrowRecords = append(s.batchArrowRecords, bar)
 	}
 }
-func (s *TraceProfileable) Process(io.Writer) string {
+func (s *TracesProfileable) Process(io.Writer) string {
 	// Not used in this benchmark
 	return ""
 }
-func (s *TraceProfileable) Serialize(io.Writer) ([][]byte, error) {
+func (s *TracesProfileable) Serialize(io.Writer) ([][]byte, error) {
+	// In the OTLP Arrow exporter, OTLP Arrow messages are serialized via the
+	// standard protobuf serialization process.
 	buffers := make([][]byte, len(s.batchArrowRecords))
 	for i, be := range s.batchArrowRecords {
 		bytes, err := proto.Marshal(be)
@@ -105,35 +112,33 @@ func (s *TraceProfileable) Serialize(io.Writer) ([][]byte, error) {
 	return buffers, nil
 }
 
-func (s *TraceProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
+func (s *TracesProfileable) Deserialize(_ io.Writer, buffers [][]byte) {
+	// In the OTLP Arrow exporter, OTLP Arrow messages are deserialized via the
+	// standard protobuf deserialization process.
 	s.batchArrowRecords = make([]*v1.BatchArrowRecords, len(buffers))
 	for i, b := range buffers {
-		be := &v1.BatchArrowRecords{}
-		if err := proto.Unmarshal(b, be); err != nil {
+		batchArrowRecords := &v1.BatchArrowRecords{}
+		if err := proto.Unmarshal(b, batchArrowRecords); err != nil {
 			panic(err)
 		}
-		s.batchArrowRecords[i] = be
-
-		// ToDo TMP
-		//ibes, err := s.consumer.Consume(be)
-		//if err != nil {
-		//	panic(err)
-		//}
-		//for _, ibe := range ibes {
-		//	request, err := trace2.ArrowRecordToOtlpTraces(ibe.Record())
-		//	if err != nil {
-		//		panic(err)
-		//	}
-		//	if len(request.ResourceLogs) == 0 {
-		//		panic("no resource spans")
-		//	}
-		//}
+		s.batchArrowRecords[i] = batchArrowRecords
 	}
 }
-func (s *TraceProfileable) Clear() {
+
+func (s *TracesProfileable) ConvertOtlpArrowToOtlp(_ io.Writer) {
+	for _, batchArrowRecords := range s.batchArrowRecords {
+		traces, err := s.consumer.TracesFrom(batchArrowRecords)
+		if err != nil {
+			panic(err)
+		}
+		if len(traces) == 0 {
+			println("no traces")
+		}
+	}
+}
+
+func (s *TracesProfileable) Clear() {
 	s.traces = nil
 	s.batchArrowRecords = s.batchArrowRecords[:0]
 }
-func (s *TraceProfileable) ShowStats() {
-	s.producer.ShowStats()
-}
+func (s *TracesProfileable) ShowStats() {}
