@@ -44,3 +44,6 @@ coverage.html
 
 # Benchmarks output
 /output/
+
+# Collector test binary
+collector/cmd/otelarrowcol/otelarrowcol

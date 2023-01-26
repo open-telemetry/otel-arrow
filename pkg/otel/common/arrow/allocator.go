@@ -17,7 +17,7 @@ package arrow
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/arrow/memory"
+	"github.com/apache/arrow/go/v11/arrow/memory"
 )
 
 type LimitedAllocator struct {

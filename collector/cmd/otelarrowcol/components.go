@@ -5,6 +5,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver"
 	"github.com/f5/otel-arrow-adapter/collector/processor/experimentprocessor"
 
+	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/loggingexporter"
@@ -27,6 +28,7 @@ func components() (otelcol.Factories, error) {
 		ballastextension.NewFactory(),
 		zpagesextension.NewFactory(),
 		headerssetterextension.NewFactory(),
+		basicauthextension.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err
