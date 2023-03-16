@@ -39,8 +39,13 @@ const I64Sig = "I64"
 const F32Sig = "F32"
 const F64Sig = "F64"
 const BinarySig = "Bin"
+const FixedSizeBinarySig = "FSB"
 const StringSig = "Str"
 const Timestamp = "Tns" // Timestamp in nanoseconds.
+const DictionarySig = "Dic"
+const DenseUnionSig = "DU"
+const SparseUnionSig = "SU"
+const MapSig = "Map"
 
 // SortableField is a wrapper around arrow.Field that implements sort.Interface.
 type SortableField struct {
@@ -142,23 +147,43 @@ func DataTypeToID(dt arrow.DataType) string {
 		id += DataTypeToID(elemField.Type)
 		id += "]"
 	case *arrow.DictionaryType:
-		id += "Dic<"
+		id += DictionarySig + "<"
 		id += DataTypeToID(t.IndexType)
 		id += ","
 		id += DataTypeToID(t.ValueType)
 		id += ">"
 	case *arrow.DenseUnionType:
-		// TODO implement
-		id += "DenseUnion<>"
+		id += DenseUnionSig + "{"
+		fields := sortedFields(t.Fields())
+
+		for i := range fields {
+			if i > 0 {
+				id += ","
+			}
+			id += FieldToID(fields[i].field)
+		}
+
+		id += "}"
 	case *arrow.SparseUnionType:
-		// TODO implement
-		id += "SparseUnion<>"
+		id += SparseUnionSig + "{"
+		fields := sortedFields(t.Fields())
+
+		for i := range fields {
+			if i > 0 {
+				id += ","
+			}
+			id += FieldToID(fields[i].field)
+		}
+
+		id += "}"
 	case *arrow.MapType:
-		// TODO implement
-		id += "Map<>"
+		id += MapSig + "<"
+		id += DataTypeToID(t.KeyType())
+		id += ","
+		id += DataTypeToID(t.ItemType())
+		id += ">"
 	case *arrow.FixedSizeBinaryType:
-		// TODO implement
-		id += "FixedSizeBinary<>"
+		id += fmt.Sprintf("%s<%d>", FixedSizeBinarySig, t.ByteWidth)
 	default:
 		panic("unsupported data type " + dt.String())
 	}

@@ -144,7 +144,6 @@ func (s *Stream) run(bgctx context.Context, client arrowpb.ArrowStreamServiceCli
 	ww.Add(1)
 	go func() {
 		defer ww.Done()
-		defer cancel()
 		s.write(ctx)
 	}()
 
