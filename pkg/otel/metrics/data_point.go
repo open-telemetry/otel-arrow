@@ -17,9 +17,33 @@ package metrics
 import (
 	"encoding/binary"
 	"math"
+	"sort"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 )
+
+type (
+	mapEntry struct {
+		key   string
+		value pcommon.Value
+	}
+
+	mapEntries []mapEntry
+)
+
+var _ sort.Interface = mapEntries{}
+
+func (me mapEntries) Len() int {
+	return len(me)
+}
+
+func (me mapEntries) Swap(i, j int) {
+	me[i], me[j] = me[j], me[i]
+}
+
+func (me mapEntries) Less(i, j int) bool {
+	return me[i].key < me[j].key
+}
 
 type DataPoint interface {
 	Attributes() pcommon.Map
@@ -38,21 +62,28 @@ func DataPointSig[N DataPoint](dataPoint N, multivariateKey string) []byte {
 
 func MapSig(sig []byte, kvs pcommon.Map, multivariateKey string) []byte {
 	// Sort KeyValue slice by key to make the signature deterministic.
-	kvs.Sort()
-
-	kvs.Range(func(key string, value pcommon.Value) bool {
+	tmp := make(mapEntries, 0, kvs.Len())
+	kvs.Range(func(k string, v pcommon.Value) bool {
 		// Skip the multivariate key.
-		if key == multivariateKey {
+		if k == multivariateKey {
 			return true
 		}
 
-		// Serialize attribute name
-		sig = append(sig, []byte(key)...)
-
-		// Serialize attribute value
-		sig = ValueSig(sig, value)
+		tmp = append(tmp, mapEntry{
+			key:   k,
+			value: v,
+		})
 		return true
 	})
+	sort.Stable(tmp)
+
+	for _, me := range tmp {
+		// Serialize attribute name
+		sig = append(sig, []byte(me.key)...)
+
+		// Serialize attribute value
+		sig = ValueSig(sig, me.value)
+	}
 
 	return sig
 }

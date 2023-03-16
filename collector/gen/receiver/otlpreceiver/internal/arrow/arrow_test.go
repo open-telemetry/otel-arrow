@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
+	"sync"
 	"testing"
 
 	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
@@ -35,18 +37,18 @@ import (
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
+	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow/mock"
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/extension/auth"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/receiver"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow/mock"
 )
 
 type compareJSONTraces struct{ ptrace.Traces }
@@ -571,15 +573,23 @@ func TestReceiverEOF(t *testing.T) {
 		close(ctc.receive)
 	}()
 
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go func() {
+		err := ctc.wait()
+		require.Error(t, err)
+		require.True(t, errors.Is(err, io.EOF))
+		wg.Done()
+	}()
+
 	for i := 0; i < times; i++ {
 		actualData = append(actualData, (<-ctc.consume).Data.(ptrace.Traces))
 	}
 
 	assert.EqualValues(t, expectData, actualData)
 
-	err := ctc.wait()
-	require.Error(t, err)
-	require.True(t, errors.Is(err, io.EOF))
+	wg.Wait()
 }
 
 func TestReceiverHeadersNoAuth(t *testing.T) {
@@ -691,7 +701,7 @@ func TestHeaderReceiverStreamContextOnly(t *testing.T) {
 
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.MD(expect))
 
-	h := newHeaderReceiver(ctx, true)
+	h := newHeaderReceiver(ctx, nil, true)
 
 	for i := 0; i < 3; i++ {
 		cc, _, err := h.combineHeaders(ctx, nil)
@@ -709,13 +719,45 @@ func TestHeaderReceiverNoIncludeMetadata(t *testing.T) {
 
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.MD(noExpect))
 
-	h := newHeaderReceiver(ctx, false)
+	h := newHeaderReceiver(ctx, nil, false)
 
 	for i := 0; i < 3; i++ {
 		cc, _, err := h.combineHeaders(ctx, nil)
 
 		require.NoError(t, err)
 		requireContainsNone(t, client.FromContext(cc).Metadata, noExpect)
+	}
+}
+
+func TestHeaderReceiverAuthServerNoIncludeMetadata(t *testing.T) {
+	expectForAuth := map[string][]string{
+		"L": {"k1", "k2"},
+		"K": {"l1"},
+	}
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.MD(expectForAuth))
+
+	ctrl := gomock.NewController(t)
+	as := mock.NewMockServer(ctrl)
+
+	// The auth server is not called, it just needs to be non-nil.
+	as.EXPECT().Authenticate(gomock.Any(), gomock.Any()).Times(0)
+
+	h := newHeaderReceiver(ctx, as, false)
+
+	for i := 0; i < 3; i++ {
+		cc, hdrs, err := h.combineHeaders(ctx, nil)
+
+		// The incoming metadata keys are not in the context.
+		require.NoError(t, err)
+		requireContainsNone(t, client.FromContext(cc).Metadata, expectForAuth)
+
+		// Headers are returned for the auth server, though
+		// names have been forced to lower case.
+		require.Equal(t, len(hdrs), len(expectForAuth))
+		for k, v := range expectForAuth {
+			require.Equal(t, hdrs[strings.ToLower(k)], v)
+		}
 	}
 }
 
@@ -731,7 +773,7 @@ func TestHeaderReceiverRequestNoStreamMetadata(t *testing.T) {
 
 	ctx := context.Background()
 
-	h := newHeaderReceiver(ctx, true)
+	h := newHeaderReceiver(ctx, nil, true)
 
 	for i := 0; i < 3; i++ {
 		hpb.Reset()
@@ -739,7 +781,7 @@ func TestHeaderReceiverRequestNoStreamMetadata(t *testing.T) {
 		for key, vals := range expect {
 			for _, val := range vals {
 				err := hpe.WriteField(hpack.HeaderField{
-					Name:  key,
+					Name:  strings.ToLower(key),
 					Value: val,
 				})
 				require.NoError(t, err)
@@ -750,6 +792,63 @@ func TestHeaderReceiverRequestNoStreamMetadata(t *testing.T) {
 
 		require.NoError(t, err)
 		requireContainsAll(t, client.FromContext(cc).Metadata, expect)
+	}
+}
+
+func TestHeaderReceiverAuthServerIsSetNoIncludeMetadata(t *testing.T) {
+	expect := map[string][]string{
+		"K": {"k1", "k2"},
+		"L": {"l1"},
+	}
+
+	var hpb bytes.Buffer
+
+	hpe := hpack.NewEncoder(&hpb)
+
+	ctx := context.Background()
+
+	ctrl := gomock.NewController(t)
+	as := mock.NewMockServer(ctrl)
+
+	// The auth server is not called, it just needs to be non-nil.
+	as.EXPECT().Authenticate(gomock.Any(), gomock.Any()).Times(0)
+
+	h := newHeaderReceiver(ctx, as, true)
+
+	for i := 0; i < 3; i++ {
+		hpb.Reset()
+
+		for key, vals := range expect {
+			for _, val := range vals {
+				err := hpe.WriteField(hpack.HeaderField{
+					Name:  strings.ToLower(key),
+					Value: val,
+				})
+				require.NoError(t, err)
+			}
+		}
+
+		cc, hdrs, err := h.combineHeaders(ctx, hpb.Bytes())
+
+		require.NoError(t, err)
+
+		// Note: The call to client.Metadata.Get() inside
+		// requireContainsAll() actually modifies the metadata
+		// map (this is weird, but true and possibly
+		// valid). In cases where the input has incorrect
+		// case.  It's not safe to check that the map sizes
+		// are equal after calling Get() below, so we assert
+		// same size first.
+		require.Equal(t, len(hdrs), len(expect))
+
+		requireContainsAll(t, client.FromContext(cc).Metadata, expect)
+
+		// Headers passed to the auth server are equivalent w/
+		// with names forced to lower case.
+
+		for k, v := range expect {
+			require.Equal(t, hdrs[strings.ToLower(k)], v, "for %v", k)
+		}
 	}
 }
 
@@ -773,7 +872,7 @@ func TestHeaderReceiverBothMetadata(t *testing.T) {
 
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.MD(expectK))
 
-	h := newHeaderReceiver(ctx, true)
+	h := newHeaderReceiver(ctx, nil, true)
 
 	for i := 0; i < 3; i++ {
 		hpb.Reset()
@@ -781,7 +880,7 @@ func TestHeaderReceiverBothMetadata(t *testing.T) {
 		for key, vals := range expectL {
 			for _, val := range vals {
 				err := hpe.WriteField(hpack.HeaderField{
-					Name:  key,
+					Name:  strings.ToLower(key),
 					Value: val,
 				})
 				require.NoError(t, err)
@@ -819,7 +918,7 @@ func TestHeaderReceiverDuplicateMetadata(t *testing.T) {
 
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.MD(expectStream))
 
-	h := newHeaderReceiver(ctx, true)
+	h := newHeaderReceiver(ctx, nil, true)
 
 	for i := 0; i < 3; i++ {
 		hpb.Reset()
@@ -827,7 +926,7 @@ func TestHeaderReceiverDuplicateMetadata(t *testing.T) {
 		for key, vals := range expectRequest {
 			for _, val := range vals {
 				err := hpe.WriteField(hpack.HeaderField{
-					Name:  key,
+					Name:  strings.ToLower(key),
 					Value: val,
 				})
 				require.NoError(t, err)
@@ -916,7 +1015,7 @@ func testReceiverAuthHeaders(t *testing.T, includeMeta bool, dataAuth bool) {
 				for key, vals := range md {
 					for _, val := range vals {
 						err := hpe.WriteField(hpack.HeaderField{
-							Name:  key,
+							Name:  strings.ToLower(key),
 							Value: val,
 						})
 						require.NoError(t, err)
@@ -933,21 +1032,23 @@ func testReceiverAuthHeaders(t *testing.T, includeMeta bool, dataAuth bool) {
 
 	var expectErrs []bool
 
-	for _, expect := range expectData {
+	for _, testInput := range expectData {
 		// The static stream context contains one extra variable.
-		if expect == nil {
-			expect = map[string][]string{}
+		cpy := map[string][]string{}
+		cpy["stream_ctx"] = []string{"per-request"}
+
+		for k, v := range testInput {
+			cpy[k] = v
 		}
-		expect["stream_ctx"] = []string{"per-request"}
 
 		expectErr := false
 		if dataAuth {
 			hasAuth := false
-			for _, val := range expect["auth"] {
+			for _, val := range cpy["auth"] {
 				hasAuth = hasAuth || (val == "true")
 			}
 			if hasAuth {
-				expect["has_auth"] = []string{":+1:", ":100:"}
+				cpy["has_auth"] = []string{":+1:", ":100:"}
 			} else {
 				expectErr = true
 			}
@@ -961,7 +1062,7 @@ func testReceiverAuthHeaders(t *testing.T, includeMeta bool, dataAuth bool) {
 
 		info := client.FromContext((<-ctc.consume).Ctx)
 
-		for key, vals := range expect {
+		for key, vals := range cpy {
 			if includeMeta {
 				require.Equal(t, vals, info.Metadata.Get(key))
 			} else {

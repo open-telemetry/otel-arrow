@@ -17,6 +17,7 @@ package arrow // import "github.com/f5/otel-arrow-adapter/collector/gen/receiver
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
@@ -96,8 +97,15 @@ type headerReceiver struct {
 	// decoder maintains state across the stream.
 	decoder *hpack.Decoder
 
-	// client connection info from the stream context, to be extended
-	// with per-request metadata.
+	// includeMetadata as configured by gRPC settings.
+	includeMetadata bool
+
+	// hasAuthServer indicates that headers must be produced
+	// independent of includeMetadata.
+	hasAuthServer bool
+
+	// client connection info from the stream context, (optionally
+	// if includeMetadata) to be extended with per-request metadata.
 	connInfo client.Info
 
 	// streamHdrs was translated from the incoming context, will be
@@ -111,16 +119,19 @@ type headerReceiver struct {
 	tmpHdrs map[string][]string
 }
 
-func newHeaderReceiver(streamCtx context.Context, includeMetadata bool) *headerReceiver {
-	if !includeMetadata {
-		return nil
-	}
+func newHeaderReceiver(streamCtx context.Context, as auth.Server, includeMetadata bool) *headerReceiver {
 	hr := &headerReceiver{
-		connInfo: client.FromContext(streamCtx),
+		includeMetadata: includeMetadata,
+		hasAuthServer:   as != nil,
+		connInfo:        client.FromContext(streamCtx),
 	}
 
-	if smd, ok := metadata.FromIncomingContext(streamCtx); ok {
-		hr.streamHdrs = smd
+	// Note that we capture the incoming context if there is an
+	// Auth plugin configured or includeMetadata is set.
+	if hr.includeMetadata || hr.hasAuthServer {
+		if smd, ok := metadata.FromIncomingContext(streamCtx); ok {
+			hr.streamHdrs = smd
+		}
 	}
 
 	// Note the hpack decoder supports additional protections,
@@ -133,9 +144,8 @@ func newHeaderReceiver(streamCtx context.Context, includeMetadata bool) *headerR
 
 // combineHeaders calculates per-request Metadata by combining the stream's
 // client.Info with additional key:values associated with the arrow batch.
-// This is safe to call when h is nil.
 func (h *headerReceiver) combineHeaders(ctx context.Context, hdrsBytes []byte) (context.Context, map[string][]string, error) {
-	if h == nil || (len(hdrsBytes) == 0 && len(h.streamHdrs) == 0) {
+	if len(hdrsBytes) == 0 && len(h.streamHdrs) == 0 {
 		return ctx, nil, nil
 	}
 
@@ -143,56 +153,80 @@ func (h *headerReceiver) combineHeaders(ctx context.Context, hdrsBytes []byte) (
 		return h.newContext(ctx, h.streamHdrs), h.streamHdrs, nil
 	}
 
-	h.tmpHdrs = map[string][]string{}
+	// Note that we will parse the headers even if they are not
+	// used, to check for validity.  tmpHdrsAppend() will skip
+	// modifying tmpHdrs if it is nil.
+	h.tmpHdrs = nil
+
+	needMergedHeaders := h.includeMetadata || h.hasAuthServer
+
+	// If headers are being merged, allocate a new map.
+	if needMergedHeaders {
+		h.tmpHdrs = map[string][]string{}
+	}
 
 	// Write calls the emitFunc, appending directly into `tmpHdrs`.
 	if _, err := h.decoder.Write(hdrsBytes); err != nil {
 		return ctx, nil, err
 	}
 
-	// Add streamHdrs that were not carried in the per-request headers.
-	for k, v := range h.streamHdrs {
-		// Note: This is done after the per-request metadata is defined
-		// in recognition of a potential for duplicated values stemming
-		// from the Arrow exporter's independent call to the Auth
-		// extension's GetRequestMetadata().  This paired with the
-		// headersetter's return of empty-string values means, we would
-		// end up with an empty-string element for any headersetter
-		// `from_context` rules b/c the stream uses background context.
-		// This allows static headers through.
-		//
-		// See https://github.com/open-telemetry/opentelemetry-collector/issues/6965
-		if _, ok := h.tmpHdrs[k]; !ok {
-			h.tmpHdrs[k] = v
+	if needMergedHeaders {
+		// Add streamHdrs that were not carried in the per-request headers.
+		for k, v := range h.streamHdrs {
+			// Note: This is done after the per-request metadata is defined
+			// in recognition of a potential for duplicated values stemming
+			// from the Arrow exporter's independent call to the Auth
+			// extension's GetRequestMetadata().  This paired with the
+			// headersetter's return of empty-string values means, we would
+			// end up with an empty-string element for any headersetter
+			// `from_context` rules b/c the stream uses background context.
+			// This allows static headers through.
+			//
+			// See https://github.com/open-telemetry/opentelemetry-collector/issues/6965
+			lk := strings.ToLower(k)
+			if _, ok := h.tmpHdrs[lk]; !ok {
+				h.tmpHdrs[lk] = v
+			}
 		}
 	}
 
-	// Release the temporary copy.
+	// Release the temporary copy used in emitFunc().
 	newHdrs := h.tmpHdrs
 	h.tmpHdrs = nil
 
+	// Note: newHdrs is passed to the Auth plugin.  Whether
+	// newHdrs is set in the context depends on h.includeMetadata.
 	return h.newContext(ctx, newHdrs), newHdrs, nil
 }
 
 // tmpHdrsAppend appends to tmpHdrs, from decoder's emit function.
 func (h *headerReceiver) tmpHdrsAppend(hf hpack.HeaderField) {
-	h.tmpHdrs[hf.Name] = append(h.tmpHdrs[hf.Name], hf.Value)
+	if h.tmpHdrs != nil {
+		// We force strings.ToLower to ensure consistency.  gRPC itself
+		// does this and would do the same.
+		hn := strings.ToLower(hf.Name)
+		h.tmpHdrs[hn] = append(h.tmpHdrs[hn], hf.Value)
+	}
 }
 
 func (h *headerReceiver) newContext(ctx context.Context, hdrs map[string][]string) context.Context {
 	// Retain the Addr/Auth of the stream connection, update the
 	// per-request metadata from the Arrow batch.
+	var md client.Metadata
+	if h.includeMetadata && hdrs != nil {
+		md = client.NewMetadata(hdrs)
+	}
 	return client.NewContext(ctx, client.Info{
 		Addr:     h.connInfo.Addr,
 		Auth:     h.connInfo.Auth,
-		Metadata: client.NewMetadata(hdrs),
+		Metadata: md,
 	})
 }
 
 func (r *Receiver) ArrowStream(serverStream arrowpb.ArrowStreamService_ArrowStreamServer) error {
 	streamCtx := serverStream.Context()
 	ac := r.newConsumer()
-	hrcv := newHeaderReceiver(serverStream.Context(), r.gsettings.IncludeMetadata)
+	hrcv := newHeaderReceiver(serverStream.Context(), r.authServer, r.gsettings.IncludeMetadata)
 
 	defer func() {
 		if err := ac.Close(); err != nil {
