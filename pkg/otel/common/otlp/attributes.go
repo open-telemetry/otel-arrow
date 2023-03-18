@@ -30,10 +30,7 @@ type AttributeIds struct {
 }
 
 func NewAttributeIds(structDT *arrow.StructType) (*AttributeIds, error) {
-	id, found := structDT.FieldIdx(constants.Attributes)
-	if !found {
-		return nil, fmt.Errorf("`attributes` field not found in Arrow struct")
-	}
+	id, _ := arrowutils.FieldIDFromStruct(structDT, constants.Attributes)
 	return &AttributeIds{Id: id}, nil
 }
 
@@ -46,13 +43,25 @@ func NewSharedAttributeIds(structDT *arrow.StructType) *AttributeIds {
 }
 
 func AppendAttributesInto(attrs pcommon.Map, parentArr *array.Struct, row int, attributeIds *AttributeIds) error {
-	marr, start, end, err := attributesFromStruct(attributeIds.Id, parentArr, row)
+	marr, err := attributesFromStruct(attributeIds.Id, parentArr, row)
 	if err != nil {
 		return err
 	}
 	if marr == nil {
 		return nil
 	}
+
+	return UpdateAttributesFrom(attrs, marr, row)
+}
+
+func UpdateAttributesFrom(attrs pcommon.Map, marr *array.Map, row int) error {
+	if marr.IsNull(row) {
+		return nil
+	}
+
+	start := int(marr.Offsets()[row])
+	end := int(marr.Offsets()[row+1])
+
 	attrs.EnsureCapacity(end - start)
 
 	keys := marr.Keys()
@@ -67,26 +76,25 @@ func AppendAttributesInto(attrs pcommon.Map, parentArr *array.Struct, row int, a
 			return err
 		}
 
-		if err := UpdateValueFrom(attrs.PutEmpty(key), values, i); err != nil {
-			return err
+		if err = UpdateValueFrom(attrs.PutEmpty(key), values, i); err != nil {
+			return fmt.Errorf("UpdateAttributesFrom(key=%q)->%w", key, err)
 		}
 	}
 	return nil
 }
 
-func attributesFromStruct(fieldId int, parentArr *array.Struct, row int) (marr *array.Map, start int, end int, err error) {
-	start = 0
-	end = 0
+func attributesFromStruct(fieldID int, parentArr *array.Struct, row int) (marr *array.Map, err error) {
+	if fieldID == -1 {
+		return nil, nil
+	}
 
-	column := parentArr.Field(fieldId)
+	column := parentArr.Field(fieldID)
 	switch arr := column.(type) {
 	case *array.Map:
 		if arr.IsNull(row) {
 			return
 		}
 
-		start = int(arr.Offsets()[row])
-		end = int(arr.Offsets()[row+1])
 		marr = arr
 	default:
 		err = fmt.Errorf("`attributes` is not an Arrow map")

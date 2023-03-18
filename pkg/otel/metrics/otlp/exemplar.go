@@ -23,7 +23,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -47,25 +47,10 @@ func NewExemplarIds(ndp *arrow.StructType) (*ExemplarIds, error) {
 		return nil, err
 	}
 
-	timeUnixNanoId, timeUnixNanoFound := exemplarDT.FieldIdx(constants.TimeUnixNano)
-	if !timeUnixNanoFound {
-		return nil, fmt.Errorf("field %s not found", constants.TimeUnixNano)
-	}
-
-	spanIdId, spanIdFound := exemplarDT.FieldIdx(constants.SpanId)
-	if !spanIdFound {
-		return nil, fmt.Errorf("field %s not found", constants.SpanId)
-	}
-
-	traceIdId, traceIdFound := exemplarDT.FieldIdx(constants.TraceId)
-	if !traceIdFound {
-		return nil, fmt.Errorf("field %s not found", constants.TraceId)
-	}
-
-	valueId, valueFound := exemplarDT.FieldIdx(constants.MetricValue)
-	if !valueFound {
-		return nil, fmt.Errorf("field %s not found", constants.MetricValue)
-	}
+	timeUnixNanoId, _ := arrowutils.FieldIDFromStruct(exemplarDT, constants.TimeUnixNano)
+	spanIdId, _ := arrowutils.FieldIDFromStruct(exemplarDT, constants.SpanId)
+	traceIdId, _ := arrowutils.FieldIDFromStruct(exemplarDT, constants.TraceId)
+	valueId, _ := arrowutils.FieldIDFromStruct(exemplarDT, constants.MetricValue)
 
 	return &ExemplarIds{
 		Id:           id,
@@ -80,7 +65,7 @@ func NewExemplarIds(ndp *arrow.StructType) (*ExemplarIds, error) {
 func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, ndp *arrowutils.ListOfStructs, ndpIdx int, ids *ExemplarIds) error {
 	exemplars, err := ndp.ListOfStructsById(ndpIdx, ids.Id)
 	if err != nil {
-		return err
+		return fmt.Errorf("AppendExemplarsInto(field='examplars')->%w", err)
 	}
 
 	if exemplars == nil {
@@ -95,7 +80,7 @@ func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, ndp *arrowutils.Li
 		}
 
 		if err := otlp.AppendAttributesInto(exemplar.FilteredAttributes(), exemplars.Array(), exemplarIdx, ids.Attributes); err != nil {
-			return err
+			return fmt.Errorf("AppendExemplarsInto->%w", err)
 		}
 
 		timeUnixNano, err := exemplars.TimestampFieldByID(ids.TimeUnixNano, exemplarIdx)

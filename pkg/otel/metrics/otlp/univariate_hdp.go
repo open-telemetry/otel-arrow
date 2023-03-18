@@ -23,7 +23,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -53,55 +53,21 @@ func NewUnivariateHistogramDataPointIds(parentDT *arrow.StructType) (*Univariate
 		return nil, err
 	}
 
-	startTimeUnixNanoId, found := hdpDT.FieldIdx(constants.StartTimeUnixNano)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.StartTimeUnixNano)
-	}
-
-	timeUnixNanoId, found := hdpDT.FieldIdx(constants.TimeUnixNano)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.TimeUnixNano)
-	}
-
-	countId, found := hdpDT.FieldIdx(constants.HistogramCount)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.HistogramCount)
-	}
-
-	sumId, found := hdpDT.FieldIdx(constants.HistogramSum)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.HistogramSum)
-	}
-
-	bucketCountsId, found := hdpDT.FieldIdx(constants.HistogramBucketCounts)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.HistogramBucketCounts)
-	}
-
-	explicitBoundsId, found := hdpDT.FieldIdx(constants.HistogramExplicitBounds)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.HistogramExplicitBounds)
-	}
+	startTimeUnixNanoId, _ := arrowutils.FieldIDFromStruct(hdpDT, constants.StartTimeUnixNano)
+	timeUnixNanoId, _ := arrowutils.FieldIDFromStruct(hdpDT, constants.TimeUnixNano)
+	countId, _ := arrowutils.FieldIDFromStruct(hdpDT, constants.HistogramCount)
+	sumId, _ := arrowutils.FieldIDFromStruct(hdpDT, constants.HistogramSum)
+	bucketCountsId, _ := arrowutils.FieldIDFromStruct(hdpDT, constants.HistogramBucketCounts)
+	explicitBoundsId, _ := arrowutils.FieldIDFromStruct(hdpDT, constants.HistogramExplicitBounds)
 
 	exemplars, err := NewExemplarIds(hdpDT)
 	if err != nil {
 		return nil, err
 	}
 
-	flagsId, found := hdpDT.FieldIdx(constants.Flags)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.Flags)
-	}
-
-	minId, found := hdpDT.FieldIdx(constants.HistogramMin)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.HistogramMin)
-	}
-
-	maxId, found := hdpDT.FieldIdx(constants.HistogramMax)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.HistogramMax)
-	}
+	flagsId, _ := arrowutils.FieldIDFromStruct(hdpDT, constants.Flags)
+	minId, _ := arrowutils.FieldIDFromStruct(hdpDT, constants.HistogramMin)
+	maxId, _ := arrowutils.FieldIDFromStruct(hdpDT, constants.HistogramMax)
 
 	return &UnivariateHistogramDataPointIds{
 		Id:                id,
@@ -133,7 +99,7 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 
 		attrs := hdpVal.Attributes()
 		if err := otlp.AppendAttributesInto(attrs, hdp.Array(), hdpIdx, ids.Attributes); err != nil {
-			return err
+			return fmt.Errorf("AppendUnivariateHistogramDataPointInto->%w", err)
 		}
 		smdata.Attributes.Range(func(k string, v pcommon.Value) bool {
 			v.CopyTo(attrs.PutEmpty(k))
@@ -180,7 +146,7 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 
 		sum, err := hdp.F64OrNilFieldByID(ids.Sum, hdpIdx)
 		if err != nil {
-			return err
+			return fmt.Errorf("AppendUnivariateHistogramDataPointInto(field=`sum`)->%w", err)
 		}
 		if sum != nil {
 			hdpVal.SetSum(*sum)
@@ -188,7 +154,7 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 
 		bucketCounts, start, end, err := hdp.ListValuesById(hdpIdx, ids.BucketCounts)
 		if err != nil {
-			return err
+			return fmt.Errorf("AppendUnivariateHistogramDataPointInto(field=`bucket_counts`)->%w", err)
 		}
 		if values, ok := bucketCounts.(*array.Uint64); ok {
 			bucketCountsSlice := hdpVal.BucketCounts()
@@ -220,7 +186,7 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 				return err
 			}
 		} else if err != nil {
-			return err
+			return fmt.Errorf("AppendUnivariateHistogramDataPointInto(field=`exemplars`)->%w", err)
 		}
 
 		flags, err := hdp.U32FieldByID(ids.Flags, hdpIdx)
@@ -231,7 +197,7 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 
 		min, err := hdp.F64OrNilFieldByID(ids.Min, hdpIdx)
 		if err != nil {
-			return err
+			return fmt.Errorf("AppendUnivariateHistogramDataPointInto(field=`min`)->%w", err)
 		}
 		if min != nil {
 			hdpVal.SetMin(*min)
@@ -239,7 +205,7 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 
 		max, err := hdp.F64OrNilFieldByID(ids.Max, hdpIdx)
 		if err != nil {
-			return err
+			return fmt.Errorf("AppendUnivariateHistogramDataPointInto(field=`max`)->%w", err)
 		}
 		if max != nil {
 			hdpVal.SetMax(*max)

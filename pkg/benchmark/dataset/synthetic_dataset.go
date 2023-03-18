@@ -18,7 +18,7 @@ import (
 	"math/rand"
 
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	arrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
@@ -33,6 +33,7 @@ type MetricsDataset interface {
 
 type LogsDataset interface {
 	Len() int
+	ShowStats()
 	Logs(start, size int) []plog.Logs
 	SizeInBytes() int
 }
@@ -88,6 +89,10 @@ func (d *FakeLogsDataset) SizeInBytes() int {
 
 func (d *FakeLogsDataset) Len() int {
 	return d.len
+}
+
+func (d *FakeLogsDataset) ShowStats() {
+	// Not implemented
 }
 
 func (d *FakeLogsDataset) Logs(_, size int) []plog.Logs {

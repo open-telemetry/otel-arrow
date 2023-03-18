@@ -21,20 +21,22 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
+	arrow "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
 )
 
 func UpdateValueFromExemplar(v pmetric.Exemplar, vArr *array.SparseUnion, row int) error {
-	tcode := int8(vArr.ChildID(row))
+	tcode := vArr.TypeCode(row)
+	fieldId := vArr.ChildID(row)
+
 	switch tcode {
 	case arrow.I64Code:
-		val, err := arrowutils.I64FromArray(vArr.Field(int(tcode)), row)
+		val, err := arrowutils.I64FromArray(vArr.Field(fieldId), row)
 		if err != nil {
 			return err
 		}
 		v.SetIntValue(val)
 	case arrow.F64Code:
-		val, err := arrowutils.F64FromArray(vArr.Field(int(tcode)), row)
+		val, err := arrowutils.F64FromArray(vArr.Field(fieldId), row)
 		if err != nil {
 			return err
 		}
@@ -46,16 +48,18 @@ func UpdateValueFromExemplar(v pmetric.Exemplar, vArr *array.SparseUnion, row in
 }
 
 func UpdateValueFromNumberDataPoint(v pmetric.NumberDataPoint, vArr *array.SparseUnion, row int) error {
-	tcode := int8(vArr.ChildID(row))
+	tcode := vArr.TypeCode(row)
+	fieldId := vArr.ChildID(row)
+
 	switch tcode {
 	case arrow.I64Code:
-		val, err := arrowutils.I64FromArray(vArr.Field(int(tcode)), row)
+		val, err := arrowutils.I64FromArray(vArr.Field(fieldId), row)
 		if err != nil {
 			return err
 		}
 		v.SetIntValue(val)
 	case arrow.F64Code:
-		val, err := arrowutils.F64FromArray(vArr.Field(int(tcode)), row)
+		val, err := arrowutils.F64FromArray(vArr.Field(fieldId), row)
 		if err != nil {
 			return err
 		}

@@ -17,11 +17,14 @@ package arrow
 import (
 	"testing"
 
+	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 )
 
 // An empty trace should not cause an error.
@@ -31,19 +34,28 @@ func TestEmptyTrace(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	schema := acommon.NewAdaptiveSchema(pool, Schema)
-	defer schema.Release()
-	builder, err := NewTracesBuilder(schema)
-	require.NoError(t, err)
-	defer builder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
+	rBuilder.Release()
 
-	trace := ptrace.NewTraces()
-	err = builder.Append(trace)
-	require.NoError(t, err)
+	var record arrow.Record
 
-	record, err := builder.Build()
+	for {
+		b, err := NewTracesBuilder(rBuilder)
+		require.NoError(t, err)
+		defer b.Release()
+
+		trace := ptrace.NewTraces()
+		err = b.Append(trace)
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, schema.ErrSchemaNotUpToDate)
+	}
+
 	defer record.Release()
-	require.NoError(t, err)
 	require.NotNil(t, record)
 }
 
@@ -54,22 +66,31 @@ func TestEmptyResource(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	schema := acommon.NewAdaptiveSchema(pool, Schema)
-	defer schema.Release()
-	builder, err := NewTracesBuilder(schema)
-	require.NoError(t, err)
-	defer builder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
+	rBuilder.Release()
 
-	trace := ptrace.NewTraces()
-	rs := trace.ResourceSpans().AppendEmpty()
-	require.NotNil(t, rs)
+	var record arrow.Record
 
-	err = builder.Append(trace)
-	require.NoError(t, err)
+	for {
+		b, err := NewTracesBuilder(rBuilder)
+		require.NoError(t, err)
+		defer b.Release()
 
-	record, err := builder.Build()
+		trace := ptrace.NewTraces()
+		rs := trace.ResourceSpans().AppendEmpty()
+		require.NotNil(t, rs)
+
+		err = b.Append(trace)
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, schema.ErrSchemaNotUpToDate)
+	}
+
 	defer record.Release()
-	require.NoError(t, err)
 	require.NotNil(t, record)
 }
 
@@ -80,23 +101,32 @@ func TestEmptyResourceAttribute(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	schema := acommon.NewAdaptiveSchema(pool, Schema)
-	defer schema.Release()
-	builder, err := NewTracesBuilder(schema)
-	require.NoError(t, err)
-	defer builder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
+	rBuilder.Release()
 
-	trace := ptrace.NewTraces()
-	rs := trace.ResourceSpans().AppendEmpty()
-	r := rs.Resource()
-	require.NotNil(t, r)
+	var record arrow.Record
 
-	err = builder.Append(trace)
-	require.NoError(t, err)
+	for {
+		b, err := NewTracesBuilder(rBuilder)
+		require.NoError(t, err)
+		defer b.Release()
 
-	record, err := builder.Build()
+		trace := ptrace.NewTraces()
+		rs := trace.ResourceSpans().AppendEmpty()
+		r := rs.Resource()
+		require.NotNil(t, r)
+
+		err = b.Append(trace)
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, schema.ErrSchemaNotUpToDate)
+	}
+
 	defer record.Release()
-	require.NoError(t, err)
 	require.NotNil(t, record)
 }
 
@@ -107,23 +137,32 @@ func TestEmptyScopeSpan(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	schema := acommon.NewAdaptiveSchema(pool, Schema)
-	defer schema.Release()
-	builder, err := NewTracesBuilder(schema)
-	require.NoError(t, err)
-	defer builder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
+	rBuilder.Release()
 
-	trace := ptrace.NewTraces()
-	rs := trace.ResourceSpans().AppendEmpty()
-	ss := rs.ScopeSpans().AppendEmpty()
-	require.NotNil(t, ss)
+	var record arrow.Record
 
-	err = builder.Append(trace)
-	require.NoError(t, err)
+	for {
+		b, err := NewTracesBuilder(rBuilder)
+		require.NoError(t, err)
+		defer b.Release()
 
-	record, err := builder.Build()
+		trace := ptrace.NewTraces()
+		rs := trace.ResourceSpans().AppendEmpty()
+		ss := rs.ScopeSpans().AppendEmpty()
+		require.NotNil(t, ss)
+
+		err = b.Append(trace)
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, schema.ErrSchemaNotUpToDate)
+	}
+
 	defer record.Release()
-	require.NoError(t, err)
 	require.NotNil(t, record)
 }
 
@@ -134,24 +173,33 @@ func TestEmptyScope(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	schema := acommon.NewAdaptiveSchema(pool, Schema)
-	defer schema.Release()
-	builder, err := NewTracesBuilder(schema)
-	require.NoError(t, err)
-	defer builder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
+	rBuilder.Release()
 
-	trace := ptrace.NewTraces()
-	rs := trace.ResourceSpans().AppendEmpty()
-	ss := rs.ScopeSpans().AppendEmpty()
-	s := ss.Scope()
-	require.NotNil(t, s)
+	var record arrow.Record
 
-	err = builder.Append(trace)
-	require.NoError(t, err)
+	for {
+		b, err := NewTracesBuilder(rBuilder)
+		require.NoError(t, err)
+		defer b.Release()
 
-	record, err := builder.Build()
+		trace := ptrace.NewTraces()
+		rs := trace.ResourceSpans().AppendEmpty()
+		ss := rs.ScopeSpans().AppendEmpty()
+		s := ss.Scope()
+		require.NotNil(t, s)
+
+		err = b.Append(trace)
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, schema.ErrSchemaNotUpToDate)
+	}
+
 	defer record.Release()
-	require.NoError(t, err)
 	require.NotNil(t, record)
 }
 
@@ -162,25 +210,34 @@ func TestEmptyScopeAttribute(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	schema := acommon.NewAdaptiveSchema(pool, Schema)
-	defer schema.Release()
-	builder, err := NewTracesBuilder(schema)
-	require.NoError(t, err)
-	defer builder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
+	rBuilder.Release()
 
-	trace := ptrace.NewTraces()
-	rs := trace.ResourceSpans().AppendEmpty()
-	ss := rs.ScopeSpans().AppendEmpty()
-	s := ss.Scope()
-	a := s.Attributes()
-	require.NotNil(t, a)
+	var record arrow.Record
 
-	err = builder.Append(trace)
-	require.NoError(t, err)
+	for {
+		b, err := NewTracesBuilder(rBuilder)
+		require.NoError(t, err)
+		defer b.Release()
 
-	record, err := builder.Build()
+		trace := ptrace.NewTraces()
+		rs := trace.ResourceSpans().AppendEmpty()
+		ss := rs.ScopeSpans().AppendEmpty()
+		s := ss.Scope()
+		a := s.Attributes()
+		require.NotNil(t, a)
+
+		err = b.Append(trace)
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, schema.ErrSchemaNotUpToDate)
+	}
+
 	defer record.Release()
-	require.NoError(t, err)
 	require.NotNil(t, record)
 }
 
@@ -191,23 +248,32 @@ func TestEmptySpans(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	schema := acommon.NewAdaptiveSchema(pool, Schema)
-	defer schema.Release()
-	builder, err := NewTracesBuilder(schema)
-	require.NoError(t, err)
-	defer builder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
+	rBuilder.Release()
 
-	trace := ptrace.NewTraces()
-	rs := trace.ResourceSpans().AppendEmpty()
-	ss := rs.ScopeSpans().AppendEmpty()
-	require.NotNil(t, ss)
+	var record arrow.Record
 
-	err = builder.Append(trace)
-	require.NoError(t, err)
+	for {
+		b, err := NewTracesBuilder(rBuilder)
+		require.NoError(t, err)
+		defer b.Release()
 
-	record, err := builder.Build()
+		trace := ptrace.NewTraces()
+		rs := trace.ResourceSpans().AppendEmpty()
+		ss := rs.ScopeSpans().AppendEmpty()
+		require.NotNil(t, ss)
+
+		err = b.Append(trace)
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, schema.ErrSchemaNotUpToDate)
+	}
+
 	defer record.Release()
-	require.NoError(t, err)
 	require.NotNil(t, record)
 }
 
@@ -218,25 +284,34 @@ func TestEmptySpanAttribute(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	schema := acommon.NewAdaptiveSchema(pool, Schema)
-	defer schema.Release()
-	builder, err := NewTracesBuilder(schema)
-	require.NoError(t, err)
-	defer builder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
+	rBuilder.Release()
 
-	trace := ptrace.NewTraces()
-	rs := trace.ResourceSpans().AppendEmpty()
-	ss := rs.ScopeSpans().AppendEmpty()
-	sp := ss.Spans().AppendEmpty()
-	a := sp.Attributes()
-	require.NotNil(t, a)
+	var record arrow.Record
 
-	err = builder.Append(trace)
-	require.NoError(t, err)
+	for {
+		b, err := NewTracesBuilder(rBuilder)
+		require.NoError(t, err)
+		defer b.Release()
 
-	record, err := builder.Build()
+		trace := ptrace.NewTraces()
+		rs := trace.ResourceSpans().AppendEmpty()
+		ss := rs.ScopeSpans().AppendEmpty()
+		sp := ss.Spans().AppendEmpty()
+		a := sp.Attributes()
+		require.NotNil(t, a)
+
+		err = b.Append(trace)
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, schema.ErrSchemaNotUpToDate)
+	}
+
 	defer record.Release()
-	require.NoError(t, err)
 	require.NotNil(t, record)
 }
 
@@ -247,25 +322,34 @@ func TestEmptySpanStatus(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	schema := acommon.NewAdaptiveSchema(pool, Schema)
-	defer schema.Release()
-	builder, err := NewTracesBuilder(schema)
-	require.NoError(t, err)
-	defer builder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
+	rBuilder.Release()
 
-	trace := ptrace.NewTraces()
-	rs := trace.ResourceSpans().AppendEmpty()
-	ss := rs.ScopeSpans().AppendEmpty()
-	sp := ss.Spans().AppendEmpty()
-	s := sp.Status()
-	require.NotNil(t, s)
+	var record arrow.Record
 
-	err = builder.Append(trace)
-	require.NoError(t, err)
+	for {
+		b, err := NewTracesBuilder(rBuilder)
+		require.NoError(t, err)
+		defer b.Release()
 
-	record, err := builder.Build()
+		trace := ptrace.NewTraces()
+		rs := trace.ResourceSpans().AppendEmpty()
+		ss := rs.ScopeSpans().AppendEmpty()
+		sp := ss.Spans().AppendEmpty()
+		s := sp.Status()
+		require.NotNil(t, s)
+
+		err = b.Append(trace)
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, schema.ErrSchemaNotUpToDate)
+	}
+
 	defer record.Release()
-	require.NoError(t, err)
 	require.NotNil(t, record)
 }
 
@@ -276,25 +360,34 @@ func TestEmptySpanLink(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	schema := acommon.NewAdaptiveSchema(pool, Schema)
-	defer schema.Release()
-	builder, err := NewTracesBuilder(schema)
-	require.NoError(t, err)
-	defer builder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
+	rBuilder.Release()
 
-	trace := ptrace.NewTraces()
-	rs := trace.ResourceSpans().AppendEmpty()
-	ss := rs.ScopeSpans().AppendEmpty()
-	sp := ss.Spans().AppendEmpty()
-	l := sp.Links().AppendEmpty()
-	require.NotNil(t, l)
+	var record arrow.Record
 
-	err = builder.Append(trace)
-	require.NoError(t, err)
+	for {
+		b, err := NewTracesBuilder(rBuilder)
+		require.NoError(t, err)
+		defer b.Release()
 
-	record, err := builder.Build()
+		trace := ptrace.NewTraces()
+		rs := trace.ResourceSpans().AppendEmpty()
+		ss := rs.ScopeSpans().AppendEmpty()
+		sp := ss.Spans().AppendEmpty()
+		l := sp.Links().AppendEmpty()
+		require.NotNil(t, l)
+
+		err = b.Append(trace)
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, schema.ErrSchemaNotUpToDate)
+	}
+
 	defer record.Release()
-	require.NoError(t, err)
 	require.NotNil(t, record)
 }
 
@@ -305,24 +398,33 @@ func TestEmptySpanEvent(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	schema := acommon.NewAdaptiveSchema(pool, Schema)
-	defer schema.Release()
-	builder, err := NewTracesBuilder(schema)
-	require.NoError(t, err)
-	defer builder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
+	rBuilder.Release()
 
-	trace := ptrace.NewTraces()
-	rs := trace.ResourceSpans().AppendEmpty()
-	ss := rs.ScopeSpans().AppendEmpty()
-	sp := ss.Spans().AppendEmpty()
-	e := sp.Events().AppendEmpty()
-	require.NotNil(t, e)
+	var record arrow.Record
 
-	err = builder.Append(trace)
-	require.NoError(t, err)
+	for {
+		b, err := NewTracesBuilder(rBuilder)
+		require.NoError(t, err)
+		defer b.Release()
 
-	record, err := builder.Build()
+		trace := ptrace.NewTraces()
+		rs := trace.ResourceSpans().AppendEmpty()
+		ss := rs.ScopeSpans().AppendEmpty()
+		sp := ss.Spans().AppendEmpty()
+		e := sp.Events().AppendEmpty()
+		require.NotNil(t, e)
+
+		err = b.Append(trace)
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, schema.ErrSchemaNotUpToDate)
+	}
+
 	defer record.Release()
-	require.NoError(t, err)
 	require.NotNil(t, record)
 }

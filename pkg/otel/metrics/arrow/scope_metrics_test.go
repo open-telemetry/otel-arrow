@@ -23,6 +23,7 @@ import (
 
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/internal"
 )
 
 func TestIntersectAttrs(t *testing.T) {
@@ -114,7 +115,7 @@ func TestIntersectAttrs(t *testing.T) {
 	require.Equal(t, 0, sharedAttrsCount)
 }
 
-func TestScopeMetricsSharedData(t *testing.T) {
+func TestScopeMetricsSharedData1(t *testing.T) {
 	t.Parallel()
 
 	entropy := datagen.NewTestEntropy(0)
@@ -149,6 +150,58 @@ func TestScopeMetricsSharedData(t *testing.T) {
 	require.Nil(t, sharedData.Metrics[4].StartTime)
 	require.Nil(t, sharedData.Metrics[4].Time)
 	require.Equal(t, 1, len(sharedData.Metrics[4].Attributes.Attributes)) // freq attribute
+}
+
+func TestScopeMetricsSharedData2(t *testing.T) {
+	t.Parallel()
+
+	metrics := internal.ScopeMetrics3().Metrics()
+	sharedData, err := NewMetricsSharedData(metrics)
+	require.NoError(t, err)
+
+	require.NotNil(t, sharedData.StartTime)
+	require.NotNil(t, sharedData.Time)
+	require.NotNil(t, sharedData.Attributes)
+	require.Equal(t, 5, sharedData.Attributes.Len())
+
+	startTime := pcommon.Timestamp(1)
+	require.Equal(t, &startTime, sharedData.StartTime)
+	time := pcommon.Timestamp(2)
+	require.Equal(t, &time, sharedData.Time)
+
+	require.Equal(t, 1, len(sharedData.Metrics))
+
+	require.Nil(t, sharedData.Metrics[0].StartTime)
+	require.Nil(t, sharedData.Metrics[0].Time)
+	require.Equal(t, 0, len(sharedData.Metrics[0].Attributes.Attributes))
+}
+
+func TestScopeMetricsSharedData3(t *testing.T) {
+	t.Parallel()
+
+	metrics := internal.ScopeMetrics4().Metrics()
+	sharedData, err := NewMetricsSharedData(metrics)
+	require.NoError(t, err)
+
+	require.NotNil(t, sharedData.StartTime)
+	require.NotNil(t, sharedData.Time)
+	require.NotNil(t, sharedData.Attributes)
+	require.Equal(t, 5, sharedData.Attributes.Len())
+
+	startTime := pcommon.Timestamp(1)
+	require.Equal(t, &startTime, sharedData.StartTime)
+	time := pcommon.Timestamp(2)
+	require.Equal(t, &time, sharedData.Time)
+
+	require.Equal(t, 2, len(sharedData.Metrics))
+
+	require.Nil(t, sharedData.Metrics[0].StartTime)
+	require.Nil(t, sharedData.Metrics[0].Time)
+	require.Equal(t, 0, len(sharedData.Metrics[0].Attributes.Attributes))
+
+	require.Nil(t, sharedData.Metrics[1].StartTime)
+	require.Nil(t, sharedData.Metrics[1].Time)
+	require.Equal(t, 0, len(sharedData.Metrics[1].Attributes.Attributes))
 }
 
 func TestMetricSharedData(t *testing.T) {

@@ -19,22 +19,23 @@ import (
 
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
 var (
 	// UnivariateNumberDataPointDT is the data type for a single univariate number data point.
 	UnivariateNumberDataPointDT = arrow.StructOf(
-		arrow.Field{Name: constants.Attributes, Type: acommon.AttributesDT},
-		arrow.Field{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
-		arrow.Field{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
-		arrow.Field{Name: constants.MetricValue, Type: MetricValueDT},
-		arrow.Field{Name: constants.Exemplars, Type: arrow.ListOf(ExemplarDT)},
-		arrow.Field{Name: constants.Flags, Type: arrow.PrimitiveTypes.Uint32},
+		arrow.Field{Name: constants.Attributes, Type: acommon.AttributesDT, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.MetricValue, Type: MetricValueDT, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.Exemplars, Type: arrow.ListOf(ExemplarDT), Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.Flags, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
 	)
 )
 
@@ -42,35 +43,31 @@ var (
 type NumberDataPointBuilder struct {
 	released bool
 
-	builder *array.StructBuilder
+	builder *builder.StructBuilder
 
 	ab    *acommon.AttributesBuilder // attributes builder
-	stunb *array.TimestampBuilder    // start_time_unix_nano builder
-	tunb  *array.TimestampBuilder    // time_unix_nano builder
+	stunb *builder.TimestampBuilder  // start_time_unix_nano builder
+	tunb  *builder.TimestampBuilder  // time_unix_nano builder
 	mvb   *MetricValueBuilder        // metric_value builder
-	elb   *array.ListBuilder         // exemplars builder
+	elb   *builder.ListBuilder       // exemplars builder
 	eb    *ExemplarBuilder           // exemplar builder
-	fb    *array.Uint32Builder       // flags builder
-}
-
-// NewNumberDataPointBuilder creates a new NumberDataPointBuilder with a given memory allocator.
-func NewNumberDataPointBuilder(pool memory.Allocator) *NumberDataPointBuilder {
-	return NumberDataPointBuilderFrom(array.NewStructBuilder(pool, UnivariateNumberDataPointDT))
+	fb    *builder.Uint32Builder     // flags builder
 }
 
 // NumberDataPointBuilderFrom creates a new NumberDataPointBuilder from an existing StructBuilder.
-func NumberDataPointBuilderFrom(ndpb *array.StructBuilder) *NumberDataPointBuilder {
+func NumberDataPointBuilderFrom(ndpb *builder.StructBuilder) *NumberDataPointBuilder {
+	exemplars := ndpb.ListBuilder(constants.Exemplars)
 	return &NumberDataPointBuilder{
 		released: false,
 		builder:  ndpb,
 
-		ab:    acommon.AttributesBuilderFrom(ndpb.FieldBuilder(0).(*array.MapBuilder)),
-		stunb: ndpb.FieldBuilder(1).(*array.TimestampBuilder),
-		tunb:  ndpb.FieldBuilder(2).(*array.TimestampBuilder),
-		mvb:   MetricValueBuilderFrom(ndpb.FieldBuilder(3).(*array.SparseUnionBuilder)),
-		elb:   ndpb.FieldBuilder(4).(*array.ListBuilder),
-		eb:    ExemplarBuilderFrom(ndpb.FieldBuilder(4).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
-		fb:    ndpb.FieldBuilder(5).(*array.Uint32Builder),
+		ab:    acommon.AttributesBuilderFrom(ndpb.MapBuilder(constants.Attributes)),
+		stunb: ndpb.TimestampBuilder(constants.StartTimeUnixNano),
+		tunb:  ndpb.TimestampBuilder(constants.TimeUnixNano),
+		mvb:   MetricValueBuilderFrom(ndpb.SparseUnionBuilder(constants.MetricValue)),
+		elb:   exemplars,
+		eb:    ExemplarBuilderFrom(exemplars.StructBuilder()),
+		fb:    ndpb.Uint32Builder(constants.Flags),
 	}
 }
 
@@ -99,39 +96,38 @@ func (b *NumberDataPointBuilder) Release() {
 // Append appends a new data point to the builder.
 func (b *NumberDataPointBuilder) Append(ndp pmetric.NumberDataPoint, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
-		return fmt.Errorf("QuantileValueBuilder: Append() called after Release()")
+		return fmt.Errorf("QuantileValueBuilder: Reserve() called after Release()")
 	}
 
-	b.builder.Append(true)
-	if err := b.ab.AppendUniqueAttributes(ndp.Attributes(), smdata.Attributes, mdata.Attributes); err != nil {
-		return err
-	}
-	if smdata.StartTime == nil && mdata.StartTime == nil {
-		b.stunb.Append(arrow.Timestamp(ndp.StartTimestamp()))
-	} else {
-		b.stunb.AppendNull()
-	}
-	if smdata.Time == nil && mdata.Time == nil {
-		b.tunb.Append(arrow.Timestamp(ndp.Timestamp()))
-	} else {
-		b.tunb.AppendNull()
-	}
-	if err := b.mvb.AppendNumberDataPointValue(ndp); err != nil {
-		return err
-	}
-	exs := ndp.Exemplars()
-	ec := exs.Len()
-	if ec > 0 {
-		b.elb.Append(true)
-		b.elb.Reserve(ec)
-		for i := 0; i < ec; i++ {
-			if err := b.eb.Append(exs.At(i)); err != nil {
-				return err
-			}
+	return b.builder.Append(ndp, func() error {
+		if err := b.ab.AppendUniqueAttributes(ndp.Attributes(), smdata.Attributes, mdata.Attributes); err != nil {
+			return err
 		}
-	} else {
-		b.elb.Append(false)
-	}
-	b.fb.Append(uint32(ndp.Flags()))
-	return nil
+		if smdata.StartTime == nil && mdata.StartTime == nil {
+			b.stunb.Append(arrow.Timestamp(ndp.StartTimestamp()))
+		} else {
+			b.stunb.AppendNull()
+		}
+		if smdata.Time == nil && mdata.Time == nil {
+			b.tunb.Append(arrow.Timestamp(ndp.Timestamp()))
+		} else {
+			b.tunb.AppendNull()
+		}
+		if err := b.mvb.AppendNumberDataPointValue(ndp); err != nil {
+			return err
+		}
+
+		b.fb.Append(uint32(ndp.Flags()))
+
+		exs := ndp.Exemplars()
+		ec := exs.Len()
+		return b.elb.Append(ec, func() error {
+			for i := 0; i < ec; i++ {
+				if err := b.eb.Append(exs.At(i)); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	})
 }

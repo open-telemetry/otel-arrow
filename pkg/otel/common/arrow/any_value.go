@@ -1,21 +1,23 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright The OpenTelemetry Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 
 package arrow
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/apache/arrow/go/v11/arrow"
@@ -23,10 +25,8 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
-)
-
-var (
-	errInvalidVariantCode = errors.New("invalid any_value variant code")
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 )
 
 // Constants used to identify the type of value in the union.
@@ -39,54 +39,16 @@ const (
 	CborCode   int8 = 5
 )
 
-// AnyValueConfig configures the AnyValueBuilder and defines the
-// variants that must be enabled at the schema level.
-type AnyValueConfig struct {
-	variantCodes []int8
-}
-
-// Schema returns the SparseUnion data type for a specific configuration.
-func (c *AnyValueConfig) Schema() (*arrow.SparseUnionType, error) {
-	fields := make([]arrow.Field, len(c.variantCodes))
-	codes := make([]int8, len(c.variantCodes))
-
-	for i, code := range c.variantCodes {
-		switch code {
-		case StrCode:
-			fields[i] = arrow.Field{Name: "str", Type: DefaultDictString}
-			codes[i] = StrCode
-		case I64Code:
-			fields[i] = arrow.Field{Name: "i64", Type: arrow.PrimitiveTypes.Int64}
-			codes[i] = I64Code
-		case F64Code:
-			fields[i] = arrow.Field{Name: "f64", Type: arrow.PrimitiveTypes.Float64}
-			codes[i] = F64Code
-		case BoolCode:
-			fields[i] = arrow.Field{Name: "bool", Type: arrow.FixedWidthTypes.Boolean}
-			codes[i] = BoolCode
-		case BinaryCode:
-			fields[i] = arrow.Field{Name: "binary", Type: DefaultDictBinary}
-			codes[i] = BinaryCode
-		case CborCode:
-			fields[i] = arrow.Field{Name: "cbor", Type: DefaultDictBinary}
-			codes[i] = CborCode
-		default:
-			return nil, fmt.Errorf("invalid any_value variant code `%d`: %w", code, errInvalidVariantCode)
-		}
-	}
-	return arrow.SparseUnionOf(fields, codes), nil
-}
-
 var (
 	// AnyValueDT is an Arrow Data Type representing an OTLP Any Value.
 	// Any values are represented as a sparse union of the following variants: str, i64, f64, bool, binary.
 	AnyValueDT = arrow.SparseUnionOf([]arrow.Field{
-		{Name: "str", Type: DefaultDictString},
-		{Name: "i64", Type: arrow.PrimitiveTypes.Int64},
-		{Name: "f64", Type: arrow.PrimitiveTypes.Float64},
-		{Name: "bool", Type: arrow.FixedWidthTypes.Boolean},
-		{Name: "binary", Type: DefaultDictBinary},
-		{Name: "cbor", Type: DefaultDictBinary},
+		{Name: "str", Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary)},
+		{Name: "i64", Type: arrow.PrimitiveTypes.Int64, Metadata: schema.Metadata(schema.Optional)},
+		{Name: "f64", Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
+		{Name: "bool", Type: arrow.FixedWidthTypes.Boolean, Metadata: schema.Metadata(schema.Optional)},
+		{Name: "binary", Type: arrow.BinaryTypes.Binary, Metadata: schema.Metadata(schema.Optional, schema.Dictionary)},
+		{Name: "cbor", Type: arrow.BinaryTypes.Binary, Metadata: schema.Metadata(schema.Optional, schema.Dictionary)},
 	}, []int8{
 		StrCode,
 		I64Code,
@@ -101,27 +63,60 @@ var (
 type AnyValueBuilder struct {
 	released bool
 
-	builder *array.SparseUnionBuilder // any value builder
+	builder *builder.SparseUnionBuilder // any value builder
 
-	strBuilder    *AdaptiveDictionaryBuilder // string builder
-	i64Builder    *array.Int64Builder        // int64 builder
-	f64Builder    *array.Float64Builder      // float64 builder
-	boolBuilder   *array.BooleanBuilder      // bool builder
-	binaryBuilder *AdaptiveDictionaryBuilder // binary builder
-	cborBuilder   *AdaptiveDictionaryBuilder // cbor builder
+	strBuilder    *builder.StringBuilder  // string builder
+	i64Builder    *builder.Int64Builder   // int64 builder
+	f64Builder    *builder.Float64Builder // float64 builder
+	boolBuilder   *builder.BooleanBuilder // bool builder
+	binaryBuilder *builder.BinaryBuilder  // binary builder
+	cborBuilder   *builder.BinaryBuilder  // cbor builder
+}
+
+func ValueID(v pcommon.Value) string {
+	switch v.Type() {
+	case pcommon.ValueTypeStr:
+		return v.Str()
+	case pcommon.ValueTypeInt:
+		return fmt.Sprintf("%d", v.Int())
+	case pcommon.ValueTypeDouble:
+		return fmt.Sprintf("%f", v.Double())
+	case pcommon.ValueTypeBool:
+		return fmt.Sprintf("%t", v.Bool())
+	case pcommon.ValueTypeMap:
+		return AttributesId(v.Map())
+	case pcommon.ValueTypeBytes:
+		return fmt.Sprintf("%x", v.Bytes().AsRaw())
+	case pcommon.ValueTypeSlice:
+		values := v.Slice()
+		valueID := "["
+		for i := 0; i < values.Len(); i++ {
+			if len(valueID) > 1 {
+				valueID += ","
+			}
+			valueID += ValueID(values.At(i))
+		}
+		valueID += "]"
+		return valueID
+	case pcommon.ValueTypeEmpty:
+		return ""
+	default:
+		// includes pcommon.ValueTypeEmpty
+		panic("unsupported value type")
+	}
 }
 
 // AnyValueBuilderFrom creates a new AnyValueBuilder from an existing SparseUnionBuilder.
-func AnyValueBuilderFrom(av *array.SparseUnionBuilder) *AnyValueBuilder {
+func AnyValueBuilderFrom(av *builder.SparseUnionBuilder) *AnyValueBuilder {
 	return &AnyValueBuilder{
 		released:      false,
 		builder:       av,
-		strBuilder:    AdaptiveDictionaryBuilderFrom(av.Child(0)),
-		i64Builder:    av.Child(1).(*array.Int64Builder),
-		f64Builder:    av.Child(2).(*array.Float64Builder),
-		boolBuilder:   av.Child(3).(*array.BooleanBuilder),
-		binaryBuilder: AdaptiveDictionaryBuilderFrom(av.Child(4)),
-		cborBuilder:   AdaptiveDictionaryBuilderFrom(av.Child(5)),
+		strBuilder:    av.StringBuilder(StrCode),
+		i64Builder:    av.Int64Builder(I64Code),
+		f64Builder:    av.Float64Builder(F64Code),
+		boolBuilder:   av.BooleanBuilder(BoolCode),
+		binaryBuilder: av.BinaryBuilder(BinaryCode),
+		cborBuilder:   av.BinaryBuilder(CborCode),
 	}
 }
 
@@ -187,13 +182,7 @@ func (b *AnyValueBuilder) Release() {
 // appendStr appends a new string value to the builder.
 func (b *AnyValueBuilder) appendStr(v string) error {
 	b.builder.Append(StrCode)
-	if v == "" {
-		b.strBuilder.AppendNull()
-	} else {
-		if err := b.strBuilder.AppendString(v); err != nil {
-			return err
-		}
-	}
+	b.strBuilder.Append(v)
 	b.i64Builder.AppendNull()
 	b.f64Builder.AppendNull()
 	b.boolBuilder.AppendNull()
@@ -207,7 +196,6 @@ func (b *AnyValueBuilder) appendStr(v string) error {
 func (b *AnyValueBuilder) appendI64(v int64) {
 	b.builder.Append(I64Code)
 	b.i64Builder.Append(v)
-
 	b.strBuilder.AppendNull()
 	b.f64Builder.AppendNull()
 	b.boolBuilder.AppendNull()
@@ -219,7 +207,6 @@ func (b *AnyValueBuilder) appendI64(v int64) {
 func (b *AnyValueBuilder) appendF64(v float64) {
 	b.builder.Append(F64Code)
 	b.f64Builder.Append(v)
-
 	b.strBuilder.AppendNull()
 	b.i64Builder.AppendNull()
 	b.boolBuilder.AppendNull()
@@ -231,7 +218,6 @@ func (b *AnyValueBuilder) appendF64(v float64) {
 func (b *AnyValueBuilder) appendBool(v bool) {
 	b.builder.Append(BoolCode)
 	b.boolBuilder.Append(v)
-
 	b.strBuilder.AppendNull()
 	b.i64Builder.AppendNull()
 	b.f64Builder.AppendNull()
@@ -242,14 +228,7 @@ func (b *AnyValueBuilder) appendBool(v bool) {
 // appendBinary appends a new binary value to the builder.
 func (b *AnyValueBuilder) appendBinary(v []byte) error {
 	b.builder.Append(BinaryCode)
-	if v == nil {
-		b.binaryBuilder.AppendNull()
-	} else {
-		if err := b.binaryBuilder.AppendBinary(v); err != nil {
-			return err
-		}
-	}
-
+	b.binaryBuilder.Append(v)
 	b.strBuilder.AppendNull()
 	b.i64Builder.AppendNull()
 	b.f64Builder.AppendNull()
@@ -262,14 +241,7 @@ func (b *AnyValueBuilder) appendBinary(v []byte) error {
 // appendCbor appends a new cbor binary value to the builder.
 func (b *AnyValueBuilder) appendCbor(v []byte) error {
 	b.builder.Append(CborCode)
-	if v == nil {
-		b.cborBuilder.AppendNull()
-	} else {
-		if err := b.cborBuilder.AppendBinary(v); err != nil {
-			return err
-		}
-	}
-
+	b.cborBuilder.Append(v)
 	b.strBuilder.AppendNull()
 	b.i64Builder.AppendNull()
 	b.f64Builder.AppendNull()

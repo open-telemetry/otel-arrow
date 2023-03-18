@@ -19,17 +19,18 @@ import (
 
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
 // QuantileValueDT is the Arrow Data Type describing a quantile value.
 var (
 	QuantileValueDT = arrow.StructOf(
-		arrow.Field{Name: constants.SummaryQuantile, Type: arrow.PrimitiveTypes.Float64},
-		arrow.Field{Name: constants.SummaryValue, Type: arrow.PrimitiveTypes.Float64},
+		arrow.Field{Name: constants.SummaryQuantile, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.SummaryValue, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
 	)
 )
 
@@ -37,25 +38,20 @@ var (
 type QuantileValueBuilder struct {
 	released bool
 
-	builder *array.StructBuilder
+	builder *builder.StructBuilder
 
-	sqb *array.Float64Builder // summary quantile builder
-	svb *array.Float64Builder // summary quantile value builder
-}
-
-// NewQuantileValueBuilder creates a new QuantileValueBuilder with a given memory allocator.
-func NewQuantileValueBuilder(pool memory.Allocator) *QuantileValueBuilder {
-	return QuantileValueBuilderFrom(array.NewStructBuilder(pool, QuantileValueDT))
+	sqb *builder.Float64Builder // summary quantile builder
+	svb *builder.Float64Builder // summary quantile value builder
 }
 
 // QuantileValueBuilderFrom creates a new QuantileValueBuilder from an existing StructBuilder.
-func QuantileValueBuilderFrom(ndpb *array.StructBuilder) *QuantileValueBuilder {
+func QuantileValueBuilderFrom(ndpb *builder.StructBuilder) *QuantileValueBuilder {
 	return &QuantileValueBuilder{
 		released: false,
 		builder:  ndpb,
 
-		sqb: ndpb.FieldBuilder(0).(*array.Float64Builder),
-		svb: ndpb.FieldBuilder(1).(*array.Float64Builder),
+		sqb: ndpb.Float64Builder(constants.SummaryQuantile),
+		svb: ndpb.Float64Builder(constants.SummaryValue),
 	}
 }
 
@@ -84,11 +80,12 @@ func (b *QuantileValueBuilder) Release() {
 // Append appends a new quantile value to the builder.
 func (b *QuantileValueBuilder) Append(sdp pmetric.SummaryDataPointValueAtQuantile) error {
 	if b.released {
-		return fmt.Errorf("QuantileValueBuilder: Append() called after Release()")
+		return fmt.Errorf("QuantileValueBuilder: Reserve() called after Release()")
 	}
 
-	b.builder.Append(true)
-	b.sqb.Append(sdp.Quantile())
-	b.svb.Append(sdp.Value())
-	return nil
+	return b.builder.Append(sdp, func() error {
+		b.sqb.AppendNonZero(sdp.Quantile())
+		b.svb.AppendNonZero(sdp.Value())
+		return nil
+	})
 }

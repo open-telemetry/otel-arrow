@@ -23,7 +23,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -48,30 +48,16 @@ func NewUnivariateNdpIds(parentDT *arrow.StructType) (*UnivariateNdpIds, error) 
 		return nil, err
 	}
 
-	startTimeUnixNanoId, found := univariateNdpDT.FieldIdx(constants.StartTimeUnixNano)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.StartTimeUnixNano)
-	}
-
-	timeUnixNanoId, found := univariateNdpDT.FieldIdx(constants.TimeUnixNano)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.TimeUnixNano)
-	}
-
-	metricValueId, found := univariateNdpDT.FieldIdx(constants.MetricValue)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.MetricValue)
-	}
+	startTimeUnixNanoId, _ := arrowutils.FieldIDFromStruct(univariateNdpDT, constants.StartTimeUnixNano)
+	timeUnixNanoId, _ := arrowutils.FieldIDFromStruct(univariateNdpDT, constants.TimeUnixNano)
+	metricValueId, _ := arrowutils.FieldIDFromStruct(univariateNdpDT, constants.MetricValue)
 
 	exemplars, err := NewExemplarIds(univariateNdpDT)
 	if err != nil {
 		return nil, err
 	}
 
-	flagsId, found := univariateNdpDT.FieldIdx(constants.Flags)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.Flags)
-	}
+	flagsId, _ := arrowutils.FieldIDFromStruct(univariateNdpDT, constants.Flags)
 
 	return &UnivariateNdpIds{
 		Id:                id,
@@ -98,7 +84,7 @@ func AppendUnivariateNdpInto(ndpSlice pmetric.NumberDataPointSlice, ndp *arrowut
 
 		attrs := ndpValue.Attributes()
 		if err := otlp.AppendAttributesInto(attrs, ndp.Array(), ndpIdx, ids.Attributes); err != nil {
-			return err
+			return fmt.Errorf("AppendUnivariateNdpInto->%w", err)
 		}
 		smdata.Attributes.Range(func(k string, v pcommon.Value) bool {
 			v.CopyTo(attrs.PutEmpty(k))
@@ -151,12 +137,7 @@ func AppendUnivariateNdpInto(ndpSlice pmetric.NumberDataPointSlice, ndp *arrowut
 		}
 		ndpValue.SetFlags(pmetric.DataPointFlags(flags))
 
-		exemplars, err := ndp.ListOfStructsById(ndpIdx, ids.Exemplars.Id)
-		if exemplars != nil && err == nil {
-			if err := AppendExemplarsInto(ndpValue.Exemplars(), exemplars, ndpIdx, ids.Exemplars); err != nil {
-				return err
-			}
-		} else if err != nil {
+		if err := AppendExemplarsInto(ndpValue.Exemplars(), ndp, ndpIdx, ids.Exemplars); err != nil {
 			return err
 		}
 	}

@@ -1,16 +1,19 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright The OpenTelemetry Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 
 package arrow
 
@@ -19,31 +22,32 @@ import (
 
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
 // SpanDT is the Arrow Data Type describing a span.
 var (
 	SpanDT = arrow.StructOf([]arrow.Field{
-		{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
-		{Name: constants.EndTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
-		{Name: constants.TraceId, Type: acommon.DefaultDictFixed16Binary},
-		{Name: constants.SpanId, Type: acommon.DefaultDictFixed8Binary},
-		{Name: constants.TraceState, Type: acommon.DefaultDictString},
-		{Name: constants.ParentSpanId, Type: acommon.DefaultDictFixed8Binary},
-		{Name: constants.Name, Type: acommon.DefaultDictString},
-		{Name: constants.KIND, Type: acommon.DefaultDictInt32},
-		{Name: constants.Attributes, Type: acommon.AttributesDT},
-		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32},
-		{Name: constants.SpanEvents, Type: arrow.ListOf(EventDT)},
-		{Name: constants.DroppedEventsCount, Type: arrow.PrimitiveTypes.Uint32},
-		{Name: constants.SpanLinks, Type: arrow.ListOf(LinkDT)},
-		{Name: constants.DroppedLinksCount, Type: arrow.PrimitiveTypes.Uint32},
-		{Name: constants.Status, Type: StatusDT},
+		{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.EndTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.TraceId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 16}, Metadata: schema.Metadata(schema.Optional, schema.Dictionary)},
+		{Name: constants.SpanId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 8}, Metadata: schema.Metadata(schema.Optional, schema.Dictionary)},
+		{Name: constants.TraceState, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary)},
+		{Name: constants.ParentSpanId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 8}, Metadata: schema.Metadata(schema.Optional, schema.Dictionary)},
+		{Name: constants.Name, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary)},
+		{Name: constants.KIND, Type: arrow.PrimitiveTypes.Int32, Metadata: schema.Metadata(schema.Optional, schema.Dictionary)},
+		{Name: constants.Attributes, Type: acommon.AttributesDT, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.SpanEvents, Type: arrow.ListOf(EventDT), Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.DroppedEventsCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.SpanLinks, Type: arrow.ListOf(LinkDT), Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.DroppedLinksCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.Status, Type: StatusDT, Metadata: schema.Metadata(schema.Optional)},
 	}...)
 )
 
@@ -51,57 +55,51 @@ var (
 type SpanBuilder struct {
 	released bool
 
-	builder *array.StructBuilder
+	builder *builder.StructBuilder
 
-	stunb *array.TimestampBuilder            // start time unix nano builder
-	etunb *array.TimestampBuilder            // end time unix nano builder
-	tib   *acommon.AdaptiveDictionaryBuilder // trace id builder
-	sib   *acommon.AdaptiveDictionaryBuilder // span id builder
-	tsb   *acommon.AdaptiveDictionaryBuilder // trace state builder
-	psib  *acommon.AdaptiveDictionaryBuilder // parent span id builder
-	nb    *acommon.AdaptiveDictionaryBuilder // name builder
-	kb    *acommon.AdaptiveDictionaryBuilder // kind builder
-	ab    *acommon.AttributesBuilder         // attributes builder
-	dacb  *array.Uint32Builder               // dropped attributes count builder
-	sesb  *array.ListBuilder                 // span event list builder
-	seb   *EventBuilder                      // span event builder
-	decb  *array.Uint32Builder               // dropped events count builder
-	slsb  *array.ListBuilder                 // span link list builder
-	slb   *LinkBuilder                       // span link builder
-	dlcb  *array.Uint32Builder               // dropped links count builder
-	sb    *StatusBuilder                     // status builder
+	stunb *builder.TimestampBuilder       // start time unix nano builder
+	etunb *builder.TimestampBuilder       // end time unix nano builder
+	tib   *builder.FixedSizeBinaryBuilder // trace id builder
+	sib   *builder.FixedSizeBinaryBuilder // span id builder
+	tsb   *builder.StringBuilder          // trace state builder
+	psib  *builder.FixedSizeBinaryBuilder // parent span id builder
+	nb    *builder.StringBuilder          // name builder
+	kb    *builder.Int32Builder           // kind builder
+	ab    *acommon.AttributesBuilder      // attributes builder
+	dacb  *builder.Uint32Builder          // dropped attributes count builder
+	sesb  *builder.ListBuilder            // span event list builder
+	seb   *EventBuilder                   // span event builder
+	decb  *builder.Uint32Builder          // dropped events count builder
+	slsb  *builder.ListBuilder            // span link list builder
+	slb   *LinkBuilder                    // span link builder
+	dlcb  *builder.Uint32Builder          // dropped links count builder
+	sb    *StatusBuilder                  // status builder
 }
 
-// NewSpanBuilder creates a new SpansBuilder with a given allocator.
-//
-// Once the builder is no longer needed, Release() must be called to free the
-// memory allocated by the builder.
-func NewSpanBuilder(pool memory.Allocator) *SpanBuilder {
-	sb := array.NewStructBuilder(pool, SpanDT)
-	return SpanBuilderFrom(sb)
-}
+func SpanBuilderFrom(sb *builder.StructBuilder) *SpanBuilder {
+	sesb := sb.ListBuilder(constants.SpanEvents)
+	slsb := sb.ListBuilder(constants.SpanLinks)
 
-func SpanBuilderFrom(sb *array.StructBuilder) *SpanBuilder {
 	return &SpanBuilder{
 		released: false,
 		builder:  sb,
-		stunb:    sb.FieldBuilder(0).(*array.TimestampBuilder),
-		etunb:    sb.FieldBuilder(1).(*array.TimestampBuilder),
-		tib:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(2)),
-		sib:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(3)),
-		tsb:      acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(4)),
-		psib:     acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(5)),
-		nb:       acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(6)),
-		kb:       acommon.AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(7)),
-		ab:       acommon.AttributesBuilderFrom(sb.FieldBuilder(8).(*array.MapBuilder)),
-		dacb:     sb.FieldBuilder(9).(*array.Uint32Builder),
-		sesb:     sb.FieldBuilder(10).(*array.ListBuilder),
-		seb:      EventBuilderFrom(sb.FieldBuilder(10).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
-		decb:     sb.FieldBuilder(11).(*array.Uint32Builder),
-		slsb:     sb.FieldBuilder(12).(*array.ListBuilder),
-		slb:      LinkBuilderFrom(sb.FieldBuilder(12).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
-		dlcb:     sb.FieldBuilder(13).(*array.Uint32Builder),
-		sb:       StatusBuilderFrom(sb.FieldBuilder(14).(*array.StructBuilder)),
+		stunb:    sb.TimestampBuilder(constants.StartTimeUnixNano),
+		etunb:    sb.TimestampBuilder(constants.EndTimeUnixNano),
+		tib:      sb.FixedSizeBinaryBuilder(constants.TraceId),
+		sib:      sb.FixedSizeBinaryBuilder(constants.SpanId),
+		tsb:      sb.StringBuilder(constants.TraceState),
+		psib:     sb.FixedSizeBinaryBuilder(constants.ParentSpanId),
+		nb:       sb.StringBuilder(constants.Name),
+		kb:       sb.Int32Builder(constants.KIND),
+		ab:       acommon.AttributesBuilderFrom(sb.MapBuilder(constants.Attributes)),
+		dacb:     sb.Uint32Builder(constants.DroppedAttributesCount),
+		sesb:     sesb,
+		seb:      EventBuilderFrom(sesb.StructBuilder()),
+		decb:     sb.Uint32Builder(constants.DroppedEventsCount),
+		slsb:     slsb,
+		slb:      LinkBuilderFrom(slsb.StructBuilder()),
+		dlcb:     sb.Uint32Builder(constants.DroppedLinksCount),
+		sb:       StatusBuilderFrom(sb.StructBuilder(constants.Status)),
 	}
 }
 
@@ -124,76 +122,50 @@ func (b *SpanBuilder) Append(span ptrace.Span) error {
 		return fmt.Errorf("span builder already released")
 	}
 
-	b.builder.Append(true)
-	b.stunb.Append(arrow.Timestamp(span.StartTimestamp()))
-	b.etunb.Append(arrow.Timestamp(span.EndTimestamp()))
-	tib := span.TraceID()
-	if err := b.tib.AppendBinary(tib[:]); err != nil {
-		return err
-	}
-	sib := span.SpanID()
-	if err := b.sib.AppendBinary(sib[:]); err != nil {
-		return err
-	}
-	traceState := span.TraceState().AsRaw()
-	if traceState == "" {
-		b.tsb.AppendNull()
-	} else {
-		if err := b.tsb.AppendString(traceState); err != nil {
+	return b.builder.Append(span, func() error {
+		b.stunb.Append(arrow.Timestamp(span.StartTimestamp()))
+		b.etunb.Append(arrow.Timestamp(span.EndTimestamp()))
+		tib := span.TraceID()
+		b.tib.Append(tib[:])
+		sib := span.SpanID()
+		b.sib.Append(sib[:])
+		b.tsb.AppendNonEmpty(span.TraceState().AsRaw())
+		psib := span.ParentSpanID()
+		b.psib.Append(psib[:])
+		b.nb.AppendNonEmpty(span.Name())
+		b.kb.AppendNonZero(int32(span.Kind()))
+		if err := b.ab.Append(span.Attributes()); err != nil {
 			return err
 		}
-	}
-	psib := span.ParentSpanID()
-	if err := b.psib.AppendBinary(psib[:]); err != nil {
-		return err
-	}
-	name := span.Name()
-	if name == "" {
-		b.nb.AppendNull()
-	} else {
-		if err := b.nb.AppendString(name); err != nil {
+		b.dacb.AppendNonZero(span.DroppedAttributesCount())
+		evts := span.Events()
+		sc := evts.Len()
+		if err := b.sesb.Append(sc, func() error {
+			for i := 0; i < sc; i++ {
+				if err := b.seb.Append(evts.At(i)); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
 			return err
 		}
-	}
-	if err := b.kb.AppendI32(int32(span.Kind())); err != nil {
-		return err
-	}
-	if err := b.ab.Append(span.Attributes()); err != nil {
-		return err
-	}
-	b.dacb.Append(span.DroppedAttributesCount())
-	evts := span.Events()
-	sc := evts.Len()
-	if sc > 0 {
-		b.sesb.Append(true)
-		b.sesb.Reserve(sc)
-		for i := 0; i < sc; i++ {
-			if err := b.seb.Append(evts.At(i)); err != nil {
-				return err
+		b.decb.AppendNonZero(span.DroppedEventsCount())
+		lks := span.Links()
+		lc := lks.Len()
+		if err := b.slsb.Append(lc, func() error {
+			for i := 0; i < lc; i++ {
+				if err := b.slb.Append(lks.At(i)); err != nil {
+					return err
+				}
 			}
+			return nil
+		}); err != nil {
+			return err
 		}
-	} else {
-		b.sesb.Append(false)
-	}
-	b.decb.Append(span.DroppedEventsCount())
-	lks := span.Links()
-	lc := lks.Len()
-	if lc > 0 {
-		b.slsb.Append(true)
-		b.slsb.Reserve(lc)
-		for i := 0; i < lc; i++ {
-			if err := b.slb.Append(lks.At(i)); err != nil {
-				return err
-			}
-		}
-	} else {
-		b.slsb.Append(false)
-	}
-	b.dlcb.Append(span.DroppedLinksCount())
-	if err := b.sb.Append(span.Status()); err != nil {
-		return err
-	}
-	return nil
+		b.dlcb.AppendNonZero(span.DroppedLinksCount())
+		return b.sb.Append(span.Status())
+	})
 }
 
 // Release releases the memory allocated by the builder.

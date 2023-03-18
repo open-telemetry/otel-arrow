@@ -19,17 +19,18 @@ import (
 
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
 // EHistogramDataPointBucketsDT is the Arrow Data Type describing an exponential histogram data point buckets.
 var (
 	EHistogramDataPointBucketsDT = arrow.StructOf(
-		arrow.Field{Name: constants.ExpHistogramOffset, Type: arrow.PrimitiveTypes.Int32},
-		arrow.Field{Name: constants.ExpHistogramBucketCounts, Type: arrow.ListOf(arrow.PrimitiveTypes.Uint64)},
+		arrow.Field{Name: constants.ExpHistogramOffset, Type: arrow.PrimitiveTypes.Int32, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.ExpHistogramBucketCounts, Type: arrow.ListOf(arrow.PrimitiveTypes.Uint64), Metadata: schema.Metadata(schema.Optional)},
 	)
 )
 
@@ -37,27 +38,23 @@ var (
 type EHistogramDataPointBucketsBuilder struct {
 	released bool
 
-	builder *array.StructBuilder
+	builder *builder.StructBuilder
 
-	ob   *array.Int32Builder  // offset builder
-	bclb *array.ListBuilder   // exp histogram bucket counts list builder
-	bcb  *array.Uint64Builder // exp histogram bucket counts builder
-}
-
-// NewEHistogramDataPointBucketsBuilder creates a new EHistogramDataPointBucketsBuilderFrom with a given memory allocator.
-func NewEHistogramDataPointBucketsBuilder(pool memory.Allocator) *EHistogramDataPointBucketsBuilder {
-	return EHistogramDataPointBucketsBuilderFrom(array.NewStructBuilder(pool, EHistogramDataPointBucketsDT))
+	ob   *builder.Int32Builder  // offset builder
+	bclb *builder.ListBuilder   // exp histogram bucket counts list builder
+	bcb  *builder.Uint64Builder // exp histogram bucket counts builder
 }
 
 // EHistogramDataPointBucketsBuilderFrom creates a new EHistogramDataPointBucketsBuilder from an existing StructBuilder.
-func EHistogramDataPointBucketsBuilderFrom(b *array.StructBuilder) *EHistogramDataPointBucketsBuilder {
+func EHistogramDataPointBucketsBuilderFrom(b *builder.StructBuilder) *EHistogramDataPointBucketsBuilder {
+	bclb := b.ListBuilder(constants.ExpHistogramBucketCounts)
 	return &EHistogramDataPointBucketsBuilder{
 		released: false,
 		builder:  b,
 
-		ob:   b.FieldBuilder(0).(*array.Int32Builder),
-		bclb: b.FieldBuilder(1).(*array.ListBuilder),
-		bcb:  b.FieldBuilder(1).(*array.ListBuilder).ValueBuilder().(*array.Uint64Builder),
+		ob:   b.Int32Builder(constants.ExpHistogramOffset),
+		bclb: bclb,
+		bcb:  bclb.Uint64Builder(),
 	}
 }
 
@@ -86,23 +83,19 @@ func (b *EHistogramDataPointBucketsBuilder) Release() {
 // Append appends a new histogram data point to the builder.
 func (b *EHistogramDataPointBucketsBuilder) Append(hdpb pmetric.ExponentialHistogramDataPointBuckets) error {
 	if b.released {
-		return fmt.Errorf("EHistogramDataPointBucketsBuilder: Append() called after Release()")
+		return fmt.Errorf("EHistogramDataPointBucketsBuilder: Reserve() called after Release()")
 	}
 
-	b.builder.Append(true)
-	b.ob.Append(hdpb.Offset())
+	return b.builder.Append(hdpb, func() error {
+		b.ob.AppendNonZero(hdpb.Offset())
 
-	bc := hdpb.BucketCounts()
-	bcc := bc.Len()
-	if bcc > 0 {
-		b.bclb.Append(true)
-		b.bclb.Reserve(bcc)
-		for i := 0; i < bcc; i++ {
-			b.bcb.Append(bc.At(i))
-		}
-	} else {
-		b.bclb.Append(false)
-	}
-
-	return nil
+		bc := hdpb.BucketCounts()
+		bcc := bc.Len()
+		return b.bclb.Append(bcc, func() error {
+			for i := 0; i < bcc; i++ {
+				b.bcb.Append(bc.At(i))
+			}
+			return nil
+		})
+	})
 }

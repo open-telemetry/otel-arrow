@@ -34,6 +34,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/otlp"
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark/stats"
 )
 
 var help = flag.Bool("help", false, "Show help")
@@ -44,6 +45,10 @@ var help = flag.Bool("help", false, "Show help")
 // The dataset can be generated from a CSV file (ext .csv) or from a OTLP protobuf file (ext .pb).
 
 func main() {
+	// By default, the benchmark runs in streaming mode (standard OTLP Arrow mode).
+	// To run in unary RPC mode, use the flag -unaryrpc.
+	unaryRpcPtr := flag.Bool("unaryrpc", false, "unary rpc mode")
+
 	// Parse the flag
 	flag.Parse()
 
@@ -70,26 +75,40 @@ func main() {
 		maxIter := uint64(3)
 
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
-		profiler := benchmark.NewProfiler([]int{ /*10, 100,*/ 1000, 2000, 5000, 10000}, "output/logs_benchmark.log", 2)
+		profiler := benchmark.NewProfiler([]int{10, 100, 1000, 2000, 5000, 10000}, "output/logs_benchmark.log", 2)
+		//profiler := benchmark.NewProfiler([]int{10}, "output/logs_benchmark.log", 2)
 
 		// Build dataset from CSV file or from OTLP protobuf file
 		if strings.HasSuffix(inputFile, ".csv") {
 			ds = CsvToLogsDataset(inputFile)
 		} else if strings.HasSuffix(inputFile, ".pb") {
-			ds = dataset.NewRealLogsDataset(inputFiles[i])
+			// ToDo Remove
+			rds := dataset.NewRealLogsDataset(inputFiles[i])
+			//rds.Resize(10)
+			ds = rds
 		} else {
 			log.Fatal("Unsupported input file format (only .csv and .pb are supported)")
 		}
 		profiler.Printf("Dataset '%s' (%s) loaded\n", inputFiles[i], humanize.Bytes(uint64(ds.SizeInBytes())))
 
 		otlpLogs := otlp.NewLogsProfileable(ds, compressionAlgo)
-		otlpArrowLogs := arrow.NewLogsProfileable([]string{}, ds, &benchmark.Config{})
+		otlpArrowLogs := arrow.NewLogsProfileable([]string{"stream mode"}, ds, &benchmark.Config{})
 
 		if err := profiler.Profile(otlpLogs, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
 		}
 		if err := profiler.Profile(otlpArrowLogs, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
+		}
+
+		// If the unary RPC mode is enabled,
+		// run the OTLP Arrow benchmark in unary RPC mode.
+		if *unaryRpcPtr {
+			otlpArrowLogs := arrow.NewLogsProfileable([]string{"unary rpc mode"}, ds, &benchmark.Config{})
+			otlpArrowLogs.EnableUnaryRpcMode()
+			if err := profiler.Profile(otlpArrowLogs, maxIter); err != nil {
+				panic(fmt.Errorf("expected no error, got %v", err))
+			}
 		}
 
 		profiler.CheckProcessingResults()
@@ -105,6 +124,8 @@ func main() {
 
 		profiler.ExportMetricsTimesCSV(fmt.Sprintf("%d_logs_benchmark_results", i))
 		profiler.ExportMetricsBytesCSV(fmt.Sprintf("%d_logs_benchmark_results", i))
+
+		ds.ShowStats()
 	}
 }
 
@@ -130,6 +151,7 @@ type LogsPerSource struct {
 type CsvLogsDataset struct {
 	logs        []plog.Logs
 	sizeInBytes int
+	logsStats   *stats.LogsStats
 }
 
 func (ds *CsvLogsDataset) Len() int {
@@ -206,12 +228,22 @@ func CsvToLogsDataset(file string) dataset.LogsDataset {
 		}
 	}
 
+	logsStats := stats.NewLogsStats()
+	logsStats.Analyze(logs)
+
 	ds := CsvLogsDataset{
 		logs:        []plog.Logs{logs},
 		sizeInBytes: 0,
+		logsStats:   logsStats,
 	}
 
 	return &ds
+}
+
+func (d *CsvLogsDataset) ShowStats() {
+	println()
+	println("Logs stats:")
+	d.logsStats.ShowStats()
 }
 
 func (d *CsvLogsDataset) SizeInBytes() int {

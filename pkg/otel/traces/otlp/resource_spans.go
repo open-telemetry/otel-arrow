@@ -19,7 +19,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -36,10 +36,7 @@ func NewResourceSpansIds(schema *arrow.Schema) (*ResourceSpansIds, error) {
 		return nil, err
 	}
 
-	schemaId, _, err := arrowutils.FieldIDFromStruct(rsDT, constants.SchemaUrl)
-	if err != nil {
-		return nil, err
-	}
+	schemaId, _ := arrowutils.FieldIDFromStruct(rsDT, constants.SchemaUrl)
 
 	scopeSpansIds, err := NewScopeSpansIds(rsDT)
 	if err != nil {

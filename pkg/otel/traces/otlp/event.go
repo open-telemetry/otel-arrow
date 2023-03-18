@@ -22,7 +22,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -40,18 +40,9 @@ func NewEventIds(spansDT *arrow.StructType) (*EventIds, error) {
 		return nil, err
 	}
 
-	timeUnixNanoID, timeUnixNanoFound := eventDT.FieldIdx(constants.TimeUnixNano)
-	if !timeUnixNanoFound {
-		return nil, fmt.Errorf("field %s not found", constants.TimeUnixNano)
-	}
-	nameID, nameFound := eventDT.FieldIdx(constants.Name)
-	if !nameFound {
-		return nil, fmt.Errorf("field %s not found", constants.Name)
-	}
-	droppedAttributesCountId, droppedAttributesCountFound := eventDT.FieldIdx(constants.DroppedAttributesCount)
-	if !droppedAttributesCountFound {
-		return nil, fmt.Errorf("field %s not found", constants.DroppedAttributesCount)
-	}
+	timeUnixNanoID, _ := arrowutils.FieldIDFromStruct(eventDT, constants.TimeUnixNano)
+	nameID, _ := arrowutils.FieldIDFromStruct(eventDT, constants.Name)
+	droppedAttributesCountId, _ := arrowutils.FieldIDFromStruct(eventDT, constants.DroppedAttributesCount)
 	attributesID, err := otlp.NewAttributeIds(eventDT)
 	if err != nil {
 		return nil, err
@@ -70,7 +61,7 @@ func NewEventIds(spansDT *arrow.StructType) (*EventIds, error) {
 func AppendEventsInto(spans ptrace.SpanEventSlice, arrowSpans *arrowutils.ListOfStructs, spanIdx int, ids *EventIds) error {
 	events, err := arrowSpans.ListOfStructsById(spanIdx, ids.Id)
 	if err != nil {
-		return err
+		return fmt.Errorf("AppendEventsInto(field='events')->%w", err)
 	}
 	if events == nil {
 		// No event found
@@ -99,7 +90,7 @@ func AppendEventsInto(spans ptrace.SpanEventSlice, arrowSpans *arrowutils.ListOf
 		event.SetName(name)
 
 		if err = otlp.AppendAttributesInto(event.Attributes(), events.Array(), eventIdx, ids.Attributes); err != nil {
-			return err
+			return fmt.Errorf("AppendEventsInto->%w", err)
 		}
 
 		dac, err := events.U32FieldByID(ids.DroppedAttributesCount, eventIdx)

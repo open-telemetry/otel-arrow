@@ -48,24 +48,42 @@ A larger campaign of tests and benchmarks on real production data will be conduc
 
 **Current results show an improvement of the compression ratio from 200% to 400%.**
 
-### Metrics benchmarks
+### Compression ratio benchmarks
 
-The following results demonstrate an improvement of the compression rate from 200% to 223% for univariate metrics. 
+The following three tables compare the performance in terms of compression ratio 
+between:
 
-![img](docs/img/benchmark_metrics.png)
+- OTLP,
+- OTLP Arrow (streaming mode),
+- and OTLP Arrow (unary RPC mode),
 
-### Logs benchmarks
+for metrics, logs, and traces (in this order).
 
-The following results demonstrate an improvement of the compression rate of 266% for logs.
+![img](docs/img/metrics_compression_rate_benchmark.png)
 
-![img](docs/img/benchmark_logs.png)
+![img](docs/img/logs_compression_rate_benchmark.png)
 
-### Traces benchmarks
+![img](docs/img/traces_compression_rate_benchmark.pnggo run)
 
-The following results demonstrate an improvement of the compression rate from 362% to 395%. The traces dataset used for
-this benchmark comes from a production environment and contains 416995 spans.
+### End-to-end performance benchmarks
 
-![img](docs/img/benchmark_traces.png)
+The following results compare the end-to-end performance between OTLP and OTLP 
+Arrow (streaming mode), and OTLP Arrow (unary RPC mode) for metrics, logs, and 
+traces (in this order).
+
+All the steps are included: encoding, sending, decoding, compression, 
+decompression, and conversion (when that is applicable). 
+
+Each result is composed of two tables: one for the phase 1 (current implementation)
+and one evaluation for the phase 2 (future implementation). The results of phase
+2 are extrapolated from the results of phase 1 by removing the conversion steps.
+
+![img](docs/img/metrics_end_to_end_benchmark.png)
+
+![img](docs/img/logs_end_to_end_benchmark.png)
+
+![img](docs/img/traces_end_to_end_benchmark.png)
+
 
 ## Testing and validation
 

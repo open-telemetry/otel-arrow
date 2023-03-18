@@ -21,12 +21,15 @@ import (
 
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
+
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark/stats"
 )
 
 // RealMetricsDataset represents a dataset of real metrics read from a Metrics serialized to a binary file.
 type RealMetricsDataset struct {
-	metrics     []metrics
-	sizeInBytes int
+	metrics      []metrics
+	sizeInBytes  int
+	metricsStats *stats.MetricsStats
 }
 
 type metrics struct {
@@ -48,9 +51,11 @@ func NewRealMetricsDataset(path string) *RealMetricsDataset {
 	mdata := otlp.Metrics()
 
 	ds := &RealMetricsDataset{
-		metrics:     []metrics{},
-		sizeInBytes: len(data),
+		metrics:      []metrics{},
+		sizeInBytes:  len(data),
+		metricsStats: stats.NewMetricsStats(),
 	}
+	ds.metricsStats.Analyze(mdata)
 
 	for ri := 0; ri < mdata.ResourceMetrics().Len(); ri++ {
 		rm := mdata.ResourceMetrics().At(ri)
@@ -73,6 +78,12 @@ func (d *RealMetricsDataset) SizeInBytes() int {
 // Len returns the number of metrics in the dataset.
 func (d *RealMetricsDataset) Len() int {
 	return len(d.metrics)
+}
+
+func (d *RealMetricsDataset) ShowStats() {
+	println()
+	println("Metrics stats:")
+	d.metricsStats.ShowStats()
 }
 
 // Resize resizes the dataset to the specified max size or do nothing if the current size is already lower than the

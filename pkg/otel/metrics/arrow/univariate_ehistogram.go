@@ -19,18 +19,18 @@ import (
 
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
 var (
 	// UnivariateEHistogramDT is the Arrow Data Type describing a univariate exponential histogram.
 	UnivariateEHistogramDT = arrow.StructOf(
-		arrow.Field{Name: constants.DataPoints, Type: arrow.ListOf(UnivariateEHistogramDataPointDT)},
-		arrow.Field{Name: constants.AggregationTemporality, Type: acommon.DefaultDictInt32},
+		arrow.Field{Name: constants.DataPoints, Type: arrow.ListOf(UnivariateEHistogramDataPointDT), Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.AggregationTemporality, Type: arrow.PrimitiveTypes.Int32, Metadata: schema.Metadata(schema.Optional, schema.Dictionary)},
 	)
 )
 
@@ -38,27 +38,24 @@ var (
 type UnivariateEHistogramBuilder struct {
 	released bool
 
-	builder *array.StructBuilder
+	builder *builder.StructBuilder
 
-	hdplb *array.ListBuilder                 // data_points builder
-	hdpb  *EHistogramDataPointBuilder        // exponential histogram data point builder
-	atb   *acommon.AdaptiveDictionaryBuilder // aggregation_temporality builder
-}
-
-// NewUnivariateEHistogramBuilder creates a new UnivariateEHistogramBuilder with a given memory allocator.
-func NewUnivariateEHistogramBuilder(pool memory.Allocator) *UnivariateEHistogramBuilder {
-	return UnivariateEHistogramBuilderFrom(array.NewStructBuilder(pool, UnivariateEHistogramDT))
+	hdplb *builder.ListBuilder        // data_points builder
+	hdpb  *EHistogramDataPointBuilder // exponential histogram data point builder
+	atb   *builder.Int32Builder       // aggregation_temporality builder
 }
 
 // UnivariateEHistogramBuilderFrom creates a new UnivariateEHistogramBuilder from an existing StructBuilder.
-func UnivariateEHistogramBuilderFrom(arr *array.StructBuilder) *UnivariateEHistogramBuilder {
+func UnivariateEHistogramBuilderFrom(b *builder.StructBuilder) *UnivariateEHistogramBuilder {
+	hdplb := b.ListBuilder(constants.DataPoints)
+
 	return &UnivariateEHistogramBuilder{
 		released: false,
-		builder:  arr,
+		builder:  b,
 
-		hdplb: arr.FieldBuilder(0).(*array.ListBuilder),
-		hdpb:  EHistogramDataPointBuilderFrom(arr.FieldBuilder(0).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
-		atb:   acommon.AdaptiveDictionaryBuilderFrom(arr.FieldBuilder(1)),
+		hdplb: hdplb,
+		hdpb:  EHistogramDataPointBuilderFrom(hdplb.StructBuilder()),
+		atb:   b.Int32Builder(constants.AggregationTemporality),
 	}
 }
 
@@ -87,32 +84,30 @@ func (b *UnivariateEHistogramBuilder) Release() {
 // Append appends a new histogram to the builder.
 func (b *UnivariateEHistogramBuilder) Append(eh pmetric.ExponentialHistogram, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
-		return fmt.Errorf("UnivariateEHistogramBuilder: Append() called after Release()")
+		return fmt.Errorf("UnivariateEHistogramBuilder: Reserve() called after Release()")
 	}
 
-	b.builder.Append(true)
-	dps := eh.DataPoints()
-	dpc := dps.Len()
-	if dpc > 0 {
-		b.hdplb.Append(true)
-		b.hdplb.Reserve(dpc)
-		for i := 0; i < dpc; i++ {
-			if err := b.hdpb.Append(dps.At(i), smdata, mdata); err != nil {
-				return err
+	return b.builder.Append(eh, func() error {
+		dps := eh.DataPoints()
+		dpc := dps.Len()
+		if err := b.hdplb.Append(dpc, func() error {
+			for i := 0; i < dpc; i++ {
+				if err := b.hdpb.Append(dps.At(i), smdata, mdata); err != nil {
+					return err
+				}
 			}
-		}
-	} else {
-		b.hdplb.Append(false)
-	}
-	if eh.AggregationTemporality() == pmetric.AggregationTemporalityUnspecified {
-		b.atb.AppendNull()
-	} else {
-		if err := b.atb.AppendI32(int32(eh.AggregationTemporality())); err != nil {
+			return nil
+		}); err != nil {
 			return err
 		}
-	}
+		if eh.AggregationTemporality() == pmetric.AggregationTemporalityUnspecified {
+			b.atb.AppendNull()
+		} else {
+			b.atb.AppendNonZero(int32(eh.AggregationTemporality()))
+		}
 
-	return nil
+		return nil
+	})
 }
 
 func (b *UnivariateEHistogramBuilder) AppendNull() {
@@ -120,5 +115,5 @@ func (b *UnivariateEHistogramBuilder) AppendNull() {
 		return
 	}
 
-	b.builder.Append(false)
+	b.builder.AppendNull()
 }

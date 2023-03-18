@@ -24,11 +24,12 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
+
+	stats "github.com/f5/otel-arrow-adapter/pkg/benchmark/stats"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 )
 
 // ===== Real traces dataset =====
@@ -38,6 +39,7 @@ type RealTraceDataset struct {
 	s2r         map[ptrace.Span]pcommon.Resource
 	s2s         map[ptrace.Span]pcommon.InstrumentationScope
 	sizeInBytes int
+	tracesStats *stats.TracesStats
 }
 
 type spanSorter struct {
@@ -61,8 +63,10 @@ func NewRealTraceDataset(path string, sortOrder []string) *RealTraceDataset {
 		s2r:         map[ptrace.Span]pcommon.Resource{},
 		s2s:         map[ptrace.Span]pcommon.InstrumentationScope{},
 		sizeInBytes: len(data),
+		tracesStats: stats.NewTracesStats(),
 	}
 	traces := otlp.Traces()
+	ds.tracesStats.Analyze(traces)
 
 	for i := 0; i < traces.ResourceSpans().Len(); i++ {
 		rs := traces.ResourceSpans().At(i)
@@ -101,6 +105,12 @@ func (d *RealTraceDataset) SizeInBytes() int {
 
 func (d *RealTraceDataset) Len() int {
 	return len(d.spans)
+}
+
+func (d *RealTraceDataset) ShowStats() {
+	println()
+	println("Traces stats:")
+	d.tracesStats.ShowStats()
 }
 
 func (d *RealTraceDataset) Traces(offset, size int) []ptrace.Traces {

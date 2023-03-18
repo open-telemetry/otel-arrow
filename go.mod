@@ -31,6 +31,7 @@ require (
 	go.uber.org/atomic v1.10.0
 	go.uber.org/multierr v1.9.0
 	go.uber.org/zap v1.24.0
+	golang.org/x/exp v0.0.0-20220827204233-334a2380cb91
 	golang.org/x/net v0.5.0
 	golang.org/x/sys v0.4.0
 	google.golang.org/genproto v0.0.0-20221118155620-16455021b5e6

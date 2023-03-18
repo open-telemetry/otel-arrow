@@ -30,6 +30,10 @@ import (
 var help = flag.Bool("help", false, "Show help")
 
 func main() {
+	// By default, the benchmark runs in streaming mode (standard OTLP Arrow mode).
+	// To run in unary RPC mode, use the flag -unaryrpc.
+	unaryRpcPtr := flag.Bool("unaryrpc", false, "unary rpc mode")
+
 	// Parse the flag
 	flag.Parse()
 
@@ -48,7 +52,8 @@ func main() {
 	// Compare the performance for each input file
 	for i := range inputFiles {
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
-		profiler := benchmark.NewProfiler([]int{ /*10, 100, 1000, 2000, 5000, 10000*/ 200000}, "output/trace_benchmark.log", 2)
+		profiler := benchmark.NewProfiler([]int{10, 100, 1000, 2000, 5000, 10000}, "output/trace_benchmark.log", 2)
+		//profiler := benchmark.NewProfiler([]int{1000}, "output/trace_benchmark.log", 2)
 		compressionAlgo := benchmark.Zstd()
 		maxIter := uint64(1)
 		ds := dataset.NewRealTraceDataset(inputFiles[i], []string{"trace_id"})
@@ -56,7 +61,7 @@ func main() {
 		otlpTraces := otlp.NewTraceProfileable(ds, compressionAlgo)
 
 		conf := &benchmark.Config{}
-		otlpArrowTraces := arrow.NewTraceProfileable([]string{}, ds, conf)
+		otlpArrowTraces := arrow.NewTraceProfileable([]string{"stream mode"}, ds, conf)
 
 		if err := profiler.Profile(otlpTraces, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
@@ -64,6 +69,16 @@ func main() {
 
 		if err := profiler.Profile(otlpArrowTraces, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
+		}
+
+		// If the unary RPC mode is enabled,
+		// run the OTLP Arrow benchmark in unary RPC mode.
+		if *unaryRpcPtr {
+			otlpArrowTraces := arrow.NewTraceProfileable([]string{"unary rpc mode"}, ds, conf)
+			otlpArrowTraces.EnableUnaryRpcMode()
+			if err := profiler.Profile(otlpArrowTraces, maxIter); err != nil {
+				panic(fmt.Errorf("expected no error, got %v", err))
+			}
 		}
 
 		profiler.CheckProcessingResults()
@@ -80,5 +95,7 @@ func main() {
 
 		profiler.ExportMetricsTimesCSV(fmt.Sprintf("%d_traces_benchmark_results", i))
 		profiler.ExportMetricsBytesCSV(fmt.Sprintf("%d_traces_benchmark_results", i))
+
+		ds.ShowStats()
 	}
 }

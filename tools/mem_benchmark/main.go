@@ -19,14 +19,15 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"runtime"
 
 	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
 	"github.com/apache/arrow/go/v11/arrow/memory"
 	"github.com/dustin/go-humanize"
 
-	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
+	config "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
 	logs "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
 	metrics "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
 	traces "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
@@ -70,38 +71,46 @@ func main() {
 	Report("TRACES", traces.Schema)
 }
 
+var DictConfig = &config.Dictionary{
+	MaxCard: math.MaxUint16,
+}
+
 func Report(name string, schema *arrow.Schema) {
 	pool := memory.NewGoAllocator()
 	println("--------------------------------------------------")
 	fmt.Printf("%s%s - Memory usage%s\n", ColorGreen, name, ColorReset)
-	ReportMemUsageOf("arrow.NewAdaptiveSchema(schema)", func() {
-		schema := carrow.NewAdaptiveSchema(pool, schema)
-		defer schema.Release()
-	})
-	ReportMemUsageOf("NewRecordBuilder(schema)", func() {
-		array.NewRecordBuilder(pool, schema)
+	ReportMemUsageOf("NewRecordBuilderExt(schema)", func() {
+		builder := builder.NewRecordBuilderExt(pool, schema, DictConfig)
+		defer builder.Release()
 	})
 	ReportMemUsageOf("NewRecordBuilder(...).NewRecord() - empty", func() {
-		builder := array.NewRecordBuilder(pool, schema)
+		builder := builder.NewRecordBuilderExt(pool, schema, DictConfig)
 		defer builder.Release()
-		record := builder.NewRecord()
+		record, err := builder.NewRecord()
+		if err != nil {
+			panic(err)
+		}
 		defer record.Release()
 	})
 
-	adaptiveSchema := carrow.NewAdaptiveSchema(pool, schema)
-	builder := array.NewRecordBuilder(pool, adaptiveSchema.Schema())
+	builder := builder.NewRecordBuilderExt(pool, schema, DictConfig)
 	defer builder.Release()
-	record := builder.NewRecord()
+	record, err := builder.NewRecord()
+	if err != nil {
+		panic(err)
+	}
 	defer record.Release()
 	ReportMemUsageOf("reusedRecordBuilder.NewRecord() - empty", func() {
-		r := builder.NewRecord()
+		r, err := builder.NewRecord()
+		if err != nil {
+			panic(err)
+		}
 		defer r.Release()
 	})
-	ReportMemUsageOf("adaptiveSchema.Analyze(...) + adaptiveSchema.UpdateSchema(...) if needed", func() {
-		overflowDetected, updates := adaptiveSchema.Analyze(record)
-		if overflowDetected {
+	ReportMemUsageOf("builder.Analyze(...) + builder.UpdateSchema(...) if needed", func() {
+		if builder.IsSchemaUpToDate() {
 			println("overflow detected")
-			adaptiveSchema.UpdateSchema(updates)
+			builder.UpdateSchema()
 		}
 	})
 }

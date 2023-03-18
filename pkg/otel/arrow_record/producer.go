@@ -29,6 +29,9 @@ import (
 
 	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
+	config "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
 	logsarrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
 	metricsarrow "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
 	tracesarrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
@@ -56,15 +59,15 @@ type Producer struct {
 	streamProducers map[string]*streamProducer
 	batchId         int64
 
-	// Adaptive schemas for each OTEL entities
-	metricsSchema *acommon.AdaptiveSchema
-	logsSchema    *acommon.AdaptiveSchema
-	tracesSchema  *acommon.AdaptiveSchema
-
 	// Builder for each OTEL entities
 	metricsBuilder *metricsarrow.MetricsBuilder
 	logsBuilder    *logsarrow.LogsBuilder
 	tracesBuilder  *tracesarrow.TracesBuilder
+
+	// Record builder for each OTEL entities
+	metricsRecordBuilder *builder.RecordBuilderExt
+	logsRecordBuilder    *builder.RecordBuilderExt
+	tracesRecordBuilder  *builder.RecordBuilderExt
 }
 
 type streamProducer struct {
@@ -104,35 +107,29 @@ func NewProducerWithOptions(options ...Option) *Producer {
 		opt(cfg)
 	}
 
-	metricsSchema := acommon.NewAdaptiveSchema(
-		cfg.pool,
-		metricsarrow.Schema,
-		acommon.WithDictInitIndexSize(cfg.initIndexSize),
-		acommon.WithDictLimitIndexSize(cfg.limitIndexSize))
+	metricsRecordBuilder := builder.NewRecordBuilderExt(cfg.pool, metricsarrow.Schema, &config.Dictionary{
+		MaxCard: cfg.limitIndexSize,
+	})
 
-	logsSchema := acommon.NewAdaptiveSchema(
-		cfg.pool,
-		logsarrow.Schema,
-		acommon.WithDictInitIndexSize(cfg.initIndexSize),
-		acommon.WithDictLimitIndexSize(cfg.limitIndexSize))
+	logsRecordBuilder := builder.NewRecordBuilderExt(cfg.pool, logsarrow.Schema, &config.Dictionary{
+		MaxCard: cfg.limitIndexSize,
+	})
 
-	tracesSchema := acommon.NewAdaptiveSchema(
-		cfg.pool,
-		tracesarrow.Schema,
-		acommon.WithDictInitIndexSize(cfg.initIndexSize),
-		acommon.WithDictLimitIndexSize(cfg.limitIndexSize))
+	tracesRecordBuilder := builder.NewRecordBuilderExt(cfg.pool, tracesarrow.Schema, &config.Dictionary{
+		MaxCard: cfg.limitIndexSize,
+	})
 
-	metricsBuilder, err := metricsarrow.NewMetricsBuilder(metricsSchema)
+	metricsBuilder, err := metricsarrow.NewMetricsBuilder(metricsRecordBuilder)
 	if err != nil {
 		panic(err)
 	}
 
-	logsBuidler, err := logsarrow.NewLogsBuilder(logsSchema)
+	logsBuidler, err := logsarrow.NewLogsBuilder(logsRecordBuilder)
 	if err != nil {
 		panic(err)
 	}
 
-	tracesBuilder, err := tracesarrow.NewTracesBuilder(tracesSchema)
+	tracesBuilder, err := tracesarrow.NewTracesBuilder(tracesRecordBuilder)
 	if err != nil {
 		panic(err)
 	}
@@ -143,13 +140,13 @@ func NewProducerWithOptions(options ...Option) *Producer {
 		streamProducers: make(map[string]*streamProducer),
 		batchId:         0,
 
-		metricsSchema: metricsSchema,
-		logsSchema:    logsSchema,
-		tracesSchema:  tracesSchema,
-
 		metricsBuilder: metricsBuilder,
 		logsBuilder:    logsBuidler,
 		tracesBuilder:  tracesBuilder,
+
+		metricsRecordBuilder: metricsRecordBuilder,
+		logsRecordBuilder:    logsRecordBuilder,
+		tracesRecordBuilder:  tracesRecordBuilder,
 	}
 }
 
@@ -165,7 +162,7 @@ func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colar
 		return nil, err
 	}
 
-	schemaID := p.metricsSchema.SchemaID()
+	schemaID := p.metricsRecordBuilder.SchemaID()
 	rms := []*RecordMessage{NewMetricsMessage(schemaID, record)}
 
 	bar, err := p.Produce(rms)
@@ -187,7 +184,7 @@ func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrow
 		return nil, err
 	}
 
-	schemaID := p.logsSchema.SchemaID()
+	schemaID := p.logsRecordBuilder.SchemaID()
 	rms := []*RecordMessage{NewLogsMessage(schemaID, record)}
 
 	bar, err := p.Produce(rms)
@@ -209,7 +206,7 @@ func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.Batc
 		return nil, err
 	}
 
-	schemaID := p.tracesSchema.SchemaID()
+	schemaID := p.tracesRecordBuilder.SchemaID()
 	rms := []*RecordMessage{NewTraceMessage(schemaID, record)}
 
 	bar, err := p.Produce(rms)
@@ -219,29 +216,31 @@ func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.Batc
 	return bar, nil
 }
 
-// TracesAdaptiveSchema returns the adaptive schema used to encode traces.
-func (p *Producer) TracesAdaptiveSchema() *acommon.AdaptiveSchema {
-	return p.tracesSchema
+// MetricsRecordBuilderExt returns the record builder used to encode metrics.
+func (p *Producer) MetricsRecordBuilderExt() *builder.RecordBuilderExt {
+	return p.metricsRecordBuilder
 }
 
-// LogsAdaptiveSchema returns the adaptive schema used to encode logs.
-func (p *Producer) LogsAdaptiveSchema() *acommon.AdaptiveSchema {
-	return p.logsSchema
+// LogsRecordBuilderExt returns the record builder used to encode logs.
+func (p *Producer) LogsRecordBuilderExt() *builder.RecordBuilderExt {
+	return p.logsRecordBuilder
 }
 
-// MetricsAdaptiveSchema returns the adaptive schema used to encode metrics.
-func (p *Producer) MetricsAdaptiveSchema() *acommon.AdaptiveSchema {
-	return p.metricsSchema
+// TracesRecordBuilderExt returns the record builder used to encode traces.
+func (p *Producer) TracesRecordBuilderExt() *builder.RecordBuilderExt {
+	return p.tracesRecordBuilder
 }
 
 // Close closes all stream producers.
 func (p *Producer) Close() error {
-	p.metricsSchema.Release()
-	p.logsSchema.Release()
-	p.tracesSchema.Release()
 	p.metricsBuilder.Release()
 	p.logsBuilder.Release()
 	p.tracesBuilder.Release()
+
+	p.metricsRecordBuilder.Release()
+	p.logsRecordBuilder.Release()
+	p.tracesRecordBuilder.Release()
+
 	for _, sp := range p.streamProducers {
 		if err := sp.ipcWriter.Close(); err != nil {
 			return err
@@ -310,17 +309,8 @@ func (p *Producer) Produce(rms []*RecordMessage) (*colarspb.BatchArrowRecords, e
 	}, nil
 }
 
-func (p *Producer) ShowStats() {
-	println("Metrics schema stats:")
-	p.metricsSchema.ShowStats()
-	println("Logs schema stats:")
-	p.logsSchema.ShowStats()
-	println("Traces schema stats:")
-	p.tracesSchema.ShowStats()
-}
-
 func recordBuilder[T pmetric.Metrics | plog.Logs | ptrace.Traces](builder func() (acommon.EntityBuilder[T], error), entity T) (record arrow.Record, err error) {
-	dictionaryOverflowCount := 0
+	schemaNotUpToDateCount := 0
 
 	// Build an Arrow Record from an OTEL entity.
 	//
@@ -339,22 +329,15 @@ func recordBuilder[T pmetric.Metrics | plog.Logs | ptrace.Traces](builder func()
 
 		record, err = tb.Build()
 		if err != nil {
-			var overflowErr *acommon.DictionaryOverflowError
-
 			if record != nil {
 				record.Release()
 			}
 
 			switch {
-			case errors.As(err, &overflowErr):
-				dictionaryOverflowCount++
-				// 4 is the maximum number of dictionary overflow errors we can handle.
-				// uint8 --> uint16
-				// uint16 --> uint32
-				// uint32 --> uint64
-				// uint64 --> string | binary
-				if dictionaryOverflowCount > 4 {
-					panic("Dictionary overflowed too many times. This shouldn't happen.")
+			case errors.As(err, &schema.ErrSchemaNotUpToDate):
+				schemaNotUpToDateCount++
+				if schemaNotUpToDateCount > 5 {
+					panic("Too many consecutive schema updates. This shouldn't happen.")
 				}
 			default:
 				return

@@ -40,6 +40,7 @@ type LogsProfileable struct {
 	batchArrowRecords []*v1.BatchArrowRecords
 	config            *benchmark.Config
 	pool              *memory.GoAllocator
+	unaryRpcMode      bool
 }
 
 func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *benchmark.Config) *LogsProfileable {
@@ -52,11 +53,16 @@ func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *benc
 		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
 		config:            config,
 		pool:              memory.NewGoAllocator(),
+		unaryRpcMode:      false,
 	}
 }
 
 func (s *LogsProfileable) Name() string {
 	return OtlpArrow
+}
+
+func (s *LogsProfileable) EnableUnaryRpcMode() {
+	s.unaryRpcMode = true
 }
 
 func (s *LogsProfileable) Tags() []string {
@@ -72,10 +78,28 @@ func (s *LogsProfileable) DatasetSize() int { return s.dataset.Len() }
 func (s *LogsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
 }
-func (s *LogsProfileable) StartProfiling(_ io.Writer)       {}
-func (s *LogsProfileable) EndProfiling(_ io.Writer)         {}
+func (s *LogsProfileable) StartProfiling(_ io.Writer) {
+	if !s.unaryRpcMode {
+		s.producer = arrow_record.NewProducerWithOptions(arrow_record.WithNoZstd())
+		s.consumer = arrow_record.NewConsumer()
+	}
+}
+func (s *LogsProfileable) EndProfiling(_ io.Writer) {
+	if !s.unaryRpcMode {
+		if err := s.producer.Close(); err != nil {
+			panic(err)
+		}
+		if err := s.consumer.Close(); err != nil {
+			panic(err)
+		}
+	}
+}
 func (s *LogsProfileable) InitBatchSize(_ io.Writer, _ int) {}
 func (s *LogsProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
+	if s.unaryRpcMode {
+		s.producer = arrow_record.NewProducerWithOptions(arrow_record.WithNoZstd())
+		s.consumer = arrow_record.NewConsumer()
+	}
 	s.logs = s.dataset.Logs(startAt, size)
 }
 func (s *LogsProfileable) ConvertOtlpToOtlpArrow(_ io.Writer, _, _ int) {
@@ -135,5 +159,14 @@ func (s *LogsProfileable) ConvertOtlpArrowToOtlp(_ io.Writer) {
 func (s *LogsProfileable) Clear() {
 	s.logs = nil
 	s.batchArrowRecords = s.batchArrowRecords[:0]
+
+	if s.unaryRpcMode {
+		if err := s.producer.Close(); err != nil {
+			panic(err)
+		}
+		if err := s.consumer.Close(); err != nil {
+			panic(err)
+		}
+	}
 }
 func (s *LogsProfileable) ShowStats() {}

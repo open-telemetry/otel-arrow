@@ -21,6 +21,7 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -31,15 +32,8 @@ type EHistogramDataPointBucketsIds struct {
 }
 
 func NewEHistogramDataPointBucketsIds(parentId int, parentDT *arrow.StructType) (*EHistogramDataPointBucketsIds, error) {
-	offset, found := parentDT.FieldIdx(constants.ExpHistogramOffset)
-	if !found {
-		return nil, fmt.Errorf("missing field %q", constants.ExpHistogramOffset)
-	}
-
-	bucketCounts, found := parentDT.FieldIdx(constants.ExpHistogramBucketCounts)
-	if !found {
-		return nil, fmt.Errorf("missing field %q", constants.ExpHistogramBucketCounts)
-	}
+	offset, _ := arrowutils.FieldIDFromStruct(parentDT, constants.ExpHistogramOffset)
+	bucketCounts, _ := arrowutils.FieldIDFromStruct(parentDT, constants.ExpHistogramBucketCounts)
 
 	return &EHistogramDataPointBucketsIds{
 		Id:           parentId,

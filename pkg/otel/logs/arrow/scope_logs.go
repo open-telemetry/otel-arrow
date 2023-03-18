@@ -1,16 +1,19 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright The OpenTelemetry Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 
 package arrow
 
@@ -19,19 +22,20 @@ import (
 
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/plog"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
 // ScopeLogsDT is the Arrow Data Type describing a scope span.
 var (
 	ScopeLogsDT = arrow.StructOf([]arrow.Field{
-		{Name: constants.Scope, Type: acommon.ScopeDT},
-		{Name: constants.SchemaUrl, Type: acommon.DefaultDictString},
-		{Name: constants.Logs, Type: arrow.ListOf(LogRecordDT)},
+		{Name: constants.Scope, Type: acommon.ScopeDT, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.SchemaUrl, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary)},
+		{Name: constants.Logs, Type: arrow.ListOf(LogRecordDT), Metadata: schema.Metadata(schema.Optional)},
 	}...)
 )
 
@@ -39,31 +43,23 @@ var (
 type ScopeLogsBuilder struct {
 	released bool
 
-	builder *array.StructBuilder
+	builder *builder.StructBuilder
 
-	scb  *acommon.ScopeBuilder              // scope builder
-	schb *acommon.AdaptiveDictionaryBuilder // schema url builder
-	lrsb *array.ListBuilder                 // log recprd list builder
-	lrb  *LogRecordBuilder                  // log record builder
+	scb  *acommon.ScopeBuilder  // scope builder
+	schb *builder.StringBuilder // schema url builder
+	lrsb *builder.ListBuilder   // log recprd list builder
+	lrb  *LogRecordBuilder      // log record builder
 }
 
-// NewScopeLogsBuilder creates a new ResourceLogsBuilder with a given allocator.
-//
-// Once the builder is no longer needed, Release() must be called to free the
-// memory allocated by the builder.
-func NewScopeLogsBuilder(pool memory.Allocator) *ScopeLogsBuilder {
-	builder := array.NewStructBuilder(pool, ScopeLogsDT)
-	return ScopeLogsBuilderFrom(builder)
-}
-
-func ScopeLogsBuilderFrom(builder *array.StructBuilder) *ScopeLogsBuilder {
+func ScopeLogsBuilderFrom(builder *builder.StructBuilder) *ScopeLogsBuilder {
+	logs := builder.ListBuilder(constants.Logs)
 	return &ScopeLogsBuilder{
 		released: false,
 		builder:  builder,
-		scb:      acommon.ScopeBuilderFrom(builder.FieldBuilder(0).(*array.StructBuilder)),
-		schb:     acommon.AdaptiveDictionaryBuilderFrom(builder.FieldBuilder(1)),
-		lrsb:     builder.FieldBuilder(2).(*array.ListBuilder),
-		lrb:      LogRecordBuilderFrom(builder.FieldBuilder(2).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
+		scb:      acommon.ScopeBuilderFrom(builder.StructBuilder(constants.Scope)),
+		schb:     builder.StringBuilder(constants.SchemaUrl),
+		lrsb:     logs,
+		lrb:      LogRecordBuilderFrom(logs.StructBuilder()),
 	}
 }
 
@@ -86,32 +82,22 @@ func (b *ScopeLogsBuilder) Append(sl plog.ScopeLogs) error {
 		return fmt.Errorf("scope logs builder already released")
 	}
 
-	b.builder.Append(true)
-	if err := b.scb.Append(sl.Scope()); err != nil {
-		return err
-	}
-	schemaUrl := sl.SchemaUrl()
-	if schemaUrl == "" {
-		b.schb.AppendNull()
-	} else {
-		if err := b.schb.AppendString(schemaUrl); err != nil {
+	return b.builder.Append(sl, func() error {
+		if err := b.scb.Append(sl.Scope()); err != nil {
 			return err
 		}
-	}
-	logRecords := sl.LogRecords()
-	lrc := logRecords.Len()
-	if lrc > 0 {
-		b.lrsb.Append(true)
-		b.lrsb.Reserve(lrc)
-		for i := 0; i < lrc; i++ {
-			if err := b.lrb.Append(logRecords.At(i)); err != nil {
-				return err
+		b.schb.AppendNonEmpty(sl.SchemaUrl())
+		logRecords := sl.LogRecords()
+		lrc := logRecords.Len()
+		return b.lrsb.Append(lrc, func() error {
+			for i := 0; i < lrc; i++ {
+				if err := b.lrb.Append(logRecords.At(i)); err != nil {
+					return err
+				}
 			}
-		}
-	} else {
-		b.lrsb.Append(false)
-	}
-	return nil
+			return nil
+		})
+	})
 }
 
 // Release releases the memory allocated by the builder.

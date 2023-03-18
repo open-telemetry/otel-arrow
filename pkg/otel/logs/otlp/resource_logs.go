@@ -19,7 +19,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -36,26 +36,23 @@ func NewResourceLogsIds(schema *arrow.Schema) (*ResourceLogsIds, error) {
 		return nil, err
 	}
 
-	schemaId, _, err := arrowutils.FieldIDFromStruct(dt, constants.SchemaUrl)
+	schemaID, _ := arrowutils.FieldIDFromStruct(dt, constants.SchemaUrl)
+
+	scopeLogsIDs, err := NewScopeLogsIds(dt)
 	if err != nil {
 		return nil, err
 	}
 
-	scopeLogsIds, err := NewScopeLogsIds(dt)
-	if err != nil {
-		return nil, err
-	}
-
-	resourceIds, err := otlp.NewResourceIds(dt)
+	resourceIDs, err := otlp.NewResourceIds(dt)
 	if err != nil {
 		return nil, err
 	}
 
 	return &ResourceLogsIds{
 		Id:        id,
-		Resource:  resourceIds,
-		SchemaUrl: schemaId,
-		ScopeLogs: scopeLogsIds,
+		Resource:  resourceIDs,
+		SchemaUrl: schemaID,
+		ScopeLogs: scopeLogsIDs,
 	}, nil
 }
 

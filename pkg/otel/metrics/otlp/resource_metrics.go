@@ -15,19 +15,22 @@
 package otlp
 
 import (
+	"fmt"
+
 	"github.com/apache/arrow/go/v11/arrow"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
 type ResourceMetricsIds struct {
-	Id           int
-	Resource     *otlp.ResourceIds
-	SchemaUrl    int
-	ScopeMetrics *ScopeMetricsIds
+	Id             int
+	Resource       *otlp.ResourceIds
+	SchemaUrl      int
+	ScopeMetricsId int
+	ScopeMetrics   *ScopeMetricsIds
 }
 
 func NewResourceMetricsIds(schema *arrow.Schema) (*ResourceMetricsIds, error) {
@@ -36,12 +39,13 @@ func NewResourceMetricsIds(schema *arrow.Schema) (*ResourceMetricsIds, error) {
 		return nil, err
 	}
 
-	schemaId, _, err := arrowutils.FieldIDFromStruct(rsDT, constants.SchemaUrl)
+	schemaId, _ := arrowutils.FieldIDFromStruct(rsDT, constants.SchemaUrl)
+
+	scopeMetricsId, scopeMetricsDT, err := arrowutils.ListOfStructsFieldIDFromStruct(rsDT, constants.ScopeMetrics)
 	if err != nil {
 		return nil, err
 	}
-
-	scopeMetricsIds, err := NewScopeMetricsIds(rsDT)
+	scopeMetricsIds, err := NewScopeMetricsIds(scopeMetricsDT)
 	if err != nil {
 		return nil, err
 	}
@@ -52,10 +56,11 @@ func NewResourceMetricsIds(schema *arrow.Schema) (*ResourceMetricsIds, error) {
 	}
 
 	return &ResourceMetricsIds{
-		Id:           id,
-		Resource:     resourceIds,
-		SchemaUrl:    schemaId,
-		ScopeMetrics: scopeMetricsIds,
+		Id:             id,
+		Resource:       resourceIds,
+		SchemaUrl:      schemaId,
+		ScopeMetricsId: scopeMetricsId,
+		ScopeMetrics:   scopeMetricsIds,
 	}, nil
 }
 
@@ -83,7 +88,11 @@ func AppendResourceMetricsInto(metrics pmetric.Metrics, record arrow.Record, met
 			}
 			resMetrics.SetSchemaUrl(schemaUrl)
 
-			err = AppendScopeMetricsInto(resMetrics, arrowResEnts, resMetricsIdx, metricsIds.ResourceMetrics.ScopeMetrics)
+			arrowScopeMetrics, err := arrowResEnts.ListOfStructsById(resMetricsIdx, metricsIds.ResourceMetrics.ScopeMetricsId)
+			if err != nil {
+				return fmt.Errorf("AppendResourceMetricsInto(field='scope_metrics')->%w", err)
+			}
+			err = UpdateScopeMetricsFrom(resMetrics.ScopeMetrics(), arrowScopeMetrics, metricsIds.ResourceMetrics.ScopeMetrics)
 			if err != nil {
 				return err
 			}

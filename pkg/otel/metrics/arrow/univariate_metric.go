@@ -19,9 +19,10 @@ import (
 
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -37,11 +38,11 @@ const (
 // UnivariateMetricDT is the Arrow Data Type describing a univariate metric.
 var (
 	UnivariateMetricDT = arrow.SparseUnionOf([]arrow.Field{
-		{Name: constants.GaugeMetrics, Type: UnivariateGaugeDT},
-		{Name: constants.SumMetrics, Type: UnivariateSumDT},
-		{Name: constants.SummaryMetrics, Type: UnivariateSummaryDT},
-		{Name: constants.HistogramMetrics, Type: UnivariateHistogramDT},
-		{Name: constants.ExpHistogramMetrics, Type: UnivariateEHistogramDT},
+		{Name: constants.GaugeMetrics, Type: UnivariateGaugeDT, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.SumMetrics, Type: UnivariateSumDT, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.SummaryMetrics, Type: UnivariateSummaryDT, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.HistogramMetrics, Type: UnivariateHistogramDT, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.ExpHistogramMetrics, Type: UnivariateEHistogramDT, Metadata: schema.Metadata(schema.Optional)},
 	},
 		[]arrow.UnionTypeCode{
 			GaugeCode,
@@ -57,7 +58,7 @@ var (
 type UnivariateMetricBuilder struct {
 	released bool
 
-	builder *array.SparseUnionBuilder
+	builder *builder.SparseUnionBuilder
 
 	gb  *UnivariateGaugeBuilder      // univariate gauge builder
 	sb  *UnivariateSumBuilder        // univariate sum builder
@@ -66,22 +67,17 @@ type UnivariateMetricBuilder struct {
 	ehb *UnivariateEHistogramBuilder // univariate exponential histogram builder
 }
 
-// NewUnivariateMetricBuilder creates a new UnivariateMetricBuilder with a given memory allocator.
-func NewUnivariateMetricBuilder(pool memory.Allocator) *UnivariateMetricBuilder {
-	return UnivariateMetricBuilderFrom(array.NewSparseUnionBuilder(pool, UnivariateMetricDT))
-}
-
 // UnivariateMetricBuilderFrom creates a new UnivariateMetricBuilder from an existing StructBuilder.
-func UnivariateMetricBuilderFrom(umb *array.SparseUnionBuilder) *UnivariateMetricBuilder {
+func UnivariateMetricBuilderFrom(umb *builder.SparseUnionBuilder) *UnivariateMetricBuilder {
 	return &UnivariateMetricBuilder{
 		released: false,
 		builder:  umb,
 
-		gb:  UnivariateGaugeBuilderFrom(umb.Child(0).(*array.StructBuilder)),
-		sb:  UnivariateSumBuilderFrom(umb.Child(1).(*array.StructBuilder)),
-		syb: UnivariateSummaryBuilderFrom(umb.Child(2).(*array.StructBuilder)),
-		hb:  UnivariateHistogramBuilderFrom(umb.Child(3).(*array.StructBuilder)),
-		ehb: UnivariateEHistogramBuilderFrom(umb.Child(4).(*array.StructBuilder)),
+		gb:  UnivariateGaugeBuilderFrom(umb.StructBuilder(GaugeCode)),
+		sb:  UnivariateSumBuilderFrom(umb.StructBuilder(SumCode)),
+		syb: UnivariateSummaryBuilderFrom(umb.StructBuilder(SummaryCode)),
+		hb:  UnivariateHistogramBuilderFrom(umb.StructBuilder(HistogramCode)),
+		ehb: UnivariateEHistogramBuilderFrom(umb.StructBuilder(ExpHistogramCode)),
 	}
 }
 
@@ -110,7 +106,7 @@ func (b *UnivariateMetricBuilder) Release() {
 // Append appends a new univariate metric to the builder.
 func (b *UnivariateMetricBuilder) Append(metric pmetric.Metric, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
-		return fmt.Errorf("UnivariateMetricBuilder: Append() called after Release()")
+		return fmt.Errorf("UnivariateMetricBuilder: Reserve() called after Release()")
 	}
 
 	switch metric.Type() {

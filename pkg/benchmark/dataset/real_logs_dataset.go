@@ -21,12 +21,15 @@ import (
 
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
+
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark/stats"
 )
 
 // RealLogsDataset represents a dataset of real logs read from a Logs serialized to a binary file.
 type RealLogsDataset struct {
 	logs        []logUnit
 	sizeInBytes int
+	logsStats   *stats.LogsStats
 }
 
 type logUnit struct {
@@ -50,8 +53,10 @@ func NewRealLogsDataset(path string) *RealLogsDataset {
 	ds := &RealLogsDataset{
 		logs:        []logUnit{},
 		sizeInBytes: len(data),
+		logsStats:   stats.NewLogsStats(),
 	}
 	logs := otlp.Logs()
+	ds.logsStats.Analyze(logs)
 
 	for ri := 0; ri < logs.ResourceLogs().Len(); ri++ {
 		rl := logs.ResourceLogs().At(ri)
@@ -74,6 +79,17 @@ func (d *RealLogsDataset) SizeInBytes() int {
 // Len returns the number of log records in the dataset.
 func (d *RealLogsDataset) Len() int {
 	return len(d.logs)
+}
+
+func (d *RealLogsDataset) ShowStats() {
+	println()
+	println("Logs stats:")
+	d.logsStats.ShowStats()
+}
+
+// Resize resizes the dataset to the specified size.
+func (d *RealLogsDataset) Resize(size int) {
+	d.logs = d.logs[:size]
 }
 
 // Logs returns a subset of log records from the original dataset.

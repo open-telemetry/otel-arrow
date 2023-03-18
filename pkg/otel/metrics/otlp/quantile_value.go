@@ -36,15 +36,8 @@ func NewQuantileValueIds(parentDT *arrow.StructType) (*QuantileValueIds, error) 
 		return nil, err
 	}
 
-	quantile, quantileFound := quantileValueDT.FieldIdx(constants.SummaryQuantile)
-	if !quantileFound {
-		return nil, fmt.Errorf("field %q not found", constants.SummaryQuantile)
-	}
-
-	value, valueFound := quantileValueDT.FieldIdx(constants.SummaryValue)
-	if !valueFound {
-		return nil, fmt.Errorf("field %q not found", constants.SummaryValue)
-	}
+	quantile, _ := arrowutils.FieldIDFromStruct(quantileValueDT, constants.SummaryQuantile)
+	value, _ := arrowutils.FieldIDFromStruct(quantileValueDT, constants.SummaryValue)
 
 	return &QuantileValueIds{
 		Id:       id,
@@ -56,7 +49,7 @@ func NewQuantileValueIds(parentDT *arrow.StructType) (*QuantileValueIds, error) 
 func AppendQuantileValuesInto(quantileSlice pmetric.SummaryDataPointValueAtQuantileSlice, ndp *arrowutils.ListOfStructs, ndpIdx int, ids *QuantileValueIds) error {
 	quantileValues, err := ndp.ListOfStructsById(ndpIdx, ids.Id)
 	if err != nil {
-		return err
+		return fmt.Errorf("AppendQuantileValuesInto(field='quantile_values')->%w", err)
 	}
 	if quantileValues == nil {
 		return nil

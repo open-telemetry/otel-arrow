@@ -22,7 +22,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -41,30 +41,16 @@ func NewLinkIds(spanDT *arrow.StructType) (*LinkIds, error) {
 		return nil, err
 	}
 
-	traceId, _, err := arrowutils.FieldIDFromStruct(linkDT, constants.TraceId)
-	if err != nil {
-		return nil, err
-	}
-
-	spanId, _, err := arrowutils.FieldIDFromStruct(linkDT, constants.SpanId)
-	if err != nil {
-		return nil, err
-	}
-
-	traceState, _, err := arrowutils.FieldIDFromStruct(linkDT, constants.TraceState)
-	if err != nil {
-		return nil, err
-	}
+	traceId, _ := arrowutils.FieldIDFromStruct(linkDT, constants.TraceId)
+	spanId, _ := arrowutils.FieldIDFromStruct(linkDT, constants.SpanId)
+	traceState, _ := arrowutils.FieldIDFromStruct(linkDT, constants.TraceState)
 
 	attributeIds, err := otlp.NewAttributeIds(linkDT)
 	if err != nil {
 		return nil, err
 	}
 
-	droppedAttributesCount, _, err := arrowutils.FieldIDFromStruct(linkDT, constants.DroppedAttributesCount)
-	if err != nil {
-		return nil, err
-	}
+	droppedAttributesCount, _ := arrowutils.FieldIDFromStruct(linkDT, constants.DroppedAttributesCount)
 
 	return &LinkIds{
 		Id:                     id,
@@ -79,10 +65,10 @@ func NewLinkIds(spanDT *arrow.StructType) (*LinkIds, error) {
 // AppendLinksInto initializes a Span's Links from an Arrow representation.
 func AppendLinksInto(result ptrace.SpanLinkSlice, los *arrowutils.ListOfStructs, row int, ids *LinkIds) error {
 	linkLos, err := los.ListOfStructsById(row, ids.Id)
-
 	if err != nil {
-		return err
+		return fmt.Errorf("AppendLinksInto(field='links')->%w", err)
 	}
+
 	if linkLos == nil {
 		// No links found
 		return nil
@@ -126,7 +112,7 @@ func AppendLinksInto(result ptrace.SpanLinkSlice, los *arrowutils.ListOfStructs,
 		link.TraceState().FromRaw(traceState)
 
 		if err = otlp.AppendAttributesInto(link.Attributes(), linkLos.Array(), linkIdx, ids.Attributes); err != nil {
-			return err
+			return fmt.Errorf("AppendLinksInto->%w", err)
 		}
 		dac, err := linkLos.U32FieldByID(ids.DroppedAttributesCount, linkIdx)
 		if err != nil {

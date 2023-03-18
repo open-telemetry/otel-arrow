@@ -22,7 +22,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -48,35 +48,16 @@ func NewUnivariateSdpIds(parentDT *arrow.StructType) (*UnivariateSdpIds, error) 
 		return nil, err
 	}
 
-	startTimeUnixNanoId, found := sdpDT.FieldIdx(constants.StartTimeUnixNano)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.StartTimeUnixNano)
-	}
-
-	timeUnixNanoId, found := sdpDT.FieldIdx(constants.TimeUnixNano)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.TimeUnixNano)
-	}
-
-	countId, found := sdpDT.FieldIdx(constants.SummaryCount)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.SummaryCount)
-	}
-
-	sumId, found := sdpDT.FieldIdx(constants.SummarySum)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.SummarySum)
-	}
-
+	startTimeUnixNanoId, _ := arrowutils.FieldIDFromStruct(sdpDT, constants.StartTimeUnixNano)
+	timeUnixNanoId, _ := arrowutils.FieldIDFromStruct(sdpDT, constants.TimeUnixNano)
+	countId, _ := arrowutils.FieldIDFromStruct(sdpDT, constants.SummaryCount)
+	sumId, _ := arrowutils.FieldIDFromStruct(sdpDT, constants.SummarySum)
 	quantileValues, err := NewQuantileValueIds(sdpDT)
 	if err != nil {
 		return nil, err
 	}
 
-	flagsId, found := sdpDT.FieldIdx(constants.Flags)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.Flags)
-	}
+	flagsId, _ := arrowutils.FieldIDFromStruct(sdpDT, constants.Flags)
 
 	return &UnivariateSdpIds{
 		Id:                id,
@@ -104,7 +85,7 @@ func AppendUnivariateSdpInto(ndpSlice pmetric.SummaryDataPointSlice, ndp *arrowu
 
 		attrs := sdpValue.Attributes()
 		if err := otlp.AppendAttributesInto(attrs, ndp.Array(), idx, ids.Attributes); err != nil {
-			return err
+			return fmt.Errorf("AppendUnivariateSdpInto->%w", err)
 		}
 		smdata.Attributes.Range(func(k string, v pcommon.Value) bool {
 			v.CopyTo(attrs.PutEmpty(k))
@@ -155,11 +136,7 @@ func AppendUnivariateSdpInto(ndpSlice pmetric.SummaryDataPointSlice, ndp *arrowu
 		}
 		sdpValue.SetSum(sum)
 
-		qValues, err := ndp.ListOfStructsById(idx, ids.QuantileValues.Id)
-		if err != nil {
-			return err
-		}
-		err = AppendQuantileValuesInto(sdpValue.QuantileValues(), qValues, idx, ids.QuantileValues)
+		err = AppendQuantileValuesInto(sdpValue.QuantileValues(), ndp, idx, ids.QuantileValues)
 		if err != nil {
 			return err
 		}

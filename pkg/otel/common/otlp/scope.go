@@ -15,6 +15,8 @@
 package otlp
 
 import (
+	"fmt"
+
 	"github.com/apache/arrow/go/v11/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
@@ -35,18 +37,10 @@ func NewScopeIds(resSpansDT *arrow.StructType) (*ScopeIds, error) {
 	if err != nil {
 		return nil, err
 	}
-	nameID, _, err := arrowutils.FieldIDFromStruct(scopeDT, constants.Name)
-	if err != nil {
-		return nil, err
-	}
-	versionID, _, err := arrowutils.FieldIDFromStruct(scopeDT, constants.Version)
-	if err != nil {
-		return nil, err
-	}
-	droppedAttributesCountID, _, err := arrowutils.FieldIDFromStruct(scopeDT, constants.DroppedAttributesCount)
-	if err != nil {
-		return nil, err
-	}
+
+	nameID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.Name)
+	versionID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.Version)
+	droppedAttributesCountID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.DroppedAttributesCount)
 	attributeIds, err := NewAttributeIds(scopeDT)
 	if err != nil {
 		return nil, err
@@ -81,7 +75,7 @@ func UpdateScopeWith(s pcommon.InstrumentationScope, listOfStructs *arrowutils.L
 
 	err = AppendAttributesInto(s.Attributes(), scopeArray, row, ids.Attributes)
 	if err != nil {
-		return err
+		return fmt.Errorf("UpdateScopeWith->%w", err)
 	}
 	s.SetName(name)
 	s.SetVersion(version)

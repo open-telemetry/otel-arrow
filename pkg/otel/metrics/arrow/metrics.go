@@ -18,17 +18,17 @@ import (
 	"fmt"
 
 	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
 // Schema is the Arrow schema for the OTLP Arrow Metrics record.
 var (
 	Schema = arrow.NewSchema([]arrow.Field{
-		{Name: constants.ResourceMetrics, Type: arrow.ListOf(ResourceMetricsDT)},
+		{Name: constants.ResourceMetrics, Type: arrow.ListOf(ResourceMetricsDT), Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
 )
 
@@ -36,17 +36,16 @@ var (
 type MetricsBuilder struct {
 	released bool
 
-	schema  *acommon.AdaptiveSchema // Metrics schema
-	builder *array.RecordBuilder    // Record builder
-	rmb     *array.ListBuilder      // resource metrics list builder
-	rmp     *ResourceMetricsBuilder // resource metrics builder
+	builder *builder.RecordBuilderExt // Record builder
+	rmb     *builder.ListBuilder      // resource metrics list builder
+	rmp     *ResourceMetricsBuilder   // resource metrics builder
 }
 
 // NewMetricsBuilder creates a new MetricsBuilder with a given allocator.
-func NewMetricsBuilder(schema *acommon.AdaptiveSchema) (*MetricsBuilder, error) {
+func NewMetricsBuilder(rBuilder *builder.RecordBuilderExt) (*MetricsBuilder, error) {
 	metricsBuilder := &MetricsBuilder{
 		released: false,
-		schema:   schema,
+		builder:  rBuilder,
 	}
 	if err := metricsBuilder.init(); err != nil {
 		return nil, err
@@ -55,17 +54,9 @@ func NewMetricsBuilder(schema *acommon.AdaptiveSchema) (*MetricsBuilder, error) 
 }
 
 func (b *MetricsBuilder) init() error {
-	if b.builder != nil {
-		b.builder.Release()
-	}
-
-	b.builder = b.schema.RecordBuilder()
-	rmb, ok := b.builder.Field(0).(*array.ListBuilder)
-	if !ok {
-		return fmt.Errorf("expected field 0 to be a list builder, got %T", b.builder.Field(0))
-	}
+	rmb := b.builder.ListBuilder(constants.ResourceMetrics)
 	b.rmb = rmb
-	b.rmp = ResourceMetricsBuilderFrom(rmb.ValueBuilder().(*array.StructBuilder))
+	b.rmp = ResourceMetricsBuilderFrom(rmb.StructBuilder())
 	return nil
 }
 
@@ -73,38 +64,20 @@ func (b *MetricsBuilder) init() error {
 //
 // Once the array is no longer needed, Release() must be called to free the
 // memory allocated by the record.
-func (b *MetricsBuilder) Build() (arrow.Record, error) {
+func (b *MetricsBuilder) Build() (record arrow.Record, err error) {
 	if b.released {
 		return nil, fmt.Errorf("resource metrics builder already released")
 	}
 
-	record := b.builder.NewRecord()
-
-	overflowDetected, updates := b.schema.Analyze(record)
-	if overflowDetected {
-		// Dictionary overflow detected =>
-		// * Update the schema
-		// * Reinitialize the trace builder
-
-		// The existing record is no longer valid, release it.
-		// A new record will be built after the schema update.
-		record.Release()
-
-		// Build a list of fields that overflowed
-		var fieldNames []string
-		for _, update := range updates {
-			fieldNames = append(fieldNames, update.DictPath)
+	record, err = b.builder.NewRecord()
+	if err != nil {
+		initErr := b.init()
+		if initErr != nil {
+			err = initErr
 		}
-
-		b.schema.UpdateSchema(updates)
-		if err := b.init(); err != nil {
-			return nil, err
-		}
-
-		return nil, &acommon.DictionaryOverflowError{FieldNames: fieldNames}
 	}
 
-	return record, nil
+	return
 }
 
 // Append appends a new set of resource metrics to the builder.
@@ -115,18 +88,14 @@ func (b *MetricsBuilder) Append(metrics pmetric.Metrics) error {
 
 	rm := metrics.ResourceMetrics()
 	rc := rm.Len()
-	if rc > 0 {
-		b.rmb.Append(true)
-		b.builder.Reserve(rc)
+	return b.rmb.Append(rc, func() error {
 		for i := 0; i < rc; i++ {
 			if err := b.rmp.Append(rm.At(i)); err != nil {
 				return err
 			}
 		}
-	} else {
-		b.rmb.AppendNull()
-	}
-	return nil
+		return nil
+	})
 }
 
 // Release releases the memory allocated by the builder.

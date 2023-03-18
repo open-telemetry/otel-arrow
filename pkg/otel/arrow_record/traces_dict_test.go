@@ -69,16 +69,15 @@ func TestTracesWithNoDictionary(t *testing.T) {
 		)
 	}
 
-	schema := producer.TracesAdaptiveSchema()
-	dictWithOverflow := schema.DictionariesWithOverflow()
-	require.Equal(t, 0, len(dictWithOverflow))
+	builder := producer.TracesRecordBuilderExt()
+	require.Equal(t, 0, len(builder.Events().DictionariesWithOverflow))
 }
 
-// TestTracesSingleBatchWithDictionaryOverflow
+// TestTracesMultiBatchWithDictionaryIndexChanges
 // Initial dictionary size uint8.
 // First batch of uint8 + 1 spans ==> dictionary overflow on 3 fields.
 // Other consecutive batches should not trigger any other dictionary overflow.
-func TestTracesSingleBatchWithDictionaryOverflow(t *testing.T) {
+func TestTracesMultiBatchWithDictionaryIndexChanges(t *testing.T) {
 	t.Parallel()
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
@@ -118,12 +117,12 @@ func TestTracesSingleBatchWithDictionaryOverflow(t *testing.T) {
 		)
 	}
 
-	schema := producer.TracesAdaptiveSchema()
-	dictWithOverflow := schema.DictionariesWithOverflow()
-	require.Equal(t, 3, len(dictWithOverflow))
-	require.Equal(t, "uint16", dictWithOverflow["resource_spans.scope_spans.spans.name"])
-	require.Equal(t, "uint16", dictWithOverflow["resource_spans.scope_spans.spans.attributes.value.str"])
-	require.Equal(t, "uint16", dictWithOverflow["resource_spans.scope_spans.spans.attributes.value.binary"])
+	builder := producer.TracesRecordBuilderExt()
+	dictionariesIndexTypeChanged := builder.Events().DictionariesIndexTypeChanged
+	require.Equal(t, 3, len(dictionariesIndexTypeChanged))
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_spans.item.scope_spans.item.spans.item.name"])
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_spans.item.scope_spans.item.spans.item.attributes.value.str"])
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_spans.item.scope_spans.item.spans.item.attributes.value.binary"])
 }
 
 // TestTracesMultiBatchWithDictionaryOverflow
@@ -171,19 +170,19 @@ func TestTracesMultiBatchWithDictionaryOverflow(t *testing.T) {
 		)
 	}
 
-	schema := producer.TracesAdaptiveSchema()
-	dictWithOverflow := schema.DictionariesWithOverflow()
-	require.Equal(t, 3, len(dictWithOverflow))
-	require.Equal(t, "uint16", dictWithOverflow["resource_spans.scope_spans.spans.name"])
-	require.Equal(t, "uint16", dictWithOverflow["resource_spans.scope_spans.spans.attributes.value.str"])
-	require.Equal(t, "uint16", dictWithOverflow["resource_spans.scope_spans.spans.attributes.value.binary"])
+	builder := producer.TracesRecordBuilderExt()
+	dictionariesIndexTypeChanged := builder.Events().DictionariesIndexTypeChanged
+	require.Equal(t, 3, len(dictionariesIndexTypeChanged))
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_spans.item.scope_spans.item.spans.item.name"])
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_spans.item.scope_spans.item.spans.item.attributes.value.str"])
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_spans.item.scope_spans.item.spans.item.attributes.value.binary"])
 }
 
-// TestTracesSingleBatchWithDictionaryLimit
+// TestTracesMultiBatchWithDictionaryLimit
 // Initial dictionary size uint8.
 // Limit dictionary index size is uint8.
 // First batch of uint8 + 1 spans ==> dictionary index type limit reached so fallback to utf8 or binary.
-func TestTracesSingleBatchWithDictionaryLimit(t *testing.T) {
+func TestTracesMultiBatchWithDictionaryLimit(t *testing.T) {
 	t.Parallel()
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
@@ -223,12 +222,12 @@ func TestTracesSingleBatchWithDictionaryLimit(t *testing.T) {
 		)
 	}
 
-	schema := producer.TracesAdaptiveSchema()
-	dictWithOverflow := schema.DictionariesWithOverflow()
-	require.Equal(t, 3, len(dictWithOverflow))
-	require.Equal(t, "utf8", dictWithOverflow["resource_spans.scope_spans.spans.name"])
-	require.Equal(t, "utf8", dictWithOverflow["resource_spans.scope_spans.spans.attributes.value.str"])
-	require.Equal(t, "binary", dictWithOverflow["resource_spans.scope_spans.spans.attributes.value.binary"])
+	builder := producer.TracesRecordBuilderExt()
+	dictionaryWithOverflow := builder.Events().DictionariesWithOverflow
+	require.Equal(t, 3, len(dictionaryWithOverflow))
+	require.True(t, dictionaryWithOverflow["resource_spans.item.scope_spans.item.spans.item.name"])
+	require.True(t, dictionaryWithOverflow["resource_spans.item.scope_spans.item.spans.item.attributes.value.str"])
+	require.True(t, dictionaryWithOverflow["resource_spans.item.scope_spans.item.spans.item.attributes.value.binary"])
 }
 
 func GenerateTraces(initValue int, spanCount int) ptrace.Traces {

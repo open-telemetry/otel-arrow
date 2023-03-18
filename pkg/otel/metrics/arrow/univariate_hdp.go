@@ -19,27 +19,28 @@ import (
 
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
 // UnivariateHistogramDataPointDT is the Arrow Data Type describing a univariate histogram number data point.
 var (
 	UnivariateHistogramDataPointDT = arrow.StructOf(
-		arrow.Field{Name: constants.Attributes, Type: acommon.AttributesDT},
-		arrow.Field{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
-		arrow.Field{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
-		arrow.Field{Name: constants.HistogramCount, Type: arrow.PrimitiveTypes.Uint64},
-		arrow.Field{Name: constants.HistogramSum, Type: arrow.PrimitiveTypes.Float64},
-		arrow.Field{Name: constants.HistogramBucketCounts, Type: arrow.ListOf(arrow.PrimitiveTypes.Uint64)},
-		arrow.Field{Name: constants.HistogramExplicitBounds, Type: arrow.ListOf(arrow.PrimitiveTypes.Float64)},
-		arrow.Field{Name: constants.Exemplars, Type: arrow.ListOf(ExemplarDT)},
-		arrow.Field{Name: constants.Flags, Type: arrow.PrimitiveTypes.Uint32},
-		arrow.Field{Name: constants.HistogramMin, Type: arrow.PrimitiveTypes.Float64},
-		arrow.Field{Name: constants.HistogramMax, Type: arrow.PrimitiveTypes.Float64},
+		arrow.Field{Name: constants.Attributes, Type: acommon.AttributesDT, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.HistogramCount, Type: arrow.PrimitiveTypes.Uint64, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.HistogramSum, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.HistogramBucketCounts, Type: arrow.ListOf(arrow.PrimitiveTypes.Uint64), Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.HistogramExplicitBounds, Type: arrow.ListOf(arrow.PrimitiveTypes.Float64), Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.Exemplars, Type: arrow.ListOf(ExemplarDT), Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.Flags, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.HistogramMin, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.HistogramMax, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
 	)
 )
 
@@ -47,49 +48,48 @@ var (
 type HistogramDataPointBuilder struct {
 	released bool
 
-	builder *array.StructBuilder
+	builder *builder.StructBuilder
 
 	ab    *acommon.AttributesBuilder // attributes builder
-	stunb *array.TimestampBuilder    // start_time_unix_nano builder
-	tunb  *array.TimestampBuilder    // time_unix_nano builder
-	hcb   *array.Uint64Builder       // histogram_count builder
-	hsb   *array.Float64Builder      // histogram_sum builder
-	hbclb *array.ListBuilder         // histogram_bucket_counts list builder
-	hbcb  *array.Uint64Builder       // histogram_bucket_counts builder
-	heblb *array.ListBuilder         // histogram_explicit_bounds list builder
-	hebb  *array.Float64Builder      // histogram_explicit_bounds builder
-	elb   *array.ListBuilder         // exemplars builder
+	stunb *builder.TimestampBuilder  // start_time_unix_nano builder
+	tunb  *builder.TimestampBuilder  // time_unix_nano builder
+	hcb   *builder.Uint64Builder     // histogram_count builder
+	hsb   *builder.Float64Builder    // histogram_sum builder
+	hbclb *builder.ListBuilder       // histogram_bucket_counts list builder
+	hbcb  *builder.Uint64Builder     // histogram_bucket_counts builder
+	heblb *builder.ListBuilder       // histogram_explicit_bounds list builder
+	hebb  *builder.Float64Builder    // histogram_explicit_bounds builder
+	elb   *builder.ListBuilder       // exemplars builder
 	eb    *ExemplarBuilder           // exemplar builder
-	fb    *array.Uint32Builder       // flags builder
-	hmib  *array.Float64Builder      // histogram_min builder
-	hmab  *array.Float64Builder      // histogram_max builder
-}
-
-// NewHistogramDataPointBuilder creates a new HistogramDataPointBuilder with a given memory allocator.
-func NewHistogramDataPointBuilder(pool memory.Allocator) *HistogramDataPointBuilder {
-	return HistogramDataPointBuilderFrom(array.NewStructBuilder(pool, UnivariateHistogramDataPointDT))
+	fb    *builder.Uint32Builder     // flags builder
+	hmib  *builder.Float64Builder    // histogram_min builder
+	hmab  *builder.Float64Builder    // histogram_max builder
 }
 
 // HistogramDataPointBuilderFrom creates a new HistogramDataPointBuilder from an existing StructBuilder.
-func HistogramDataPointBuilderFrom(b *array.StructBuilder) *HistogramDataPointBuilder {
+func HistogramDataPointBuilderFrom(b *builder.StructBuilder) *HistogramDataPointBuilder {
+	hbclb := b.ListBuilder(constants.HistogramBucketCounts)
+	heblb := b.ListBuilder(constants.HistogramExplicitBounds)
+	elb := b.ListBuilder(constants.Exemplars)
+
 	return &HistogramDataPointBuilder{
 		released: false,
 		builder:  b,
 
-		ab:    acommon.AttributesBuilderFrom(b.FieldBuilder(0).(*array.MapBuilder)),
-		stunb: b.FieldBuilder(1).(*array.TimestampBuilder),
-		tunb:  b.FieldBuilder(2).(*array.TimestampBuilder),
-		hcb:   b.FieldBuilder(3).(*array.Uint64Builder),
-		hsb:   b.FieldBuilder(4).(*array.Float64Builder),
-		hbclb: b.FieldBuilder(5).(*array.ListBuilder),
-		hbcb:  b.FieldBuilder(5).(*array.ListBuilder).ValueBuilder().(*array.Uint64Builder),
-		heblb: b.FieldBuilder(6).(*array.ListBuilder),
-		hebb:  b.FieldBuilder(6).(*array.ListBuilder).ValueBuilder().(*array.Float64Builder),
-		elb:   b.FieldBuilder(7).(*array.ListBuilder),
-		eb:    ExemplarBuilderFrom(b.FieldBuilder(7).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
-		fb:    b.FieldBuilder(8).(*array.Uint32Builder),
-		hmib:  b.FieldBuilder(9).(*array.Float64Builder),
-		hmab:  b.FieldBuilder(10).(*array.Float64Builder),
+		ab:    acommon.AttributesBuilderFrom(b.MapBuilder(constants.Attributes)),
+		stunb: b.TimestampBuilder(constants.StartTimeUnixNano),
+		tunb:  b.TimestampBuilder(constants.TimeUnixNano),
+		hcb:   b.Uint64Builder(constants.HistogramCount),
+		hsb:   b.Float64Builder(constants.HistogramSum),
+		hbclb: hbclb,
+		hbcb:  hbclb.Uint64Builder(),
+		heblb: heblb,
+		hebb:  heblb.Float64Builder(),
+		elb:   elb,
+		eb:    ExemplarBuilderFrom(elb.StructBuilder()),
+		fb:    b.Uint32Builder(constants.Flags),
+		hmib:  b.Float64Builder(constants.HistogramMin),
+		hmab:  b.Float64Builder(constants.HistogramMax),
 	}
 }
 
@@ -118,79 +118,77 @@ func (b *HistogramDataPointBuilder) Release() {
 // Append appends a new histogram data point to the builder.
 func (b *HistogramDataPointBuilder) Append(hdp pmetric.HistogramDataPoint, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
-		return fmt.Errorf("HistogramDataPointBuilder: Append() called after Release()")
+		return fmt.Errorf("HistogramDataPointBuilder: Reserve() called after Release()")
 	}
 
-	b.builder.Append(true)
-	if err := b.ab.AppendUniqueAttributes(hdp.Attributes(), smdata.Attributes, mdata.Attributes); err != nil {
-		return err
-	}
-	if smdata.StartTime == nil && mdata.StartTime == nil {
-		b.stunb.Append(arrow.Timestamp(hdp.StartTimestamp()))
-	} else {
-		b.stunb.AppendNull()
-	}
-	if smdata.Time == nil && mdata.Time == nil {
-		b.tunb.Append(arrow.Timestamp(hdp.Timestamp()))
-	} else {
-		b.tunb.AppendNull()
-	}
-	b.hcb.Append(hdp.Count())
-	if hdp.HasSum() {
-		b.hsb.Append(hdp.Sum())
-	} else {
-		b.hsb.AppendNull()
-	}
-
-	hbc := hdp.BucketCounts()
-	hbcc := hbc.Len()
-	if hbcc > 0 {
-		b.hbclb.Append(true)
-		b.hbclb.Reserve(hbcc)
-		for i := 0; i < hbcc; i++ {
-			b.hbcb.Append(hbc.At(i))
+	return b.builder.Append(hdp, func() error {
+		if err := b.ab.AppendUniqueAttributes(hdp.Attributes(), smdata.Attributes, mdata.Attributes); err != nil {
+			return err
 		}
-	} else {
-		b.hbclb.Append(false)
-	}
-
-	heb := hdp.ExplicitBounds()
-	hebc := heb.Len()
-	if hebc > 0 {
-		b.heblb.Append(true)
-		b.heblb.Reserve(hebc)
-		for i := 0; i < hebc; i++ {
-			b.hebb.Append(heb.At(i))
+		if smdata.StartTime == nil && mdata.StartTime == nil {
+			b.stunb.Append(arrow.Timestamp(hdp.StartTimestamp()))
+		} else {
+			b.stunb.AppendNull()
 		}
-	} else {
-		b.heblb.Append(false)
-	}
+		if smdata.Time == nil && mdata.Time == nil {
+			b.tunb.Append(arrow.Timestamp(hdp.Timestamp()))
+		} else {
+			b.tunb.AppendNull()
+		}
+		b.hcb.Append(hdp.Count())
+		if hdp.HasSum() {
+			b.hsb.AppendNonZero(hdp.Sum())
+		} else {
+			b.hsb.AppendNull()
+		}
 
-	exs := hdp.Exemplars()
-	ec := exs.Len()
-	if ec > 0 {
-		b.elb.Append(true)
-		b.elb.Reserve(ec)
-		for i := 0; i < ec; i++ {
-			if err := b.eb.Append(exs.At(i)); err != nil {
-				return err
+		hbc := hdp.BucketCounts()
+		hbcc := hbc.Len()
+		if err := b.hbclb.Append(hbcc, func() error {
+			for i := 0; i < hbcc; i++ {
+				b.hbcb.Append(hbc.At(i))
 			}
+			return nil
+		}); err != nil {
+			return err
 		}
-	} else {
-		b.elb.Append(false)
-	}
-	b.fb.Append(uint32(hdp.Flags()))
 
-	if hdp.HasMin() {
-		b.hmib.Append(hdp.Min())
-	} else {
-		b.hmib.AppendNull()
-	}
-	if hdp.HasMax() {
-		b.hmab.Append(hdp.Max())
-	} else {
-		b.hmab.AppendNull()
-	}
+		heb := hdp.ExplicitBounds()
+		hebc := heb.Len()
+		if err := b.heblb.Append(hebc, func() error {
+			for i := 0; i < hebc; i++ {
+				b.hebb.AppendNonZero(heb.At(i))
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
 
-	return nil
+		exs := hdp.Exemplars()
+		ec := exs.Len()
+		if err := b.elb.Append(ec, func() error {
+			for i := 0; i < ec; i++ {
+				if err := b.eb.Append(exs.At(i)); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		b.fb.Append(uint32(hdp.Flags()))
+
+		if hdp.HasMin() {
+			b.hmib.AppendNonZero(hdp.Min())
+		} else {
+			b.hmib.AppendNull()
+		}
+		if hdp.HasMax() {
+			b.hmab.AppendNonZero(hdp.Max())
+		} else {
+			b.hmab.AppendNull()
+		}
+
+		return nil
+	})
 }

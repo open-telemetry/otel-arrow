@@ -1,56 +1,81 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright The OpenTelemetry Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 
 package arrow
 
 import (
+	"math"
 	"testing"
 
+	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
+	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/internal"
 )
+
+var DefaultDictConfig = &cfg.Dictionary{
+	MaxCard: math.MaxUint16,
+}
 
 func TestStatus(t *testing.T) {
 	t.Parallel()
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	sb := NewStatusBuilder(pool)
 
-	if err := sb.Append(Status1()); err != nil {
-		t.Fatal(err)
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: constants.Status, Type: StatusDT, Metadata: acommon.Metadata(acommon.Optional)},
+	}, nil)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	defer rBuilder.Release()
+
+	var record arrow.Record
+
+	for {
+		sb := StatusBuilderFrom(rBuilder.StructBuilder(constants.Status))
+
+		err := sb.Append(Status1())
+		require.NoError(t, err)
+		err = sb.Append(Status2())
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
-	if err := sb.Append(Status2()); err != nil {
-		t.Fatal(err)
-	}
-	arr, err := sb.Build()
+
+	json, err := record.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer arr.Release()
 
-	json, err := arr.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
+	record.Release()
 
-	expected := `[{"code":1,"status_message":"message1"}
-,{"code":2,"status_message":"message2"}
+	expected := `[{"status":{"code":1,"status_message":"message1"}}
+,{"status":{"code":2,"status_message":"message2"}}
 ]`
 
 	require.JSONEq(t, expected, string(json))
@@ -61,27 +86,39 @@ func TestEvent(t *testing.T) {
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	eb := NewEventBuilder(pool)
 
-	if err := eb.Append(Event1()); err != nil {
-		t.Fatal(err)
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: constants.SpanEvents, Type: EventDT, Metadata: acommon.Metadata(acommon.Optional)},
+	}, nil)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	defer rBuilder.Release()
+
+	var record arrow.Record
+
+	for {
+		eb := EventBuilderFrom(rBuilder.StructBuilder(constants.SpanEvents))
+
+		err := eb.Append(Event1())
+		require.NoError(t, err)
+		err = eb.Append(Event2())
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
-	if err := eb.Append(Event2()); err != nil {
-		t.Fatal(err)
-	}
-	arr, err := eb.Build()
+
+	json, err := record.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer arr.Release()
 
-	json, err := arr.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
+	record.Release()
 
-	expected := `[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}
+	expected := `[{"events":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}}
+,{"events":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}}
 ]`
 
 	require.JSONEq(t, expected, string(json))
@@ -92,27 +129,39 @@ func TestLink(t *testing.T) {
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	lb := NewLinkBuilder(pool)
 
-	if err := lb.Append(Link1()); err != nil {
-		t.Fatal(err)
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: constants.SpanLinks, Type: LinkDT, Metadata: acommon.Metadata(acommon.Optional)},
+	}, nil)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	defer rBuilder.Release()
+
+	var record arrow.Record
+
+	for {
+		lb := LinkBuilderFrom(rBuilder.StructBuilder(constants.SpanLinks))
+
+		err := lb.Append(Link1())
+		require.NoError(t, err)
+		err = lb.Append(Link2())
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
-	if err := lb.Append(Link2()); err != nil {
-		t.Fatal(err)
-	}
-	arr, err := lb.Build()
+
+	json, err := record.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer arr.Release()
 
-	json, err := arr.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
+	record.Release()
 
-	expected := `[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
-,{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+	expected := `[{"links":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}}
+,{"links":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}}
 ]`
 
 	require.JSONEq(t, expected, string(json))
@@ -123,27 +172,39 @@ func TestSpan(t *testing.T) {
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	sb := NewSpanBuilder(pool)
 
-	if err := sb.Append(Span1()); err != nil {
-		t.Fatal(err)
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: constants.Spans, Type: SpanDT, Metadata: acommon.Metadata(acommon.Optional)},
+	}, nil)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	defer rBuilder.Release()
+
+	var record arrow.Record
+
+	for {
+		sb := SpanBuilderFrom(rBuilder.StructBuilder(constants.Spans))
+
+		err := sb.Append(Span1())
+		require.NoError(t, err)
+		err = sb.Append(Span2())
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
-	if err := sb.Append(Span2()); err != nil {
-		t.Fatal(err)
-	}
-	arr, err := sb.Build()
+
+	json, err := record.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer arr.Release()
 
-	json, err := arr.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
+	record.Release()
 
-	expected := `[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"dropped_attributes_count":0,"dropped_events_count":0,"dropped_links_count":0,"end_time_unix_nano":"1970-01-01 00:00:00.000000002","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
-,{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}
+	expected := `[{"spans":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"end_time_unix_nano":"1970-01-01 00:00:00.000000002","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}}
+,{"spans":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}}
 ]`
 
 	require.JSONEq(t, expected, string(json))
@@ -154,27 +215,39 @@ func TestScopeSpans(t *testing.T) {
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	ssb := NewScopeSpansBuilder(pool)
 
-	if err := ssb.Append(ScopeSpans1()); err != nil {
-		t.Fatal(err)
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: constants.ScopeSpans, Type: ScopeSpansDT, Metadata: acommon.Metadata(acommon.Optional)},
+	}, nil)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	defer rBuilder.Release()
+
+	var record arrow.Record
+
+	for {
+		ssb := ScopeSpansBuilderFrom(rBuilder.StructBuilder(constants.ScopeSpans))
+
+		err := ssb.Append(ScopeSpans1())
+		require.NoError(t, err)
+		err = ssb.Append(ScopeSpans2())
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
-	if err := ssb.Append(ScopeSpans2()); err != nil {
-		t.Fatal(err)
-	}
-	arr, err := ssb.Build()
+
+	json, err := record.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer arr.Release()
 
-	json, err := arr.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
+	record.Release()
 
-	expected := `[{"schema_url":"schema1","scope":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"},"spans":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"dropped_attributes_count":0,"dropped_events_count":0,"dropped_links_count":0,"end_time_unix_nano":"1970-01-01 00:00:00.000000002","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}
-,{"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}
+	expected := `[{"scope_spans":{"schema_url":"schema1","scope":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"},"spans":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"end_time_unix_nano":"1970-01-01 00:00:00.000000002","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}}
+,{"scope_spans":{"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}}
 ]`
 
 	require.JSONEq(t, expected, string(json))
@@ -185,27 +258,39 @@ func TestResourceSpans(t *testing.T) {
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	rsb := NewResourceSpansBuilder(pool)
 
-	if err := rsb.Append(ResourceSpans1()); err != nil {
-		t.Fatal(err)
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: constants.ResourceSpans, Type: ResourceSpansDT, Metadata: acommon.Metadata(acommon.Optional)},
+	}, nil)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	defer rBuilder.Release()
+
+	var record arrow.Record
+
+	for {
+		rsb := ResourceSpansBuilderFrom(rBuilder.StructBuilder(constants.ResourceSpans))
+
+		err := rsb.Append(ResourceSpans1())
+		require.NoError(t, err)
+		err = rsb.Append(ResourceSpans2())
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
-	if err := rsb.Append(ResourceSpans2()); err != nil {
-		t.Fatal(err)
-	}
-	arr, err := rsb.Build()
+
+	json, err := record.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer arr.Release()
 
-	json, err := arr.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
+	record.Release()
 
-	expected := `[{"resource":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null},"schema_url":"schema1","scope_spans":[{"schema_url":"schema1","scope":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"},"spans":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"dropped_attributes_count":0,"dropped_events_count":0,"dropped_links_count":0,"end_time_unix_nano":"1970-01-01 00:00:00.000000002","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]},{"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]}
-,{"resource":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1},"schema_url":"schema2","scope_spans":[{"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]}
+	expected := `[{"resource_spans":{"resource":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null},"schema_url":"schema1","scope_spans":[{"schema_url":"schema1","scope":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"},"spans":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"end_time_unix_nano":"1970-01-01 00:00:00.000000002","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]},{"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]}}
+,{"resource_spans":{"resource":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1},"schema_url":"schema2","scope_spans":[{"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]}}
 ]`
 
 	require.JSONEq(t, expected, string(json))
@@ -216,27 +301,35 @@ func TestTraces(t *testing.T) {
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	traceSchema := acommon.NewAdaptiveSchema(pool, Schema)
-	defer traceSchema.Release()
-	tb, err := NewTracesBuilder(traceSchema)
-	require.NoError(t, err)
-	defer tb.Release()
 
-	if err := tb.Append(Traces()); err != nil {
-		t.Fatal(err)
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
+	defer rBuilder.Release()
+
+	var record arrow.Record
+
+	for {
+		tb, err := NewTracesBuilder(rBuilder)
+		require.NoError(t, err)
+		defer tb.Release()
+
+		err = tb.Append(Traces())
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
-	record, err := tb.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer record.Release()
 
 	json, err := record.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	expected := `[{"resource_spans":[{"resource":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null},"schema_url":"schema1","scope_spans":[{"schema_url":"schema1","scope":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"},"spans":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"dropped_attributes_count":0,"dropped_events_count":0,"dropped_links_count":0,"end_time_unix_nano":"1970-01-01 00:00:00.000000002","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]},{"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]},{"resource":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1},"schema_url":"schema2","scope_spans":[{"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]}]}
+	record.Release()
+
+	expected := `[{"resource_spans":[{"resource":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null},"schema_url":"schema1","scope_spans":[{"schema_url":"schema1","scope":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"},"spans":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"end_time_unix_nano":"1970-01-01 00:00:00.000000002","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]},{"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]},{"resource":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1},"schema_url":"schema2","scope_spans":[{"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"end_time_unix_nano":"1970-01-01 00:00:00.000000004","events":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]}],"dropped_attributes_count":null,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}],"kind":3,"links":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bool","value":[3,false]}],"dropped_attributes_count":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}],"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]}]}
 ]`
 
 	require.JSONEq(t, expected, string(json))

@@ -19,18 +19,19 @@ import (
 
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
 var (
 	ResourceMetricsDT = arrow.StructOf([]arrow.Field{
-		{Name: constants.Resource, Type: acommon.ResourceDT},
-		{Name: constants.SchemaUrl, Type: acommon.DefaultDictString},
-		{Name: constants.ScopeMetrics, Type: arrow.ListOf(ScopeMetricsDT)},
+		{Name: constants.Resource, Type: acommon.ResourceDT, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.SchemaUrl, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary)},
+		{Name: constants.ScopeMetrics, Type: arrow.ListOf(ScopeMetricsDT), Metadata: schema.Metadata(schema.Optional)},
 	}...)
 )
 
@@ -38,32 +39,24 @@ var (
 type ResourceMetricsBuilder struct {
 	released bool
 
-	builder *array.StructBuilder // builder for the resource metrics struct
+	builder *builder.StructBuilder // builder for the resource metrics struct
 
-	rb   *acommon.ResourceBuilder           // resource builder
-	schb *acommon.AdaptiveDictionaryBuilder // schema url builder
-	spsb *array.ListBuilder                 // scope metrics list builder
-	smb  *ScopeMetricsBuilder               // scope metrics builder
-}
-
-// NewResourceMetricsBuilder creates a new ResourceMetricsBuilder with a given allocator.
-//
-// Once the builder is no longer needed, Build() or Release() must be called to free the
-// memory allocated by the builder.
-func NewResourceMetricsBuilder(pool memory.Allocator) *ResourceMetricsBuilder {
-	builder := array.NewStructBuilder(pool, ResourceMetricsDT)
-	return ResourceMetricsBuilderFrom(builder)
+	rb   *acommon.ResourceBuilder // resource builder
+	schb *builder.StringBuilder   // schema url builder
+	spsb *builder.ListBuilder     // scope metrics list builder
+	smb  *ScopeMetricsBuilder     // scope metrics builder
 }
 
 // ResourceMetricsBuilderFrom creates a new ResourceMetricsBuilder from an existing builder.
-func ResourceMetricsBuilderFrom(builder *array.StructBuilder) *ResourceMetricsBuilder {
+func ResourceMetricsBuilderFrom(builder *builder.StructBuilder) *ResourceMetricsBuilder {
+	spsb := builder.ListBuilder(constants.ScopeMetrics)
 	return &ResourceMetricsBuilder{
 		released: false,
 		builder:  builder,
-		rb:       acommon.ResourceBuilderFrom(builder.FieldBuilder(0).(*array.StructBuilder)),
-		schb:     acommon.AdaptiveDictionaryBuilderFrom(builder.FieldBuilder(1)),
-		spsb:     builder.FieldBuilder(2).(*array.ListBuilder),
-		smb:      ScopeMetricsBuilderFrom(builder.FieldBuilder(2).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
+		rb:       acommon.ResourceBuilderFrom(builder.StructBuilder(constants.Resource)),
+		schb:     builder.StringBuilder(constants.SchemaUrl),
+		spsb:     spsb,
+		smb:      ScopeMetricsBuilderFrom(spsb.StructBuilder()),
 	}
 }
 
@@ -86,32 +79,22 @@ func (b *ResourceMetricsBuilder) Append(sm pmetric.ResourceMetrics) error {
 		return fmt.Errorf("resource metrics builder already released")
 	}
 
-	b.builder.Append(true)
-	if err := b.rb.Append(sm.Resource()); err != nil {
-		return err
-	}
-	schemaUrl := sm.SchemaUrl()
-	if schemaUrl == "" {
-		b.schb.AppendNull()
-	} else {
-		if err := b.schb.AppendString(schemaUrl); err != nil {
+	return b.builder.Append(sm, func() error {
+		if err := b.rb.Append(sm.Resource()); err != nil {
 			return err
 		}
-	}
-	smetrics := sm.ScopeMetrics()
-	sc := smetrics.Len()
-	if sc > 0 {
-		b.spsb.Append(true)
-		b.spsb.Reserve(sc)
-		for i := 0; i < sc; i++ {
-			if err := b.smb.Append(smetrics.At(i)); err != nil {
-				return err
+		b.schb.AppendNonEmpty(sm.SchemaUrl())
+		smetrics := sm.ScopeMetrics()
+		sc := smetrics.Len()
+		return b.spsb.Append(sc, func() error {
+			for i := 0; i < sc; i++ {
+				if err := b.smb.Append(smetrics.At(i)); err != nil {
+					return err
+				}
 			}
-		}
-	} else {
-		b.spsb.Append(false)
-	}
-	return nil
+			return nil
+		})
+	})
 }
 
 // Release releases the memory allocated by the builder.

@@ -15,11 +15,13 @@
 package otlp
 
 import (
+	"fmt"
+
 	"github.com/apache/arrow/go/v11/arrow"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -36,10 +38,7 @@ func NewScopeSpansIds(dt *arrow.StructType) (*ScopeSpansIds, error) {
 		return nil, err
 	}
 
-	schemaId, _, err := arrowutils.FieldIDFromStruct(scopeSpansDT, constants.SchemaUrl)
-	if err != nil {
-		return nil, err
-	}
+	schemaId, _ := arrowutils.FieldIDFromStruct(scopeSpansDT, constants.SchemaUrl)
 
 	scopeIds, err := otlp.NewScopeIds(scopeSpansDT)
 	if err != nil {
@@ -66,7 +65,7 @@ func AppendScopeSpansInto(resSpans ptrace.ResourceSpans, arrowResSpans *arrowuti
 
 	arrowScopeSpans, err := arrowResSpans.ListOfStructsById(resSpansIdx, ids.Id)
 	if err != nil {
-		return err
+		return fmt.Errorf("AppendScopeSpansInto(field='scope_spans')->%w", err)
 	}
 
 	if arrowScopeSpans == nil {
@@ -92,7 +91,7 @@ func AppendScopeSpansInto(resSpans ptrace.ResourceSpans, arrowResSpans *arrowuti
 
 		arrowSpans, err := arrowScopeSpans.ListOfStructsById(scopeSpansIdx, ids.SpansIds.Id)
 		if err != nil {
-			return err
+			return fmt.Errorf("AppendScopeSpansInto(field='spans')->%w", err)
 		}
 		spansSlice := scopeSpans.Spans()
 		spansSlice.EnsureCapacity(arrowSpans.End() - arrowSpans.Start())

@@ -16,19 +16,27 @@ package logs_test
 
 import (
 	"encoding/json"
+	"math"
 	"math/rand"
 	"testing"
 
+	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/memory"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
+	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
 	logsarrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
 	logsotlp "github.com/f5/otel-arrow-adapter/pkg/otel/logs/otlp"
 )
+
+var DefaultDictConfig = &cfg.Dictionary{
+	MaxCard: math.MaxUint16,
+}
 
 // TestConversionFromSyntheticData tests the conversion of OTLP logs to Arrow and back to OTLP.
 // The initial OTLP logs are generated from a synthetic dataset.
@@ -46,19 +54,31 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	// Convert the OTLP logs request to Arrow.
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	logsSchema := acommon.NewAdaptiveSchema(pool, logsarrow.Schema)
-	defer logsSchema.Release()
-	lb, err := logsarrow.NewLogsBuilder(logsSchema)
-	require.NoError(t, err)
-	defer lb.Release()
-	err = lb.Append(expectedRequest.Logs())
-	require.NoError(t, err)
-	record, err := lb.Build()
-	require.NoError(t, err)
-	defer record.Release()
+
+	rBuilder := builder.NewRecordBuilderExt(pool, logsarrow.Schema, DefaultDictConfig)
+	defer rBuilder.Release()
+
+	var record arrow.Record
+
+	for {
+		lb, err := logsarrow.NewLogsBuilder(rBuilder)
+		require.NoError(t, err)
+		defer lb.Release()
+		err = lb.Append(expectedRequest.Logs())
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		require.Error(t, acommon.ErrSchemaNotUpToDate)
+	}
 
 	// Convert the Arrow records back to OTLP.
 	logs, err := logsotlp.LogsFrom(record)
 	require.NoError(t, err)
+
+	record.Release()
+
 	assert.Equiv(t, []json.Marshaler{expectedRequest}, []json.Marshaler{plogotlp.NewExportRequestFromLogs(logs)})
 }

@@ -36,10 +36,7 @@ func NewUnivariateEHistogramIds(parentDT *arrow.StructType) (*UnivariateEHistogr
 		return nil, err
 	}
 
-	aggrTempId, found := parentDT.FieldIdx(constants.AggregationTemporality)
-	if !found {
-		return nil, fmt.Errorf("missing field %q", constants.AggregationTemporality)
-	}
+	aggrTempId, _ := arrowutils.FieldIDFromStruct(parentDT, constants.AggregationTemporality)
 
 	return &UnivariateEHistogramIds{
 		DataPoints:             dataPoints,
@@ -48,15 +45,21 @@ func NewUnivariateEHistogramIds(parentDT *arrow.StructType) (*UnivariateEHistogr
 }
 
 func UpdateUnivariateEHistogramFrom(ehistogram pmetric.ExponentialHistogram, arr *array.Struct, row int, ids *UnivariateEHistogramIds, smdata *SharedData, mdata *SharedData) error {
-	value, err := arrowutils.I32FromArray(arr.Field(ids.AggregationTemporality), row)
-	if err != nil {
-		return err
+	if ids.AggregationTemporality >= 0 {
+		value, err := arrowutils.I32FromArray(arr.Field(ids.AggregationTemporality), row)
+		if err != nil {
+			return fmt.Errorf("UpdateUnivariateEHistogramFrom->%w", err)
+		}
+		ehistogram.SetAggregationTemporality(pmetric.AggregationTemporality(value))
 	}
-	ehistogram.SetAggregationTemporality(pmetric.AggregationTemporality(value))
 
 	los, err := arrowutils.ListOfStructsFromStruct(arr, ids.DataPoints.Id, row)
 	if err != nil {
-		return err
+		return fmt.Errorf("UpdateUnivariateEHistogramFrom->%w", err)
 	}
-	return AppendUnivariateEHistogramDataPointInto(ehistogram.DataPoints(), los, ids.DataPoints, smdata, mdata)
+	err = AppendUnivariateEHistogramDataPointInto(ehistogram.DataPoints(), los, ids.DataPoints, smdata, mdata)
+	if err != nil {
+		err = fmt.Errorf("UpdateUnivariateEHistogramFrom->%w", err)
+	}
+	return err
 }

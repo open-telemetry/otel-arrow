@@ -36,55 +36,49 @@ type UnivariateMetricIds struct {
 }
 
 func NewUnivariateMetricIds(parentDT *arrow.StructType) (*UnivariateMetricIds, error) {
-	id, found := parentDT.FieldIdx(constants.Data)
-	if !found {
-		return nil, fmt.Errorf("field %q not found in struct", constants.Data)
+	id, _ := arrowutils.FieldIDFromStruct(parentDT, constants.Data)
+
+	if id == -1 {
+		return &UnivariateMetricIds{
+			Id:                      id,
+			UnivariateGaugeIds:      nil,
+			UnivariateSumIds:        nil,
+			UnivariateSummaryIds:    nil,
+			UnivariateHistogramIds:  nil,
+			UnivariateEHistogramIds: nil,
+		}, nil
 	}
+
 	dataDT, ok := parentDT.Field(id).Type.(*arrow.SparseUnionType)
 	if !ok {
 		return nil, fmt.Errorf("field %q is not a sparse union", constants.Data)
 	}
 
-	gaugeDT, ok := dataDT.Fields()[ametric.GaugeCode].Type.(*arrow.StructType)
-	if !ok {
-		return nil, fmt.Errorf("gauge field is not a struct")
-	}
+	gaugeDT := arrowutils.StructFromSparseUnion(dataDT, ametric.GaugeCode)
 	gaugeIds, err := NewUnivariateGaugeIds(gaugeDT)
 	if err != nil {
 		return nil, err
 	}
 
-	sumDT, ok := dataDT.Fields()[ametric.SumCode].Type.(*arrow.StructType)
-	if !ok {
-		return nil, fmt.Errorf("sum field is not a struct")
-	}
+	sumDT := arrowutils.StructFromSparseUnion(dataDT, ametric.SumCode)
 	sumIds, err := NewUnivariateSumIds(sumDT)
 	if err != nil {
 		return nil, err
 	}
 
-	summaryDT, ok := dataDT.Fields()[ametric.SummaryCode].Type.(*arrow.StructType)
-	if !ok {
-		return nil, fmt.Errorf("summary field is not a struct")
-	}
+	summaryDT := arrowutils.StructFromSparseUnion(dataDT, ametric.SummaryCode)
 	summaryIds, err := NewUnivariateSummaryIds(summaryDT)
 	if err != nil {
 		return nil, err
 	}
 
-	histogramDT, ok := dataDT.Fields()[ametric.HistogramCode].Type.(*arrow.StructType)
-	if !ok {
-		return nil, fmt.Errorf("histogram field is not a struct")
-	}
+	histogramDT := arrowutils.StructFromSparseUnion(dataDT, ametric.HistogramCode)
 	histogramIds, err := NewUnivariateHistogramIds(histogramDT)
 	if err != nil {
 		return nil, err
 	}
 
-	ehistogramDT, ok := dataDT.Fields()[ametric.ExpHistogramCode].Type.(*arrow.StructType)
-	if !ok {
-		return nil, fmt.Errorf("ehistogram field is not a struct")
-	}
+	ehistogramDT := arrowutils.StructFromSparseUnion(dataDT, ametric.ExpHistogramCode)
 	ehistogramIds, err := NewUnivariateEHistogramIds(ehistogramDT)
 	if err != nil {
 		return nil, err
@@ -100,24 +94,26 @@ func NewUnivariateMetricIds(parentDT *arrow.StructType) (*UnivariateMetricIds, e
 	}, nil
 }
 
-func UpdateUnivariateMetricFrom(metric pmetric.Metric, los *arrowutils.ListOfStructs, row int, ids *UnivariateMetricIds, smdata *SharedData, mdata *SharedData) error {
-	arr, ok := los.FieldByID(ids.Id).(*array.SparseUnion)
-	if !ok {
-		return fmt.Errorf("field %q is not a sparse union", constants.Data)
-	}
-	tcode := int8(arr.ChildID(row))
+func UpdateUnivariateMetricFrom(metric pmetric.Metric, arr *array.SparseUnion, row int, ids *UnivariateMetricIds, smdata *SharedData, mdata *SharedData) (err error) {
+	tcode := arr.TypeCode(row)
+	fieldID := arr.ChildID(row)
+
 	switch tcode {
 	case ametric.GaugeCode:
-		return UpdateUnivariateGaugeFrom(metric.SetEmptyGauge(), arr.Field(int(tcode)).(*array.Struct), row, ids.UnivariateGaugeIds, smdata, mdata)
+		err = UpdateUnivariateGaugeFrom(metric.SetEmptyGauge(), arr.Field(fieldID).(*array.Struct), row, ids.UnivariateGaugeIds, smdata, mdata)
 	case ametric.SumCode:
-		return UpdateUnivariateSumFrom(metric.SetEmptySum(), arr.Field(int(tcode)).(*array.Struct), row, ids.UnivariateSumIds, smdata, mdata)
+		err = UpdateUnivariateSumFrom(metric.SetEmptySum(), arr.Field(fieldID).(*array.Struct), row, ids.UnivariateSumIds, smdata, mdata)
 	case ametric.SummaryCode:
-		return UpdateUnivariateSummaryFrom(metric.SetEmptySummary(), arr.Field(int(tcode)).(*array.Struct), row, ids.UnivariateSummaryIds, smdata, mdata)
+		err = UpdateUnivariateSummaryFrom(metric.SetEmptySummary(), arr.Field(fieldID).(*array.Struct), row, ids.UnivariateSummaryIds, smdata, mdata)
 	case ametric.HistogramCode:
-		return UpdateUnivariateHistogramFrom(metric.SetEmptyHistogram(), arr.Field(int(tcode)).(*array.Struct), row, ids.UnivariateHistogramIds, smdata, mdata)
+		err = UpdateUnivariateHistogramFrom(metric.SetEmptyHistogram(), arr.Field(fieldID).(*array.Struct), row, ids.UnivariateHistogramIds, smdata, mdata)
 	case ametric.ExpHistogramCode:
-		return UpdateUnivariateEHistogramFrom(metric.SetEmptyExponentialHistogram(), arr.Field(int(tcode)).(*array.Struct), row, ids.UnivariateEHistogramIds, smdata, mdata)
+		err = UpdateUnivariateEHistogramFrom(metric.SetEmptyExponentialHistogram(), arr.Field(fieldID).(*array.Struct), row, ids.UnivariateEHistogramIds, smdata, mdata)
 	default:
-		return fmt.Errorf("UpdateUnivariateMetricFrom: unknown type code %d", tcode)
+		err = fmt.Errorf("UpdateUnivariateMetricFrom: unknown type code %d", tcode)
 	}
+	if err != nil {
+		err = fmt.Errorf("UpdateUnivariateMetricFrom->%w", err)
+	}
+	return
 }

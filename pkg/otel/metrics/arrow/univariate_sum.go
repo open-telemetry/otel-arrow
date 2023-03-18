@@ -19,19 +19,19 @@ import (
 
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
 // UnivariateSumDT is the Arrow Data Type describing a univariate sum.
 var (
 	UnivariateSumDT = arrow.StructOf(
-		arrow.Field{Name: constants.DataPoints, Type: arrow.ListOf(UnivariateNumberDataPointDT)},
-		arrow.Field{Name: constants.AggregationTemporality, Type: acommon.DefaultDictInt32},
-		arrow.Field{Name: constants.IsMonotonic, Type: arrow.FixedWidthTypes.Boolean},
+		arrow.Field{Name: constants.DataPoints, Type: arrow.ListOf(UnivariateNumberDataPointDT), Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.AggregationTemporality, Type: arrow.PrimitiveTypes.Int32, Metadata: schema.Metadata(schema.Optional, schema.Dictionary)},
+		arrow.Field{Name: constants.IsMonotonic, Type: arrow.FixedWidthTypes.Boolean, Metadata: schema.Metadata(schema.Optional)},
 	)
 )
 
@@ -39,29 +39,26 @@ var (
 type UnivariateSumBuilder struct {
 	released bool
 
-	builder *array.StructBuilder
+	builder *builder.StructBuilder
 
-	dplb *array.ListBuilder                 // data_points builder
-	dpb  *NumberDataPointBuilder            // number data point builder
-	atb  *acommon.AdaptiveDictionaryBuilder // aggregation_temporality builder
-	imb  *array.BooleanBuilder              // is_monotonic builder
-}
-
-// NewUnivariateSumBuilder creates a new UnivariateSumBuilder with a given memory allocator.
-func NewUnivariateSumBuilder(pool memory.Allocator) *UnivariateSumBuilder {
-	return UnivariateSumBuilderFrom(array.NewStructBuilder(pool, UnivariateSumDT))
+	dplb *builder.ListBuilder    // data_points builder
+	dpb  *NumberDataPointBuilder // number data point builder
+	atb  *builder.Int32Builder   // aggregation_temporality builder
+	imb  *builder.BooleanBuilder // is_monotonic builder
 }
 
 // UnivariateSumBuilderFrom creates a new UnivariateSumBuilder from an existing StructBuilder.
-func UnivariateSumBuilderFrom(ndpb *array.StructBuilder) *UnivariateSumBuilder {
+func UnivariateSumBuilderFrom(ndpb *builder.StructBuilder) *UnivariateSumBuilder {
+	dplb := ndpb.ListBuilder(constants.DataPoints)
+
 	return &UnivariateSumBuilder{
 		released: false,
 		builder:  ndpb,
 
-		dplb: ndpb.FieldBuilder(0).(*array.ListBuilder),
-		dpb:  NumberDataPointBuilderFrom(ndpb.FieldBuilder(0).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
-		atb:  acommon.AdaptiveDictionaryBuilderFrom(ndpb.FieldBuilder(1)),
-		imb:  ndpb.FieldBuilder(2).(*array.BooleanBuilder),
+		dplb: dplb,
+		dpb:  NumberDataPointBuilderFrom(dplb.StructBuilder()),
+		atb:  ndpb.Int32Builder(constants.AggregationTemporality),
+		imb:  ndpb.BooleanBuilder(constants.IsMonotonic),
 	}
 }
 
@@ -90,37 +87,35 @@ func (b *UnivariateSumBuilder) Release() {
 // Append appends a new univariate sum to the builder.
 func (b *UnivariateSumBuilder) Append(sum pmetric.Sum, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
-		return fmt.Errorf("UnivariateMetricBuilder: Append() called after Release()")
+		return fmt.Errorf("UnivariateMetricBuilder: Reserve() called after Release()")
 	}
 
-	b.builder.Append(true)
-	dps := sum.DataPoints()
-	dpc := dps.Len()
-	if dpc > 0 {
-		b.dplb.Append(true)
-		b.dplb.Reserve(dpc)
-		for i := 0; i < dpc; i++ {
-			if err := b.dpb.Append(dps.At(i), smdata, mdata); err != nil {
-				return err
+	return b.builder.Append(sum, func() error {
+		dps := sum.DataPoints()
+		dpc := dps.Len()
+		if err := b.dplb.Append(dpc, func() error {
+			for i := 0; i < dpc; i++ {
+				if err := b.dpb.Append(dps.At(i), smdata, mdata); err != nil {
+					return err
+				}
 			}
-		}
-	} else {
-		b.dplb.Append(false)
-	}
-	if sum.AggregationTemporality() == pmetric.AggregationTemporalityUnspecified {
-		b.atb.AppendNull()
-	} else {
-		if err := b.atb.AppendI32(int32(sum.AggregationTemporality())); err != nil {
+			return nil
+		}); err != nil {
 			return err
 		}
-	}
-	if sum.IsMonotonic() {
-		b.imb.Append(sum.IsMonotonic())
-	} else {
-		b.imb.AppendNull()
-	}
+		if sum.AggregationTemporality() == pmetric.AggregationTemporalityUnspecified {
+			b.atb.AppendNull()
+		} else {
+			b.atb.AppendNonZero(int32(sum.AggregationTemporality()))
+		}
+		if sum.IsMonotonic() {
+			b.imb.AppendNonFalse(sum.IsMonotonic())
+		} else {
+			b.imb.AppendNull()
+		}
 
-	return nil
+		return nil
+	})
 }
 
 func (b *UnivariateSumBuilder) AppendNull() {
@@ -128,5 +123,5 @@ func (b *UnivariateSumBuilder) AppendNull() {
 		return
 	}
 
-	b.builder.Append(false)
+	b.builder.AppendNull()
 }

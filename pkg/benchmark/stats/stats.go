@@ -1,20 +1,24 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright The OpenTelemetry Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 
-package benchmark
+package stats
 
 import (
+	"fmt"
 	"math"
 	"sort"
 )
@@ -32,25 +36,25 @@ type Summary struct {
 }
 
 type BatchSummary struct {
-	batchSize              int
-	uncompressedSizeByte   *Summary
-	compressedSizeByte     *Summary
-	otlpArrowConversionSec *Summary
-	processingSec          *Summary
-	serializationSec       *Summary
-	deserializationSec     *Summary
-	compressionSec         *Summary
-	decompressionSec       *Summary
-	totalTimeSec           *Summary
-	processingResults      []string
-	cpuMemUsage            *CpuMemUsage
-	otlpConversionSec      *Summary
+	BatchSize              int
+	UncompressedSizeByte   *Summary
+	CompressedSizeByte     *Summary
+	OtlpArrowConversionSec *Summary
+	ProcessingSec          *Summary
+	SerializationSec       *Summary
+	DeserializationSec     *Summary
+	CompressionSec         *Summary
+	DecompressionSec       *Summary
+	TotalTimeSec           *Summary
+	ProcessingResults      []string
+	CpuMemUsage            *CpuMemUsage
+	OtlpConversionSec      *Summary
 }
 
 type ProfilerResult struct {
-	benchName string
-	tags      string
-	summaries []BatchSummary
+	BenchName string
+	Tags      string
+	Summaries []BatchSummary
 }
 
 type Metric struct {
@@ -68,6 +72,10 @@ func (m *Metric) Record(value float64) {
 }
 
 func (m *Metric) ComputeSummary() *Summary {
+	if len(m.values) == 0 {
+		return &Summary{}
+	}
+
 	min := math.MaxFloat64
 	max := -math.MaxFloat64
 	sum := 0.0
@@ -150,8 +158,19 @@ func (s *Summary) Total(maxIter uint64) float64 {
 	return sum / float64(maxIter)
 }
 
-// AddSummaries combines multiple summaries by adding their metric values together.
-// This method panics if the summaries have different number of values.
+func (s *Summary) ToString() string {
+	return fmt.Sprintf("mean: %8.2f, min: %8.2f, max: %8.2f, std-dev: %8.2f, p50: %8.2f, p99: %8.2f",
+		s.Mean,
+		s.Min,
+		s.Max,
+		s.Stddev,
+		s.P50,
+		s.P99,
+	)
+}
+
+// AddSummaries combines multiple Summaries by adding their metric values together.
+// This method panics if the Summaries have different number of values.
 func AddSummaries(summaries ...*Summary) *Summary {
 	if len(summaries) == 0 {
 		return nil

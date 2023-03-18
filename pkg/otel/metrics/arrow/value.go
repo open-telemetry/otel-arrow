@@ -19,9 +19,10 @@ import (
 
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -34,8 +35,8 @@ const (
 var (
 	// MetricValueDT is an Arrow Data Type representing an OTLP metric value.
 	MetricValueDT = arrow.SparseUnionOf([]arrow.Field{
-		{Name: constants.I64MetricValue, Type: arrow.PrimitiveTypes.Int64},
-		{Name: constants.F64MetricValue, Type: arrow.PrimitiveTypes.Float64},
+		{Name: constants.I64MetricValue, Type: arrow.PrimitiveTypes.Int64, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.F64MetricValue, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
 	}, []int8{
 		I64Code,
 		F64Code,
@@ -46,24 +47,19 @@ var (
 type MetricValueBuilder struct {
 	released bool
 
-	builder *array.SparseUnionBuilder // metric value builder
+	builder *builder.SparseUnionBuilder // metric value builder
 
-	i64Builder *array.Int64Builder   // int64 builder
-	f64Builder *array.Float64Builder // float64 builder
-}
-
-// NewMetricValueBuilder creates a new MetricValueBuilder with a given memory allocator.
-func NewMetricValueBuilder(pool memory.Allocator) *MetricValueBuilder {
-	return MetricValueBuilderFrom(array.NewSparseUnionBuilder(pool, MetricValueDT))
+	i64Builder *builder.Int64Builder   // `int64` builder
+	f64Builder *builder.Float64Builder // `float64` builder
 }
 
 // MetricValueBuilderFrom creates a new MetricValueBuilder from an existing SparseUnionBuilder.
-func MetricValueBuilderFrom(mv *array.SparseUnionBuilder) *MetricValueBuilder {
+func MetricValueBuilderFrom(mv *builder.SparseUnionBuilder) *MetricValueBuilder {
 	return &MetricValueBuilder{
 		released:   false,
 		builder:    mv,
-		i64Builder: mv.Child(0).(*array.Int64Builder),
-		f64Builder: mv.Child(1).(*array.Float64Builder),
+		i64Builder: mv.Int64Builder(I64Code),
+		f64Builder: mv.Float64Builder(F64Code),
 	}
 }
 
@@ -128,13 +124,13 @@ func (b *MetricValueBuilder) Release() {
 // appendI64 appends a new int64 value to the builder.
 func (b *MetricValueBuilder) appendI64(v int64) {
 	b.builder.Append(I64Code)
-	b.i64Builder.Append(v)
+	b.i64Builder.AppendNonZero(v)
 	b.f64Builder.AppendNull()
 }
 
 // appendF64 appends a new double value to the builder.
 func (b *MetricValueBuilder) appendF64(v float64) {
 	b.builder.Append(F64Code)
-	b.f64Builder.Append(v)
+	b.f64Builder.AppendNonZero(v)
 	b.i64Builder.AppendNull()
 }

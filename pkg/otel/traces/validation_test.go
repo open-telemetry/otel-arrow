@@ -16,19 +16,28 @@ package traces_test
 
 import (
 	"encoding/json"
+	"math"
 	"math/rand"
 	"testing"
 
+	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
+	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
 	tracesarrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
 	tracesotlp "github.com/f5/otel-arrow-adapter/pkg/otel/traces/otlp"
 )
+
+var DefaultDictConfig = &cfg.Dictionary{
+	MaxCard: math.MaxUint16,
+}
 
 // TestConversionFromSyntheticData tests the conversion of OTLP traces to Arrow and back to OTLP.
 // The initial OTLP traces are generated from a synthetic dataset.
@@ -47,28 +56,32 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	// Convert the OTLP traces request to Arrow.
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	traceSchema := acommon.NewAdaptiveSchema(pool, tracesarrow.Schema)
-	defer traceSchema.Release()
-	tb, err := tracesarrow.NewTracesBuilder(traceSchema)
-	if err != nil {
-		t.Fatal(err)
+
+	rBuilder := builder.NewRecordBuilderExt(pool, tracesarrow.Schema, DefaultDictConfig)
+	defer rBuilder.Release()
+
+	var record arrow.Record
+
+	for {
+		tb, err := tracesarrow.NewTracesBuilder(rBuilder)
+		require.NoError(t, err)
+		defer tb.Release()
+		err = tb.Append(expectedRequest.Traces())
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		require.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
-	defer tb.Release()
-	err = tb.Append(expectedRequest.Traces())
-	if err != nil {
-		t.Fatal(err)
-	}
-	record, err := tb.Build()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer record.Release()
 
 	// Convert the Arrow record back to OTLP.
 	traces, err := tracesotlp.TracesFrom(record)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
+	record.Release()
+
 	assert.Equiv(t, []json.Marshaler{expectedRequest}, []json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)})
 }
 
@@ -98,19 +111,22 @@ func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportReques
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	traceSchema := acommon.NewAdaptiveSchema(pool, tracesarrow.Schema)
-	tb, err := tracesarrow.NewTracesBuilder(traceSchema)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = tb.Append(expectedRequest.Traces())
-	if err != nil {
-		t.Fatal(err)
-	}
-	record, err := tb.Build()
-	defer record.Release()
-	if err != nil {
-		t.Fatal(err)
+
+	rBuilder := builder.NewRecordBuilderExt(pool, tracesarrow.Schema, DefaultDictConfig)
+	defer rBuilder.Release()
+
+	var record arrow.Record
+
+	for {
+		tb, err := tracesarrow.NewTracesBuilder(rBuilder)
+		require.NoError(t, err)
+		err = tb.Append(expectedRequest.Traces())
+		require.NoError(t, err)
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		require.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
 
 	// Convert the Arrow records back to OTLP.
@@ -118,5 +134,8 @@ func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportReques
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	defer record.Release()
+
 	assert.Equiv(t, []json.Marshaler{expectedRequest}, []json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)})
 }

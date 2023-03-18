@@ -30,6 +30,8 @@ import (
 
 	"github.com/dustin/go-humanize"
 	"github.com/olekukonko/tablewriter"
+
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark/stats"
 )
 
 // Section identifiers used in the benchmark output.
@@ -52,7 +54,7 @@ var (
 // Profiler is the main profiler object used to implement benchmarks.
 type Profiler struct {
 	batchSizes []int
-	benchmarks []*ProfilerResult
+	benchmarks []*stats.ProfilerResult
 	writer     io.Writer
 	outputDir  string
 	warmUpIter uint64
@@ -80,6 +82,10 @@ type ColumnConfig struct {
 	metricApplicable bool
 }
 
+type ProfileOptions struct {
+	UnaryRpcMode bool
+}
+
 func NewProfiler(batchSizes []int, logfile string, warmUpIter uint64) *Profiler {
 	if _, err := os.Stat(logfile); os.IsNotExist(err) {
 		err = os.MkdirAll(path.Dir(logfile), 0700)
@@ -97,7 +103,7 @@ func NewProfiler(batchSizes []int, logfile string, warmUpIter uint64) *Profiler 
 
 	return &Profiler{
 		batchSizes: batchSizes,
-		benchmarks: []*ProfilerResult{},
+		benchmarks: []*stats.ProfilerResult{},
 		writer:     mw,
 		outputDir:  path.Dir(logfile),
 		warmUpIter: warmUpIter,
@@ -112,12 +118,12 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 	runtime.GC()
 	tags := strings.Join(profileable.Tags()[:], "+")
 
-	p.benchmarks = append(p.benchmarks, &ProfilerResult{
-		benchName: profileable.Name(),
-		summaries: []BatchSummary{},
-		tags:      tags,
+	p.benchmarks = append(p.benchmarks, &stats.ProfilerResult{
+		BenchName: profileable.Name(),
+		Summaries: []stats.BatchSummary{},
+		Tags:      tags,
 	})
-	probe := NewSystemProbe()
+	probe := stats.NewSystemProbe()
 
 	for _, batchSize := range p.batchSizes {
 		probe.Reset()
@@ -125,16 +131,16 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 		batchStart := time.Now()
 		_, _ = fmt.Fprintf(p.writer, "Profiling '%s' (parameters tags=[%v], batch-size=%d, dataset-size=%d)", profileable.Name(), strings.Join(profileable.Tags(), `,`), batchSize, profileable.DatasetSize())
 
-		uncompressedSize := NewMetric()
-		compressedSize := NewMetric()
-		otlpArrowConversion := NewMetric()
-		otlpConversion := NewMetric()
-		processing := NewMetric()
-		serialization := NewMetric()
-		deserialization := NewMetric()
-		compression := NewMetric()
-		decompression := NewMetric()
-		totalTime := NewMetric()
+		uncompressedSize := stats.NewMetric()
+		compressedSize := stats.NewMetric()
+		otlpArrowConversion := stats.NewMetric()
+		otlpConversion := stats.NewMetric()
+		processing := stats.NewMetric()
+		serialization := stats.NewMetric()
+		deserialization := stats.NewMetric()
+		compression := stats.NewMetric()
+		decompression := stats.NewMetric()
+		totalTime := stats.NewMetric()
 		var processingResults []string
 
 		profileable.InitBatchSize(p.writer, batchSize)
@@ -244,20 +250,20 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 
 		profileable.ShowStats()
 		currentBenchmark := p.benchmarks[len(p.benchmarks)-1]
-		currentBenchmark.summaries = append(currentBenchmark.summaries, BatchSummary{
-			batchSize:              batchSize,
-			uncompressedSizeByte:   uncompressedSize.ComputeSummary(),
-			compressedSizeByte:     compressedSize.ComputeSummary(),
-			otlpArrowConversionSec: otlpArrowConversion.ComputeSummary(),
-			processingSec:          processing.ComputeSummary(),
-			serializationSec:       serialization.ComputeSummary(),
-			deserializationSec:     deserialization.ComputeSummary(),
-			compressionSec:         compression.ComputeSummary(),
-			decompressionSec:       decompression.ComputeSummary(),
-			totalTimeSec:           totalTime.ComputeSummary(),
-			processingResults:      processingResults,
-			cpuMemUsage:            probe.MeasureUsage(),
-			otlpConversionSec:      otlpConversion.ComputeSummary(),
+		currentBenchmark.Summaries = append(currentBenchmark.Summaries, stats.BatchSummary{
+			BatchSize:              batchSize,
+			UncompressedSizeByte:   uncompressedSize.ComputeSummary(),
+			CompressedSizeByte:     compressedSize.ComputeSummary(),
+			OtlpArrowConversionSec: otlpArrowConversion.ComputeSummary(),
+			ProcessingSec:          processing.ComputeSummary(),
+			SerializationSec:       serialization.ComputeSummary(),
+			DeserializationSec:     deserialization.ComputeSummary(),
+			CompressionSec:         compression.ComputeSummary(),
+			DecompressionSec:       decompression.ComputeSummary(),
+			TotalTimeSec:           totalTime.ComputeSummary(),
+			ProcessingResults:      processingResults,
+			CpuMemUsage:            probe.MeasureUsage(),
+			OtlpConversionSec:      otlpConversion.ComputeSummary(),
 		})
 
 		profileable.EndProfiling(p.writer)
@@ -276,9 +282,9 @@ func (p *Profiler) CheckProcessingResults() {
 		var refProcessingResults []string
 		for _, benchmark := range p.benchmarks {
 			if len(refProcessingResults) == 0 {
-				refProcessingResults = benchmark.summaries[batchIdx].processingResults
+				refProcessingResults = benchmark.Summaries[batchIdx].ProcessingResults
 			} else {
-				if !stringsEqual(refProcessingResults, benchmark.summaries[batchIdx].processingResults) {
+				if !stringsEqual(refProcessingResults, benchmark.Summaries[batchIdx].ProcessingResults) {
 					panic("Processing results are not equal")
 				}
 			}
@@ -316,7 +322,7 @@ func (p *Profiler) PrintPhase1StepsTiming(_ uint64) {
 	headers := []string{"Proto msg step duration"}
 
 	for _, benchmark := range p.benchmarks {
-		headers = append(headers, fmt.Sprintf("%s %s - p99", benchmark.benchName, benchmark.tags))
+		headers = append(headers, fmt.Sprintf("%s %s - p99", benchmark.BenchName, benchmark.Tags))
 	}
 
 	table := tablewriter.NewWriter(p.writer)
@@ -332,30 +338,30 @@ func (p *Profiler) PrintPhase1StepsTiming(_ uint64) {
 
 	table.SetHeaderColor(headerColors...)
 
-	values := make(map[string]*Summary)
+	values := make(map[string]*stats.Summary)
 
 	for _, result := range p.benchmarks {
-		for _, summary := range result.summaries {
-			key := fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, OtlpArrowConversionSection.ID)
-			values[key] = summary.otlpArrowConversionSec
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, ProcessingSection.ID)
-			values[key] = summary.processingSec
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, SerializationSection.ID)
-			values[key] = summary.serializationSec
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, CompressionSection.ID)
-			values[key] = summary.compressionSec
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, DecompressionSection.ID)
-			values[key] = summary.decompressionSec
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, DeserializationSection.ID)
-			values[key] = summary.deserializationSec
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, TotalEncodingTimeSection.ID)
-			values[key] = AddSummaries(summary.otlpArrowConversionSec, summary.serializationSec, summary.compressionSec)
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, TotalDecodingTimeSection.ID)
-			values[key] = AddSummaries(summary.deserializationSec, summary.decompressionSec, summary.otlpConversionSec)
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, Phase1TotalTimeSection.ID)
-			values[key] = summary.totalTimeSec
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, OtlpConversionSection.ID)
-			values[key] = summary.otlpConversionSec
+		for _, summary := range result.Summaries {
+			key := fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, OtlpArrowConversionSection.ID)
+			values[key] = summary.OtlpArrowConversionSec
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, ProcessingSection.ID)
+			values[key] = summary.ProcessingSec
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, SerializationSection.ID)
+			values[key] = summary.SerializationSec
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, CompressionSection.ID)
+			values[key] = summary.CompressionSec
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, DecompressionSection.ID)
+			values[key] = summary.DecompressionSec
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, DeserializationSection.ID)
+			values[key] = summary.DeserializationSec
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, TotalEncodingTimeSection.ID)
+			values[key] = stats.AddSummaries(summary.OtlpArrowConversionSec, summary.SerializationSec, summary.CompressionSec)
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, TotalDecodingTimeSection.ID)
+			values[key] = stats.AddSummaries(summary.DeserializationSec, summary.DecompressionSec, summary.OtlpConversionSec)
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, Phase1TotalTimeSection.ID)
+			values[key] = summary.TotalTimeSec
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, OtlpConversionSection.ID)
+			values[key] = summary.OtlpConversionSec
 		}
 	}
 
@@ -385,7 +391,7 @@ func (p *Profiler) PrintPhase2StepsTiming(_ uint64) {
 	headers := []string{"Proto msg step duration"}
 
 	for _, benchmark := range p.benchmarks {
-		headers = append(headers, fmt.Sprintf("%s %s - p99", benchmark.benchName, benchmark.tags))
+		headers = append(headers, fmt.Sprintf("%s %s - p99", benchmark.BenchName, benchmark.Tags))
 	}
 
 	table := tablewriter.NewWriter(p.writer)
@@ -401,26 +407,26 @@ func (p *Profiler) PrintPhase2StepsTiming(_ uint64) {
 
 	table.SetHeaderColor(headerColors...)
 
-	values := make(map[string]*Summary)
+	values := make(map[string]*stats.Summary)
 
 	for _, result := range p.benchmarks {
-		for _, summary := range result.summaries {
-			key := fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, ProcessingSection.ID)
-			values[key] = summary.processingSec
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, SerializationSection.ID)
-			values[key] = summary.serializationSec
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, CompressionSection.ID)
-			values[key] = summary.compressionSec
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, DecompressionSection.ID)
-			values[key] = summary.decompressionSec
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, DeserializationSection.ID)
-			values[key] = summary.deserializationSec
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, TotalEncodingTimeSection.ID)
-			values[key] = AddSummaries(summary.serializationSec, summary.compressionSec)
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, TotalDecodingTimeSection.ID)
-			values[key] = AddSummaries(summary.deserializationSec, summary.decompressionSec)
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, Phase1TotalTimeSection.ID)
-			values[key] = AddSummaries(summary.serializationSec, summary.compressionSec, summary.deserializationSec, summary.decompressionSec)
+		for _, summary := range result.Summaries {
+			key := fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, ProcessingSection.ID)
+			values[key] = summary.ProcessingSec
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, SerializationSection.ID)
+			values[key] = summary.SerializationSec
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, CompressionSection.ID)
+			values[key] = summary.CompressionSec
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, DecompressionSection.ID)
+			values[key] = summary.DecompressionSec
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, DeserializationSection.ID)
+			values[key] = summary.DeserializationSec
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, TotalEncodingTimeSection.ID)
+			values[key] = stats.AddSummaries(summary.SerializationSec, summary.CompressionSec)
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, TotalDecodingTimeSection.ID)
+			values[key] = stats.AddSummaries(summary.DeserializationSec, summary.DecompressionSec)
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, Phase1TotalTimeSection.ID)
+			values[key] = stats.AddSummaries(summary.SerializationSec, summary.CompressionSec, summary.DeserializationSec, summary.DecompressionSec)
 		}
 	}
 
@@ -446,7 +452,7 @@ func (p *Profiler) PrintCompressionRatio(maxIter uint64) {
 	_, _ = fmt.Fprintf(p.writer, "\n")
 	headers := []string{"Proto msg size"}
 	for _, benchmark := range p.benchmarks {
-		headers = append(headers, fmt.Sprintf("%s %s - p99", benchmark.benchName, benchmark.tags))
+		headers = append(headers, fmt.Sprintf("%s %s - p99", benchmark.BenchName, benchmark.Tags))
 	}
 
 	table := tablewriter.NewWriter(p.writer)
@@ -465,17 +471,17 @@ func (p *Profiler) PrintCompressionRatio(maxIter uint64) {
 	uncompressedTotal := make(map[string]int64)
 	compressedTotal := make(map[string]int64)
 
-	values := make(map[string]*Summary)
+	values := make(map[string]*stats.Summary)
 
 	for _, result := range p.benchmarks {
-		for _, summary := range result.summaries {
-			key := fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, CompressedSizeSection.ID)
-			values[key] = summary.compressedSizeByte
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, "total_compressed_size_byte")
-			compressedTotal[key] = int64(summary.compressedSizeByte.Total(maxIter))
-			key = fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, summary.batchSize, UncompressedSizeSection.ID)
-			values[key] = summary.uncompressedSizeByte
-			uncompressedTotal[key] = int64(summary.uncompressedSizeByte.Total(maxIter))
+		for _, summary := range result.Summaries {
+			key := fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, CompressedSizeSection.ID)
+			values[key] = summary.CompressedSizeByte
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, "total_compressed_size_byte")
+			compressedTotal[key] = int64(summary.CompressedSizeByte.Total(maxIter))
+			key = fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, summary.BatchSize, UncompressedSizeSection.ID)
+			values[key] = summary.UncompressedSizeByte
+			uncompressedTotal[key] = int64(summary.UncompressedSizeByte.Total(maxIter))
 		}
 	}
 
@@ -507,14 +513,14 @@ func (p *Profiler) AddSeparator(table *tablewriter.Table) {
 func (p *Profiler) AddStep(
 	section *SectionConfig,
 	table *tablewriter.Table,
-	values map[string]*Summary,
+	values map[string]*stats.Summary,
 	transform func(float64) float64,
 	titleColor []int) {
 	titles := []string{fmt.Sprintf("  %s", section.Title)}
 	colors := []tablewriter.Colors{titleColor}
 	for i := 0; i < len(p.benchmarks); i++ {
 		result := p.benchmarks[i]
-		titles = append(titles, section.SubTitle(fmt.Sprintf("%s:%s", result.benchName, result.tags)))
+		titles = append(titles, section.SubTitle(fmt.Sprintf("%s:%s", result.BenchName, result.Tags)))
 		colors = append(colors, tablewriter.Color())
 	}
 	table.Rich(titles, colors)
@@ -523,12 +529,12 @@ func (p *Profiler) AddStep(
 		row := []string{fmt.Sprintf("  batch_size: %d", batchSize)}
 		refImplName := ""
 		for _, result := range p.benchmarks {
-			metricNotApplicable := section.MetricNotApplicable(fmt.Sprintf("%s:%s", result.benchName, result.tags))
-			key := fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, batchSize, section.ID)
+			metricNotApplicable := section.MetricNotApplicable(fmt.Sprintf("%s:%s", result.BenchName, result.Tags))
+			key := fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, batchSize, section.ID)
 			improvement := ""
 
 			if refImplName == "" {
-				refImplName = fmt.Sprintf("%s:%s", result.benchName, result.tags)
+				refImplName = fmt.Sprintf("%s:%s", result.BenchName, result.Tags)
 			} else {
 				refKey := fmt.Sprintf("%s:%d:%s", refImplName, batchSize, section.ID)
 				improvement = fmt.Sprintf(" (x%6.2f)", values[refKey].P99/values[key].P99)
@@ -538,7 +544,7 @@ func (p *Profiler) AddStep(
 			decoratedValue := "Not Applicable"
 			if metricNotApplicable {
 				if section.total {
-					decoratedValue = fmt.Sprintf("%7.3fms/msg%s, %s", value, improvement, result.summaries[i].cpuMemUsage.ToString())
+					decoratedValue = fmt.Sprintf("%7.3fms/msg%s, %s", value, improvement, result.Summaries[i].CpuMemUsage.ToString())
 				} else {
 					decoratedValue = fmt.Sprintf("%7.3fms/msg%s", value, improvement)
 				}
@@ -550,7 +556,7 @@ func (p *Profiler) AddStep(
 	}
 }
 
-func (p *Profiler) AddSectionWithTotal(section *SectionConfig, table *tablewriter.Table, values map[string]*Summary, transform func(float64) float64, maxIter uint64) {
+func (p *Profiler) AddSectionWithTotal(section *SectionConfig, table *tablewriter.Table, values map[string]*stats.Summary, transform func(float64) float64, maxIter uint64) {
 	labels := []string{section.Title}
 	colors := []tablewriter.Colors{tablewriter.Color(tablewriter.Normal, tablewriter.FgGreenColor)}
 	for i := 0; i < len(p.benchmarks); i++ {
@@ -563,12 +569,12 @@ func (p *Profiler) AddSectionWithTotal(section *SectionConfig, table *tablewrite
 		row := []string{fmt.Sprintf("batch_size: %d", batchSize)}
 		refImplName := ""
 		for _, result := range p.benchmarks {
-			key := fmt.Sprintf("%s:%s:%d:%s", result.benchName, result.tags, batchSize, section.ID)
-			metricNotApplicable := section.MetricNotApplicable(fmt.Sprintf("%s:%s", result.benchName, result.tags))
+			key := fmt.Sprintf("%s:%s:%d:%s", result.BenchName, result.Tags, batchSize, section.ID)
+			metricNotApplicable := section.MetricNotApplicable(fmt.Sprintf("%s:%s", result.BenchName, result.Tags))
 			improvement := ""
 
 			if refImplName == "" {
-				refImplName = fmt.Sprintf("%s:%s", result.benchName, result.tags)
+				refImplName = fmt.Sprintf("%s:%s", result.BenchName, result.Tags)
 			} else {
 				refKey := fmt.Sprintf("%s:%d:%s", refImplName, batchSize, section.ID)
 				improvement = fmt.Sprintf("(x%6.2f)", values[refKey].P99/values[key].P99)
@@ -622,39 +628,39 @@ func (p *Profiler) ExportMetricsTimesCSV(filePrefix string) {
 		}
 
 		for _, result := range p.benchmarks {
-			otlpArrowConversionMs := result.summaries[batchIdx].otlpArrowConversionSec.P99
-			serializationMs := result.summaries[batchIdx].serializationSec.P99
-			compressionMs := result.summaries[batchIdx].compressionSec.P99
-			decompressionMs := result.summaries[batchIdx].decompressionSec.P99
-			deserializationMs := result.summaries[batchIdx].deserializationSec.P99
-			otlpConversionMs := result.summaries[batchIdx].otlpConversionSec.P99
+			otlpArrowConversionMs := result.Summaries[batchIdx].OtlpArrowConversionSec.P99
+			serializationMs := result.Summaries[batchIdx].SerializationSec.P99
+			compressionMs := result.Summaries[batchIdx].CompressionSec.P99
+			decompressionMs := result.Summaries[batchIdx].DecompressionSec.P99
+			deserializationMs := result.Summaries[batchIdx].DeserializationSec.P99
+			otlpConversionMs := result.Summaries[batchIdx].OtlpConversionSec.P99
 
-			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],0_OtlpArrowConversion\n", batchSize, otlpArrowConversionMs, result.benchName, result.tags))
+			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],0_OtlpArrowConversion\n", batchSize, otlpArrowConversionMs, result.BenchName, result.Tags))
 			if err != nil {
 				panic(fmt.Sprintf("failed writing to file: %s", err))
 			}
 
-			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],1_Serialization\n", batchSize, serializationMs, result.benchName, result.tags))
+			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],1_Serialization\n", batchSize, serializationMs, result.BenchName, result.Tags))
 			if err != nil {
 				panic(fmt.Sprintf("failed writing to file: %s", err))
 			}
 
-			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],2_Compression\n", batchSize, compressionMs, result.benchName, result.tags))
+			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],2_Compression\n", batchSize, compressionMs, result.BenchName, result.Tags))
 			if err != nil {
 				panic(fmt.Sprintf("failed writing to file: %s", err))
 			}
 
-			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],3_Decompression\n", batchSize, decompressionMs, result.benchName, result.tags))
+			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],3_Decompression\n", batchSize, decompressionMs, result.BenchName, result.Tags))
 			if err != nil {
 				panic(fmt.Sprintf("failed writing to file: %s", err))
 			}
 
-			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],4_Deserialization\n", batchSize, deserializationMs, result.benchName, result.tags))
+			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],4_Deserialization\n", batchSize, deserializationMs, result.BenchName, result.Tags))
 			if err != nil {
 				panic(fmt.Sprintf("failed writing to file: %s", err))
 			}
 
-			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],5_OtlpConversion\n", batchSize, otlpConversionMs, result.benchName, result.tags))
+			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],5_OtlpConversion\n", batchSize, otlpConversionMs, result.BenchName, result.Tags))
 			if err != nil {
 				panic(fmt.Sprintf("failed writing to file: %s", err))
 			}
@@ -694,14 +700,14 @@ func (p *Profiler) ExportMetricsBytesCSV(filePrefix string) {
 			continue
 		}
 
-		numSamples := len(p.benchmarks[0].summaries[batchIdx].otlpArrowConversionSec.Values)
+		numSamples := len(p.benchmarks[0].Summaries[batchIdx].OtlpArrowConversionSec.Values)
 		for sampleIdx := 0; sampleIdx < numSamples; sampleIdx++ {
 			for _, result := range p.benchmarks {
 				line := fmt.Sprintf("%d,%d", batchSize, sampleIdx)
-				compressedSizeByte := result.summaries[batchIdx].compressedSizeByte.Values[sampleIdx]
-				uncompressedSizeByte := result.summaries[batchIdx].uncompressedSizeByte.Values[sampleIdx]
+				compressedSizeByte := result.Summaries[batchIdx].CompressedSizeByte.Values[sampleIdx]
+				uncompressedSizeByte := result.Summaries[batchIdx].UncompressedSizeByte.Values[sampleIdx]
 
-				line += fmt.Sprintf(",%f,%f,%s [%s]\n", compressedSizeByte, uncompressedSizeByte, result.benchName, result.tags)
+				line += fmt.Sprintf(",%f,%f,%s [%s]\n", compressedSizeByte, uncompressedSizeByte, result.BenchName, result.Tags)
 
 				_, err = dataWriter.WriteString(line)
 				if err != nil {
@@ -812,56 +818,4 @@ func (c *ColumnConfig) SubTitle(subTitle string) *ColumnConfig {
 func (c *ColumnConfig) MetricNotApplicable() *ColumnConfig {
 	c.metricApplicable = false
 	return c
-}
-
-// SystemProbe is a probe that measures CPU and memory usage.
-type SystemProbe struct {
-	lastTime       time.Time // last time the probe was reset
-	lastMalloc     uint64    // last observed number of malloc
-	lastTotalAlloc uint64    // last observed number of total bytes allocated
-	lastNumGC      uint32    // last observed number of garbage collections
-}
-
-// CpuMemUsage contains the CPU and memory usage of a specific step.
-type CpuMemUsage struct {
-	heap      uint64  // heap memory usage in bytes
-	malloc    uint64  // number of malloc
-	bandwidth float64 // memory bandwidth in B/s
-	gcCount   uint32  // number of garbage collections
-}
-
-func NewSystemProbe() *SystemProbe {
-	return &SystemProbe{}
-}
-
-func (sp *SystemProbe) Reset() {
-	runtime.GC()
-
-	sp.lastTime = time.Now()
-
-	// Read memory stats and get the number of GCs
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	sp.lastMalloc = m.Mallocs
-	sp.lastTotalAlloc = m.TotalAlloc
-	sp.lastNumGC = m.NumGC
-}
-
-func (sp *SystemProbe) MeasureUsage() *CpuMemUsage {
-	var m runtime.MemStats
-	runtime.ReadMemStats(&m)
-	durationSec := time.Now().Sub(sp.lastTime).Seconds()
-
-	return &CpuMemUsage{
-		heap:      m.Alloc,
-		malloc:    m.Mallocs - sp.lastMalloc,
-		bandwidth: float64(m.TotalAlloc-sp.lastTotalAlloc) / durationSec,
-		gcCount:   m.NumGC - sp.lastNumGC,
-	}
-}
-
-func (u *CpuMemUsage) ToString() string {
-	malloc, unitPrefix := humanize.ComputeSI(float64(u.malloc))
-	return fmt.Sprintf("heap{%s, %6.2f%s mallocs, bw=%s/s, #gc=%2d}",
-		humanize.Bytes(u.heap), malloc, unitPrefix, humanize.Bytes(uint64(u.bandwidth)), u.gcCount)
 }

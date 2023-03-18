@@ -67,6 +67,37 @@ func Equiv(t *testing.T, expected []json.Marshaler, actual []json.Marshaler) {
 	}
 }
 
+func EquivFromBytes(t *testing.T, expected []byte, actual []byte) {
+	t.Helper()
+	expectedVPaths, err := vPathsFromBytes(expected)
+	if err != nil {
+		assert.FailNow(t, "Failed to convert expected traces to canonical representation", err)
+	}
+	actualVPaths, err := vPathsFromBytes(actual)
+	if err != nil {
+		assert.FailNow(t, "Failed to convert actual traces to canonical representation", err)
+	}
+
+	missingExpectedVPaths := difference(expectedVPaths, actualVPaths)
+	missingActualVPaths := difference(actualVPaths, expectedVPaths)
+
+	if len(missingExpectedVPaths) > 0 {
+		fmt.Printf("Missing expected vPaths:\n")
+		for _, vPath := range missingExpectedVPaths {
+			fmt.Printf("+ %s\n", vPath)
+		}
+	}
+	if len(missingActualVPaths) > 0 {
+		fmt.Printf("Unexpected vPaths:\n")
+		for _, vPath := range missingActualVPaths {
+			fmt.Printf("- %s\n", vPath)
+		}
+	}
+	if len(missingExpectedVPaths) > 0 || len(missingActualVPaths) > 0 {
+		assert.FailNow(t, "Traces are not equivalent")
+	}
+}
+
 // NotEquiv asserts that two arrays of json.Marshaler are not equivalent. See Equiv for the definition of equivalence.
 func NotEquiv(t *testing.T, expected []json.Marshaler, actual []json.Marshaler) {
 	t.Helper()
@@ -112,12 +143,29 @@ func vPaths(marshaler []json.Marshaler) ([]string, error) {
 		exportAllVPaths(jsonTraces[i], "", vPathMap)
 	}
 
-	vPaths := make([]string, 0, len(vPathMap))
+	paths := make([]string, 0, len(vPathMap))
 	for vPath := range vPathMap {
-		vPaths = append(vPaths, vPath)
+		paths = append(paths, vPath)
 	}
 
-	return vPaths, nil
+	return paths, nil
+}
+
+func vPathsFromBytes(json []byte) ([]string, error) {
+	jsonMap, err := jsonifyFromBytes(json)
+	if err != nil {
+		return nil, err
+	}
+	vPathMap := make(map[string]bool)
+
+	exportAllVPaths(jsonMap, "", vPathMap)
+
+	paths := make([]string, 0, len(vPathMap))
+	for vPath := range vPathMap {
+		paths = append(paths, vPath)
+	}
+
+	return paths, nil
 }
 
 func exportAllVPaths(traces map[string]interface{}, currentVPath string, vPaths map[string]bool) {
@@ -168,12 +216,20 @@ func jsonify(marshaler []json.Marshaler) ([]map[string]interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
-		var jsonMap map[string]interface{}
-		err = json.Unmarshal(jsonBytes, &jsonMap)
+		jsonMap, err := jsonifyFromBytes(jsonBytes)
 		if err != nil {
 			return nil, err
 		}
 		jsonTraces = append(jsonTraces, jsonMap)
 	}
 	return jsonTraces, nil
+}
+
+func jsonifyFromBytes(jsonBytes []byte) (map[string]interface{}, error) {
+	var jsonMap map[string]interface{}
+	err := json.Unmarshal(jsonBytes, &jsonMap)
+	if err != nil {
+		return nil, err
+	}
+	return jsonMap, nil
 }

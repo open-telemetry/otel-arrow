@@ -15,6 +15,8 @@
 package otlp
 
 import (
+	"fmt"
+
 	"github.com/apache/arrow/go/v11/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
@@ -39,10 +41,7 @@ func NewResourceIds(resSpansDT *arrow.StructType) (*ResourceIds, error) {
 		return nil, err
 	}
 
-	droppedAttributesCount, _, err := arrowutils.FieldIDFromStruct(resDT, constants.DroppedAttributesCount)
-	if err != nil {
-		return nil, err
-	}
+	droppedAttributesCount, _ := arrowutils.FieldIDFromStruct(resDT, constants.DroppedAttributesCount)
 
 	return &ResourceIds{
 		Id:                     resId,
@@ -68,7 +67,7 @@ func UpdateResourceWith(r pcommon.Resource, resList *arrowutils.ListOfStructs, r
 	// Read attributes
 	err = AppendAttributesInto(r.Attributes(), resArr, row, resIds.Attributes)
 	if err != nil {
-		return err
+		return fmt.Errorf("UpdateResourceWith->%w", err)
 	}
 
 	return err

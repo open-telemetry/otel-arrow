@@ -19,23 +19,24 @@ import (
 
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
 // UnivariateSummaryDataPointDT is the Arrow Data Type describing a univariate summary data point.
 var (
 	UnivariateSummaryDataPointDT = arrow.StructOf(
-		arrow.Field{Name: constants.Attributes, Type: acommon.AttributesDT},
-		arrow.Field{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
-		arrow.Field{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
-		arrow.Field{Name: constants.SummaryCount, Type: arrow.PrimitiveTypes.Uint64},
-		arrow.Field{Name: constants.SummarySum, Type: arrow.PrimitiveTypes.Float64},
-		arrow.Field{Name: constants.SummaryQuantileValues, Type: arrow.ListOf(QuantileValueDT)},
-		arrow.Field{Name: constants.Flags, Type: arrow.PrimitiveTypes.Uint32},
+		arrow.Field{Name: constants.Attributes, Type: acommon.AttributesDT, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.SummaryCount, Type: arrow.PrimitiveTypes.Uint64, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.SummarySum, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.SummaryQuantileValues, Type: arrow.ListOf(QuantileValueDT), Metadata: schema.Metadata(schema.Optional)},
+		arrow.Field{Name: constants.Flags, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
 	)
 )
 
@@ -43,37 +44,34 @@ var (
 type UnivariateSummaryDataPointBuilder struct {
 	released bool
 
-	builder *array.StructBuilder
+	builder *builder.StructBuilder
 
 	ab    *acommon.AttributesBuilder // attributes builder
-	stunb *array.TimestampBuilder    // start_time_unix_nano builder
-	tunb  *array.TimestampBuilder    // time_unix_nano builder
-	scb   *array.Uint64Builder       // count builder
-	ssb   *array.Float64Builder      // sum builder
-	qvlb  *array.ListBuilder         // summary quantile value list builder
+	stunb *builder.TimestampBuilder  // start_time_unix_nano builder
+	tunb  *builder.TimestampBuilder  // time_unix_nano builder
+	scb   *builder.Uint64Builder     // count builder
+	ssb   *builder.Float64Builder    // sum builder
+	qvlb  *builder.ListBuilder       // summary quantile value list builder
 	qvb   *QuantileValueBuilder      // summary quantile value builder
-	fb    *array.Uint32Builder       // flags builder
-}
-
-// NewUnivariateSummaryDataPointBuilder creates a new UnivariateSummaryDataPointBuilder with a given memory allocator.
-func NewUnivariateSummaryDataPointBuilder(pool memory.Allocator) *UnivariateSummaryDataPointBuilder {
-	return UnivariateSummaryDataPointBuilderFrom(array.NewStructBuilder(pool, UnivariateSummaryDataPointDT))
+	fb    *builder.Uint32Builder     // flags builder
 }
 
 // UnivariateSummaryDataPointBuilderFrom creates a new UnivariateSummaryDataPointBuilder from an existing StructBuilder.
-func UnivariateSummaryDataPointBuilderFrom(ndpb *array.StructBuilder) *UnivariateSummaryDataPointBuilder {
+func UnivariateSummaryDataPointBuilderFrom(ndpb *builder.StructBuilder) *UnivariateSummaryDataPointBuilder {
+	qvlb := ndpb.ListBuilder(constants.SummaryQuantileValues)
+
 	return &UnivariateSummaryDataPointBuilder{
 		released: false,
 		builder:  ndpb,
 
-		ab:    acommon.AttributesBuilderFrom(ndpb.FieldBuilder(0).(*array.MapBuilder)),
-		stunb: ndpb.FieldBuilder(1).(*array.TimestampBuilder),
-		tunb:  ndpb.FieldBuilder(2).(*array.TimestampBuilder),
-		scb:   ndpb.FieldBuilder(3).(*array.Uint64Builder),
-		ssb:   ndpb.FieldBuilder(4).(*array.Float64Builder),
-		qvlb:  ndpb.FieldBuilder(5).(*array.ListBuilder),
-		qvb:   QuantileValueBuilderFrom(ndpb.FieldBuilder(5).(*array.ListBuilder).ValueBuilder().(*array.StructBuilder)),
-		fb:    ndpb.FieldBuilder(6).(*array.Uint32Builder),
+		ab:    acommon.AttributesBuilderFrom(ndpb.MapBuilder(constants.Attributes)),
+		stunb: ndpb.TimestampBuilder(constants.StartTimeUnixNano),
+		tunb:  ndpb.TimestampBuilder(constants.TimeUnixNano),
+		scb:   ndpb.Uint64Builder(constants.SummaryCount),
+		ssb:   ndpb.Float64Builder(constants.SummarySum),
+		qvlb:  qvlb,
+		qvb:   QuantileValueBuilderFrom(qvlb.StructBuilder()),
+		fb:    ndpb.Uint32Builder(constants.Flags),
 	}
 }
 
@@ -102,40 +100,39 @@ func (b *UnivariateSummaryDataPointBuilder) Release() {
 // Append appends a new summary data point to the builder.
 func (b *UnivariateSummaryDataPointBuilder) Append(sdp pmetric.SummaryDataPoint, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
-		return fmt.Errorf("UnivariateSummaryDataPointBuilder: Append() called after Release()")
+		return fmt.Errorf("UnivariateSummaryDataPointBuilder: Reserve() called after Release()")
 	}
 
-	b.builder.Append(true)
-	if err := b.ab.AppendUniqueAttributes(sdp.Attributes(), smdata.Attributes, mdata.Attributes); err != nil {
-		return err
-	}
-
-	if smdata.StartTime == nil && mdata.StartTime == nil {
-		b.stunb.Append(arrow.Timestamp(sdp.StartTimestamp()))
-	} else {
-		b.stunb.AppendNull()
-	}
-	if smdata.Time == nil && mdata.Time == nil {
-		b.tunb.Append(arrow.Timestamp(sdp.Timestamp()))
-	} else {
-		b.tunb.AppendNull()
-	}
-
-	b.scb.Append(sdp.Count())
-	b.ssb.Append(sdp.Sum())
-	qvs := sdp.QuantileValues()
-	qvc := qvs.Len()
-	if qvc > 0 {
-		b.qvlb.Append(true)
-		b.qvlb.Reserve(qvc)
-		for i := 0; i < qvc; i++ {
-			if err := b.qvb.Append(qvs.At(i)); err != nil {
-				return err
-			}
+	return b.builder.Append(sdp, func() error {
+		if err := b.ab.AppendUniqueAttributes(sdp.Attributes(), smdata.Attributes, mdata.Attributes); err != nil {
+			return err
 		}
-	} else {
-		b.qvlb.Append(false)
-	}
-	b.fb.Append(uint32(sdp.Flags()))
-	return nil
+
+		if smdata.StartTime == nil && mdata.StartTime == nil {
+			b.stunb.Append(arrow.Timestamp(sdp.StartTimestamp()))
+		} else {
+			b.stunb.AppendNull()
+		}
+		if smdata.Time == nil && mdata.Time == nil {
+			b.tunb.Append(arrow.Timestamp(sdp.Timestamp()))
+		} else {
+			b.tunb.AppendNull()
+		}
+
+		b.scb.Append(sdp.Count())
+		b.ssb.AppendNonZero(sdp.Sum())
+
+		b.fb.Append(uint32(sdp.Flags()))
+
+		qvs := sdp.QuantileValues()
+		qvc := qvs.Len()
+		return b.qvlb.Append(qvc, func() error {
+			for i := 0; i < qvc; i++ {
+				if err := b.qvb.Append(qvs.At(i)); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	})
 }

@@ -1,56 +1,82 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright The OpenTelemetry Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 
 package arrow
 
 import (
+	"math"
 	"testing"
 
+	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/plog"
 
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
+	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/internal"
 )
+
+var DefaultDictConfig = &cfg.Dictionary{
+	MaxCard: math.MaxUint16,
+}
 
 func TestLogRecord(t *testing.T) {
 	t.Parallel()
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	sb := NewLogRecordBuilder(pool)
 
-	if err := sb.Append(LogRecord1()); err != nil {
-		t.Fatal(err)
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: constants.Logs, Type: LogRecordDT, Metadata: acommon.Metadata(acommon.Optional)},
+	}, nil)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	defer rBuilder.Release()
+
+	var record arrow.Record
+
+	for {
+		sb := LogRecordBuilderFrom(rBuilder.StructBuilder(constants.Logs))
+
+		err := sb.Append(LogRecord1())
+		require.NoError(t, err)
+
+		err = sb.Append(LogRecord2())
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
-	if err := sb.Append(LogRecord2()); err != nil {
-		t.Fatal(err)
-	}
-	arr, err := sb.Build()
+
+	json, err := record.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer arr.Release()
 
-	json, err := arr.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
+	record.Release()
 
-	expected := `[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"body":[0,"body1"],"dropped_attributes_count":0,"flags":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}
-,{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}
+	expected := `[{"logs":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}}
+,{"logs":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}}
 ]`
 
 	require.JSONEq(t, expected, string(json))
@@ -61,27 +87,40 @@ func TestScopeLogs(t *testing.T) {
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	ssb := NewScopeLogsBuilder(pool)
 
-	if err := ssb.Append(ScopeLogs1()); err != nil {
-		t.Fatal(err)
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: constants.ScopeLogs, Type: ScopeLogsDT, Metadata: acommon.Metadata(acommon.Optional)},
+	}, nil)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	defer rBuilder.Release()
+
+	var record arrow.Record
+
+	for {
+		ssb := ScopeLogsBuilderFrom(rBuilder.StructBuilder(constants.ScopeLogs))
+
+		err := ssb.Append(ScopeLogs1())
+		require.NoError(t, err)
+
+		err = ssb.Append(ScopeLogs2())
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
-	if err := ssb.Append(ScopeLogs2()); err != nil {
-		t.Fatal(err)
-	}
-	arr, err := ssb.Build()
+
+	json, err := record.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer arr.Release()
 
-	json, err := arr.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
+	record.Release()
 
-	expected := `[{"logs":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"body":[0,"body1"],"dropped_attributes_count":0,"flags":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}}
-,{"logs":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}
+	expected := `[{"scope_logs":{"logs":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}}}
+,{"scope_logs":{"logs":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}}
 ]`
 
 	require.JSONEq(t, expected, string(json))
@@ -92,27 +131,40 @@ func TestResourceLogs(t *testing.T) {
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	rsb := NewResourceLogsBuilder(pool)
 
-	if err := rsb.Append(ResourceLogs1()); err != nil {
-		t.Fatal(err)
+	schema := arrow.NewSchema([]arrow.Field{
+		{Name: constants.ResourceLogs, Type: ResourceLogsDT, Metadata: acommon.Metadata(acommon.Optional)},
+	}, nil)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	defer rBuilder.Release()
+
+	var record arrow.Record
+
+	for {
+		rsb := ResourceLogsBuilderFrom(rBuilder.StructBuilder(constants.ResourceLogs))
+
+		err := rsb.Append(ResourceLogs1())
+		require.NoError(t, err)
+
+		err = rsb.Append(ResourceLogs2())
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
-	if err := rsb.Append(ResourceLogs2()); err != nil {
-		t.Fatal(err)
-	}
-	arr, err := rsb.Build()
+
+	json, err := record.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer arr.Release()
 
-	json, err := arr.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
+	record.Release()
 
-	expected := `[{"resource":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null},"schema_url":"schema1","scope_logs":[{"logs":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"body":[0,"body1"],"dropped_attributes_count":0,"flags":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}},{"logs":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}
-,{"resource":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1},"schema_url":"schema2","scope_logs":[{"logs":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}
+	expected := `[{"resource_logs":{"resource":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null},"schema_url":"schema1","scope_logs":[{"logs":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}},{"logs":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}}
+,{"resource_logs":{"resource":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1},"schema_url":"schema2","scope_logs":[{"logs":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}}
 ]`
 
 	require.JSONEq(t, expected, string(json))
@@ -123,25 +175,33 @@ func TestLogs(t *testing.T) {
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	logsSchema := acommon.NewAdaptiveSchema(pool, Schema)
-	defer logsSchema.Release()
-	tb, err := NewLogsBuilder(logsSchema)
-	require.NoError(t, err)
-	defer tb.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
+	defer rBuilder.Release()
 
-	err = tb.Append(Logs())
-	require.NoError(t, err)
+	var record arrow.Record
 
-	record, err := tb.Build()
-	require.NoError(t, err)
-	defer record.Release()
+	for {
+		tb, err := NewLogsBuilder(rBuilder)
+		require.NoError(t, err)
+		defer tb.Release()
+
+		err = tb.Append(Logs())
+		require.NoError(t, err)
+
+		record, err = rBuilder.NewRecord()
+		if err == nil {
+			break
+		}
+		assert.Error(t, acommon.ErrSchemaNotUpToDate)
+	}
 
 	json, err := record.MarshalJSON()
 	require.NoError(t, err)
 
-	expected := `[{"resource_logs":[{"resource":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null},"schema_url":"schema1","scope_logs":[{"logs":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"body":[0,"body1"],"dropped_attributes_count":0,"flags":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}},{"logs":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]},{"resource":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1},"schema_url":"schema2","scope_logs":[{"logs":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}]}
-]`
+	record.Release()
 
+	expected := `[{"resource_logs":[{"resource":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null},"schema_url":"schema1","scope_logs":[{"logs":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}},{"logs":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]},{"resource":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1},"schema_url":"schema2","scope_logs":[{"logs":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}]}
+]`
 	require.JSONEq(t, expected, string(json))
 }
 

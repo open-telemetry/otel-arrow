@@ -15,12 +15,15 @@
 package otlp
 
 import (
+	"fmt"
+
 	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -41,20 +44,9 @@ func NewMetricSetIds(parentDT *arrow.StructType) (*MetricSetIds, error) {
 		return nil, err
 	}
 
-	name, _, err := arrowutils.FieldIDFromStruct(metricSetDT, constants.Name)
-	if err != nil {
-		return nil, err
-	}
-
-	description, _, err := arrowutils.FieldIDFromStruct(metricSetDT, constants.Description)
-	if err != nil {
-		return nil, err
-	}
-
-	unit, _, err := arrowutils.FieldIDFromStruct(metricSetDT, constants.Unit)
-	if err != nil {
-		return nil, err
-	}
+	name, _ := arrowutils.FieldIDFromStruct(metricSetDT, constants.Name)
+	description, _ := arrowutils.FieldIDFromStruct(metricSetDT, constants.Description)
+	unit, _ := arrowutils.FieldIDFromStruct(metricSetDT, constants.Unit)
 
 	data, err := NewUnivariateMetricIds(metricSetDT)
 	if err != nil {
@@ -99,11 +91,11 @@ func AppendMetricSetInto(metrics pmetric.MetricSlice, los *arrowutils.ListOfStru
 	metric.SetUnit(unit)
 
 	mdata := &SharedData{}
+	mdata.Attributes = pcommon.NewMap()
 	if ids.SharedAttributeIds != nil {
-		mdata.Attributes = pcommon.NewMap()
 		err = otlp.AppendAttributesInto(mdata.Attributes, los.Array(), row, ids.SharedAttributeIds)
 		if err != nil {
-			return err
+			return fmt.Errorf("AppendMetricSetInto(field='shared_attributes')->%w", err)
 		}
 	}
 	if ids.SharedStartTimeID != -1 {
@@ -113,5 +105,9 @@ func AppendMetricSetInto(metrics pmetric.MetricSlice, los *arrowutils.ListOfStru
 		mdata.Time = los.OptionalTimestampFieldByID(ids.SharedTimeID, row)
 	}
 
-	return UpdateUnivariateMetricFrom(metric, los, row, ids.Data, smdata, mdata)
+	arr, ok := los.FieldByID(ids.Data.Id).(*array.SparseUnion)
+	if !ok {
+		return fmt.Errorf("field %q is not a sparse union", constants.Data)
+	}
+	return UpdateUnivariateMetricFrom(metric, arr, row, ids.Data, smdata, mdata)
 }

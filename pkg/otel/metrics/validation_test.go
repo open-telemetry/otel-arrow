@@ -16,6 +16,7 @@ package metrics
 
 import (
 	"encoding/json"
+	"math"
 	"math/rand"
 	"testing"
 
@@ -27,10 +28,16 @@ import (
 
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
+	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
 	ametrics "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics/otlp"
 )
+
+var DefaultDictConfig = &cfg.Dictionary{
+	MaxCard: math.MaxUint16,
+}
 
 // TestBackAndForthConversion tests the conversion of OTLP metrics to Arrow and back to OTLP.
 // The initial OTLP metrics are generated from a synthetic dataset.
@@ -57,21 +64,30 @@ func TestBackAndForthConversion(t *testing.T) {
 	// Convert the OTLP metrics request to Arrow.
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	metricsSchema := acommon.NewAdaptiveSchema(pool, ametrics.Schema)
-	defer metricsSchema.Release()
-	lb, err := ametrics.NewMetricsBuilder(metricsSchema)
-	require.NoError(t, err)
-	defer lb.Release()
-	err = lb.Append(expectedRequest.Metrics())
-	require.NoError(t, err)
+
+	rBuilder := builder.NewRecordBuilderExt(pool, ametrics.Schema, DefaultDictConfig)
+	defer rBuilder.Release()
+
 	var record arrow.Record
-	record, err = lb.Build()
-	require.NoError(t, err)
+
+	for {
+		lb, err := ametrics.NewMetricsBuilder(rBuilder)
+		require.NoError(t, err)
+
+		err = lb.Append(expectedRequest.Metrics())
+		require.NoError(t, err)
+
+		record, err = lb.Build()
+		if err == nil {
+			break
+		}
+		require.Error(t, schema.ErrSchemaNotUpToDate)
+	}
 	defer record.Release()
 
 	// Convert the Arrow records back to OTLP.
 	var metrics pmetric.Metrics
-	metrics, err = otlp.MetricsFrom(record)
+	metrics, err := otlp.MetricsFrom(record)
 	require.NoError(t, err)
 
 	assert.Equiv(t, []json.Marshaler{expectedRequest}, []json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(metrics)})

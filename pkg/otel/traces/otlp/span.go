@@ -22,7 +22,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -57,75 +57,31 @@ func NewSpansIds(scopeSpansDT *arrow.StructType) (*SpansIds, error) {
 		return nil, err
 	}
 
-	traceId, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.TraceId)
-	if err != nil {
-		return nil, err
-	}
-
-	spanId, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.SpanId)
-	if err != nil {
-		return nil, err
-	}
-
-	traceState, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.TraceState)
-	if err != nil {
-		return nil, err
-	}
-
-	parentSpanId, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.ParentSpanId)
-	if err != nil {
-		return nil, err
-	}
-
-	name, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.Name)
-	if err != nil {
-		return nil, err
-	}
-
-	kind, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.KIND)
-	if err != nil {
-		return nil, err
-	}
-
-	startTimeUnixNano, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.StartTimeUnixNano)
-	if err != nil {
-		return nil, err
-	}
-
-	endTimeUnixNano, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.EndTimeUnixNano)
-	if err != nil {
-		return nil, err
-	}
-
+	traceId, _ := arrowutils.FieldIDFromStruct(spanDT, constants.TraceId)
+	spanId, _ := arrowutils.FieldIDFromStruct(spanDT, constants.SpanId)
+	traceState, _ := arrowutils.FieldIDFromStruct(spanDT, constants.TraceState)
+	parentSpanId, _ := arrowutils.FieldIDFromStruct(spanDT, constants.ParentSpanId)
+	name, _ := arrowutils.FieldIDFromStruct(spanDT, constants.Name)
+	kind, _ := arrowutils.FieldIDFromStruct(spanDT, constants.KIND)
+	startTimeUnixNano, _ := arrowutils.FieldIDFromStruct(spanDT, constants.StartTimeUnixNano)
+	endTimeUnixNano, _ := arrowutils.FieldIDFromStruct(spanDT, constants.EndTimeUnixNano)
 	attributes, err := otlp.NewAttributeIds(spanDT)
 	if err != nil {
 		return nil, err
 	}
-
-	droppedAttributesCount, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.DroppedAttributesCount)
-	if err != nil {
-		return nil, err
-	}
-
+	droppedAttributesCount, _ := arrowutils.FieldIDFromStruct(spanDT, constants.DroppedAttributesCount)
 	events, err := NewEventIds(spanDT)
 	if err != nil {
 		return nil, err
 	}
 
-	droppedEventsCount, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.DroppedEventsCount)
-	if err != nil {
-		return nil, err
-	}
-
+	droppedEventsCount, _ := arrowutils.FieldIDFromStruct(spanDT, constants.DroppedEventsCount)
 	links, err := NewLinkIds(spanDT)
 	if err != nil {
 		return nil, err
 	}
 
-	droppedLinksCount, _, err := arrowutils.FieldIDFromStruct(spanDT, constants.DroppedLinksCount)
-	if err != nil {
-		return nil, err
-	}
+	droppedLinksCount, _ := arrowutils.FieldIDFromStruct(spanDT, constants.DroppedLinksCount)
 
 	status, err := NewStatusIds(spanDT)
 	if err != nil {
@@ -158,15 +114,8 @@ func NewStatusIds(spansDT *arrow.StructType) (*StatusIds, error) {
 		return nil, err
 	}
 
-	code, _, err := arrowutils.FieldIDFromStruct(statusDT, constants.StatusCode)
-	if err != nil {
-		return nil, err
-	}
-
-	message, _, err := arrowutils.FieldIDFromStruct(statusDT, constants.StatusMessage)
-	if err != nil {
-		return nil, err
-	}
+	code, _ := arrowutils.FieldIDFromStruct(statusDT, constants.StatusCode)
+	message, _ := arrowutils.FieldIDFromStruct(statusDT, constants.StatusMessage)
 
 	return &StatusIds{
 		Id:      statusId,
@@ -250,7 +199,7 @@ func AppendSpanInto(spans ptrace.SpanSlice, los *arrowutils.ListOfStructs, row i
 	}
 	err = otlp.AppendAttributesInto(span.Attributes(), los.Array(), row, ids.Attributes)
 	if err != nil {
-		return err
+		return fmt.Errorf("AppendSpanInto->%w", err)
 	}
 
 	if err := AppendEventsInto(span.Events(), los, row, ids.Events); err != nil {

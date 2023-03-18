@@ -22,7 +22,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
@@ -57,35 +57,12 @@ func NewUnivariateEHistogramDataPointIds(parentDT *arrow.StructType) (*Univariat
 		return nil, err
 	}
 
-	startTimeUnixNanoID, found := ehdpDT.FieldIdx(constants.StartTimeUnixNano)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.StartTimeUnixNano)
-	}
-
-	timeUnixNanoID, found := ehdpDT.FieldIdx(constants.TimeUnixNano)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.TimeUnixNano)
-	}
-
-	countID, found := ehdpDT.FieldIdx(constants.HistogramCount)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.HistogramCount)
-	}
-
-	sumID, found := ehdpDT.FieldIdx(constants.HistogramSum)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.HistogramSum)
-	}
-
-	scaleID, found := ehdpDT.FieldIdx(constants.ExpHistogramScale)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.ExpHistogramScale)
-	}
-
-	zeroCountID, found := ehdpDT.FieldIdx(constants.ExpHistogramZeroCount)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.ExpHistogramZeroCount)
-	}
+	startTimeUnixNanoID, _ := arrowutils.FieldIDFromStruct(ehdpDT, constants.StartTimeUnixNano)
+	timeUnixNanoID, _ := arrowutils.FieldIDFromStruct(ehdpDT, constants.TimeUnixNano)
+	countID, _ := arrowutils.FieldIDFromStruct(ehdpDT, constants.HistogramCount)
+	sumID, _ := arrowutils.FieldIDFromStruct(ehdpDT, constants.HistogramSum)
+	scaleID, _ := arrowutils.FieldIDFromStruct(ehdpDT, constants.ExpHistogramScale)
+	zeroCountID, _ := arrowutils.FieldIDFromStruct(ehdpDT, constants.ExpHistogramZeroCount)
 
 	positiveID, positiveDT, err := arrowutils.StructFieldIDFromStruct(ehdpDT, constants.ExpHistogramPositive)
 	if err != nil {
@@ -110,20 +87,9 @@ func NewUnivariateEHistogramDataPointIds(parentDT *arrow.StructType) (*Univariat
 		return nil, err
 	}
 
-	flagsID, found := ehdpDT.FieldIdx(constants.Flags)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.Flags)
-	}
-
-	minID, found := ehdpDT.FieldIdx(constants.HistogramMin)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.HistogramMin)
-	}
-
-	maxID, found := ehdpDT.FieldIdx(constants.HistogramMax)
-	if !found {
-		return nil, fmt.Errorf("field %q not found", constants.HistogramMax)
-	}
+	flagsID, _ := arrowutils.FieldIDFromStruct(ehdpDT, constants.Flags)
+	minID, _ := arrowutils.FieldIDFromStruct(ehdpDT, constants.HistogramMin)
+	maxID, _ := arrowutils.FieldIDFromStruct(ehdpDT, constants.HistogramMax)
 
 	return &UnivariateEHistogramDataPointIds{
 		Id:                id,
@@ -159,7 +125,7 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 
 		attrs := ehdpVal.Attributes()
 		if err := otlp.AppendAttributesInto(attrs, ehdp.Array(), ehdpIdx, ids.Attributes); err != nil {
-			return err
+			return fmt.Errorf("AppendUnivariateEHistogramDataPointInto->%w", err)
 		}
 		smdata.Attributes.Range(func(k string, v pcommon.Value) bool {
 			v.CopyTo(attrs.PutEmpty(k))
@@ -241,7 +207,7 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 				return err
 			}
 		} else if err != nil {
-			return err
+			return fmt.Errorf("AppendUnivariateEHistogramDataPointInto(field='exemplars')->%w", err)
 		}
 
 		flags, err := ehdp.U32FieldByID(ids.Flags, ehdpIdx)
@@ -262,7 +228,7 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 func AppendMinMaxInto(ehdp *arrowutils.ListOfStructs, ids *UnivariateEHistogramDataPointIds, ehdpIdx int, ehdpVal pmetric.ExponentialHistogramDataPoint) error {
 	min, err := ehdp.F64OrNilFieldByID(ids.Min, ehdpIdx)
 	if err != nil {
-		return err
+		return fmt.Errorf("AppendMinMaxInto(field='min')->%w", err)
 	}
 	if min != nil {
 		ehdpVal.SetMin(*min)
@@ -270,7 +236,7 @@ func AppendMinMaxInto(ehdp *arrowutils.ListOfStructs, ids *UnivariateEHistogramD
 
 	max, err := ehdp.F64OrNilFieldByID(ids.Max, ehdpIdx)
 	if err != nil {
-		return err
+		return fmt.Errorf("AppendMinMaxInto(field='max')->%w", err)
 	}
 	if max != nil {
 		ehdpVal.SetMax(*max)
@@ -287,7 +253,7 @@ func AppendCountSumInto(ehdp *arrowutils.ListOfStructs, ids *UnivariateEHistogra
 
 	sum, err := ehdp.F64OrNilFieldByID(ids.Sum, ehdpIdx)
 	if err != nil {
-		return err
+		return fmt.Errorf("AppendCountSumInto(field='sum')->%w", err)
 	}
 	if sum != nil {
 		ehdpVal.SetSum(*sum)

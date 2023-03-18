@@ -70,16 +70,15 @@ func TestMetricsWithNoDictionary(t *testing.T) {
 		)
 	}
 
-	schema := producer.MetricsAdaptiveSchema()
-	dictWithOverflow := schema.DictionariesWithOverflow()
-	require.Equal(t, 0, len(dictWithOverflow))
+	builder := producer.MetricsRecordBuilderExt()
+	require.Equal(t, 0, len(builder.Events().DictionariesWithOverflow))
 }
 
-// TestMetricsSingleBatchWithDictionaryOverflow
+// TestMetricsMultiBatchWithDictionaryIndexChanges
 // Initial dictionary size uint8.
 // First batch of uint8 + 1 spans ==> dictionary overflow on 3 fields.
 // Other consecutive batches should not trigger any other dictionary overflow.
-func TestMetricsSingleBatchWithDictionaryOverflow(t *testing.T) {
+func TestMetricsMultiBatchWithDictionaryIndexChanges(t *testing.T) {
 	t.Parallel()
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
@@ -119,11 +118,11 @@ func TestMetricsSingleBatchWithDictionaryOverflow(t *testing.T) {
 		)
 	}
 
-	schema := producer.MetricsAdaptiveSchema()
-	dictWithOverflow := schema.DictionariesWithOverflow()
-	require.Equal(t, 2, len(dictWithOverflow))
-	require.Equal(t, "uint16", dictWithOverflow["resource_metrics.scope_metrics.univariate_metrics.name"])
-	require.Equal(t, "uint16", dictWithOverflow["resource_metrics.scope_metrics.univariate_metrics.description"])
+	builder := producer.MetricsRecordBuilderExt()
+	dictionariesIndexTypeChanged := builder.Events().DictionariesIndexTypeChanged
+	require.Equal(t, 2, len(dictionariesIndexTypeChanged))
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_metrics.item.scope_metrics.item.univariate_metrics.item.name"])
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_metrics.item.scope_metrics.item.univariate_metrics.item.description"])
 }
 
 // TestMetricsMultiBatchWithDictionaryOverflow
@@ -171,18 +170,18 @@ func TestMetricsMultiBatchWithDictionaryOverflow(t *testing.T) {
 		)
 	}
 
-	schema := producer.MetricsAdaptiveSchema()
-	dictWithOverflow := schema.DictionariesWithOverflow()
-	require.Equal(t, 2, len(dictWithOverflow))
-	require.Equal(t, "uint16", dictWithOverflow["resource_metrics.scope_metrics.univariate_metrics.name"])
-	require.Equal(t, "uint16", dictWithOverflow["resource_metrics.scope_metrics.univariate_metrics.description"])
+	builder := producer.MetricsRecordBuilderExt()
+	dictionariesIndexTypeChanged := builder.Events().DictionariesIndexTypeChanged
+	require.Equal(t, 2, len(dictionariesIndexTypeChanged))
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_metrics.item.scope_metrics.item.univariate_metrics.item.name"])
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_metrics.item.scope_metrics.item.univariate_metrics.item.description"])
 }
 
-// TestMetricsSingleBatchWithDictionaryLimit
+// TestMetricsMultiBatchWithDictionaryLimit
 // Initial dictionary size uint8.
 // Limit dictionary index size is uint8.
 // First batch of uint8 + 1 spans ==> dictionary index type limit reached so fallback to utf8 or binary.
-func TestMetricsSingleBatchWithDictionaryLimit(t *testing.T) {
+func TestMetricsMultiBatchWithDictionaryLimit(t *testing.T) {
 	t.Parallel()
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
@@ -222,11 +221,14 @@ func TestMetricsSingleBatchWithDictionaryLimit(t *testing.T) {
 		)
 	}
 
-	schema := producer.MetricsAdaptiveSchema()
-	dictWithOverflow := schema.DictionariesWithOverflow()
-	require.Equal(t, 2, len(dictWithOverflow))
-	require.Equal(t, "utf8", dictWithOverflow["resource_metrics.scope_metrics.univariate_metrics.name"])
-	require.Equal(t, "utf8", dictWithOverflow["resource_metrics.scope_metrics.univariate_metrics.description"])
+	builder := producer.MetricsRecordBuilderExt()
+	dictionaryWithOverflow := builder.Events().DictionariesWithOverflow
+	require.Equal(t, 2, len(dictionaryWithOverflow))
+	require.Equal(t, true, dictionaryWithOverflow["resource_metrics.item.scope_metrics.item.univariate_metrics.item.name"])
+	require.Equal(t, true, dictionaryWithOverflow["resource_metrics.item.scope_metrics.item.univariate_metrics.item.description"])
+
+	// name and description should be utf8 at this point and not dictionaries.
+	require.Equal(t, "resource_metrics:[{resource:{},schema_url:Dic<U8,Str>,scope_metrics:[{scope:{},univariate_metrics:[{data:SU{gauge:{data_points:[{value:SU{i64:I64}}]}},description:Str,name:Str}]}]}]", builder.SchemaID())
 }
 
 func GenerateMetrics(initValue int, metricCount int) pmetric.Metrics {

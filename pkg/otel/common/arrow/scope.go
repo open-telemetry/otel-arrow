@@ -1,16 +1,19 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright The OpenTelemetry Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 
 package arrow
 
@@ -19,45 +22,50 @@ import (
 
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 )
 
 // ScopeDT is the Arrow Data Type describing a scope.
 var (
 	ScopeDT = arrow.StructOf([]arrow.Field{
-		{Name: constants.Name, Type: DefaultDictString},
-		{Name: constants.Version, Type: DefaultDictString},
-		{Name: constants.Attributes, Type: AttributesDT},
-		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32},
+		{Name: constants.Name, Type: arrow.BinaryTypes.String, Metadata: acommon.Metadata(acommon.Optional, acommon.Dictionary)},
+		{Name: constants.Version, Type: arrow.BinaryTypes.String, Metadata: acommon.Metadata(acommon.Optional, acommon.Dictionary)},
+		{Name: constants.Attributes, Type: AttributesDT, Metadata: acommon.Metadata(acommon.Optional)},
+		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: acommon.Metadata(acommon.Optional)},
 	}...)
 )
 
 type ScopeBuilder struct {
 	released bool
-	builder  *array.StructBuilder
-	nb       *AdaptiveDictionaryBuilder // Name builder
-	vb       *AdaptiveDictionaryBuilder // Version builder
-	ab       *AttributesBuilder         // Attributes builder
-	dacb     *array.Uint32Builder       // Dropped attributes count builder
+	builder  *builder.StructBuilder
+	nb       *builder.StringBuilder // Name builder
+	vb       *builder.StringBuilder // Version builder
+	ab       *AttributesBuilder     // Attributes builder
+	dacb     *builder.Uint32Builder // Dropped attributes count builder
+}
+
+func ScopeID(is pcommon.InstrumentationScope) string {
+	return "name:" + is.Name() + "|version:" + is.Version() + "|" + AttributesId(is.Attributes()) + "|" + fmt.Sprintf("dac:%d", is.DroppedAttributesCount())
 }
 
 // NewScopeBuilder creates a new instrumentation scope array builder with a given allocator.
-func NewScopeBuilder(pool memory.Allocator) *ScopeBuilder {
-	return ScopeBuilderFrom(array.NewStructBuilder(pool, ScopeDT))
+func NewScopeBuilder(builder *builder.StructBuilder) *ScopeBuilder {
+	return ScopeBuilderFrom(builder)
 }
 
 // ScopeBuilderFrom creates a new instrumentation scope array builder from an existing struct builder.
-func ScopeBuilderFrom(sb *array.StructBuilder) *ScopeBuilder {
+func ScopeBuilderFrom(sb *builder.StructBuilder) *ScopeBuilder {
 	return &ScopeBuilder{
 		released: false,
 		builder:  sb,
-		nb:       AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(0)),
-		vb:       AdaptiveDictionaryBuilderFrom(sb.FieldBuilder(1)),
-		ab:       AttributesBuilderFrom(sb.FieldBuilder(2).(*array.MapBuilder)),
-		dacb:     sb.FieldBuilder(3).(*array.Uint32Builder),
+		nb:       sb.StringBuilder(constants.Name),
+		vb:       sb.StringBuilder(constants.Version),
+		ab:       AttributesBuilderFrom(sb.MapBuilder(constants.Attributes)),
+		dacb:     sb.Uint32Builder(constants.DroppedAttributesCount),
 	}
 }
 
@@ -67,32 +75,15 @@ func (b *ScopeBuilder) Append(scope pcommon.InstrumentationScope) error {
 		return fmt.Errorf("scope builder already released")
 	}
 
-	b.builder.Append(true)
-	name := scope.Name()
-	if name == "" {
-		b.nb.AppendNull()
-	} else {
-		if err := b.nb.AppendString(name); err != nil {
+	return b.builder.Append(scope, func() error {
+		b.nb.AppendNonEmpty(scope.Name())
+		b.vb.AppendNonEmpty(scope.Version())
+		if err := b.ab.Append(scope.Attributes()); err != nil {
 			return err
 		}
-	}
-	version := scope.Version()
-	if version == "" {
-		b.vb.AppendNull()
-	} else {
-		if err := b.vb.AppendString(version); err != nil {
-			return err
-		}
-	}
-	if err := b.ab.Append(scope.Attributes()); err != nil {
-		return err
-	}
-	if scope.DroppedAttributesCount() > 0 {
-		b.dacb.Append(scope.DroppedAttributesCount())
-	} else {
-		b.dacb.AppendNull()
-	}
-	return nil
+		b.dacb.AppendNonZero(scope.DroppedAttributesCount())
+		return nil
+	})
 }
 
 // Build builds the instrumentation scope array struct.
