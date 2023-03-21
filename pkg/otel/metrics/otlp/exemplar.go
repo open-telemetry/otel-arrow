@@ -15,16 +15,16 @@
 package otlp
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type ExemplarIds struct {
@@ -39,12 +39,12 @@ type ExemplarIds struct {
 func NewExemplarIds(ndp *arrow.StructType) (*ExemplarIds, error) {
 	id, exemplarDT, err := arrowutils.ListOfStructsFieldIDFromStruct(ndp, constants.Exemplars)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	attributesId, err := otlp.NewAttributeIds(exemplarDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	timeUnixNanoId, _ := arrowutils.FieldIDFromStruct(exemplarDT, constants.TimeUnixNano)
@@ -65,7 +65,7 @@ func NewExemplarIds(ndp *arrow.StructType) (*ExemplarIds, error) {
 func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, ndp *arrowutils.ListOfStructs, ndpIdx int, ids *ExemplarIds) error {
 	exemplars, err := ndp.ListOfStructsById(ndpIdx, ids.Id)
 	if err != nil {
-		return fmt.Errorf("AppendExemplarsInto(field='examplars')->%w", err)
+		return werror.WrapWithContext(err, map[string]interface{}{"ndpIdx": ndpIdx})
 	}
 
 	if exemplars == nil {
@@ -80,18 +80,18 @@ func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, ndp *arrowutils.Li
 		}
 
 		if err := otlp.AppendAttributesInto(exemplar.FilteredAttributes(), exemplars.Array(), exemplarIdx, ids.Attributes); err != nil {
-			return fmt.Errorf("AppendExemplarsInto->%w", err)
+			return werror.WrapWithContext(err, map[string]interface{}{"ndpIdx": ndpIdx})
 		}
 
 		timeUnixNano, err := exemplars.TimestampFieldByID(ids.TimeUnixNano, exemplarIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		exemplar.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 
 		spanId, err := exemplars.FixedSizeBinaryFieldByID(ids.SpanID, exemplarIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 
 		if len(spanId) == 8 {
@@ -100,30 +100,30 @@ func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, ndp *arrowutils.Li
 			copy(sid[:], spanId)
 			exemplar.SetSpanID(sid)
 		} else {
-			return fmt.Errorf("invalid span id length %d", len(spanId))
+			return werror.WrapWithContext(common.ErrInvalidSpanIDLength, map[string]interface{}{"spanID": spanId})
 		}
 
-		traceId, err := exemplars.FixedSizeBinaryFieldByID(ids.TraceID, exemplarIdx)
+		traceID, err := exemplars.FixedSizeBinaryFieldByID(ids.TraceID, exemplarIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 
-		if len(traceId) == 16 {
+		if len(traceID) == 16 {
 			var tid pcommon.TraceID
 
-			copy(tid[:], traceId)
+			copy(tid[:], traceID)
 			exemplar.SetTraceID(tid)
 		} else {
-			return fmt.Errorf("invalid trace id length %d", len(traceId))
+			return werror.WrapWithContext(common.ErrInvalidTraceIDLength, map[string]interface{}{"traceID": traceID})
 		}
 
 		value := exemplars.FieldByID(ids.ValueID)
 		if valueArr, ok := value.(*array.SparseUnion); ok {
 			if err := UpdateValueFromExemplar(exemplar, valueArr, exemplarIdx); err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 		} else {
-			return fmt.Errorf("value field shound be a SparseUnion")
+			return werror.Wrap(ErrNotArraySparseUnion)
 		}
 	}
 

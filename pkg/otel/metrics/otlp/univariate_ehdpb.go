@@ -15,14 +15,13 @@
 package otlp
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type EHistogramDataPointBucketsIds struct {
@@ -52,7 +51,7 @@ func AppendUnivariateEHistogramDataPointBucketsInto(dpBuckets pmetric.Exponentia
 		if i32OffsetArr, ok := offsetArr.(*array.Int32); ok {
 			dpBuckets.SetOffset(i32OffsetArr.Value(row))
 		} else {
-			return fmt.Errorf("field %q is not an int32", constants.ExpHistogramOffset)
+			return werror.Wrap(ErrNotArrayInt32)
 		}
 	}
 
@@ -71,7 +70,7 @@ func AppendUnivariateEHistogramDataPointBucketsInto(dpBuckets pmetric.Exponentia
 				}
 			}
 		} else {
-			return fmt.Errorf("field %q is not an int64", constants.ExpHistogramBucketCounts)
+			return werror.Wrap(ErrNotArrayList)
 		}
 	}
 

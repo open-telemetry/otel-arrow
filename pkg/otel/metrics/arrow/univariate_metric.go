@@ -15,15 +15,15 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // Constants used to identify the type of univariate metric in the union.
@@ -86,7 +86,7 @@ func UnivariateMetricBuilderFrom(umb *builder.SparseUnionBuilder) *UnivariateMet
 // Once the array is no longer needed, Release() should be called to free the memory.
 func (b *UnivariateMetricBuilder) Build() (*array.SparseUnion, error) {
 	if b.released {
-		return nil, fmt.Errorf("UnivariateMetricBuilder: Build() called after Release()")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -106,14 +106,14 @@ func (b *UnivariateMetricBuilder) Release() {
 // Append appends a new univariate metric to the builder.
 func (b *UnivariateMetricBuilder) Append(metric pmetric.Metric, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
-		return fmt.Errorf("UnivariateMetricBuilder: Reserve() called after Release()")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	switch metric.Type() {
 	case pmetric.MetricTypeGauge:
 		b.builder.Append(GaugeCode)
 		if err := b.gb.Append(metric.Gauge(), smdata, mdata); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.sb.AppendNull()
 		b.syb.AppendNull()
@@ -122,7 +122,7 @@ func (b *UnivariateMetricBuilder) Append(metric pmetric.Metric, smdata *ScopeMet
 	case pmetric.MetricTypeSum:
 		b.builder.Append(SumCode)
 		if err := b.sb.Append(metric.Sum(), smdata, mdata); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.gb.AppendNull()
 		b.syb.AppendNull()
@@ -131,7 +131,7 @@ func (b *UnivariateMetricBuilder) Append(metric pmetric.Metric, smdata *ScopeMet
 	case pmetric.MetricTypeSummary:
 		b.builder.Append(SummaryCode)
 		if err := b.syb.Append(metric.Summary(), smdata, mdata); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.gb.AppendNull()
 		b.sb.AppendNull()
@@ -140,7 +140,7 @@ func (b *UnivariateMetricBuilder) Append(metric pmetric.Metric, smdata *ScopeMet
 	case pmetric.MetricTypeHistogram:
 		b.builder.Append(HistogramCode)
 		if err := b.hb.Append(metric.Histogram(), smdata, mdata); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.gb.AppendNull()
 		b.sb.AppendNull()
@@ -149,7 +149,7 @@ func (b *UnivariateMetricBuilder) Append(metric pmetric.Metric, smdata *ScopeMet
 	case pmetric.MetricTypeExponentialHistogram:
 		b.builder.Append(ExpHistogramCode)
 		if err := b.ehb.Append(metric.ExponentialHistogram(), smdata, mdata); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.gb.AppendNull()
 		b.sb.AppendNull()

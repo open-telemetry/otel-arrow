@@ -15,8 +15,6 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -27,6 +25,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // ScopeMetricsDT is the Arrow Data Type describing a scope span.
@@ -83,7 +82,7 @@ func ScopeMetricsBuilderFrom(builder *builder.StructBuilder) *ScopeMetricsBuilde
 // memory allocated by the array.
 func (b *ScopeMetricsBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("scope metrics builder already released")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -93,30 +92,30 @@ func (b *ScopeMetricsBuilder) Build() (*array.Struct, error) {
 // Append appends a new scope metrics to the builder.
 func (b *ScopeMetricsBuilder) Append(sm pmetric.ScopeMetrics) error {
 	if b.released {
-		return fmt.Errorf("scope metrics builder already released")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(sm, func() error {
 		if err := b.scb.Append(sm.Scope()); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.schb.AppendNonEmpty(sm.SchemaUrl())
 
 		metrics := sm.Metrics()
 		sharedData, err := NewMetricsSharedData(metrics)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		mc := metrics.Len()
 		if err = b.smb.Append(mc, func() error {
 			for i := 0; i < mc; i++ {
 				if err := b.mb.Append(metrics.At(i), sharedData, sharedData.Metrics[i]); err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 			}
 			return nil
 		}); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 
 		if sharedData.Attributes != nil && sharedData.Attributes.Len() > 0 {
@@ -124,7 +123,7 @@ func (b *ScopeMetricsBuilder) Append(sm pmetric.ScopeMetrics) error {
 			sharedData.Attributes.CopyTo(attrs)
 			err = b.sab.Append(attrs)
 			if err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 		}
 
@@ -172,7 +171,7 @@ func NewMetricsSharedData(metrics pmetric.MetricSlice) (sharedData *ScopeMetrics
 	if metrics.Len() > 0 {
 		msd, err := NewMetricSharedData(metrics.At(0))
 		if err != nil {
-			return nil, err
+			return nil, werror.Wrap(err)
 		}
 		sharedData = &ScopeMetricsSharedData{Metrics: make([]*MetricSharedData, metrics.Len())}
 		sharedData.StartTime = msd.StartTime
@@ -183,7 +182,7 @@ func NewMetricsSharedData(metrics pmetric.MetricSlice) (sharedData *ScopeMetrics
 	for i := 1; i < metrics.Len(); i++ {
 		msd, err := NewMetricSharedData(metrics.At(i))
 		if err != nil {
-			return nil, err
+			return nil, werror.Wrap(err)
 		}
 		sharedData.Metrics[i] = msd
 		if msd.StartTime != nil && sharedData.StartTime != nil && uint64(*sharedData.StartTime) != uint64(*msd.StartTime) {
@@ -248,7 +247,7 @@ func NewMetricSharedData(metric pmetric.Metric) (sharedData *MetricSharedData, e
 	case pmetric.MetricTypeEmpty:
 		// ignore empty metric.
 	default:
-		err = fmt.Errorf("unknown metric type: %v", metric.Type())
+		err = werror.Wrap(ErrUnknownMetricType)
 		return sharedData, err
 	}
 

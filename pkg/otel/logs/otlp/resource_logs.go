@@ -21,6 +21,7 @@ import (
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type ResourceLogsIds struct {
@@ -33,19 +34,19 @@ type ResourceLogsIds struct {
 func NewResourceLogsIds(schema *arrow.Schema) (*ResourceLogsIds, error) {
 	id, dt, err := arrowutils.ListOfStructsFieldIDFromSchema(schema, constants.ResourceLogs)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	schemaID, _ := arrowutils.FieldIDFromStruct(dt, constants.SchemaUrl)
 
 	scopeLogsIDs, err := NewScopeLogsIds(dt)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	resourceIDs, err := otlp.NewResourceIds(dt)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	return &ResourceLogsIds{
@@ -63,7 +64,7 @@ func AppendResourceLogsInto(logs plog.Logs, record arrow.Record, ids *LogsIds) e
 	for traceIdx := 0; traceIdx < resLogsCount; traceIdx++ {
 		arrowResLogs, err := arrowutils.ListOfStructsFromRecord(record, ids.ResourceLogs.Id, traceIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		resLogsSlice.EnsureCapacity(resLogsSlice.Len() + arrowResLogs.End() - arrowResLogs.Start())
 
@@ -71,18 +72,18 @@ func AppendResourceLogsInto(logs plog.Logs, record arrow.Record, ids *LogsIds) e
 			resLogs := resLogsSlice.AppendEmpty()
 
 			if err = otlp.UpdateResourceWith(resLogs.Resource(), arrowResLogs, resLogsIdx, ids.ResourceLogs.Resource); err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 
 			schemaUrl, err := arrowResLogs.StringFieldByID(ids.ResourceLogs.SchemaUrl, resLogsIdx)
 			if err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 			resLogs.SetSchemaUrl(schemaUrl)
 
 			err = AppendScopeLogsInto(resLogs, arrowResLogs, resLogsIdx, ids.ResourceLogs.ScopeLogs)
 			if err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 		}
 	}

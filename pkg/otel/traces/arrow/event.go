@@ -18,8 +18,6 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -28,6 +26,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // EventDT is the Arrow Data Type describing a span event.
@@ -65,7 +64,7 @@ func EventBuilderFrom(eb *builder.StructBuilder) *EventBuilder {
 // Append appends a new event to the builder.
 func (b *EventBuilder) Append(event ptrace.SpanEvent) error {
 	if b.released {
-		return fmt.Errorf("event builder already released")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(event, func() error {
@@ -82,7 +81,7 @@ func (b *EventBuilder) Append(event ptrace.SpanEvent) error {
 // memory allocated by the array.
 func (b *EventBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("event builder already released")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()

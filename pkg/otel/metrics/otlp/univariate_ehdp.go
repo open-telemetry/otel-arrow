@@ -15,8 +15,6 @@
 package otlp
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -24,6 +22,7 @@ import (
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // UnivariateEHistogramDataPointIds is a struct containing the field ids for the
@@ -49,12 +48,12 @@ type UnivariateEHistogramDataPointIds struct {
 func NewUnivariateEHistogramDataPointIds(parentDT *arrow.StructType) (*UnivariateEHistogramDataPointIds, error) {
 	id, ehdpDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.DataPoints)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	attributes, err := otlp.NewAttributeIds(ehdpDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	startTimeUnixNanoID, _ := arrowutils.FieldIDFromStruct(ehdpDT, constants.StartTimeUnixNano)
@@ -66,25 +65,25 @@ func NewUnivariateEHistogramDataPointIds(parentDT *arrow.StructType) (*Univariat
 
 	positiveID, positiveDT, err := arrowutils.StructFieldIDFromStruct(ehdpDT, constants.ExpHistogramPositive)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 	positive, err := NewEHistogramDataPointBucketsIds(positiveID, positiveDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	negativeID, negativeDT, err := arrowutils.StructFieldIDFromStruct(ehdpDT, constants.ExpHistogramNegative)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 	negative, err := NewEHistogramDataPointBucketsIds(negativeID, negativeDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	exemplars, err := NewExemplarIds(ehdpDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	flagsID, _ := arrowutils.FieldIDFromStruct(ehdpDT, constants.Flags)
@@ -125,7 +124,7 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 
 		attrs := ehdpVal.Attributes()
 		if err := otlp.AppendAttributesInto(attrs, ehdp.Array(), ehdpIdx, ids.Attributes); err != nil {
-			return fmt.Errorf("AppendUnivariateEHistogramDataPointInto->%w", err)
+			return werror.Wrap(err)
 		}
 		smdata.Attributes.Range(func(k string, v pcommon.Value) bool {
 			v.CopyTo(attrs.PutEmpty(k))
@@ -144,7 +143,7 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 			} else {
 				startTimeUnixNano, err := ehdp.TimestampFieldByID(ids.StartTimeUnixNano, ehdpIdx)
 				if err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 				ehdpVal.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
 			}
@@ -158,7 +157,7 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 			} else {
 				timeUnixNano, err := ehdp.TimestampFieldByID(ids.TimeUnixNano, ehdpIdx)
 				if err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 				ehdpVal.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 			}
@@ -166,59 +165,59 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 
 		err := AppendCountSumInto(ehdp, ids, ehdpIdx, ehdpVal)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 
 		scale, err := ehdp.I32FieldByID(ids.Scale, ehdpIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		ehdpVal.SetScale(scale)
 
 		zeroCount, err := ehdp.U64FieldByID(ids.ZeroCount, ehdpIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		ehdpVal.SetZeroCount(zeroCount)
 
 		_, positive, err := ehdp.StructByID(ids.Positive.Id, ehdpIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		if positive != nil {
 			if err := AppendUnivariateEHistogramDataPointBucketsInto(ehdpVal.Positive(), positive, ids.Positive, ehdpIdx); err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 		}
 
 		_, negative, err := ehdp.StructByID(ids.Negative.Id, ehdpIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		if negative != nil {
 			if err := AppendUnivariateEHistogramDataPointBucketsInto(ehdpVal.Negative(), negative, ids.Negative, ehdpIdx); err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 		}
 
 		exemplars, err := ehdp.ListOfStructsById(ehdpIdx, ids.Exemplars.Id)
 		if exemplars != nil && err == nil {
 			if err := AppendExemplarsInto(ehdpVal.Exemplars(), exemplars, ehdpIdx, ids.Exemplars); err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 		} else if err != nil {
-			return fmt.Errorf("AppendUnivariateEHistogramDataPointInto(field='exemplars')->%w", err)
+			return werror.Wrap(err)
 		}
 
 		flags, err := ehdp.U32FieldByID(ids.Flags, ehdpIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		ehdpVal.SetFlags(pmetric.DataPointFlags(flags))
 
 		err = AppendMinMaxInto(ehdp, ids, ehdpIdx, ehdpVal)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 	}
 
@@ -228,7 +227,7 @@ func AppendUnivariateEHistogramDataPointInto(ehdpSlice pmetric.ExponentialHistog
 func AppendMinMaxInto(ehdp *arrowutils.ListOfStructs, ids *UnivariateEHistogramDataPointIds, ehdpIdx int, ehdpVal pmetric.ExponentialHistogramDataPoint) error {
 	min, err := ehdp.F64OrNilFieldByID(ids.Min, ehdpIdx)
 	if err != nil {
-		return fmt.Errorf("AppendMinMaxInto(field='min')->%w", err)
+		return werror.Wrap(err)
 	}
 	if min != nil {
 		ehdpVal.SetMin(*min)
@@ -236,7 +235,7 @@ func AppendMinMaxInto(ehdp *arrowutils.ListOfStructs, ids *UnivariateEHistogramD
 
 	max, err := ehdp.F64OrNilFieldByID(ids.Max, ehdpIdx)
 	if err != nil {
-		return fmt.Errorf("AppendMinMaxInto(field='max')->%w", err)
+		return werror.Wrap(err)
 	}
 	if max != nil {
 		ehdpVal.SetMax(*max)
@@ -247,16 +246,16 @@ func AppendMinMaxInto(ehdp *arrowutils.ListOfStructs, ids *UnivariateEHistogramD
 func AppendCountSumInto(ehdp *arrowutils.ListOfStructs, ids *UnivariateEHistogramDataPointIds, ehdpIdx int, ehdpVal pmetric.ExponentialHistogramDataPoint) error {
 	count, err := ehdp.U64FieldByID(ids.Count, ehdpIdx)
 	if err != nil {
-		return err
+		return werror.Wrap(err)
 	}
 	ehdpVal.SetCount(count)
 
 	sum, err := ehdp.F64OrNilFieldByID(ids.Sum, ehdpIdx)
 	if err != nil {
-		return fmt.Errorf("AppendCountSumInto(field='sum')->%w", err)
+		return werror.Wrap(err)
 	}
 	if sum != nil {
 		ehdpVal.SetSum(*sum)
 	}
-	return err
+	return werror.Wrap(err)
 }

@@ -20,9 +20,9 @@ package arrow
 // Utility functions to extract ids from Arrow schemas.
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
+
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // ListOfStructsFieldIDFromSchema returns the field id of a list of structs
@@ -35,16 +35,16 @@ func ListOfStructsFieldIDFromSchema(schema *arrow.Schema, fieldName string) (int
 		return -1, nil, nil
 	}
 	if len(ids) > 1 {
-		return 0, nil, fmt.Errorf("more than one field %q in schema", fieldName)
+		return 0, nil, werror.WrapWithContext(ErrDuplicateFieldName, map[string]interface{}{"fieldName": fieldName})
 	}
 
 	if lt, ok := schema.Field(ids[0]).Type.(*arrow.ListType); ok {
 		st, ok := lt.ElemField().Type.(*arrow.StructType)
 		if !ok {
-			return 0, nil, fmt.Errorf("field %q is not a list of structs", fieldName)
+			return 0, nil, werror.WrapWithContext(ErrNotArrayListOfStructs, map[string]interface{}{"fieldName": fieldName})
 		}
 		return ids[0], st, nil
 	} else {
-		return 0, nil, fmt.Errorf("field %q is not a list", fieldName)
+		return 0, nil, werror.WrapWithContext(ErrNotArrayList, map[string]interface{}{"fieldName": fieldName})
 	}
 }

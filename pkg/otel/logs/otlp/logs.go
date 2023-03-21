@@ -17,6 +17,8 @@ package otlp
 import (
 	"github.com/apache/arrow/go/v11/arrow"
 	"go.opentelemetry.io/collector/pdata/plog"
+
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type LogsIds struct {
@@ -29,19 +31,17 @@ func LogsFrom(record arrow.Record) (plog.Logs, error) {
 
 	ids, err := SchemaToIds(record.Schema())
 	if err != nil {
-		return logs, err
+		return logs, werror.Wrap(err)
 	}
 
-	// TODO there is probably two nested lists that could be replaced by a single list (traces, resource spans). This could simplify a future query layer.
-
 	err = AppendResourceLogsInto(logs, record, ids)
-	return logs, err
+	return logs, werror.Wrap(err)
 }
 
 func SchemaToIds(schema *arrow.Schema) (*LogsIds, error) {
 	resLogsIds, err := NewResourceLogsIds(schema)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 	return &LogsIds{
 		ResourceLogs: resLogsIds,

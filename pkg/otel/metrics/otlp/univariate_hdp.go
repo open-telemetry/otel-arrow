@@ -15,8 +15,6 @@
 package otlp
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -25,6 +23,7 @@ import (
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type UnivariateHistogramDataPointIds struct {
@@ -45,12 +44,12 @@ type UnivariateHistogramDataPointIds struct {
 func NewUnivariateHistogramDataPointIds(parentDT *arrow.StructType) (*UnivariateHistogramDataPointIds, error) {
 	id, hdpDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.DataPoints)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	attributes, err := otlp.NewAttributeIds(hdpDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	startTimeUnixNanoId, _ := arrowutils.FieldIDFromStruct(hdpDT, constants.StartTimeUnixNano)
@@ -62,7 +61,7 @@ func NewUnivariateHistogramDataPointIds(parentDT *arrow.StructType) (*Univariate
 
 	exemplars, err := NewExemplarIds(hdpDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	flagsId, _ := arrowutils.FieldIDFromStruct(hdpDT, constants.Flags)
@@ -99,7 +98,7 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 
 		attrs := hdpVal.Attributes()
 		if err := otlp.AppendAttributesInto(attrs, hdp.Array(), hdpIdx, ids.Attributes); err != nil {
-			return fmt.Errorf("AppendUnivariateHistogramDataPointInto->%w", err)
+			return werror.Wrap(err)
 		}
 		smdata.Attributes.Range(func(k string, v pcommon.Value) bool {
 			v.CopyTo(attrs.PutEmpty(k))
@@ -118,7 +117,7 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 			} else {
 				startTimeUnixNano, err := hdp.TimestampFieldByID(ids.StartTimeUnixNano, hdpIdx)
 				if err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 				hdpVal.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
 			}
@@ -132,7 +131,7 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 			} else {
 				timeUnixNano, err := hdp.TimestampFieldByID(ids.TimeUnixNano, hdpIdx)
 				if err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 				hdpVal.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 			}
@@ -140,13 +139,13 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 
 		count, err := hdp.U64FieldByID(ids.Count, hdpIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		hdpVal.SetCount(count)
 
 		sum, err := hdp.F64OrNilFieldByID(ids.Sum, hdpIdx)
 		if err != nil {
-			return fmt.Errorf("AppendUnivariateHistogramDataPointInto(field=`sum`)->%w", err)
+			return werror.Wrap(err)
 		}
 		if sum != nil {
 			hdpVal.SetSum(*sum)
@@ -154,7 +153,7 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 
 		bucketCounts, start, end, err := hdp.ListValuesById(hdpIdx, ids.BucketCounts)
 		if err != nil {
-			return fmt.Errorf("AppendUnivariateHistogramDataPointInto(field=`bucket_counts`)->%w", err)
+			return werror.Wrap(err)
 		}
 		if values, ok := bucketCounts.(*array.Uint64); ok {
 			bucketCountsSlice := hdpVal.BucketCounts()
@@ -163,12 +162,12 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 				bucketCountsSlice.Append(values.Value(i))
 			}
 		} else {
-			return fmt.Errorf("field %q is not a list of uint64", constants.HistogramBucketCounts)
+			return werror.Wrap(ErrNotArrayUint64)
 		}
 
 		explicitBounds, start, end, err := hdp.ListValuesById(hdpIdx, ids.ExplicitBounds)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		if values, ok := explicitBounds.(*array.Float64); ok {
 			explicitBoundsSlice := hdpVal.ExplicitBounds()
@@ -177,27 +176,27 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 				explicitBoundsSlice.Append(values.Value(i))
 			}
 		} else {
-			return fmt.Errorf("field %q is not a list of float64", constants.HistogramExplicitBounds)
+			return werror.Wrap(ErrNotArrayFloat64)
 		}
 
 		exemplars, err := hdp.ListOfStructsById(hdpIdx, ids.Exemplars.Id)
 		if exemplars != nil && err == nil {
 			if err := AppendExemplarsInto(hdpVal.Exemplars(), exemplars, hdpIdx, ids.Exemplars); err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 		} else if err != nil {
-			return fmt.Errorf("AppendUnivariateHistogramDataPointInto(field=`exemplars`)->%w", err)
+			return werror.Wrap(err)
 		}
 
 		flags, err := hdp.U32FieldByID(ids.Flags, hdpIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		hdpVal.SetFlags(pmetric.DataPointFlags(flags))
 
 		min, err := hdp.F64OrNilFieldByID(ids.Min, hdpIdx)
 		if err != nil {
-			return fmt.Errorf("AppendUnivariateHistogramDataPointInto(field=`min`)->%w", err)
+			return werror.Wrap(err)
 		}
 		if min != nil {
 			hdpVal.SetMin(*min)
@@ -205,7 +204,7 @@ func AppendUnivariateHistogramDataPointInto(hdpSlice pmetric.HistogramDataPointS
 
 		max, err := hdp.F64OrNilFieldByID(ids.Max, hdpIdx)
 		if err != nil {
-			return fmt.Errorf("AppendUnivariateHistogramDataPointInto(field=`max`)->%w", err)
+			return werror.Wrap(err)
 		}
 		if max != nil {
 			hdpVal.SetMax(*max)

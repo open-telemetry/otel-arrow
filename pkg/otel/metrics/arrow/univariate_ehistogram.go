@@ -15,15 +15,15 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 var (
@@ -64,7 +64,7 @@ func UnivariateEHistogramBuilderFrom(b *builder.StructBuilder) *UnivariateEHisto
 // Once the array is no longer needed, Release() should be called to free the memory.
 func (b *UnivariateEHistogramBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("UnivariateEHistogramBuilder: Build() called after Release()")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -84,7 +84,7 @@ func (b *UnivariateEHistogramBuilder) Release() {
 // Append appends a new histogram to the builder.
 func (b *UnivariateEHistogramBuilder) Append(eh pmetric.ExponentialHistogram, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
-		return fmt.Errorf("UnivariateEHistogramBuilder: Reserve() called after Release()")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(eh, func() error {
@@ -93,12 +93,12 @@ func (b *UnivariateEHistogramBuilder) Append(eh pmetric.ExponentialHistogram, sm
 		if err := b.hdplb.Append(dpc, func() error {
 			for i := 0; i < dpc; i++ {
 				if err := b.hdpb.Append(dps.At(i), smdata, mdata); err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 			}
 			return nil
 		}); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		if eh.AggregationTemporality() == pmetric.AggregationTemporalityUnspecified {
 			b.atb.AppendNull()

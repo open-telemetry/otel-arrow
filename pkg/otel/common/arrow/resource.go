@@ -27,6 +27,7 @@ import (
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // ResourceDT is the Arrow Data Type describing a resource.
@@ -78,12 +79,12 @@ func ResourceBuilderFrom(builder *builder.StructBuilder) *ResourceBuilder {
 // Append appends a new resource to the builder.
 func (b *ResourceBuilder) Append(resource pcommon.Resource) error {
 	if b.released {
-		return fmt.Errorf("resource builder already released")
+		return werror.Wrap(ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(resource, func() error {
 		if err := b.ab.Append(resource.Attributes()); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.dacb.AppendNonZero(resource.DroppedAttributesCount())
 		return nil
@@ -96,7 +97,7 @@ func (b *ResourceBuilder) Append(resource pcommon.Resource) error {
 // memory allocated by the array.
 func (b *ResourceBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("attribute builder already released")
+		return nil, werror.Wrap(ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()

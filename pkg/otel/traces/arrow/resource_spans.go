@@ -18,8 +18,6 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -28,6 +26,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 var (
@@ -71,7 +70,7 @@ func ResourceSpansBuilderFrom(builder *builder.StructBuilder) *ResourceSpansBuil
 // memory allocated by the array.
 func (b *ResourceSpansBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("resource spans builder already released")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -81,12 +80,12 @@ func (b *ResourceSpansBuilder) Build() (*array.Struct, error) {
 // Append appends a new resource spans to the builder.
 func (b *ResourceSpansBuilder) Append(ss ptrace.ResourceSpans) error {
 	if b.released {
-		return fmt.Errorf("resource spans builder already released")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(ss, func() error {
 		if err := b.rb.Append(ss.Resource()); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.schb.AppendNonEmpty(ss.SchemaUrl())
 		sspans := ss.ScopeSpans()
@@ -94,7 +93,7 @@ func (b *ResourceSpansBuilder) Append(ss ptrace.ResourceSpans) error {
 		return b.spsb.Append(sc, func() error {
 			for i := 0; i < sc; i++ {
 				if err := b.spb.Append(sspans.At(i)); err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 			}
 			return nil

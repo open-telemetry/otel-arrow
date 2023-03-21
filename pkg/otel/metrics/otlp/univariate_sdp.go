@@ -15,8 +15,6 @@
 package otlp
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -24,6 +22,7 @@ import (
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type UnivariateSdpIds struct {
@@ -40,12 +39,12 @@ type UnivariateSdpIds struct {
 func NewUnivariateSdpIds(parentDT *arrow.StructType) (*UnivariateSdpIds, error) {
 	id, sdpDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.DataPoints)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	attributes, err := otlp.NewAttributeIds(sdpDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	startTimeUnixNanoId, _ := arrowutils.FieldIDFromStruct(sdpDT, constants.StartTimeUnixNano)
@@ -54,7 +53,7 @@ func NewUnivariateSdpIds(parentDT *arrow.StructType) (*UnivariateSdpIds, error) 
 	sumId, _ := arrowutils.FieldIDFromStruct(sdpDT, constants.SummarySum)
 	quantileValues, err := NewQuantileValueIds(sdpDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	flagsId, _ := arrowutils.FieldIDFromStruct(sdpDT, constants.Flags)
@@ -85,7 +84,7 @@ func AppendUnivariateSdpInto(ndpSlice pmetric.SummaryDataPointSlice, ndp *arrowu
 
 		attrs := sdpValue.Attributes()
 		if err := otlp.AppendAttributesInto(attrs, ndp.Array(), idx, ids.Attributes); err != nil {
-			return fmt.Errorf("AppendUnivariateSdpInto->%w", err)
+			return werror.Wrap(err)
 		}
 		smdata.Attributes.Range(func(k string, v pcommon.Value) bool {
 			v.CopyTo(attrs.PutEmpty(k))
@@ -104,7 +103,7 @@ func AppendUnivariateSdpInto(ndpSlice pmetric.SummaryDataPointSlice, ndp *arrowu
 			} else {
 				startTimeUnixNano, err := ndp.TimestampFieldByID(ids.StartTimeUnixNano, idx)
 				if err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 				sdpValue.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
 			}
@@ -118,7 +117,7 @@ func AppendUnivariateSdpInto(ndpSlice pmetric.SummaryDataPointSlice, ndp *arrowu
 			} else {
 				timeUnixNano, err := ndp.TimestampFieldByID(ids.TimeUnixNano, idx)
 				if err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 				sdpValue.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 			}
@@ -126,24 +125,24 @@ func AppendUnivariateSdpInto(ndpSlice pmetric.SummaryDataPointSlice, ndp *arrowu
 
 		count, err := ndp.U64FieldByID(ids.Count, idx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		sdpValue.SetCount(count)
 
 		sum, err := ndp.F64FieldByID(ids.Sum, idx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		sdpValue.SetSum(sum)
 
 		err = AppendQuantileValuesInto(sdpValue.QuantileValues(), ndp, idx, ids.QuantileValues)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 
 		flags, err := ndp.U32FieldByID(ids.Flags, idx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		sdpValue.SetFlags(pmetric.DataPointFlags(flags))
 	}

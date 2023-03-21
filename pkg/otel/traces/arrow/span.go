@@ -18,8 +18,6 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -28,6 +26,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // SpanDT is the Arrow Data Type describing a span.
@@ -109,7 +108,7 @@ func SpanBuilderFrom(sb *builder.StructBuilder) *SpanBuilder {
 // memory allocated by the array.
 func (b *SpanBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("span builder already released")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -119,7 +118,7 @@ func (b *SpanBuilder) Build() (*array.Struct, error) {
 // Append appends a new span to the builder.
 func (b *SpanBuilder) Append(span ptrace.Span) error {
 	if b.released {
-		return fmt.Errorf("span builder already released")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(span, func() error {
@@ -135,7 +134,7 @@ func (b *SpanBuilder) Append(span ptrace.Span) error {
 		b.nb.AppendNonEmpty(span.Name())
 		b.kb.AppendNonZero(int32(span.Kind()))
 		if err := b.ab.Append(span.Attributes()); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.dacb.AppendNonZero(span.DroppedAttributesCount())
 		evts := span.Events()
@@ -143,12 +142,12 @@ func (b *SpanBuilder) Append(span ptrace.Span) error {
 		if err := b.sesb.Append(sc, func() error {
 			for i := 0; i < sc; i++ {
 				if err := b.seb.Append(evts.At(i)); err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 			}
 			return nil
 		}); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.decb.AppendNonZero(span.DroppedEventsCount())
 		lks := span.Links()
@@ -156,12 +155,12 @@ func (b *SpanBuilder) Append(span ptrace.Span) error {
 		if err := b.slsb.Append(lc, func() error {
 			for i := 0; i < lc; i++ {
 				if err := b.slb.Append(lks.At(i)); err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 			}
 			return nil
 		}); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.dlcb.AppendNonZero(span.DroppedLinksCount())
 		return b.sb.Append(span.Status())

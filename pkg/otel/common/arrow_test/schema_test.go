@@ -29,6 +29,7 @@ import (
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	config "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 const (
@@ -908,7 +909,7 @@ func (b *RootBuilder) Append(data *RootData) error {
 		b.i32.AppendNonZero(data.i32)
 		b.string.AppendNonEmpty(data.string)
 		if err := b.values.Append(data.values); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.fixedSize8.Append(data.fixedSize8[:])
 		b.fixedSize16.Append(data.fixedSize16[:])

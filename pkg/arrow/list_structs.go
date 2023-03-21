@@ -20,18 +20,11 @@ package arrow
 // Wrapper around an Arrow list of structs used to expose utility functions.
 
 import (
-	"errors"
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
-)
 
-var (
-	errNotArrayStruct        = errors.New("Not an Arrow array.Struct")
-	errNotArrayList          = errors.New("Not an Arrow array.List")
-	errNotArrayListOfStructs = errors.New("Not an Arrow array.List of array.Struct")
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // ListOfStructs is a wrapper around an Arrow list of structs used to expose utility functions.
@@ -55,7 +48,7 @@ func ListOfStructsFromRecord(record arrow.Record, fieldID int, row int) (*ListOf
 		case *array.Struct:
 			dt, ok := structArr.DataType().(*arrow.StructType)
 			if !ok {
-				return nil, fmt.Errorf("field id %d is not a list of structs", fieldID)
+				return nil, werror.WrapWithContext(ErrNotArrayListOfStructs, map[string]interface{}{"fieldID": fieldID, "row": row})
 			}
 			start := int(listArr.Offsets()[row])
 			end := int(listArr.Offsets()[row+1])
@@ -67,10 +60,10 @@ func ListOfStructsFromRecord(record arrow.Record, fieldID int, row int) (*ListOf
 				end:   end,
 			}, nil
 		default:
-			return nil, fmt.Errorf("ListOfStructsFromRecord(fieldID=%d)->%w", fieldID, errNotArrayListOfStructs)
+			return nil, werror.WrapWithContext(ErrNotArrayListOfStructs, map[string]interface{}{"fieldID": fieldID, "row": row})
 		}
 	default:
-		return nil, fmt.Errorf("ListOfStructsFromRecord(fieldID=%d)->%w", fieldID, errNotArrayList)
+		return nil, werror.WrapWithContext(ErrNotArrayList, map[string]interface{}{"fieldID": fieldID, "row": row})
 	}
 }
 
@@ -85,7 +78,7 @@ func ListOfStructsFromArray(arr arrow.Array, row int) (*ListOfStructs, error) {
 		case *array.Struct:
 			dt, ok := structArr.DataType().(*arrow.StructType)
 			if !ok {
-				return nil, fmt.Errorf("ListOfStructsFromArray->%w", errNotArrayListOfStructs)
+				return nil, werror.WrapWithContext(ErrNotArrayListOfStructs, map[string]interface{}{"row": row})
 			}
 			start := int(listArr.Offsets()[row])
 			end := int(listArr.Offsets()[row+1])
@@ -97,10 +90,10 @@ func ListOfStructsFromArray(arr arrow.Array, row int) (*ListOfStructs, error) {
 				end:   end,
 			}, nil
 		default:
-			return nil, fmt.Errorf("ListOfStructsFromArray->%w", errNotArrayListOfStructs)
+			return nil, werror.WrapWithContext(ErrNotArrayListOfStructs, map[string]interface{}{"row": row})
 		}
 	default:
-		return nil, fmt.Errorf("ListOfStructsFromArray->%w", errNotArrayList)
+		return nil, werror.WrapWithContext(ErrNotArrayList, map[string]interface{}{"row": row})
 	}
 }
 
@@ -362,7 +355,7 @@ func (los *ListOfStructs) StructArray(name string, row int) (*arrow.StructType, 
 		}
 		return structArr.DataType().(*arrow.StructType), structArr, nil
 	default:
-		return nil, nil, fmt.Errorf("StructArray(name=%q)->%w", name, errNotArrayStruct)
+		return nil, nil, werror.WrapWithContext(ErrNotArrayStruct, map[string]interface{}{"fieldName": name, "row": row})
 	}
 }
 
@@ -379,7 +372,7 @@ func (los *ListOfStructs) StructByID(fieldID int, row int) (*arrow.StructType, *
 		}
 		return structArr.DataType().(*arrow.StructType), structArr, nil
 	default:
-		return nil, nil, fmt.Errorf("StructByID(fieldID=%d)->%w", fieldID, errNotArrayStruct)
+		return nil, nil, werror.WrapWithContext(ErrNotArrayStruct, map[string]interface{}{"fieldID": fieldID, "row": row})
 	}
 }
 
@@ -403,7 +396,7 @@ func (los *ListOfStructs) ListValuesById(row int, fieldID int) (arr arrow.Array,
 		end = int(listArr.Offsets()[row+1])
 		arr = listArr.ListValues()
 	default:
-		err = fmt.Errorf("ListValuesById(fieldID=%d)->%w", fieldID, errNotArrayList)
+		err = werror.WrapWithContext(ErrNotArrayList, map[string]interface{}{"fieldID": fieldID, "row": row})
 	}
 	return
 }
@@ -424,7 +417,7 @@ func (los *ListOfStructs) ListOfStructsById(row int, fieldID int) (*ListOfStruct
 		case *array.Struct:
 			dt, ok := structArr.DataType().(*arrow.StructType)
 			if !ok {
-				return nil, fmt.Errorf("ListOfStructsById(fieldID=%d)->%w", fieldID, errNotArrayStruct)
+				return nil, werror.WrapWithContext(ErrNotArrayStruct, map[string]interface{}{"fieldID": fieldID, "row": row})
 			}
 			start := int(listArr.Offsets()[row])
 			end := int(listArr.Offsets()[row+1])
@@ -436,10 +429,10 @@ func (los *ListOfStructs) ListOfStructsById(row int, fieldID int) (*ListOfStruct
 				end:   end,
 			}, nil
 		default:
-			return nil, fmt.Errorf("ListOfStructsById(fieldID=%d)->%w", fieldID, errNotArrayListOfStructs)
+			return nil, werror.WrapWithContext(ErrNotArrayListOfStructs, map[string]interface{}{"fieldID": fieldID, "row": row})
 		}
 	default:
-		return nil, fmt.Errorf("ListOfStructsById(fieldID=%d)->%w", fieldID, errNotArrayList)
+		return nil, werror.WrapWithContext(ErrNotArrayList, map[string]interface{}{"fieldID": fieldID, "row": row})
 	}
 }
 

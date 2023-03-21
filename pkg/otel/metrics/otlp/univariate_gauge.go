@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type UnivariateGaugeIds struct {
@@ -29,7 +30,7 @@ type UnivariateGaugeIds struct {
 func NewUnivariateGaugeIds(parentDT *arrow.StructType) (*UnivariateGaugeIds, error) {
 	dataPoints, err := NewUnivariateNdpIds(parentDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	return &UnivariateGaugeIds{
@@ -40,7 +41,7 @@ func NewUnivariateGaugeIds(parentDT *arrow.StructType) (*UnivariateGaugeIds, err
 func UpdateUnivariateGaugeFrom(gauge pmetric.Gauge, arr *array.Struct, row int, ids *UnivariateGaugeIds, smdata *SharedData, mdata *SharedData) error {
 	los, err := arrowutils.ListOfStructsFromStruct(arr, ids.DataPoints.Id, row)
 	if err != nil {
-		return err
+		return werror.Wrap(err)
 	}
 	return AppendUnivariateNdpInto(gauge.DataPoints(), los, ids.DataPoints, smdata, mdata)
 }

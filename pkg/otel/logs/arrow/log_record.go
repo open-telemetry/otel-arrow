@@ -18,8 +18,6 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/plog"
@@ -28,6 +26,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // Arrow Data Types describing log record and body.
@@ -88,7 +87,7 @@ func LogRecordBuilderFrom(sb *builder.StructBuilder) *LogRecordBuilder {
 // memory allocated by the array.
 func (b *LogRecordBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("log builder already released")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -98,7 +97,7 @@ func (b *LogRecordBuilder) Build() (*array.Struct, error) {
 // Append appends a new log record to the builder.
 func (b *LogRecordBuilder) Append(log plog.LogRecord) error {
 	if b.released {
-		return fmt.Errorf("log record builder already released")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(log, func() error {
@@ -111,10 +110,10 @@ func (b *LogRecordBuilder) Append(log plog.LogRecord) error {
 		b.snb.AppendNonZero(int32(log.SeverityNumber()))
 		b.stb.AppendNonEmpty(log.SeverityText())
 		if err := b.bb.Append(log.Body()); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		if err := b.ab.Append(log.Attributes()); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.dacb.AppendNonZero(log.DroppedAttributesCount())
 		b.fb.Append(uint32(log.Flags()))

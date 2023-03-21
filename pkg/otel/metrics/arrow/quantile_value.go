@@ -15,15 +15,15 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // QuantileValueDT is the Arrow Data Type describing a quantile value.
@@ -60,7 +60,7 @@ func QuantileValueBuilderFrom(ndpb *builder.StructBuilder) *QuantileValueBuilder
 // Once the array is no longer needed, Release() should be called to free the memory.
 func (b *QuantileValueBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("QuantileValueBuilder: Build() called after Release()")
+		return nil, werror.Wrap(carrow.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -80,7 +80,7 @@ func (b *QuantileValueBuilder) Release() {
 // Append appends a new quantile value to the builder.
 func (b *QuantileValueBuilder) Append(sdp pmetric.SummaryDataPointValueAtQuantile) error {
 	if b.released {
-		return fmt.Errorf("QuantileValueBuilder: Reserve() called after Release()")
+		return werror.Wrap(carrow.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(sdp, func() error {

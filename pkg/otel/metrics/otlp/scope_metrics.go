@@ -15,8 +15,6 @@
 package otlp
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -24,6 +22,7 @@ import (
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type ScopeMetricsIds struct {
@@ -40,12 +39,12 @@ func NewScopeMetricsIds(scopeMetricsDT *arrow.StructType) (*ScopeMetricsIds, err
 
 	scopeIds, err := otlp.NewScopeIds(scopeMetricsDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	metricSetIds, err := NewMetricSetIds(scopeMetricsDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	sharedAttrIds := otlp.NewSharedAttributeIds(scopeMetricsDT)
@@ -69,12 +68,12 @@ func UpdateScopeMetricsFrom(scopeMetricsSlice pmetric.ScopeMetricsSlice, arrowSc
 		scopeMetrics := scopeMetricsSlice.AppendEmpty()
 
 		if err := otlp.UpdateScopeWith(scopeMetrics.Scope(), arrowScopeMetrics, scopeMetricsIdx, ids.ScopeIds); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 
 		schemaUrl, err := arrowScopeMetrics.StringFieldByID(ids.SchemaUrl, scopeMetricsIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		scopeMetrics.SetSchemaUrl(schemaUrl)
 
@@ -83,7 +82,7 @@ func UpdateScopeMetricsFrom(scopeMetricsSlice pmetric.ScopeMetricsSlice, arrowSc
 		if ids.SharedAttributeIds != nil {
 			err = otlp.AppendAttributesInto(sdata.Attributes, arrowScopeMetrics.Array(), scopeMetricsIdx, ids.SharedAttributeIds)
 			if err != nil {
-				return fmt.Errorf("UpdateScopeMetricsFrom(field='shared_attributes')->%w", err)
+				return werror.Wrap(err)
 			}
 		}
 		if ids.SharedStartTimeID != -1 {
@@ -95,14 +94,14 @@ func UpdateScopeMetricsFrom(scopeMetricsSlice pmetric.ScopeMetricsSlice, arrowSc
 
 		arrowMetrics, err := arrowScopeMetrics.ListOfStructsById(scopeMetricsIdx, ids.MetricSetIds.Id)
 		if err != nil {
-			return fmt.Errorf("UpdateScopeMetricsFrom(field='metrics')->%w", err)
+			return werror.Wrap(err)
 		}
 		metricsSlice := scopeMetrics.Metrics()
 		metricsSlice.EnsureCapacity(arrowMetrics.End() - arrowMetrics.Start())
 		for entityIdx := arrowMetrics.Start(); entityIdx < arrowMetrics.End(); entityIdx++ {
 			err = AppendMetricSetInto(metricsSlice, arrowMetrics, entityIdx, ids.MetricSetIds, sdata)
 			if err != nil {
-				return fmt.Errorf("UpdateScopeMetricsFrom->%w", err)
+				return werror.Wrap(err)
 			}
 		}
 	}

@@ -18,8 +18,6 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -28,6 +26,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // LinkDT is the Arrow Data Type describing a link event.
@@ -68,7 +67,7 @@ func LinkBuilderFrom(lb *builder.StructBuilder) *LinkBuilder {
 // Append appends a new link to the builder.
 func (b *LinkBuilder) Append(link ptrace.SpanLink) error {
 	if b.released {
-		return fmt.Errorf("link builder already released")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(link, func() error {
@@ -88,7 +87,7 @@ func (b *LinkBuilder) Append(link ptrace.SpanLink) error {
 // memory allocated by the array.
 func (b *LinkBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("link builder already released")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()

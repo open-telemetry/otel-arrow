@@ -27,6 +27,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // Constants used to identify the type of value in the union.
@@ -126,7 +127,7 @@ func AnyValueBuilderFrom(av *builder.SparseUnionBuilder) *AnyValueBuilder {
 // memory allocated by the array.
 func (b *AnyValueBuilder) Build() (*array.SparseUnion, error) {
 	if b.released {
-		return nil, fmt.Errorf("any value builder already released")
+		return nil, werror.Wrap(ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -136,7 +137,7 @@ func (b *AnyValueBuilder) Build() (*array.SparseUnion, error) {
 // Append appends a new any value to the builder.
 func (b *AnyValueBuilder) Append(av pcommon.Value) error {
 	if b.released {
-		return fmt.Errorf("any value builder already released")
+		return werror.Wrap(ErrBuilderAlreadyReleased)
 	}
 
 	var err error
@@ -167,7 +168,7 @@ func (b *AnyValueBuilder) Append(av pcommon.Value) error {
 		err = b.appendCbor(cborData)
 	}
 
-	return err
+	return werror.Wrap(err)
 }
 
 // Release releases the memory allocated by the builder.

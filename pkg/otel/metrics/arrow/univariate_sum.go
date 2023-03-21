@@ -15,15 +15,15 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // UnivariateSumDT is the Arrow Data Type describing a univariate sum.
@@ -67,7 +67,7 @@ func UnivariateSumBuilderFrom(ndpb *builder.StructBuilder) *UnivariateSumBuilder
 // Once the array is no longer needed, Release() should be called to free the memory.
 func (b *UnivariateSumBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("UnivariateMetricBuilder: Build() called after Release()")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -87,7 +87,7 @@ func (b *UnivariateSumBuilder) Release() {
 // Append appends a new univariate sum to the builder.
 func (b *UnivariateSumBuilder) Append(sum pmetric.Sum, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
-		return fmt.Errorf("UnivariateMetricBuilder: Reserve() called after Release()")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(sum, func() error {
@@ -96,12 +96,12 @@ func (b *UnivariateSumBuilder) Append(sum pmetric.Sum, smdata *ScopeMetricsShare
 		if err := b.dplb.Append(dpc, func() error {
 			for i := 0; i < dpc; i++ {
 				if err := b.dpb.Append(dps.At(i), smdata, mdata); err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 			}
 			return nil
 		}); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		if sum.AggregationTemporality() == pmetric.AggregationTemporalityUnspecified {
 			b.atb.AppendNull()

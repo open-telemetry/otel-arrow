@@ -15,14 +15,13 @@
 package otlp
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type ScopeSpansIds struct {
@@ -35,19 +34,19 @@ type ScopeSpansIds struct {
 func NewScopeSpansIds(dt *arrow.StructType) (*ScopeSpansIds, error) {
 	id, scopeSpansDT, err := arrowutils.ListOfStructsFieldIDFromStruct(dt, constants.ScopeSpans)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	schemaId, _ := arrowutils.FieldIDFromStruct(scopeSpansDT, constants.SchemaUrl)
 
 	scopeIds, err := otlp.NewScopeIds(scopeSpansDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	spansIds, err := NewSpansIds(scopeSpansDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	return &ScopeSpansIds{
@@ -65,7 +64,7 @@ func AppendScopeSpansInto(resSpans ptrace.ResourceSpans, arrowResSpans *arrowuti
 
 	arrowScopeSpans, err := arrowResSpans.ListOfStructsById(resSpansIdx, ids.Id)
 	if err != nil {
-		return fmt.Errorf("AppendScopeSpansInto(field='scope_spans')->%w", err)
+		return werror.Wrap(err)
 	}
 
 	if arrowScopeSpans == nil {
@@ -80,25 +79,25 @@ func AppendScopeSpansInto(resSpans ptrace.ResourceSpans, arrowResSpans *arrowuti
 		scopeSpans := scopeSpansSlice.AppendEmpty()
 
 		if err = otlp.UpdateScopeWith(scopeSpans.Scope(), arrowScopeSpans, scopeSpansIdx, ids.ScopeIds); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 
 		schemaUrl, err := arrowScopeSpans.StringFieldByID(ids.SchemaUrl, scopeSpansIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		scopeSpans.SetSchemaUrl(schemaUrl)
 
 		arrowSpans, err := arrowScopeSpans.ListOfStructsById(scopeSpansIdx, ids.SpansIds.Id)
 		if err != nil {
-			return fmt.Errorf("AppendScopeSpansInto(field='spans')->%w", err)
+			return werror.Wrap(err)
 		}
 		spansSlice := scopeSpans.Spans()
 		spansSlice.EnsureCapacity(arrowSpans.End() - arrowSpans.Start())
 		for entityIdx := arrowSpans.Start(); entityIdx < arrowSpans.End(); entityIdx++ {
 			err = AppendSpanInto(spansSlice, arrowSpans, entityIdx, ids.SpansIds)
 			if err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 		}
 	}

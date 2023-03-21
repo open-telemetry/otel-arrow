@@ -35,6 +35,7 @@ import (
 	logsarrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
 	metricsarrow "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
 	tracesarrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // This file implements a generic producer API used to encode BatchArrowRecords messages from
@@ -159,7 +160,7 @@ func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colar
 		return p.metricsBuilder, nil
 	}, metrics)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	schemaID := p.metricsRecordBuilder.SchemaID()
@@ -167,7 +168,7 @@ func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colar
 
 	bar, err := p.Produce(rms)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 	return bar, nil
 }
@@ -181,7 +182,7 @@ func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrow
 		return p.logsBuilder, nil
 	}, ls)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	schemaID := p.logsRecordBuilder.SchemaID()
@@ -189,7 +190,7 @@ func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrow
 
 	bar, err := p.Produce(rms)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 	return bar, nil
 }
@@ -203,7 +204,7 @@ func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.Batc
 		return p.tracesBuilder, nil
 	}, ts)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	schemaID := p.tracesRecordBuilder.SchemaID()
@@ -211,7 +212,7 @@ func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.Batc
 
 	bar, err := p.Produce(rms)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 	return bar, nil
 }
@@ -243,7 +244,7 @@ func (p *Producer) Close() error {
 
 	for _, sp := range p.streamProducers {
 		if err := sp.ipcWriter.Close(); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 	}
 	return nil
@@ -281,7 +282,7 @@ func (p *Producer) Produce(rms []*RecordMessage) (*colarspb.BatchArrowRecords, e
 			}
 			err := sp.ipcWriter.Write(rm.record)
 			if err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 			buf := sp.output.Bytes()
 
@@ -296,7 +297,7 @@ func (p *Producer) Produce(rms []*RecordMessage) (*colarspb.BatchArrowRecords, e
 			return nil
 		}()
 		if err != nil {
-			return nil, err
+			return nil, werror.Wrap(err)
 		}
 	}
 
@@ -346,7 +347,7 @@ func recordBuilder[T pmetric.Metrics | plog.Logs | ptrace.Traces](builder func()
 			break
 		}
 	}
-	return record, err
+	return record, werror.Wrap(err)
 }
 
 // WithAllocator sets the allocator to use for the Producer.

@@ -21,6 +21,7 @@ import (
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type ResourceSpansIds struct {
@@ -33,19 +34,19 @@ type ResourceSpansIds struct {
 func NewResourceSpansIds(schema *arrow.Schema) (*ResourceSpansIds, error) {
 	id, rsDT, err := arrowutils.ListOfStructsFieldIDFromSchema(schema, constants.ResourceSpans)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	schemaId, _ := arrowutils.FieldIDFromStruct(rsDT, constants.SchemaUrl)
 
 	scopeSpansIds, err := NewScopeSpansIds(rsDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	resourceIds, err := otlp.NewResourceIds(rsDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	return &ResourceSpansIds{
@@ -63,7 +64,7 @@ func AppendResourceSpansInto(traces ptrace.Traces, record arrow.Record, traceIds
 	for traceIdx := 0; traceIdx < resSpansCount; traceIdx++ {
 		arrowResEnts, err := arrowutils.ListOfStructsFromRecord(record, traceIds.ResourceSpans.Id, traceIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		resSpansSlice.EnsureCapacity(resSpansSlice.Len() + arrowResEnts.End() - arrowResEnts.Start())
 
@@ -71,18 +72,18 @@ func AppendResourceSpansInto(traces ptrace.Traces, record arrow.Record, traceIds
 			resSpans := resSpansSlice.AppendEmpty()
 
 			if err = otlp.UpdateResourceWith(resSpans.Resource(), arrowResEnts, resSpansIdx, traceIds.ResourceSpans.Resource); err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 
 			schemaUrl, err := arrowResEnts.StringFieldByID(traceIds.ResourceSpans.SchemaUrl, resSpansIdx)
 			if err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 			resSpans.SetSchemaUrl(schemaUrl)
 
 			err = AppendScopeSpansInto(resSpans, arrowResEnts, resSpansIdx, traceIds.ResourceSpans.ScopeSpans)
 			if err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 		}
 	}

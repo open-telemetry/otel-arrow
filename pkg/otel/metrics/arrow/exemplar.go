@@ -15,8 +15,6 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -25,6 +23,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 var (
@@ -71,7 +70,7 @@ func ExemplarBuilderFrom(ex *builder.StructBuilder) *ExemplarBuilder {
 // memory allocated by the array.
 func (b *ExemplarBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("exemplar builder already released")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -81,16 +80,16 @@ func (b *ExemplarBuilder) Build() (*array.Struct, error) {
 // Append appends an exemplar to the builder.
 func (b *ExemplarBuilder) Append(ex pmetric.Exemplar) error {
 	if b.released {
-		return fmt.Errorf("exemplar builder already released")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(ex, func() error {
 		if err := b.ab.Append(ex.FilteredAttributes()); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.tunb.Append(arrow.Timestamp(ex.Timestamp()))
 		if err := b.mvb.AppendExemplarValue(ex); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 
 		sid := ex.SpanID()

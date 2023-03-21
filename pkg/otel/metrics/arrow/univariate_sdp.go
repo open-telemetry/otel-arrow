@@ -15,8 +15,6 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -25,6 +23,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // UnivariateSummaryDataPointDT is the Arrow Data Type describing a univariate summary data point.
@@ -80,7 +79,7 @@ func UnivariateSummaryDataPointBuilderFrom(ndpb *builder.StructBuilder) *Univari
 // Once the array is no longer needed, Release() should be called to free the memory.
 func (b *UnivariateSummaryDataPointBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("UnivariateSummaryDataPointBuilder: Build() called after Release()")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -100,12 +99,12 @@ func (b *UnivariateSummaryDataPointBuilder) Release() {
 // Append appends a new summary data point to the builder.
 func (b *UnivariateSummaryDataPointBuilder) Append(sdp pmetric.SummaryDataPoint, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
-		return fmt.Errorf("UnivariateSummaryDataPointBuilder: Reserve() called after Release()")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(sdp, func() error {
 		if err := b.ab.AppendUniqueAttributes(sdp.Attributes(), smdata.Attributes, mdata.Attributes); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 
 		if smdata.StartTime == nil && mdata.StartTime == nil {
@@ -129,7 +128,7 @@ func (b *UnivariateSummaryDataPointBuilder) Append(sdp pmetric.SummaryDataPoint,
 		return b.qvlb.Append(qvc, func() error {
 			for i := 0; i < qvc; i++ {
 				if err := b.qvb.Append(qvs.At(i)); err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 			}
 			return nil

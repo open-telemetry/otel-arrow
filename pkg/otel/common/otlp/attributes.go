@@ -15,14 +15,13 @@
 package otlp
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type AttributeIds struct {
@@ -45,7 +44,7 @@ func NewSharedAttributeIds(structDT *arrow.StructType) *AttributeIds {
 func AppendAttributesInto(attrs pcommon.Map, parentArr *array.Struct, row int, attributeIds *AttributeIds) error {
 	marr, err := attributesFromStruct(attributeIds.Id, parentArr, row)
 	if err != nil {
-		return err
+		return werror.Wrap(err)
 	}
 	if marr == nil {
 		return nil
@@ -67,17 +66,17 @@ func UpdateAttributesFrom(attrs pcommon.Map, marr *array.Map, row int) error {
 	keys := marr.Keys()
 	values, ok := marr.Items().(*array.SparseUnion)
 	if !ok {
-		return fmt.Errorf("`attributes` is not an Arrow sparse union")
+		return werror.WrapWithContext(ErrNotArraySparseUnion, map[string]interface{}{"row": row})
 	}
 
 	for i := start; i < end; i++ {
 		key, err := arrowutils.StringFromArray(keys, i)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 
 		if err = UpdateValueFrom(attrs.PutEmpty(key), values, i); err != nil {
-			return fmt.Errorf("UpdateAttributesFrom(key=%q)->%w", key, err)
+			return werror.Wrap(err)
 		}
 	}
 	return nil
@@ -97,7 +96,7 @@ func attributesFromStruct(fieldID int, parentArr *array.Struct, row int) (marr *
 
 		marr = arr
 	default:
-		err = fmt.Errorf("`attributes` is not an Arrow map")
+		err = werror.WrapWithContext(ErrNotArrayMap, map[string]interface{}{"row": row, "fieldID": fieldID})
 	}
 	return
 }

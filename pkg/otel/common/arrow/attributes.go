@@ -18,7 +18,6 @@
 package arrow
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 
@@ -28,6 +27,7 @@ import (
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // Arrow data types used to build the attribute map.
@@ -123,7 +123,7 @@ func AttributesBuilderFrom(mb *builder.MapBuilder) *AttributesBuilder {
 // memory allocated by the array.
 func (b *AttributesBuilder) Build() (*array.Map, error) {
 	if b.released {
-		return nil, fmt.Errorf("attribute builder already released")
+		return nil, werror.Wrap(ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -134,7 +134,7 @@ func (b *AttributesBuilder) Build() (*array.Map, error) {
 // Note: empty keys are skipped.
 func (b *AttributesBuilder) Append(attrs pcommon.Map) error {
 	if b.released {
-		return fmt.Errorf("attribute builder already released")
+		return werror.Wrap(ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(attrs.Len(), func() error {
@@ -147,13 +147,13 @@ func (b *AttributesBuilder) Append(attrs pcommon.Map) error {
 			b.kb.AppendNonEmpty(key)
 			return b.ib.Append(v) == nil
 		})
-		return err
+		return werror.Wrap(err)
 	})
 }
 
 func (b *AttributesBuilder) AppendUniqueAttributes(attrs pcommon.Map, smattrs *common.SharedAttributes, mattrs *common.SharedAttributes) error {
 	if b.released {
-		return fmt.Errorf("attribute builder already released")
+		return werror.Wrap(ErrBuilderAlreadyReleased)
 	}
 
 	uniqueAttrsCount := attrs.Len()
@@ -182,7 +182,7 @@ func (b *AttributesBuilder) AppendUniqueAttributes(attrs pcommon.Map, smattrs *c
 			}
 
 			b.kb.AppendNonEmpty(key)
-			err = b.ib.Append(v)
+			err = werror.WrapWithContext(b.ib.Append(v), map[string]interface{}{"key": key, "value": v})
 
 			uniqueAttrsCount--
 			return err == nil && uniqueAttrsCount > 0

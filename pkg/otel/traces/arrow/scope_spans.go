@@ -18,8 +18,6 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -28,6 +26,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // ScopeSpansDT is the Arrow Data Type describing a scope span.
@@ -70,7 +69,7 @@ func ScopeSpansBuilderFrom(builder *builder.StructBuilder) *ScopeSpansBuilder {
 // memory allocated by the array.
 func (b *ScopeSpansBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("scope spans builder already released")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -80,12 +79,12 @@ func (b *ScopeSpansBuilder) Build() (*array.Struct, error) {
 // Append appends a new scope spans to the builder.
 func (b *ScopeSpansBuilder) Append(ss ptrace.ScopeSpans) error {
 	if b.released {
-		return fmt.Errorf("scope spans builder already released")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(ss, func() error {
 		if err := b.scb.Append(ss.Scope()); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.schb.AppendNonEmpty(ss.SchemaUrl())
 		spans := ss.Spans()
@@ -93,7 +92,7 @@ func (b *ScopeSpansBuilder) Append(ss ptrace.ScopeSpans) error {
 		return b.ssb.Append(sc, func() error {
 			for i := 0; i < sc; i++ {
 				if err := b.sb.Append(spans.At(i)); err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 			}
 			return nil

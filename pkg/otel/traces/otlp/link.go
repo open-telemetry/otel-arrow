@@ -15,15 +15,15 @@
 package otlp
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type LinkIds struct {
@@ -38,7 +38,7 @@ type LinkIds struct {
 func NewLinkIds(spanDT *arrow.StructType) (*LinkIds, error) {
 	id, linkDT, err := arrowutils.ListOfStructsFieldIDFromStruct(spanDT, constants.SpanLinks)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	traceId, _ := arrowutils.FieldIDFromStruct(linkDT, constants.TraceId)
@@ -47,7 +47,7 @@ func NewLinkIds(spanDT *arrow.StructType) (*LinkIds, error) {
 
 	attributeIds, err := otlp.NewAttributeIds(linkDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	droppedAttributesCount, _ := arrowutils.FieldIDFromStruct(linkDT, constants.DroppedAttributesCount)
@@ -66,7 +66,7 @@ func NewLinkIds(spanDT *arrow.StructType) (*LinkIds, error) {
 func AppendLinksInto(result ptrace.SpanLinkSlice, los *arrowutils.ListOfStructs, row int, ids *LinkIds) error {
 	linkLos, err := los.ListOfStructsById(row, ids.Id)
 	if err != nil {
-		return fmt.Errorf("AppendLinksInto(field='links')->%w", err)
+		return werror.Wrap(err)
 	}
 
 	if linkLos == nil {
@@ -81,42 +81,42 @@ func AppendLinksInto(result ptrace.SpanLinkSlice, los *arrowutils.ListOfStructs,
 			continue
 		}
 
-		traceId, err := linkLos.FixedSizeBinaryFieldByID(ids.TraceID, linkIdx)
+		traceID, err := linkLos.FixedSizeBinaryFieldByID(ids.TraceID, linkIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
-		if len(traceId) == 16 {
+		if len(traceID) == 16 {
 			var tid pcommon.TraceID
-			copy(tid[:], traceId)
+			copy(tid[:], traceID)
 			link.SetTraceID(tid)
 		} else {
-			return fmt.Errorf("invalid TraceID len")
+			return werror.WrapWithContext(common.ErrInvalidTraceIDLength, map[string]interface{}{"traceID": traceID})
 		}
 
-		spanId, err := linkLos.FixedSizeBinaryFieldByID(ids.SpanID, linkIdx)
+		spanID, err := linkLos.FixedSizeBinaryFieldByID(ids.SpanID, linkIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
-		if len(spanId) == 8 {
+		if len(spanID) == 8 {
 			var sid pcommon.SpanID
-			copy(sid[:], spanId)
+			copy(sid[:], spanID)
 			link.SetSpanID(sid)
 		} else {
-			return fmt.Errorf("invalid SpanID len")
+			return werror.WrapWithContext(common.ErrInvalidSpanIDLength, map[string]interface{}{"spanID": spanID})
 		}
 
 		traceState, err := linkLos.StringFieldByID(ids.TraceState, linkIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		link.TraceState().FromRaw(traceState)
 
 		if err = otlp.AppendAttributesInto(link.Attributes(), linkLos.Array(), linkIdx, ids.Attributes); err != nil {
-			return fmt.Errorf("AppendLinksInto->%w", err)
+			return werror.Wrap(err)
 		}
 		dac, err := linkLos.U32FieldByID(ids.DroppedAttributesCount, linkIdx)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		link.SetDroppedAttributesCount(dac)
 	}

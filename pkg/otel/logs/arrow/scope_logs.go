@@ -18,8 +18,6 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/plog"
@@ -28,6 +26,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // ScopeLogsDT is the Arrow Data Type describing a scope span.
@@ -69,7 +68,7 @@ func ScopeLogsBuilderFrom(builder *builder.StructBuilder) *ScopeLogsBuilder {
 // memory allocated by the array.
 func (b *ScopeLogsBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("scope logs builder already released")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -79,12 +78,12 @@ func (b *ScopeLogsBuilder) Build() (*array.Struct, error) {
 // Append appends a new scope logs to the builder.
 func (b *ScopeLogsBuilder) Append(sl plog.ScopeLogs) error {
 	if b.released {
-		return fmt.Errorf("scope logs builder already released")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(sl, func() error {
 		if err := b.scb.Append(sl.Scope()); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.schb.AppendNonEmpty(sl.SchemaUrl())
 		logRecords := sl.LogRecords()
@@ -92,7 +91,7 @@ func (b *ScopeLogsBuilder) Append(sl plog.ScopeLogs) error {
 		return b.lrsb.Append(lrc, func() error {
 			for i := 0; i < lrc; i++ {
 				if err := b.lrb.Append(logRecords.At(i)); err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 			}
 			return nil

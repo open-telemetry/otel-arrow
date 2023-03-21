@@ -15,14 +15,14 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // Schema is the Arrow schema for the OTLP Arrow Metrics record.
@@ -48,7 +48,7 @@ func NewMetricsBuilder(rBuilder *builder.RecordBuilderExt) (*MetricsBuilder, err
 		builder:  rBuilder,
 	}
 	if err := metricsBuilder.init(); err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 	return metricsBuilder, nil
 }
@@ -66,14 +66,14 @@ func (b *MetricsBuilder) init() error {
 // memory allocated by the record.
 func (b *MetricsBuilder) Build() (record arrow.Record, err error) {
 	if b.released {
-		return nil, fmt.Errorf("resource metrics builder already released")
+		return nil, werror.Wrap(carrow.ErrBuilderAlreadyReleased)
 	}
 
 	record, err = b.builder.NewRecord()
 	if err != nil {
 		initErr := b.init()
 		if initErr != nil {
-			err = initErr
+			err = werror.Wrap(initErr)
 		}
 	}
 
@@ -83,7 +83,7 @@ func (b *MetricsBuilder) Build() (record arrow.Record, err error) {
 // Append appends a new set of resource metrics to the builder.
 func (b *MetricsBuilder) Append(metrics pmetric.Metrics) error {
 	if b.released {
-		return fmt.Errorf("metrics builder already released")
+		return werror.Wrap(carrow.ErrBuilderAlreadyReleased)
 	}
 
 	rm := metrics.ResourceMetrics()
@@ -91,7 +91,7 @@ func (b *MetricsBuilder) Append(metrics pmetric.Metrics) error {
 	return b.rmb.Append(rc, func() error {
 		for i := 0; i < rc; i++ {
 			if err := b.rmp.Append(rm.At(i)); err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 		}
 		return nil

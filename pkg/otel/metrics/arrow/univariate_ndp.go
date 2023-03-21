@@ -15,8 +15,6 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -25,6 +23,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 var (
@@ -76,7 +75,7 @@ func NumberDataPointBuilderFrom(ndpb *builder.StructBuilder) *NumberDataPointBui
 // Once the array is no longer needed, Release() should be called to free the memory.
 func (b *NumberDataPointBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("QuantileValueBuilder: Build() called after Release()")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -96,12 +95,12 @@ func (b *NumberDataPointBuilder) Release() {
 // Append appends a new data point to the builder.
 func (b *NumberDataPointBuilder) Append(ndp pmetric.NumberDataPoint, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
-		return fmt.Errorf("QuantileValueBuilder: Reserve() called after Release()")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(ndp, func() error {
 		if err := b.ab.AppendUniqueAttributes(ndp.Attributes(), smdata.Attributes, mdata.Attributes); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		if smdata.StartTime == nil && mdata.StartTime == nil {
 			b.stunb.Append(arrow.Timestamp(ndp.StartTimestamp()))
@@ -114,7 +113,7 @@ func (b *NumberDataPointBuilder) Append(ndp pmetric.NumberDataPoint, smdata *Sco
 			b.tunb.AppendNull()
 		}
 		if err := b.mvb.AppendNumberDataPointValue(ndp); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 
 		b.fb.Append(uint32(ndp.Flags()))
@@ -124,7 +123,7 @@ func (b *NumberDataPointBuilder) Append(ndp pmetric.NumberDataPoint, smdata *Sco
 		return b.elb.Append(ec, func() error {
 			for i := 0; i < ec; i++ {
 				if err := b.eb.Append(exs.At(i)); err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 			}
 			return nil

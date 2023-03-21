@@ -15,8 +15,6 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -25,6 +23,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // UnivariateHistogramDataPointDT is the Arrow Data Type describing a univariate histogram number data point.
@@ -98,7 +97,7 @@ func HistogramDataPointBuilderFrom(b *builder.StructBuilder) *HistogramDataPoint
 // Once the array is no longer needed, Release() should be called to free the memory.
 func (b *HistogramDataPointBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("HistogramDataPointBuilder: Build() called after Release()")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -118,12 +117,12 @@ func (b *HistogramDataPointBuilder) Release() {
 // Append appends a new histogram data point to the builder.
 func (b *HistogramDataPointBuilder) Append(hdp pmetric.HistogramDataPoint, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
-		return fmt.Errorf("HistogramDataPointBuilder: Reserve() called after Release()")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(hdp, func() error {
 		if err := b.ab.AppendUniqueAttributes(hdp.Attributes(), smdata.Attributes, mdata.Attributes); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		if smdata.StartTime == nil && mdata.StartTime == nil {
 			b.stunb.Append(arrow.Timestamp(hdp.StartTimestamp()))
@@ -150,7 +149,7 @@ func (b *HistogramDataPointBuilder) Append(hdp pmetric.HistogramDataPoint, smdat
 			}
 			return nil
 		}); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 
 		heb := hdp.ExplicitBounds()
@@ -161,7 +160,7 @@ func (b *HistogramDataPointBuilder) Append(hdp pmetric.HistogramDataPoint, smdat
 			}
 			return nil
 		}); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 
 		exs := hdp.Exemplars()
@@ -169,12 +168,12 @@ func (b *HistogramDataPointBuilder) Append(hdp pmetric.HistogramDataPoint, smdat
 		if err := b.elb.Append(ec, func() error {
 			for i := 0; i < ec; i++ {
 				if err := b.eb.Append(exs.At(i)); err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 			}
 			return nil
 		}); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.fb.Append(uint32(hdp.Flags()))
 

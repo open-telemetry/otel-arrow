@@ -15,15 +15,15 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // EHistogramDataPointBucketsDT is the Arrow Data Type describing an exponential histogram data point buckets.
@@ -63,7 +63,7 @@ func EHistogramDataPointBucketsBuilderFrom(b *builder.StructBuilder) *EHistogram
 // Once the array is no longer needed, Release() should be called to free the memory.
 func (b *EHistogramDataPointBucketsBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("EHistogramDataPointBucketsBuilder: Build() called after Release()")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -83,7 +83,7 @@ func (b *EHistogramDataPointBucketsBuilder) Release() {
 // Append appends a new histogram data point to the builder.
 func (b *EHistogramDataPointBucketsBuilder) Append(hdpb pmetric.ExponentialHistogramDataPointBuckets) error {
 	if b.released {
-		return fmt.Errorf("EHistogramDataPointBucketsBuilder: Reserve() called after Release()")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(hdpb, func() error {

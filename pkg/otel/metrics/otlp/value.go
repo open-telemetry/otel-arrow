@@ -15,13 +15,12 @@
 package otlp
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	arrow "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 func UpdateValueFromExemplar(v pmetric.Exemplar, vArr *array.SparseUnion, row int) error {
@@ -32,17 +31,17 @@ func UpdateValueFromExemplar(v pmetric.Exemplar, vArr *array.SparseUnion, row in
 	case arrow.I64Code:
 		val, err := arrowutils.I64FromArray(vArr.Field(fieldId), row)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		v.SetIntValue(val)
 	case arrow.F64Code:
 		val, err := arrowutils.F64FromArray(vArr.Field(fieldId), row)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		v.SetDoubleValue(val)
 	default:
-		return fmt.Errorf("UpdateValueFromExemplar: unknow type code `%d` in sparse union array", tcode)
+		return werror.WrapWithContext(ErrUnknownTypeCode, map[string]interface{}{"typeCode": tcode, "row": row})
 	}
 	return nil
 }
@@ -55,17 +54,17 @@ func UpdateValueFromNumberDataPoint(v pmetric.NumberDataPoint, vArr *array.Spars
 	case arrow.I64Code:
 		val, err := arrowutils.I64FromArray(vArr.Field(fieldId), row)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		v.SetIntValue(val)
 	case arrow.F64Code:
 		val, err := arrowutils.F64FromArray(vArr.Field(fieldId), row)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		v.SetDoubleValue(val)
 	default:
-		return fmt.Errorf("UpdateValueFromNumberDataPoint: unknow type code `%d` in sparse union array", tcode)
+		return werror.WrapWithContext(ErrUnknownTypeCode, map[string]interface{}{"typeCode": tcode, "row": row})
 	}
 	return nil
 }

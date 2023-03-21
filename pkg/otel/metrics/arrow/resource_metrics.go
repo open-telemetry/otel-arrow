@@ -15,8 +15,6 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -25,6 +23,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 var (
@@ -66,7 +65,7 @@ func ResourceMetricsBuilderFrom(builder *builder.StructBuilder) *ResourceMetrics
 // memory allocated by the array.
 func (b *ResourceMetricsBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("resource metrics builder already released")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -76,12 +75,12 @@ func (b *ResourceMetricsBuilder) Build() (*array.Struct, error) {
 // Append appends a new resource metrics to the builder.
 func (b *ResourceMetricsBuilder) Append(sm pmetric.ResourceMetrics) error {
 	if b.released {
-		return fmt.Errorf("resource metrics builder already released")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(sm, func() error {
 		if err := b.rb.Append(sm.Resource()); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.schb.AppendNonEmpty(sm.SchemaUrl())
 		smetrics := sm.ScopeMetrics()
@@ -89,7 +88,7 @@ func (b *ResourceMetricsBuilder) Append(sm pmetric.ResourceMetrics) error {
 		return b.spsb.Append(sc, func() error {
 			for i := 0; i < sc; i++ {
 				if err := b.smb.Append(smetrics.At(i)); err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 			}
 			return nil

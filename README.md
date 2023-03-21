@@ -63,7 +63,7 @@ for metrics, logs, and traces (in this order).
 
 ![img](docs/img/logs_compression_rate_benchmark.png)
 
-![img](docs/img/traces_compression_rate_benchmark.pnggo run)
+![img](docs/img/traces_compression_rate_benchmark.png)
 
 ### End-to-end performance benchmarks
 

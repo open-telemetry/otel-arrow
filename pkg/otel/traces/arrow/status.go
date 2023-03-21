@@ -18,15 +18,15 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // StatusDT is the Arrow Data Type describing a span status.
@@ -58,7 +58,7 @@ func StatusBuilderFrom(sb *builder.StructBuilder) *StatusBuilder {
 // Append appends a new span status to the builder.
 func (b *StatusBuilder) Append(status ptrace.Status) error {
 	if b.released {
-		return fmt.Errorf("status builder already released")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(status, func() error {
@@ -74,7 +74,7 @@ func (b *StatusBuilder) Append(status ptrace.Status) error {
 // memory allocated by the array.
 func (b *StatusBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("status builder already released")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()

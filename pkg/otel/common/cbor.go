@@ -19,12 +19,12 @@ package common
 
 import (
 	"bytes"
-	"errors"
-	"fmt"
 	"math"
 
 	"github.com/fxamacker/cbor/v2"
 	"go.opentelemetry.io/collector/pdata/pcommon"
+
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // The CBOR representation is used to serialize complex pcommon.Value types (e.g. maps and slices) in the attributes
@@ -38,23 +38,17 @@ import (
 // small code size, fairly small message size, and extensibility without the need for version negotiation. CBOR is
 // defined in RFC 8949.
 
-var (
-	errInvalidKeyMap         = errors.New("invalid key map")
-	errUnsupportedCborType   = errors.New("unsupported cbor type")
-	errInvalidTypeConversion = errors.New("invalid type conversion")
-)
-
 // Serialize serializes the given pcommon.value into a CBOR byte array.
 func Serialize(v pcommon.Value) ([]byte, error) {
 	var buf bytes.Buffer
 
 	em, err := cbor.EncOptions{Sort: cbor.SortCanonical}.EncMode()
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	if err = encode(em.NewEncoder(&buf), v); err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	return buf.Bytes(), nil
@@ -66,11 +60,11 @@ func Deserialize(cborData []byte, target pcommon.Value) error {
 
 	var v interface{}
 	if err := dec.Decode(&v); err != nil {
-		return err
+		return werror.Wrap(err)
 	}
 
 	if err := decode(v, target); err != nil {
-		return err
+		return werror.Wrap(err)
 	}
 	return nil
 }
@@ -112,7 +106,7 @@ func encode(enc *cbor.Encoder, v pcommon.Value) (err error) {
 		slice := v.Slice()
 		for i := 0; i < slice.Len(); i++ {
 			if err := encode(enc, slice.At(i)); err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 		}
 
@@ -127,6 +121,8 @@ func encode(enc *cbor.Encoder, v pcommon.Value) (err error) {
 	case pcommon.ValueTypeEmpty:
 		err = enc.Encode(nil)
 	}
+
+	err = werror.Wrap(err)
 	return
 }
 
@@ -140,7 +136,7 @@ func decode(inVal interface{}, outVal pcommon.Value) error {
 		outVal.SetInt(typedV)
 	case uint64:
 		if typedV > math.MaxInt64 {
-			return fmt.Errorf("uint64 too large to be converted into an int64: %w", errInvalidTypeConversion)
+			return werror.Wrap(ErrInvalidTypeConversion)
 		}
 		outVal.SetInt(int64(typedV))
 	case float64:
@@ -153,10 +149,10 @@ func decode(inVal interface{}, outVal pcommon.Value) error {
 		for k, v := range typedV {
 			if kStr, ok := k.(string); ok {
 				if err := decode(v, mapV.PutEmpty(kStr)); err != nil {
-					return err
+					return werror.Wrap(err)
 				}
 			} else {
-				return fmt.Errorf("key map is not a string: %w", errInvalidKeyMap)
+				return werror.WrapWithContext(ErrInvalidKeyMap, map[string]interface{}{"key": k, "value": v})
 			}
 		}
 	case []interface{}:
@@ -164,7 +160,7 @@ func decode(inVal interface{}, outVal pcommon.Value) error {
 		slice.EnsureCapacity(len(typedV))
 		for _, v := range typedV {
 			if err := decode(v, slice.AppendEmpty()); err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 		}
 	case []byte:
@@ -173,7 +169,7 @@ func decode(inVal interface{}, outVal pcommon.Value) error {
 	case nil:
 		// nothing to do
 	default:
-		return fmt.Errorf("unsupported CBOR type=%T: %w", inVal, errUnsupportedCborType)
+		return werror.WrapWithContext(ErrUnsupportedCborType, map[string]interface{}{"type": inVal})
 	}
 	return nil
 }

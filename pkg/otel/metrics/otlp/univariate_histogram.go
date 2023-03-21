@@ -15,14 +15,13 @@
 package otlp
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type UnivariateHistogramIds struct {
@@ -33,7 +32,7 @@ type UnivariateHistogramIds struct {
 func NewUnivariateHistogramIds(parentDT *arrow.StructType) (*UnivariateHistogramIds, error) {
 	dataPoints, err := NewUnivariateHistogramDataPointIds(parentDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	aggrTempId, _ := arrowutils.FieldIDFromStruct(parentDT, constants.AggregationTemporality)
@@ -48,18 +47,18 @@ func UpdateUnivariateHistogramFrom(histogram pmetric.Histogram, arr *array.Struc
 	if ids.AggregationTemporality >= 0 {
 		value, err := arrowutils.I32FromArray(arr.Field(ids.AggregationTemporality), row)
 		if err != nil {
-			return fmt.Errorf("UpdateUnivariateHistogramFrom->%w", err)
+			return werror.WrapWithContext(err, map[string]interface{}{"row": row})
 		}
 		histogram.SetAggregationTemporality(pmetric.AggregationTemporality(value))
 	}
 
 	los, err := arrowutils.ListOfStructsFromStruct(arr, ids.DataPoints.Id, row)
 	if err != nil {
-		return fmt.Errorf("UpdateUnivariateHistogramFrom->%w", err)
+		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
 	}
 	err = AppendUnivariateHistogramDataPointInto(histogram.DataPoints(), los, ids.DataPoints, smdata, mdata)
 	if err != nil {
-		err = fmt.Errorf("UpdateUnivariateHistogramFrom->%w", err)
+		err = werror.WrapWithContext(err, map[string]interface{}{"row": row})
 	}
-	return err
+	return werror.Wrap(err)
 }

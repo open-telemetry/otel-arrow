@@ -15,13 +15,12 @@
 package otlp
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type ResourceIds struct {
@@ -33,12 +32,12 @@ type ResourceIds struct {
 func NewResourceIds(resSpansDT *arrow.StructType) (*ResourceIds, error) {
 	resId, resDT, err := arrowutils.StructFieldIDFromStruct(resSpansDT, constants.Resource)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	attributeIds, err := NewAttributeIds(resDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	droppedAttributesCount, _ := arrowutils.FieldIDFromStruct(resDT, constants.DroppedAttributesCount)
@@ -54,20 +53,20 @@ func NewResourceIds(resSpansDT *arrow.StructType) (*ResourceIds, error) {
 func UpdateResourceWith(r pcommon.Resource, resList *arrowutils.ListOfStructs, row int, resIds *ResourceIds) error {
 	_, resArr, err := resList.StructByID(resIds.Id, row)
 	if err != nil {
-		return err
+		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
 	}
 
 	// Read dropped attributes count
 	droppedAttributesCount, err := arrowutils.U32FromStruct(resArr, row, resIds.DroppedAttributesCount)
 	if err != nil {
-		return err
+		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
 	}
 	r.SetDroppedAttributesCount(droppedAttributesCount)
 
 	// Read attributes
 	err = AppendAttributesInto(r.Attributes(), resArr, row, resIds.Attributes)
 	if err != nil {
-		return fmt.Errorf("UpdateResourceWith->%w", err)
+		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
 	}
 
 	return err

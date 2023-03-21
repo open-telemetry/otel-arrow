@@ -30,6 +30,7 @@ import (
 	events "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/events"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/transform"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/update"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // RecordBuilderExt is a wrapper/decorator around array.RecordBuilder that
@@ -112,7 +113,7 @@ func (rb *RecordBuilderExt) NewRecord() (arrow.Record, error) {
 	// If field optionality has changed, update the schema
 	if !rb.IsSchemaUpToDate() {
 		rb.UpdateSchema()
-		return nil, schema.ErrSchemaNotUpToDate
+		return nil, werror.Wrap(schema.ErrSchemaNotUpToDate)
 	}
 
 	record := rb.recordBuilder.NewRecord()
@@ -128,7 +129,7 @@ func (rb *RecordBuilderExt) NewRecord() (arrow.Record, error) {
 	if !rb.IsSchemaUpToDate() {
 		record.Release()
 		rb.UpdateSchema()
-		return nil, schema.ErrSchemaNotUpToDate
+		return nil, werror.Wrap(schema.ErrSchemaNotUpToDate)
 	} else {
 		return record, nil
 	}
@@ -231,7 +232,7 @@ func copyDictValuesTo(srcRecBuilder *array.RecordBuilder, destRecBuilder *array.
 		if len(destFieldIndices) == 1 {
 			destBuilder := destRecBuilder.Field(destFieldIndices[0])
 			if err := copyFieldDictValuesTo(srcBuilder, destBuilder); err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 		}
 	}
@@ -296,10 +297,10 @@ func copyFieldDictValuesTo(srcBuilder array.Builder, destBuilder array.Builder) 
 		}
 	case *array.MapBuilder:
 		if err = copyFieldDictValuesTo(sBuilder.KeyBuilder(), destBuilder.(*array.MapBuilder).KeyBuilder()); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		if err = copyFieldDictValuesTo(sBuilder.ItemBuilder(), destBuilder.(*array.MapBuilder).ItemBuilder()); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 	case array.DictionaryBuilder:
 		srcDictArr := sBuilder.NewDictionaryArray()

@@ -15,14 +15,13 @@
 package otlp
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type UnivariateSumIds struct {
@@ -34,7 +33,7 @@ type UnivariateSumIds struct {
 func NewUnivariateSumIds(parentDT *arrow.StructType) (*UnivariateSumIds, error) {
 	dataPoints, err := NewUnivariateNdpIds(parentDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	aggrTempId, _ := arrowutils.FieldIDFromStruct(parentDT, constants.AggregationTemporality)
@@ -51,7 +50,7 @@ func UpdateUnivariateSumFrom(sum pmetric.Sum, arr *array.Struct, row int, ids *U
 	if ids.AggregationTemporality >= 0 {
 		value, err := arrowutils.I32FromArray(arr.Field(ids.AggregationTemporality), row)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 
 		sum.SetAggregationTemporality(pmetric.AggregationTemporality(value))
@@ -60,14 +59,14 @@ func UpdateUnivariateSumFrom(sum pmetric.Sum, arr *array.Struct, row int, ids *U
 	if ids.IsMonotonic >= 0 {
 		imArr, ok := arr.Field(ids.IsMonotonic).(*array.Boolean)
 		if !ok {
-			return fmt.Errorf("field %q is not a boolean", constants.IsMonotonic)
+			return werror.Wrap(ErrNotArrayBoolean)
 		}
 		sum.SetIsMonotonic(imArr.Value(row))
 	}
 
 	los, err := arrowutils.ListOfStructsFromStruct(arr, ids.DataPoints.Id, row)
 	if err != nil {
-		return err
+		return werror.Wrap(err)
 	}
 	return AppendUnivariateNdpInto(sum.DataPoints(), los, ids.DataPoints, smdata, mdata)
 }

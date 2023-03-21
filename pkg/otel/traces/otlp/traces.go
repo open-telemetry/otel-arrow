@@ -17,6 +17,8 @@ package otlp
 import (
 	"github.com/apache/arrow/go/v11/arrow"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type TraceIds struct {
@@ -36,8 +38,6 @@ func TracesFrom(record arrow.Record) (ptrace.Traces, error) {
 	resSpansCount := int(record.NumRows())
 	resSpansSlice.EnsureCapacity(resSpansCount)
 
-	// TODO there is probably two nested lists that could be replaced by a single list (traces, resource spans). This could simplify a future query layer.
-
 	err = AppendResourceSpansInto(traces, record, traceIds)
 	return traces, err
 }
@@ -45,7 +45,7 @@ func TracesFrom(record arrow.Record) (ptrace.Traces, error) {
 func SchemaToIds(schema *arrow.Schema) (*TraceIds, error) {
 	resSpansIds, err := NewResourceSpansIds(schema)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 	return &TraceIds{
 		ResourceSpans: resSpansIds,

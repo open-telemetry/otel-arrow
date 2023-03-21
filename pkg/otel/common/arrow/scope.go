@@ -27,6 +27,7 @@ import (
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // ScopeDT is the Arrow Data Type describing a scope.
@@ -72,14 +73,14 @@ func ScopeBuilderFrom(sb *builder.StructBuilder) *ScopeBuilder {
 // Append appends a new instrumentation scope to the builder.
 func (b *ScopeBuilder) Append(scope pcommon.InstrumentationScope) error {
 	if b.released {
-		return fmt.Errorf("scope builder already released")
+		return werror.Wrap(ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(scope, func() error {
 		b.nb.AppendNonEmpty(scope.Name())
 		b.vb.AppendNonEmpty(scope.Version())
 		if err := b.ab.Append(scope.Attributes()); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 		b.dacb.AppendNonZero(scope.DroppedAttributesCount())
 		return nil
@@ -92,7 +93,7 @@ func (b *ScopeBuilder) Append(scope pcommon.InstrumentationScope) error {
 // memory allocated by the array.
 func (b *ScopeBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("scope builder already released")
+		return nil, werror.Wrap(ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()

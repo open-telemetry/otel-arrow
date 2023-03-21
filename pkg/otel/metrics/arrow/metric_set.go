@@ -15,8 +15,6 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -26,6 +24,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 var (
@@ -76,7 +75,7 @@ func MetricSetBuilderFrom(sb *builder.StructBuilder) *MetricSetBuilder {
 // memory allocated by the array.
 func (b *MetricSetBuilder) Build() (*array.Struct, error) {
 	if b.released {
-		return nil, fmt.Errorf("span builder already released")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -86,7 +85,7 @@ func (b *MetricSetBuilder) Build() (*array.Struct, error) {
 // Append appends a new metric to the builder.
 func (b *MetricSetBuilder) Append(metric pmetric.Metric, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
-		return fmt.Errorf("metric set builder already released")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(metric, func() error {
@@ -94,7 +93,7 @@ func (b *MetricSetBuilder) Append(metric pmetric.Metric, smdata *ScopeMetricsSha
 		b.db.AppendNonEmpty(metric.Description())
 		b.ub.AppendNonEmpty(metric.Unit())
 		if err := b.dtb.Append(metric, smdata, mdata); err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 
 		attrs := pcommon.NewMap()
@@ -103,7 +102,7 @@ func (b *MetricSetBuilder) Append(metric pmetric.Metric, smdata *ScopeMetricsSha
 		}
 		err := b.sab.Append(attrs)
 		if err != nil {
-			return err
+			return werror.Wrap(err)
 		}
 
 		if mdata != nil && mdata.StartTime != nil {

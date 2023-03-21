@@ -18,14 +18,14 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	schema "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // Schema is the Arrow schema for the OTLP Arrow Traces record.
@@ -51,7 +51,7 @@ func NewTracesBuilder(rBuilder *builder.RecordBuilderExt) (*TracesBuilder, error
 		builder:  rBuilder,
 	}
 	if err := tracesBuilder.init(); err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 	return tracesBuilder, nil
 }
@@ -72,14 +72,14 @@ func (b *TracesBuilder) init() error {
 // (or several) exceeds the maximum allowed value.
 func (b *TracesBuilder) Build() (record arrow.Record, err error) {
 	if b.released {
-		return nil, fmt.Errorf("resource spans builder already released")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	record, err = b.builder.NewRecord()
 	if err != nil {
 		initErr := b.init()
 		if initErr != nil {
-			err = initErr
+			err = werror.Wrap(initErr)
 		}
 	}
 
@@ -89,7 +89,7 @@ func (b *TracesBuilder) Build() (record arrow.Record, err error) {
 // Append appends a new set of resource spans to the builder.
 func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 	if b.released {
-		return fmt.Errorf("traces builder already released")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	rs := traces.ResourceSpans()
@@ -97,7 +97,7 @@ func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 	return b.rsb.Append(rc, func() error {
 		for i := 0; i < rc; i++ {
 			if err := b.rsp.Append(rs.At(i)); err != nil {
-				return err
+				return werror.Wrap(err)
 			}
 		}
 		return nil

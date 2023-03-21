@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type UnivariateSummaryIds struct {
@@ -29,7 +30,7 @@ type UnivariateSummaryIds struct {
 func NewUnivariateSummaryIds(parentDT *arrow.StructType) (*UnivariateSummaryIds, error) {
 	dataPoints, err := NewUnivariateSdpIds(parentDT)
 	if err != nil {
-		return nil, err
+		return nil, werror.Wrap(err)
 	}
 
 	return &UnivariateSummaryIds{
@@ -40,7 +41,7 @@ func NewUnivariateSummaryIds(parentDT *arrow.StructType) (*UnivariateSummaryIds,
 func UpdateUnivariateSummaryFrom(summary pmetric.Summary, arr *array.Struct, row int, ids *UnivariateSummaryIds, smdata *SharedData, mdata *SharedData) error {
 	los, err := arrowutils.ListOfStructsFromStruct(arr, ids.DataPoints.Id, row)
 	if err != nil {
-		return err
+		return werror.Wrap(err)
 	}
 	return AppendUnivariateSdpInto(summary.DataPoints(), los, ids.DataPoints, smdata, mdata)
 }

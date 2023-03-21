@@ -15,15 +15,15 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // Constants used to identify the type of value in the union.
@@ -69,7 +69,7 @@ func MetricValueBuilderFrom(mv *builder.SparseUnionBuilder) *MetricValueBuilder 
 // memory allocated by the array.
 func (b *MetricValueBuilder) Build() (*array.SparseUnion, error) {
 	if b.released {
-		return nil, fmt.Errorf("metric value builder already released")
+		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	defer b.Release()
@@ -79,7 +79,7 @@ func (b *MetricValueBuilder) Build() (*array.SparseUnion, error) {
 // AppendNumberDataPointValue appends a new metric value to the builder.
 func (b *MetricValueBuilder) AppendNumberDataPointValue(mdp pmetric.NumberDataPoint) error {
 	if b.released {
-		return fmt.Errorf("metric value builder already released")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	var err error
@@ -91,13 +91,13 @@ func (b *MetricValueBuilder) AppendNumberDataPointValue(mdp pmetric.NumberDataPo
 	case pmetric.NumberDataPointValueTypeEmpty:
 		// ignore empty data point.
 	}
-	return err
+	return werror.Wrap(err)
 }
 
 // AppendExemplarValue appends a new exemplar value to the builder.
 func (b *MetricValueBuilder) AppendExemplarValue(ex pmetric.Exemplar) error {
 	if b.released {
-		return fmt.Errorf("metric value builder already released")
+		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	var err error
@@ -109,7 +109,7 @@ func (b *MetricValueBuilder) AppendExemplarValue(ex pmetric.Exemplar) error {
 	case pmetric.ExemplarValueTypeEmpty:
 		// ignore empty exemplar.
 	}
-	return err
+	return werror.Wrap(err)
 }
 
 // Release releases the memory allocated by the builder.
