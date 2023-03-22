@@ -57,3 +57,4 @@ service:
   telemetry:
     metrics:
       address: 127.0.0.1:8889
+      level: normal
