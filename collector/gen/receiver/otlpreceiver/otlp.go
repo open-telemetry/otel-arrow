@@ -27,6 +27,10 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
+	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow"
+	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/logs"
+	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/metrics"
+	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/trace"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confighttp"
@@ -37,10 +41,6 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"go.opentelemetry.io/collector/receiver"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/logs"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/metrics"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/trace"
 )
 
 // otlpReceiver is the type that exposes Trace and Metrics reception.
@@ -160,12 +160,9 @@ func (r *otlpReceiver) startProtocolServers(host component.Host) error {
 				}
 			}
 
-			r.arrowReceiver, err = arrow.New(r.settings.ID, arrow.Consumers(r), r.settings, r.cfg.GRPC, authServer, func() arrowRecord.ConsumerAPI {
+			r.arrowReceiver = arrow.New(arrow.Consumers(r), r.settings, r.obsrepGRPC, r.cfg.GRPC, authServer, func() arrowRecord.ConsumerAPI {
 				return arrowRecord.NewConsumer()
 			})
-			if err != nil {
-				return err
-			}
 			arrowpb.RegisterArrowStreamServiceServer(r.serverGRPC, r.arrowReceiver)
 		}
 

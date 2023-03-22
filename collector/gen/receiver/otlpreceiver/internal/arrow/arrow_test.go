@@ -45,6 +45,7 @@ import (
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/extension/auth"
+	"go.opentelemetry.io/collector/obsreport"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -76,6 +77,8 @@ type consumeResult struct {
 }
 
 type commonTestCase struct {
+	*testing.T
+
 	ctrl      *gomock.Controller
 	cancel    context.CancelFunc
 	telset    component.TelemetrySettings
@@ -227,6 +230,7 @@ func newCommonTestCase(t *testing.T, tc testChannel) *commonTestCase {
 	})
 
 	ctc := &commonTestCase{
+		T:            t,
 		ctrl:         ctrl,
 		cancel:       cancel,
 		telset:       newTestTelemetry(t),
@@ -323,22 +327,25 @@ func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opt
 	for _, gf := range opts {
 		gf(gsettings, &authServer)
 	}
-	rcvr, err := New(
-		component.NewID("arrowtest"),
+	rc := receiver.CreateSettings{
+		TelemetrySettings: ctc.telset,
+		BuildInfo:         component.NewDefaultBuildInfo(),
+	}
+	obsrecv, err := obsreport.NewReceiver(obsreport.ReceiverSettings{
+		ReceiverID:             component.NewID("arrowtest"),
+		Transport:              "grpc",
+		ReceiverCreateSettings: rc,
+	})
+	require.NoError(ctc.T, err)
+
+	rcvr := New(
 		ctc.consumers,
-		receiver.CreateSettings{
-			TelemetrySettings: ctc.telset,
-			BuildInfo:         component.NewDefaultBuildInfo(),
-		},
+		rc,
+		obsrecv,
 		gsettings,
 		authServer,
 		newConsumer,
 	)
-	if err != nil {
-		// it would be because obsreport.NewReceiver failed, this is
-		// not tested here.
-		panic("new failure not tested")
-	}
 	go func() {
 		ctc.streamErr <- rcvr.ArrowStream(ctc.stream)
 	}()

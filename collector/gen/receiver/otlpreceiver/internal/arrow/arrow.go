@@ -23,6 +23,7 @@ import (
 
 	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
+	"go.uber.org/multierr"
 	"go.uber.org/zap"
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/grpc/codes"
@@ -40,7 +41,7 @@ import (
 )
 
 const (
-	receiverTransport   = "otlp-arrow"
+	streamFormat        = "arrow"
 	hpackMaxDynamicSize = 4096
 )
 
@@ -70,29 +71,21 @@ type Receiver struct {
 
 // New creates a new Receiver reference.
 func New(
-	id component.ID,
 	cs Consumers,
 	set receiver.CreateSettings,
+	obsrecv *obsreport.Receiver,
 	gsettings *configgrpc.GRPCServerSettings,
 	authServer auth.Server,
 	newConsumer func() arrowRecord.ConsumerAPI,
-) (*Receiver, error) {
-	obs, err := obsreport.NewReceiver(obsreport.ReceiverSettings{
-		ReceiverID:             id,
-		Transport:              receiverTransport,
-		ReceiverCreateSettings: set,
-	})
-	if err != nil {
-		return nil, err
-	}
+) *Receiver {
 	return &Receiver{
 		Consumers:   cs,
-		obsrecv:     obs,
+		obsrecv:     obsrecv,
 		telemetry:   set.TelemetrySettings,
 		authServer:  authServer,
 		newConsumer: newConsumer,
 		gsettings:   gsettings,
-	}, nil
+	}
 }
 
 // headerReceiver contains the state necessary to decode per-request metadata
@@ -303,7 +296,8 @@ func (r *Receiver) ArrowStream(serverStream arrowpb.ArrowStreamService_ArrowStre
 			err = r.processRecords(thisCtx, ac, req)
 		}
 
-		// Note: Statuses can be batched: TODO: should we?
+		// Note: Statuses can be batched, but we do not take
+		// advantage of this feature.
 		resp := &arrowpb.BatchStatus{}
 		status := &arrowpb.StatusMessage{
 			BatchId: req.GetBatchId(),
@@ -341,48 +335,62 @@ func (r *Receiver) processRecords(ctx context.Context, arrowConsumer arrowRecord
 	if len(payloads) == 0 {
 		return nil
 	}
-	// TODO: Use the obsreport object to instrument (somehow)
 	switch payloads[0].Type {
 	case arrowpb.OtlpArrowPayloadType_METRICS:
+		var numPts int
+		ctx = r.obsrecv.StartMetricsOp(ctx)
+
 		otlp, err := arrowConsumer.MetricsFrom(records)
 		if err != nil {
-			return consumererror.NewPermanent(err)
-		}
-		for _, metrics := range otlp {
-			err = r.Metrics().ConsumeMetrics(ctx, metrics)
-			if err != nil {
-				return err
+			err = consumererror.NewPermanent(err)
+		} else {
+			for _, metrics := range otlp {
+				numPts += metrics.DataPointCount()
+				err = multierr.Append(err,
+					r.Metrics().ConsumeMetrics(ctx, metrics),
+				)
 			}
 		}
+		r.obsrecv.EndMetricsOp(ctx, streamFormat, numPts, err)
+		return err
 
 	case arrowpb.OtlpArrowPayloadType_LOGS:
+		var numLogs int
+		ctx = r.obsrecv.StartLogsOp(ctx)
+
 		otlp, err := arrowConsumer.LogsFrom(records)
 		if err != nil {
-			return consumererror.NewPermanent(err)
-		}
-
-		for _, logs := range otlp {
-			err = r.Logs().ConsumeLogs(ctx, logs)
-			if err != nil {
-				return err
+			err = consumererror.NewPermanent(err)
+		} else {
+			for _, logs := range otlp {
+				numLogs += logs.LogRecordCount()
+				err = multierr.Append(err,
+					r.Logs().ConsumeLogs(ctx, logs),
+				)
 			}
 		}
+		r.obsrecv.EndLogsOp(ctx, streamFormat, numLogs, err)
+		return err
 
 	case arrowpb.OtlpArrowPayloadType_SPANS:
+		var numSpans int
+		ctx = r.obsrecv.StartTracesOp(ctx)
+
 		otlp, err := arrowConsumer.TracesFrom(records)
 		if err != nil {
-			return consumererror.NewPermanent(err)
-		}
-
-		for _, traces := range otlp {
-			err = r.Traces().ConsumeTraces(ctx, traces)
-			if err != nil {
-				return err
+			err = consumererror.NewPermanent(err)
+		} else {
+			for _, traces := range otlp {
+				numSpans += traces.SpanCount()
+				err = multierr.Append(err,
+					r.Traces().ConsumeTraces(ctx, traces),
+				)
 			}
 		}
+		r.obsrecv.EndTracesOp(ctx, streamFormat, numSpans, err)
+		return err
 
 	default:
 		return ErrUnrecognizedPayload
 	}
-	return nil
 }
