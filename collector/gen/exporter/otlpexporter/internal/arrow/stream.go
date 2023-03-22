@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 
 	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
@@ -106,6 +107,19 @@ func (s *Stream) setBatchChannel(batchID string, errCh chan error) {
 	s.waiters[batchID] = errCh
 }
 
+func (s *Stream) logStreamError(err error) {
+	isEOF := errors.Is(err, io.EOF)
+	isCanceled := errors.Is(err, context.Canceled)
+
+	if !isEOF && !isCanceled {
+		s.telemetry.Logger.Error("arrow stream error", zap.Error(err))
+	} else if isEOF {
+		s.telemetry.Logger.Debug("arrow stream end")
+	} else if isCanceled {
+		s.telemetry.Logger.Debug("arrow stream canceled")
+	}
+}
+
 // run blocks the calling goroutine while executing stream logic.  run
 // will return when the reader and writer are finished.  errors will be logged.
 func (s *Stream) run(bgctx context.Context, client arrowpb.ArrowStreamServiceClient, grpcOptions []grpc.CallOption) {
@@ -144,7 +158,10 @@ func (s *Stream) run(bgctx context.Context, client arrowpb.ArrowStreamServiceCli
 	ww.Add(1)
 	go func() {
 		defer ww.Done()
-		s.write(ctx)
+		err := s.write(ctx)
+		if err != nil {
+			s.logStreamError(err)
+		}
 	}()
 
 	// the result from read() is processed after cancel and wait,
@@ -158,22 +175,45 @@ func (s *Stream) run(bgctx context.Context, client arrowpb.ArrowStreamServiceCli
 	if err != nil {
 		// This branch is reached with an unimplemented status
 		// with or without the WaitForReady flag.
-		if status, ok := status.FromError(err); ok && status.Code() == codes.Unimplemented {
-			// This (client == nil) signals the controller
-			// to downgrade when all streams have returned
-			// in that status.
-			//
-			// TODO: Note there are partial failure modes
-			// that will continue to function in a
-			// degraded mode, such as when half of the
-			// streams are successful and half of streams
-			// take this return path.  Design a graceful
-			// recovery mechanism?
-			s.client = nil
-			s.telemetry.Logger.Info("arrow is not supported", zap.Error(err))
-		} else if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
-			// TODO: Should we add debug-level logs for EOF and Canceled?
-			s.telemetry.Logger.Error("arrow recv", zap.Error(err))
+		status, ok := status.FromError(err)
+
+		if ok {
+			switch status.Code() {
+			case codes.Unimplemented:
+				// This (client == nil) signals the controller
+				// to downgrade when all streams have returned
+				// in that status.
+				//
+				// TODO: Note there are partial failure modes
+				// that will continue to function in a
+				// degraded mode, such as when half of the
+				// streams are successful and half of streams
+				// take this return path.  Design a graceful
+				// recovery mechanism?
+				s.client = nil
+				s.telemetry.Logger.Info("arrow is not supported",
+					zap.String("message", status.Message()),
+				)
+
+			case codes.Unavailable:
+				// gRPC returns this when max connection age is reached.
+				// The message string will contain NO_ERROR if it's a
+				// graceful shutdown.
+				if strings.Contains(status.Message(), "NO_ERROR") {
+					s.telemetry.Logger.Debug("arrow stream shutdown")
+				} else {
+					s.telemetry.Logger.Error("arrow stream unavailable",
+						zap.String("message", status.Message()),
+					)
+				}
+			default:
+				s.telemetry.Logger.Error("arrow stream unknown",
+					zap.Uint32("code", uint32(status.Code())),
+					zap.String("message", status.Message()),
+				)
+			}
+		} else {
+			s.logStreamError(err)
 		}
 	}
 
@@ -188,7 +228,7 @@ func (s *Stream) run(bgctx context.Context, client arrowpb.ArrowStreamServiceCli
 // write repeatedly places this stream into the next-available queue, then
 // performs a blocking send().  This returns when the data is in the write buffer,
 // the caller waiting on its error channel.
-func (s *Stream) write(ctx context.Context) {
+func (s *Stream) write(ctx context.Context) error {
 	// headers are encoding using hpack, reusing a buffer on each call.
 	var hdrsBuf bytes.Buffer
 	hdrsEnc := hpack.NewEncoder(&hdrsBuf)
@@ -208,7 +248,7 @@ func (s *Stream) write(ctx context.Context) {
 			// is a potential sender race since the stream
 			// is currently in the ready set.
 			s.prioritizer.removeReady(s)
-			return
+			return ctx.Err()
 		}
 		// Note: For the two return statements below there is no potential
 		// sender race because the stream is not available, as indicated by
@@ -218,9 +258,9 @@ func (s *Stream) write(ctx context.Context) {
 		if err != nil {
 			// This is some kind of internal error.  We will restart the
 			// stream and mark this record as a permanent one.
+			err = fmt.Errorf("encode: %w", err)
 			wri.errCh <- consumererror.NewPermanent(err)
-			s.telemetry.Logger.Error("arrow encode", zap.Error(err))
-			return
+			return err
 		}
 
 		// Optionally include outgoing metadata, if present.
@@ -235,9 +275,9 @@ func (s *Stream) write(ctx context.Context) {
 					// This case is like the encode-failure case
 					// above, we will restart the stream but consider
 					// this a permenent error.
+					err = fmt.Errorf("hpack: %w", err)
 					wri.errCh <- consumererror.NewPermanent(err)
-					s.telemetry.Logger.Error("hpack encode", zap.Error(err))
-					return
+					return err
 				}
 			}
 			batch.Headers = hdrsBuf.Bytes()
@@ -248,10 +288,8 @@ func (s *Stream) write(ctx context.Context) {
 
 		if err := s.client.Send(batch); err != nil {
 			// The error will be sent to errCh during cleanup for this stream.
-			// Note there are common cases like EOF and Canceled that we may
-			// wish to suppress in the logs if they become a problem.
-			s.telemetry.Logger.Error("arrow send", zap.Error(err))
-			return
+			// Note: do not wrap this error, it may contain a Status.
+			return err
 		}
 	}
 }
@@ -265,11 +303,12 @@ func (s *Stream) read(_ context.Context) error {
 	for {
 		resp, err := s.client.Recv()
 		if err != nil {
+			// Note: do not wrap, contains a Status.
 			return err
 		}
 
 		if err = s.processBatchStatus(resp.Statuses); err != nil {
-			return err
+			return fmt.Errorf("process: %w", err)
 		}
 	}
 }

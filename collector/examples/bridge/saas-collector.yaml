@@ -11,13 +11,18 @@ receivers:
         # to the next hop.
         include_metadata: true
 
+        keepalive:
+          server_parameters:
+            max_connection_age: 10s
+            max_connection_age_grace: 10s
+
       # Enable arrow for the bridge.
       arrow:
         enabled: true
 
 exporters:
   logging:      
-    verbosity: detailed
+    verbosity: normal
 
   otlphttp:
     # You can use an HTTP listener on port 5001 to see the headers

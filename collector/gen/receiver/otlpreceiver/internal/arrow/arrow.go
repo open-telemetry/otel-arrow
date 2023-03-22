@@ -16,6 +16,7 @@ package arrow // import "github.com/f5/otel-arrow-adapter/collector/gen/receiver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -24,7 +25,9 @@ import (
 	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 	"go.uber.org/zap"
 	"golang.org/x/net/http2/hpack"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
@@ -224,6 +227,35 @@ func (h *headerReceiver) newContext(ctx context.Context, hdrs map[string][]strin
 	})
 }
 
+// logStreamError decides whether to log an error to the console.
+func (r *Receiver) logStreamError(err error) {
+	status, ok := status.FromError(err)
+
+	if ok {
+		switch status.Code() {
+		case codes.Canceled:
+			r.telemetry.Logger.Debug("arrow stream canceled")
+		default:
+			r.telemetry.Logger.Error("arrow stream error",
+				zap.Uint32("code", uint32(status.Code())),
+				zap.String("message", status.Message()),
+			)
+		}
+		return
+	}
+
+	isEOF := errors.Is(err, io.EOF)
+	isCanceled := errors.Is(err, context.Canceled)
+
+	if !isEOF && !isCanceled {
+		r.telemetry.Logger.Error("arrow stream error", zap.Error(err))
+	} else if isEOF {
+		r.telemetry.Logger.Debug("arrow stream end")
+	} else {
+		r.telemetry.Logger.Debug("arrow stream canceled")
+	}
+}
+
 func (r *Receiver) ArrowStream(serverStream arrowpb.ArrowStreamService_ArrowStreamServer) error {
 	streamCtx := serverStream.Context()
 	ac := r.newConsumer()
@@ -241,11 +273,7 @@ func (r *Receiver) ArrowStream(serverStream arrowpb.ArrowStreamService_ArrowStre
 		req, err := serverStream.Recv()
 
 		if err != nil {
-			if err == io.EOF {
-				r.telemetry.Logger.Debug("arrow recv eof", zap.Error(err))
-			} else {
-				r.telemetry.Logger.Error("arrow recv error", zap.Error(err))
-			}
+			r.logStreamError(err)
 			return err
 		}
 
@@ -298,7 +326,7 @@ func (r *Receiver) ArrowStream(serverStream arrowpb.ArrowStreamService_ArrowStre
 
 		err = serverStream.Send(resp)
 		if err != nil {
-			r.telemetry.Logger.Error("arrow send error", zap.Error(err))
+			r.logStreamError(err)
 			return err
 		}
 	}

@@ -91,6 +91,38 @@ func newExporterNoisyTestCase(t *testing.T, numStreams int) *exporterTestCase {
 	return newExporterTestCaseCommon(t, Noisy, numStreams, false, nil)
 }
 
+func copyBatch[T any](real func(T) (*arrowpb.BatchArrowRecords, error)) func(T) (*arrowpb.BatchArrowRecords, error) {
+	// Because Arrow-IPC uses zero copy, we have to copy inside the test
+	// instead of sharing pointers to BatchArrowRecords.
+	return func(data T) (*arrowpb.BatchArrowRecords, error) {
+		in, err := real(data)
+		if err != nil {
+			return nil, err
+		}
+
+		hcpy := make([]byte, len(in.Headers))
+		copy(hcpy, in.Headers)
+
+		pays := make([]*arrowpb.OtlpArrowPayload, len(in.OtlpArrowPayloads))
+
+		for i, inp := range in.OtlpArrowPayloads {
+			rcpy := make([]byte, len(inp.Record))
+			copy(rcpy, inp.Record)
+			pays[i] = &arrowpb.OtlpArrowPayload{
+				SubStreamId: inp.SubStreamId,
+				Type:        inp.Type,
+				Record:      rcpy,
+			}
+		}
+
+		return &arrowpb.BatchArrowRecords{
+			BatchId:           in.BatchId,
+			Headers:           hcpy,
+			OtlpArrowPayloads: pays,
+		}, nil
+	}
+}
+
 func newExporterTestCaseCommon(t *testing.T, noisy noisyTest, numStreams int, disableDowngrade bool, metadataFunc func(ctx context.Context) (map[string]string, error)) *exporterTestCase {
 	ctc := newCommonTestCase(t, noisy)
 
@@ -108,11 +140,11 @@ func newExporterTestCaseCommon(t *testing.T, noisy noisyTest, numStreams int, di
 		real := arrowRecord.NewProducer()
 
 		prod.EXPECT().BatchArrowRecordsFromTraces(gomock.Any()).AnyTimes().DoAndReturn(
-			real.BatchArrowRecordsFromTraces)
+			copyBatch(real.BatchArrowRecordsFromTraces))
 		prod.EXPECT().BatchArrowRecordsFromLogs(gomock.Any()).AnyTimes().DoAndReturn(
-			real.BatchArrowRecordsFromLogs)
+			copyBatch(real.BatchArrowRecordsFromLogs))
 		prod.EXPECT().BatchArrowRecordsFromMetrics(gomock.Any()).AnyTimes().DoAndReturn(
-			real.BatchArrowRecordsFromMetrics)
+			copyBatch(real.BatchArrowRecordsFromMetrics))
 		prod.EXPECT().Close().Times(1).Return(nil)
 		return prod
 	}, ctc.serviceClient, ctc.perRPCCredentials)
@@ -413,12 +445,12 @@ func TestArrowExporterStreamRace(t *testing.T) {
 	var tries atomic.Int32
 
 	tc.streamCall.AnyTimes().DoAndReturn(tc.repeatedNewStream(func() testChannel {
-		tc := newUnresponsiveTestChannel()
+		noResponse := newUnresponsiveTestChannel()
 		// Immediately unblock to return the EOF to the stream
 		// receiver and shut down the stream.
-		go tc.unblock()
+		go noResponse.unblock()
 		tries.Add(1)
-		return tc
+		return noResponse
 	}))
 
 	var wg sync.WaitGroup

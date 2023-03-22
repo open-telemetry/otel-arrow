@@ -32,10 +32,10 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
-	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/component/componenttest"
 	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow/grpcmock"
 	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
+	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/component/componenttest"
 )
 
 var (
@@ -70,7 +70,7 @@ func newTestTelemetry(t *testing.T, noisy noisyTest) (component.TelemetrySetting
 	if noisy {
 		return telset, nil
 	}
-	core, obslogs := observer.New(zapcore.DebugLevel)
+	core, obslogs := observer.New(zapcore.InfoLevel)
 	telset.Logger = zap.New(zapcore.NewTee(core, zaptest.NewLogger(t).Core()))
 	return telset, obslogs
 }

@@ -335,7 +335,7 @@ func recordBuilder[T pmetric.Metrics | plog.Logs | ptrace.Traces](builder func()
 			}
 
 			switch {
-			case errors.As(err, &schema.ErrSchemaNotUpToDate):
+			case errors.Is(err, schema.ErrSchemaNotUpToDate):
 				schemaNotUpToDateCount++
 				if schemaNotUpToDateCount > 5 {
 					panic("Too many consecutive schema updates. This shouldn't happen.")

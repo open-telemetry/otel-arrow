@@ -55,3 +55,5 @@ service:
   telemetry:
     metrics:
       address: 127.0.0.1:8888
+    logs:
+      level: info
