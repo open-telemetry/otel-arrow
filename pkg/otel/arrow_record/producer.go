@@ -284,7 +284,9 @@ func (p *Producer) Produce(rms []*RecordMessage) (*colarspb.BatchArrowRecords, e
 			if err != nil {
 				return werror.Wrap(err)
 			}
-			buf := sp.output.Bytes()
+			outputBuf := sp.output.Bytes()
+			buf := make([]byte, len(outputBuf))
+			copy(buf, outputBuf)
 
 			// Reset the buffer
 			sp.output.Reset()
