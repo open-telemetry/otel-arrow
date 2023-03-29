@@ -99,10 +99,12 @@ func TestScopeBuilder(t *testing.T) {
 	for {
 		sb := NewScopeBuilder(rBuilder.StructBuilder(constants.Scope))
 
-		err := sb.Append(internal.Scope1())
+		scope := internal.Scope1()
+		err := sb.Append(&scope)
 		require.NoError(t, err)
 
-		err = sb.Append(internal.Scope2())
+		scope = internal.Scope2()
+		err = sb.Append(&scope)
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
@@ -142,10 +144,12 @@ func TestResourceBuilder(t *testing.T) {
 
 	for {
 		rb := NewResourceBuilder(rBuilder.StructBuilder(constants.Resource))
-		err := rb.Append(internal.Resource1())
+		res := internal.Resource1()
+		err := rb.Append(&res)
 		require.NoError(t, err)
 
-		err = rb.Append(internal.Resource2())
+		res = internal.Resource2()
+		err = rb.Append(&res)
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()

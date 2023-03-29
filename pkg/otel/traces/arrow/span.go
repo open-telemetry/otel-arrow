@@ -116,7 +116,7 @@ func (b *SpanBuilder) Build() (*array.Struct, error) {
 }
 
 // Append appends a new span to the builder.
-func (b *SpanBuilder) Append(span ptrace.Span) error {
+func (b *SpanBuilder) Append(span *ptrace.Span) error {
 	if b.released {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}

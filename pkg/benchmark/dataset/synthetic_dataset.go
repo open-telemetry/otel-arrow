@@ -16,14 +16,15 @@ package dataset
 
 import (
 	"math/rand"
-
-	"github.com/f5/otel-arrow-adapter/pkg/datagen"
-	arrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	"strings"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+
+	"github.com/f5/otel-arrow-adapter/pkg/datagen"
+	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 )
 
 type MetricsDataset interface {
@@ -44,7 +45,11 @@ type TraceDataset interface {
 }
 
 func ResourceAndScopeId(r pcommon.Resource, is pcommon.InstrumentationScope) string {
-	return arrow.ResourceID(r) + "|" + arrow.ScopeID(is)
+	var b strings.Builder
+	b.WriteString(carrow.ResourceID(r, ""))
+	b.WriteString("|")
+	b.WriteString(carrow.ScopeID(is, ""))
+	return b.String()
 }
 
 // ===== Fake metrics dataset =====

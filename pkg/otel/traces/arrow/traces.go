@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	schema "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -39,16 +40,18 @@ var (
 type TracesBuilder struct {
 	released bool
 
-	builder *builder.RecordBuilderExt // Record builder
-	rsb     *builder.ListBuilder      // Resource spans list builder
-	rsp     *ResourceSpansBuilder     // resource spans builder
+	builder   *builder.RecordBuilderExt // Record builder
+	rsb       *builder.ListBuilder      // Resource spans list builder
+	rsp       *ResourceSpansBuilder     // resource spans builder
+	optimizer *carrow.TracesOptimizer
 }
 
 // NewTracesBuilder creates a new TracesBuilder with a given allocator.
 func NewTracesBuilder(rBuilder *builder.RecordBuilderExt) (*TracesBuilder, error) {
 	tracesBuilder := &TracesBuilder{
-		released: false,
-		builder:  rBuilder,
+		released:  false,
+		builder:   rBuilder,
+		optimizer: carrow.NewTracesOptimizer(),
 	}
 	if err := tracesBuilder.init(); err != nil {
 		return nil, werror.Wrap(err)
@@ -92,11 +95,12 @@ func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
-	rs := traces.ResourceSpans()
-	rc := rs.Len()
+	optimTraces := b.optimizer.Optimize(traces)
+
+	rc := len(optimTraces.ResourceSpans)
 	return b.rsb.Append(rc, func() error {
-		for i := 0; i < rc; i++ {
-			if err := b.rsp.Append(rs.At(i)); err != nil {
+		for _, resSpanGroup := range optimTraces.ResourceSpans {
+			if err := b.rsp.Append(resSpanGroup); err != nil {
 				return werror.Wrap(err)
 			}
 		}

@@ -18,9 +18,6 @@
 package arrow
 
 import (
-	"sort"
-	"strings"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -47,54 +44,6 @@ type AttributesBuilder struct {
 	builder *builder.MapBuilder    // map builder
 	kb      *builder.StringBuilder // key builder
 	ib      *AnyValueBuilder       // item any value builder
-}
-
-type (
-	mapEntry struct {
-		key   string
-		value pcommon.Value
-	}
-
-	mapEntries []mapEntry
-)
-
-var _ sort.Interface = mapEntries{}
-
-func (me mapEntries) Len() int {
-	return len(me)
-}
-
-func (me mapEntries) Swap(i, j int) {
-	me[i], me[j] = me[j], me[i]
-}
-
-func (me mapEntries) Less(i, j int) bool {
-	return me[i].key < me[j].key
-}
-
-func AttributesId(attrs pcommon.Map) string {
-	tmp := make(mapEntries, 0, attrs.Len())
-	attrs.Range(func(k string, v pcommon.Value) bool {
-		tmp = append(tmp, mapEntry{
-			key:   k,
-			value: v,
-		})
-		return true
-	})
-	sort.Stable(tmp)
-
-	var attrsId strings.Builder
-	attrsId.WriteString("{")
-	for _, e := range tmp {
-		if attrsId.Len() > 1 {
-			attrsId.WriteString(",")
-		}
-		attrsId.WriteString(e.key)
-		attrsId.WriteString(":")
-		attrsId.WriteString(ValueID(e.value))
-	}
-	attrsId.WriteString("}")
-	return attrsId.String()
 }
 
 // NewAttributesBuilder creates a new AttributesBuilder with a given allocator.

@@ -18,8 +18,6 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -49,10 +47,6 @@ type ScopeBuilder struct {
 	dacb     *builder.Uint32Builder // Dropped attributes count builder
 }
 
-func ScopeID(is pcommon.InstrumentationScope) string {
-	return "name:" + is.Name() + "|version:" + is.Version() + "|" + AttributesId(is.Attributes()) + "|" + fmt.Sprintf("dac:%d", is.DroppedAttributesCount())
-}
-
 // NewScopeBuilder creates a new instrumentation scope array builder with a given allocator.
 func NewScopeBuilder(builder *builder.StructBuilder) *ScopeBuilder {
 	return ScopeBuilderFrom(builder)
@@ -71,7 +65,7 @@ func ScopeBuilderFrom(sb *builder.StructBuilder) *ScopeBuilder {
 }
 
 // Append appends a new instrumentation scope to the builder.
-func (b *ScopeBuilder) Append(scope pcommon.InstrumentationScope) error {
+func (b *ScopeBuilder) Append(scope *pcommon.InstrumentationScope) error {
 	if b.released {
 		return werror.Wrap(ErrBuilderAlreadyReleased)
 	}

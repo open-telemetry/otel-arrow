@@ -18,8 +18,6 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -57,10 +55,6 @@ type ResourceBuilder struct {
 	dacb    *builder.Uint32Builder // `dropped_attributes_count` field builder
 }
 
-func ResourceID(r pcommon.Resource) string {
-	return AttributesId(r.Attributes()) + "|" + fmt.Sprintf("dac:%d", r.DroppedAttributesCount())
-}
-
 // NewResourceBuilder creates a new resource builder with a given allocator.
 func NewResourceBuilder(builder *builder.StructBuilder) *ResourceBuilder {
 	return ResourceBuilderFrom(builder)
@@ -77,7 +71,7 @@ func ResourceBuilderFrom(builder *builder.StructBuilder) *ResourceBuilder {
 }
 
 // Append appends a new resource to the builder.
-func (b *ResourceBuilder) Append(resource pcommon.Resource) error {
+func (b *ResourceBuilder) Append(resource *pcommon.Resource) error {
 	if b.released {
 		return werror.Wrap(ErrBuilderAlreadyReleased)
 	}

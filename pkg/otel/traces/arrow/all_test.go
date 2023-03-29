@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
+	cotlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
@@ -184,9 +185,11 @@ func TestSpan(t *testing.T) {
 	for {
 		sb := SpanBuilderFrom(rBuilder.StructBuilder(constants.Spans))
 
-		err := sb.Append(Span1())
+		span := Span1()
+		err := sb.Append(&span)
 		require.NoError(t, err)
-		err = sb.Append(Span2())
+		span = Span2()
+		err = sb.Append(&span)
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
@@ -227,9 +230,9 @@ func TestScopeSpans(t *testing.T) {
 	for {
 		ssb := ScopeSpansBuilderFrom(rBuilder.StructBuilder(constants.ScopeSpans))
 
-		err := ssb.Append(ScopeSpans1())
+		err := ssb.Append(ScopeSpanGroup(ScopeSpans1()))
 		require.NoError(t, err)
-		err = ssb.Append(ScopeSpans2())
+		err = ssb.Append(ScopeSpanGroup(ScopeSpans2()))
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
@@ -253,6 +256,22 @@ func TestScopeSpans(t *testing.T) {
 	require.JSONEq(t, expected, string(json))
 }
 
+func ScopeSpanGroup(scopeSpans ptrace.ScopeSpans) *cotlp.ScopeSpanGroup {
+	spans := make([]*ptrace.Span, 0, scopeSpans.Spans().Len())
+	scope := scopeSpans.Scope()
+
+	spanSlice := scopeSpans.Spans()
+	for i := 0; i < spanSlice.Len(); i++ {
+		span := spanSlice.At(i)
+		spans = append(spans, &span)
+	}
+	return &cotlp.ScopeSpanGroup{
+		Scope:          &scope,
+		ScopeSchemaUrl: scopeSpans.SchemaUrl(),
+		Spans:          spans,
+	}
+}
+
 func TestResourceSpans(t *testing.T) {
 	t.Parallel()
 
@@ -270,9 +289,9 @@ func TestResourceSpans(t *testing.T) {
 	for {
 		rsb := ResourceSpansBuilderFrom(rBuilder.StructBuilder(constants.ResourceSpans))
 
-		err := rsb.Append(ResourceSpans1())
+		err := rsb.Append(ResourceSpanGroup(ResourceSpans1()))
 		require.NoError(t, err)
-		err = rsb.Append(ResourceSpans2())
+		err = rsb.Append(ResourceSpanGroup(ResourceSpans2()))
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
@@ -294,6 +313,21 @@ func TestResourceSpans(t *testing.T) {
 ]`
 
 	require.JSONEq(t, expected, string(json))
+}
+
+func ResourceSpanGroup(resSpan ptrace.ResourceSpans) *cotlp.ResourceSpanGroup {
+	resource := resSpan.Resource()
+	resSpanGroup := cotlp.ResourceSpanGroup{
+		Resource:          &resource,
+		ResourceSchemaUrl: resSpan.SchemaUrl(),
+		ScopeSpans:        make(map[string]*cotlp.ScopeSpanGroup),
+	}
+	scopeSpanSlice := resSpan.ScopeSpans()
+	for i := 0; i < scopeSpanSlice.Len(); i++ {
+		scopeSpan := scopeSpanSlice.At(i)
+		resSpanGroup.AddScopeSpan(&scopeSpan)
+	}
+	return &resSpanGroup
 }
 
 func TestTraces(t *testing.T) {

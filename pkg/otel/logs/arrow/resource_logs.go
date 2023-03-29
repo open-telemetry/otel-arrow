@@ -82,7 +82,8 @@ func (b *ResourceLogsBuilder) Append(rs plog.ResourceLogs) error {
 	}
 
 	return b.builder.Append(rs, func() error {
-		if err := b.rb.Append(rs.Resource()); err != nil {
+		res := rs.Resource()
+		if err := b.rb.Append(&res); err != nil {
 			return werror.Wrap(err)
 		}
 		b.schb.AppendNonEmpty(rs.SchemaUrl())

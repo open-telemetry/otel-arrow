@@ -96,7 +96,8 @@ func (b *ScopeMetricsBuilder) Append(sm pmetric.ScopeMetrics) error {
 	}
 
 	return b.builder.Append(sm, func() error {
-		if err := b.scb.Append(sm.Scope()); err != nil {
+		scope := sm.Scope()
+		if err := b.scb.Append(&scope); err != nil {
 			return werror.Wrap(err)
 		}
 		b.schb.AppendNonEmpty(sm.SchemaUrl())

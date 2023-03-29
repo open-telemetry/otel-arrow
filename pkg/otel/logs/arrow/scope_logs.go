@@ -82,7 +82,8 @@ func (b *ScopeLogsBuilder) Append(sl plog.ScopeLogs) error {
 	}
 
 	return b.builder.Append(sl, func() error {
-		if err := b.scb.Append(sl.Scope()); err != nil {
+		scope := sl.Scope()
+		if err := b.scb.Append(&scope); err != nil {
 			return werror.Wrap(err)
 		}
 		b.schb.AppendNonEmpty(sl.SchemaUrl())

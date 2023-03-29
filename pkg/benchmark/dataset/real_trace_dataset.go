@@ -29,7 +29,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
 	stats "github.com/f5/otel-arrow-adapter/pkg/benchmark/stats"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 )
 
 // ===== Real traces dataset =====
@@ -127,7 +127,7 @@ func (d *RealTraceDataset) Traces(offset, size int) []ptrace.Traces {
 
 		if !ok {
 			inres := d.s2r[span]
-			inresID := arrow.ResourceID(inres)
+			inresID := carrow.ResourceID(inres, "")
 			outres, ok := rsm[inresID]
 
 			if !ok {

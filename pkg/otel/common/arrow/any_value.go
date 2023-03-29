@@ -18,8 +18,6 @@
 package arrow
 
 import (
-	"fmt"
-
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -72,39 +70,6 @@ type AnyValueBuilder struct {
 	boolBuilder   *builder.BooleanBuilder // bool builder
 	binaryBuilder *builder.BinaryBuilder  // binary builder
 	cborBuilder   *builder.BinaryBuilder  // cbor builder
-}
-
-func ValueID(v pcommon.Value) string {
-	switch v.Type() {
-	case pcommon.ValueTypeStr:
-		return v.Str()
-	case pcommon.ValueTypeInt:
-		return fmt.Sprintf("%d", v.Int())
-	case pcommon.ValueTypeDouble:
-		return fmt.Sprintf("%f", v.Double())
-	case pcommon.ValueTypeBool:
-		return fmt.Sprintf("%t", v.Bool())
-	case pcommon.ValueTypeMap:
-		return AttributesId(v.Map())
-	case pcommon.ValueTypeBytes:
-		return fmt.Sprintf("%x", v.Bytes().AsRaw())
-	case pcommon.ValueTypeSlice:
-		values := v.Slice()
-		valueID := "["
-		for i := 0; i < values.Len(); i++ {
-			if len(valueID) > 1 {
-				valueID += ","
-			}
-			valueID += ValueID(values.At(i))
-		}
-		valueID += "]"
-		return valueID
-	case pcommon.ValueTypeEmpty:
-		return ""
-	default:
-		// includes pcommon.ValueTypeEmpty
-		panic("unsupported value type")
-	}
 }
 
 // AnyValueBuilderFrom creates a new AnyValueBuilder from an existing SparseUnionBuilder.
