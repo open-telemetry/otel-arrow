@@ -22,6 +22,7 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
@@ -422,11 +423,14 @@ func TestUnivariateMetric(t *testing.T) {
 		smdata := &ScopeMetricsSharedData{Attributes: &common.SharedAttributes{}}
 		mdata := &MetricSharedData{Attributes: &common.SharedAttributes{}}
 
-		err := sb.Append(internal.Metric1(), smdata, mdata)
+		metric := internal.Metric1()
+		err := sb.Append(&metric, smdata, mdata)
 		require.NoError(t, err)
-		err = sb.Append(internal.Metric2(), smdata, mdata)
+		metric = internal.Metric2()
+		err = sb.Append(&metric, smdata, mdata)
 		require.NoError(t, err)
-		err = sb.Append(internal.Metric3(), smdata, mdata)
+		metric = internal.Metric3()
+		err = sb.Append(&metric, smdata, mdata)
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
@@ -471,11 +475,14 @@ func TestMetricSet(t *testing.T) {
 		smdata := &ScopeMetricsSharedData{Attributes: &common.SharedAttributes{}}
 		mdata := &MetricSharedData{Attributes: &common.SharedAttributes{}}
 
-		err := sb.Append(internal.Metric1(), smdata, mdata)
+		metric := internal.Metric1()
+		err := sb.Append(&metric, smdata, mdata)
 		require.NoError(t, err)
-		err = sb.Append(internal.Metric2(), smdata, mdata)
+		metric = internal.Metric2()
+		err = sb.Append(&metric, smdata, mdata)
 		require.NoError(t, err)
-		err = sb.Append(internal.Metric3(), smdata, mdata)
+		metric = internal.Metric3()
+		err = sb.Append(&metric, smdata, mdata)
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
@@ -517,9 +524,9 @@ func TestScopeMetrics(t *testing.T) {
 	for {
 		sb := ScopeMetricsBuilderFrom(rBuilder.StructBuilder(constants.ScopeMetrics))
 
-		err := sb.Append(internal.ScopeMetrics1())
+		err := sb.Append(ToScopeMetricsGroup(internal.ScopeMetrics1()))
 		require.NoError(t, err)
-		err = sb.Append(internal.ScopeMetrics2())
+		err = sb.Append(ToScopeMetricsGroup(internal.ScopeMetrics2()))
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
@@ -543,6 +550,22 @@ func TestScopeMetrics(t *testing.T) {
 	require.JSONEq(t, expected, string(json))
 }
 
+func ToScopeMetricsGroup(scopeMetrics pmetric.ScopeMetrics) *ScopeMetricsGroup {
+	metrics := make([]*pmetric.Metric, 0, scopeMetrics.Metrics().Len())
+	scope := scopeMetrics.Scope()
+
+	metricsSlice := scopeMetrics.Metrics()
+	for i := 0; i < metricsSlice.Len(); i++ {
+		log := metricsSlice.At(i)
+		metrics = append(metrics, &log)
+	}
+	return &ScopeMetricsGroup{
+		Scope:          &scope,
+		ScopeSchemaUrl: scopeMetrics.SchemaUrl(),
+		Metrics:        metrics,
+	}
+}
+
 func TestResourceMetrics(t *testing.T) {
 	t.Parallel()
 
@@ -560,9 +583,9 @@ func TestResourceMetrics(t *testing.T) {
 	for {
 		sb := ResourceMetricsBuilderFrom(rBuilder.StructBuilder(constants.ResourceMetrics))
 
-		err := sb.Append(internal.ResourceMetrics1())
+		err := sb.Append(ToResourceMetricsGroup(internal.ResourceMetrics1()))
 		require.NoError(t, err)
-		err = sb.Append(internal.ResourceMetrics2())
+		err = sb.Append(ToResourceMetricsGroup(internal.ResourceMetrics2()))
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
@@ -584,6 +607,22 @@ func TestResourceMetrics(t *testing.T) {
 ]`
 
 	require.JSONEq(t, expected, string(json))
+}
+
+func ToResourceMetricsGroup(resMetrics pmetric.ResourceMetrics) *ResourceMetricsGroup {
+	resource := resMetrics.Resource()
+	resMetricsGroup := ResourceMetricsGroup{
+		Resource:          &resource,
+		ResourceSchemaUrl: resMetrics.SchemaUrl(),
+		ScopeMetricsIdx:   make(map[string]int),
+		ScopeMetrics:      make([]*ScopeMetricsGroup, 0),
+	}
+	scopeMetricsSlice := resMetrics.ScopeMetrics()
+	for i := 0; i < scopeMetricsSlice.Len(); i++ {
+		scopeMetrics := scopeMetricsSlice.At(i)
+		resMetricsGroup.AddScopeMetrics(&scopeMetrics)
+	}
+	return &resMetricsGroup
 }
 
 func TestMetrics(t *testing.T) {

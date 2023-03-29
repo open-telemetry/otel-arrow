@@ -95,7 +95,7 @@ func (b *LogRecordBuilder) Build() (*array.Struct, error) {
 }
 
 // Append appends a new log record to the builder.
-func (b *LogRecordBuilder) Append(log plog.LogRecord) error {
+func (b *LogRecordBuilder) Append(log *plog.LogRecord) error {
 	if b.released {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}

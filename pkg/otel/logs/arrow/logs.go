@@ -39,16 +39,18 @@ var (
 type LogsBuilder struct {
 	released bool
 
-	builder *builder.RecordBuilderExt // Record builder
-	rlb     *builder.ListBuilder      // ResourceLogs list builder
-	rlp     *ResourceLogsBuilder      // resource logs builder
+	builder   *builder.RecordBuilderExt // Record builder
+	rlb       *builder.ListBuilder      // ResourceLogs list builder
+	rlp       *ResourceLogsBuilder      // resource logs builder
+	optimizer *LogsOptimizer
 }
 
 // NewLogsBuilder creates a new LogsBuilder with a given allocator.
 func NewLogsBuilder(recordBuilder *builder.RecordBuilderExt) (*LogsBuilder, error) {
 	b := &LogsBuilder{
-		released: false,
-		builder:  recordBuilder,
+		released:  false,
+		builder:   recordBuilder,
+		optimizer: NewLogsOptimizer(),
 	}
 	if err := b.init(); err != nil {
 		return nil, werror.Wrap(err)
@@ -89,11 +91,12 @@ func (b *LogsBuilder) Append(logs plog.Logs) error {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
-	rl := logs.ResourceLogs()
-	rc := rl.Len()
+	optimLogs := b.optimizer.Optimize(logs)
+
+	rc := len(optimLogs.ResourceLogs)
 	return b.rlb.Append(rc, func() error {
-		for i := 0; i < rc; i++ {
-			if err := b.rlp.Append(rl.At(i)); err != nil {
+		for _, resLogGroup := range optimLogs.ResourceLogs {
+			if err := b.rlp.Append(resLogGroup); err != nil {
 				return werror.Wrap(err)
 			}
 		}

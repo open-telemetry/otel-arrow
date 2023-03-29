@@ -90,27 +90,25 @@ func (b *ScopeMetricsBuilder) Build() (*array.Struct, error) {
 }
 
 // Append appends a new scope metrics to the builder.
-func (b *ScopeMetricsBuilder) Append(sm pmetric.ScopeMetrics) error {
+func (b *ScopeMetricsBuilder) Append(smg *ScopeMetricsGroup) error {
 	if b.released {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
-	return b.builder.Append(sm, func() error {
-		scope := sm.Scope()
-		if err := b.scb.Append(&scope); err != nil {
+	return b.builder.Append(smg, func() error {
+		if err := b.scb.Append(smg.Scope); err != nil {
 			return werror.Wrap(err)
 		}
-		b.schb.AppendNonEmpty(sm.SchemaUrl())
+		b.schb.AppendNonEmpty(smg.ScopeSchemaUrl)
 
-		metrics := sm.Metrics()
-		sharedData, err := NewMetricsSharedData(metrics)
+		sharedData, err := NewMetricsSharedData(smg.Metrics)
 		if err != nil {
 			return werror.Wrap(err)
 		}
-		mc := metrics.Len()
+		mc := len(smg.Metrics)
 		if err = b.smb.Append(mc, func() error {
-			for i := 0; i < mc; i++ {
-				if err := b.mb.Append(metrics.At(i), sharedData, sharedData.Metrics[i]); err != nil {
+			for i, metric := range smg.Metrics {
+				if err := b.mb.Append(metric, sharedData, sharedData.Metrics[i]); err != nil {
 					return werror.Wrap(err)
 				}
 			}
@@ -168,20 +166,20 @@ type MetricSharedData struct {
 	Attributes *common.SharedAttributes
 }
 
-func NewMetricsSharedData(metrics pmetric.MetricSlice) (sharedData *ScopeMetricsSharedData, err error) {
-	if metrics.Len() > 0 {
-		msd, err := NewMetricSharedData(metrics.At(0))
+func NewMetricsSharedData(metrics []*pmetric.Metric) (sharedData *ScopeMetricsSharedData, err error) {
+	if len(metrics) > 0 {
+		msd, err := NewMetricSharedData(metrics[0])
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
-		sharedData = &ScopeMetricsSharedData{Metrics: make([]*MetricSharedData, metrics.Len())}
+		sharedData = &ScopeMetricsSharedData{Metrics: make([]*MetricSharedData, len(metrics))}
 		sharedData.StartTime = msd.StartTime
 		sharedData.Time = msd.Time
 		sharedData.Attributes = msd.Attributes.Clone()
 		sharedData.Metrics[0] = msd
 	}
-	for i := 1; i < metrics.Len(); i++ {
-		msd, err := NewMetricSharedData(metrics.At(i))
+	for i := 1; i < len(metrics); i++ {
+		msd, err := NewMetricSharedData(metrics[i])
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
@@ -219,7 +217,7 @@ func NewMetricsSharedData(metrics pmetric.MetricSlice) (sharedData *ScopeMetrics
 	return sharedData, err
 }
 
-func NewMetricSharedData(metric pmetric.Metric) (sharedData *MetricSharedData, err error) {
+func NewMetricSharedData(metric *pmetric.Metric) (sharedData *MetricSharedData, err error) {
 	sharedData = &MetricSharedData{}
 	var dpLen func() int
 	var dpAt func(int) DataPoint

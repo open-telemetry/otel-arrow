@@ -17,7 +17,6 @@ package arrow
 import (
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
-	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
@@ -73,22 +72,20 @@ func (b *ResourceMetricsBuilder) Build() (*array.Struct, error) {
 }
 
 // Append appends a new resource metrics to the builder.
-func (b *ResourceMetricsBuilder) Append(sm pmetric.ResourceMetrics) error {
+func (b *ResourceMetricsBuilder) Append(rmg *ResourceMetricsGroup) error {
 	if b.released {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
-	return b.builder.Append(sm, func() error {
-		res := sm.Resource()
-		if err := b.rb.Append(&res); err != nil {
+	return b.builder.Append(rmg, func() error {
+		if err := b.rb.Append(rmg.Resource); err != nil {
 			return werror.Wrap(err)
 		}
-		b.schb.AppendNonEmpty(sm.SchemaUrl())
-		smetrics := sm.ScopeMetrics()
-		sc := smetrics.Len()
+		b.schb.AppendNonEmpty(rmg.ResourceSchemaUrl)
+		sc := len(rmg.ScopeMetrics)
 		return b.spsb.Append(sc, func() error {
-			for i := 0; i < sc; i++ {
-				if err := b.smb.Append(smetrics.At(i)); err != nil {
+			for _, smg := range rmg.ScopeMetrics {
+				if err := b.smb.Append(smg); err != nil {
 					return werror.Wrap(err)
 				}
 			}

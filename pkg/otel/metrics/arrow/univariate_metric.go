@@ -104,7 +104,7 @@ func (b *UnivariateMetricBuilder) Release() {
 }
 
 // Append appends a new univariate metric to the builder.
-func (b *UnivariateMetricBuilder) Append(metric pmetric.Metric, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
+func (b *UnivariateMetricBuilder) Append(metric *pmetric.Metric, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}

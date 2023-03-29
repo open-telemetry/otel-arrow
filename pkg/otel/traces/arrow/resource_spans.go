@@ -22,7 +22,6 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/array"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -78,7 +77,7 @@ func (b *ResourceSpansBuilder) Build() (*array.Struct, error) {
 }
 
 // Append appends a new resource spans to the builder.
-func (b *ResourceSpansBuilder) Append(rsg *carrow.ResourceSpanGroup) error {
+func (b *ResourceSpansBuilder) Append(rsg *ResourceSpanGroup) error {
 	if b.released {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}

@@ -83,7 +83,7 @@ func (b *MetricSetBuilder) Build() (*array.Struct, error) {
 }
 
 // Append appends a new metric to the builder.
-func (b *MetricSetBuilder) Append(metric pmetric.Metric, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
+func (b *MetricSetBuilder) Append(metric *pmetric.Metric, smdata *ScopeMetricsSharedData, mdata *MetricSharedData) error {
 	if b.released {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}

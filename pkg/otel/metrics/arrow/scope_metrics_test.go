@@ -115,13 +115,22 @@ func TestIntersectAttrs(t *testing.T) {
 	require.Equal(t, 0, sharedAttrsCount)
 }
 
+func MetricSlice(metricSlice pmetric.MetricSlice) []*pmetric.Metric {
+	metrics := make([]*pmetric.Metric, metricSlice.Len())
+	for i := 0; i < metricSlice.Len(); i++ {
+		metric := metricSlice.At(i)
+		metrics[i] = &metric
+	}
+	return metrics
+}
+
 func TestScopeMetricsSharedData1(t *testing.T) {
 	t.Parallel()
 
 	entropy := datagen.NewTestEntropy(0)
 	dg := datagen.NewMetricsGeneratorFromEntropy(entropy)
 	metrics := dg.GenerateMetricSlice(1, 1)
-	sharedData, err := NewMetricsSharedData(metrics)
+	sharedData, err := NewMetricsSharedData(MetricSlice(metrics))
 	require.NoError(t, err)
 
 	require.NotNil(t, sharedData.StartTime)
@@ -156,7 +165,7 @@ func TestScopeMetricsSharedData2(t *testing.T) {
 	t.Parallel()
 
 	metrics := internal.ScopeMetrics3().Metrics()
-	sharedData, err := NewMetricsSharedData(metrics)
+	sharedData, err := NewMetricsSharedData(MetricSlice(metrics))
 	require.NoError(t, err)
 
 	require.NotNil(t, sharedData.StartTime)
@@ -180,7 +189,7 @@ func TestScopeMetricsSharedData3(t *testing.T) {
 	t.Parallel()
 
 	metrics := internal.ScopeMetrics4().Metrics()
-	sharedData, err := NewMetricsSharedData(metrics)
+	sharedData, err := NewMetricsSharedData(MetricSlice(metrics))
 	require.NoError(t, err)
 
 	require.NotNil(t, sharedData.StartTime)
@@ -208,7 +217,7 @@ func TestMetricSharedData(t *testing.T) {
 	t.Parallel()
 
 	metric := SingleSystemMemoryUsage(0, 10)
-	sharedData, err := NewMetricSharedData(metric)
+	sharedData, err := NewMetricSharedData(&metric)
 	require.NoError(t, err)
 	require.Equal(t, 1, sharedData.NumDP)
 	require.NotNil(t, sharedData.StartTime)
@@ -217,7 +226,7 @@ func TestMetricSharedData(t *testing.T) {
 	require.Equal(t, 2, sharedData.Attributes.Len())
 
 	metric = MultiSystemMemoryUsage(0, 10)
-	sharedData, err = NewMetricSharedData(metric)
+	sharedData, err = NewMetricSharedData(&metric)
 	require.NoError(t, err)
 	require.Equal(t, 3, sharedData.NumDP)
 	require.NotNil(t, sharedData.StartTime)

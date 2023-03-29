@@ -55,10 +55,12 @@ func TestLogRecord(t *testing.T) {
 	for {
 		sb := LogRecordBuilderFrom(rBuilder.StructBuilder(constants.Logs))
 
-		err := sb.Append(LogRecord1())
+		logRecord := LogRecord1()
+		err := sb.Append(&logRecord)
 		require.NoError(t, err)
 
-		err = sb.Append(LogRecord2())
+		logRecord = LogRecord2()
+		err = sb.Append(&logRecord)
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
@@ -99,10 +101,10 @@ func TestScopeLogs(t *testing.T) {
 	for {
 		ssb := ScopeLogsBuilderFrom(rBuilder.StructBuilder(constants.ScopeLogs))
 
-		err := ssb.Append(ScopeLogs1())
+		err := ssb.Append(ToScopeLogGroup(ScopeLogs1()))
 		require.NoError(t, err)
 
-		err = ssb.Append(ScopeLogs2())
+		err = ssb.Append(ToScopeLogGroup(ScopeLogs2()))
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
@@ -126,6 +128,22 @@ func TestScopeLogs(t *testing.T) {
 	require.JSONEq(t, expected, string(json))
 }
 
+func ToScopeLogGroup(scopeLogs plog.ScopeLogs) *ScopeLogGroup {
+	logs := make([]*plog.LogRecord, 0, scopeLogs.LogRecords().Len())
+	scope := scopeLogs.Scope()
+
+	logRecords := scopeLogs.LogRecords()
+	for i := 0; i < logRecords.Len(); i++ {
+		log := logRecords.At(i)
+		logs = append(logs, &log)
+	}
+	return &ScopeLogGroup{
+		Scope:          &scope,
+		ScopeSchemaUrl: scopeLogs.SchemaUrl(),
+		Logs:           logs,
+	}
+}
+
 func TestResourceLogs(t *testing.T) {
 	t.Parallel()
 
@@ -143,10 +161,10 @@ func TestResourceLogs(t *testing.T) {
 	for {
 		rsb := ResourceLogsBuilderFrom(rBuilder.StructBuilder(constants.ResourceLogs))
 
-		err := rsb.Append(ResourceLogs1())
+		err := rsb.Append(ToResourceLogGroup(ResourceLogs1()))
 		require.NoError(t, err)
 
-		err = rsb.Append(ResourceLogs2())
+		err = rsb.Append(ToResourceLogGroup(ResourceLogs2()))
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
@@ -168,6 +186,22 @@ func TestResourceLogs(t *testing.T) {
 ]`
 
 	require.JSONEq(t, expected, string(json))
+}
+
+func ToResourceLogGroup(resLogs plog.ResourceLogs) *ResourceLogGroup {
+	resource := resLogs.Resource()
+	resSpanGroup := ResourceLogGroup{
+		Resource:          &resource,
+		ResourceSchemaUrl: resLogs.SchemaUrl(),
+		ScopeLogsIdx:      make(map[string]int),
+		ScopeLogs:         make([]*ScopeLogGroup, 0),
+	}
+	scopeLogsSlice := resLogs.ScopeLogs()
+	for i := 0; i < scopeLogsSlice.Len(); i++ {
+		scopeLogs := scopeLogsSlice.At(i)
+		resSpanGroup.AddScopeLogs(&scopeLogs)
+	}
+	return &resSpanGroup
 }
 
 func TestLogs(t *testing.T) {

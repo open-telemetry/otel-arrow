@@ -22,7 +22,6 @@ import (
 	"github.com/apache/arrow/go/v11/arrow/array"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -77,7 +76,7 @@ func (b *ScopeSpansBuilder) Build() (*array.Struct, error) {
 }
 
 // Append appends a new scope spans to the builder.
-func (b *ScopeSpansBuilder) Append(spg *carrow.ScopeSpanGroup) error {
+func (b *ScopeSpansBuilder) Append(spg *ScopeSpanGroup) error {
 	if b.released {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}

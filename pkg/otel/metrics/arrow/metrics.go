@@ -36,16 +36,18 @@ var (
 type MetricsBuilder struct {
 	released bool
 
-	builder *builder.RecordBuilderExt // Record builder
-	rmb     *builder.ListBuilder      // resource metrics list builder
-	rmp     *ResourceMetricsBuilder   // resource metrics builder
+	builder   *builder.RecordBuilderExt // Record builder
+	rmb       *builder.ListBuilder      // resource metrics list builder
+	rmp       *ResourceMetricsBuilder   // resource metrics builder
+	optimizer *MetricsOptimizer
 }
 
 // NewMetricsBuilder creates a new MetricsBuilder with a given allocator.
 func NewMetricsBuilder(rBuilder *builder.RecordBuilderExt) (*MetricsBuilder, error) {
 	metricsBuilder := &MetricsBuilder{
-		released: false,
-		builder:  rBuilder,
+		released:  false,
+		builder:   rBuilder,
+		optimizer: NewMetricsOptimizer(carrow.WithSort()),
 	}
 	if err := metricsBuilder.init(); err != nil {
 		return nil, werror.Wrap(err)
@@ -86,11 +88,12 @@ func (b *MetricsBuilder) Append(metrics pmetric.Metrics) error {
 		return werror.Wrap(carrow.ErrBuilderAlreadyReleased)
 	}
 
-	rm := metrics.ResourceMetrics()
-	rc := rm.Len()
+	optimMetrics := b.optimizer.Optimize(metrics)
+
+	rc := len(optimMetrics.ResourceMetrics)
 	return b.rmb.Append(rc, func() error {
-		for i := 0; i < rc; i++ {
-			if err := b.rmp.Append(rm.At(i)); err != nil {
+		for _, resMetricsGroup := range optimMetrics.ResourceMetrics {
+			if err := b.rmp.Append(resMetricsGroup); err != nil {
 				return werror.Wrap(err)
 			}
 		}

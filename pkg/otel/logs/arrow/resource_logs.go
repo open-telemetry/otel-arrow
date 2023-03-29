@@ -20,7 +20,6 @@ package arrow
 import (
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
-	"go.opentelemetry.io/collector/pdata/plog"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
@@ -76,22 +75,20 @@ func (b *ResourceLogsBuilder) Build() (*array.Struct, error) {
 }
 
 // Append appends a new resource logs to the builder.
-func (b *ResourceLogsBuilder) Append(rs plog.ResourceLogs) error {
+func (b *ResourceLogsBuilder) Append(rlg *ResourceLogGroup) error {
 	if b.released {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
-	return b.builder.Append(rs, func() error {
-		res := rs.Resource()
-		if err := b.rb.Append(&res); err != nil {
+	return b.builder.Append(rlg, func() error {
+		if err := b.rb.Append(rlg.Resource); err != nil {
 			return werror.Wrap(err)
 		}
-		b.schb.AppendNonEmpty(rs.SchemaUrl())
-		slogs := rs.ScopeLogs()
-		sc := slogs.Len()
+		b.schb.AppendNonEmpty(rlg.ResourceSchemaUrl)
+		sc := len(rlg.ScopeLogs)
 		return b.slsb.Append(sc, func() error {
-			for i := 0; i < sc; i++ {
-				if err := b.slb.Append(slogs.At(i)); err != nil {
+			for _, slg := range rlg.ScopeLogs {
+				if err := b.slb.Append(slg); err != nil {
 					return werror.Wrap(err)
 				}
 			}

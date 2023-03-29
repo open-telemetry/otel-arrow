@@ -20,7 +20,6 @@ package arrow
 import (
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
-	"go.opentelemetry.io/collector/pdata/plog"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
@@ -76,22 +75,20 @@ func (b *ScopeLogsBuilder) Build() (*array.Struct, error) {
 }
 
 // Append appends a new scope logs to the builder.
-func (b *ScopeLogsBuilder) Append(sl plog.ScopeLogs) error {
+func (b *ScopeLogsBuilder) Append(slg *ScopeLogGroup) error {
 	if b.released {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
-	return b.builder.Append(sl, func() error {
-		scope := sl.Scope()
-		if err := b.scb.Append(&scope); err != nil {
+	return b.builder.Append(slg, func() error {
+		if err := b.scb.Append(slg.Scope); err != nil {
 			return werror.Wrap(err)
 		}
-		b.schb.AppendNonEmpty(sl.SchemaUrl())
-		logRecords := sl.LogRecords()
-		lrc := logRecords.Len()
+		b.schb.AppendNonEmpty(slg.ScopeSchemaUrl)
+		lrc := len(slg.Logs)
 		return b.lrsb.Append(lrc, func() error {
 			for i := 0; i < lrc; i++ {
-				if err := b.lrb.Append(logRecords.At(i)); err != nil {
+				if err := b.lrb.Append(slg.Logs[i]); err != nil {
 					return werror.Wrap(err)
 				}
 			}

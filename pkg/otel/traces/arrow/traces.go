@@ -22,7 +22,6 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	schema "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -43,7 +42,7 @@ type TracesBuilder struct {
 	builder   *builder.RecordBuilderExt // Record builder
 	rsb       *builder.ListBuilder      // Resource spans list builder
 	rsp       *ResourceSpansBuilder     // resource spans builder
-	optimizer *carrow.TracesOptimizer
+	optimizer *TracesOptimizer
 }
 
 // NewTracesBuilder creates a new TracesBuilder with a given allocator.
@@ -51,7 +50,7 @@ func NewTracesBuilder(rBuilder *builder.RecordBuilderExt) (*TracesBuilder, error
 	tracesBuilder := &TracesBuilder{
 		released:  false,
 		builder:   rBuilder,
-		optimizer: carrow.NewTracesOptimizer(),
+		optimizer: NewTracesOptimizer(),
 	}
 	if err := tracesBuilder.init(); err != nil {
 		return nil, werror.Wrap(err)

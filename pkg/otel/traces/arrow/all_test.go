@@ -27,7 +27,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	cotlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
@@ -230,9 +229,9 @@ func TestScopeSpans(t *testing.T) {
 	for {
 		ssb := ScopeSpansBuilderFrom(rBuilder.StructBuilder(constants.ScopeSpans))
 
-		err := ssb.Append(ScopeSpanGroup(ScopeSpans1()))
+		err := ssb.Append(ToScopeSpanGroup(ScopeSpans1()))
 		require.NoError(t, err)
-		err = ssb.Append(ScopeSpanGroup(ScopeSpans2()))
+		err = ssb.Append(ToScopeSpanGroup(ScopeSpans2()))
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
@@ -256,7 +255,7 @@ func TestScopeSpans(t *testing.T) {
 	require.JSONEq(t, expected, string(json))
 }
 
-func ScopeSpanGroup(scopeSpans ptrace.ScopeSpans) *cotlp.ScopeSpanGroup {
+func ToScopeSpanGroup(scopeSpans ptrace.ScopeSpans) *ScopeSpanGroup {
 	spans := make([]*ptrace.Span, 0, scopeSpans.Spans().Len())
 	scope := scopeSpans.Scope()
 
@@ -265,7 +264,7 @@ func ScopeSpanGroup(scopeSpans ptrace.ScopeSpans) *cotlp.ScopeSpanGroup {
 		span := spanSlice.At(i)
 		spans = append(spans, &span)
 	}
-	return &cotlp.ScopeSpanGroup{
+	return &ScopeSpanGroup{
 		Scope:          &scope,
 		ScopeSchemaUrl: scopeSpans.SchemaUrl(),
 		Spans:          spans,
@@ -289,9 +288,9 @@ func TestResourceSpans(t *testing.T) {
 	for {
 		rsb := ResourceSpansBuilderFrom(rBuilder.StructBuilder(constants.ResourceSpans))
 
-		err := rsb.Append(ResourceSpanGroup(ResourceSpans1()))
+		err := rsb.Append(ToResourceSpanGroup(ResourceSpans1()))
 		require.NoError(t, err)
-		err = rsb.Append(ResourceSpanGroup(ResourceSpans2()))
+		err = rsb.Append(ToResourceSpanGroup(ResourceSpans2()))
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
@@ -315,12 +314,13 @@ func TestResourceSpans(t *testing.T) {
 	require.JSONEq(t, expected, string(json))
 }
 
-func ResourceSpanGroup(resSpan ptrace.ResourceSpans) *cotlp.ResourceSpanGroup {
+func ToResourceSpanGroup(resSpan ptrace.ResourceSpans) *ResourceSpanGroup {
 	resource := resSpan.Resource()
-	resSpanGroup := cotlp.ResourceSpanGroup{
+	resSpanGroup := ResourceSpanGroup{
 		Resource:          &resource,
 		ResourceSchemaUrl: resSpan.SchemaUrl(),
-		ScopeSpans:        make(map[string]*cotlp.ScopeSpanGroup),
+		ScopeSpansIdx:     make(map[string]int),
+		ScopeSpans:        make([]*ScopeSpanGroup, 0),
 	}
 	scopeSpanSlice := resSpan.ScopeSpans()
 	for i := 0; i < scopeSpanSlice.Len(); i++ {

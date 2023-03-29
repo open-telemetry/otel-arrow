@@ -63,9 +63,9 @@ func TestScopeMetrics(t *testing.T) {
 		b := marrow.ScopeMetricsBuilderFrom(lb.StructBuilder())
 		for i := 0; i < maxIter; i++ {
 			err := lb.Append(2, func() error {
-				err = b.Append(internal.ScopeMetrics3())
+				err = b.Append(ToScopeMetricsGroup(internal.ScopeMetrics3()))
 				require.NoError(t, err)
-				err = b.Append(internal.ScopeMetrics4())
+				err = b.Append(ToScopeMetricsGroup(internal.ScopeMetrics4()))
 				require.NoError(t, err)
 				return nil
 			})
@@ -99,6 +99,22 @@ func TestScopeMetrics(t *testing.T) {
 		AssertJSONEq(t, internal.ScopeMetrics3(), value.At(0))
 		AssertJSONEq(t, internal.ScopeMetrics4(), value.At(1))
 		row++
+	}
+}
+
+func ToScopeMetricsGroup(scopeMetrics pmetric.ScopeMetrics) *marrow.ScopeMetricsGroup {
+	metrics := make([]*pmetric.Metric, 0, scopeMetrics.Metrics().Len())
+	scope := scopeMetrics.Scope()
+
+	metricsSlice := scopeMetrics.Metrics()
+	for i := 0; i < metricsSlice.Len(); i++ {
+		log := metricsSlice.At(i)
+		metrics = append(metrics, &log)
+	}
+	return &marrow.ScopeMetricsGroup{
+		Scope:          &scope,
+		ScopeSchemaUrl: scopeMetrics.SchemaUrl(),
+		Metrics:        metrics,
 	}
 }
 
@@ -158,7 +174,7 @@ func TestScopeMetricsWithGenerator(t *testing.T) {
 		for i := 0; i < maxIter; i++ {
 			err := lb.Append(len(expectedScopeMetrics), func() error {
 				for _, scopeMetrics := range expectedScopeMetrics {
-					err := b.Append(scopeMetrics)
+					err := b.Append(ToScopeMetricsGroup(scopeMetrics))
 					require.NoError(t, err)
 				}
 				return nil

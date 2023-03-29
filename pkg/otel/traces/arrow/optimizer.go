@@ -15,7 +15,7 @@
  *
  */
 
-package otlp
+package arrow
 
 import (
 	"sort"
@@ -25,6 +25,8 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/stats"
+	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 )
 
 type TracesOptimizer struct {
@@ -33,13 +35,15 @@ type TracesOptimizer struct {
 }
 
 type TracesOptimized struct {
-	ResourceSpans map[string]*ResourceSpanGroup // resource span id -> resource span group
+	ResourceSpansIdx map[string]int // resource span id -> resource span group
+	ResourceSpans    []*ResourceSpanGroup
 }
 
 type ResourceSpanGroup struct {
 	Resource          *pcommon.Resource
 	ResourceSchemaUrl string
-	ScopeSpans        map[string]*ScopeSpanGroup // scope span id -> scope span group
+	ScopeSpansIdx     map[string]int // scope span id -> scope span group
+	ScopeSpans        []*ScopeSpanGroup
 }
 
 type ScopeSpanGroup struct {
@@ -49,46 +53,30 @@ type ScopeSpanGroup struct {
 	Spans []*ptrace.Span
 }
 
-type Options struct {
-	sort  bool
-	stats bool
-}
-
-func WithSort() func(*Options) {
-	return func(o *Options) {
-		o.sort = true
-	}
-}
-
-func WithStats() func(*Options) {
-	return func(o *Options) {
-		o.stats = true
-	}
-}
-
-func NewTracesOptimizer(cfg ...func(*Options)) *TracesOptimizer {
-	options := Options{
-		sort:  false,
-		stats: false,
+func NewTracesOptimizer(cfg ...func(*carrow.Options)) *TracesOptimizer {
+	options := carrow.Options{
+		Sort:  false,
+		Stats: false,
 	}
 	for _, c := range cfg {
 		c(&options)
 	}
 
 	var s *stats.TracesStats
-	if options.stats {
+	if options.Stats {
 		s = stats.NewTracesStats()
 	}
 
 	return &TracesOptimizer{
-		sort:  options.sort,
+		sort:  options.Sort,
 		stats: s,
 	}
 }
 
 func (t *TracesOptimizer) Optimize(traces ptrace.Traces) *TracesOptimized {
 	tracesOptimized := &TracesOptimized{
-		ResourceSpans: make(map[string]*ResourceSpanGroup),
+		ResourceSpansIdx: make(map[string]int),
+		ResourceSpans:    make([]*ResourceSpanGroup, 0),
 	}
 
 	resSpans := traces.ResourceSpans()
@@ -107,40 +95,46 @@ func (t *TracesOptimizer) Optimize(traces ptrace.Traces) *TracesOptimized {
 }
 
 func (t *TracesOptimized) AddResourceSpan(resSpan *ptrace.ResourceSpans) {
-	resSpanId := ResourceID(resSpan.Resource(), resSpan.SchemaUrl())
-	resSpanGroup, found := t.ResourceSpans[resSpanId]
+	resSpanId := otlp.ResourceID(resSpan.Resource(), resSpan.SchemaUrl())
+	resSpanGroupIdx, found := t.ResourceSpansIdx[resSpanId]
 	if !found {
 		res := resSpan.Resource()
-		resSpanGroup = &ResourceSpanGroup{
+		resSpanGroup := &ResourceSpanGroup{
 			Resource:          &res,
 			ResourceSchemaUrl: resSpan.SchemaUrl(),
-			ScopeSpans:        make(map[string]*ScopeSpanGroup),
+			ScopeSpansIdx:     make(map[string]int),
+			ScopeSpans:        make([]*ScopeSpanGroup, 0),
 		}
-		t.ResourceSpans[resSpanId] = resSpanGroup
+		t.ResourceSpans = append(t.ResourceSpans, resSpanGroup)
+		resSpanGroupIdx = len(t.ResourceSpans) - 1
+		t.ResourceSpansIdx[resSpanId] = resSpanGroupIdx
 	}
 	scopeSpans := resSpan.ScopeSpans()
 	for i := 0; i < scopeSpans.Len(); i++ {
 		scopeSpan := scopeSpans.At(i)
-		resSpanGroup.AddScopeSpan(&scopeSpan)
+		t.ResourceSpans[resSpanGroupIdx].AddScopeSpan(&scopeSpan)
 	}
 }
 
 func (r *ResourceSpanGroup) AddScopeSpan(scopeSpan *ptrace.ScopeSpans) {
-	scopeSpanId := ScopeID(scopeSpan.Scope(), scopeSpan.SchemaUrl())
-	scopeSpanGroup, found := r.ScopeSpans[scopeSpanId]
+	scopeSpanId := otlp.ScopeID(scopeSpan.Scope(), scopeSpan.SchemaUrl())
+	scopeSpanGroupIdx, found := r.ScopeSpansIdx[scopeSpanId]
 	if !found {
 		scope := scopeSpan.Scope()
-		scopeSpanGroup = &ScopeSpanGroup{
+		scopeSpanGroup := &ScopeSpanGroup{
 			Scope:          &scope,
 			ScopeSchemaUrl: scopeSpan.SchemaUrl(),
 			Spans:          make([]*ptrace.Span, 0),
 		}
-		r.ScopeSpans[scopeSpanId] = scopeSpanGroup
+		r.ScopeSpans = append(r.ScopeSpans, scopeSpanGroup)
+		scopeSpanGroupIdx = len(r.ScopeSpans) - 1
+		r.ScopeSpansIdx[scopeSpanId] = scopeSpanGroupIdx
 	}
 	spansSlice := scopeSpan.Spans()
 	for i := 0; i < spansSlice.Len(); i++ {
 		spans := spansSlice.At(i)
-		scopeSpanGroup.Spans = append(scopeSpanGroup.Spans, &spans)
+		scopeSpans := r.ScopeSpans[scopeSpanGroupIdx]
+		scopeSpans.Spans = append(scopeSpans.Spans, &spans)
 	}
 }
 
