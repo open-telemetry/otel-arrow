@@ -337,6 +337,9 @@ func (r *Receiver) processRecords(ctx context.Context, arrowConsumer arrowRecord
 	}
 	switch payloads[0].Type {
 	case arrowpb.OtlpArrowPayloadType_METRICS:
+		if r.Metrics() == nil {
+			return status.Error(codes.Unimplemented, "metrics service not available")
+		}
 		var numPts int
 		ctx = r.obsrecv.StartMetricsOp(ctx)
 
@@ -355,6 +358,9 @@ func (r *Receiver) processRecords(ctx context.Context, arrowConsumer arrowRecord
 		return err
 
 	case arrowpb.OtlpArrowPayloadType_LOGS:
+		if r.Logs() == nil {
+			return status.Error(codes.Unimplemented, "logs service not available")
+		}
 		var numLogs int
 		ctx = r.obsrecv.StartLogsOp(ctx)
 
@@ -373,6 +379,9 @@ func (r *Receiver) processRecords(ctx context.Context, arrowConsumer arrowRecord
 		return err
 
 	case arrowpb.OtlpArrowPayloadType_SPANS:
+		if r.Traces() == nil {
+			return status.Error(codes.Unimplemented, "traces service not available")
+		}
 		var numSpans int
 		ctx = r.obsrecv.StartTracesOp(ctx)
 
