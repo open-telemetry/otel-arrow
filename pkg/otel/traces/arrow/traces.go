@@ -46,11 +46,19 @@ type TracesBuilder struct {
 }
 
 // NewTracesBuilder creates a new TracesBuilder with a given allocator.
-func NewTracesBuilder(rBuilder *builder.RecordBuilderExt) (*TracesBuilder, error) {
+func NewTracesBuilder(rBuilder *builder.RecordBuilderExt, traceStats bool) (*TracesBuilder, error) {
+	var optimizer *TracesOptimizer
+
+	if traceStats {
+		optimizer = NewTracesOptimizer(acommon.WithStats())
+	} else {
+		optimizer = NewTracesOptimizer()
+	}
+
 	tracesBuilder := &TracesBuilder{
 		released:  false,
 		builder:   rBuilder,
-		optimizer: NewTracesOptimizer(),
+		optimizer: optimizer,
 	}
 	if err := tracesBuilder.init(); err != nil {
 		return nil, werror.Wrap(err)
@@ -63,6 +71,10 @@ func (b *TracesBuilder) init() error {
 	b.rsb = rsb
 	b.rsp = ResourceSpansBuilderFrom(rsb.StructBuilder())
 	return nil
+}
+
+func (b *TracesBuilder) Stats() *TracesStats {
+	return b.optimizer.Stats()
 }
 
 // Build builds an Arrow Record from the builder.

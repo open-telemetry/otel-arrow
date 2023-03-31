@@ -28,6 +28,11 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 )
 
+var metricsProducerOptions = []arrow_record.Option{
+	arrow_record.WithNoZstd(),
+	arrow_record.WithMetricsStats(),
+}
+
 type MetricsProfileable struct {
 	tags              []string
 	compression       benchmark.CompressionAlgorithm
@@ -46,7 +51,7 @@ func NewMetricsProfileable(tags []string, dataset dataset.MetricsDataset, config
 		tags:              tags,
 		dataset:           dataset,
 		compression:       benchmark.Zstd(),
-		producer:          arrow_record.NewProducerWithOptions(arrow_record.WithNoZstd()),
+		producer:          arrow_record.NewProducerWithOptions(metricsProducerOptions...),
 		consumer:          arrow_record.NewConsumer(),
 		batchArrowRecords: make([]*colarspb.BatchArrowRecords, 0, 10),
 		config:            config,
@@ -78,7 +83,7 @@ func (s *MetricsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorit
 }
 func (s *MetricsProfileable) StartProfiling(_ io.Writer) {
 	if !s.unaryRpcMode {
-		s.producer = arrow_record.NewProducerWithOptions(arrow_record.WithNoZstd())
+		s.producer = arrow_record.NewProducerWithOptions(metricsProducerOptions...)
 		s.consumer = arrow_record.NewConsumer()
 	}
 }
@@ -95,7 +100,7 @@ func (s *MetricsProfileable) EndProfiling(_ io.Writer) {
 func (s *MetricsProfileable) InitBatchSize(_ io.Writer, _ int) {}
 func (s *MetricsProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	if s.unaryRpcMode {
-		s.producer = arrow_record.NewProducerWithOptions(arrow_record.WithNoZstd())
+		s.producer = arrow_record.NewProducerWithOptions(metricsProducerOptions...)
 		s.consumer = arrow_record.NewConsumer()
 	}
 
@@ -168,4 +173,9 @@ func (s *MetricsProfileable) Clear() {
 		}
 	}
 }
-func (s *MetricsProfileable) ShowStats() {}
+func (s *MetricsProfileable) ShowStats() {
+	stats := s.producer.MetricsStats()
+	if stats != nil {
+		stats.Show()
+	}
+}

@@ -637,7 +637,7 @@ func TestMetrics(t *testing.T) {
 	var record arrow.Record
 
 	for {
-		sb, err := NewMetricsBuilder(rBuilder)
+		sb, err := NewMetricsBuilder(rBuilder, false)
 		require.NoError(t, err)
 		defer sb.Release()
 

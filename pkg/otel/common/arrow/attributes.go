@@ -18,6 +18,9 @@
 package arrow
 
 import (
+	"fmt"
+
+	"github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -36,6 +39,11 @@ var (
 	// ToDo support dictionary on keys.
 	AttributesDT = arrow.MapOf(KDT, AnyValueDT)
 )
+
+type AttributesStats struct {
+	AttrsHistogram *hdrhistogram.Histogram
+	AnyValueStats  *AnyValueStats
+}
 
 // AttributesBuilder is a helper to build a map of attributes.
 type AttributesBuilder struct {
@@ -147,4 +155,35 @@ func (b *AttributesBuilder) Release() {
 
 		b.released = true
 	}
+}
+
+func NewAttributesStats() *AttributesStats {
+	return &AttributesStats{
+		AttrsHistogram: hdrhistogram.New(0, 1000000, 1),
+		AnyValueStats:  NewAnyValueStats(),
+	}
+}
+
+func (a *AttributesStats) UpdateStats(attrs pcommon.Map) {
+	a.AttrsHistogram.RecordValue(int64(attrs.Len()))
+	attrs.Range(func(key string, v pcommon.Value) bool {
+		a.AnyValueStats.UpdateStats(v)
+		return true
+	})
+}
+
+func (a *AttributesStats) Show(prefix string) {
+	if a.AttrsHistogram.Mean() == 0 {
+		return
+	}
+	fmt.Printf("%sAttributes -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+		prefix,
+		a.AttrsHistogram.Mean(),
+		a.AttrsHistogram.Min(),
+		a.AttrsHistogram.Max(),
+		a.AttrsHistogram.StdDev(),
+		a.AttrsHistogram.ValueAtQuantile(50),
+		a.AttrsHistogram.ValueAtQuantile(99),
+	)
+	a.AnyValueStats.Show(prefix + "  ")
 }

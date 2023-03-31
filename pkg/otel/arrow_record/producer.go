@@ -82,6 +82,9 @@ type Config struct {
 	initIndexSize  uint64
 	limitIndexSize uint64
 	zstd           bool // Use IPC ZSTD compression
+	metricsStats   bool
+	logsStats      bool
+	tracesStats    bool
 }
 
 type Option func(*Config)
@@ -102,6 +105,9 @@ func NewProducerWithOptions(options ...Option) *Producer {
 		pool:           memory.NewGoAllocator(),
 		initIndexSize:  math.MaxUint16,
 		limitIndexSize: math.MaxUint16,
+		metricsStats:   false,
+		logsStats:      false,
+		tracesStats:    false,
 		zstd:           true,
 	}
 	for _, opt := range options {
@@ -120,17 +126,17 @@ func NewProducerWithOptions(options ...Option) *Producer {
 		MaxCard: cfg.limitIndexSize,
 	})
 
-	metricsBuilder, err := metricsarrow.NewMetricsBuilder(metricsRecordBuilder)
+	metricsBuilder, err := metricsarrow.NewMetricsBuilder(metricsRecordBuilder, cfg.metricsStats)
 	if err != nil {
 		panic(err)
 	}
 
-	logsBuidler, err := logsarrow.NewLogsBuilder(logsRecordBuilder)
+	logsBuidler, err := logsarrow.NewLogsBuilder(logsRecordBuilder, cfg.logsStats)
 	if err != nil {
 		panic(err)
 	}
 
-	tracesBuilder, err := tracesarrow.NewTracesBuilder(tracesRecordBuilder)
+	tracesBuilder, err := tracesarrow.NewTracesBuilder(tracesRecordBuilder, cfg.tracesStats)
 	if err != nil {
 		panic(err)
 	}
@@ -230,6 +236,18 @@ func (p *Producer) LogsRecordBuilderExt() *builder.RecordBuilderExt {
 // TracesRecordBuilderExt returns the record builder used to encode traces.
 func (p *Producer) TracesRecordBuilderExt() *builder.RecordBuilderExt {
 	return p.tracesRecordBuilder
+}
+
+func (p *Producer) MetricsStats() *metricsarrow.MetricsStats {
+	return p.metricsBuilder.Stats()
+}
+
+func (p *Producer) LogsStats() *logsarrow.LogsStats {
+	return p.logsBuilder.Stats()
+}
+
+func (p *Producer) TracesStats() *tracesarrow.TracesStats {
+	return p.tracesBuilder.Stats()
 }
 
 // Close closes all stream producers.
@@ -434,5 +452,23 @@ func WithZstd() Option {
 func WithNoZstd() Option {
 	return func(cfg *Config) {
 		cfg.zstd = false
+	}
+}
+
+func WithMetricsStats() Option {
+	return func(cfg *Config) {
+		cfg.metricsStats = true
+	}
+}
+
+func WithLogsStats() Option {
+	return func(cfg *Config) {
+		cfg.logsStats = true
+	}
+}
+
+func WithTracesStats() Option {
+	return func(cfg *Config) {
+		cfg.tracesStats = true
 	}
 }

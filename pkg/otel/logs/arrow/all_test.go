@@ -215,7 +215,7 @@ func TestLogs(t *testing.T) {
 	var record arrow.Record
 
 	for {
-		tb, err := NewLogsBuilder(rBuilder)
+		tb, err := NewLogsBuilder(rBuilder, false)
 		require.NoError(t, err)
 		defer tb.Release()
 

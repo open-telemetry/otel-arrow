@@ -50,7 +50,7 @@ func TestMetrics(t *testing.T) {
 
 	// Create Arrow record from OTLP metrics.
 	for {
-		b, err := ametrics.NewMetricsBuilder(rBuilder)
+		b, err := ametrics.NewMetricsBuilder(rBuilder, false)
 		require.NoError(t, err)
 		for i := 0; i < maxIter; i++ {
 			err = b.Append(internal.Metrics1())

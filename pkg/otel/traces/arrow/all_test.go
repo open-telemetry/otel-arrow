@@ -342,7 +342,7 @@ func TestTraces(t *testing.T) {
 	var record arrow.Record
 
 	for {
-		tb, err := NewTracesBuilder(rBuilder)
+		tb, err := NewTracesBuilder(rBuilder, false)
 		require.NoError(t, err)
 		defer tb.Release()
 

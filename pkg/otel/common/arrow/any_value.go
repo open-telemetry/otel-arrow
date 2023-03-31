@@ -18,6 +18,9 @@
 package arrow
 
 import (
+	"fmt"
+
+	"github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/apache/arrow/go/v11/arrow"
 	"github.com/apache/arrow/go/v11/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -57,6 +60,16 @@ var (
 		CborCode,
 	})
 )
+
+type AnyValueStats struct {
+	StrHistogram    *hdrhistogram.Histogram
+	I64Histogram    *hdrhistogram.Histogram
+	F64Histogram    *hdrhistogram.Histogram
+	BoolHistogram   *hdrhistogram.Histogram
+	BinaryHistogram *hdrhistogram.Histogram
+	ListHistogram   *hdrhistogram.Histogram
+	MapHistogram    *hdrhistogram.Histogram
+}
 
 // AnyValueBuilder is a helper to build an Arrow array containing a collection of OTLP Any Value.
 type AnyValueBuilder struct {
@@ -215,4 +228,97 @@ func (b *AnyValueBuilder) appendCbor(v []byte) error {
 	b.binaryBuilder.AppendNull()
 
 	return nil
+}
+
+func NewAnyValueStats() *AnyValueStats {
+	return &AnyValueStats{
+		StrHistogram:    hdrhistogram.New(0, 100000, 1),
+		I64Histogram:    hdrhistogram.New(0, 100000, 1),
+		F64Histogram:    hdrhistogram.New(0, 100000, 1),
+		BoolHistogram:   hdrhistogram.New(0, 100000, 1),
+		BinaryHistogram: hdrhistogram.New(0, 100000, 1),
+		ListHistogram:   hdrhistogram.New(0, 100000, 1),
+		MapHistogram:    hdrhistogram.New(0, 100000, 1),
+	}
+}
+
+func (a *AnyValueStats) UpdateStats(v pcommon.Value) {
+	var strCount int64
+	var i64Count int64
+	var f64Count int64
+	var boolCount int64
+	var binaryCount int64
+	var listCount int64
+	var mapCount int64
+
+	switch v.Type() {
+	case pcommon.ValueTypeStr:
+		strCount++
+	case pcommon.ValueTypeInt:
+		i64Count++
+	case pcommon.ValueTypeDouble:
+		f64Count++
+	case pcommon.ValueTypeBool:
+		boolCount++
+	case pcommon.ValueTypeBytes:
+		binaryCount++
+	case pcommon.ValueTypeSlice:
+		listCount++
+	case pcommon.ValueTypeMap:
+		mapCount++
+	default: // ignore
+	}
+
+	if err := a.StrHistogram.RecordValue(strCount); err != nil {
+		panic(fmt.Sprintf("failed to record str count: %v", err))
+	}
+	if err := a.I64Histogram.RecordValue(i64Count); err != nil {
+		panic(fmt.Sprintf("failed to record i64 count: %v", err))
+	}
+	if err := a.F64Histogram.RecordValue(f64Count); err != nil {
+		panic(fmt.Sprintf("failed to record f64 count: %v", err))
+	}
+	if err := a.BoolHistogram.RecordValue(boolCount); err != nil {
+		panic(fmt.Sprintf("failed to record bool count: %v", err))
+	}
+	if err := a.BinaryHistogram.RecordValue(binaryCount); err != nil {
+		panic(fmt.Sprintf("failed to record binary count: %v", err))
+	}
+	if err := a.ListHistogram.RecordValue(listCount); err != nil {
+		panic(fmt.Sprintf("failed to record list count: %v", err))
+	}
+	if err := a.MapHistogram.RecordValue(mapCount); err != nil {
+		panic(fmt.Sprintf("failed to record map count: %v", err))
+	}
+}
+
+func (a *AnyValueStats) Show(prefix string) {
+	if a.StrHistogram.Mean() > 0 {
+		fmt.Printf("%sstr      -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+			prefix, a.StrHistogram.Mean(), a.StrHistogram.Min(), a.StrHistogram.Max(), a.StrHistogram.StdDev(), a.StrHistogram.ValueAtQuantile(50), a.StrHistogram.ValueAtQuantile(99))
+	}
+	if a.I64Histogram.Mean() > 0 {
+		fmt.Printf("%si64      -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+			prefix, a.I64Histogram.Mean(), a.I64Histogram.Min(), a.I64Histogram.Max(), a.I64Histogram.StdDev(), a.I64Histogram.ValueAtQuantile(50), a.I64Histogram.ValueAtQuantile(99))
+	}
+	if a.F64Histogram.Mean() > 0 {
+		fmt.Printf("%sf64      -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+			prefix, a.F64Histogram.Mean(), a.F64Histogram.Min(), a.F64Histogram.Max(), a.F64Histogram.StdDev(), a.F64Histogram.ValueAtQuantile(50), a.F64Histogram.ValueAtQuantile(99))
+	}
+	if a.BoolHistogram.Mean() > 0 {
+		fmt.Printf("%sbool     -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+			prefix, a.BoolHistogram.Mean(), a.BoolHistogram.Min(), a.BoolHistogram.Max(), a.BoolHistogram.StdDev(), a.BoolHistogram.ValueAtQuantile(50), a.BoolHistogram.ValueAtQuantile(99))
+	}
+	if a.BinaryHistogram.Mean() > 0 {
+		fmt.Printf("%sbinary   -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+			prefix, a.BinaryHistogram.Mean(), a.BinaryHistogram.Min(), a.BinaryHistogram.Max(), a.BinaryHistogram.StdDev(), a.BinaryHistogram.ValueAtQuantile(50), a.BinaryHistogram.ValueAtQuantile(99))
+	}
+	if a.ListHistogram.Mean() > 0 {
+		fmt.Printf("%slist     -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+			prefix, a.ListHistogram.Mean(), a.ListHistogram.Min(), a.ListHistogram.Max(), a.ListHistogram.StdDev(), a.ListHistogram.ValueAtQuantile(50), a.ListHistogram.ValueAtQuantile(99))
+	}
+	if a.MapHistogram.Mean() > 0 {
+		fmt.Printf("%smap      -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+			prefix, a.MapHistogram.Mean(), a.MapHistogram.Min(), a.MapHistogram.Max(), a.MapHistogram.StdDev(), a.MapHistogram.ValueAtQuantile(50), a.MapHistogram.ValueAtQuantile(99))
+	}
 }

@@ -46,11 +46,19 @@ type LogsBuilder struct {
 }
 
 // NewLogsBuilder creates a new LogsBuilder with a given allocator.
-func NewLogsBuilder(recordBuilder *builder.RecordBuilderExt) (*LogsBuilder, error) {
+func NewLogsBuilder(recordBuilder *builder.RecordBuilderExt, logsStats bool) (*LogsBuilder, error) {
+	var optimizer *LogsOptimizer
+
+	if logsStats {
+		optimizer = NewLogsOptimizer(acommon.WithStats())
+	} else {
+		optimizer = NewLogsOptimizer()
+	}
+
 	b := &LogsBuilder{
 		released:  false,
 		builder:   recordBuilder,
-		optimizer: NewLogsOptimizer(),
+		optimizer: optimizer,
 	}
 	if err := b.init(); err != nil {
 		return nil, werror.Wrap(err)
@@ -63,6 +71,10 @@ func (b *LogsBuilder) init() error {
 	b.rlb = rlb
 	b.rlp = ResourceLogsBuilderFrom(rlb.StructBuilder())
 	return nil
+}
+
+func (b *LogsBuilder) Stats() *LogsStats {
+	return b.optimizer.Stats()
 }
 
 // Build builds an Arrow Record from the builder.

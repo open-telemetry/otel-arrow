@@ -30,6 +30,11 @@ import (
 
 const OtlpArrow = "OTLP_ARROW"
 
+var logsProducerOptions = []arrow_record.Option{
+	arrow_record.WithNoZstd(),
+	arrow_record.WithLogsStats(),
+}
+
 type LogsProfileable struct {
 	tags              []string
 	compression       benchmark.CompressionAlgorithm
@@ -48,7 +53,7 @@ func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *benc
 		tags:              tags,
 		dataset:           dataset,
 		compression:       benchmark.Zstd(),
-		producer:          arrow_record.NewProducerWithOptions(arrow_record.WithNoZstd()),
+		producer:          arrow_record.NewProducerWithOptions(logsProducerOptions...),
 		consumer:          arrow_record.NewConsumer(),
 		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
 		config:            config,
@@ -80,7 +85,7 @@ func (s *LogsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm 
 }
 func (s *LogsProfileable) StartProfiling(_ io.Writer) {
 	if !s.unaryRpcMode {
-		s.producer = arrow_record.NewProducerWithOptions(arrow_record.WithNoZstd())
+		s.producer = arrow_record.NewProducerWithOptions(logsProducerOptions...)
 		s.consumer = arrow_record.NewConsumer()
 	}
 }
@@ -97,7 +102,7 @@ func (s *LogsProfileable) EndProfiling(_ io.Writer) {
 func (s *LogsProfileable) InitBatchSize(_ io.Writer, _ int) {}
 func (s *LogsProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	if s.unaryRpcMode {
-		s.producer = arrow_record.NewProducerWithOptions(arrow_record.WithNoZstd())
+		s.producer = arrow_record.NewProducerWithOptions(logsProducerOptions...)
 		s.consumer = arrow_record.NewConsumer()
 	}
 	s.logs = s.dataset.Logs(startAt, size)
@@ -169,4 +174,9 @@ func (s *LogsProfileable) Clear() {
 		}
 	}
 }
-func (s *LogsProfileable) ShowStats() {}
+func (s *LogsProfileable) ShowStats() {
+	stats := s.producer.LogsStats()
+	if stats != nil {
+		stats.Show()
+	}
+}

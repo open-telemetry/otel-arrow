@@ -61,7 +61,7 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	var record arrow.Record
 
 	for {
-		lb, err := logsarrow.NewLogsBuilder(rBuilder)
+		lb, err := logsarrow.NewLogsBuilder(rBuilder, false)
 		require.NoError(t, err)
 		defer lb.Release()
 		err = lb.Append(expectedRequest.Logs())

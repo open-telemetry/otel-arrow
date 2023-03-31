@@ -18,20 +18,21 @@
 package arrow
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/HdrHistogram/hdrhistogram-go"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 
-	"github.com/f5/otel-arrow-adapter/pkg/benchmark/stats"
 	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 )
 
 type LogsOptimizer struct {
 	sort  bool
-	stats *stats.LogsStats
+	stats *LogsStats
 }
 
 type LogsOptimized struct {
@@ -53,6 +54,23 @@ type ScopeLogGroup struct {
 	Logs []*plog.LogRecord
 }
 
+type LogsStats struct {
+	LogsCount              int
+	ResourceLogsHistogram  *hdrhistogram.Histogram
+	ResourceAttrsHistogram *carrow.AttributesStats
+	ScopeLogsHistogram     *hdrhistogram.Histogram
+	ScopeAttrsHistogram    *carrow.AttributesStats
+	LogsHistogram          *hdrhistogram.Histogram
+	LogsAttrsHistogram     *carrow.AttributesStats
+	IntBodyHistogram       *hdrhistogram.Histogram
+	DoubleBodyHistogram    *hdrhistogram.Histogram
+	StringBodyHistogram    *hdrhistogram.Histogram
+	BoolBodyHistogram      *hdrhistogram.Histogram
+	ListBodyHistogram      *hdrhistogram.Histogram
+	MapBodyHistogram       *hdrhistogram.Histogram
+	BytesBodyHistogram     *hdrhistogram.Histogram
+}
+
 func NewLogsOptimizer(cfg ...func(*carrow.Options)) *LogsOptimizer {
 	options := carrow.Options{
 		Sort:  false,
@@ -62,9 +80,24 @@ func NewLogsOptimizer(cfg ...func(*carrow.Options)) *LogsOptimizer {
 		c(&options)
 	}
 
-	var s *stats.LogsStats
+	var s *LogsStats
 	if options.Stats {
-		s = stats.NewLogsStats()
+		s = &LogsStats{
+			LogsCount:              0,
+			ResourceLogsHistogram:  hdrhistogram.New(1, 1000000, 1),
+			ResourceAttrsHistogram: carrow.NewAttributesStats(),
+			ScopeLogsHistogram:     hdrhistogram.New(1, 1000000, 1),
+			ScopeAttrsHistogram:    carrow.NewAttributesStats(),
+			LogsHistogram:          hdrhistogram.New(1, 1000000, 1),
+			LogsAttrsHistogram:     carrow.NewAttributesStats(),
+			IntBodyHistogram:       hdrhistogram.New(1, 1000000, 1),
+			DoubleBodyHistogram:    hdrhistogram.New(1, 1000000, 1),
+			StringBodyHistogram:    hdrhistogram.New(1, 1000000, 1),
+			BoolBodyHistogram:      hdrhistogram.New(1, 1000000, 1),
+			ListBodyHistogram:      hdrhistogram.New(1, 1000000, 1),
+			MapBodyHistogram:       hdrhistogram.New(1, 1000000, 1),
+			BytesBodyHistogram:     hdrhistogram.New(1, 1000000, 1),
+		}
 	}
 
 	return &LogsOptimizer{
@@ -91,7 +124,27 @@ func (t *LogsOptimizer) Optimize(logs plog.Logs) *LogsOptimized {
 		}
 	}
 
+	if t.stats != nil {
+		logsOptimized.RecordStats(t.stats)
+	}
+
 	return logsOptimized
+}
+
+func (t *LogsOptimizer) Stats() *LogsStats {
+	return t.stats
+}
+
+func (t *LogsOptimized) RecordStats(stats *LogsStats) {
+	stats.LogsCount++
+	if err := stats.ResourceLogsHistogram.RecordValue(int64(len(t.ResourceLogs))); err != nil {
+		panic(fmt.Sprintf("number of resource logs is out of range: %v", err))
+	}
+	for _, resLogsGroup := range t.ResourceLogs {
+		attrs := resLogsGroup.Resource.Attributes()
+		stats.ResourceAttrsHistogram.UpdateStats(attrs)
+		resLogsGroup.RecordStats(stats)
+	}
 }
 
 func (t *LogsOptimized) AddResourceLogs(resLogs *plog.ResourceLogs) {
@@ -147,4 +200,164 @@ func (r *ResourceLogGroup) Sort() {
 			) == -1
 		})
 	}
+}
+
+func (t *ResourceLogGroup) RecordStats(stats *LogsStats) {
+	if err := stats.ScopeLogsHistogram.RecordValue(int64(len(t.ScopeLogs))); err != nil {
+		panic(fmt.Sprintf("number of scope logs is out of range: %v", err))
+	}
+	for _, scopeLogsGroup := range t.ScopeLogs {
+		attrs := scopeLogsGroup.Scope.Attributes()
+		stats.ScopeAttrsHistogram.UpdateStats(attrs)
+		scopeLogsGroup.RecordStats(stats)
+	}
+}
+
+func (t *ScopeLogGroup) RecordStats(stats *LogsStats) {
+	if err := stats.LogsHistogram.RecordValue(int64(len(t.Logs))); err != nil {
+		panic(fmt.Sprintf("number of logs is out of range: %v", err))
+	}
+
+	intCount := 0
+	doubleCount := 0
+	stringCount := 0
+	boolCount := 0
+	listCount := 0
+	mapCount := 0
+	bytesCount := 0
+
+	for _, log := range t.Logs {
+		stats.LogsAttrsHistogram.UpdateStats(log.Attributes())
+
+		switch log.Body().Type() {
+		case pcommon.ValueTypeInt:
+			intCount++
+		case pcommon.ValueTypeDouble:
+			doubleCount++
+		case pcommon.ValueTypeStr:
+			stringCount++
+		case pcommon.ValueTypeBool:
+			boolCount++
+		case pcommon.ValueTypeSlice:
+			listCount++
+		case pcommon.ValueTypeMap:
+			mapCount++
+		case pcommon.ValueTypeBytes:
+			bytesCount++
+		default: /* ignore */
+		}
+	}
+
+	if err := stats.IntBodyHistogram.RecordValue(int64(intCount)); err != nil {
+		panic(fmt.Sprintf("number of int body is out of range: %v", err))
+	}
+	if err := stats.DoubleBodyHistogram.RecordValue(int64(doubleCount)); err != nil {
+		panic(fmt.Sprintf("number of double body is out of range: %v", err))
+	}
+	if err := stats.StringBodyHistogram.RecordValue(int64(stringCount)); err != nil {
+		panic(fmt.Sprintf("number of string body is out of range: %v", err))
+	}
+	if err := stats.BoolBodyHistogram.RecordValue(int64(boolCount)); err != nil {
+		panic(fmt.Sprintf("number of bool body is out of range: %v", err))
+	}
+	if err := stats.ListBodyHistogram.RecordValue(int64(listCount)); err != nil {
+		panic(fmt.Sprintf("number of list body is out of range: %v", err))
+	}
+	if err := stats.MapBodyHistogram.RecordValue(int64(mapCount)); err != nil {
+		panic(fmt.Sprintf("number of map body is out of range: %v", err))
+	}
+	if err := stats.BytesBodyHistogram.RecordValue(int64(bytesCount)); err != nil {
+		panic(fmt.Sprintf("number of bytes body is out of range: %v", err))
+	}
+}
+
+func (t *LogsStats) Show() {
+	println("\n == Logs structure distribution ============================================================")
+	fmt.Printf("Logs: %d\n", t.LogsCount)
+	fmt.Printf("  ResourceLogs   -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+		t.ResourceLogsHistogram.Mean(),
+		t.ResourceLogsHistogram.Min(),
+		t.ResourceLogsHistogram.Max(),
+		t.ResourceLogsHistogram.StdDev(),
+		t.ResourceLogsHistogram.ValueAtQuantile(50),
+		t.ResourceLogsHistogram.ValueAtQuantile(99),
+	)
+	fmt.Printf("    Resource\n")
+	t.ResourceAttrsHistogram.Show("      ")
+	fmt.Printf("    ScopeLogs    -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+		t.ScopeLogsHistogram.Mean(),
+		t.ScopeLogsHistogram.Min(),
+		t.ScopeLogsHistogram.Max(),
+		t.ScopeLogsHistogram.StdDev(),
+		t.ScopeLogsHistogram.ValueAtQuantile(50),
+		t.ScopeLogsHistogram.ValueAtQuantile(99),
+	)
+	fmt.Printf("      Scope\n")
+	t.ScopeAttrsHistogram.Show("        ")
+	fmt.Printf("      LogRecords   -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+		t.LogsHistogram.Mean(),
+		t.LogsHistogram.Min(),
+		t.LogsHistogram.Max(),
+		t.LogsHistogram.StdDev(),
+		t.LogsHistogram.ValueAtQuantile(50),
+		t.LogsHistogram.ValueAtQuantile(99),
+	)
+	t.LogsAttrsHistogram.Show("        ")
+	fmt.Printf("        Body\n")
+	fmt.Printf("          i64    -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+		t.IntBodyHistogram.Mean(),
+		t.IntBodyHistogram.Min(),
+		t.IntBodyHistogram.Max(),
+		t.IntBodyHistogram.StdDev(),
+		t.IntBodyHistogram.ValueAtQuantile(50),
+		t.IntBodyHistogram.ValueAtQuantile(99),
+	)
+	fmt.Printf("          f64    -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+		t.DoubleBodyHistogram.Mean(),
+		t.DoubleBodyHistogram.Min(),
+		t.DoubleBodyHistogram.Max(),
+		t.DoubleBodyHistogram.StdDev(),
+		t.DoubleBodyHistogram.ValueAtQuantile(50),
+		t.DoubleBodyHistogram.ValueAtQuantile(99),
+	)
+	fmt.Printf("          str    -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+		t.StringBodyHistogram.Mean(),
+		t.StringBodyHistogram.Min(),
+		t.StringBodyHistogram.Max(),
+		t.StringBodyHistogram.StdDev(),
+		t.StringBodyHistogram.ValueAtQuantile(50),
+		t.StringBodyHistogram.ValueAtQuantile(99),
+	)
+	fmt.Printf("          bool   -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+		t.BoolBodyHistogram.Mean(),
+		t.BoolBodyHistogram.Min(),
+		t.BoolBodyHistogram.Max(),
+		t.BoolBodyHistogram.StdDev(),
+		t.BoolBodyHistogram.ValueAtQuantile(50),
+		t.BoolBodyHistogram.ValueAtQuantile(99),
+	)
+	fmt.Printf("          map    -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+		t.MapBodyHistogram.Mean(),
+		t.MapBodyHistogram.Min(),
+		t.MapBodyHistogram.Max(),
+		t.MapBodyHistogram.StdDev(),
+		t.MapBodyHistogram.ValueAtQuantile(50),
+		t.MapBodyHistogram.ValueAtQuantile(99),
+	)
+	fmt.Printf("          list   -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+		t.ListBodyHistogram.Mean(),
+		t.ListBodyHistogram.Min(),
+		t.ListBodyHistogram.Max(),
+		t.ListBodyHistogram.StdDev(),
+		t.ListBodyHistogram.ValueAtQuantile(50),
+		t.ListBodyHistogram.ValueAtQuantile(99),
+	)
+	fmt.Printf("          binary -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
+		t.BytesBodyHistogram.Mean(),
+		t.BytesBodyHistogram.Min(),
+		t.BytesBodyHistogram.Max(),
+		t.BytesBodyHistogram.StdDev(),
+		t.BytesBodyHistogram.ValueAtQuantile(50),
+		t.BytesBodyHistogram.ValueAtQuantile(99),
+	)
 }

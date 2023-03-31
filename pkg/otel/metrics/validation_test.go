@@ -71,7 +71,7 @@ func TestBackAndForthConversion(t *testing.T) {
 	var record arrow.Record
 
 	for {
-		lb, err := ametrics.NewMetricsBuilder(rBuilder)
+		lb, err := ametrics.NewMetricsBuilder(rBuilder, false)
 		require.NoError(t, err)
 
 		err = lb.Append(expectedRequest.Metrics())

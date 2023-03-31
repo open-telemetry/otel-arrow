@@ -43,11 +43,17 @@ type MetricsBuilder struct {
 }
 
 // NewMetricsBuilder creates a new MetricsBuilder with a given allocator.
-func NewMetricsBuilder(rBuilder *builder.RecordBuilderExt) (*MetricsBuilder, error) {
+func NewMetricsBuilder(rBuilder *builder.RecordBuilderExt, metricsStats bool) (*MetricsBuilder, error) {
+	var optimizer *MetricsOptimizer
+	if metricsStats {
+		optimizer = NewMetricsOptimizer(carrow.WithSort(), carrow.WithStats())
+	} else {
+		optimizer = NewMetricsOptimizer(carrow.WithSort())
+	}
 	metricsBuilder := &MetricsBuilder{
 		released:  false,
 		builder:   rBuilder,
-		optimizer: NewMetricsOptimizer(carrow.WithSort()),
+		optimizer: optimizer,
 	}
 	if err := metricsBuilder.init(); err != nil {
 		return nil, werror.Wrap(err)
@@ -60,6 +66,10 @@ func (b *MetricsBuilder) init() error {
 	b.rmb = rmb
 	b.rmp = ResourceMetricsBuilderFrom(rmb.StructBuilder())
 	return nil
+}
+
+func (b *MetricsBuilder) Stats() *MetricsStats {
+	return b.optimizer.Stats()
 }
 
 // Build builds an Arrow Record from the builder.
