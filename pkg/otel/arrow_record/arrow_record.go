@@ -17,8 +17,8 @@ package arrow_record
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/array"
 
 	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 )

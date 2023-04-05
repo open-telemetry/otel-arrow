@@ -20,7 +20,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
@@ -119,10 +119,8 @@ func TestTracesMultiBatchWithDictionaryIndexChanges(t *testing.T) {
 
 	builder := producer.TracesRecordBuilderExt()
 	dictionariesIndexTypeChanged := builder.Events().DictionariesIndexTypeChanged
-	require.Equal(t, 3, len(dictionariesIndexTypeChanged))
+	require.Equal(t, 1, len(dictionariesIndexTypeChanged))
 	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_spans.item.scope_spans.item.spans.item.name"])
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_spans.item.scope_spans.item.spans.item.attributes.value.str"])
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_spans.item.scope_spans.item.spans.item.attributes.value.binary"])
 }
 
 // TestTracesMultiBatchWithDictionaryOverflow
@@ -172,10 +170,8 @@ func TestTracesMultiBatchWithDictionaryOverflow(t *testing.T) {
 
 	builder := producer.TracesRecordBuilderExt()
 	dictionariesIndexTypeChanged := builder.Events().DictionariesIndexTypeChanged
-	require.Equal(t, 3, len(dictionariesIndexTypeChanged))
+	require.Equal(t, 1, len(dictionariesIndexTypeChanged))
 	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_spans.item.scope_spans.item.spans.item.name"])
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_spans.item.scope_spans.item.spans.item.attributes.value.str"])
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_spans.item.scope_spans.item.spans.item.attributes.value.binary"])
 }
 
 // TestTracesMultiBatchWithDictionaryLimit

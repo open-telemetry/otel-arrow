@@ -19,10 +19,12 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
+	"time"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/ipc"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/ipc"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -72,9 +74,11 @@ type Producer struct {
 }
 
 type streamProducer struct {
-	output      bytes.Buffer
-	ipcWriter   *ipc.Writer
-	subStreamId string
+	output         bytes.Buffer
+	ipcWriter      *ipc.Writer
+	subStreamId    string
+	lastProduction time.Time
+	schema         *arrow.Schema
 }
 
 type Config struct {
@@ -114,17 +118,11 @@ func NewProducerWithOptions(options ...Option) *Producer {
 		opt(cfg)
 	}
 
-	metricsRecordBuilder := builder.NewRecordBuilderExt(cfg.pool, metricsarrow.Schema, &config.Dictionary{
-		MaxCard: cfg.limitIndexSize,
-	})
+	metricsRecordBuilder := builder.NewRecordBuilderExt(cfg.pool, metricsarrow.Schema, config.NewDictionary(cfg.limitIndexSize), cfg.metricsStats)
 
-	logsRecordBuilder := builder.NewRecordBuilderExt(cfg.pool, logsarrow.Schema, &config.Dictionary{
-		MaxCard: cfg.limitIndexSize,
-	})
+	logsRecordBuilder := builder.NewRecordBuilderExt(cfg.pool, logsarrow.Schema, config.NewDictionary(cfg.limitIndexSize), cfg.logsStats)
 
-	tracesRecordBuilder := builder.NewRecordBuilderExt(cfg.pool, tracesarrow.Schema, &config.Dictionary{
-		MaxCard: cfg.limitIndexSize,
-	})
+	tracesRecordBuilder := builder.NewRecordBuilderExt(cfg.pool, tracesarrow.Schema, config.NewDictionary(cfg.limitIndexSize), cfg.tracesStats)
 
 	metricsBuilder, err := metricsarrow.NewMetricsBuilder(metricsRecordBuilder, cfg.metricsStats)
 	if err != nil {
@@ -286,6 +284,8 @@ func (p *Producer) Produce(rms []*RecordMessage) (*colarspb.BatchArrowRecords, e
 				}
 				p.streamProducers[rm.subStreamId] = sp
 			}
+			sp.lastProduction = time.Now()
+			sp.schema = rm.record.Schema()
 
 			if sp.ipcWriter == nil {
 				options := []ipc.Option{
@@ -328,6 +328,29 @@ func (p *Producer) Produce(rms []*RecordMessage) (*colarspb.BatchArrowRecords, e
 		BatchId:           batchId,
 		OtlpArrowPayloads: oapl,
 	}, nil
+}
+
+func (p *Producer) ShowSchemas() {
+	type TimeSchema struct {
+		time   time.Time
+		schema *arrow.Schema
+	}
+
+	var schemas []TimeSchema
+
+	for _, producer := range p.streamProducers {
+		schemas = append(schemas, TimeSchema{time: producer.lastProduction, schema: producer.schema})
+	}
+	sort.Slice(schemas, func(i, j int) bool {
+		return schemas[i].time.Before(schemas[j].time)
+	})
+	fmt.Printf("\n== Schema (#stream-producers=%d) ============================================================\n", len(schemas))
+	//for _, schema := range schemas {
+	//	fmt.Printf(">> Schema last update at %s:\n", schema.time)
+	//	carrow.ShowSchema(schema.schema, "  ")
+	//}
+	//println("------")
+	p.tracesBuilder.ShowSchema()
 }
 
 func recordBuilder[T pmetric.Metrics | plog.Logs | ptrace.Traces](builder func() (acommon.EntityBuilder[T], error), entity T) (record arrow.Record, err error) {

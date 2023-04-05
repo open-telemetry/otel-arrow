@@ -17,12 +17,14 @@
 
 package transform
 
-import "github.com/apache/arrow/go/v11/arrow"
+import "github.com/apache/arrow/go/v12/arrow"
 
 // NoField is a FieldTransform that returns nil, so in practice it removes the
 // field.
 type NoField struct{}
 
-func (t *NoField) Transform(field *arrow.Field) *arrow.Field {
+func (t *NoField) Transform(_ *arrow.Field) *arrow.Field {
 	return nil
 }
+
+func (t *NoField) RevertCounters() {}

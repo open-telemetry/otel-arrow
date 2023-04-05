@@ -21,7 +21,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/stretchr/testify/assert"
 
 	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
@@ -48,11 +48,9 @@ func TestNoDictionary(t *testing.T) {
 
 func TestDictUint8Overflow(t *testing.T) {
 	schemaUpdateRequest := update.NewSchemaUpdateRequest()
-	dictConfig := cfg.Dictionary{
-		MaxCard: math.MaxUint8,
-	}
+	dictConfig := cfg.NewDictionary(math.MaxUint8)
 
-	dict := NewDictionaryField("", "1", &dictConfig, schemaUpdateRequest, evts)
+	dict := NewDictionaryField("", "1", dictConfig, schemaUpdateRequest, evts)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
@@ -71,11 +69,9 @@ func TestDictUint8Overflow(t *testing.T) {
 
 func TestDictUint16Overflow(t *testing.T) {
 	schemaUpdateRequest := update.NewSchemaUpdateRequest()
-	dictConfig := cfg.Dictionary{
-		MaxCard: math.MaxUint16,
-	}
+	dictConfig := cfg.NewDictionary(math.MaxUint16)
 
-	dict := NewDictionaryField("", "1", &dictConfig, schemaUpdateRequest, evts)
+	dict := NewDictionaryField("", "1", dictConfig, schemaUpdateRequest, evts)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
@@ -103,11 +99,9 @@ func TestDictUint16Overflow(t *testing.T) {
 
 func TestDictUint32Overflow(t *testing.T) {
 	schemaUpdateRequest := update.NewSchemaUpdateRequest()
-	dictConfig := cfg.Dictionary{
-		MaxCard: math.MaxUint32,
-	}
+	dictConfig := cfg.NewDictionary(math.MaxUint32)
 
-	dict := NewDictionaryField("", "1", &dictConfig, schemaUpdateRequest, evts)
+	dict := NewDictionaryField("", "1", dictConfig, schemaUpdateRequest, evts)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
@@ -144,11 +138,9 @@ func TestDictUint32Overflow(t *testing.T) {
 
 func TestDictUint64Overflow(t *testing.T) {
 	schemaUpdateRequest := update.NewSchemaUpdateRequest()
-	dictConfig := cfg.Dictionary{
-		MaxCard: math.MaxUint64,
-	}
+	dictConfig := cfg.NewDictionary(math.MaxUint64)
 
-	dict := NewDictionaryField("", "1", &dictConfig, schemaUpdateRequest, evts)
+	dict := NewDictionaryField("", "1", dictConfig, schemaUpdateRequest, evts)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 

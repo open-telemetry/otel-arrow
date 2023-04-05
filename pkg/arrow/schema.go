@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/apache/arrow/go/v11/arrow"
+	"github.com/apache/arrow/go/v12/arrow"
 )
 
 // Constants used to create schema id signature.
@@ -188,4 +188,90 @@ func DataTypeToID(dt arrow.DataType) string {
 	}
 
 	return id
+}
+
+func ShowSchema(schema *arrow.Schema, prefix string) {
+	println(prefix + "Schema {")
+	for _, f := range schema.Fields() {
+		ShowField(&f, prefix+"  ")
+	}
+	println(prefix + "}")
+}
+
+func ShowField(field *arrow.Field, prefix string) {
+	fmt.Printf("%s%s: ", prefix, field.Name)
+	ShowDataType(field.Type, prefix)
+	fmt.Println()
+}
+
+func ShowDataType(dt arrow.DataType, prefix string) {
+	switch t := dt.(type) {
+	case *arrow.BooleanType:
+		fmt.Printf("Bool")
+	case *arrow.Int8Type:
+		fmt.Printf("Int8")
+	case *arrow.Int16Type:
+		fmt.Printf("Int16")
+	case *arrow.Int32Type:
+		fmt.Printf("Int32")
+	case *arrow.Int64Type:
+		fmt.Printf("Int64")
+	case *arrow.Uint8Type:
+		fmt.Printf("Uint8")
+	case *arrow.Uint16Type:
+		fmt.Printf("Uint16")
+	case *arrow.Uint32Type:
+		fmt.Printf("Uint32")
+	case *arrow.Uint64Type:
+		fmt.Printf("Uint64")
+	case *arrow.Float32Type:
+		fmt.Printf("Float32")
+	case *arrow.Float64Type:
+		fmt.Printf("Float64")
+	case *arrow.StringType:
+		fmt.Printf("String")
+	case *arrow.BinaryType:
+		fmt.Printf("Binary")
+	case *arrow.TimestampType:
+		fmt.Printf("Timestamp")
+	case *arrow.StructType:
+		fmt.Printf("Struct {\n")
+		for _, field := range t.Fields() {
+			ShowField(&field, prefix+"  ")
+		}
+		fmt.Printf("%s}", prefix)
+	case *arrow.ListType:
+		fmt.Printf("[")
+		elemField := t.ElemField()
+		ShowDataType(elemField.Type, prefix)
+		fmt.Printf("]")
+	case *arrow.DictionaryType:
+		fmt.Printf("Dictionary<key:")
+		ShowDataType(t.IndexType, prefix)
+		fmt.Printf(",value:")
+		ShowDataType(t.ValueType, prefix)
+		fmt.Printf(">")
+	case *arrow.DenseUnionType:
+		fmt.Printf("DenseUnion {\n")
+		for _, field := range t.Fields() {
+			ShowField(&field, prefix+"  ")
+		}
+		fmt.Printf("%s}", prefix)
+	case *arrow.SparseUnionType:
+		fmt.Printf("SparseUnion {\n")
+		for _, field := range t.Fields() {
+			ShowField(&field, prefix+"  ")
+		}
+		fmt.Printf("%s}", prefix)
+	case *arrow.MapType:
+		fmt.Printf("Map<")
+		ShowDataType(t.KeyType(), prefix)
+		fmt.Printf(",")
+		ShowDataType(t.ItemType(), prefix)
+		fmt.Printf(">")
+	case *arrow.FixedSizeBinaryType:
+		fmt.Printf("FixedSizeBinary<%d>", t.ByteWidth)
+	default:
+		panic("unsupported data type " + dt.String())
+	}
 }

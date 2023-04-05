@@ -17,7 +17,7 @@
 
 package transform
 
-import "github.com/apache/arrow/go/v11/arrow"
+import "github.com/apache/arrow/go/v12/arrow"
 
 // IdentityField is a FieldTransform that returns a copy of the field.
 type IdentityField struct{}
@@ -25,3 +25,5 @@ type IdentityField struct{}
 func (t *IdentityField) Transform(field *arrow.Field) *arrow.Field {
 	return &arrow.Field{Name: field.Name, Type: field.Type, Nullable: field.Nullable, Metadata: field.Metadata}
 }
+
+func (t *IdentityField) RevertCounters() {}

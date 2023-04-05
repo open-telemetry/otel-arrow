@@ -14,4 +14,7 @@
 
 package benchmark
 
-type Config struct{}
+type Config struct {
+	Compression bool
+	Stats       bool
+}

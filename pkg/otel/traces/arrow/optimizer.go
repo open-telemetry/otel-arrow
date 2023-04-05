@@ -240,7 +240,7 @@ func (t *ScopeSpanGroup) RecordStats(stats *TracesStats) {
 
 func (t *TracesStats) Show() {
 	fmt.Printf("\n== Traces structure distribution ============================================================\n")
-	fmt.Printf("Traces           -> %d\n", t.TracesCount)
+	fmt.Printf("Traces (total): %d\n", t.TracesCount)
 	fmt.Printf("  ResourceSpans  -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
 		t.ResourceSpansHistogram.Mean(),
 		t.ResourceSpansHistogram.Min(),

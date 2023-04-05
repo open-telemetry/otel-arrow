@@ -245,6 +245,8 @@ func (p *Profiler) Profile(profileable ProfileableSystem, maxIter uint64) error 
 						afterDeserialization.Sub(afterDecompression).Seconds() +
 						afterOtlpConversion.Sub(afterDeserialization).Seconds(),
 				)
+
+				startAt += batchSize
 			}
 		}
 

@@ -17,7 +17,7 @@ package arrow
 import (
 	"io"
 
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"google.golang.org/protobuf/proto"
 
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -28,35 +28,45 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 )
 
-var tracesProducerOptions = []arrow_record.Option{
-	arrow_record.WithNoZstd(),
-	arrow_record.WithTracesStats(),
-}
-
 type TracesProfileable struct {
-	tags              []string
-	compression       benchmark.CompressionAlgorithm
-	dataset           dataset.TraceDataset
-	traces            []ptrace.Traces
-	producer          *arrow_record.Producer
-	consumer          *arrow_record.Consumer
-	batchArrowRecords []*v1.BatchArrowRecords
-	config            *benchmark.Config
-	pool              *memory.GoAllocator
-	unaryRpcMode      bool
+	tags                  []string
+	compression           benchmark.CompressionAlgorithm
+	dataset               dataset.TraceDataset
+	traces                []ptrace.Traces
+	producer              *arrow_record.Producer
+	consumer              *arrow_record.Consumer
+	batchArrowRecords     []*v1.BatchArrowRecords
+	config                *benchmark.Config
+	pool                  *memory.GoAllocator
+	unaryRpcMode          bool
+	stats                 bool
+	tracesProducerOptions []arrow_record.Option
 }
 
 func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *benchmark.Config) *TracesProfileable {
+	var tracesProducerOptions []arrow_record.Option
+
+	if config.Compression {
+		tracesProducerOptions = append(tracesProducerOptions, arrow_record.WithZstd())
+	} else {
+		tracesProducerOptions = append(tracesProducerOptions, arrow_record.WithNoZstd())
+	}
+	if config.Stats {
+		tracesProducerOptions = append(tracesProducerOptions, arrow_record.WithTracesStats())
+	}
+
 	return &TracesProfileable{
-		tags:              tags,
-		dataset:           dataset,
-		compression:       benchmark.Zstd(),
-		producer:          arrow_record.NewProducerWithOptions(tracesProducerOptions...),
-		consumer:          arrow_record.NewConsumer(),
-		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
-		config:            config,
-		pool:              memory.NewGoAllocator(),
-		unaryRpcMode:      false,
+		tags:                  tags,
+		dataset:               dataset,
+		compression:           benchmark.Zstd(),
+		producer:              arrow_record.NewProducerWithOptions(tracesProducerOptions...),
+		consumer:              arrow_record.NewConsumer(),
+		batchArrowRecords:     make([]*v1.BatchArrowRecords, 0, 10),
+		config:                config,
+		pool:                  memory.NewGoAllocator(),
+		unaryRpcMode:          false,
+		stats:                 config.Stats,
+		tracesProducerOptions: tracesProducerOptions,
 	}
 }
 
@@ -83,7 +93,7 @@ func (s *TracesProfileable) CompressionAlgorithm() benchmark.CompressionAlgorith
 }
 func (s *TracesProfileable) StartProfiling(_ io.Writer) {
 	if !s.unaryRpcMode {
-		s.producer = arrow_record.NewProducerWithOptions(tracesProducerOptions...)
+		s.producer = arrow_record.NewProducerWithOptions(s.tracesProducerOptions...)
 		s.consumer = arrow_record.NewConsumer()
 	}
 }
@@ -100,7 +110,7 @@ func (s *TracesProfileable) EndProfiling(_ io.Writer) {
 func (s *TracesProfileable) InitBatchSize(_ io.Writer, _ int) {}
 func (s *TracesProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	if s.unaryRpcMode {
-		s.producer = arrow_record.NewProducerWithOptions(tracesProducerOptions...)
+		s.producer = arrow_record.NewProducerWithOptions(s.tracesProducerOptions...)
 		s.consumer = arrow_record.NewConsumer()
 	}
 
@@ -177,8 +187,11 @@ func (s *TracesProfileable) Clear() {
 	}
 }
 func (s *TracesProfileable) ShowStats() {
-	stats := s.producer.TracesStats()
-	if stats != nil {
-		stats.Show()
+	if s.stats {
+		stats := s.producer.TracesStats()
+		if stats != nil {
+			stats.Show()
+		}
+		s.producer.ShowSchemas()
 	}
 }

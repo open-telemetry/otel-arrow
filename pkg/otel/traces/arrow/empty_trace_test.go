@@ -17,8 +17,8 @@ package arrow
 import (
 	"testing"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -34,8 +34,8 @@ func TestEmptyTrace(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
-	rBuilder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig, false)
+	defer rBuilder.Release()
 
 	var record arrow.Record
 
@@ -66,8 +66,8 @@ func TestEmptyResource(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
-	rBuilder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig, false)
+	defer rBuilder.Release()
 
 	var record arrow.Record
 
@@ -101,8 +101,8 @@ func TestEmptyResourceAttribute(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
-	rBuilder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig, false)
+	defer rBuilder.Release()
 
 	var record arrow.Record
 
@@ -137,8 +137,8 @@ func TestEmptyScopeSpan(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
-	rBuilder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig, false)
+	defer rBuilder.Release()
 
 	var record arrow.Record
 
@@ -173,8 +173,8 @@ func TestEmptyScope(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
-	rBuilder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig, false)
+	defer rBuilder.Release()
 
 	var record arrow.Record
 
@@ -210,8 +210,8 @@ func TestEmptyScopeAttribute(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
-	rBuilder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig, false)
+	defer rBuilder.Release()
 
 	var record arrow.Record
 
@@ -248,8 +248,8 @@ func TestEmptySpans(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
-	rBuilder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig, false)
+	defer rBuilder.Release()
 
 	var record arrow.Record
 
@@ -284,8 +284,8 @@ func TestEmptySpanAttribute(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
-	rBuilder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig, false)
+	defer rBuilder.Release()
 
 	var record arrow.Record
 
@@ -322,8 +322,8 @@ func TestEmptySpanStatus(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
-	rBuilder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig, false)
+	defer rBuilder.Release()
 
 	var record arrow.Record
 
@@ -360,8 +360,8 @@ func TestEmptySpanLink(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
-	rBuilder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig, false)
+	defer rBuilder.Release()
 
 	var record arrow.Record
 
@@ -398,8 +398,8 @@ func TestEmptySpanEvent(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
-	rBuilder.Release()
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig, false)
+	defer rBuilder.Release()
 
 	var record arrow.Record
 

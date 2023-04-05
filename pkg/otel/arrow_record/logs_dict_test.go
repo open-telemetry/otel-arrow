@@ -20,7 +20,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
@@ -119,11 +119,8 @@ func TestLogsMultiBatchWithDictionaryIndexChanges(t *testing.T) {
 
 	builder := producer.LogsRecordBuilderExt()
 	dictionariesIndexTypeChanged := builder.Events().DictionariesIndexTypeChanged
-	require.Equal(t, 4, len(dictionariesIndexTypeChanged))
+	require.Equal(t, 1, len(dictionariesIndexTypeChanged))
 	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_logs.item.scope_logs.item.logs.item.severity_text"])
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_logs.item.scope_logs.item.logs.item.body.str"])
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_logs.item.scope_logs.item.logs.item.attributes.value.str"])
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_logs.item.scope_logs.item.logs.item.attributes.value.binary"])
 }
 
 // TestLogsMultiBatchWithDictionaryOverflow
@@ -173,11 +170,8 @@ func TestLogsMultiBatchWithDictionaryOverflow(t *testing.T) {
 
 	builder := producer.LogsRecordBuilderExt()
 	dictionariesIndexTypeChanged := builder.Events().DictionariesIndexTypeChanged
-	require.Equal(t, 4, len(dictionariesIndexTypeChanged))
+	require.Equal(t, 1, len(dictionariesIndexTypeChanged))
 	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_logs.item.scope_logs.item.logs.item.severity_text"])
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_logs.item.scope_logs.item.logs.item.body.str"])
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_logs.item.scope_logs.item.logs.item.attributes.value.str"])
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_logs.item.scope_logs.item.logs.item.attributes.value.binary"])
 }
 
 // TestLogsSingleBatchWithDictionaryLimit

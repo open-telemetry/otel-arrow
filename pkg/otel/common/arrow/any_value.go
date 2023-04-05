@@ -21,8 +21,8 @@ import (
 	"fmt"
 
 	"github.com/HdrHistogram/hdrhistogram-go"
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
@@ -45,12 +45,12 @@ var (
 	// AnyValueDT is an Arrow Data Type representing an OTLP Any Value.
 	// Any values are represented as a sparse union of the following variants: str, i64, f64, bool, binary.
 	AnyValueDT = arrow.SparseUnionOf([]arrow.Field{
-		{Name: "str", Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary)},
+		{Name: "str", Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary16)},
 		{Name: "i64", Type: arrow.PrimitiveTypes.Int64, Metadata: schema.Metadata(schema.Optional)},
 		{Name: "f64", Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
 		{Name: "bool", Type: arrow.FixedWidthTypes.Boolean, Metadata: schema.Metadata(schema.Optional)},
-		{Name: "binary", Type: arrow.BinaryTypes.Binary, Metadata: schema.Metadata(schema.Optional, schema.Dictionary)},
-		{Name: "cbor", Type: arrow.BinaryTypes.Binary, Metadata: schema.Metadata(schema.Optional, schema.Dictionary)},
+		{Name: "binary", Type: arrow.BinaryTypes.Binary, Metadata: schema.Metadata(schema.Optional, schema.Dictionary16)},
+		{Name: "cbor", Type: arrow.BinaryTypes.Binary, Metadata: schema.Metadata(schema.Optional, schema.Dictionary16)},
 	}, []int8{
 		StrCode,
 		I64Code,
@@ -83,6 +83,17 @@ type AnyValueBuilder struct {
 	boolBuilder   *builder.BooleanBuilder // bool builder
 	binaryBuilder *builder.BinaryBuilder  // binary builder
 	cborBuilder   *builder.BinaryBuilder  // cbor builder
+}
+
+// ValueTypeCounters is a struct to count the number of values of each type.
+type ValueTypeCounters struct {
+	strCount    int64
+	i64Count    int64
+	f64Count    int64
+	boolCount   int64
+	binaryCount int64
+	listCount   int64
+	mapCount    int64
 }
 
 // AnyValueBuilderFrom creates a new AnyValueBuilder from an existing SparseUnionBuilder.
@@ -242,53 +253,23 @@ func NewAnyValueStats() *AnyValueStats {
 	}
 }
 
-func (a *AnyValueStats) UpdateStats(v pcommon.Value) {
-	var strCount int64
-	var i64Count int64
-	var f64Count int64
-	var boolCount int64
-	var binaryCount int64
-	var listCount int64
-	var mapCount int64
-
+func (a *AnyValueStats) UpdateStats(v pcommon.Value, counters *ValueTypeCounters) {
 	switch v.Type() {
 	case pcommon.ValueTypeStr:
-		strCount++
+		counters.strCount++
 	case pcommon.ValueTypeInt:
-		i64Count++
+		counters.i64Count++
 	case pcommon.ValueTypeDouble:
-		f64Count++
+		counters.f64Count++
 	case pcommon.ValueTypeBool:
-		boolCount++
+		counters.boolCount++
 	case pcommon.ValueTypeBytes:
-		binaryCount++
+		counters.binaryCount++
 	case pcommon.ValueTypeSlice:
-		listCount++
+		counters.listCount++
 	case pcommon.ValueTypeMap:
-		mapCount++
+		counters.mapCount++
 	default: // ignore
-	}
-
-	if err := a.StrHistogram.RecordValue(strCount); err != nil {
-		panic(fmt.Sprintf("failed to record str count: %v", err))
-	}
-	if err := a.I64Histogram.RecordValue(i64Count); err != nil {
-		panic(fmt.Sprintf("failed to record i64 count: %v", err))
-	}
-	if err := a.F64Histogram.RecordValue(f64Count); err != nil {
-		panic(fmt.Sprintf("failed to record f64 count: %v", err))
-	}
-	if err := a.BoolHistogram.RecordValue(boolCount); err != nil {
-		panic(fmt.Sprintf("failed to record bool count: %v", err))
-	}
-	if err := a.BinaryHistogram.RecordValue(binaryCount); err != nil {
-		panic(fmt.Sprintf("failed to record binary count: %v", err))
-	}
-	if err := a.ListHistogram.RecordValue(listCount); err != nil {
-		panic(fmt.Sprintf("failed to record list count: %v", err))
-	}
-	if err := a.MapHistogram.RecordValue(mapCount); err != nil {
-		panic(fmt.Sprintf("failed to record map count: %v", err))
 	}
 }
 

@@ -21,8 +21,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/plog"
@@ -34,9 +34,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/internal"
 )
 
-var DefaultDictConfig = &cfg.Dictionary{
-	MaxCard: math.MaxUint16,
-}
+var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
 
 func TestLogRecord(t *testing.T) {
 	t.Parallel()
@@ -47,7 +45,7 @@ func TestLogRecord(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.Logs, Type: LogRecordDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -93,7 +91,7 @@ func TestScopeLogs(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.ScopeLogs, Type: ScopeLogsDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -153,7 +151,7 @@ func TestResourceLogs(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.ResourceLogs, Type: ResourceLogsDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -209,7 +207,7 @@ func TestLogs(t *testing.T) {
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record

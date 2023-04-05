@@ -20,9 +20,9 @@ package otlp
 import (
 	"testing"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/array"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -45,7 +45,7 @@ func TestSums(t *testing.T) {
 		{Name: "sums", Type: marrow.UnivariateSumDT, Metadata: schema.Metadata(schema.Optional)},
 	}, nil)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, s, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, s, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record

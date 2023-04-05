@@ -34,6 +34,10 @@ func main() {
 	// To run in unary RPC mode, use the flag -unaryrpc.
 	unaryRpcPtr := flag.Bool("unaryrpc", false, "unary rpc mode")
 
+	// The -stats flag displays a series of statistics about the schema and the
+	// dataset. This flag is disabled by default.
+	stats := flag.Bool("stats", false, "stats mode")
+
 	// Parse the flag
 	flag.Parse()
 
@@ -49,10 +53,18 @@ func main() {
 		inputFiles = append(inputFiles, "./data/otlp_traces.pb")
 	}
 
+	conf := &benchmark.Config{
+		Compression: false,
+	}
+	if *stats {
+		conf.Stats = true
+	}
+
 	// Compare the performance for each input file
 	for i := range inputFiles {
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
-		profiler := benchmark.NewProfiler([]int{10, 100, 1000, 2000, 5000, 10000}, "output/trace_benchmark.log", 2)
+		profiler := benchmark.NewProfiler([]int{10, 10000}, "output/trace_benchmark.log", 2)
+		// profiler := benchmark.NewProfiler([]int{10 /*100, 1000, 2000, 5000,*/, 10000}, "output/trace_benchmark.log", 2)
 		//profiler := benchmark.NewProfiler([]int{1000}, "output/trace_benchmark.log", 2)
 		compressionAlgo := benchmark.Zstd()
 		maxIter := uint64(1)
@@ -60,7 +72,6 @@ func main() {
 		profiler.Printf("Dataset '%s' (%s) loaded\n", inputFiles[i], humanize.Bytes(uint64(ds.SizeInBytes())))
 		otlpTraces := otlp.NewTraceProfileable(ds, compressionAlgo)
 
-		conf := &benchmark.Config{}
 		otlpArrowTraces := arrow.NewTraceProfileable([]string{"stream mode"}, ds, conf)
 
 		if err := profiler.Profile(otlpTraces, maxIter); err != nil {

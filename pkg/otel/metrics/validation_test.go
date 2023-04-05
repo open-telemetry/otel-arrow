@@ -20,8 +20,8 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
@@ -35,9 +35,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics/otlp"
 )
 
-var DefaultDictConfig = &cfg.Dictionary{
-	MaxCard: math.MaxUint16,
-}
+var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
 
 // TestBackAndForthConversion tests the conversion of OTLP metrics to Arrow and back to OTLP.
 // The initial OTLP metrics are generated from a synthetic dataset.
@@ -65,7 +63,7 @@ func TestBackAndForthConversion(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, ametrics.Schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, ametrics.Schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record

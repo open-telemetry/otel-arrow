@@ -18,8 +18,8 @@ import (
 	"math"
 	"testing"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -32,9 +32,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/internal"
 )
 
-var DefaultDictConfig = &cfg.Dictionary{
-	MaxCard: math.MaxUint16,
-}
+var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
 
 func TestValue(t *testing.T) {
 	t.Parallel()
@@ -45,7 +43,7 @@ func TestValue(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.MetricValue, Type: MetricValueDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -91,7 +89,7 @@ func TestExemplar(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.Exemplars, Type: ExemplarDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -134,7 +132,7 @@ func TestUnivariateNDP(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.DataPoints, Type: UnivariateNumberDataPointDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -185,7 +183,7 @@ func TestUnivariateGauge(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.GaugeMetrics, Type: UnivariateGaugeDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -231,7 +229,7 @@ func TestUnivariateSum(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.SumMetrics, Type: UnivariateSumDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -277,7 +275,7 @@ func TestQuantileValue(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.SummaryQuantileValues, Type: QuantileValueDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -320,7 +318,7 @@ func TestUnivariateSummaryDataPoint(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.DataPoints, Type: UnivariateSummaryDataPointDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -366,7 +364,7 @@ func TestUnivariateSummary(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.SummaryMetrics, Type: UnivariateSummaryDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -412,7 +410,7 @@ func TestUnivariateMetric(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.UnivariateMetrics, Type: UnivariateMetricDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -464,7 +462,7 @@ func TestMetricSet(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.UnivariateMetrics, Type: UnivariateMetricSetDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -516,7 +514,7 @@ func TestScopeMetrics(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.ScopeMetrics, Type: ScopeMetricsDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -575,7 +573,7 @@ func TestResourceMetrics(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.ResourceMetrics, Type: ResourceMetricsDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -631,7 +629,7 @@ func TestMetrics(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -675,7 +673,7 @@ func TestExponentialHistogramDataPointBuckets(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.ExpHistogramPositive, Type: EHistogramDataPointBucketsDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -718,7 +716,7 @@ func TestExponentialHistogramDataPoint(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.DataPoints, Type: UnivariateEHistogramDataPointDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -764,7 +762,7 @@ func TestHistogramDataPoint(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.DataPoints, Type: UnivariateHistogramDataPointDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -810,7 +808,7 @@ func TestHistogram(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.HistogramMetrics, Type: UnivariateHistogramDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -856,7 +854,7 @@ func TestExponentialHistogram(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.ExpHistogramMetrics, Type: UnivariateEHistogramDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record

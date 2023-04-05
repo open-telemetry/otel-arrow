@@ -18,7 +18,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,6 +26,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
+	"golang.org/x/exp/rand"
 
 	stats "github.com/f5/otel-arrow-adapter/pkg/benchmark/stats"
 	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"

@@ -21,9 +21,9 @@ import (
 	"math"
 	"testing"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/array"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -37,9 +37,7 @@ import (
 	marrow "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
 )
 
-var DefaultDictConfig = &cfg.Dictionary{
-	MaxCard: math.MaxUint16,
-}
+var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
 
 func TestGauges(t *testing.T) {
 	t.Parallel()
@@ -51,7 +49,7 @@ func TestGauges(t *testing.T) {
 		{Name: "gauges", Type: marrow.UnivariateGaugeDT, Metadata: schema.Metadata(schema.Optional)},
 	}, nil)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, s, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, s, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record

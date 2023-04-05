@@ -22,8 +22,8 @@ import (
 	"math"
 	"runtime"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/dustin/go-humanize"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
@@ -71,46 +71,44 @@ func main() {
 	Report("TRACES", traces.Schema)
 }
 
-var DictConfig = &config.Dictionary{
-	MaxCard: math.MaxUint16,
-}
+var DictConfig = config.NewDictionary(math.MaxUint16)
 
 func Report(name string, schema *arrow.Schema) {
 	pool := memory.NewGoAllocator()
 	println("--------------------------------------------------")
 	fmt.Printf("%s%s - Memory usage%s\n", ColorGreen, name, ColorReset)
 	ReportMemUsageOf("NewRecordBuilderExt(schema)", func() {
-		builder := builder.NewRecordBuilderExt(pool, schema, DictConfig)
-		defer builder.Release()
+		b := builder.NewRecordBuilderExt(pool, schema, DictConfig, false)
+		defer b.Release()
 	})
 	ReportMemUsageOf("NewRecordBuilder(...).NewRecord() - empty", func() {
-		builder := builder.NewRecordBuilderExt(pool, schema, DictConfig)
-		defer builder.Release()
-		record, err := builder.NewRecord()
+		b := builder.NewRecordBuilderExt(pool, schema, DictConfig, false)
+		defer b.Release()
+		record, err := b.NewRecord()
 		if err != nil {
 			panic(err)
 		}
 		defer record.Release()
 	})
 
-	builder := builder.NewRecordBuilderExt(pool, schema, DictConfig)
-	defer builder.Release()
-	record, err := builder.NewRecord()
+	b := builder.NewRecordBuilderExt(pool, schema, DictConfig, false)
+	defer b.Release()
+	record, err := b.NewRecord()
 	if err != nil {
 		panic(err)
 	}
 	defer record.Release()
 	ReportMemUsageOf("reusedRecordBuilder.NewRecord() - empty", func() {
-		r, err := builder.NewRecord()
+		r, err := b.NewRecord()
 		if err != nil {
 			panic(err)
 		}
 		defer r.Release()
 	})
 	ReportMemUsageOf("builder.Analyze(...) + builder.UpdateSchema(...) if needed", func() {
-		if builder.IsSchemaUpToDate() {
+		if b.IsSchemaUpToDate() {
 			println("overflow detected")
-			builder.UpdateSchema()
+			b.UpdateSchema()
 		}
 	})
 }

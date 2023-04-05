@@ -288,7 +288,7 @@ func (t *ScopeMetricsGroup) RecordStats(stats *MetricsStats) {
 
 func (t *MetricsStats) Show() {
 	println("\n== Metrics structure distribution ============================================================")
-	fmt.Printf("Metrics : %d\n", t.MetricsCount)
+	fmt.Printf("Metrics (total): %d\n", t.MetricsCount)
 	fmt.Printf("  ResourceMetrics  -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
 		t.ResourceMetricsHistogram.Mean(),
 		t.ResourceMetricsHistogram.Min(),

@@ -273,7 +273,7 @@ func (t *ScopeLogGroup) RecordStats(stats *LogsStats) {
 
 func (t *LogsStats) Show() {
 	println("\n == Logs structure distribution ============================================================")
-	fmt.Printf("Logs: %d\n", t.LogsCount)
+	fmt.Printf("Logs (total): %d\n", t.LogsCount)
 	fmt.Printf("  ResourceLogs   -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
 		t.ResourceLogsHistogram.Mean(),
 		t.ResourceLogsHistogram.Min(),

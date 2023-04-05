@@ -20,8 +20,8 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 
@@ -34,9 +34,7 @@ import (
 	logsotlp "github.com/f5/otel-arrow-adapter/pkg/otel/logs/otlp"
 )
 
-var DefaultDictConfig = &cfg.Dictionary{
-	MaxCard: math.MaxUint16,
-}
+var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
 
 // TestConversionFromSyntheticData tests the conversion of OTLP logs to Arrow and back to OTLP.
 // The initial OTLP logs are generated from a synthetic dataset.
@@ -55,7 +53,7 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, logsarrow.Schema, DefaultDictConfig)
+	rBuilder := builder.NewRecordBuilderExt(pool, logsarrow.Schema, DefaultDictConfig, false)
 	defer rBuilder.Release()
 
 	var record arrow.Record

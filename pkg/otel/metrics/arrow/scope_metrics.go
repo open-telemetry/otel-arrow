@@ -15,8 +15,8 @@
 package arrow
 
 import (
-	"github.com/apache/arrow/go/v11/arrow"
-	"github.com/apache/arrow/go/v11/arrow/array"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
@@ -32,7 +32,7 @@ import (
 var (
 	ScopeMetricsDT = arrow.StructOf([]arrow.Field{
 		{Name: constants.Scope, Type: acommon.ScopeDT, Metadata: schema.Metadata(schema.Optional)},
-		{Name: constants.SchemaUrl, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary)},
+		{Name: constants.SchemaUrl, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
 		{Name: constants.UnivariateMetrics, Type: arrow.ListOf(UnivariateMetricSetDT), Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.SharedAttributes, Type: acommon.AttributesDT, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.SharedStartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional)},
@@ -167,12 +167,13 @@ type MetricSharedData struct {
 }
 
 func NewMetricsSharedData(metrics []*pmetric.Metric) (sharedData *ScopeMetricsSharedData, err error) {
+	sharedData = &ScopeMetricsSharedData{Metrics: make([]*MetricSharedData, len(metrics))}
+
 	if len(metrics) > 0 {
 		msd, err := NewMetricSharedData(metrics[0])
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
-		sharedData = &ScopeMetricsSharedData{Metrics: make([]*MetricSharedData, len(metrics))}
 		sharedData.StartTime = msd.StartTime
 		sharedData.Time = msd.Time
 		sharedData.Attributes = msd.Attributes.Clone()
