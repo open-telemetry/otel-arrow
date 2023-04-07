@@ -1,0 +1,71 @@
+receivers:
+  otlp/na:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:9099
+  otlp/second:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:6000
+      arrow:
+        enabled: true
+  file/first_metrics:
+    path: "first.metrics.json"
+    throttle: 0
+
+  # not supported
+  # file/first_traces:
+  #   path: "first.traces.json"
+  #   throttle: 0
+        
+exporters:
+  otlp/forward:
+    endpoint: 127.0.0.1:6000
+    wait_for_ready: true
+    arrow:
+      enabled: true
+      num_streams: 1
+      disable_downgrade: true
+    tls:
+      insecure: true
+    retry_on_failure:
+      enabled: false
+    sending_queue:
+      enabled: false
+      num_consumers: 1
+    timeout: 1s
+  logging/first:
+  logging/second:
+  file/second_traces:
+    path: "second.traces.json"
+  file/second_metrics:
+    path: "second.metrics.json"
+
+service:
+  pipelines:
+    traces/first:
+      receivers: [otlp/na] # @@@ should be file/first_traces, traces not supported
+      processors: []
+      exporters: [logging/first, otlp/forward]
+    metrics/first:
+      receivers: [file/first_metrics]
+      processors: []
+      exporters: [logging/first, otlp/forward]
+
+    traces/second:
+      receivers: [otlp/second]
+      processors: []
+      exporters: [logging/second, file/second_traces]
+    metrics/second:
+      receivers: [otlp/second]
+      processors: []
+      exporters: [logging/second, file/second_metrics]
+      
+  telemetry:
+    resource:
+      "service.name": "data-replayer"
+    metrics:
+      address: 127.0.0.1:8888
+      level: detailed
+    logs:
+      level: debug

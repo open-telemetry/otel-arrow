@@ -43,18 +43,24 @@ exporters:
       num_streams: 4
 
   logging:
-    verbosity: normal
+    verbosity: detailed
 
 service:
   pipelines:
     traces:
       receivers: [otlp/standard]
       processors: [batch]
-      exporters: [logging, otlp/arrow]
+      exporters: [otlp/arrow]
+    metrics:
+      receivers: [otlp/standard]
+      processors: [batch]
+      exporters: [otlp/arrow]
 
   telemetry:
+    resource:
+      "service.name": "example-bridge"
     metrics:
       address: 127.0.0.1:8888
-      level: normal
+      level: detailed
     logs:
       level: info

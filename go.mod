@@ -12,8 +12,10 @@ require (
 	github.com/golang/mock v1.6.0
 	github.com/klauspost/compress v1.15.15
 	github.com/olekukonko/tablewriter v0.0.5
+	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.71.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.71.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.71.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filereceiver v0.71.0
 	github.com/pierrec/lz4 v2.0.5+incompatible
 	github.com/stretchr/testify v1.8.1
 	go.opentelemetry.io/collector v0.71.0
@@ -84,6 +86,7 @@ require (
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/mostynb/go-grpc-compression v1.1.17 // indirect
+	github.com/open-telemetry/opentelemetry-collector-contrib/internal/sharedcomponent v0.71.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.15 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
@@ -116,6 +119,7 @@ require (
 	golang.org/x/tools v0.6.0 // indirect
 	golang.org/x/xerrors v0.0.0-20220609144429-65e65417b02f // indirect
 	gonum.org/v1/gonum v0.12.0 // indirect
+	gopkg.in/natefinch/lumberjack.v2 v2.0.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

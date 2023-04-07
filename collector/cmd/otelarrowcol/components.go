@@ -5,8 +5,10 @@ import (
 	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver"
 	"github.com/f5/otel-arrow-adapter/collector/processor/experimentprocessor"
 
+	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filereceiver"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/loggingexporter"
 	"go.opentelemetry.io/collector/exporter/otlphttpexporter"
@@ -36,6 +38,7 @@ func components() (otelcol.Factories, error) {
 
 	factories.Receivers, err = receiver.MakeFactoryMap(
 		otlpreceiver.NewFactory(),
+		filereceiver.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err
@@ -45,6 +48,7 @@ func components() (otelcol.Factories, error) {
 		loggingexporter.NewFactory(),
 		otlpexporter.NewFactory(),
 		otlphttpexporter.NewFactory(),
+		fileexporter.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err

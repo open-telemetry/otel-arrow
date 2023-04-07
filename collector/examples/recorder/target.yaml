@@ -1,0 +1,73 @@
+receivers:
+  # Send test data to the first pipeline.
+  otlp/first:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4318
+      arrow:
+        enabled: true
+
+  # Data will be repeated to the second pipeline via Arrow.
+  otlp/second:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:5000
+      arrow:
+        enabled: true
+        
+exporters:
+  otlp/forward:
+    # Data is forwarded via Arrow to this receiver.
+    endpoint: 127.0.0.1:5000
+    wait_for_ready: true
+    arrow:
+      enabled: true
+      num_streams: 1
+      disable_downgrade: true
+    tls:
+      insecure: true
+    retry_on_failure:
+      enabled: false
+    sending_queue:
+      enabled: false
+      num_consumers: 1
+    timeout: 1s
+  file/first_traces:
+    path: "first.traces.json"
+  file/second_traces:
+    path: "second.traces.json"
+  file/first_metrics:
+    path: "first.metrics.json"
+  file/second_metrics:
+    path: "second.metrics.json"
+  logging/first:
+  logging/second:
+
+service:
+  pipelines:
+    traces/first:
+      receivers: [otlp/first]
+      processors: []
+      exporters: [logging/first, file/first_traces, otlp/forward]
+    metrics/first:
+      receivers: [otlp/first]
+      processors: []
+      exporters: [logging/first, file/first_metrics, otlp/forward]
+
+    traces/second:
+      receivers: [otlp/second]
+      processors: []
+      exporters: [logging/second, file/second_traces]
+    metrics/second:
+      receivers: [otlp/second]
+      processors: []
+      exporters: [logging/second, file/second_metrics]
+      
+  telemetry:
+    resource:
+      "service.name": "data-recorder"
+    metrics:
+      address: 127.0.0.1:8888
+      level: detailed
+    logs:
+      level: debug

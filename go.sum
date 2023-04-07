@@ -37,6 +37,7 @@ cloud.google.com/go/storage v1.10.0/go.mod h1:FLPqc6j+Ki4BU591ie1oL6qBQGu2Bl/tZ9
 contrib.go.opencensus.io/exporter/prometheus v0.4.2 h1:sqfsYl5GIY/L570iT+l93ehxaWJs2/OwXtiWwew3oAg=
 contrib.go.opencensus.io/exporter/prometheus v0.4.2/go.mod h1:dvEHbiKmgvbr5pjaF9fpw1KeYcjrnC1J8B+JKjsZyRQ=
 dmitri.shuralyov.com/gpu/mtl v0.0.0-20190408044501-666a987793e9/go.mod h1:H6x//7gZCb22OMCxBHrMx7a5I7Hp++hsVxbQ4BYO7hU=
+github.com/BurntSushi/toml v0.3.1 h1:WXkYYl6Yr3qBf1K79EBnL4mak0OimBfB0XUf9Vl28OQ=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/BurntSushi/xgb v0.0.0-20160522181843-27f122750802/go.mod h1:IVnqGOEym/WlBOVXweHU+Q+/VP0lqqI8lqeDx9IjBqo=
 github.com/GehirnInc/crypt v0.0.0-20200316065508-bb7000b8a962 h1:KeNholpO2xKjgaaSyd+DyQRrsQjhbSeS7qe4nEw8aQw=
@@ -55,8 +56,6 @@ github.com/alecthomas/units v0.0.0-20211218093645-b94a6e3cc137/go.mod h1:OMCwj8V
 github.com/andybalholm/brotli v1.0.4 h1:V7DdXeJtZscaqfNuAdSRuRFzuiKlHSC/Zh3zl9qY3JY=
 github.com/andybalholm/brotli v1.0.4/go.mod h1:fO7iG3H7G2nSZ7m0zPUDn85XEX2GTukHGRSepvi9Eig=
 github.com/antihax/optional v1.0.0/go.mod h1:uupD/76wgC+ih3iEmQUL+0Ugr19nfwCT1kdvxnR2qWY=
-github.com/apache/arrow/go/v11 v11.0.0 h1:hqauxvFQxww+0mEU/2XHG6LT7eZternCZq+A5Yly2uM=
-github.com/apache/arrow/go/v11 v11.0.0/go.mod h1:Eg5OsL5H+e299f7u5ssuXsuHQVEGC4xei5aX110hRiI=
 github.com/apache/arrow/go/v12 v12.0.0-20230404000714-f02d35119ae6 h1:fxTIj+3iGIYO+Er48dwZPt2zTxHkUd/7zpzCFhArUwI=
 github.com/apache/arrow/go/v12 v12.0.0-20230404000714-f02d35119ae6/go.mod h1:d+tV/eHZZ7Dz7RPrFKtPK02tpr+c9/PEd/zm8mDS9Vg=
 github.com/apache/thrift v0.16.0 h1:qEy6UW60iVOlUy+b9ZR0d5WzUWYGOo4HfopoyBaNmoY=
@@ -369,10 +368,17 @@ github.com/npillmayer/nestext v0.1.3/go.mod h1:h2lrijH8jpicr25dFY+oAJLyzlya6jhnu
 github.com/oklog/run v1.0.0/go.mod h1:dlhp/R75TPv97u0XWUtDeV/lRKWPKSdTuV0TZvrmrQA=
 github.com/olekukonko/tablewriter v0.0.5 h1:P2Ga83D34wi1o9J6Wh1mRuqd4mF/x/lgBS7N7AbDhec=
 github.com/olekukonko/tablewriter v0.0.5/go.mod h1:hPp6KlRPjbx+hW8ykQs1w3UBbZlj6HuIJcUGPhkA7kY=
+github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.71.0 h1:pp2brtgBojjLRlwFyGh199OQryh7p3FGA85z5+povuk=
+github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.71.0/go.mod h1:KroNaWdPPmtF7DszmUXsCsCkZ+nZ8H8/p6PnFKNXHOo=
 github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.71.0 h1:43PPxy43lOno2k1hahJpkTJeSbc/pEHivu7LTb8uLjQ=
 github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.71.0/go.mod h1:+CpIm44T+dolPGJ2txXB18bksxWJbKiI+XiKik4t3vo=
 github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.71.0 h1:DQ4xefhafSwWbLGM3om3mZuyVI2fL61kgfZZCW5p63s=
 github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.71.0/go.mod h1:3LAroLCfcgKFGVhgKFvIhX5NAuTmFFnWAVlh9Eol6cc=
+github.com/open-telemetry/opentelemetry-collector-contrib/internal/coreinternal v0.71.0 h1:v4I84/Ek2uu5zQyghQuLavc12c5zYsETdfWj0BiF99s=
+github.com/open-telemetry/opentelemetry-collector-contrib/internal/sharedcomponent v0.71.0 h1:e4e9cVSW/Ieb2b76ZpmwmtSFVqKG0/MlPo6KzI2L/5Q=
+github.com/open-telemetry/opentelemetry-collector-contrib/internal/sharedcomponent v0.71.0/go.mod h1:+2GAIhYO3hrG2HliE65l3xEKT5MUHnBu73I7mRRt/oE=
+github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filereceiver v0.71.0 h1:78kuPTuzZOlRNMc6TAuvIA4YFi/hxYjE4wLUwcPV8us=
+github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filereceiver v0.71.0/go.mod h1:ALVZE8z7tWgdTgk079vPxyMwvsBCkTwN3+7ZhwEbwpA=
 github.com/pascaldekloe/goe v0.0.0-20180627143212-57f6aae5913c/go.mod h1:lzWF7FIEvWOWxwDKqyGYQf6ZUaNfKdP144TG7ZOy1lc=
 github.com/pascaldekloe/goe v0.1.0/go.mod h1:lzWF7FIEvWOWxwDKqyGYQf6ZUaNfKdP144TG7ZOy1lc=
 github.com/pelletier/go-toml v1.7.0/go.mod h1:vwGMzjaWMwyfHwgIBhI2YUM4fB6nL6lVAvS1LBMMhTE=
@@ -904,6 +910,8 @@ gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15/go.mod h1:Co6ibVJAznAaIkqp8
 gopkg.in/check.v1 v1.0.0-20200227125254-8fa46927fb4f/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c h1:Hei/4ADfdWqJk1ZMxUNpqntNwaWcugrBjAiHlqqRiVk=
 gopkg.in/errgo.v2 v2.1.0/go.mod h1:hNsd1EY+bozCKY1Ytp96fpM3vjJbqLJn88ws8XvfDNI=
+gopkg.in/natefinch/lumberjack.v2 v2.0.0 h1:1Lc07Kr7qY4U2YPouBjpCLxpiyxIVoxqXgkXLknAOE8=
+gopkg.in/natefinch/lumberjack.v2 v2.0.0/go.mod h1:l0ndWWf7gzL7RNwBG7wST/UCcT4T24xpD6X8LsfU/+k=
 gopkg.in/square/go-jose.v2 v2.3.1/go.mod h1:M9dMgbHiYLoDGQrXy7OpJDJWiKiU//h+vD76mk0e1AI=
 gopkg.in/yaml.v2 v2.2.1/go.mod h1:hI93XBmqTisBFMUTm0b8Fm+jr3Dg1NNxqwp+5A1VGuI=
 gopkg.in/yaml.v2 v2.2.2/go.mod h1:hI93XBmqTisBFMUTm0b8Fm+jr3Dg1NNxqwp+5A1VGuI=

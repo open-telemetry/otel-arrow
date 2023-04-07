@@ -22,7 +22,7 @@ receivers:
 
 exporters:
   logging:      
-    verbosity: normal
+    verbosity: detailed
 
   otlphttp:
     # You can use an HTTP listener on port 5001 to see the headers
@@ -52,8 +52,13 @@ service:
       # Note there is no need to re-apply the batch processor on the
       # SaaS-side of a bridge.
       processors: []
-      exporters: [logging, otlphttp]
+      exporters: [otlphttp]
 
+    metrics:
+      receivers: [otlp]
+      processors: []
+      exporters: [otlphttp]
+      
   telemetry:
     metrics:
       address: 127.0.0.1:8889
