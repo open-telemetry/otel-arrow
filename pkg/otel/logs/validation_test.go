@@ -32,9 +32,13 @@ import (
 	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
 	logsarrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
 	logsotlp "github.com/f5/otel-arrow-adapter/pkg/otel/logs/otlp"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
 )
 
-var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
+var (
+	DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
+	producerStats     = stats.NewProducerStats()
+)
 
 // TestConversionFromSyntheticData tests the conversion of OTLP logs to Arrow and back to OTLP.
 // The initial OTLP logs are generated from a synthetic dataset.
@@ -53,7 +57,7 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, logsarrow.Schema, DefaultDictConfig, false)
+	rBuilder := builder.NewRecordBuilderExt(pool, logsarrow.Schema, DefaultDictConfig, producerStats)
 	defer rBuilder.Release()
 
 	var record arrow.Record

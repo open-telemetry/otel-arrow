@@ -33,6 +33,7 @@ import (
 	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
 	ametrics "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics/otlp"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
 )
 
 var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
@@ -63,7 +64,7 @@ func TestBackAndForthConversion(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, ametrics.Schema, DefaultDictConfig, false)
+	rBuilder := builder.NewRecordBuilderExt(pool, ametrics.Schema, DefaultDictConfig, stats.NewProducerStats())
 	defer rBuilder.Release()
 
 	var record arrow.Record

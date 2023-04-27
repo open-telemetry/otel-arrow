@@ -25,12 +25,13 @@ import (
 	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
+	"github.com/f5/otel-arrow-adapter/pkg/config"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 )
 
-var metricsProducerOptions = []arrow_record.Option{
-	arrow_record.WithNoZstd(),
-	arrow_record.WithMetricsStats(),
+var metricsProducerOptions = []config.Option{
+	config.WithNoZstd(),
+	config.WithStats(),
 }
 
 type MetricsProfileable struct {

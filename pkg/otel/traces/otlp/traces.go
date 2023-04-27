@@ -26,7 +26,10 @@ type TraceIds struct {
 }
 
 // TracesFrom creates a [ptrace.Traces] from the given Arrow Record.
-func TracesFrom(record arrow.Record) (ptrace.Traces, error) {
+// Note: This function consume the record.
+func TracesFrom(record arrow.Record, relatedData *RelatedData) (ptrace.Traces, error) {
+	defer record.Release()
+
 	traces := ptrace.NewTraces()
 
 	traceIds, err := SchemaToIds(record.Schema())
@@ -38,7 +41,7 @@ func TracesFrom(record arrow.Record) (ptrace.Traces, error) {
 	resSpansCount := int(record.NumRows())
 	resSpansSlice.EnsureCapacity(resSpansCount)
 
-	err = AppendResourceSpansInto(traces, record, traceIds)
+	err = AppendResourceSpansInto(traces, record, traceIds, relatedData)
 	return traces, err
 }
 

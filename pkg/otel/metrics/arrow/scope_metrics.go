@@ -21,7 +21,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow_old"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -122,6 +122,11 @@ func (b *ScopeMetricsBuilder) Append(smg *ScopeMetricsGroup) error {
 			sharedData.Attributes.CopyTo(attrs)
 			err = b.sab.Append(attrs)
 			if err != nil {
+				return werror.Wrap(err)
+			}
+		} else {
+			// if no shared attributes
+			if err := b.sab.AppendNull(); err != nil {
 				return werror.Wrap(err)
 			}
 		}

@@ -16,6 +16,7 @@ package otlp
 
 import (
 	"github.com/apache/arrow/go/v12/arrow"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
@@ -25,10 +26,13 @@ import (
 )
 
 type ScopeSpansIds struct {
-	Id        int
-	SchemaUrl int
-	ScopeIds  *otlp.ScopeIds
-	SpansIds  *SpansIds
+	Id                      int
+	SchemaUrl               int
+	ScopeIds                *otlp.ScopeIds
+	SpansIds                *SpansIds
+	SharedAttributeIds      *otlp.AttributeIds
+	SharedEventAttributeIds *otlp.AttributeIds
+	SharedLinkAttributeIds  *otlp.AttributeIds
 }
 
 func NewScopeSpansIds(dt *arrow.StructType) (*ScopeSpansIds, error) {
@@ -49,15 +53,28 @@ func NewScopeSpansIds(dt *arrow.StructType) (*ScopeSpansIds, error) {
 		return nil, werror.Wrap(err)
 	}
 
+	sharedAttrIds := otlp.NewSharedAttributeIds(scopeSpansDT)
+	sharedEventAttrIds := otlp.NewSharedEventAttributeIds(scopeSpansDT)
+	sharedLinkAttrIds := otlp.NewSharedLinkAttributeIds(scopeSpansDT)
+
 	return &ScopeSpansIds{
-		Id:        id,
-		SchemaUrl: schemaId,
-		ScopeIds:  scopeIds,
-		SpansIds:  spansIds,
+		Id:                      id,
+		SchemaUrl:               schemaId,
+		ScopeIds:                scopeIds,
+		SpansIds:                spansIds,
+		SharedAttributeIds:      sharedAttrIds,
+		SharedEventAttributeIds: sharedEventAttrIds,
+		SharedLinkAttributeIds:  sharedLinkAttrIds,
 	}, nil
 }
 
-func AppendScopeSpansInto(resSpans ptrace.ResourceSpans, arrowResSpans *arrowutils.ListOfStructs, resSpansIdx int, ids *ScopeSpansIds) error {
+func AppendScopeSpansInto(
+	resSpans ptrace.ResourceSpans,
+	arrowResSpans *arrowutils.ListOfStructs,
+	resSpansIdx int,
+	ids *ScopeSpansIds,
+	relatedData *RelatedData,
+) error {
 	if arrowResSpans == nil {
 		return nil
 	}
@@ -78,7 +95,7 @@ func AppendScopeSpansInto(resSpans ptrace.ResourceSpans, arrowResSpans *arrowuti
 	for scopeSpansIdx := arrowScopeSpans.Start(); scopeSpansIdx < arrowScopeSpans.End(); scopeSpansIdx++ {
 		scopeSpans := scopeSpansSlice.AppendEmpty()
 
-		if err = otlp.UpdateScopeWith(scopeSpans.Scope(), arrowScopeSpans, scopeSpansIdx, ids.ScopeIds); err != nil {
+		if err = otlp.UpdateScopeWith(scopeSpans.Scope(), arrowScopeSpans, scopeSpansIdx, ids.ScopeIds, relatedData.ScopeAttrMapStore); err != nil {
 			return werror.Wrap(err)
 		}
 
@@ -88,14 +105,38 @@ func AppendScopeSpansInto(resSpans ptrace.ResourceSpans, arrowResSpans *arrowuti
 		}
 		scopeSpans.SetSchemaUrl(schemaUrl)
 
-		arrowSpans, err := arrowScopeSpans.ListOfStructsById(scopeSpansIdx, ids.SpansIds.Id)
+		sharedAttrs := pcommon.NewMap()
+		if ids.SharedAttributeIds != nil {
+			err = otlp.AppendAttributesInto(sharedAttrs, arrowScopeSpans.Array(), resSpansIdx, ids.SharedAttributeIds)
+			if err != nil {
+				return werror.Wrap(err)
+			}
+		}
+
+		sharedEventAttrs := pcommon.NewMap()
+		if ids.SharedEventAttributeIds != nil {
+			err = otlp.AppendAttributesInto(sharedEventAttrs, arrowScopeSpans.Array(), resSpansIdx, ids.SharedEventAttributeIds)
+			if err != nil {
+				return werror.Wrap(err)
+			}
+		}
+
+		sharedLinkAttrs := pcommon.NewMap()
+		if ids.SharedLinkAttributeIds != nil {
+			err = otlp.AppendAttributesInto(sharedLinkAttrs, arrowScopeSpans.Array(), resSpansIdx, ids.SharedLinkAttributeIds)
+			if err != nil {
+				return werror.Wrap(err)
+			}
+		}
+
+		arrowSpans, err := arrowScopeSpans.ListOfStructsById(scopeSpansIdx, ids.SpansIds.SpansID)
 		if err != nil {
 			return werror.Wrap(err)
 		}
 		spansSlice := scopeSpans.Spans()
 		spansSlice.EnsureCapacity(arrowSpans.End() - arrowSpans.Start())
 		for entityIdx := arrowSpans.Start(); entityIdx < arrowSpans.End(); entityIdx++ {
-			err = AppendSpanInto(spansSlice, arrowSpans, entityIdx, ids.SpansIds)
+			err = AppendSpanInto(spansSlice, arrowSpans, entityIdx, ids.SpansIds, sharedAttrs, sharedEventAttrs, sharedLinkAttrs, relatedData)
 			if err != nil {
 				return werror.Wrap(err)
 			}

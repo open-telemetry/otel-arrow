@@ -21,9 +21,11 @@ import (
 	"github.com/apache/arrow/go/v12/arrow"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
+	"github.com/f5/otel-arrow-adapter/pkg/config"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
@@ -42,22 +44,38 @@ type TracesBuilder struct {
 	rsb       *builder.ListBuilder      // Resource spans list builder
 	rsp       *ResourceSpansBuilder     // resource spans builder
 	optimizer *TracesOptimizer
+	analyzer  *TraceAnalyzer
+
+	relatedData *RelatedData
 }
 
 // NewTracesBuilder creates a new TracesBuilder with a given allocator.
-func NewTracesBuilder(rBuilder *builder.RecordBuilderExt, traceStats bool) (*TracesBuilder, error) {
+func NewTracesBuilder(
+	rBuilder *builder.RecordBuilderExt,
+	cfg *config.Config,
+	stats *stats.ProducerStats,
+) (*TracesBuilder, error) {
 	var optimizer *TracesOptimizer
+	var analyzer *TraceAnalyzer
 
-	if traceStats {
+	relatedData, err := NewRelatedData(cfg, stats)
+	if err != nil {
+		panic(err)
+	}
+
+	if stats.SchemaStatsEnabled {
 		optimizer = NewTracesOptimizer(acommon.WithStats(), acommon.WithSort())
+		analyzer = NewTraceAnalyzer()
 	} else {
 		optimizer = NewTracesOptimizer(acommon.WithSort())
 	}
 
 	tracesBuilder := &TracesBuilder{
-		released:  false,
-		builder:   rBuilder,
-		optimizer: optimizer,
+		released:    false,
+		builder:     rBuilder,
+		optimizer:   optimizer,
+		analyzer:    analyzer,
+		relatedData: relatedData,
 	}
 	if err := tracesBuilder.init(); err != nil {
 		return nil, werror.Wrap(err)
@@ -72,8 +90,8 @@ func (b *TracesBuilder) init() error {
 	return nil
 }
 
-func (b *TracesBuilder) Stats() *TracesStats {
-	return b.optimizer.Stats()
+func (b *TracesBuilder) RelatedData() *RelatedData {
+	return b.relatedData
 }
 
 // Build builds an Arrow Record from the builder.
@@ -106,11 +124,15 @@ func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 	}
 
 	optimTraces := b.optimizer.Optimize(traces)
+	if b.analyzer != nil {
+		b.analyzer.Analyze(optimTraces)
+		b.analyzer.ShowStats("")
+	}
 
 	rc := len(optimTraces.ResourceSpans)
 	return b.rsb.Append(rc, func() error {
 		for _, resSpanGroup := range optimTraces.ResourceSpans {
-			if err := b.rsp.Append(resSpanGroup); err != nil {
+			if err := b.rsp.Append(resSpanGroup, b.relatedData); err != nil {
 				return werror.Wrap(err)
 			}
 		}
@@ -123,6 +145,8 @@ func (b *TracesBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
 		b.released = true
+
+		b.relatedData.Release()
 	}
 }
 

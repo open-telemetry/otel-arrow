@@ -32,9 +32,11 @@ import (
 	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/internal"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
 )
 
 var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
+var ProducerStats = stats.NewProducerStats()
 
 func TestLogRecord(t *testing.T) {
 	t.Parallel()
@@ -45,7 +47,7 @@ func TestLogRecord(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.Logs, Type: LogRecordDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, ProducerStats)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -91,7 +93,7 @@ func TestScopeLogs(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.ScopeLogs, Type: ScopeLogsDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, ProducerStats)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -151,7 +153,7 @@ func TestResourceLogs(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.ResourceLogs, Type: ResourceLogsDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, ProducerStats)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -207,7 +209,7 @@ func TestLogs(t *testing.T) {
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig, false)
+	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig, ProducerStats)
 	defer rBuilder.Release()
 
 	var record arrow.Record

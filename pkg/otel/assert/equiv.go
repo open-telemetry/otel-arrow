@@ -17,10 +17,12 @@ package assert
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Equiv asserts that two arrays of json.Marshaler are equivalent. Metrics, logs, and traces requests implement
@@ -230,6 +232,108 @@ func jsonifyFromBytes(jsonBytes []byte) (map[string]interface{}, error) {
 	err := json.Unmarshal(jsonBytes, &jsonMap)
 	if err != nil {
 		return nil, err
+	}
+	return jsonMap, nil
+}
+
+// JSONCanonicalEq compares two JSON objects for equality after converting
+// them to a canonical form. This is useful for comparing JSON objects that may
+// have different key orders or array orders.
+func JSONCanonicalEq(t *testing.T, expected interface{}, actual interface{}) {
+	t.Helper()
+
+	expected, err := jsonFrom(expected)
+	require.NoError(t, err)
+	actual, err = jsonFrom(actual)
+	require.NoError(t, err)
+
+	expectedID := CanonicalObjectID(expected)
+	actualID := CanonicalObjectID(actual)
+
+	assert.Equal(t, expectedID, actualID)
+}
+
+// CanonicalObjectID computes a unique ID for an object.
+func CanonicalObjectID(object interface{}) string {
+	switch object.(type) {
+	case map[string]interface{}:
+		return CanonicalMapID(object.(map[string]interface{}))
+	case []interface{}:
+		return CanonicalSliceID(object.([]interface{}))
+	default:
+		return fmt.Sprintf("%v", object)
+	}
+}
+
+// CanonicalMapID computes a unique ID for a map.
+// Sort the keys to ensure a consistent order.
+func CanonicalMapID(object map[string]interface{}) string {
+	var keys []string
+	for key := range object {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var ID strings.Builder
+	ID.WriteString("{")
+	for _, key := range keys {
+		if ID.Len() > 1 {
+			ID.WriteString(",")
+		}
+		ID.WriteString(key)
+		ID.WriteString(":")
+		ID.WriteString(CanonicalObjectID(object[key]))
+	}
+	ID.WriteString("}")
+	return ID.String()
+}
+
+// CanonicalSliceID computes a unique ID for a slice.
+func CanonicalSliceID(slice []interface{}) string {
+	var itemIDs []string
+
+	for _, item := range slice {
+		itemIDs = append(itemIDs, CanonicalObjectID(item))
+	}
+	sort.Strings(itemIDs)
+
+	var ID strings.Builder
+	ID.WriteString("[")
+	for i, itemID := range itemIDs {
+		if i > 0 {
+			ID.WriteString(",")
+		}
+		ID.WriteString(itemID)
+	}
+	ID.WriteString("]")
+
+	return ID.String()
+}
+
+// jsonFrom converts a string or a byte slice to a Go object representing
+// this JSON object.
+func jsonFrom(value interface{}) (interface{}, error) {
+	switch v := value.(type) {
+	case string:
+		return jsonFromBytes([]byte(v))
+	case []byte:
+		return jsonFromBytes(v)
+	default:
+		return nil, fmt.Errorf("unsupported type: %T", value)
+	}
+}
+
+// jsonFromBytes converts a byte slice, representing a JSON object, to a Go
+// map or a slice of Go map.
+func jsonFromBytes(jsonBytes []byte) (interface{}, error) {
+	var jsonMap map[string]interface{}
+	err := json.Unmarshal(jsonBytes, &jsonMap)
+	if err != nil {
+		var jsonArray []interface{}
+		err = json.Unmarshal(jsonBytes, &jsonArray)
+		if err != nil {
+			return nil, err
+		}
+		return jsonArray, nil
 	}
 	return jsonMap, nil
 }

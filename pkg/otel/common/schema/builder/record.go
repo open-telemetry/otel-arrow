@@ -27,9 +27,10 @@ import (
 	carrow "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
-	events "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/events"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/events"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/transform"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/update"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
@@ -64,8 +65,8 @@ type RecordBuilderExt struct {
 
 	events *events.Events
 
-	// stats is a flag that enables/disables the collection of statistics
-	stats bool
+	// stats is a set of counters that are incremented when certain events occur.
+	stats *stats.ProducerStats
 }
 
 // NewRecordBuilderExt creates a new RecordBuilderExt from the given allocator
@@ -74,7 +75,7 @@ func NewRecordBuilderExt(
 	allocator memory.Allocator,
 	protoSchema *arrow.Schema,
 	dictConfig *builder.Dictionary,
-	stats bool,
+	stats *stats.ProducerStats,
 ) *RecordBuilderExt {
 	schemaUpdateRequest := update.NewSchemaUpdateRequest()
 	evts := &events.Events{
@@ -119,7 +120,8 @@ func (rb *RecordBuilderExt) RecordBuilder() *array.RecordBuilder {
 // NewRecord returns a new record from the underlying array.RecordBuilder or
 // ErrSchemaNotUpToDate if the schema is not up-to-date.
 func (rb *RecordBuilderExt) NewRecord() (arrow.Record, error) {
-	// If field optionality has changed, update the schema
+	// If one of the tree transformation has been removed, or updated, then
+	// the schema must be updated.
 	if !rb.IsSchemaUpToDate() {
 		rb.UpdateSchema()
 		return nil, werror.Wrap(schema.ErrSchemaNotUpToDate)
@@ -183,7 +185,7 @@ func (rb *RecordBuilderExt) detectDictionaryOverflow(field *arrow.Field, column 
 				switch dictColumn := column.(type) {
 				case *array.Dictionary:
 					dictTransform.AddTotal(dictColumn.Len())
-					dictTransform.SetCardinality(uint64(dictColumn.Dictionary().Len()))
+					dictTransform.SetCardinality(uint64(dictColumn.Dictionary().Len()), &rb.stats.RecordBuilderStats)
 				}
 			} else {
 				panic(fmt.Sprintf("Dictionary transform not found for field %s", field.Name))
@@ -221,11 +223,16 @@ func (rb *RecordBuilderExt) UpdateSchema() {
 	// and transfer the dictionaries from the old record builder
 	// to the new one.
 	newRecBuilder := array.NewRecordBuilder(rb.allocator, s)
-	// ToDo Find a better way to copy the dictionary values who have a lot of reused values between batches. For now, this feature is disabled.
-	//if err := copyDictValuesTo(rb.recordBuilder, newRecBuilder); err != nil {
+
+	// Note: dictionaries are no longer copied between schema changes as it can
+	// be very expensive when the number of reusable dictionary entries is not
+	// an important percentage of the existing dictionary.
+	// ToDo Find a way to identify when it makes sense to use dictionary migration between schema changes.
+	//if err := rb.copyDictValuesTo(rb.recordBuilder, newRecBuilder); err != nil {
 	//	panic(err)
 	//}
-	if rb.stats {
+
+	if rb.stats.SchemaStatsEnabled {
 		rb.ShowSchema()
 	}
 
@@ -234,11 +241,12 @@ func (rb *RecordBuilderExt) UpdateSchema() {
 	rb.schemaID = carrow.SchemaToID(s)
 
 	rb.updateRequest.Reset()
+	rb.stats.RecordBuilderStats.SchemaUpdatesPerformed++
 }
 
 // CopyDictValuesTo recursively copy the dictionary values from the source
 // record builder to the destination record builder.
-func copyDictValuesTo(srcRecBuilder *array.RecordBuilder, destRecBuilder *array.RecordBuilder) error {
+func (rb *RecordBuilderExt) copyDictValuesTo(srcRecBuilder *array.RecordBuilder, destRecBuilder *array.RecordBuilder) error {
 	srcSchema := srcRecBuilder.Schema()
 	destSchema := destRecBuilder.Schema()
 
@@ -247,7 +255,7 @@ func copyDictValuesTo(srcRecBuilder *array.RecordBuilder, destRecBuilder *array.
 		destFieldIndices := destSchema.FieldIndices(srcField.Name)
 		if len(destFieldIndices) == 1 {
 			destBuilder := destRecBuilder.Field(destFieldIndices[0])
-			if err := copyFieldDictValuesTo(srcBuilder, destBuilder); err != nil {
+			if err := rb.copyFieldDictValuesTo(srcBuilder, destBuilder); err != nil {
 				return werror.Wrap(err)
 			}
 		}
@@ -257,7 +265,7 @@ func copyDictValuesTo(srcRecBuilder *array.RecordBuilder, destRecBuilder *array.
 
 // Recursively copy the dictionary values from the source array builder to the
 // destination array builder.
-func copyFieldDictValuesTo(srcBuilder array.Builder, destBuilder array.Builder) (err error) {
+func (rb *RecordBuilderExt) copyFieldDictValuesTo(srcBuilder array.Builder, destBuilder array.Builder) (err error) {
 	srcDT := srcBuilder.Type()
 	destDT := destBuilder.Type()
 
@@ -282,12 +290,12 @@ func copyFieldDictValuesTo(srcBuilder array.Builder, destBuilder array.Builder) 
 			if !found {
 				continue
 			}
-			if err = copyFieldDictValuesTo(sBuilder.FieldBuilder(i), dBuilder.FieldBuilder(destSubFieldIdx)); err != nil {
+			if err = rb.copyFieldDictValuesTo(sBuilder.FieldBuilder(i), dBuilder.FieldBuilder(destSubFieldIdx)); err != nil {
 				return
 			}
 		}
 	case *array.ListBuilder:
-		if err = copyFieldDictValuesTo(sBuilder.ValueBuilder(), destBuilder.(*array.ListBuilder).ValueBuilder()); err != nil {
+		if err = rb.copyFieldDictValuesTo(sBuilder.ValueBuilder(), destBuilder.(*array.ListBuilder).ValueBuilder()); err != nil {
 			return
 		}
 	case array.UnionBuilder:
@@ -307,15 +315,15 @@ func copyFieldDictValuesTo(srcBuilder array.Builder, destBuilder array.Builder) 
 			if destChildID == -1 {
 				continue
 			}
-			if err = copyFieldDictValuesTo(sBuilder.Child(srcChildID), destBuilder.(array.UnionBuilder).Child(destChildID)); err != nil {
+			if err = rb.copyFieldDictValuesTo(sBuilder.Child(srcChildID), destBuilder.(array.UnionBuilder).Child(destChildID)); err != nil {
 				return
 			}
 		}
 	case *array.MapBuilder:
-		if err = copyFieldDictValuesTo(sBuilder.KeyBuilder(), destBuilder.(*array.MapBuilder).KeyBuilder()); err != nil {
+		if err = rb.copyFieldDictValuesTo(sBuilder.KeyBuilder(), destBuilder.(*array.MapBuilder).KeyBuilder()); err != nil {
 			return werror.Wrap(err)
 		}
-		if err = copyFieldDictValuesTo(sBuilder.ItemBuilder(), destBuilder.(*array.MapBuilder).ItemBuilder()); err != nil {
+		if err = rb.copyFieldDictValuesTo(sBuilder.ItemBuilder(), destBuilder.(*array.MapBuilder).ItemBuilder()); err != nil {
 			return werror.Wrap(err)
 		}
 	case array.DictionaryBuilder:
@@ -332,8 +340,12 @@ func copyFieldDictValuesTo(srcBuilder array.Builder, destBuilder array.Builder) 
 			err = destBuilder.(*array.FixedSizeBinaryDictionaryBuilder).InsertDictValues(dict)
 		case *array.Int32:
 			err = destBuilder.(*array.Int32DictionaryBuilder).InsertDictValues(dict)
+		case *array.Int64:
+			err = destBuilder.(*array.Int64DictionaryBuilder).InsertDictValues(dict)
 		case *array.Uint32:
 			err = destBuilder.(*array.Uint32DictionaryBuilder).InsertDictValues(dict)
+		case *array.Duration:
+			err = destBuilder.(*array.DurationDictionaryBuilder).InsertDictValues(dict)
 		default:
 			panic("copyFieldDictValuesTo: unsupported dictionary type " + dict.DataType().Name())
 		}
@@ -424,9 +436,9 @@ func (rb *RecordBuilderExt) StringBuilder(name string) *StringBuilder {
 	b := rb.builder(name)
 
 	if b != nil {
-		return &StringBuilder{builder: b, transformNode: transformNode, updateRequest: rb.updateRequest}
+		return NewStringBuilder(b, transformNode, rb.updateRequest)
 	} else {
-		return &StringBuilder{builder: nil, transformNode: transformNode, updateRequest: rb.updateRequest}
+		return NewStringBuilder(nil, transformNode, rb.updateRequest)
 	}
 }
 
@@ -475,6 +487,21 @@ func (rb *RecordBuilderExt) Uint8Builder(name string) *Uint8Builder {
 	}
 }
 
+// Uint16Builder returns a Uint16Builder wrapper for the field with the given
+// name. If the underlying builder doesn't exist, an empty wrapper is returned,
+// so that the feeding process can continue without panicking. This is useful
+// to handle optional fields.
+func (rb *RecordBuilderExt) Uint16Builder(name string) *Uint16Builder {
+	_, transformNode := rb.protoDataTypeAndTransformNode(name)
+	b := rb.builder(name)
+
+	if b != nil {
+		return &Uint16Builder{builder: b, transformNode: transformNode, updateRequest: rb.updateRequest}
+	} else {
+		return &Uint16Builder{builder: nil, transformNode: transformNode, updateRequest: rb.updateRequest}
+	}
+}
+
 // Uint32Builder returns a Uint32Builder wrapper for the field with the given
 // name. If the underlying builder doesn't exist, an empty wrapper is returned,
 // so that the feeding process can continue without panicking. This is useful
@@ -502,6 +529,36 @@ func (rb *RecordBuilderExt) Uint64Builder(name string) *Uint64Builder {
 		return &Uint64Builder{builder: b, transformNode: transformNode, updateRequest: rb.updateRequest}
 	} else {
 		return &Uint64Builder{builder: nil, transformNode: transformNode, updateRequest: rb.updateRequest}
+	}
+}
+
+// Uint16DeltaBuilder returns a Uint16DeltaBuilder wrapper for the field with the given
+// name. If the underlying builder doesn't exist, an empty wrapper is returned,
+// so that the feeding process can continue without panicking. This is useful
+// to handle optional fields.
+func (rb *RecordBuilderExt) Uint16DeltaBuilder(name string) *Uint16DeltaBuilder {
+	_, transformNode := rb.protoDataTypeAndTransformNode(name)
+	b := rb.builder(name)
+
+	if b != nil {
+		return NewUint16DeltaBuilder(b, transformNode, rb.updateRequest)
+	} else {
+		return NewUint16DeltaBuilder(nil, transformNode, rb.updateRequest)
+	}
+}
+
+// Uint32DeltaBuilder returns a Uint32DeltaBuilder wrapper for the field with the given
+// name. If the underlying builder doesn't exist, an empty wrapper is returned,
+// so that the feeding process can continue without panicking. This is useful
+// to handle optional fields.
+func (rb *RecordBuilderExt) Uint32DeltaBuilder(name string) *Uint32DeltaBuilder {
+	_, transformNode := rb.protoDataTypeAndTransformNode(name)
+	b := rb.builder(name)
+
+	if b != nil {
+		return NewUint32DeltaBuilder(b, transformNode, rb.updateRequest)
+	} else {
+		return NewUint32DeltaBuilder(nil, transformNode, rb.updateRequest)
 	}
 }
 
@@ -645,6 +702,8 @@ func (rb *RecordBuilderExt) VisitDataType(builder array.Builder, dt arrow.DataTy
 		fmt.Printf("Binary")
 	case *arrow.TimestampType:
 		fmt.Printf("Timestamp")
+	case *arrow.DurationType:
+		fmt.Printf("Duration")
 	case *arrow.StructType:
 		structBuilder := builder.(*array.StructBuilder)
 		fmt.Printf("Struct {\n")

@@ -1,0 +1,4 @@
+otlp_*.pg
+hipstershop_*.pb
+generated_otlp_*.pb
+

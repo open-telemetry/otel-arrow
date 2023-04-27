@@ -24,6 +24,8 @@ import (
 	"strings"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
+
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 )
 
 func ResourceID(r pcommon.Resource, schemaUrl string) string {
@@ -36,35 +38,12 @@ func ResourceID(r pcommon.Resource, schemaUrl string) string {
 	return b.String()
 }
 
-type (
-	mapEntry struct {
-		key   string
-		value pcommon.Value
-	}
-
-	mapEntries []mapEntry
-)
-
-var _ sort.Interface = mapEntries{}
-
-func (me mapEntries) Len() int {
-	return len(me)
-}
-
-func (me mapEntries) Swap(i, j int) {
-	me[i], me[j] = me[j], me[i]
-}
-
-func (me mapEntries) Less(i, j int) bool {
-	return me[i].key < me[j].key
-}
-
 func AttributesId(attrs pcommon.Map, b *strings.Builder) {
-	tmp := make(mapEntries, 0, attrs.Len())
+	tmp := make(common.AttributeEntries, 0, attrs.Len())
 	attrs.Range(func(k string, v pcommon.Value) bool {
-		tmp = append(tmp, mapEntry{
-			key:   k,
-			value: v,
+		tmp = append(tmp, common.AttributeEntry{
+			Key:   k,
+			Value: v,
 		})
 		return true
 	})
@@ -75,9 +54,9 @@ func AttributesId(attrs pcommon.Map, b *strings.Builder) {
 		if i > 0 {
 			b.WriteString(",")
 		}
-		b.WriteString(e.key)
+		b.WriteString(e.Key)
 		b.WriteString(":")
-		ValueID(e.value, b)
+		ValueID(e.Value, b)
 	}
 	b.WriteString("}")
 }

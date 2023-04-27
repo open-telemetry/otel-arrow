@@ -162,9 +162,9 @@ func (sub *SparseUnionBuilder) StringBuilder(code arrow.UnionTypeCode) *StringBu
 	_, transformNode := sub.protoDataTypeAndTransformNode(code)
 
 	if builder != nil {
-		return &StringBuilder{builder: builder, transformNode: transformNode, updateRequest: sub.updateRequest}
+		return NewStringBuilder(builder, transformNode, sub.updateRequest)
 	} else {
-		return &StringBuilder{builder: nil, transformNode: transformNode, updateRequest: sub.updateRequest}
+		return NewStringBuilder(nil, transformNode, sub.updateRequest)
 	}
 }
 

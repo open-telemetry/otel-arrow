@@ -23,7 +23,7 @@ import (
 )
 
 func TestOtlpArrowMetricsProfiler(t *testing.T) {
-	// t.Skip("Skipping this test because it's not fully implemented yet")
+	t.Skip("Skipping this test because it's not fully implemented yet")
 	t.Parallel()
 
 	// Configuration

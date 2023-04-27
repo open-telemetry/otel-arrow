@@ -1,18 +1,21 @@
-// Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Copyright The OpenTelemetry Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
 
-package arrow_record
+package record_message
 
 import (
 	"fmt"
@@ -32,6 +35,15 @@ type RecordMessage struct {
 	subStreamId string
 	payloadType PayloadType
 	record      arrow.Record
+}
+
+// NewRecordMessage creates a record message.
+func NewRecordMessage(batchId string, payloadType PayloadType, record arrow.Record) *RecordMessage {
+	return &RecordMessage{
+		batchId:     batchId,
+		payloadType: payloadType,
+		record:      record,
+	}
 }
 
 // NewMetricsMessage creates a reference to a new RecordMessage from a given Arrow Record representing a collection of
@@ -63,6 +75,22 @@ func NewTraceMessage(schemaID string, record arrow.Record) *RecordMessage {
 		payloadType: v1.OtlpArrowPayloadType_SPANS,
 		record:      record,
 	}
+}
+
+func NewRelatedDataMessage(schemaID string, record arrow.Record, payloadType PayloadType) *RecordMessage {
+	return &RecordMessage{
+		subStreamId: schemaID,
+		payloadType: payloadType,
+		record:      record,
+	}
+}
+
+func (rm *RecordMessage) BatchId() string {
+	return rm.batchId
+}
+
+func (rm *RecordMessage) SubStreamId() string {
+	return rm.subStreamId
 }
 
 // Record returns the Arrow Record associated with this RecordMessage.

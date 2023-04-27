@@ -31,6 +31,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/internal"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
 )
 
 func TestAttributes(t *testing.T) {
@@ -43,7 +44,7 @@ func TestAttributes(t *testing.T) {
 		{Name: "attributes", Type: carrow.AttributesDT, Metadata: schema.Metadata(schema.Optional)},
 	}, nil)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, s, DefaultDictConfig, false)
+	rBuilder := builder.NewRecordBuilderExt(pool, s, DefaultDictConfig, stats.NewProducerStats())
 	defer rBuilder.Release()
 
 	var record arrow.Record

@@ -28,6 +28,7 @@ import (
 	logsotlp "github.com/f5/otel-arrow-adapter/pkg/otel/logs/otlp"
 	metricsotlp "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/otlp"
 	tracesotlp "github.com/f5/otel-arrow-adapter/pkg/otel/traces/otlp"
+	"github.com/f5/otel-arrow-adapter/pkg/record_message"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
@@ -65,7 +66,7 @@ func NewConsumer() *Consumer {
 		streamConsumers: make(map[string]*streamConsumer),
 
 		// TODO: configure this limit with a functional option
-		memLimit: 20 << 20,
+		memLimit: 50 << 20,
 	}
 }
 
@@ -76,9 +77,9 @@ func (c *Consumer) MetricsFrom(bar *colarspb.BatchArrowRecords) ([]pmetric.Metri
 		return nil, werror.Wrap(err)
 	}
 
-	record2Metrics := func(record *RecordMessage) (pmetric.Metrics, error) {
-		defer record.record.Release()
-		return metricsotlp.MetricsFrom(record.record)
+	record2Metrics := func(record *record_message.RecordMessage) (pmetric.Metrics, error) {
+		defer record.Record().Release()
+		return metricsotlp.MetricsFrom(record.Record())
 	}
 
 	result := make([]pmetric.Metrics, 0, len(records))
@@ -99,9 +100,9 @@ func (c *Consumer) LogsFrom(bar *colarspb.BatchArrowRecords) ([]plog.Logs, error
 		return nil, werror.Wrap(err)
 	}
 
-	record2Logs := func(record *RecordMessage) (plog.Logs, error) {
-		defer record.record.Release()
-		return logsotlp.LogsFrom(record.record)
+	record2Logs := func(record *record_message.RecordMessage) (plog.Logs, error) {
+		defer record.Record().Release()
+		return logsotlp.LogsFrom(record.Record())
 	}
 
 	result := make([]plog.Logs, 0, len(records))
@@ -122,26 +123,28 @@ func (c *Consumer) TracesFrom(bar *colarspb.BatchArrowRecords) ([]ptrace.Traces,
 		return nil, werror.Wrap(err)
 	}
 
-	record2Traces := func(record *RecordMessage) (ptrace.Traces, error) {
-		defer record.record.Release()
-		return tracesotlp.TracesFrom(record.record)
-	}
-
 	result := make([]ptrace.Traces, 0, len(records))
-	for _, record := range records {
-		traces, err := record2Traces(record)
+
+	// Compute all related records (i.e. Attributes, Events, and Links)
+	relatedData, tracesRecord, err := tracesotlp.RelatedDataFrom(records)
+
+	if tracesRecord != nil {
+		// Decode OTLP traces from the combination of the main record and the
+		// related records.
+		traces, err := tracesotlp.TracesFrom(tracesRecord.Record(), relatedData)
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
 		result = append(result, traces)
 	}
+
 	return result, nil
 }
 
 // Consume takes a BatchArrowRecords protobuf message and returns an array of RecordMessage.
 // Note: the records wrapped in the RecordMessage must be released after use by the caller.
-func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*RecordMessage, error) {
-	var ibes []*RecordMessage
+func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.RecordMessage, error) {
+	var ibes []*record_message.RecordMessage
 
 	// Transform each individual OtlpArrowPayload into RecordMessage
 	for _, payload := range bar.OtlpArrowPayloads {
@@ -175,11 +178,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*RecordMessage, e
 			// We need to retain it to be able to use it after the Reader is closed
 			// or after the next call to Reader.Next().
 			rec.Retain()
-			ibes = append(ibes, &RecordMessage{
-				batchId:     bar.BatchId,
-				payloadType: payload.GetType(),
-				record:      rec,
-			})
+			ibes = append(ibes, record_message.NewRecordMessage(bar.BatchId, payload.GetType(), rec))
 		}
 	}
 

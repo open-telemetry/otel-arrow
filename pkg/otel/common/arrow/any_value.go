@@ -43,10 +43,15 @@ const (
 
 var (
 	// AnyValueDT is an Arrow Data Type representing an OTLP Any Value.
-	// Any values are represented as a sparse union of the following variants: str, i64, f64, bool, binary.
+	// Any values are represented as a sparse union of the following variants:
+	// str, i64, f64, bool, binary.
+	//
+	// Note: str, i64, binary, and cbor are dictionary encoded by default and
+	// will fall back to a non-dictionary encoding when the dictionary index
+	// overflowed.
 	AnyValueDT = arrow.SparseUnionOf([]arrow.Field{
 		{Name: "str", Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary16)},
-		{Name: "i64", Type: arrow.PrimitiveTypes.Int64, Metadata: schema.Metadata(schema.Optional)},
+		{Name: "i64", Type: arrow.PrimitiveTypes.Int64, Metadata: schema.Metadata(schema.Optional, schema.Dictionary16)},
 		{Name: "f64", Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
 		{Name: "bool", Type: arrow.FixedWidthTypes.Boolean, Metadata: schema.Metadata(schema.Optional)},
 		{Name: "binary", Type: arrow.BinaryTypes.Binary, Metadata: schema.Metadata(schema.Optional, schema.Dictionary16)},

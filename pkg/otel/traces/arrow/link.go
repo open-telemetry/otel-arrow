@@ -17,11 +17,24 @@
 
 package arrow
 
+// Links are represented as Arrow records.
+//
+// A link accumulator is used to collect of the links across all spans, and
+// once the entire trace is processed, the links are being globally sorted and
+// written to the Arrow record batch. This process improves the compression
+// ratio of the Arrow record batch.
+
 import (
+	"bytes"
+	"errors"
+	"math"
+	"sort"
+
 	"github.com/apache/arrow/go/v12/arrow"
-	"github.com/apache/arrow/go/v12/arrow/array"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
@@ -29,69 +42,160 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
-// LinkDT is the Arrow Data Type describing a link event.
+// LinkSchema is the Arrow Data Type describing a link (as a related record
+// to the main trace record).
 var (
-	LinkDT = arrow.StructOf([]arrow.Field{
+	LinkSchema = arrow.NewSchema([]arrow.Field{
+		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint16},
 		{Name: constants.TraceId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 16}, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
 		{Name: constants.SpanId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 8}, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
 		{Name: constants.TraceState, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
-		{Name: constants.Attributes, Type: acommon.AttributesDT, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.AttributesID, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional, schema.DeltaEncoding)},
 		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
-	}...)
+	}, nil)
 )
 
-type LinkBuilder struct {
-	released bool
+type (
+	// LinkBuilder is an Arrow builder for Link records.
+	LinkBuilder struct {
+		released bool
 
-	builder *builder.StructBuilder
+		builder *builder.RecordBuilderExt
 
-	tib  *builder.FixedSizeBinaryBuilder // `trace_id` builder
-	sib  *builder.FixedSizeBinaryBuilder // `span_id` builder
-	tsb  *builder.StringBuilder          // `trace_state` builder
-	ab   *acommon.AttributesBuilder      // `attributes` builder
-	dacb *builder.Uint32Builder          // `dropped_attributes_count` builder
-}
+		ib   *builder.Uint16Builder          // `id` builder
+		tib  *builder.FixedSizeBinaryBuilder // `trace_id` builder
+		sib  *builder.FixedSizeBinaryBuilder // `span_id` builder
+		tsb  *builder.StringBuilder          // `trace_state` builder
+		aib  *builder.Uint32DeltaBuilder     // attributes id builder
+		dacb *builder.Uint32Builder          // `dropped_attributes_count` builder
 
-func LinkBuilderFrom(lb *builder.StructBuilder) *LinkBuilder {
-	return &LinkBuilder{
-		released: false,
-		builder:  lb,
-		tib:      lb.FixedSizeBinaryBuilder(constants.TraceId),
-		sib:      lb.FixedSizeBinaryBuilder(constants.SpanId),
-		tsb:      lb.StringBuilder(constants.TraceState),
-		ab:       acommon.AttributesBuilderFrom(lb.MapBuilder(constants.Attributes)),
-		dacb:     lb.Uint32Builder(constants.DroppedAttributesCount),
-	}
-}
-
-// Append appends a new link to the builder.
-func (b *LinkBuilder) Append(link ptrace.SpanLink) error {
-	if b.released {
-		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
+		accumulator *LinkAccumulator
 	}
 
-	return b.builder.Append(link, func() error {
-		tid := link.TraceID()
-		b.tib.Append(tid[:])
-		sid := link.SpanID()
-		b.sib.Append(sid[:])
-		b.tsb.AppendNonEmpty(link.TraceState().AsRaw())
-		b.dacb.AppendNonZero(link.DroppedAttributesCount())
-		return b.ab.Append(link.Attributes())
-	})
+	// Link is an internal representation of a link used by the
+	// LinkAccumulator.
+	Link struct {
+		ID                     uint16
+		TraceID                [16]byte
+		SpanID                 [8]byte
+		TraceState             string
+		Attributes             pcommon.Map
+		SharedAttributes       *common.SharedAttributes
+		DroppedAttributesCount uint32
+	}
+
+	// LinkAccumulator is an accumulator for links that is used to sort links
+	// globally in order to improve compression.
+	LinkAccumulator struct {
+		groupCount uint16
+		links      []Link
+	}
+)
+
+func NewLinkBuilder(rBuilder *builder.RecordBuilderExt) (*LinkBuilder, error) {
+	b := &LinkBuilder{
+		released:    false,
+		builder:     rBuilder,
+		accumulator: NewLinkAccumulator(),
+	}
+
+	if err := b.init(); err != nil {
+		return nil, werror.Wrap(err)
+	}
+
+	return b, nil
 }
 
-// Build builds the link array struct.
-//
-// Once the array is no longer needed, Release() must be called to free the
-// memory allocated by the array.
-func (b *LinkBuilder) Build() (*array.Struct, error) {
+func (b *LinkBuilder) init() error {
+	b.ib = b.builder.Uint16Builder(constants.ID)
+	b.tib = b.builder.FixedSizeBinaryBuilder(constants.TraceId)
+	b.sib = b.builder.FixedSizeBinaryBuilder(constants.SpanId)
+	b.tsb = b.builder.StringBuilder(constants.TraceState)
+	b.aib = b.builder.Uint32DeltaBuilder(constants.AttributesID)
+	// As the attributes are sorted before insertion, the delta between two
+	// consecutive attributes ID should always be <=1.
+	b.aib.SetMaxDelta(1)
+	b.dacb = b.builder.Uint32Builder(constants.DroppedAttributesCount)
+	return nil
+}
+
+func (b *LinkBuilder) SchemaID() string {
+	return b.builder.SchemaID()
+}
+
+func (b *LinkBuilder) IsEmpty() bool {
+	return b.accumulator.IsEmpty()
+}
+
+func (b *LinkBuilder) Accumulator() *LinkAccumulator {
+	return b.accumulator
+}
+
+func (b *LinkBuilder) BuildRecord(attrsAccu *acommon.Attributes32Accumulator) (record arrow.Record, err error) {
+	schemaNotUpToDateCount := 0
+
+	// Loop until the record is built successfully.
+	// Intermediaries steps may be required to update the schema.
+	for {
+		attrsAccu.Reset()
+		record, err = b.TryBuild(attrsAccu)
+		if err != nil {
+			if record != nil {
+				record.Release()
+			}
+
+			switch {
+			case errors.Is(err, schema.ErrSchemaNotUpToDate):
+				schemaNotUpToDateCount++
+				if schemaNotUpToDateCount > 5 {
+					panic("Too many consecutive schema updates. This shouldn't happen.")
+				}
+			default:
+				return nil, werror.Wrap(err)
+			}
+		} else {
+			break
+		}
+	}
+	return record, werror.Wrap(err)
+}
+
+func (b *LinkBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (record arrow.Record, err error) {
 	if b.released {
 		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
-	defer b.Release()
-	return b.builder.NewStructArray(), nil
+	b.accumulator.Sort()
+
+	for _, link := range b.accumulator.links {
+		b.ib.Append(link.ID)
+		b.tib.Append(link.TraceID[:])
+		b.sib.Append(link.SpanID[:])
+		b.tsb.AppendNonEmpty(link.TraceState)
+
+		// Attributes
+		var ID int64
+		ID, err = attrsAccu.AppendUniqueAttributes(link.Attributes, link.SharedAttributes, nil)
+		if err != nil {
+			return
+		}
+		if ID >= 0 {
+			b.aib.Append(uint32(ID))
+		} else {
+			b.aib.AppendNull()
+		}
+
+		b.dacb.AppendNonZero(link.DroppedAttributesCount)
+	}
+
+	record, err = b.builder.NewRecord()
+	if err != nil {
+		initErr := b.init()
+		if initErr != nil {
+			return nil, werror.Wrap(initErr)
+		}
+	}
+	return
 }
 
 // Release releases the memory allocated by the builder.
@@ -101,4 +205,63 @@ func (b *LinkBuilder) Release() {
 
 		b.released = true
 	}
+}
+
+// NewLinkAccumulator creates a new LinkAccumulator.
+func NewLinkAccumulator() *LinkAccumulator {
+	return &LinkAccumulator{
+		groupCount: 0,
+		links:      make([]Link, 0),
+	}
+}
+
+func (a *LinkAccumulator) IsEmpty() bool {
+	return len(a.links) == 0
+}
+
+// Append appends a new link to the builder.
+func (a *LinkAccumulator) Append(spanID uint16, links ptrace.SpanLinkSlice, sharedAttrs *common.SharedAttributes) error {
+	if a.groupCount == math.MaxUint16 {
+		panic("The maximum number of group of links has been reached (max is uint16).")
+	}
+
+	if links.Len() == 0 {
+		return nil
+	}
+
+	for i := 0; i < links.Len(); i++ {
+		link := links.At(i)
+		a.links = append(a.links, Link{
+			ID:                     spanID,
+			TraceID:                link.TraceID(),
+			SpanID:                 link.SpanID(),
+			TraceState:             link.TraceState().AsRaw(),
+			Attributes:             link.Attributes(),
+			SharedAttributes:       sharedAttrs,
+			DroppedAttributesCount: link.DroppedAttributesCount(),
+		})
+	}
+
+	a.groupCount++
+
+	return nil
+}
+
+func (a *LinkAccumulator) Sort() {
+	sort.Slice(a.links, func(i, j int) bool {
+		linkI := a.links[i]
+		linkJ := a.links[j]
+
+		cmp := bytes.Compare(linkI.TraceID[:], linkJ.TraceID[:])
+		if cmp == 0 {
+			return linkI.ID < linkJ.ID
+		} else {
+			return cmp == -1
+		}
+	})
+}
+
+func (a *LinkAccumulator) Reset() {
+	a.groupCount = 0
+	a.links = a.links[:0]
 }

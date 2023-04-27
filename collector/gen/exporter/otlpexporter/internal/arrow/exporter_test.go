@@ -23,10 +23,6 @@ import (
 	"testing"
 	"time"
 
-	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
-	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
-	arrowRecordMock "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record/mock"
-	otelAssert "github.com/f5/otel-arrow-adapter/pkg/otel/assert"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,10 +31,16 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
+	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
+	arrowRecordMock "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record/mock"
+	otelAssert "github.com/f5/otel-arrow-adapter/pkg/otel/assert"
+
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
 )
 
 type compareJSONTraces struct{ ptrace.Traces }
@@ -527,6 +529,8 @@ func TestArrowExporterStreaming(t *testing.T) {
 	close(channel.sent)
 	wg.Wait()
 
+	// As this equality check doesn't support out of order slices,
+	// we sort the slices directly in the GenerateTraces function.
 	require.Equal(t, expectOutput, actualOutput)
 	require.NoError(t, tc.exporter.Shutdown(bg))
 }

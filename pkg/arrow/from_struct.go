@@ -27,6 +27,31 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
+// U16FromStruct returns the uint16 value for a specific row in an Arrow struct
+// or 0 if the field doesn't exist.
+func U16FromStruct(structArr *array.Struct, row int, fieldID int) (uint16, error) {
+	if fieldID == -1 {
+		return 0, nil
+	}
+	return U16FromArray(structArr.Field(fieldID), row)
+}
+
+// NullableU16FromStruct returns a reference to an uint16 value for a specific
+// row in an Arrow struct or nil if the field doesn't exist.
+func NullableU16FromStruct(structArr *array.Struct, row int, fieldID int) (*uint16, error) {
+	if fieldID == -1 {
+		return nil, nil
+	}
+	if structArr.IsNull(row) {
+		return nil, nil
+	}
+	val, err := U16FromArray(structArr.Field(fieldID), row)
+	if err != nil {
+		return nil, err
+	}
+	return &val, nil
+}
+
 // U32FromStruct returns the uint32 value for a specific row in an Arrow struct
 // or 0 if the field doesn't exist.
 func U32FromStruct(structArr *array.Struct, row int, fieldID int) (uint32, error) {

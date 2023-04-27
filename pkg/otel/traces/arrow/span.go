@@ -32,19 +32,17 @@ import (
 // SpanDT is the Arrow Data Type describing a span.
 var (
 	SpanDT = arrow.StructOf([]arrow.Field{
+		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint16, Metadata: schema.Metadata(schema.Optional, schema.DeltaEncoding)},
 		{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
-		{Name: constants.EndTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
+		{Name: constants.DurationTimeUnixNano, Type: arrow.FixedWidthTypes.Duration_ms, Metadata: schema.Metadata(schema.Dictionary8)},
 		{Name: constants.TraceId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 16}},
 		{Name: constants.SpanId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 8}},
 		{Name: constants.TraceState, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
 		{Name: constants.ParentSpanId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 8}, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.Name, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary8)},
 		{Name: constants.KIND, Type: arrow.PrimitiveTypes.Int32, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
-		{Name: constants.Attributes, Type: acommon.AttributesDT, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
-		{Name: constants.SpanEvents, Type: arrow.ListOf(EventDT), Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.DroppedEventsCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
-		{Name: constants.SpanLinks, Type: arrow.ListOf(LinkDT), Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.DroppedLinksCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.Status, Type: StatusDT, Metadata: schema.Metadata(schema.Optional)},
 	}...)
@@ -56,47 +54,41 @@ type SpanBuilder struct {
 
 	builder *builder.StructBuilder
 
+	ib    *builder.Uint16DeltaBuilder     //  id builder
 	stunb *builder.TimestampBuilder       // start time unix nano builder
-	etunb *builder.TimestampBuilder       // end time unix nano builder
+	dtunb *builder.DurationBuilder        // duration time unix nano builder
 	tib   *builder.FixedSizeBinaryBuilder // trace id builder
 	sib   *builder.FixedSizeBinaryBuilder // span id builder
 	tsb   *builder.StringBuilder          // trace state builder
 	psib  *builder.FixedSizeBinaryBuilder // parent span id builder
 	nb    *builder.StringBuilder          // name builder
 	kb    *builder.Int32Builder           // kind builder
-	ab    *acommon.AttributesBuilder      // attributes builder
 	dacb  *builder.Uint32Builder          // dropped attributes count builder
-	sesb  *builder.ListBuilder            // span event list builder
-	seb   *EventBuilder                   // span event builder
 	decb  *builder.Uint32Builder          // dropped events count builder
-	slsb  *builder.ListBuilder            // span link list builder
-	slb   *LinkBuilder                    // span link builder
 	dlcb  *builder.Uint32Builder          // dropped links count builder
 	sb    *StatusBuilder                  // status builder
 }
 
 func SpanBuilderFrom(sb *builder.StructBuilder) *SpanBuilder {
-	sesb := sb.ListBuilder(constants.SpanEvents)
-	slsb := sb.ListBuilder(constants.SpanLinks)
+	ib := sb.Uint16DeltaBuilder(constants.ID)
+	// As the attributes are sorted before insertion, the delta between two
+	// consecutive attributes ID should always be <=1.
+	ib.SetMaxDelta(1)
 
 	return &SpanBuilder{
 		released: false,
 		builder:  sb,
+		ib:       ib,
 		stunb:    sb.TimestampBuilder(constants.StartTimeUnixNano),
-		etunb:    sb.TimestampBuilder(constants.EndTimeUnixNano),
+		dtunb:    sb.DurationBuilder(constants.DurationTimeUnixNano),
 		tib:      sb.FixedSizeBinaryBuilder(constants.TraceId),
 		sib:      sb.FixedSizeBinaryBuilder(constants.SpanId),
 		tsb:      sb.StringBuilder(constants.TraceState),
 		psib:     sb.FixedSizeBinaryBuilder(constants.ParentSpanId),
 		nb:       sb.StringBuilder(constants.Name),
 		kb:       sb.Int32Builder(constants.KIND),
-		ab:       acommon.AttributesBuilderFrom(sb.MapBuilder(constants.Attributes)),
 		dacb:     sb.Uint32Builder(constants.DroppedAttributesCount),
-		sesb:     sesb,
-		seb:      EventBuilderFrom(sesb.StructBuilder()),
 		decb:     sb.Uint32Builder(constants.DroppedEventsCount),
-		slsb:     slsb,
-		slb:      LinkBuilderFrom(slsb.StructBuilder()),
 		dlcb:     sb.Uint32Builder(constants.DroppedLinksCount),
 		sb:       StatusBuilderFrom(sb.StructBuilder(constants.Status)),
 	}
@@ -116,14 +108,18 @@ func (b *SpanBuilder) Build() (*array.Struct, error) {
 }
 
 // Append appends a new span to the builder.
-func (b *SpanBuilder) Append(span *ptrace.Span) error {
+func (b *SpanBuilder) Append(span *ptrace.Span, sharedData *SharedData, relatedData *RelatedData) error {
 	if b.released {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(span, func() error {
+		ID := relatedData.NextSpanID()
+
+		b.ib.Append(ID)
 		b.stunb.Append(arrow.Timestamp(span.StartTimestamp()))
-		b.etunb.Append(arrow.Timestamp(span.EndTimestamp()))
+		duration := span.EndTimestamp().AsTime().Sub(span.StartTimestamp().AsTime()).Nanoseconds()
+		b.dtunb.Append(arrow.Duration(duration))
 		tib := span.TraceID()
 		b.tib.Append(tib[:])
 		sib := span.SpanID()
@@ -133,36 +129,28 @@ func (b *SpanBuilder) Append(span *ptrace.Span) error {
 		b.psib.Append(psib[:])
 		b.nb.AppendNonEmpty(span.Name())
 		b.kb.AppendNonZero(int32(span.Kind()))
-		if err := b.ab.Append(span.Attributes()); err != nil {
+
+		// Span Attributes
+		err := relatedData.AttrsBuilders().Span().Accumulator().AppendUniqueAttributesWithID(ID, span.Attributes(), sharedData.sharedAttributes, nil)
+		if err != nil {
 			return werror.Wrap(err)
 		}
 		b.dacb.AppendNonZero(span.DroppedAttributesCount())
-		evts := span.Events()
-		sc := evts.Len()
-		if err := b.sesb.Append(sc, func() error {
-			for i := 0; i < sc; i++ {
-				if err := b.seb.Append(evts.At(i)); err != nil {
-					return werror.Wrap(err)
-				}
-			}
-			return nil
-		}); err != nil {
+
+		// Events
+		err = relatedData.EventBuilder().Accumulator().Append(ID, span.Events(), sharedData.sharedEventAttributes)
+		if err != nil {
 			return werror.Wrap(err)
 		}
 		b.decb.AppendNonZero(span.DroppedEventsCount())
-		lks := span.Links()
-		lc := lks.Len()
-		if err := b.slsb.Append(lc, func() error {
-			for i := 0; i < lc; i++ {
-				if err := b.slb.Append(lks.At(i)); err != nil {
-					return werror.Wrap(err)
-				}
-			}
-			return nil
-		}); err != nil {
+
+		// Links
+		err = relatedData.LinkBuilder().Accumulator().Append(ID, span.Links(), sharedData.sharedLinkAttributes)
+		if err != nil {
 			return werror.Wrap(err)
 		}
 		b.dlcb.AppendNonZero(span.DroppedLinksCount())
+
 		return b.sb.Append(span.Status())
 	})
 }

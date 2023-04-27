@@ -27,6 +27,7 @@ import (
 )
 
 // I32FromArray returns the int32 value for a specific row in an Arrow array.
+// This Arrow array can be either an int32 array or a dictionary-encoded array.
 func I32FromArray(arr arrow.Array, row int) (int32, error) {
 	if arr == nil {
 		return 0, nil
@@ -52,6 +53,7 @@ func I32FromArray(arr arrow.Array, row int) (int32, error) {
 }
 
 // I64FromArray returns the int64 value for a specific row in an Arrow array.
+// This Arrow array can be either an int64 array or a dictionary-encoded int64 array.
 func I64FromArray(arr arrow.Array, row int) (int64, error) {
 	if arr == nil {
 		return 0, nil
@@ -62,6 +64,13 @@ func I64FromArray(arr arrow.Array, row int) (int64, error) {
 				return 0, nil
 			} else {
 				return arr.Value(row), nil
+			}
+		case *array.Dictionary:
+			i64Arr := arr.Dictionary().(*array.Int64)
+			if arr.IsNull(row) {
+				return 0, nil
+			} else {
+				return i64Arr.Value(arr.GetValueIndex(row)), nil
 			}
 		default:
 			return 0, werror.WrapWithMsg(ErrInvalidArrayType, "not an int64 array")
@@ -216,6 +225,50 @@ func TimestampFromArray(arr arrow.Array, row int) (arrow.Timestamp, error) {
 			}
 		default:
 			return 0, werror.WrapWithMsg(ErrInvalidArrayType, "not a timestamp array")
+		}
+	}
+}
+
+// DurationFromArray returns the duration value for a specific row in an Arrow array.
+// This Arrow array can be either a duration array or a dictionary array.
+func DurationFromArray(arr arrow.Array, row int) (arrow.Duration, error) {
+	if arr == nil {
+		return 0, nil
+	} else {
+		switch arr := arr.(type) {
+		case *array.Duration:
+			if arr.IsNull(row) {
+				return 0, nil
+			} else {
+				return arr.Value(row), nil
+			}
+		case *array.Dictionary:
+			durationArr := arr.Dictionary().(*array.Duration)
+			if arr.IsNull(row) {
+				return 0, nil
+			} else {
+				return durationArr.Value(arr.GetValueIndex(row)), nil
+			}
+		default:
+			return 0, werror.WrapWithMsg(ErrInvalidArrayType, "not a duration array")
+		}
+	}
+}
+
+// U16FromArray returns the uint16 value for a specific row in an Arrow array.
+func U16FromArray(arr arrow.Array, row int) (uint16, error) {
+	if arr == nil {
+		return 0, nil
+	} else {
+		switch arr := arr.(type) {
+		case *array.Uint16:
+			if arr.IsNull(row) {
+				return 0, nil
+			} else {
+				return arr.Value(row), nil
+			}
+		default:
+			return 0, werror.WrapWithMsg(ErrInvalidArrayType, "not a uint16 array")
 		}
 	}
 }

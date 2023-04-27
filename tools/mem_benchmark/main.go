@@ -30,6 +30,7 @@ import (
 	config "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
 	logs "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
 	metrics "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
 	traces "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
 )
 
@@ -78,11 +79,11 @@ func Report(name string, schema *arrow.Schema) {
 	println("--------------------------------------------------")
 	fmt.Printf("%s%s - Memory usage%s\n", ColorGreen, name, ColorReset)
 	ReportMemUsageOf("NewRecordBuilderExt(schema)", func() {
-		b := builder.NewRecordBuilderExt(pool, schema, DictConfig, false)
+		b := builder.NewRecordBuilderExt(pool, schema, DictConfig, stats.NewProducerStats())
 		defer b.Release()
 	})
 	ReportMemUsageOf("NewRecordBuilder(...).NewRecord() - empty", func() {
-		b := builder.NewRecordBuilderExt(pool, schema, DictConfig, false)
+		b := builder.NewRecordBuilderExt(pool, schema, DictConfig, stats.NewProducerStats())
 		defer b.Release()
 		record, err := b.NewRecord()
 		if err != nil {
@@ -91,7 +92,7 @@ func Report(name string, schema *arrow.Schema) {
 		defer record.Release()
 	})
 
-	b := builder.NewRecordBuilderExt(pool, schema, DictConfig, false)
+	b := builder.NewRecordBuilderExt(pool, schema, DictConfig, stats.NewProducerStats())
 	defer b.Release()
 	record, err := b.NewRecord()
 	if err != nil {

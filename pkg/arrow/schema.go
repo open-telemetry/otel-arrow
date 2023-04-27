@@ -41,6 +41,7 @@ const BinarySig = "Bin"
 const FixedSizeBinarySig = "FSB"
 const StringSig = "Str"
 const Timestamp = "Tns" // Timestamp in nanoseconds.
+const Duration = "Dur"  // Duration in nanoseconds.
 const DictionarySig = "Dic"
 const DenseUnionSig = "DU"
 const SparseUnionSig = "SU"
@@ -127,6 +128,8 @@ func DataTypeToID(dt arrow.DataType) string {
 		id += BinarySig
 	case *arrow.TimestampType:
 		id += Timestamp
+	case *arrow.DurationType:
+		id += Duration
 	case *arrow.StructType:
 		id += "{"
 		fields := sortedFields(t.Fields())
@@ -234,6 +237,8 @@ func ShowDataType(dt arrow.DataType, prefix string) {
 		fmt.Printf("Binary")
 	case *arrow.TimestampType:
 		fmt.Printf("Timestamp")
+	case *arrow.DurationType:
+		fmt.Printf("Duration")
 	case *arrow.StructType:
 		fmt.Printf("Struct {\n")
 		for _, field := range t.Fields() {

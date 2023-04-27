@@ -28,9 +28,11 @@ import (
 	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/internal"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
 )
 
 var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
+var ProducerStats = stats.NewProducerStats()
 
 func TestAttributesBuilder(t *testing.T) {
 	t.Parallel()
@@ -41,7 +43,7 @@ func TestAttributesBuilder(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.Attributes, Type: AttributesDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, ProducerStats)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -75,97 +77,6 @@ func TestAttributesBuilder(t *testing.T) {
 	expected := `[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}]}
 ,{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}]}
 ,{"attributes":[{"key":"str","value":[0,"string3"]},{"key":"double","value":[2,3]},{"key":"bool","value":[3,false]},{"key":"bytes","value":[4,"Ynl0ZXMz"]}]}
-]`
-
-	require.JSONEq(t, expected, string(json))
-}
-
-func TestScopeBuilder(t *testing.T) {
-	t.Parallel()
-
-	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
-	defer pool.AssertSize(t, 0)
-
-	schema := arrow.NewSchema([]arrow.Field{
-		{Name: constants.Scope, Type: ScopeDT, Metadata: acommon.Metadata(acommon.Optional)},
-	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
-	defer rBuilder.Release()
-
-	var record arrow.Record
-
-	for {
-		sb := NewScopeBuilder(rBuilder.StructBuilder(constants.Scope))
-
-		scope := internal.Scope1()
-		err := sb.Append(&scope)
-		require.NoError(t, err)
-
-		scope = internal.Scope2()
-		err = sb.Append(&scope)
-		require.NoError(t, err)
-
-		record, err = rBuilder.NewRecord()
-		if err == nil {
-			break
-		}
-		assert.Error(t, acommon.ErrSchemaNotUpToDate)
-	}
-
-	json, err := record.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	record.Release()
-
-	expected := `[{"scope":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}}
-,{"scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}
-]`
-
-	require.JSONEq(t, expected, string(json))
-}
-
-func TestResourceBuilder(t *testing.T) {
-	t.Parallel()
-
-	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
-	defer pool.AssertSize(t, 0)
-
-	schema := arrow.NewSchema([]arrow.Field{
-		{Name: constants.Resource, Type: ResourceDT, Metadata: acommon.Metadata(acommon.Optional)},
-	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, false)
-	defer rBuilder.Release()
-
-	var record arrow.Record
-
-	for {
-		rb := NewResourceBuilder(rBuilder.StructBuilder(constants.Resource))
-		res := internal.Resource1()
-		err := rb.Append(&res)
-		require.NoError(t, err)
-
-		res = internal.Resource2()
-		err = rb.Append(&res)
-		require.NoError(t, err)
-
-		record, err = rBuilder.NewRecord()
-		if err == nil {
-			break
-		}
-		assert.Error(t, acommon.ErrSchemaNotUpToDate)
-	}
-
-	json, err := record.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	record.Release()
-
-	expected := `[{"resource":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null}}
-,{"resource":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1}}
 ]`
 
 	require.JSONEq(t, expected, string(json))

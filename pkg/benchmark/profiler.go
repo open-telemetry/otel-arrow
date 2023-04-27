@@ -324,7 +324,7 @@ func (p *Profiler) PrintPhase1StepsTiming(_ uint64) {
 	headers := []string{"Proto msg step duration"}
 
 	for _, benchmark := range p.benchmarks {
-		headers = append(headers, fmt.Sprintf("%s %s - p99", benchmark.BenchName, benchmark.Tags))
+		headers = append(headers, fmt.Sprintf("%s %s - Mean", benchmark.BenchName, benchmark.Tags))
 	}
 
 	table := tablewriter.NewWriter(p.writer)
@@ -393,7 +393,7 @@ func (p *Profiler) PrintPhase2StepsTiming(_ uint64) {
 	headers := []string{"Proto msg step duration"}
 
 	for _, benchmark := range p.benchmarks {
-		headers = append(headers, fmt.Sprintf("%s %s - p99", benchmark.BenchName, benchmark.Tags))
+		headers = append(headers, fmt.Sprintf("%s %s - Mean", benchmark.BenchName, benchmark.Tags))
 	}
 
 	table := tablewriter.NewWriter(p.writer)
@@ -454,7 +454,7 @@ func (p *Profiler) PrintCompressionRatio(maxIter uint64) {
 	_, _ = fmt.Fprintf(p.writer, "\n")
 	headers := []string{"Proto msg size"}
 	for _, benchmark := range p.benchmarks {
-		headers = append(headers, fmt.Sprintf("%s %s - p99", benchmark.BenchName, benchmark.Tags))
+		headers = append(headers, fmt.Sprintf("%s %s - Mean", benchmark.BenchName, benchmark.Tags))
 	}
 
 	table := tablewriter.NewWriter(p.writer)
@@ -539,10 +539,10 @@ func (p *Profiler) AddStep(
 				refImplName = fmt.Sprintf("%s:%s", result.BenchName, result.Tags)
 			} else {
 				refKey := fmt.Sprintf("%s:%d:%s", refImplName, batchSize, section.ID)
-				improvement = fmt.Sprintf(" (x%6.2f)", values[refKey].P99/values[key].P99)
+				improvement = fmt.Sprintf(" (x%6.2f)", values[refKey].Mean/values[key].Mean)
 			}
 
-			value := transform(values[key].P99)
+			value := transform(values[key].Mean)
 			decoratedValue := "Not Applicable"
 			if metricNotApplicable {
 				if section.total {
@@ -579,10 +579,10 @@ func (p *Profiler) AddSectionWithTotal(section *SectionConfig, table *tablewrite
 				refImplName = fmt.Sprintf("%s:%s", result.BenchName, result.Tags)
 			} else {
 				refKey := fmt.Sprintf("%s:%d:%s", refImplName, batchSize, section.ID)
-				improvement = fmt.Sprintf("(x%6.2f)", values[refKey].P99/values[key].P99)
+				improvement = fmt.Sprintf("(x%6.2f)", values[refKey].Total(maxIter)/values[key].Total(maxIter))
 			}
 
-			value := transform(values[key].P99)
+			value := transform(values[key].Mean)
 			decoratedValue := "Not Applicable"
 			if value == math.Trunc(value) {
 				accumulatedSize := uint64(values[key].Total(maxIter))
@@ -630,12 +630,12 @@ func (p *Profiler) ExportMetricsTimesCSV(filePrefix string) {
 		}
 
 		for _, result := range p.benchmarks {
-			otlpArrowConversionMs := result.Summaries[batchIdx].OtlpArrowConversionSec.P99
-			serializationMs := result.Summaries[batchIdx].SerializationSec.P99
-			compressionMs := result.Summaries[batchIdx].CompressionSec.P99
-			decompressionMs := result.Summaries[batchIdx].DecompressionSec.P99
-			deserializationMs := result.Summaries[batchIdx].DeserializationSec.P99
-			otlpConversionMs := result.Summaries[batchIdx].OtlpConversionSec.P99
+			otlpArrowConversionMs := result.Summaries[batchIdx].OtlpArrowConversionSec.Mean
+			serializationMs := result.Summaries[batchIdx].SerializationSec.Mean
+			compressionMs := result.Summaries[batchIdx].CompressionSec.Mean
+			decompressionMs := result.Summaries[batchIdx].DecompressionSec.Mean
+			deserializationMs := result.Summaries[batchIdx].DeserializationSec.Mean
+			otlpConversionMs := result.Summaries[batchIdx].OtlpConversionSec.Mean
 
 			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],0_OtlpArrowConversion\n", batchSize, otlpArrowConversionMs, result.BenchName, result.Tags))
 			if err != nil {

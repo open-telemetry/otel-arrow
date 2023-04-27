@@ -27,6 +27,7 @@ import (
 	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/events"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/update"
+	stats "github.com/f5/otel-arrow-adapter/pkg/otel/stats"
 )
 
 var evts = &events.Events{
@@ -35,18 +36,20 @@ var evts = &events.Events{
 }
 
 func TestNoDictionary(t *testing.T) {
+	rbStats := &stats.RecordBuilderStats{}
 	schemaUpdateRequest := update.NewSchemaUpdateRequest()
 
 	dict := NewDictionaryField("", "1", nil, schemaUpdateRequest, evts)
 	assert.Nil(t, dict.IndexType(), "index type should be nil (no dictionary config)")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(math.MaxUint8 + 1)
+	dict.SetCardinality(math.MaxUint8+1, rbStats)
 	assert.Nil(t, dict.IndexType(), "index type should be nil (no dictionary config)")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 }
 
 func TestDictUint8Overflow(t *testing.T) {
+	rbStats := &stats.RecordBuilderStats{}
 	schemaUpdateRequest := update.NewSchemaUpdateRequest()
 	dictConfig := cfg.NewDictionary(math.MaxUint8)
 
@@ -54,20 +57,21 @@ func TestDictUint8Overflow(t *testing.T) {
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(100)
+	dict.SetCardinality(100, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(math.MaxUint8)
+	dict.SetCardinality(math.MaxUint8, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(math.MaxUint8 + 1)
+	dict.SetCardinality(math.MaxUint8+1, rbStats)
 	assert.Nil(t, dict.IndexType(), "index type should be nil (overflow)")
 	assert.Equal(t, 1, schemaUpdateRequest.Count())
 }
 
 func TestDictUint16Overflow(t *testing.T) {
+	rbStats := &stats.RecordBuilderStats{}
 	schemaUpdateRequest := update.NewSchemaUpdateRequest()
 	dictConfig := cfg.NewDictionary(math.MaxUint16)
 
@@ -75,29 +79,30 @@ func TestDictUint16Overflow(t *testing.T) {
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(100)
+	dict.SetCardinality(100, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(math.MaxUint8)
+	dict.SetCardinality(math.MaxUint8, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(math.MaxUint8 + 1)
+	dict.SetCardinality(math.MaxUint8+1, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint16, dict.IndexType(), "index type should be uint16")
 	assert.Equal(t, 1, schemaUpdateRequest.Count())
 	schemaUpdateRequest.Reset()
 
-	dict.SetCardinality(math.MaxUint16)
+	dict.SetCardinality(math.MaxUint16, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint16, dict.IndexType(), "index type should be uint16")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(math.MaxUint16 + 1)
+	dict.SetCardinality(math.MaxUint16+1, rbStats)
 	assert.Nil(t, dict.IndexType(), "index type should be nil (overflow)")
 	assert.Equal(t, 1, schemaUpdateRequest.Count())
 }
 
 func TestDictUint32Overflow(t *testing.T) {
+	rbStats := &stats.RecordBuilderStats{}
 	schemaUpdateRequest := update.NewSchemaUpdateRequest()
 	dictConfig := cfg.NewDictionary(math.MaxUint32)
 
@@ -105,38 +110,39 @@ func TestDictUint32Overflow(t *testing.T) {
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(100)
+	dict.SetCardinality(100, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(math.MaxUint8)
+	dict.SetCardinality(math.MaxUint8, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(math.MaxUint8 + 1)
+	dict.SetCardinality(math.MaxUint8+1, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint16, dict.IndexType(), "index type should be uint16")
 	assert.Equal(t, 1, schemaUpdateRequest.Count())
 	schemaUpdateRequest.Reset()
 
-	dict.SetCardinality(math.MaxUint16)
+	dict.SetCardinality(math.MaxUint16, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint16, dict.IndexType(), "index type should be uint16")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(math.MaxUint16 + 1)
+	dict.SetCardinality(math.MaxUint16+1, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint32, dict.IndexType(), "index type should be uint32")
 	assert.Equal(t, 1, schemaUpdateRequest.Count())
 	schemaUpdateRequest.Reset()
 
-	dict.SetCardinality(math.MaxUint32)
+	dict.SetCardinality(math.MaxUint32, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint32, dict.IndexType(), "index type should be uint32")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(math.MaxUint32 + 1)
+	dict.SetCardinality(math.MaxUint32+1, rbStats)
 	assert.Nil(t, dict.IndexType(), "index type should be nil (overflow)")
 	assert.Equal(t, 1, schemaUpdateRequest.Count())
 }
 
 func TestDictUint64Overflow(t *testing.T) {
+	rbStats := &stats.RecordBuilderStats{}
 	schemaUpdateRequest := update.NewSchemaUpdateRequest()
 	dictConfig := cfg.NewDictionary(math.MaxUint64)
 
@@ -144,38 +150,38 @@ func TestDictUint64Overflow(t *testing.T) {
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(100)
+	dict.SetCardinality(100, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(math.MaxUint8)
+	dict.SetCardinality(math.MaxUint8, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(math.MaxUint8 + 1)
+	dict.SetCardinality(math.MaxUint8+1, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint16, dict.IndexType(), "index type should be uint16")
 	assert.Equal(t, 1, schemaUpdateRequest.Count())
 	schemaUpdateRequest.Reset()
 
-	dict.SetCardinality(math.MaxUint16)
+	dict.SetCardinality(math.MaxUint16, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint16, dict.IndexType(), "index type should be uint16")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(math.MaxUint16 + 1)
+	dict.SetCardinality(math.MaxUint16+1, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint32, dict.IndexType(), "index type should be uint32")
 	assert.Equal(t, 1, schemaUpdateRequest.Count())
 	schemaUpdateRequest.Reset()
 
-	dict.SetCardinality(math.MaxUint32)
+	dict.SetCardinality(math.MaxUint32, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint32, dict.IndexType(), "index type should be uint32")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 
-	dict.SetCardinality(math.MaxUint32 + 1)
+	dict.SetCardinality(math.MaxUint32+1, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint64, dict.IndexType(), "index type should be uint64")
 	assert.Equal(t, 1, schemaUpdateRequest.Count())
 	schemaUpdateRequest.Reset()
 
-	dict.SetCardinality(math.MaxUint64)
+	dict.SetCardinality(math.MaxUint64, rbStats)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint64, dict.IndexType(), "index type should be uint64")
 	assert.Equal(t, 0, schemaUpdateRequest.Count())
 }

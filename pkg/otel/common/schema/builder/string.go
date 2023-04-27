@@ -30,6 +30,15 @@ type StringBuilder struct {
 	updateRequest *update.SchemaUpdateRequest
 }
 
+// NewStringBuilder creates a new StringBuilder.
+func NewStringBuilder(builder array.Builder, transformNode *schema.TransformNode, updateRequest *update.SchemaUpdateRequest) *StringBuilder {
+	return &StringBuilder{
+		builder:       builder,
+		transformNode: transformNode,
+		updateRequest: updateRequest,
+	}
+}
+
 func (b *StringBuilder) AppendNull() {
 	if b.builder != nil {
 		b.builder.AppendNull()

@@ -25,14 +25,15 @@ import (
 	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
+	"github.com/f5/otel-arrow-adapter/pkg/config"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 )
 
 const OtlpArrow = "OTLP_ARROW"
 
-var logsProducerOptions = []arrow_record.Option{
-	arrow_record.WithNoZstd(),
-	arrow_record.WithLogsStats(),
+var logsProducerOptions = []config.Option{
+	config.WithNoZstd(),
+	config.WithStats(),
 }
 
 type LogsProfileable struct {

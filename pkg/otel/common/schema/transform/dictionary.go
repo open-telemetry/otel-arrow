@@ -25,6 +25,7 @@ import (
 	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
 	events "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/events"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/update"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
 )
 
 const DictIdKey = "dictId"
@@ -90,9 +91,9 @@ func (t *DictionaryField) AddTotal(total int) {
 	t.cumulativeTotal += uint64(total)
 }
 
-func (t *DictionaryField) SetCardinality(card uint64) {
+func (t *DictionaryField) SetCardinality(card uint64, stats *stats.RecordBuilderStats) {
 	t.cardinality = card
-	t.updateIndexType()
+	t.updateIndexType(stats)
 }
 
 func (t *DictionaryField) Cardinality() uint64 {
@@ -150,7 +151,7 @@ func (t *DictionaryField) Transform(field *arrow.Field) *arrow.Field {
 	}
 }
 
-func (t *DictionaryField) updateIndexType() {
+func (t *DictionaryField) updateIndexType(stats *stats.RecordBuilderStats) {
 	if t.indexTypes == nil {
 		return
 	}
@@ -166,9 +167,11 @@ func (t *DictionaryField) updateIndexType() {
 		t.currentIndex = 0
 		t.schemaUpdateRequest.Inc()
 		t.events.DictionariesWithOverflow[t.path] = true
+		stats.DictionaryOverflowDetected++
 	} else if t.currentIndex != currentIndex {
 		t.schemaUpdateRequest.Inc()
 		t.events.DictionariesIndexTypeChanged[t.path] = t.indexTypes[t.currentIndex].Name()
+		stats.DictionaryIndexTypeChanged++
 	}
 }
 

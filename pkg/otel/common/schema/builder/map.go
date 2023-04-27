@@ -87,11 +87,11 @@ func (b *MapBuilder) KeyStringBuilder() *StringBuilder {
 		keyBuilder = b.builder.KeyBuilder()
 	}
 
-	return &StringBuilder{
-		builder:       keyBuilder,
-		transformNode: b.transformNode.Children[0],
-		updateRequest: b.updateRequest,
-	}
+	return NewStringBuilder(
+		keyBuilder,
+		b.transformNode.Children[0],
+		b.updateRequest,
+	)
 }
 
 func (b *MapBuilder) KeyBinaryBuilder() *BinaryBuilder {
@@ -271,11 +271,11 @@ func (b *MapBuilder) ItemStringBuilder() *StringBuilder {
 		valueBuilder = b.builder.ItemBuilder().(*array.StringBuilder)
 	}
 
-	return &StringBuilder{
-		builder:       valueBuilder,
-		transformNode: b.transformNode.Children[1],
-		updateRequest: b.updateRequest,
-	}
+	return NewStringBuilder(
+		valueBuilder,
+		b.transformNode.Children[1],
+		b.updateRequest,
+	)
 }
 
 func (b *MapBuilder) ItemBinaryBuilder() *BinaryBuilder {

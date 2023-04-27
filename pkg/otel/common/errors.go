@@ -28,4 +28,7 @@ var (
 
 	ErrInvalidSpanIDLength  = errors.New("invalid span id length")
 	ErrInvalidTraceIDLength = errors.New("invalid trace id length")
+
+	ErrNotArraySparseUnion = errors.New("not an arrow array.SparseUnion")
+	ErrNotArrayMap         = errors.New("not an arrow array.Map")
 )

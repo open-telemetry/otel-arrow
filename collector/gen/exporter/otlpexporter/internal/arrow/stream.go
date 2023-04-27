@@ -23,8 +23,6 @@ import (
 	"strings"
 	"sync"
 
-	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
-	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 	"golang.org/x/net/http2/hpack"
@@ -32,6 +30,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
+
+	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer/consumererror"

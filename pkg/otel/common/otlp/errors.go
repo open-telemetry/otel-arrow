@@ -20,8 +20,6 @@ package otlp
 import "errors"
 
 var (
-	ErrInvalidTypeCode     = errors.New("invalid type code")
-	ErrInvalidFieldId      = errors.New("invalid field id")
-	ErrNotArrayMap         = errors.New("not an arrow array.Map")
-	ErrNotArraySparseUnion = errors.New("not an arrow array.SparseUnion")
+	ErrInvalidTypeCode = errors.New("invalid type code")
+	ErrInvalidFieldId  = errors.New("invalid field id")
 )

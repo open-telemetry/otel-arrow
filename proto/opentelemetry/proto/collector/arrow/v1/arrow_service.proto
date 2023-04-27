@@ -52,6 +52,24 @@ enum OtlpArrowPayloadType {
   LOGS = 1;
   // A payload representing a collection of traces.
   SPANS = 2;
+  // A payload representing a collection of resource attributes.
+  RESOURCE_ATTRS = 3;
+  // A payload representing a collection of scope attributes.
+  SCOPE_ATTRS = 4;
+  // A payload representing a collection of metric attributes.
+  METRIC_ATTRS = 5;
+  // A payload representing a collection of log attributes.
+  LOG_ATTRS = 6;
+  // A payload representing a collection of span attributes.
+  SPAN_ATTRS = 7;
+  // A payload representing a collection of span events.
+  SPAN_EVENTS = 8;
+  // A payload representing a collection of span events attributes.
+  SPAN_EVENT_ATTRS = 9;
+  // A payload representing a collection of span links.
+  SPAN_LINKS = 10;
+  // A payload representing a collection of span links attributes.
+  SPAN_LINK_ATTRS = 11;
 }
 
 // Represents a batch of OTLP Arrow entities.

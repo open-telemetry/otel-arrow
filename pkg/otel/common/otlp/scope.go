@@ -27,7 +27,7 @@ type ScopeIds struct {
 	Id                     int
 	Name                   int
 	Version                int
-	Attributes             *AttributeIds
+	AttrsID                int
 	DroppedAttributesCount int
 }
 
@@ -40,21 +40,24 @@ func NewScopeIds(resSpansDT *arrow.StructType) (*ScopeIds, error) {
 	nameID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.Name)
 	versionID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.Version)
 	droppedAttributesCountID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.DroppedAttributesCount)
-	attributeIds, err := NewAttributeIds(scopeDT)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
+	attrsID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.AttributesID)
 	return &ScopeIds{
 		Id:                     scopeID,
 		Name:                   nameID,
 		Version:                versionID,
 		DroppedAttributesCount: droppedAttributesCountID,
-		Attributes:             attributeIds,
+		AttrsID:                attrsID,
 	}, nil
 }
 
 // UpdateScopeWith appends a scope into a given scope spans from an Arrow list of structs.
-func UpdateScopeWith(s pcommon.InstrumentationScope, listOfStructs *arrowutils.ListOfStructs, row int, ids *ScopeIds) error {
+func UpdateScopeWith(
+	s pcommon.InstrumentationScope,
+	listOfStructs *arrowutils.ListOfStructs,
+	row int,
+	ids *ScopeIds,
+	attrsStore *Attributes16Store,
+) error {
 	_, scopeArray, err := listOfStructs.StructByID(ids.Id, row)
 	if err != nil {
 		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
@@ -72,9 +75,15 @@ func UpdateScopeWith(s pcommon.InstrumentationScope, listOfStructs *arrowutils.L
 		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
 	}
 
-	err = AppendAttributesInto(s.Attributes(), scopeArray, row, ids.Attributes)
+	attrsID, err := arrowutils.NullableU16FromStruct(scopeArray, row, ids.AttrsID)
 	if err != nil {
 		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
+	}
+	if attrsID != nil {
+		attrs := attrsStore.AttributesByDeltaID(*attrsID)
+		if attrs != nil {
+			attrs.CopyTo(s.Attributes())
+		}
 	}
 	s.SetName(name)
 	s.SetVersion(version)

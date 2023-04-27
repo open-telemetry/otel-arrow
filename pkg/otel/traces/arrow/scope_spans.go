@@ -20,7 +20,9 @@ package arrow
 import (
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/array"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
@@ -34,6 +36,9 @@ var (
 		{Name: constants.Scope, Type: acommon.ScopeDT, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.SchemaUrl, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
 		{Name: constants.Spans, Type: arrow.ListOf(SpanDT)},
+		{Name: constants.SharedAttributes, Type: acommon.AttributesDT, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.SharedEventAttributes, Type: acommon.AttributesDT, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.SharedLinkAttributes, Type: acommon.AttributesDT, Metadata: schema.Metadata(schema.Optional)},
 	}...)
 )
 
@@ -43,10 +48,13 @@ type ScopeSpansBuilder struct {
 
 	builder *builder.StructBuilder
 
-	scb  *acommon.ScopeBuilder  // `scope` builder
-	schb *builder.StringBuilder // `schema_url` builder
-	ssb  *builder.ListBuilder   // `spans` list builder
-	sb   *SpanBuilder           // `span` builder
+	scb  *acommon.ScopeBuilder      // `scope` builder
+	schb *builder.StringBuilder     // `schema_url` builder
+	ssb  *builder.ListBuilder       // `spans` list builder
+	sb   *SpanBuilder               // `span` builder
+	sab  *acommon.AttributesBuilder // `shared_attributes` builder
+	seab *acommon.AttributesBuilder // `shared_event_attributes` builder
+	slab *acommon.AttributesBuilder // `shared_link_attributes` builder
 }
 
 func ScopeSpansBuilderFrom(builder *builder.StructBuilder) *ScopeSpansBuilder {
@@ -59,6 +67,9 @@ func ScopeSpansBuilderFrom(builder *builder.StructBuilder) *ScopeSpansBuilder {
 		schb:     builder.StringBuilder(constants.SchemaUrl),
 		ssb:      ssb,
 		sb:       SpanBuilderFrom(ssb.StructBuilder()),
+		sab:      acommon.AttributesBuilderFrom(builder.MapBuilder(constants.SharedAttributes)),
+		seab:     acommon.AttributesBuilderFrom(builder.MapBuilder(constants.SharedEventAttributes)),
+		slab:     acommon.AttributesBuilderFrom(builder.MapBuilder(constants.SharedLinkAttributes)),
 	}
 }
 
@@ -76,26 +87,57 @@ func (b *ScopeSpansBuilder) Build() (*array.Struct, error) {
 }
 
 // Append appends a new scope spans to the builder.
-func (b *ScopeSpansBuilder) Append(spg *ScopeSpanGroup) error {
+func (b *ScopeSpansBuilder) Append(spg *ScopeSpanGroup, relatedData *RelatedData) error {
 	if b.released {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(spg, func() error {
-		if err := b.scb.Append(spg.Scope); err != nil {
+		if err := b.scb.Append(spg.Scope, relatedData.AttrsBuilders().scope.Accumulator()); err != nil {
 			return werror.Wrap(err)
 		}
 		b.schb.AppendNonEmpty(spg.ScopeSchemaUrl)
 		sc := len(spg.Spans)
+
+		// Append span shared attributes
+		if err := appendSharedAttributes(spg.SharedData.sharedAttributes, b.sab); err != nil {
+			return werror.Wrap(err)
+		}
+
+		// Append event shared attributes
+		if err := appendSharedAttributes(spg.SharedData.sharedEventAttributes, b.seab); err != nil {
+			return werror.Wrap(err)
+		}
+
+		// shared link shared attributes
+		if err := appendSharedAttributes(spg.SharedData.sharedLinkAttributes, b.slab); err != nil {
+			return werror.Wrap(err)
+		}
+
 		return b.ssb.Append(sc, func() error {
 			for i := 0; i < sc; i++ {
-				if err := b.sb.Append(spg.Spans[i]); err != nil {
+				if err := b.sb.Append(spg.Spans[i], spg.SharedData, relatedData); err != nil {
 					return werror.Wrap(err)
 				}
 			}
 			return nil
 		})
 	})
+}
+
+func appendSharedAttributes(sharedAttrs *common.SharedAttributes, builder *acommon.AttributesBuilder) error {
+	if sharedAttrs != nil && len(sharedAttrs.Attributes) > 0 {
+		attrs := pcommon.NewMap()
+		sharedAttrs.CopyTo(attrs)
+		if err := builder.Append(attrs); err != nil {
+			return werror.Wrap(err)
+		}
+	} else {
+		if err := builder.AppendNull(); err != nil {
+			return werror.Wrap(err)
+		}
+	}
+	return nil
 }
 
 // Release releases the memory allocated by the builder.

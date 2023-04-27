@@ -25,7 +25,7 @@ import (
 
 type ResourceIds struct {
 	Id                     int
-	Attributes             *AttributeIds
+	AttrsID                int
 	DroppedAttributesCount int
 }
 
@@ -35,22 +35,18 @@ func NewResourceIds(resSpansDT *arrow.StructType) (*ResourceIds, error) {
 		return nil, werror.Wrap(err)
 	}
 
-	attributeIds, err := NewAttributeIds(resDT)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
+	attributeIds, _ := arrowutils.FieldIDFromStruct(resDT, constants.AttributesID)
 	droppedAttributesCount, _ := arrowutils.FieldIDFromStruct(resDT, constants.DroppedAttributesCount)
 
 	return &ResourceIds{
 		Id:                     resId,
-		Attributes:             attributeIds,
+		AttrsID:                attributeIds,
 		DroppedAttributesCount: droppedAttributesCount,
 	}, nil
 }
 
 // UpdateResourceWith updates a resource with the content of an Arrow array.
-func UpdateResourceWith(r pcommon.Resource, resList *arrowutils.ListOfStructs, row int, resIds *ResourceIds) error {
+func UpdateResourceWith(r pcommon.Resource, resList *arrowutils.ListOfStructs, row int, resIds *ResourceIds, attrsStore *Attributes16Store) error {
 	_, resArr, err := resList.StructByID(resIds.Id, row)
 	if err != nil {
 		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
@@ -64,9 +60,15 @@ func UpdateResourceWith(r pcommon.Resource, resList *arrowutils.ListOfStructs, r
 	r.SetDroppedAttributesCount(droppedAttributesCount)
 
 	// Read attributes
-	err = AppendAttributesInto(r.Attributes(), resArr, row, resIds.Attributes)
+	attrsId, err := arrowutils.NullableU16FromStruct(resArr, row, resIds.AttrsID)
 	if err != nil {
 		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
+	}
+	if attrsId != nil {
+		attrs := attrsStore.AttributesByDeltaID(*attrsId)
+		if attrs != nil {
+			attrs.CopyTo(r.Attributes())
+		}
 	}
 
 	return err

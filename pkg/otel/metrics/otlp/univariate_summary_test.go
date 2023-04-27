@@ -45,7 +45,7 @@ func TestSummaries(t *testing.T) {
 		{Name: "summaries", Type: marrow.UnivariateSummaryDT, Metadata: schema.Metadata(schema.Optional)},
 	}, nil)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, s, DefaultDictConfig, false)
+	rBuilder := builder.NewRecordBuilderExt(pool, s, DefaultDictConfig, producerStats)
 	defer rBuilder.Release()
 
 	var record arrow.Record

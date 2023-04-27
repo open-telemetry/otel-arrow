@@ -32,9 +32,11 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
 )
 
 var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
+var producerStats = stats.NewProducerStats()
 
 func TestEmptyAnyValue(t *testing.T) {
 	t.Parallel()
@@ -46,7 +48,7 @@ func TestEmptyAnyValue(t *testing.T) {
 		{Name: "any_value", Type: carrow.AnyValueDT, Metadata: schema.Metadata(schema.Optional)},
 	}, nil)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, s, DefaultDictConfig, false)
+	rBuilder := builder.NewRecordBuilderExt(pool, s, DefaultDictConfig, producerStats)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -86,7 +88,7 @@ func TestMultipleAnyValues(t *testing.T) {
 		{Name: "any_value", Type: carrow.AnyValueDT, Metadata: schema.Metadata(schema.Optional)},
 	}, nil)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, s, DefaultDictConfig, false)
+	rBuilder := builder.NewRecordBuilderExt(pool, s, DefaultDictConfig, producerStats)
 	defer rBuilder.Release()
 
 	var record arrow.Record

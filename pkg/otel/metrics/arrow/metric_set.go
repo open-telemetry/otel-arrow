@@ -20,7 +20,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow_old"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"

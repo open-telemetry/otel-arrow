@@ -28,6 +28,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	"github.com/f5/otel-arrow-adapter/pkg/config"
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
 )
@@ -209,7 +210,7 @@ func TestProducerConsumerTraces(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	producer := NewProducerWithOptions(WithAllocator(pool))
+	producer := NewProducerWithOptions(config.WithAllocator(pool))
 	defer func() {
 		if err := producer.Close(); err != nil {
 			t.Error("unexpected fail", err)
@@ -218,18 +219,25 @@ func TestProducerConsumerTraces(t *testing.T) {
 
 	batch, err := producer.BatchArrowRecordsFromTraces(traces)
 	require.NoError(t, err)
+	require.Equal(t, 7, len(batch.OtlpArrowPayloads))
 	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPANS, batch.OtlpArrowPayloads[0].Type)
+	require.Equal(t, arrowpb.OtlpArrowPayloadType_RESOURCE_ATTRS, batch.OtlpArrowPayloads[1].Type)
+	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPAN_ATTRS, batch.OtlpArrowPayloads[2].Type)
+	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPAN_EVENTS, batch.OtlpArrowPayloads[3].Type)
+	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPAN_EVENT_ATTRS, batch.OtlpArrowPayloads[4].Type)
+	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPAN_LINKS, batch.OtlpArrowPayloads[5].Type)
+	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPAN_LINK_ATTRS, batch.OtlpArrowPayloads[6].Type)
 
-	//consumer := NewConsumer()
-	//received, err := consumer.TracesFrom(batch)
-	//require.NoError(t, err)
-	//require.Equal(t, 1, len(received))
-	//
-	//assert.Equiv(
-	//	t,
-	//	[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)},
-	//	[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(received[0])},
-	//)
+	consumer := NewConsumer()
+	received, err := consumer.TracesFrom(batch)
+	require.NoError(t, err)
+	require.Equal(t, 1, len(received))
+
+	assert.Equiv(
+		t,
+		[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)},
+		[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(received[0])},
+	)
 }
 
 func TestProducerConsumerLogs(t *testing.T) {
@@ -246,7 +254,7 @@ func TestProducerConsumerLogs(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	producer := NewProducerWithOptions(WithAllocator(pool))
+	producer := NewProducerWithOptions(config.WithAllocator(pool))
 	defer func() {
 		if err := producer.Close(); err != nil {
 			t.Error("unexpected fail", err)
@@ -283,7 +291,7 @@ func TestProducerConsumerMetrics(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	producer := NewProducerWithOptions(WithAllocator(pool))
+	producer := NewProducerWithOptions(config.WithAllocator(pool))
 	defer func() {
 		if err := producer.Close(); err != nil {
 			t.Error("unexpected fail", err)

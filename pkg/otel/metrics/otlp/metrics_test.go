@@ -31,7 +31,10 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/internal"
 	ametrics "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
 )
+
+var producerStats = stats.NewProducerStats()
 
 func TestMetrics(t *testing.T) {
 	t.Parallel()
@@ -39,7 +42,7 @@ func TestMetrics(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, ametrics.Schema, DefaultDictConfig, false)
+	rBuilder := builder.NewRecordBuilderExt(pool, ametrics.Schema, DefaultDictConfig, producerStats)
 	defer rBuilder.Release()
 
 	var record arrow.Record

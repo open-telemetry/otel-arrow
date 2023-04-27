@@ -31,9 +31,13 @@ const (
 	Optional MetadataKey = iota
 	Dictionary8
 	Dictionary16
+	DeltaEncoding
 
 	OptionalKey   = "#optional"
 	DictionaryKey = "#dictionary"
+	EncodingKey   = "encoding"
+
+	DeltaEncodingValue = "delta"
 )
 
 var (
@@ -51,6 +55,8 @@ func Metadata(keys ...MetadataKey) arrow.Metadata {
 			m[DictionaryKey] = "8"
 		case Dictionary16:
 			m[DictionaryKey] = "16"
+		case DeltaEncoding:
+			m[EncodingKey] = DeltaEncodingValue
 		}
 	}
 	return arrow.MetadataFrom(m)

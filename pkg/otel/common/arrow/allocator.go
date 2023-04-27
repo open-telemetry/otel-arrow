@@ -16,6 +16,7 @@ package arrow
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/apache/arrow/go/v12/arrow/memory"
 )
@@ -55,11 +56,15 @@ func (_ LimitError) Is(tgt error) bool {
 func (l *LimitedAllocator) Allocate(size int) []byte {
 	change := uint64(size)
 	if l.inuse+change > l.limit {
-		panic(LimitError{
+		err := LimitError{
 			Request: change,
 			Inuse:   l.inuse,
 			Limit:   l.limit,
-		})
+		}
+		// Write the error to stderr so that it is visible even if the
+		// panic is caught.
+		os.Stderr.WriteString(err.Error() + "\n")
+		panic(err)
 	}
 
 	res := l.mem.Allocate(size)
@@ -72,11 +77,15 @@ func (l *LimitedAllocator) Allocate(size int) []byte {
 func (l *LimitedAllocator) Reallocate(size int, b []byte) []byte {
 	change := uint64(size - len(b))
 	if l.inuse+change > l.limit {
-		panic(LimitError{
+		err := LimitError{
 			Request: change,
 			Inuse:   l.inuse,
 			Limit:   l.limit,
-		})
+		}
+		// Write the error to stderr so that it is visible even if the
+		// panic is caught.
+		os.Stderr.WriteString(err.Error() + "\n")
+		panic(err)
 	}
 
 	res := l.mem.Reallocate(size, b)

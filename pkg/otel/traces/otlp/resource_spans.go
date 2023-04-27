@@ -57,7 +57,7 @@ func NewResourceSpansIds(schema *arrow.Schema) (*ResourceSpansIds, error) {
 	}, nil
 }
 
-func AppendResourceSpansInto(traces ptrace.Traces, record arrow.Record, traceIds *TraceIds) error {
+func AppendResourceSpansInto(traces ptrace.Traces, record arrow.Record, traceIds *TraceIds, relatedData *RelatedData) error {
 	resSpansSlice := traces.ResourceSpans()
 	resSpansCount := int(record.NumRows())
 
@@ -71,7 +71,7 @@ func AppendResourceSpansInto(traces ptrace.Traces, record arrow.Record, traceIds
 		for resSpansIdx := arrowResEnts.Start(); resSpansIdx < arrowResEnts.End(); resSpansIdx++ {
 			resSpans := resSpansSlice.AppendEmpty()
 
-			if err = otlp.UpdateResourceWith(resSpans.Resource(), arrowResEnts, resSpansIdx, traceIds.ResourceSpans.Resource); err != nil {
+			if err = otlp.UpdateResourceWith(resSpans.Resource(), arrowResEnts, resSpansIdx, traceIds.ResourceSpans.Resource, relatedData.ResAttrMapStore); err != nil {
 				return werror.Wrap(err)
 			}
 
@@ -81,7 +81,7 @@ func AppendResourceSpansInto(traces ptrace.Traces, record arrow.Record, traceIds
 			}
 			resSpans.SetSchemaUrl(schemaUrl)
 
-			err = AppendScopeSpansInto(resSpans, arrowResEnts, resSpansIdx, traceIds.ResourceSpans.ScopeSpans)
+			err = AppendScopeSpansInto(resSpans, arrowResEnts, resSpansIdx, traceIds.ResourceSpans.ScopeSpans, relatedData)
 			if err != nil {
 				return werror.Wrap(err)
 			}

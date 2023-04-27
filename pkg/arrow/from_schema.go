@@ -25,6 +25,21 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
+// FieldIDFromSchema returns the field id of a field from an Arrow schema or -1
+// for an unknown field.
+//
+// An error is returned if the field is duplicated.
+func FieldIDFromSchema(schema *arrow.Schema, fieldName string) (int, error) {
+	ids := schema.FieldIndices(fieldName)
+	if len(ids) == 0 {
+		return -1, nil
+	}
+	if len(ids) > 1 {
+		return 0, werror.WrapWithContext(ErrDuplicateFieldName, map[string]interface{}{"fieldName": fieldName})
+	}
+	return ids[0], nil
+}
+
 // ListOfStructsFieldIDFromSchema returns the field id of a list of structs
 // field from an Arrow schema or -1 for an unknown field.
 //

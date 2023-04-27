@@ -20,105 +20,165 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
-type LinkIds struct {
-	Id                     int
-	TraceID                int
-	SpanID                 int
-	TraceState             int
-	Attributes             *otlp.AttributeIds
-	DroppedAttributesCount int
+type (
+	// SpanLinkIDs is a struct containing the Arrow field IDs for the Link struct.
+	SpanLinkIDs struct {
+		ID                     int
+		TraceID                int
+		SpanID                 int
+		TraceState             int
+		AttrsID                int
+		DroppedAttributesCount int
+	}
+
+	SpanLinksStore struct {
+		linksByID map[uint16][]*ptrace.SpanLink
+	}
+)
+
+// NewSpanLinksStore creates a new SpanLinksStore.
+func NewSpanLinksStore() *SpanLinksStore {
+	return &SpanLinksStore{
+		linksByID: make(map[uint16][]*ptrace.SpanLink),
+	}
 }
 
-func NewLinkIds(spanDT *arrow.StructType) (*LinkIds, error) {
-	id, linkDT, err := arrowutils.ListOfStructsFieldIDFromStruct(spanDT, constants.SpanLinks)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
-	traceId, _ := arrowutils.FieldIDFromStruct(linkDT, constants.TraceId)
-	spanId, _ := arrowutils.FieldIDFromStruct(linkDT, constants.SpanId)
-	traceState, _ := arrowutils.FieldIDFromStruct(linkDT, constants.TraceState)
-
-	attributeIds, err := otlp.NewAttributeIds(linkDT)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
-	droppedAttributesCount, _ := arrowutils.FieldIDFromStruct(linkDT, constants.DroppedAttributesCount)
-
-	return &LinkIds{
-		Id:                     id,
-		TraceID:                traceId,
-		SpanID:                 spanId,
-		TraceState:             traceState,
-		Attributes:             attributeIds,
-		DroppedAttributesCount: droppedAttributesCount,
-	}, nil
-}
-
-// AppendLinksInto initializes a Span's Links from an Arrow representation.
-func AppendLinksInto(result ptrace.SpanLinkSlice, los *arrowutils.ListOfStructs, row int, ids *LinkIds) error {
-	linkLos, err := los.ListOfStructsById(row, ids.Id)
-	if err != nil {
-		return werror.Wrap(err)
-	}
-
-	if linkLos == nil {
-		// No links found
-		return nil
-	}
-
-	for linkIdx := linkLos.Start(); linkIdx < linkLos.End(); linkIdx++ {
-		link := result.AppendEmpty()
-
-		if linkLos.IsNull(linkIdx) {
-			continue
+// LinksByID returns the links for the given ID.
+func (s *SpanLinksStore) LinksByID(ID uint16, sharedAttrs pcommon.Map) []*ptrace.SpanLink {
+	if links, ok := s.linksByID[ID]; ok {
+		if sharedAttrs.Len() > 0 {
+			// Add shared attributes to all links.
+			for _, link := range links {
+				attrs := link.Attributes()
+				sharedAttrs.Range(func(k string, v pcommon.Value) bool {
+					v.CopyTo(attrs.PutEmpty(k))
+					return true
+				})
+			}
 		}
-
-		traceID, err := linkLos.FixedSizeBinaryFieldByID(ids.TraceID, linkIdx)
-		if err != nil {
-			return werror.Wrap(err)
-		}
-		if len(traceID) == 16 {
-			var tid pcommon.TraceID
-			copy(tid[:], traceID)
-			link.SetTraceID(tid)
-		} else {
-			return werror.WrapWithContext(common.ErrInvalidTraceIDLength, map[string]interface{}{"traceID": traceID})
-		}
-
-		spanID, err := linkLos.FixedSizeBinaryFieldByID(ids.SpanID, linkIdx)
-		if err != nil {
-			return werror.Wrap(err)
-		}
-		if len(spanID) == 8 {
-			var sid pcommon.SpanID
-			copy(sid[:], spanID)
-			link.SetSpanID(sid)
-		} else {
-			return werror.WrapWithContext(common.ErrInvalidSpanIDLength, map[string]interface{}{"spanID": spanID})
-		}
-
-		traceState, err := linkLos.StringFieldByID(ids.TraceState, linkIdx)
-		if err != nil {
-			return werror.Wrap(err)
-		}
-		link.TraceState().FromRaw(traceState)
-
-		if err = otlp.AppendAttributesInto(link.Attributes(), linkLos.Array(), linkIdx, ids.Attributes); err != nil {
-			return werror.Wrap(err)
-		}
-		dac, err := linkLos.U32FieldByID(ids.DroppedAttributesCount, linkIdx)
-		if err != nil {
-			return werror.Wrap(err)
-		}
-		link.SetDroppedAttributesCount(dac)
+		return links
 	}
 	return nil
+}
+
+// SpanLinksStoreFrom creates an SpanLinksStore from an arrow.Record.
+// Note: This function consume the record.
+func SpanLinksStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store) (*SpanLinksStore, error) {
+	defer record.Release()
+
+	store := &SpanLinksStore{
+		linksByID: make(map[uint16][]*ptrace.SpanLink),
+	}
+
+	spanLinkIDs, err := SchemaToSpanLinkIDs(record.Schema())
+	if err != nil {
+		return nil, werror.Wrap(err)
+	}
+
+	linksCount := int(record.NumRows())
+
+	// Read all link fields from the record and reconstruct the link lists
+	// by ID.
+	for row := 0; row < linksCount; row++ {
+		ID, err := arrowutils.U16FromRecord(record, spanLinkIDs.ID, row)
+		if err != nil {
+			return nil, werror.Wrap(err)
+		}
+
+		traceID, err := arrowutils.FixedSizeBinaryFieldByIDFromRecord(record, spanLinkIDs.TraceID, row)
+		if err != nil {
+			return nil, werror.Wrap(err)
+		}
+
+		spanID, err := arrowutils.FixedSizeBinaryFieldByIDFromRecord(record, spanLinkIDs.SpanID, row)
+		if err != nil {
+			return nil, werror.Wrap(err)
+		}
+
+		traceState, err := arrowutils.StringFromRecord(record, spanLinkIDs.TraceState, row)
+		if err != nil {
+			return nil, werror.Wrap(err)
+		}
+
+		attrsID, err := arrowutils.NullableU32FromRecord(record, spanLinkIDs.AttrsID, row)
+		if err != nil {
+			return nil, werror.Wrap(err)
+		}
+
+		dac, err := arrowutils.U32FromRecord(record, spanLinkIDs.DroppedAttributesCount, row)
+		if err != nil {
+			return nil, werror.Wrap(err)
+		}
+
+		link := ptrace.NewSpanLink()
+
+		var tid pcommon.TraceID
+		var sid pcommon.SpanID
+
+		copy(tid[:], traceID)
+		copy(sid[:], spanID)
+
+		link.SetTraceID(tid)
+		link.SetSpanID(sid)
+		link.TraceState().FromRaw(traceState)
+
+		if attrsID != nil {
+			attrs := attrsStore.AttributesByDeltaID(*attrsID)
+			if attrs != nil {
+				attrs.CopyTo(link.Attributes())
+			}
+		}
+
+		link.SetDroppedAttributesCount(dac)
+		store.linksByID[ID] = append(store.linksByID[ID], &link)
+	}
+
+	return store, nil
+}
+
+// SchemaToSpanLinkIDs pre-computes the field IDs for the links record.
+func SchemaToSpanLinkIDs(schema *arrow.Schema) (*SpanLinkIDs, error) {
+	ID, err := arrowutils.FieldIDFromSchema(schema, constants.ID)
+	if err != nil {
+		return nil, werror.Wrap(err)
+	}
+
+	traceID, err := arrowutils.FieldIDFromSchema(schema, constants.TraceId)
+	if err != nil {
+		return nil, werror.Wrap(err)
+	}
+
+	spanID, err := arrowutils.FieldIDFromSchema(schema, constants.SpanId)
+	if err != nil {
+		return nil, werror.Wrap(err)
+	}
+
+	traceState, err := arrowutils.FieldIDFromSchema(schema, constants.TraceState)
+	if err != nil {
+		return nil, werror.Wrap(err)
+	}
+
+	attrsID, err := arrowutils.FieldIDFromSchema(schema, constants.AttributesID)
+	if err != nil {
+		return nil, werror.Wrap(err)
+	}
+
+	dac, err := arrowutils.FieldIDFromSchema(schema, constants.DroppedAttributesCount)
+	if err != nil {
+		return nil, werror.Wrap(err)
+	}
+
+	return &SpanLinkIDs{
+		ID:                     ID,
+		TraceID:                traceID,
+		SpanID:                 spanID,
+		TraceState:             traceState,
+		AttrsID:                attrsID,
+		DroppedAttributesCount: dac,
+	}, nil
 }

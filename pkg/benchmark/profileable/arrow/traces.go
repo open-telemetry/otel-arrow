@@ -25,6 +25,7 @@ import (
 	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
+	cfg "github.com/f5/otel-arrow-adapter/pkg/config"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 )
 
@@ -40,19 +41,19 @@ type TracesProfileable struct {
 	pool                  *memory.GoAllocator
 	unaryRpcMode          bool
 	stats                 bool
-	tracesProducerOptions []arrow_record.Option
+	tracesProducerOptions []cfg.Option
 }
 
 func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *benchmark.Config) *TracesProfileable {
-	var tracesProducerOptions []arrow_record.Option
+	var tracesProducerOptions []cfg.Option
 
 	if config.Compression {
-		tracesProducerOptions = append(tracesProducerOptions, arrow_record.WithZstd())
+		tracesProducerOptions = append(tracesProducerOptions, cfg.WithZstd())
 	} else {
-		tracesProducerOptions = append(tracesProducerOptions, arrow_record.WithNoZstd())
+		tracesProducerOptions = append(tracesProducerOptions, cfg.WithNoZstd())
 	}
 	if config.Stats {
-		tracesProducerOptions = append(tracesProducerOptions, arrow_record.WithTracesStats())
+		tracesProducerOptions = append(tracesProducerOptions, cfg.WithStats())
 	}
 
 	return &TracesProfileable{
@@ -188,10 +189,6 @@ func (s *TracesProfileable) Clear() {
 }
 func (s *TracesProfileable) ShowStats() {
 	if s.stats {
-		stats := s.producer.TracesStats()
-		if stats != nil {
-			stats.Show()
-		}
-		s.producer.ShowSchemas()
+		s.producer.ShowStats()
 	}
 }

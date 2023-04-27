@@ -32,9 +32,9 @@ import (
 var (
 	ResourceDT = arrow.StructOf([]arrow.Field{
 		{
-			Name:     constants.Attributes,
-			Type:     AttributesDT,
-			Metadata: acommon.Metadata(acommon.Optional),
+			Name:     constants.AttributesID,
+			Type:     arrow.PrimitiveTypes.Uint16,
+			Metadata: acommon.Metadata(acommon.Optional, acommon.DeltaEncoding),
 		},
 		{
 			Name:     constants.DroppedAttributesCount,
@@ -50,9 +50,9 @@ type ResourceBuilder struct {
 
 	rBuilder *builder.RecordBuilderExt
 
-	builder *builder.StructBuilder // `resource` builder
-	ab      *AttributesBuilder     // `attributes` field builder
-	dacb    *builder.Uint32Builder // `dropped_attributes_count` field builder
+	builder *builder.StructBuilder      // `resource` builder
+	aib     *builder.Uint16DeltaBuilder // attributes id builder
+	dacb    *builder.Uint32Builder      // `dropped_attributes_count` field builder
 }
 
 // NewResourceBuilder creates a new resource builder with a given allocator.
@@ -62,23 +62,37 @@ func NewResourceBuilder(builder *builder.StructBuilder) *ResourceBuilder {
 
 // ResourceBuilderFrom creates a new resource builder from an existing struct builder.
 func ResourceBuilderFrom(builder *builder.StructBuilder) *ResourceBuilder {
+	aib := builder.Uint16DeltaBuilder(constants.AttributesID)
+	// As the attributes are sorted before insertion, the delta between two
+	// consecutive attributes ID should always be <=1.
+	// We are enforcing this constraint to make sure that the delta encoding
+	// will always be used efficiently.
+	aib.SetMaxDelta(1)
+
 	return &ResourceBuilder{
 		released: false,
 		builder:  builder,
-		ab:       AttributesBuilderFrom(builder.MapBuilder(constants.Attributes)),
+		aib:      aib,
 		dacb:     builder.Uint32Builder(constants.DroppedAttributesCount),
 	}
 }
 
 // Append appends a new resource to the builder.
-func (b *ResourceBuilder) Append(resource *pcommon.Resource) error {
+func (b *ResourceBuilder) Append(resource *pcommon.Resource, attrsAccu *Attributes16Accumulator) error {
 	if b.released {
 		return werror.Wrap(ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(resource, func() error {
-		if err := b.ab.Append(resource.Attributes()); err != nil {
+		ID, err := attrsAccu.Append(resource.Attributes())
+		if err != nil {
 			return werror.Wrap(err)
+		}
+		if ID >= 0 {
+			b.aib.Append(uint16(ID))
+		} else {
+			// ID == -1 when the attributes are empty.
+			b.aib.AppendNull()
 		}
 		b.dacb.AppendNonZero(resource.DroppedAttributesCount())
 		return nil

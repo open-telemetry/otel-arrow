@@ -77,20 +77,20 @@ func (b *ResourceSpansBuilder) Build() (*array.Struct, error) {
 }
 
 // Append appends a new resource spans to the builder.
-func (b *ResourceSpansBuilder) Append(rsg *ResourceSpanGroup) error {
+func (b *ResourceSpansBuilder) Append(rsg *ResourceSpanGroup, relatedData *RelatedData) error {
 	if b.released {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(rsg, func() error {
-		if err := b.rb.Append(rsg.Resource); err != nil {
+		if err := b.rb.Append(rsg.Resource, relatedData.AttrsBuilders().Resource().Accumulator()); err != nil {
 			return werror.Wrap(err)
 		}
 		b.schb.AppendNonEmpty(rsg.ResourceSchemaUrl)
 		sc := len(rsg.ScopeSpans)
 		return b.spsb.Append(sc, func() error {
 			for _, spg := range rsg.ScopeSpans {
-				if err := b.spb.Append(spg); err != nil {
+				if err := b.spb.Append(spg, relatedData); err != nil {
 					return werror.Wrap(err)
 				}
 			}

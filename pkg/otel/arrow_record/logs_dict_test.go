@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 
+	"github.com/f5/otel-arrow-adapter/pkg/config"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
 )
 
@@ -37,8 +38,8 @@ func TestLogsWithNoDictionary(t *testing.T) {
 	defer pool.AssertSize(t, 0)
 
 	producer := NewProducerWithOptions(
-		WithAllocator(pool),
-		WithNoDictionary(),
+		config.WithAllocator(pool),
+		config.WithNoDictionary(),
 	)
 	defer func() {
 		if err := producer.Close(); err != nil {
@@ -84,9 +85,9 @@ func TestLogsMultiBatchWithDictionaryIndexChanges(t *testing.T) {
 	defer pool.AssertSize(t, 0)
 
 	producer := NewProducerWithOptions(
-		WithAllocator(pool),
-		WithUint8InitDictIndex(),
-		WithUint32LimitDictIndex(),
+		config.WithAllocator(pool),
+		config.WithUint8InitDictIndex(),
+		config.WithUint32LimitDictIndex(),
 	)
 	defer func() {
 		if err := producer.Close(); err != nil {
@@ -135,9 +136,9 @@ func TestLogsMultiBatchWithDictionaryOverflow(t *testing.T) {
 	defer pool.AssertSize(t, 0)
 
 	producer := NewProducerWithOptions(
-		WithAllocator(pool),
-		WithUint8InitDictIndex(),
-		WithUint32LimitDictIndex(),
+		config.WithAllocator(pool),
+		config.WithUint8InitDictIndex(),
+		config.WithUint32LimitDictIndex(),
 	)
 	defer func() {
 		if err := producer.Close(); err != nil {
@@ -185,9 +186,9 @@ func TestLogsMultiBatchWithDictionaryLimit(t *testing.T) {
 	defer pool.AssertSize(t, 0)
 
 	producer := NewProducerWithOptions(
-		WithAllocator(pool),
-		WithUint8InitDictIndex(),
-		WithUint8LimitDictIndex(),
+		config.WithAllocator(pool),
+		config.WithUint8InitDictIndex(),
+		config.WithUint8LimitDictIndex(),
 	)
 	defer func() {
 		if err := producer.Close(); err != nil {

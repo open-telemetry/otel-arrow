@@ -33,7 +33,7 @@ var (
 	ScopeDT = arrow.StructOf([]arrow.Field{
 		{Name: constants.Name, Type: arrow.BinaryTypes.String, Metadata: acommon.Metadata(acommon.Optional, acommon.Dictionary8)},
 		{Name: constants.Version, Type: arrow.BinaryTypes.String, Metadata: acommon.Metadata(acommon.Optional, acommon.Dictionary8)},
-		{Name: constants.Attributes, Type: AttributesDT, Metadata: acommon.Metadata(acommon.Optional)},
+		{Name: constants.AttributesID, Type: arrow.PrimitiveTypes.Uint16, Metadata: acommon.Metadata(acommon.Optional, acommon.DeltaEncoding)},
 		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: acommon.Metadata(acommon.Optional)},
 	}...)
 )
@@ -41,10 +41,10 @@ var (
 type ScopeBuilder struct {
 	released bool
 	builder  *builder.StructBuilder
-	nb       *builder.StringBuilder // Name builder
-	vb       *builder.StringBuilder // Version builder
-	ab       *AttributesBuilder     // Attributes builder
-	dacb     *builder.Uint32Builder // Dropped attributes count builder
+	nb       *builder.StringBuilder      // Name builder
+	vb       *builder.StringBuilder      // Version builder
+	aib      *builder.Uint16DeltaBuilder // attributes id builder
+	dacb     *builder.Uint32Builder      // Dropped attributes count builder
 }
 
 // NewScopeBuilder creates a new instrumentation scope array builder with a given allocator.
@@ -54,18 +54,24 @@ func NewScopeBuilder(builder *builder.StructBuilder) *ScopeBuilder {
 
 // ScopeBuilderFrom creates a new instrumentation scope array builder from an existing struct builder.
 func ScopeBuilderFrom(sb *builder.StructBuilder) *ScopeBuilder {
+	aib := sb.Uint16DeltaBuilder(constants.AttributesID)
+	// As the attributes are sorted before insertion, the delta between two
+	// consecutive attributes ID should always be <=1.
+	// We are enforcing this constraint to make sure that the delta encoding
+	// will always be used efficiently.
+	aib.SetMaxDelta(1)
 	return &ScopeBuilder{
 		released: false,
 		builder:  sb,
 		nb:       sb.StringBuilder(constants.Name),
 		vb:       sb.StringBuilder(constants.Version),
-		ab:       AttributesBuilderFrom(sb.MapBuilder(constants.Attributes)),
+		aib:      aib,
 		dacb:     sb.Uint32Builder(constants.DroppedAttributesCount),
 	}
 }
 
 // Append appends a new instrumentation scope to the builder.
-func (b *ScopeBuilder) Append(scope *pcommon.InstrumentationScope) error {
+func (b *ScopeBuilder) Append(scope *pcommon.InstrumentationScope, attrsAccu *Attributes16Accumulator) error {
 	if b.released {
 		return werror.Wrap(ErrBuilderAlreadyReleased)
 	}
@@ -73,9 +79,18 @@ func (b *ScopeBuilder) Append(scope *pcommon.InstrumentationScope) error {
 	return b.builder.Append(scope, func() error {
 		b.nb.AppendNonEmpty(scope.Name())
 		b.vb.AppendNonEmpty(scope.Version())
-		if err := b.ab.Append(scope.Attributes()); err != nil {
+
+		ID, err := attrsAccu.Append(scope.Attributes())
+		if err != nil {
 			return werror.Wrap(err)
 		}
+		if ID >= 0 {
+			b.aib.Append(uint16(ID))
+		} else {
+			// ID == -1 when the attributes are empty.
+			b.aib.AppendNull()
+		}
+
 		b.dacb.AppendNonZero(scope.DroppedAttributesCount())
 		return nil
 	})

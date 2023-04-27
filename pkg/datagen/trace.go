@@ -68,10 +68,10 @@ func (tg *TraceGenerator) Generate(batchSize int, collectInterval time.Duration)
 }
 
 func (dg *DataGenerator) Spans(spans ptrace.SpanSlice) {
-	dg.NextId8Bytes()
 	dg.NextId16Bytes()
-
 	traceId := dg.Id16Bytes()
+
+	dg.NextId8Bytes()
 	rootSpanId := dg.Id8Bytes()
 	rootStartTime := dg.CurrentTime()
 	rootEndTime := dg.CurrentTime() + 1 + pcommon.Timestamp(dg.rng.Intn(6))
@@ -98,7 +98,7 @@ func (dg *DataGenerator) Spans(spans ptrace.SpanSlice) {
 			s.SetKind(ptrace.SpanKindServer)
 			dg.NewStandardAttributes().CopyTo(s.Attributes())
 			dg.events(s.Events())
-			dg.links(s.Links())
+			dg.links(s.Links(), traceId, rootSpanId)
 			s.Status().SetCode(ptrace.StatusCodeOk)
 			s.Status().SetMessage("OK")
 		},
@@ -111,7 +111,7 @@ func (dg *DataGenerator) Spans(spans ptrace.SpanSlice) {
 			s.SetKind(ptrace.SpanKindServer)
 			dg.NewStandardAttributes().CopyTo(s.Attributes())
 			dg.events(s.Events())
-			dg.links(s.Links())
+			dg.links(s.Links(), traceId, userAccountSpanId)
 			s.Status().SetCode(ptrace.StatusCodeError)
 			s.Status().SetMessage("Error")
 		},
@@ -124,7 +124,7 @@ func (dg *DataGenerator) Spans(spans ptrace.SpanSlice) {
 			s.SetKind(ptrace.SpanKindServer)
 			dg.NewStandardAttributes().CopyTo(s.Attributes())
 			dg.events(s.Events())
-			dg.links(s.Links())
+			dg.links(s.Links(), traceId, userPreferencesSpanId)
 			s.Status().SetCode(ptrace.StatusCodeOk)
 			s.Status().SetMessage("OK")
 		},
@@ -149,15 +149,13 @@ func (dg *DataGenerator) events(ses ptrace.SpanEventSlice) {
 }
 
 // links returns a slice of links for the span.
-func (dg *DataGenerator) links(sls ptrace.SpanLinkSlice) {
+func (dg *DataGenerator) links(sls ptrace.SpanLinkSlice, traceID pcommon.TraceID, spanID pcommon.SpanID) {
 	linkCount := dg.rng.Intn(8) + 2
-	dg.NextId16Bytes()
 
 	for i := 0; i < linkCount; i++ {
-		dg.NextId8Bytes()
 		sl := sls.AppendEmpty()
-		sl.SetTraceID(dg.Id16Bytes())
-		sl.SetSpanID(dg.Id8Bytes())
+		sl.SetTraceID(traceID)
+		sl.SetSpanID(spanID)
 		sl.TraceState().FromRaw(pick(dg.TestEntropy, TraceStates))
 		dg.NewStandardSpanLinkAttributes().CopyTo(sl.Attributes())
 	}

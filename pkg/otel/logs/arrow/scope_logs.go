@@ -21,7 +21,7 @@ import (
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/array"
 
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow_old"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
