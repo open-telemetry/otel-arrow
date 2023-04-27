@@ -21,6 +21,7 @@ generate:
 	rm gen/exporter/otlpexporter/go.{sum,mod}
 	cp -r ${SOURCE_DIR}/receiver/otlpreceiver gen/receiver
 	rm gen/receiver/otlpreceiver/go.{sum,mod}
+	cp -r ${SOURCE_DIR}/internal/netstats gen/internal
 	cp -r ${SOURCE_DIR}/internal/testutil gen/internal
 	cp -r ${SOURCE_DIR}/internal/testdata gen/internal
 	cp -r ${SOURCE_DIR}/internal/sharedcomponent gen/internal

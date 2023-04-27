@@ -22,13 +22,16 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	arrowpbMock "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1/mock"
+	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/atomic"
 	"go.uber.org/zap/zaptest"
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -39,10 +42,6 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
-	arrowpbMock "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1/mock"
-	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
-
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
@@ -52,17 +51,16 @@ import (
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exportertest"
+	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow/grpcmock"
 	"go.opentelemetry.io/collector/extension"
 	"go.opentelemetry.io/collector/extension/auth"
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
-
-	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow/grpcmock"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
 )
 
 type mockReceiver struct {
@@ -94,7 +92,7 @@ type mockTracesReceiver struct {
 }
 
 func (r *mockTracesReceiver) Export(ctx context.Context, req ptraceotlp.ExportRequest) (ptraceotlp.ExportResponse, error) {
-	r.requestCount.Inc()
+	r.requestCount.Add(int32(1))
 	td := req.Traces()
 	r.totalItems.Add(int32(td.SpanCount()))
 	r.mux.Lock()
@@ -130,8 +128,8 @@ func otlpTracesReceiverOnGRPCServer(ln net.Listener, useTLS bool) (*mockTracesRe
 		mockReceiver: mockReceiver{
 			srv:          grpc.NewServer(sopts...),
 			ln:           ln,
-			requestCount: atomic.NewInt32(0),
-			totalItems:   atomic.NewInt32(0),
+			requestCount: &atomic.Int32{},
+			totalItems:   &atomic.Int32{},
 		},
 	}
 
@@ -153,7 +151,7 @@ type mockLogsReceiver struct {
 }
 
 func (r *mockLogsReceiver) Export(ctx context.Context, req plogotlp.ExportRequest) (plogotlp.ExportResponse, error) {
-	r.requestCount.Inc()
+	r.requestCount.Add(int32(1))
 	ld := req.Logs()
 	r.totalItems.Add(int32(ld.LogRecordCount()))
 	r.mux.Lock()
@@ -173,8 +171,8 @@ func otlpLogsReceiverOnGRPCServer(ln net.Listener) *mockLogsReceiver {
 	rcv := &mockLogsReceiver{
 		mockReceiver: mockReceiver{
 			srv:          grpc.NewServer(),
-			requestCount: atomic.NewInt32(0),
-			totalItems:   atomic.NewInt32(0),
+			requestCount: &atomic.Int32{},
+			totalItems:   &atomic.Int32{},
 		},
 	}
 
@@ -195,7 +193,7 @@ type mockMetricsReceiver struct {
 
 func (r *mockMetricsReceiver) Export(ctx context.Context, req pmetricotlp.ExportRequest) (pmetricotlp.ExportResponse, error) {
 	md := req.Metrics()
-	r.requestCount.Inc()
+	r.requestCount.Add(int32(1))
 	r.totalItems.Add(int32(md.DataPointCount()))
 	r.mux.Lock()
 	defer r.mux.Unlock()
@@ -214,8 +212,8 @@ func otlpMetricsReceiverOnGRPCServer(ln net.Listener) *mockMetricsReceiver {
 	rcv := &mockMetricsReceiver{
 		mockReceiver: mockReceiver{
 			srv:          grpc.NewServer(),
-			requestCount: atomic.NewInt32(0),
-			totalItems:   atomic.NewInt32(0),
+			requestCount: &atomic.Int32{},
+			totalItems:   &atomic.Int32{},
 		},
 	}
 

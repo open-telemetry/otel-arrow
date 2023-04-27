@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package netstats
+package netstats // import "github.com/f5/otel-arrow-adapter/collector/gen/internal/netstats"
 
 import (
 	"context"
