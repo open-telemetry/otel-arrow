@@ -221,11 +221,15 @@ func TestLogsMultiBatchWithDictionaryLimit(t *testing.T) {
 
 	builder := producer.LogsRecordBuilderExt()
 	dictionaryWithOverflow := builder.Events().DictionariesWithOverflow
-	require.Equal(t, 4, len(dictionaryWithOverflow))
+	require.Equal(t, 2, len(dictionaryWithOverflow))
 	require.True(t, dictionaryWithOverflow["resource_logs.item.scope_logs.item.logs.item.severity_text"])
 	require.True(t, dictionaryWithOverflow["resource_logs.item.scope_logs.item.logs.item.body.str"])
-	require.True(t, dictionaryWithOverflow["resource_logs.item.scope_logs.item.logs.item.attributes.value.str"])
-	require.True(t, dictionaryWithOverflow["resource_logs.item.scope_logs.item.logs.item.attributes.value.binary"])
+
+	logRecordAttrsBuilder := producer.LogsBuilder().RelatedData().AttrsRecordBuilders().LogRecord()
+	dictionaryWithOverflow = logRecordAttrsBuilder.Events().DictionariesWithOverflow
+	require.Equal(t, 2, len(dictionaryWithOverflow))
+	require.True(t, dictionaryWithOverflow["value.str"])
+	require.True(t, dictionaryWithOverflow["value.binary"])
 }
 
 func GenerateLogs(initValue int, logCount int) plog.Logs {

@@ -63,6 +63,7 @@ type Producer struct {
 	pool            memory.Allocator // Use a custom memory allocator
 	zstd            bool             // Use IPC ZSTD compression
 	streamProducers map[string]*streamProducer
+	nextSubStreamId int64
 	batchId         int64
 
 	// Builder for each OTEL entities
@@ -85,6 +86,7 @@ type streamProducer struct {
 	subStreamId    string
 	lastProduction time.Time
 	schema         *arrow.Schema
+	payloadType    record_message.PayloadType
 }
 
 // NewProducer creates a new BatchArrowRecords producer.
@@ -120,7 +122,7 @@ func NewProducerWithOptions(options ...config2.Option) *Producer {
 		panic(err)
 	}
 
-	logsBuidler, err := logsarrow.NewLogsBuilder(logsRecordBuilder, stats.SchemaStatsEnabled)
+	logsBuidler, err := logsarrow.NewLogsBuilder(logsRecordBuilder, cfg, stats)
 	if err != nil {
 		panic(err)
 	}
@@ -150,9 +152,9 @@ func NewProducerWithOptions(options ...config2.Option) *Producer {
 
 // BatchArrowRecordsFromMetrics produces a BatchArrowRecords message from a [pmetric.Metrics] messages.
 func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colarspb.BatchArrowRecords, error) {
-	// Build the record from the logs passed as parameter
-	// Note: The record returned is wrapped into a RecordMessage and will
-	// be released by the Producer.Produce method.
+	// Builds a main Record and n related Records from the metrics passed in
+	// parameter. All these Arrow records are wrapped into a BatchArrowRecords
+	// and will be released by the Producer.Produce method.
 	record, err := recordBuilder[pmetric.Metrics](func() (acommon.EntityBuilder[pmetric.Metrics], error) {
 		return p.metricsBuilder, nil
 	}, metrics)
@@ -173,18 +175,26 @@ func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colar
 
 // BatchArrowRecordsFromLogs produces a BatchArrowRecords message from a [plog.Logs] messages.
 func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrowRecords, error) {
-	// Build the record from the logs passed as parameter
-	// Note: The record returned is wrapped into a RecordMessage and will
-	// be released by the Producer.Produce method.
+	// Builds a main Record and n related Records from the logs passed in
+	// parameter. All these Arrow records are wrapped into a BatchArrowRecords
+	// and will be released by the Producer.Produce method.
 	record, err := recordBuilder[plog.Logs](func() (acommon.EntityBuilder[plog.Logs], error) {
+		p.logsBuilder.RelatedData().Reset()
 		return p.logsBuilder, nil
 	}, ls)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
 
+	rms, err := p.logsBuilder.RelatedData().BuildRecordMessages()
+	if err != nil {
+		return nil, werror.Wrap(err)
+	}
+
 	schemaID := p.logsRecordBuilder.SchemaID()
-	rms := []*record_message.RecordMessage{record_message.NewLogsMessage(schemaID, record)}
+	// The main record must be the first one to simplify the decoding
+	// in the collector.
+	rms = append([]*record_message.RecordMessage{record_message.NewLogsMessage(schemaID, record)}, rms...)
 
 	bar, err := p.Produce(rms)
 	if err != nil {
@@ -196,9 +206,9 @@ func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrow
 
 // BatchArrowRecordsFromTraces produces a BatchArrowRecords message from a [ptrace.Traces] messages.
 func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.BatchArrowRecords, error) {
-	// Build the record from the traces passes as parameter
-	// Note: The record returned is wrapped into a RecordMessage and will
-	// be released by the Producer.Produce method.
+	// Builds a main Record and n related Records from the traces passed in
+	// parameter. All these Arrow records are wrapped into a BatchArrowRecords
+	// and will be released by the Producer.Produce method.
 	record, err := recordBuilder[ptrace.Traces](func() (acommon.EntityBuilder[ptrace.Traces], error) {
 		p.tracesBuilder.RelatedData().Reset()
 		return p.tracesBuilder, nil
@@ -242,10 +252,6 @@ func (p *Producer) TracesRecordBuilderExt() *builder.RecordBuilderExt {
 
 func (p *Producer) MetricsStats() *metricsarrow.MetricsStats {
 	return p.metricsBuilder.Stats()
-}
-
-func (p *Producer) LogsStats() *logsarrow.LogsStats {
-	return p.logsBuilder.Stats()
 }
 
 func (p *Producer) MetricsBuilder() *metricsarrow.MetricsBuilder {
@@ -297,14 +303,34 @@ func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.Batch
 			// Retrieves (or creates) the stream Producer for the sub-stream id defined in the RecordMessage.
 			sp := p.streamProducers[rm.SubStreamId()]
 			if sp == nil {
+				// cleanup previous stream producer if any that have the same
+				// PayloadType. The reasoning is that if we have a new
+				// sub-stream ID (i.e. schema change) we should no longer use
+				// the previous stream producer for this PayloadType as schema
+				// changes are only additive.
+				// This will release the resources associated with the previous
+				// stream producer.
+				for ssID, sp := range p.streamProducers {
+					if sp.payloadType == rm.PayloadType() {
+						if err := sp.ipcWriter.Close(); err != nil {
+							return werror.Wrap(err)
+						}
+						p.stats.StreamProducersClosed++
+						delete(p.streamProducers, ssID)
+					}
+				}
+
 				var buf bytes.Buffer
 				sp = &streamProducer{
 					output:      buf,
-					subStreamId: fmt.Sprintf("%d", len(p.streamProducers)),
+					subStreamId: fmt.Sprintf("%d", p.nextSubStreamId),
+					payloadType: rm.PayloadType(),
 				}
 				p.streamProducers[rm.SubStreamId()] = sp
+				p.nextSubStreamId++
 				p.stats.StreamProducersCreated++
 			}
+
 			sp.lastProduction = time.Now()
 			sp.schema = rm.Record().Schema()
 

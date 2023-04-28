@@ -33,9 +33,9 @@ func GenerateLogs(count int) plog.Logs {
 	for i := 0; i < count; i++ {
 		switch i % 2 {
 		case 0:
-			fillLogOne(logs.AppendEmpty())
-		case 1:
 			fillLogTwo(logs.AppendEmpty())
+		case 1:
+			fillLogOne(logs.AppendEmpty())
 		}
 	}
 	return ld
@@ -57,7 +57,7 @@ func fillLogOne(log plog.LogRecord) {
 }
 
 func fillLogTwo(log plog.LogRecord) {
-	log.SetTimestamp(logTimestamp)
+	log.SetTimestamp(logTimestamp + 1)
 	log.SetDroppedAttributesCount(1)
 	log.SetSeverityNumber(plog.SeverityNumberInfo)
 	log.SetSeverityText("Info")

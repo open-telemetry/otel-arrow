@@ -71,6 +71,7 @@ func TestConversionFromSyntheticData(t *testing.T) {
 		tb, err := tracesarrow.NewTracesBuilder(rBuilder, conf, stats.NewProducerStats())
 		require.NoError(t, err)
 		defer tb.Release()
+
 		err = tb.Append(expectedRequest.Traces())
 		require.NoError(t, err)
 

@@ -45,7 +45,7 @@ type LimitError struct {
 var _ error = LimitError{}
 
 func (le LimitError) Error() string {
-	return fmt.Sprintf("allocation size %d exceeds limit %d", le.Request, le.Limit)
+	return fmt.Sprintf("allocation size %d exceeds limit %d (in-use=%d)", le.Request, le.Limit, le.Inuse)
 }
 
 func (_ LimitError) Is(tgt error) bool {

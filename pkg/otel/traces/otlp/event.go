@@ -36,6 +36,7 @@ type (
 	}
 
 	SpanEventsStore struct {
+		nextID     uint16
 		eventsByID map[uint16][]*ptrace.SpanEvent
 	}
 )

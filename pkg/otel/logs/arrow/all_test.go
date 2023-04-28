@@ -18,6 +18,7 @@
 package arrow
 
 import (
+	"fmt"
 	"math"
 	"testing"
 
@@ -27,12 +28,16 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/plog"
 
+	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	"github.com/f5/otel-arrow-adapter/pkg/config"
+	jsonassert "github.com/f5/otel-arrow-adapter/pkg/otel/assert"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/internal"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
+	"github.com/f5/otel-arrow-adapter/pkg/record_message"
 )
 
 var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
@@ -51,37 +56,74 @@ func TestLogRecord(t *testing.T) {
 	defer rBuilder.Release()
 
 	var record arrow.Record
+	var relatedRecords []*record_message.RecordMessage
+	relatedData, err := NewRelatedData(config.DefaultConfig(), stats.NewProducerStats())
+	require.NoError(t, err)
 
 	for {
+		relatedData.Reset()
+		if relatedRecords != nil {
+			for _, r := range relatedRecords {
+				r.Record().Release()
+			}
+		}
+
 		sb := LogRecordBuilderFrom(rBuilder.StructBuilder(constants.Logs))
 
 		logRecord := LogRecord1()
-		err := sb.Append(&logRecord)
+		err := sb.Append(&logRecord, relatedData)
 		require.NoError(t, err)
 
 		logRecord = LogRecord2()
-		err = sb.Append(&logRecord)
+		err = sb.Append(&logRecord, relatedData)
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
+		if err != nil {
+			assert.Error(t, acommon.ErrSchemaNotUpToDate)
+			continue
+		}
+
+		relatedRecords, err = relatedData.BuildRecordMessages()
 		if err == nil {
 			break
 		}
 		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
 
-	json, err := record.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
+	actual, err := record.MarshalJSON()
+	require.NoError(t, err)
 
 	record.Release()
 
-	expected := `[{"logs":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}}
-,{"logs":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}}
+	expected := `[{"logs":{"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"id":0,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}}
+,{"logs":{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}}
+]`
+	require.JSONEq(t, expected, string(actual))
+
+	for _, relatedRecord := range relatedRecords {
+		switch relatedRecord.PayloadType() {
+		case v1.OtlpArrowPayloadType_LOG_ATTRS:
+			expected = `[{"id":0,"key":"double","value":[2,1]}
+,{"id":1,"key":"double","value":[2,2]}
+,{"id":0,"key":"int","value":[1,1]}
+,{"id":1,"key":"int","value":[1,2]}
+,{"id":0,"key":"str","value":[0,"string1"]}
+,{"id":1,"key":"str","value":[0,"string2"]}
 ]`
 
-	require.JSONEq(t, expected, string(json))
+		default:
+			panic("unexpected payload type")
+		}
+
+		actual, err := relatedRecord.Record().MarshalJSON()
+		require.NoError(t, err)
+		relatedRecord.Record().Release()
+
+		require.JSONEq(t, expected, string(actual))
+
+		relatedRecord.Record().Release()
+	}
 }
 
 func TestScopeLogs(t *testing.T) {
@@ -97,35 +139,90 @@ func TestScopeLogs(t *testing.T) {
 	defer rBuilder.Release()
 
 	var record arrow.Record
+	var relatedRecords []*record_message.RecordMessage
+	relatedData, err := NewRelatedData(config.DefaultConfig(), stats.NewProducerStats())
+	require.NoError(t, err)
 
 	for {
+		relatedData.Reset()
+		if relatedRecords != nil {
+			for _, r := range relatedRecords {
+				r.Record().Release()
+			}
+		}
+
 		ssb := ScopeLogsBuilderFrom(rBuilder.StructBuilder(constants.ScopeLogs))
 
-		err := ssb.Append(ToScopeLogGroup(ScopeLogs1()))
+		err := ssb.Append(ToScopeLogGroup(ScopeLogs1()), relatedData)
 		require.NoError(t, err)
 
-		err = ssb.Append(ToScopeLogGroup(ScopeLogs2()))
+		err = ssb.Append(ToScopeLogGroup(ScopeLogs2()), relatedData)
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
+		if err != nil {
+			assert.Error(t, acommon.ErrSchemaNotUpToDate)
+			continue
+		}
+
+		relatedRecords, err = relatedData.BuildRecordMessages()
 		if err == nil {
 			break
 		}
 		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
 
-	json, err := record.MarshalJSON()
+	actual, err := record.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	record.Release()
 
-	expected := `[{"scope_logs":{"logs":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}}}
-,{"scope_logs":{"logs":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}}
+	expected := `[{"scope_logs":{"logs":[{"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"id":0,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"attrs_id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}}}
+,{"scope_logs":{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}}
 ]`
 
-	require.JSONEq(t, expected, string(json))
+	require.JSONEq(t, expected, string(actual))
+
+	for _, relatedRecord := range relatedRecords {
+		switch relatedRecord.PayloadType() {
+		case v1.OtlpArrowPayloadType_SCOPE_ATTRS:
+			expected = `[{"id":0,"key":"bool","value":[3,true]}
+,{"id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
+,{"id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"id":0,"key":"double","value":[2,1]}
+,{"id":1,"key":"double","value":[2,2]}
+,{"id":0,"key":"int","value":[1,1]}
+,{"id":1,"key":"int","value":[1,2]}
+,{"id":0,"key":"str","value":[0,"string1"]}
+,{"id":1,"key":"str","value":[0,"string2"]}
+]`
+
+		case v1.OtlpArrowPayloadType_LOG_ATTRS:
+			expected = `[{"id":0,"key":"double","value":[2,1]}
+,{"id":1,"key":"double","value":[2,2]}
+,{"id":2,"key":"double","value":[2,2]}
+,{"id":0,"key":"int","value":[1,1]}
+,{"id":1,"key":"int","value":[1,2]}
+,{"id":2,"key":"int","value":[1,2]}
+,{"id":0,"key":"str","value":[0,"string1"]}
+,{"id":1,"key":"str","value":[0,"string2"]}
+,{"id":2,"key":"str","value":[0,"string2"]}
+]`
+
+		default:
+			panic(fmt.Sprint("unexpected payload type: ", relatedRecord.PayloadType()))
+		}
+
+		observed, err := relatedRecord.Record().MarshalJSON()
+		require.NoError(t, err)
+		relatedRecord.Record().Release()
+
+		require.JSONEq(t, expected, string(observed))
+
+		relatedRecord.Record().Release()
+	}
 }
 
 func ToScopeLogGroup(scopeLogs plog.ScopeLogs) *ScopeLogGroup {
@@ -157,35 +254,108 @@ func TestResourceLogs(t *testing.T) {
 	defer rBuilder.Release()
 
 	var record arrow.Record
+	var relatedRecords []*record_message.RecordMessage
+	relatedData, err := NewRelatedData(config.DefaultConfig(), stats.NewProducerStats())
+	require.NoError(t, err)
 
 	for {
+		relatedData.Reset()
+		if relatedRecords != nil {
+			for _, r := range relatedRecords {
+				r.Record().Release()
+			}
+		}
+
 		rsb := ResourceLogsBuilderFrom(rBuilder.StructBuilder(constants.ResourceLogs))
 
-		err := rsb.Append(ToResourceLogGroup(ResourceLogs1()))
+		err := rsb.Append(ToResourceLogGroup(ResourceLogs1()), relatedData)
 		require.NoError(t, err)
 
-		err = rsb.Append(ToResourceLogGroup(ResourceLogs2()))
+		err = rsb.Append(ToResourceLogGroup(ResourceLogs2()), relatedData)
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
+		if err != nil {
+			assert.Error(t, acommon.ErrSchemaNotUpToDate)
+			continue
+		}
+
+		relatedRecords, err = relatedData.BuildRecordMessages()
 		if err == nil {
 			break
 		}
 		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
 
-	json, err := record.MarshalJSON()
+	actual, err := record.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	record.Release()
 
-	expected := `[{"resource_logs":{"resource":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null},"schema_url":"schema1","scope_logs":[{"logs":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}},{"logs":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}}
-,{"resource_logs":{"resource":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1},"schema_url":"schema2","scope_logs":[{"logs":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}}
+	expected := `[{"resource_logs":{"resource":{"attrs_id":0,"dropped_attributes_count":null},"schema_url":"schema1","scope_logs":[{"logs":[{"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"id":0,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"attrs_id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}},{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}}
+,{"resource_logs":{"resource":{"attrs_id":1,"dropped_attributes_count":1},"schema_url":"schema2","scope_logs":[{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}}
+]`
+	jsonassert.JSONCanonicalEq(t, expected, actual)
+
+	for _, relatedRecord := range relatedRecords {
+		switch relatedRecord.PayloadType() {
+		case v1.OtlpArrowPayloadType_RESOURCE_ATTRS:
+			expected = `[{"id":0,"key":"bool","value":[3,true]}
+,{"id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
+,{"id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"id":0,"key":"double","value":[2,1]}
+,{"id":1,"key":"double","value":[2,2]}
+,{"id":0,"key":"int","value":[1,1]}
+,{"id":1,"key":"int","value":[1,2]}
+,{"id":0,"key":"str","value":[0,"string1"]}
+,{"id":1,"key":"str","value":[0,"string2"]}
 ]`
 
-	require.JSONEq(t, expected, string(json))
+		case v1.OtlpArrowPayloadType_SCOPE_ATTRS:
+			expected = `[{"id":0,"key":"bool","value":[3,true]}
+,{"id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
+,{"id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"id":2,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"id":0,"key":"double","value":[2,1]}
+,{"id":1,"key":"double","value":[2,2]}
+,{"id":2,"key":"double","value":[2,2]}
+,{"id":0,"key":"int","value":[1,1]}
+,{"id":1,"key":"int","value":[1,2]}
+,{"id":2,"key":"int","value":[1,2]}
+,{"id":0,"key":"str","value":[0,"string1"]}
+,{"id":1,"key":"str","value":[0,"string2"]}
+,{"id":2,"key":"str","value":[0,"string2"]}
+]`
+
+		case v1.OtlpArrowPayloadType_LOG_ATTRS:
+			expected = `[{"id":0,"key":"double","value":[2,1]}
+,{"id":1,"key":"double","value":[2,2]}
+,{"id":2,"key":"double","value":[2,2]}
+,{"id":3,"key":"double","value":[2,2]}
+,{"id":0,"key":"int","value":[1,1]}
+,{"id":1,"key":"int","value":[1,2]}
+,{"id":2,"key":"int","value":[1,2]}
+,{"id":3,"key":"int","value":[1,2]}
+,{"id":0,"key":"str","value":[0,"string1"]}
+,{"id":1,"key":"str","value":[0,"string2"]}
+,{"id":2,"key":"str","value":[0,"string2"]}
+,{"id":3,"key":"str","value":[0,"string2"]}
+]`
+
+		default:
+			panic(fmt.Sprint("unexpected payload type: ", relatedRecord.PayloadType()))
+		}
+
+		observed, err := relatedRecord.Record().MarshalJSON()
+		require.NoError(t, err)
+		relatedRecord.Record().Release()
+
+		require.JSONEq(t, expected, string(observed))
+
+		relatedRecord.Record().Release()
+	}
 }
 
 func ToResourceLogGroup(resLogs plog.ResourceLogs) *ResourceLogGroup {
@@ -213,9 +383,13 @@ func TestLogs(t *testing.T) {
 	defer rBuilder.Release()
 
 	var record arrow.Record
+	var relatedRecords []*record_message.RecordMessage
+
+	conf := config.DefaultConfig()
+	stats := stats.NewProducerStats()
 
 	for {
-		tb, err := NewLogsBuilder(rBuilder, false)
+		tb, err := NewLogsBuilder(rBuilder, conf, stats)
 		require.NoError(t, err)
 		defer tb.Release()
 
@@ -223,20 +397,85 @@ func TestLogs(t *testing.T) {
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
+		if err != nil {
+			assert.Error(t, acommon.ErrSchemaNotUpToDate)
+			continue
+		}
+
+		relatedRecords, err = tb.RelatedData().BuildRecordMessages()
 		if err == nil {
 			break
 		}
 		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
 
-	json, err := record.MarshalJSON()
+	actual, err := record.MarshalJSON()
 	require.NoError(t, err)
 
 	record.Release()
 
-	expected := `[{"resource_logs":[{"resource":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null},"schema_url":"schema1","scope_logs":[{"logs":[{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]}],"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"attributes":[{"key":"str","value":[0,"string1"]},{"key":"int","value":[1,1]},{"key":"double","value":[2,1]},{"key":"bool","value":[3,true]},{"key":"bytes","value":[4,"Ynl0ZXMx"]}],"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}},{"logs":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]},{"resource":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1},"schema_url":"schema2","scope_logs":[{"logs":[{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]}],"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attributes":[{"key":"str","value":[0,"string2"]},{"key":"int","value":[1,2]},{"key":"double","value":[2,2]},{"key":"bytes","value":[4,"Ynl0ZXMy"]}],"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}]}
+	expected := `[{"resource_logs":[{"resource":{"attrs_id":0,"dropped_attributes_count":null},"schema_url":"schema1","scope_logs":[{"logs":[{"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"id":0,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"attrs_id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}},{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]},{"resource":{"attrs_id":1,"dropped_attributes_count":1},"schema_url":"schema2","scope_logs":[{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}]}
 ]`
-	require.JSONEq(t, expected, string(json))
+
+	jsonassert.JSONCanonicalEq(t, expected, actual)
+
+	for _, relatedRecord := range relatedRecords {
+		switch relatedRecord.PayloadType() {
+		case v1.OtlpArrowPayloadType_RESOURCE_ATTRS:
+			expected = `[{"id":0,"key":"bool","value":[3,true]}
+,{"id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
+,{"id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"id":0,"key":"double","value":[2,1]}
+,{"id":1,"key":"double","value":[2,2]}
+,{"id":0,"key":"int","value":[1,1]}
+,{"id":1,"key":"int","value":[1,2]}
+,{"id":0,"key":"str","value":[0,"string1"]}
+,{"id":1,"key":"str","value":[0,"string2"]}
+]`
+
+		case v1.OtlpArrowPayloadType_SCOPE_ATTRS:
+			expected = `[{"id":0,"key":"bool","value":[3,true]}
+,{"id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
+,{"id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"id":2,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"id":0,"key":"double","value":[2,1]}
+,{"id":1,"key":"double","value":[2,2]}
+,{"id":2,"key":"double","value":[2,2]}
+,{"id":0,"key":"int","value":[1,1]}
+,{"id":1,"key":"int","value":[1,2]}
+,{"id":2,"key":"int","value":[1,2]}
+,{"id":0,"key":"str","value":[0,"string1"]}
+,{"id":1,"key":"str","value":[0,"string2"]}
+,{"id":2,"key":"str","value":[0,"string2"]}
+]`
+
+		case v1.OtlpArrowPayloadType_LOG_ATTRS:
+			expected = `[{"id":0,"key":"double","value":[2,1]}
+,{"id":1,"key":"double","value":[2,2]}
+,{"id":2,"key":"double","value":[2,2]}
+,{"id":3,"key":"double","value":[2,2]}
+,{"id":0,"key":"int","value":[1,1]}
+,{"id":1,"key":"int","value":[1,2]}
+,{"id":2,"key":"int","value":[1,2]}
+,{"id":3,"key":"int","value":[1,2]}
+,{"id":0,"key":"str","value":[0,"string1"]}
+,{"id":1,"key":"str","value":[0,"string2"]}
+,{"id":2,"key":"str","value":[0,"string2"]}
+,{"id":3,"key":"str","value":[0,"string2"]}
+]`
+
+		default:
+			panic(fmt.Sprint("unexpected payload type: ", relatedRecord.PayloadType()))
+		}
+
+		observed, err := relatedRecord.Record().MarshalJSON()
+		require.NoError(t, err)
+		relatedRecord.Record().Release()
+
+		require.JSONEq(t, expected, string(observed))
+
+		relatedRecord.Record().Release()
+	}
 }
 
 func LogRecord1() plog.LogRecord {

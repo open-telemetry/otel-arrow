@@ -21,7 +21,7 @@ import (
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/array"
 
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow_old"
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -33,7 +33,7 @@ var (
 	ScopeLogsDT = arrow.StructOf([]arrow.Field{
 		{Name: constants.Scope, Type: acommon.ScopeDT, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.SchemaUrl, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
-		{Name: constants.Logs, Type: arrow.ListOf(LogRecordDT), Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.Logs, Type: arrow.ListOf(LogRecordDT)},
 	}...)
 )
 
@@ -75,20 +75,23 @@ func (b *ScopeLogsBuilder) Build() (*array.Struct, error) {
 }
 
 // Append appends a new scope logs to the builder.
-func (b *ScopeLogsBuilder) Append(slg *ScopeLogGroup) error {
+func (b *ScopeLogsBuilder) Append(slg *ScopeLogGroup, relatedData *RelatedData) error {
 	if b.released {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(slg, func() error {
-		if err := b.scb.Append(slg.Scope); err != nil {
+		if err := b.scb.Append(slg.Scope, relatedData.AttrsBuilders().scope.Accumulator()); err != nil {
 			return werror.Wrap(err)
 		}
 		b.schb.AppendNonEmpty(slg.ScopeSchemaUrl)
 		lrc := len(slg.Logs)
+
+		// ToDo shared attributes ?
+
 		return b.lrsb.Append(lrc, func() error {
 			for i := 0; i < lrc; i++ {
-				if err := b.lrb.Append(slg.Logs[i]); err != nil {
+				if err := b.lrb.Append(slg.Logs[i], relatedData); err != nil {
 					return werror.Wrap(err)
 				}
 			}

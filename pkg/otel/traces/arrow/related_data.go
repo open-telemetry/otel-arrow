@@ -20,14 +20,11 @@ package arrow
 // Infrastructure to manage related records.
 
 import (
-	"errors"
 	"math"
 
-	"github.com/apache/arrow/go/v12/arrow"
-
 	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
-	config2 "github.com/f5/otel-arrow-adapter/pkg/config"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	cfg "github.com/f5/otel-arrow-adapter/pkg/config"
+	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	config "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
@@ -35,70 +32,72 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
-// RelatedData is a collection of related data constructs used by traces.
-type RelatedData struct {
-	spanCount uint16
+type (
+	// RelatedData is a collection of related/dependent data to span entities.
+	RelatedData struct {
+		spanCount uint64
 
-	attrsBuilders       *AttrsBuilders
-	attrsRecordBuilders *AttrsRecordBuilders
+		attrsBuilders       *AttrsBuilders
+		attrsRecordBuilders *AttrsRecordBuilders
 
-	eventBuilder       *EventBuilder
-	eventRecordBuilder *builder.RecordBuilderExt
+		eventBuilder       *EventBuilder
+		eventRecordBuilder *builder.RecordBuilderExt
 
-	linkBuilder       *LinkBuilder
-	linkRecordBuilder *builder.RecordBuilderExt
-}
+		linkBuilder       *LinkBuilder
+		linkRecordBuilder *builder.RecordBuilderExt
+	}
 
-// AttrsBuilders groups together AttrsBuilder instances used to build related
-// data attributes (i.e. resource attributes, scope attributes, span attributes,
-// event attributes, and link attributes).
-type AttrsBuilders struct {
-	resource *Attrs16Builder
-	scope    *Attrs16Builder
-	span     *Attrs16Builder
-	event    *Attrs32Builder
-	link     *Attrs32Builder
-}
+	// AttrsBuilders groups together AttrsBuilder instances used to build related
+	// data attributes (i.e. resource attributes, scope attributes, span attributes,
+	// event attributes, and link attributes).
+	AttrsBuilders struct {
+		resource *carrow.Attrs16Builder
+		scope    *carrow.Attrs16Builder
+		span     *carrow.Attrs16Builder
+		event    *carrow.Attrs32Builder
+		link     *carrow.Attrs32Builder
+	}
 
-// AttrsRecordBuilders is a collection of RecordBuilderExt instances used
-// to build related data records (i.e. resource attributes, scope attributes,
-// span attributes, event attributes, and link attributes).
-type AttrsRecordBuilders struct {
-	resource *builder.RecordBuilderExt
-	scope    *builder.RecordBuilderExt
-	span     *builder.RecordBuilderExt
-	event    *builder.RecordBuilderExt
-	link     *builder.RecordBuilderExt
-}
+	// AttrsRecordBuilders is a collection of RecordBuilderExt instances used
+	// to build related data records (i.e. resource attributes, scope attributes,
+	// span attributes, event attributes, and link attributes).
+	AttrsRecordBuilders struct {
+		resource *builder.RecordBuilderExt
+		scope    *builder.RecordBuilderExt
+		span     *builder.RecordBuilderExt
+		event    *builder.RecordBuilderExt
+		link     *builder.RecordBuilderExt
+	}
+)
 
-func NewRelatedData(cfg *config2.Config, stats *stats.ProducerStats) (*RelatedData, error) {
-	attrsResourceRB := builder.NewRecordBuilderExt(cfg.Pool, AttrsSchema16, config.NewDictionary(cfg.LimitIndexSize), stats)
-	attrsScopeRB := builder.NewRecordBuilderExt(cfg.Pool, AttrsSchema16, config.NewDictionary(cfg.LimitIndexSize), stats)
-	attrsSpanRB := builder.NewRecordBuilderExt(cfg.Pool, AttrsSchema16, config.NewDictionary(cfg.LimitIndexSize), stats)
-	attrsEventRB := builder.NewRecordBuilderExt(cfg.Pool, AttrsSchema32, config.NewDictionary(cfg.LimitIndexSize), stats)
-	attrsLinkRB := builder.NewRecordBuilderExt(cfg.Pool, AttrsSchema32, config.NewDictionary(cfg.LimitIndexSize), stats)
+func NewRelatedData(cfg *cfg.Config, stats *stats.ProducerStats) (*RelatedData, error) {
+	attrsResourceRB := builder.NewRecordBuilderExt(cfg.Pool, carrow.AttrsSchema16, config.NewDictionary(cfg.LimitIndexSize), stats)
+	attrsScopeRB := builder.NewRecordBuilderExt(cfg.Pool, carrow.AttrsSchema16, config.NewDictionary(cfg.LimitIndexSize), stats)
+	attrsSpanRB := builder.NewRecordBuilderExt(cfg.Pool, carrow.AttrsSchema16, config.NewDictionary(cfg.LimitIndexSize), stats)
+	attrsEventRB := builder.NewRecordBuilderExt(cfg.Pool, carrow.AttrsSchema32, config.NewDictionary(cfg.LimitIndexSize), stats)
+	attrsLinkRB := builder.NewRecordBuilderExt(cfg.Pool, carrow.AttrsSchema32, config.NewDictionary(cfg.LimitIndexSize), stats)
 
-	attrsResourceBuilder, err := NewAttrs16Builder(attrsResourceRB)
+	attrsResourceBuilder, err := carrow.NewAttrs16Builder(attrsResourceRB)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
 
-	attrsScopeBuilder, err := NewAttrs16Builder(attrsScopeRB)
+	attrsScopeBuilder, err := carrow.NewAttrs16Builder(attrsScopeRB)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
 
-	attrsSpanBuilder, err := NewAttrs16Builder(attrsSpanRB)
+	attrsSpanBuilder, err := carrow.NewAttrs16Builder(attrsSpanRB)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
 
-	attrsEventBuilder, err := NewAttrs32Builder(attrsEventRB)
+	attrsEventBuilder, err := carrow.NewAttrs32Builder(attrsEventRB)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
 
-	attrsLinkBuilder, err := NewAttrs32Builder(attrsLinkRB)
+	attrsLinkBuilder, err := carrow.NewAttrs32Builder(attrsLinkRB)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
@@ -183,7 +182,7 @@ func (r *RelatedData) Reset() {
 }
 
 func (r *RelatedData) SpanCount() uint16 {
-	return r.spanCount
+	return uint16(r.spanCount)
 }
 
 func (r *RelatedData) NextSpanID() uint16 {
@@ -194,14 +193,14 @@ func (r *RelatedData) NextSpanID() uint16 {
 	}
 
 	r.spanCount++
-	return sc
+	return uint16(sc)
 }
 
 func (r *RelatedData) BuildRecordMessages() ([]*record_message.RecordMessage, error) {
 	recordMessages := make([]*record_message.RecordMessage, 0, 6)
 
 	if !r.attrsBuilders.resource.IsEmpty() {
-		attrsResRec, err := r.attrsBuilders.BuildAttrs16Record(r.attrsBuilders.resource)
+		attrsResRec, err := r.attrsBuilders.resource.Build()
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
@@ -210,7 +209,7 @@ func (r *RelatedData) BuildRecordMessages() ([]*record_message.RecordMessage, er
 	}
 
 	if !r.attrsBuilders.scope.IsEmpty() {
-		attrsScopeRec, err := r.attrsBuilders.BuildAttrs16Record(r.attrsBuilders.scope)
+		attrsScopeRec, err := r.attrsBuilders.scope.Build()
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
@@ -219,7 +218,7 @@ func (r *RelatedData) BuildRecordMessages() ([]*record_message.RecordMessage, er
 	}
 
 	if !r.attrsBuilders.span.IsEmpty() {
-		attrsSpanRec, err := r.attrsBuilders.BuildAttrs16Record(r.attrsBuilders.span)
+		attrsSpanRec, err := r.attrsBuilders.span.Build()
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
@@ -237,7 +236,7 @@ func (r *RelatedData) BuildRecordMessages() ([]*record_message.RecordMessage, er
 	}
 
 	if !r.attrsBuilders.event.IsEmpty() {
-		attrsEventRec, err := r.attrsBuilders.BuildAttrs32Record(r.attrsBuilders.event)
+		attrsEventRec, err := r.attrsBuilders.event.Build()
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
@@ -255,7 +254,7 @@ func (r *RelatedData) BuildRecordMessages() ([]*record_message.RecordMessage, er
 	}
 
 	if !r.attrsBuilders.link.IsEmpty() {
-		attrsLinkRec, err := r.attrsBuilders.BuildAttrs32Record(r.attrsBuilders.link)
+		attrsLinkRec, err := r.attrsBuilders.link.Build()
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
@@ -274,23 +273,23 @@ func (ab *AttrsBuilders) Release() {
 	ab.link.Release()
 }
 
-func (ab *AttrsBuilders) Resource() *Attrs16Builder {
+func (ab *AttrsBuilders) Resource() *carrow.Attrs16Builder {
 	return ab.resource
 }
 
-func (ab *AttrsBuilders) Scope() *Attrs16Builder {
+func (ab *AttrsBuilders) Scope() *carrow.Attrs16Builder {
 	return ab.scope
 }
 
-func (ab *AttrsBuilders) Span() *Attrs16Builder {
+func (ab *AttrsBuilders) Span() *carrow.Attrs16Builder {
 	return ab.span
 }
 
-func (ab *AttrsBuilders) Event() *Attrs32Builder {
+func (ab *AttrsBuilders) Event() *carrow.Attrs32Builder {
 	return ab.event
 }
 
-func (ab *AttrsBuilders) Link() *Attrs32Builder {
+func (ab *AttrsBuilders) Link() *carrow.Attrs32Builder {
 	return ab.link
 }
 
@@ -300,68 +299,6 @@ func (ab *AttrsBuilders) Reset() {
 	ab.span.Accumulator().Reset()
 	ab.event.Accumulator().Reset()
 	ab.link.Accumulator().Reset()
-}
-
-func (ab *AttrsBuilders) BuildAttrs16Record(attrsBuilder *Attrs16Builder) (arrow.Record, error) {
-	schemaNotUpToDateCount := 0
-
-	var record arrow.Record
-	var err error
-
-	// Loop until the record is built successfully.
-	// Intermediaries steps may be required to update the schema.
-	for {
-		record, err = attrsBuilder.Build()
-		if err != nil {
-			if record != nil {
-				record.Release()
-			}
-
-			switch {
-			case errors.Is(err, schema.ErrSchemaNotUpToDate):
-				schemaNotUpToDateCount++
-				if schemaNotUpToDateCount > 5 {
-					panic("Too many consecutive schema updates. This shouldn't happen.")
-				}
-			default:
-				return nil, werror.Wrap(err)
-			}
-		} else {
-			break
-		}
-	}
-	return record, werror.Wrap(err)
-}
-
-func (ab *AttrsBuilders) BuildAttrs32Record(attrsBuilder *Attrs32Builder) (arrow.Record, error) {
-	schemaNotUpToDateCount := 0
-
-	var record arrow.Record
-	var err error
-
-	// Loop until the record is built successfully.
-	// Intermediaries steps may be required to update the schema.
-	for {
-		record, err = attrsBuilder.Build()
-		if err != nil {
-			if record != nil {
-				record.Release()
-			}
-
-			switch {
-			case errors.Is(err, schema.ErrSchemaNotUpToDate):
-				schemaNotUpToDateCount++
-				if schemaNotUpToDateCount > 5 {
-					panic("Too many consecutive schema updates. This shouldn't happen.")
-				}
-			default:
-				return nil, werror.Wrap(err)
-			}
-		} else {
-			break
-		}
-	}
-	return record, werror.Wrap(err)
 }
 
 func (arb *AttrsRecordBuilders) Release() {

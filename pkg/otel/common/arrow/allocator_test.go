@@ -47,7 +47,7 @@ func TestLimitedAllocator(t *testing.T) {
 	}()
 	require.NotNil(t, capture)
 	require.True(t, errors.Is(capture.(error), LimitError{}))
-	require.Equal(t, "allocation size 1 exceeds limit 1000000", capture.(error).Error())
+	require.Equal(t, "allocation size 1 exceeds limit 1000000 (in-use=1000000)", capture.(error).Error())
 
 	limit.Free(b)
 

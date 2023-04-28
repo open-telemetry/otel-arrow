@@ -37,6 +37,7 @@ type (
 	}
 
 	SpanLinksStore struct {
+		nextID    uint16
 		linksByID map[uint16][]*ptrace.SpanLink
 	}
 )

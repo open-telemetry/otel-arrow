@@ -19,7 +19,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp_old"
+	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
@@ -57,7 +57,12 @@ func NewResourceLogsIds(schema *arrow.Schema) (*ResourceLogsIds, error) {
 	}, nil
 }
 
-func AppendResourceLogsInto(logs plog.Logs, record arrow.Record, ids *LogsIds) error {
+func AppendResourceLogsInto(
+	logs plog.Logs,
+	record arrow.Record,
+	ids *LogsIds,
+	relatedData *RelatedData,
+) error {
 	resLogsSlice := logs.ResourceLogs()
 	resLogsCount := int(record.NumRows())
 
@@ -71,7 +76,7 @@ func AppendResourceLogsInto(logs plog.Logs, record arrow.Record, ids *LogsIds) e
 		for resLogsIdx := arrowResLogs.Start(); resLogsIdx < arrowResLogs.End(); resLogsIdx++ {
 			resLogs := resLogsSlice.AppendEmpty()
 
-			if err = otlp.UpdateResourceWith(resLogs.Resource(), arrowResLogs, resLogsIdx, ids.ResourceLogs.Resource); err != nil {
+			if err = otlp.UpdateResourceWith(resLogs.Resource(), arrowResLogs, resLogsIdx, ids.ResourceLogs.Resource, relatedData.ResAttrMapStore); err != nil {
 				return werror.Wrap(err)
 			}
 
@@ -81,7 +86,7 @@ func AppendResourceLogsInto(logs plog.Logs, record arrow.Record, ids *LogsIds) e
 			}
 			resLogs.SetSchemaUrl(schemaUrl)
 
-			err = AppendScopeLogsInto(resLogs, arrowResLogs, resLogsIdx, ids.ResourceLogs.ScopeLogs)
+			err = AppendScopeLogsInto(resLogs, arrowResLogs, resLogsIdx, ids.ResourceLogs.ScopeLogs, relatedData)
 			if err != nil {
 				return werror.Wrap(err)
 			}

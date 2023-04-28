@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 
+	"github.com/f5/otel-arrow-adapter/pkg/config"
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
@@ -33,6 +34,7 @@ import (
 	logsarrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
 	logsotlp "github.com/f5/otel-arrow-adapter/pkg/otel/logs/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
+	"github.com/f5/otel-arrow-adapter/pkg/record_message"
 )
 
 var (
@@ -61,23 +63,32 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	defer rBuilder.Release()
 
 	var record arrow.Record
+	var relatedRecords []*record_message.RecordMessage
+
+	conf := config.DefaultConfig()
 
 	for {
-		lb, err := logsarrow.NewLogsBuilder(rBuilder, false)
+		lb, err := logsarrow.NewLogsBuilder(rBuilder, conf, stats.NewProducerStats())
 		require.NoError(t, err)
 		defer lb.Release()
+
 		err = lb.Append(expectedRequest.Logs())
 		require.NoError(t, err)
 
 		record, err = rBuilder.NewRecord()
 		if err == nil {
+			relatedRecords, err = lb.RelatedData().BuildRecordMessages()
+			require.NoError(t, err)
 			break
 		}
 		require.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
 
+	relatedData, _, err := logsotlp.RelatedDataFrom(relatedRecords)
+	require.NoError(t, err)
+
 	// Convert the Arrow records back to OTLP.
-	logs, err := logsotlp.LogsFrom(record)
+	logs, err := logsotlp.LogsFrom(record, relatedData)
 	require.NoError(t, err)
 
 	record.Release()

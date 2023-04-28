@@ -24,7 +24,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -50,11 +49,6 @@ var (
 )
 
 type (
-	AttributesStats struct {
-		AttrsHistogram *hdrhistogram.Histogram
-		AnyValueStats  *AnyValueStats
-	}
-
 	// AttributesBuilder is a helper to build a map of attributes.
 	AttributesBuilder struct {
 		released bool
@@ -210,64 +204,6 @@ func (b *AttributesBuilder) Release() {
 
 		b.released = true
 	}
-}
-
-func NewAttributesStats() *AttributesStats {
-	return &AttributesStats{
-		AttrsHistogram: hdrhistogram.New(0, 1000000, 1),
-		AnyValueStats:  NewAnyValueStats(),
-	}
-}
-
-func (a *AttributesStats) UpdateStats(attrs pcommon.Map) {
-	counters := ValueTypeCounters{}
-
-	if err := a.AttrsHistogram.RecordValue(int64(attrs.Len())); err != nil {
-		panic(fmt.Sprintf("failed to record attrs count: %v", err))
-	}
-
-	attrs.Range(func(key string, v pcommon.Value) bool {
-		a.AnyValueStats.UpdateStats(v, &counters)
-		return true
-	})
-
-	if err := a.AnyValueStats.StrHistogram.RecordValue(counters.strCount); err != nil {
-		panic(fmt.Sprintf("failed to record str count: %v", err))
-	}
-	if err := a.AnyValueStats.I64Histogram.RecordValue(counters.i64Count); err != nil {
-		panic(fmt.Sprintf("failed to record i64 count: %v", err))
-	}
-	if err := a.AnyValueStats.F64Histogram.RecordValue(counters.f64Count); err != nil {
-		panic(fmt.Sprintf("failed to record f64 count: %v", err))
-	}
-	if err := a.AnyValueStats.BoolHistogram.RecordValue(counters.boolCount); err != nil {
-		panic(fmt.Sprintf("failed to record bool count: %v", err))
-	}
-	if err := a.AnyValueStats.BinaryHistogram.RecordValue(counters.binaryCount); err != nil {
-		panic(fmt.Sprintf("failed to record binary count: %v", err))
-	}
-	if err := a.AnyValueStats.ListHistogram.RecordValue(counters.listCount); err != nil {
-		panic(fmt.Sprintf("failed to record list count: %v", err))
-	}
-	if err := a.AnyValueStats.MapHistogram.RecordValue(counters.mapCount); err != nil {
-		panic(fmt.Sprintf("failed to record map count: %v", err))
-	}
-}
-
-func (a *AttributesStats) Show(prefix string) {
-	if a.AttrsHistogram.Mean() == 0 {
-		return
-	}
-	fmt.Printf("%sAttributes -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
-		prefix,
-		a.AttrsHistogram.Mean(),
-		a.AttrsHistogram.Min(),
-		a.AttrsHistogram.Max(),
-		a.AttrsHistogram.StdDev(),
-		a.AttrsHistogram.ValueAtQuantile(50),
-		a.AttrsHistogram.ValueAtQuantile(99),
-	)
-	a.AnyValueStats.Show(prefix + "  ")
 }
 
 func NewAttributes16Accumulator() *Attributes16Accumulator {

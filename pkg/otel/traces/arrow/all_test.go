@@ -33,6 +33,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/config"
 	jsonassert "github.com/f5/otel-arrow-adapter/pkg/otel/assert"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
+	arrow2 "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
@@ -104,7 +105,7 @@ func TestEvent(t *testing.T) {
 
 	eventRBuilder := builder.NewRecordBuilderExt(pool, EventSchema, DefaultDictConfig, producerStats)
 	defer eventRBuilder.Release()
-	attrsRBuilder := builder.NewRecordBuilderExt(pool, AttrsSchema32, DefaultDictConfig, producerStats)
+	attrsRBuilder := builder.NewRecordBuilderExt(pool, arrow2.AttrsSchema32, DefaultDictConfig, producerStats)
 	defer attrsRBuilder.Release()
 
 	var eventsRecord, attrsRecord arrow.Record
@@ -119,7 +120,7 @@ func TestEvent(t *testing.T) {
 
 		eb, err := NewEventBuilder(eventRBuilder)
 		require.NoError(t, err)
-		ab, err := NewAttrs32Builder(attrsRBuilder)
+		ab, err := arrow2.NewAttrs32Builder(attrsRBuilder)
 		require.NoError(t, err)
 
 		events := ptrace.NewSpanEventSlice()
@@ -135,7 +136,7 @@ func TestEvent(t *testing.T) {
 			continue
 		}
 
-		attrsRecord, err = ab.Build()
+		attrsRecord, err = ab.TryBuild()
 		if err == nil {
 			break
 		}
@@ -179,7 +180,7 @@ func TestLink(t *testing.T) {
 
 	linkRBuilder := builder.NewRecordBuilderExt(pool, LinkSchema, DefaultDictConfig, producerStats)
 	defer linkRBuilder.Release()
-	attrsRBuilder := builder.NewRecordBuilderExt(pool, AttrsSchema32, DefaultDictConfig, producerStats)
+	attrsRBuilder := builder.NewRecordBuilderExt(pool, arrow2.AttrsSchema32, DefaultDictConfig, producerStats)
 	defer attrsRBuilder.Release()
 
 	var linksRecord, attrsRecord arrow.Record
@@ -194,7 +195,7 @@ func TestLink(t *testing.T) {
 
 		lb, err := NewLinkBuilder(linkRBuilder)
 		require.NoError(t, err)
-		ab, err := NewAttrs32Builder(attrsRBuilder)
+		ab, err := arrow2.NewAttrs32Builder(attrsRBuilder)
 		require.NoError(t, err)
 
 		links := ptrace.NewSpanLinkSlice()
@@ -210,7 +211,7 @@ func TestLink(t *testing.T) {
 			continue
 		}
 
-		attrsRecord, err = ab.Build()
+		attrsRecord, err = ab.TryBuild()
 		if err == nil {
 			break
 		}
@@ -293,7 +294,7 @@ func TestSpan(t *testing.T) {
 		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
 
-	json, err := record.MarshalJSON()
+	actual, err := record.MarshalJSON()
 	require.NoError(t, err)
 
 	record.Release()
@@ -301,7 +302,8 @@ func TestSpan(t *testing.T) {
 	expected := `[{"spans":{"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"duration_time_unix_nano":"1ms","id":0,"kind":3,"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}}
 ,{"spans":{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}}
 ]`
-	require.JSONEq(t, expected, string(json))
+
+	require.JSONEq(t, expected, string(actual))
 
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {
@@ -412,7 +414,7 @@ func TestScopeSpans(t *testing.T) {
 		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
 
-	json, err := record.MarshalJSON()
+	actual, err := record.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -423,7 +425,7 @@ func TestScopeSpans(t *testing.T) {
 ,{"scope_spans":{"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}}
 ]`
 
-	jsonassert.JSONCanonicalEq(t, expected, json)
+	jsonassert.JSONCanonicalEq(t, expected, actual)
 
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {
@@ -586,7 +588,7 @@ func TestResourceSpans(t *testing.T) {
 		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
 
-	json, err := record.MarshalJSON()
+	actual, err := record.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +599,7 @@ func TestResourceSpans(t *testing.T) {
 ,{"resource_spans":{"resource":{"attrs_id":1,"dropped_attributes_count":1},"schema_url":"schema2","scope_spans":[{"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]}}
 ]`
 
-	jsonassert.JSONCanonicalEq(t, expected, json)
+	jsonassert.JSONCanonicalEq(t, expected, actual)
 
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {
@@ -780,7 +782,7 @@ func TestTraces(t *testing.T) {
 		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
 
-	json, err := record.MarshalJSON()
+	actual, err := record.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -790,7 +792,7 @@ func TestTraces(t *testing.T) {
 	expected := `[{"resource_spans":[{"resource":{"attrs_id":0,"dropped_attributes_count":null},"schema_url":"schema1","scope_spans":[{"schema_url":"schema1","scope":{"attrs_id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"},"spans":[{"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"duration_time_unix_nano":"1ms","id":0,"kind":3,"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]},{"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]},{"resource":{"attrs_id":1,"dropped_attributes_count":1},"schema_url":"schema2","scope_spans":[{"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]}]}
 ]`
 
-	jsonassert.JSONCanonicalEq(t, expected, json)
+	jsonassert.JSONCanonicalEq(t, expected, actual)
 
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {

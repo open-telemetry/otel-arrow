@@ -29,6 +29,7 @@ import (
 
 type LogRecordIds struct {
 	Id                   int
+	RecordID             int
 	TimeUnixNano         int
 	ObservedTimeUnixNano int
 	TraceID              int
@@ -47,6 +48,7 @@ func NewLogRecordIds(scopeLogsDT *arrow.StructType) (*LogRecordIds, error) {
 		return nil, werror.Wrap(err)
 	}
 
+	ID, _ := arrowutils.FieldIDFromStruct(logDT, constants.ID)
 	timeUnixNano, _ := arrowutils.FieldIDFromStruct(logDT, constants.TimeUnixNano)
 	observedTimeUnixNano, _ := arrowutils.FieldIDFromStruct(logDT, constants.ObservedTimeUnixNano)
 	traceID, _ := arrowutils.FieldIDFromStruct(logDT, constants.TraceId)
@@ -65,6 +67,7 @@ func NewLogRecordIds(scopeLogsDT *arrow.StructType) (*LogRecordIds, error) {
 
 	return &LogRecordIds{
 		Id:                   id,
+		RecordID:             ID,
 		TimeUnixNano:         timeUnixNano,
 		ObservedTimeUnixNano: observedTimeUnixNano,
 		TraceID:              traceID,
@@ -78,8 +81,19 @@ func NewLogRecordIds(scopeLogsDT *arrow.StructType) (*LogRecordIds, error) {
 	}, nil
 }
 
-func AppendLogRecordInto(logs plog.LogRecordSlice, los *arrowutils.ListOfStructs, row int, ids *LogRecordIds) error {
+func AppendLogRecordInto(
+	logs plog.LogRecordSlice,
+	los *arrowutils.ListOfStructs,
+	row int,
+	ids *LogRecordIds,
+	relatedData *RelatedData,
+) error {
 	logRecord := logs.AppendEmpty()
+	deltaID, err := los.U16FieldByID(ids.RecordID, row)
+	if err != nil {
+		return werror.Wrap(err)
+	}
+	ID := relatedData.LogRecordIDFromDelta(deltaID)
 
 	timeUnixNano, err := los.TimestampFieldByID(ids.TimeUnixNano, row)
 	if err != nil {
@@ -121,6 +135,12 @@ func AppendLogRecordInto(logs plog.LogRecordSlice, los *arrowutils.ListOfStructs
 		}
 	} else {
 		return werror.WrapWithContext(ErrBodyNotSparseUnion, map[string]interface{}{"row": row})
+	}
+
+	logRecordAttrs := logRecord.Attributes()
+	attrs := relatedData.LogRecordAttrMapStore.AttributesByID(ID)
+	if attrs != nil {
+		attrs.CopyTo(logRecordAttrs)
 	}
 
 	err = otlp.AppendAttributesInto(logRecord.Attributes(), los.Array(), row, ids.Attributes)

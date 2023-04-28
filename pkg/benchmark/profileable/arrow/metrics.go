@@ -175,8 +175,4 @@ func (s *MetricsProfileable) Clear() {
 	}
 }
 func (s *MetricsProfileable) ShowStats() {
-	stats := s.producer.MetricsStats()
-	if stats != nil {
-		stats.Show()
-	}
 }

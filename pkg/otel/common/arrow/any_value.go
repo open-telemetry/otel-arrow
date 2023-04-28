@@ -18,9 +18,6 @@
 package arrow
 
 import (
-	"fmt"
-
-	"github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -65,16 +62,6 @@ var (
 		CborCode,
 	})
 )
-
-type AnyValueStats struct {
-	StrHistogram    *hdrhistogram.Histogram
-	I64Histogram    *hdrhistogram.Histogram
-	F64Histogram    *hdrhistogram.Histogram
-	BoolHistogram   *hdrhistogram.Histogram
-	BinaryHistogram *hdrhistogram.Histogram
-	ListHistogram   *hdrhistogram.Histogram
-	MapHistogram    *hdrhistogram.Histogram
-}
 
 // AnyValueBuilder is a helper to build an Arrow array containing a collection of OTLP Any Value.
 type AnyValueBuilder struct {
@@ -244,67 +231,4 @@ func (b *AnyValueBuilder) appendCbor(v []byte) error {
 	b.binaryBuilder.AppendNull()
 
 	return nil
-}
-
-func NewAnyValueStats() *AnyValueStats {
-	return &AnyValueStats{
-		StrHistogram:    hdrhistogram.New(0, 100000, 1),
-		I64Histogram:    hdrhistogram.New(0, 100000, 1),
-		F64Histogram:    hdrhistogram.New(0, 100000, 1),
-		BoolHistogram:   hdrhistogram.New(0, 100000, 1),
-		BinaryHistogram: hdrhistogram.New(0, 100000, 1),
-		ListHistogram:   hdrhistogram.New(0, 100000, 1),
-		MapHistogram:    hdrhistogram.New(0, 100000, 1),
-	}
-}
-
-func (a *AnyValueStats) UpdateStats(v pcommon.Value, counters *ValueTypeCounters) {
-	switch v.Type() {
-	case pcommon.ValueTypeStr:
-		counters.strCount++
-	case pcommon.ValueTypeInt:
-		counters.i64Count++
-	case pcommon.ValueTypeDouble:
-		counters.f64Count++
-	case pcommon.ValueTypeBool:
-		counters.boolCount++
-	case pcommon.ValueTypeBytes:
-		counters.binaryCount++
-	case pcommon.ValueTypeSlice:
-		counters.listCount++
-	case pcommon.ValueTypeMap:
-		counters.mapCount++
-	default: // ignore
-	}
-}
-
-func (a *AnyValueStats) Show(prefix string) {
-	if a.StrHistogram.Mean() > 0 {
-		fmt.Printf("%sstr      -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
-			prefix, a.StrHistogram.Mean(), a.StrHistogram.Min(), a.StrHistogram.Max(), a.StrHistogram.StdDev(), a.StrHistogram.ValueAtQuantile(50), a.StrHistogram.ValueAtQuantile(99))
-	}
-	if a.I64Histogram.Mean() > 0 {
-		fmt.Printf("%si64      -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
-			prefix, a.I64Histogram.Mean(), a.I64Histogram.Min(), a.I64Histogram.Max(), a.I64Histogram.StdDev(), a.I64Histogram.ValueAtQuantile(50), a.I64Histogram.ValueAtQuantile(99))
-	}
-	if a.F64Histogram.Mean() > 0 {
-		fmt.Printf("%sf64      -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
-			prefix, a.F64Histogram.Mean(), a.F64Histogram.Min(), a.F64Histogram.Max(), a.F64Histogram.StdDev(), a.F64Histogram.ValueAtQuantile(50), a.F64Histogram.ValueAtQuantile(99))
-	}
-	if a.BoolHistogram.Mean() > 0 {
-		fmt.Printf("%sbool     -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
-			prefix, a.BoolHistogram.Mean(), a.BoolHistogram.Min(), a.BoolHistogram.Max(), a.BoolHistogram.StdDev(), a.BoolHistogram.ValueAtQuantile(50), a.BoolHistogram.ValueAtQuantile(99))
-	}
-	if a.BinaryHistogram.Mean() > 0 {
-		fmt.Printf("%sbinary   -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
-			prefix, a.BinaryHistogram.Mean(), a.BinaryHistogram.Min(), a.BinaryHistogram.Max(), a.BinaryHistogram.StdDev(), a.BinaryHistogram.ValueAtQuantile(50), a.BinaryHistogram.ValueAtQuantile(99))
-	}
-	if a.ListHistogram.Mean() > 0 {
-		fmt.Printf("%slist     -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
-			prefix, a.ListHistogram.Mean(), a.ListHistogram.Min(), a.ListHistogram.Max(), a.ListHistogram.StdDev(), a.ListHistogram.ValueAtQuantile(50), a.ListHistogram.ValueAtQuantile(99))
-	}
-	if a.MapHistogram.Mean() > 0 {
-		fmt.Printf("%smap      -> mean: %8.2f, min: %8d, max: %8d, std-dev: %8.2f, p50: %8d, p99: %8d\n",
-			prefix, a.MapHistogram.Mean(), a.MapHistogram.Min(), a.MapHistogram.Max(), a.MapHistogram.StdDev(), a.MapHistogram.ValueAtQuantile(50), a.MapHistogram.ValueAtQuantile(99))
-	}
 }

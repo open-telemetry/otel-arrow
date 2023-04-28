@@ -57,7 +57,12 @@ func NewResourceSpansIds(schema *arrow.Schema) (*ResourceSpansIds, error) {
 	}, nil
 }
 
-func AppendResourceSpansInto(traces ptrace.Traces, record arrow.Record, traceIds *TraceIds, relatedData *RelatedData) error {
+func AppendResourceSpansInto(
+	traces ptrace.Traces,
+	record arrow.Record,
+	traceIds *TraceIds,
+	relatedData *RelatedData,
+) error {
 	resSpansSlice := traces.ResourceSpans()
 	resSpansCount := int(record.NumRows())
 

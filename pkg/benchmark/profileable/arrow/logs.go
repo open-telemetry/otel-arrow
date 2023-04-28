@@ -25,41 +25,51 @@ import (
 	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
-	"github.com/f5/otel-arrow-adapter/pkg/config"
+	cfg "github.com/f5/otel-arrow-adapter/pkg/config"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 )
 
 const OtlpArrow = "OTLP_ARROW"
 
-var logsProducerOptions = []config.Option{
-	config.WithNoZstd(),
-	config.WithStats(),
-}
-
 type LogsProfileable struct {
-	tags              []string
-	compression       benchmark.CompressionAlgorithm
-	dataset           dataset.LogsDataset
-	logs              []plog.Logs
-	producer          *arrow_record.Producer
-	consumer          *arrow_record.Consumer
-	batchArrowRecords []*v1.BatchArrowRecords
-	config            *benchmark.Config
-	pool              *memory.GoAllocator
-	unaryRpcMode      bool
+	tags                []string
+	compression         benchmark.CompressionAlgorithm
+	dataset             dataset.LogsDataset
+	logs                []plog.Logs
+	producer            *arrow_record.Producer
+	consumer            *arrow_record.Consumer
+	batchArrowRecords   []*v1.BatchArrowRecords
+	config              *benchmark.Config
+	pool                *memory.GoAllocator
+	unaryRpcMode        bool
+	stats               bool
+	logsProducerOptions []cfg.Option
 }
 
 func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *benchmark.Config) *LogsProfileable {
+	var logsProducerOptions []cfg.Option
+
+	if config.Compression {
+		logsProducerOptions = append(logsProducerOptions, cfg.WithZstd())
+	} else {
+		logsProducerOptions = append(logsProducerOptions, cfg.WithNoZstd())
+	}
+	if config.Stats {
+		logsProducerOptions = append(logsProducerOptions, cfg.WithStats())
+	}
+
 	return &LogsProfileable{
-		tags:              tags,
-		dataset:           dataset,
-		compression:       benchmark.Zstd(),
-		producer:          arrow_record.NewProducerWithOptions(logsProducerOptions...),
-		consumer:          arrow_record.NewConsumer(),
-		batchArrowRecords: make([]*v1.BatchArrowRecords, 0, 10),
-		config:            config,
-		pool:              memory.NewGoAllocator(),
-		unaryRpcMode:      false,
+		tags:                tags,
+		dataset:             dataset,
+		compression:         benchmark.Zstd(),
+		producer:            arrow_record.NewProducerWithOptions(logsProducerOptions...),
+		consumer:            arrow_record.NewConsumer(),
+		batchArrowRecords:   make([]*v1.BatchArrowRecords, 0, 10),
+		config:              config,
+		pool:                memory.NewGoAllocator(),
+		unaryRpcMode:        false,
+		stats:               config.Stats,
+		logsProducerOptions: logsProducerOptions,
 	}
 }
 
@@ -86,7 +96,7 @@ func (s *LogsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm 
 }
 func (s *LogsProfileable) StartProfiling(_ io.Writer) {
 	if !s.unaryRpcMode {
-		s.producer = arrow_record.NewProducerWithOptions(logsProducerOptions...)
+		s.producer = arrow_record.NewProducerWithOptions(s.logsProducerOptions...)
 		s.consumer = arrow_record.NewConsumer()
 	}
 }
@@ -103,7 +113,7 @@ func (s *LogsProfileable) EndProfiling(_ io.Writer) {
 func (s *LogsProfileable) InitBatchSize(_ io.Writer, _ int) {}
 func (s *LogsProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	if s.unaryRpcMode {
-		s.producer = arrow_record.NewProducerWithOptions(logsProducerOptions...)
+		s.producer = arrow_record.NewProducerWithOptions(s.logsProducerOptions...)
 		s.consumer = arrow_record.NewConsumer()
 	}
 	s.logs = s.dataset.Logs(startAt, size)
@@ -158,7 +168,7 @@ func (s *LogsProfileable) ConvertOtlpArrowToOtlp(_ io.Writer) {
 			panic(err)
 		}
 		if len(logs) == 0 {
-			panic("no logs")
+			println("no logs")
 		}
 	}
 }
@@ -176,8 +186,7 @@ func (s *LogsProfileable) Clear() {
 	}
 }
 func (s *LogsProfileable) ShowStats() {
-	stats := s.producer.LogsStats()
-	if stats != nil {
-		stats.Show()
+	if s.stats {
+		s.producer.ShowStats()
 	}
 }

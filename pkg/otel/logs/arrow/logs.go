@@ -21,17 +21,18 @@ import (
 	"github.com/apache/arrow/go/v12/arrow"
 	"go.opentelemetry.io/collector/pdata/plog"
 
+	"github.com/f5/otel-arrow-adapter/pkg/config"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-	schema "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 // Schema is the Arrow schema for the OTLP Arrow Logs record.
 var (
 	Schema = arrow.NewSchema([]arrow.Field{
-		{Name: constants.ResourceLogs, Type: arrow.ListOf(ResourceLogsDT), Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.ResourceLogs, Type: arrow.ListOf(ResourceLogsDT)},
 	}, nil)
 )
 
@@ -39,30 +40,50 @@ var (
 type LogsBuilder struct {
 	released bool
 
-	builder   *builder.RecordBuilderExt // Record builder
-	rlb       *builder.ListBuilder      // ResourceLogs list builder
-	rlp       *ResourceLogsBuilder      // resource logs builder
+	builder *builder.RecordBuilderExt // Record builder
+
+	rlb *builder.ListBuilder // ResourceLogs list builder
+	rlp *ResourceLogsBuilder // resource logs builder
+
 	optimizer *LogsOptimizer
+	analyzer  *LogsAnalyzer
+
+	relatedData *RelatedData
 }
 
 // NewLogsBuilder creates a new LogsBuilder with a given allocator.
-func NewLogsBuilder(recordBuilder *builder.RecordBuilderExt, logsStats bool) (*LogsBuilder, error) {
+func NewLogsBuilder(
+	recordBuilder *builder.RecordBuilderExt,
+	cfg *config.Config,
+	stats *stats.ProducerStats,
+) (*LogsBuilder, error) {
 	var optimizer *LogsOptimizer
+	var analyzer *LogsAnalyzer
 
-	if logsStats {
-		optimizer = NewLogsOptimizer(acommon.WithStats())
+	relatedData, err := NewRelatedData(cfg, stats)
+	if err != nil {
+		panic(err)
+	}
+
+	if stats.SchemaStatsEnabled {
+		optimizer = NewLogsOptimizer(acommon.WithStats(), acommon.WithSort())
+		analyzer = NewLogsAnalyzer()
 	} else {
-		optimizer = NewLogsOptimizer()
+		optimizer = NewLogsOptimizer(acommon.WithSort())
 	}
 
 	b := &LogsBuilder{
-		released:  false,
-		builder:   recordBuilder,
-		optimizer: optimizer,
+		released:    false,
+		builder:     recordBuilder,
+		optimizer:   optimizer,
+		analyzer:    analyzer,
+		relatedData: relatedData,
 	}
+
 	if err := b.init(); err != nil {
 		return nil, werror.Wrap(err)
 	}
+
 	return b, nil
 }
 
@@ -73,8 +94,8 @@ func (b *LogsBuilder) init() error {
 	return nil
 }
 
-func (b *LogsBuilder) Stats() *LogsStats {
-	return b.optimizer.Stats()
+func (b *LogsBuilder) RelatedData() *RelatedData {
+	return b.relatedData
 }
 
 // Build builds an Arrow Record from the builder.
@@ -104,11 +125,15 @@ func (b *LogsBuilder) Append(logs plog.Logs) error {
 	}
 
 	optimLogs := b.optimizer.Optimize(logs)
+	if b.analyzer != nil {
+		b.analyzer.Analyze(optimLogs)
+		b.analyzer.ShowStats("")
+	}
 
 	rc := len(optimLogs.ResourceLogs)
 	return b.rlb.Append(rc, func() error {
 		for _, resLogGroup := range optimLogs.ResourceLogs {
-			if err := b.rlp.Append(resLogGroup); err != nil {
+			if err := b.rlp.Append(resLogGroup, b.relatedData); err != nil {
 				return werror.Wrap(err)
 			}
 		}
@@ -120,7 +145,12 @@ func (b *LogsBuilder) Append(logs plog.Logs) error {
 func (b *LogsBuilder) Release() {
 	if !b.released {
 		b.builder.Release()
-
 		b.released = true
+
+		b.relatedData.Release()
 	}
+}
+
+func (b *LogsBuilder) ShowSchema() {
+	b.builder.ShowSchema()
 }

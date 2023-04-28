@@ -21,7 +21,7 @@ import (
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/array"
 
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow_old"
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -75,20 +75,20 @@ func (b *ResourceLogsBuilder) Build() (*array.Struct, error) {
 }
 
 // Append appends a new resource logs to the builder.
-func (b *ResourceLogsBuilder) Append(rlg *ResourceLogGroup) error {
+func (b *ResourceLogsBuilder) Append(rlg *ResourceLogGroup, relatedData *RelatedData) error {
 	if b.released {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(rlg, func() error {
-		if err := b.rb.Append(rlg.Resource); err != nil {
+		if err := b.rb.Append(rlg.Resource, relatedData.AttrsBuilders().Resource().Accumulator()); err != nil {
 			return werror.Wrap(err)
 		}
 		b.schb.AppendNonEmpty(rlg.ResourceSchemaUrl)
 		sc := len(rlg.ScopeLogs)
 		return b.slsb.Append(sc, func() error {
 			for _, slg := range rlg.ScopeLogs {
-				if err := b.slb.Append(slg); err != nil {
+				if err := b.slb.Append(slg, relatedData); err != nil {
 					return werror.Wrap(err)
 				}
 			}

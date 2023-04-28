@@ -40,11 +40,13 @@ var (
 type TracesBuilder struct {
 	released bool
 
-	builder   *builder.RecordBuilderExt // Record builder
-	rsb       *builder.ListBuilder      // Resource spans list builder
-	rsp       *ResourceSpansBuilder     // resource spans builder
+	builder *builder.RecordBuilderExt // Record builder
+
+	rsb *builder.ListBuilder  // Resource spans list builder
+	rsp *ResourceSpansBuilder // resource spans builder
+
 	optimizer *TracesOptimizer
-	analyzer  *TraceAnalyzer
+	analyzer  *TracesAnalyzer
 
 	relatedData *RelatedData
 }
@@ -56,7 +58,7 @@ func NewTracesBuilder(
 	stats *stats.ProducerStats,
 ) (*TracesBuilder, error) {
 	var optimizer *TracesOptimizer
-	var analyzer *TraceAnalyzer
+	var analyzer *TracesAnalyzer
 
 	relatedData, err := NewRelatedData(cfg, stats)
 	if err != nil {
@@ -70,17 +72,19 @@ func NewTracesBuilder(
 		optimizer = NewTracesOptimizer(acommon.WithSort())
 	}
 
-	tracesBuilder := &TracesBuilder{
+	b := &TracesBuilder{
 		released:    false,
 		builder:     rBuilder,
 		optimizer:   optimizer,
 		analyzer:    analyzer,
 		relatedData: relatedData,
 	}
-	if err := tracesBuilder.init(); err != nil {
+
+	if err := b.init(); err != nil {
 		return nil, werror.Wrap(err)
 	}
-	return tracesBuilder, nil
+
+	return b, nil
 }
 
 func (b *TracesBuilder) init() error {

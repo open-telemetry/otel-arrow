@@ -26,7 +26,10 @@ type LogsIds struct {
 }
 
 // LogsFrom creates a [plog.Logs] from the given Arrow Record.
-func LogsFrom(record arrow.Record) (plog.Logs, error) {
+// Note: This function consume the record.
+func LogsFrom(record arrow.Record, relatedData *RelatedData) (plog.Logs, error) {
+	defer record.Release()
+
 	logs := plog.NewLogs()
 
 	ids, err := SchemaToIds(record.Schema())
@@ -34,7 +37,7 @@ func LogsFrom(record arrow.Record) (plog.Logs, error) {
 		return logs, werror.Wrap(err)
 	}
 
-	err = AppendResourceLogsInto(logs, record, ids)
+	err = AppendResourceLogsInto(logs, record, ids, relatedData)
 	return logs, werror.Wrap(err)
 }
 

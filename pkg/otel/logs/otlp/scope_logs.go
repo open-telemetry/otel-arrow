@@ -19,7 +19,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp_old"
+	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
@@ -61,7 +61,13 @@ func NewScopeLogsIds(dt *arrow.StructType) (*ScopeLogsIds, error) {
 	}, nil
 }
 
-func AppendScopeLogsInto(resLogs plog.ResourceLogs, arrowResLogs *arrowutils.ListOfStructs, resLogsIdx int, ids *ScopeLogsIds) error {
+func AppendScopeLogsInto(
+	resLogs plog.ResourceLogs,
+	arrowResLogs *arrowutils.ListOfStructs,
+	resLogsIdx int,
+	ids *ScopeLogsIds,
+	relatedData *RelatedData,
+) error {
 	arrowScopeLogs, err := arrowResLogs.ListOfStructsById(resLogsIdx, ids.Id)
 	if err != nil {
 		return werror.Wrap(err)
@@ -72,7 +78,7 @@ func AppendScopeLogsInto(resLogs plog.ResourceLogs, arrowResLogs *arrowutils.Lis
 	for scopeLogsIdx := arrowScopeLogs.Start(); scopeLogsIdx < arrowScopeLogs.End(); scopeLogsIdx++ {
 		scopeLogs := scopeLogsSlice.AppendEmpty()
 
-		if err = otlp.UpdateScopeWith(scopeLogs.Scope(), arrowScopeLogs, scopeLogsIdx, ids.ScopeIds); err != nil {
+		if err = otlp.UpdateScopeWith(scopeLogs.Scope(), arrowScopeLogs, scopeLogsIdx, ids.ScopeIds, relatedData.ScopeAttrMapStore); err != nil {
 			return werror.Wrap(err)
 		}
 
@@ -82,6 +88,8 @@ func AppendScopeLogsInto(resLogs plog.ResourceLogs, arrowResLogs *arrowutils.Lis
 		}
 		scopeLogs.SetSchemaUrl(schemaUrl)
 
+		// ToDo shared attributes ?
+
 		arrowLogs, err := arrowScopeLogs.ListOfStructsById(scopeLogsIdx, ids.LogRecordIds.Id)
 		if err != nil {
 			return werror.Wrap(err)
@@ -89,7 +97,7 @@ func AppendScopeLogsInto(resLogs plog.ResourceLogs, arrowResLogs *arrowutils.Lis
 		logsSlice := scopeLogs.LogRecords()
 		logsSlice.EnsureCapacity(arrowLogs.End() - arrowLogs.Start())
 		for logIdx := arrowLogs.Start(); logIdx < arrowLogs.End(); logIdx++ {
-			err = AppendLogRecordInto(logsSlice, arrowLogs, logIdx, ids.LogRecordIds)
+			err = AppendLogRecordInto(logsSlice, arrowLogs, logIdx, ids.LogRecordIds, relatedData)
 			if err != nil {
 				return werror.Wrap(err)
 			}

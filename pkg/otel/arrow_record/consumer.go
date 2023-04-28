@@ -55,8 +55,9 @@ type Consumer struct {
 }
 
 type streamConsumer struct {
-	bufReader *bytes.Reader
-	ipcReader *ipc.Reader
+	bufReader   *bytes.Reader
+	ipcReader   *ipc.Reader
+	payloadType record_message.PayloadType
 }
 
 // NewConsumer creates a new BatchArrowRecords consumer, i.e. a decoder consuming BatchArrowRecords and returning
@@ -66,7 +67,7 @@ func NewConsumer() *Consumer {
 		streamConsumers: make(map[string]*streamConsumer),
 
 		// TODO: configure this limit with a functional option
-		memLimit: 50 << 20,
+		memLimit: 70 << 20,
 	}
 }
 
@@ -100,19 +101,21 @@ func (c *Consumer) LogsFrom(bar *colarspb.BatchArrowRecords) ([]plog.Logs, error
 		return nil, werror.Wrap(err)
 	}
 
-	record2Logs := func(record *record_message.RecordMessage) (plog.Logs, error) {
-		defer record.Record().Release()
-		return logsotlp.LogsFrom(record.Record())
-	}
-
 	result := make([]plog.Logs, 0, len(records))
-	for _, record := range records {
-		logs, err := record2Logs(record)
+
+	// Compute all related records (i.e. Attributes)
+	relatedData, logsRecord, err := logsotlp.RelatedDataFrom(records)
+
+	if logsRecord != nil {
+		// Decode OTLP logs from the combination of the main record and the
+		// related records.
+		logs, err := logsotlp.LogsFrom(logsRecord.Record(), relatedData)
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
 		result = append(result, logs)
 	}
+
 	return result, nil
 }
 
@@ -151,9 +154,24 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.R
 		// Retrieves (or creates) the stream consumer for the sub-stream id defined in the BatchArrowRecords message.
 		sc := c.streamConsumers[payload.SubStreamId]
 		if sc == nil {
+			// cleanup previous stream consumer if any that have the same
+			// PayloadType. The reasoning is that if we have a new
+			// sub-stream ID (i.e. schema change) we should no longer use
+			// the previous stream consumer for this PayloadType as schema
+			// changes are only additive.
+			// This will release the resources associated with the previous
+			// stream consumer.
+			for scID, sc := range c.streamConsumers {
+				if sc.payloadType == payload.Type {
+					sc.ipcReader.Release()
+					delete(c.streamConsumers, scID)
+				}
+			}
+
 			bufReader := bytes.NewReader([]byte{})
 			sc = &streamConsumer{
-				bufReader: bufReader,
+				bufReader:   bufReader,
+				payloadType: payload.Type,
 			}
 			c.streamConsumers[payload.SubStreamId] = sc
 		}
@@ -180,6 +198,12 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.R
 			rec.Retain()
 			ibes = append(ibes, record_message.NewRecordMessage(bar.BatchId, payload.GetType(), rec))
 		}
+	}
+
+	if len(ibes) < len(bar.OtlpArrowPayloads) {
+		println("Something is wrong! " +
+			"The number of decoded records is smaller than the number of received payloads. " +
+			"Please consider to increase the memory limit of the consumer.")
 	}
 
 	return ibes, nil

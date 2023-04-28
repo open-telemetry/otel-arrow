@@ -21,9 +21,10 @@ package arrow
 // ToDo move this to the common package once the metrics and logs builders are refactored.
 
 import (
+	"errors"
+
 	"github.com/apache/arrow/go/v12/arrow"
 
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -35,7 +36,7 @@ var (
 	AttrsSchema16 = arrow.NewSchema([]arrow.Field{
 		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint16},
 		{Name: constants.AttrsRecordKey, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary8)},
-		{Name: constants.AttrsRecordValue, Type: acommon.AnyValueDT},
+		{Name: constants.AttrsRecordValue, Type: AnyValueDT},
 	}, nil)
 )
 
@@ -47,9 +48,9 @@ type (
 
 		ib *builder.Uint16Builder
 		kb *builder.StringBuilder
-		ab *acommon.AnyValueBuilder
+		ab *AnyValueBuilder
 
-		accumulator *acommon.Attributes16Accumulator
+		accumulator *Attributes16Accumulator
 	}
 )
 
@@ -57,7 +58,7 @@ func NewAttrs16Builder(rBuilder *builder.RecordBuilderExt) (*Attrs16Builder, err
 	b := &Attrs16Builder{
 		released:    false,
 		builder:     rBuilder,
-		accumulator: acommon.NewAttributes16Accumulator(),
+		accumulator: NewAttributes16Accumulator(),
 	}
 	if err := b.init(); err != nil {
 		return nil, werror.Wrap(err)
@@ -68,11 +69,11 @@ func NewAttrs16Builder(rBuilder *builder.RecordBuilderExt) (*Attrs16Builder, err
 func (b *Attrs16Builder) init() error {
 	b.ib = b.builder.Uint16Builder("id")
 	b.kb = b.builder.StringBuilder("key")
-	b.ab = acommon.AnyValueBuilderFrom(b.builder.SparseUnionBuilder("value"))
+	b.ab = AnyValueBuilderFrom(b.builder.SparseUnionBuilder("value"))
 	return nil
 }
 
-func (b *Attrs16Builder) Accumulator() *acommon.Attributes16Accumulator {
+func (b *Attrs16Builder) Accumulator() *Attributes16Accumulator {
 	return b.accumulator
 }
 
@@ -80,9 +81,9 @@ func (b *Attrs16Builder) IsEmpty() bool {
 	return b.accumulator.IsEmpty()
 }
 
-func (b *Attrs16Builder) Build() (record arrow.Record, err error) {
+func (b *Attrs16Builder) TryBuild() (record arrow.Record, err error) {
 	if b.released {
-		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
+		return nil, werror.Wrap(ErrBuilderAlreadyReleased)
 	}
 
 	for _, attr := range b.accumulator.SortedAttrs() {
@@ -104,6 +105,37 @@ func (b *Attrs16Builder) Build() (record arrow.Record, err error) {
 	}
 
 	return
+}
+
+func (b *Attrs16Builder) Build() (arrow.Record, error) {
+	schemaNotUpToDateCount := 0
+
+	var record arrow.Record
+	var err error
+
+	// Loop until the record is built successfully.
+	// Intermediaries steps may be required to update the schema.
+	for {
+		record, err = b.TryBuild()
+		if err != nil {
+			if record != nil {
+				record.Release()
+			}
+
+			switch {
+			case errors.Is(err, schema.ErrSchemaNotUpToDate):
+				schemaNotUpToDateCount++
+				if schemaNotUpToDateCount > 5 {
+					panic("Too many consecutive schema updates. This shouldn't happen.")
+				}
+			default:
+				return nil, werror.Wrap(err)
+			}
+		} else {
+			break
+		}
+	}
+	return record, werror.Wrap(err)
 }
 
 func (b *Attrs16Builder) SchemaID() string {

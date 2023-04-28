@@ -46,12 +46,15 @@ message BatchArrowRecords {
 
 // Enumeration of all the OTLP Arrow payload types currently supported by the OTLP Arrow protocol.
 enum OtlpArrowPayloadType {
+  // Main OTel entities
   // A payload representing a collection of metrics.
   METRICS = 0;
   // A payload representing a collection of logs.
   LOGS = 1;
   // A payload representing a collection of traces.
   SPANS = 2;
+
+  // Related OTel entities
   // A payload representing a collection of resource attributes.
   RESOURCE_ATTRS = 3;
   // A payload representing a collection of scope attributes.
