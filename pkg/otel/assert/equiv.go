@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -255,12 +256,27 @@ func JSONCanonicalEq(t *testing.T, expected interface{}, actual interface{}) {
 
 // CanonicalObjectID computes a unique ID for an object.
 func CanonicalObjectID(object interface{}) string {
-	switch object.(type) {
+	if object == nil {
+		return "null"
+	}
+
+	switch obj := object.(type) {
 	case map[string]interface{}:
-		return CanonicalMapID(object.(map[string]interface{}))
+		return CanonicalMapID(obj)
 	case []interface{}:
-		return CanonicalSliceID(object.([]interface{}))
+		return CanonicalSliceID(obj)
+	case []map[string]interface{}:
+		return CanonicalSliceMapID(obj)
+	case int64:
+		return strconv.FormatInt(obj, 10)
+	case float64:
+		return strconv.FormatFloat(obj, 'f', -1, 64)
+	case string:
+		return fmt.Sprintf("%q", obj)
+	case bool:
+		return strconv.FormatBool(obj)
 	default:
+		fmt.Printf("canonical id: unknown type (object: %v)\n", object)
 		return fmt.Sprintf("%v", object)
 	}
 }
@@ -279,8 +295,9 @@ func CanonicalMapID(object map[string]interface{}) string {
 		if ID.Len() > 1 {
 			ID.WriteString(",")
 		}
+		ID.WriteString("\"")
 		ID.WriteString(key)
-		ID.WriteString(":")
+		ID.WriteString("\":")
 		ID.WriteString(CanonicalObjectID(object[key]))
 	}
 	ID.WriteString("}")
@@ -309,6 +326,28 @@ func CanonicalSliceID(slice []interface{}) string {
 	return ID.String()
 }
 
+// CanonicalSliceMapID computes a unique ID for a slice of maps.
+func CanonicalSliceMapID(slice []map[string]interface{}) string {
+	var itemIDs []string
+
+	for _, item := range slice {
+		itemIDs = append(itemIDs, CanonicalMapID(item))
+	}
+	sort.Strings(itemIDs)
+
+	var ID strings.Builder
+	ID.WriteString("[")
+	for i, itemID := range itemIDs {
+		if i > 0 {
+			ID.WriteString(",")
+		}
+		ID.WriteString(itemID)
+	}
+	ID.WriteString("]")
+
+	return ID.String()
+}
+
 // jsonFrom converts a string or a byte slice to a Go object representing
 // this JSON object.
 func jsonFrom(value interface{}) (interface{}, error) {
@@ -317,6 +356,8 @@ func jsonFrom(value interface{}) (interface{}, error) {
 		return jsonFromBytes([]byte(v))
 	case []byte:
 		return jsonFromBytes(v)
+	case []json.Marshaler:
+		return jsonify(v)
 	default:
 		return nil, fmt.Errorf("unsupported type: %T", value)
 	}

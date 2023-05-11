@@ -25,14 +25,14 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
-// FieldIDFromSchema returns the field id of a field from an Arrow schema or -1
+// FieldIDFromSchema returns the field id of a field from an Arrow schema or -AbsentFieldID
 // for an unknown field.
 //
 // An error is returned if the field is duplicated.
 func FieldIDFromSchema(schema *arrow.Schema, fieldName string) (int, error) {
 	ids := schema.FieldIndices(fieldName)
 	if len(ids) == 0 {
-		return -1, nil
+		return AbsentFieldID, nil
 	}
 	if len(ids) > 1 {
 		return 0, werror.WrapWithContext(ErrDuplicateFieldName, map[string]interface{}{"fieldName": fieldName})
@@ -40,14 +40,34 @@ func FieldIDFromSchema(schema *arrow.Schema, fieldName string) (int, error) {
 	return ids[0], nil
 }
 
+// StructFieldIDFromSchema returns the field id of a struct
+// field from an Arrow schema or AbsentFieldID for an unknown field.
+//
+// An error is returned if the field is not a struct.
+func StructFieldIDFromSchema(schema *arrow.Schema, fieldName string) (int, *arrow.StructType, error) {
+	ids := schema.FieldIndices(fieldName)
+	if len(ids) == 0 {
+		return AbsentFieldID, nil, nil
+	}
+	if len(ids) > 1 {
+		return 0, nil, werror.WrapWithContext(ErrDuplicateFieldName, map[string]interface{}{"fieldName": fieldName})
+	}
+
+	if st, ok := schema.Field(ids[0]).Type.(*arrow.StructType); ok {
+		return ids[0], st, nil
+	} else {
+		return 0, nil, werror.WrapWithContext(ErrNotArrayStruct, map[string]interface{}{"fieldName": fieldName})
+	}
+}
+
 // ListOfStructsFieldIDFromSchema returns the field id of a list of structs
-// field from an Arrow schema or -1 for an unknown field.
+// field from an Arrow schema or AbsentFieldID for an unknown field.
 //
 // An error is returned if the field is not a list of structs.
 func ListOfStructsFieldIDFromSchema(schema *arrow.Schema, fieldName string) (int, *arrow.StructType, error) {
 	ids := schema.FieldIndices(fieldName)
 	if len(ids) == 0 {
-		return -1, nil, nil
+		return AbsentFieldID, nil, nil
 	}
 	if len(ids) > 1 {
 		return 0, nil, werror.WrapWithContext(ErrDuplicateFieldName, map[string]interface{}{"fieldName": fieldName})

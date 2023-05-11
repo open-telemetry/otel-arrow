@@ -108,7 +108,11 @@ func (b *SpanBuilder) Build() (*array.Struct, error) {
 }
 
 // Append appends a new span to the builder.
-func (b *SpanBuilder) Append(span *ptrace.Span, sharedData *SharedData, relatedData *RelatedData) error {
+func (b *SpanBuilder) Append(
+	span *ptrace.Span,
+	sharedData *SharedData,
+	relatedData *RelatedData,
+) error {
 	if b.released {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
@@ -131,7 +135,8 @@ func (b *SpanBuilder) Append(span *ptrace.Span, sharedData *SharedData, relatedD
 		b.kb.AppendNonZero(int32(span.Kind()))
 
 		// Span Attributes
-		err := relatedData.AttrsBuilders().Span().Accumulator().AppendUniqueAttributesWithID(ID, span.Attributes(), sharedData.sharedAttributes, nil)
+		attrsAccu := relatedData.AttrsBuilders().Span().Accumulator()
+		err := attrsAccu.AppendUniqueAttributesWithID(ID, span.Attributes(), sharedData.sharedAttributes, nil)
 		if err != nil {
 			return werror.Wrap(err)
 		}

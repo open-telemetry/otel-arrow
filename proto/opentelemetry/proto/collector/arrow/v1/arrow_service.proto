@@ -49,30 +49,44 @@ enum OtlpArrowPayloadType {
   // Main OTel entities
   // A payload representing a collection of metrics.
   METRICS = 0;
+  INT_GAUGE = 2;
+  DOUBLE_GAUGE = 3;
+  INT_SUM = 4;
+  DOUBLE_SUM = 5;
+  SUMMARIES = 6;
+  HISTOGRAMS = 7;
+  EXP_HISTOGRAMS = 8;
+
   // A payload representing a collection of logs.
-  LOGS = 1;
+  LOGS = 9;
   // A payload representing a collection of traces.
-  SPANS = 2;
+  SPANS = 10;
 
   // Related OTel entities
   // A payload representing a collection of resource attributes.
-  RESOURCE_ATTRS = 3;
+  RESOURCE_ATTRS = 11;
   // A payload representing a collection of scope attributes.
-  SCOPE_ATTRS = 4;
+  SCOPE_ATTRS = 12;
   // A payload representing a collection of metric attributes.
-  METRIC_ATTRS = 5;
+  INT_GAUGE_ATTRS = 13;
+  DOUBLE_GAUGE_ATTRS = 14;
+  INT_SUM_ATTRS = 15;
+  DOUBLE_SUM_ATTRS = 16;
+  SUMMARY_ATTRS = 17;
+  HISTOGRAM_ATTRS = 18;
+  EXP_HISTOGRAM_ATTRS = 19;
   // A payload representing a collection of log attributes.
-  LOG_ATTRS = 6;
+  LOG_ATTRS = 20;
   // A payload representing a collection of span attributes.
-  SPAN_ATTRS = 7;
+  SPAN_ATTRS = 21;
   // A payload representing a collection of span events.
-  SPAN_EVENTS = 8;
+  SPAN_EVENTS = 22;
   // A payload representing a collection of span events attributes.
-  SPAN_EVENT_ATTRS = 9;
+  SPAN_EVENT_ATTRS = 23;
   // A payload representing a collection of span links.
-  SPAN_LINKS = 10;
+  SPAN_LINKS = 24;
   // A payload representing a collection of span links attributes.
-  SPAN_LINK_ATTRS = 11;
+  SPAN_LINK_ATTRS = 25;
 }
 
 // Represents a batch of OTLP Arrow entities.

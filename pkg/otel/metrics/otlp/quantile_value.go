@@ -29,8 +29,8 @@ type QuantileValueIds struct {
 	Value    int
 }
 
-func NewQuantileValueIds(parentDT *arrow.StructType) (*QuantileValueIds, error) {
-	id, quantileValueDT, err := arrowutils.ListOfStructsFieldIDFromStruct(parentDT, constants.SummaryQuantileValues)
+func NewQuantileValueIds(schema *arrow.Schema) (*QuantileValueIds, error) {
+	id, quantileValueDT, err := arrowutils.ListOfStructsFieldIDFromSchema(schema, constants.SummaryQuantileValues)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
@@ -45,8 +45,8 @@ func NewQuantileValueIds(parentDT *arrow.StructType) (*QuantileValueIds, error) 
 	}, nil
 }
 
-func AppendQuantileValuesInto(quantileSlice pmetric.SummaryDataPointValueAtQuantileSlice, ndp *arrowutils.ListOfStructs, ndpIdx int, ids *QuantileValueIds) error {
-	quantileValues, err := ndp.ListOfStructsById(ndpIdx, ids.Id)
+func AppendQuantileValuesInto(quantileSlice pmetric.SummaryDataPointValueAtQuantileSlice, record arrow.Record, ndpIdx int, ids *QuantileValueIds) error {
+	quantileValues, err := arrowutils.ListOfStructsFromRecord(record, ids.Id, ndpIdx)
 	if err != nil {
 		return werror.Wrap(err)
 	}

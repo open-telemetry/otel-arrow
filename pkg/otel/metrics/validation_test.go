@@ -23,9 +23,9 @@ import (
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 
+	"github.com/f5/otel-arrow-adapter/pkg/config"
 	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
@@ -34,6 +34,7 @@ import (
 	ametrics "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
+	"github.com/f5/otel-arrow-adapter/pkg/record_message"
 )
 
 var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
@@ -64,30 +65,39 @@ func TestBackAndForthConversion(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, ametrics.Schema, DefaultDictConfig, stats.NewProducerStats())
+	rBuilder := builder.NewRecordBuilderExt(pool, ametrics.MetricsSchema, DefaultDictConfig, stats.NewProducerStats())
 	defer rBuilder.Release()
 
 	var record arrow.Record
+	var relatedRecords []*record_message.RecordMessage
+
+	conf := config.DefaultConfig()
 
 	for {
-		lb, err := ametrics.NewMetricsBuilder(rBuilder, false)
+		lb, err := ametrics.NewMetricsBuilder(rBuilder, conf, stats.NewProducerStats())
 		require.NoError(t, err)
+		defer lb.Release()
 
 		err = lb.Append(expectedRequest.Metrics())
 		require.NoError(t, err)
 
-		record, err = lb.Build()
+		record, err = rBuilder.NewRecord()
 		if err == nil {
+			relatedRecords, err = lb.RelatedData().BuildRecordMessages()
+			require.NoError(t, err)
 			break
 		}
 		require.Error(t, schema.ErrSchemaNotUpToDate)
 	}
-	defer record.Release()
+
+	relatedData, _, err := otlp.RelatedDataFrom(relatedRecords)
+	require.NoError(t, err)
 
 	// Convert the Arrow records back to OTLP.
-	var metrics pmetric.Metrics
-	metrics, err := otlp.MetricsFrom(record)
+	metrics, err := otlp.MetricsFrom(record, relatedData)
 	require.NoError(t, err)
+
+	record.Release()
 
 	assert.Equiv(t, []json.Marshaler{expectedRequest}, []json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(metrics)})
 }

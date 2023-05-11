@@ -67,7 +67,7 @@ const (
 //     - heap object size after a forced GC: 1.4 MB
 
 func main() {
-	Report("METRICS", metrics.Schema)
+	Report("METRICS", metrics.MetricsSchema)
 	Report("LOGS", logs.Schema)
 	Report("TRACES", traces.Schema)
 }

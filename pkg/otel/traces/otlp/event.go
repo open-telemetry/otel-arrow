@@ -28,10 +28,10 @@ import (
 type (
 	// SpanEventIDs is a struct containing the Arrow field IDs for the Event struct.
 	SpanEventIDs struct {
-		ID                     int
+		ParentID               int
 		TimeUnixNano           int
 		Name                   int
-		AttrsID                int
+		ID                     int
 		DroppedAttributesCount int
 	}
 
@@ -85,7 +85,12 @@ func SpanEventsStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store
 	// Read all event fields from the record and reconstruct the event lists
 	// by ID.
 	for row := 0; row < eventsCount; row++ {
-		ID, err := arrowutils.U16FromRecord(record, spanEventIDs.ID, row)
+		ID, err := arrowutils.NullableU32FromRecord(record, spanEventIDs.ID, row)
+		if err != nil {
+			return nil, werror.Wrap(err)
+		}
+
+		ParentID, err := arrowutils.U16FromRecord(record, spanEventIDs.ParentID, row)
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
@@ -100,11 +105,6 @@ func SpanEventsStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store
 			return nil, werror.Wrap(err)
 		}
 
-		attrsID, err := arrowutils.NullableU32FromRecord(record, spanEventIDs.AttrsID, row)
-		if err != nil {
-			return nil, werror.Wrap(err)
-		}
-
 		dac, err := arrowutils.U32FromRecord(record, spanEventIDs.DroppedAttributesCount, row)
 		if err != nil {
 			return nil, werror.Wrap(err)
@@ -114,15 +114,15 @@ func SpanEventsStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store
 		event.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 		event.SetName(name)
 
-		if attrsID != nil {
-			attrs := attrsStore.AttributesByDeltaID(*attrsID)
+		if ID != nil {
+			attrs := attrsStore.AttributesByDeltaID(*ID)
 			if attrs != nil {
 				attrs.CopyTo(event.Attributes())
 			}
 		}
 
 		event.SetDroppedAttributesCount(dac)
-		store.eventsByID[ID] = append(store.eventsByID[ID], &event)
+		store.eventsByID[ParentID] = append(store.eventsByID[ParentID], &event)
 	}
 
 	return store, nil
@@ -131,6 +131,11 @@ func SpanEventsStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store
 // SchemaToSpanEventIDs pre-computes the field IDs for the events record.
 func SchemaToSpanEventIDs(schema *arrow.Schema) (*SpanEventIDs, error) {
 	ID, err := arrowutils.FieldIDFromSchema(schema, constants.ID)
+	if err != nil {
+		return nil, werror.Wrap(err)
+	}
+
+	ParentID, err := arrowutils.FieldIDFromSchema(schema, constants.ParentID)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
@@ -145,11 +150,6 @@ func SchemaToSpanEventIDs(schema *arrow.Schema) (*SpanEventIDs, error) {
 		return nil, werror.Wrap(err)
 	}
 
-	attrsID, err := arrowutils.FieldIDFromSchema(schema, constants.AttributesID)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
 	dac, err := arrowutils.FieldIDFromSchema(schema, constants.DroppedAttributesCount)
 	if err != nil {
 		return nil, werror.Wrap(err)
@@ -157,9 +157,9 @@ func SchemaToSpanEventIDs(schema *arrow.Schema) (*SpanEventIDs, error) {
 
 	return &SpanEventIDs{
 		ID:                     ID,
+		ParentID:               ParentID,
 		TimeUnixNano:           timeUnixNano,
 		Name:                   name,
-		AttrsID:                attrsID,
 		DroppedAttributesCount: dac,
 	}, nil
 }

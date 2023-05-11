@@ -28,7 +28,7 @@ import (
 )
 
 type ExemplarIds struct {
-	Id           int
+	ID           int
 	Attributes   *otlp.AttributeIds
 	TimeUnixNano int
 	SpanID       int
@@ -36,8 +36,8 @@ type ExemplarIds struct {
 	ValueID      int
 }
 
-func NewExemplarIds(ndp *arrow.StructType) (*ExemplarIds, error) {
-	id, exemplarDT, err := arrowutils.ListOfStructsFieldIDFromStruct(ndp, constants.Exemplars)
+func NewExemplarIds(schema *arrow.Schema) (*ExemplarIds, error) {
+	id, exemplarDT, err := arrowutils.ListOfStructsFieldIDFromSchema(schema, constants.Exemplars)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
@@ -53,7 +53,7 @@ func NewExemplarIds(ndp *arrow.StructType) (*ExemplarIds, error) {
 	valueId, _ := arrowutils.FieldIDFromStruct(exemplarDT, constants.MetricValue)
 
 	return &ExemplarIds{
-		Id:           id,
+		ID:           id,
 		Attributes:   attributesId,
 		TimeUnixNano: timeUnixNanoId,
 		SpanID:       spanIdId,
@@ -62,8 +62,13 @@ func NewExemplarIds(ndp *arrow.StructType) (*ExemplarIds, error) {
 	}, nil
 }
 
-func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, ndp *arrowutils.ListOfStructs, ndpIdx int, ids *ExemplarIds) error {
-	exemplars, err := ndp.ListOfStructsById(ndpIdx, ids.Id)
+func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, record arrow.Record, ndpIdx int, ids *ExemplarIds) error {
+	if ids.ID == -1 {
+		// No exemplars
+		return nil
+	}
+
+	exemplars, err := arrowutils.ListOfStructsFromRecord(record, ids.ID, ndpIdx)
 	if err != nil {
 		return werror.WrapWithContext(err, map[string]interface{}{"ndpIdx": ndpIdx})
 	}

@@ -20,6 +20,9 @@ package otlp
 import "errors"
 
 var (
-	ErrInvalidTypeCode = errors.New("invalid type code")
-	ErrInvalidFieldId  = errors.New("invalid field id")
+	ErrInvalidTypeCode     = errors.New("invalid type code")
+	ErrInvalidFieldId      = errors.New("invalid field id")
+	ErrParentIDMissing     = errors.New("parent id missing")
+	ErrInvalidAttrName     = errors.New("invalid attribute name")
+	ErrMissingTypeMetadata = errors.New("missing type metadata")
 )

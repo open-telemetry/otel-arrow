@@ -67,6 +67,10 @@ type RecordBuilderExt struct {
 
 	// stats is a set of counters that are incremented when certain events occur.
 	stats *stats.ProducerStats
+
+	// Label is a string that is used to identify the source of the data.
+	// [optional].
+	label string
 }
 
 // NewRecordBuilderExt creates a new RecordBuilderExt from the given allocator
@@ -98,6 +102,14 @@ func NewRecordBuilderExt(
 		events:             evts,
 		stats:              stats,
 	}
+}
+
+func (rb *RecordBuilderExt) Label() string {
+	return rb.label
+}
+
+func (rb *RecordBuilderExt) SetLabel(label string) {
+	rb.label = label
 }
 
 func (rb *RecordBuilderExt) Events() *events.Events {
@@ -216,6 +228,13 @@ func (rb *RecordBuilderExt) builder(name string) array.Builder {
 // UpdateSchema updates the schema based on the pending schema update requests
 // the initial prototype schema.
 func (rb *RecordBuilderExt) UpdateSchema() {
+	if rb.stats.SchemaStatsEnabled {
+		println("=====================================================")
+		fmt.Printf("Updating schema for %q\n", rb.label)
+		println("From =====>")
+		rb.ShowSchema()
+	}
+
 	rb.transformTree.RevertCounters()
 	s := schema.NewSchemaFrom(rb.protoSchema, rb.transformTree)
 
@@ -232,16 +251,17 @@ func (rb *RecordBuilderExt) UpdateSchema() {
 	//	panic(err)
 	//}
 
-	if rb.stats.SchemaStatsEnabled {
-		rb.ShowSchema()
-	}
-
 	rb.recordBuilder.Release()
 	rb.recordBuilder = newRecBuilder
 	rb.schemaID = carrow.SchemaToID(s)
 
 	rb.updateRequest.Reset()
 	rb.stats.RecordBuilderStats.SchemaUpdatesPerformed++
+
+	if rb.stats.SchemaStatsEnabled {
+		println("To =====>")
+		rb.ShowSchema()
+	}
 }
 
 // CopyDictValuesTo recursively copy the dictionary values from the source
@@ -384,6 +404,21 @@ func (rb *RecordBuilderExt) TimestampBuilder(name string) *TimestampBuilder {
 		return &TimestampBuilder{builder: b.(*array.TimestampBuilder), transformNode: transformNode, updateRequest: rb.updateRequest}
 	} else {
 		return &TimestampBuilder{builder: nil, transformNode: transformNode, updateRequest: rb.updateRequest}
+	}
+}
+
+// DurationBuilder returns a DurationBuilder wrapper for the field with the
+// given name. If the underlying builder doesn't exist, an empty wrapper is
+// returned, so that the feeding process can continue without panicking. This
+// is useful to handle optional fields.
+func (rb *RecordBuilderExt) DurationBuilder(name string) *DurationBuilder {
+	_, transformNode := rb.protoDataTypeAndTransformNode(name)
+	b := rb.builder(name)
+
+	if b != nil {
+		return &DurationBuilder{builder: b, transformNode: transformNode, updateRequest: rb.updateRequest}
+	} else {
+		return &DurationBuilder{builder: nil, transformNode: transformNode, updateRequest: rb.updateRequest}
 	}
 }
 

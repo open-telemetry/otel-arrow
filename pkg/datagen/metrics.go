@@ -72,6 +72,7 @@ func (mg *MetricsGenerator) Generate(batchSize int, collectInterval time.Duratio
 		mg.SystemCpuTime(metrics.AppendEmpty(), 1)
 		mg.SystemMemoryUsage(metrics.AppendEmpty())
 		mg.SystemCpuLoadAverage1m(metrics.AppendEmpty())
+		mg.FakeSummary(metrics.AppendEmpty())
 		mg.FakeHistogram(metrics.AppendEmpty())
 		mg.FakeExpHistogram(metrics.AppendEmpty())
 	}
@@ -90,6 +91,7 @@ func (mg *MetricsGenerator) GenerateMetricSlice(batchSize int, collectInterval t
 		mg.SystemCpuTime(metrics.AppendEmpty(), 1)
 		mg.SystemMemoryUsage(metrics.AppendEmpty())
 		mg.SystemCpuLoadAverage1m(metrics.AppendEmpty())
+		mg.FakeSummary(metrics.AppendEmpty())
 		mg.FakeHistogram(metrics.AppendEmpty())
 		mg.FakeExpHistogram(metrics.AppendEmpty())
 	}
@@ -256,6 +258,53 @@ func (dg *DataGenerator) SystemCpuLoadAverage1m(metric pmetric.Metric) {
 	attrs.PutStr("cpu_mhz", "2.4")
 	attrs.PutStr("cpu_cores", "4")
 	attrs.PutStr("cpu_logical_processors", "8")
+}
+
+func (dg *DataGenerator) FakeSummary(metric pmetric.Metric) {
+	metric.SetName("fake.summary")
+	// Generate description and unit only half of the time.
+	if dg.HasMetricDescription() {
+		metric.SetDescription("A summary.")
+	}
+	if dg.HasMetricUnit() {
+		metric.SetUnit("1")
+	}
+
+	summary := metric.SetEmptySummary()
+
+	dps := summary.DataPoints()
+	dps.EnsureCapacity(10)
+
+	for i := 0; i < 10; i++ {
+		dp := dps.AppendEmpty()
+		dp.SetStartTimestamp(dg.PrevTime())
+		dp.SetTimestamp(dg.CurrentTime())
+
+		attrs := dp.Attributes()
+		attrs.EnsureCapacity(2)
+		attrs.PutStr("freq", "3GHz")
+		attrs.PutInt("cpu", 0)
+		attrs.PutStr("cpu_id", "cpu-0")
+		attrs.PutStr("cpu_arch", "x86-64")
+		attrs.PutStr("cpu_vendor", "intel")
+		attrs.PutStr("cpu_model", "i7")
+		attrs.PutStr("cpu_mhz", "2.4")
+		attrs.PutStr("cpu_cores", "4")
+		attrs.PutStr("cpu_logical_processors", "8")
+
+		dp.SetCount(uint64(dg.GenI64Range(0, 100)))
+		dp.SetSum(dg.GenF64Range(0, 100))
+
+		dp.QuantileValues().EnsureCapacity(2)
+		qv := dp.QuantileValues().AppendEmpty()
+		qv.SetQuantile(0.5)
+		qv.SetValue(dg.GenF64Range(0, 100))
+		qv = dp.QuantileValues().AppendEmpty()
+		qv.SetQuantile(0.9)
+		qv.SetValue(dg.GenF64Range(0, 100))
+
+		dp.SetFlags(pmetric.DataPointFlags(dg.GenI64Range(1, 50)))
+	}
 }
 
 // FakeHistogram generates a fake histogram metric.

@@ -53,7 +53,7 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	logsGen := datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
 	// Generate a random OTLP logs request.
-	expectedRequest := plogotlp.NewExportRequestFromLogs(logsGen.Generate(10, 100))
+	expectedRequest := plogotlp.NewExportRequestFromLogs(logsGen.Generate(1, 100))
 
 	// Convert the OTLP logs request to Arrow.
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())

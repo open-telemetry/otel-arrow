@@ -27,6 +27,7 @@ import (
 
 	"github.com/f5/otel-arrow-adapter/pkg/config"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 )
 
 // TestMetricsWithNoDictionary
@@ -34,9 +35,8 @@ import (
 func TestMetricsWithNoDictionary(t *testing.T) {
 	t.Parallel()
 
-	//pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
-	//defer pool.AssertSize(t, 0)
-	pool := memory.NewGoAllocator()
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	defer pool.AssertSize(t, 0)
 
 	producer := NewProducerWithOptions(
 		config.WithAllocator(pool),
@@ -119,11 +119,11 @@ func TestMetricsMultiBatchWithDictionaryIndexChanges(t *testing.T) {
 		)
 	}
 
-	builder := producer.MetricsRecordBuilderExt()
+	builder := producer.MetricsBuilder().RelatedData().RecordBuilderExt(arrow.PayloadTypes.IntGauge)
 	dictionariesIndexTypeChanged := builder.Events().DictionariesIndexTypeChanged
 	require.Equal(t, 2, len(dictionariesIndexTypeChanged))
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_metrics.item.scope_metrics.item.univariate_metrics.item.name"])
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_metrics.item.scope_metrics.item.univariate_metrics.item.description"])
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["name"])
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["description"])
 }
 
 // TestMetricsMultiBatchWithDictionaryOverflow
@@ -171,11 +171,11 @@ func TestMetricsMultiBatchWithDictionaryOverflow(t *testing.T) {
 		)
 	}
 
-	builder := producer.MetricsRecordBuilderExt()
+	builder := producer.MetricsBuilder().RelatedData().RecordBuilderExt(arrow.PayloadTypes.IntGauge)
 	dictionariesIndexTypeChanged := builder.Events().DictionariesIndexTypeChanged
 	require.Equal(t, 2, len(dictionariesIndexTypeChanged))
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_metrics.item.scope_metrics.item.univariate_metrics.item.name"])
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_metrics.item.scope_metrics.item.univariate_metrics.item.description"])
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["name"])
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["description"])
 }
 
 // TestMetricsMultiBatchWithDictionaryLimit
@@ -222,14 +222,14 @@ func TestMetricsMultiBatchWithDictionaryLimit(t *testing.T) {
 		)
 	}
 
-	builder := producer.MetricsRecordBuilderExt()
+	builder := producer.MetricsBuilder().RelatedData().RecordBuilderExt(arrow.PayloadTypes.IntGauge)
 	dictionaryWithOverflow := builder.Events().DictionariesWithOverflow
 	require.Equal(t, 2, len(dictionaryWithOverflow))
-	require.Equal(t, true, dictionaryWithOverflow["resource_metrics.item.scope_metrics.item.univariate_metrics.item.name"])
-	require.Equal(t, true, dictionaryWithOverflow["resource_metrics.item.scope_metrics.item.univariate_metrics.item.description"])
+	require.Equal(t, true, dictionaryWithOverflow["name"])
+	require.Equal(t, true, dictionaryWithOverflow["description"])
 
 	// name and description should be utf8 at this point and not dictionaries.
-	require.Equal(t, "resource_metrics:[{resource:{},schema_url:Dic<U8,Str>,scope_metrics:[{scope:{},univariate_metrics:[{data:SU{gauge:{data_points:[{value:SU{i64:I64}}]}},description:Str,name:Str}]}]}]", builder.SchemaID())
+	require.Equal(t, "aggregation_temporality:Dic<U8,I32>,description:Str,id:U32,is_monotonic:Bol,name:Str,parent_id:U16,start_time_unix_nano:Tns,time_unix_nano:Tns,value:I64", builder.SchemaID())
 }
 
 func GenerateMetrics(initValue int, metricCount int) pmetric.Metrics {

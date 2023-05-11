@@ -25,17 +25,21 @@ import (
 )
 
 type EHistogramDataPointBucketsIds struct {
-	Id           int
+	ID           int
 	Offset       int
 	BucketCounts int
 }
 
-func NewEHistogramDataPointBucketsIds(parentId int, parentDT *arrow.StructType) (*EHistogramDataPointBucketsIds, error) {
+func NewEHistogramDataPointBucketsIds(schema *arrow.Schema, parent string) (*EHistogramDataPointBucketsIds, error) {
+	ID, parentDT, err := arrowutils.StructFieldIDFromSchema(schema, parent)
+	if err != nil {
+		return nil, werror.Wrap(err)
+	}
 	offset, _ := arrowutils.FieldIDFromStruct(parentDT, constants.ExpHistogramOffset)
 	bucketCounts, _ := arrowutils.FieldIDFromStruct(parentDT, constants.ExpHistogramBucketCounts)
 
 	return &EHistogramDataPointBucketsIds{
-		Id:           parentId,
+		ID:           ID,
 		Offset:       offset,
 		BucketCounts: bucketCounts,
 	}, nil

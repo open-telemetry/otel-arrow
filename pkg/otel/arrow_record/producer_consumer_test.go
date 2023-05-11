@@ -224,8 +224,8 @@ func TestProducerConsumerTraces(t *testing.T) {
 	require.Equal(t, arrowpb.OtlpArrowPayloadType_RESOURCE_ATTRS, batch.OtlpArrowPayloads[1].Type)
 	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPAN_ATTRS, batch.OtlpArrowPayloads[2].Type)
 	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPAN_EVENTS, batch.OtlpArrowPayloads[3].Type)
-	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPAN_EVENT_ATTRS, batch.OtlpArrowPayloads[4].Type)
-	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPAN_LINKS, batch.OtlpArrowPayloads[5].Type)
+	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPAN_LINKS, batch.OtlpArrowPayloads[4].Type)
+	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPAN_EVENT_ATTRS, batch.OtlpArrowPayloads[5].Type)
 	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPAN_LINK_ATTRS, batch.OtlpArrowPayloads[6].Type)
 
 	consumer := NewConsumer()

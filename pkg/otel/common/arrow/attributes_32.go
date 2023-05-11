@@ -17,8 +17,7 @@
 
 package arrow
 
-// Attributes record builder for 16-bit IDs.
-// ToDo move this to the common package once the metrics and logs builders are refactored.
+// Attributes record builder for 32-bit Parent IDs.
 
 import (
 	"errors"
@@ -31,10 +30,19 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
-// Schema is the Arrow schema for the OTLP Arrow Traces record.
 var (
+	// AttrsSchema32 is the Arrow schema for Attributes records with 32-bit
+	// Parent IDs.
 	AttrsSchema32 = arrow.NewSchema([]arrow.Field{
-		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint32},
+		{Name: constants.ParentID, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Dictionary8)},
+		{Name: constants.AttrsRecordKey, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary8)},
+		{Name: constants.AttrsRecordValue, Type: AnyValueDT},
+	}, nil)
+
+	// DeltaEncodedAttrsSchema32 is the Arrow schema for Attributes records with
+	// 32-bit Parent IDs that are delta encoded.
+	DeltaEncodedAttrsSchema32 = arrow.NewSchema([]arrow.Field{
+		{Name: constants.ParentID, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Dictionary8, schema.DeltaEncoding)},
 		{Name: constants.AttrsRecordKey, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary8)},
 		{Name: constants.AttrsRecordValue, Type: AnyValueDT},
 	}, nil)
@@ -51,34 +59,44 @@ type (
 		ab *AnyValueBuilder
 
 		accumulator *Attributes32Accumulator
+		payloadType *PayloadType
+
+		deltaEncoded bool // flag to indicate if the parentID is delta encoded
 	}
 )
 
-func NewAttrs32Builder(rBuilder *builder.RecordBuilderExt) (*Attrs32Builder, error) {
+func NewAttrs32Builder(rBuilder *builder.RecordBuilderExt, payloadType *PayloadType) *Attrs32Builder {
 	b := &Attrs32Builder{
 		released:    false,
 		builder:     rBuilder,
 		accumulator: NewAttributes32Accumulator(),
+		payloadType: payloadType,
 	}
-	if err := b.init(); err != nil {
-		return nil, werror.Wrap(err)
-	}
-	return b, nil
+	b.init()
+	return b
 }
 
-func (b *Attrs32Builder) init() error {
-	b.ib = b.builder.Uint32Builder("id")
-	b.kb = b.builder.StringBuilder("key")
-	b.ab = AnyValueBuilderFrom(b.builder.SparseUnionBuilder("value"))
-	return nil
+func NewDeltaEncodedAttrs32Builder(rBuilder *builder.RecordBuilderExt, payloadType *PayloadType) *Attrs32Builder {
+	b := &Attrs32Builder{
+		released:     false,
+		builder:      rBuilder,
+		accumulator:  NewAttributes32Accumulator(),
+		payloadType:  payloadType,
+		deltaEncoded: true,
+	}
+
+	b.init()
+	return b
+}
+
+func (b *Attrs32Builder) init() {
+	b.ib = b.builder.Uint32Builder(constants.ParentID)
+	b.kb = b.builder.StringBuilder(constants.AttrsRecordKey)
+	b.ab = AnyValueBuilderFrom(b.builder.SparseUnionBuilder(constants.AttrsRecordValue))
 }
 
 func (b *Attrs32Builder) Accumulator() *Attributes32Accumulator {
 	return b.accumulator
-}
-
-func (b *Attrs32Builder) IsEmpty() bool {
-	return b.accumulator.IsEmpty()
 }
 
 func (b *Attrs32Builder) TryBuild() (record arrow.Record, err error) {
@@ -86,8 +104,15 @@ func (b *Attrs32Builder) TryBuild() (record arrow.Record, err error) {
 		return nil, werror.Wrap(ErrBuilderAlreadyReleased)
 	}
 
+	prevParentID := uint32(0)
 	for _, attr := range b.accumulator.SortedAttrs() {
-		b.ib.Append(attr.ID)
+		if b.deltaEncoded {
+			delta := attr.ParentID - prevParentID
+			prevParentID = attr.ParentID
+			b.ib.Append(delta)
+		} else {
+			b.ib.Append(attr.ParentID)
+		}
 		b.kb.Append(attr.Key)
 		if err := b.ab.Append(attr.Value); err != nil {
 			return nil, werror.Wrap(err)
@@ -96,15 +121,16 @@ func (b *Attrs32Builder) TryBuild() (record arrow.Record, err error) {
 
 	record, err = b.builder.NewRecord()
 	if err != nil {
-		initErr := b.init()
-		if initErr != nil {
-			err = werror.Wrap(initErr)
-		}
+		b.init()
 	} else {
 		//PrintRecord(record)
 	}
 
 	return
+}
+
+func (b *Attrs32Builder) IsEmpty() bool {
+	return b.accumulator.IsEmpty()
 }
 
 func (b *Attrs32Builder) Build() (arrow.Record, error) {
@@ -140,6 +166,14 @@ func (b *Attrs32Builder) Build() (arrow.Record, error) {
 
 func (b *Attrs32Builder) SchemaID() string {
 	return b.builder.SchemaID()
+}
+
+func (b *Attrs32Builder) PayloadType() *PayloadType {
+	return b.payloadType
+}
+
+func (b *Attrs32Builder) Reset() {
+	b.accumulator.Reset()
 }
 
 // Release releases the memory allocated by the builder.

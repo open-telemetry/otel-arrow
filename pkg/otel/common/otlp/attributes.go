@@ -29,6 +29,8 @@ type AttributeIds struct {
 	Id int
 }
 
+// ToDo this file must be removed once all the attributes are migrated to the new format (see logs and traces).
+
 func NewAttributeIds(structDT *arrow.StructType) (*AttributeIds, error) {
 	id, _ := arrowutils.FieldIDFromStruct(structDT, constants.Attributes)
 	return &AttributeIds{Id: id}, nil

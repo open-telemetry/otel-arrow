@@ -93,6 +93,7 @@ const SharedStartTimeUnixNano string = "shared_start_time_unix_nano"
 const SharedTimeUnixNano string = "shared_time_unix_nano"
 
 const ID string = "id"
+const ParentID string = "parent_id"
 
 const AttrsRecordKey string = "key"
 const AttrsRecordValue string = "value"

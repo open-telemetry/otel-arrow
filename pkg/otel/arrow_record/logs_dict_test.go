@@ -27,6 +27,7 @@ import (
 
 	"github.com/f5/otel-arrow-adapter/pkg/config"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 )
 
 // TestLogsWithNoDictionary
@@ -225,7 +226,7 @@ func TestLogsMultiBatchWithDictionaryLimit(t *testing.T) {
 	require.True(t, dictionaryWithOverflow["resource_logs.item.scope_logs.item.logs.item.severity_text"])
 	require.True(t, dictionaryWithOverflow["resource_logs.item.scope_logs.item.logs.item.body.str"])
 
-	logRecordAttrsBuilder := producer.LogsBuilder().RelatedData().AttrsRecordBuilders().LogRecord()
+	logRecordAttrsBuilder := producer.LogsBuilder().RelatedData().RecordBuilderExt(arrow.PayloadTypes.LogRecordAttrs)
 	dictionaryWithOverflow = logRecordAttrsBuilder.Events().DictionariesWithOverflow
 	require.Equal(t, 2, len(dictionaryWithOverflow))
 	require.True(t, dictionaryWithOverflow["value.str"])

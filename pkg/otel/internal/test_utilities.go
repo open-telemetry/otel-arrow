@@ -15,9 +15,46 @@
 package internal
 
 import (
+	"github.com/brianvoe/gofakeit/v6"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"golang.org/x/exp/rand"
 )
+
+// RandAttrs generates a randon set of attributes with the given names.
+// The number of attributes is random between 1 and the number of names.
+// The type of each attribute is random.
+func RandAttrs(names []string) pcommon.Map {
+	attrs := pcommon.NewMap()
+
+	rand.Shuffle(len(names), func(i, j int) {
+		names[i], names[j] = names[j], names[i]
+	})
+
+	attrCount := rand.Intn(len(names))
+	if attrCount == 0 {
+		attrCount = 1
+	}
+	names = names[:attrCount]
+
+	for _, name := range names {
+		attrType := rand.Intn(5)
+		switch attrType {
+		case 0:
+			attrs.PutStr(name, gofakeit.AppName())
+		case 1:
+			attrs.PutInt(name, rand.Int63())
+		case 2:
+			attrs.PutDouble(name, rand.Float64())
+		case 3:
+			attrs.PutBool(name, rand.Intn(2) == 1)
+		case 4:
+			bytes := attrs.PutEmptyBytes(name)
+			bytes.Append([]byte(gofakeit.UUID())...)
+		}
+	}
+	return attrs
+}
 
 func Attrs1() pcommon.Map {
 	attrs := pcommon.NewMap()
@@ -115,6 +152,30 @@ func Resource2() pcommon.Resource {
 	return resource
 }
 
+// IntDP1 returns a pmetric.NumberDataPoint (sample 1).
+func IntDP1() pmetric.NumberDataPoint {
+	dp := pmetric.NewNumberDataPoint()
+	Attrs1().CopyTo(dp.Attributes())
+	dp.SetStartTimestamp(1)
+	dp.SetTimestamp(2)
+	dp.SetIntValue(1)
+	exs := dp.Exemplars()
+	exs.EnsureCapacity(2)
+	Exemplar1().CopyTo(exs.AppendEmpty())
+	Exemplar2().CopyTo(exs.AppendEmpty())
+	dp.SetFlags(1)
+	return dp
+}
+
+// IntDP2 returns a pmetric.NumberDataPoint (sample 1).
+func IntDP2() pmetric.NumberDataPoint {
+	dp := pmetric.NewNumberDataPoint()
+	Attrs1().CopyTo(dp.Attributes())
+	dp.SetTimestamp(2)
+	dp.SetIntValue(1)
+	return dp
+}
+
 // NDP1 returns a pmetric.NumberDataPoint (sample 1).
 func NDP1() pmetric.NumberDataPoint {
 	dp := pmetric.NewNumberDataPoint()
@@ -195,6 +256,22 @@ func Gauge2() pmetric.Gauge {
 func Gauge3() pmetric.Gauge {
 	g := pmetric.NewGauge()
 	NDP1().CopyTo(g.DataPoints().AppendEmpty())
+	return g
+}
+
+func IntSum1() pmetric.Sum {
+	g := pmetric.NewSum()
+	IntDP1().CopyTo(g.DataPoints().AppendEmpty())
+	IntDP2().CopyTo(g.DataPoints().AppendEmpty())
+	g.SetAggregationTemporality(pmetric.AggregationTemporalityDelta)
+	g.SetIsMonotonic(true)
+	return g
+}
+
+func IntSum2() pmetric.Sum {
+	g := pmetric.NewSum()
+	IntDP1().CopyTo(g.DataPoints().AppendEmpty())
+	IntDP2().CopyTo(g.DataPoints().AppendEmpty())
 	return g
 }
 

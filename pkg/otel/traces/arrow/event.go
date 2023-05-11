@@ -41,14 +41,14 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
-// EventSchema is the Arrow Data Type describing an event (as a related record
-// to the main trace record).
+// EventSchema is the Arrow schema representing events.
+// Related record.
 var (
 	EventSchema = arrow.NewSchema([]arrow.Field{
-		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint16},
+		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional, schema.DeltaEncoding)},
+		{Name: constants.ParentID, Type: arrow.PrimitiveTypes.Uint16},
 		{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.Name, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary8)},
-		{Name: constants.AttributesID, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional, schema.DeltaEncoding)},
 		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
 	}, nil)
 )
@@ -60,19 +60,20 @@ type (
 
 		builder *builder.RecordBuilderExt
 
-		ib   *builder.Uint16Builder      // `id` builder
+		ib   *builder.Uint32DeltaBuilder // `id` builder
+		pib  *builder.Uint16Builder      // `parent_id` builder
 		tunb *builder.TimestampBuilder   // `time_unix_nano` builder
 		nb   *builder.StringBuilder      // `name` builder
-		aib  *builder.Uint32DeltaBuilder // attributes id builder
 		dacb *builder.Uint32Builder      // `dropped_attributes_count` builder
 
 		accumulator *EventAccumulator
+		attrsAccu   *acommon.Attributes32Accumulator
 	}
 
 	// Event is an internal representation of an event used by the
 	// EventAccumulator.
 	Event struct {
-		ID                     uint16
+		ParentID               uint16
 		TimeUnixNano           pcommon.Timestamp
 		Name                   string
 		Attributes             pcommon.Map
@@ -88,28 +89,31 @@ type (
 	}
 )
 
-func NewEventBuilder(rBuilder *builder.RecordBuilderExt) (*EventBuilder, error) {
+func NewEventBuilder(rBuilder *builder.RecordBuilderExt) *EventBuilder {
 	b := &EventBuilder{
 		released:    false,
 		builder:     rBuilder,
 		accumulator: NewEventAccumulator(),
 	}
-	if err := b.init(); err != nil {
-		return nil, werror.Wrap(err)
-	}
-	return b, nil
+
+	b.init()
+	return b
 }
 
-func (b *EventBuilder) init() error {
-	b.ib = b.builder.Uint16Builder(constants.ID)
+func (b *EventBuilder) init() {
+	b.ib = b.builder.Uint32DeltaBuilder(constants.ID)
+	// As the events are sorted before insertion, the delta between two
+	// consecutive ID should always be <=1.
+	b.ib.SetMaxDelta(1)
+	b.pib = b.builder.Uint16Builder(constants.ParentID)
+
 	b.tunb = b.builder.TimestampBuilder(constants.TimeUnixNano)
 	b.nb = b.builder.StringBuilder(constants.Name)
-	b.aib = b.builder.Uint32DeltaBuilder(constants.AttributesID)
-	// As the attributes are sorted before insertion, the delta between two
-	// consecutive attributes ID should always be <=1.
-	b.aib.SetMaxDelta(1)
 	b.dacb = b.builder.Uint32Builder(constants.DroppedAttributesCount)
-	return nil
+}
+
+func (b *EventBuilder) SetAttributesAccumulator(accu *acommon.Attributes32Accumulator) {
+	b.attrsAccu = accu
 }
 
 func (b *EventBuilder) SchemaID() string {
@@ -124,14 +128,14 @@ func (b *EventBuilder) Accumulator() *EventAccumulator {
 	return b.accumulator
 }
 
-func (b *EventBuilder) BuildRecord(attrsAccu *acommon.Attributes32Accumulator) (record arrow.Record, err error) {
+func (b *EventBuilder) Build() (record arrow.Record, err error) {
 	schemaNotUpToDateCount := 0
 
 	// Loop until the record is built successfully.
 	// Intermediaries steps may be required to update the schema.
 	for {
-		attrsAccu.Reset()
-		record, err = b.TryBuild(attrsAccu)
+		b.attrsAccu.Reset()
+		record, err = b.TryBuild(b.attrsAccu)
 		if err != nil {
 			if record != nil {
 				record.Release()
@@ -160,21 +164,16 @@ func (b *EventBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (rec
 
 	b.accumulator.Sort()
 
-	for _, event := range b.accumulator.events {
-		b.ib.Append(event.ID)
+	for ID, event := range b.accumulator.events {
+		b.ib.Append(uint32(ID))
+		b.pib.Append(event.ParentID)
 		b.tunb.Append(arrow.Timestamp(event.TimeUnixNano.AsTime().UnixNano()))
 		b.nb.AppendNonEmpty(event.Name)
 
 		// Attributes
-		var ID int64
-		ID, err = attrsAccu.AppendUniqueAttributes(event.Attributes, event.SharedAttributes, nil)
+		err = attrsAccu.AppendUniqueAttributesWithID(uint32(ID), event.Attributes, event.SharedAttributes, nil)
 		if err != nil {
 			return
-		}
-		if ID >= 0 {
-			b.aib.Append(uint32(ID))
-		} else {
-			b.aib.AppendNull()
 		}
 
 		b.dacb.AppendNonZero(event.DroppedAttributesCount)
@@ -182,12 +181,17 @@ func (b *EventBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (rec
 
 	record, err = b.builder.NewRecord()
 	if err != nil {
-		initErr := b.init()
-		if initErr != nil {
-			return nil, werror.Wrap(initErr)
-		}
+		b.init()
 	}
 	return
+}
+
+func (b *EventBuilder) Reset() {
+	b.accumulator.Reset()
+}
+
+func (b *EventBuilder) PayloadType() *acommon.PayloadType {
+	return acommon.PayloadTypes.Event
 }
 
 // Release releases the memory allocated by the builder.
@@ -224,7 +228,7 @@ func (a *EventAccumulator) Append(spanID uint16, events ptrace.SpanEventSlice, s
 	for i := 0; i < events.Len(); i++ {
 		evt := events.At(i)
 		a.events = append(a.events, Event{
-			ID:                     spanID,
+			ParentID:               spanID,
 			TimeUnixNano:           evt.Timestamp(),
 			Name:                   evt.Name(),
 			Attributes:             evt.Attributes(),

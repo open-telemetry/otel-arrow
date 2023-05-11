@@ -73,24 +73,32 @@ func NewConsumer() *Consumer {
 
 // MetricsFrom produces an array of [pmetric.Metrics] from a BatchArrowRecords message.
 func (c *Consumer) MetricsFrom(bar *colarspb.BatchArrowRecords) ([]pmetric.Metrics, error) {
+	// extracts the records from the BatchArrowRecords message
 	records, err := c.Consume(bar)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
 
-	record2Metrics := func(record *record_message.RecordMessage) (pmetric.Metrics, error) {
-		defer record.Record().Release()
-		return metricsotlp.MetricsFrom(record.Record())
+	result := make([]pmetric.Metrics, 0, len(records))
+
+	// builds the related entities (i.e. Attributes, Summaries, Histograms, ...)
+	// from the records and returns the main record.
+	relatedData, metricsRecord, err := metricsotlp.RelatedDataFrom(records)
+	if err != nil {
+		return nil, werror.Wrap(err)
 	}
 
-	result := make([]pmetric.Metrics, 0, len(records))
-	for _, record := range records {
-		metrics, err := record2Metrics(record)
+	// Process the main record with the related entities.
+	if metricsRecord != nil {
+		// Decode OTLP metrics from the combination of the main record and the
+		// related records.
+		metrics, err := metricsotlp.MetricsFrom(metricsRecord.Record(), relatedData)
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
 		result = append(result, metrics)
 	}
+
 	return result, nil
 }
 

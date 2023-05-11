@@ -18,7 +18,7 @@ import (
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/array"
 
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow_old"
+	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -29,7 +29,7 @@ var (
 	ResourceMetricsDT = arrow.StructOf([]arrow.Field{
 		{Name: constants.Resource, Type: acommon.ResourceDT, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.SchemaUrl, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
-		{Name: constants.ScopeMetrics, Type: arrow.ListOf(ScopeMetricsDT), Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.ScopeMetrics, Type: arrow.ListOf(ScopeMetricsDT)},
 	}...)
 )
 
@@ -72,20 +72,20 @@ func (b *ResourceMetricsBuilder) Build() (*array.Struct, error) {
 }
 
 // Append appends a new resource metrics to the builder.
-func (b *ResourceMetricsBuilder) Append(rmg *ResourceMetricsGroup) error {
+func (b *ResourceMetricsBuilder) Append(rmg *ResourceMetricsGroup, relatedData *RelatedData) error {
 	if b.released {
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(rmg, func() error {
-		if err := b.rb.Append(rmg.Resource); err != nil {
+		if err := b.rb.Append(rmg.Resource, relatedData.AttrsBuilders().Resource().Accumulator()); err != nil {
 			return werror.Wrap(err)
 		}
 		b.schb.AppendNonEmpty(rmg.ResourceSchemaUrl)
 		sc := len(rmg.ScopeMetrics)
 		return b.spsb.Append(sc, func() error {
 			for _, smg := range rmg.ScopeMetrics {
-				if err := b.smb.Append(smg); err != nil {
+				if err := b.smb.Append(smg, relatedData); err != nil {
 					return werror.Wrap(err)
 				}
 			}

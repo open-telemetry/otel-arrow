@@ -29,10 +29,10 @@ type (
 	// SpanLinkIDs is a struct containing the Arrow field IDs for the Link struct.
 	SpanLinkIDs struct {
 		ID                     int
+		ParentID               int
 		TraceID                int
 		SpanID                 int
 		TraceState             int
-		AttrsID                int
 		DroppedAttributesCount int
 	}
 
@@ -86,7 +86,12 @@ func SpanLinksStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store)
 	// Read all link fields from the record and reconstruct the link lists
 	// by ID.
 	for row := 0; row < linksCount; row++ {
-		ID, err := arrowutils.U16FromRecord(record, spanLinkIDs.ID, row)
+		ID, err := arrowutils.NullableU32FromRecord(record, spanLinkIDs.ID, row)
+		if err != nil {
+			return nil, werror.Wrap(err)
+		}
+
+		ParentID, err := arrowutils.U16FromRecord(record, spanLinkIDs.ParentID, row)
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
@@ -102,11 +107,6 @@ func SpanLinksStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store)
 		}
 
 		traceState, err := arrowutils.StringFromRecord(record, spanLinkIDs.TraceState, row)
-		if err != nil {
-			return nil, werror.Wrap(err)
-		}
-
-		attrsID, err := arrowutils.NullableU32FromRecord(record, spanLinkIDs.AttrsID, row)
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
@@ -128,15 +128,15 @@ func SpanLinksStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store)
 		link.SetSpanID(sid)
 		link.TraceState().FromRaw(traceState)
 
-		if attrsID != nil {
-			attrs := attrsStore.AttributesByDeltaID(*attrsID)
+		if ID != nil {
+			attrs := attrsStore.AttributesByDeltaID(*ID)
 			if attrs != nil {
 				attrs.CopyTo(link.Attributes())
 			}
 		}
 
 		link.SetDroppedAttributesCount(dac)
-		store.linksByID[ID] = append(store.linksByID[ID], &link)
+		store.linksByID[ParentID] = append(store.linksByID[ParentID], &link)
 	}
 
 	return store, nil
@@ -145,6 +145,11 @@ func SpanLinksStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store)
 // SchemaToSpanLinkIDs pre-computes the field IDs for the links record.
 func SchemaToSpanLinkIDs(schema *arrow.Schema) (*SpanLinkIDs, error) {
 	ID, err := arrowutils.FieldIDFromSchema(schema, constants.ID)
+	if err != nil {
+		return nil, werror.Wrap(err)
+	}
+
+	ParentID, err := arrowutils.FieldIDFromSchema(schema, constants.ParentID)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
@@ -164,22 +169,17 @@ func SchemaToSpanLinkIDs(schema *arrow.Schema) (*SpanLinkIDs, error) {
 		return nil, werror.Wrap(err)
 	}
 
-	attrsID, err := arrowutils.FieldIDFromSchema(schema, constants.AttributesID)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
 	dac, err := arrowutils.FieldIDFromSchema(schema, constants.DroppedAttributesCount)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
 
 	return &SpanLinkIDs{
-		ID:                     ID,
+		ParentID:               ParentID,
 		TraceID:                traceID,
 		SpanID:                 spanID,
 		TraceState:             traceState,
-		AttrsID:                attrsID,
+		ID:                     ID,
 		DroppedAttributesCount: dac,
 	}, nil
 }

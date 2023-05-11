@@ -40,7 +40,7 @@ func NewScopeIds(resSpansDT *arrow.StructType) (*ScopeIds, error) {
 	nameID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.Name)
 	versionID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.Version)
 	droppedAttributesCountID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.DroppedAttributesCount)
-	attrsID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.AttributesID)
+	attrsID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.ID)
 	return &ScopeIds{
 		Id:                     scopeID,
 		Name:                   nameID,

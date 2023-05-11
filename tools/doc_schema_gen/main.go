@@ -41,7 +41,7 @@ func main() {
 		comment("kind", "OTLP enum with 6 variants").
 		comment("code", "OTLP enum with 4 variants")
 
-	sdg.genSchemaDoc(metricsarrow.Schema, 2)
+	sdg.genSchemaDoc(metricsarrow.MetricsSchema, 2)
 	sdg.genSchemaDoc(logsarrow.Schema, 2)
 	sdg.genSchemaDoc(tracesarrow.Schema, 2)
 

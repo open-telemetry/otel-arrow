@@ -16,93 +16,89 @@ package otlp
 
 import (
 	"github.com/apache/arrow/go/v12/arrow"
-	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp_old"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type ScopeMetricsIds struct {
-	SchemaUrl          int
-	ScopeIds           *otlp.ScopeIds
-	MetricSetIds       *MetricSetIds
-	SharedAttributeIds *otlp.AttributeIds
-	SharedStartTimeID  int
-	SharedTimeID       int
+	ID        int
+	SchemaUrl int
+	ScopeIDs  *otlp.ScopeIds
 }
 
 func NewScopeMetricsIds(scopeMetricsDT *arrow.StructType) (*ScopeMetricsIds, error) {
-	schemaId, _ := arrowutils.FieldIDFromStruct(scopeMetricsDT, constants.SchemaUrl)
+	ID, _ := arrowutils.FieldIDFromStruct(scopeMetricsDT, constants.ID)
 
 	scopeIds, err := otlp.NewScopeIds(scopeMetricsDT)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
 
-	metricSetIds, err := NewMetricSetIds(scopeMetricsDT)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
-	sharedAttrIds := otlp.NewSharedAttributeIds(scopeMetricsDT)
-	startTimeID := arrowutils.OptionalFieldIDFromStruct(scopeMetricsDT, constants.SharedStartTimeUnixNano)
-	timeID := arrowutils.OptionalFieldIDFromStruct(scopeMetricsDT, constants.SharedTimeUnixNano)
+	schemaID, _ := arrowutils.FieldIDFromStruct(scopeMetricsDT, constants.SchemaUrl)
 
 	return &ScopeMetricsIds{
-		SchemaUrl:          schemaId,
-		ScopeIds:           scopeIds,
-		MetricSetIds:       metricSetIds,
-		SharedAttributeIds: sharedAttrIds,
-		SharedStartTimeID:  startTimeID,
-		SharedTimeID:       timeID,
+		ID:        ID,
+		SchemaUrl: schemaID,
+		ScopeIDs:  scopeIds,
 	}, nil
 }
 
-func UpdateScopeMetricsFrom(scopeMetricsSlice pmetric.ScopeMetricsSlice, arrowScopeMetrics *arrowutils.ListOfStructs, ids *ScopeMetricsIds) error {
+func UpdateScopeMetricsFrom(
+	scopeMetricsSlice pmetric.ScopeMetricsSlice,
+	arrowScopeMetrics *arrowutils.ListOfStructs,
+	ids *ScopeMetricsIds,
+	relatedData *RelatedData,
+) error {
 	scopeMetricsSlice.EnsureCapacity(arrowScopeMetrics.End() - arrowScopeMetrics.Start())
 
 	for scopeMetricsIdx := arrowScopeMetrics.Start(); scopeMetricsIdx < arrowScopeMetrics.End(); scopeMetricsIdx++ {
 		scopeMetrics := scopeMetricsSlice.AppendEmpty()
 
-		if err := otlp.UpdateScopeWith(scopeMetrics.Scope(), arrowScopeMetrics, scopeMetricsIdx, ids.ScopeIds); err != nil {
+		if err := otlp.UpdateScopeWith(scopeMetrics.Scope(), arrowScopeMetrics, scopeMetricsIdx, ids.ScopeIDs, relatedData.ScopeAttrMapStore); err != nil {
 			return werror.Wrap(err)
 		}
 
+		ID, err := arrowScopeMetrics.U16FieldByID(ids.ID, scopeMetricsIdx)
 		schemaUrl, err := arrowScopeMetrics.StringFieldByID(ids.SchemaUrl, scopeMetricsIdx)
 		if err != nil {
 			return werror.Wrap(err)
 		}
 		scopeMetrics.SetSchemaUrl(schemaUrl)
 
-		sdata := &SharedData{}
-		sdata.Attributes = pcommon.NewMap()
-		if ids.SharedAttributeIds != nil {
-			err = otlp.AppendAttributesInto(sdata.Attributes, arrowScopeMetrics.Array(), scopeMetricsIdx, ids.SharedAttributeIds)
-			if err != nil {
-				return werror.Wrap(err)
-			}
-		}
-		if ids.SharedStartTimeID != -1 {
-			sdata.StartTime = arrowScopeMetrics.OptionalTimestampFieldByID(ids.SharedStartTimeID, scopeMetricsIdx)
-		}
-		if ids.SharedTimeID != -1 {
-			sdata.Time = arrowScopeMetrics.OptionalTimestampFieldByID(ids.SharedTimeID, scopeMetricsIdx)
-		}
+		iSums := relatedData.SumIntDataPointsStore.SumMetricsByID(ID)
+		dSums := relatedData.SumDoubleDataPointsStore.SumMetricsByID(ID)
+		iGauges := relatedData.GaugeIntDataPointsStore.GaugeMetricsByID(ID)
+		dGauges := relatedData.GaugeDoubleDataPointsStore.GaugeMetricsByID(ID)
+		summaries := relatedData.SummaryDataPointsStore.SummaryMetricsByID(ID)
+		histogram := relatedData.HistogramDataPointsStore.HistogramMetricsByID(ID)
+		eHistogram := relatedData.EHistogramDataPointsStore.EHistogramMetricsByID(ID)
 
-		arrowMetrics, err := arrowScopeMetrics.ListOfStructsById(scopeMetricsIdx, ids.MetricSetIds.Id)
-		if err != nil {
-			return werror.Wrap(err)
+		metrics := scopeMetrics.Metrics()
+		metrics.EnsureCapacity(len(iSums) + len(dSums) + len(iGauges) + len(dGauges) + len(summaries))
+		for _, sum := range iSums {
+			sum.MoveTo(metrics.AppendEmpty())
 		}
-		metricsSlice := scopeMetrics.Metrics()
-		metricsSlice.EnsureCapacity(arrowMetrics.End() - arrowMetrics.Start())
-		for entityIdx := arrowMetrics.Start(); entityIdx < arrowMetrics.End(); entityIdx++ {
-			err = AppendMetricSetInto(metricsSlice, arrowMetrics, entityIdx, ids.MetricSetIds, sdata)
-			if err != nil {
-				return werror.Wrap(err)
-			}
+		for _, sum := range dSums {
+			sum.MoveTo(metrics.AppendEmpty())
+		}
+		for _, gauge := range iGauges {
+			gauge.MoveTo(metrics.AppendEmpty())
+		}
+		for _, gauge := range dGauges {
+			gauge.MoveTo(metrics.AppendEmpty())
+		}
+		for _, sum := range summaries {
+			sum.MoveTo(metrics.AppendEmpty())
+		}
+		for _, hist := range histogram {
+			hist.MoveTo(metrics.AppendEmpty())
+		}
+		for _, hist := range eHistogram {
+			hist.MoveTo(metrics.AppendEmpty())
 		}
 	}
 

@@ -30,7 +30,7 @@ import (
 // U16FromStruct returns the uint16 value for a specific row in an Arrow struct
 // or 0 if the field doesn't exist.
 func U16FromStruct(structArr *array.Struct, row int, fieldID int) (uint16, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return 0, nil
 	}
 	return U16FromArray(structArr.Field(fieldID), row)
@@ -39,7 +39,7 @@ func U16FromStruct(structArr *array.Struct, row int, fieldID int) (uint16, error
 // NullableU16FromStruct returns a reference to an uint16 value for a specific
 // row in an Arrow struct or nil if the field doesn't exist.
 func NullableU16FromStruct(structArr *array.Struct, row int, fieldID int) (*uint16, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return nil, nil
 	}
 	if structArr.IsNull(row) {
@@ -55,24 +55,24 @@ func NullableU16FromStruct(structArr *array.Struct, row int, fieldID int) (*uint
 // U32FromStruct returns the uint32 value for a specific row in an Arrow struct
 // or 0 if the field doesn't exist.
 func U32FromStruct(structArr *array.Struct, row int, fieldID int) (uint32, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return 0, nil
 	}
 	return U32FromArray(structArr.Field(fieldID), row)
 }
 
 // ListOfStructsFieldIDFromStruct returns the field id of a list of structs
-// field from an Arrow struct or -1 if the field is not found.
+// field from an Arrow struct or AbsentFieldID if the field is not found.
 //
 // An error is returned if the field is not a list of structs.
 func ListOfStructsFieldIDFromStruct(dt *arrow.StructType, fieldName string) (int, *arrow.StructType, error) {
 	if dt == nil {
-		return -1, nil, nil
+		return AbsentFieldID, nil, nil
 	}
 
 	id, ok := dt.FieldIdx(fieldName)
 	if !ok {
-		return -1, nil, nil
+		return AbsentFieldID, nil, nil
 	}
 
 	if lt, ok := dt.Field(id).Type.(*arrow.ListType); ok {
@@ -87,32 +87,32 @@ func ListOfStructsFieldIDFromStruct(dt *arrow.StructType, fieldName string) (int
 }
 
 // FieldIDFromStruct returns the field id of a named field from an Arrow struct
-// or -1 for an unknown field.
+// or AbsentFieldID for an unknown field.
 func FieldIDFromStruct(dt *arrow.StructType, fieldName string) (int, *arrow.DataType) {
 	if dt == nil {
-		return -1, nil
+		return AbsentFieldID, nil
 	}
 
 	id, found := dt.FieldIdx(fieldName)
 	if !found {
-		return -1, nil
+		return AbsentFieldID, nil
 	}
 	field := dt.Field(id)
 	return id, &field.Type
 }
 
 // StructFieldIDFromStruct returns the field id of a struct field from an Arrow
-// struct or -1 for an unknown field.
+// struct or AbsentFieldID for an unknown field.
 //
 // An error is returned if the field is not a struct.
 func StructFieldIDFromStruct(dt *arrow.StructType, fieldName string) (int, *arrow.StructType, error) {
 	if dt == nil {
-		return -1, nil, nil
+		return AbsentFieldID, nil, nil
 	}
 
 	id, found := dt.FieldIdx(fieldName)
 	if !found {
-		return -1, nil, nil
+		return AbsentFieldID, nil, nil
 	}
 	if st, ok := dt.Field(id).Type.(*arrow.StructType); ok {
 		return id, st, nil
@@ -123,7 +123,7 @@ func StructFieldIDFromStruct(dt *arrow.StructType, fieldName string) (int, *arro
 
 // StringFromStruct returns the string value for a specific row in an Arrow struct.
 func StringFromStruct(arr arrow.Array, row int, id int) (string, error) {
-	if id == -1 {
+	if id == AbsentFieldID {
 		return "", nil
 	}
 
@@ -141,7 +141,7 @@ func StringFromStruct(arr arrow.Array, row int, id int) (string, error) {
 // I32FromStruct returns the int32 value for a specific field+row in an Arrow
 // Array struct.
 func I32FromStruct(arr arrow.Array, row int, id int) (int32, error) {
-	if id == -1 {
+	if id == AbsentFieldID {
 		return 0, nil
 	}
 	structArr, ok := arr.(*array.Struct)
@@ -158,23 +158,23 @@ func I32FromStruct(arr arrow.Array, row int, id int) (int32, error) {
 	}
 }
 
-// OptionalFieldIDFromStruct returns the field id of a named field from an Arrow struct or -1 if the field is unknown.
+// OptionalFieldIDFromStruct returns the field id of a named field from an Arrow struct or AbsentFieldID if the field is unknown.
 func OptionalFieldIDFromStruct(dt *arrow.StructType, fieldName string) (id int) {
 	if dt == nil {
-		id = -1
+		id = AbsentFieldID
 		return
 	}
 
 	id, found := dt.FieldIdx(fieldName)
 	if !found {
-		id = -1
+		id = AbsentFieldID
 	}
 	return
 }
 
 // ListOfStructsFromStruct return a ListOfStructs from a struct field.
 func ListOfStructsFromStruct(parent *array.Struct, fieldID int, row int) (*ListOfStructs, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return nil, nil
 	}
 

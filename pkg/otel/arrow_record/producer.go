@@ -111,13 +111,16 @@ func NewProducerWithOptions(options ...config2.Option) *Producer {
 		stats.SchemaStatsEnabled = true
 	}
 
-	metricsRecordBuilder := builder.NewRecordBuilderExt(cfg.Pool, metricsarrow.Schema, config.NewDictionary(cfg.LimitIndexSize), stats)
-
+	// Record builders
+	metricsRecordBuilder := builder.NewRecordBuilderExt(cfg.Pool, metricsarrow.MetricsSchema, config.NewDictionary(cfg.LimitIndexSize), stats)
+	metricsRecordBuilder.SetLabel("metrics")
 	logsRecordBuilder := builder.NewRecordBuilderExt(cfg.Pool, logsarrow.Schema, config.NewDictionary(cfg.LimitIndexSize), stats)
-
+	logsRecordBuilder.SetLabel("logs")
 	tracesRecordBuilder := builder.NewRecordBuilderExt(cfg.Pool, tracesarrow.Schema, config.NewDictionary(cfg.LimitIndexSize), stats)
+	tracesRecordBuilder.SetLabel("traces")
 
-	metricsBuilder, err := metricsarrow.NewMetricsBuilder(metricsRecordBuilder, stats.SchemaStatsEnabled)
+	// Entity builders
+	metricsBuilder, err := metricsarrow.NewMetricsBuilder(metricsRecordBuilder, cfg, stats)
 	if err != nil {
 		panic(err)
 	}
@@ -156,14 +159,26 @@ func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colar
 	// parameter. All these Arrow records are wrapped into a BatchArrowRecords
 	// and will be released by the Producer.Produce method.
 	record, err := recordBuilder[pmetric.Metrics](func() (acommon.EntityBuilder[pmetric.Metrics], error) {
+		// Related entity builder must be reset before each use.
+		// This is especially important after a schema update.
+		p.metricsBuilder.RelatedData().Reset()
 		return p.metricsBuilder, nil
 	}, metrics)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
 
+	// builds the related records (e.g. INT_SUM, INT_GAUGE, INT_GAUGE_ATTRS, ...)
+	rms, err := p.metricsBuilder.RelatedData().BuildRecordMessages()
+	if err != nil {
+		return nil, werror.Wrap(err)
+	}
+
 	schemaID := p.metricsRecordBuilder.SchemaID()
-	rms := []*record_message.RecordMessage{record_message.NewMetricsMessage(schemaID, record)}
+
+	// The main record must be the first one to simplify the decoding
+	// in the collector.
+	rms = append([]*record_message.RecordMessage{record_message.NewMetricsMessage(schemaID, record)}, rms...)
 
 	bar, err := p.Produce(rms)
 	if err != nil {
@@ -248,10 +263,6 @@ func (p *Producer) LogsRecordBuilderExt() *builder.RecordBuilderExt {
 // TracesRecordBuilderExt returns the record builder used to encode traces.
 func (p *Producer) TracesRecordBuilderExt() *builder.RecordBuilderExt {
 	return p.tracesRecordBuilder
-}
-
-func (p *Producer) MetricsStats() *metricsarrow.MetricsStats {
-	return p.metricsBuilder.Stats()
 }
 
 func (p *Producer) MetricsBuilder() *metricsarrow.MetricsBuilder {

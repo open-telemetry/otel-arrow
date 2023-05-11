@@ -25,14 +25,9 @@ import (
 	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
-	"github.com/f5/otel-arrow-adapter/pkg/config"
+	cfg "github.com/f5/otel-arrow-adapter/pkg/config"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 )
-
-var metricsProducerOptions = []config.Option{
-	config.WithNoZstd(),
-	config.WithStats(),
-}
 
 type MetricsProfileable struct {
 	tags              []string
@@ -45,19 +40,32 @@ type MetricsProfileable struct {
 	config            *benchmark.Config
 	pool              *memory.GoAllocator
 	unaryRpcMode      bool
+	options           []cfg.Option
 }
 
 func NewMetricsProfileable(tags []string, dataset dataset.MetricsDataset, config *benchmark.Config) *MetricsProfileable {
+	var options []cfg.Option
+
+	if config.Compression {
+		options = append(options, cfg.WithZstd())
+	} else {
+		options = append(options, cfg.WithNoZstd())
+	}
+	if config.Stats {
+		options = append(options, cfg.WithStats())
+	}
+
 	return &MetricsProfileable{
 		tags:              tags,
 		dataset:           dataset,
 		compression:       benchmark.Zstd(),
-		producer:          arrow_record.NewProducerWithOptions(metricsProducerOptions...),
+		producer:          arrow_record.NewProducerWithOptions(options...),
 		consumer:          arrow_record.NewConsumer(),
 		batchArrowRecords: make([]*colarspb.BatchArrowRecords, 0, 10),
 		config:            config,
 		pool:              memory.NewGoAllocator(),
 		unaryRpcMode:      false,
+		options:           options,
 	}
 }
 
@@ -84,7 +92,7 @@ func (s *MetricsProfileable) CompressionAlgorithm() benchmark.CompressionAlgorit
 }
 func (s *MetricsProfileable) StartProfiling(_ io.Writer) {
 	if !s.unaryRpcMode {
-		s.producer = arrow_record.NewProducerWithOptions(metricsProducerOptions...)
+		s.producer = arrow_record.NewProducerWithOptions(s.options...)
 		s.consumer = arrow_record.NewConsumer()
 	}
 }
@@ -101,7 +109,7 @@ func (s *MetricsProfileable) EndProfiling(_ io.Writer) {
 func (s *MetricsProfileable) InitBatchSize(_ io.Writer, _ int) {}
 func (s *MetricsProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	if s.unaryRpcMode {
-		s.producer = arrow_record.NewProducerWithOptions(metricsProducerOptions...)
+		s.producer = arrow_record.NewProducerWithOptions(s.options...)
 		s.consumer = arrow_record.NewConsumer()
 	}
 

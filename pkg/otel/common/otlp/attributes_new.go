@@ -17,14 +17,14 @@
 
 package otlp
 
-// Note: This file will replace pkg/otel/common/otlp/attributes.go once all OTel
-// entities will be migrated to the hybrid model.
+// ToDo This file will replace pkg/otel/common/otlp/attributes.go once all OTel entities will be migrated to the hybrid model.
 
 import (
 	"github.com/apache/arrow/go/v12/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	oschema "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
@@ -33,9 +33,10 @@ type (
 	// AttributeIDs is a struct containing the Arrow field IDs of the
 	// attributes.
 	AttributeIDs struct {
-		ID    int
-		Key   int
-		value int
+		ParentID             int
+		ParentIDDeltaEncoded bool
+		Key                  int
+		value                int
 	}
 
 	// Attributes16Store is a store for attributes.
@@ -114,7 +115,7 @@ func Attributes16StoreFrom(record arrow.Record, store *Attributes16Store) error 
 	// Read all key/value tuples from the record and reconstruct the attributes
 	// map by ID.
 	for i := 0; i < attrsCount; i++ {
-		ID, err := arrowutils.U16FromRecord(record, attrIDS.ID, i)
+		ParentID, err := arrowutils.U16FromRecord(record, attrIDS.ParentID, i)
 		if err != nil {
 			return werror.Wrap(err)
 		}
@@ -134,11 +135,11 @@ func Attributes16StoreFrom(record arrow.Record, store *Attributes16Store) error 
 			return werror.Wrap(err)
 		}
 
-		m, ok := store.attributesByID[ID]
+		m, ok := store.attributesByID[ParentID]
 		if !ok {
 			newMap := pcommon.NewMap()
 			m = &newMap
-			store.attributesByID[ID] = m
+			store.attributesByID[ParentID] = m
 		}
 		value.CopyTo(m.PutEmpty(key))
 	}
@@ -160,10 +161,20 @@ func Attributes32StoreFrom(record arrow.Record, store *Attributes32Store) error 
 
 	// Read all key/value tuples from the record and reconstruct the attributes
 	// map by ID.
+	parentID := uint32(0)
 	for i := 0; i < attrsCount; i++ {
-		ID, err := arrowutils.U32FromRecord(record, attrIDS.ID, i)
-		if err != nil {
-			return werror.Wrap(err)
+		if attrIDS.ParentIDDeltaEncoded {
+			delta, err := arrowutils.U32FromRecord(record, attrIDS.ParentID, i)
+			if err != nil {
+				return werror.Wrap(err)
+			}
+
+			parentID += delta
+		} else {
+			parentID, err = arrowutils.U32FromRecord(record, attrIDS.ParentID, i)
+			if err != nil {
+				return werror.Wrap(err)
+			}
 		}
 
 		key, err := arrowutils.StringFromRecord(record, attrIDS.Key, i)
@@ -181,11 +192,11 @@ func Attributes32StoreFrom(record arrow.Record, store *Attributes32Store) error 
 			return werror.Wrap(err)
 		}
 
-		m, ok := store.attributesByID[ID]
+		m, ok := store.attributesByID[parentID]
 		if !ok {
 			newMap := pcommon.NewMap()
 			m = &newMap
-			store.attributesByID[ID] = m
+			store.attributesByID[parentID] = m
 		}
 		value.CopyTo(m.PutEmpty(key))
 	}
@@ -195,9 +206,15 @@ func Attributes32StoreFrom(record arrow.Record, store *Attributes32Store) error 
 
 // SchemaToAttributeIDs pre-computes the field IDs for the attributes record.
 func SchemaToAttributeIDs(schema *arrow.Schema) (*AttributeIDs, error) {
-	ID, err := arrowutils.FieldIDFromSchema(schema, constants.ID)
+	parentID, err := arrowutils.FieldIDFromSchema(schema, constants.ParentID)
 	if err != nil {
 		return nil, werror.Wrap(err)
+	}
+
+	deltaEncoded := false
+	v, found := schema.Field(parentID).Metadata.GetValue(oschema.EncodingKey)
+	if found {
+		deltaEncoded = v == oschema.DeltaEncodingValue
 	}
 
 	key, err := arrowutils.FieldIDFromSchema(schema, constants.AttrsRecordKey)
@@ -211,8 +228,9 @@ func SchemaToAttributeIDs(schema *arrow.Schema) (*AttributeIDs, error) {
 	}
 
 	return &AttributeIDs{
-		ID:    ID,
-		Key:   key,
-		value: value,
+		ParentID:             parentID,
+		ParentIDDeltaEncoded: deltaEncoded,
+		Key:                  key,
+		value:                value,
 	}, nil
 }

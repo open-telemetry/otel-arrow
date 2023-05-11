@@ -34,6 +34,10 @@ func main() {
 	// To run in unary RPC mode, use the flag -unaryrpc.
 	unaryRpcPtr := flag.Bool("unaryrpc", false, "unary rpc mode")
 
+	// The -stats flag displays a series of statistics about the schema and the
+	// dataset. This flag is disabled by default.
+	stats := flag.Bool("stats", false, "stats mode")
+
 	// Parse the flag
 	flag.Parse()
 
@@ -49,22 +53,35 @@ func main() {
 		inputFiles = append(inputFiles, "./data/otlp_metrics.pb")
 	}
 
-	warmUpIter := uint64(2)
+	conf := &benchmark.Config{
+		Compression: false,
+	}
+	if *stats {
+		conf.Stats = true
+	}
+
+	warmUpIter := uint64(1)
 
 	// Performance comparison for each input file
 	for i := range inputFiles {
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
-		profiler := benchmark.NewProfiler([]int{10, 100, 1000, 2000, 4000}, "output/metrics_benchmark.log", warmUpIter)
+		profiler := benchmark.NewProfiler([]int{10, 100, 500, 1000, 2000, 4000, 5000}, "output/metrics_benchmark.log", warmUpIter)
 		compressionAlgo := benchmark.Zstd()
 		maxIter := uint64(3)
 		ds := dataset.NewRealMetricsDataset(inputFiles[i])
 		profiler.Printf("Dataset '%s' (%s) loaded\n", inputFiles[i], humanize.Bytes(uint64(ds.SizeInBytes())))
 		otlpMetrics := otlp.NewMetricsProfileable(ds, compressionAlgo)
-		otlpArrowMetrics := arrow.NewMetricsProfileable([]string{"stream mode"}, ds, &benchmark.Config{})
+		//otlpDictMetrics := otlpdict.NewMetricsProfileable(ds, compressionAlgo)
+		otlpArrowMetrics := arrow.NewMetricsProfileable([]string{"stream mode"}, ds, conf)
 
 		if err := profiler.Profile(otlpMetrics, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
 		}
+
+		//if err := profiler.Profile(otlpDictMetrics, maxIter); err != nil {
+		//	panic(fmt.Errorf("expected no error, got %v", err))
+		//}
+
 		if err := profiler.Profile(otlpArrowMetrics, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
 		}
@@ -72,7 +89,13 @@ func main() {
 		// If the unary RPC mode is enabled,
 		// run the OTLP Arrow benchmark in unary RPC mode.
 		if *unaryRpcPtr {
-			otlpArrowMetrics = arrow.NewMetricsProfileable([]string{"unary rpc mode"}, ds, &benchmark.Config{})
+			//otlpDictMetrics := otlpdict.NewMetricsProfileable(ds, compressionAlgo)
+			//otlpDictMetrics.EnableUnaryRpcMode()
+			//if err := profiler.Profile(otlpDictMetrics, maxIter); err != nil {
+			//	panic(fmt.Errorf("expected no error, got %v", err))
+			//}
+
+			otlpArrowMetrics = arrow.NewMetricsProfileable([]string{"unary rpc mode"}, ds, conf)
 			otlpArrowMetrics.EnableUnaryRpcMode()
 			if err := profiler.Profile(otlpArrowMetrics, maxIter); err != nil {
 				panic(fmt.Errorf("expected no error, got %v", err))

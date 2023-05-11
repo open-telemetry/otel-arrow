@@ -17,8 +17,7 @@
 
 package arrow
 
-// Attributes record builder for 16-bit IDs.
-// ToDo move this to the common package once the metrics and logs builders are refactored.
+// Attributes record builder for 16-bit Parent IDs.
 
 import (
 	"errors"
@@ -34,7 +33,7 @@ import (
 // Schema is the Arrow schema for the OTLP Arrow Traces record.
 var (
 	AttrsSchema16 = arrow.NewSchema([]arrow.Field{
-		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint16},
+		{Name: constants.ParentID, Type: arrow.PrimitiveTypes.Uint16},
 		{Name: constants.AttrsRecordKey, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary8)},
 		{Name: constants.AttrsRecordValue, Type: AnyValueDT},
 	}, nil)
@@ -51,34 +50,29 @@ type (
 		ab *AnyValueBuilder
 
 		accumulator *Attributes16Accumulator
+		payloadType *PayloadType
 	}
 )
 
-func NewAttrs16Builder(rBuilder *builder.RecordBuilderExt) (*Attrs16Builder, error) {
+func NewAttrs16Builder(rBuilder *builder.RecordBuilderExt, payloadType *PayloadType) *Attrs16Builder {
 	b := &Attrs16Builder{
 		released:    false,
 		builder:     rBuilder,
 		accumulator: NewAttributes16Accumulator(),
+		payloadType: payloadType,
 	}
-	if err := b.init(); err != nil {
-		return nil, werror.Wrap(err)
-	}
-	return b, nil
+	b.init()
+	return b
 }
 
-func (b *Attrs16Builder) init() error {
-	b.ib = b.builder.Uint16Builder("id")
-	b.kb = b.builder.StringBuilder("key")
-	b.ab = AnyValueBuilderFrom(b.builder.SparseUnionBuilder("value"))
-	return nil
+func (b *Attrs16Builder) init() {
+	b.ib = b.builder.Uint16Builder(constants.ParentID)
+	b.kb = b.builder.StringBuilder(constants.AttrsRecordKey)
+	b.ab = AnyValueBuilderFrom(b.builder.SparseUnionBuilder(constants.AttrsRecordValue))
 }
 
 func (b *Attrs16Builder) Accumulator() *Attributes16Accumulator {
 	return b.accumulator
-}
-
-func (b *Attrs16Builder) IsEmpty() bool {
-	return b.accumulator.IsEmpty()
 }
 
 func (b *Attrs16Builder) TryBuild() (record arrow.Record, err error) {
@@ -87,7 +81,7 @@ func (b *Attrs16Builder) TryBuild() (record arrow.Record, err error) {
 	}
 
 	for _, attr := range b.accumulator.SortedAttrs() {
-		b.ib.Append(attr.ID)
+		b.ib.Append(attr.ParentID)
 		b.kb.Append(attr.Key)
 		if err := b.ab.Append(attr.Value); err != nil {
 			return nil, werror.Wrap(err)
@@ -96,15 +90,16 @@ func (b *Attrs16Builder) TryBuild() (record arrow.Record, err error) {
 
 	record, err = b.builder.NewRecord()
 	if err != nil {
-		initErr := b.init()
-		if initErr != nil {
-			err = werror.Wrap(initErr)
-		}
+		b.init()
 	} else {
 		//PrintRecord(record)
 	}
 
 	return
+}
+
+func (b *Attrs16Builder) IsEmpty() bool {
+	return b.accumulator.IsEmpty()
 }
 
 func (b *Attrs16Builder) Build() (arrow.Record, error) {
@@ -140,6 +135,14 @@ func (b *Attrs16Builder) Build() (arrow.Record, error) {
 
 func (b *Attrs16Builder) SchemaID() string {
 	return b.builder.SchemaID()
+}
+
+func (b *Attrs16Builder) PayloadType() *PayloadType {
+	return b.payloadType
+}
+
+func (b *Attrs16Builder) Reset() {
+	b.accumulator.Reset()
 }
 
 // Release releases the memory allocated by the builder.

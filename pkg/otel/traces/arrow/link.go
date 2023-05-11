@@ -46,11 +46,11 @@ import (
 // to the main trace record).
 var (
 	LinkSchema = arrow.NewSchema([]arrow.Field{
-		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint16},
+		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional, schema.DeltaEncoding)},
+		{Name: constants.ParentID, Type: arrow.PrimitiveTypes.Uint16},
 		{Name: constants.TraceId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 16}, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
 		{Name: constants.SpanId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 8}, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
 		{Name: constants.TraceState, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
-		{Name: constants.AttributesID, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional, schema.DeltaEncoding)},
 		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
 	}, nil)
 )
@@ -62,20 +62,21 @@ type (
 
 		builder *builder.RecordBuilderExt
 
-		ib   *builder.Uint16Builder          // `id` builder
+		ib   *builder.Uint32DeltaBuilder     // `id` builder
+		pib  *builder.Uint16Builder          // `parent_id` builder
 		tib  *builder.FixedSizeBinaryBuilder // `trace_id` builder
 		sib  *builder.FixedSizeBinaryBuilder // `span_id` builder
 		tsb  *builder.StringBuilder          // `trace_state` builder
-		aib  *builder.Uint32DeltaBuilder     // attributes id builder
 		dacb *builder.Uint32Builder          // `dropped_attributes_count` builder
 
 		accumulator *LinkAccumulator
+		attrsAccu   *acommon.Attributes32Accumulator
 	}
 
 	// Link is an internal representation of a link used by the
 	// LinkAccumulator.
 	Link struct {
-		ID                     uint16
+		ParentID               uint16
 		TraceID                [16]byte
 		SpanID                 [8]byte
 		TraceState             string
@@ -92,31 +93,32 @@ type (
 	}
 )
 
-func NewLinkBuilder(rBuilder *builder.RecordBuilderExt) (*LinkBuilder, error) {
+func NewLinkBuilder(rBuilder *builder.RecordBuilderExt) *LinkBuilder {
 	b := &LinkBuilder{
 		released:    false,
 		builder:     rBuilder,
 		accumulator: NewLinkAccumulator(),
 	}
 
-	if err := b.init(); err != nil {
-		return nil, werror.Wrap(err)
-	}
+	b.init()
 
-	return b, nil
+	return b
 }
 
-func (b *LinkBuilder) init() error {
-	b.ib = b.builder.Uint16Builder(constants.ID)
+func (b *LinkBuilder) init() {
+	b.ib = b.builder.Uint32DeltaBuilder(constants.ID)
+	// As the links are sorted before insertion, the delta between two
+	// consecutive attributes ID should always be <=1.
+	b.ib.SetMaxDelta(1)
+	b.pib = b.builder.Uint16Builder(constants.ParentID)
 	b.tib = b.builder.FixedSizeBinaryBuilder(constants.TraceId)
 	b.sib = b.builder.FixedSizeBinaryBuilder(constants.SpanId)
 	b.tsb = b.builder.StringBuilder(constants.TraceState)
-	b.aib = b.builder.Uint32DeltaBuilder(constants.AttributesID)
-	// As the attributes are sorted before insertion, the delta between two
-	// consecutive attributes ID should always be <=1.
-	b.aib.SetMaxDelta(1)
 	b.dacb = b.builder.Uint32Builder(constants.DroppedAttributesCount)
-	return nil
+}
+
+func (b *LinkBuilder) SetAttributesAccumulator(accu *acommon.Attributes32Accumulator) {
+	b.attrsAccu = accu
 }
 
 func (b *LinkBuilder) SchemaID() string {
@@ -127,18 +129,26 @@ func (b *LinkBuilder) IsEmpty() bool {
 	return b.accumulator.IsEmpty()
 }
 
+func (b *LinkBuilder) Reset() {
+	b.accumulator.Reset()
+}
+
+func (b *LinkBuilder) PayloadType() *acommon.PayloadType {
+	return acommon.PayloadTypes.Link
+}
+
 func (b *LinkBuilder) Accumulator() *LinkAccumulator {
 	return b.accumulator
 }
 
-func (b *LinkBuilder) BuildRecord(attrsAccu *acommon.Attributes32Accumulator) (record arrow.Record, err error) {
+func (b *LinkBuilder) Build() (record arrow.Record, err error) {
 	schemaNotUpToDateCount := 0
 
 	// Loop until the record is built successfully.
 	// Intermediaries steps may be required to update the schema.
 	for {
-		attrsAccu.Reset()
-		record, err = b.TryBuild(attrsAccu)
+		b.attrsAccu.Reset()
+		record, err = b.TryBuild(b.attrsAccu)
 		if err != nil {
 			if record != nil {
 				record.Release()
@@ -167,22 +177,17 @@ func (b *LinkBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (reco
 
 	b.accumulator.Sort()
 
-	for _, link := range b.accumulator.links {
-		b.ib.Append(link.ID)
+	for ID, link := range b.accumulator.links {
+		b.ib.Append(uint32(ID))
+		b.pib.Append(link.ParentID)
 		b.tib.Append(link.TraceID[:])
 		b.sib.Append(link.SpanID[:])
 		b.tsb.AppendNonEmpty(link.TraceState)
 
 		// Attributes
-		var ID int64
-		ID, err = attrsAccu.AppendUniqueAttributes(link.Attributes, link.SharedAttributes, nil)
+		err = attrsAccu.AppendUniqueAttributesWithID(uint32(ID), link.Attributes, link.SharedAttributes, nil)
 		if err != nil {
 			return
-		}
-		if ID >= 0 {
-			b.aib.Append(uint32(ID))
-		} else {
-			b.aib.AppendNull()
 		}
 
 		b.dacb.AppendNonZero(link.DroppedAttributesCount)
@@ -190,10 +195,7 @@ func (b *LinkBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (reco
 
 	record, err = b.builder.NewRecord()
 	if err != nil {
-		initErr := b.init()
-		if initErr != nil {
-			return nil, werror.Wrap(initErr)
-		}
+		b.init()
 	}
 	return
 }
@@ -232,7 +234,7 @@ func (a *LinkAccumulator) Append(spanID uint16, links ptrace.SpanLinkSlice, shar
 	for i := 0; i < links.Len(); i++ {
 		link := links.At(i)
 		a.links = append(a.links, Link{
-			ID:                     spanID,
+			ParentID:               spanID,
 			TraceID:                link.TraceID(),
 			SpanID:                 link.SpanID(),
 			TraceState:             link.TraceState().AsRaw(),
@@ -254,7 +256,7 @@ func (a *LinkAccumulator) Sort() {
 
 		cmp := bytes.Compare(linkI.TraceID[:], linkJ.TraceID[:])
 		if cmp == 0 {
-			return linkI.ID < linkJ.ID
+			return linkI.ParentID < linkJ.ParentID
 		} else {
 			return cmp == -1
 		}

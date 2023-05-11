@@ -27,6 +27,7 @@ import (
 
 	"github.com/f5/otel-arrow-adapter/pkg/config"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 )
 
 // TestTracesWithNoDictionary
@@ -224,7 +225,7 @@ func TestTracesMultiBatchWithDictionaryLimit(t *testing.T) {
 	require.Equal(t, 1, len(dictionaryWithOverflow))
 	require.True(t, dictionaryWithOverflow["resource_spans.item.scope_spans.item.spans.item.name"])
 
-	spanAttrsBuilder := producer.TracesBuilder().RelatedData().AttrsRecordBuilders().Span()
+	spanAttrsBuilder := producer.TracesBuilder().RelatedData().RecordBuilderExt(arrow.PayloadTypes.SpanAttrs)
 	dictionaryWithOverflow = spanAttrsBuilder.Events().DictionariesWithOverflow
 	require.Equal(t, 2, len(dictionaryWithOverflow))
 	require.True(t, dictionaryWithOverflow["value.str"])

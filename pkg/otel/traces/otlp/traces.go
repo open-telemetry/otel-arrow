@@ -41,7 +41,7 @@ func TracesFrom(record arrow.Record, relatedData *RelatedData) (ptrace.Traces, e
 	resSpansCount := int(record.NumRows())
 	resSpansSlice.EnsureCapacity(resSpansCount)
 
-	err = AppendResourceSpansInto(traces, record, traceIds, relatedData)
+	err = werror.Wrap(AppendResourceSpansInto(traces, record, traceIds, relatedData))
 	return traces, err
 }
 

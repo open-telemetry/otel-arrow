@@ -14,16 +14,15 @@
 
 package arrow
 
+// ToDo this test will be remove in a future PR once the shared attributes will be removed from the logs and traces.
+
 import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pcommon"
-	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	"github.com/f5/otel-arrow-adapter/pkg/datagen"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/internal"
 )
 
 func TestIntersectAttrs(t *testing.T) {
@@ -113,182 +112,4 @@ func TestIntersectAttrs(t *testing.T) {
 	attrs = pcommon.NewMap()
 	sharedAttrsCount = sharedAttrs.IntersectWithMap(attrs)
 	require.Equal(t, 0, sharedAttrsCount)
-}
-
-func MetricSlice(metricSlice pmetric.MetricSlice) []*pmetric.Metric {
-	metrics := make([]*pmetric.Metric, metricSlice.Len())
-	for i := 0; i < metricSlice.Len(); i++ {
-		metric := metricSlice.At(i)
-		metrics[i] = &metric
-	}
-	return metrics
-}
-
-func TestScopeMetricsSharedData1(t *testing.T) {
-	t.Parallel()
-
-	entropy := datagen.NewTestEntropy(0)
-	dg := datagen.NewMetricsGeneratorFromEntropy(entropy)
-	metrics := dg.GenerateMetricSlice(1, 1)
-	sharedData, err := NewMetricsSharedData(MetricSlice(metrics))
-	require.NoError(t, err)
-
-	require.NotNil(t, sharedData.StartTime)
-	require.NotNil(t, sharedData.Time)
-	require.NotNil(t, sharedData.Attributes)
-	require.Equal(t, 8, sharedData.Attributes.Len()) // cpu attribute
-
-	require.Equal(t, 5, len(sharedData.Metrics))
-
-	require.Nil(t, sharedData.Metrics[0].StartTime)
-	require.Nil(t, sharedData.Metrics[0].Time)
-	require.Equal(t, 0, len(sharedData.Metrics[0].Attributes.Attributes))
-
-	require.Nil(t, sharedData.Metrics[1].StartTime)
-	require.Nil(t, sharedData.Metrics[1].Time)
-	require.Equal(t, 0, len(sharedData.Metrics[1].Attributes.Attributes))
-
-	require.Nil(t, sharedData.Metrics[2].StartTime)
-	require.Nil(t, sharedData.Metrics[2].Time)
-	require.Equal(t, 0, len(sharedData.Metrics[2].Attributes.Attributes))
-
-	require.Nil(t, sharedData.Metrics[3].StartTime)
-	require.Nil(t, sharedData.Metrics[3].Time)
-	require.Equal(t, 1, len(sharedData.Metrics[3].Attributes.Attributes)) // freq attribute
-
-	require.Nil(t, sharedData.Metrics[4].StartTime)
-	require.Nil(t, sharedData.Metrics[4].Time)
-	require.Equal(t, 1, len(sharedData.Metrics[4].Attributes.Attributes)) // freq attribute
-}
-
-func TestScopeMetricsSharedData2(t *testing.T) {
-	t.Parallel()
-
-	metrics := internal.ScopeMetrics3().Metrics()
-	sharedData, err := NewMetricsSharedData(MetricSlice(metrics))
-	require.NoError(t, err)
-
-	require.NotNil(t, sharedData.StartTime)
-	require.NotNil(t, sharedData.Time)
-	require.NotNil(t, sharedData.Attributes)
-	require.Equal(t, 5, sharedData.Attributes.Len())
-
-	startTime := pcommon.Timestamp(1)
-	require.Equal(t, &startTime, sharedData.StartTime)
-	time := pcommon.Timestamp(2)
-	require.Equal(t, &time, sharedData.Time)
-
-	require.Equal(t, 1, len(sharedData.Metrics))
-
-	require.Nil(t, sharedData.Metrics[0].StartTime)
-	require.Nil(t, sharedData.Metrics[0].Time)
-	require.Equal(t, 0, len(sharedData.Metrics[0].Attributes.Attributes))
-}
-
-func TestScopeMetricsSharedData3(t *testing.T) {
-	t.Parallel()
-
-	metrics := internal.ScopeMetrics4().Metrics()
-	sharedData, err := NewMetricsSharedData(MetricSlice(metrics))
-	require.NoError(t, err)
-
-	require.NotNil(t, sharedData.StartTime)
-	require.NotNil(t, sharedData.Time)
-	require.NotNil(t, sharedData.Attributes)
-	require.Equal(t, 5, sharedData.Attributes.Len())
-
-	startTime := pcommon.Timestamp(1)
-	require.Equal(t, &startTime, sharedData.StartTime)
-	time := pcommon.Timestamp(2)
-	require.Equal(t, &time, sharedData.Time)
-
-	require.Equal(t, 2, len(sharedData.Metrics))
-
-	require.Nil(t, sharedData.Metrics[0].StartTime)
-	require.Nil(t, sharedData.Metrics[0].Time)
-	require.Equal(t, 0, len(sharedData.Metrics[0].Attributes.Attributes))
-
-	require.Nil(t, sharedData.Metrics[1].StartTime)
-	require.Nil(t, sharedData.Metrics[1].Time)
-	require.Equal(t, 0, len(sharedData.Metrics[1].Attributes.Attributes))
-}
-
-func TestMetricSharedData(t *testing.T) {
-	t.Parallel()
-
-	metric := SingleSystemMemoryUsage(0, 10)
-	sharedData, err := NewMetricSharedData(&metric)
-	require.NoError(t, err)
-	require.Equal(t, 1, sharedData.NumDP)
-	require.NotNil(t, sharedData.StartTime)
-	require.NotNil(t, sharedData.Time)
-	require.NotNil(t, sharedData.Attributes)
-	require.Equal(t, 2, sharedData.Attributes.Len())
-
-	metric = MultiSystemMemoryUsage(0, 10)
-	sharedData, err = NewMetricSharedData(&metric)
-	require.NoError(t, err)
-	require.Equal(t, 3, sharedData.NumDP)
-	require.NotNil(t, sharedData.StartTime)
-	require.NotNil(t, sharedData.Time)
-	require.NotNil(t, sharedData.Attributes)
-	require.Equal(t, 1, sharedData.Attributes.Len())
-}
-
-func SingleSystemMemoryUsage(startTs, currentTs pcommon.Timestamp) pmetric.Metric {
-	metric := pmetric.NewMetric()
-	metric.SetName("system.memory.usage")
-	metric.SetDescription("Bytes of memory in use.")
-	metric.SetUnit("By")
-
-	sum := metric.SetEmptySum()
-	sum.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
-	sum.SetIsMonotonic(false)
-
-	points := sum.DataPoints()
-
-	p1 := points.AppendEmpty()
-	p1.Attributes().PutStr("host", "my-host")
-	p1.Attributes().PutStr("state", "used")
-	p1.SetStartTimestamp(startTs)
-	p1.SetTimestamp(currentTs)
-	p1.SetIntValue(10)
-
-	return metric
-}
-
-func MultiSystemMemoryUsage(startTs, currentTs pcommon.Timestamp) pmetric.Metric {
-	metric := pmetric.NewMetric()
-	metric.SetName("system.memory.usage")
-	metric.SetDescription("Bytes of memory in use.")
-	metric.SetUnit("By")
-
-	sum := metric.SetEmptySum()
-	sum.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
-	sum.SetIsMonotonic(false)
-
-	points := sum.DataPoints()
-
-	p1 := points.AppendEmpty()
-	p1.Attributes().PutStr("host", "my-host")
-	p1.Attributes().PutStr("state", "used")
-	p1.SetStartTimestamp(startTs)
-	p1.SetTimestamp(currentTs)
-	p1.SetIntValue(10)
-
-	p2 := points.AppendEmpty()
-	p2.Attributes().PutStr("host", "my-host")
-	p2.Attributes().PutStr("state", "free")
-	p2.SetStartTimestamp(startTs)
-	p2.SetTimestamp(currentTs)
-	p2.SetIntValue(20)
-
-	p3 := points.AppendEmpty()
-	p3.Attributes().PutStr("host", "my-host")
-	p3.Attributes().PutStr("state", "inactive")
-	p3.SetStartTimestamp(startTs)
-	p3.SetTimestamp(currentTs)
-	p3.SetIntValue(30)
-
-	return metric
 }

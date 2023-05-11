@@ -31,9 +31,9 @@ import (
 // ScopeDT is the Arrow Data Type describing a scope.
 var (
 	ScopeDT = arrow.StructOf([]arrow.Field{
+		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint16, Metadata: acommon.Metadata(acommon.Optional, acommon.DeltaEncoding)},
 		{Name: constants.Name, Type: arrow.BinaryTypes.String, Metadata: acommon.Metadata(acommon.Optional, acommon.Dictionary8)},
 		{Name: constants.Version, Type: arrow.BinaryTypes.String, Metadata: acommon.Metadata(acommon.Optional, acommon.Dictionary8)},
-		{Name: constants.AttributesID, Type: arrow.PrimitiveTypes.Uint16, Metadata: acommon.Metadata(acommon.Optional, acommon.DeltaEncoding)},
 		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: acommon.Metadata(acommon.Optional)},
 	}...)
 )
@@ -54,7 +54,7 @@ func NewScopeBuilder(builder *builder.StructBuilder) *ScopeBuilder {
 
 // ScopeBuilderFrom creates a new instrumentation scope array builder from an existing struct builder.
 func ScopeBuilderFrom(sb *builder.StructBuilder) *ScopeBuilder {
-	aib := sb.Uint16DeltaBuilder(constants.AttributesID)
+	aib := sb.Uint16DeltaBuilder(constants.ID)
 	// As the attributes are sorted before insertion, the delta between two
 	// consecutive attributes ID should always be <=1.
 	// We are enforcing this constraint to make sure that the delta encoding
@@ -80,6 +80,7 @@ func (b *ScopeBuilder) Append(scope *pcommon.InstrumentationScope, attrsAccu *At
 		b.nb.AppendNonEmpty(scope.Name())
 		b.vb.AppendNonEmpty(scope.Version())
 
+		// ToDo Move to AppendWithID in a future PR
 		ID, err := attrsAccu.Append(scope.Attributes())
 		if err != nil {
 			return werror.Wrap(err)

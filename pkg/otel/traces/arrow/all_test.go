@@ -118,19 +118,18 @@ func TestEvent(t *testing.T) {
 			attrsRecord.Release()
 		}
 
-		eb, err := NewEventBuilder(eventRBuilder)
-		require.NoError(t, err)
-		ab, err := arrow2.NewAttrs32Builder(attrsRBuilder)
-		require.NoError(t, err)
+		ab := arrow2.NewAttrs32Builder(attrsRBuilder, arrow2.PayloadTypes.EventAttrs)
+		eb := NewEventBuilder(eventRBuilder)
+		eb.SetAttributesAccumulator(ab.Accumulator())
 
 		events := ptrace.NewSpanEventSlice()
 		Event1().CopyTo(events.AppendEmpty())
 		Event2().CopyTo(events.AppendEmpty())
 
-		err = eb.Accumulator().Append(0, events, emptySharedAttrs)
+		err := eb.Accumulator().Append(0, events, emptySharedAttrs)
 		require.NoError(t, err)
 
-		eventsRecord, err = eb.BuildRecord(ab.Accumulator())
+		eventsRecord, err = eb.Build()
 		if err != nil {
 			assert.Error(t, acommon.ErrSchemaNotUpToDate)
 			continue
@@ -143,33 +142,33 @@ func TestEvent(t *testing.T) {
 		assert.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
 
-	eventsJson, err := eventsRecord.MarshalJSON()
+	actualEvents, err := eventsRecord.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
 	eventsRecord.Release()
 
-	attrsJson, err := attrsRecord.MarshalJSON()
+	actualAttrs, err := attrsRecord.MarshalJSON()
 	if err != nil {
 		t.Fatal(err)
 	}
 	attrsRecord.Release()
 
-	expectedEvents := `[{"attrs_id":0,"dropped_attributes_count":null,"id":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":0,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}
+	expectedEvents := `[{"id":0,"dropped_attributes_count":null,"parent_id":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"id":1,"dropped_attributes_count":1,"parent_id":0,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}
 ]`
 
-	expectedAttrs := `[{"id":0,"key":"bool","value":[3,true]}
-	,{"id":0,"key":"double","value":[2,1]}
-	,{"id":0,"key":"int","value":[1,1]}
-	,{"id":0,"key":"str","value":[0,"string1"]}
-	,{"id":1,"key":"double","value":[2,2]}
-	,{"id":1,"key":"int","value":[1,2]}
-	,{"id":1,"key":"str","value":[0,"string2"]}
+	expectedAttrs := `[{"parent_id":0,"key":"bool","value":[3,true]}
+	,{"parent_id":0,"key":"double","value":[2,1]}
+	,{"parent_id":0,"key":"int","value":[1,1]}
+	,{"parent_id":0,"key":"str","value":[0,"string1"]}
+	,{"parent_id":1,"key":"double","value":[2,2]}
+	,{"parent_id":1,"key":"int","value":[1,2]}
+	,{"parent_id":1,"key":"str","value":[0,"string2"]}
 	]`
 
-	require.JSONEq(t, expectedEvents, string(eventsJson))
-	require.JSONEq(t, expectedAttrs, string(attrsJson))
+	require.JSONEq(t, expectedEvents, string(actualEvents))
+	require.JSONEq(t, expectedAttrs, string(actualAttrs))
 }
 
 func TestLink(t *testing.T) {
@@ -193,19 +192,18 @@ func TestLink(t *testing.T) {
 			attrsRecord.Release()
 		}
 
-		lb, err := NewLinkBuilder(linkRBuilder)
-		require.NoError(t, err)
-		ab, err := arrow2.NewAttrs32Builder(attrsRBuilder)
-		require.NoError(t, err)
+		ab := arrow2.NewAttrs32Builder(attrsRBuilder, arrow2.PayloadTypes.LinkAttrs)
+		lb := NewLinkBuilder(linkRBuilder)
+		lb.SetAttributesAccumulator(ab.Accumulator())
 
 		links := ptrace.NewSpanLinkSlice()
 		Link1().CopyTo(links.AppendEmpty())
 		Link2().CopyTo(links.AppendEmpty())
 
-		err = lb.Accumulator().Append(0, links, emptySharedAttrs)
+		err := lb.Accumulator().Append(0, links, emptySharedAttrs)
 		require.NoError(t, err)
 
-		linksRecord, err = lb.BuildRecord(ab.Accumulator())
+		linksRecord, err = lb.Build()
 		if err != nil {
 			assert.Error(t, acommon.ErrSchemaNotUpToDate)
 			continue
@@ -230,17 +228,17 @@ func TestLink(t *testing.T) {
 	}
 	attrsRecord.Release()
 
-	expectedLinks := `[{"attrs_id":0,"dropped_attributes_count":null,"id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+	expectedLinks := `[{"id":0,"dropped_attributes_count":null,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
+,{"id":1,"dropped_attributes_count":1,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
 ]`
-	expectedAttrs := `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"bool","value":[3,false]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":1,"key":"str","value":[0,"string2"]}
+	expectedAttrs := `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"bool","value":[3,false]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
 ]`
 
 	require.JSONEq(t, expectedLinks, string(linksJson))
@@ -308,62 +306,62 @@ func TestSpan(t *testing.T) {
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {
 		case v1.OtlpArrowPayloadType_SPAN_ATTRS:
-			expected = `[{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
 ]`
 		case v1.OtlpArrowPayloadType_SPAN_EVENTS:
-			expected = `[{"attrs_id":0,"dropped_attributes_count":null,"id":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"attrs_id":1,"dropped_attributes_count":null,"id":1,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":0,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}
+			expected = `[{"dropped_attributes_count":null,"id":0,"name":"event1","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":1,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"dropped_attributes_count":1,"id":1,"name":"event2","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000002"}
 ]`
 		case v1.OtlpArrowPayloadType_SPAN_EVENT_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"bool","value":[3,true]}
-,{"id":1,"key":"double","value":[2,1]}
-,{"id":1,"key":"int","value":[1,1]}
-,{"id":1,"key":"str","value":[0,"string1"]}
-,{"id":2,"key":"double","value":[2,2]}
-,{"id":2,"key":"int","value":[1,2]}
-,{"id":2,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"bool","value":[3,true]}
+,{"parent_id":1,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"str","value":[0,"string1"]}
+,{"parent_id":2,"key":"double","value":[2,2]}
+,{"parent_id":2,"key":"int","value":[1,2]}
+,{"parent_id":2,"key":"str","value":[0,"string2"]}
 ]`
 
 		case v1.OtlpArrowPayloadType_SPAN_LINKS:
-			expected = `[{"attrs_id":0,"dropped_attributes_count":null,"id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+			expected = `[{"id":0,"dropped_attributes_count":null,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
+,{"id":1,"dropped_attributes_count":1,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+,{"id":1,"dropped_attributes_count":1,"parent_id":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
 ]`
 
 		case v1.OtlpArrowPayloadType_SPAN_LINK_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"bool","value":[3,false]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":1,"key":"str","value":[0,"string2"]}
-,{"id":2,"key":"bool","value":[3,false]}
-,{"id":2,"key":"double","value":[2,2]}
-,{"id":2,"key":"int","value":[1,2]}
-,{"id":2,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"bool","value":[3,false]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
+,{"parent_id":2,"key":"bool","value":[3,false]}
+,{"parent_id":2,"key":"double","value":[2,2]}
+,{"parent_id":2,"key":"int","value":[1,2]}
+,{"parent_id":2,"key":"str","value":[0,"string2"]}
 ]`
 
 		default:
 			panic("unexpected payload type")
 		}
 
-		observed, err := relatedRecord.Record().MarshalJSON()
+		actual, err := relatedRecord.Record().MarshalJSON()
 		require.NoError(t, err)
 		relatedRecord.Record().Release()
 
-		require.JSONEq(t, expected, string(observed))
+		require.JSONEq(t, expected, string(actual))
 
 		relatedRecord.Record().Release()
 	}
@@ -421,8 +419,8 @@ func TestScopeSpans(t *testing.T) {
 
 	record.Release()
 
-	expected := `[{"scope_spans":{"schema_url":"schema1","scope":{"attrs_id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"},"spans":[{"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"duration_time_unix_nano":"1ms","id":0,"kind":3,"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}}
-,{"scope_spans":{"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}}
+	expected := `[{"scope_spans":{"schema_url":"schema1","scope":{"id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"},"spans":[{"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"duration_time_unix_nano":"1ms","id":0,"kind":3,"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}}
+,{"scope_spans":{"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}}
 ]`
 
 	jsonassert.JSONCanonicalEq(t, expected, actual)
@@ -430,87 +428,87 @@ func TestScopeSpans(t *testing.T) {
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {
 		case v1.OtlpArrowPayloadType_SCOPE_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
+			expected = `[{"key":"bool","parent_id":0,"value":[3,true]}
+,{"key":"bytes","parent_id":0,"value":[4,"Ynl0ZXMx"]}
+,{"key":"bytes","parent_id":1,"value":[4,"Ynl0ZXMy"]}
+,{"key":"double","parent_id":0,"value":[2,1]}
+,{"key":"double","parent_id":1,"value":[2,2]}
+,{"key":"int","parent_id":0,"value":[1,1]}
+,{"key":"int","parent_id":1,"value":[1,2]}
+,{"key":"str","parent_id":0,"value":[0,"string1"]}
+,{"key":"str","parent_id":1,"value":[0,"string2"]}
 ]`
 
 		case v1.OtlpArrowPayloadType_SPAN_ATTRS:
-			expected = `[{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":2,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":2,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
-,{"id":2,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":2,"key":"double","value":[2,2]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":2,"key":"int","value":[1,2]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
+,{"parent_id":2,"key":"str","value":[0,"string2"]}
 ]`
 		case v1.OtlpArrowPayloadType_SPAN_EVENTS:
-			expected = `[{"attrs_id":0,"dropped_attributes_count":null,"id":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"attrs_id":1,"dropped_attributes_count":null,"id":1,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"attrs_id":1,"dropped_attributes_count":null,"id":2,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":0,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}
+			expected = `[{"dropped_attributes_count":null,"id":0,"name":"event1","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":1,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":2,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"dropped_attributes_count":1,"id":1,"name":"event2","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000002"}
 ]`
 		case v1.OtlpArrowPayloadType_SPAN_EVENT_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"bool","value":[3,true]}
-,{"id":1,"key":"double","value":[2,1]}
-,{"id":1,"key":"int","value":[1,1]}
-,{"id":1,"key":"str","value":[0,"string1"]}
-,{"id":2,"key":"bool","value":[3,true]}
-,{"id":2,"key":"double","value":[2,1]}
-,{"id":2,"key":"int","value":[1,1]}
-,{"id":2,"key":"str","value":[0,"string1"]}
-,{"id":3,"key":"double","value":[2,2]}
-,{"id":3,"key":"int","value":[1,2]}
-,{"id":3,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"bool","value":[3,true]}
+,{"parent_id":1,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"str","value":[0,"string1"]}
+,{"parent_id":2,"key":"bool","value":[3,true]}
+,{"parent_id":2,"key":"double","value":[2,1]}
+,{"parent_id":2,"key":"int","value":[1,1]}
+,{"parent_id":2,"key":"str","value":[0,"string1"]}
+,{"parent_id":3,"key":"double","value":[2,2]}
+,{"parent_id":3,"key":"int","value":[1,2]}
+,{"parent_id":3,"key":"str","value":[0,"string2"]}
 ]`
 
 		case v1.OtlpArrowPayloadType_SPAN_LINKS:
-			expected = `[{"attrs_id":0,"dropped_attributes_count":null,"id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":2,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+			expected = `[{"id":0,"dropped_attributes_count":null,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
+,{"id":1,"dropped_attributes_count":1,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+,{"id":1,"dropped_attributes_count":1,"parent_id":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+,{"id":1,"dropped_attributes_count":1,"parent_id":2,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
 ]`
 
 		case v1.OtlpArrowPayloadType_SPAN_LINK_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"bool","value":[3,false]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":1,"key":"str","value":[0,"string2"]}
-,{"id":2,"key":"bool","value":[3,false]}
-,{"id":2,"key":"double","value":[2,2]}
-,{"id":2,"key":"int","value":[1,2]}
-,{"id":2,"key":"str","value":[0,"string2"]}
-,{"id":3,"key":"bool","value":[3,false]}
-,{"id":3,"key":"double","value":[2,2]}
-,{"id":3,"key":"int","value":[1,2]}
-,{"id":3,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"bool","value":[3,false]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
+,{"parent_id":2,"key":"bool","value":[3,false]}
+,{"parent_id":2,"key":"double","value":[2,2]}
+,{"parent_id":2,"key":"int","value":[1,2]}
+,{"parent_id":2,"key":"str","value":[0,"string2"]}
+,{"parent_id":3,"key":"bool","value":[3,false]}
+,{"parent_id":3,"key":"double","value":[2,2]}
+,{"parent_id":3,"key":"int","value":[1,2]}
+,{"parent_id":3,"key":"str","value":[0,"string2"]}
 ]`
 
 		default:
 			panic(fmt.Sprint("unexpected payload type: ", relatedRecord.PayloadType()))
 		}
 
-		observed, err := relatedRecord.Record().MarshalJSON()
+		actual, err := relatedRecord.Record().MarshalJSON()
 		require.NoError(t, err)
 		relatedRecord.Record().Release()
 
-		require.JSONEq(t, expected, string(observed))
+		require.JSONEq(t, expected, string(actual))
 
 		relatedRecord.Record().Release()
 	}
@@ -595,8 +593,8 @@ func TestResourceSpans(t *testing.T) {
 
 	record.Release()
 
-	expected := `[{"resource_spans":{"resource":{"attrs_id":0,"dropped_attributes_count":null},"schema_url":"schema1","scope_spans":[{"schema_url":"schema1","scope":{"attrs_id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"},"spans":[{"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"duration_time_unix_nano":"1ms","id":0,"kind":3,"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]},{"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]}}
-,{"resource_spans":{"resource":{"attrs_id":1,"dropped_attributes_count":1},"schema_url":"schema2","scope_spans":[{"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]}}
+	expected := `[{"resource_spans":{"resource":{"id":0,"dropped_attributes_count":null},"schema_url":"schema1","scope_spans":[{"schema_url":"schema1","scope":{"id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"},"spans":[{"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"duration_time_unix_nano":"1ms","id":0,"kind":3,"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]},{"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]}}
+,{"resource_spans":{"resource":{"id":1,"dropped_attributes_count":1},"schema_url":"schema2","scope_spans":[{"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]}}
 ]`
 
 	jsonassert.JSONCanonicalEq(t, expected, actual)
@@ -604,116 +602,116 @@ func TestResourceSpans(t *testing.T) {
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {
 		case v1.OtlpArrowPayloadType_RESOURCE_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
+,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
 ]`
 
 		case v1.OtlpArrowPayloadType_SCOPE_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"id":2,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":2,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":2,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
-,{"id":2,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
+,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"parent_id":2,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":2,"key":"double","value":[2,2]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":2,"key":"int","value":[1,2]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
+,{"parent_id":2,"key":"str","value":[0,"string2"]}
 ]`
 
 		case v1.OtlpArrowPayloadType_SPAN_ATTRS:
-			expected = `[{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":2,"key":"double","value":[2,2]}
-,{"id":3,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":2,"key":"int","value":[1,2]}
-,{"id":3,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
-,{"id":2,"key":"str","value":[0,"string2"]}
-,{"id":3,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":2,"key":"double","value":[2,2]}
+,{"parent_id":3,"key":"double","value":[2,2]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":2,"key":"int","value":[1,2]}
+,{"parent_id":3,"key":"int","value":[1,2]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
+,{"parent_id":2,"key":"str","value":[0,"string2"]}
+,{"parent_id":3,"key":"str","value":[0,"string2"]}
 ]`
 		case v1.OtlpArrowPayloadType_SPAN_EVENTS:
-			expected = `[{"attrs_id":0,"dropped_attributes_count":null,"id":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"attrs_id":1,"dropped_attributes_count":null,"id":1,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"attrs_id":1,"dropped_attributes_count":null,"id":2,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"attrs_id":1,"dropped_attributes_count":null,"id":3,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":0,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}
+			expected = `[{"id":0,"dropped_attributes_count":null,"parent_id":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"id":1,"dropped_attributes_count":null,"parent_id":1,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"id":1,"dropped_attributes_count":null,"parent_id":2,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"id":1,"dropped_attributes_count":null,"parent_id":3,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"id":1,"dropped_attributes_count":1,"parent_id":0,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}
 ]`
 		case v1.OtlpArrowPayloadType_SPAN_EVENT_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"bool","value":[3,true]}
-,{"id":1,"key":"double","value":[2,1]}
-,{"id":1,"key":"int","value":[1,1]}
-,{"id":1,"key":"str","value":[0,"string1"]}
-,{"id":2,"key":"bool","value":[3,true]}
-,{"id":2,"key":"double","value":[2,1]}
-,{"id":2,"key":"int","value":[1,1]}
-,{"id":2,"key":"str","value":[0,"string1"]}
-,{"id":3,"key":"bool","value":[3,true]}
-,{"id":3,"key":"double","value":[2,1]}
-,{"id":3,"key":"int","value":[1,1]}
-,{"id":3,"key":"str","value":[0,"string1"]}
-,{"id":4,"key":"double","value":[2,2]}
-,{"id":4,"key":"int","value":[1,2]}
-,{"id":4,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"bool","value":[3,true]}
+,{"parent_id":1,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"str","value":[0,"string1"]}
+,{"parent_id":2,"key":"bool","value":[3,true]}
+,{"parent_id":2,"key":"double","value":[2,1]}
+,{"parent_id":2,"key":"int","value":[1,1]}
+,{"parent_id":2,"key":"str","value":[0,"string1"]}
+,{"parent_id":3,"key":"bool","value":[3,true]}
+,{"parent_id":3,"key":"double","value":[2,1]}
+,{"parent_id":3,"key":"int","value":[1,1]}
+,{"parent_id":3,"key":"str","value":[0,"string1"]}
+,{"parent_id":4,"key":"double","value":[2,2]}
+,{"parent_id":4,"key":"int","value":[1,2]}
+,{"parent_id":4,"key":"str","value":[0,"string2"]}
 ]`
 
 		case v1.OtlpArrowPayloadType_SPAN_LINKS:
-			expected = `[{"attrs_id":0,"dropped_attributes_count":null,"id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":2,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":3,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+			expected = `[{"id":0,"dropped_attributes_count":null,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
+,{"id":1,"dropped_attributes_count":1,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+,{"id":1,"dropped_attributes_count":1,"parent_id":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+,{"id":1,"dropped_attributes_count":1,"parent_id":2,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+,{"id":1,"dropped_attributes_count":1,"parent_id":3,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
 ]`
 
 		case v1.OtlpArrowPayloadType_SPAN_LINK_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"bool","value":[3,false]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":1,"key":"str","value":[0,"string2"]}
-,{"id":2,"key":"bool","value":[3,false]}
-,{"id":2,"key":"double","value":[2,2]}
-,{"id":2,"key":"int","value":[1,2]}
-,{"id":2,"key":"str","value":[0,"string2"]}
-,{"id":3,"key":"bool","value":[3,false]}
-,{"id":3,"key":"double","value":[2,2]}
-,{"id":3,"key":"int","value":[1,2]}
-,{"id":3,"key":"str","value":[0,"string2"]}
-,{"id":4,"key":"bool","value":[3,false]}
-,{"id":4,"key":"double","value":[2,2]}
-,{"id":4,"key":"int","value":[1,2]}
-,{"id":4,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"bool","value":[3,false]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
+,{"parent_id":2,"key":"bool","value":[3,false]}
+,{"parent_id":2,"key":"double","value":[2,2]}
+,{"parent_id":2,"key":"int","value":[1,2]}
+,{"parent_id":2,"key":"str","value":[0,"string2"]}
+,{"parent_id":3,"key":"bool","value":[3,false]}
+,{"parent_id":3,"key":"double","value":[2,2]}
+,{"parent_id":3,"key":"int","value":[1,2]}
+,{"parent_id":3,"key":"str","value":[0,"string2"]}
+,{"parent_id":4,"key":"bool","value":[3,false]}
+,{"parent_id":4,"key":"double","value":[2,2]}
+,{"parent_id":4,"key":"int","value":[1,2]}
+,{"parent_id":4,"key":"str","value":[0,"string2"]}
 ]`
 
 		default:
 			panic(fmt.Sprint("unexpected payload type: ", relatedRecord.PayloadType()))
 		}
 
-		observed, err := relatedRecord.Record().MarshalJSON()
+		actual, err := relatedRecord.Record().MarshalJSON()
 		require.NoError(t, err)
 		relatedRecord.Record().Release()
 
-		require.JSONEq(t, expected, string(observed))
+		require.JSONEq(t, expected, string(actual))
 
 		relatedRecord.Record().Release()
 	}
@@ -789,7 +787,7 @@ func TestTraces(t *testing.T) {
 
 	record.Release()
 
-	expected := `[{"resource_spans":[{"resource":{"attrs_id":0,"dropped_attributes_count":null},"schema_url":"schema1","scope_spans":[{"schema_url":"schema1","scope":{"attrs_id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"},"spans":[{"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"duration_time_unix_nano":"1ms","id":0,"kind":3,"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]},{"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]},{"resource":{"attrs_id":1,"dropped_attributes_count":1},"schema_url":"schema2","scope_spans":[{"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]}]}
+	expected := `[{"resource_spans":[{"resource":{"id":0,"dropped_attributes_count":null},"schema_url":"schema1","scope_spans":[{"schema_url":"schema1","scope":{"id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"},"spans":[{"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"duration_time_unix_nano":"1ms","id":0,"kind":3,"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]},{"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]},{"resource":{"id":1,"dropped_attributes_count":1},"schema_url":"schema2","scope_spans":[{"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]}]}
 ]`
 
 	jsonassert.JSONCanonicalEq(t, expected, actual)
@@ -797,105 +795,105 @@ func TestTraces(t *testing.T) {
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {
 		case v1.OtlpArrowPayloadType_RESOURCE_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
+,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
 ]`
 
 		case v1.OtlpArrowPayloadType_SCOPE_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"id":2,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":2,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":2,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
-,{"id":2,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
+,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"parent_id":2,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":2,"key":"double","value":[2,2]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":2,"key":"int","value":[1,2]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
+,{"parent_id":2,"key":"str","value":[0,"string2"]}
 ]`
 
 		case v1.OtlpArrowPayloadType_SPAN_ATTRS:
-			expected = `[{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":2,"key":"double","value":[2,2]}
-,{"id":3,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":2,"key":"int","value":[1,2]}
-,{"id":3,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
-,{"id":2,"key":"str","value":[0,"string2"]}
-,{"id":3,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":2,"key":"double","value":[2,2]}
+,{"parent_id":3,"key":"double","value":[2,2]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":2,"key":"int","value":[1,2]}
+,{"parent_id":3,"key":"int","value":[1,2]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
+,{"parent_id":2,"key":"str","value":[0,"string2"]}
+,{"parent_id":3,"key":"str","value":[0,"string2"]}
 ]`
 		case v1.OtlpArrowPayloadType_SPAN_EVENTS:
-			expected = `[{"attrs_id":0,"dropped_attributes_count":null,"id":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"attrs_id":1,"dropped_attributes_count":null,"id":1,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"attrs_id":1,"dropped_attributes_count":null,"id":2,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"attrs_id":1,"dropped_attributes_count":null,"id":3,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":0,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}
+			expected = `[{"id":0,"dropped_attributes_count":null,"parent_id":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"id":1,"dropped_attributes_count":null,"parent_id":1,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"id":1,"dropped_attributes_count":null,"parent_id":2,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"id":1,"dropped_attributes_count":null,"parent_id":3,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"id":1,"dropped_attributes_count":1,"parent_id":0,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}
 ]`
 		case v1.OtlpArrowPayloadType_SPAN_EVENT_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"bool","value":[3,true]}
-,{"id":1,"key":"double","value":[2,1]}
-,{"id":1,"key":"int","value":[1,1]}
-,{"id":1,"key":"str","value":[0,"string1"]}
-,{"id":2,"key":"bool","value":[3,true]}
-,{"id":2,"key":"double","value":[2,1]}
-,{"id":2,"key":"int","value":[1,1]}
-,{"id":2,"key":"str","value":[0,"string1"]}
-,{"id":3,"key":"bool","value":[3,true]}
-,{"id":3,"key":"double","value":[2,1]}
-,{"id":3,"key":"int","value":[1,1]}
-,{"id":3,"key":"str","value":[0,"string1"]}
-,{"id":4,"key":"double","value":[2,2]}
-,{"id":4,"key":"int","value":[1,2]}
-,{"id":4,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"bool","value":[3,true]}
+,{"parent_id":1,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"str","value":[0,"string1"]}
+,{"parent_id":2,"key":"bool","value":[3,true]}
+,{"parent_id":2,"key":"double","value":[2,1]}
+,{"parent_id":2,"key":"int","value":[1,1]}
+,{"parent_id":2,"key":"str","value":[0,"string1"]}
+,{"parent_id":3,"key":"bool","value":[3,true]}
+,{"parent_id":3,"key":"double","value":[2,1]}
+,{"parent_id":3,"key":"int","value":[1,1]}
+,{"parent_id":3,"key":"str","value":[0,"string1"]}
+,{"parent_id":4,"key":"double","value":[2,2]}
+,{"parent_id":4,"key":"int","value":[1,2]}
+,{"parent_id":4,"key":"str","value":[0,"string2"]}
 ]`
 
 		case v1.OtlpArrowPayloadType_SPAN_LINKS:
-			expected = `[{"attrs_id":0,"dropped_attributes_count":null,"id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":2,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"attrs_id":1,"dropped_attributes_count":1,"id":3,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+			expected = `[{"id":0,"dropped_attributes_count":null,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
+,{"id":1,"dropped_attributes_count":1,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+,{"id":1,"dropped_attributes_count":1,"parent_id":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+,{"id":1,"dropped_attributes_count":1,"parent_id":2,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+,{"id":1,"dropped_attributes_count":1,"parent_id":3,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
 ]`
 
 		case v1.OtlpArrowPayloadType_SPAN_LINK_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"bool","value":[3,false]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":1,"key":"str","value":[0,"string2"]}
-,{"id":2,"key":"bool","value":[3,false]}
-,{"id":2,"key":"double","value":[2,2]}
-,{"id":2,"key":"int","value":[1,2]}
-,{"id":2,"key":"str","value":[0,"string2"]}
-,{"id":3,"key":"bool","value":[3,false]}
-,{"id":3,"key":"double","value":[2,2]}
-,{"id":3,"key":"int","value":[1,2]}
-,{"id":3,"key":"str","value":[0,"string2"]}
-,{"id":4,"key":"bool","value":[3,false]}
-,{"id":4,"key":"double","value":[2,2]}
-,{"id":4,"key":"int","value":[1,2]}
-,{"id":4,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"bool","value":[3,false]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
+,{"parent_id":2,"key":"bool","value":[3,false]}
+,{"parent_id":2,"key":"double","value":[2,2]}
+,{"parent_id":2,"key":"int","value":[1,2]}
+,{"parent_id":2,"key":"str","value":[0,"string2"]}
+,{"parent_id":3,"key":"bool","value":[3,false]}
+,{"parent_id":3,"key":"double","value":[2,2]}
+,{"parent_id":3,"key":"int","value":[1,2]}
+,{"parent_id":3,"key":"str","value":[0,"string2"]}
+,{"parent_id":4,"key":"bool","value":[3,false]}
+,{"parent_id":4,"key":"double","value":[2,2]}
+,{"parent_id":4,"key":"int","value":[1,2]}
+,{"parent_id":4,"key":"str","value":[0,"string2"]}
 ]`
 
 		default:

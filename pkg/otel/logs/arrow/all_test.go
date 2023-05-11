@@ -104,12 +104,12 @@ func TestLogRecord(t *testing.T) {
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {
 		case v1.OtlpArrowPayloadType_LOG_ATTRS:
-			expected = `[{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
 ]`
 
 		default:
@@ -179,8 +179,8 @@ func TestScopeLogs(t *testing.T) {
 
 	record.Release()
 
-	expected := `[{"scope_logs":{"logs":[{"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"id":0,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"attrs_id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}}}
-,{"scope_logs":{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}}
+	expected := `[{"scope_logs":{"logs":[{"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"id":0,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}}}
+,{"scope_logs":{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}}
 ]`
 
 	require.JSONEq(t, expected, string(actual))
@@ -188,27 +188,27 @@ func TestScopeLogs(t *testing.T) {
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {
 		case v1.OtlpArrowPayloadType_SCOPE_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
+,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
 ]`
 
 		case v1.OtlpArrowPayloadType_LOG_ATTRS:
-			expected = `[{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":2,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":2,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
-,{"id":2,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":2,"key":"double","value":[2,2]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":2,"key":"int","value":[1,2]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
+,{"parent_id":2,"key":"str","value":[0,"string2"]}
 ]`
 
 		default:
@@ -294,54 +294,54 @@ func TestResourceLogs(t *testing.T) {
 
 	record.Release()
 
-	expected := `[{"resource_logs":{"resource":{"attrs_id":0,"dropped_attributes_count":null},"schema_url":"schema1","scope_logs":[{"logs":[{"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"id":0,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"attrs_id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}},{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}}
-,{"resource_logs":{"resource":{"attrs_id":1,"dropped_attributes_count":1},"schema_url":"schema2","scope_logs":[{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}}
+	expected := `[{"resource_logs":{"resource":{"id":0,"dropped_attributes_count":null},"schema_url":"schema1","scope_logs":[{"logs":[{"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"id":0,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}},{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}}
+,{"resource_logs":{"resource":{"id":1,"dropped_attributes_count":1},"schema_url":"schema2","scope_logs":[{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}}
 ]`
 	jsonassert.JSONCanonicalEq(t, expected, actual)
 
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {
 		case v1.OtlpArrowPayloadType_RESOURCE_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
+,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
 ]`
 
 		case v1.OtlpArrowPayloadType_SCOPE_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"id":2,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":2,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":2,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
-,{"id":2,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
+,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"parent_id":2,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":2,"key":"double","value":[2,2]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":2,"key":"int","value":[1,2]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
+,{"parent_id":2,"key":"str","value":[0,"string2"]}
 ]`
 
 		case v1.OtlpArrowPayloadType_LOG_ATTRS:
-			expected = `[{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":2,"key":"double","value":[2,2]}
-,{"id":3,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":2,"key":"int","value":[1,2]}
-,{"id":3,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
-,{"id":2,"key":"str","value":[0,"string2"]}
-,{"id":3,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":2,"key":"double","value":[2,2]}
+,{"parent_id":3,"key":"double","value":[2,2]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":2,"key":"int","value":[1,2]}
+,{"parent_id":3,"key":"int","value":[1,2]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
+,{"parent_id":2,"key":"str","value":[0,"string2"]}
+,{"parent_id":3,"key":"str","value":[0,"string2"]}
 ]`
 
 		default:
@@ -414,7 +414,7 @@ func TestLogs(t *testing.T) {
 
 	record.Release()
 
-	expected := `[{"resource_logs":[{"resource":{"attrs_id":0,"dropped_attributes_count":null},"schema_url":"schema1","scope_logs":[{"logs":[{"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"id":0,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"attrs_id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}},{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]},{"resource":{"attrs_id":1,"dropped_attributes_count":1},"schema_url":"schema2","scope_logs":[{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"attrs_id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}]}
+	expected := `[{"resource_logs":[{"resource":{"id":0,"dropped_attributes_count":null},"schema_url":"schema1","scope_logs":[{"logs":[{"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"id":0,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}},{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]},{"resource":{"id":1,"dropped_attributes_count":1},"schema_url":"schema2","scope_logs":[{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}]}
 ]`
 
 	jsonassert.JSONCanonicalEq(t, expected, actual)
@@ -422,46 +422,46 @@ func TestLogs(t *testing.T) {
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {
 		case v1.OtlpArrowPayloadType_RESOURCE_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
+,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
 ]`
 
 		case v1.OtlpArrowPayloadType_SCOPE_ATTRS:
-			expected = `[{"id":0,"key":"bool","value":[3,true]}
-,{"id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"id":2,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":2,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":2,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
-,{"id":2,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
+,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
+,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"parent_id":2,"key":"bytes","value":[4,"Ynl0ZXMy"]}
+,{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":2,"key":"double","value":[2,2]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":2,"key":"int","value":[1,2]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
+,{"parent_id":2,"key":"str","value":[0,"string2"]}
 ]`
 
 		case v1.OtlpArrowPayloadType_LOG_ATTRS:
-			expected = `[{"id":0,"key":"double","value":[2,1]}
-,{"id":1,"key":"double","value":[2,2]}
-,{"id":2,"key":"double","value":[2,2]}
-,{"id":3,"key":"double","value":[2,2]}
-,{"id":0,"key":"int","value":[1,1]}
-,{"id":1,"key":"int","value":[1,2]}
-,{"id":2,"key":"int","value":[1,2]}
-,{"id":3,"key":"int","value":[1,2]}
-,{"id":0,"key":"str","value":[0,"string1"]}
-,{"id":1,"key":"str","value":[0,"string2"]}
-,{"id":2,"key":"str","value":[0,"string2"]}
-,{"id":3,"key":"str","value":[0,"string2"]}
+			expected = `[{"parent_id":0,"key":"double","value":[2,1]}
+,{"parent_id":1,"key":"double","value":[2,2]}
+,{"parent_id":2,"key":"double","value":[2,2]}
+,{"parent_id":3,"key":"double","value":[2,2]}
+,{"parent_id":0,"key":"int","value":[1,1]}
+,{"parent_id":1,"key":"int","value":[1,2]}
+,{"parent_id":2,"key":"int","value":[1,2]}
+,{"parent_id":3,"key":"int","value":[1,2]}
+,{"parent_id":0,"key":"str","value":[0,"string1"]}
+,{"parent_id":1,"key":"str","value":[0,"string2"]}
+,{"parent_id":2,"key":"str","value":[0,"string2"]}
+,{"parent_id":3,"key":"str","value":[0,"string2"]}
 ]`
 
 		default:

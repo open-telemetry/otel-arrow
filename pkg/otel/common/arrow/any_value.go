@@ -47,7 +47,7 @@ var (
 	// will fall back to a non-dictionary encoding when the dictionary index
 	// overflowed.
 	AnyValueDT = arrow.SparseUnionOf([]arrow.Field{
-		{Name: "str", Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary16)},
+		{Name: "str", Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary16)},
 		{Name: "i64", Type: arrow.PrimitiveTypes.Int64, Metadata: schema.Metadata(schema.Optional, schema.Dictionary16)},
 		{Name: "f64", Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
 		{Name: "bool", Type: arrow.FixedWidthTypes.Boolean, Metadata: schema.Metadata(schema.Optional)},

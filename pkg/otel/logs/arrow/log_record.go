@@ -122,7 +122,8 @@ func (b *LogRecordBuilder) Append(log *plog.LogRecord, relatedData *RelatedData)
 		}
 
 		// Log record attributes
-		err := relatedData.AttrsBuilders().LogRecord().Accumulator().AppendUniqueAttributesWithID(ID, log.Attributes(), nil, nil)
+		attrsAccu := relatedData.AttrsBuilders().LogRecord().Accumulator()
+		err := attrsAccu.AppendUniqueAttributesWithID(ID, log.Attributes(), nil, nil)
 		if err != nil {
 			return werror.Wrap(err)
 		}

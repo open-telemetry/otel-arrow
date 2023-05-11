@@ -37,6 +37,9 @@ type ListOfStructs struct {
 
 // ListOfStructsFromRecord returns the struct type and an array of structs for a given field id.
 func ListOfStructsFromRecord(record arrow.Record, fieldID int, row int) (*ListOfStructs, error) {
+	if fieldID == AbsentFieldID {
+		return nil, nil
+	}
 	arr := record.Column(fieldID)
 	switch listArr := arr.(type) {
 	case *array.List:
@@ -131,7 +134,7 @@ func (los *ListOfStructs) FieldByID(id int) arrow.Array {
 // StringFieldByID returns the string value of a field id for a specific row
 // or empty string if the field doesn't exist.
 func (los *ListOfStructs) StringFieldByID(fieldID int, row int) (string, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return "", nil
 	}
 	column := los.arr.Field(fieldID)
@@ -141,7 +144,7 @@ func (los *ListOfStructs) StringFieldByID(fieldID int, row int) (string, error) 
 // U16FieldByID returns the uint16 value of a field id for a specific row or 0
 // if the field doesn't exist.
 func (los *ListOfStructs) U16FieldByID(fieldID int, row int) (uint16, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return 0, nil
 	}
 	column := los.arr.Field(fieldID)
@@ -151,7 +154,7 @@ func (los *ListOfStructs) U16FieldByID(fieldID int, row int) (uint16, error) {
 // NullableU16FieldByID returns the uint16 value of a field id for a specific row or nil
 // if the field doesn't exist.
 func (los *ListOfStructs) NullableU16FieldByID(fieldID int, row int) (*uint16, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return nil, nil
 	}
 	column := los.arr.Field(fieldID)
@@ -168,7 +171,7 @@ func (los *ListOfStructs) NullableU16FieldByID(fieldID int, row int) (*uint16, e
 // U32FieldByID returns the uint32 value of a field id for a specific row or 0
 // if the field doesn't exist.
 func (los *ListOfStructs) U32FieldByID(fieldID int, row int) (uint32, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return 0, nil
 	}
 	column := los.arr.Field(fieldID)
@@ -178,7 +181,7 @@ func (los *ListOfStructs) U32FieldByID(fieldID int, row int) (uint32, error) {
 // U64FieldByID returns the uint64 value of a field id for a specific row or 0
 // if the field doesn't exist.
 func (los *ListOfStructs) U64FieldByID(fieldID int, row int) (uint64, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return 0, nil
 	}
 	column := los.arr.Field(fieldID)
@@ -188,7 +191,7 @@ func (los *ListOfStructs) U64FieldByID(fieldID int, row int) (uint64, error) {
 // TimestampFieldByID returns the timestamp value of a field id for a specific
 // row or a zero timestamp if the field doesn't exist.
 func (los *ListOfStructs) TimestampFieldByID(fieldID int, row int) (arrow.Timestamp, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return arrow.Timestamp(0), nil
 	}
 	column := los.arr.Field(fieldID)
@@ -198,7 +201,7 @@ func (los *ListOfStructs) TimestampFieldByID(fieldID int, row int) (arrow.Timest
 // DurationFieldByID returns the duration value of a field id for a specific
 // row or a 0 if the field doesn't exist.
 func (los *ListOfStructs) DurationFieldByID(fieldID int, row int) (arrow.Duration, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return arrow.Duration(0), nil
 	}
 	column := los.arr.Field(fieldID)
@@ -208,7 +211,7 @@ func (los *ListOfStructs) DurationFieldByID(fieldID int, row int) (arrow.Duratio
 // OptionalTimestampFieldByID returns the timestamp value of a field id for a
 // specific row or nil if the field is null.
 func (los *ListOfStructs) OptionalTimestampFieldByID(fieldID int, row int) *pcommon.Timestamp {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return nil
 	}
 	column := los.arr.Field(fieldID)
@@ -226,7 +229,7 @@ func (los *ListOfStructs) OptionalTimestampFieldByID(fieldID int, row int) *pcom
 
 // I32FieldByID returns the int32 value of a field id for a specific row.
 func (los *ListOfStructs) I32FieldByID(fieldID int, row int) (int32, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return 0, nil
 	}
 	column := los.arr.Field(fieldID)
@@ -235,7 +238,7 @@ func (los *ListOfStructs) I32FieldByID(fieldID int, row int) (int32, error) {
 
 // I64FieldByID returns the int64 value of a field id for a specific row.
 func (los *ListOfStructs) I64FieldByID(fieldID int, row int) (int64, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return 0, nil
 	}
 	column := los.arr.Field(fieldID)
@@ -244,7 +247,7 @@ func (los *ListOfStructs) I64FieldByID(fieldID int, row int) (int64, error) {
 
 // F64FieldByID returns the float64 value of a field id for a specific row.
 func (los *ListOfStructs) F64FieldByID(fieldID int, row int) (float64, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return 0.0, nil
 	}
 	column := los.arr.Field(fieldID)
@@ -253,7 +256,7 @@ func (los *ListOfStructs) F64FieldByID(fieldID int, row int) (float64, error) {
 
 // F64OrNilFieldByID returns the float64 value of a field id for a specific row or nil if the field is null.
 func (los *ListOfStructs) F64OrNilFieldByID(fieldID int, row int) (*float64, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return nil, nil
 	}
 	column := los.arr.Field(fieldID)
@@ -262,7 +265,7 @@ func (los *ListOfStructs) F64OrNilFieldByID(fieldID int, row int) (*float64, err
 
 // BoolFieldByID returns the bool value of a field id for a specific row.
 func (los *ListOfStructs) BoolFieldByID(fieldID int, row int) (bool, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return false, nil
 	}
 	column := los.arr.Field(fieldID)
@@ -271,7 +274,7 @@ func (los *ListOfStructs) BoolFieldByID(fieldID int, row int) (bool, error) {
 
 // BinaryFieldByID returns the binary value of a field id for a specific row.
 func (los *ListOfStructs) BinaryFieldByID(fieldID int, row int) ([]byte, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return nil, nil
 	}
 	column := los.arr.Field(fieldID)
@@ -280,7 +283,7 @@ func (los *ListOfStructs) BinaryFieldByID(fieldID int, row int) ([]byte, error) 
 
 // FixedSizeBinaryFieldByID returns the fixed size binary value of a field id for a specific row.
 func (los *ListOfStructs) FixedSizeBinaryFieldByID(fieldID int, row int) ([]byte, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return nil, nil
 	}
 	column := los.arr.Field(fieldID)
@@ -398,7 +401,7 @@ func (los *ListOfStructs) StructArray(name string, row int) (*arrow.StructType, 
 
 // StructByID returns the underlying arrow struct stype and arrow array for a field id for a specific row.
 func (los *ListOfStructs) StructByID(fieldID int, row int) (*arrow.StructType, *array.Struct, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return nil, nil, nil
 	}
 	column := los.arr.Field(fieldID)
@@ -420,7 +423,7 @@ func (los *ListOfStructs) IsNull(row int) bool {
 
 // ListValuesById return the list array for a field id for a specific row.
 func (los *ListOfStructs) ListValuesById(row int, fieldID int) (arr arrow.Array, start int, end int, err error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return nil, 0, 0, nil
 	}
 	column := los.arr.Field(fieldID)
@@ -440,7 +443,7 @@ func (los *ListOfStructs) ListValuesById(row int, fieldID int) (arr arrow.Array,
 
 // ListOfStructsById returns the list of structs for a field id for a specific row.
 func (los *ListOfStructs) ListOfStructsById(row int, fieldID int) (*ListOfStructs, error) {
-	if fieldID == -1 {
+	if fieldID == AbsentFieldID {
 		return nil, nil
 	}
 	column := los.arr.Field(fieldID)

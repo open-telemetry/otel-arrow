@@ -26,7 +26,7 @@ type MetricsIds struct {
 }
 
 // MetricsFrom creates a [pmetric.Metrics] from the given Arrow Record.
-func MetricsFrom(record arrow.Record) (pmetric.Metrics, error) {
+func MetricsFrom(record arrow.Record, relatedData *RelatedData) (pmetric.Metrics, error) {
 	metrics := pmetric.NewMetrics()
 
 	metricsIds, err := SchemaToIds(record.Schema())
@@ -38,7 +38,7 @@ func MetricsFrom(record arrow.Record) (pmetric.Metrics, error) {
 	resSpansCount := int(record.NumRows())
 	resMetricsSlice.EnsureCapacity(resSpansCount)
 
-	err = werror.Wrap(AppendResourceMetricsInto(metrics, record, metricsIds))
+	err = werror.Wrap(AppendResourceMetricsInto(metrics, record, metricsIds, relatedData))
 	return metrics, err
 }
 

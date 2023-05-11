@@ -21,7 +21,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/HdrHistogram/hdrhistogram-go"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
@@ -29,48 +28,30 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 )
 
-type MetricsOptimizer struct {
-	sort  bool
-	stats *MetricsStats
-}
+type (
+	MetricsOptimizer struct {
+		sort bool
+	}
 
-type MetricsOptimized struct {
-	ResourceMetricsIdx map[string]int // resource metrics id -> resource metrics group
-	ResourceMetrics    []*ResourceMetricsGroup
-}
+	MetricsOptimized struct {
+		ResourceMetricsIdx map[string]int // resource metrics id -> resource metrics group
+		ResourceMetrics    []*ResourceMetricsGroup
+	}
 
-type ResourceMetricsGroup struct {
-	Resource          *pcommon.Resource
-	ResourceSchemaUrl string
-	ScopeMetricsIdx   map[string]int // scope metrics id -> scope metrics group
-	ScopeMetrics      []*ScopeMetricsGroup
-}
+	ResourceMetricsGroup struct {
+		Resource          *pcommon.Resource
+		ResourceSchemaUrl string
+		ScopeMetricsIdx   map[string]int // scope metrics id -> scope metrics group
+		ScopeMetrics      []*ScopeMetricsGroup
+	}
 
-type ScopeMetricsGroup struct {
-	Scope          *pcommon.InstrumentationScope
-	ScopeSchemaUrl string
+	ScopeMetricsGroup struct {
+		Scope          *pcommon.InstrumentationScope
+		ScopeSchemaUrl string
 
-	Metrics []*pmetric.Metric
-}
-
-type MetricsStats struct {
-	MetricsCount               int
-	ResourceMetricsHistogram   *hdrhistogram.Histogram
-	ResourceAttrsHistogram     *carrow.AttributesStats
-	ScopeMetricsHistogram      *hdrhistogram.Histogram
-	ScopeAttrsHistogram        *carrow.AttributesStats
-	MetricsHistogram           *hdrhistogram.Histogram
-	SumHistogram               *hdrhistogram.Histogram
-	SumAttrsHistogram          *carrow.AttributesStats
-	GaugeHistogram             *hdrhistogram.Histogram
-	GaugeAttrsHistogram        *carrow.AttributesStats
-	HistogramHistogram         *hdrhistogram.Histogram
-	HistogramAttrsHistogram    *carrow.AttributesStats
-	SummaryHistogram           *hdrhistogram.Histogram
-	SummaryAttrsHistogram      *carrow.AttributesStats
-	ExpHistogramHistogram      *hdrhistogram.Histogram
-	ExpHistogramAttrsHistogram *carrow.AttributesStats
-}
+		Metrics []*pmetric.Metric
+	}
+)
 
 func NewMetricsOptimizer(cfg ...func(*carrow.Options)) *MetricsOptimizer {
 	options := carrow.Options{
@@ -81,36 +62,9 @@ func NewMetricsOptimizer(cfg ...func(*carrow.Options)) *MetricsOptimizer {
 		c(&options)
 	}
 
-	var s *MetricsStats
-	if options.Stats {
-		s = &MetricsStats{
-			MetricsCount:               0,
-			ResourceMetricsHistogram:   hdrhistogram.New(1, 1000000, 1),
-			ResourceAttrsHistogram:     carrow.NewAttributesStats(),
-			ScopeMetricsHistogram:      hdrhistogram.New(1, 1000000, 1),
-			ScopeAttrsHistogram:        carrow.NewAttributesStats(),
-			MetricsHistogram:           hdrhistogram.New(1, 1000000, 1),
-			SumHistogram:               hdrhistogram.New(1, 1000000, 1),
-			SumAttrsHistogram:          carrow.NewAttributesStats(),
-			GaugeHistogram:             hdrhistogram.New(1, 1000000, 1),
-			GaugeAttrsHistogram:        carrow.NewAttributesStats(),
-			HistogramHistogram:         hdrhistogram.New(1, 1000000, 1),
-			HistogramAttrsHistogram:    carrow.NewAttributesStats(),
-			SummaryHistogram:           hdrhistogram.New(1, 1000000, 1),
-			SummaryAttrsHistogram:      carrow.NewAttributesStats(),
-			ExpHistogramHistogram:      hdrhistogram.New(1, 1000000, 1),
-			ExpHistogramAttrsHistogram: carrow.NewAttributesStats(),
-		}
-	}
-
 	return &MetricsOptimizer{
-		sort:  options.Sort,
-		stats: s,
+		sort: options.Sort,
 	}
-}
-
-func (t *MetricsOptimizer) Stats() *MetricsStats {
-	return t.stats
 }
 
 func (t *MetricsOptimizer) Optimize(metrics pmetric.Metrics) *MetricsOptimized {

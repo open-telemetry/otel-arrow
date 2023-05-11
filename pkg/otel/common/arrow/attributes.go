@@ -36,6 +36,9 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
+// ToDo Standard attributes (i.e. AttributesDT) will be removed in the future. They are still used as shared attributes in the span.
+// ToDo this file must be redistributed into `attributes_16.go` and `attributes_32.go` files.
+
 // Arrow data types used to build the attribute map.
 var (
 	// KDT is the Arrow key data type.
@@ -59,15 +62,15 @@ type (
 	}
 
 	Attr16 struct {
-		ID    uint16
-		Key   string
-		Value pcommon.Value
+		ParentID uint16
+		Key      string
+		Value    pcommon.Value
 	}
 
 	Attr32 struct {
-		ID    uint32
-		Key   string
-		Value pcommon.Value
+		ParentID uint32
+		Key      string
+		Value    pcommon.Value
 	}
 
 	// Attributes16Accumulator accumulates attributes for the scope of an entire
@@ -216,6 +219,8 @@ func (c *Attributes16Accumulator) IsEmpty() bool {
 	return len(c.attrs) == 0
 }
 
+// ToDo Remove this method once `resource` and `scope` are migrated to use the new AppendWithID method.
+
 func (c *Attributes16Accumulator) Append(attrs pcommon.Map) (int64, error) {
 	ID := c.attrsMapCount
 
@@ -229,9 +234,9 @@ func (c *Attributes16Accumulator) Append(attrs pcommon.Map) (int64, error) {
 
 	attrs.Range(func(k string, v pcommon.Value) bool {
 		c.attrs = append(c.attrs, Attr16{
-			ID:    ID,
-			Key:   k,
-			Value: v,
+			ParentID: ID,
+			Key:      k,
+			Value:    v,
 		})
 		return true
 	})
@@ -241,7 +246,38 @@ func (c *Attributes16Accumulator) Append(attrs pcommon.Map) (int64, error) {
 	return int64(ID), nil
 }
 
-func (c *Attributes16Accumulator) AppendUniqueAttributesWithID(mainID uint16, attrs pcommon.Map, smattrs *common.SharedAttributes, mattrs *common.SharedAttributes) error {
+func (c *Attributes16Accumulator) AppendWithID(parentID uint16, attrs pcommon.Map) error {
+	if attrs.Len() == 0 {
+		return nil
+	}
+
+	if c.attrsMapCount == math.MaxUint16 {
+		panic("The maximum number of group of attributes has been reached (max is uint16).")
+	}
+
+	attrs.Range(func(key string, v pcommon.Value) bool {
+		if key == "" {
+			// Skip entries with empty keys
+			return true
+		}
+
+		c.attrs = append(c.attrs, Attr16{
+			ParentID: parentID,
+			Key:      key,
+			Value:    v,
+		})
+
+		return true
+	})
+
+	c.attrsMapCount++
+
+	return nil
+}
+
+// ToDo Remove this method once shared attributes are removed logs and traces.
+
+func (c *Attributes16Accumulator) AppendUniqueAttributesWithID(parentID uint16, attrs pcommon.Map, smattrs *common.SharedAttributes, mattrs *common.SharedAttributes) error {
 	uniqueAttrsCount := attrs.Len()
 	if smattrs != nil {
 		uniqueAttrsCount -= smattrs.Len()
@@ -279,9 +315,9 @@ func (c *Attributes16Accumulator) AppendUniqueAttributesWithID(mainID uint16, at
 		}
 
 		c.attrs = append(c.attrs, Attr16{
-			ID:    mainID,
-			Key:   key,
-			Value: v,
+			ParentID: parentID,
+			Key:      key,
+			Value:    v,
 		})
 
 		uniqueAttrsCount--
@@ -293,59 +329,6 @@ func (c *Attributes16Accumulator) AppendUniqueAttributesWithID(mainID uint16, at
 	return nil
 }
 
-func (c *Attributes16Accumulator) AppendUniqueAttributes(attrs pcommon.Map, smattrs *common.SharedAttributes, mattrs *common.SharedAttributes) (int64, error) {
-	uniqueAttrsCount := attrs.Len()
-	if smattrs != nil {
-		uniqueAttrsCount -= smattrs.Len()
-	}
-	if mattrs != nil {
-		uniqueAttrsCount -= mattrs.Len()
-	}
-
-	ID := c.attrsMapCount
-	if uniqueAttrsCount == 0 {
-		return -1, nil
-	}
-
-	if c.attrsMapCount == math.MaxUint16 {
-		panic("The maximum number of group of attributes has been reached (max is uint16).")
-	}
-
-	attrs.Range(func(key string, v pcommon.Value) bool {
-		if key == "" {
-			// Skip entries with empty keys
-			return true
-		}
-
-		// Skip the current attribute if it is a scope metric shared attribute
-		// or a metric shared attribute
-		smattrsFound := false
-		mattrsFound := false
-		if smattrs != nil {
-			_, smattrsFound = smattrs.Attributes[key]
-		}
-		if mattrs != nil {
-			_, mattrsFound = mattrs.Attributes[key]
-		}
-		if smattrsFound || mattrsFound {
-			return true
-		}
-
-		c.attrs = append(c.attrs, Attr16{
-			ID:    ID,
-			Key:   key,
-			Value: v,
-		})
-
-		uniqueAttrsCount--
-		return uniqueAttrsCount > 0
-	})
-
-	c.attrsMapCount++
-
-	return int64(ID), nil
-}
-
 func (c *Attributes16Accumulator) SortedAttrs() []Attr16 {
 	sort.Slice(c.attrs, func(i, j int) bool {
 		attrsI := c.attrs[i]
@@ -353,7 +336,7 @@ func (c *Attributes16Accumulator) SortedAttrs() []Attr16 {
 		if attrsI.Key == attrsJ.Key {
 			cmp := Compare(attrsI.Value, attrsJ.Value)
 			if cmp == 0 {
-				return attrsI.ID < attrsJ.ID
+				return attrsI.ParentID < attrsJ.ParentID
 			} else {
 				return cmp == -1
 			}
@@ -380,32 +363,36 @@ func (c *Attributes32Accumulator) IsEmpty() bool {
 	return len(c.attrs) == 0
 }
 
-func (c *Attributes32Accumulator) Append(attrs pcommon.Map) (int64, error) {
-	ID := c.attrsMapCount
-
+func (c *Attributes32Accumulator) Append(ID uint32, attrs pcommon.Map) error {
 	if attrs.Len() == 0 {
-		return -1, nil
+		return nil
 	}
 
 	if c.attrsMapCount == math.MaxUint32 {
 		panic("The maximum number of group of attributes has been reached (max is uint32).")
 	}
 
-	attrs.Range(func(k string, v pcommon.Value) bool {
+	attrs.Range(func(key string, v pcommon.Value) bool {
+		if key == "" {
+			// Skip entries with empty keys
+			return true
+		}
+
 		c.attrs = append(c.attrs, Attr32{
-			ID:    ID,
-			Key:   k,
-			Value: v,
+			ParentID: ID,
+			Key:      key,
+			Value:    v,
 		})
+
 		return true
 	})
 
 	c.attrsMapCount++
 
-	return int64(ID), nil
+	return nil
 }
 
-func (c *Attributes32Accumulator) AppendUniqueAttributes(attrs pcommon.Map, smattrs *common.SharedAttributes, mattrs *common.SharedAttributes) (int64, error) {
+func (c *Attributes32Accumulator) AppendUniqueAttributesWithID(ID uint32, attrs pcommon.Map, smattrs *common.SharedAttributes, mattrs *common.SharedAttributes) error {
 	uniqueAttrsCount := attrs.Len()
 	if smattrs != nil {
 		uniqueAttrsCount -= smattrs.Len()
@@ -414,9 +401,8 @@ func (c *Attributes32Accumulator) AppendUniqueAttributes(attrs pcommon.Map, smat
 		uniqueAttrsCount -= mattrs.Len()
 	}
 
-	ID := c.attrsMapCount
 	if uniqueAttrsCount == 0 {
-		return -1, nil
+		return nil
 	}
 
 	if c.attrsMapCount == math.MaxUint32 {
@@ -444,9 +430,9 @@ func (c *Attributes32Accumulator) AppendUniqueAttributes(attrs pcommon.Map, smat
 		}
 
 		c.attrs = append(c.attrs, Attr32{
-			ID:    ID,
-			Key:   key,
-			Value: v,
+			ParentID: ID,
+			Key:      key,
+			Value:    v,
 		})
 
 		uniqueAttrsCount--
@@ -455,21 +441,21 @@ func (c *Attributes32Accumulator) AppendUniqueAttributes(attrs pcommon.Map, smat
 
 	c.attrsMapCount++
 
-	return int64(ID), nil
+	return nil
 }
 
 func (c *Attributes32Accumulator) SortedAttrs() []Attr32 {
 	sort.Slice(c.attrs, func(i, j int) bool {
 		attrsI := c.attrs[i]
 		attrsJ := c.attrs[j]
-		if attrsI.ID == attrsJ.ID {
+		if attrsI.ParentID == attrsJ.ParentID {
 			if attrsI.Key == attrsJ.Key {
 				return IsLess(attrsI.Value, attrsJ.Value)
 			} else {
 				return attrsI.Key < attrsJ.Key
 			}
 		} else {
-			return attrsI.ID < attrsJ.ID
+			return attrsI.ParentID < attrsJ.ParentID
 		}
 	})
 
@@ -668,4 +654,5 @@ func PrintRecord(record arrow.Record) {
 		}
 		print("\n")
 	}
+	println()
 }

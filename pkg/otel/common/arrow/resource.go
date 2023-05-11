@@ -32,7 +32,7 @@ import (
 var (
 	ResourceDT = arrow.StructOf([]arrow.Field{
 		{
-			Name:     constants.AttributesID,
+			Name:     constants.ID,
 			Type:     arrow.PrimitiveTypes.Uint16,
 			Metadata: acommon.Metadata(acommon.Optional, acommon.DeltaEncoding),
 		},
@@ -62,7 +62,7 @@ func NewResourceBuilder(builder *builder.StructBuilder) *ResourceBuilder {
 
 // ResourceBuilderFrom creates a new resource builder from an existing struct builder.
 func ResourceBuilderFrom(builder *builder.StructBuilder) *ResourceBuilder {
-	aib := builder.Uint16DeltaBuilder(constants.AttributesID)
+	aib := builder.Uint16DeltaBuilder(constants.ID)
 	// As the attributes are sorted before insertion, the delta between two
 	// consecutive attributes ID should always be <=1.
 	// We are enforcing this constraint to make sure that the delta encoding
@@ -84,6 +84,7 @@ func (b *ResourceBuilder) Append(resource *pcommon.Resource, attrsAccu *Attribut
 	}
 
 	return b.builder.Append(resource, func() error {
+		// ToDo Move to AppendWithID in a future PR
 		ID, err := attrsAccu.Append(resource.Attributes())
 		if err != nil {
 			return werror.Wrap(err)

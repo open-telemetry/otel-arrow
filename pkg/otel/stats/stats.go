@@ -23,23 +23,25 @@ import (
 	"fmt"
 )
 
-// ProducerStats is a struct that contains stats about the OTLP Arrow Producer.
-type ProducerStats struct {
-	MetricsBatchesProduced uint64
-	LogsBatchesProduced    uint64
-	TracesBatchesProduced  uint64
-	StreamProducersCreated uint64
-	StreamProducersClosed  uint64
-	RecordBuilderStats     RecordBuilderStats
+type (
+	// ProducerStats is a struct that contains stats about the OTLP Arrow Producer.
+	ProducerStats struct {
+		MetricsBatchesProduced uint64
+		LogsBatchesProduced    uint64
+		TracesBatchesProduced  uint64
+		StreamProducersCreated uint64
+		StreamProducersClosed  uint64
+		RecordBuilderStats     RecordBuilderStats
 
-	SchemaStatsEnabled bool
-}
+		SchemaStatsEnabled bool
+	}
 
-type RecordBuilderStats struct {
-	SchemaUpdatesPerformed     uint64
-	DictionaryIndexTypeChanged uint64
-	DictionaryOverflowDetected uint64
-}
+	RecordBuilderStats struct {
+		SchemaUpdatesPerformed     uint64
+		DictionaryIndexTypeChanged uint64
+		DictionaryOverflowDetected uint64
+	}
+)
 
 // NewProducerStats creates a new ProducerStats struct.
 func NewProducerStats() *ProducerStats {
