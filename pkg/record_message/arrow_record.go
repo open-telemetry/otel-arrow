@@ -23,7 +23,7 @@ import (
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/array"
 
-	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	v1 "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
 )
 
 type PayloadType = v1.OtlpArrowPayloadType

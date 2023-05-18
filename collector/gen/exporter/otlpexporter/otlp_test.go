@@ -26,8 +26,8 @@ import (
 	"testing"
 	"time"
 
-	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
-	arrowpbMock "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1/mock"
+	arrowpb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
+	arrowpbMock "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1/mock"
 	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"

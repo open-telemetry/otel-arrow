@@ -18,7 +18,7 @@
 package otlp
 
 import (
-	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	colarspb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
 	"github.com/f5/otel-arrow-adapter/pkg/otel"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/record_message"

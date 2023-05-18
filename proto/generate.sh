@@ -15,12 +15,12 @@ for dir in $(find ${DIR}/opentelemetry -name '*.proto' -print0 | xargs -0 -n1 di
   protoc -I ${DIR} --go_out=api --go-grpc_out=api ${files}
 done
 
-mv api/github.com/f5/otel-arrow-adapter/api/collector api
+mv api/github.com/f5/otel-arrow-adapter/api/experimental api
 rm -rf api/github.com
 
 # Generate the mock files
 go get github.com/golang/mock
 go install github.com/golang/mock
-mkdir -p api/collector/arrow/v1/mock
-mockgen -package mock github.com/f5/otel-arrow-adapter/api/collector/arrow/v1 ArrowStreamServiceClient,ArrowStreamService_ArrowStreamClient,ArrowStreamServiceServer,ArrowStreamService_ArrowStreamServer > api/collector/arrow/v1/mock/arrow_service_mock.go
+mkdir -p api/experimental/arrow/v1/mock
+mockgen -package mock github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1 ArrowStreamServiceClient,ArrowStreamService_ArrowStreamClient,ArrowStreamServiceServer,ArrowStreamService_ArrowStreamServer > api/experimental/arrow/v1/mock/arrow_service_mock.go
 go mod tidy

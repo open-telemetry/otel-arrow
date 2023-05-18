@@ -23,7 +23,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	colarspb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
 	common "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	logsotlp "github.com/f5/otel-arrow-adapter/pkg/otel/logs/otlp"
 	metricsotlp "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/otlp"

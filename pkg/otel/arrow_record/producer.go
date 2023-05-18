@@ -28,7 +28,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	colarspb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
 	carrow "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	config2 "github.com/f5/otel-arrow-adapter/pkg/config"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"

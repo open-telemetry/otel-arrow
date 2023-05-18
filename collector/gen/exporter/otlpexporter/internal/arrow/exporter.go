@@ -19,7 +19,7 @@ import (
 	"errors"
 	"sync"
 
-	arrowpb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	arrowpb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
 	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"

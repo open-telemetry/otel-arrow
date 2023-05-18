@@ -29,7 +29,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	v1 "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	v1 "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
 	"github.com/f5/otel-arrow-adapter/pkg/config"
 	jsonassert "github.com/f5/otel-arrow-adapter/pkg/otel/assert"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common"

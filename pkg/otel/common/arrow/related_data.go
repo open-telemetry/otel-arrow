@@ -23,7 +23,7 @@ package arrow
 import (
 	"github.com/apache/arrow/go/v12/arrow"
 
-	colarspb "github.com/f5/otel-arrow-adapter/api/collector/arrow/v1"
+	colarspb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
 	cfg "github.com/f5/otel-arrow-adapter/pkg/config"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	config "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
