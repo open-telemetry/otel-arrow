@@ -2,4 +2,3 @@
 protocols:
   http:
   arrow:
-    enabled: true

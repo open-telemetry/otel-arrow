@@ -42,6 +42,9 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testutil"
+	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow/mock"
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
@@ -54,14 +57,11 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/extension/auth"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testutil"
 	"go.opentelemetry.io/collector/obsreport/obsreporttest"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"go.opentelemetry.io/collector/receiver"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow/mock"
 	"go.opentelemetry.io/collector/receiver/receivertest"
 	semconv "go.opentelemetry.io/collector/semconv/v1.5.0"
 )
@@ -1135,7 +1135,7 @@ func TestGRPCArrowReceiver(t *testing.T) {
 	cfg.GRPC.NetAddr.Endpoint = addr
 	cfg.GRPC.IncludeMetadata = true
 	cfg.HTTP = nil
-	cfg.Arrow.Enabled = true
+	cfg.Arrow.Disabled = false
 	id := component.NewID("arrow")
 	ocr := newReceiver(t, factory, cfg, id, sink, nil)
 
@@ -1248,7 +1248,7 @@ func TestGRPCArrowReceiverAuth(t *testing.T) {
 		AuthenticatorID: authID,
 	}
 	cfg.HTTP = nil
-	cfg.Arrow.Enabled = true
+	cfg.Arrow.Disabled = false
 	id := component.NewID("arrow")
 	ocr := newReceiver(t, factory, cfg, id, sink, nil)
 

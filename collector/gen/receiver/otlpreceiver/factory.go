@@ -17,12 +17,12 @@ package otlpreceiver // import "github.com/f5/otel-arrow-adapter/collector/gen/r
 import (
 	"context"
 
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/sharedcomponent"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/consumer"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/sharedcomponent"
 	"go.opentelemetry.io/collector/receiver"
 )
 
@@ -59,7 +59,7 @@ func createDefaultConfig() component.Config {
 				Endpoint: defaultHTTPEndpoint,
 			},
 			Arrow: &ArrowSettings{
-				Enabled: false,
+				Disabled: false,
 			},
 		},
 	}

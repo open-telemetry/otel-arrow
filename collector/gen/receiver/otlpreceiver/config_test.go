@@ -140,7 +140,7 @@ func TestUnmarshalConfig(t *testing.T) {
 					},
 				},
 				Arrow: &ArrowSettings{
-					Enabled: true,
+					Disabled: false,
 				},
 			},
 		}, cfg)
@@ -167,9 +167,7 @@ func TestUnmarshalConfigUnix(t *testing.T) {
 					Endpoint: "/tmp/http_otlp.sock",
 					// Transport: "unix",
 				},
-				Arrow: &ArrowSettings{
-					Enabled: false,
-				},
+				Arrow: &ArrowSettings{},
 			},
 		}, cfg)
 }
