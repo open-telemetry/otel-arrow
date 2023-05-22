@@ -42,6 +42,8 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
+	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow/grpcmock"
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
@@ -51,10 +53,8 @@ import (
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exportertest"
-	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow/grpcmock"
 	"go.opentelemetry.io/collector/extension"
 	"go.opentelemetry.io/collector/extension/auth"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -297,6 +297,11 @@ func TestSendTraces(t *testing.T) {
 			AuthenticatorID: authID,
 		},
 	}
+	// This test fails w/ Arrow enabled because the function
+	// passed to newTestAuthExtension() below requires it the
+	// caller's context, and the newStream doesn't have it.
+	cfg.Arrow.Disabled = true
+
 	set := exportertest.NewNopCreateSettings()
 	set.BuildInfo.Description = "Collector"
 	set.BuildInfo.Version = "1.2.3test"
@@ -833,7 +838,6 @@ func testSendArrowTraces(t *testing.T, clientWaitForReady, streamServiceAvailabl
 	}
 	// Arrow client is enabled, but the server doesn't support it.
 	cfg.Arrow = ArrowSettings{
-		Enabled:    true,
 		NumStreams: 1,
 	}
 
@@ -989,7 +993,6 @@ func TestSendArrowFailedTraces(t *testing.T) {
 	}
 	// Arrow client is enabled, but the server doesn't support it.
 	cfg.Arrow = ArrowSettings{
-		Enabled:    true,
 		NumStreams: 1,
 	}
 	cfg.QueueSettings.Enabled = false

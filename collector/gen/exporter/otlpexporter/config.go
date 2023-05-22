@@ -36,7 +36,7 @@ type Config struct {
 // ArrowSettings includes whether Arrow is enabled and the number of
 // concurrent Arrow streams.
 type ArrowSettings struct {
-	Enabled          bool `mapstructure:"enabled"`
+	Disabled         bool `mapstructure:"disabled"`
 	NumStreams       int  `mapstructure:"num_streams"`
 	DisableDowngrade bool `mapstructure:"disable_downgrade"`
 }

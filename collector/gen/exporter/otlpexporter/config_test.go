@@ -88,7 +88,6 @@ func TestUnmarshalConfig(t *testing.T) {
 				Auth:            &configauth.Authentication{AuthenticatorID: component.NewID("nop")},
 			},
 			Arrow: ArrowSettings{
-				Enabled:    true,
 				NumStreams: 2,
 			},
 		}, cfg)
@@ -96,7 +95,7 @@ func TestUnmarshalConfig(t *testing.T) {
 
 func TestArrowSettingsValidate(t *testing.T) {
 	settings := func(enabled bool, numStreams int) *ArrowSettings {
-		return &ArrowSettings{Enabled: enabled, NumStreams: numStreams}
+		return &ArrowSettings{Disabled: !enabled, NumStreams: numStreams}
 	}
 	require.NoError(t, settings(true, 1).Validate())
 	require.NoError(t, settings(false, 1).Validate())

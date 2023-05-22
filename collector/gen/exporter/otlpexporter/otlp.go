@@ -32,12 +32,12 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow"
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/netstats"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
-	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/netstats"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -83,7 +83,7 @@ func newExporter(cfg component.Config, set exporter.CreateSettings) (*baseExport
 	userAgent := fmt.Sprintf("%s/%s (%s/%s)",
 		set.BuildInfo.Description, set.BuildInfo.Version, runtime.GOOS, runtime.GOARCH)
 
-	if oCfg.Arrow.Enabled {
+	if !oCfg.Arrow.Disabled {
 		userAgent += fmt.Sprintf(" ApacheArrow/%s (NumStreams/%d)", arrowPkg.PkgVersion, oCfg.Arrow.NumStreams)
 	}
 
@@ -114,7 +114,7 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) (err erro
 		grpc.WaitForReady(e.config.GRPCClientSettings.WaitForReady),
 	}
 
-	if e.config.Arrow.Enabled {
+	if !e.config.Arrow.Disabled {
 		// Note this sets static outgoing context for all future stream requests.
 		ctx := e.enhanceContext(context.Background())
 

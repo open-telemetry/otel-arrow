@@ -27,4 +27,4 @@ keepalive:
 balancer_name: "round_robin"
 arrow:
   num_streams: 2
-  enabled: true
+  disabled: false
