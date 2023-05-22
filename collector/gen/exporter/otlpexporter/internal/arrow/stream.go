@@ -124,7 +124,7 @@ func (s *Stream) logStreamError(err error) {
 
 // run blocks the calling goroutine while executing stream logic.  run
 // will return when the reader and writer are finished.  errors will be logged.
-func (s *Stream) run(bgctx context.Context, streamClient streamClientFunc, grpcOptions []grpc.CallOption) {
+func (s *Stream) run(bgctx context.Context, streamClient StreamClientFunc, grpcOptions []grpc.CallOption) {
 	ctx, cancel := context.WithCancel(bgctx)
 	defer cancel()
 

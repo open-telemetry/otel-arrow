@@ -26,6 +26,6 @@ keepalive:
   permit_without_stream: true
 balancer_name: "round_robin"
 arrow:
-  disabled: false
   num_streams: 2
+  disabled: false
   enable_mixed_signals: true

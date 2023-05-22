@@ -20,13 +20,13 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/atomic"
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -138,17 +138,17 @@ func newExporterTestCaseCommon(t *testing.T, noisy noisyTest, numStreams int, di
 
 	exp := NewExporter(numStreams, disableDowngrade, ctc.telset, nil, func() arrowRecord.ProducerAPI {
 		// Mock the close function, use a real producer for testing dataflow.
-		prod := arrowRecordMock.NewMockProducerAPI(ctc.ctrl)
-		real := arrowRecord.NewProducer()
+		mock := arrowRecordMock.NewMockProducerAPI(ctc.ctrl)
+		prod := arrowRecord.NewProducer()
 
-		prod.EXPECT().BatchArrowRecordsFromTraces(gomock.Any()).AnyTimes().DoAndReturn(
-			copyBatch(real.BatchArrowRecordsFromTraces))
-		prod.EXPECT().BatchArrowRecordsFromLogs(gomock.Any()).AnyTimes().DoAndReturn(
-			copyBatch(real.BatchArrowRecordsFromLogs))
-		prod.EXPECT().BatchArrowRecordsFromMetrics(gomock.Any()).AnyTimes().DoAndReturn(
-			copyBatch(real.BatchArrowRecordsFromMetrics))
-		prod.EXPECT().Close().Times(1).Return(nil)
-		return prod
+		mock.EXPECT().BatchArrowRecordsFromTraces(gomock.Any()).AnyTimes().DoAndReturn(
+			copyBatch(prod.BatchArrowRecordsFromTraces))
+		mock.EXPECT().BatchArrowRecordsFromLogs(gomock.Any()).AnyTimes().DoAndReturn(
+			copyBatch(prod.BatchArrowRecordsFromLogs))
+		mock.EXPECT().BatchArrowRecordsFromMetrics(gomock.Any()).AnyTimes().DoAndReturn(
+			copyBatch(prod.BatchArrowRecordsFromMetrics))
+		mock.EXPECT().Close().Times(1).Return(nil)
+		return mock
 	}, ctc.streamClient, ctc.perRPCCredentials)
 
 	return &exporterTestCase{

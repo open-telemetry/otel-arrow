@@ -32,10 +32,10 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
-	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow/grpcmock"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
+	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow/grpcmock"
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
 )
 
 var (
@@ -54,7 +54,7 @@ type commonTestCase struct {
 	ctrl                *gomock.Controller
 	telset              component.TelemetrySettings
 	observedLogs        *observer.ObservedLogs
-	streamClient        streamClientFunc
+	streamClient        StreamClientFunc
 	streamCall          *gomock.Call
 	perRPCCredentials   credentials.PerRPCCredentials
 	requestMetadataCall *gomock.Call
@@ -279,7 +279,7 @@ func (tc *arrowUnsupportedTestChannel) onSend(ctx context.Context) func(*arrowpb
 	}
 }
 
-func (tc *arrowUnsupportedTestChannel) onRecv(ctx context.Context) func() (*arrowpb.BatchStatus, error) {
+func (tc *arrowUnsupportedTestChannel) onRecv(_ context.Context) func() (*arrowpb.BatchStatus, error) {
 	return func() (*arrowpb.BatchStatus, error) {
 		err := status.Error(codes.Unimplemented, "arrow will not be served")
 		return &arrowpb.BatchStatus{}, err
@@ -299,13 +299,13 @@ func (tc *disconnectedTestChannel) onConnect(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func (tc *disconnectedTestChannel) onSend(ctx context.Context) func(*arrowpb.BatchArrowRecords) error {
+func (tc *disconnectedTestChannel) onSend(_ context.Context) func(*arrowpb.BatchArrowRecords) error {
 	return func(req *arrowpb.BatchArrowRecords) error {
 		panic("unreachable")
 	}
 }
 
-func (tc *disconnectedTestChannel) onRecv(ctx context.Context) func() (*arrowpb.BatchStatus, error) {
+func (tc *disconnectedTestChannel) onRecv(_ context.Context) func() (*arrowpb.BatchStatus, error) {
 	return func() (*arrowpb.BatchStatus, error) {
 		panic("unreachable")
 	}
@@ -322,11 +322,11 @@ func newSendErrorTestChannel() *sendErrorTestChannel {
 	}
 }
 
-func (tc *sendErrorTestChannel) onConnect(ctx context.Context) error {
+func (tc *sendErrorTestChannel) onConnect(_ context.Context) error {
 	return nil
 }
 
-func (tc *sendErrorTestChannel) onSend(ctx context.Context) func(*arrowpb.BatchArrowRecords) error {
+func (tc *sendErrorTestChannel) onSend(_ context.Context) func(*arrowpb.BatchArrowRecords) error {
 	return func(*arrowpb.BatchArrowRecords) error {
 		return io.EOF
 	}
@@ -336,7 +336,7 @@ func (tc *sendErrorTestChannel) unblock() {
 	close(tc.release)
 }
 
-func (tc *sendErrorTestChannel) onRecv(ctx context.Context) func() (*arrowpb.BatchStatus, error) {
+func (tc *sendErrorTestChannel) onRecv(_ context.Context) func() (*arrowpb.BatchStatus, error) {
 	return func() (*arrowpb.BatchStatus, error) {
 		<-tc.release
 		return &arrowpb.BatchStatus{}, io.EOF
@@ -351,17 +351,17 @@ func newConnectErrorTestChannel() *connectErrorTestChannel {
 	return &connectErrorTestChannel{}
 }
 
-func (tc *connectErrorTestChannel) onConnect(ctx context.Context) error {
+func (tc *connectErrorTestChannel) onConnect(_ context.Context) error {
 	return fmt.Errorf("test connect error")
 }
 
-func (tc *connectErrorTestChannel) onSend(ctx context.Context) func(*arrowpb.BatchArrowRecords) error {
+func (tc *connectErrorTestChannel) onSend(_ context.Context) func(*arrowpb.BatchArrowRecords) error {
 	return func(*arrowpb.BatchArrowRecords) error {
 		panic("not reached")
 	}
 }
 
-func (tc *connectErrorTestChannel) onRecv(ctx context.Context) func() (*arrowpb.BatchStatus, error) {
+func (tc *connectErrorTestChannel) onRecv(_ context.Context) func() (*arrowpb.BatchStatus, error) {
 	return func() (*arrowpb.BatchStatus, error) {
 		panic("not reached")
 	}

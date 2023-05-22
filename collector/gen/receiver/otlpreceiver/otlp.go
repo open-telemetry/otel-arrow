@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//       http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package otlpreceiver // import "github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver"
 
@@ -27,21 +16,21 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/netstats"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/logs"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/metrics"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/trace"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/extension/auth"
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/netstats"
 	"go.opentelemetry.io/collector/obsreport"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"go.opentelemetry.io/collector/receiver"
+	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow"
+	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/logs"
+	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/metrics"
+	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/trace"
 )
 
 // otlpReceiver is the type that exposes Trace and Metrics reception.
@@ -251,7 +240,7 @@ func (r *otlpReceiver) registerTraceConsumer(tc consumer.Traces) error {
 				handleUnmatchedMethod(resp)
 				return
 			}
-			switch req.Header.Get("Content-Type") {
+			switch getMimeTypeFromContentType(req.Header.Get("Content-Type")) {
 			case pbContentType:
 				handleTraces(resp, req, httpTracesReceiver, pbEncoder)
 			case jsonContentType:
@@ -276,7 +265,7 @@ func (r *otlpReceiver) registerMetricsConsumer(mc consumer.Metrics) error {
 				handleUnmatchedMethod(resp)
 				return
 			}
-			switch req.Header.Get("Content-Type") {
+			switch getMimeTypeFromContentType(req.Header.Get("Content-Type")) {
 			case pbContentType:
 				handleMetrics(resp, req, httpMetricsReceiver, pbEncoder)
 			case jsonContentType:
@@ -301,7 +290,7 @@ func (r *otlpReceiver) registerLogsConsumer(lc consumer.Logs) error {
 				handleUnmatchedMethod(resp)
 				return
 			}
-			switch req.Header.Get("Content-Type") {
+			switch getMimeTypeFromContentType(req.Header.Get("Content-Type")) {
 			case pbContentType:
 				handleLogs(resp, req, httpLogsReceiver, pbEncoder)
 			case jsonContentType:

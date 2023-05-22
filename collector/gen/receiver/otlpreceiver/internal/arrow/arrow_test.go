@@ -299,26 +299,26 @@ func statusInvalidFor(batchID string, msg string) *arrowpb.BatchStatus {
 }
 
 func (ctc *commonTestCase) newRealConsumer() arrowRecord.ConsumerAPI {
-	cons := arrowRecordMock.NewMockConsumerAPI(ctc.ctrl)
-	real := arrowRecord.NewConsumer()
+	mock := arrowRecordMock.NewMockConsumerAPI(ctc.ctrl)
+	cons := arrowRecord.NewConsumer()
 
-	cons.EXPECT().Close().Times(1).Return(nil)
-	cons.EXPECT().TracesFrom(gomock.Any()).AnyTimes().DoAndReturn(real.TracesFrom)
-	cons.EXPECT().MetricsFrom(gomock.Any()).AnyTimes().DoAndReturn(real.MetricsFrom)
-	cons.EXPECT().LogsFrom(gomock.Any()).AnyTimes().DoAndReturn(real.LogsFrom)
+	mock.EXPECT().Close().Times(1).Return(nil)
+	mock.EXPECT().TracesFrom(gomock.Any()).AnyTimes().DoAndReturn(cons.TracesFrom)
+	mock.EXPECT().MetricsFrom(gomock.Any()).AnyTimes().DoAndReturn(cons.MetricsFrom)
+	mock.EXPECT().LogsFrom(gomock.Any()).AnyTimes().DoAndReturn(cons.LogsFrom)
 
-	return cons
+	return mock
 }
 
 func (ctc *commonTestCase) newErrorConsumer() arrowRecord.ConsumerAPI {
-	cons := arrowRecordMock.NewMockConsumerAPI(ctc.ctrl)
+	mock := arrowRecordMock.NewMockConsumerAPI(ctc.ctrl)
 
-	cons.EXPECT().Close().Times(1).Return(nil)
-	cons.EXPECT().TracesFrom(gomock.Any()).AnyTimes().Return(nil, fmt.Errorf("test invalid error"))
-	cons.EXPECT().MetricsFrom(gomock.Any()).AnyTimes().Return(nil, fmt.Errorf("test invalid error"))
-	cons.EXPECT().LogsFrom(gomock.Any()).AnyTimes().Return(nil, fmt.Errorf("test invalid error"))
+	mock.EXPECT().Close().Times(1).Return(nil)
+	mock.EXPECT().TracesFrom(gomock.Any()).AnyTimes().Return(nil, fmt.Errorf("test invalid error"))
+	mock.EXPECT().MetricsFrom(gomock.Any()).AnyTimes().Return(nil, fmt.Errorf("test invalid error"))
+	mock.EXPECT().LogsFrom(gomock.Any()).AnyTimes().Return(nil, fmt.Errorf("test invalid error"))
 
-	return cons
+	return mock
 }
 
 func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opts ...func(*configgrpc.GRPCServerSettings, *auth.Server)) {

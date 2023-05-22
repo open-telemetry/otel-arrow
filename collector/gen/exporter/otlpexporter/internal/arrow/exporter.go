@@ -50,7 +50,7 @@ type Exporter struct {
 
 	// client is a stream corresponding with the signal's payload
 	// type. uses the exporter's gRPC ClientConn (or is a mock, in tests).
-	streamClient streamClientFunc
+	streamClient StreamClientFunc
 
 	// perRPCCredentials derived from the exporter's gRPC auth settings.
 	perRPCCredentials credentials.PerRPCCredentials
@@ -88,11 +88,11 @@ type AnyStreamClient interface {
 }
 
 // streamClientFunc is a constructor for AnyStreamClients.
-type streamClientFunc func(context.Context, ...grpc.CallOption) (AnyStreamClient, error)
+type StreamClientFunc func(context.Context, ...grpc.CallOption) (AnyStreamClient, error)
 
 // MakeAnyStreamClient accepts any Arrow-like stream (mixed signal or
 // not) and turns it into an AnyStreamClient.
-func MakeAnyStreamClient[T AnyStreamClient](clientFunc func(ctx context.Context, opts ...grpc.CallOption) (T, error)) streamClientFunc {
+func MakeAnyStreamClient[T AnyStreamClient](clientFunc func(ctx context.Context, opts ...grpc.CallOption) (T, error)) StreamClientFunc {
 	return func(ctx context.Context, opts ...grpc.CallOption) (AnyStreamClient, error) {
 		client, err := clientFunc(ctx, opts...)
 		return client, err
@@ -106,7 +106,7 @@ func NewExporter(
 	telemetry component.TelemetrySettings,
 	grpcOptions []grpc.CallOption,
 	newProducer func() arrowRecord.ProducerAPI,
-	streamClient streamClientFunc,
+	streamClient StreamClientFunc,
 	perRPCCredentials credentials.PerRPCCredentials,
 ) *Exporter {
 	return &Exporter{
@@ -235,7 +235,7 @@ func (e *Exporter) SendAndWait(ctx context.Context, data interface{}) (bool, err
 }
 
 // Shutdown returns when all Arrow-associated goroutines have returned.
-func (e *Exporter) Shutdown(ctx context.Context) error {
+func (e *Exporter) Shutdown(_ context.Context) error {
 	e.cancel()
 	e.wg.Wait()
 	return nil

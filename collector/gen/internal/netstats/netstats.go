@@ -19,7 +19,6 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/metric/instrument"
 	"go.uber.org/multierr"
 
 	"go.opentelemetry.io/collector/config/configtelemetry"
@@ -58,11 +57,11 @@ const (
 // NetworkReporter is a helper to add network-level observability to
 // an exporter or receiver.
 type NetworkReporter struct {
-	attrs         []attribute.KeyValue
-	sentBytes     instrument.Int64Counter
-	sentWireBytes instrument.Int64Counter
-	recvBytes     instrument.Int64Counter
-	recvWireBytes instrument.Int64Counter
+	attrs         []metric.AddOption
+	sentBytes     metric.Int64Counter
+	sentWireBytes metric.Int64Counter
+	recvBytes     metric.Int64Counter
+	recvWireBytes metric.Int64Counter
 }
 
 // SizesStruct is used to pass uncompressed on-wire message lengths to
@@ -82,17 +81,17 @@ const (
 
 // makeSentMetrics builds the sent and sent-wire metric instruments
 // for an exporter or receiver using the corresponding `prefix`.
-func makeSentMetrics(prefix string, meter metric.Meter) (sent, sentWire instrument.Int64Counter, _ error) {
-	sentBytes, err1 := meter.Int64Counter(prefix+"_"+SentBytes, instrument.WithDescription(sentDescription), instrument.WithUnit(bytesUnit))
-	sentWireBytes, err2 := meter.Int64Counter(prefix+"_"+SentWireBytes, instrument.WithDescription(sentWireDescription), instrument.WithUnit(bytesUnit))
+func makeSentMetrics(prefix string, meter metric.Meter) (sent, sentWire metric.Int64Counter, _ error) {
+	sentBytes, err1 := meter.Int64Counter(prefix+"_"+SentBytes, metric.WithDescription(sentDescription), metric.WithUnit(bytesUnit))
+	sentWireBytes, err2 := meter.Int64Counter(prefix+"_"+SentWireBytes, metric.WithDescription(sentWireDescription), metric.WithUnit(bytesUnit))
 	return sentBytes, sentWireBytes, multierr.Append(err1, err2)
 }
 
 // makeRecvMetrics builds the received and received-wire metric instruments
 // for an exporter or receiver using the corresponding `prefix`.
-func makeRecvMetrics(prefix string, meter metric.Meter) (recv, recvWire instrument.Int64Counter, _ error) {
-	recvBytes, err1 := meter.Int64Counter(prefix+"_"+RecvBytes, instrument.WithDescription(recvDescription), instrument.WithUnit(bytesUnit))
-	recvWireBytes, err2 := meter.Int64Counter(prefix+"_"+RecvWireBytes, instrument.WithDescription(recvWireDescription), instrument.WithUnit(bytesUnit))
+func makeRecvMetrics(prefix string, meter metric.Meter) (recv, recvWire metric.Int64Counter, _ error) {
+	recvBytes, err1 := meter.Int64Counter(prefix+"_"+RecvBytes, metric.WithDescription(recvDescription), metric.WithUnit(bytesUnit))
+	recvWireBytes, err2 := meter.Int64Counter(prefix+"_"+RecvWireBytes, metric.WithDescription(recvWireDescription), metric.WithUnit(bytesUnit))
 	return recvBytes, recvWireBytes, multierr.Append(err1, err2)
 }
 
@@ -107,8 +106,8 @@ func NewExporterNetworkReporter(settings exporter.CreateSettings) (*NetworkRepor
 
 	meter := settings.TelemetrySettings.MeterProvider.Meter(scopeName)
 	rep := &NetworkReporter{
-		attrs: []attribute.KeyValue{
-			attribute.String(ExporterKey, settings.ID.String()),
+		attrs: []metric.AddOption{
+			metric.WithAttributes(attribute.String(ExporterKey, settings.ID.String())),
 		},
 	}
 
@@ -137,8 +136,8 @@ func NewReceiverNetworkReporter(settings receiver.CreateSettings) (*NetworkRepor
 
 	meter := settings.MeterProvider.Meter(scopeName)
 	rep := &NetworkReporter{
-		attrs: []attribute.KeyValue{
-			attribute.String(ReceiverKey, settings.ID.String()),
+		attrs: []metric.AddOption{
+			metric.WithAttributes(attribute.String(ReceiverKey, settings.ID.String())),
 		},
 	}
 

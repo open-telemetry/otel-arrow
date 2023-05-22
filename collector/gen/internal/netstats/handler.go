@@ -52,6 +52,6 @@ func (rep *NetworkReporter) TagConn(ctx context.Context, _ *stats.ConnTagInfo) c
 }
 
 // HandleConn implements grpc/stats.Handler
-func (rep *NetworkReporter) HandleConn(_ context.Context, s stats.ConnStats) {
+func (rep *NetworkReporter) HandleConn(_ context.Context, _ stats.ConnStats) {
 	// Note: ConnBegin and ConnEnd
 }
