@@ -32,10 +32,10 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
-	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/component/componenttest"
 	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow/grpcmock"
 	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
+	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/component/componenttest"
 )
 
 var (
@@ -54,7 +54,7 @@ type commonTestCase struct {
 	ctrl                *gomock.Controller
 	telset              component.TelemetrySettings
 	observedLogs        *observer.ObservedLogs
-	serviceClient       arrowpb.ArrowStreamServiceClient
+	streamClient        streamClientFunc
 	streamCall          *gomock.Call
 	perRPCCredentials   credentials.PerRPCCredentials
 	requestMetadataCall *gomock.Call
@@ -96,7 +96,7 @@ func newCommonTestCase(t *testing.T, noisy noisyTest) *commonTestCase {
 		ctrl:                ctrl,
 		telset:              telset,
 		observedLogs:        obslogs,
-		serviceClient:       client,
+		streamClient:        MakeAnyStreamClient(client.ArrowStream),
 		streamCall:          streamCall,
 		perRPCCredentials:   creds,
 		requestMetadataCall: requestMetadataCall,
@@ -104,18 +104,18 @@ func newCommonTestCase(t *testing.T, noisy noisyTest) *commonTestCase {
 }
 
 type commonTestStream struct {
-	streamClient arrowpb.ArrowStreamService_ArrowStreamClient
-	ctxCall      *gomock.Call
-	sendCall     *gomock.Call
-	recvCall     *gomock.Call
+	anyStreamClient AnyStreamClient
+	ctxCall         *gomock.Call
+	sendCall        *gomock.Call
+	recvCall        *gomock.Call
 }
 
 func (ctc *commonTestCase) newMockStream(ctx context.Context) *commonTestStream {
 	client := arrowCollectorMock.NewMockArrowStreamService_ArrowStreamClient(ctc.ctrl)
 
 	testStream := &commonTestStream{
-		streamClient: client,
-		ctxCall:      client.EXPECT().Context().AnyTimes().Return(ctx),
+		anyStreamClient: client,
+		ctxCall:         client.EXPECT().Context().AnyTimes().Return(ctx),
 		sendCall: client.EXPECT().Send(
 			gomock.Any(), // *arrowpb.BatchArrowRecords
 		).Times(0),
@@ -146,7 +146,7 @@ func (ctc *commonTestCase) returnNewStream(hs ...testChannel) func(context.Conte
 		str := ctc.newMockStream(ctx)
 		str.sendCall.AnyTimes().DoAndReturn(h.onSend(ctx))
 		str.recvCall.AnyTimes().DoAndReturn(h.onRecv(ctx))
-		return str.streamClient, nil
+		return str.anyStreamClient, nil
 	}
 }
 
@@ -167,7 +167,7 @@ func (ctc *commonTestCase) repeatedNewStream(nc func() testChannel) func(context
 		str := ctc.newMockStream(ctx)
 		str.sendCall.AnyTimes().DoAndReturn(h.onSend(ctx))
 		str.recvCall.AnyTimes().DoAndReturn(h.onRecv(ctx))
-		return str.streamClient, nil
+		return str.anyStreamClient, nil
 	}
 }
 

@@ -48,8 +48,9 @@ type Exporter struct {
 	// newProducer returns a real (or mock) Producer.
 	newProducer func() arrowRecord.ProducerAPI
 
-	// client uses the exporter's gRPC ClientConn (or is a mock, in tests).
-	client arrowpb.ArrowStreamServiceClient
+	// client is a stream corresponding with the signal's payload
+	// type. uses the exporter's gRPC ClientConn (or is a mock, in tests).
+	streamClient streamClientFunc
 
 	// perRPCCredentials derived from the exporter's gRPC auth settings.
 	perRPCCredentials credentials.PerRPCCredentials
@@ -78,6 +79,26 @@ type Exporter struct {
 	wg sync.WaitGroup
 }
 
+// AnyStreamClient is the interface supported by all Arrow streams,
+// mixed signals or not.
+type AnyStreamClient interface {
+	Send(*arrowpb.BatchArrowRecords) error
+	Recv() (*arrowpb.BatchStatus, error)
+	grpc.ClientStream
+}
+
+// streamClientFunc is a constructor for AnyStreamClients.
+type streamClientFunc func(context.Context, ...grpc.CallOption) (AnyStreamClient, error)
+
+// MakeAnyStreamClient accepts any Arrow-like stream (mixed signal or
+// not) and turns it into an AnyStreamClient.
+func MakeAnyStreamClient[T AnyStreamClient](clientFunc func(ctx context.Context, opts ...grpc.CallOption) (T, error)) streamClientFunc {
+	return func(ctx context.Context, opts ...grpc.CallOption) (AnyStreamClient, error) {
+		client, err := clientFunc(ctx, opts...)
+		return client, err
+	}
+}
+
 // NewExporter configures a new Exporter.
 func NewExporter(
 	numStreams int,
@@ -85,7 +106,7 @@ func NewExporter(
 	telemetry component.TelemetrySettings,
 	grpcOptions []grpc.CallOption,
 	newProducer func() arrowRecord.ProducerAPI,
-	client arrowpb.ArrowStreamServiceClient,
+	streamClient streamClientFunc,
 	perRPCCredentials credentials.PerRPCCredentials,
 ) *Exporter {
 	return &Exporter{
@@ -94,7 +115,7 @@ func NewExporter(
 		telemetry:         telemetry,
 		grpcOptions:       grpcOptions,
 		newProducer:       newProducer,
-		client:            client,
+		streamClient:      streamClient,
 		perRPCCredentials: perRPCCredentials,
 		returning:         make(chan *Stream, numStreams),
 	}
@@ -174,7 +195,7 @@ func (e *Exporter) runArrowStream(ctx context.Context) {
 		e.returning <- stream
 	}()
 
-	stream.run(ctx, e.client, e.grpcOptions)
+	stream.run(ctx, e.streamClient, e.grpcOptions)
 }
 
 // SendAndWait tries to send using an Arrow stream.  The results are:

@@ -150,18 +150,6 @@ func (r *otlpReceiver) startProtocolServers(host component.Host) error {
 			return err
 		}
 
-		if r.tracesReceiver != nil {
-			ptraceotlp.RegisterGRPCServer(r.serverGRPC, r.tracesReceiver)
-		}
-
-		if r.metricsReceiver != nil {
-			pmetricotlp.RegisterGRPCServer(r.serverGRPC, r.metricsReceiver)
-		}
-
-		if r.logsReceiver != nil {
-			plogotlp.RegisterGRPCServer(r.serverGRPC, r.logsReceiver)
-		}
-
 		if r.cfg.Arrow != nil && !r.cfg.Arrow.Disabled {
 			var authServer auth.Server
 			if r.cfg.GRPC.Auth != nil {
@@ -174,7 +162,34 @@ func (r *otlpReceiver) startProtocolServers(host component.Host) error {
 			r.arrowReceiver = arrow.New(arrow.Consumers(r), r.settings, r.obsrepGRPC, r.cfg.GRPC, authServer, func() arrowRecord.ConsumerAPI {
 				return arrowRecord.NewConsumer()
 			})
-			arrowpb.RegisterArrowStreamServiceServer(r.serverGRPC, r.arrowReceiver)
+
+			if !r.cfg.Arrow.DisableMixedSignals {
+				arrowpb.RegisterArrowStreamServiceServer(r.serverGRPC, r.arrowReceiver)
+			}
+		}
+
+		if r.tracesReceiver != nil {
+			ptraceotlp.RegisterGRPCServer(r.serverGRPC, r.tracesReceiver)
+
+			if r.cfg.Arrow != nil && !r.cfg.Arrow.DisableSeparateSignals {
+				arrowpb.RegisterArrowTracesServiceServer(r.serverGRPC, r.arrowReceiver)
+			}
+		}
+
+		if r.metricsReceiver != nil {
+			pmetricotlp.RegisterGRPCServer(r.serverGRPC, r.metricsReceiver)
+
+			if r.cfg.Arrow != nil && !r.cfg.Arrow.DisableSeparateSignals {
+				arrowpb.RegisterArrowMetricsServiceServer(r.serverGRPC, r.arrowReceiver)
+			}
+		}
+
+		if r.logsReceiver != nil {
+			plogotlp.RegisterGRPCServer(r.serverGRPC, r.logsReceiver)
+
+			if r.cfg.Arrow != nil && !r.cfg.Arrow.DisableSeparateSignals {
+				arrowpb.RegisterArrowLogsServiceServer(r.serverGRPC, r.arrowReceiver)
+			}
 		}
 
 		err = r.startGRPCServer(r.cfg.GRPC, host)

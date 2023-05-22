@@ -149,7 +149,7 @@ func newExporterTestCaseCommon(t *testing.T, noisy noisyTest, numStreams int, di
 			copyBatch(real.BatchArrowRecordsFromMetrics))
 		prod.EXPECT().Close().Times(1).Return(nil)
 		return prod
-	}, ctc.serviceClient, ctc.perRPCCredentials)
+	}, ctc.streamClient, ctc.perRPCCredentials)
 
 	return &exporterTestCase{
 		commonTestCase: ctc,

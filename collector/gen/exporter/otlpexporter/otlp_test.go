@@ -793,27 +793,17 @@ func TestSendLogData(t *testing.T) {
 // TestSendArrowTracesNotSupported tests a successful OTLP export w/
 // and without Arrow, w/ WaitForReady and without.
 func TestSendArrowTracesNotSupported(t *testing.T) {
-	// With arrow unsupported
-	t.Run("Service Unavailable", func(t *testing.T) {
-		t.Run("WaitForReady true", func(t *testing.T) {
-			testSendArrowTraces(t, true, false)
-		})
-		t.Run("WaitForReady false", func(t *testing.T) {
-			testSendArrowTraces(t, false, false)
-		})
-	})
-	// With arrow supported
-	t.Run("Service Available", func(t *testing.T) {
-		t.Run("WaitForReady true", func(t *testing.T) {
-			testSendArrowTraces(t, true, true)
-		})
-		t.Run("WaitForReady false", func(t *testing.T) {
-			testSendArrowTraces(t, false, true)
-		})
-	})
+	for _, mixed := range []bool{true, false} {
+		for _, waitForReady := range []bool{true, false} {
+			for _, available := range []bool{true, false} {
+				t.Run(fmt.Sprintf("mixed=%v waitForReady=%v available=%v", mixed, waitForReady, available),
+					func(t *testing.T) { testSendArrowTraces(t, mixed, waitForReady, available) })
+			}
+		}
+	}
 }
 
-func testSendArrowTraces(t *testing.T, clientWaitForReady, streamServiceAvailable bool) {
+func testSendArrowTraces(t *testing.T, mixedSignals, clientWaitForReady, streamServiceAvailable bool) {
 	// Start an OTLP-compatible receiver.
 	ln, err := net.Listen("tcp", "127.0.0.1:")
 	require.NoError(t, err, "Failed to find an available address to run the gRPC server: %v", err)
@@ -838,7 +828,8 @@ func testSendArrowTraces(t *testing.T, clientWaitForReady, streamServiceAvailabl
 	}
 	// Arrow client is enabled, but the server doesn't support it.
 	cfg.Arrow = ArrowSettings{
-		NumStreams: 1,
+		NumStreams:         1,
+		EnableMixedSignals: mixedSignals,
 	}
 
 	set := exportertest.NewNopCreateSettings()
@@ -869,7 +860,7 @@ func testSendArrowTraces(t *testing.T, clientWaitForReady, streamServiceAvailabl
 
 	rcv, _ := otlpTracesReceiverOnGRPCServer(ln, false)
 	if streamServiceAvailable {
-		rcv.startStreamMockArrowTraces(t, okStatusFor)
+		rcv.startStreamMockArrowTraces(t, mixedSignals, okStatusFor)
 	}
 
 	// Delay the server start, slightly.
@@ -918,26 +909,23 @@ func failedStatusFor(id string) *arrowpb.StatusMessage {
 	}
 }
 
-func (r *mockTracesReceiver) startStreamMockArrowTraces(t *testing.T, statusFor func(string) *arrowpb.StatusMessage) {
+type anyStreamServer interface {
+	Send(*arrowpb.BatchStatus) error
+	Recv() (*arrowpb.BatchArrowRecords, error)
+	grpc.ServerStream
+}
+
+func (r *mockTracesReceiver) startStreamMockArrowTraces(t *testing.T, mixedSignals bool, statusFor func(string) *arrowpb.StatusMessage) {
 	ctrl := gomock.NewController(t)
 
-	type binding struct {
-		arrowpb.UnsafeArrowStreamServiceServer
-		*arrowpbMock.MockArrowStreamServiceServer
-	}
-	svc := arrowpbMock.NewMockArrowStreamServiceServer(ctrl)
-
-	arrowpb.RegisterArrowStreamServiceServer(r.srv, binding{
-		MockArrowStreamServiceServer: svc,
-	})
-	svc.EXPECT().ArrowStream(gomock.Any()).Times(1).DoAndReturn(func(realSrv arrowpb.ArrowStreamService_ArrowStreamServer) error {
+	doer := func(server anyStreamServer) error {
 		consumer := arrowRecord.NewConsumer()
 		var hdrs []hpack.HeaderField
 		hdrsDecoder := hpack.NewDecoder(4096, func(hdr hpack.HeaderField) {
 			hdrs = append(hdrs, hdr)
 		})
 		for {
-			records, err := realSrv.Recv()
+			records, err := server.Recv()
 			if status, ok := status.FromError(err); ok && status.Code() == codes.Canceled {
 				break
 			}
@@ -949,7 +937,7 @@ func (r *mockTracesReceiver) startStreamMockArrowTraces(t *testing.T, statusFor 
 			hdrs = nil
 			_, err = hdrsDecoder.Write(records.Headers)
 			require.NoError(t, err)
-			md, ok := metadata.FromIncomingContext(realSrv.Context())
+			md, ok := metadata.FromIncomingContext(server.Context())
 			require.True(t, ok)
 
 			for _, hf := range hdrs {
@@ -965,14 +953,38 @@ func (r *mockTracesReceiver) startStreamMockArrowTraces(t *testing.T, statusFor 
 				_, err := r.Export(ctx, ptraceotlp.NewExportRequestFromTraces(traces))
 				require.NoError(t, err)
 			}
-			require.NoError(t, realSrv.Send(&arrowpb.BatchStatus{
+			require.NoError(t, server.Send(&arrowpb.BatchStatus{
 				Statuses: []*arrowpb.StatusMessage{
 					statusFor(records.BatchId),
 				},
 			}))
 		}
 		return nil
+	}
+
+	if mixedSignals {
+		type mixedBinding struct {
+			arrowpb.UnsafeArrowStreamServiceServer
+			*arrowpbMock.MockArrowStreamServiceServer
+		}
+		svc := arrowpbMock.NewMockArrowStreamServiceServer(ctrl)
+
+		arrowpb.RegisterArrowStreamServiceServer(r.srv, mixedBinding{
+			MockArrowStreamServiceServer: svc,
+		})
+		svc.EXPECT().ArrowStream(gomock.Any()).Times(1).DoAndReturn(doer)
+		return
+	}
+	type singleBinding struct {
+		arrowpb.UnsafeArrowTracesServiceServer
+		*arrowpbMock.MockArrowTracesServiceServer
+	}
+	svc := arrowpbMock.NewMockArrowTracesServiceServer(ctrl)
+
+	arrowpb.RegisterArrowTracesServiceServer(r.srv, singleBinding{
+		MockArrowTracesServiceServer: svc,
 	})
+	svc.EXPECT().ArrowTraces(gomock.Any()).Times(1).DoAndReturn(doer)
 
 }
 
@@ -993,7 +1005,8 @@ func TestSendArrowFailedTraces(t *testing.T) {
 	}
 	// Arrow client is enabled, but the server doesn't support it.
 	cfg.Arrow = ArrowSettings{
-		NumStreams: 1,
+		NumStreams:         1,
+		EnableMixedSignals: true,
 	}
 	cfg.QueueSettings.Enabled = false
 
@@ -1011,7 +1024,7 @@ func TestSendArrowFailedTraces(t *testing.T) {
 	assert.NoError(t, exp.Start(context.Background(), host))
 
 	rcv, _ := otlpTracesReceiverOnGRPCServer(ln, false)
-	rcv.startStreamMockArrowTraces(t, failedStatusFor)
+	rcv.startStreamMockArrowTraces(t, true, failedStatusFor)
 
 	// Delay the server start, slightly.
 	go func() {

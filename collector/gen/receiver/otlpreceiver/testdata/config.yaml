@@ -42,3 +42,5 @@ protocols:
   # Arrow enables receiving OTLP+Arrow streaming
   arrow:
     disabled: false
+    disable_mixed_signals: false
+    disable_separate_signals: false

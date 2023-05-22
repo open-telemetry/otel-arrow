@@ -124,11 +124,11 @@ func (s *Stream) logStreamError(err error) {
 
 // run blocks the calling goroutine while executing stream logic.  run
 // will return when the reader and writer are finished.  errors will be logged.
-func (s *Stream) run(bgctx context.Context, client arrowpb.ArrowStreamServiceClient, grpcOptions []grpc.CallOption) {
+func (s *Stream) run(bgctx context.Context, streamClient streamClientFunc, grpcOptions []grpc.CallOption) {
 	ctx, cancel := context.WithCancel(bgctx)
 	defer cancel()
 
-	sc, err := client.ArrowStream(ctx, grpcOptions...)
+	sc, err := streamClient(ctx, grpcOptions...)
 	if err != nil {
 		// Returning with stream.client == nil signals the
 		// lack of an Arrow stream endpoint.  When all the

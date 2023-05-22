@@ -91,7 +91,7 @@ func (tc *streamTestCase) start(channel testChannel) {
 
 	go func() {
 		defer tc.wait.Done()
-		tc.stream.run(tc.bgctx, tc.serviceClient, nil)
+		tc.stream.run(tc.bgctx, MakeAnyStreamClient(tc.streamClient), nil)
 	}()
 }
 
@@ -120,7 +120,7 @@ func (tc *streamTestCase) connectTestStream(h testChannel) func(context.Context,
 		}
 		tc.sendCall.AnyTimes().DoAndReturn(h.onSend(ctx))
 		tc.recvCall.AnyTimes().DoAndReturn(h.onRecv(ctx))
-		return tc.streamClient, nil
+		return tc.anyStreamClient, nil
 	}
 }
 

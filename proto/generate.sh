@@ -22,5 +22,5 @@ rm -rf api/github.com
 go get github.com/golang/mock
 go install github.com/golang/mock
 mkdir -p api/experimental/arrow/v1/mock
-mockgen -package mock github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1 ArrowStreamServiceClient,ArrowStreamService_ArrowStreamClient,ArrowStreamServiceServer,ArrowStreamService_ArrowStreamServer > api/experimental/arrow/v1/mock/arrow_service_mock.go
+mockgen -package mock github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1 ArrowStreamServiceClient,ArrowStreamService_ArrowStreamClient,ArrowStreamServiceServer,ArrowStreamService_ArrowStreamServer,ArrowTracesServiceClient,ArrowTracesService_ArrowTracesClient,ArrowTracesServiceServer,ArrowTracesService_ArrowTracesServer,ArrowLogsServiceClient,ArrowLogsService_ArrowLogsClient,ArrowLogsServiceServer,ArrowLogsService_ArrowLogsServer,ArrowMetricsServiceClient,ArrowMetricsService_ArrowMetricsClient,ArrowMetricsServiceServer,ArrowMetricsService_ArrowMetricsServer > api/experimental/arrow/v1/mock/arrow_service_mock.go
 go mod tidy
