@@ -59,7 +59,7 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, logsarrow.Schema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, logsarrow.LogsSchema, DefaultDictConfig, producerStats)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -68,7 +68,7 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	conf := config.DefaultConfig()
 
 	for {
-		lb, err := logsarrow.NewLogsBuilder(rBuilder, conf, stats.NewProducerStats())
+		lb, err := logsarrow.NewLogsBuilder(rBuilder, logsarrow.NewConfig(conf), stats.NewProducerStats())
 		require.NoError(t, err)
 		defer lb.Release()
 

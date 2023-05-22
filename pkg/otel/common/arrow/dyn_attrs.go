@@ -217,6 +217,10 @@ func (b *DynAttrsBuilder) SchemaID() string {
 	return b.schemaID
 }
 
+func (b *DynAttrsBuilder) Schema() *arrow.Schema {
+	return b.builder.Schema()
+}
+
 func (b *DynAttrsBuilder) PayloadType() *PayloadType {
 	return b.payloadType
 }

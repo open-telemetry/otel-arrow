@@ -23,6 +23,7 @@ import (
 	colarspb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
 	"github.com/f5/otel-arrow-adapter/pkg/otel"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/record_message"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
@@ -40,14 +41,14 @@ type (
 	}
 )
 
-func NewRelatedData() *RelatedData {
+func NewRelatedData(conf *arrow.Config) *RelatedData {
 	return &RelatedData{
 		ResAttrMapStore:       otlp.NewAttributes16Store(),
 		ScopeAttrMapStore:     otlp.NewAttributes16Store(),
 		SpanAttrMapStore:      otlp.NewAttributes16Store(),
 		SpanEventAttrMapStore: otlp.NewAttributes32Store(),
 		SpanLinkAttrMapStore:  otlp.NewAttributes32Store(),
-		SpanEventsStore:       NewSpanEventsStore(),
+		SpanEventsStore:       NewSpanEventsStore(conf.Event),
 		SpanLinksStore:        NewSpanLinksStore(),
 	}
 }
@@ -57,18 +58,21 @@ func (r *RelatedData) SpanIDFromDelta(delta uint16) uint16 {
 	return r.SpanID
 }
 
-func RelatedDataFrom(records []*record_message.RecordMessage) (relatedData *RelatedData, tracesRecord *record_message.RecordMessage, err error) {
+func RelatedDataFrom(records []*record_message.RecordMessage, conf *arrow.Config) (relatedData *RelatedData, tracesRecord *record_message.RecordMessage, err error) {
 	var spanEventRecord *record_message.RecordMessage
 	var spanLinkRecord *record_message.RecordMessage
 
-	relatedData = NewRelatedData()
+	relatedData = NewRelatedData(conf)
 
 	// Scan the records to find the traces record and the span event record.
 	// Create the attribute map stores for all the attribute records.
 	for _, record := range records {
 		switch record.PayloadType() {
 		case colarspb.OtlpArrowPayloadType_RESOURCE_ATTRS:
-			err = otlp.Attributes16StoreFrom(record.Record(), relatedData.ResAttrMapStore)
+			err = otlp.Attributes16StoreFrom(
+				record.Record(),
+				relatedData.ResAttrMapStore,
+			)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
@@ -113,14 +117,22 @@ func RelatedDataFrom(records []*record_message.RecordMessage) (relatedData *Rela
 	}
 
 	if spanEventRecord != nil {
-		relatedData.SpanEventsStore, err = SpanEventsStoreFrom(spanEventRecord.Record(), relatedData.SpanEventAttrMapStore)
+		relatedData.SpanEventsStore, err = SpanEventsStoreFrom(
+			spanEventRecord.Record(),
+			relatedData.SpanEventAttrMapStore,
+			conf.Event,
+		)
 		if err != nil {
 			return nil, nil, werror.Wrap(err)
 		}
 	}
 
 	if spanLinkRecord != nil {
-		relatedData.SpanLinksStore, err = SpanLinksStoreFrom(spanLinkRecord.Record(), relatedData.SpanLinkAttrMapStore)
+		relatedData.SpanLinksStore, err = SpanLinksStoreFrom(
+			spanLinkRecord.Record(),
+			relatedData.SpanLinkAttrMapStore,
+			conf.Link,
+		)
 		if err != nil {
 			return nil, nil, werror.Wrap(err)
 		}

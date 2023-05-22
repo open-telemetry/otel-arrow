@@ -63,7 +63,8 @@ func main() {
 	// Compare the performance for each input file
 	for i := range inputFiles {
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
-		profiler := benchmark.NewProfiler([]int{ /*100, 1000,*/ 5000, 10000}, "output/trace_benchmark.log", 2)
+		profiler := benchmark.NewProfiler([]int{500, 5000, 10000}, "output/trace_benchmark.log", 2)
+		//profiler := benchmark.NewProfiler([]int{5000}, "output/trace_benchmark.log", 2)
 		// profiler := benchmark.NewProfiler([]int{10 /*100, 1000, 2000, 5000,*/, 10000}, "output/trace_benchmark.log", 2)
 		//profiler := benchmark.NewProfiler([]int{1000}, "output/trace_benchmark.log", 2)
 		compressionAlgo := benchmark.Zstd()

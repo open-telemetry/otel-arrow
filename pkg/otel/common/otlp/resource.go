@@ -24,11 +24,13 @@ import (
 )
 
 type ResourceIds struct {
-	Id                     int
-	AttrsID                int
+	Resource               int
+	ID                     int
 	DroppedAttributesCount int
+	SchemaUrl              int
 }
 
+// ToDo remove this function once metrics have been converted to the model v1
 func NewResourceIds(resSpansDT *arrow.StructType) (*ResourceIds, error) {
 	resId, resDT, err := arrowutils.StructFieldIDFromStruct(resSpansDT, constants.Resource)
 	if err != nil {
@@ -39,15 +41,35 @@ func NewResourceIds(resSpansDT *arrow.StructType) (*ResourceIds, error) {
 	droppedAttributesCount, _ := arrowutils.FieldIDFromStruct(resDT, constants.DroppedAttributesCount)
 
 	return &ResourceIds{
-		Id:                     resId,
-		AttrsID:                attributeIds,
+		Resource:               resId,
+		ID:                     attributeIds,
 		DroppedAttributesCount: droppedAttributesCount,
 	}, nil
 }
 
+func NewResourceIdsFromSchema(schema *arrow.Schema) (*ResourceIds, error) {
+	resource, resDT, err := arrowutils.StructFieldIDFromSchema(schema, constants.Resource)
+	if err != nil {
+		return nil, werror.Wrap(err)
+	}
+
+	ID, _ := arrowutils.FieldIDFromStruct(resDT, constants.ID)
+	droppedAttributesCount, _ := arrowutils.FieldIDFromStruct(resDT, constants.DroppedAttributesCount)
+	schemaUrl, _ := arrowutils.FieldIDFromStruct(resDT, constants.SchemaUrl)
+
+	return &ResourceIds{
+		Resource:               resource,
+		ID:                     ID,
+		DroppedAttributesCount: droppedAttributesCount,
+		SchemaUrl:              schemaUrl,
+	}, nil
+}
+
+// ToDo remove this function once metrics have been converted to the model v1
+
 // UpdateResourceWith updates a resource with the content of an Arrow array.
 func UpdateResourceWith(r pcommon.Resource, resList *arrowutils.ListOfStructs, row int, resIds *ResourceIds, attrsStore *Attributes16Store) error {
-	_, resArr, err := resList.StructByID(resIds.Id, row)
+	_, resArr, err := resList.StructByID(resIds.Resource, row)
 	if err != nil {
 		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
 	}
@@ -60,7 +82,7 @@ func UpdateResourceWith(r pcommon.Resource, resList *arrowutils.ListOfStructs, r
 	r.SetDroppedAttributesCount(droppedAttributesCount)
 
 	// Read attributes
-	attrsId, err := arrowutils.NullableU16FromStruct(resArr, row, resIds.AttrsID)
+	attrsId, err := arrowutils.NullableU16FromStruct(resArr, row, resIds.ID)
 	if err != nil {
 		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
 	}
@@ -72,4 +94,45 @@ func UpdateResourceWith(r pcommon.Resource, resList *arrowutils.ListOfStructs, r
 	}
 
 	return err
+}
+
+func UpdateResourceFromRecord(r pcommon.Resource, record arrow.Record, row int, resIds *ResourceIds, attrsStore *Attributes16Store) (schemaUrl string, err error) {
+	resArr, err := arrowutils.StructFromRecord(record, resIds.Resource, row)
+	if err != nil {
+		return "", werror.WrapWithContext(err, map[string]interface{}{"row": row})
+	}
+
+	// Read schema url
+	schemaUrl, err = arrowutils.StringFromStruct(resArr, row, resIds.SchemaUrl)
+	if err != nil {
+		return "", werror.WrapWithContext(err, map[string]interface{}{"row": row})
+	}
+
+	// Read dropped attributes count
+	droppedAttributesCount, err := arrowutils.U32FromStruct(resArr, row, resIds.DroppedAttributesCount)
+	if err != nil {
+		return "", werror.WrapWithContext(err, map[string]interface{}{"row": row})
+	}
+	r.SetDroppedAttributesCount(droppedAttributesCount)
+
+	// Read attributes
+	ID, err := arrowutils.NullableU16FromStruct(resArr, row, resIds.ID)
+	if err != nil {
+		return "", werror.WrapWithContext(err, map[string]interface{}{"row": row})
+	}
+	if ID != nil {
+		attrs := attrsStore.AttributesByDeltaID(*ID)
+		if attrs != nil {
+			attrs.CopyTo(r.Attributes())
+		}
+	}
+	return
+}
+
+func ResourceIDFromRecord(record arrow.Record, row int, resIDs *ResourceIds) (uint16, error) {
+	resStruct, err := arrowutils.StructFromRecord(record, resIDs.Resource, row)
+	if err != nil {
+		return 0, err
+	}
+	return arrowutils.U16FromStruct(resStruct, row, resIDs.ID)
 }

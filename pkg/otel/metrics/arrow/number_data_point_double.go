@@ -140,6 +140,10 @@ func (b *DoubleDataPointBuilder) SchemaID() string {
 	return b.builder.SchemaID()
 }
 
+func (b *DoubleDataPointBuilder) Schema() *arrow.Schema {
+	return b.builder.Schema()
+}
+
 func (b *DoubleDataPointBuilder) IsEmpty() bool {
 	return b.accumulator.IsEmpty()
 }

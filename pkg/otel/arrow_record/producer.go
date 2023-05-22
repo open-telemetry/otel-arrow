@@ -114,9 +114,9 @@ func NewProducerWithOptions(options ...config2.Option) *Producer {
 	// Record builders
 	metricsRecordBuilder := builder.NewRecordBuilderExt(cfg.Pool, metricsarrow.MetricsSchema, config.NewDictionary(cfg.LimitIndexSize), stats)
 	metricsRecordBuilder.SetLabel("metrics")
-	logsRecordBuilder := builder.NewRecordBuilderExt(cfg.Pool, logsarrow.Schema, config.NewDictionary(cfg.LimitIndexSize), stats)
+	logsRecordBuilder := builder.NewRecordBuilderExt(cfg.Pool, logsarrow.LogsSchema, config.NewDictionary(cfg.LimitIndexSize), stats)
 	logsRecordBuilder.SetLabel("logs")
-	tracesRecordBuilder := builder.NewRecordBuilderExt(cfg.Pool, tracesarrow.Schema, config.NewDictionary(cfg.LimitIndexSize), stats)
+	tracesRecordBuilder := builder.NewRecordBuilderExt(cfg.Pool, tracesarrow.TracesSchema, config.NewDictionary(cfg.LimitIndexSize), stats)
 	tracesRecordBuilder.SetLabel("traces")
 
 	// Entity builders
@@ -125,12 +125,12 @@ func NewProducerWithOptions(options ...config2.Option) *Producer {
 		panic(err)
 	}
 
-	logsBuidler, err := logsarrow.NewLogsBuilder(logsRecordBuilder, cfg, stats)
+	logsBuidler, err := logsarrow.NewLogsBuilder(logsRecordBuilder, logsarrow.NewConfig(cfg), stats)
 	if err != nil {
 		panic(err)
 	}
 
-	tracesBuilder, err := tracesarrow.NewTracesBuilder(tracesRecordBuilder, cfg, stats)
+	tracesBuilder, err := tracesarrow.NewTracesBuilder(tracesRecordBuilder, tracesarrow.NewConfig(cfg), stats)
 	if err != nil {
 		panic(err)
 	}

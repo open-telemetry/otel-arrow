@@ -59,7 +59,7 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, tracesarrow.Schema, DefaultDictConfig, ProducerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, tracesarrow.TracesSchema, DefaultDictConfig, ProducerStats)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -68,7 +68,7 @@ func TestConversionFromSyntheticData(t *testing.T) {
 	conf := config.DefaultConfig()
 
 	for {
-		tb, err := tracesarrow.NewTracesBuilder(rBuilder, conf, stats.NewProducerStats())
+		tb, err := tracesarrow.NewTracesBuilder(rBuilder, tracesarrow.NewConfig(conf), stats.NewProducerStats())
 		require.NoError(t, err)
 		defer tb.Release()
 
@@ -84,7 +84,7 @@ func TestConversionFromSyntheticData(t *testing.T) {
 		require.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
 
-	relatedData, _, err := tracesotlp.RelatedDataFrom(relatedRecords)
+	relatedData, _, err := tracesotlp.RelatedDataFrom(relatedRecords, tracesarrow.NewConfig(conf))
 	require.NoError(t, err)
 
 	// Convert the Arrow record back to OTLP.
@@ -123,7 +123,7 @@ func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportReques
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, tracesarrow.Schema, DefaultDictConfig, ProducerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, tracesarrow.TracesSchema, DefaultDictConfig, ProducerStats)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -132,7 +132,7 @@ func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportReques
 	cfg := config.DefaultConfig()
 
 	for {
-		tb, err := tracesarrow.NewTracesBuilder(rBuilder, cfg, stats.NewProducerStats())
+		tb, err := tracesarrow.NewTracesBuilder(rBuilder, tracesarrow.NewConfig(cfg), stats.NewProducerStats())
 		require.NoError(t, err)
 		err = tb.Append(expectedRequest.Traces())
 		require.NoError(t, err)
@@ -145,7 +145,7 @@ func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportReques
 		require.Error(t, acommon.ErrSchemaNotUpToDate)
 	}
 
-	relatedData, _, err := tracesotlp.RelatedDataFrom(relatedRecords)
+	relatedData, _, err := tracesotlp.RelatedDataFrom(relatedRecords, tracesarrow.NewConfig(cfg))
 	require.NoError(t, err)
 
 	// Convert the Arrow records back to OTLP.

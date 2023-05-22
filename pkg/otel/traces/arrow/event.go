@@ -33,7 +33,6 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
@@ -41,9 +40,9 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
-// EventSchema is the Arrow schema representing events.
-// Related record.
 var (
+	// EventSchema is the Arrow schema representing events.
+	// Related record.
 	EventSchema = arrow.NewSchema([]arrow.Field{
 		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional, schema.DeltaEncoding)},
 		{Name: constants.ParentID, Type: arrow.PrimitiveTypes.Uint16},
@@ -68,6 +67,8 @@ type (
 
 		accumulator *EventAccumulator
 		attrsAccu   *acommon.Attributes32Accumulator
+
+		config *EventConfig
 	}
 
 	// Event is an internal representation of an event used by the
@@ -77,7 +78,6 @@ type (
 		TimeUnixNano           pcommon.Timestamp
 		Name                   string
 		Attributes             pcommon.Map
-		SharedAttributes       *common.SharedAttributes
 		DroppedAttributesCount uint32
 	}
 
@@ -86,14 +86,30 @@ type (
 	EventAccumulator struct {
 		groupCount uint16
 		events     []Event
+		sorter     EventSorter
 	}
+
+	EventParentIdEncoder struct {
+		prevName     string
+		prevParentID uint16
+		encoderType  int
+	}
+
+	EventSorter interface {
+		Sort(events []Event)
+	}
+
+	EventsByNothing          struct{}
+	EventsByNameTimeUnixNano struct{}
+	EventsByNameParentId     struct{}
 )
 
-func NewEventBuilder(rBuilder *builder.RecordBuilderExt) *EventBuilder {
+func NewEventBuilder(rBuilder *builder.RecordBuilderExt, conf *EventConfig) *EventBuilder {
 	b := &EventBuilder{
 		released:    false,
 		builder:     rBuilder,
-		accumulator: NewEventAccumulator(),
+		accumulator: NewEventAccumulator(conf.Sorter),
+		config:      conf,
 	}
 
 	b.init()
@@ -118,6 +134,10 @@ func (b *EventBuilder) SetAttributesAccumulator(accu *acommon.Attributes32Accumu
 
 func (b *EventBuilder) SchemaID() string {
 	return b.builder.SchemaID()
+}
+
+func (b *EventBuilder) Schema() *arrow.Schema {
+	return b.builder.Schema()
 }
 
 func (b *EventBuilder) IsEmpty() bool {
@@ -154,27 +174,49 @@ func (b *EventBuilder) Build() (record arrow.Record, err error) {
 			break
 		}
 	}
+
+	// ToDo Keep this code for debugging purposes.
+	//if err == nil && eventcount == 0 {
+	//	println(acommon.PayloadTypes.Event.PayloadType().String())
+	//	arrow2.PrintRecord(record)
+	//	eventcount = eventcount + 1
+	//}
+
 	return record, werror.Wrap(err)
 }
+
+// ToDo Keep this code for debugging purposes.
+//var eventcount = 0
 
 func (b *EventBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (record arrow.Record, err error) {
 	if b.released {
 		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
-	b.accumulator.Sort()
+	b.accumulator.sorter.Sort(b.accumulator.events)
 
-	for ID, event := range b.accumulator.events {
-		b.ib.Append(uint32(ID))
-		b.pib.Append(event.ParentID)
+	parentIdEncoder := NewEventParentIdEncoder(b.config.ParentIdEncoding)
+
+	eventID := uint32(0)
+
+	for _, event := range b.accumulator.events {
+		if event.Attributes.Len() == 0 {
+			b.ib.AppendNull()
+		} else {
+			b.ib.Append(eventID)
+
+			// Attributes
+			err = attrsAccu.Append(eventID, event.Attributes)
+			if err != nil {
+				return
+			}
+
+			eventID++
+		}
+
+		b.pib.Append(parentIdEncoder.Encode(event.ParentID, event.Name))
 		b.tunb.Append(arrow.Timestamp(event.TimeUnixNano.AsTime().UnixNano()))
 		b.nb.AppendNonEmpty(event.Name)
-
-		// Attributes
-		err = attrsAccu.AppendUniqueAttributesWithID(uint32(ID), event.Attributes, event.SharedAttributes, nil)
-		if err != nil {
-			return
-		}
 
 		b.dacb.AppendNonZero(event.DroppedAttributesCount)
 	}
@@ -204,10 +246,11 @@ func (b *EventBuilder) Release() {
 }
 
 // NewEventAccumulator creates a new EventAccumulator.
-func NewEventAccumulator() *EventAccumulator {
+func NewEventAccumulator(sorter EventSorter) *EventAccumulator {
 	return &EventAccumulator{
 		groupCount: 0,
 		events:     make([]Event, 0),
+		sorter:     sorter,
 	}
 }
 
@@ -216,7 +259,7 @@ func (a *EventAccumulator) IsEmpty() bool {
 }
 
 // Append appends a slice of events to the accumulator.
-func (a *EventAccumulator) Append(spanID uint16, events ptrace.SpanEventSlice, sharedAttrs *common.SharedAttributes) error {
+func (a *EventAccumulator) Append(spanID uint16, events ptrace.SpanEventSlice) error {
 	if a.groupCount == math.MaxUint16 {
 		panic("The maximum number of group of events has been reached (max is uint16).")
 	}
@@ -232,7 +275,6 @@ func (a *EventAccumulator) Append(spanID uint16, events ptrace.SpanEventSlice, s
 			TimeUnixNano:           evt.Timestamp(),
 			Name:                   evt.Name(),
 			Attributes:             evt.Attributes(),
-			SharedAttributes:       sharedAttrs,
 			DroppedAttributesCount: evt.DroppedAttributesCount(),
 		})
 	}
@@ -242,17 +284,82 @@ func (a *EventAccumulator) Append(spanID uint16, events ptrace.SpanEventSlice, s
 	return nil
 }
 
-func (a *EventAccumulator) Sort() {
-	sort.Slice(a.events, func(i, j int) bool {
-		if a.events[i].Name == a.events[j].Name {
-			return a.events[i].TimeUnixNano < a.events[j].TimeUnixNano
+func (a *EventAccumulator) Reset() {
+	a.groupCount = 0
+	a.events = a.events[:0]
+}
+
+func NewEventParentIdEncoder(encoderType int) *EventParentIdEncoder {
+	return &EventParentIdEncoder{
+		prevName:     "",
+		prevParentID: 0,
+		encoderType:  encoderType,
+	}
+}
+
+func (e *EventParentIdEncoder) Encode(parentID uint16, name string) uint16 {
+	switch e.encoderType {
+	case acommon.ParentIdNoEncoding:
+		return parentID
+	case acommon.ParentIdDeltaEncoding:
+		delta := parentID - e.prevParentID
+		e.prevParentID = parentID
+		return delta
+	case acommon.ParentIdDeltaGroupEncoding:
+		if e.prevName == name {
+			delta := parentID - e.prevParentID
+			e.prevParentID = parentID
+			return delta
 		} else {
-			return a.events[i].Name < a.events[j].Name
+			e.prevName = name
+			e.prevParentID = parentID
+			return parentID
+		}
+	default:
+		panic("Unknown parent ID encoding type.")
+	}
+}
+
+// No sorting
+// ==========
+
+func UnsortedEvents() *EventsByNothing {
+	return &EventsByNothing{}
+}
+
+func (s *EventsByNothing) Sort(_ []Event) {
+}
+
+// Sorts events by name and time.
+// ==============================
+
+func SortEventsByNameTimeUnixNano() *EventsByNameTimeUnixNano {
+	return &EventsByNameTimeUnixNano{}
+}
+
+func (s *EventsByNameTimeUnixNano) Sort(events []Event) {
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].Name == events[j].Name {
+			return events[i].TimeUnixNano < events[j].TimeUnixNano
+		} else {
+			return events[i].Name < events[j].Name
 		}
 	})
 }
 
-func (a *EventAccumulator) Reset() {
-	a.groupCount = 0
-	a.events = a.events[:0]
+// Sorts events by name and parentID.
+// ==================================
+
+func SortEventsByNameParentId() *EventsByNameParentId {
+	return &EventsByNameParentId{}
+}
+
+func (s *EventsByNameParentId) Sort(events []Event) {
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].Name == events[j].Name {
+			return events[i].ParentID < events[j].ParentID
+		} else {
+			return events[i].Name < events[j].Name
+		}
+	})
 }

@@ -18,125 +18,123 @@
 package arrow
 
 import (
+	"bytes"
 	"sort"
-	"strings"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 
-	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 )
 
-type LogsOptimizer struct {
-	sort bool
-}
-
-type LogsOptimized struct {
-	ResourceLogsIdx map[string]int // resource logs id -> resource logs group
-	ResourceLogs    []*ResourceLogGroup
-}
-
-type ResourceLogGroup struct {
-	Resource          *pcommon.Resource
-	ResourceSchemaUrl string
-	ScopeLogsIdx      map[string]int // scope logs id -> scope logs group
-	ScopeLogs         []*ScopeLogGroup
-}
-
-type ScopeLogGroup struct {
-	Scope          *pcommon.InstrumentationScope
-	ScopeSchemaUrl string
-
-	Logs []*plog.LogRecord
-}
-
-func NewLogsOptimizer(cfg ...func(*carrow.Options)) *LogsOptimizer {
-	options := carrow.Options{
-		Sort:  false,
-		Stats: false,
-	}
-	for _, c := range cfg {
-		c(&options)
+type (
+	LogsOptimizer struct {
+		sorter LogSorter
 	}
 
+	LogsOptimized struct {
+		Logs []*FlattenedLog
+	}
+
+	FlattenedLog struct {
+		// Resource log section.
+		ResourceLogsID    string
+		Resource          *pcommon.Resource
+		ResourceSchemaUrl string
+
+		// Scope log section.
+		ScopeLogsID    string
+		Scope          *pcommon.InstrumentationScope
+		ScopeSchemaUrl string
+
+		// Log section.
+		Log *plog.LogRecord
+	}
+
+	LogSorter interface {
+		Sort(logs []*FlattenedLog)
+	}
+
+	LogsByNothing                          struct{}
+	LogsByResourceLogsIDScopeLogsIDTraceID struct{}
+)
+
+func NewLogsOptimizer(sorter LogSorter) *LogsOptimizer {
 	return &LogsOptimizer{
-		sort: options.Sort,
+		sorter: sorter,
 	}
 }
 
 func (t *LogsOptimizer) Optimize(logs plog.Logs) *LogsOptimized {
 	logsOptimized := &LogsOptimized{
-		ResourceLogsIdx: make(map[string]int),
-		ResourceLogs:    make([]*ResourceLogGroup, 0),
+		Logs: make([]*FlattenedLog, 0),
 	}
 
 	resLogsSlice := logs.ResourceLogs()
 	for i := 0; i < resLogsSlice.Len(); i++ {
 		resLogs := resLogsSlice.At(i)
-		logsOptimized.AddResourceLogs(&resLogs)
-	}
+		resource := resLogs.Resource()
+		resourceSchemaUrl := resLogs.SchemaUrl()
+		resSpanID := otlp.ResourceID(resource, resourceSchemaUrl)
 
-	if t.sort {
-		for _, resLogGroup := range logsOptimized.ResourceLogs {
-			resLogGroup.Sort()
+		scopeLogs := resLogs.ScopeLogs()
+		for j := 0; j < scopeLogs.Len(); j++ {
+			scopeSpan := scopeLogs.At(j)
+			scope := scopeSpan.Scope()
+			scopeSchemaUrl := scopeSpan.SchemaUrl()
+			scopeSpanID := otlp.ScopeID(scope, scopeSchemaUrl)
+
+			logs := scopeSpan.LogRecords()
+			for k := 0; k < logs.Len(); k++ {
+				log := logs.At(k)
+				logsOptimized.Logs = append(logsOptimized.Logs, &FlattenedLog{
+					ResourceLogsID:    resSpanID,
+					Resource:          &resource,
+					ResourceSchemaUrl: resourceSchemaUrl,
+					ScopeLogsID:       scopeSpanID,
+					Scope:             &scope,
+					ScopeSchemaUrl:    scopeSchemaUrl,
+					Log:               &log,
+				})
+			}
 		}
 	}
+
+	t.sorter.Sort(logsOptimized.Logs)
 
 	return logsOptimized
 }
 
-func (t *LogsOptimized) AddResourceLogs(resLogs *plog.ResourceLogs) {
-	resLogsID := otlp.ResourceID(resLogs.Resource(), resLogs.SchemaUrl())
-	resLogGroupIdx, found := t.ResourceLogsIdx[resLogsID]
-	if !found {
-		res := resLogs.Resource()
-		resLogGroup := &ResourceLogGroup{
-			Resource:          &res,
-			ResourceSchemaUrl: resLogs.SchemaUrl(),
-			ScopeLogsIdx:      make(map[string]int),
-			ScopeLogs:         make([]*ScopeLogGroup, 0),
-		}
-		t.ResourceLogs = append(t.ResourceLogs, resLogGroup)
-		resLogGroupIdx = len(t.ResourceLogs) - 1
-		t.ResourceLogsIdx[resLogsID] = resLogGroupIdx
-	}
-	scopeLogsSlice := resLogs.ScopeLogs()
-	for i := 0; i < scopeLogsSlice.Len(); i++ {
-		scopeLogs := scopeLogsSlice.At(i)
-		t.ResourceLogs[resLogGroupIdx].AddScopeLogs(&scopeLogs)
-	}
+// No sorting
+// ==========
+
+func UnsortedLogs() *LogsByNothing {
+	return &LogsByNothing{}
 }
 
-func (r *ResourceLogGroup) AddScopeLogs(scopeLogs *plog.ScopeLogs) {
-	scopeLogID := otlp.ScopeID(scopeLogs.Scope(), scopeLogs.SchemaUrl())
-	scopeLogGroupIdx, found := r.ScopeLogsIdx[scopeLogID]
-	if !found {
-		scope := scopeLogs.Scope()
-		scopeLogGroup := &ScopeLogGroup{
-			Scope:          &scope,
-			ScopeSchemaUrl: scopeLogs.SchemaUrl(),
-			Logs:           make([]*plog.LogRecord, 0),
-		}
-		r.ScopeLogs = append(r.ScopeLogs, scopeLogGroup)
-		scopeLogGroupIdx = len(r.ScopeLogs) - 1
-		r.ScopeLogsIdx[scopeLogID] = scopeLogGroupIdx
-	}
-	logsSlice := scopeLogs.LogRecords()
-	for i := 0; i < logsSlice.Len(); i++ {
-		log := logsSlice.At(i)
-		sl := r.ScopeLogs[scopeLogGroupIdx]
-		sl.Logs = append(sl.Logs, &log)
-	}
+func (s *LogsByNothing) Sort(_ []*FlattenedLog) {
 }
 
-func (r *ResourceLogGroup) Sort() {
-	for _, scopeLogGroup := range r.ScopeLogs {
-		sort.Slice(scopeLogGroup.Logs, func(i, j int) bool {
-			return strings.Compare(
-				scopeLogGroup.Logs[i].TraceID().String(),
-				scopeLogGroup.Logs[j].TraceID().String(),
-			) == -1
-		})
-	}
+// Sort logs by resource logs ID, scope logs ID, and trace ID.
+func SortLogsByResourceLogsIDScopeLogsIDTraceID() *LogsByResourceLogsIDScopeLogsIDTraceID {
+	return &LogsByResourceLogsIDScopeLogsIDTraceID{}
+}
+
+func (s *LogsByResourceLogsIDScopeLogsIDTraceID) Sort(logs []*FlattenedLog) {
+	sort.Slice(logs, func(i, j int) bool {
+		logI := logs[i]
+		logJ := logs[j]
+
+		if logI.ResourceLogsID == logJ.ResourceLogsID {
+			if logI.ScopeLogsID == logJ.ScopeLogsID {
+				traceIdI := logI.Log.TraceID()
+				traceIdJ := logJ.Log.TraceID()
+				return bytes.Compare(traceIdI[:], traceIdJ[:]) == -1
+			} else {
+				return logI.ScopeLogsID < logJ.ScopeLogsID
+			}
+		} else {
+			return logI.ResourceLogsID < logJ.ResourceLogsID
+		}
+	})
 }

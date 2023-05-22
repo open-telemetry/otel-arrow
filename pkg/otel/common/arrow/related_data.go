@@ -39,6 +39,7 @@ type (
 		IsEmpty() bool
 		Build() (arrow.Record, error)
 		SchemaID() string
+		Schema() *arrow.Schema
 		PayloadType() *PayloadType
 		Reset()
 		Release()
@@ -52,6 +53,8 @@ type (
 
 		builders    []RelatedRecordBuilder
 		builderExts []*builder.RecordBuilderExt
+
+		schemas []SchemaWithPayload
 	}
 
 	// PayloadType wraps the protobuf payload type generated from the protobuf
@@ -63,6 +66,10 @@ type (
 
 	// All the payload types currently supported by the adapter.
 	payloadTypes struct {
+		Metrics *PayloadType
+		Logs    *PayloadType
+		Spans   *PayloadType
+
 		ResourceAttrs     *PayloadType
 		ScopeAttrs        *PayloadType
 		Metric            *PayloadType
@@ -87,6 +94,12 @@ type (
 		Link              *PayloadType
 		LinkAttrs         *PayloadType
 	}
+
+	SchemaWithPayload struct {
+		Schema            *arrow.Schema
+		PayloadType       *PayloadType
+		ParentPayloadType *PayloadType
+	}
 )
 
 // All the payload types currently supported by the adapter and their specific
@@ -94,6 +107,18 @@ type (
 
 var (
 	PayloadTypes = payloadTypes{
+		Metrics: &PayloadType{
+			prefix:      "metrics",
+			payloadType: colarspb.OtlpArrowPayloadType_METRICS,
+		},
+		Logs: &PayloadType{
+			prefix:      "logs",
+			payloadType: colarspb.OtlpArrowPayloadType_LOGS,
+		},
+		Spans: &PayloadType{
+			prefix:      "spans",
+			payloadType: colarspb.OtlpArrowPayloadType_SPANS,
+		},
 		ResourceAttrs: &PayloadType{
 			prefix:      "resource-attrs",
 			payloadType: colarspb.OtlpArrowPayloadType_RESOURCE_ATTRS,
@@ -194,12 +219,17 @@ func NewRelatedRecordsManager(cfg *cfg.Config, stats *stats.ProducerStats) *Rela
 	}
 }
 
-func (m *RelatedRecordsManager) Declare(payloadType *PayloadType, schema *arrow.Schema, rrBuilder func(b *builder.RecordBuilderExt) RelatedRecordBuilder) RelatedRecordBuilder {
+func (m *RelatedRecordsManager) Declare(payloadType *PayloadType, parentPayloadType *PayloadType, schema *arrow.Schema, rrBuilder func(b *builder.RecordBuilderExt) RelatedRecordBuilder) RelatedRecordBuilder {
 	builderExt := builder.NewRecordBuilderExt(m.cfg.Pool, schema, config.NewDictionary(m.cfg.LimitIndexSize), m.stats)
 	builderExt.SetLabel(payloadType.SchemaPrefix())
 	rBuilder := rrBuilder(builderExt)
 	m.builders = append(m.builders, rBuilder)
 	m.builderExts = append(m.builderExts, builderExt)
+	m.schemas = append(m.schemas, SchemaWithPayload{
+		Schema:            schema,
+		PayloadType:       payloadType,
+		ParentPayloadType: parentPayloadType,
+	})
 	return rBuilder
 }
 
@@ -221,6 +251,10 @@ func (m *RelatedRecordsManager) BuildRecordMessages() ([]*record_message.RecordM
 		recordMessages = append(recordMessages, relatedDataMessage)
 	}
 	return recordMessages, nil
+}
+
+func (m *RelatedRecordsManager) Schemas() []SchemaWithPayload {
+	return m.schemas
 }
 
 func (m *RelatedRecordsManager) Reset() {

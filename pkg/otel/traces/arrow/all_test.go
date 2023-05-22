@@ -26,14 +26,12 @@ import (
 	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	v1 "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
 	"github.com/f5/otel-arrow-adapter/pkg/config"
 	jsonassert "github.com/f5/otel-arrow-adapter/pkg/otel/assert"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
-	arrow2 "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
@@ -46,12 +44,6 @@ import (
 var (
 	DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
 	producerStats     = stats.NewProducerStats()
-	emptySharedAttrs  = &common.SharedAttributes{Attributes: make(map[string]pcommon.Value)}
-	emptySharedData   = &SharedData{
-		sharedAttributes:      emptySharedAttrs,
-		sharedEventAttributes: emptySharedAttrs,
-		sharedLinkAttributes:  emptySharedAttrs,
-	}
 )
 
 func TestStatus(t *testing.T) {
@@ -105,7 +97,7 @@ func TestEvent(t *testing.T) {
 
 	eventRBuilder := builder.NewRecordBuilderExt(pool, EventSchema, DefaultDictConfig, producerStats)
 	defer eventRBuilder.Release()
-	attrsRBuilder := builder.NewRecordBuilderExt(pool, arrow2.AttrsSchema32, DefaultDictConfig, producerStats)
+	attrsRBuilder := builder.NewRecordBuilderExt(pool, carrow.AttrsSchema32, DefaultDictConfig, producerStats)
 	defer attrsRBuilder.Release()
 
 	var eventsRecord, attrsRecord arrow.Record
@@ -118,15 +110,18 @@ func TestEvent(t *testing.T) {
 			attrsRecord.Release()
 		}
 
-		ab := arrow2.NewAttrs32Builder(attrsRBuilder, arrow2.PayloadTypes.EventAttrs)
-		eb := NewEventBuilder(eventRBuilder)
+		ab := carrow.NewAttrs32Builder(attrsRBuilder, carrow.PayloadTypes.EventAttrs, carrow.SortAttrs32ByParentIdKeyValue())
+		eb := NewEventBuilder(eventRBuilder, &EventConfig{
+			Sorter:           SortEventsByNameTimeUnixNano(),
+			ParentIdEncoding: carrow.ParentIdDeltaGroupEncoding,
+		})
 		eb.SetAttributesAccumulator(ab.Accumulator())
 
 		events := ptrace.NewSpanEventSlice()
 		Event1().CopyTo(events.AppendEmpty())
 		Event2().CopyTo(events.AppendEmpty())
 
-		err := eb.Accumulator().Append(0, events, emptySharedAttrs)
+		err := eb.Accumulator().Append(0, events)
 		require.NoError(t, err)
 
 		eventsRecord, err = eb.Build()
@@ -154,18 +149,18 @@ func TestEvent(t *testing.T) {
 	}
 	attrsRecord.Release()
 
-	expectedEvents := `[{"id":0,"dropped_attributes_count":null,"parent_id":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"id":1,"dropped_attributes_count":1,"parent_id":0,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}
+	expectedEvents := `[{"dropped_attributes_count":null,"id":0,"name":"event1","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"dropped_attributes_count":1,"id":1,"name":"event2","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000002"}
 ]`
 
-	expectedAttrs := `[{"parent_id":0,"key":"bool","value":[3,true]}
-	,{"parent_id":0,"key":"double","value":[2,1]}
-	,{"parent_id":0,"key":"int","value":[1,1]}
-	,{"parent_id":0,"key":"str","value":[0,"string1"]}
-	,{"parent_id":1,"key":"double","value":[2,2]}
-	,{"parent_id":1,"key":"int","value":[1,2]}
-	,{"parent_id":1,"key":"str","value":[0,"string2"]}
-	]`
+	expectedAttrs := `[{"bool":null,"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
+,{"bool":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
+,{"bool":null,"double":null,"int":1,"key":"int","parent_id":0,"str":null,"type":2}
+,{"bool":null,"double":null,"int":2,"key":"int","parent_id":1,"str":null,"type":2}
+,{"bool":null,"double":1,"int":null,"key":"double","parent_id":0,"str":null,"type":3}
+,{"bool":null,"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
+,{"bool":true,"double":null,"int":null,"key":"bool","parent_id":0,"str":null,"type":4}
+]`
 
 	require.JSONEq(t, expectedEvents, string(actualEvents))
 	require.JSONEq(t, expectedAttrs, string(actualAttrs))
@@ -179,10 +174,11 @@ func TestLink(t *testing.T) {
 
 	linkRBuilder := builder.NewRecordBuilderExt(pool, LinkSchema, DefaultDictConfig, producerStats)
 	defer linkRBuilder.Release()
-	attrsRBuilder := builder.NewRecordBuilderExt(pool, arrow2.AttrsSchema32, DefaultDictConfig, producerStats)
+	attrsRBuilder := builder.NewRecordBuilderExt(pool, carrow.AttrsSchema32, DefaultDictConfig, producerStats)
 	defer attrsRBuilder.Release()
 
 	var linksRecord, attrsRecord arrow.Record
+	tracesConf := DefaultConfig()
 
 	for {
 		if linksRecord != nil {
@@ -192,15 +188,15 @@ func TestLink(t *testing.T) {
 			attrsRecord.Release()
 		}
 
-		ab := arrow2.NewAttrs32Builder(attrsRBuilder, arrow2.PayloadTypes.LinkAttrs)
-		lb := NewLinkBuilder(linkRBuilder)
+		ab := carrow.NewAttrs32Builder(attrsRBuilder, carrow.PayloadTypes.LinkAttrs, carrow.SortAttrs32ByParentIdKeyValue())
+		lb := NewLinkBuilder(linkRBuilder, tracesConf.Link)
 		lb.SetAttributesAccumulator(ab.Accumulator())
 
 		links := ptrace.NewSpanLinkSlice()
 		Link1().CopyTo(links.AppendEmpty())
 		Link2().CopyTo(links.AppendEmpty())
 
-		err := lb.Accumulator().Append(0, links, emptySharedAttrs)
+		err := lb.Accumulator().Append(0, links)
 		require.NoError(t, err)
 
 		linksRecord, err = lb.Build()
@@ -228,520 +224,21 @@ func TestLink(t *testing.T) {
 	}
 	attrsRecord.Release()
 
-	expectedLinks := `[{"id":0,"dropped_attributes_count":null,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
-,{"id":1,"dropped_attributes_count":1,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+	expectedLinks := `[{"dropped_attributes_count":null,"id":0,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
+,{"dropped_attributes_count":1,"id":1,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
 ]`
-	expectedAttrs := `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"bool","value":[3,false]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
+	expectedAttrs := `[{"bool":null,"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
+,{"bool":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
+,{"bool":null,"double":null,"int":1,"key":"int","parent_id":0,"str":null,"type":2}
+,{"bool":null,"double":null,"int":2,"key":"int","parent_id":1,"str":null,"type":2}
+,{"bool":null,"double":1,"int":null,"key":"double","parent_id":0,"str":null,"type":3}
+,{"bool":null,"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
+,{"bool":true,"double":null,"int":null,"key":"bool","parent_id":0,"str":null,"type":4}
+,{"bool":false,"double":null,"int":null,"key":"bool","parent_id":1,"str":null,"type":4}
 ]`
 
 	require.JSONEq(t, expectedLinks, string(linksJson))
 	require.JSONEq(t, expectedAttrs, string(attrsJson))
-}
-
-func TestSpan(t *testing.T) {
-	t.Parallel()
-
-	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
-	defer pool.AssertSize(t, 0)
-
-	schema := arrow.NewSchema([]arrow.Field{
-		{Name: constants.Spans, Type: SpanDT, Metadata: acommon.Metadata(acommon.Optional)},
-	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, producerStats)
-	defer rBuilder.Release()
-
-	var record arrow.Record
-	var relatedRecords []*record_message.RecordMessage
-	relatedData, err := NewRelatedData(config.DefaultConfig(), stats.NewProducerStats())
-	require.NoError(t, err)
-
-	for {
-		relatedData.Reset()
-		if relatedRecords != nil {
-			for _, r := range relatedRecords {
-				r.Record().Release()
-			}
-		}
-
-		sb := SpanBuilderFrom(rBuilder.StructBuilder(constants.Spans))
-
-		span := Span1()
-		err = sb.Append(&span, emptySharedData, relatedData)
-		require.NoError(t, err)
-		span = Span2()
-		err = sb.Append(&span, emptySharedData, relatedData)
-		require.NoError(t, err)
-
-		record, err = rBuilder.NewRecord()
-		if err != nil {
-			assert.Error(t, acommon.ErrSchemaNotUpToDate)
-			continue
-		}
-
-		relatedRecords, err = relatedData.BuildRecordMessages()
-		if err == nil {
-			break
-		}
-		assert.Error(t, acommon.ErrSchemaNotUpToDate)
-	}
-
-	actual, err := record.MarshalJSON()
-	require.NoError(t, err)
-
-	record.Release()
-
-	expected := `[{"spans":{"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"duration_time_unix_nano":"1ms","id":0,"kind":3,"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}}
-,{"spans":{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}}
-]`
-
-	require.JSONEq(t, expected, string(actual))
-
-	for _, relatedRecord := range relatedRecords {
-		switch relatedRecord.PayloadType() {
-		case v1.OtlpArrowPayloadType_SPAN_ATTRS:
-			expected = `[{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-]`
-		case v1.OtlpArrowPayloadType_SPAN_EVENTS:
-			expected = `[{"dropped_attributes_count":null,"id":0,"name":"event1","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":1,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"dropped_attributes_count":1,"id":1,"name":"event2","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000002"}
-]`
-		case v1.OtlpArrowPayloadType_SPAN_EVENT_ATTRS:
-			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"bool","value":[3,true]}
-,{"parent_id":1,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"str","value":[0,"string1"]}
-,{"parent_id":2,"key":"double","value":[2,2]}
-,{"parent_id":2,"key":"int","value":[1,2]}
-,{"parent_id":2,"key":"str","value":[0,"string2"]}
-]`
-
-		case v1.OtlpArrowPayloadType_SPAN_LINKS:
-			expected = `[{"id":0,"dropped_attributes_count":null,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
-,{"id":1,"dropped_attributes_count":1,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"id":1,"dropped_attributes_count":1,"parent_id":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-]`
-
-		case v1.OtlpArrowPayloadType_SPAN_LINK_ATTRS:
-			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"bool","value":[3,false]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-,{"parent_id":2,"key":"bool","value":[3,false]}
-,{"parent_id":2,"key":"double","value":[2,2]}
-,{"parent_id":2,"key":"int","value":[1,2]}
-,{"parent_id":2,"key":"str","value":[0,"string2"]}
-]`
-
-		default:
-			panic("unexpected payload type")
-		}
-
-		actual, err := relatedRecord.Record().MarshalJSON()
-		require.NoError(t, err)
-		relatedRecord.Record().Release()
-
-		require.JSONEq(t, expected, string(actual))
-
-		relatedRecord.Record().Release()
-	}
-}
-
-func TestScopeSpans(t *testing.T) {
-	t.Parallel()
-
-	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
-	defer pool.AssertSize(t, 0)
-
-	schema := arrow.NewSchema([]arrow.Field{
-		{Name: constants.ScopeSpans, Type: ScopeSpansDT, Metadata: acommon.Metadata(acommon.Optional)},
-	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, producerStats)
-	defer rBuilder.Release()
-
-	var record arrow.Record
-	var relatedRecords []*record_message.RecordMessage
-	relatedData, err := NewRelatedData(config.DefaultConfig(), stats.NewProducerStats())
-	require.NoError(t, err)
-
-	for {
-		relatedData.Reset()
-		if relatedRecords != nil {
-			for _, r := range relatedRecords {
-				r.Record().Release()
-			}
-		}
-
-		ssb := ScopeSpansBuilderFrom(rBuilder.StructBuilder(constants.ScopeSpans))
-
-		err = ssb.Append(ToScopeSpanGroup(ScopeSpans1()), relatedData)
-		require.NoError(t, err)
-		err = ssb.Append(ToScopeSpanGroup(ScopeSpans2()), relatedData)
-		require.NoError(t, err)
-
-		record, err = rBuilder.NewRecord()
-		if err != nil {
-			assert.Error(t, acommon.ErrSchemaNotUpToDate)
-			continue
-		}
-
-		relatedRecords, err = relatedData.BuildRecordMessages()
-		if err == nil {
-			break
-		}
-		assert.Error(t, acommon.ErrSchemaNotUpToDate)
-	}
-
-	actual, err := record.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	record.Release()
-
-	expected := `[{"scope_spans":{"schema_url":"schema1","scope":{"id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"},"spans":[{"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"duration_time_unix_nano":"1ms","id":0,"kind":3,"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}}
-,{"scope_spans":{"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}}
-]`
-
-	jsonassert.JSONCanonicalEq(t, expected, actual)
-
-	for _, relatedRecord := range relatedRecords {
-		switch relatedRecord.PayloadType() {
-		case v1.OtlpArrowPayloadType_SCOPE_ATTRS:
-			expected = `[{"key":"bool","parent_id":0,"value":[3,true]}
-,{"key":"bytes","parent_id":0,"value":[4,"Ynl0ZXMx"]}
-,{"key":"bytes","parent_id":1,"value":[4,"Ynl0ZXMy"]}
-,{"key":"double","parent_id":0,"value":[2,1]}
-,{"key":"double","parent_id":1,"value":[2,2]}
-,{"key":"int","parent_id":0,"value":[1,1]}
-,{"key":"int","parent_id":1,"value":[1,2]}
-,{"key":"str","parent_id":0,"value":[0,"string1"]}
-,{"key":"str","parent_id":1,"value":[0,"string2"]}
-]`
-
-		case v1.OtlpArrowPayloadType_SPAN_ATTRS:
-			expected = `[{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":2,"key":"double","value":[2,2]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":2,"key":"int","value":[1,2]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-,{"parent_id":2,"key":"str","value":[0,"string2"]}
-]`
-		case v1.OtlpArrowPayloadType_SPAN_EVENTS:
-			expected = `[{"dropped_attributes_count":null,"id":0,"name":"event1","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":1,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":2,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"dropped_attributes_count":1,"id":1,"name":"event2","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000002"}
-]`
-		case v1.OtlpArrowPayloadType_SPAN_EVENT_ATTRS:
-			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"bool","value":[3,true]}
-,{"parent_id":1,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"str","value":[0,"string1"]}
-,{"parent_id":2,"key":"bool","value":[3,true]}
-,{"parent_id":2,"key":"double","value":[2,1]}
-,{"parent_id":2,"key":"int","value":[1,1]}
-,{"parent_id":2,"key":"str","value":[0,"string1"]}
-,{"parent_id":3,"key":"double","value":[2,2]}
-,{"parent_id":3,"key":"int","value":[1,2]}
-,{"parent_id":3,"key":"str","value":[0,"string2"]}
-]`
-
-		case v1.OtlpArrowPayloadType_SPAN_LINKS:
-			expected = `[{"id":0,"dropped_attributes_count":null,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
-,{"id":1,"dropped_attributes_count":1,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"id":1,"dropped_attributes_count":1,"parent_id":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"id":1,"dropped_attributes_count":1,"parent_id":2,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-]`
-
-		case v1.OtlpArrowPayloadType_SPAN_LINK_ATTRS:
-			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"bool","value":[3,false]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-,{"parent_id":2,"key":"bool","value":[3,false]}
-,{"parent_id":2,"key":"double","value":[2,2]}
-,{"parent_id":2,"key":"int","value":[1,2]}
-,{"parent_id":2,"key":"str","value":[0,"string2"]}
-,{"parent_id":3,"key":"bool","value":[3,false]}
-,{"parent_id":3,"key":"double","value":[2,2]}
-,{"parent_id":3,"key":"int","value":[1,2]}
-,{"parent_id":3,"key":"str","value":[0,"string2"]}
-]`
-
-		default:
-			panic(fmt.Sprint("unexpected payload type: ", relatedRecord.PayloadType()))
-		}
-
-		actual, err := relatedRecord.Record().MarshalJSON()
-		require.NoError(t, err)
-		relatedRecord.Record().Release()
-
-		require.JSONEq(t, expected, string(actual))
-
-		relatedRecord.Record().Release()
-	}
-}
-
-func ToScopeSpanGroup(scopeSpans ptrace.ScopeSpans) *ScopeSpanGroup {
-	spans := make([]*ptrace.Span, 0, scopeSpans.Spans().Len())
-	scope := scopeSpans.Scope()
-
-	spanSlice := scopeSpans.Spans()
-	for i := 0; i < spanSlice.Len(); i++ {
-		span := spanSlice.At(i)
-		spans = append(spans, &span)
-	}
-	return &ScopeSpanGroup{
-		Scope:          &scope,
-		ScopeSchemaUrl: scopeSpans.SchemaUrl(),
-		Spans:          spans,
-		SharedData: &SharedData{
-			sharedAttributes: &common.SharedAttributes{
-				Attributes: make(map[string]pcommon.Value),
-			},
-			sharedEventAttributes: &common.SharedAttributes{
-				Attributes: make(map[string]pcommon.Value),
-			},
-			sharedLinkAttributes: &common.SharedAttributes{
-				Attributes: make(map[string]pcommon.Value),
-			},
-		},
-	}
-}
-
-func TestResourceSpans(t *testing.T) {
-	t.Parallel()
-
-	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
-	defer pool.AssertSize(t, 0)
-
-	schema := arrow.NewSchema([]arrow.Field{
-		{Name: constants.ResourceSpans, Type: ResourceSpansDT, Metadata: acommon.Metadata(acommon.Optional)},
-	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, producerStats)
-	defer rBuilder.Release()
-
-	var record arrow.Record
-	var relatedRecords []*record_message.RecordMessage
-	relatedData, err := NewRelatedData(config.DefaultConfig(), stats.NewProducerStats())
-	require.NoError(t, err)
-
-	for {
-		relatedData.Reset()
-		if relatedRecords != nil {
-			for _, r := range relatedRecords {
-				r.Record().Release()
-			}
-		}
-
-		rsb := ResourceSpansBuilderFrom(rBuilder.StructBuilder(constants.ResourceSpans))
-
-		err = rsb.Append(ToResourceSpanGroup(ResourceSpans1()), relatedData)
-		require.NoError(t, err)
-		err = rsb.Append(ToResourceSpanGroup(ResourceSpans2()), relatedData)
-		require.NoError(t, err)
-
-		record, err = rBuilder.NewRecord()
-		if err != nil {
-			assert.Error(t, acommon.ErrSchemaNotUpToDate)
-			continue
-		}
-
-		relatedRecords, err = relatedData.BuildRecordMessages()
-		if err == nil {
-			break
-		}
-		assert.Error(t, acommon.ErrSchemaNotUpToDate)
-	}
-
-	actual, err := record.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	record.Release()
-
-	expected := `[{"resource_spans":{"resource":{"id":0,"dropped_attributes_count":null},"schema_url":"schema1","scope_spans":[{"schema_url":"schema1","scope":{"id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"},"spans":[{"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"duration_time_unix_nano":"1ms","id":0,"kind":3,"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]},{"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]}}
-,{"resource_spans":{"resource":{"id":1,"dropped_attributes_count":1},"schema_url":"schema2","scope_spans":[{"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]}}
-]`
-
-	jsonassert.JSONCanonicalEq(t, expected, actual)
-
-	for _, relatedRecord := range relatedRecords {
-		switch relatedRecord.PayloadType() {
-		case v1.OtlpArrowPayloadType_RESOURCE_ATTRS:
-			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-]`
-
-		case v1.OtlpArrowPayloadType_SCOPE_ATTRS:
-			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"parent_id":2,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":2,"key":"double","value":[2,2]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":2,"key":"int","value":[1,2]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-,{"parent_id":2,"key":"str","value":[0,"string2"]}
-]`
-
-		case v1.OtlpArrowPayloadType_SPAN_ATTRS:
-			expected = `[{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":2,"key":"double","value":[2,2]}
-,{"parent_id":3,"key":"double","value":[2,2]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":2,"key":"int","value":[1,2]}
-,{"parent_id":3,"key":"int","value":[1,2]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-,{"parent_id":2,"key":"str","value":[0,"string2"]}
-,{"parent_id":3,"key":"str","value":[0,"string2"]}
-]`
-		case v1.OtlpArrowPayloadType_SPAN_EVENTS:
-			expected = `[{"id":0,"dropped_attributes_count":null,"parent_id":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"id":1,"dropped_attributes_count":null,"parent_id":1,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"id":1,"dropped_attributes_count":null,"parent_id":2,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"id":1,"dropped_attributes_count":null,"parent_id":3,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"id":1,"dropped_attributes_count":1,"parent_id":0,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}
-]`
-		case v1.OtlpArrowPayloadType_SPAN_EVENT_ATTRS:
-			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"bool","value":[3,true]}
-,{"parent_id":1,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"str","value":[0,"string1"]}
-,{"parent_id":2,"key":"bool","value":[3,true]}
-,{"parent_id":2,"key":"double","value":[2,1]}
-,{"parent_id":2,"key":"int","value":[1,1]}
-,{"parent_id":2,"key":"str","value":[0,"string1"]}
-,{"parent_id":3,"key":"bool","value":[3,true]}
-,{"parent_id":3,"key":"double","value":[2,1]}
-,{"parent_id":3,"key":"int","value":[1,1]}
-,{"parent_id":3,"key":"str","value":[0,"string1"]}
-,{"parent_id":4,"key":"double","value":[2,2]}
-,{"parent_id":4,"key":"int","value":[1,2]}
-,{"parent_id":4,"key":"str","value":[0,"string2"]}
-]`
-
-		case v1.OtlpArrowPayloadType_SPAN_LINKS:
-			expected = `[{"id":0,"dropped_attributes_count":null,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
-,{"id":1,"dropped_attributes_count":1,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"id":1,"dropped_attributes_count":1,"parent_id":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"id":1,"dropped_attributes_count":1,"parent_id":2,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"id":1,"dropped_attributes_count":1,"parent_id":3,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-]`
-
-		case v1.OtlpArrowPayloadType_SPAN_LINK_ATTRS:
-			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"bool","value":[3,false]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-,{"parent_id":2,"key":"bool","value":[3,false]}
-,{"parent_id":2,"key":"double","value":[2,2]}
-,{"parent_id":2,"key":"int","value":[1,2]}
-,{"parent_id":2,"key":"str","value":[0,"string2"]}
-,{"parent_id":3,"key":"bool","value":[3,false]}
-,{"parent_id":3,"key":"double","value":[2,2]}
-,{"parent_id":3,"key":"int","value":[1,2]}
-,{"parent_id":3,"key":"str","value":[0,"string2"]}
-,{"parent_id":4,"key":"bool","value":[3,false]}
-,{"parent_id":4,"key":"double","value":[2,2]}
-,{"parent_id":4,"key":"int","value":[1,2]}
-,{"parent_id":4,"key":"str","value":[0,"string2"]}
-]`
-
-		default:
-			panic(fmt.Sprint("unexpected payload type: ", relatedRecord.PayloadType()))
-		}
-
-		actual, err := relatedRecord.Record().MarshalJSON()
-		require.NoError(t, err)
-		relatedRecord.Record().Release()
-
-		require.JSONEq(t, expected, string(actual))
-
-		relatedRecord.Record().Release()
-	}
-}
-
-func ToResourceSpanGroup(resSpan ptrace.ResourceSpans) *ResourceSpanGroup {
-	resource := resSpan.Resource()
-	resSpanGroup := ResourceSpanGroup{
-		Resource:          &resource,
-		ResourceSchemaUrl: resSpan.SchemaUrl(),
-		ScopeSpansIdx:     make(map[string]int),
-		ScopeSpans:        make([]*ScopeSpanGroup, 0),
-	}
-	scopeSpanSlice := resSpan.ScopeSpans()
-	for i := 0; i < scopeSpanSlice.Len(); i++ {
-		scopeSpan := scopeSpanSlice.At(i)
-		resSpanGroup.AddScopeSpan(&scopeSpan)
-		resSpanGroup.ScopeSpans[i].SharedData = &SharedData{
-			sharedAttributes: &common.SharedAttributes{
-				Attributes: make(map[string]pcommon.Value),
-			},
-			sharedEventAttributes: &common.SharedAttributes{
-				Attributes: make(map[string]pcommon.Value),
-			},
-			sharedLinkAttributes: &common.SharedAttributes{
-				Attributes: make(map[string]pcommon.Value),
-			},
-		}
-	}
-	return &resSpanGroup
 }
 
 func TestTraces(t *testing.T) {
@@ -750,17 +247,17 @@ func TestTraces(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats)
 	defer rBuilder.Release()
 
 	var record arrow.Record
 	var relatedRecords []*record_message.RecordMessage
 
 	conf := config.DefaultConfig()
-	stats := stats.NewProducerStats()
+	statistics := stats.NewProducerStats()
 
 	for {
-		tb, err := NewTracesBuilder(rBuilder, conf, stats)
+		tb, err := NewTracesBuilder(rBuilder, NewConfig(conf), statistics)
 		require.NoError(t, err)
 		defer tb.Release()
 
@@ -787,7 +284,10 @@ func TestTraces(t *testing.T) {
 
 	record.Release()
 
-	expected := `[{"resource_spans":[{"resource":{"id":0,"dropped_attributes_count":null},"schema_url":"schema1","scope_spans":[{"schema_url":"schema1","scope":{"id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"},"spans":[{"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"duration_time_unix_nano":"1ms","id":0,"kind":3,"name":"span1","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"},{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]},{"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]},{"resource":{"id":1,"dropped_attributes_count":1},"schema_url":"schema2","scope_spans":[{"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"},"spans":[{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}]}]}]}
+	expected := `[{"dropped_attributes_count":null,"dropped_events_count":null,"dropped_links_count":null,"duration_time_unix_nano":"1ms","id":0,"kind":3,"name":"span1","parent_span_id":"qgAAAAAAAAA=","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema1","scope":{"dropped_attributes_count":null,"id":0,"name":"scope1","version":"1.0.1"},"span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000001","status":{"code":1,"status_message":"message1"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
+,{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema1","scope":{"dropped_attributes_count":null,"id":0,"name":"scope1","version":"1.0.1"},"span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}
+,{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema2","scope":{"dropped_attributes_count":1,"id":1,"name":"scope2","version":"1.0.2"},"span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}
+,{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","resource":{"dropped_attributes_count":1,"id":1,"schema_url":"schema2"},"schema_url":"schema2","scope":{"dropped_attributes_count":1,"id":0,"name":"scope2","version":"1.0.2"},"span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}
 ]`
 
 	jsonassert.JSONCanonicalEq(t, expected, actual)
@@ -795,105 +295,101 @@ func TestTraces(t *testing.T) {
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {
 		case v1.OtlpArrowPayloadType_RESOURCE_ATTRS:
-			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
+			expected = `[{"bool":null,"bytes":null,"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
+,{"bool":null,"bytes":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
+,{"bool":null,"bytes":null,"double":null,"int":1,"key":"int","parent_id":0,"str":null,"type":2}
+,{"bool":null,"bytes":null,"double":null,"int":2,"key":"int","parent_id":1,"str":null,"type":2}
+,{"bool":null,"bytes":null,"double":1,"int":null,"key":"double","parent_id":0,"str":null,"type":3}
+,{"bool":null,"bytes":null,"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
+,{"bool":true,"bytes":null,"double":null,"int":null,"key":"bool","parent_id":0,"str":null,"type":4}
+,{"bool":null,"bytes":"Ynl0ZXMx","double":null,"int":null,"key":"bytes","parent_id":0,"str":null,"type":7}
+,{"bool":null,"bytes":"Ynl0ZXMy","double":null,"int":null,"key":"bytes","parent_id":1,"str":null,"type":7}
 ]`
 
 		case v1.OtlpArrowPayloadType_SCOPE_ATTRS:
-			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"parent_id":2,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":2,"key":"double","value":[2,2]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":2,"key":"int","value":[1,2]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-,{"parent_id":2,"key":"str","value":[0,"string2"]}
+			expected = `[{"bool":null,"bytes":null,"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
+,{"bool":null,"bytes":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
+,{"bool":null,"bytes":null,"double":null,"int":1,"key":"int","parent_id":0,"str":null,"type":2}
+,{"bool":null,"bytes":null,"double":null,"int":2,"key":"int","parent_id":1,"str":null,"type":2}
+,{"bool":null,"bytes":null,"double":1,"int":null,"key":"double","parent_id":0,"str":null,"type":3}
+,{"bool":null,"bytes":null,"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
+,{"bool":true,"bytes":null,"double":null,"int":null,"key":"bool","parent_id":0,"str":null,"type":4}
+,{"bool":null,"bytes":"Ynl0ZXMx","double":null,"int":null,"key":"bytes","parent_id":0,"str":null,"type":7}
+,{"bool":null,"bytes":"Ynl0ZXMy","double":null,"int":null,"key":"bytes","parent_id":1,"str":null,"type":7}
 ]`
 
 		case v1.OtlpArrowPayloadType_SPAN_ATTRS:
-			expected = `[{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":2,"key":"double","value":[2,2]}
-,{"parent_id":3,"key":"double","value":[2,2]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":2,"key":"int","value":[1,2]}
-,{"parent_id":3,"key":"int","value":[1,2]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-,{"parent_id":2,"key":"str","value":[0,"string2"]}
-,{"parent_id":3,"key":"str","value":[0,"string2"]}
+			expected = `[{"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
+,{"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
+,{"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
+,{"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
+,{"double":null,"int":1,"key":"int","parent_id":0,"str":null,"type":2}
+,{"double":null,"int":2,"key":"int","parent_id":1,"str":null,"type":2}
+,{"double":null,"int":2,"key":"int","parent_id":1,"str":null,"type":2}
+,{"double":null,"int":2,"key":"int","parent_id":1,"str":null,"type":2}
+,{"double":1,"int":null,"key":"double","parent_id":0,"str":null,"type":3}
+,{"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
+,{"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
+,{"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
 ]`
 		case v1.OtlpArrowPayloadType_SPAN_EVENTS:
-			expected = `[{"id":0,"dropped_attributes_count":null,"parent_id":0,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"id":1,"dropped_attributes_count":null,"parent_id":1,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"id":1,"dropped_attributes_count":null,"parent_id":2,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"id":1,"dropped_attributes_count":null,"parent_id":3,"name":"event1","time_unix_nano":"1970-01-01 00:00:00.000000001"}
-,{"id":1,"dropped_attributes_count":1,"parent_id":0,"name":"event2","time_unix_nano":"1970-01-01 00:00:00.000000002"}
+			expected = `[{"dropped_attributes_count":null,"id":0,"name":"event1","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":1,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":1,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":1,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
+,{"dropped_attributes_count":1,"id":1,"name":"event2","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000002"}
 ]`
 		case v1.OtlpArrowPayloadType_SPAN_EVENT_ATTRS:
-			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"bool","value":[3,true]}
-,{"parent_id":1,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"str","value":[0,"string1"]}
-,{"parent_id":2,"key":"bool","value":[3,true]}
-,{"parent_id":2,"key":"double","value":[2,1]}
-,{"parent_id":2,"key":"int","value":[1,1]}
-,{"parent_id":2,"key":"str","value":[0,"string1"]}
-,{"parent_id":3,"key":"bool","value":[3,true]}
-,{"parent_id":3,"key":"double","value":[2,1]}
-,{"parent_id":3,"key":"int","value":[1,1]}
-,{"parent_id":3,"key":"str","value":[0,"string1"]}
-,{"parent_id":4,"key":"double","value":[2,2]}
-,{"parent_id":4,"key":"int","value":[1,2]}
-,{"parent_id":4,"key":"str","value":[0,"string2"]}
+			expected = `[{"bool":null,"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
+,{"bool":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string1","type":1}
+,{"bool":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string1","type":1}
+,{"bool":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string1","type":1}
+,{"bool":null,"double":null,"int":null,"key":"str","parent_id":4,"str":"string2","type":1}
+,{"bool":null,"double":null,"int":1,"key":"int","parent_id":0,"str":null,"type":2}
+,{"bool":null,"double":null,"int":1,"key":"int","parent_id":1,"str":null,"type":2}
+,{"bool":null,"double":null,"int":1,"key":"int","parent_id":1,"str":null,"type":2}
+,{"bool":null,"double":null,"int":1,"key":"int","parent_id":1,"str":null,"type":2}
+,{"bool":null,"double":null,"int":2,"key":"int","parent_id":4,"str":null,"type":2}
+,{"bool":null,"double":1,"int":null,"key":"double","parent_id":0,"str":null,"type":3}
+,{"bool":null,"double":1,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
+,{"bool":null,"double":1,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
+,{"bool":null,"double":1,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
+,{"bool":null,"double":2,"int":null,"key":"double","parent_id":4,"str":null,"type":3}
+,{"bool":true,"double":null,"int":null,"key":"bool","parent_id":0,"str":null,"type":4}
+,{"bool":true,"double":null,"int":null,"key":"bool","parent_id":1,"str":null,"type":4}
+,{"bool":true,"double":null,"int":null,"key":"bool","parent_id":1,"str":null,"type":4}
+,{"bool":true,"double":null,"int":null,"key":"bool","parent_id":1,"str":null,"type":4}
 ]`
 
 		case v1.OtlpArrowPayloadType_SPAN_LINKS:
-			expected = `[{"id":0,"dropped_attributes_count":null,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
-,{"id":1,"dropped_attributes_count":1,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"id":1,"dropped_attributes_count":1,"parent_id":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"id":1,"dropped_attributes_count":1,"parent_id":2,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
-,{"id":1,"dropped_attributes_count":1,"parent_id":3,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+			expected = `[{"dropped_attributes_count":null,"id":0,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
+,{"dropped_attributes_count":1,"id":1,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+,{"dropped_attributes_count":1,"id":1,"parent_id":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+,{"dropped_attributes_count":1,"id":1,"parent_id":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
+,{"dropped_attributes_count":1,"id":1,"parent_id":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
 ]`
 
 		case v1.OtlpArrowPayloadType_SPAN_LINK_ATTRS:
-			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"bool","value":[3,false]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-,{"parent_id":2,"key":"bool","value":[3,false]}
-,{"parent_id":2,"key":"double","value":[2,2]}
-,{"parent_id":2,"key":"int","value":[1,2]}
-,{"parent_id":2,"key":"str","value":[0,"string2"]}
-,{"parent_id":3,"key":"bool","value":[3,false]}
-,{"parent_id":3,"key":"double","value":[2,2]}
-,{"parent_id":3,"key":"int","value":[1,2]}
-,{"parent_id":3,"key":"str","value":[0,"string2"]}
-,{"parent_id":4,"key":"bool","value":[3,false]}
-,{"parent_id":4,"key":"double","value":[2,2]}
-,{"parent_id":4,"key":"int","value":[1,2]}
-,{"parent_id":4,"key":"str","value":[0,"string2"]}
+			expected = `[{"bool":null,"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
+,{"bool":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
+,{"bool":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
+,{"bool":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
+,{"bool":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
+,{"bool":null,"double":null,"int":1,"key":"int","parent_id":0,"str":null,"type":2}
+,{"bool":null,"double":null,"int":2,"key":"int","parent_id":1,"str":null,"type":2}
+,{"bool":null,"double":null,"int":2,"key":"int","parent_id":1,"str":null,"type":2}
+,{"bool":null,"double":null,"int":2,"key":"int","parent_id":1,"str":null,"type":2}
+,{"bool":null,"double":null,"int":2,"key":"int","parent_id":1,"str":null,"type":2}
+,{"bool":null,"double":1,"int":null,"key":"double","parent_id":0,"str":null,"type":3}
+,{"bool":null,"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
+,{"bool":null,"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
+,{"bool":null,"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
+,{"bool":null,"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
+,{"bool":false,"double":null,"int":null,"key":"bool","parent_id":1,"str":null,"type":4}
+,{"bool":false,"double":null,"int":null,"key":"bool","parent_id":1,"str":null,"type":4}
+,{"bool":false,"double":null,"int":null,"key":"bool","parent_id":1,"str":null,"type":4}
+,{"bool":false,"double":null,"int":null,"key":"bool","parent_id":1,"str":null,"type":4}
+,{"bool":true,"double":null,"int":null,"key":"bool","parent_id":0,"str":null,"type":4}
 ]`
 
 		default:

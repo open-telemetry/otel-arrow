@@ -97,6 +97,27 @@ func (b *ScopeBuilder) Append(scope *pcommon.InstrumentationScope, attrsAccu *At
 	})
 }
 
+func (b *ScopeBuilder) AppendWithAttrsID(ID int64, scope *pcommon.InstrumentationScope) error {
+	if b.released {
+		return werror.Wrap(ErrBuilderAlreadyReleased)
+	}
+
+	return b.builder.Append(scope, func() error {
+		b.nb.AppendNonEmpty(scope.Name())
+		b.vb.AppendNonEmpty(scope.Version())
+
+		if ID >= 0 {
+			b.aib.Append(uint16(ID))
+		} else {
+			// ID == -1 when the attributes are empty.
+			b.aib.AppendNull()
+		}
+
+		b.dacb.AppendNonZero(scope.DroppedAttributesCount())
+		return nil
+	})
+}
+
 // Build builds the instrumentation scope array struct.
 //
 // Once the array is no longer needed, Release() must be called to free the

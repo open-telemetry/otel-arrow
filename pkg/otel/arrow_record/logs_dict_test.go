@@ -122,7 +122,7 @@ func TestLogsMultiBatchWithDictionaryIndexChanges(t *testing.T) {
 	builder := producer.LogsRecordBuilderExt()
 	dictionariesIndexTypeChanged := builder.Events().DictionariesIndexTypeChanged
 	require.Equal(t, 1, len(dictionariesIndexTypeChanged))
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_logs.item.scope_logs.item.logs.item.severity_text"])
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["severity_text"])
 }
 
 // TestLogsMultiBatchWithDictionaryOverflow
@@ -173,7 +173,7 @@ func TestLogsMultiBatchWithDictionaryOverflow(t *testing.T) {
 	builder := producer.LogsRecordBuilderExt()
 	dictionariesIndexTypeChanged := builder.Events().DictionariesIndexTypeChanged
 	require.Equal(t, 1, len(dictionariesIndexTypeChanged))
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_logs.item.scope_logs.item.logs.item.severity_text"])
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["severity_text"])
 }
 
 // TestLogsSingleBatchWithDictionaryLimit
@@ -223,14 +223,14 @@ func TestLogsMultiBatchWithDictionaryLimit(t *testing.T) {
 	builder := producer.LogsRecordBuilderExt()
 	dictionaryWithOverflow := builder.Events().DictionariesWithOverflow
 	require.Equal(t, 2, len(dictionaryWithOverflow))
-	require.True(t, dictionaryWithOverflow["resource_logs.item.scope_logs.item.logs.item.severity_text"])
-	require.True(t, dictionaryWithOverflow["resource_logs.item.scope_logs.item.logs.item.body.str"])
+	require.True(t, dictionaryWithOverflow["severity_text"])
+	require.True(t, dictionaryWithOverflow["body.str"])
 
 	logRecordAttrsBuilder := producer.LogsBuilder().RelatedData().RecordBuilderExt(arrow.PayloadTypes.LogRecordAttrs)
 	dictionaryWithOverflow = logRecordAttrsBuilder.Events().DictionariesWithOverflow
 	require.Equal(t, 2, len(dictionaryWithOverflow))
-	require.True(t, dictionaryWithOverflow["value.str"])
-	require.True(t, dictionaryWithOverflow["value.binary"])
+	require.True(t, dictionaryWithOverflow["str"])
+	require.True(t, dictionaryWithOverflow["bytes"])
 }
 
 func GenerateLogs(initValue int, logCount int) plog.Logs {

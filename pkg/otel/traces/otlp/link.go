@@ -15,18 +15,23 @@
 package otlp
 
 import (
+	"bytes"
+
 	"github.com/apache/arrow/go/v12/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	tarrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type (
-	// SpanLinkIDs is a struct containing the Arrow field IDs for the Link struct.
+	// SpanLinkIDs is a struct containing the Arrow field IDs for the Link
+	// struct.
 	SpanLinkIDs struct {
 		ID                     int
 		ParentID               int
@@ -36,9 +41,18 @@ type (
 		DroppedAttributesCount int
 	}
 
+	// SpanLinksStore contains a set of links indexed by span ID.
+	// This store is initialized from an arrow.Record representing all the
+	// links for a batch of spans.
 	SpanLinksStore struct {
 		nextID    uint16
 		linksByID map[uint16][]*ptrace.SpanLink
+	}
+
+	LinkParentIdDecoder struct {
+		prevParentID uint16
+		prevTraceID  []byte
+		encodingType int
 	}
 )
 
@@ -50,18 +64,8 @@ func NewSpanLinksStore() *SpanLinksStore {
 }
 
 // LinksByID returns the links for the given ID.
-func (s *SpanLinksStore) LinksByID(ID uint16, sharedAttrs pcommon.Map) []*ptrace.SpanLink {
+func (s *SpanLinksStore) LinksByID(ID uint16) []*ptrace.SpanLink {
 	if links, ok := s.linksByID[ID]; ok {
-		if sharedAttrs.Len() > 0 {
-			// Add shared attributes to all links.
-			for _, link := range links {
-				attrs := link.Attributes()
-				sharedAttrs.Range(func(k string, v pcommon.Value) bool {
-					v.CopyTo(attrs.PutEmpty(k))
-					return true
-				})
-			}
-		}
 		return links
 	}
 	return nil
@@ -69,7 +73,11 @@ func (s *SpanLinksStore) LinksByID(ID uint16, sharedAttrs pcommon.Map) []*ptrace
 
 // SpanLinksStoreFrom creates an SpanLinksStore from an arrow.Record.
 // Note: This function consume the record.
-func SpanLinksStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store) (*SpanLinksStore, error) {
+func SpanLinksStoreFrom(
+	record arrow.Record,
+	attrsStore *otlp.Attributes32Store,
+	conf *tarrow.LinkConfig,
+) (*SpanLinksStore, error) {
 	defer record.Release()
 
 	store := &SpanLinksStore{
@@ -82,6 +90,7 @@ func SpanLinksStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store)
 	}
 
 	linksCount := int(record.NumRows())
+	parentIdDecoder := NewLinkParentIdDecoder(conf.ParentIdEncoding)
 
 	// Read all link fields from the record and reconstruct the link lists
 	// by ID.
@@ -91,15 +100,16 @@ func SpanLinksStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store)
 			return nil, werror.Wrap(err)
 		}
 
-		ParentID, err := arrowutils.U16FromRecord(record, spanLinkIDs.ParentID, row)
-		if err != nil {
-			return nil, werror.Wrap(err)
-		}
-
 		traceID, err := arrowutils.FixedSizeBinaryFieldByIDFromRecord(record, spanLinkIDs.TraceID, row)
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
+
+		parentID, err := arrowutils.U16FromRecord(record, spanLinkIDs.ParentID, row)
+		if err != nil {
+			return nil, werror.Wrap(err)
+		}
+		parentID = parentIdDecoder.Decode(parentID, traceID)
 
 		spanID, err := arrowutils.FixedSizeBinaryFieldByIDFromRecord(record, spanLinkIDs.SpanID, row)
 		if err != nil {
@@ -136,7 +146,7 @@ func SpanLinksStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store)
 		}
 
 		link.SetDroppedAttributesCount(dac)
-		store.linksByID[ParentID] = append(store.linksByID[ParentID], &link)
+		store.linksByID[parentID] = append(store.linksByID[parentID], &link)
 	}
 
 	return store, nil
@@ -182,4 +192,34 @@ func SchemaToSpanLinkIDs(schema *arrow.Schema) (*SpanLinkIDs, error) {
 		ID:                     ID,
 		DroppedAttributesCount: dac,
 	}, nil
+}
+
+func NewLinkParentIdDecoder(encodingType int) *LinkParentIdDecoder {
+	return &LinkParentIdDecoder{
+		prevParentID: 0,
+		encodingType: encodingType,
+	}
+}
+
+func (d *LinkParentIdDecoder) Decode(value uint16, traceID []byte) uint16 {
+	switch d.encodingType {
+	case carrow.ParentIdNoEncoding:
+		return value
+	case carrow.ParentIdDeltaEncoding:
+		decodedParentID := d.prevParentID + value
+		d.prevParentID = decodedParentID
+		return decodedParentID
+	case 2:
+		if bytes.Equal(d.prevTraceID, traceID) {
+			parentID := d.prevParentID + value
+			d.prevParentID = parentID
+			return parentID
+		} else {
+			d.prevTraceID = traceID
+			d.prevParentID = value
+			return value
+		}
+	default:
+		panic("unknown encoding type")
+	}
 }

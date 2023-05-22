@@ -35,9 +35,9 @@ func GenerateTraces(spanCount int) ptrace.Traces {
 	for i := 0; i < spanCount; i++ {
 		switch i % 2 {
 		case 0:
-			fillSpanTwo(ss.AppendEmpty())
-		case 1:
 			fillSpanOne(ss.AppendEmpty())
+		case 1:
+			fillSpanTwo(ss.AppendEmpty())
 		}
 	}
 	return td

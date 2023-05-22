@@ -59,7 +59,7 @@ func TestBackAndForthConversion(t *testing.T) {
 	metricsGen := datagen.NewMetricsGeneratorWithDataGenerator(dg)
 
 	// Generate a random OTLP metrics request.
-	expectedRequest := pmetricotlp.NewExportRequestFromMetrics(metricsGen.Generate(2 /*00*/, 1 /*00*/))
+	expectedRequest := pmetricotlp.NewExportRequestFromMetrics(metricsGen.Generate(100, 100))
 
 	// Convert the OTLP metrics request to Arrow.
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())

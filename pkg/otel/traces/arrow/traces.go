@@ -21,18 +21,35 @@ import (
 	"github.com/apache/arrow/go/v12/arrow"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	"github.com/f5/otel-arrow-adapter/pkg/config"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
-// Schema is the Arrow schema for the OTLP Arrow Traces record.
 var (
-	Schema = arrow.NewSchema([]arrow.Field{
-		{Name: constants.ResourceSpans, Type: arrow.ListOf(ResourceSpansDT)},
+	// TracesSchema is the Arrow schema for the OTLP Arrow Traces record.
+	TracesSchema = arrow.NewSchema([]arrow.Field{
+		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint16, Metadata: schema.Metadata(schema.Optional, schema.DeltaEncoding)},
+		{Name: constants.Resource, Type: acommon.ResourceDT, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.Scope, Type: acommon.ScopeDT, Metadata: schema.Metadata(schema.Optional)},
+		// This schema URL applies to the span and span events (the schema URL
+		// for the resource is in the resource struct).
+		{Name: constants.SchemaUrl, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
+		{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
+		{Name: constants.DurationTimeUnixNano, Type: arrow.FixedWidthTypes.Duration_ms, Metadata: schema.Metadata(schema.Dictionary8)},
+		{Name: constants.TraceId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 16}},
+		{Name: constants.SpanId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 8}},
+		{Name: constants.TraceState, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
+		{Name: constants.ParentSpanId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 8}, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.Name, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary8)},
+		{Name: constants.KIND, Type: arrow.PrimitiveTypes.Int32, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
+		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.DroppedEventsCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.DroppedLinksCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.Status, Type: StatusDT, Metadata: schema.Metadata(schema.Optional)},
 	}, nil)
 )
 
@@ -42,8 +59,22 @@ type TracesBuilder struct {
 
 	builder *builder.RecordBuilderExt // Record builder
 
-	rsb *builder.ListBuilder  // Resource spans list builder
-	rsp *ResourceSpansBuilder // resource spans builder
+	rb    *acommon.ResourceBuilder        // `resource` builder
+	scb   *acommon.ScopeBuilder           // `scope` builder
+	sschb *builder.StringBuilder          // scope `schema_url` builder
+	ib    *builder.Uint16DeltaBuilder     //  id builder
+	stunb *builder.TimestampBuilder       // start time unix nano builder
+	dtunb *builder.DurationBuilder        // duration time unix nano builder
+	tib   *builder.FixedSizeBinaryBuilder // trace id builder
+	sib   *builder.FixedSizeBinaryBuilder // span id builder
+	tsb   *builder.StringBuilder          // trace state builder
+	psib  *builder.FixedSizeBinaryBuilder // parent span id builder
+	nb    *builder.StringBuilder          // name builder
+	kb    *builder.Int32Builder           // kind builder
+	dacb  *builder.Uint32Builder          // dropped attributes count builder
+	decb  *builder.Uint32Builder          // dropped events count builder
+	dlcb  *builder.Uint32Builder          // dropped links count builder
+	sb    *StatusBuilder                  // status builder
 
 	optimizer *TracesOptimizer
 	analyzer  *TracesAnalyzer
@@ -54,7 +85,7 @@ type TracesBuilder struct {
 // NewTracesBuilder creates a new TracesBuilder with a given allocator.
 func NewTracesBuilder(
 	rBuilder *builder.RecordBuilderExt,
-	cfg *config.Config,
+	cfg *Config,
 	stats *stats.ProducerStats,
 ) (*TracesBuilder, error) {
 	var optimizer *TracesOptimizer
@@ -66,10 +97,10 @@ func NewTracesBuilder(
 	}
 
 	if stats.SchemaStatsEnabled {
-		optimizer = NewTracesOptimizer(acommon.WithStats(), acommon.WithSort())
+		optimizer = NewTracesOptimizer(cfg.Span.Sorter)
 		analyzer = NewTraceAnalyzer()
 	} else {
-		optimizer = NewTracesOptimizer(acommon.WithSort())
+		optimizer = NewTracesOptimizer(cfg.Span.Sorter)
 	}
 
 	b := &TracesBuilder{
@@ -88,9 +119,29 @@ func NewTracesBuilder(
 }
 
 func (b *TracesBuilder) init() error {
-	rsb := b.builder.ListBuilder(constants.ResourceSpans)
-	b.rsb = rsb
-	b.rsp = ResourceSpansBuilderFrom(rsb.StructBuilder())
+	ib := b.builder.Uint16DeltaBuilder(constants.ID)
+	// As the attributes are sorted before insertion, the delta between two
+	// consecutive attributes ID should always be <=1.
+	ib.SetMaxDelta(1)
+
+	b.ib = ib
+	b.rb = acommon.ResourceBuilderFrom(b.builder.StructBuilder(constants.Resource))
+	b.scb = acommon.ScopeBuilderFrom(b.builder.StructBuilder(constants.Scope))
+	b.sschb = b.builder.StringBuilder(constants.SchemaUrl)
+
+	b.stunb = b.builder.TimestampBuilder(constants.StartTimeUnixNano)
+	b.dtunb = b.builder.DurationBuilder(constants.DurationTimeUnixNano)
+	b.tib = b.builder.FixedSizeBinaryBuilder(constants.TraceId)
+	b.sib = b.builder.FixedSizeBinaryBuilder(constants.SpanId)
+	b.tsb = b.builder.StringBuilder(constants.TraceState)
+	b.psib = b.builder.FixedSizeBinaryBuilder(constants.ParentSpanId)
+	b.nb = b.builder.StringBuilder(constants.Name)
+	b.kb = b.builder.Int32Builder(constants.KIND)
+	b.dacb = b.builder.Uint32Builder(constants.DroppedAttributesCount)
+	b.decb = b.builder.Uint32Builder(constants.DroppedEventsCount)
+	b.dlcb = b.builder.Uint32Builder(constants.DroppedLinksCount)
+	b.sb = StatusBuilderFrom(b.builder.StructBuilder(constants.Status))
+
 	return nil
 }
 
@@ -118,8 +169,18 @@ func (b *TracesBuilder) Build() (record arrow.Record, err error) {
 		}
 	}
 
+	// ToDo Keep this code for debugging purposes.
+	//if err == nil && count == 0 {
+	//	println("Traces")
+	//	arrow2.PrintRecord(record)
+	//	count = count + 1
+	//}
+
 	return
 }
+
+// ToDo Keep this code for debugging purposes.
+//var count = 0
 
 // Append appends a new set of resource spans to the builder.
 func (b *TracesBuilder) Append(traces ptrace.Traces) error {
@@ -133,15 +194,100 @@ func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 		b.analyzer.ShowStats("")
 	}
 
-	rc := len(optimTraces.ResourceSpans)
-	return b.rsb.Append(rc, func() error {
-		for _, resSpanGroup := range optimTraces.ResourceSpans {
-			if err := b.rsp.Append(resSpanGroup, b.relatedData); err != nil {
+	spanID := uint16(0)
+	var resSpanID, scopeSpanID string
+	var resID, scopeID int64
+	var err error
+
+	attrsAccu := b.relatedData.AttrsBuilders().Span().Accumulator()
+	eventsAccu := b.relatedData.EventBuilder().Accumulator()
+	linksAccu := b.relatedData.LinkBuilder().Accumulator()
+
+	for _, span := range optimTraces.Spans {
+		spanAttrs := span.Span.Attributes()
+		spanEvents := span.Span.Events()
+		spanLinks := span.Span.Links()
+
+		ID := spanID
+
+		if spanAttrs.Len() == 0 && spanEvents.Len() == 0 && spanLinks.Len() == 0 {
+			// No related data found
+			b.ib.AppendNull()
+		} else {
+			b.ib.Append(ID)
+			spanID++
+		}
+
+		// Resource spans
+		if resSpanID != span.ResourceSpanID {
+			resSpanID = span.ResourceSpanID
+			resID, err = b.relatedData.AttrsBuilders().Resource().Accumulator().Append(span.Resource.Attributes())
+			if err != nil {
 				return werror.Wrap(err)
 			}
 		}
-		return nil
-	})
+		if err = b.rb.AppendWithAttrsID(resID, span.Resource, span.ResourceSchemaUrl); err != nil {
+			return werror.Wrap(err)
+		}
+
+		// Scope spans
+		if scopeSpanID != span.ScopeSpanID {
+			scopeSpanID = span.ScopeSpanID
+			scopeID, err = b.relatedData.AttrsBuilders().scope.Accumulator().Append(span.Scope.Attributes())
+			if err != nil {
+				return werror.Wrap(err)
+			}
+		}
+		if err = b.scb.AppendWithAttrsID(scopeID, span.Scope); err != nil {
+			return werror.Wrap(err)
+		}
+		b.sschb.AppendNonEmpty(span.ScopeSchemaUrl)
+
+		b.stunb.Append(arrow.Timestamp(span.Span.StartTimestamp()))
+		duration := span.Span.EndTimestamp().AsTime().Sub(span.Span.StartTimestamp().AsTime()).Nanoseconds()
+		b.dtunb.Append(arrow.Duration(duration))
+		tib := span.Span.TraceID()
+		b.tib.Append(tib[:])
+		sib := span.Span.SpanID()
+		b.sib.Append(sib[:])
+		b.tsb.AppendNonEmpty(span.Span.TraceState().AsRaw())
+		psib := span.Span.ParentSpanID()
+		b.psib.Append(psib[:])
+		b.nb.AppendNonEmpty(span.Span.Name())
+		b.kb.AppendNonZero(int32(span.Span.Kind()))
+
+		// Span Attributes
+		if spanAttrs.Len() > 0 {
+			err = attrsAccu.AppendWithID(ID, spanAttrs)
+			if err != nil {
+				return werror.Wrap(err)
+			}
+		}
+		b.dacb.AppendNonZero(span.Span.DroppedAttributesCount())
+
+		// Events
+		if spanEvents.Len() > 0 {
+			err = eventsAccu.Append(ID, spanEvents)
+			if err != nil {
+				return werror.Wrap(err)
+			}
+		}
+		b.decb.AppendNonZero(span.Span.DroppedEventsCount())
+
+		// Links
+		if spanLinks.Len() > 0 {
+			err = linksAccu.Append(ID, spanLinks)
+			if err != nil {
+				return werror.Wrap(err)
+			}
+		}
+		b.dlcb.AppendNonZero(span.Span.DroppedLinksCount())
+
+		if err = b.sb.Append(span.Span.Status()); err != nil {
+			return werror.Wrap(err)
+		}
+	}
+	return nil
 }
 
 // Release releases the memory allocated by the builder.

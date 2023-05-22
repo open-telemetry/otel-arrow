@@ -164,6 +164,10 @@ func (b *HistogramDataPointBuilder) SchemaID() string {
 	return b.builder.SchemaID()
 }
 
+func (b *HistogramDataPointBuilder) Schema() *arrow.Schema {
+	return b.builder.Schema()
+}
+
 func (b *HistogramDataPointBuilder) IsEmpty() bool {
 	return b.accumulator.IsEmpty()
 }

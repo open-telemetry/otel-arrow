@@ -27,6 +27,30 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
+// U8FromRecord returns the uint8 value for a specific row and column in an
+// Arrow record. If the value is null, it returns 0.
+func U8FromRecord(record arrow.Record, fieldID int, row int) (uint8, error) {
+	if fieldID == AbsentFieldID {
+		return 0, nil
+	}
+
+	arr := record.Column(fieldID)
+	if arr == nil {
+		return 0, nil
+	}
+
+	switch arr := arr.(type) {
+	case *array.Uint8:
+		if arr.IsNull(row) {
+			return 0, nil
+		} else {
+			return arr.Value(row), nil
+		}
+	default:
+		return 0, werror.WrapWithMsg(ErrInvalidArrayType, "not a uint8 array")
+	}
+}
+
 // U16FromRecord returns the uint16 value for a specific row and column in an
 // Arrow record. If the value is null, it returns 0.
 func U16FromRecord(record arrow.Record, fieldID int, row int) (uint16, error) {
@@ -367,6 +391,38 @@ func TimestampFromRecord(record arrow.Record, fieldID int, row int) (arrow.Times
 	}
 }
 
+// DurationFromRecord returns the duration value for a specific row and column
+// in an Arrow record.
+func DurationFromRecord(record arrow.Record, fieldID int, row int) (arrow.Duration, error) {
+	if fieldID == AbsentFieldID {
+		return 0, nil
+	}
+
+	arr := record.Column(fieldID)
+
+	if arr == nil {
+		return 0, nil
+	} else {
+		switch arr := arr.(type) {
+		case *array.Duration:
+			if arr.IsNull(row) {
+				return 0, nil
+			} else {
+				return arr.Value(row), nil
+			}
+		case *array.Dictionary:
+			durationArr := arr.Dictionary().(*array.Duration)
+			if arr.IsNull(row) {
+				return 0, nil
+			} else {
+				return durationArr.Value(arr.GetValueIndex(row)), nil
+			}
+		default:
+			return 0, werror.WrapWithMsg(ErrInvalidArrayType, "not a duration array")
+		}
+	}
+}
+
 // FixedSizeBinaryFieldByIDFromRecord returns the fixed size binary value of a field id for a specific row.
 // If the value is null, it returns nil.
 func FixedSizeBinaryFieldByIDFromRecord(record arrow.Record, fieldID int, row int) ([]byte, error) {
@@ -402,4 +458,14 @@ func ListValuesByIDFromRecord(record arrow.Record, fieldID int, row int) (arr ar
 		err = werror.WrapWithContext(ErrNotArrayList, map[string]interface{}{"fieldID": fieldID, "row": row})
 	}
 	return
+}
+
+// FixedSizeBinaryFromRecord returns the fixed size binary value of a field id
+// for a specific row.
+func FixedSizeBinaryFromRecord(record arrow.Record, fieldID int, row int) ([]byte, error) {
+	if fieldID == AbsentFieldID {
+		return nil, nil
+	}
+	column := record.Column(fieldID)
+	return FixedSizeBinaryFromArray(column, row)
 }

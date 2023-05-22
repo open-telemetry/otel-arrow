@@ -29,12 +29,12 @@ import (
 
 	"github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/axiomhq/hyperloglog"
-	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 )
+
+const None = ""
 
 type (
 	TracesAnalyzer struct {
@@ -79,23 +79,21 @@ type (
 	}
 
 	EventStats struct {
-		TotalCount       int64
-		Missing          int64
-		Distribution     *hdrhistogram.Histogram
-		Timestamp        *carrow.TimestampStats
-		Name             *carrow.StringStats
-		Attributes       *carrow.AttributesStats
-		SharedAttributes *carrow.AttributesStats
+		TotalCount   int64
+		Missing      int64
+		Distribution *hdrhistogram.Histogram
+		Timestamp    *carrow.TimestampStats
+		Name         *carrow.StringStats
+		Attributes   *carrow.AttributesStats
 	}
 
 	LinkStats struct {
-		TotalCount       int64
-		Distribution     *hdrhistogram.Histogram
-		TraceID          *hyperloglog.Sketch
-		SpanID           *hyperloglog.Sketch
-		TraceState       *hyperloglog.Sketch
-		Attributes       *carrow.AttributesStats
-		SharedAttributes *carrow.AttributesStats
+		TotalCount   int64
+		Distribution *hdrhistogram.Histogram
+		TraceID      *hyperloglog.Sketch
+		SpanID       *hyperloglog.Sketch
+		TraceState   *hyperloglog.Sketch
+		Attributes   *carrow.AttributesStats
 	}
 )
 
@@ -142,20 +140,64 @@ func (t *TracesAnalyzer) ShowStats(indent string) {
 }
 
 func (r *ResourceSpansStats) UpdateWith(traces *TracesOptimized) {
-	resSpan := traces.ResourceSpans
+	prevResID := None
+	prevScopeID := None
 
-	for ID := range traces.ResourceSpansIdx {
-		r.ResSpansIDsDistinct.Insert([]byte(ID))
+	resSpansCount := 0
+	scopeSpansCount := 0
+	spansPerScopeSpans := 0
+
+	var spans []*ptrace.Span
+
+	for _, span := range traces.Spans {
+		if prevResID != span.ResourceSpanID {
+			prevResID = span.ResourceSpanID
+			resSpansCount++
+			r.ResSpansIDsDistinct.Insert([]byte(span.ResourceSpanID))
+			r.ResourceStats.UpdateWith(span.Resource)
+			r.SchemaUrlStats.UpdateWith(span.ResourceSchemaUrl)
+			spansPerScopeSpans = 0
+		}
+
+		if prevScopeID != span.ScopeSpanID {
+			prevScopeID = span.ScopeSpanID
+			scopeSpansCount++
+			r.ScopeSpansStats.ScopeSpansIDsDistinct.Insert([]byte(span.ScopeSpanID))
+			r.ScopeSpansStats.ScopeStats.UpdateWith(span.Scope)
+			r.ScopeSpansStats.SchemaUrlStats.UpdateWith(span.ScopeSchemaUrl)
+			carrow.RequireNoError(r.ScopeSpansStats.Distribution.RecordValue(int64(spansPerScopeSpans)))
+			spansPerScopeSpans = 0
+		}
+
+		s := r.ScopeSpansStats.SpanStats
+		s.Attributes.UpdateWith(span.Span.Attributes(), span.Span.DroppedAttributesCount())
+		s.Name.UpdateWith(span.Span.Name())
+		s.SpanID.Insert([]byte(span.Span.SpanID().String()))
+		s.TraceID.Insert([]byte(span.Span.TraceID().String()))
+		s.ParentSpanID.Insert([]byte(span.Span.ParentSpanID().String()))
+		s.Kind.Insert([]byte(span.Span.Kind().String()))
+		s.TraceState.Insert([]byte(span.Span.TraceState().AsRaw()))
+		s.Events.UpdateWith(span.Span.Events(), span.Span.DroppedEventsCount())
+		s.Links.UpdateWith(span.Span.Links(), span.Span.DroppedLinksCount())
+
+		b := make([]byte, 8)
+		binary.LittleEndian.PutUint64(b, uint64(span.Span.DroppedEventsCount()))
+		s.DropEventsCount.Insert(b)
+		binary.LittleEndian.PutUint64(b, uint64(span.Span.DroppedLinksCount()))
+		s.DropLinksCount.Insert(b)
+		s.StatusStats.UpdateWith(span.Span.Status())
+		s.TotalCount++
+
+		spans = append(spans, span.Span)
+
+		spansPerScopeSpans++
 	}
 
-	r.TotalCount += int64(len(resSpan))
-	carrow.RequireNoError(r.Distribution.RecordValue(int64(len(resSpan))))
+	r.TotalCount += int64(resSpansCount)
+	carrow.RequireNoError(r.Distribution.RecordValue(int64(resSpansCount)))
+	carrow.RequireNoError(r.ScopeSpansStats.Distribution.RecordValue(int64(scopeSpansCount)))
 
-	for _, rs := range resSpan {
-		r.ResourceStats.UpdateWith(rs.Resource)
-		r.ScopeSpansStats.UpdateWith(rs.ScopeSpans, rs.ScopeSpansIdx)
-		r.SchemaUrlStats.UpdateWith(rs.ResourceSchemaUrl)
-	}
+	r.ScopeSpansStats.SpanStats.TimeIntervalStats.UpdateWithSpans(spans)
 }
 
 func (r *ResourceSpansStats) ShowStats(indent string) {
@@ -169,20 +211,6 @@ func (r *ResourceSpansStats) ShowStats(indent string) {
 	r.ResourceStats.ShowStats(indent)
 	r.ScopeSpansStats.ShowStats(indent)
 	r.SchemaUrlStats.ShowStats(indent)
-}
-
-func (s *ScopeSpansStats) UpdateWith(scopeSpans []*ScopeSpanGroup, scopeSpansIdx map[string]int) {
-	carrow.RequireNoError(s.Distribution.RecordValue(int64(len(scopeSpans))))
-
-	for ID := range scopeSpansIdx {
-		s.ScopeSpansIDsDistinct.Insert([]byte(ID))
-	}
-
-	for _, ss := range scopeSpans {
-		s.ScopeStats.UpdateWith(ss.Scope)
-		s.SpanStats.UpdateWith(ss)
-		s.SchemaUrlStats.UpdateWith(ss.ScopeSchemaUrl)
-	}
 }
 
 func (s *ScopeSpansStats) ShowStats(indent string) {
@@ -216,38 +244,6 @@ func NewSpanStats() *SpanStats {
 	}
 }
 
-func (s *SpanStats) UpdateWith(ss *ScopeSpanGroup) {
-	spans := ss.Spans
-	carrow.RequireNoError(s.Distribution.RecordValue(int64(len(spans))))
-
-	sharedAttrs := pcommon.NewMap()
-	ss.SharedData.sharedAttributes.CopyTo(sharedAttrs)
-	s.SharedAttributes.UpdateWith(sharedAttrs, 0)
-
-	s.TimeIntervalStats.UpdateWithSpans(spans)
-
-	for _, span := range spans {
-		s.Attributes.UpdateWith(span.Attributes(), span.DroppedAttributesCount())
-		s.Name.UpdateWith(span.Name())
-		s.SpanID.Insert([]byte(span.SpanID().String()))
-		s.TraceID.Insert([]byte(span.TraceID().String()))
-		s.ParentSpanID.Insert([]byte(span.ParentSpanID().String()))
-		s.Kind.Insert([]byte(span.Kind().String()))
-		s.TraceState.Insert([]byte(span.TraceState().AsRaw()))
-		s.Events.UpdateWith(span.Events(), span.DroppedEventsCount(), ss.SharedData.sharedEventAttributes)
-		s.Links.UpdateWith(span.Links(), span.DroppedLinksCount(), ss.SharedData.sharedLinkAttributes)
-
-		b := make([]byte, 8)
-		binary.LittleEndian.PutUint64(b, uint64(span.DroppedEventsCount()))
-		s.DropEventsCount.Insert(b)
-		binary.LittleEndian.PutUint64(b, uint64(span.DroppedLinksCount()))
-		s.DropLinksCount.Insert(b)
-		s.StatusStats.UpdateWith(span.Status())
-	}
-
-	s.TotalCount += int64(len(spans))
-}
-
 func (s *SpanStats) ShowStats(indent string) {
 	print(carrow.Green)
 	fmt.Printf("%sSpans%s |   Total|   Min|   Max|  Mean|  Stdev|   P50|   P99|\n", indent, carrow.ColorReset)
@@ -275,15 +271,14 @@ func (s *SpanStats) ShowStats(indent string) {
 
 func NewEventStats() *EventStats {
 	return &EventStats{
-		Distribution:     hdrhistogram.New(0, 10000, 2),
-		Timestamp:        carrow.NewTimestampStats(),
-		Name:             carrow.NewStringStats(),
-		Attributes:       carrow.NewAttributesStats(),
-		SharedAttributes: carrow.NewAttributesStats(),
+		Distribution: hdrhistogram.New(0, 10000, 2),
+		Timestamp:    carrow.NewTimestampStats(),
+		Name:         carrow.NewStringStats(),
+		Attributes:   carrow.NewAttributesStats(),
 	}
 }
 
-func (e *EventStats) UpdateWith(events ptrace.SpanEventSlice, dac uint32, sharedAttributes *common.SharedAttributes) {
+func (e *EventStats) UpdateWith(events ptrace.SpanEventSlice, dac uint32) {
 	ec := events.Len()
 
 	if ec == 0 {
@@ -301,10 +296,6 @@ func (e *EventStats) UpdateWith(events ptrace.SpanEventSlice, dac uint32, shared
 		e.Name.UpdateWith(event.Name())
 		e.Attributes.UpdateWith(event.Attributes(), dac)
 	}
-
-	sharedAttrs := pcommon.NewMap()
-	sharedAttributes.CopyTo(sharedAttrs)
-	e.SharedAttributes.UpdateWith(sharedAttrs, 0)
 }
 
 func (e *EventStats) ShowStats(indent string) {
@@ -319,21 +310,19 @@ func (e *EventStats) ShowStats(indent string) {
 	e.Timestamp.ShowStats("Timestamp", indent)
 	e.Name.ShowStats("Name", indent)
 	e.Attributes.ShowStats(indent, "Attributes", carrow.Green)
-	e.SharedAttributes.ShowStats(indent, "SharedAttributes", carrow.Cyan)
 }
 
 func NewLinkStats() *LinkStats {
 	return &LinkStats{
-		Distribution:     hdrhistogram.New(0, 10000, 2),
-		TraceID:          hyperloglog.New16(),
-		SpanID:           hyperloglog.New16(),
-		TraceState:       hyperloglog.New16(),
-		Attributes:       carrow.NewAttributesStats(),
-		SharedAttributes: carrow.NewAttributesStats(),
+		Distribution: hdrhistogram.New(0, 10000, 2),
+		TraceID:      hyperloglog.New16(),
+		SpanID:       hyperloglog.New16(),
+		TraceState:   hyperloglog.New16(),
+		Attributes:   carrow.NewAttributesStats(),
 	}
 }
 
-func (l *LinkStats) UpdateWith(links ptrace.SpanLinkSlice, dac uint32, sharedAttributes *common.SharedAttributes) {
+func (l *LinkStats) UpdateWith(links ptrace.SpanLinkSlice, dac uint32) {
 	l.TotalCount += int64(links.Len())
 	carrow.RequireNoError(l.Distribution.RecordValue(int64(links.Len())))
 	for i := 0; i < links.Len(); i++ {
@@ -343,10 +332,6 @@ func (l *LinkStats) UpdateWith(links ptrace.SpanLinkSlice, dac uint32, sharedAtt
 		l.TraceState.Insert([]byte(link.TraceState().AsRaw()))
 		l.Attributes.UpdateWith(link.Attributes(), dac)
 	}
-
-	sharedAttrs := pcommon.NewMap()
-	sharedAttributes.CopyTo(sharedAttrs)
-	l.SharedAttributes.UpdateWith(sharedAttrs, 0)
 }
 
 func (l *LinkStats) ShowStats(indent string) {
@@ -367,5 +352,4 @@ func (l *LinkStats) ShowStats(indent string) {
 	fmt.Printf("%sTraceState%s |%8d|%8d|%8.1f%%|\n", indent, carrow.ColorReset, l.TraceState.Estimate(), l.TotalCount, 100.0*float64(l.TraceState.Estimate())/float64(l.TotalCount))
 
 	l.Attributes.ShowStats(indent, "Attributes", carrow.Green)
-	l.SharedAttributes.ShowStats(indent, "SharedAttributes", carrow.Cyan)
 }

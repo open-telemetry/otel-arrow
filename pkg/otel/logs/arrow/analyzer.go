@@ -19,7 +19,6 @@ package arrow
 
 import (
 	"fmt"
-	"strconv"
 
 	"github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/axiomhq/hyperloglog"
@@ -113,20 +112,21 @@ func (t *LogsAnalyzer) ShowStats(indent string) {
 }
 
 func (r *ResourceLogsStats) UpdateWith(logs *LogsOptimized) {
-	resLogs := logs.ResourceLogs
-
-	for ID := range logs.ResourceLogsIdx {
-		r.ResLogsIDsDistinct.Insert([]byte(ID))
-	}
-
-	r.TotalCount += int64(len(resLogs))
-	carrow.RequireNoError(r.Distribution.RecordValue(int64(len(resLogs))))
-
-	for _, rs := range resLogs {
-		r.ResourceStats.UpdateWith(rs.Resource)
-		r.ScopeLogsStats.UpdateWith(rs.ScopeLogs, rs.ScopeLogsIdx)
-		r.SchemaUrlStats.UpdateWith(rs.ResourceSchemaUrl)
-	}
+	// ToDo I will update this in a future PR. Only used for troubleshooting compression ratio issues.
+	//resLogs := logs.ResourceLogs
+	//
+	//for ID := range logs.ResourceLogsIdx {
+	//	r.ResLogsIDsDistinct.Insert([]byte(ID))
+	//}
+	//
+	//r.TotalCount += int64(len(resLogs))
+	//carrow.RequireNoError(r.Distribution.RecordValue(int64(len(resLogs))))
+	//
+	//for _, rs := range resLogs {
+	//	r.ResourceStats.UpdateWith(rs.Resource)
+	//	r.ScopeLogsStats.UpdateWith(rs.ScopeLogs, rs.ScopeLogsIdx)
+	//	r.SchemaUrlStats.UpdateWith(rs.ResourceSchemaUrl)
+	//}
 }
 
 func (r *ResourceLogsStats) ShowStats(indent string) {
@@ -142,19 +142,19 @@ func (r *ResourceLogsStats) ShowStats(indent string) {
 	r.SchemaUrlStats.ShowStats(indent)
 }
 
-func (s *ScopeLogsStats) UpdateWith(scopeLogs []*ScopeLogGroup, scopeLogsIdx map[string]int) {
-	carrow.RequireNoError(s.Distribution.RecordValue(int64(len(scopeLogs))))
-
-	for ID := range scopeLogsIdx {
-		s.ScopeLogsIDsDistinct.Insert([]byte(ID))
-	}
-
-	for _, sl := range scopeLogs {
-		s.ScopeStats.UpdateWith(sl.Scope)
-		s.LogRecordStats.UpdateWith(sl)
-		s.SchemaUrlStats.UpdateWith(sl.ScopeSchemaUrl)
-	}
-}
+//func (s *ScopeLogsStats) UpdateWith(scopeLogs []*ScopeLogGroup, scopeLogsIdx map[string]int) {
+//	carrow.RequireNoError(s.Distribution.RecordValue(int64(len(scopeLogs))))
+//
+//	for ID := range scopeLogsIdx {
+//		s.ScopeLogsIDsDistinct.Insert([]byte(ID))
+//	}
+//
+//	for _, sl := range scopeLogs {
+//		s.ScopeStats.UpdateWith(sl.Scope)
+//		s.LogRecordStats.UpdateWith(sl)
+//		s.SchemaUrlStats.UpdateWith(sl.ScopeSchemaUrl)
+//	}
+//}
 
 func (s *ScopeLogsStats) ShowStats(indent string) {
 	print(carrow.Green)
@@ -181,23 +181,23 @@ func NewLogRecordStats() *LogRecordStats {
 	}
 }
 
-func (s *LogRecordStats) UpdateWith(sl *ScopeLogGroup) {
-	logs := sl.Logs
-	carrow.RequireNoError(s.Distribution.RecordValue(int64(len(logs))))
-
-	for _, logRecord := range logs {
-		s.TimeUnixNano.UpdateWith(logRecord.Timestamp())
-		s.ObservedTimeUnixNano.UpdateWith(logRecord.ObservedTimestamp())
-		s.Attributes.UpdateWith(logRecord.Attributes(), logRecord.DroppedAttributesCount())
-		s.SpanID.Insert([]byte(logRecord.SpanID().String()))
-		s.TraceID.Insert([]byte(logRecord.TraceID().String()))
-		s.SeverityNumber.Insert([]byte(strconv.Itoa(int(logRecord.SeverityNumber()))))
-		s.SeverityText.UpdateWith(logRecord.SeverityText())
-		s.Body.UpdateWith(logRecord.Body())
-	}
-
-	s.TotalCount += int64(len(logs))
-}
+//func (s *LogRecordStats) UpdateWith(sl *ScopeLogGroup) {
+//	logs := sl.Logs
+//	carrow.RequireNoError(s.Distribution.RecordValue(int64(len(logs))))
+//
+//	for _, logRecord := range logs {
+//		s.TimeUnixNano.UpdateWith(logRecord.Timestamp())
+//		s.ObservedTimeUnixNano.UpdateWith(logRecord.ObservedTimestamp())
+//		s.Attributes.UpdateWith(logRecord.Attributes(), logRecord.DroppedAttributesCount())
+//		s.SpanID.Insert([]byte(logRecord.SpanID().String()))
+//		s.TraceID.Insert([]byte(logRecord.TraceID().String()))
+//		s.SeverityNumber.Insert([]byte(strconv.Itoa(int(logRecord.SeverityNumber()))))
+//		s.SeverityText.UpdateWith(logRecord.SeverityText())
+//		s.Body.UpdateWith(logRecord.Body())
+//	}
+//
+//	s.TotalCount += int64(len(logs))
+//}
 
 func (s *LogRecordStats) ShowStats(indent string) {
 	print(carrow.Green)

@@ -24,13 +24,14 @@ import (
 )
 
 type ScopeIds struct {
-	Id                     int
+	Scope                  int
 	Name                   int
 	Version                int
-	AttrsID                int
+	ID                     int
 	DroppedAttributesCount int
 }
 
+// ToDo remove this function once metrics have been converted to the model v1
 func NewScopeIds(resSpansDT *arrow.StructType) (*ScopeIds, error) {
 	scopeID, scopeDT, err := arrowutils.StructFieldIDFromStruct(resSpansDT, constants.Scope)
 	if err != nil {
@@ -42,13 +43,34 @@ func NewScopeIds(resSpansDT *arrow.StructType) (*ScopeIds, error) {
 	droppedAttributesCountID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.DroppedAttributesCount)
 	attrsID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.ID)
 	return &ScopeIds{
-		Id:                     scopeID,
+		Scope:                  scopeID,
 		Name:                   nameID,
 		Version:                versionID,
 		DroppedAttributesCount: droppedAttributesCountID,
-		AttrsID:                attrsID,
+		ID:                     attrsID,
 	}, nil
 }
+
+func NewScopeIdsFromSchema(schema *arrow.Schema) (*ScopeIds, error) {
+	scopeID, scopeDT, err := arrowutils.StructFieldIDFromSchema(schema, constants.Scope)
+	if err != nil {
+		return nil, werror.Wrap(err)
+	}
+
+	nameID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.Name)
+	versionID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.Version)
+	droppedAttributesCountID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.DroppedAttributesCount)
+	ID, _ := arrowutils.FieldIDFromStruct(scopeDT, constants.ID)
+	return &ScopeIds{
+		Scope:                  scopeID,
+		Name:                   nameID,
+		Version:                versionID,
+		DroppedAttributesCount: droppedAttributesCountID,
+		ID:                     ID,
+	}, nil
+}
+
+// ToDo remove this function once metrics have been converted to the model v1
 
 // UpdateScopeWith appends a scope into a given scope spans from an Arrow list of structs.
 func UpdateScopeWith(
@@ -58,7 +80,7 @@ func UpdateScopeWith(
 	ids *ScopeIds,
 	attrsStore *Attributes16Store,
 ) error {
-	_, scopeArray, err := listOfStructs.StructByID(ids.Id, row)
+	_, scopeArray, err := listOfStructs.StructByID(ids.Scope, row)
 	if err != nil {
 		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
 	}
@@ -75,7 +97,7 @@ func UpdateScopeWith(
 		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
 	}
 
-	attrsID, err := arrowutils.NullableU16FromStruct(scopeArray, row, ids.AttrsID)
+	attrsID, err := arrowutils.NullableU16FromStruct(scopeArray, row, ids.ID)
 	if err != nil {
 		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
 	}
@@ -89,4 +111,53 @@ func UpdateScopeWith(
 	s.SetVersion(version)
 	s.SetDroppedAttributesCount(droppedAttributesCount)
 	return nil
+}
+
+func UpdateScopeFromRecord(
+	s pcommon.InstrumentationScope,
+	record arrow.Record,
+	row int,
+	ids *ScopeIds,
+	attrsStore *Attributes16Store,
+) error {
+	scopeArray, err := arrowutils.StructFromRecord(record, ids.Scope, row)
+	if err != nil {
+		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
+	}
+	name, err := arrowutils.StringFromStruct(scopeArray, row, ids.Name)
+	if err != nil {
+		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
+	}
+	version, err := arrowutils.StringFromStruct(scopeArray, row, ids.Version)
+	if err != nil {
+		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
+	}
+	droppedAttributesCount, err := arrowutils.U32FromStruct(scopeArray, row, ids.DroppedAttributesCount)
+	if err != nil {
+		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
+	}
+
+	ID, err := arrowutils.NullableU16FromStruct(scopeArray, row, ids.ID)
+	if err != nil {
+		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
+	}
+	if ID != nil {
+		attrs := attrsStore.AttributesByDeltaID(*ID)
+		if attrs != nil {
+			attrs.CopyTo(s.Attributes())
+		}
+	}
+	s.SetName(name)
+	s.SetVersion(version)
+	s.SetDroppedAttributesCount(droppedAttributesCount)
+	return nil
+}
+
+func ScopeIDFromRecord(record arrow.Record, row int, IDs *ScopeIds) (uint16, error) {
+	scopeStruct, err := arrowutils.StructFromRecord(record, IDs.Scope, row)
+	if err != nil {
+		return 0, err
+	}
+	return arrowutils.U16FromStruct(scopeStruct, row, IDs.ID)
+
 }

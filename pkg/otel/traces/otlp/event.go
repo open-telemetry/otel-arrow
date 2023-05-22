@@ -20,47 +20,51 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
+	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	tarrow "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type (
-	// SpanEventIDs is a struct containing the Arrow field IDs for the Event struct.
+	// SpanEventIDs is a struct containing the Arrow field IDs for the Event
+	// struct.
 	SpanEventIDs struct {
-		ParentID               int
+		ParentID               int // Span ID
 		TimeUnixNano           int
 		Name                   int
-		ID                     int
+		ID                     int // Event ID (used by attributes of the event)
 		DroppedAttributesCount int
 	}
 
+	// SpanEventsStore contains a set of events indexed by span ID.
+	// This store is initialized from an arrow.Record representing all the
+	// events for a batch of spans.
 	SpanEventsStore struct {
 		nextID     uint16
 		eventsByID map[uint16][]*ptrace.SpanEvent
+		config     *tarrow.EventConfig
+	}
+
+	EventParentIdDecoder struct {
+		prevParentID uint16
+		prevName     string
+		encodingType int
 	}
 )
 
 // NewSpanEventsStore creates a new SpanEventsStore.
-func NewSpanEventsStore() *SpanEventsStore {
+func NewSpanEventsStore(config *tarrow.EventConfig) *SpanEventsStore {
 	return &SpanEventsStore{
 		eventsByID: make(map[uint16][]*ptrace.SpanEvent),
+		config:     config,
 	}
 }
 
-// EventsByID returns the events for the given ID.
-func (s *SpanEventsStore) EventsByID(ID uint16, sharedAttrs pcommon.Map) []*ptrace.SpanEvent {
+// EventsByID returns the events for the given span ID.
+func (s *SpanEventsStore) EventsByID(ID uint16) []*ptrace.SpanEvent {
 	if events, ok := s.eventsByID[ID]; ok {
-		if sharedAttrs.Len() > 0 {
-			// Add shared attributes to all events.
-			for _, event := range events {
-				attrs := event.Attributes()
-				sharedAttrs.Range(func(k string, v pcommon.Value) bool {
-					v.CopyTo(attrs.PutEmpty(k))
-					return true
-				})
-			}
-		}
 		return events
 	}
 	return nil
@@ -68,12 +72,17 @@ func (s *SpanEventsStore) EventsByID(ID uint16, sharedAttrs pcommon.Map) []*ptra
 
 // SpanEventsStoreFrom creates an SpanEventsStore from an arrow.Record.
 // Note: This function consume the record.
-func SpanEventsStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store) (*SpanEventsStore, error) {
+func SpanEventsStoreFrom(
+	record arrow.Record,
+	attrsStore *otlp.Attributes32Store,
+	conf *tarrow.EventConfig,
+) (*SpanEventsStore, error) {
 	defer record.Release()
 
 	store := &SpanEventsStore{
 		eventsByID: make(map[uint16][]*ptrace.SpanEvent),
 	}
+	parentIdDecoder := NewEventParentIdDecoder(conf.ParentIdEncoding)
 
 	spanEventIDs, err := SchemaToSpanEventIDs(record.Schema())
 	if err != nil {
@@ -90,17 +99,18 @@ func SpanEventsStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store
 			return nil, werror.Wrap(err)
 		}
 
-		ParentID, err := arrowutils.U16FromRecord(record, spanEventIDs.ParentID, row)
+		name, err := arrowutils.StringFromRecord(record, spanEventIDs.Name, row)
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
+
+		parentID, err := arrowutils.U16FromRecord(record, spanEventIDs.ParentID, row)
+		if err != nil {
+			return nil, werror.Wrap(err)
+		}
+		parentID = parentIdDecoder.Decode(parentID, name)
 
 		timeUnixNano, err := arrowutils.TimestampFromRecord(record, spanEventIDs.TimeUnixNano, row)
-		if err != nil {
-			return nil, werror.Wrap(err)
-		}
-
-		name, err := arrowutils.StringFromRecord(record, spanEventIDs.Name, row)
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
@@ -122,7 +132,7 @@ func SpanEventsStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store
 		}
 
 		event.SetDroppedAttributesCount(dac)
-		store.eventsByID[ParentID] = append(store.eventsByID[ParentID], &event)
+		store.eventsByID[parentID] = append(store.eventsByID[parentID], &event)
 	}
 
 	return store, nil
@@ -162,4 +172,35 @@ func SchemaToSpanEventIDs(schema *arrow.Schema) (*SpanEventIDs, error) {
 		Name:                   name,
 		DroppedAttributesCount: dac,
 	}, nil
+}
+
+func NewEventParentIdDecoder(encodingType int) *EventParentIdDecoder {
+	return &EventParentIdDecoder{
+		prevParentID: 0,
+		prevName:     "",
+		encodingType: encodingType,
+	}
+}
+
+func (d *EventParentIdDecoder) Decode(value uint16, name string) uint16 {
+	switch d.encodingType {
+	case carrow.ParentIdNoEncoding:
+		return value
+	case carrow.ParentIdDeltaEncoding:
+		decodedParentID := d.prevParentID + value
+		d.prevParentID = decodedParentID
+		return decodedParentID
+	case carrow.ParentIdDeltaGroupEncoding:
+		if d.prevName == name {
+			parentID := d.prevParentID + value
+			d.prevParentID = parentID
+			return parentID
+		} else {
+			d.prevName = name
+			d.prevParentID = value
+			return value
+		}
+	default:
+		panic("unknown event parent ID encoding type")
+	}
 }

@@ -34,7 +34,6 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
@@ -42,9 +41,9 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
-// LinkSchema is the Arrow Data Type describing a link (as a related record
-// to the main trace record).
 var (
+	// LinkSchema is the Arrow Data Type describing a link (as a related record
+	// to the main trace record).
 	LinkSchema = arrow.NewSchema([]arrow.Field{
 		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional, schema.DeltaEncoding)},
 		{Name: constants.ParentID, Type: arrow.PrimitiveTypes.Uint16},
@@ -71,6 +70,8 @@ type (
 
 		accumulator *LinkAccumulator
 		attrsAccu   *acommon.Attributes32Accumulator
+
+		config *LinkConfig
 	}
 
 	// Link is an internal representation of a link used by the
@@ -81,7 +82,6 @@ type (
 		SpanID                 [8]byte
 		TraceState             string
 		Attributes             pcommon.Map
-		SharedAttributes       *common.SharedAttributes
 		DroppedAttributesCount uint32
 	}
 
@@ -90,14 +90,29 @@ type (
 	LinkAccumulator struct {
 		groupCount uint16
 		links      []Link
+		sorter     LinkSorter
 	}
+
+	LinkParentIdEncoder struct {
+		prevTraceID  [16]byte
+		prevParentID uint16
+		encoderType  int
+	}
+
+	LinkSorter interface {
+		Sort(links []Link)
+	}
+
+	LinksByNothing         struct{}
+	LinksByTraceIdParentId struct{}
 )
 
-func NewLinkBuilder(rBuilder *builder.RecordBuilderExt) *LinkBuilder {
+func NewLinkBuilder(rBuilder *builder.RecordBuilderExt, conf *LinkConfig) *LinkBuilder {
 	b := &LinkBuilder{
 		released:    false,
 		builder:     rBuilder,
-		accumulator: NewLinkAccumulator(),
+		accumulator: NewLinkAccumulator(conf.Sorter),
+		config:      conf,
 	}
 
 	b.init()
@@ -123,6 +138,10 @@ func (b *LinkBuilder) SetAttributesAccumulator(accu *acommon.Attributes32Accumul
 
 func (b *LinkBuilder) SchemaID() string {
 	return b.builder.SchemaID()
+}
+
+func (b *LinkBuilder) Schema() *arrow.Schema {
+	return b.builder.Schema()
 }
 
 func (b *LinkBuilder) IsEmpty() bool {
@@ -167,28 +186,50 @@ func (b *LinkBuilder) Build() (record arrow.Record, err error) {
 			break
 		}
 	}
+
+	// ToDo Keep this code for debugging purposes.
+	//if err == nil && linkcount == 0 {
+	//	println(acommon.PayloadTypes.Link.PayloadType().String())
+	//	arrow2.PrintRecord(record)
+	//	linkcount = linkcount + 1
+	//}
+
 	return record, werror.Wrap(err)
 }
+
+// ToDo Keep this code for debugging purposes.
+//var linkcount = 0
 
 func (b *LinkBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (record arrow.Record, err error) {
 	if b.released {
 		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
-	b.accumulator.Sort()
+	b.accumulator.sorter.Sort(b.accumulator.links)
 
-	for ID, link := range b.accumulator.links {
-		b.ib.Append(uint32(ID))
-		b.pib.Append(link.ParentID)
+	parentIdEncoder := NewLinkParentIdEncoder(b.config.ParentIdEncoding)
+
+	linkID := uint32(0)
+
+	for _, link := range b.accumulator.links {
+		if link.Attributes.Len() == 0 {
+			b.ib.AppendNull()
+		} else {
+			b.ib.Append(linkID)
+
+			// Attributes
+			err = attrsAccu.Append(linkID, link.Attributes)
+			if err != nil {
+				return
+			}
+
+			linkID++
+		}
+
+		b.pib.Append(parentIdEncoder.Encode(link.ParentID, link.TraceID))
 		b.tib.Append(link.TraceID[:])
 		b.sib.Append(link.SpanID[:])
 		b.tsb.AppendNonEmpty(link.TraceState)
-
-		// Attributes
-		err = attrsAccu.AppendUniqueAttributesWithID(uint32(ID), link.Attributes, link.SharedAttributes, nil)
-		if err != nil {
-			return
-		}
 
 		b.dacb.AppendNonZero(link.DroppedAttributesCount)
 	}
@@ -210,10 +251,11 @@ func (b *LinkBuilder) Release() {
 }
 
 // NewLinkAccumulator creates a new LinkAccumulator.
-func NewLinkAccumulator() *LinkAccumulator {
+func NewLinkAccumulator(sorter LinkSorter) *LinkAccumulator {
 	return &LinkAccumulator{
 		groupCount: 0,
 		links:      make([]Link, 0),
+		sorter:     sorter,
 	}
 }
 
@@ -222,7 +264,7 @@ func (a *LinkAccumulator) IsEmpty() bool {
 }
 
 // Append appends a new link to the builder.
-func (a *LinkAccumulator) Append(spanID uint16, links ptrace.SpanLinkSlice, sharedAttrs *common.SharedAttributes) error {
+func (a *LinkAccumulator) Append(spanID uint16, links ptrace.SpanLinkSlice) error {
 	if a.groupCount == math.MaxUint16 {
 		panic("The maximum number of group of links has been reached (max is uint16).")
 	}
@@ -239,7 +281,6 @@ func (a *LinkAccumulator) Append(spanID uint16, links ptrace.SpanLinkSlice, shar
 			SpanID:                 link.SpanID(),
 			TraceState:             link.TraceState().AsRaw(),
 			Attributes:             link.Attributes(),
-			SharedAttributes:       sharedAttrs,
 			DroppedAttributesCount: link.DroppedAttributesCount(),
 		})
 	}
@@ -249,10 +290,62 @@ func (a *LinkAccumulator) Append(spanID uint16, links ptrace.SpanLinkSlice, shar
 	return nil
 }
 
-func (a *LinkAccumulator) Sort() {
-	sort.Slice(a.links, func(i, j int) bool {
-		linkI := a.links[i]
-		linkJ := a.links[j]
+func (a *LinkAccumulator) Reset() {
+	a.groupCount = 0
+	a.links = a.links[:0]
+}
+
+func NewLinkParentIdEncoder(encoderType int) *LinkParentIdEncoder {
+	return &LinkParentIdEncoder{
+		prevParentID: 0,
+		encoderType:  encoderType,
+	}
+}
+
+func (e *LinkParentIdEncoder) Encode(parentID uint16, traceID [16]byte) uint16 {
+	switch e.encoderType {
+	case acommon.ParentIdNoEncoding:
+		return parentID
+	case acommon.ParentIdDeltaEncoding:
+		delta := parentID - e.prevParentID
+		e.prevParentID = parentID
+		return delta
+	case acommon.ParentIdDeltaGroupEncoding:
+		if e.prevTraceID == traceID {
+			delta := parentID - e.prevParentID
+			e.prevParentID = parentID
+			return delta
+		} else {
+			e.prevTraceID = traceID
+			e.prevParentID = parentID
+			return parentID
+		}
+	default:
+		panic("Unknown parent ID encoding type.")
+	}
+}
+
+// No sorting
+// ==========
+
+func UnsortedLinks() *LinksByNothing {
+	return &LinksByNothing{}
+}
+
+func (s *LinksByNothing) Sort(_ []Link) {
+}
+
+// Sorts by TraceID, ParentID
+// ==========================
+
+func SortLinksByTraceIdParentId() *LinksByTraceIdParentId {
+	return &LinksByTraceIdParentId{}
+}
+
+func (s *LinksByTraceIdParentId) Sort(links []Link) {
+	sort.Slice(links, func(i, j int) bool {
+		linkI := links[i]
+		linkJ := links[j]
 
 		cmp := bytes.Compare(linkI.TraceID[:], linkJ.TraceID[:])
 		if cmp == 0 {
@@ -261,9 +354,4 @@ func (a *LinkAccumulator) Sort() {
 			return cmp == -1
 		}
 	})
-}
-
-func (a *LinkAccumulator) Reset() {
-	a.groupCount = 0
-	a.links = a.links[:0]
 }

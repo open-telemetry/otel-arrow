@@ -52,6 +52,15 @@ func NullableU16FromStruct(structArr *array.Struct, row int, fieldID int) (*uint
 	return &val, nil
 }
 
+// U8FromStruct returns the uint8 value for a specific row in an Arrow struct
+// or 0 if the field doesn't exist.
+func U8FromStruct(structArr *array.Struct, row int, fieldID int) (uint8, error) {
+	if fieldID == AbsentFieldID {
+		return 0, nil
+	}
+	return U8FromArray(structArr.Field(fieldID), row)
+}
+
 // U32FromStruct returns the uint32 value for a specific row in an Arrow struct
 // or 0 if the field doesn't exist.
 func U32FromStruct(structArr *array.Struct, row int, fieldID int) (uint32, error) {
@@ -152,6 +161,86 @@ func I32FromStruct(arr arrow.Array, row int, id int) (int32, error) {
 		return I32FromArray(structArr.Field(id), row)
 	} else {
 		return 0, werror.WrapWithContext(ErrNotArrayStruct, map[string]interface{}{
+			"row": row,
+			"id":  id,
+		})
+	}
+}
+
+// I64FromStruct returns the int64 value for a specific field+row in an Arrow
+// Array struct.
+func I64FromStruct(arr arrow.Array, row int, id int) (int64, error) {
+	if id == AbsentFieldID {
+		return 0, nil
+	}
+	structArr, ok := arr.(*array.Struct)
+	if !ok {
+		return 0, werror.WrapWithContext(ErrNotArrayStruct, map[string]interface{}{"row": row, "id": id})
+	}
+	if structArr != nil {
+		return I64FromArray(structArr.Field(id), row)
+	} else {
+		return 0, werror.WrapWithContext(ErrNotArrayStruct, map[string]interface{}{
+			"row": row,
+			"id":  id,
+		})
+	}
+}
+
+// F64FromStruct returns the float64 value for a specific field+row in an Arrow
+// Array struct.
+func F64FromStruct(arr arrow.Array, row int, id int) (float64, error) {
+	if id == AbsentFieldID {
+		return 0, nil
+	}
+	structArr, ok := arr.(*array.Struct)
+	if !ok {
+		return 0, werror.WrapWithContext(ErrNotArrayStruct, map[string]interface{}{"row": row, "id": id})
+	}
+	if structArr != nil {
+		return F64FromArray(structArr.Field(id), row)
+	} else {
+		return 0, werror.WrapWithContext(ErrNotArrayStruct, map[string]interface{}{
+			"row": row,
+			"id":  id,
+		})
+	}
+}
+
+// BoolFromStruct returns the bool value for a specific field+row in an Arrow
+// Array struct.
+func BoolFromStruct(arr arrow.Array, row int, id int) (bool, error) {
+	if id == AbsentFieldID {
+		return false, nil
+	}
+	structArr, ok := arr.(*array.Struct)
+	if !ok {
+		return false, werror.WrapWithContext(ErrNotArrayStruct, map[string]interface{}{"row": row, "id": id})
+	}
+	if structArr != nil {
+		return BoolFromArray(structArr.Field(id), row)
+	} else {
+		return false, werror.WrapWithContext(ErrNotArrayStruct, map[string]interface{}{
+			"row": row,
+			"id":  id,
+		})
+	}
+}
+
+// BinaryFromStruct returns the []byte value for a specific field+row in an Arrow
+// Array struct.
+func BinaryFromStruct(arr arrow.Array, row int, id int) ([]byte, error) {
+	if id == AbsentFieldID {
+		return nil, nil
+	}
+	structArr, ok := arr.(*array.Struct)
+	if !ok {
+		return nil, werror.WrapWithContext(ErrNotArrayStruct, map[string]interface{}{"row": row, "id": id})
+	}
+	if structArr != nil {
+		return BinaryFromArray(structArr.Field(id), row)
+	} else {
+		return nil, werror.WrapWithContext(ErrNotArrayStruct, map[string]interface{}{
 			"row": row,
 			"id":  id,
 		})

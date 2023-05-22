@@ -74,7 +74,7 @@ func NewSchemaFrom(prototype *arrow.Schema, transformTree *TransformNode) *arrow
 		}
 	}
 
-	metadata := prototype.Metadata()
+	metadata := cleanMetadata(prototype.Metadata())
 	return arrow.NewSchema(fields, &metadata)
 
 }

@@ -68,8 +68,8 @@ const (
 
 func main() {
 	Report("METRICS", metrics.MetricsSchema)
-	Report("LOGS", logs.Schema)
-	Report("TRACES", traces.Schema)
+	Report("LOGS", logs.LogsSchema)
+	Report("TRACES", traces.TracesSchema)
 }
 
 var DictConfig = config.NewDictionary(math.MaxUint16)

@@ -122,7 +122,7 @@ func TestTracesMultiBatchWithDictionaryIndexChanges(t *testing.T) {
 	builder := producer.TracesRecordBuilderExt()
 	dictionariesIndexTypeChanged := builder.Events().DictionariesIndexTypeChanged
 	require.Equal(t, 1, len(dictionariesIndexTypeChanged))
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_spans.item.scope_spans.item.spans.item.name"])
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["name"])
 }
 
 // TestTracesMultiBatchWithDictionaryOverflow
@@ -173,7 +173,7 @@ func TestTracesMultiBatchWithDictionaryOverflow(t *testing.T) {
 	builder := producer.TracesRecordBuilderExt()
 	dictionariesIndexTypeChanged := builder.Events().DictionariesIndexTypeChanged
 	require.Equal(t, 1, len(dictionariesIndexTypeChanged))
-	require.Equal(t, "uint16", dictionariesIndexTypeChanged["resource_spans.item.scope_spans.item.spans.item.name"])
+	require.Equal(t, "uint16", dictionariesIndexTypeChanged["name"])
 }
 
 // TestTracesMultiBatchWithDictionaryLimit
@@ -223,13 +223,13 @@ func TestTracesMultiBatchWithDictionaryLimit(t *testing.T) {
 	spanBuilder := producer.TracesRecordBuilderExt()
 	dictionaryWithOverflow := spanBuilder.Events().DictionariesWithOverflow
 	require.Equal(t, 1, len(dictionaryWithOverflow))
-	require.True(t, dictionaryWithOverflow["resource_spans.item.scope_spans.item.spans.item.name"])
+	require.True(t, dictionaryWithOverflow["name"])
 
 	spanAttrsBuilder := producer.TracesBuilder().RelatedData().RecordBuilderExt(arrow.PayloadTypes.SpanAttrs)
 	dictionaryWithOverflow = spanAttrsBuilder.Events().DictionariesWithOverflow
 	require.Equal(t, 2, len(dictionaryWithOverflow))
-	require.True(t, dictionaryWithOverflow["value.str"])
-	require.True(t, dictionaryWithOverflow["value.binary"])
+	require.True(t, dictionaryWithOverflow["str"])
+	require.True(t, dictionaryWithOverflow["bytes"])
 }
 
 func GenerateTraces(initValue int, spanCount int) ptrace.Traces {

@@ -22,7 +22,7 @@ import (
 	"github.com/apache/arrow/go/v12/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
+	schema "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
@@ -34,12 +34,17 @@ var (
 		{
 			Name:     constants.ID,
 			Type:     arrow.PrimitiveTypes.Uint16,
-			Metadata: acommon.Metadata(acommon.Optional, acommon.DeltaEncoding),
+			Metadata: schema.Metadata(schema.Optional, schema.DeltaEncoding),
+		},
+		{
+			Name:     constants.SchemaUrl,
+			Type:     arrow.BinaryTypes.String,
+			Metadata: schema.Metadata(schema.Optional, schema.Dictionary8),
 		},
 		{
 			Name:     constants.DroppedAttributesCount,
 			Type:     arrow.PrimitiveTypes.Uint32,
-			Metadata: acommon.Metadata(acommon.Optional),
+			Metadata: schema.Metadata(schema.Optional),
 		},
 	}...)
 )
@@ -52,6 +57,7 @@ type ResourceBuilder struct {
 
 	builder *builder.StructBuilder      // `resource` builder
 	aib     *builder.Uint16DeltaBuilder // attributes id builder
+	schb    *builder.StringBuilder      // `schema_url` builder
 	dacb    *builder.Uint32Builder      // `dropped_attributes_count` field builder
 }
 
@@ -73,6 +79,7 @@ func ResourceBuilderFrom(builder *builder.StructBuilder) *ResourceBuilder {
 		released: false,
 		builder:  builder,
 		aib:      aib,
+		schb:     builder.StringBuilder(constants.SchemaUrl),
 		dacb:     builder.Uint32Builder(constants.DroppedAttributesCount),
 	}
 }
@@ -95,6 +102,25 @@ func (b *ResourceBuilder) Append(resource *pcommon.Resource, attrsAccu *Attribut
 			// ID == -1 when the attributes are empty.
 			b.aib.AppendNull()
 		}
+		b.schb.AppendNull()
+		b.dacb.AppendNonZero(resource.DroppedAttributesCount())
+		return nil
+	})
+}
+
+func (b *ResourceBuilder) AppendWithAttrsID(attrsID int64, resource *pcommon.Resource, schemaUrl string) error {
+	if b.released {
+		return werror.Wrap(ErrBuilderAlreadyReleased)
+	}
+
+	return b.builder.Append(resource, func() error {
+		if attrsID >= 0 {
+			b.aib.Append(uint16(attrsID))
+		} else {
+			// ID == -1 when the attributes are empty.
+			b.aib.AppendNull()
+		}
+		b.schb.AppendNonEmpty(schemaUrl)
 		b.dacb.AppendNonZero(resource.DroppedAttributesCount())
 		return nil
 	})

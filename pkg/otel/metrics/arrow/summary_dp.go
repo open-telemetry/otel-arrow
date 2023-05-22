@@ -139,6 +139,10 @@ func (b *SummaryDataPointBuilder) SchemaID() string {
 	return b.builder.SchemaID()
 }
 
+func (b *SummaryDataPointBuilder) Schema() *arrow.Schema {
+	return b.builder.Schema()
+}
+
 func (b *SummaryDataPointBuilder) IsEmpty() bool {
 	return b.accumulator.IsEmpty()
 }

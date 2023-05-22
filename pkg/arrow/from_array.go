@@ -93,7 +93,10 @@ func StringFromArray(arr arrow.Array, row int) (string, error) {
 		case *array.Dictionary:
 			return arr.Dictionary().(*array.String).Value(arr.GetValueIndex(row)), nil
 		default:
-			return "", werror.WrapWithMsg(ErrInvalidArrayType, "not a string array")
+			return "", werror.WrapWithContext(ErrInvalidArrayType, map[string]interface{}{
+				"message":    "invalid array type",
+				"array-type": arr.DataType().Name(),
+			})
 		}
 	}
 }
@@ -251,6 +254,24 @@ func DurationFromArray(arr arrow.Array, row int) (arrow.Duration, error) {
 			}
 		default:
 			return 0, werror.WrapWithMsg(ErrInvalidArrayType, "not a duration array")
+		}
+	}
+}
+
+// U8FromArray returns the uint8 value for a specific row in an Arrow array.
+func U8FromArray(arr arrow.Array, row int) (uint8, error) {
+	if arr == nil {
+		return 0, nil
+	} else {
+		switch arr := arr.(type) {
+		case *array.Uint8:
+			if arr.IsNull(row) {
+				return 0, nil
+			} else {
+				return arr.Value(row), nil
+			}
+		default:
+			return 0, werror.WrapWithMsg(ErrInvalidArrayType, "not a uint8 array")
 		}
 	}
 }

@@ -120,6 +120,10 @@ func (rb *RecordBuilderExt) SchemaID() string {
 	return rb.schemaID
 }
 
+func (rb *RecordBuilderExt) Schema() *arrow.Schema {
+	return rb.recordBuilder.Schema()
+}
+
 func (rb *RecordBuilderExt) Release() {
 	rb.recordBuilder.Release()
 }

@@ -34,7 +34,6 @@ import (
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/internal"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
 	"github.com/f5/otel-arrow-adapter/pkg/record_message"
@@ -43,343 +42,12 @@ import (
 var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
 var ProducerStats = stats.NewProducerStats()
 
-func TestLogRecord(t *testing.T) {
-	t.Parallel()
-
-	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
-	defer pool.AssertSize(t, 0)
-
-	schema := arrow.NewSchema([]arrow.Field{
-		{Name: constants.Logs, Type: LogRecordDT, Metadata: acommon.Metadata(acommon.Optional)},
-	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, ProducerStats)
-	defer rBuilder.Release()
-
-	var record arrow.Record
-	var relatedRecords []*record_message.RecordMessage
-	relatedData, err := NewRelatedData(config.DefaultConfig(), stats.NewProducerStats())
-	require.NoError(t, err)
-
-	for {
-		relatedData.Reset()
-		if relatedRecords != nil {
-			for _, r := range relatedRecords {
-				r.Record().Release()
-			}
-		}
-
-		sb := LogRecordBuilderFrom(rBuilder.StructBuilder(constants.Logs))
-
-		logRecord := LogRecord1()
-		err := sb.Append(&logRecord, relatedData)
-		require.NoError(t, err)
-
-		logRecord = LogRecord2()
-		err = sb.Append(&logRecord, relatedData)
-		require.NoError(t, err)
-
-		record, err = rBuilder.NewRecord()
-		if err != nil {
-			assert.Error(t, acommon.ErrSchemaNotUpToDate)
-			continue
-		}
-
-		relatedRecords, err = relatedData.BuildRecordMessages()
-		if err == nil {
-			break
-		}
-		assert.Error(t, acommon.ErrSchemaNotUpToDate)
-	}
-
-	actual, err := record.MarshalJSON()
-	require.NoError(t, err)
-
-	record.Release()
-
-	expected := `[{"logs":{"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"id":0,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}}
-,{"logs":{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}}
-]`
-	require.JSONEq(t, expected, string(actual))
-
-	for _, relatedRecord := range relatedRecords {
-		switch relatedRecord.PayloadType() {
-		case v1.OtlpArrowPayloadType_LOG_ATTRS:
-			expected = `[{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-]`
-
-		default:
-			panic("unexpected payload type")
-		}
-
-		actual, err := relatedRecord.Record().MarshalJSON()
-		require.NoError(t, err)
-		relatedRecord.Record().Release()
-
-		require.JSONEq(t, expected, string(actual))
-
-		relatedRecord.Record().Release()
-	}
-}
-
-func TestScopeLogs(t *testing.T) {
-	t.Parallel()
-
-	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
-	defer pool.AssertSize(t, 0)
-
-	schema := arrow.NewSchema([]arrow.Field{
-		{Name: constants.ScopeLogs, Type: ScopeLogsDT, Metadata: acommon.Metadata(acommon.Optional)},
-	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, ProducerStats)
-	defer rBuilder.Release()
-
-	var record arrow.Record
-	var relatedRecords []*record_message.RecordMessage
-	relatedData, err := NewRelatedData(config.DefaultConfig(), stats.NewProducerStats())
-	require.NoError(t, err)
-
-	for {
-		relatedData.Reset()
-		if relatedRecords != nil {
-			for _, r := range relatedRecords {
-				r.Record().Release()
-			}
-		}
-
-		ssb := ScopeLogsBuilderFrom(rBuilder.StructBuilder(constants.ScopeLogs))
-
-		err := ssb.Append(ToScopeLogGroup(ScopeLogs1()), relatedData)
-		require.NoError(t, err)
-
-		err = ssb.Append(ToScopeLogGroup(ScopeLogs2()), relatedData)
-		require.NoError(t, err)
-
-		record, err = rBuilder.NewRecord()
-		if err != nil {
-			assert.Error(t, acommon.ErrSchemaNotUpToDate)
-			continue
-		}
-
-		relatedRecords, err = relatedData.BuildRecordMessages()
-		if err == nil {
-			break
-		}
-		assert.Error(t, acommon.ErrSchemaNotUpToDate)
-	}
-
-	actual, err := record.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	record.Release()
-
-	expected := `[{"scope_logs":{"logs":[{"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"id":0,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}}}
-,{"scope_logs":{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}}
-]`
-
-	require.JSONEq(t, expected, string(actual))
-
-	for _, relatedRecord := range relatedRecords {
-		switch relatedRecord.PayloadType() {
-		case v1.OtlpArrowPayloadType_SCOPE_ATTRS:
-			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-]`
-
-		case v1.OtlpArrowPayloadType_LOG_ATTRS:
-			expected = `[{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":2,"key":"double","value":[2,2]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":2,"key":"int","value":[1,2]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-,{"parent_id":2,"key":"str","value":[0,"string2"]}
-]`
-
-		default:
-			panic(fmt.Sprint("unexpected payload type: ", relatedRecord.PayloadType()))
-		}
-
-		observed, err := relatedRecord.Record().MarshalJSON()
-		require.NoError(t, err)
-		relatedRecord.Record().Release()
-
-		require.JSONEq(t, expected, string(observed))
-
-		relatedRecord.Record().Release()
-	}
-}
-
-func ToScopeLogGroup(scopeLogs plog.ScopeLogs) *ScopeLogGroup {
-	logs := make([]*plog.LogRecord, 0, scopeLogs.LogRecords().Len())
-	scope := scopeLogs.Scope()
-
-	logRecords := scopeLogs.LogRecords()
-	for i := 0; i < logRecords.Len(); i++ {
-		log := logRecords.At(i)
-		logs = append(logs, &log)
-	}
-	return &ScopeLogGroup{
-		Scope:          &scope,
-		ScopeSchemaUrl: scopeLogs.SchemaUrl(),
-		Logs:           logs,
-	}
-}
-
-func TestResourceLogs(t *testing.T) {
-	t.Parallel()
-
-	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
-	defer pool.AssertSize(t, 0)
-
-	schema := arrow.NewSchema([]arrow.Field{
-		{Name: constants.ResourceLogs, Type: ResourceLogsDT, Metadata: acommon.Metadata(acommon.Optional)},
-	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, ProducerStats)
-	defer rBuilder.Release()
-
-	var record arrow.Record
-	var relatedRecords []*record_message.RecordMessage
-	relatedData, err := NewRelatedData(config.DefaultConfig(), stats.NewProducerStats())
-	require.NoError(t, err)
-
-	for {
-		relatedData.Reset()
-		if relatedRecords != nil {
-			for _, r := range relatedRecords {
-				r.Record().Release()
-			}
-		}
-
-		rsb := ResourceLogsBuilderFrom(rBuilder.StructBuilder(constants.ResourceLogs))
-
-		err := rsb.Append(ToResourceLogGroup(ResourceLogs1()), relatedData)
-		require.NoError(t, err)
-
-		err = rsb.Append(ToResourceLogGroup(ResourceLogs2()), relatedData)
-		require.NoError(t, err)
-
-		record, err = rBuilder.NewRecord()
-		if err != nil {
-			assert.Error(t, acommon.ErrSchemaNotUpToDate)
-			continue
-		}
-
-		relatedRecords, err = relatedData.BuildRecordMessages()
-		if err == nil {
-			break
-		}
-		assert.Error(t, acommon.ErrSchemaNotUpToDate)
-	}
-
-	actual, err := record.MarshalJSON()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	record.Release()
-
-	expected := `[{"resource_logs":{"resource":{"id":0,"dropped_attributes_count":null},"schema_url":"schema1","scope_logs":[{"logs":[{"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"id":0,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}},{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}}
-,{"resource_logs":{"resource":{"id":1,"dropped_attributes_count":1},"schema_url":"schema2","scope_logs":[{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}}
-]`
-	jsonassert.JSONCanonicalEq(t, expected, actual)
-
-	for _, relatedRecord := range relatedRecords {
-		switch relatedRecord.PayloadType() {
-		case v1.OtlpArrowPayloadType_RESOURCE_ATTRS:
-			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-]`
-
-		case v1.OtlpArrowPayloadType_SCOPE_ATTRS:
-			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"parent_id":2,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":2,"key":"double","value":[2,2]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":2,"key":"int","value":[1,2]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-,{"parent_id":2,"key":"str","value":[0,"string2"]}
-]`
-
-		case v1.OtlpArrowPayloadType_LOG_ATTRS:
-			expected = `[{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":2,"key":"double","value":[2,2]}
-,{"parent_id":3,"key":"double","value":[2,2]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":2,"key":"int","value":[1,2]}
-,{"parent_id":3,"key":"int","value":[1,2]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-,{"parent_id":2,"key":"str","value":[0,"string2"]}
-,{"parent_id":3,"key":"str","value":[0,"string2"]}
-]`
-
-		default:
-			panic(fmt.Sprint("unexpected payload type: ", relatedRecord.PayloadType()))
-		}
-
-		observed, err := relatedRecord.Record().MarshalJSON()
-		require.NoError(t, err)
-		relatedRecord.Record().Release()
-
-		require.JSONEq(t, expected, string(observed))
-
-		relatedRecord.Record().Release()
-	}
-}
-
-func ToResourceLogGroup(resLogs plog.ResourceLogs) *ResourceLogGroup {
-	resource := resLogs.Resource()
-	resSpanGroup := ResourceLogGroup{
-		Resource:          &resource,
-		ResourceSchemaUrl: resLogs.SchemaUrl(),
-		ScopeLogsIdx:      make(map[string]int),
-		ScopeLogs:         make([]*ScopeLogGroup, 0),
-	}
-	scopeLogsSlice := resLogs.ScopeLogs()
-	for i := 0; i < scopeLogsSlice.Len(); i++ {
-		scopeLogs := scopeLogsSlice.At(i)
-		resSpanGroup.AddScopeLogs(&scopeLogs)
-	}
-	return &resSpanGroup
-}
-
 func TestLogs(t *testing.T) {
 	t.Parallel()
 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	rBuilder := builder.NewRecordBuilderExt(pool, Schema, DefaultDictConfig, ProducerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, LogsSchema, DefaultDictConfig, ProducerStats)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -389,7 +57,7 @@ func TestLogs(t *testing.T) {
 	stats := stats.NewProducerStats()
 
 	for {
-		tb, err := NewLogsBuilder(rBuilder, conf, stats)
+		tb, err := NewLogsBuilder(rBuilder, NewConfig(conf), stats)
 		require.NoError(t, err)
 		defer tb.Release()
 
@@ -414,7 +82,10 @@ func TestLogs(t *testing.T) {
 
 	record.Release()
 
-	expected := `[{"resource_logs":[{"resource":{"id":0,"dropped_attributes_count":null},"schema_url":"schema1","scope_logs":[{"logs":[{"body":[0,"body1"],"dropped_attributes_count":null,"flags":1,"id":0,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="},{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema1","scope":{"id":0,"dropped_attributes_count":null,"name":"scope1","version":"1.0.1"}},{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]},{"resource":{"id":1,"dropped_attributes_count":1},"schema_url":"schema2","scope_logs":[{"logs":[{"body":[0,"body2"],"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}],"schema_url":"schema2","scope":{"id":1,"dropped_attributes_count":1,"name":"scope2","version":"1.0.2"}}]}]}
+	expected := `[{"body":{"str":"body1","type":1},"dropped_attributes_count":null,"flags":1,"id":0,"observed_time_unix_nano":"1970-01-01 00:00:00.000000002","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema1","scope":{"dropped_attributes_count":null,"id":0,"name":"scope1","version":"1.0.1"},"severity_number":1,"severity_text":"severity1","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000001","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}
+,{"body":{"str":"body2","type":1},"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema1","scope":{"dropped_attributes_count":null,"id":0,"name":"scope1","version":"1.0.1"},"severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}
+,{"body":{"str":"body2","type":1},"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","resource":{"dropped_attributes_count":null,"id":0,"schema_url":"schema1"},"schema_url":"schema2","scope":{"dropped_attributes_count":1,"id":1,"name":"scope2","version":"1.0.2"},"severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}
+,{"body":{"str":"body2","type":1},"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","resource":{"dropped_attributes_count":1,"id":1,"schema_url":"schema2"},"schema_url":"schema2","scope":{"dropped_attributes_count":1,"id":0,"name":"scope2","version":"1.0.2"},"severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}
 ]`
 
 	jsonassert.JSONCanonicalEq(t, expected, actual)
@@ -422,46 +93,42 @@ func TestLogs(t *testing.T) {
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {
 		case v1.OtlpArrowPayloadType_RESOURCE_ATTRS:
-			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
+			expected = `[{"bool":null,"bytes":null,"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
+,{"bool":null,"bytes":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
+,{"bool":null,"bytes":null,"double":null,"int":1,"key":"int","parent_id":0,"str":null,"type":2}
+,{"bool":null,"bytes":null,"double":null,"int":2,"key":"int","parent_id":1,"str":null,"type":2}
+,{"bool":null,"bytes":null,"double":1,"int":null,"key":"double","parent_id":0,"str":null,"type":3}
+,{"bool":null,"bytes":null,"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
+,{"bool":true,"bytes":null,"double":null,"int":null,"key":"bool","parent_id":0,"str":null,"type":4}
+,{"bool":null,"bytes":"Ynl0ZXMx","double":null,"int":null,"key":"bytes","parent_id":0,"str":null,"type":7}
+,{"bool":null,"bytes":"Ynl0ZXMy","double":null,"int":null,"key":"bytes","parent_id":1,"str":null,"type":7}
 ]`
 
 		case v1.OtlpArrowPayloadType_SCOPE_ATTRS:
-			expected = `[{"parent_id":0,"key":"bool","value":[3,true]}
-,{"parent_id":0,"key":"bytes","value":[4,"Ynl0ZXMx"]}
-,{"parent_id":1,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"parent_id":2,"key":"bytes","value":[4,"Ynl0ZXMy"]}
-,{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":2,"key":"double","value":[2,2]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":2,"key":"int","value":[1,2]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-,{"parent_id":2,"key":"str","value":[0,"string2"]}
+			expected = `[{"bool":null,"bytes":null,"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
+,{"bool":null,"bytes":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
+,{"bool":null,"bytes":null,"double":null,"int":1,"key":"int","parent_id":0,"str":null,"type":2}
+,{"bool":null,"bytes":null,"double":null,"int":2,"key":"int","parent_id":1,"str":null,"type":2}
+,{"bool":null,"bytes":null,"double":1,"int":null,"key":"double","parent_id":0,"str":null,"type":3}
+,{"bool":null,"bytes":null,"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
+,{"bool":true,"bytes":null,"double":null,"int":null,"key":"bool","parent_id":0,"str":null,"type":4}
+,{"bool":null,"bytes":"Ynl0ZXMx","double":null,"int":null,"key":"bytes","parent_id":0,"str":null,"type":7}
+,{"bool":null,"bytes":"Ynl0ZXMy","double":null,"int":null,"key":"bytes","parent_id":1,"str":null,"type":7}
 ]`
 
 		case v1.OtlpArrowPayloadType_LOG_ATTRS:
-			expected = `[{"parent_id":0,"key":"double","value":[2,1]}
-,{"parent_id":1,"key":"double","value":[2,2]}
-,{"parent_id":2,"key":"double","value":[2,2]}
-,{"parent_id":3,"key":"double","value":[2,2]}
-,{"parent_id":0,"key":"int","value":[1,1]}
-,{"parent_id":1,"key":"int","value":[1,2]}
-,{"parent_id":2,"key":"int","value":[1,2]}
-,{"parent_id":3,"key":"int","value":[1,2]}
-,{"parent_id":0,"key":"str","value":[0,"string1"]}
-,{"parent_id":1,"key":"str","value":[0,"string2"]}
-,{"parent_id":2,"key":"str","value":[0,"string2"]}
-,{"parent_id":3,"key":"str","value":[0,"string2"]}
+			expected = `[{"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
+,{"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
+,{"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
+,{"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
+,{"double":null,"int":1,"key":"int","parent_id":0,"str":null,"type":2}
+,{"double":null,"int":2,"key":"int","parent_id":1,"str":null,"type":2}
+,{"double":null,"int":2,"key":"int","parent_id":1,"str":null,"type":2}
+,{"double":null,"int":2,"key":"int","parent_id":1,"str":null,"type":2}
+,{"double":1,"int":null,"key":"double","parent_id":0,"str":null,"type":3}
+,{"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
+,{"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
+,{"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
 ]`
 
 		default:

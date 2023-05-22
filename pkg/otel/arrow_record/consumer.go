@@ -27,6 +27,7 @@ import (
 	common "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	logsotlp "github.com/f5/otel-arrow-adapter/pkg/otel/logs/otlp"
 	metricsotlp "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/otlp"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
 	tracesotlp "github.com/f5/otel-arrow-adapter/pkg/otel/traces/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/record_message"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
@@ -52,6 +53,8 @@ type Consumer struct {
 	streamConsumers map[string]*streamConsumer
 
 	memLimit uint64
+
+	tracesConfig *arrow.Config
 }
 
 type streamConsumer struct {
@@ -67,7 +70,8 @@ func NewConsumer() *Consumer {
 		streamConsumers: make(map[string]*streamConsumer),
 
 		// TODO: configure this limit with a functional option
-		memLimit: 70 << 20,
+		memLimit:     70 << 20,
+		tracesConfig: arrow.DefaultConfig(),
 	}
 }
 
@@ -137,7 +141,7 @@ func (c *Consumer) TracesFrom(bar *colarspb.BatchArrowRecords) ([]ptrace.Traces,
 	result := make([]ptrace.Traces, 0, len(records))
 
 	// Compute all related records (i.e. Attributes, Events, and Links)
-	relatedData, tracesRecord, err := tracesotlp.RelatedDataFrom(records)
+	relatedData, tracesRecord, err := tracesotlp.RelatedDataFrom(records, c.tracesConfig)
 
 	if tracesRecord != nil {
 		// Decode OTLP traces from the combination of the main record and the

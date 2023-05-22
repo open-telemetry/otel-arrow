@@ -164,6 +164,10 @@ func (b *EHistogramDataPointBuilder) SchemaID() string {
 	return b.builder.SchemaID()
 }
 
+func (b *EHistogramDataPointBuilder) Schema() *arrow.Schema {
+	return b.builder.Schema()
+}
+
 func (b *EHistogramDataPointBuilder) IsEmpty() bool {
 	return b.accumulator.IsEmpty()
 }
