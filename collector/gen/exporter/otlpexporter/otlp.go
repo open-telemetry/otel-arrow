@@ -20,12 +20,12 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow"
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/netstats"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
-	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/netstats"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -47,6 +47,7 @@ type baseExporter struct {
 	callOptions    []grpc.CallOption
 	settings       exporter.CreateSettings
 	netStats       *netstats.NetworkReporter
+	dialOptions    []grpc.DialOption
 
 	// Default user-agent header.
 	userAgent string
@@ -97,6 +98,7 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) (err erro
 	if e.netStats != nil {
 		dialOpts = append(dialOpts, grpc.WithStatsHandler(e.netStats))
 	}
+	dialOpts = append(dialOpts, e.config.UserDialOptions...)
 	if e.clientConn, err = e.config.GRPCClientSettings.ToClientConn(ctx, host, e.settings.TelemetrySettings, dialOpts...); err != nil {
 		return err
 	}
