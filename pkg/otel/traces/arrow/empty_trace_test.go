@@ -32,6 +32,7 @@ import (
 func TestEmptyTrace(t *testing.T) {
 	t.Parallel()
 
+	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
@@ -64,6 +65,7 @@ func TestEmptyTrace(t *testing.T) {
 func TestEmptyResource(t *testing.T) {
 	t.Parallel()
 
+	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
@@ -99,6 +101,7 @@ func TestEmptyResource(t *testing.T) {
 func TestEmptyResourceAttribute(t *testing.T) {
 	t.Parallel()
 
+	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
@@ -135,6 +138,7 @@ func TestEmptyResourceAttribute(t *testing.T) {
 func TestEmptyScopeSpan(t *testing.T) {
 	t.Parallel()
 
+	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
@@ -171,6 +175,7 @@ func TestEmptyScopeSpan(t *testing.T) {
 func TestEmptyScope(t *testing.T) {
 	t.Parallel()
 
+	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
@@ -208,6 +213,7 @@ func TestEmptyScope(t *testing.T) {
 func TestEmptyScopeAttribute(t *testing.T) {
 	t.Parallel()
 
+	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
@@ -246,6 +252,7 @@ func TestEmptyScopeAttribute(t *testing.T) {
 func TestEmptySpans(t *testing.T) {
 	t.Parallel()
 
+	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
@@ -282,6 +289,7 @@ func TestEmptySpans(t *testing.T) {
 func TestEmptySpanAttribute(t *testing.T) {
 	t.Parallel()
 
+	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
@@ -320,6 +328,7 @@ func TestEmptySpanAttribute(t *testing.T) {
 func TestEmptySpanStatus(t *testing.T) {
 	t.Parallel()
 
+	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
@@ -358,6 +367,7 @@ func TestEmptySpanStatus(t *testing.T) {
 func TestEmptySpanLink(t *testing.T) {
 	t.Parallel()
 
+	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
@@ -396,6 +406,7 @@ func TestEmptySpanLink(t *testing.T) {
 func TestEmptySpanEvent(t *testing.T) {
 	t.Parallel()
 
+	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 

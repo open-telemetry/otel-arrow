@@ -43,12 +43,12 @@ import (
 
 var (
 	DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
-	producerStats     = stats.NewProducerStats()
 )
 
 func TestStatus(t *testing.T) {
 	t.Parallel()
 
+	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
@@ -92,6 +92,7 @@ func TestStatus(t *testing.T) {
 func TestEvent(t *testing.T) {
 	t.Parallel()
 
+	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
@@ -169,6 +170,7 @@ func TestEvent(t *testing.T) {
 func TestLink(t *testing.T) {
 	t.Parallel()
 
+	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
@@ -244,6 +246,7 @@ func TestLink(t *testing.T) {
 func TestTraces(t *testing.T) {
 	t.Parallel()
 
+	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 

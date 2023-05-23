@@ -40,14 +40,14 @@ import (
 )
 
 var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
-var ProducerStats = stats.NewProducerStats()
 
 func TestLogs(t *testing.T) {
 	t.Parallel()
 
+	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	rBuilder := builder.NewRecordBuilderExt(pool, LogsSchema, DefaultDictConfig, ProducerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, LogsSchema, DefaultDictConfig, producerStats)
 	defer rBuilder.Release()
 
 	var record arrow.Record
