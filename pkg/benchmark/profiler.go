@@ -459,7 +459,7 @@ func (p *Profiler) PrintCompressionRatio(maxIter uint64) {
 
 	table := tablewriter.NewWriter(p.writer)
 	table.SetHeader(headers)
-	table.SetBorder(false)
+	table.SetBorder(true)
 	table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
 	table.SetAutoWrapText(false)
 	headerColors := []tablewriter.Colors{tablewriter.Color(tablewriter.Normal, tablewriter.FgGreenColor)}

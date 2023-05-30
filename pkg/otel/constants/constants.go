@@ -51,6 +51,8 @@ const SummaryQuantileValues string = "quantile"
 const SummaryQuantile string = "quantile"
 const SummaryValue string = "value"
 const MetricValue string = "value"
+const IntValue string = "int_value"
+const DoubleValue string = "double_value"
 const HistogramCount string = "count"
 const HistogramSum string = "sum"
 const HistogramMin string = "min"
@@ -76,6 +78,8 @@ const SharedLinkAttributes string = "shared_link_attributes"
 
 const ID string = "id"
 const ParentID string = "parent_id"
+
+const MetricType string = "metric_type"
 
 // Attributes
 

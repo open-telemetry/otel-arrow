@@ -19,7 +19,7 @@ package arrow
 
 // Events are represented as Arrow records.
 //
-// An event accumulator is used to collect of the events across all spans, and
+// An event accumulator is used to collect the events across all spans, and
 // once the entire trace is processed, the events are being globally sorted and
 // written to the Arrow record batch. This process improves the compression
 // ratio of the Arrow record batch.
@@ -85,23 +85,24 @@ type (
 	// globally in order to improve compression.
 	EventAccumulator struct {
 		groupCount uint16
-		events     []Event
+		events     []*Event
 		sorter     EventSorter
 	}
 
-	EventParentIdEncoder struct {
-		prevName     string
-		prevParentID uint16
-		encoderType  int
-	}
-
 	EventSorter interface {
-		Sort(events []Event)
+		Sort(events []*Event)
+		Encode(parentID uint16, event *Event) uint16
+		Reset()
 	}
 
 	EventsByNothing          struct{}
-	EventsByNameTimeUnixNano struct{}
-	EventsByNameParentId     struct{}
+	EventsByNameTimeUnixNano struct {
+		prevParentID uint16
+	}
+	EventsByNameParentId struct {
+		prevParentID uint16
+		prevEvent    *Event
+	}
 )
 
 func NewEventBuilder(rBuilder *builder.RecordBuilderExt, conf *EventConfig) *EventBuilder {
@@ -175,27 +176,16 @@ func (b *EventBuilder) Build() (record arrow.Record, err error) {
 		}
 	}
 
-	// ToDo Keep this code for debugging purposes.
-	//if err == nil && eventcount == 0 {
-	//	println(acommon.PayloadTypes.Event.PayloadType().String())
-	//	arrow2.PrintRecord(record)
-	//	eventcount = eventcount + 1
-	//}
-
 	return record, werror.Wrap(err)
 }
-
-// ToDo Keep this code for debugging purposes.
-//var eventcount = 0
 
 func (b *EventBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (record arrow.Record, err error) {
 	if b.released {
 		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
+	b.accumulator.sorter.Reset()
 	b.accumulator.sorter.Sort(b.accumulator.events)
-
-	parentIdEncoder := NewEventParentIdEncoder(b.config.ParentIdEncoding)
 
 	eventID := uint32(0)
 
@@ -214,7 +204,7 @@ func (b *EventBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (rec
 			eventID++
 		}
 
-		b.pib.Append(parentIdEncoder.Encode(event.ParentID, event.Name))
+		b.pib.Append(b.accumulator.sorter.Encode(event.ParentID, event))
 		b.tunb.Append(arrow.Timestamp(event.TimeUnixNano.AsTime().UnixNano()))
 		b.nb.AppendNonEmpty(event.Name)
 
@@ -249,7 +239,7 @@ func (b *EventBuilder) Release() {
 func NewEventAccumulator(sorter EventSorter) *EventAccumulator {
 	return &EventAccumulator{
 		groupCount: 0,
-		events:     make([]Event, 0),
+		events:     make([]*Event, 0),
 		sorter:     sorter,
 	}
 }
@@ -270,7 +260,7 @@ func (a *EventAccumulator) Append(spanID uint16, events ptrace.SpanEventSlice) e
 
 	for i := 0; i < events.Len(); i++ {
 		evt := events.At(i)
-		a.events = append(a.events, Event{
+		a.events = append(a.events, &Event{
 			ParentID:               spanID,
 			TimeUnixNano:           evt.Timestamp(),
 			Name:                   evt.Name(),
@@ -289,37 +279,6 @@ func (a *EventAccumulator) Reset() {
 	a.events = a.events[:0]
 }
 
-func NewEventParentIdEncoder(encoderType int) *EventParentIdEncoder {
-	return &EventParentIdEncoder{
-		prevName:     "",
-		prevParentID: 0,
-		encoderType:  encoderType,
-	}
-}
-
-func (e *EventParentIdEncoder) Encode(parentID uint16, name string) uint16 {
-	switch e.encoderType {
-	case acommon.ParentIdNoEncoding:
-		return parentID
-	case acommon.ParentIdDeltaEncoding:
-		delta := parentID - e.prevParentID
-		e.prevParentID = parentID
-		return delta
-	case acommon.ParentIdDeltaGroupEncoding:
-		if e.prevName == name {
-			delta := parentID - e.prevParentID
-			e.prevParentID = parentID
-			return delta
-		} else {
-			e.prevName = name
-			e.prevParentID = parentID
-			return parentID
-		}
-	default:
-		panic("Unknown parent ID encoding type.")
-	}
-}
-
 // No sorting
 // ==========
 
@@ -327,8 +286,14 @@ func UnsortedEvents() *EventsByNothing {
 	return &EventsByNothing{}
 }
 
-func (s *EventsByNothing) Sort(_ []Event) {
+func (s *EventsByNothing) Sort(_ []*Event) {
 }
+
+func (s *EventsByNothing) Encode(parentID uint16, _ *Event) uint16 {
+	return parentID
+}
+
+func (s *EventsByNothing) Reset() {}
 
 // Sorts events by name and time.
 // ==============================
@@ -337,7 +302,7 @@ func SortEventsByNameTimeUnixNano() *EventsByNameTimeUnixNano {
 	return &EventsByNameTimeUnixNano{}
 }
 
-func (s *EventsByNameTimeUnixNano) Sort(events []Event) {
+func (s *EventsByNameTimeUnixNano) Sort(events []*Event) {
 	sort.Slice(events, func(i, j int) bool {
 		if events[i].Name == events[j].Name {
 			return events[i].TimeUnixNano < events[j].TimeUnixNano
@@ -347,6 +312,16 @@ func (s *EventsByNameTimeUnixNano) Sort(events []Event) {
 	})
 }
 
+func (s *EventsByNameTimeUnixNano) Encode(parentID uint16, _ *Event) uint16 {
+	delta := parentID - s.prevParentID
+	s.prevParentID = parentID
+	return delta
+}
+
+func (s *EventsByNameTimeUnixNano) Reset() {
+	s.prevParentID = 0
+}
+
 // Sorts events by name and parentID.
 // ==================================
 
@@ -354,7 +329,7 @@ func SortEventsByNameParentId() *EventsByNameParentId {
 	return &EventsByNameParentId{}
 }
 
-func (s *EventsByNameParentId) Sort(events []Event) {
+func (s *EventsByNameParentId) Sort(events []*Event) {
 	sort.Slice(events, func(i, j int) bool {
 		if events[i].Name == events[j].Name {
 			return events[i].ParentID < events[j].ParentID
@@ -362,4 +337,35 @@ func (s *EventsByNameParentId) Sort(events []Event) {
 			return events[i].Name < events[j].Name
 		}
 	})
+}
+
+func (s *EventsByNameParentId) Encode(parentID uint16, event *Event) uint16 {
+	if s.prevEvent == nil {
+		s.prevEvent = event
+		s.prevParentID = parentID
+		return parentID
+	}
+
+	if s.IsSameGroup(event) {
+		delta := parentID - s.prevParentID
+		s.prevParentID = parentID
+		return delta
+	} else {
+		s.prevEvent = event
+		s.prevParentID = parentID
+		return parentID
+	}
+}
+
+func (s *EventsByNameParentId) Reset() {
+	s.prevParentID = 0
+	s.prevEvent = nil
+}
+
+func (s *EventsByNameParentId) IsSameGroup(event *Event) bool {
+	if s.prevEvent == nil {
+		return false
+	}
+
+	return s.prevEvent.Name == event.Name
 }

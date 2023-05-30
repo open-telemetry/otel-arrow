@@ -227,7 +227,7 @@ func (b *LogsBuilder) Append(logs plog.Logs) (err error) {
 				return werror.Wrap(err)
 			}
 		}
-		if err = b.rb.AppendWithAttrsID(resID, logRec.Resource, logRec.ResourceSchemaUrl); err != nil {
+		if err = b.rb.AppendWithID(resID, logRec.Resource, logRec.ResourceSchemaUrl); err != nil {
 			return werror.Wrap(err)
 		}
 

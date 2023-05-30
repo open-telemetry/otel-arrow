@@ -82,7 +82,8 @@ func SpanEventsStoreFrom(
 	store := &SpanEventsStore{
 		eventsByID: make(map[uint16][]*ptrace.SpanEvent),
 	}
-	parentIdDecoder := NewEventParentIdDecoder(conf.ParentIdEncoding)
+	// ToDo Make this decoding dependent on the encoding type column metadata.
+	parentIdDecoder := NewEventParentIdDecoder(carrow.ParentIdDeltaGroupEncoding)
 
 	spanEventIDs, err := SchemaToSpanEventIDs(record.Schema())
 	if err != nil {

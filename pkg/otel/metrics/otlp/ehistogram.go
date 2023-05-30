@@ -15,8 +15,6 @@
 package otlp
 
 import (
-	"strconv"
-
 	"github.com/apache/arrow/go/v12/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -29,48 +27,39 @@ import (
 
 type (
 	EHistogramDataPointIDs struct {
-		ID                     int
-		ParentID               int
-		Name                   int
-		Description            int
-		Unit                   int
-		AggregationTemporality int
-		StartTimeUnixNano      int
-		TimeUnixNano           int
-		Count                  int
-		Sum                    int
-		Scale                  int
-		ZeroCount              int
-		Positive               *EHistogramDataPointBucketsIds
-		Negative               *EHistogramDataPointBucketsIds
-		Exemplars              *ExemplarIds
-		Flags                  int
-		Min                    int
-		Max                    int
+		ID                int
+		ParentID          int
+		StartTimeUnixNano int
+		TimeUnixNano      int
+		Count             int
+		Sum               int
+		Scale             int
+		ZeroCount         int
+		Positive          *EHistogramDataPointBucketsIds
+		Negative          *EHistogramDataPointBucketsIds
+		Flags             int
+		Min               int
+		Max               int
 	}
 
 	EHistogramDataPointsStore struct {
-		nextID      uint16
-		metricByIDs map[uint16]map[string]*pmetric.Metric
+		nextID         uint16
+		dataPointsByID map[uint16]pmetric.ExponentialHistogramDataPointSlice
 	}
 )
 
 func NewEHistogramDataPointsStore() *EHistogramDataPointsStore {
 	return &EHistogramDataPointsStore{
-		metricByIDs: make(map[uint16]map[string]*pmetric.Metric),
+		dataPointsByID: make(map[uint16]pmetric.ExponentialHistogramDataPointSlice),
 	}
 }
 
-func (s *EHistogramDataPointsStore) EHistogramMetricsByID(ID uint16) []*pmetric.Metric {
-	histograms, ok := s.metricByIDs[ID]
+func (s *EHistogramDataPointsStore) EHistogramMetricsByID(ID uint16) pmetric.ExponentialHistogramDataPointSlice {
+	dps, ok := s.dataPointsByID[ID]
 	if !ok {
-		return make([]*pmetric.Metric, 0)
+		return pmetric.NewExponentialHistogramDataPointSlice()
 	}
-	metrics := make([]*pmetric.Metric, 0, len(histograms))
-	for _, metric := range histograms {
-		metrics = append(metrics, metric)
-	}
-	return metrics
+	return dps
 }
 
 func SchemaToEHistogramIDs(schema *arrow.Schema) (*EHistogramDataPointIDs, error) {
@@ -80,26 +69,6 @@ func SchemaToEHistogramIDs(schema *arrow.Schema) (*EHistogramDataPointIDs, error
 	}
 
 	parentID, err := arrowutils.FieldIDFromSchema(schema, constants.ParentID)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
-	name, err := arrowutils.FieldIDFromSchema(schema, constants.Name)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
-	description, err := arrowutils.FieldIDFromSchema(schema, constants.Description)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
-	unit, err := arrowutils.FieldIDFromSchema(schema, constants.Unit)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
-	aggregationTemporality, err := arrowutils.FieldIDFromSchema(schema, constants.AggregationTemporality)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
@@ -144,11 +113,6 @@ func SchemaToEHistogramIDs(schema *arrow.Schema) (*EHistogramDataPointIDs, error
 		return nil, werror.Wrap(err)
 	}
 
-	exemplars, err := NewExemplarIds(schema)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
 	flags, err := arrowutils.FieldIDFromSchema(schema, constants.Flags)
 	if err != nil {
 		return nil, werror.Wrap(err)
@@ -165,32 +129,27 @@ func SchemaToEHistogramIDs(schema *arrow.Schema) (*EHistogramDataPointIDs, error
 	}
 
 	return &EHistogramDataPointIDs{
-		ID:                     ID,
-		ParentID:               parentID,
-		Name:                   name,
-		Description:            description,
-		Unit:                   unit,
-		AggregationTemporality: aggregationTemporality,
-		StartTimeUnixNano:      startTimeUnixNano,
-		TimeUnixNano:           timeUnixNano,
-		Count:                  count,
-		Sum:                    sum,
-		Scale:                  scale,
-		ZeroCount:              zeroCount,
-		Positive:               positive,
-		Negative:               negative,
-		Exemplars:              exemplars,
-		Flags:                  flags,
-		Min:                    min,
-		Max:                    max,
+		ID:                ID,
+		ParentID:          parentID,
+		StartTimeUnixNano: startTimeUnixNano,
+		TimeUnixNano:      timeUnixNano,
+		Count:             count,
+		Sum:               sum,
+		Scale:             scale,
+		ZeroCount:         zeroCount,
+		Positive:          positive,
+		Negative:          negative,
+		Flags:             flags,
+		Min:               min,
+		Max:               max,
 	}, nil
 }
 
-func EHistogramDataPointsStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store) (*EHistogramDataPointsStore, error) {
+func EHistogramDataPointsStoreFrom(record arrow.Record, exemplarsStore *ExemplarsStore, attrsStore *otlp.Attributes32Store) (*EHistogramDataPointsStore, error) {
 	defer record.Release()
 
 	store := &EHistogramDataPointsStore{
-		metricByIDs: make(map[uint16]map[string]*pmetric.Metric),
+		dataPointsByID: make(map[uint16]pmetric.ExponentialHistogramDataPointSlice),
 	}
 
 	fieldIDs, err := SchemaToEHistogramIDs(record.Schema())
@@ -199,6 +158,7 @@ func EHistogramDataPointsStoreFrom(record arrow.Record, attrsStore *otlp.Attribu
 	}
 
 	count := int(record.NumRows())
+	prevParentID := uint16(0)
 
 	for row := 0; row < count; row++ {
 		// Data Point ID
@@ -208,54 +168,20 @@ func EHistogramDataPointsStoreFrom(record arrow.Record, attrsStore *otlp.Attribu
 		}
 
 		// ParentID = Scope ID
-		parentID, err := arrowutils.U16FromRecord(record, fieldIDs.ParentID, row)
+		delta, err := arrowutils.U16FromRecord(record, fieldIDs.ParentID, row)
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
+		parentID := prevParentID + delta
+		prevParentID = parentID
 
-		metrics := store.metricByIDs[parentID]
-		if metrics == nil {
-			metrics = make(map[string]*pmetric.Metric)
-			store.metricByIDs[parentID] = metrics
+		ehdps, found := store.dataPointsByID[parentID]
+		if !found {
+			ehdps = pmetric.NewExponentialHistogramDataPointSlice()
+			store.dataPointsByID[parentID] = ehdps
 		}
 
-		name, err := arrowutils.StringFromRecord(record, fieldIDs.Name, row)
-		if err != nil {
-			return nil, werror.Wrap(err)
-		}
-
-		description, err := arrowutils.StringFromRecord(record, fieldIDs.Description, row)
-		if err != nil {
-			return nil, werror.Wrap(err)
-		}
-
-		unit, err := arrowutils.StringFromRecord(record, fieldIDs.Unit, row)
-		if err != nil {
-			return nil, werror.Wrap(err)
-		}
-
-		aggregationTemporality, err := arrowutils.I32FromRecord(record, fieldIDs.AggregationTemporality, row)
-		if err != nil {
-			return nil, werror.Wrap(err)
-		}
-
-		metricSig := name + ":" + description + ":" + unit + ":" + strconv.Itoa(int(aggregationTemporality))
-		metric := metrics[metricSig]
-		var histogram pmetric.ExponentialHistogram
-
-		if metric == nil {
-			metricObj := pmetric.NewMetric()
-			metric = &metricObj
-			metric.SetName(name)
-			metric.SetDescription(description)
-			metric.SetUnit(unit)
-			histogram = metric.SetEmptyExponentialHistogram()
-			histogram.SetAggregationTemporality(pmetric.AggregationTemporality(aggregationTemporality))
-			metrics[metricSig] = metric
-		} else {
-			histogram = metric.ExponentialHistogram()
-		}
-		hdp := histogram.DataPoints().AppendEmpty()
+		hdp := ehdps.AppendEmpty()
 
 		startTimeUnixNano, err := arrowutils.TimestampFromRecord(record, fieldIDs.StartTimeUnixNano, row)
 		if err != nil {
@@ -315,15 +241,6 @@ func EHistogramDataPointsStoreFrom(record arrow.Record, attrsStore *otlp.Attribu
 			}
 		}
 
-		exemplars, err := arrowutils.ListOfStructsFromRecord(record, fieldIDs.Exemplars.ID, row)
-		if exemplars != nil && err == nil {
-			if err := AppendExemplarsInto(hdp.Exemplars(), record, row, fieldIDs.Exemplars); err != nil {
-				return nil, werror.Wrap(err)
-			}
-		} else if err != nil {
-			return nil, werror.Wrap(err)
-		}
-
 		flags, err := arrowutils.U32FromRecord(record, fieldIDs.Flags, row)
 		if err != nil {
 			return nil, werror.Wrap(err)
@@ -347,6 +264,9 @@ func EHistogramDataPointsStoreFrom(record arrow.Record, attrsStore *otlp.Attribu
 		}
 
 		if ID != nil {
+			exemplars := exemplarsStore.ExemplarsByID(*ID)
+			exemplars.MoveAndAppendTo(hdp.Exemplars())
+
 			attrs := attrsStore.AttributesByDeltaID(*ID)
 			if attrs != nil {
 				attrs.CopyTo(hdp.Attributes())

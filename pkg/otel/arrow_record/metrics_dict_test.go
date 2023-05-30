@@ -27,7 +27,6 @@ import (
 
 	"github.com/f5/otel-arrow-adapter/pkg/config"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 )
 
 // TestMetricsWithNoDictionary
@@ -119,7 +118,7 @@ func TestMetricsMultiBatchWithDictionaryIndexChanges(t *testing.T) {
 		)
 	}
 
-	builder := producer.MetricsBuilder().RelatedData().RecordBuilderExt(arrow.PayloadTypes.IntGauge)
+	builder := producer.MetricsBuilder().RecordBuilderExt()
 	dictionariesIndexTypeChanged := builder.Events().DictionariesIndexTypeChanged
 	require.Equal(t, 2, len(dictionariesIndexTypeChanged))
 	require.Equal(t, "uint16", dictionariesIndexTypeChanged["name"])
@@ -171,7 +170,7 @@ func TestMetricsMultiBatchWithDictionaryOverflow(t *testing.T) {
 		)
 	}
 
-	builder := producer.MetricsBuilder().RelatedData().RecordBuilderExt(arrow.PayloadTypes.IntGauge)
+	builder := producer.MetricsBuilder().RecordBuilderExt()
 	dictionariesIndexTypeChanged := builder.Events().DictionariesIndexTypeChanged
 	require.Equal(t, 2, len(dictionariesIndexTypeChanged))
 	require.Equal(t, "uint16", dictionariesIndexTypeChanged["name"])
@@ -222,14 +221,14 @@ func TestMetricsMultiBatchWithDictionaryLimit(t *testing.T) {
 		)
 	}
 
-	builder := producer.MetricsBuilder().RelatedData().RecordBuilderExt(arrow.PayloadTypes.IntGauge)
+	builder := producer.MetricsBuilder().RecordBuilderExt()
 	dictionaryWithOverflow := builder.Events().DictionariesWithOverflow
 	require.Equal(t, 2, len(dictionaryWithOverflow))
 	require.Equal(t, true, dictionaryWithOverflow["name"])
 	require.Equal(t, true, dictionaryWithOverflow["description"])
 
 	// name and description should be utf8 at this point and not dictionaries.
-	require.Equal(t, "aggregation_temporality:Dic<U8,I32>,description:Str,id:U32,is_monotonic:Bol,name:Str,parent_id:U16,start_time_unix_nano:Tns,time_unix_nano:Tns,value:I64", builder.SchemaID())
+	require.Equal(t, "description:Str,id:U16,metric_type:U8,name:Str,resource:{schema_url:Dic<U8,Str>},scope:{}", builder.SchemaID())
 }
 
 func GenerateMetrics(initValue int, metricCount int) pmetric.Metrics {

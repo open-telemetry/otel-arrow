@@ -40,7 +40,6 @@ type (
 		newColumn         bool
 		schemaID          string
 		schemaUpdateCount int
-		counter           int // todo remove
 
 		parentGroups   map[string][]int
 		parentIDColumn *ParentIDColumn
@@ -236,11 +235,6 @@ func (b *DynAttrsBuilder) Build() (arrow.Record, error) {
 	}
 
 	record := b.builder.NewRecord()
-	//if b.counter > 3 {
-	//	panic("stop")
-	//}
-	//arrowutils.PrintRecord(parentGroups, record)
-	//b.counter++
 
 	b.Reset()
 

@@ -30,7 +30,7 @@ import (
 
 	colarspb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
 	carrow "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	config2 "github.com/f5/otel-arrow-adapter/pkg/config"
+	cfg "github.com/f5/otel-arrow-adapter/pkg/config"
 	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
@@ -59,35 +59,53 @@ type ProducerAPI interface {
 var _ ProducerAPI = &Producer{}
 
 // Producer is a BatchArrowRecords producer.
-type Producer struct {
-	pool            memory.Allocator // Use a custom memory allocator
-	zstd            bool             // Use IPC ZSTD compression
-	streamProducers map[string]*streamProducer
-	nextSubStreamId int64
-	batchId         int64
+type (
+	Producer struct {
+		pool            memory.Allocator // Use a custom memory allocator
+		zstd            bool             // Use IPC ZSTD compression
+		streamProducers map[string]*streamProducer
+		nextSubStreamId int64
+		batchId         int64
 
-	// Builder for each OTEL entities
-	metricsBuilder *metricsarrow.MetricsBuilder
-	logsBuilder    *logsarrow.LogsBuilder
-	tracesBuilder  *tracesarrow.TracesBuilder
+		// Builder for each OTEL entities
+		metricsBuilder *metricsarrow.MetricsBuilder
+		logsBuilder    *logsarrow.LogsBuilder
+		tracesBuilder  *tracesarrow.TracesBuilder
 
-	// Record builder for each OTEL entities
-	metricsRecordBuilder *builder.RecordBuilderExt
-	logsRecordBuilder    *builder.RecordBuilderExt
-	tracesRecordBuilder  *builder.RecordBuilderExt
+		// Record builder for each OTEL entities
+		metricsRecordBuilder *builder.RecordBuilderExt
+		logsRecordBuilder    *builder.RecordBuilderExt
+		tracesRecordBuilder  *builder.RecordBuilderExt
 
-	// General stats for the producer
-	stats *pstats.ProducerStats
-}
+		// General stats for the producer
+		stats *pstats.ProducerStats
 
-type streamProducer struct {
-	output         bytes.Buffer
-	ipcWriter      *ipc.Writer
-	subStreamId    string
-	lastProduction time.Time
-	schema         *arrow.Schema
-	payloadType    record_message.PayloadType
-}
+		// Producer observer
+		observer ProducerObserver
+	}
+
+	ProducerObserver interface {
+		OnRecord(arrow.Record, record_message.PayloadType)
+	}
+
+	consoleObserver struct {
+		// Max number of rows to print per record
+		maxRows int
+		// Max number of prints per payload type
+		maxPrints int
+
+		counters map[record_message.PayloadType]int
+	}
+
+	streamProducer struct {
+		output         bytes.Buffer
+		ipcWriter      *ipc.Writer
+		subStreamId    string
+		lastProduction time.Time
+		schema         *arrow.Schema
+		payloadType    record_message.PayloadType
+	}
+)
 
 // NewProducer creates a new BatchArrowRecords producer.
 //
@@ -99,45 +117,45 @@ func NewProducer() *Producer {
 // NewProducerWithOptions creates a new BatchArrowRecords producer with a set of options.
 //
 // The method close MUST be called when the producer is not used anymore to release the memory and avoid memory leaks.
-func NewProducerWithOptions(options ...config2.Option) *Producer {
+func NewProducerWithOptions(options ...cfg.Option) *Producer {
 	// Default configuration
-	cfg := config2.DefaultConfig()
+	conf := cfg.DefaultConfig()
 	for _, opt := range options {
-		opt(cfg)
+		opt(conf)
 	}
 
 	stats := pstats.NewProducerStats()
-	if cfg.Stats {
+	if conf.Stats {
 		stats.SchemaStatsEnabled = true
 	}
 
 	// Record builders
-	metricsRecordBuilder := builder.NewRecordBuilderExt(cfg.Pool, metricsarrow.MetricsSchema, config.NewDictionary(cfg.LimitIndexSize), stats)
+	metricsRecordBuilder := builder.NewRecordBuilderExt(conf.Pool, metricsarrow.MetricsSchema, config.NewDictionary(conf.LimitIndexSize), stats)
 	metricsRecordBuilder.SetLabel("metrics")
-	logsRecordBuilder := builder.NewRecordBuilderExt(cfg.Pool, logsarrow.LogsSchema, config.NewDictionary(cfg.LimitIndexSize), stats)
+	logsRecordBuilder := builder.NewRecordBuilderExt(conf.Pool, logsarrow.LogsSchema, config.NewDictionary(conf.LimitIndexSize), stats)
 	logsRecordBuilder.SetLabel("logs")
-	tracesRecordBuilder := builder.NewRecordBuilderExt(cfg.Pool, tracesarrow.TracesSchema, config.NewDictionary(cfg.LimitIndexSize), stats)
+	tracesRecordBuilder := builder.NewRecordBuilderExt(conf.Pool, tracesarrow.TracesSchema, config.NewDictionary(conf.LimitIndexSize), stats)
 	tracesRecordBuilder.SetLabel("traces")
 
 	// Entity builders
-	metricsBuilder, err := metricsarrow.NewMetricsBuilder(metricsRecordBuilder, cfg, stats)
+	metricsBuilder, err := metricsarrow.NewMetricsBuilder(metricsRecordBuilder, metricsarrow.NewConfig(conf), stats)
 	if err != nil {
 		panic(err)
 	}
 
-	logsBuidler, err := logsarrow.NewLogsBuilder(logsRecordBuilder, logsarrow.NewConfig(cfg), stats)
+	logsBuidler, err := logsarrow.NewLogsBuilder(logsRecordBuilder, logsarrow.NewConfig(conf), stats)
 	if err != nil {
 		panic(err)
 	}
 
-	tracesBuilder, err := tracesarrow.NewTracesBuilder(tracesRecordBuilder, tracesarrow.NewConfig(cfg), stats)
+	tracesBuilder, err := tracesarrow.NewTracesBuilder(tracesRecordBuilder, tracesarrow.NewConfig(conf), stats)
 	if err != nil {
 		panic(err)
 	}
 
 	return &Producer{
-		pool:            cfg.Pool,
-		zstd:            cfg.Zstd,
+		pool:            conf.Pool,
+		zstd:            conf.Zstd,
 		streamProducers: make(map[string]*streamProducer),
 		batchId:         0,
 
@@ -151,6 +169,11 @@ func NewProducerWithOptions(options ...config2.Option) *Producer {
 
 		stats: stats,
 	}
+}
+
+// SetObserver adds an observer to the producer.
+func (p *Producer) SetObserver(observer ProducerObserver) {
+	p.observer = observer
 }
 
 // BatchArrowRecordsFromMetrics produces a BatchArrowRecords message from a [pmetric.Metrics] messages.
@@ -356,6 +379,11 @@ func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.Batch
 				}
 				sp.ipcWriter = ipc.NewWriter(&sp.output, options...)
 			}
+
+			if p.observer != nil {
+				p.observer.OnRecord(rm.Record(), rm.PayloadType())
+			}
+
 			err := sp.ipcWriter.Write(rm.Record())
 			if err != nil {
 				return werror.Wrap(err)
@@ -457,4 +485,24 @@ func recordBuilder[T pmetric.Metrics | plog.Logs | ptrace.Traces](builder func()
 		}
 	}
 	return record, werror.Wrap(err)
+}
+
+func NewConsoleObserver(maxRows, maxPrints int) ProducerObserver {
+	return &consoleObserver{
+		maxRows:   maxRows,
+		maxPrints: maxPrints,
+		counters:  make(map[record_message.PayloadType]int),
+	}
+}
+
+func (o *consoleObserver) OnRecord(record arrow.Record, payloadType record_message.PayloadType) {
+	count, found := o.counters[payloadType]
+	if found && count >= o.maxPrints {
+		// We already printed the max number of records for this payload type.
+		return
+	} else {
+		count++
+		o.counters[payloadType] = count
+		carrow.PrintRecord(payloadType.String(), record, o.maxRows, count, o.maxPrints)
+	}
 }

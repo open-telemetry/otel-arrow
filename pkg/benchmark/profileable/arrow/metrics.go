@@ -41,6 +41,8 @@ type MetricsProfileable struct {
 	pool              *memory.GoAllocator
 	unaryRpcMode      bool
 	options           []cfg.Option
+
+	observer arrow_record.ProducerObserver
 }
 
 func NewMetricsProfileable(tags []string, dataset dataset.MetricsDataset, config *benchmark.Config) *MetricsProfileable {
@@ -55,11 +57,13 @@ func NewMetricsProfileable(tags []string, dataset dataset.MetricsDataset, config
 		options = append(options, cfg.WithStats())
 	}
 
+	producer := arrow_record.NewProducerWithOptions(options...)
+
 	return &MetricsProfileable{
 		tags:              tags,
 		dataset:           dataset,
 		compression:       benchmark.Zstd(),
-		producer:          arrow_record.NewProducerWithOptions(options...),
+		producer:          producer,
 		consumer:          arrow_record.NewConsumer(),
 		batchArrowRecords: make([]*colarspb.BatchArrowRecords, 0, 10),
 		config:            config,
@@ -75,6 +79,10 @@ func (s *MetricsProfileable) Name() string {
 
 func (s *MetricsProfileable) EnableUnaryRpcMode() {
 	s.unaryRpcMode = true
+}
+
+func (s *MetricsProfileable) SetObserver(observer arrow_record.ProducerObserver) {
+	s.observer = observer
 }
 
 func (s *MetricsProfileable) Tags() []string {
@@ -94,6 +102,7 @@ func (s *MetricsProfileable) StartProfiling(_ io.Writer) {
 	if !s.unaryRpcMode {
 		s.producer = arrow_record.NewProducerWithOptions(s.options...)
 		s.consumer = arrow_record.NewConsumer()
+		s.producer.SetObserver(s.observer)
 	}
 }
 func (s *MetricsProfileable) EndProfiling(_ io.Writer) {
@@ -110,6 +119,7 @@ func (s *MetricsProfileable) InitBatchSize(_ io.Writer, _ int) {}
 func (s *MetricsProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	if s.unaryRpcMode {
 		s.producer = arrow_record.NewProducerWithOptions(s.options...)
+		s.producer.SetObserver(s.observer)
 		s.consumer = arrow_record.NewConsumer()
 	}
 

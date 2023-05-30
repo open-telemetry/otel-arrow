@@ -23,6 +23,7 @@ package arrow
 import (
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/array"
@@ -45,10 +46,23 @@ const (
 )
 
 // PrintRecord prints the contents of an Arrow record to stdout.
-func PrintRecord(record arrow.Record) {
+func PrintRecord(name string, record arrow.Record, maxRows, countPrints, maxPrints int) {
 	println()
+
+	if record.NumRows() > int64(maxRows) {
+		fmt.Printf("Record %q -> #rows: %d/%d, prints: %d/%d\n", name, maxRows, record.NumRows(), countPrints, maxPrints)
+	} else {
+		fmt.Printf("Record %q -> #rows: %d, prints: %d/%d\n", name, record.NumRows(), countPrints, maxPrints)
+	}
+
 	schema := record.Schema()
 	colNames := schemaColNames(schema)
+
+	for i := 0; i < len(colNames); i++ {
+		print(strings.Repeat("-", MaxColSize), "-+")
+	}
+	println()
+
 	for _, colName := range colNames {
 		if len(colName) > MaxColSize {
 			colName = colName[:MaxColSize]
@@ -58,7 +72,11 @@ func PrintRecord(record arrow.Record) {
 	}
 	println()
 
-	println("#rows:", record.NumRows())
+	for i := 0; i < len(colNames); i++ {
+		print(strings.Repeat("-", MaxColSize), "-+")
+	}
+	println()
+
 	rows := int(math.Min(500.0, float64(record.NumRows())))
 	for row := 0; row < rows; row++ {
 		values := recordColValues(record, row)
@@ -115,24 +133,36 @@ func arrayColValues(arr arrow.Array, row int) []string {
 	switch c := arr.(type) {
 	case *array.Boolean:
 		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+	// uints
 	case *array.Uint8:
 		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
 	case *array.Uint16:
 		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
 	case *array.Uint32:
 		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+	case *array.Uint64:
+		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+	// ints
+	case *array.Int8:
+		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+	case *array.Int16:
+		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
 	case *array.Int32:
 		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
 	case *array.Int64:
 		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+	// floats
+	case *array.Float32:
+		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+	case *array.Float64:
+		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+
 	case *array.String:
 		str := c.Value(row)
 		if len(str) > MaxColSize {
 			str = str[:MaxColSize]
 		}
 		return []string{fmt.Sprintf(MaxValSize, str)}
-	case *array.Float64:
-		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
 	case *array.Binary:
 		bin := c.Value(row)
 		if len(bin) > MaxColSize {
@@ -188,6 +218,8 @@ func arrayColValues(arr arrow.Array, row int) []string {
 		return values
 	case *array.SparseUnion:
 		return []string{sparseUnionValue(c, row)}
+	case *array.List:
+		return []string{"List not supported"}
 	default:
 		panic(fmt.Sprintf("unsupported array type %T", arr))
 	}

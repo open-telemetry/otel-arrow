@@ -42,6 +42,8 @@ type TracesProfileable struct {
 	unaryRpcMode          bool
 	stats                 bool
 	tracesProducerOptions []cfg.Option
+
+	observer arrow_record.ProducerObserver
 }
 
 func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *benchmark.Config) *TracesProfileable {
@@ -71,6 +73,10 @@ func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *be
 	}
 }
 
+func (s *TracesProfileable) SetObserver(observer arrow_record.ProducerObserver) {
+	s.observer = observer
+}
+
 func (s *TracesProfileable) Name() string {
 	return "OTLP_ARROW"
 }
@@ -96,6 +102,7 @@ func (s *TracesProfileable) StartProfiling(_ io.Writer) {
 	if !s.unaryRpcMode {
 		s.producer = arrow_record.NewProducerWithOptions(s.tracesProducerOptions...)
 		s.consumer = arrow_record.NewConsumer()
+		s.producer.SetObserver(s.observer)
 	}
 }
 func (s *TracesProfileable) EndProfiling(_ io.Writer) {
@@ -113,6 +120,7 @@ func (s *TracesProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	if s.unaryRpcMode {
 		s.producer = arrow_record.NewProducerWithOptions(s.tracesProducerOptions...)
 		s.consumer = arrow_record.NewConsumer()
+		s.producer.SetObserver(s.observer)
 	}
 
 	s.traces = s.dataset.Traces(startAt, size)

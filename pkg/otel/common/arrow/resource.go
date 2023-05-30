@@ -108,7 +108,7 @@ func (b *ResourceBuilder) Append(resource *pcommon.Resource, attrsAccu *Attribut
 	})
 }
 
-func (b *ResourceBuilder) AppendWithAttrsID(attrsID int64, resource *pcommon.Resource, schemaUrl string) error {
+func (b *ResourceBuilder) AppendWithID(attrsID int64, resource *pcommon.Resource, schemaUrl string) error {
 	if b.released {
 		return werror.Wrap(ErrBuilderAlreadyReleased)
 	}

@@ -14,12 +14,17 @@
 
 package arrow
 
+// Exemplars are represented as Arrow records.
+
 import (
+	"errors"
+	"math"
+	"sort"
+
 	"github.com/apache/arrow/go/v12/arrow"
-	"github.com/apache/arrow/go/v12/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow_old"
+	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
@@ -27,69 +32,187 @@ import (
 )
 
 var (
-	// ExemplarDT is an Arrow Data Type representing an OTLP metric exemplar.
-	ExemplarDT = arrow.StructOf(
-		arrow.Field{Name: constants.Attributes, Type: acommon.AttributesDT, Metadata: schema.Metadata(schema.Optional)},
-		arrow.Field{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional)},
-		arrow.Field{Name: constants.MetricValue, Type: MetricValueDT, Metadata: schema.Metadata(schema.Optional)},
-		arrow.Field{Name: constants.SpanId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 8}, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
-		arrow.Field{Name: constants.TraceId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 16}, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
-	)
+	// ExemplarSchema is the Arrow schema representing an OTLP metric exemplar.
+	ExemplarSchema = arrow.NewSchema([]arrow.Field{
+		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional, schema.DeltaEncoding)},
+		{Name: constants.ParentID, Type: arrow.PrimitiveTypes.Uint32},
+		{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.IntValue, Type: arrow.PrimitiveTypes.Int64, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.DoubleValue, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.SpanId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 8}, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
+		{Name: constants.TraceId, Type: &arrow.FixedSizeBinaryType{ByteWidth: 16}, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
+	}, nil)
 )
 
-// ExemplarBuilder is a helper to build an Arrow array containing a collection of OTLP metric exemplar.
-type ExemplarBuilder struct {
-	released bool
+type (
+	// ExemplarBuilder is a helper to build an Arrow array containing a collection of OTLP metric exemplar.
+	ExemplarBuilder struct {
+		released bool
 
-	builder *builder.StructBuilder // `exemplar` value builder
+		builder *builder.RecordBuilderExt
 
-	ab   *acommon.AttributesBuilder      // attributes builder
-	tunb *builder.TimestampBuilder       // time unix nano builder
-	mvb  *MetricValueBuilder             // metric value builder
-	sib  *builder.FixedSizeBinaryBuilder // span id builder
-	tib  *builder.FixedSizeBinaryBuilder // trace id builder
-}
+		ib   *builder.Uint32DeltaBuilder     // `id` builder
+		pib  *builder.Uint32Builder          // `parent_id` builder
+		tunb *builder.TimestampBuilder       // `time_unix_nano` builder
+		ivb  *builder.Int64Builder           // `int_value` metric builder
+		dvb  *builder.Float64Builder         // `double_value` metric builder
+		sib  *builder.FixedSizeBinaryBuilder // span id builder
+		tib  *builder.FixedSizeBinaryBuilder // trace id builder
 
-// ExemplarBuilderFrom creates a new ExemplarBuilder from an existing StructBuilder.
-func ExemplarBuilderFrom(ex *builder.StructBuilder) *ExemplarBuilder {
-	return &ExemplarBuilder{
-		released: false,
-		builder:  ex,
+		accumulator *ExemplarAccumulator
+		attrsAccu   *carrow.Attributes32Accumulator
 
-		ab:   acommon.AttributesBuilderFrom(ex.MapBuilder(constants.Attributes)),
-		tunb: ex.TimestampBuilder(constants.TimeUnixNano),
-		mvb:  MetricValueBuilderFrom(ex.SparseUnionBuilder(constants.MetricValue)),
-		sib:  ex.FixedSizeBinaryBuilder(constants.SpanId),
-		tib:  ex.FixedSizeBinaryBuilder(constants.TraceId),
-	}
-}
-
-// Build builds the exemplar Arrow array.
-//
-// Once the returned array is no longer needed, Release() must be called to free the
-// memory allocated by the array.
-func (b *ExemplarBuilder) Build() (*array.Struct, error) {
-	if b.released {
-		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
+		config      *ExemplarConfig
+		payloadType *carrow.PayloadType
 	}
 
-	defer b.Release()
-	return b.builder.NewStructArray(), nil
-}
-
-// Append appends an exemplar to the builder.
-func (b *ExemplarBuilder) Append(ex pmetric.Exemplar) error {
-	if b.released {
-		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
+	Exemplar struct {
+		ParentID uint32
+		Orig     *pmetric.Exemplar
 	}
 
-	return b.builder.Append(ex, func() error {
-		if err := b.ab.Append(ex.FilteredAttributes()); err != nil {
-			return werror.Wrap(err)
+	ExemplarAccumulator struct {
+		groupCount uint32
+		exemplars  []Exemplar
+		sorter     ExemplarSorter
+	}
+
+	ExemplarParentIdEncoder struct {
+		prevParentID uint32
+		encoderType  int
+	}
+
+	ExemplarSorter interface {
+		Sort(exemplars []Exemplar)
+		Encode(parentID uint32, dp *pmetric.Exemplar) uint32
+		Reset()
+	}
+
+	ExemplarsByNothing           struct{}
+	ExemplarsByTypeValueParentId struct {
+		prevParentID uint32
+		prevExemplar *pmetric.Exemplar
+	}
+)
+
+// NewExemplarBuilder creates a new ExemplarBuilder.
+func NewExemplarBuilder(rBuilder *builder.RecordBuilderExt, payloadType *carrow.PayloadType, conf *ExemplarConfig) *ExemplarBuilder {
+	b := &ExemplarBuilder{
+		released:    false,
+		builder:     rBuilder,
+		accumulator: NewExemplarAccumulator(conf.Sorter),
+		config:      conf,
+		payloadType: payloadType,
+	}
+
+	b.init()
+	return b
+}
+
+func (b *ExemplarBuilder) init() {
+	b.ib = b.builder.Uint32DeltaBuilder(constants.ID)
+	// As the events are sorted before insertion, the delta between two
+	// consecutive ID should always be <=1.
+	b.ib.SetMaxDelta(1)
+	b.pib = b.builder.Uint32Builder(constants.ParentID)
+
+	b.tunb = b.builder.TimestampBuilder(constants.TimeUnixNano)
+	b.ivb = b.builder.Int64Builder(constants.IntValue)
+	b.dvb = b.builder.Float64Builder(constants.DoubleValue)
+	b.sib = b.builder.FixedSizeBinaryBuilder(constants.SpanId)
+	b.tib = b.builder.FixedSizeBinaryBuilder(constants.TraceId)
+}
+
+func (b *ExemplarBuilder) SetAttributesAccumulator(accu *carrow.Attributes32Accumulator) {
+	b.attrsAccu = accu
+}
+
+func (b *ExemplarBuilder) SchemaID() string {
+	return b.builder.SchemaID()
+}
+
+func (b *ExemplarBuilder) Schema() *arrow.Schema {
+	return b.builder.Schema()
+}
+
+func (b *ExemplarBuilder) IsEmpty() bool {
+	return b.accumulator.IsEmpty()
+}
+
+func (b *ExemplarBuilder) Accumulator() *ExemplarAccumulator {
+	return b.accumulator
+}
+
+func (b *ExemplarBuilder) Build() (record arrow.Record, err error) {
+	schemaNotUpToDateCount := 0
+
+	// Loop until the record is built successfully.
+	// Intermediaries steps may be required to update the schema.
+	for {
+		b.attrsAccu.Reset()
+		record, err = b.TryBuild(b.attrsAccu)
+		if err != nil {
+			if record != nil {
+				record.Release()
+			}
+
+			switch {
+			case errors.Is(err, schema.ErrSchemaNotUpToDate):
+				schemaNotUpToDateCount++
+				if schemaNotUpToDateCount > 5 {
+					panic("Too many consecutive schema updates. This shouldn't happen.")
+				}
+			default:
+				return nil, werror.Wrap(err)
+			}
+		} else {
+			break
 		}
-		b.tunb.Append(arrow.Timestamp(ex.Timestamp()))
-		if err := b.mvb.AppendExemplarValue(ex); err != nil {
-			return werror.Wrap(err)
+	}
+
+	return record, werror.Wrap(err)
+}
+
+func (b *ExemplarBuilder) TryBuild(attrsAccu *carrow.Attributes32Accumulator) (record arrow.Record, err error) {
+	if b.released {
+		return nil, werror.Wrap(carrow.ErrBuilderAlreadyReleased)
+	}
+
+	b.accumulator.Reset()
+	b.accumulator.sorter.Sort(b.accumulator.exemplars)
+
+	exemplarID := uint32(0)
+
+	for _, exemplar := range b.accumulator.exemplars {
+		ex := exemplar.Orig
+		attrs := ex.FilteredAttributes()
+		if attrs.Len() == 0 {
+			b.ib.AppendNull()
+		} else {
+			b.ib.Append(exemplarID)
+
+			// Attributes
+			err = attrsAccu.Append(exemplarID, attrs)
+			if err != nil {
+				return
+			}
+
+			exemplarID++
+		}
+
+		b.pib.Append(b.accumulator.sorter.Encode(exemplar.ParentID, exemplar.Orig))
+		b.tunb.Append(arrow.Timestamp(ex.Timestamp().AsTime().UnixNano()))
+
+		switch ex.ValueType() {
+		case pmetric.ExemplarValueTypeInt:
+			b.ivb.Append(ex.IntValue())
+			b.dvb.AppendNull()
+		case pmetric.ExemplarValueTypeDouble:
+			b.ivb.AppendNull()
+			b.dvb.Append(ex.DoubleValue())
+		default:
+			b.ivb.AppendNull()
+			b.dvb.AppendNull()
 		}
 
 		sid := ex.SpanID()
@@ -97,9 +220,21 @@ func (b *ExemplarBuilder) Append(ex pmetric.Exemplar) error {
 
 		tid := ex.TraceID()
 		b.tib.Append(tid[:])
+	}
 
-		return nil
-	})
+	record, err = b.builder.NewRecord()
+	if err != nil {
+		b.init()
+	}
+	return
+}
+
+func (b *ExemplarBuilder) Reset() {
+	b.accumulator.Reset()
+}
+
+func (b *ExemplarBuilder) PayloadType() *carrow.PayloadType {
+	return b.payloadType
 }
 
 // Release releases the memory allocated by the builder.
@@ -108,5 +243,162 @@ func (b *ExemplarBuilder) Release() {
 		b.builder.Release()
 
 		b.released = true
+	}
+}
+
+func NewExemplarAccumulator(sorter ExemplarSorter) *ExemplarAccumulator {
+	return &ExemplarAccumulator{
+		groupCount: 0,
+		exemplars:  make([]Exemplar, 0),
+		sorter:     sorter,
+	}
+}
+
+func (a *ExemplarAccumulator) IsEmpty() bool {
+	return len(a.exemplars) == 0
+}
+
+// Append appends a slice of exemplars to the accumulator.
+func (a *ExemplarAccumulator) Append(dpID uint32, exemplars pmetric.ExemplarSlice) error {
+	if a.groupCount == math.MaxUint32 {
+		panic("The maximum number of group of exemplars has been reached (max is uint32).")
+	}
+
+	if exemplars.Len() == 0 {
+		return nil
+	}
+
+	for i := 0; i < exemplars.Len(); i++ {
+		evt := exemplars.At(i)
+		a.exemplars = append(a.exemplars, Exemplar{
+			ParentID: dpID,
+			Orig:     &evt,
+		})
+	}
+
+	a.groupCount++
+
+	return nil
+}
+
+func (a *ExemplarAccumulator) Reset() {
+	a.groupCount = 0
+	a.exemplars = a.exemplars[:0]
+}
+
+func NewExemplarParentIdEncoder(encoderType int) *ExemplarParentIdEncoder {
+	return &ExemplarParentIdEncoder{
+		prevParentID: 0,
+		encoderType:  encoderType,
+	}
+}
+
+func (e *ExemplarParentIdEncoder) Encode(parentID uint32) uint32 {
+	switch e.encoderType {
+	case carrow.ParentIdNoEncoding:
+		return parentID
+	case carrow.ParentIdDeltaEncoding:
+		delta := parentID - e.prevParentID
+		e.prevParentID = parentID
+		return delta
+	case carrow.ParentIdDeltaGroupEncoding:
+		delta := parentID - e.prevParentID
+		e.prevParentID = parentID
+		return delta
+	default:
+		panic("Unknown parent ID encoding type.")
+	}
+}
+
+// No sorting
+// ==========
+
+func UnsortedExemplars() *ExemplarsByNothing {
+	return &ExemplarsByNothing{}
+}
+
+func (s *ExemplarsByNothing) Sort(_ []Exemplar) {
+}
+
+func (s *ExemplarsByNothing) Encode(parentID uint32, _ *pmetric.Exemplar) uint32 {
+	return parentID
+}
+
+func (s *ExemplarsByNothing) Reset() {}
+
+// Sorts exemplars by type, value, and parentID.
+// =============================================
+
+func SortExemplarsByTypeValueParentId() *ExemplarsByTypeValueParentId {
+	return &ExemplarsByTypeValueParentId{}
+}
+
+func (s *ExemplarsByTypeValueParentId) Sort(exemplars []Exemplar) {
+	sort.Slice(exemplars, func(i, j int) bool {
+		exI := exemplars[i].Orig
+		exJ := exemplars[j].Orig
+
+		if exI.ValueType() == exJ.ValueType() {
+			switch exI.ValueType() {
+			case pmetric.ExemplarValueTypeInt:
+				if exI.IntValue() == exJ.IntValue() {
+					return exemplars[i].ParentID < exemplars[j].ParentID
+				} else {
+					return exI.IntValue() < exJ.IntValue()
+				}
+			case pmetric.ExemplarValueTypeDouble:
+				if exI.DoubleValue() == exJ.DoubleValue() {
+					return exemplars[i].ParentID < exemplars[j].ParentID
+				} else {
+					return exI.DoubleValue() < exJ.DoubleValue()
+				}
+			default:
+				return false
+			}
+		} else {
+			return exI.ValueType() < exJ.ValueType()
+		}
+	})
+}
+
+func (s *ExemplarsByTypeValueParentId) Encode(parentID uint32, exemplar *pmetric.Exemplar) uint32 {
+	if s.prevExemplar == nil {
+		s.prevExemplar = exemplar
+		s.prevParentID = parentID
+		return parentID
+	}
+
+	if s.Equal(s.prevExemplar, exemplar) {
+		delta := parentID - s.prevParentID
+		s.prevParentID = parentID
+		return delta
+	} else {
+		s.prevExemplar = exemplar
+		s.prevParentID = parentID
+		return parentID
+	}
+}
+
+func (s *ExemplarsByTypeValueParentId) Reset() {
+	s.prevParentID = 0
+	s.prevExemplar = nil
+}
+
+func (s *ExemplarsByTypeValueParentId) Equal(ex1, ex2 *pmetric.Exemplar) bool {
+	if ex1 == nil || ex2 == nil {
+		return false
+	}
+
+	if ex1.ValueType() == ex2.ValueType() {
+		switch ex1.ValueType() {
+		case pmetric.ExemplarValueTypeInt:
+			return ex1.IntValue() == ex2.IntValue()
+		case pmetric.ExemplarValueTypeDouble:
+			return ex1.DoubleValue() == ex2.DoubleValue()
+		default:
+			return true
+		}
+	} else {
+		return false
 	}
 }

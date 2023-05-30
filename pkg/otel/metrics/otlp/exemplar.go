@@ -16,87 +16,150 @@ package otlp
 
 import (
 	"github.com/apache/arrow/go/v12/arrow"
-	"github.com/apache/arrow/go/v12/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
-	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
-type ExemplarIds struct {
-	ID           int
-	Attributes   *otlp.AttributeIds
-	TimeUnixNano int
-	SpanID       int
-	TraceID      int
-	ValueID      int
+const (
+	UndefinedTypeValue = 0
+	IntValue           = 1
+	DoubleValue        = 2
+)
+
+type (
+	// ExemplarIDs contains the field IDs for the exemplar struct.
+	ExemplarIDs struct {
+		ID           int
+		ParentID     int
+		TimeUnixNano int
+		SpanID       int
+		TraceID      int
+		IntValue     int
+		DoubleValue  int
+	}
+
+	ExemplarsStore struct {
+		nextID         uint32
+		exemplarsByIDs map[uint32]pmetric.ExemplarSlice
+	}
+
+	ExemplarParentIdDecoder struct {
+		prevParentID    uint32
+		prevType        int
+		prevIntValue    *int64
+		prevDoubleValue *float64
+		encodingType    int
+	}
+)
+
+func NewExemplarsStore() *ExemplarsStore {
+	return &ExemplarsStore{
+		exemplarsByIDs: make(map[uint32]pmetric.ExemplarSlice),
+	}
 }
 
-func NewExemplarIds(schema *arrow.Schema) (*ExemplarIds, error) {
-	id, exemplarDT, err := arrowutils.ListOfStructsFieldIDFromSchema(schema, constants.Exemplars)
+func SchemaToExemplarIDs(schema *arrow.Schema) (*ExemplarIDs, error) {
+	ID, err := arrowutils.FieldIDFromSchema(schema, constants.ID)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
 
-	attributesId, err := otlp.NewAttributeIds(exemplarDT)
+	ParentID, err := arrowutils.FieldIDFromSchema(schema, constants.ParentID)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
 
-	timeUnixNanoId, _ := arrowutils.FieldIDFromStruct(exemplarDT, constants.TimeUnixNano)
-	spanIdId, _ := arrowutils.FieldIDFromStruct(exemplarDT, constants.SpanId)
-	traceIdId, _ := arrowutils.FieldIDFromStruct(exemplarDT, constants.TraceId)
-	valueId, _ := arrowutils.FieldIDFromStruct(exemplarDT, constants.MetricValue)
+	timeUnixNanoId, _ := arrowutils.FieldIDFromSchema(schema, constants.TimeUnixNano)
+	spanIdId, _ := arrowutils.FieldIDFromSchema(schema, constants.SpanId)
+	traceIdId, _ := arrowutils.FieldIDFromSchema(schema, constants.TraceId)
+	intValueId, _ := arrowutils.FieldIDFromSchema(schema, constants.IntValue)
+	doubleValueId, _ := arrowutils.FieldIDFromSchema(schema, constants.DoubleValue)
 
-	return &ExemplarIds{
-		ID:           id,
-		Attributes:   attributesId,
+	return &ExemplarIDs{
+		ID:           ID,
+		ParentID:     ParentID,
 		TimeUnixNano: timeUnixNanoId,
 		SpanID:       spanIdId,
 		TraceID:      traceIdId,
-		ValueID:      valueId,
+		IntValue:     intValueId,
+		DoubleValue:  doubleValueId,
 	}, nil
 }
 
-func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, record arrow.Record, ndpIdx int, ids *ExemplarIds) error {
-	if ids.ID == -1 {
-		// No exemplars
-		return nil
+func (s *ExemplarsStore) ExemplarsByID(ID uint32) pmetric.ExemplarSlice {
+	exemplars, found := s.exemplarsByIDs[ID]
+	if !found {
+		return pmetric.NewExemplarSlice()
 	}
+	return exemplars
+}
 
-	exemplars, err := arrowutils.ListOfStructsFromRecord(record, ids.ID, ndpIdx)
+// ExemplarsStoreFrom creates an ExemplarsStore from an arrow.Record.
+// Note: This function consume the record.
+func ExemplarsStoreFrom(
+	record arrow.Record,
+	attrsStore *otlp.Attributes32Store,
+) (*ExemplarsStore, error) {
+	defer record.Release()
+
+	store := &ExemplarsStore{
+		exemplarsByIDs: make(map[uint32]pmetric.ExemplarSlice),
+	}
+	// ToDo Make this decoding dependent on the encoding type column metadata.
+	parentIdDecoder := NewExemplarParentIdDecoder(carrow.ParentIdDeltaGroupEncoding)
+
+	exemplarIDs, err := SchemaToExemplarIDs(record.Schema())
 	if err != nil {
-		return werror.WrapWithContext(err, map[string]interface{}{"ndpIdx": ndpIdx})
+		return nil, werror.Wrap(err)
 	}
 
-	if exemplars == nil {
-		return nil
-	}
+	rows := int(record.NumRows())
 
-	for exemplarIdx := exemplars.Start(); exemplarIdx < exemplars.End(); exemplarIdx++ {
-		exemplar := exemplarSlice.AppendEmpty()
-
-		if exemplars.IsNull(exemplarIdx) {
-			continue
-		}
-
-		if err := otlp.AppendAttributesInto(exemplar.FilteredAttributes(), exemplars.Array(), exemplarIdx, ids.Attributes); err != nil {
-			return werror.WrapWithContext(err, map[string]interface{}{"ndpIdx": ndpIdx})
-		}
-
-		timeUnixNano, err := exemplars.TimestampFieldByID(ids.TimeUnixNano, exemplarIdx)
+	// Read all exemplar fields from the record and reconstruct the exemplar
+	// slices by ID.
+	for row := 0; row < rows; row++ {
+		ID, err := arrowutils.NullableU32FromRecord(record, exemplarIDs.ID, row)
 		if err != nil {
-			return werror.Wrap(err)
+			return nil, werror.Wrap(err)
+		}
+
+		intValue, err := arrowutils.I64OrNilFromRecord(record, exemplarIDs.IntValue, row)
+		if err != nil {
+			return nil, werror.Wrap(err)
+		}
+		doubleValue, err := arrowutils.F64OrNilFromRecord(record, exemplarIDs.DoubleValue, row)
+		if err != nil {
+			return nil, werror.Wrap(err)
+		}
+
+		parentID, err := arrowutils.U32FromRecord(record, exemplarIDs.ParentID, row)
+		if err != nil {
+			return nil, werror.Wrap(err)
+		}
+		parentID = parentIdDecoder.Decode(parentID, intValue, doubleValue)
+		exemplars, found := store.exemplarsByIDs[parentID]
+		if !found {
+			exemplars = pmetric.NewExemplarSlice()
+			store.exemplarsByIDs[parentID] = exemplars
+		}
+		exemplar := exemplars.AppendEmpty()
+
+		timeUnixNano, err := arrowutils.TimestampFromRecord(record, exemplarIDs.TimeUnixNano, row)
+		if err != nil {
+			return nil, werror.Wrap(err)
 		}
 		exemplar.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 
-		spanId, err := exemplars.FixedSizeBinaryFieldByID(ids.SpanID, exemplarIdx)
+		spanId, err := arrowutils.FixedSizeBinaryFromRecord(record, exemplarIDs.SpanID, row)
 		if err != nil {
-			return werror.Wrap(err)
+			return nil, werror.Wrap(err)
 		}
 
 		if len(spanId) == 8 {
@@ -105,12 +168,12 @@ func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, record arrow.Recor
 			copy(sid[:], spanId)
 			exemplar.SetSpanID(sid)
 		} else {
-			return werror.WrapWithContext(common.ErrInvalidSpanIDLength, map[string]interface{}{"spanID": spanId})
+			return nil, werror.WrapWithContext(common.ErrInvalidSpanIDLength, map[string]interface{}{"spanID": spanId})
 		}
 
-		traceID, err := exemplars.FixedSizeBinaryFieldByID(ids.TraceID, exemplarIdx)
+		traceID, err := arrowutils.FixedSizeBinaryFromRecord(record, exemplarIDs.TraceID, row)
 		if err != nil {
-			return werror.Wrap(err)
+			return nil, werror.Wrap(err)
 		}
 
 		if len(traceID) == 16 {
@@ -119,18 +182,78 @@ func AppendExemplarsInto(exemplarSlice pmetric.ExemplarSlice, record arrow.Recor
 			copy(tid[:], traceID)
 			exemplar.SetTraceID(tid)
 		} else {
-			return werror.WrapWithContext(common.ErrInvalidTraceIDLength, map[string]interface{}{"traceID": traceID})
+			return nil, werror.WrapWithContext(common.ErrInvalidTraceIDLength, map[string]interface{}{"traceID": traceID})
 		}
 
-		value := exemplars.FieldByID(ids.ValueID)
-		if valueArr, ok := value.(*array.SparseUnion); ok {
-			if err := UpdateValueFromExemplar(exemplar, valueArr, exemplarIdx); err != nil {
-				return werror.Wrap(err)
+		if intValue != nil {
+			exemplar.SetIntValue(*intValue)
+		}
+		if doubleValue != nil {
+			exemplar.SetDoubleValue(*doubleValue)
+		}
+
+		if ID != nil {
+			attrs := attrsStore.AttributesByDeltaID(*ID)
+			if attrs != nil {
+				attrs.CopyTo(exemplar.FilteredAttributes())
 			}
-		} else {
-			return werror.Wrap(ErrNotArraySparseUnion)
 		}
 	}
 
-	return nil
+	return store, nil
+}
+
+func NewExemplarParentIdDecoder(encodingType int) *ExemplarParentIdDecoder {
+	return &ExemplarParentIdDecoder{
+		prevParentID:    0,
+		prevType:        UndefinedTypeValue,
+		prevIntValue:    nil,
+		prevDoubleValue: nil,
+		encodingType:    encodingType,
+	}
+}
+
+func (d *ExemplarParentIdDecoder) Decode(value uint32, intValue *int64, doubleValue *float64) uint32 {
+	switch d.encodingType {
+	case carrow.ParentIdNoEncoding:
+		return value
+	case carrow.ParentIdDeltaEncoding:
+		decodedParentID := d.prevParentID + value
+		d.prevParentID = decodedParentID
+		return decodedParentID
+	case carrow.ParentIdDeltaGroupEncoding:
+		if intValue != nil {
+			if d.prevType == IntValue && d.prevIntValue != nil && *d.prevIntValue == *intValue {
+				parentID := d.prevParentID + value
+				d.prevParentID = parentID
+				return parentID
+			} else {
+				d.prevType = IntValue
+				d.prevIntValue = intValue
+				d.prevDoubleValue = nil
+				d.prevParentID = value
+				return value
+			}
+		}
+
+		if doubleValue != nil {
+			if d.prevType == DoubleValue && d.prevDoubleValue != nil && *d.prevDoubleValue == *doubleValue {
+				parentID := d.prevParentID + value
+				d.prevParentID = parentID
+				return parentID
+			} else {
+				d.prevType = DoubleValue
+				d.prevIntValue = nil
+				d.prevDoubleValue = doubleValue
+				d.prevParentID = value
+				return value
+			}
+		}
+
+		parentID := d.prevParentID + value
+		d.prevParentID = parentID
+		return parentID
+	default:
+		panic("unknown exemplar parent ID encoding type")
+	}
 }

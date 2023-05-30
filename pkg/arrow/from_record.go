@@ -221,8 +221,41 @@ func I64FromRecord(record arrow.Record, fieldID int, row int) (int64, error) {
 	}
 }
 
+// I64OrNilFromRecord returns the int64 value for a specific row and column in an
+// Arrow record. If the value is nil, it returns nil.
+func I64OrNilFromRecord(record arrow.Record, fieldID int, row int) (*int64, error) {
+	if fieldID == AbsentFieldID {
+		return nil, nil
+	}
+
+	arr := record.Column(fieldID)
+	if arr == nil {
+		return nil, nil
+	}
+
+	switch arr := arr.(type) {
+	case *array.Int64:
+		if arr.IsNull(row) {
+			return nil, nil
+		} else {
+			v := arr.Value(row)
+			return &v, nil
+		}
+	case *array.Dictionary:
+		i64Arr := arr.Dictionary().(*array.Int64)
+		if arr.IsNull(row) {
+			return nil, nil
+		} else {
+			v := i64Arr.Value(arr.GetValueIndex(row))
+			return &v, nil
+		}
+	default:
+		return nil, werror.WrapWithMsg(ErrInvalidArrayType, "not a int64 array")
+	}
+}
+
 // F64FromRecord returns the float64 value for a specific row and column in an
-// Arrow record. If the value is null, it returns 0.
+// Arrow record. If the value is nil, it returns 0.
 func F64FromRecord(record arrow.Record, fieldID int, row int) (float64, error) {
 	if fieldID == AbsentFieldID {
 		return 0, nil
@@ -246,7 +279,7 @@ func F64FromRecord(record arrow.Record, fieldID int, row int) (float64, error) {
 }
 
 // F64OrNilFromRecord returns the float64 value for a specific row and column in an
-// Arrow record. Returns nil if the value is null
+// Arrow record. Returns nil if the value is nil
 func F64OrNilFromRecord(record arrow.Record, fieldID int, row int) (*float64, error) {
 	if fieldID == AbsentFieldID {
 		return nil, nil
@@ -339,27 +372,6 @@ func StructFromRecord(record arrow.Record, fieldID int, row int) (sarr *array.St
 		}
 
 		sarr = arr
-	default:
-		err = werror.WrapWithContext(common.ErrNotArrayMap, map[string]interface{}{"row": row, "fieldID": fieldID})
-	}
-	return
-}
-
-// SparseUnionFromRecord returns the sparse union array for a specific row and
-// column in an Arrow record. If the value is null, it returns nil.
-func SparseUnionFromRecord(record arrow.Record, fieldID int, row int) (marr *array.SparseUnion, err error) {
-	if fieldID == AbsentFieldID {
-		return nil, nil
-	}
-
-	column := record.Column(fieldID)
-	switch arr := column.(type) {
-	case *array.SparseUnion:
-		if arr.IsNull(row) {
-			return
-		}
-
-		marr = arr
 	default:
 		err = werror.WrapWithContext(common.ErrNotArrayMap, map[string]interface{}{"row": row, "fieldID": fieldID})
 	}

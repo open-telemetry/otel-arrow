@@ -57,16 +57,13 @@ func NewConfig(globalConf *cfg.Config) *Config {
 		},
 		Attrs: &AttrsConfig{
 			Resource: &arrow.Attrs16Config{
-				Sorter:           arrow.SortAttrs16ByKeyValueParentId(),
-				ParentIdEncoding: arrow.ParentIdDeltaGroupEncoding,
+				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
 			},
 			Scope: &arrow.Attrs16Config{
-				Sorter:           arrow.SortAttrs16ByKeyValueParentId(),
-				ParentIdEncoding: arrow.ParentIdDeltaGroupEncoding,
+				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
 			},
 			Log: &arrow.Attrs16Config{
-				Sorter:           arrow.SortAttrs16ByKeyValueParentId(),
-				ParentIdEncoding: arrow.ParentIdDeltaGroupEncoding,
+				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
 			},
 		},
 	}
@@ -80,16 +77,13 @@ func NewNoSortConfig(globalConf *cfg.Config) *Config {
 		},
 		Attrs: &AttrsConfig{
 			Resource: &arrow.Attrs16Config{
-				Sorter:           arrow.UnsortedAttrs16(),
-				ParentIdEncoding: arrow.ParentIdNoEncoding,
+				Sorter: arrow.UnsortedAttrs16(),
 			},
 			Scope: &arrow.Attrs16Config{
-				Sorter:           arrow.UnsortedAttrs16(),
-				ParentIdEncoding: arrow.ParentIdNoEncoding,
+				Sorter: arrow.UnsortedAttrs16(),
 			},
 			Log: &arrow.Attrs16Config{
-				Sorter:           arrow.UnsortedAttrs16(),
-				ParentIdEncoding: arrow.ParentIdNoEncoding,
+				Sorter: arrow.UnsortedAttrs16(),
 			},
 		},
 	}

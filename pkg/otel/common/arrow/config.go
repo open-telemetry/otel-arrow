@@ -19,12 +19,10 @@ package arrow
 
 type (
 	Attrs16Config struct {
-		Sorter           Attrs16Sorter
-		ParentIdEncoding int
+		Sorter Attrs16Sorter
 	}
 
 	Attrs32Config struct {
-		Sorter           Attrs32Sorter
-		ParentIdEncoding int
+		Sorter Attrs32Sorter
 	}
 )

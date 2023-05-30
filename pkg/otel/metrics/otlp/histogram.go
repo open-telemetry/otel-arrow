@@ -15,8 +15,6 @@
 package otlp
 
 import (
-	"strconv"
-
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -30,46 +28,37 @@ import (
 
 type (
 	HistogramDataPointIDs struct {
-		ID                     int
-		ParentID               int
-		Name                   int
-		Description            int
-		Unit                   int
-		AggregationTemporality int
-		StartTimeUnixNano      int
-		TimeUnixNano           int
-		Count                  int
-		Sum                    int
-		BucketCounts           int // List of uint64
-		ExplicitBounds         int // List of float64
-		Exemplars              *ExemplarIds
-		Flags                  int
-		Min                    int
-		Max                    int
+		ID                int
+		ParentID          int
+		StartTimeUnixNano int
+		TimeUnixNano      int
+		Count             int
+		Sum               int
+		BucketCounts      int // List of uint64
+		ExplicitBounds    int // List of float64
+		Flags             int
+		Min               int
+		Max               int
 	}
 
 	HistogramDataPointsStore struct {
-		nextID      uint16
-		metricByIDs map[uint16]map[string]*pmetric.Metric
+		nextID         uint16
+		dataPointsByID map[uint16]pmetric.HistogramDataPointSlice
 	}
 )
 
 func NewHistogramDataPointsStore() *HistogramDataPointsStore {
 	return &HistogramDataPointsStore{
-		metricByIDs: make(map[uint16]map[string]*pmetric.Metric),
+		dataPointsByID: make(map[uint16]pmetric.HistogramDataPointSlice),
 	}
 }
 
-func (s *HistogramDataPointsStore) HistogramMetricsByID(ID uint16) []*pmetric.Metric {
-	histograms, ok := s.metricByIDs[ID]
+func (s *HistogramDataPointsStore) HistogramMetricsByID(ID uint16) pmetric.HistogramDataPointSlice {
+	dps, ok := s.dataPointsByID[ID]
 	if !ok {
-		return make([]*pmetric.Metric, 0)
+		return pmetric.NewHistogramDataPointSlice()
 	}
-	metrics := make([]*pmetric.Metric, 0, len(histograms))
-	for _, metric := range histograms {
-		metrics = append(metrics, metric)
-	}
-	return metrics
+	return dps
 }
 
 func SchemaToHistogramIDs(schema *arrow.Schema) (*HistogramDataPointIDs, error) {
@@ -79,26 +68,6 @@ func SchemaToHistogramIDs(schema *arrow.Schema) (*HistogramDataPointIDs, error) 
 	}
 
 	parentID, err := arrowutils.FieldIDFromSchema(schema, constants.ParentID)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
-	name, err := arrowutils.FieldIDFromSchema(schema, constants.Name)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
-	description, err := arrowutils.FieldIDFromSchema(schema, constants.Description)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
-	unit, err := arrowutils.FieldIDFromSchema(schema, constants.Unit)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
-	aggregationTemporality, err := arrowutils.FieldIDFromSchema(schema, constants.AggregationTemporality)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
@@ -133,11 +102,6 @@ func SchemaToHistogramIDs(schema *arrow.Schema) (*HistogramDataPointIDs, error) 
 		return nil, werror.Wrap(err)
 	}
 
-	exemplars, err := NewExemplarIds(schema)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
 	flags, err := arrowutils.FieldIDFromSchema(schema, constants.Flags)
 	if err != nil {
 		return nil, werror.Wrap(err)
@@ -154,30 +118,25 @@ func SchemaToHistogramIDs(schema *arrow.Schema) (*HistogramDataPointIDs, error) 
 	}
 
 	return &HistogramDataPointIDs{
-		ID:                     ID,
-		ParentID:               parentID,
-		Name:                   name,
-		Description:            description,
-		Unit:                   unit,
-		AggregationTemporality: aggregationTemporality,
-		StartTimeUnixNano:      startTimeUnixNano,
-		TimeUnixNano:           timeUnixNano,
-		Count:                  count,
-		Sum:                    sum,
-		BucketCounts:           bucketCounts,
-		ExplicitBounds:         explicitBounds,
-		Exemplars:              exemplars,
-		Flags:                  flags,
-		Min:                    min,
-		Max:                    max,
+		ID:                ID,
+		ParentID:          parentID,
+		StartTimeUnixNano: startTimeUnixNano,
+		TimeUnixNano:      timeUnixNano,
+		Count:             count,
+		Sum:               sum,
+		BucketCounts:      bucketCounts,
+		ExplicitBounds:    explicitBounds,
+		Flags:             flags,
+		Min:               min,
+		Max:               max,
 	}, nil
 }
 
-func HistogramDataPointsStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store) (*HistogramDataPointsStore, error) {
+func HistogramDataPointsStoreFrom(record arrow.Record, exemplarsStore *ExemplarsStore, attrsStore *otlp.Attributes32Store) (*HistogramDataPointsStore, error) {
 	defer record.Release()
 
 	store := &HistogramDataPointsStore{
-		metricByIDs: make(map[uint16]map[string]*pmetric.Metric),
+		dataPointsByID: make(map[uint16]pmetric.HistogramDataPointSlice),
 	}
 
 	fieldIDs, err := SchemaToHistogramIDs(record.Schema())
@@ -186,6 +145,7 @@ func HistogramDataPointsStoreFrom(record arrow.Record, attrsStore *otlp.Attribut
 	}
 
 	count := int(record.NumRows())
+	prevParentID := uint16(0)
 
 	for row := 0; row < count; row++ {
 		// Data Point ID
@@ -195,54 +155,20 @@ func HistogramDataPointsStoreFrom(record arrow.Record, attrsStore *otlp.Attribut
 		}
 
 		// ParentID = Scope ID
-		parentID, err := arrowutils.U16FromRecord(record, fieldIDs.ParentID, row)
+		delta, err := arrowutils.U16FromRecord(record, fieldIDs.ParentID, row)
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
+		parentID := prevParentID + delta
+		prevParentID = parentID
 
-		metrics := store.metricByIDs[parentID]
-		if metrics == nil {
-			metrics = make(map[string]*pmetric.Metric)
-			store.metricByIDs[parentID] = metrics
+		hdps, found := store.dataPointsByID[parentID]
+		if !found {
+			hdps = pmetric.NewHistogramDataPointSlice()
+			store.dataPointsByID[parentID] = hdps
 		}
 
-		name, err := arrowutils.StringFromRecord(record, fieldIDs.Name, row)
-		if err != nil {
-			return nil, werror.Wrap(err)
-		}
-
-		description, err := arrowutils.StringFromRecord(record, fieldIDs.Description, row)
-		if err != nil {
-			return nil, werror.Wrap(err)
-		}
-
-		unit, err := arrowutils.StringFromRecord(record, fieldIDs.Unit, row)
-		if err != nil {
-			return nil, werror.Wrap(err)
-		}
-
-		aggregationTemporality, err := arrowutils.I32FromRecord(record, fieldIDs.AggregationTemporality, row)
-		if err != nil {
-			return nil, werror.Wrap(err)
-		}
-
-		metricSig := name + ":" + description + ":" + unit + ":" + strconv.Itoa(int(aggregationTemporality))
-		metric := metrics[metricSig]
-		var histogram pmetric.Histogram
-
-		if metric == nil {
-			metricObj := pmetric.NewMetric()
-			metric = &metricObj
-			metric.SetName(name)
-			metric.SetDescription(description)
-			metric.SetUnit(unit)
-			histogram = metric.SetEmptyHistogram()
-			histogram.SetAggregationTemporality(pmetric.AggregationTemporality(aggregationTemporality))
-			metrics[metricSig] = metric
-		} else {
-			histogram = metric.Histogram()
-		}
-		hdp := histogram.DataPoints().AppendEmpty()
+		hdp := hdps.AppendEmpty()
 
 		startTimeUnixNano, err := arrowutils.TimestampFromRecord(record, fieldIDs.StartTimeUnixNano, row)
 		if err != nil {
@@ -298,15 +224,6 @@ func HistogramDataPointsStoreFrom(record arrow.Record, attrsStore *otlp.Attribut
 			return nil, werror.Wrap(ErrNotArrayFloat64)
 		}
 
-		exemplars, err := arrowutils.ListOfStructsFromRecord(record, fieldIDs.Exemplars.ID, row)
-		if exemplars != nil && err == nil {
-			if err := AppendExemplarsInto(hdp.Exemplars(), record, row, fieldIDs.Exemplars); err != nil {
-				return nil, werror.Wrap(err)
-			}
-		} else if err != nil {
-			return nil, werror.Wrap(err)
-		}
-
 		flags, err := arrowutils.U32FromRecord(record, fieldIDs.Flags, row)
 		if err != nil {
 			return nil, werror.Wrap(err)
@@ -330,6 +247,9 @@ func HistogramDataPointsStoreFrom(record arrow.Record, attrsStore *otlp.Attribut
 		}
 
 		if ID != nil {
+			exemplars := exemplarsStore.ExemplarsByID(*ID)
+			exemplars.MoveAndAppendTo(hdp.Exemplars())
+
 			attrs := attrsStore.AttributesByDeltaID(*ID)
 			if attrs != nil {
 				attrs.CopyTo(hdp.Attributes())

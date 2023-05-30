@@ -120,7 +120,7 @@ func NewTracesBuilder(
 
 func (b *TracesBuilder) init() error {
 	ib := b.builder.Uint16DeltaBuilder(constants.ID)
-	// As the attributes are sorted before insertion, the delta between two
+	// As traces are sorted before insertion, the delta between two
 	// consecutive attributes ID should always be <=1.
 	ib.SetMaxDelta(1)
 
@@ -169,18 +169,8 @@ func (b *TracesBuilder) Build() (record arrow.Record, err error) {
 		}
 	}
 
-	// ToDo Keep this code for debugging purposes.
-	//if err == nil && count == 0 {
-	//	println("Traces")
-	//	arrow2.PrintRecord(record)
-	//	count = count + 1
-	//}
-
 	return
 }
-
-// ToDo Keep this code for debugging purposes.
-//var count = 0
 
 // Append appends a new set of resource spans to the builder.
 func (b *TracesBuilder) Append(traces ptrace.Traces) error {
@@ -226,7 +216,7 @@ func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 				return werror.Wrap(err)
 			}
 		}
-		if err = b.rb.AppendWithAttrsID(resID, span.Resource, span.ResourceSchemaUrl); err != nil {
+		if err = b.rb.AppendWithID(resID, span.Resource, span.ResourceSchemaUrl); err != nil {
 			return werror.Wrap(err)
 		}
 

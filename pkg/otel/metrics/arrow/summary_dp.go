@@ -39,11 +39,6 @@ var (
 		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional, schema.DeltaEncoding)},
 		// The ID of the parent metric.
 		{Name: constants.ParentID, Type: arrow.PrimitiveTypes.Uint16},
-		{Name: constants.Name, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary8)},
-		{Name: constants.Description, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
-		{Name: constants.Unit, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
-		{Name: constants.AggregationTemporality, Type: arrow.PrimitiveTypes.Int32, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
-		{Name: constants.IsMonotonic, Type: arrow.FixedWidthTypes.Boolean, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.SummaryCount, Type: arrow.PrimitiveTypes.Uint64, Metadata: schema.Metadata(schema.Optional)},
@@ -63,12 +58,6 @@ type (
 		ib  *builder.Uint32DeltaBuilder // id builder
 		pib *builder.Uint16Builder      // parent_id builder
 
-		nb  *builder.StringBuilder  // metric name builder
-		db  *builder.StringBuilder  // metric description builder
-		ub  *builder.StringBuilder  // metric unit builder
-		atb *builder.Int32Builder   // aggregation temporality builder
-		imb *builder.BooleanBuilder // is monotonic builder
-
 		stunb *builder.TimestampBuilder // start_time_unix_nano builder
 		tunb  *builder.TimestampBuilder // time_unix_nano builder
 		scb   *builder.Uint64Builder    // count builder
@@ -79,28 +68,39 @@ type (
 
 		accumulator *SummaryAccumulator
 		attrsAccu   *carrow.Attributes32Accumulator
+
+		config *SummaryConfig
 	}
 
 	Summary struct {
-		ParentID               uint16
-		Metric                 *pmetric.Metric
-		AggregationTemporality pmetric.AggregationTemporality
-		IsMonotonic            bool
-		Orig                   *pmetric.SummaryDataPoint
+		ParentID uint16
+		Orig     *pmetric.SummaryDataPoint
 	}
 
 	SummaryAccumulator struct {
 		groupCount uint32
 		summaries  []Summary
+		sorter     SummarySorter
+	}
+
+	SummarySorter interface {
+		Sort(summaries []Summary)
+		Encode(parentID uint16, summary *pmetric.SummaryDataPoint) uint16
+		Reset()
+	}
+
+	SummariesByNothing  struct{}
+	SummariesByParentID struct {
+		prevParentID uint16
 	}
 )
 
 // NewSummaryDataPointBuilder creates a new SummaryDataPointBuilder.
-func NewSummaryDataPointBuilder(rBuilder *builder.RecordBuilderExt) *SummaryDataPointBuilder {
+func NewSummaryDataPointBuilder(rBuilder *builder.RecordBuilderExt, conf *SummaryConfig) *SummaryDataPointBuilder {
 	b := &SummaryDataPointBuilder{
 		released:    false,
 		builder:     rBuilder,
-		accumulator: NewSummaryAccumulator(),
+		accumulator: NewSummaryAccumulator(conf.Sorter),
 	}
 
 	b.init()
@@ -113,12 +113,6 @@ func (b *SummaryDataPointBuilder) init() {
 	// consecutive attributes ID should always be <=1.
 	b.ib.SetMaxDelta(1)
 	b.pib = b.builder.Uint16Builder(constants.ParentID)
-
-	b.nb = b.builder.StringBuilder(constants.Name)
-	b.db = b.builder.StringBuilder(constants.Description)
-	b.ub = b.builder.StringBuilder(constants.Unit)
-	b.atb = b.builder.Int32Builder(constants.AggregationTemporality)
-	b.imb = b.builder.BooleanBuilder(constants.IsMonotonic)
 
 	qvlb := b.builder.ListBuilder(constants.SummaryQuantileValues)
 
@@ -206,23 +200,18 @@ func (b *SummaryDataPointBuilder) TryBuild(attrsAccu *carrow.Attributes32Accumul
 		return nil, werror.Wrap(carrow.ErrBuilderAlreadyReleased)
 	}
 
-	b.accumulator.Sort()
+	b.accumulator.sorter.Reset()
+	b.accumulator.sorter.Sort(b.accumulator.summaries)
 
 	for ID, summary := range b.accumulator.summaries {
 		b.ib.Append(uint32(ID))
-		b.pib.Append(summary.ParentID)
+		b.pib.Append(b.accumulator.sorter.Encode(summary.ParentID, summary.Orig))
 
 		// Attributes
 		err = attrsAccu.Append(uint32(ID), summary.Orig.Attributes())
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
-
-		b.nb.AppendNonEmpty(summary.Metric.Name())
-		b.db.AppendNonEmpty(summary.Metric.Description())
-		b.ub.AppendNonEmpty(summary.Metric.Unit())
-		b.atb.Append(int32(summary.AggregationTemporality))
-		b.imb.Append(summary.IsMonotonic)
 
 		b.stunb.Append(arrow.Timestamp(summary.Orig.StartTimestamp()))
 		b.tunb.Append(arrow.Timestamp(summary.Orig.Timestamp()))
@@ -255,10 +244,11 @@ func (b *SummaryDataPointBuilder) TryBuild(attrsAccu *carrow.Attributes32Accumul
 }
 
 // NewSummaryAccumulator creates a new SummaryAccumulator.
-func NewSummaryAccumulator() *SummaryAccumulator {
+func NewSummaryAccumulator(sorter SummarySorter) *SummaryAccumulator {
 	return &SummaryAccumulator{
 		groupCount: 0,
 		summaries:  make([]Summary, 0),
+		sorter:     sorter,
 	}
 }
 
@@ -269,9 +259,6 @@ func (a *SummaryAccumulator) IsEmpty() bool {
 // Append appends a slice of number data points to the accumulator.
 func (a *SummaryAccumulator) Append(
 	parentID uint16,
-	metric *pmetric.Metric,
-	aggregationTemporality pmetric.AggregationTemporality,
-	isMonotonic bool,
 	summaries pmetric.SummaryDataPointSlice,
 ) {
 	if a.groupCount == math.MaxUint32 {
@@ -286,28 +273,57 @@ func (a *SummaryAccumulator) Append(
 		summary := summaries.At(i)
 
 		a.summaries = append(a.summaries, Summary{
-			ParentID:               parentID,
-			Orig:                   &summary,
-			Metric:                 metric,
-			AggregationTemporality: aggregationTemporality,
-			IsMonotonic:            isMonotonic,
+			ParentID: parentID,
+			Orig:     &summary,
 		})
 	}
 
 	a.groupCount++
 }
 
-func (a *SummaryAccumulator) Sort() {
-	sort.Slice(a.summaries, func(i, j int) bool {
-		if a.summaries[i].Metric.Name() == a.summaries[j].Metric.Name() {
-			return a.summaries[i].ParentID < a.summaries[j].ParentID
-		} else {
-			return a.summaries[i].Metric.Name() < a.summaries[j].Metric.Name()
-		}
-	})
-}
-
 func (a *SummaryAccumulator) Reset() {
 	a.groupCount = 0
 	a.summaries = a.summaries[:0]
+}
+
+// No sorting
+// ==========
+
+func UnsortedSummaries() *SummariesByNothing {
+	return &SummariesByNothing{}
+}
+
+func (a *SummariesByNothing) Sort(_ []Summary) {
+	// Do nothing
+}
+
+func (a *SummariesByNothing) Encode(parentID uint16, _ *pmetric.SummaryDataPoint) uint16 {
+	return parentID
+}
+
+func (a *SummariesByNothing) Reset() {}
+
+// Sort by parentID
+// ================
+
+func SortSummariesByParentID() *SummariesByParentID {
+	return &SummariesByParentID{}
+}
+
+func (a *SummariesByParentID) Sort(summaries []Summary) {
+	sort.Slice(summaries, func(i, j int) bool {
+		dpsI := summaries[i]
+		dpsJ := summaries[j]
+		return dpsI.ParentID < dpsJ.ParentID
+	})
+}
+
+func (a *SummariesByParentID) Encode(parentID uint16, _ *pmetric.SummaryDataPoint) uint16 {
+	delta := parentID - a.prevParentID
+	a.prevParentID = parentID
+	return delta
+}
+
+func (a *SummariesByParentID) Reset() {
+	a.prevParentID = 0
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/otlp"
+	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 )
 
 var help = flag.Bool("help", false, "Show help")
@@ -61,11 +62,12 @@ func main() {
 	}
 
 	warmUpIter := uint64(1)
+	observer := arrow_record.NewConsoleObserver(500, 1)
 
 	// Performance comparison for each input file
 	for i := range inputFiles {
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
-		profiler := benchmark.NewProfiler([]int{10, 100, 500, 1000, 2000, 4000, 5000}, "output/metrics_benchmark.log", warmUpIter)
+		profiler := benchmark.NewProfiler([]int{100, 500, 1000, 2000, 4000, 5000}, "output/metrics_benchmark.log", warmUpIter)
 		compressionAlgo := benchmark.Zstd()
 		maxIter := uint64(3)
 		ds := dataset.NewRealMetricsDataset(inputFiles[i])
@@ -73,6 +75,7 @@ func main() {
 		otlpMetrics := otlp.NewMetricsProfileable(ds, compressionAlgo)
 		//otlpDictMetrics := otlpdict.NewMetricsProfileable(ds, compressionAlgo)
 		otlpArrowMetrics := arrow.NewMetricsProfileable([]string{"stream mode"}, ds, conf)
+		otlpArrowMetrics.SetObserver(observer)
 
 		if err := profiler.Profile(otlpMetrics, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))

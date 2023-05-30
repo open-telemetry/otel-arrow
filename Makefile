@@ -27,3 +27,5 @@ build:
 gotidy:
 	for dir in $(GODIRS); do (cd $${dir} && go mod tidy); done
 
+doc:
+	go run tools/data_model_gen/main.go

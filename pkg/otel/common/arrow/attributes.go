@@ -80,6 +80,8 @@ type (
 	// Attrs16Sorter is used to sort attributes with 16-bit ParentIDs.
 	Attrs16Sorter interface {
 		Sort(attrs []Attr16)
+		Encode(parentID uint16, key string, value pcommon.Value) uint16
+		Reset()
 	}
 
 	// Attr32 is an attribute with a 32-bit ParentID.
@@ -92,6 +94,8 @@ type (
 	// Attrs32Sorter is used to sort attributes with 32-bit ParentIDs.
 	Attrs32Sorter interface {
 		Sort(attrs []Attr32)
+		Encode(parentID uint32, key string, value pcommon.Value) uint32
+		Reset()
 	}
 
 	// Attributes16Accumulator accumulates attributes for the scope of an entire
@@ -358,6 +362,7 @@ func (c *Attributes16Accumulator) AppendUniqueAttributesWithID(parentID uint16, 
 // different payload types.
 func (c *Attributes16Accumulator) Sort() {
 	c.sorter.Sort(c.attrs)
+	c.sorter.Reset()
 }
 
 func (c *Attributes16Accumulator) Reset() {
@@ -462,6 +467,7 @@ func (c *Attributes32Accumulator) AppendUniqueAttributesWithID(ID uint32, attrs 
 // different payload types.
 func (c *Attributes32Accumulator) Sort() {
 	c.sorter.Sort(c.attrs)
+	c.sorter.Reset()
 }
 
 func (c *Attributes32Accumulator) Reset() {

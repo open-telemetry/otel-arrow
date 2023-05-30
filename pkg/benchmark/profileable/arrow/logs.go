@@ -44,6 +44,8 @@ type LogsProfileable struct {
 	unaryRpcMode        bool
 	stats               bool
 	logsProducerOptions []cfg.Option
+
+	observer arrow_record.ProducerObserver
 }
 
 func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *benchmark.Config) *LogsProfileable {
@@ -58,11 +60,13 @@ func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *benc
 		logsProducerOptions = append(logsProducerOptions, cfg.WithStats())
 	}
 
+	producer := arrow_record.NewProducerWithOptions(logsProducerOptions...)
+
 	return &LogsProfileable{
 		tags:                tags,
 		dataset:             dataset,
 		compression:         benchmark.Zstd(),
-		producer:            arrow_record.NewProducerWithOptions(logsProducerOptions...),
+		producer:            producer,
 		consumer:            arrow_record.NewConsumer(),
 		batchArrowRecords:   make([]*v1.BatchArrowRecords, 0, 10),
 		config:              config,
@@ -71,6 +75,10 @@ func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *benc
 		stats:               config.Stats,
 		logsProducerOptions: logsProducerOptions,
 	}
+}
+
+func (s *LogsProfileable) SetObserver(observer arrow_record.ProducerObserver) {
+	s.observer = observer
 }
 
 func (s *LogsProfileable) Name() string {
@@ -98,6 +106,7 @@ func (s *LogsProfileable) StartProfiling(_ io.Writer) {
 	if !s.unaryRpcMode {
 		s.producer = arrow_record.NewProducerWithOptions(s.logsProducerOptions...)
 		s.consumer = arrow_record.NewConsumer()
+		s.producer.SetObserver(s.observer)
 	}
 }
 func (s *LogsProfileable) EndProfiling(_ io.Writer) {
@@ -115,6 +124,7 @@ func (s *LogsProfileable) PrepareBatch(_ io.Writer, startAt, size int) {
 	if s.unaryRpcMode {
 		s.producer = arrow_record.NewProducerWithOptions(s.logsProducerOptions...)
 		s.consumer = arrow_record.NewConsumer()
+		s.producer.SetObserver(s.observer)
 	}
 	s.logs = s.dataset.Logs(startAt, size)
 }

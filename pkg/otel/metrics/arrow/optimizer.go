@@ -19,126 +19,149 @@ package arrow
 
 import (
 	"sort"
-	"strings"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 )
 
 type (
 	MetricsOptimizer struct {
-		sort bool
+		sorter MetricSorter
 	}
 
 	MetricsOptimized struct {
-		ResourceMetricsIdx map[string]int // resource metrics id -> resource metrics group
-		ResourceMetrics    []*ResourceMetricsGroup
+		Metrics []*FlattenedMetric
 	}
 
-	ResourceMetricsGroup struct {
+	FlattenedMetric struct {
+		// Resource metrics section.
+		ResourceMetricsID string
 		Resource          *pcommon.Resource
 		ResourceSchemaUrl string
-		ScopeMetricsIdx   map[string]int // scope metrics id -> scope metrics group
-		ScopeMetrics      []*ScopeMetricsGroup
-	}
 
-	ScopeMetricsGroup struct {
+		// Scope metrics section.
+		ScopeMetricsID string
 		Scope          *pcommon.InstrumentationScope
 		ScopeSchemaUrl string
 
-		Metrics []*pmetric.Metric
+		// Metric section.
+		Metric *pmetric.Metric
 	}
+
+	MetricSorter interface {
+		Sort(metrics []*FlattenedMetric)
+	}
+
+	MetricsByNothing               struct{}
+	MetricsByResourceScopeTypeName struct{}
+	MetricsByTypeNameResourceScope struct{}
 )
 
-func NewMetricsOptimizer(cfg ...func(*carrow.Options)) *MetricsOptimizer {
-	options := carrow.Options{
-		Sort:  false,
-		Stats: false,
-	}
-	for _, c := range cfg {
-		c(&options)
-	}
-
+func NewMetricsOptimizer(sorter MetricSorter) *MetricsOptimizer {
 	return &MetricsOptimizer{
-		sort: options.Sort,
+		sorter: sorter,
 	}
 }
 
 func (t *MetricsOptimizer) Optimize(metrics pmetric.Metrics) *MetricsOptimized {
 	metricsOptimized := &MetricsOptimized{
-		ResourceMetricsIdx: make(map[string]int),
-		ResourceMetrics:    make([]*ResourceMetricsGroup, 0),
+		Metrics: make([]*FlattenedMetric, 0),
 	}
 
 	resMetricsSlice := metrics.ResourceMetrics()
 	for i := 0; i < resMetricsSlice.Len(); i++ {
 		resMetrics := resMetricsSlice.At(i)
-		metricsOptimized.AddResourceMetrics(&resMetrics)
-	}
+		resource := resMetrics.Resource()
+		resourceSchemaUrl := resMetrics.SchemaUrl()
+		resMetricID := otlp.ResourceID(resource, resourceSchemaUrl)
 
-	if t.sort {
-		for _, resMetricsGroup := range metricsOptimized.ResourceMetrics {
-			resMetricsGroup.Sort()
+		scopeMetricsSlice := resMetrics.ScopeMetrics()
+		for j := 0; j < scopeMetricsSlice.Len(); j++ {
+			scopeMetrics := scopeMetricsSlice.At(j)
+			scope := scopeMetrics.Scope()
+			scopeSchemaUrl := scopeMetrics.SchemaUrl()
+			scopeMetricsID := otlp.ScopeID(scope, scopeSchemaUrl)
+
+			metrics := scopeMetrics.Metrics()
+			for k := 0; k < metrics.Len(); k++ {
+				metric := metrics.At(k)
+
+				metricsOptimized.Metrics = append(metricsOptimized.Metrics, &FlattenedMetric{
+					ResourceMetricsID: resMetricID,
+					Resource:          &resource,
+					ResourceSchemaUrl: resourceSchemaUrl,
+					ScopeMetricsID:    scopeMetricsID,
+					Scope:             &scope,
+					ScopeSchemaUrl:    scopeSchemaUrl,
+					Metric:            &metric,
+				})
+			}
 		}
 	}
+
+	t.sorter.Sort(metricsOptimized.Metrics)
 
 	return metricsOptimized
 }
 
-func (t *MetricsOptimized) AddResourceMetrics(resMetrics *pmetric.ResourceMetrics) {
-	resMetricsID := otlp.ResourceID(resMetrics.Resource(), resMetrics.SchemaUrl())
-	resMetricsGroupIdx, found := t.ResourceMetricsIdx[resMetricsID]
-	if !found {
-		res := resMetrics.Resource()
-		resMetricsGroup := &ResourceMetricsGroup{
-			Resource:          &res,
-			ResourceSchemaUrl: resMetrics.SchemaUrl(),
-			ScopeMetricsIdx:   make(map[string]int),
-			ScopeMetrics:      make([]*ScopeMetricsGroup, 0),
-		}
-		t.ResourceMetrics = append(t.ResourceMetrics, resMetricsGroup)
-		resMetricsGroupIdx = len(t.ResourceMetrics) - 1
-		t.ResourceMetricsIdx[resMetricsID] = resMetricsGroupIdx
-	}
-	scopeMetricsSlice := resMetrics.ScopeMetrics()
-	for i := 0; i < scopeMetricsSlice.Len(); i++ {
-		scopeMetrics := scopeMetricsSlice.At(i)
-		t.ResourceMetrics[resMetricsGroupIdx].AddScopeMetrics(&scopeMetrics)
-	}
+// No sorting
+// ==========
+
+func UnsortedMetrics() *MetricsByNothing {
+	return &MetricsByNothing{}
 }
 
-func (r *ResourceMetricsGroup) AddScopeMetrics(scopeMetrics *pmetric.ScopeMetrics) {
-	scopeMetricsID := otlp.ScopeID(scopeMetrics.Scope(), scopeMetrics.SchemaUrl())
-	scopeMetricsGroupIdx, found := r.ScopeMetricsIdx[scopeMetricsID]
-	if !found {
-		scope := scopeMetrics.Scope()
-		scopeMetricsGroup := &ScopeMetricsGroup{
-			Scope:          &scope,
-			ScopeSchemaUrl: scopeMetrics.SchemaUrl(),
-			Metrics:        make([]*pmetric.Metric, 0),
-		}
-		r.ScopeMetrics = append(r.ScopeMetrics, scopeMetricsGroup)
-		scopeMetricsGroupIdx = len(r.ScopeMetrics) - 1
-		r.ScopeMetricsIdx[scopeMetricsID] = scopeMetricsGroupIdx
-	}
-	metricsSlice := scopeMetrics.Metrics()
-	for i := 0; i < metricsSlice.Len(); i++ {
-		metric := metricsSlice.At(i)
-		sm := r.ScopeMetrics[scopeMetricsGroupIdx]
-		sm.Metrics = append(sm.Metrics, &metric)
-	}
+func (s *MetricsByNothing) Sort(_ []*FlattenedMetric) {
 }
 
-func (r *ResourceMetricsGroup) Sort() {
-	for _, scopeMetricsGroup := range r.ScopeMetrics {
-		sort.Slice(scopeMetricsGroup.Metrics, func(i, j int) bool {
-			return strings.Compare(
-				scopeMetricsGroup.Metrics[i].Name(),
-				scopeMetricsGroup.Metrics[j].Name(),
-			) == -1
-		})
-	}
+func SortMetricsByResourceScopeTypeName() *MetricsByResourceScopeTypeName {
+	return &MetricsByResourceScopeTypeName{}
+}
+
+func (s *MetricsByResourceScopeTypeName) Sort(metrics []*FlattenedMetric) {
+	sort.Slice(metrics, func(i, j int) bool {
+		metricI := metrics[i]
+		metricJ := metrics[j]
+
+		if metricI.ResourceMetricsID == metricJ.ResourceMetricsID {
+			if metricI.ScopeMetricsID == metricJ.ScopeMetricsID {
+				if metricI.Metric.Type() == metricJ.Metric.Type() {
+					return metricI.Metric.Name() < metricJ.Metric.Name()
+				} else {
+					return metricI.Metric.Type() < metricJ.Metric.Type()
+				}
+			} else {
+				return metricI.ScopeMetricsID < metricJ.ScopeMetricsID
+			}
+		} else {
+			return metricI.ResourceMetricsID < metricJ.ResourceMetricsID
+		}
+	})
+}
+
+func SortMetricsByTypeNameResourceScope() *MetricsByTypeNameResourceScope {
+	return &MetricsByTypeNameResourceScope{}
+}
+
+func (s *MetricsByTypeNameResourceScope) Sort(metrics []*FlattenedMetric) {
+	sort.Slice(metrics, func(i, j int) bool {
+		metricI := metrics[i]
+		metricJ := metrics[j]
+
+		if metricI.Metric.Type() == metricJ.Metric.Type() {
+			if metricI.Metric.Name() == metricJ.Metric.Name() {
+				if metricI.ResourceMetricsID == metricJ.ResourceMetricsID {
+					return metricI.ScopeMetricsID < metricJ.ScopeMetricsID
+				} else {
+					return metricI.ResourceMetricsID < metricJ.ResourceMetricsID
+				}
+			} else {
+				return metricI.Metric.Name() < metricJ.Metric.Name()
+			}
+		} else {
+			return metricI.Metric.Type() < metricJ.Metric.Type()
+		}
+	})
 }

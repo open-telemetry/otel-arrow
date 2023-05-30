@@ -30,24 +30,26 @@ type (
 		MetricID uint16
 
 		// Attributes stores
-		ResAttrMapStore        *otlp.Attributes16Store
-		ScopeAttrMapStore      *otlp.Attributes16Store
-		SumIntAttrsStore       *otlp.Attributes32Store
-		SumDoubleAttrsStore    *otlp.Attributes32Store
-		SummaryAttrsStore      *otlp.Attributes32Store
-		GaugeIntAttrsStore     *otlp.Attributes32Store
-		GaugeDoubleAttrsStore  *otlp.Attributes32Store
-		HistogramAttrsStore    *otlp.Attributes32Store
-		ExpHistogramAttrsStore *otlp.Attributes32Store
+		ResAttrMapStore                *otlp.Attributes16Store
+		ScopeAttrMapStore              *otlp.Attributes16Store
+		NumberDPAttrsStore             *otlp.Attributes32Store
+		SummaryAttrsStore              *otlp.Attributes32Store
+		HistogramAttrsStore            *otlp.Attributes32Store
+		ExpHistogramAttrsStore         *otlp.Attributes32Store
+		NumberDPExemplarAttrsStore     *otlp.Attributes32Store
+		HistogramExemplarAttrsStore    *otlp.Attributes32Store
+		ExpHistogramExemplarAttrsStore *otlp.Attributes32Store
 
 		// Metric stores
-		SumIntDataPointsStore      *SumIntDataPointsStore
-		SumDoubleDataPointsStore   *SumDoubleDataPointsStore
-		GaugeIntDataPointsStore    *GaugeIntDataPointsStore
-		GaugeDoubleDataPointsStore *GaugeDoubleDataPointsStore
-		SummaryDataPointsStore     *SummaryDataPointsStore
-		HistogramDataPointsStore   *HistogramDataPointsStore
-		EHistogramDataPointsStore  *EHistogramDataPointsStore
+		NumberDataPointsStore     *NumberDataPointsStore
+		SummaryDataPointsStore    *SummaryDataPointsStore
+		HistogramDataPointsStore  *HistogramDataPointsStore
+		EHistogramDataPointsStore *EHistogramDataPointsStore
+
+		// Exemplar stores
+		NumberDataPointExemplarsStore     *ExemplarsStore
+		HistogramDataPointExemplarsStore  *ExemplarsStore
+		EHistogramDataPointExemplarsStore *ExemplarsStore
 	}
 )
 
@@ -55,21 +57,19 @@ func NewRelatedData() *RelatedData {
 	return &RelatedData{
 		ResAttrMapStore:        otlp.NewAttributes16Store(),
 		ScopeAttrMapStore:      otlp.NewAttributes16Store(),
-		SumIntAttrsStore:       otlp.NewAttributes32Store(),
-		SumDoubleAttrsStore:    otlp.NewAttributes32Store(),
+		NumberDPAttrsStore:     otlp.NewAttributes32Store(),
 		SummaryAttrsStore:      otlp.NewAttributes32Store(),
-		GaugeIntAttrsStore:     otlp.NewAttributes32Store(),
-		GaugeDoubleAttrsStore:  otlp.NewAttributes32Store(),
 		HistogramAttrsStore:    otlp.NewAttributes32Store(),
 		ExpHistogramAttrsStore: otlp.NewAttributes32Store(),
 
-		SumIntDataPointsStore:      NewSumIntDataPointsStore(),
-		SumDoubleDataPointsStore:   NewSumDoubleDataPointsStore(),
-		GaugeIntDataPointsStore:    NewGaugeIntDataPointsStore(),
-		GaugeDoubleDataPointsStore: NewGaugeDoubleDataPointsStore(),
-		SummaryDataPointsStore:     NewSummaryDataPointsStore(),
-		HistogramDataPointsStore:   NewHistogramDataPointsStore(),
-		EHistogramDataPointsStore:  NewEHistogramDataPointsStore(),
+		NumberDataPointsStore:     NewNumberDataPointsStore(),
+		SummaryDataPointsStore:    NewSummaryDataPointsStore(),
+		HistogramDataPointsStore:  NewHistogramDataPointsStore(),
+		EHistogramDataPointsStore: NewEHistogramDataPointsStore(),
+
+		NumberDataPointExemplarsStore:     NewExemplarsStore(),
+		HistogramDataPointExemplarsStore:  NewExemplarsStore(),
+		EHistogramDataPointExemplarsStore: NewExemplarsStore(),
 	}
 }
 
@@ -79,13 +79,13 @@ func (r *RelatedData) MetricIDFromDelta(delta uint16) uint16 {
 }
 
 func RelatedDataFrom(records []*record_message.RecordMessage) (relatedData *RelatedData, metricsRecord *record_message.RecordMessage, err error) {
-	var sumIntDPRec *record_message.RecordMessage
-	var sumDoubleDPRec *record_message.RecordMessage
-	var gaugeIntDPRec *record_message.RecordMessage
-	var gaugeDoubleDPRec *record_message.RecordMessage
+	var numberDPRec *record_message.RecordMessage
 	var summaryDPRec *record_message.RecordMessage
 	var histogramDPRec *record_message.RecordMessage
 	var expHistogramDPRec *record_message.RecordMessage
+	var numberDBExRec *record_message.RecordMessage
+	var histogramDBExRec *record_message.RecordMessage
+	var expHistogramDBExRec *record_message.RecordMessage
 
 	relatedData = NewRelatedData()
 
@@ -101,72 +101,42 @@ func RelatedDataFrom(records []*record_message.RecordMessage) (relatedData *Rela
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_INT_SUM_ATTRS:
-			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.SumIntAttrsStore)
+		case colarspb.OtlpArrowPayloadType_NUMBER_DP_ATTRS:
+			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.NumberDPAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_DOUBLE_SUM_ATTRS:
-			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.SumDoubleAttrsStore)
-			if err != nil {
-				return nil, nil, werror.Wrap(err)
-			}
-		case colarspb.OtlpArrowPayloadType_INT_GAUGE_ATTRS:
-			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.GaugeIntAttrsStore)
-			if err != nil {
-				return nil, nil, werror.Wrap(err)
-			}
-		case colarspb.OtlpArrowPayloadType_DOUBLE_GAUGE_ATTRS:
-			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.GaugeDoubleAttrsStore)
-			if err != nil {
-				return nil, nil, werror.Wrap(err)
-			}
-		case colarspb.OtlpArrowPayloadType_SUMMARY_ATTRS:
+		case colarspb.OtlpArrowPayloadType_SUMMARY_DP_ATTRS:
 			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.SummaryAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_HISTOGRAM_ATTRS:
+		case colarspb.OtlpArrowPayloadType_HISTOGRAM_DP_ATTRS:
 			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.HistogramAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_EXP_HISTOGRAM_ATTRS:
+		case colarspb.OtlpArrowPayloadType_EXP_HISTOGRAM_DP_ATTRS:
 			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.ExpHistogramAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_INT_SUM:
-			if sumIntDPRec != nil {
+		case colarspb.OtlpArrowPayloadType_NUMBER_DATA_POINTS:
+			if numberDPRec != nil {
 				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
 			}
-			sumIntDPRec = record
-		case colarspb.OtlpArrowPayloadType_DOUBLE_SUM:
-			if sumDoubleDPRec != nil {
-				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
-			}
-			sumDoubleDPRec = record
-		case colarspb.OtlpArrowPayloadType_INT_GAUGE:
-			if gaugeIntDPRec != nil {
-				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
-			}
-			gaugeIntDPRec = record
-		case colarspb.OtlpArrowPayloadType_DOUBLE_GAUGE:
-			if gaugeDoubleDPRec != nil {
-				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
-			}
-			gaugeDoubleDPRec = record
-		case colarspb.OtlpArrowPayloadType_SUMMARIES:
+			numberDPRec = record
+		case colarspb.OtlpArrowPayloadType_SUMMARY_DATA_POINTS:
 			if summaryDPRec != nil {
 				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
 			}
 			summaryDPRec = record
-		case colarspb.OtlpArrowPayloadType_HISTOGRAMS:
+		case colarspb.OtlpArrowPayloadType_HISTOGRAM_DATA_POINTS:
 			if histogramDPRec != nil {
 				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
 			}
 			histogramDPRec = record
-		case colarspb.OtlpArrowPayloadType_EXP_HISTOGRAMS:
+		case colarspb.OtlpArrowPayloadType_EXP_HISTOGRAM_DATA_POINTS:
 			if expHistogramDPRec != nil {
 				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
 			}
@@ -176,55 +146,111 @@ func RelatedDataFrom(records []*record_message.RecordMessage) (relatedData *Rela
 				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
 			}
 			metricsRecord = record
+		case colarspb.OtlpArrowPayloadType_NUMBER_DP_EXEMPLARS:
+			if numberDBExRec != nil {
+				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
+			}
+			numberDBExRec = record
+		case colarspb.OtlpArrowPayloadType_HISTOGRAM_DP_EXEMPLARS:
+			if histogramDBExRec != nil {
+				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
+			}
+			histogramDBExRec = record
+		case colarspb.OtlpArrowPayloadType_EXP_HISTOGRAM_DP_EXEMPLARS:
+			if expHistogramDBExRec != nil {
+				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
+			}
+			expHistogramDBExRec = record
+		case colarspb.OtlpArrowPayloadType_NUMBER_DP_EXEMPLAR_ATTRS:
+			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.NumberDPExemplarAttrsStore)
+			if err != nil {
+				return nil, nil, werror.Wrap(err)
+			}
+		case colarspb.OtlpArrowPayloadType_HISTOGRAM_DP_EXEMPLAR_ATTRS:
+			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.HistogramExemplarAttrsStore)
+			if err != nil {
+				return nil, nil, werror.Wrap(err)
+			}
+		case colarspb.OtlpArrowPayloadType_EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS:
+			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.ExpHistogramExemplarAttrsStore)
+			if err != nil {
+				return nil, nil, werror.Wrap(err)
+			}
 		default:
 			return nil, nil, werror.Wrap(otel.UnknownPayloadType)
 		}
 	}
 
-	if sumIntDPRec != nil {
-		relatedData.SumIntDataPointsStore, err = SumIntStoreFrom(sumIntDPRec.Record(), relatedData.SumIntAttrsStore)
+	// Process exemplar records
+	if numberDBExRec != nil {
+		relatedData.NumberDataPointExemplarsStore, err = ExemplarsStoreFrom(
+			numberDPRec.Record(),
+			relatedData.NumberDPExemplarAttrsStore,
+		)
 		if err != nil {
 			return nil, nil, werror.Wrap(err)
 		}
 	}
 
-	if sumDoubleDPRec != nil {
-		relatedData.SumDoubleDataPointsStore, err = SumDoubleStoreFrom(sumDoubleDPRec.Record(), relatedData.SumDoubleAttrsStore)
+	if histogramDBExRec != nil {
+		relatedData.HistogramDataPointExemplarsStore, err = ExemplarsStoreFrom(
+			histogramDPRec.Record(),
+			relatedData.HistogramExemplarAttrsStore,
+		)
 		if err != nil {
 			return nil, nil, werror.Wrap(err)
 		}
 	}
 
-	if gaugeIntDPRec != nil {
-		relatedData.GaugeIntDataPointsStore, err = GaugeIntStoreFrom(gaugeIntDPRec.Record(), relatedData.GaugeIntAttrsStore)
+	if expHistogramDBExRec != nil {
+		relatedData.EHistogramDataPointExemplarsStore, err = ExemplarsStoreFrom(
+			expHistogramDPRec.Record(),
+			relatedData.ExpHistogramExemplarAttrsStore,
+		)
 		if err != nil {
 			return nil, nil, werror.Wrap(err)
 		}
 	}
 
-	if gaugeDoubleDPRec != nil {
-		relatedData.GaugeDoubleDataPointsStore, err = GaugeDoubleStoreFrom(gaugeDoubleDPRec.Record(), relatedData.GaugeDoubleAttrsStore)
+	// Process data point records
+	if numberDPRec != nil {
+		relatedData.NumberDataPointsStore, err = NumberDataPointsStoreFrom(
+			numberDPRec.Record(),
+			relatedData.NumberDataPointExemplarsStore,
+			relatedData.NumberDPAttrsStore,
+		)
 		if err != nil {
 			return nil, nil, werror.Wrap(err)
 		}
 	}
 
 	if summaryDPRec != nil {
-		relatedData.SummaryDataPointsStore, err = SummaryDataPointsStoreFrom(summaryDPRec.Record(), relatedData.SummaryAttrsStore)
+		relatedData.SummaryDataPointsStore, err = SummaryDataPointsStoreFrom(
+			summaryDPRec.Record(),
+			relatedData.SummaryAttrsStore,
+		)
 		if err != nil {
 			return nil, nil, werror.Wrap(err)
 		}
 	}
 
 	if histogramDPRec != nil {
-		relatedData.HistogramDataPointsStore, err = HistogramDataPointsStoreFrom(histogramDPRec.Record(), relatedData.HistogramAttrsStore)
+		relatedData.HistogramDataPointsStore, err = HistogramDataPointsStoreFrom(
+			histogramDPRec.Record(),
+			relatedData.HistogramDataPointExemplarsStore,
+			relatedData.HistogramAttrsStore,
+		)
 		if err != nil {
 			return nil, nil, werror.Wrap(err)
 		}
 	}
 
 	if expHistogramDPRec != nil {
-		relatedData.EHistogramDataPointsStore, err = EHistogramDataPointsStoreFrom(expHistogramDPRec.Record(), relatedData.ExpHistogramAttrsStore)
+		relatedData.EHistogramDataPointsStore, err = EHistogramDataPointsStoreFrom(
+			expHistogramDPRec.Record(),
+			relatedData.EHistogramDataPointExemplarsStore,
+			relatedData.ExpHistogramAttrsStore,
+		)
 		if err != nil {
 			return nil, nil, werror.Wrap(err)
 		}

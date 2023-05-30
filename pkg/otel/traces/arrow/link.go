@@ -89,22 +89,21 @@ type (
 	// globally in order to improve compression.
 	LinkAccumulator struct {
 		groupCount uint16
-		links      []Link
+		links      []*Link
 		sorter     LinkSorter
 	}
 
-	LinkParentIdEncoder struct {
-		prevTraceID  [16]byte
-		prevParentID uint16
-		encoderType  int
-	}
-
 	LinkSorter interface {
-		Sort(links []Link)
+		Sort(links []*Link)
+		Encode(parentID uint16, link *Link) uint16
+		Reset()
 	}
 
 	LinksByNothing         struct{}
-	LinksByTraceIdParentId struct{}
+	LinksByTraceIdParentId struct {
+		prevParentID uint16
+		prevLink     *Link
+	}
 )
 
 func NewLinkBuilder(rBuilder *builder.RecordBuilderExt, conf *LinkConfig) *LinkBuilder {
@@ -187,27 +186,16 @@ func (b *LinkBuilder) Build() (record arrow.Record, err error) {
 		}
 	}
 
-	// ToDo Keep this code for debugging purposes.
-	//if err == nil && linkcount == 0 {
-	//	println(acommon.PayloadTypes.Link.PayloadType().String())
-	//	arrow2.PrintRecord(record)
-	//	linkcount = linkcount + 1
-	//}
-
 	return record, werror.Wrap(err)
 }
-
-// ToDo Keep this code for debugging purposes.
-//var linkcount = 0
 
 func (b *LinkBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (record arrow.Record, err error) {
 	if b.released {
 		return nil, werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
+	b.accumulator.sorter.Reset()
 	b.accumulator.sorter.Sort(b.accumulator.links)
-
-	parentIdEncoder := NewLinkParentIdEncoder(b.config.ParentIdEncoding)
 
 	linkID := uint32(0)
 
@@ -226,7 +214,7 @@ func (b *LinkBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (reco
 			linkID++
 		}
 
-		b.pib.Append(parentIdEncoder.Encode(link.ParentID, link.TraceID))
+		b.pib.Append(b.accumulator.sorter.Encode(link.ParentID, link))
 		b.tib.Append(link.TraceID[:])
 		b.sib.Append(link.SpanID[:])
 		b.tsb.AppendNonEmpty(link.TraceState)
@@ -254,7 +242,7 @@ func (b *LinkBuilder) Release() {
 func NewLinkAccumulator(sorter LinkSorter) *LinkAccumulator {
 	return &LinkAccumulator{
 		groupCount: 0,
-		links:      make([]Link, 0),
+		links:      make([]*Link, 0),
 		sorter:     sorter,
 	}
 }
@@ -275,7 +263,7 @@ func (a *LinkAccumulator) Append(spanID uint16, links ptrace.SpanLinkSlice) erro
 
 	for i := 0; i < links.Len(); i++ {
 		link := links.At(i)
-		a.links = append(a.links, Link{
+		a.links = append(a.links, &Link{
 			ParentID:               spanID,
 			TraceID:                link.TraceID(),
 			SpanID:                 link.SpanID(),
@@ -295,36 +283,6 @@ func (a *LinkAccumulator) Reset() {
 	a.links = a.links[:0]
 }
 
-func NewLinkParentIdEncoder(encoderType int) *LinkParentIdEncoder {
-	return &LinkParentIdEncoder{
-		prevParentID: 0,
-		encoderType:  encoderType,
-	}
-}
-
-func (e *LinkParentIdEncoder) Encode(parentID uint16, traceID [16]byte) uint16 {
-	switch e.encoderType {
-	case acommon.ParentIdNoEncoding:
-		return parentID
-	case acommon.ParentIdDeltaEncoding:
-		delta := parentID - e.prevParentID
-		e.prevParentID = parentID
-		return delta
-	case acommon.ParentIdDeltaGroupEncoding:
-		if e.prevTraceID == traceID {
-			delta := parentID - e.prevParentID
-			e.prevParentID = parentID
-			return delta
-		} else {
-			e.prevTraceID = traceID
-			e.prevParentID = parentID
-			return parentID
-		}
-	default:
-		panic("Unknown parent ID encoding type.")
-	}
-}
-
 // No sorting
 // ==========
 
@@ -332,8 +290,14 @@ func UnsortedLinks() *LinksByNothing {
 	return &LinksByNothing{}
 }
 
-func (s *LinksByNothing) Sort(_ []Link) {
+func (s *LinksByNothing) Sort(_ []*Link) {
 }
+
+func (s *LinksByNothing) Encode(parentID uint16, _ *Link) uint16 {
+	return parentID
+}
+
+func (s *LinksByNothing) Reset() {}
 
 // Sorts by TraceID, ParentID
 // ==========================
@@ -342,7 +306,7 @@ func SortLinksByTraceIdParentId() *LinksByTraceIdParentId {
 	return &LinksByTraceIdParentId{}
 }
 
-func (s *LinksByTraceIdParentId) Sort(links []Link) {
+func (s *LinksByTraceIdParentId) Sort(links []*Link) {
 	sort.Slice(links, func(i, j int) bool {
 		linkI := links[i]
 		linkJ := links[j]
@@ -354,4 +318,35 @@ func (s *LinksByTraceIdParentId) Sort(links []Link) {
 			return cmp == -1
 		}
 	})
+}
+
+func (s *LinksByTraceIdParentId) Encode(parentID uint16, link *Link) uint16 {
+	if s.prevLink == nil {
+		s.prevLink = link
+		s.prevParentID = parentID
+		return parentID
+	}
+
+	if s.IsSameGroup(link) {
+		delta := parentID - s.prevParentID
+		s.prevParentID = parentID
+		return delta
+	} else {
+		s.prevLink = link
+		s.prevParentID = parentID
+		return parentID
+	}
+}
+
+func (s *LinksByTraceIdParentId) Reset() {
+	s.prevParentID = 0
+	s.prevLink = nil
+}
+
+func (s *LinksByTraceIdParentId) IsSameGroup(link *Link) bool {
+	if s.prevLink == nil {
+		return false
+	}
+
+	return bytes.Equal(s.prevLink.TraceID[:], link.TraceID[:])
 }

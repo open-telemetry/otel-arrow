@@ -1,6 +1,6 @@
-# OTLP Arrow Encoder/Decoder package
+# OTel Arrow Encoder/Decoder package
 
-This package is a reference implementation of the OTLP Arrow protocol specified in this [OTEP](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md).
+This package is a reference implementation of the OTel Arrow protocol specified in this [OTEP](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md).
 All OTLP entities are covered (metrics, logs, and traces) as well as all sub-elements such as events, links, gauge, sum, 
 summary, histograms, ... The overall goal is to optimize the compression ratio for telemetry data transmission as well 
 as the end-to-end performance between telemetry data producers and receivers.
@@ -12,12 +12,28 @@ Other important links:
 - [OTEP/Specification](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md) describing the
   motivations, the protocol, the schemas, the benchmark results and the different phases of this project. The OTEP is
   still [pending, unmerged](https://github.com/open-telemetry/oteps/pull/171).
-- [Donation proposal](https://github.com/open-telemetry/community/issues/1332) under review.
+- [Donation proposal](https://github.com/open-telemetry/community/issues/1332) - approved, but repo not yet transferred in OTel org.
 - [Slides](https://docs.google.com/presentation/d/12uLXmMWNelAyAiKFYMR0i7E7N4dPhzBi2_HLshFOLak/edit?usp=sharing) (01/30/2023 Maintainers meeting).
 - [Project Roadmap](https://github.com/f5/otel-arrow-adapter/milestones?direction=asc&sort=due_date&state=open) and [project Board](https://github.com/orgs/f5/projects/1/views/2) describing the current state of the project.
-- [Arrow schemas](docs/arrow_schema.md) used by this package.
+- [Arrow schemas](docs/data_model.md) used by this package.
 - [Threat model](docs/threat_model_assessment.md).
 
+## Benchmark summary
+
+The following chart shows the compressed message size (in bytes) as a function
+of the batch size for metrics (univariate), logs, and traces. The bottom of the
+chart shows the reduction factor for both the standard OTLP protocol and the
+OTel Arrow protocol.
+
+![compression_ratio](./docs/img/compression_ratio_summary_std_metrics.png)
+
+The next chart follows the same logic but shows the results for multivariate
+metrics (left column).
+
+![compression_ratio](./docs/img/compression_ratio_summary_multivariate_metrics.png)
+
+See the following [benchmark results](docs/benchmarks.md) for more details.
+ 
 ## Phase 1 (current implementation)
 
 This first step is intended to address the specific use cases of traffic reduction. Based on community feedback, many
@@ -30,73 +46,27 @@ format to eliminate redundant data and optimize the compression rate. This is il
 > Note 1: A fallback mechanism can be used to handle the case where the new protocol is not supported by the target. 
 > More on this mechanism in this [section](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md#protocol-extension-and-fallback-mechanism) of the OTEP. 
 
-The experimental collector implements on top of this library a new OTLP Arrow Receiver and Exporter able to fallback on
+The experimental collector implements on top of this library a new Arrow Receiver and Exporter able to fallback on
 standard OTLP when needed. The following diagram is an overview of this integration. The internal representation of the
 data has not been updated and this collector is still fundamentally row-oriented internally.
 
 ![collector internal overview](docs/img/collector_internal_overview.png)
 
-> Note 2: A future phase 2 of this project will focus on implementing end-to-end OTLP arrow to improve the overall
+> Note 2: A future phase 2 of this project will focus on implementing end-to-end OTel Arrow to improve the overall
 > performance.
-
-## OTLP Arrow Performance
-
-A comparison of the performance and compression rates between the standard OTLP protocol and the OTLP Arrow protocol is
-given below. Except for the traces, the telemetry data used for these benchmarks are from a synthetic data generator.
-A larger campaign of tests and benchmarks on real production data will be conducted with the help of the community
-(see the [Help us](#tests-and-benchmarks-on-real-production-data) section).
-
-**Current results show an improvement of the compression ratio from 200% to 400%.**
-
-### Compression ratio benchmarks
-
-The following three tables compare the performance in terms of compression ratio 
-between:
-
-- OTLP,
-- OTLP Arrow (streaming mode),
-- and OTLP Arrow (unary RPC mode),
-
-for metrics, logs, and traces (in this order).
-
-![img](docs/img/metrics_compression_rate_benchmark.png)
-
-![img](docs/img/logs_compression_rate_benchmark.png)
-
-![img](docs/img/traces_compression_rate_benchmark.png)
-
-### End-to-end performance benchmarks
-
-The following results compare the end-to-end performance between OTLP and OTLP 
-Arrow (streaming mode), and OTLP Arrow (unary RPC mode) for metrics, logs, and 
-traces (in this order).
-
-All the steps are included: encoding, sending, decoding, compression, 
-decompression, and conversion (when that is applicable). 
-
-Each result is composed of two tables: one for the phase 1 (current implementation)
-and one evaluation for the phase 2 (future implementation). The results of phase
-2 are extrapolated from the results of phase 1 by removing the conversion steps.
-
-![img](docs/img/metrics_end_to_end_benchmark.png)
-
-![img](docs/img/logs_end_to_end_benchmark.png)
-
-![img](docs/img/traces_end_to_end_benchmark.png)
-
 
 ## Testing and validation
 
-The testing of this package and the validation of the OTLP Arrow encoding/decoding are the object of particular 
-attention because of the central position of this package in the future OTEL collector.
+The testing of this package and the validation of the OTel Arrow encoding/decoding are the object of particular 
+attention because of the central position of this package in the future OTel collector.
 
 Concerning the tests, the plan is to:
 - reach a test coverage close to 80% (currently ~62%).
-- add more fuzz tests on the encoding and decoding of OTLP Arrow messages,
+- add more fuzz tests on the encoding and decoding of OTel Arrow messages,
 - implement integration tests with the experimental collector (testbed implemented in the experimental collector).
 
 Concerning the encoding/decoding validation, the plan is to:
-- compare the OTLP entities before and after their conversion to OTLP Arrow entities (done).
+- compare the OTLP entities before and after their conversion to OTel Arrow entities (done).
 - test the conversion procedure of the production data via a CLI tool or directly via the integration in the 
 experimental collector (wip).
 

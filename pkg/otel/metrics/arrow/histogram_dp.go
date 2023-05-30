@@ -26,6 +26,8 @@ package arrow
 // by the metric name, further enhancing the schema's efficiency and accessibility.
 
 import (
+	"sort"
+
 	"github.com/apache/arrow/go/v12/arrow"
 
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
@@ -33,7 +35,6 @@ import (
 
 	"errors"
 	"math"
-	"sort"
 
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
@@ -52,18 +53,12 @@ var (
 		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional, schema.DeltaEncoding)},
 		// The ID of the parent metric.
 		{Name: constants.ParentID, Type: arrow.PrimitiveTypes.Uint16},
-		{Name: constants.Name, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary8)},
-		{Name: constants.Description, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
-		{Name: constants.Unit, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
-		{Name: constants.AggregationTemporality, Type: arrow.PrimitiveTypes.Int32, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
-		{Name: constants.IsMonotonic, Type: arrow.FixedWidthTypes.Boolean, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.HistogramCount, Type: arrow.PrimitiveTypes.Uint64, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.HistogramSum, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.HistogramBucketCounts, Type: arrow.ListOf(arrow.PrimitiveTypes.Uint64), Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.HistogramExplicitBounds, Type: arrow.ListOf(arrow.PrimitiveTypes.Float64), Metadata: schema.Metadata(schema.Optional)},
-		{Name: constants.Exemplars, Type: arrow.ListOf(ExemplarDT), Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.Flags, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.HistogramMin, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.HistogramMax, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
@@ -80,12 +75,6 @@ type (
 		ib  *builder.Uint32DeltaBuilder // id builder
 		pib *builder.Uint16Builder      // parent_id builder
 
-		nb  *builder.StringBuilder  // metric name builder
-		db  *builder.StringBuilder  // metric description builder
-		ub  *builder.StringBuilder  // metric unit builder
-		atb *builder.Int32Builder   // aggregation temporality builder
-		imb *builder.BooleanBuilder // is monotonic builder
-
 		stunb *builder.TimestampBuilder // start_time_unix_nano builder
 		tunb  *builder.TimestampBuilder // time_unix_nano builder
 		hcb   *builder.Uint64Builder    // histogram_count builder
@@ -94,36 +83,46 @@ type (
 		hbcb  *builder.Uint64Builder    // histogram_bucket_counts builder
 		heblb *builder.ListBuilder      // histogram_explicit_bounds list builder
 		hebb  *builder.Float64Builder   // histogram_explicit_bounds builder
-		elb   *builder.ListBuilder      // exemplars builder
-		eb    *ExemplarBuilder          // exemplar builder
 		fb    *builder.Uint32Builder    // flags builder
 		hmib  *builder.Float64Builder   // histogram_min builder
 		hmab  *builder.Float64Builder   // histogram_max builder
 
-		accumulator *HDPAccumulator
-		attrsAccu   *carrow.Attributes32Accumulator
+		dataPointAccumulator *HDPAccumulator
+		attrsAccu            *carrow.Attributes32Accumulator
+		exemplarAccumulator  *ExemplarAccumulator
+		config               *HistogramConfig
 	}
 
 	HDP struct {
-		ParentID               uint16
-		Metric                 *pmetric.Metric
-		AggregationTemporality pmetric.AggregationTemporality
-		IsMonotonic            bool
-		Orig                   *pmetric.HistogramDataPoint
+		ParentID uint16
+		Orig     *pmetric.HistogramDataPoint
 	}
 
 	HDPAccumulator struct {
 		groupCount uint32
 		hdps       []HDP
+		sorter     HistogramSorter
 	}
+
+	HistogramSorter interface {
+		Sort(histograms []HDP)
+		Encode(parentID uint16, dp *pmetric.HistogramDataPoint) uint16
+		Reset()
+	}
+
+	HistogramsByNothing  struct{}
+	HistogramsByParentID struct {
+		prevParentID uint16
+	}
+	// ToDo explore other sorting options
 )
 
 // NewHistogramDataPointBuilder creates a new HistogramDataPointBuilder.
-func NewHistogramDataPointBuilder(rBuilder *builder.RecordBuilderExt) *HistogramDataPointBuilder {
+func NewHistogramDataPointBuilder(rBuilder *builder.RecordBuilderExt, conf *HistogramConfig) *HistogramDataPointBuilder {
 	b := &HistogramDataPointBuilder{
-		released:    false,
-		builder:     rBuilder,
-		accumulator: NewHDPAccumulator(),
+		released:             false,
+		builder:              rBuilder,
+		dataPointAccumulator: NewHDPAccumulator(conf.Sorter),
 	}
 
 	b.init()
@@ -135,22 +134,14 @@ func (b *HistogramDataPointBuilder) init() {
 	b.ib.SetMaxDelta(1)
 	b.pib = b.builder.Uint16Builder(constants.ParentID)
 
-	b.nb = b.builder.StringBuilder(constants.Name)
-	b.db = b.builder.StringBuilder(constants.Description)
-	b.ub = b.builder.StringBuilder(constants.Unit)
-	b.atb = b.builder.Int32Builder(constants.AggregationTemporality)
-	b.imb = b.builder.BooleanBuilder(constants.IsMonotonic)
-
 	b.stunb = b.builder.TimestampBuilder(constants.StartTimeUnixNano)
 	b.tunb = b.builder.TimestampBuilder(constants.TimeUnixNano)
 	b.hcb = b.builder.Uint64Builder(constants.HistogramCount)
 	b.hsb = b.builder.Float64Builder(constants.HistogramSum)
 	b.hbclb = b.builder.ListBuilder(constants.HistogramBucketCounts)
 	b.heblb = b.builder.ListBuilder(constants.HistogramExplicitBounds)
-	b.elb = b.builder.ListBuilder(constants.Exemplars)
 	b.hbcb = b.hbclb.Uint64Builder()
 	b.hebb = b.heblb.Float64Builder()
-	b.eb = ExemplarBuilderFrom(b.elb.StructBuilder())
 	b.fb = b.builder.Uint32Builder(constants.Flags)
 	b.hmib = b.builder.Float64Builder(constants.HistogramMin)
 	b.hmab = b.builder.Float64Builder(constants.HistogramMax)
@@ -158,6 +149,10 @@ func (b *HistogramDataPointBuilder) init() {
 
 func (b *HistogramDataPointBuilder) SetAttributesAccumulator(accu *carrow.Attributes32Accumulator) {
 	b.attrsAccu = accu
+}
+
+func (b *HistogramDataPointBuilder) SetExemplarAccumulator(accu *ExemplarAccumulator) {
+	b.exemplarAccumulator = accu
 }
 
 func (b *HistogramDataPointBuilder) SchemaID() string {
@@ -169,11 +164,11 @@ func (b *HistogramDataPointBuilder) Schema() *arrow.Schema {
 }
 
 func (b *HistogramDataPointBuilder) IsEmpty() bool {
-	return b.accumulator.IsEmpty()
+	return b.dataPointAccumulator.IsEmpty()
 }
 
 func (b *HistogramDataPointBuilder) Accumulator() *HDPAccumulator {
-	return b.accumulator
+	return b.dataPointAccumulator
 }
 
 // Build builds the underlying array.
@@ -209,7 +204,7 @@ func (b *HistogramDataPointBuilder) Build() (record arrow.Record, err error) {
 }
 
 func (b *HistogramDataPointBuilder) Reset() {
-	b.accumulator.Reset()
+	b.dataPointAccumulator.Reset()
 }
 
 func (b *HistogramDataPointBuilder) PayloadType() *carrow.PayloadType {
@@ -231,24 +226,19 @@ func (b *HistogramDataPointBuilder) TryBuild(attrsAccu *carrow.Attributes32Accum
 		return nil, werror.Wrap(carrow.ErrBuilderAlreadyReleased)
 	}
 
-	b.accumulator.Sort()
+	b.dataPointAccumulator.sorter.Reset()
+	b.dataPointAccumulator.sorter.Sort(b.dataPointAccumulator.hdps)
 
-	for ID, hdpRec := range b.accumulator.hdps {
+	for ID, hdpRec := range b.dataPointAccumulator.hdps {
 		hdp := hdpRec.Orig
 		b.ib.Append(uint32(ID))
-		b.pib.Append(hdpRec.ParentID)
+		b.pib.Append(b.dataPointAccumulator.sorter.Encode(hdpRec.ParentID, hdp))
 
 		// Attributes
 		err = attrsAccu.Append(uint32(ID), hdp.Attributes())
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
-
-		b.nb.AppendNonEmpty(hdpRec.Metric.Name())
-		b.db.AppendNonEmpty(hdpRec.Metric.Description())
-		b.ub.AppendNonEmpty(hdpRec.Metric.Unit())
-		b.atb.Append(int32(hdpRec.AggregationTemporality))
-		b.imb.Append(hdpRec.IsMonotonic)
 
 		b.stunb.Append(arrow.Timestamp(hdp.StartTimestamp()))
 		b.tunb.Append(arrow.Timestamp(hdp.Timestamp()))
@@ -282,18 +272,14 @@ func (b *HistogramDataPointBuilder) TryBuild(attrsAccu *carrow.Attributes32Accum
 			return nil, werror.Wrap(err)
 		}
 
-		exs := hdp.Exemplars()
-		ec := exs.Len()
-		if err := b.elb.Append(ec, func() error {
-			for i := 0; i < ec; i++ {
-				if err := b.eb.Append(exs.At(i)); err != nil {
-					return werror.Wrap(err)
-				}
+		exemplars := hdp.Exemplars()
+		if exemplars.Len() > 0 {
+			err = b.exemplarAccumulator.Append(uint32(ID), exemplars)
+			if err != nil {
+				return nil, werror.Wrap(err)
 			}
-			return nil
-		}); err != nil {
-			return nil, werror.Wrap(err)
 		}
+
 		b.fb.Append(uint32(hdp.Flags()))
 
 		if hdp.HasMin() {
@@ -315,10 +301,11 @@ func (b *HistogramDataPointBuilder) TryBuild(attrsAccu *carrow.Attributes32Accum
 	return
 }
 
-func NewHDPAccumulator() *HDPAccumulator {
+func NewHDPAccumulator(sorter HistogramSorter) *HDPAccumulator {
 	return &HDPAccumulator{
 		groupCount: 0,
 		hdps:       make([]HDP, 0),
+		sorter:     sorter,
 	}
 }
 
@@ -328,9 +315,6 @@ func (a *HDPAccumulator) IsEmpty() bool {
 
 func (a *HDPAccumulator) Append(
 	parentID uint16,
-	metric *pmetric.Metric,
-	aggregationTemporality pmetric.AggregationTemporality,
-	isMonotonic bool,
 	hdps pmetric.HistogramDataPointSlice,
 ) {
 	if a.groupCount == math.MaxUint32 {
@@ -345,28 +329,57 @@ func (a *HDPAccumulator) Append(
 		hdp := hdps.At(i)
 
 		a.hdps = append(a.hdps, HDP{
-			ParentID:               parentID,
-			Metric:                 metric,
-			AggregationTemporality: aggregationTemporality,
-			IsMonotonic:            isMonotonic,
-			Orig:                   &hdp,
+			ParentID: parentID,
+			Orig:     &hdp,
 		})
 	}
 
 	a.groupCount++
 }
 
-func (a *HDPAccumulator) Sort() {
-	sort.Slice(a.hdps, func(i, j int) bool {
-		if a.hdps[i].Metric.Name() == a.hdps[j].Metric.Name() {
-			return a.hdps[i].ParentID < a.hdps[j].ParentID
-		} else {
-			return a.hdps[i].Metric.Name() < a.hdps[j].Metric.Name()
-		}
-	})
-}
-
 func (a *HDPAccumulator) Reset() {
 	a.groupCount = 0
 	a.hdps = a.hdps[:0]
+}
+
+// No sorting
+// ==========
+
+func UnsortedHistograms() *HistogramsByNothing {
+	return &HistogramsByNothing{}
+}
+
+func (a *HistogramsByNothing) Sort(_ []HDP) {
+	// Do nothing
+}
+
+func (a *HistogramsByNothing) Encode(parentID uint16, _ *pmetric.HistogramDataPoint) uint16 {
+	return parentID
+}
+
+func (a *HistogramsByNothing) Reset() {}
+
+// Sort by parentID
+// ================
+
+func SortHistogramsByParentID() *HistogramsByParentID {
+	return &HistogramsByParentID{}
+}
+
+func (a *HistogramsByParentID) Sort(histograms []HDP) {
+	sort.Slice(histograms, func(i, j int) bool {
+		dpsI := histograms[i]
+		dpsJ := histograms[j]
+		return dpsI.ParentID < dpsJ.ParentID
+	})
+}
+
+func (a *HistogramsByParentID) Encode(parentID uint16, _ *pmetric.HistogramDataPoint) uint16 {
+	delta := parentID - a.prevParentID
+	a.prevParentID = parentID
+	return delta
+}
+
+func (a *HistogramsByParentID) Reset() {
+	a.prevParentID = 0
 }

@@ -69,14 +69,22 @@ type (
 
 		accumulator *Attributes16Accumulator
 		payloadType *PayloadType
-
-		parentIdEncoding int
 	}
 
 	Attrs16ByNothing          struct{}
-	Attrs16ByParentIdKeyValue struct{}
-	Attrs16ByKeyParentIdValue struct{}
-	Attrs16ByKeyValueParentId struct{}
+	Attrs16ByParentIdKeyValue struct {
+		prevParentID uint16
+	}
+	Attrs16ByKeyParentIdValue struct {
+		prevParentID uint16
+		prevKey      string
+		prevValue    *pcommon.Value
+	}
+	Attrs16ByKeyValueParentId struct {
+		prevParentID uint16
+		prevKey      string
+		prevValue    *pcommon.Value
+	}
 )
 
 func NewAttrs16Builder(rBuilder *builder.RecordBuilderExt, payloadType *PayloadType, sorter Attrs16Sorter) *Attrs16Builder {
@@ -92,11 +100,10 @@ func NewAttrs16Builder(rBuilder *builder.RecordBuilderExt, payloadType *PayloadT
 
 func NewAttrs16BuilderWithEncoding(rBuilder *builder.RecordBuilderExt, payloadType *PayloadType, config *Attrs16Config) *Attrs16Builder {
 	b := &Attrs16Builder{
-		released:         false,
-		builder:          rBuilder,
-		accumulator:      NewAttributes16Accumulator(config.Sorter),
-		payloadType:      payloadType,
-		parentIdEncoding: config.ParentIdEncoding,
+		released:    false,
+		builder:     rBuilder,
+		accumulator: NewAttributes16Accumulator(config.Sorter),
+		payloadType: payloadType,
 	}
 
 	b.init()
@@ -124,33 +131,12 @@ func (b *Attrs16Builder) TryBuild() (record arrow.Record, err error) {
 		return nil, werror.Wrap(ErrBuilderAlreadyReleased)
 	}
 
-	prevParentID := uint16(0)
-	prevKey := ""
-	prevValue := pcommon.NewValueEmpty()
-
 	b.accumulator.Sort()
 
 	for _, attr := range b.accumulator.attrs {
-		switch b.parentIdEncoding {
-		case ParentIdNoEncoding:
-			b.pib.Append(attr.ParentID)
-		case ParentIdDeltaEncoding:
-			delta := attr.ParentID - prevParentID
-			prevParentID = attr.ParentID
-			b.pib.Append(delta)
-		case ParentIdDeltaGroupEncoding:
-			if prevKey == attr.Key && Equal(prevValue, attr.Value) {
-				delta := attr.ParentID - prevParentID
-				prevParentID = attr.ParentID
-				b.pib.Append(delta)
-			} else {
-				prevKey = attr.Key
-				prevValue = attr.Value
-				prevParentID = attr.ParentID
-				b.pib.Append(attr.ParentID)
-			}
-		}
+		b.pib.Append(b.accumulator.sorter.Encode(attr.ParentID, attr.Key, attr.Value))
 		b.keyb.Append(attr.Key)
+
 		switch attr.Value.Type() {
 		case pcommon.ValueTypeStr:
 			b.typeb.Append(uint8(pcommon.ValueTypeStr))
@@ -260,18 +246,8 @@ func (b *Attrs16Builder) Build() (arrow.Record, error) {
 		}
 	}
 
-	// ToDo Keep this code for debugging purposes.
-	//if err == nil && countAttrs16[b.payloadType.PayloadType().String()] == 0 {
-	//	println(b.payloadType.PayloadType().String())
-	//	arrow2.PrintRecord(record)
-	//	countAttrs16[b.payloadType.PayloadType().String()] += 1
-	//}
-
 	return record, werror.Wrap(err)
 }
-
-// ToDo Keep this code for debugging purposes.
-//var countAttrs16 = make(map[string]int)
 
 func (b *Attrs16Builder) SchemaID() string {
 	return b.builder.SchemaID()
@@ -308,7 +284,7 @@ func SortByParentIdKeyValueAttr16() *Attrs16ByParentIdKeyValue {
 	return &Attrs16ByParentIdKeyValue{}
 }
 
-func (s Attrs16ByParentIdKeyValue) Sort(attrs []Attr16) {
+func (s *Attrs16ByParentIdKeyValue) Sort(attrs []Attr16) {
 	sort.Slice(attrs, func(i, j int) bool {
 		attrsI := attrs[i]
 		attrsJ := attrs[j]
@@ -324,6 +300,16 @@ func (s Attrs16ByParentIdKeyValue) Sort(attrs []Attr16) {
 	})
 }
 
+func (s *Attrs16ByParentIdKeyValue) Encode(parentID uint16, _ string, _ pcommon.Value) uint16 {
+	delta := parentID - s.prevParentID
+	s.prevParentID = parentID
+	return delta
+}
+
+func (s *Attrs16ByParentIdKeyValue) Reset() {
+	s.prevParentID = 0
+}
+
 // No sorting
 // ==========
 
@@ -331,9 +317,15 @@ func UnsortedAttrs16() *Attrs16ByNothing {
 	return &Attrs16ByNothing{}
 }
 
-func (s Attrs16ByNothing) Sort(_ []Attr16) {
+func (s *Attrs16ByNothing) Sort(_ []Attr16) {
 	// Do nothing
 }
+
+func (s *Attrs16ByNothing) Encode(parentID uint16, _ string, _ pcommon.Value) uint16 {
+	return parentID
+}
+
+func (s *Attrs16ByNothing) Reset() {}
 
 // Sorts the attributes by key, parentID, and value
 // ================================================
@@ -342,7 +334,7 @@ func SortAttrs16ByKeyParentIdValue() *Attrs16ByKeyParentIdValue {
 	return &Attrs16ByKeyParentIdValue{}
 }
 
-func (s Attrs16ByKeyParentIdValue) Sort(attrs []Attr16) {
+func (s *Attrs16ByKeyParentIdValue) Sort(attrs []Attr16) {
 	sort.Slice(attrs, func(i, j int) bool {
 		attrsI := attrs[i]
 		attrsJ := attrs[j]
@@ -362,6 +354,43 @@ func (s Attrs16ByKeyParentIdValue) Sort(attrs []Attr16) {
 	})
 }
 
+func (s *Attrs16ByKeyParentIdValue) Encode(parentID uint16, key string, value pcommon.Value) uint16 {
+	if s.prevValue == nil {
+		s.prevKey = key
+		s.prevValue = &value
+		s.prevParentID = parentID
+		return parentID
+	}
+
+	if s.IsSameGroup(key, value) {
+		delta := parentID - s.prevParentID
+		s.prevParentID = parentID
+		return delta
+	} else {
+		s.prevKey = key
+		s.prevValue = &value
+		s.prevParentID = parentID
+		return parentID
+	}
+}
+
+func (s *Attrs16ByKeyParentIdValue) Reset() {
+	s.prevParentID = 0
+	s.prevKey = ""
+	s.prevValue = nil
+}
+
+func (s *Attrs16ByKeyParentIdValue) IsSameGroup(key string, value pcommon.Value) bool {
+	if s.prevValue == nil {
+		return false
+	}
+
+	if s.prevValue.Type() == value.Type() && s.prevKey == key {
+		return true
+	}
+	return false
+}
+
 // Sorts the attributes by key, value, and parentID
 // ================================================
 
@@ -369,7 +398,7 @@ func SortAttrs16ByKeyValueParentId() *Attrs16ByKeyValueParentId {
 	return &Attrs16ByKeyValueParentId{}
 }
 
-func (s Attrs16ByKeyValueParentId) Sort(attrs []Attr16) {
+func (s *Attrs16ByKeyValueParentId) Sort(attrs []Attr16) {
 	sort.Slice(attrs, func(i, j int) bool {
 		attrsI := attrs[i]
 		attrsJ := attrs[j]
@@ -388,4 +417,42 @@ func (s Attrs16ByKeyValueParentId) Sort(attrs []Attr16) {
 			return attrsI.Value.Type() < attrsJ.Value.Type()
 		}
 	})
+}
+
+func (s *Attrs16ByKeyValueParentId) Encode(parentID uint16, key string, value pcommon.Value) uint16 {
+	if s.prevValue == nil {
+		s.prevKey = key
+		s.prevValue = &value
+		s.prevParentID = parentID
+		return parentID
+	}
+
+	if s.IsSameGroup(key, value) {
+		delta := parentID - s.prevParentID
+		s.prevParentID = parentID
+		return delta
+	} else {
+		s.prevKey = key
+		s.prevValue = &value
+		s.prevParentID = parentID
+		return parentID
+	}
+}
+
+func (s *Attrs16ByKeyValueParentId) Reset() {
+	s.prevParentID = 0
+	s.prevKey = ""
+	s.prevValue = nil
+}
+
+func (s *Attrs16ByKeyValueParentId) IsSameGroup(key string, value pcommon.Value) bool {
+	if s.prevValue == nil {
+		return false
+	}
+
+	if s.prevKey == key {
+		return Equal(*s.prevValue, value)
+	} else {
+		return false
+	}
 }

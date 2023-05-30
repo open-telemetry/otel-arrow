@@ -51,7 +51,7 @@ func main() {
 
 	// The -stats flag displays a series of statistics about the schema and the
 	// dataset. This flag is disabled by default.
-	stats := flag.Bool("stats", false, "stats mode")
+	statsFlag := flag.Bool("stats", false, "stats mode")
 
 	// Parse the flag
 	flag.Parse()
@@ -73,7 +73,7 @@ func main() {
 	conf := &benchmark.Config{
 		Compression: false,
 	}
-	if *stats {
+	if *statsFlag {
 		conf.Stats = true
 	}
 
@@ -86,7 +86,7 @@ func main() {
 		maxIter := uint64(3)
 
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
-		profiler := benchmark.NewProfiler([]int{5000, 10000}, "output/logs_benchmark.log", 2)
+		profiler := benchmark.NewProfiler([]int{100, 500, 1000, 2000, 4000, 5000}, "output/logs_benchmark.log", 2)
 		//profiler := benchmark.NewProfiler([]int{10}, "output/logs_benchmark.log", 2)
 
 		// Build dataset from CSV file or from OTLP protobuf file

@@ -111,10 +111,9 @@ func TestEvent(t *testing.T) {
 			attrsRecord.Release()
 		}
 
-		ab := carrow.NewAttrs32Builder(attrsRBuilder, carrow.PayloadTypes.EventAttrs, carrow.SortAttrs32ByParentIdKeyValue())
+		ab := carrow.NewAttrs32Builder(attrsRBuilder, carrow.PayloadTypes.EventAttrs, carrow.SortAttrs32ByTypeParentIdKeyValue())
 		eb := NewEventBuilder(eventRBuilder, &EventConfig{
-			Sorter:           SortEventsByNameTimeUnixNano(),
-			ParentIdEncoding: carrow.ParentIdDeltaGroupEncoding,
+			Sorter: SortEventsByNameTimeUnixNano(),
 		})
 		eb.SetAttributesAccumulator(ab.Accumulator())
 
@@ -190,7 +189,7 @@ func TestLink(t *testing.T) {
 			attrsRecord.Release()
 		}
 
-		ab := carrow.NewAttrs32Builder(attrsRBuilder, carrow.PayloadTypes.LinkAttrs, carrow.SortAttrs32ByParentIdKeyValue())
+		ab := carrow.NewAttrs32Builder(attrsRBuilder, carrow.PayloadTypes.LinkAttrs, carrow.SortAttrs32ByTypeParentIdKeyValue())
 		lb := NewLinkBuilder(linkRBuilder, tracesConf.Link)
 		lb.SetAttributesAccumulator(ab.Accumulator())
 
@@ -399,11 +398,11 @@ func TestTraces(t *testing.T) {
 			panic(fmt.Sprint("unexpected payload type: ", relatedRecord.PayloadType()))
 		}
 
-		observed, err := relatedRecord.Record().MarshalJSON()
+		actual, err := relatedRecord.Record().MarshalJSON()
 		require.NoError(t, err)
 		relatedRecord.Record().Release()
 
-		require.JSONEq(t, expected, string(observed))
+		require.JSONEq(t, expected, string(actual))
 
 		relatedRecord.Record().Release()
 	}

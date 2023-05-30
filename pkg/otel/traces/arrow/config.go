@@ -49,13 +49,11 @@ type (
 	}
 
 	EventConfig struct {
-		Sorter           EventSorter
-		ParentIdEncoding int
+		Sorter EventSorter
 	}
 
 	LinkConfig struct {
-		Sorter           LinkSorter
-		ParentIdEncoding int
+		Sorter LinkSorter
 	}
 )
 
@@ -70,37 +68,28 @@ func NewConfig(globalConf *cfg.Config) *Config {
 			Sorter: SortSpansByResourceSpanIdScopeSpanIdNameTraceId(),
 		},
 		Event: &EventConfig{
-			Sorter:           SortEventsByNameParentId(),
-			ParentIdEncoding: arrow.ParentIdDeltaGroupEncoding,
+			Sorter: SortEventsByNameParentId(),
 		},
 		Link: &LinkConfig{
-			Sorter:           SortLinksByTraceIdParentId(),
-			ParentIdEncoding: arrow.ParentIdDeltaGroupEncoding,
+			Sorter: SortLinksByTraceIdParentId(),
 		},
 		Attrs: &AttrsConfig{
 			Resource: &arrow.Attrs16Config{
-				Sorter:           arrow.SortAttrs16ByKeyValueParentId(),
-				ParentIdEncoding: arrow.ParentIdDeltaGroupEncoding,
+				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
 			},
 			Scope: &arrow.Attrs16Config{
-				Sorter:           arrow.SortAttrs16ByKeyValueParentId(),
-				ParentIdEncoding: arrow.ParentIdDeltaGroupEncoding,
+				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
 			},
 			Span: &arrow.Attrs16Config{
-				Sorter:           arrow.SortAttrs16ByKeyValueParentId(),
-				ParentIdEncoding: arrow.ParentIdDeltaGroupEncoding,
+				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
 			},
 			Event: &arrow.Attrs32Config{
-				Sorter:           arrow.SortAttrs32ByKeyValueParentId(),
-				ParentIdEncoding: arrow.ParentIdDeltaGroupEncoding,
-				//Sorter:           arrow.SortAttrs32ByParentIdKeyValue(),
-				//ParentIdEncoding: arrow.ParentIdDeltaEncoding,
+				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
+				//Sorter:           arrow.SortAttrs32ByTypeParentIdKeyValue(),
 			},
 			Link: &arrow.Attrs32Config{
-				Sorter:           arrow.SortAttrs32ByKeyValueParentId(),
-				ParentIdEncoding: arrow.ParentIdDeltaGroupEncoding,
-				//Sorter:           arrow.SortAttrs32ByParentIdKeyValue(),
-				//ParentIdEncoding: arrow.ParentIdDeltaEncoding,
+				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
+				//Sorter:           arrow.SortAttrs32ByTypeParentIdKeyValue(),
 			},
 		},
 	}
@@ -113,33 +102,26 @@ func NewNoSortConfig(globalConf *cfg.Config) *Config {
 			Sorter: UnsortedSpans(),
 		},
 		Event: &EventConfig{
-			Sorter:           UnsortedEvents(),
-			ParentIdEncoding: arrow.ParentIdNoEncoding,
+			Sorter: UnsortedEvents(),
 		},
 		Link: &LinkConfig{
-			Sorter:           UnsortedLinks(),
-			ParentIdEncoding: arrow.ParentIdNoEncoding,
+			Sorter: UnsortedLinks(),
 		},
 		Attrs: &AttrsConfig{
 			Resource: &arrow.Attrs16Config{
-				Sorter:           arrow.UnsortedAttrs16(),
-				ParentIdEncoding: arrow.ParentIdNoEncoding,
+				Sorter: arrow.UnsortedAttrs16(),
 			},
 			Scope: &arrow.Attrs16Config{
-				Sorter:           arrow.UnsortedAttrs16(),
-				ParentIdEncoding: arrow.ParentIdNoEncoding,
+				Sorter: arrow.UnsortedAttrs16(),
 			},
 			Span: &arrow.Attrs16Config{
-				Sorter:           arrow.UnsortedAttrs16(),
-				ParentIdEncoding: arrow.ParentIdNoEncoding,
+				Sorter: arrow.UnsortedAttrs16(),
 			},
 			Event: &arrow.Attrs32Config{
-				Sorter:           arrow.UnsortedAttrs32(),
-				ParentIdEncoding: arrow.ParentIdNoEncoding,
+				Sorter: arrow.UnsortedAttrs32(),
 			},
 			Link: &arrow.Attrs32Config{
-				Sorter:           arrow.UnsortedAttrs32(),
-				ParentIdEncoding: arrow.ParentIdNoEncoding,
+				Sorter: arrow.UnsortedAttrs32(),
 			},
 		},
 	}

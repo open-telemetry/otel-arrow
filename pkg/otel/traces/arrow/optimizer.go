@@ -82,7 +82,7 @@ func (t *TracesOptimizer) Optimize(traces ptrace.Traces) *TracesOptimized {
 		resSpan := resSpans.At(i)
 		resource := resSpan.Resource()
 		resourceSchemaUrl := resSpan.SchemaUrl()
-		resSpanId := otlp.ResourceID(resource, resourceSchemaUrl)
+		resSpanID := otlp.ResourceID(resource, resourceSchemaUrl)
 
 		scopeSpans := resSpan.ScopeSpans()
 		for j := 0; j < scopeSpans.Len(); j++ {
@@ -96,7 +96,7 @@ func (t *TracesOptimizer) Optimize(traces ptrace.Traces) *TracesOptimized {
 				span := spans.At(k)
 
 				tracesOptimized.Spans = append(tracesOptimized.Spans, &FlattenedSpan{
-					ResourceSpanID:    resSpanId,
+					ResourceSpanID:    resSpanID,
 					Resource:          &resource,
 					ResourceSchemaUrl: resourceSchemaUrl,
 					ScopeSpanID:       scopeSpanId,

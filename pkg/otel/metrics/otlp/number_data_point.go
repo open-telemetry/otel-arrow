@@ -20,44 +20,43 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	otlp "github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
 )
 
 type (
-	SummaryDataPointIDs struct {
+	NumberDataPointIDs struct {
 		ID                int
 		ParentID          int
 		StartTimeUnixNano int
 		TimeUnixNano      int
-		Count             int
-		Sum               int
-		QuantileValues    *QuantileValueIds
+		IntValue          int
+		DoubleValue       int
 		Flags             int
 	}
 
-	SummaryDataPointsStore struct {
+	NumberDataPointsStore struct {
 		nextID         uint16
-		dataPointsByID map[uint16]pmetric.SummaryDataPointSlice
+		dataPointsByID map[uint16]pmetric.NumberDataPointSlice
 	}
 )
 
-func NewSummaryDataPointsStore() *SummaryDataPointsStore {
-	return &SummaryDataPointsStore{
-		dataPointsByID: make(map[uint16]pmetric.SummaryDataPointSlice),
+func NewNumberDataPointsStore() *NumberDataPointsStore {
+	return &NumberDataPointsStore{
+		dataPointsByID: make(map[uint16]pmetric.NumberDataPointSlice),
 	}
 }
 
-func (s *SummaryDataPointsStore) SummaryMetricsByID(ID uint16) pmetric.SummaryDataPointSlice {
-	nbdps, ok := s.dataPointsByID[ID]
+func (s *NumberDataPointsStore) NumberDataPointsByID(ID uint16) pmetric.NumberDataPointSlice {
+	nbps, ok := s.dataPointsByID[ID]
 	if !ok {
-		return pmetric.NewSummaryDataPointSlice()
+		return pmetric.NewNumberDataPointSlice()
 	}
-	return nbdps
+	return nbps
 }
 
-func SchemaToSummaryIDs(schema *arrow.Schema) (*SummaryDataPointIDs, error) {
+func SchemaToNDPIDs(schema *arrow.Schema) (*NumberDataPointIDs, error) {
 	ID, err := arrowutils.FieldIDFromSchema(schema, constants.ID)
 	if err != nil {
 		return nil, werror.Wrap(err)
@@ -78,17 +77,12 @@ func SchemaToSummaryIDs(schema *arrow.Schema) (*SummaryDataPointIDs, error) {
 		return nil, werror.Wrap(err)
 	}
 
-	count, err := arrowutils.FieldIDFromSchema(schema, constants.SummaryCount)
+	intValue, err := arrowutils.FieldIDFromSchema(schema, constants.IntValue)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
 
-	sum, err := arrowutils.FieldIDFromSchema(schema, constants.SummarySum)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
-	quantileValues, err := NewQuantileValueIds(schema)
+	doubleValue, err := arrowutils.FieldIDFromSchema(schema, constants.DoubleValue)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
@@ -98,26 +92,25 @@ func SchemaToSummaryIDs(schema *arrow.Schema) (*SummaryDataPointIDs, error) {
 		return nil, werror.Wrap(err)
 	}
 
-	return &SummaryDataPointIDs{
+	return &NumberDataPointIDs{
 		ID:                ID,
 		ParentID:          parentID,
 		StartTimeUnixNano: startTimeUnixNano,
 		TimeUnixNano:      timeUnixNano,
-		Count:             count,
-		Sum:               sum,
-		QuantileValues:    quantileValues,
+		IntValue:          intValue,
+		DoubleValue:       doubleValue,
 		Flags:             flags,
 	}, nil
 }
 
-func SummaryDataPointsStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store) (*SummaryDataPointsStore, error) {
+func NumberDataPointsStoreFrom(record arrow.Record, exemplarsStore *ExemplarsStore, attrsStore *otlp.Attributes32Store) (*NumberDataPointsStore, error) {
 	defer record.Release()
 
-	store := &SummaryDataPointsStore{
-		dataPointsByID: make(map[uint16]pmetric.SummaryDataPointSlice),
+	store := &NumberDataPointsStore{
+		dataPointsByID: make(map[uint16]pmetric.NumberDataPointSlice),
 	}
 
-	fieldIDs, err := SchemaToSummaryIDs(record.Schema())
+	fieldIDs, err := SchemaToNDPIDs(record.Schema())
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
@@ -142,51 +135,53 @@ func SummaryDataPointsStoreFrom(record arrow.Record, attrsStore *otlp.Attributes
 
 		nbdps, found := store.dataPointsByID[parentID]
 		if !found {
-			nbdps = pmetric.NewSummaryDataPointSlice()
+			nbdps = pmetric.NewNumberDataPointSlice()
 			store.dataPointsByID[parentID] = nbdps
 		}
 
-		sdp := nbdps.AppendEmpty()
+		ndp := nbdps.AppendEmpty()
 
 		startTimeUnixNano, err := arrowutils.TimestampFromRecord(record, fieldIDs.StartTimeUnixNano, row)
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
-		sdp.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
+		ndp.SetStartTimestamp(pcommon.Timestamp(startTimeUnixNano))
 
 		timeUnixNano, err := arrowutils.TimestampFromRecord(record, fieldIDs.TimeUnixNano, row)
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
-		sdp.SetTimestamp(pcommon.Timestamp(timeUnixNano))
+		ndp.SetTimestamp(pcommon.Timestamp(timeUnixNano))
 
-		summaryCount, err := arrowutils.U64FromRecord(record, fieldIDs.Count, row)
+		intValue, err := arrowutils.I64OrNilFromRecord(record, fieldIDs.IntValue, row)
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
-		sdp.SetCount(summaryCount)
-
-		sum, err := arrowutils.F64FromRecord(record, fieldIDs.Sum, row)
-		if err != nil {
-			return nil, werror.Wrap(err)
-		}
-		sdp.SetSum(sum)
-
-		err = AppendQuantileValuesInto(sdp.QuantileValues(), record, row, fieldIDs.QuantileValues)
-		if err != nil {
-			return nil, werror.Wrap(err)
+		if intValue != nil {
+			ndp.SetIntValue(*intValue)
+		} else {
+			doubleValue, err := arrowutils.F64OrNilFromRecord(record, fieldIDs.DoubleValue, row)
+			if err != nil {
+				return nil, werror.Wrap(err)
+			}
+			if doubleValue != nil {
+				ndp.SetDoubleValue(*doubleValue)
+			}
 		}
 
 		flags, err := arrowutils.U32FromRecord(record, fieldIDs.Flags, row)
 		if err != nil {
 			return nil, werror.Wrap(err)
 		}
-		sdp.SetFlags(pmetric.DataPointFlags(flags))
+		ndp.SetFlags(pmetric.DataPointFlags(flags))
 
 		if ID != nil {
+			exemplars := exemplarsStore.ExemplarsByID(*ID)
+			exemplars.MoveAndAppendTo(ndp.Exemplars())
+
 			attrs := attrsStore.AttributesByDeltaID(*ID)
 			if attrs != nil {
-				attrs.CopyTo(sdp.Attributes())
+				attrs.CopyTo(ndp.Attributes())
 			}
 		}
 	}

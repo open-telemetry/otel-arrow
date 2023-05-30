@@ -90,7 +90,8 @@ func SpanLinksStoreFrom(
 	}
 
 	linksCount := int(record.NumRows())
-	parentIdDecoder := NewLinkParentIdDecoder(conf.ParentIdEncoding)
+	// ToDo Make this decoding dependent on the encoding type column metadata.
+	parentIdDecoder := NewLinkParentIdDecoder(carrow.ParentIdDeltaGroupEncoding)
 
 	// Read all link fields from the record and reconstruct the link lists
 	// by ID.

@@ -74,7 +74,7 @@ func TestBackAndForthConversion(t *testing.T) {
 	conf := config.DefaultConfig()
 
 	for {
-		lb, err := ametrics.NewMetricsBuilder(rBuilder, conf, stats.NewProducerStats())
+		lb, err := ametrics.NewMetricsBuilder(rBuilder, ametrics.NewConfig(conf), stats.NewProducerStats())
 		require.NoError(t, err)
 		defer lb.Release()
 

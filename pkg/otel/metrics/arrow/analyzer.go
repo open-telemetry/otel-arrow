@@ -110,20 +110,21 @@ func (t *MetricsAnalyzer) ShowStats(indent string) {
 }
 
 func (r *ResourceMetricsStats) UpdateWith(metrics *MetricsOptimized) {
-	resMetrics := metrics.ResourceMetrics
-
-	for ID := range metrics.ResourceMetricsIdx {
-		r.ResMetricsIDsDistinct.Insert([]byte(ID))
-	}
-
-	r.TotalCount += int64(len(resMetrics))
-	carrow.RequireNoError(r.Distribution.RecordValue(int64(len(resMetrics))))
-
-	for _, rs := range resMetrics {
-		r.ResourceStats.UpdateWith(rs.Resource)
-		r.ScopeMetricsStats.UpdateWith(rs.ScopeMetrics, rs.ScopeMetricsIdx)
-		r.SchemaUrlStats.UpdateWith(rs.ResourceSchemaUrl)
-	}
+	// ToDo adapt the analyzer to the new metrics format
+	//resMetrics := metrics.ResourceMetrics
+	//
+	//for ID := range metrics.ResourceMetricsIdx {
+	//	r.ResMetricsIDsDistinct.Insert([]byte(ID))
+	//}
+	//
+	//r.TotalCount += int64(len(resMetrics))
+	//carrow.RequireNoError(r.Distribution.RecordValue(int64(len(resMetrics))))
+	//
+	//for _, rs := range resMetrics {
+	//	r.ResourceStats.UpdateWith(rs.Resource)
+	//	r.ScopeMetricsStats.UpdateWith(rs.ScopeMetrics, rs.ScopeMetricsIdx)
+	//	r.SchemaUrlStats.UpdateWith(rs.ResourceSchemaUrl)
+	//}
 }
 
 func (r *ResourceMetricsStats) ShowStats(indent string) {
@@ -139,19 +140,20 @@ func (r *ResourceMetricsStats) ShowStats(indent string) {
 	r.SchemaUrlStats.ShowStats(indent)
 }
 
-func (s *ScopeMetricsStats) UpdateWith(scopeMetrics []*ScopeMetricsGroup, scopeMetricsIdx map[string]int) {
-	carrow.RequireNoError(s.Distribution.RecordValue(int64(len(scopeMetrics))))
-
-	for ID := range scopeMetricsIdx {
-		s.ScopeMetricsIDsDistinct.Insert([]byte(ID))
-	}
-
-	for _, ss := range scopeMetrics {
-		s.ScopeStats.UpdateWith(ss.Scope)
-		s.MetricsStats.UpdateWith(ss)
-		s.SchemaUrlStats.UpdateWith(ss.ScopeSchemaUrl)
-	}
-}
+// ToDo adapt the analyzer to the new metrics format
+//func (s *ScopeMetricsStats) UpdateWith(scopeMetrics []*ScopeMetricsGroup, scopeMetricsIdx map[string]int) {
+//	carrow.RequireNoError(s.Distribution.RecordValue(int64(len(scopeMetrics))))
+//
+//	for ID := range scopeMetricsIdx {
+//		s.ScopeMetricsIDsDistinct.Insert([]byte(ID))
+//	}
+//
+//	for _, ss := range scopeMetrics {
+//		s.ScopeStats.UpdateWith(ss.Scope)
+//		s.MetricsStats.UpdateWith(ss)
+//		s.SchemaUrlStats.UpdateWith(ss.ScopeSchemaUrl)
+//	}
+//}
 
 func (s *ScopeMetricsStats) ShowStats(indent string) {
 	print(carrow.Green)
@@ -180,37 +182,38 @@ func NewMetricsStats() *MetricsStats {
 	}
 }
 
-func (s *MetricsStats) UpdateWith(sm *ScopeMetricsGroup) {
-	metrics := sm.Metrics
-	carrow.RequireNoError(s.Distribution.RecordValue(int64(len(metrics))))
+// ToDo adapt the analyzer to the new metrics format
+//func (s *MetricsStats) UpdateWith(sm *ScopeMetricsGroup) {
+//	metrics := sm.Metrics
+//	carrow.RequireNoError(s.Distribution.RecordValue(int64(len(metrics))))
 
-	//sharedAttrs := pcommon.NewMap()
-	//sm.SharedData.sharedAttributes.CopyTo(sharedAttrs)
-	//s.SharedAttributes.UpdateWith(sharedAttrs, 0)
-	//
-	//s.TimeIntervalStats.UpdateWithSpans(metrics)
-	//
-	//for _, span := range metrics {
-	//	s.Attributes.UpdateWith(span.Attributes(), span.DroppedAttributesCount())
-	//	s.Name.UpdateWith(span.Name())
-	//	s.SpanID.Insert([]byte(span.SpanID().String()))
-	//	s.TraceID.Insert([]byte(span.TraceID().String()))
-	//	s.ParentSpanID.Insert([]byte(span.ParentSpanID().String()))
-	//	s.Kind.Insert([]byte(span.Kind().String()))
-	//	s.TraceState.Insert([]byte(span.TraceState().AsRaw()))
-	//	s.Events.UpdateWith(span.Events(), span.DroppedEventsCount(), sm.SharedData.sharedEventAttributes)
-	//	s.Links.UpdateWith(span.Links(), span.DroppedLinksCount(), sm.SharedData.sharedLinkAttributes)
-	//
-	//	b := make([]byte, 8)
-	//	binary.LittleEndian.PutUint64(b, uint64(span.DroppedEventsCount()))
-	//	s.DropEventsCount.Insert(b)
-	//	binary.LittleEndian.PutUint64(b, uint64(span.DroppedLinksCount()))
-	//	s.DropLinksCount.Insert(b)
-	//	s.StatusStats.UpdateWith(span.Status())
-	//}
+//sharedAttrs := pcommon.NewMap()
+//sm.SharedData.sharedAttributes.CopyTo(sharedAttrs)
+//s.SharedAttributes.UpdateWith(sharedAttrs, 0)
+//
+//s.TimeIntervalStats.UpdateWithSpans(metrics)
+//
+//for _, span := range metrics {
+//	s.Attributes.UpdateWith(span.Attributes(), span.DroppedAttributesCount())
+//	s.Name.UpdateWith(span.Name())
+//	s.SpanID.Insert([]byte(span.SpanID().String()))
+//	s.TraceID.Insert([]byte(span.TraceID().String()))
+//	s.ParentSpanID.Insert([]byte(span.ParentSpanID().String()))
+//	s.Kind.Insert([]byte(span.Kind().String()))
+//	s.TraceState.Insert([]byte(span.TraceState().AsRaw()))
+//	s.Events.UpdateWith(span.Events(), span.DroppedEventsCount(), sm.SharedData.sharedEventAttributes)
+//	s.Links.UpdateWith(span.Links(), span.DroppedLinksCount(), sm.SharedData.sharedLinkAttributes)
+//
+//	b := make([]byte, 8)
+//	binary.LittleEndian.PutUint64(b, uint64(span.DroppedEventsCount()))
+//	s.DropEventsCount.Insert(b)
+//	binary.LittleEndian.PutUint64(b, uint64(span.DroppedLinksCount()))
+//	s.DropLinksCount.Insert(b)
+//	s.StatusStats.UpdateWith(span.Status())
+//}
 
-	s.TotalCount += int64(len(metrics))
-}
+//	s.TotalCount += int64(len(metrics))
+//}
 
 func (s *MetricsStats) ShowStats(indent string) {
 	print(carrow.Green)

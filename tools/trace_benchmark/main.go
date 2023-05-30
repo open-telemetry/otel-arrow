@@ -63,7 +63,7 @@ func main() {
 	// Compare the performance for each input file
 	for i := range inputFiles {
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
-		profiler := benchmark.NewProfiler([]int{500, 5000, 10000}, "output/trace_benchmark.log", 2)
+		profiler := benchmark.NewProfiler([]int{100, 500, 1000, 2000, 4000, 5000}, "output/trace_benchmark.log", 2)
 		//profiler := benchmark.NewProfiler([]int{5000}, "output/trace_benchmark.log", 2)
 		// profiler := benchmark.NewProfiler([]int{10 /*100, 1000, 2000, 5000,*/, 10000}, "output/trace_benchmark.log", 2)
 		//profiler := benchmark.NewProfiler([]int{1000}, "output/trace_benchmark.log", 2)
@@ -73,12 +73,16 @@ func main() {
 		//ds.Resize(5000)
 		profiler.Printf("Dataset '%s' (%s) loaded\n", inputFiles[i], humanize.Bytes(uint64(ds.SizeInBytes())))
 		otlpTraces := otlp.NewTraceProfileable(ds, compressionAlgo)
-
+		//otlpDictTraces := otlpdict.NewTraceProfileable(ds, compressionAlgo)
 		otlpArrowTraces := arrow.NewTraceProfileable([]string{"stream mode"}, ds, conf)
 
 		if err := profiler.Profile(otlpTraces, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
 		}
+
+		//if err := profiler.Profile(otlpDictTraces, maxIter); err != nil {
+		//	panic(fmt.Errorf("expected no error, got %v", err))
+		//}
 
 		if err := profiler.Profile(otlpArrowTraces, maxIter); err != nil {
 			panic(fmt.Errorf("expected no error, got %v", err))
@@ -87,6 +91,12 @@ func main() {
 		// If the unary RPC mode is enabled,
 		// run the OTLP Arrow benchmark in unary RPC mode.
 		if *unaryRpcPtr {
+			//otlpDictTraces := otlpdict.NewTraceProfileable(ds, compressionAlgo)
+			//otlpDictTraces.EnableUnaryRpcMode()
+			//if err := profiler.Profile(otlpDictTraces, maxIter); err != nil {
+			//	panic(fmt.Errorf("expected no error, got %v", err))
+			//}
+
 			otlpArrowTraces := arrow.NewTraceProfileable([]string{"unary rpc mode"}, ds, conf)
 			otlpArrowTraces.EnableUnaryRpcMode()
 			if err := profiler.Profile(otlpArrowTraces, maxIter); err != nil {

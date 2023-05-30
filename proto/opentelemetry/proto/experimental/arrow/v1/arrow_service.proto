@@ -61,47 +61,41 @@ message BatchArrowRecords {
 
 // Enumeration of all the OTLP Arrow payload types currently supported by the OTLP Arrow protocol.
 enum OtlpArrowPayloadType {
-  // Main OTel entities
-  // A payload representing a collection of metrics.
-  METRICS = 0;
-  INT_GAUGE = 2;
-  DOUBLE_GAUGE = 3;
-  INT_SUM = 4;
-  DOUBLE_SUM = 5;
-  SUMMARIES = 6;
-  HISTOGRAMS = 7;
-  EXP_HISTOGRAMS = 8;
+  UNKNOWN = 0;
 
-  // A payload representing a collection of logs.
-  LOGS = 9;
-  // A payload representing a collection of traces.
-  SPANS = 10;
-
-  // Related OTel entities
   // A payload representing a collection of resource attributes.
-  RESOURCE_ATTRS = 11;
+  RESOURCE_ATTRS = 1;
   // A payload representing a collection of scope attributes.
-  SCOPE_ATTRS = 12;
-  // A payload representing a collection of metric attributes.
-  INT_GAUGE_ATTRS = 13;
-  DOUBLE_GAUGE_ATTRS = 14;
-  INT_SUM_ATTRS = 15;
-  DOUBLE_SUM_ATTRS = 16;
-  SUMMARY_ATTRS = 17;
-  HISTOGRAM_ATTRS = 18;
-  EXP_HISTOGRAM_ATTRS = 19;
-  // A payload representing a collection of log attributes.
-  LOG_ATTRS = 20;
-  // A payload representing a collection of span attributes.
-  SPAN_ATTRS = 21;
-  // A payload representing a collection of span events.
-  SPAN_EVENTS = 22;
-  // A payload representing a collection of span events attributes.
-  SPAN_EVENT_ATTRS = 23;
-  // A payload representing a collection of span links.
-  SPAN_LINKS = 24;
-  // A payload representing a collection of span links attributes.
-  SPAN_LINK_ATTRS = 25;
+  SCOPE_ATTRS = 2;
+
+  // A set of payloads representing a collection of metrics.
+  METRICS = 10;                    // Main metric payload
+  NUMBER_DATA_POINTS = 11;
+  SUMMARY_DATA_POINTS = 12;
+  HISTOGRAM_DATA_POINTS = 13;
+  EXP_HISTOGRAM_DATA_POINTS = 14;
+  NUMBER_DP_ATTRS = 15;
+  SUMMARY_DP_ATTRS = 16;
+  HISTOGRAM_DP_ATTRS = 17;
+  EXP_HISTOGRAM_DP_ATTRS = 18;
+  NUMBER_DP_EXEMPLARS = 19;
+  HISTOGRAM_DP_EXEMPLARS = 20;
+  EXP_HISTOGRAM_DP_EXEMPLARS = 21;
+  NUMBER_DP_EXEMPLAR_ATTRS = 22;
+  HISTOGRAM_DP_EXEMPLAR_ATTRS = 23;
+  EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS = 24;
+
+  // A set of payloads representing a collection of logs.
+  LOGS = 30;
+  LOG_ATTRS = 31;
+
+  // A set of payloads representing a collection of traces.
+  SPANS = 40;
+  SPAN_ATTRS = 41;
+  SPAN_EVENTS = 42;
+  SPAN_LINKS = 43;
+  SPAN_EVENT_ATTRS = 44;
+  SPAN_LINK_ATTRS = 45;
 }
 
 // Represents a batch of OTLP Arrow entities.

@@ -19,11 +19,12 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
+	"text/template"
 
 	"github.com/apache/arrow/go/v12/arrow"
 
-	"github.com/f5/otel-arrow-adapter/pkg/config"
 	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	logsarrow "github.com/f5/otel-arrow-adapter/pkg/otel/logs/arrow"
@@ -32,7 +33,11 @@ import (
 	traces "github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
 )
 
-var Conf = config.DefaultConfig()
+const (
+	Metrics = "Metrics"
+	Logs    = "Logs"
+	Traces  = "Traces"
+)
 
 type (
 	Domains struct {
@@ -66,21 +71,41 @@ type (
 		fk       bool
 		comments []string
 	}
+
+	DataModel struct {
+		Metrics string
+		Logs    string
+		Traces  string
+	}
 )
 
 func main() {
 	domains := NewDomains()
 
-	VisitMetricsDataModel(domains.Domain("Metrics"))
-	VisitLogsDataModel(domains.Domain("Logs"))
-	VisitTracesDataModel(domains.Domain("Traces"))
+	VisitMetricsDataModel(domains.Domain(Metrics))
+	VisitLogsDataModel(domains.Domain(Logs))
+	VisitTracesDataModel(domains.Domain(Traces))
 
-	println(domains.ToMarkdown())
+	tmpl := template.Must(template.ParseFiles("tools/data_model_gen/data_model.tmpl"))
+
+	// Write the content of generated Markdown to the `docs/data_model.md` file
+	f, err := os.Create("docs/data_model.md")
+	check(err)
+	defer func() { check(f.Close()) }()
+
+	err = tmpl.Execute(f, domains.ToDataModel())
+	check(err)
+}
+
+func check(err error) {
+	if err != nil {
+		panic(err)
+	}
 }
 
 func VisitMetricsDataModel(domain *Domain) {
 	mainSchema := metrics.MetricsSchema
-	relatedData, err := metrics.NewRelatedData(Conf, stats.NewProducerStats())
+	relatedData, err := metrics.NewRelatedData(metrics.DefaultConfig(), stats.NewProducerStats())
 	if err != nil {
 		panic(err)
 	}
@@ -246,6 +271,12 @@ func NewDomains() *Domains {
 }
 
 func (d *Domains) Domain(name string) *Domain {
+	for _, domain := range d.domains {
+		if domain.name == name {
+			return domain
+		}
+	}
+
 	d.domains = append(d.domains, &Domain{
 		name:    name,
 		records: make(map[string]*Record),
@@ -254,12 +285,12 @@ func (d *Domains) Domain(name string) *Domain {
 	return d.domains[len(d.domains)-1]
 }
 
-func (d *Domains) ToMarkdown() string {
-	md := "\n# Arrow Data Model\n\n"
-	for _, domain := range d.domains {
-		md += domain.ToMarkdown()
+func (d *Domains) ToDataModel() DataModel {
+	return DataModel{
+		Metrics: d.Domain(Metrics).ToMarkdown(),
+		Logs:    d.Domain(Logs).ToMarkdown(),
+		Traces:  d.Domain(Traces).ToMarkdown(),
 	}
-	return md
 }
 
 func (d *Domain) RecordByPayloadType(payloadType *carrow.PayloadType) *Record {
@@ -300,9 +331,7 @@ func (d *Domain) OneToManyRelation(from *carrow.PayloadType, to *carrow.PayloadT
 }
 
 func (d *Domain) ToMarkdown() string {
-	md := "## " + d.name + " Arrow Records\n\n"
-
-	md += "```mermaid\n"
+	md := "```mermaid\n"
 	md += "erDiagram\n"
 
 	for _, relation := range d.relations {
@@ -313,7 +342,7 @@ func (d *Domain) ToMarkdown() string {
 		md += record.ToMermaid("    ")
 	}
 
-	md += "```\n\n"
+	md += "```"
 
 	return md
 }
