@@ -1,4 +1,4 @@
-# OTel Arrow Encoder/Decoder package
+# OTel Arrow Protocol implementation
 
 This package is a reference implementation of the OTel Arrow protocol specified in this [OTEP](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md).
 All OTLP entities are covered (metrics, logs, and traces) as well as all sub-elements such as events, links, gauge, sum, 
@@ -13,26 +13,26 @@ Other important links:
   motivations, the protocol, the schemas, the benchmark results and the different phases of this project. The OTEP is
   still [pending, unmerged](https://github.com/open-telemetry/oteps/pull/171).
 - [Donation proposal](https://github.com/open-telemetry/community/issues/1332) - approved, but repo not yet transferred in OTel org.
-- [Slides](https://docs.google.com/presentation/d/12uLXmMWNelAyAiKFYMR0i7E7N4dPhzBi2_HLshFOLak/edit?usp=sharing) (01/30/2023 Maintainers meeting).
-- [Project Roadmap](https://github.com/f5/otel-arrow-adapter/milestones?direction=asc&sort=due_date&state=open) and [project Board](https://github.com/orgs/f5/projects/1/views/2) describing the current state of the project.
 - [Arrow schemas](docs/data_model.md) used by this package.
-- [Threat model](docs/threat_model_assessment.md).
+- [Project Roadmap](https://github.com/f5/otel-arrow-adapter/milestones?direction=asc&sort=due_date&state=open) and [project Board](https://github.com/orgs/f5/projects/1/views/2) describing the current state of the project.
+- [Slides](https://docs.google.com/presentation/d/12uLXmMWNelAyAiKFYMR0i7E7N4dPhzBi2_HLshFOLak/edit?usp=sharing) (01/30/2023 Maintainers meeting).
 
 ## Benchmark summary
 
 The following chart shows the compressed message size (in bytes) as a function
 of the batch size for metrics (univariate), logs, and traces. The bottom of the
-chart shows the reduction factor for both the standard OTLP protocol and the
-OTel Arrow protocol.
+chart shows the reduction factor for both the standard OTLP protocol (with ZSTD
+compression) and the OTel Arrow protocol (ZSTD) in comparison with an
+uncompressed OTLP protocol.
 
 ![compression_ratio](./docs/img/compression_ratio_summary_std_metrics.png)
 
 The next chart follows the same logic but shows the results for multivariate
-metrics (left column).
+metrics (see left column).
 
 ![compression_ratio](./docs/img/compression_ratio_summary_multivariate_metrics.png)
 
-See the following [benchmark results](docs/benchmarks.md) for more details.
+For more details, see the following [benchmark results](docs/benchmarks.md) page.
  
 ## Phase 1 (current implementation)
 
@@ -54,34 +54,6 @@ data has not been updated and this collector is still fundamentally row-oriented
 
 > Note 2: A future phase 2 of this project will focus on implementing end-to-end OTel Arrow to improve the overall
 > performance.
-
-## Testing and validation
-
-The testing of this package and the validation of the OTel Arrow encoding/decoding are the object of particular 
-attention because of the central position of this package in the future OTel collector.
-
-Concerning the tests, the plan is to:
-- reach a test coverage close to 80% (currently ~62%).
-- add more fuzz tests on the encoding and decoding of OTel Arrow messages,
-- implement integration tests with the experimental collector (testbed implemented in the experimental collector).
-
-Concerning the encoding/decoding validation, the plan is to:
-- compare the OTLP entities before and after their conversion to OTel Arrow entities (done).
-- test the conversion procedure of the production data via a CLI tool or directly via the integration in the 
-experimental collector (wip).
-
-A validation of the compression ratio stability is also part of the objectives. This validation will be performed on
-production data (see [Help us](#tests-and-benchmarks-on-real-production-data) section).
-
-## Help us!
-
-### Tests and benchmarks on real production data
-
-We strongly encourage community members to test this protocol extension on production data and report their results and
-potential problems.
-
-A beta version of this experimental collector will soon be available for this purpose. The testing procedure is described below:
-- ToDo
 
 ### Developers
 
@@ -107,19 +79,6 @@ generated files present in the `./proto/api/collector/arrow/v1` directory.
 The integration of this package with the OpenTelemetry Collector is done in the following experimental repository:
 * [experimental-arrow-collector](https://github.com/open-telemetry/experimental-arrow-collector)
 
-## Project management and status
-
-- [Project Board](https://github.com/orgs/f5/projects/1/views/2)
-- Milestones:
-  - [Beta 1](https://github.com/f5/otel-arrow-adapter/milestone/1)
-  - [Beta 2](https://github.com/f5/otel-arrow-adapter/milestone/2)
-  - [Beta 3](https://github.com/f5/otel-arrow-adapter/milestone/3)
-  - [Beta 4](https://github.com/f5/otel-arrow-adapter/milestone/4)
-- Not yet implemented
-  - Multivariate metrics encoder/decoder
-  - Complex attributes (list, map)
-  - Some mitigations mentioned in the [thread model assessment](docs/threat_model_assessment.md)
-
 ## License
 
-OTEL Arrow Adapter is licensed under Apache 2.0.
+OTel Arrow Protocol Adapter is licensed under Apache 2.0.
