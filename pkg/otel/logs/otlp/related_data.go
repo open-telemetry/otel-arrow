@@ -55,22 +55,22 @@ func RelatedDataFrom(records []*record_message.RecordMessage) (relatedData *Rela
 	// Create the attribute map stores for all the attribute records.
 	for _, record := range records {
 		switch record.PayloadType() {
-		case colarspb.OtlpArrowPayloadType_RESOURCE_ATTRS:
+		case colarspb.ArrowPayloadType_RESOURCE_ATTRS:
 			err = otlp.Attributes16StoreFrom(record.Record(), relatedData.ResAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_SCOPE_ATTRS:
+		case colarspb.ArrowPayloadType_SCOPE_ATTRS:
 			err = otlp.Attributes16StoreFrom(record.Record(), relatedData.ScopeAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_LOG_ATTRS:
+		case colarspb.ArrowPayloadType_LOG_ATTRS:
 			err = otlp.Attributes16StoreFrom(record.Record(), relatedData.LogRecordAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_LOGS:
+		case colarspb.ArrowPayloadType_LOGS:
 			if logsRecord != nil {
 				return nil, nil, werror.Wrap(otel.ErrMultipleTracesRecords)
 			}

@@ -162,7 +162,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.R
 	var ibes []*record_message.RecordMessage
 
 	// Transform each individual OtlpArrowPayload into RecordMessage
-	for _, payload := range bar.OtlpArrowPayloads {
+	for _, payload := range bar.ArrowPayloads {
 		// Retrieves (or creates) the stream consumer for the sub-stream id defined in the BatchArrowRecords message.
 		sc := c.streamConsumers[payload.SubStreamId]
 		if sc == nil {
@@ -212,7 +212,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.R
 		}
 	}
 
-	if len(ibes) < len(bar.OtlpArrowPayloads) {
+	if len(ibes) < len(bar.ArrowPayloads) {
 		println("Something is wrong! " +
 			"The number of decoded records is smaller than the number of received payloads. " +
 			"Please consider to increase the memory limit of the consumer.")

@@ -219,14 +219,14 @@ func TestProducerConsumerTraces(t *testing.T) {
 
 	batch, err := producer.BatchArrowRecordsFromTraces(traces)
 	require.NoError(t, err)
-	require.Equal(t, 7, len(batch.OtlpArrowPayloads))
-	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPANS, batch.OtlpArrowPayloads[0].Type)
-	require.Equal(t, arrowpb.OtlpArrowPayloadType_RESOURCE_ATTRS, batch.OtlpArrowPayloads[1].Type)
-	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPAN_ATTRS, batch.OtlpArrowPayloads[2].Type)
-	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPAN_EVENTS, batch.OtlpArrowPayloads[3].Type)
-	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPAN_LINKS, batch.OtlpArrowPayloads[4].Type)
-	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPAN_EVENT_ATTRS, batch.OtlpArrowPayloads[5].Type)
-	require.Equal(t, arrowpb.OtlpArrowPayloadType_SPAN_LINK_ATTRS, batch.OtlpArrowPayloads[6].Type)
+	require.Equal(t, 7, len(batch.ArrowPayloads))
+	require.Equal(t, arrowpb.ArrowPayloadType_SPANS, batch.ArrowPayloads[0].Type)
+	require.Equal(t, arrowpb.ArrowPayloadType_RESOURCE_ATTRS, batch.ArrowPayloads[1].Type)
+	require.Equal(t, arrowpb.ArrowPayloadType_SPAN_ATTRS, batch.ArrowPayloads[2].Type)
+	require.Equal(t, arrowpb.ArrowPayloadType_SPAN_EVENTS, batch.ArrowPayloads[3].Type)
+	require.Equal(t, arrowpb.ArrowPayloadType_SPAN_LINKS, batch.ArrowPayloads[4].Type)
+	require.Equal(t, arrowpb.ArrowPayloadType_SPAN_EVENT_ATTRS, batch.ArrowPayloads[5].Type)
+	require.Equal(t, arrowpb.ArrowPayloadType_SPAN_LINK_ATTRS, batch.ArrowPayloads[6].Type)
 
 	consumer := NewConsumer()
 	received, err := consumer.TracesFrom(batch)
@@ -263,7 +263,7 @@ func TestProducerConsumerLogs(t *testing.T) {
 
 	batch, err := producer.BatchArrowRecordsFromLogs(logs)
 	require.NoError(t, err)
-	require.Equal(t, arrowpb.OtlpArrowPayloadType_LOGS, batch.OtlpArrowPayloads[0].Type)
+	require.Equal(t, arrowpb.ArrowPayloadType_LOGS, batch.ArrowPayloads[0].Type)
 
 	consumer := NewConsumer()
 	received, err := consumer.LogsFrom(batch)
@@ -301,7 +301,7 @@ func TestProducerConsumerMetrics(t *testing.T) {
 	// First round.
 	batch, err := producer.BatchArrowRecordsFromMetrics(metrics)
 	require.NoError(t, err)
-	require.Equal(t, arrowpb.OtlpArrowPayloadType_METRICS, batch.OtlpArrowPayloads[0].Type)
+	require.Equal(t, arrowpb.ArrowPayloadType_METRICS, batch.ArrowPayloads[0].Type)
 
 	consumer := NewConsumer()
 	received, err := consumer.MetricsFrom(batch)
@@ -317,7 +317,7 @@ func TestProducerConsumerMetrics(t *testing.T) {
 	// Second round (emit same data).
 	batch, err = producer.BatchArrowRecordsFromMetrics(metrics)
 	require.NoError(t, err)
-	require.Equal(t, arrowpb.OtlpArrowPayloadType_METRICS, batch.OtlpArrowPayloads[0].Type)
+	require.Equal(t, arrowpb.ArrowPayloadType_METRICS, batch.ArrowPayloads[0].Type)
 
 	received, err = consumer.MetricsFrom(batch)
 	require.NoError(t, err)

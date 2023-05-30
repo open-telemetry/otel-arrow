@@ -12,6 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// This protocol specifies the services and messages utilized by the OTel Arrow
+// Protocol. It extends the OTLP protocol by representing OTLP entities in a
+// columnar manner using Apache Arrow. The primary objective of this new
+// protocol is to optimize transport efficiency in terms of compression (phase 1),
+// memory, and CPU usage (phase 2).
+//
+// Note: This protocol is still experimental and subject to change.
+
 syntax = "proto3";
 
 package opentelemetry.proto.experimental.arrow.v1;
@@ -23,11 +31,17 @@ option java_outer_classname = "ArrowServiceProto";
 // Note the following is temporary
 option go_package = "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1";
 
-// Service that can be used to send `BatchArrowRecords` between one Application instrumented with OpenTelemetry and a
-// collector, or between collectors.
+// This service can be utilized to transmit `BatchArrowRecords` either from an
+// application instrumented with OpenTelemetry to a collector, or between
+// multiple collectors.
+//
+// Note: If your deployment requires to load-balance the telemetry data based on
+// the nature of the telemetry data (e.g. traces, metrics, logs), then you should
+// use the `ArrowTracesService`, `ArrowMetricsService`, and `ArrowLogsService`.
 service ArrowStreamService {
-  // The ArrowStream endpoint is a bi-directional stream used to send batch of `BatchArrowRecords` from the exporter
-  // to the collector. The collector returns `BatchStatus` messages to acknowledge the `BatchArrowRecords`
+  // The ArrowStream endpoint is a bi-directional stream used to send batch of
+  // `BatchArrowRecords` from the exporter to the collector. The collector
+  // returns `BatchStatus` messages to acknowledge the `BatchArrowRecords`
   // messages received.
   rpc ArrowStream(stream BatchArrowRecords) returns (stream BatchStatus) {}
 }
@@ -47,20 +61,22 @@ service ArrowMetricsService {
   rpc ArrowMetrics(stream BatchArrowRecords) returns (stream BatchStatus) {}
 }
 
-// A message sent by an exporter to a collector containing a batch of Arrow records.
+// A message sent by an exporter to a collector containing a batch of Arrow
+// records.
 message BatchArrowRecords {
   // [mandatory] Batch ID. Must be unique in the context of the stream.
   string batch_id = 1;
 
   // [mandatory] A collection of payloads containing the data of the batch.
-  repeated OtlpArrowPayload otlp_arrow_payloads = 2;
+  repeated ArrowPayload arrow_payloads = 2;
 
   // [optional] Headers associated with this batch, encoded using hpack.
   bytes headers = 3;
 }
 
-// Enumeration of all the OTLP Arrow payload types currently supported by the OTLP Arrow protocol.
-enum OtlpArrowPayloadType {
+// Enumeration of all the OTel Arrow payload types currently supported by the
+// OTel Arrow protocol.
+enum ArrowPayloadType {
   UNKNOWN = 0;
 
   // A payload representing a collection of resource attributes.
@@ -98,13 +114,14 @@ enum OtlpArrowPayloadType {
   SPAN_LINK_ATTRS = 45;
 }
 
-// Represents a batch of OTLP Arrow entities.
-message OtlpArrowPayload {
-  // [mandatory] A unique id assigned to a sub-stream of the batch sharing the same schema, and dictionaries.
+// Represents a batch of OTel Arrow entities.
+message ArrowPayload {
+  // [mandatory] A unique id assigned to a sub-stream of the batch sharing the
+  // same schema, and dictionaries.
   string sub_stream_id = 1;
 
-  // [mandatory] Type of the OTLP Arrow payload.
-  OtlpArrowPayloadType type = 2;
+  // [mandatory] Type of the OTel Arrow payload.
+  ArrowPayloadType type = 2;
 
   // [mandatory] Serialized Arrow Record Batch
   // For a description of the Arrow IPC format see:

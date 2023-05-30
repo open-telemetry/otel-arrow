@@ -68,7 +68,7 @@ func RelatedDataFrom(records []*record_message.RecordMessage, conf *arrow.Config
 	// Create the attribute map stores for all the attribute records.
 	for _, record := range records {
 		switch record.PayloadType() {
-		case colarspb.OtlpArrowPayloadType_RESOURCE_ATTRS:
+		case colarspb.ArrowPayloadType_RESOURCE_ATTRS:
 			err = otlp.Attributes16StoreFrom(
 				record.Record(),
 				relatedData.ResAttrMapStore,
@@ -76,37 +76,37 @@ func RelatedDataFrom(records []*record_message.RecordMessage, conf *arrow.Config
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_SCOPE_ATTRS:
+		case colarspb.ArrowPayloadType_SCOPE_ATTRS:
 			err = otlp.Attributes16StoreFrom(record.Record(), relatedData.ScopeAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_SPAN_ATTRS:
+		case colarspb.ArrowPayloadType_SPAN_ATTRS:
 			err = otlp.Attributes16StoreFrom(record.Record(), relatedData.SpanAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_SPAN_EVENTS:
+		case colarspb.ArrowPayloadType_SPAN_EVENTS:
 			if spanEventRecord != nil {
 				return nil, nil, werror.Wrap(otel.ErrMultipleSpanEventsRecords)
 			}
 			spanEventRecord = record
-		case colarspb.OtlpArrowPayloadType_SPAN_EVENT_ATTRS:
+		case colarspb.ArrowPayloadType_SPAN_EVENT_ATTRS:
 			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.SpanEventAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_SPAN_LINKS:
+		case colarspb.ArrowPayloadType_SPAN_LINKS:
 			if spanLinkRecord != nil {
 				return nil, nil, werror.Wrap(otel.ErrMultipleSpanEventsRecords)
 			}
 			spanLinkRecord = record
-		case colarspb.OtlpArrowPayloadType_SPAN_LINK_ATTRS:
+		case colarspb.ArrowPayloadType_SPAN_LINK_ATTRS:
 			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.SpanLinkAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_SPANS:
+		case colarspb.ArrowPayloadType_SPANS:
 			if tracesRecord != nil {
 				return nil, nil, werror.Wrap(otel.ErrMultipleTracesRecords)
 			}

@@ -21,8 +21,6 @@ import (
 	"io"
 	"strings"
 
-	arrowpb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
-	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 	"golang.org/x/net/http2/hpack"
@@ -30,6 +28,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	arrowpb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
+	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
@@ -359,12 +360,12 @@ func (r *Receiver) anyStream(serverStream anyStreamServer) error {
 // argument) or (false) from the consuming pipeline.  The boolean is
 // not used when success (nil error) is returned.
 func (r *Receiver) processRecords(ctx context.Context, arrowConsumer arrowRecord.ConsumerAPI, records *arrowpb.BatchArrowRecords) error {
-	payloads := records.GetOtlpArrowPayloads()
+	payloads := records.GetArrowPayloads()
 	if len(payloads) == 0 {
 		return nil
 	}
 	switch payloads[0].Type {
-	case arrowpb.OtlpArrowPayloadType_METRICS:
+	case arrowpb.ArrowPayloadType_METRICS:
 		if r.Metrics() == nil {
 			return status.Error(codes.Unimplemented, "metrics service not available")
 		}
@@ -385,7 +386,7 @@ func (r *Receiver) processRecords(ctx context.Context, arrowConsumer arrowRecord
 		r.obsrecv.EndMetricsOp(ctx, streamFormat, numPts, err)
 		return err
 
-	case arrowpb.OtlpArrowPayloadType_LOGS:
+	case arrowpb.ArrowPayloadType_LOGS:
 		if r.Logs() == nil {
 			return status.Error(codes.Unimplemented, "logs service not available")
 		}
@@ -406,7 +407,7 @@ func (r *Receiver) processRecords(ctx context.Context, arrowConsumer arrowRecord
 		r.obsrecv.EndLogsOp(ctx, streamFormat, numLogs, err)
 		return err
 
-	case arrowpb.OtlpArrowPayloadType_SPANS:
+	case arrowpb.ArrowPayloadType_SPANS:
 		if r.Traces() == nil {
 			return status.Error(codes.Unimplemented, "traces service not available")
 		}

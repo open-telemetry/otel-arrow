@@ -91,87 +91,87 @@ func RelatedDataFrom(records []*record_message.RecordMessage) (relatedData *Rela
 
 	for _, record := range records {
 		switch record.PayloadType() {
-		case colarspb.OtlpArrowPayloadType_RESOURCE_ATTRS:
+		case colarspb.ArrowPayloadType_RESOURCE_ATTRS:
 			err = otlp.Attributes16StoreFrom(record.Record(), relatedData.ResAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_SCOPE_ATTRS:
+		case colarspb.ArrowPayloadType_SCOPE_ATTRS:
 			err = otlp.Attributes16StoreFrom(record.Record(), relatedData.ScopeAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_NUMBER_DP_ATTRS:
+		case colarspb.ArrowPayloadType_NUMBER_DP_ATTRS:
 			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.NumberDPAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_SUMMARY_DP_ATTRS:
+		case colarspb.ArrowPayloadType_SUMMARY_DP_ATTRS:
 			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.SummaryAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_HISTOGRAM_DP_ATTRS:
+		case colarspb.ArrowPayloadType_HISTOGRAM_DP_ATTRS:
 			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.HistogramAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_EXP_HISTOGRAM_DP_ATTRS:
+		case colarspb.ArrowPayloadType_EXP_HISTOGRAM_DP_ATTRS:
 			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.ExpHistogramAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_NUMBER_DATA_POINTS:
+		case colarspb.ArrowPayloadType_NUMBER_DATA_POINTS:
 			if numberDPRec != nil {
 				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
 			}
 			numberDPRec = record
-		case colarspb.OtlpArrowPayloadType_SUMMARY_DATA_POINTS:
+		case colarspb.ArrowPayloadType_SUMMARY_DATA_POINTS:
 			if summaryDPRec != nil {
 				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
 			}
 			summaryDPRec = record
-		case colarspb.OtlpArrowPayloadType_HISTOGRAM_DATA_POINTS:
+		case colarspb.ArrowPayloadType_HISTOGRAM_DATA_POINTS:
 			if histogramDPRec != nil {
 				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
 			}
 			histogramDPRec = record
-		case colarspb.OtlpArrowPayloadType_EXP_HISTOGRAM_DATA_POINTS:
+		case colarspb.ArrowPayloadType_EXP_HISTOGRAM_DATA_POINTS:
 			if expHistogramDPRec != nil {
 				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
 			}
 			expHistogramDPRec = record
-		case colarspb.OtlpArrowPayloadType_METRICS:
+		case colarspb.ArrowPayloadType_METRICS:
 			if metricsRecord != nil {
 				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
 			}
 			metricsRecord = record
-		case colarspb.OtlpArrowPayloadType_NUMBER_DP_EXEMPLARS:
+		case colarspb.ArrowPayloadType_NUMBER_DP_EXEMPLARS:
 			if numberDBExRec != nil {
 				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
 			}
 			numberDBExRec = record
-		case colarspb.OtlpArrowPayloadType_HISTOGRAM_DP_EXEMPLARS:
+		case colarspb.ArrowPayloadType_HISTOGRAM_DP_EXEMPLARS:
 			if histogramDBExRec != nil {
 				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
 			}
 			histogramDBExRec = record
-		case colarspb.OtlpArrowPayloadType_EXP_HISTOGRAM_DP_EXEMPLARS:
+		case colarspb.ArrowPayloadType_EXP_HISTOGRAM_DP_EXEMPLARS:
 			if expHistogramDBExRec != nil {
 				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
 			}
 			expHistogramDBExRec = record
-		case colarspb.OtlpArrowPayloadType_NUMBER_DP_EXEMPLAR_ATTRS:
+		case colarspb.ArrowPayloadType_NUMBER_DP_EXEMPLAR_ATTRS:
 			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.NumberDPExemplarAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_HISTOGRAM_DP_EXEMPLAR_ATTRS:
+		case colarspb.ArrowPayloadType_HISTOGRAM_DP_EXEMPLAR_ATTRS:
 			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.HistogramExemplarAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
-		case colarspb.OtlpArrowPayloadType_EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS:
+		case colarspb.ArrowPayloadType_EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS:
 			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.ExpHistogramExemplarAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)

@@ -92,7 +92,7 @@ func TestLogs(t *testing.T) {
 
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {
-		case v1.OtlpArrowPayloadType_RESOURCE_ATTRS:
+		case v1.ArrowPayloadType_RESOURCE_ATTRS:
 			expected = `[{"bool":null,"bytes":null,"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
 ,{"bool":null,"bytes":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
 ,{"bool":null,"bytes":null,"double":null,"int":1,"key":"int","parent_id":0,"str":null,"type":2}
@@ -104,7 +104,7 @@ func TestLogs(t *testing.T) {
 ,{"bool":null,"bytes":"Ynl0ZXMy","double":null,"int":null,"key":"bytes","parent_id":1,"str":null,"type":7}
 ]`
 
-		case v1.OtlpArrowPayloadType_SCOPE_ATTRS:
+		case v1.ArrowPayloadType_SCOPE_ATTRS:
 			expected = `[{"bool":null,"bytes":null,"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
 ,{"bool":null,"bytes":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
 ,{"bool":null,"bytes":null,"double":null,"int":1,"key":"int","parent_id":0,"str":null,"type":2}
@@ -116,7 +116,7 @@ func TestLogs(t *testing.T) {
 ,{"bool":null,"bytes":"Ynl0ZXMy","double":null,"int":null,"key":"bytes","parent_id":1,"str":null,"type":7}
 ]`
 
-		case v1.OtlpArrowPayloadType_LOG_ATTRS:
+		case v1.ArrowPayloadType_LOG_ATTRS:
 			expected = `[{"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
 ,{"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
 ,{"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}

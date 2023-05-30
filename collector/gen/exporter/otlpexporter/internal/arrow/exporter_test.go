@@ -105,12 +105,12 @@ func copyBatch[T any](real func(T) (*arrowpb.BatchArrowRecords, error)) func(T) 
 		hcpy := make([]byte, len(in.Headers))
 		copy(hcpy, in.Headers)
 
-		pays := make([]*arrowpb.OtlpArrowPayload, len(in.OtlpArrowPayloads))
+		pays := make([]*arrowpb.ArrowPayload, len(in.ArrowPayloads))
 
-		for i, inp := range in.OtlpArrowPayloads {
+		for i, inp := range in.ArrowPayloads {
 			rcpy := make([]byte, len(inp.Record))
 			copy(rcpy, inp.Record)
-			pays[i] = &arrowpb.OtlpArrowPayload{
+			pays[i] = &arrowpb.ArrowPayload{
 				SubStreamId: inp.SubStreamId,
 				Type:        inp.Type,
 				Record:      rcpy,
@@ -118,9 +118,9 @@ func copyBatch[T any](real func(T) (*arrowpb.BatchArrowRecords, error)) func(T) 
 		}
 
 		return &arrowpb.BatchArrowRecords{
-			BatchId:           in.BatchId,
-			Headers:           hcpy,
-			OtlpArrowPayloads: pays,
+			BatchId:       in.BatchId,
+			Headers:       hcpy,
+			ArrowPayloads: pays,
 		}, nil
 	}
 }

@@ -326,7 +326,7 @@ func (p *Producer) GetAndResetStats() pstats.ProducerStats {
 
 // Produce takes a slice of RecordMessage and returns the corresponding BatchArrowRecords protobuf message.
 func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.BatchArrowRecords, error) {
-	oapl := make([]*colarspb.OtlpArrowPayload, len(rms))
+	oapl := make([]*colarspb.ArrowPayload, len(rms))
 
 	for i, rm := range rms {
 		err := func() error {
@@ -400,7 +400,7 @@ func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.Batch
 			// Reset the buffer
 			sp.output.Reset()
 
-			oapl[i] = &colarspb.OtlpArrowPayload{
+			oapl[i] = &colarspb.ArrowPayload{
 				SubStreamId: sp.subStreamId,
 				Type:        rm.PayloadType(),
 				Record:      buf,
@@ -416,8 +416,8 @@ func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.Batch
 	p.batchId++
 
 	return &colarspb.BatchArrowRecords{
-		BatchId:           batchId,
-		OtlpArrowPayloads: oapl,
+		BatchId:       batchId,
+		ArrowPayloads: oapl,
 	}, nil
 }
 

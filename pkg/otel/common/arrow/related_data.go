@@ -109,103 +109,103 @@ var (
 	PayloadTypes = payloadTypes{
 		Metrics: &PayloadType{
 			prefix:      "metrics",
-			payloadType: colarspb.OtlpArrowPayloadType_METRICS,
+			payloadType: colarspb.ArrowPayloadType_METRICS,
 		},
 		Logs: &PayloadType{
 			prefix:      "logs",
-			payloadType: colarspb.OtlpArrowPayloadType_LOGS,
+			payloadType: colarspb.ArrowPayloadType_LOGS,
 		},
 		Spans: &PayloadType{
 			prefix:      "spans",
-			payloadType: colarspb.OtlpArrowPayloadType_SPANS,
+			payloadType: colarspb.ArrowPayloadType_SPANS,
 		},
 		ResourceAttrs: &PayloadType{
 			prefix:      "resource-attrs",
-			payloadType: colarspb.OtlpArrowPayloadType_RESOURCE_ATTRS,
+			payloadType: colarspb.ArrowPayloadType_RESOURCE_ATTRS,
 		},
 		ScopeAttrs: &PayloadType{
 			prefix:      "scope-attrs",
-			payloadType: colarspb.OtlpArrowPayloadType_SCOPE_ATTRS,
+			payloadType: colarspb.ArrowPayloadType_SCOPE_ATTRS,
 		},
 		NumberDataPoints: &PayloadType{
 			prefix:      "number-dps",
-			payloadType: colarspb.OtlpArrowPayloadType_NUMBER_DATA_POINTS,
+			payloadType: colarspb.ArrowPayloadType_NUMBER_DATA_POINTS,
 		},
 		NumberDataPointAttrs: &PayloadType{
 			prefix:      "number-dp-attrs",
-			payloadType: colarspb.OtlpArrowPayloadType_NUMBER_DP_ATTRS,
+			payloadType: colarspb.ArrowPayloadType_NUMBER_DP_ATTRS,
 		},
 		NumberDataPointExemplars: &PayloadType{
 			prefix:      "number-dp-exemplars",
-			payloadType: colarspb.OtlpArrowPayloadType_NUMBER_DP_EXEMPLARS,
+			payloadType: colarspb.ArrowPayloadType_NUMBER_DP_EXEMPLARS,
 		},
 		NumberDataPointExemplarAttrs: &PayloadType{
 			prefix:      "number-dp-exemplar-attrs",
-			payloadType: colarspb.OtlpArrowPayloadType_NUMBER_DP_EXEMPLAR_ATTRS,
+			payloadType: colarspb.ArrowPayloadType_NUMBER_DP_EXEMPLAR_ATTRS,
 		},
 		Summary: &PayloadType{
 			prefix:      "summary-dps",
-			payloadType: colarspb.OtlpArrowPayloadType_SUMMARY_DATA_POINTS,
+			payloadType: colarspb.ArrowPayloadType_SUMMARY_DATA_POINTS,
 		},
 		SummaryAttrs: &PayloadType{
 			prefix:      "summary-dp-attrs",
-			payloadType: colarspb.OtlpArrowPayloadType_SUMMARY_DP_ATTRS,
+			payloadType: colarspb.ArrowPayloadType_SUMMARY_DP_ATTRS,
 		},
 		Histogram: &PayloadType{
 			prefix:      "histogram-dps",
-			payloadType: colarspb.OtlpArrowPayloadType_HISTOGRAM_DATA_POINTS,
+			payloadType: colarspb.ArrowPayloadType_HISTOGRAM_DATA_POINTS,
 		},
 		HistogramAttrs: &PayloadType{
 			prefix:      "histogram-dp-attrs",
-			payloadType: colarspb.OtlpArrowPayloadType_HISTOGRAM_DP_ATTRS,
+			payloadType: colarspb.ArrowPayloadType_HISTOGRAM_DP_ATTRS,
 		},
 		HistogramExemplars: &PayloadType{
 			prefix:      "histogram-dp-exemplars",
-			payloadType: colarspb.OtlpArrowPayloadType_HISTOGRAM_DP_EXEMPLARS,
+			payloadType: colarspb.ArrowPayloadType_HISTOGRAM_DP_EXEMPLARS,
 		},
 		HistogramExemplarAttrs: &PayloadType{
 			prefix:      "histogram-dp-exemplar-attrs",
-			payloadType: colarspb.OtlpArrowPayloadType_HISTOGRAM_DP_EXEMPLAR_ATTRS,
+			payloadType: colarspb.ArrowPayloadType_HISTOGRAM_DP_EXEMPLAR_ATTRS,
 		},
 		ExpHistogram: &PayloadType{
 			prefix:      "exp-histogram-dps",
-			payloadType: colarspb.OtlpArrowPayloadType_EXP_HISTOGRAM_DATA_POINTS,
+			payloadType: colarspb.ArrowPayloadType_EXP_HISTOGRAM_DATA_POINTS,
 		},
 		ExpHistogramAttrs: &PayloadType{
 			prefix:      "exp-histogram-dp-attrs",
-			payloadType: colarspb.OtlpArrowPayloadType_EXP_HISTOGRAM_DP_ATTRS,
+			payloadType: colarspb.ArrowPayloadType_EXP_HISTOGRAM_DP_ATTRS,
 		},
 		ExpHistogramExemplars: &PayloadType{
 			prefix:      "exp-histogram-dp-exemplars",
-			payloadType: colarspb.OtlpArrowPayloadType_EXP_HISTOGRAM_DP_EXEMPLARS,
+			payloadType: colarspb.ArrowPayloadType_EXP_HISTOGRAM_DP_EXEMPLARS,
 		},
 		ExpHistogramExemplarAttrs: &PayloadType{
 			prefix:      "exp-histogram-dp-exemplar-attrs",
-			payloadType: colarspb.OtlpArrowPayloadType_EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS,
+			payloadType: colarspb.ArrowPayloadType_EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS,
 		},
 		LogRecordAttrs: &PayloadType{
 			prefix:      "logs-attrs",
-			payloadType: colarspb.OtlpArrowPayloadType_LOG_ATTRS,
+			payloadType: colarspb.ArrowPayloadType_LOG_ATTRS,
 		},
 		SpanAttrs: &PayloadType{
 			prefix:      "span-attrs",
-			payloadType: colarspb.OtlpArrowPayloadType_SPAN_ATTRS,
+			payloadType: colarspb.ArrowPayloadType_SPAN_ATTRS,
 		},
 		Event: &PayloadType{
 			prefix:      "span-event",
-			payloadType: colarspb.OtlpArrowPayloadType_SPAN_EVENTS,
+			payloadType: colarspb.ArrowPayloadType_SPAN_EVENTS,
 		},
 		EventAttrs: &PayloadType{
 			prefix:      "span-event-attrs",
-			payloadType: colarspb.OtlpArrowPayloadType_SPAN_EVENT_ATTRS,
+			payloadType: colarspb.ArrowPayloadType_SPAN_EVENT_ATTRS,
 		},
 		Link: &PayloadType{
 			prefix:      "span-link",
-			payloadType: colarspb.OtlpArrowPayloadType_SPAN_LINKS,
+			payloadType: colarspb.ArrowPayloadType_SPAN_LINKS,
 		},
 		LinkAttrs: &PayloadType{
 			prefix:      "span-link-attrs",
-			payloadType: colarspb.OtlpArrowPayloadType_SPAN_LINK_ATTRS,
+			payloadType: colarspb.ArrowPayloadType_SPAN_LINK_ATTRS,
 		},
 	}
 )

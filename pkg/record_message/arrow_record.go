@@ -26,7 +26,7 @@ import (
 	v1 "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
 )
 
-type PayloadType = v1.OtlpArrowPayloadType
+type PayloadType = v1.ArrowPayloadType
 
 // RecordMessage wraps an Arrow Record with a set of metadata used to identify the batch, sub-stream, and few other
 // properties.
@@ -51,7 +51,7 @@ func NewRecordMessage(batchId string, payloadType PayloadType, record arrow.Reco
 func NewMetricsMessage(schemaID string, record arrow.Record) *RecordMessage {
 	return &RecordMessage{
 		subStreamId: schemaID,
-		payloadType: v1.OtlpArrowPayloadType_METRICS,
+		payloadType: v1.ArrowPayloadType_METRICS,
 		record:      record,
 	}
 }
@@ -62,7 +62,7 @@ func NewLogsMessage(schemaID string, record arrow.Record) *RecordMessage {
 	record.Schema()
 	return &RecordMessage{
 		subStreamId: schemaID,
-		payloadType: v1.OtlpArrowPayloadType_LOGS,
+		payloadType: v1.ArrowPayloadType_LOGS,
 		record:      record,
 	}
 }
@@ -72,7 +72,7 @@ func NewLogsMessage(schemaID string, record arrow.Record) *RecordMessage {
 func NewTraceMessage(schemaID string, record arrow.Record) *RecordMessage {
 	return &RecordMessage{
 		subStreamId: schemaID,
-		payloadType: v1.OtlpArrowPayloadType_SPANS,
+		payloadType: v1.ArrowPayloadType_SPANS,
 		record:      record,
 	}
 }

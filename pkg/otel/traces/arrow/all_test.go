@@ -296,7 +296,7 @@ func TestTraces(t *testing.T) {
 
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {
-		case v1.OtlpArrowPayloadType_RESOURCE_ATTRS:
+		case v1.ArrowPayloadType_RESOURCE_ATTRS:
 			expected = `[{"bool":null,"bytes":null,"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
 ,{"bool":null,"bytes":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
 ,{"bool":null,"bytes":null,"double":null,"int":1,"key":"int","parent_id":0,"str":null,"type":2}
@@ -308,7 +308,7 @@ func TestTraces(t *testing.T) {
 ,{"bool":null,"bytes":"Ynl0ZXMy","double":null,"int":null,"key":"bytes","parent_id":1,"str":null,"type":7}
 ]`
 
-		case v1.OtlpArrowPayloadType_SCOPE_ATTRS:
+		case v1.ArrowPayloadType_SCOPE_ATTRS:
 			expected = `[{"bool":null,"bytes":null,"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
 ,{"bool":null,"bytes":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
 ,{"bool":null,"bytes":null,"double":null,"int":1,"key":"int","parent_id":0,"str":null,"type":2}
@@ -320,7 +320,7 @@ func TestTraces(t *testing.T) {
 ,{"bool":null,"bytes":"Ynl0ZXMy","double":null,"int":null,"key":"bytes","parent_id":1,"str":null,"type":7}
 ]`
 
-		case v1.OtlpArrowPayloadType_SPAN_ATTRS:
+		case v1.ArrowPayloadType_SPAN_ATTRS:
 			expected = `[{"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
 ,{"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
 ,{"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
@@ -334,14 +334,14 @@ func TestTraces(t *testing.T) {
 ,{"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
 ,{"double":2,"int":null,"key":"double","parent_id":1,"str":null,"type":3}
 ]`
-		case v1.OtlpArrowPayloadType_SPAN_EVENTS:
+		case v1.ArrowPayloadType_SPAN_EVENTS:
 			expected = `[{"dropped_attributes_count":null,"id":0,"name":"event1","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
 ,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":1,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
 ,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":1,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
 ,{"dropped_attributes_count":null,"id":1,"name":"event1","parent_id":1,"time_unix_nano":"1970-01-01 00:00:00.000000001"}
 ,{"dropped_attributes_count":1,"id":1,"name":"event2","parent_id":0,"time_unix_nano":"1970-01-01 00:00:00.000000002"}
 ]`
-		case v1.OtlpArrowPayloadType_SPAN_EVENT_ATTRS:
+		case v1.ArrowPayloadType_SPAN_EVENT_ATTRS:
 			expected = `[{"bool":null,"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
 ,{"bool":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string1","type":1}
 ,{"bool":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string1","type":1}
@@ -363,7 +363,7 @@ func TestTraces(t *testing.T) {
 ,{"bool":true,"double":null,"int":null,"key":"bool","parent_id":1,"str":null,"type":4}
 ]`
 
-		case v1.OtlpArrowPayloadType_SPAN_LINKS:
+		case v1.ArrowPayloadType_SPAN_LINKS:
 			expected = `[{"dropped_attributes_count":null,"id":0,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value1"}
 ,{"dropped_attributes_count":1,"id":1,"parent_id":0,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
 ,{"dropped_attributes_count":1,"id":1,"parent_id":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
@@ -371,7 +371,7 @@ func TestTraces(t *testing.T) {
 ,{"dropped_attributes_count":1,"id":1,"parent_id":1,"span_id":"qgAAAAAAAAA=","trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key2=value2"}
 ]`
 
-		case v1.OtlpArrowPayloadType_SPAN_LINK_ATTRS:
+		case v1.ArrowPayloadType_SPAN_LINK_ATTRS:
 			expected = `[{"bool":null,"double":null,"int":null,"key":"str","parent_id":0,"str":"string1","type":1}
 ,{"bool":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
 ,{"bool":null,"double":null,"int":null,"key":"str","parent_id":1,"str":"string2","type":1}
