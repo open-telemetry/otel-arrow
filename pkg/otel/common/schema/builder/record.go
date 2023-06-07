@@ -124,6 +124,10 @@ func (rb *RecordBuilderExt) Schema() *arrow.Schema {
 	return rb.recordBuilder.Schema()
 }
 
+func (rb *RecordBuilderExt) Reserve(size int) {
+	rb.recordBuilder.Reserve(size)
+}
+
 func (rb *RecordBuilderExt) Release() {
 	rb.recordBuilder.Release()
 }

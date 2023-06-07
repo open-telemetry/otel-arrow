@@ -285,7 +285,7 @@ func TestProducerConsumerMetrics(t *testing.T) {
 		ent.NewStandardResourceAttributes(),
 		ent.NewStandardInstrumentationScopes(),
 	)
-	metrics := dg.Generate(10, time.Minute)
+	metrics := dg.GenerateAllKindOfMetrics(10, time.Minute)
 
 	// Check memory leak issue.
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())

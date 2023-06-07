@@ -228,6 +228,8 @@ func (b *EHistogramDataPointBuilder) TryBuild(attrsAccu *carrow.Attributes32Accu
 	b.dataPointAccumulator.sorter.Reset()
 	b.dataPointAccumulator.sorter.Sort(b.dataPointAccumulator.ehdps)
 
+	b.builder.Reserve(len(b.dataPointAccumulator.ehdps))
+
 	for ID, ehdpRec := range b.dataPointAccumulator.ehdps {
 		ehdp := ehdpRec.Orig
 		b.ib.Append(uint32(ID))

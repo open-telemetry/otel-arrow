@@ -55,12 +55,15 @@ type (
 
 func NewRelatedData() *RelatedData {
 	return &RelatedData{
-		ResAttrMapStore:        otlp.NewAttributes16Store(),
-		ScopeAttrMapStore:      otlp.NewAttributes16Store(),
-		NumberDPAttrsStore:     otlp.NewAttributes32Store(),
-		SummaryAttrsStore:      otlp.NewAttributes32Store(),
-		HistogramAttrsStore:    otlp.NewAttributes32Store(),
-		ExpHistogramAttrsStore: otlp.NewAttributes32Store(),
+		ResAttrMapStore:                otlp.NewAttributes16Store(),
+		ScopeAttrMapStore:              otlp.NewAttributes16Store(),
+		NumberDPAttrsStore:             otlp.NewAttributes32Store(),
+		SummaryAttrsStore:              otlp.NewAttributes32Store(),
+		HistogramAttrsStore:            otlp.NewAttributes32Store(),
+		ExpHistogramAttrsStore:         otlp.NewAttributes32Store(),
+		NumberDPExemplarAttrsStore:     otlp.NewAttributes32Store(),
+		HistogramExemplarAttrsStore:    otlp.NewAttributes32Store(),
+		ExpHistogramExemplarAttrsStore: otlp.NewAttributes32Store(),
 
 		NumberDataPointsStore:     NewNumberDataPointsStore(),
 		SummaryDataPointsStore:    NewSummaryDataPointsStore(),
@@ -184,7 +187,7 @@ func RelatedDataFrom(records []*record_message.RecordMessage) (relatedData *Rela
 	// Process exemplar records
 	if numberDBExRec != nil {
 		relatedData.NumberDataPointExemplarsStore, err = ExemplarsStoreFrom(
-			numberDPRec.Record(),
+			numberDBExRec.Record(),
 			relatedData.NumberDPExemplarAttrsStore,
 		)
 		if err != nil {
@@ -194,7 +197,7 @@ func RelatedDataFrom(records []*record_message.RecordMessage) (relatedData *Rela
 
 	if histogramDBExRec != nil {
 		relatedData.HistogramDataPointExemplarsStore, err = ExemplarsStoreFrom(
-			histogramDPRec.Record(),
+			histogramDBExRec.Record(),
 			relatedData.HistogramExemplarAttrsStore,
 		)
 		if err != nil {
@@ -204,7 +207,7 @@ func RelatedDataFrom(records []*record_message.RecordMessage) (relatedData *Rela
 
 	if expHistogramDBExRec != nil {
 		relatedData.EHistogramDataPointExemplarsStore, err = ExemplarsStoreFrom(
-			expHistogramDPRec.Record(),
+			expHistogramDBExRec.Record(),
 			relatedData.ExpHistogramExemplarAttrsStore,
 		)
 		if err != nil {

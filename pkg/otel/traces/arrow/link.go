@@ -199,6 +199,8 @@ func (b *LinkBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (reco
 
 	linkID := uint32(0)
 
+	b.builder.Reserve(len(b.accumulator.links))
+
 	for _, link := range b.accumulator.links {
 		if link.Attributes.Len() == 0 {
 			b.ib.AppendNull()

@@ -74,7 +74,7 @@ func NewMetricsProfileable(tags []string, dataset dataset.MetricsDataset, config
 }
 
 func (s *MetricsProfileable) Name() string {
-	return "OTLP_ARROW"
+	return "OTel_ARROW"
 }
 
 func (s *MetricsProfileable) EnableUnaryRpcMode() {

@@ -167,6 +167,8 @@ func (b *MetricsBuilder) Append(metrics pmetric.Metrics) error {
 	var resID, scopeID int64
 	var err error
 
+	b.builder.Reserve(len(optimizedMetrics.Metrics))
+
 	for _, metric := range optimizedMetrics.Metrics {
 		ID := metricID
 
@@ -240,6 +242,9 @@ func (b *MetricsBuilder) Append(metrics pmetric.Metrics) error {
 			b.imb.AppendNull()
 			dps := exponentialHistogram.DataPoints()
 			b.relatedData.EHistogramDPBuilder().Accumulator().Append(ID, dps)
+		case pmetric.MetricTypeEmpty:
+			b.atb.AppendNull()
+			b.imb.AppendNull()
 		default:
 			// ToDo should log and ignore unknown metric types.
 		}

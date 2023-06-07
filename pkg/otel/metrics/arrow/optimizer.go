@@ -38,12 +38,12 @@ type (
 	FlattenedMetric struct {
 		// Resource metrics section.
 		ResourceMetricsID string
-		Resource          *pcommon.Resource
+		Resource          pcommon.Resource
 		ResourceSchemaUrl string
 
 		// Scope metrics section.
 		ScopeMetricsID string
-		Scope          *pcommon.InstrumentationScope
+		Scope          pcommon.InstrumentationScope
 		ScopeSchemaUrl string
 
 		// Metric section.
@@ -90,10 +90,10 @@ func (t *MetricsOptimizer) Optimize(metrics pmetric.Metrics) *MetricsOptimized {
 
 				metricsOptimized.Metrics = append(metricsOptimized.Metrics, &FlattenedMetric{
 					ResourceMetricsID: resMetricID,
-					Resource:          &resource,
+					Resource:          resource,
 					ResourceSchemaUrl: resourceSchemaUrl,
 					ScopeMetricsID:    scopeMetricsID,
-					Scope:             &scope,
+					Scope:             scope,
 					ScopeSchemaUrl:    scopeSchemaUrl,
 					Metric:            &metric,
 				})

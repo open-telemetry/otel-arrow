@@ -29,7 +29,7 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 )
 
-const OtlpArrow = "OTLP_ARROW"
+const OtelArrow = "OTel_ARROW"
 
 type LogsProfileable struct {
 	tags                []string
@@ -82,7 +82,7 @@ func (s *LogsProfileable) SetObserver(observer arrow_record.ProducerObserver) {
 }
 
 func (s *LogsProfileable) Name() string {
-	return OtlpArrow
+	return OtelArrow
 }
 
 func (s *LogsProfileable) EnableUnaryRpcMode() {

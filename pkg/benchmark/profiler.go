@@ -36,8 +36,8 @@ import (
 
 // Section identifiers used in the benchmark output.
 var (
-	OtlpArrowConversionSection = NewSectionConfig("otlp_arrow_conversion_sec", "OTLP -> OTLP Arrow conv.", false)
-	OtlpConversionSection      = NewSectionConfig("otlp_conversion_sec", "OTLP Arrow -> OTLP conv.", false)
+	OtlpArrowConversionSection = NewSectionConfig("otel_arrow_conversion_sec", "OTLP -> OTel Arrow conv.", false)
+	OtlpConversionSection      = NewSectionConfig("otel_conversion_sec", "OTel Arrow -> OTLP conv.", false)
 	SerializationSection       = NewSectionConfig("serialization_sec", "Protobuf serialization", false)
 	CompressionSection         = NewSectionConfig("compression_sec", "Compression", false)
 	DecompressionSection       = NewSectionConfig("decompression_sec", "Decompression", false)
@@ -637,7 +637,7 @@ func (p *Profiler) ExportMetricsTimesCSV(filePrefix string) {
 			deserializationMs := result.Summaries[batchIdx].DeserializationSec.Mean
 			otlpConversionMs := result.Summaries[batchIdx].OtlpConversionSec.Mean
 
-			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],0_OtlpArrowConversion\n", batchSize, otlpArrowConversionMs, result.BenchName, result.Tags))
+			_, err = dataWriter.WriteString(fmt.Sprintf("%d,%f,%s [%s],0_OtelArrowConversion\n", batchSize, otlpArrowConversionMs, result.BenchName, result.Tags))
 			if err != nil {
 				panic(fmt.Sprintf("failed writing to file: %s", err))
 			}

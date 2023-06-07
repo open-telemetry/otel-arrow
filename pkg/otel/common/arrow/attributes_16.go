@@ -133,6 +133,8 @@ func (b *Attrs16Builder) TryBuild() (record arrow.Record, err error) {
 
 	b.accumulator.Sort()
 
+	b.builder.Reserve(len(b.accumulator.attrs))
+
 	for _, attr := range b.accumulator.attrs {
 		b.pib.Append(b.accumulator.sorter.Encode(attr.ParentID, attr.Key, attr.Value))
 		b.keyb.Append(attr.Key)
@@ -300,7 +302,7 @@ func (s *Attrs16ByParentIdKeyValue) Sort(attrs []Attr16) {
 	})
 }
 
-func (s *Attrs16ByParentIdKeyValue) Encode(parentID uint16, _ string, _ pcommon.Value) uint16 {
+func (s *Attrs16ByParentIdKeyValue) Encode(parentID uint16, _ string, _ *pcommon.Value) uint16 {
 	delta := parentID - s.prevParentID
 	s.prevParentID = parentID
 	return delta
@@ -321,7 +323,7 @@ func (s *Attrs16ByNothing) Sort(_ []Attr16) {
 	// Do nothing
 }
 
-func (s *Attrs16ByNothing) Encode(parentID uint16, _ string, _ pcommon.Value) uint16 {
+func (s *Attrs16ByNothing) Encode(parentID uint16, _ string, _ *pcommon.Value) uint16 {
 	return parentID
 }
 
@@ -354,10 +356,10 @@ func (s *Attrs16ByKeyParentIdValue) Sort(attrs []Attr16) {
 	})
 }
 
-func (s *Attrs16ByKeyParentIdValue) Encode(parentID uint16, key string, value pcommon.Value) uint16 {
+func (s *Attrs16ByKeyParentIdValue) Encode(parentID uint16, key string, value *pcommon.Value) uint16 {
 	if s.prevValue == nil {
 		s.prevKey = key
-		s.prevValue = &value
+		s.prevValue = value
 		s.prevParentID = parentID
 		return parentID
 	}
@@ -368,7 +370,7 @@ func (s *Attrs16ByKeyParentIdValue) Encode(parentID uint16, key string, value pc
 		return delta
 	} else {
 		s.prevKey = key
-		s.prevValue = &value
+		s.prevValue = value
 		s.prevParentID = parentID
 		return parentID
 	}
@@ -380,7 +382,7 @@ func (s *Attrs16ByKeyParentIdValue) Reset() {
 	s.prevValue = nil
 }
 
-func (s *Attrs16ByKeyParentIdValue) IsSameGroup(key string, value pcommon.Value) bool {
+func (s *Attrs16ByKeyParentIdValue) IsSameGroup(key string, value *pcommon.Value) bool {
 	if s.prevValue == nil {
 		return false
 	}
@@ -419,10 +421,10 @@ func (s *Attrs16ByKeyValueParentId) Sort(attrs []Attr16) {
 	})
 }
 
-func (s *Attrs16ByKeyValueParentId) Encode(parentID uint16, key string, value pcommon.Value) uint16 {
+func (s *Attrs16ByKeyValueParentId) Encode(parentID uint16, key string, value *pcommon.Value) uint16 {
 	if s.prevValue == nil {
 		s.prevKey = key
-		s.prevValue = &value
+		s.prevValue = value
 		s.prevParentID = parentID
 		return parentID
 	}
@@ -433,7 +435,7 @@ func (s *Attrs16ByKeyValueParentId) Encode(parentID uint16, key string, value pc
 		return delta
 	} else {
 		s.prevKey = key
-		s.prevValue = &value
+		s.prevValue = value
 		s.prevParentID = parentID
 		return parentID
 	}
@@ -445,13 +447,13 @@ func (s *Attrs16ByKeyValueParentId) Reset() {
 	s.prevValue = nil
 }
 
-func (s *Attrs16ByKeyValueParentId) IsSameGroup(key string, value pcommon.Value) bool {
+func (s *Attrs16ByKeyValueParentId) IsSameGroup(key string, value *pcommon.Value) bool {
 	if s.prevValue == nil {
 		return false
 	}
 
 	if s.prevKey == key {
-		return Equal(*s.prevValue, value)
+		return Equal(s.prevValue, value)
 	} else {
 		return false
 	}

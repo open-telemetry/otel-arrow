@@ -65,12 +65,7 @@ type StatusStats struct {
 	MissingMessage         int64
 }
 
-func (s *ScopeStats) UpdateWith(scope *pcommon.InstrumentationScope) {
-	if scope == nil {
-		s.Missing++
-		return
-	}
-
+func (s *ScopeStats) UpdateWith(scope pcommon.InstrumentationScope) {
 	s.TotalCount++
 	s.AttributesStats.UpdateWith(scope.Attributes(), scope.DroppedAttributesCount())
 }
@@ -89,7 +84,7 @@ func (s *ScopeStats) ShowStats(indent string) {
 	s.AttributesStats.ShowStats(indent, "Attributes", Green)
 }
 
-func (r *ResourceStats) UpdateWith(res *pcommon.Resource) {
+func (r *ResourceStats) UpdateWith(res pcommon.Resource) {
 	attrs := res.Attributes()
 	dac := res.DroppedAttributesCount()
 

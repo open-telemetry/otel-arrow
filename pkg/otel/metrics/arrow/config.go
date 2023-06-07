@@ -149,3 +149,62 @@ func NewConfig(globalConf *cfg.Config) *Config {
 		},
 	}
 }
+
+func NewNoSortConfig(globalConf *cfg.Config) *Config {
+	return &Config{
+		Global: globalConf,
+		Metric: &MetricConfig{
+			Sorter: UnsortedMetrics(),
+		},
+		NumberDP: &NumberDataPointConfig{
+			Sorter: UnsortedNumberDataPoints(),
+		},
+		Summary: &SummaryConfig{
+			Sorter: UnsortedSummaries(),
+		},
+		Histogram: &HistogramConfig{
+			Sorter: UnsortedHistograms(),
+		},
+		ExpHistogram: &ExpHistogramConfig{
+			Sorter: UnsortedEHistograms(),
+		},
+		NumberDataPointExemplar: &ExemplarConfig{
+			Sorter: UnsortedExemplars(),
+		},
+		HistogramExemplar: &ExemplarConfig{
+			Sorter: UnsortedExemplars(),
+		},
+		ExpHistogramExemplar: &ExemplarConfig{
+			Sorter: UnsortedExemplars(),
+		},
+		Attrs: &AttrsConfig{
+			Resource: &arrow.Attrs16Config{
+				Sorter: arrow.UnsortedAttrs16(),
+			},
+			Scope: &arrow.Attrs16Config{
+				Sorter: arrow.UnsortedAttrs16(),
+			},
+			NumberDataPoint: &arrow.Attrs32Config{
+				Sorter: arrow.UnsortedAttrs32(),
+			},
+			NumberDataPointExemplar: &arrow.Attrs32Config{
+				Sorter: arrow.UnsortedAttrs32(),
+			},
+			Summary: &arrow.Attrs32Config{
+				Sorter: arrow.UnsortedAttrs32(),
+			},
+			Histogram: &arrow.Attrs32Config{
+				Sorter: arrow.UnsortedAttrs32(),
+			},
+			HistogramExemplar: &arrow.Attrs32Config{
+				Sorter: arrow.UnsortedAttrs32(),
+			},
+			ExpHistogram: &arrow.Attrs32Config{
+				Sorter: arrow.UnsortedAttrs32(),
+			},
+			ExpHistogramExemplar: &arrow.Attrs32Config{
+				Sorter: arrow.UnsortedAttrs32(),
+			},
+		},
+	}
+}

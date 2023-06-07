@@ -74,13 +74,13 @@ type (
 	Attr16 struct {
 		ParentID uint16
 		Key      string
-		Value    pcommon.Value
+		Value    *pcommon.Value
 	}
 
 	// Attrs16Sorter is used to sort attributes with 16-bit ParentIDs.
 	Attrs16Sorter interface {
 		Sort(attrs []Attr16)
-		Encode(parentID uint16, key string, value pcommon.Value) uint16
+		Encode(parentID uint16, key string, value *pcommon.Value) uint16
 		Reset()
 	}
 
@@ -88,13 +88,13 @@ type (
 	Attr32 struct {
 		ParentID uint32
 		Key      string
-		Value    pcommon.Value
+		Value    *pcommon.Value
 	}
 
 	// Attrs32Sorter is used to sort attributes with 32-bit ParentIDs.
 	Attrs32Sorter interface {
 		Sort(attrs []Attr32)
-		Encode(parentID uint32, key string, value pcommon.Value) uint32
+		Encode(parentID uint32, key string, value *pcommon.Value) uint32
 		Reset()
 	}
 
@@ -174,7 +174,7 @@ func (b *AttributesBuilder) Append(attrs pcommon.Map) error {
 				return true
 			}
 			b.kb.AppendNonEmpty(key)
-			return b.ib.Append(v) == nil
+			return b.ib.Append(&v) == nil
 		})
 		return werror.Wrap(err)
 	})
@@ -217,7 +217,7 @@ func (b *AttributesBuilder) AppendUniqueAttributes(attrs pcommon.Map, smattrs *c
 			}
 
 			b.kb.AppendNonEmpty(key)
-			err = werror.WrapWithContext(b.ib.Append(v), map[string]interface{}{"key": key, "value": v})
+			err = werror.WrapWithContext(b.ib.Append(&v), map[string]interface{}{"key": key, "value": v})
 
 			uniqueAttrsCount--
 			return err == nil && uniqueAttrsCount > 0
@@ -264,7 +264,7 @@ func (c *Attributes16Accumulator) Append(attrs pcommon.Map) (int64, error) {
 		c.attrs = append(c.attrs, Attr16{
 			ParentID: ID,
 			Key:      k,
-			Value:    v,
+			Value:    &v,
 		})
 		return true
 	})
@@ -292,7 +292,7 @@ func (c *Attributes16Accumulator) AppendWithID(parentID uint16, attrs pcommon.Ma
 		c.attrs = append(c.attrs, Attr16{
 			ParentID: parentID,
 			Key:      key,
-			Value:    v,
+			Value:    &v,
 		})
 
 		return true
@@ -345,7 +345,7 @@ func (c *Attributes16Accumulator) AppendUniqueAttributesWithID(parentID uint16, 
 		c.attrs = append(c.attrs, Attr16{
 			ParentID: parentID,
 			Key:      key,
-			Value:    v,
+			Value:    &v,
 		})
 
 		uniqueAttrsCount--
@@ -399,7 +399,7 @@ func (c *Attributes32Accumulator) Append(ID uint32, attrs pcommon.Map) error {
 		c.attrs = append(c.attrs, Attr32{
 			ParentID: ID,
 			Key:      key,
-			Value:    v,
+			Value:    &v,
 		})
 
 		return true
@@ -450,7 +450,7 @@ func (c *Attributes32Accumulator) AppendUniqueAttributesWithID(ID uint32, attrs 
 		c.attrs = append(c.attrs, Attr32{
 			ParentID: ID,
 			Key:      key,
-			Value:    v,
+			Value:    &v,
 		})
 
 		uniqueAttrsCount--
@@ -475,7 +475,7 @@ func (c *Attributes32Accumulator) Reset() {
 	c.attrs = c.attrs[:0]
 }
 
-func Equal(a, b pcommon.Value) bool {
+func Equal(a, b *pcommon.Value) bool {
 	switch a.Type() {
 	case pcommon.ValueTypeInt:
 		if b.Type() == pcommon.ValueTypeInt {
@@ -518,7 +518,7 @@ func Equal(a, b pcommon.Value) bool {
 	}
 }
 
-func IsLess(a, b pcommon.Value) bool {
+func IsLess(a, b *pcommon.Value) bool {
 	switch a.Type() {
 	case pcommon.ValueTypeInt:
 		if b.Type() == pcommon.ValueTypeInt {
@@ -557,7 +557,7 @@ func IsLess(a, b pcommon.Value) bool {
 	}
 }
 
-func Compare(a, b pcommon.Value) int {
+func Compare(a, b *pcommon.Value) int {
 	switch a.Type() {
 	case pcommon.ValueTypeInt:
 		aI := a.Int()

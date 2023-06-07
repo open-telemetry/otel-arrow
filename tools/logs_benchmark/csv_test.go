@@ -28,7 +28,7 @@ func TestCsvDataset(t *testing.T) {
 
 	ds := CsvToLogsDataset("./test-logs.csv")
 
-	assert.Equal(t, 1, ds.Len())
+	assert.Equal(t, 3, ds.Len())
 
 	logs := ds.Logs(0, ds.Len())
 	assert.Equal(t, 1, len(logs))
@@ -39,13 +39,10 @@ func TestCsvDataset(t *testing.T) {
 	lr := lrs.At(0)
 	res := lr.Resource()
 	resAttrs := res.Attributes()
-	assert.Equal(t, 2, resAttrs.Len())
-	v, ok := resAttrs.Get("host")
+	assert.Equal(t, 1, resAttrs.Len())
+	v, ok := resAttrs.Get("host.name")
 	assert.True(t, ok)
-	assert.Equal(t, "156.122.44.5", v.Str())
-	v, ok = resAttrs.Get("type")
-	assert.True(t, ok)
-	assert.Equal(t, "http", v.Str())
+	assert.Equal(t, "host", v.Str())
 
 	sls := lr.ScopeLogs()
 	assert.Equal(t, 1, sls.Len())

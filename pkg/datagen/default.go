@@ -48,35 +48,6 @@ func (te TestEntropy) NewStandardAttributes() pcommon.Map {
 		func(attrs Attrs) { attrs.PutBool("up", pick(te, UPS)) },
 		func(attrs Attrs) { attrs.PutInt("status", pick(te, STATUS)) },
 		func(attrs Attrs) { attrs.PutStr("version", pick(te, VERSIONS)) },
-
-		// ToDo reintroduce tags_arrays once list are fully supported
-		//{
-		//	Key: "tags_array",
-		//	Value: &pcommon.AnyValue{Value: &pcommon.AnyValue_ArrayValue{ArrayValue: &pcommon.ArrayValue{
-		//		Values: []pcommon.Value{
-		//			{Value: &pcommon.AnyValue_StringValue{StringValue: "tag1"}},
-		//			{Value: &pcommon.AnyValue_StringValue{StringValue: "tag2"}},
-		//		},
-		//	}}},
-		//},
-		//{
-		//	Key: "tags_kv_list",
-		//	Value: &pcommon.AnyValue{Value: &pcommon.AnyValue_KvlistValue{
-		//		KvlistValue: &pcommon.KeyValueList{
-		//			Values: pcommon.Map{
-		//				{
-		//					Key:   "state",
-		//					Value: &pcommon.AnyValue{Value: &pcommon.AnyValue_StringValue{StringValue: STATES[rand.Intn(len(STATES))]}},
-		//				},
-		//				{
-		//					Key:   "duration",
-		//					Value: &pcommon.AnyValue{Value: &pcommon.AnyValue_IntValue{IntValue: int64(rand.Intn(100))}},
-		//				},
-		//			},
-		//		},
-		//	}},
-		//},
-
 		func(attrs Attrs) {
 			attrs.PutEmpty("group_id").
 				SetEmptyBytes().

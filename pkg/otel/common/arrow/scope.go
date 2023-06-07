@@ -97,7 +97,7 @@ func (b *ScopeBuilder) Append(scope *pcommon.InstrumentationScope, attrsAccu *At
 	})
 }
 
-func (b *ScopeBuilder) AppendWithAttrsID(ID int64, scope *pcommon.InstrumentationScope) error {
+func (b *ScopeBuilder) AppendWithAttrsID(ID int64, scope pcommon.InstrumentationScope) error {
 	if b.released {
 		return werror.Wrap(ErrBuilderAlreadyReleased)
 	}

@@ -150,6 +150,8 @@ func (b *Attrs32Builder) TryBuild() (record arrow.Record, err error) {
 
 	b.accumulator.Sort()
 
+	b.builder.Reserve(len(b.accumulator.attrs))
+
 	for _, attr := range b.accumulator.attrs {
 		b.pib.Append(b.accumulator.sorter.Encode(attr.ParentID, attr.Key, attr.Value))
 		b.keyb.Append(attr.Key)
@@ -305,7 +307,7 @@ func (s *Attrs32ByNothing) Sort(_ []Attr32) {
 	// Do nothing
 }
 
-func (s *Attrs32ByNothing) Encode(parentID uint32, _ string, _ pcommon.Value) uint32 {
+func (s *Attrs32ByNothing) Encode(parentID uint32, _ string, _ *pcommon.Value) uint32 {
 	return parentID
 }
 
@@ -338,9 +340,9 @@ func (s *Attrs32ByTypeParentIdKeyValue) Sort(attrs []Attr32) {
 	})
 }
 
-func (s *Attrs32ByTypeParentIdKeyValue) Encode(parentID uint32, _ string, value pcommon.Value) uint32 {
+func (s *Attrs32ByTypeParentIdKeyValue) Encode(parentID uint32, _ string, value *pcommon.Value) uint32 {
 	if s.prevValue == nil {
-		s.prevValue = &value
+		s.prevValue = value
 		s.prevParentID = parentID
 		return parentID
 	}
@@ -350,7 +352,7 @@ func (s *Attrs32ByTypeParentIdKeyValue) Encode(parentID uint32, _ string, value 
 		s.prevParentID = parentID
 		return delta
 	} else {
-		s.prevValue = &value
+		s.prevValue = value
 		s.prevParentID = parentID
 		return parentID
 	}
@@ -388,10 +390,10 @@ func (s *Attrs32ByKeyParentIdValue) Sort(attrs []Attr32) {
 	})
 }
 
-func (s *Attrs32ByKeyParentIdValue) Encode(parentID uint32, key string, value pcommon.Value) uint32 {
+func (s *Attrs32ByKeyParentIdValue) Encode(parentID uint32, key string, value *pcommon.Value) uint32 {
 	if s.prevValue == nil {
 		s.prevKey = key
-		s.prevValue = &value
+		s.prevValue = value
 		s.prevParentID = parentID
 		return parentID
 	}
@@ -402,7 +404,7 @@ func (s *Attrs32ByKeyParentIdValue) Encode(parentID uint32, key string, value pc
 		return delta
 	} else {
 		s.prevKey = key
-		s.prevValue = &value
+		s.prevValue = value
 		s.prevParentID = parentID
 		return parentID
 	}
@@ -414,7 +416,7 @@ func (s *Attrs32ByKeyParentIdValue) Reset() {
 	s.prevValue = nil
 }
 
-func (s *Attrs32ByKeyParentIdValue) IsSameGroup(key string, value pcommon.Value) bool {
+func (s *Attrs32ByKeyParentIdValue) IsSameGroup(key string, value *pcommon.Value) bool {
 	if s.prevValue == nil {
 		return false
 	}
@@ -453,10 +455,10 @@ func (s *Attrs32ByKeyValueParentId) Sort(attrs []Attr32) {
 	})
 }
 
-func (s *Attrs32ByKeyValueParentId) Encode(parentID uint32, key string, value pcommon.Value) uint32 {
+func (s *Attrs32ByKeyValueParentId) Encode(parentID uint32, key string, value *pcommon.Value) uint32 {
 	if s.prevValue == nil {
 		s.prevKey = key
-		s.prevValue = &value
+		s.prevValue = value
 		s.prevParentID = parentID
 		return parentID
 	}
@@ -467,7 +469,7 @@ func (s *Attrs32ByKeyValueParentId) Encode(parentID uint32, key string, value pc
 		return delta
 	} else {
 		s.prevKey = key
-		s.prevValue = &value
+		s.prevValue = value
 		s.prevParentID = parentID
 		return parentID
 	}
@@ -479,13 +481,13 @@ func (s *Attrs32ByKeyValueParentId) Reset() {
 	s.prevValue = nil
 }
 
-func (s *Attrs32ByKeyValueParentId) IsSameGroup(key string, value pcommon.Value) bool {
+func (s *Attrs32ByKeyValueParentId) IsSameGroup(key string, value *pcommon.Value) bool {
 	if s.prevValue == nil {
 		return false
 	}
 
 	if s.prevKey == key {
-		return Equal(*s.prevValue, value)
+		return Equal(s.prevValue, value)
 	} else {
 		return false
 	}

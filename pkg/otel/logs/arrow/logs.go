@@ -54,7 +54,7 @@ var (
 			{Name: constants.BodyBool, Type: arrow.FixedWidthTypes.Boolean, Metadata: schema.Metadata(schema.Optional)},
 			{Name: constants.BodyBytes, Type: arrow.BinaryTypes.Binary, Metadata: schema.Metadata(schema.Optional, schema.Dictionary16)},
 			{Name: constants.BodySer, Type: arrow.BinaryTypes.Binary, Metadata: schema.Metadata(schema.Optional, schema.Dictionary16)},
-		}...), Metadata: schema.Metadata(schema.Optional)},
+		}...)},
 		{Name: constants.DroppedAttributesCount, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
 		{Name: constants.Flags, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
 	}, nil)
@@ -203,8 +203,11 @@ func (b *LogsBuilder) Append(logs plog.Logs) (err error) {
 	attrsAccu := b.relatedData.AttrsBuilders().LogRecord().Accumulator()
 
 	logID := uint16(0)
-	var resLogID, scopeLogID string
+	resLogID := -1
+	scopeLogID := -1
 	var resID, scopeID int64
+
+	b.builder.Reserve(len(optimLogs.Logs))
 
 	for _, logRec := range optimLogs.Logs {
 		log := logRec.Log
@@ -219,30 +222,30 @@ func (b *LogsBuilder) Append(logs plog.Logs) (err error) {
 			logID++
 		}
 
-		// Resource spans
-		if resLogID != logRec.ResourceLogsID {
-			resLogID = logRec.ResourceLogsID
-			resID, err = b.relatedData.AttrsBuilders().Resource().Accumulator().Append(logRec.Resource.Attributes())
+		// Resource logs
+		if resLogID != logRec.ResScope.ResourceLogsID {
+			resLogID = logRec.ResScope.ResourceLogsID
+			resID, err = b.relatedData.AttrsBuilders().Resource().Accumulator().Append(logRec.ResScope.Resource.Attributes())
 			if err != nil {
 				return werror.Wrap(err)
 			}
 		}
-		if err = b.rb.AppendWithID(resID, logRec.Resource, logRec.ResourceSchemaUrl); err != nil {
+		if err = b.rb.AppendWithID(resID, logRec.ResScope.Resource, logRec.ResScope.ResourceSchemaUrl); err != nil {
 			return werror.Wrap(err)
 		}
 
-		// Scope spans
-		if scopeLogID != logRec.ScopeLogsID {
-			scopeLogID = logRec.ScopeLogsID
-			scopeID, err = b.relatedData.AttrsBuilders().scope.Accumulator().Append(logRec.Scope.Attributes())
+		// Scope logs
+		if scopeLogID != logRec.ResScope.ScopeLogsID {
+			scopeLogID = logRec.ResScope.ScopeLogsID
+			scopeID, err = b.relatedData.AttrsBuilders().scope.Accumulator().Append(logRec.ResScope.Scope.Attributes())
 			if err != nil {
 				return werror.Wrap(err)
 			}
 		}
-		if err = b.scb.AppendWithAttrsID(scopeID, logRec.Scope); err != nil {
+		if err = b.scb.AppendWithAttrsID(scopeID, logRec.ResScope.Scope); err != nil {
 			return werror.Wrap(err)
 		}
-		b.sschb.AppendNonEmpty(logRec.ScopeSchemaUrl)
+		b.sschb.AppendNonEmpty(logRec.ResScope.ScopeSchemaUrl)
 
 		b.tub.Append(arrow.Timestamp(log.Timestamp()))
 		b.otub.Append(arrow.Timestamp(log.ObservedTimestamp()))
@@ -327,7 +330,7 @@ func (b *LogsBuilder) Append(logs plog.Logs) (err error) {
 				return werror.Wrap(err)
 			}
 		case pcommon.ValueTypeSlice:
-			cborData, err := common.Serialize(body)
+			cborData, err := common.Serialize(&body)
 			if err != nil {
 				return werror.Wrap(err)
 			}
@@ -345,7 +348,7 @@ func (b *LogsBuilder) Append(logs plog.Logs) (err error) {
 				return werror.Wrap(err)
 			}
 		case pcommon.ValueTypeMap:
-			cborData, err := common.Serialize(body)
+			cborData, err := common.Serialize(&body)
 			if err != nil {
 				return werror.Wrap(err)
 			}

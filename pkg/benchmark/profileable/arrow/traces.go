@@ -78,7 +78,7 @@ func (s *TracesProfileable) SetObserver(observer arrow_record.ProducerObserver) 
 }
 
 func (s *TracesProfileable) Name() string {
-	return "OTLP_ARROW"
+	return "OTel_ARROW"
 }
 
 func (s *TracesProfileable) EnableUnaryRpcMode() {

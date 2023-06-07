@@ -178,10 +178,12 @@ func (b *ExemplarBuilder) TryBuild(attrsAccu *carrow.Attributes32Accumulator) (r
 		return nil, werror.Wrap(carrow.ErrBuilderAlreadyReleased)
 	}
 
-	b.accumulator.Reset()
+	b.accumulator.sorter.Reset()
 	b.accumulator.sorter.Sort(b.accumulator.exemplars)
 
 	exemplarID := uint32(0)
+
+	b.builder.Reserve(len(b.accumulator.exemplars))
 
 	for _, exemplar := range b.accumulator.exemplars {
 		ex := exemplar.Orig

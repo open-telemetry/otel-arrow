@@ -189,6 +189,8 @@ func (b *EventBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (rec
 
 	eventID := uint32(0)
 
+	b.builder.Reserve(len(b.accumulator.events))
+
 	for _, event := range b.accumulator.events {
 		if event.Attributes.Len() == 0 {
 			b.ib.AppendNull()

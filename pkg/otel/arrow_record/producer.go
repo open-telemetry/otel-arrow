@@ -143,7 +143,7 @@ func NewProducerWithOptions(options ...cfg.Option) *Producer {
 		panic(err)
 	}
 
-	logsBuidler, err := logsarrow.NewLogsBuilder(logsRecordBuilder, logsarrow.NewConfig(conf), stats)
+	logsBuilder, err := logsarrow.NewLogsBuilder(logsRecordBuilder, logsarrow.NewConfig(conf), stats)
 	if err != nil {
 		panic(err)
 	}
@@ -160,7 +160,7 @@ func NewProducerWithOptions(options ...cfg.Option) *Producer {
 		batchId:         0,
 
 		metricsBuilder: metricsBuilder,
-		logsBuilder:    logsBuidler,
+		logsBuilder:    logsBuilder,
 		tracesBuilder:  tracesBuilder,
 
 		metricsRecordBuilder: metricsRecordBuilder,

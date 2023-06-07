@@ -31,7 +31,7 @@ func TestIntValues(t *testing.T) {
 	// Test small negative value
 	expectedValue := pcommon.NewValueInt(-0)
 
-	cborData, err := Serialize(expectedValue)
+	cborData, err := Serialize(&expectedValue)
 	assert.NoError(t, err)
 
 	value := pcommon.NewValueEmpty()
@@ -43,7 +43,7 @@ func TestIntValues(t *testing.T) {
 	// Test big negative value
 	expectedValue = pcommon.NewValueInt(math.MinInt64)
 
-	cborData, err = Serialize(expectedValue)
+	cborData, err = Serialize(&expectedValue)
 	assert.NoError(t, err)
 
 	value = pcommon.NewValueEmpty()
@@ -55,7 +55,7 @@ func TestIntValues(t *testing.T) {
 	// Test small value
 	expectedValue = pcommon.NewValueInt(0)
 
-	cborData, err = Serialize(expectedValue)
+	cborData, err = Serialize(&expectedValue)
 	assert.NoError(t, err)
 
 	value = pcommon.NewValueEmpty()
@@ -67,7 +67,7 @@ func TestIntValues(t *testing.T) {
 	// Test big value
 	expectedValue = pcommon.NewValueInt(math.MaxInt64)
 
-	cborData, err = Serialize(expectedValue)
+	cborData, err = Serialize(&expectedValue)
 	assert.NoError(t, err)
 
 	value = pcommon.NewValueEmpty()
@@ -83,7 +83,7 @@ func TestDoubleValues(t *testing.T) {
 	// Test small negative value
 	expectedValue := pcommon.NewValueDouble(-0.0)
 
-	cborData, err := Serialize(expectedValue)
+	cborData, err := Serialize(&expectedValue)
 	assert.NoError(t, err)
 
 	value := pcommon.NewValueEmpty()
@@ -95,7 +95,7 @@ func TestDoubleValues(t *testing.T) {
 	// Test big negative value
 	expectedValue = pcommon.NewValueDouble(-112334324234)
 
-	cborData, err = Serialize(expectedValue)
+	cborData, err = Serialize(&expectedValue)
 	assert.NoError(t, err)
 
 	value = pcommon.NewValueEmpty()
@@ -107,7 +107,7 @@ func TestDoubleValues(t *testing.T) {
 	// Test small value
 	expectedValue = pcommon.NewValueDouble(0.0)
 
-	cborData, err = Serialize(expectedValue)
+	cborData, err = Serialize(&expectedValue)
 	assert.NoError(t, err)
 
 	value = pcommon.NewValueEmpty()
@@ -119,7 +119,7 @@ func TestDoubleValues(t *testing.T) {
 	// Test big value
 	expectedValue = pcommon.NewValueDouble(math.MaxFloat64)
 
-	cborData, err = Serialize(expectedValue)
+	cborData, err = Serialize(&expectedValue)
 	assert.NoError(t, err)
 
 	value = pcommon.NewValueEmpty()
@@ -134,7 +134,7 @@ func TestBoolValues(t *testing.T) {
 
 	expectedValue := pcommon.NewValueBool(true)
 
-	cborData, err := Serialize(expectedValue)
+	cborData, err := Serialize(&expectedValue)
 	assert.NoError(t, err)
 
 	value := pcommon.NewValueEmpty()
@@ -145,7 +145,7 @@ func TestBoolValues(t *testing.T) {
 
 	expectedValue = pcommon.NewValueBool(false)
 
-	cborData, err = Serialize(expectedValue)
+	cborData, err = Serialize(&expectedValue)
 	assert.NoError(t, err)
 
 	value = pcommon.NewValueEmpty()
@@ -160,7 +160,7 @@ func TestStringValues(t *testing.T) {
 
 	expectedValue := pcommon.NewValueStr("")
 
-	cborData, err := Serialize(expectedValue)
+	cborData, err := Serialize(&expectedValue)
 	assert.NoError(t, err)
 
 	value := pcommon.NewValueEmpty()
@@ -171,7 +171,7 @@ func TestStringValues(t *testing.T) {
 
 	expectedValue = pcommon.NewValueStr("string")
 
-	cborData, err = Serialize(expectedValue)
+	cborData, err = Serialize(&expectedValue)
 	assert.NoError(t, err)
 
 	value = pcommon.NewValueEmpty()
@@ -187,7 +187,7 @@ func TestBinaryValue(t *testing.T) {
 	expectedValue := pcommon.NewValueEmpty()
 	expectedValue.SetEmptyBytes().Append([]byte("binary")...)
 
-	cborData, err := Serialize(expectedValue)
+	cborData, err := Serialize(&expectedValue)
 	assert.NoError(t, err)
 
 	value := pcommon.NewValueEmpty()
@@ -226,7 +226,7 @@ func TestCbor(t *testing.T) {
 	subArray.AppendEmpty().SetStr("3")
 	subArray.AppendEmpty().SetBool(false)
 
-	cborData, err := Serialize(expectedValue)
+	cborData, err := Serialize(&expectedValue)
 	assert.NoError(t, err)
 
 	value := pcommon.NewValueEmpty()

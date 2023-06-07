@@ -38,6 +38,10 @@ func NewEHistogramDataPointBucketsIds(schema *arrow.Schema, parent string) (*EHi
 	offset, _ := arrowutils.FieldIDFromStruct(parentDT, constants.ExpHistogramOffset)
 	bucketCounts, _ := arrowutils.FieldIDFromStruct(parentDT, constants.ExpHistogramBucketCounts)
 
+	if offset == arrowutils.AbsentFieldID && bucketCounts == arrowutils.AbsentFieldID {
+		ID = arrowutils.AbsentFieldID
+	}
+
 	return &EHistogramDataPointBucketsIds{
 		ID:           ID,
 		Offset:       offset,

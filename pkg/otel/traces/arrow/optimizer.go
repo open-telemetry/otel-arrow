@@ -41,12 +41,12 @@ type (
 	FlattenedSpan struct {
 		// Resource span section.
 		ResourceSpanID    string
-		Resource          *pcommon.Resource
+		Resource          pcommon.Resource
 		ResourceSchemaUrl string
 
 		// Scope span section.
 		ScopeSpanID    string
-		Scope          *pcommon.InstrumentationScope
+		Scope          pcommon.InstrumentationScope
 		ScopeSchemaUrl string
 
 		// Span section.
@@ -97,10 +97,10 @@ func (t *TracesOptimizer) Optimize(traces ptrace.Traces) *TracesOptimized {
 
 				tracesOptimized.Spans = append(tracesOptimized.Spans, &FlattenedSpan{
 					ResourceSpanID:    resSpanID,
-					Resource:          &resource,
+					Resource:          resource,
 					ResourceSchemaUrl: resourceSchemaUrl,
 					ScopeSpanID:       scopeSpanId,
-					Scope:             &scope,
+					Scope:             scope,
 					ScopeSchemaUrl:    scopeSchemaUrl,
 					Span:              &span,
 				})

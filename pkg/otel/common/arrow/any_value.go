@@ -116,7 +116,7 @@ func (b *AnyValueBuilder) Build() (*array.SparseUnion, error) {
 }
 
 // Append appends a new any value to the builder.
-func (b *AnyValueBuilder) Append(av pcommon.Value) error {
+func (b *AnyValueBuilder) Append(av *pcommon.Value) error {
 	if b.released {
 		return werror.Wrap(ErrBuilderAlreadyReleased)
 	}

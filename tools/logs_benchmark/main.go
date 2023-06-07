@@ -34,7 +34,6 @@ import (
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/profileable/otlp"
-	"github.com/f5/otel-arrow-adapter/pkg/benchmark/stats"
 )
 
 var help = flag.Bool("help", false, "Show help")
@@ -83,10 +82,10 @@ func main() {
 
 		inputFile := inputFiles[i]
 		compressionAlgo := benchmark.Zstd()
-		maxIter := uint64(3)
+		maxIter := uint64(1)
 
 		// Compare the performance between the standard OTLP representation and the OTLP Arrow representation.
-		profiler := benchmark.NewProfiler([]int{100, 500, 1000, 2000, 4000, 5000}, "output/logs_benchmark.log", 2)
+		profiler := benchmark.NewProfiler([]int{128, 1024, 2048, 4096}, "output/logs_benchmark.log", 2)
 		//profiler := benchmark.NewProfiler([]int{10}, "output/logs_benchmark.log", 2)
 
 		// Build dataset from CSV file or from OTLP protobuf file
@@ -154,15 +153,9 @@ type CsvRowSchema struct {
 	logAttrs []AttrIndex
 }
 
-type LogsPerSource struct {
-	sourceAttrs *pcommon.Map
-	logs        []*plog.LogRecord
-}
-
 type CsvLogsDataset struct {
-	logs        []plog.Logs
+	logs        []plog.LogRecord
 	sizeInBytes int
-	logsStats   *stats.LogsStats
 }
 
 func (ds *CsvLogsDataset) Len() int {
@@ -170,7 +163,19 @@ func (ds *CsvLogsDataset) Len() int {
 }
 
 func (ds *CsvLogsDataset) Logs(start, size int) []plog.Logs {
-	return ds.logs[start : start+size]
+	logs := plog.NewLogs()
+	resLogsSlice := logs.ResourceLogs()
+	resLogs := resLogsSlice.AppendEmpty()
+	res := resLogs.Resource()
+	res.Attributes().PutStr("host.name", "host")
+	scopeLogsSlice := resLogs.ScopeLogs()
+	scopeLogs := scopeLogsSlice.AppendEmpty()
+	logRecordSlice := scopeLogs.LogRecords()
+	for i := start; i < start+size; i++ {
+		logRecord := logRecordSlice.AppendEmpty()
+		ds.logs[i].CopyTo(logRecord)
+	}
+	return []plog.Logs{logs}
 }
 
 // CsvToLogsDataset converts a CSV file to a log dataset directly usable by this benchmark utility.
@@ -200,7 +205,11 @@ func CsvToLogsDataset(file string) dataset.LogsDataset {
 	}
 
 	csvSchema := ReadCsvRowSchema(firstLine)
-	sources := make(map[string]*LogsPerSource)
+
+	ds := CsvLogsDataset{
+		logs:        make([]plog.LogRecord, 0, 100),
+		sizeInBytes: 0,
+	}
 
 	// Read the rest of the file
 	for {
@@ -212,40 +221,8 @@ func CsvToLogsDataset(file string) dataset.LogsDataset {
 			log.Fatal(err)
 		}
 
-		sourceID, sourceAttrs, logRecord := ReadCsvRow(csvSchema, rec)
-		if _, ok := sources[sourceID]; !ok {
-			lps := LogsPerSource{
-				sourceAttrs: sourceAttrs,
-				logs:        make([]*plog.LogRecord, 0, 100),
-			}
-			sources[sourceID] = &lps
-		}
-		sources[sourceID].logs = append(sources[sourceID].logs, logRecord)
-	}
-
-	logs := plog.NewLogs()
-	rls := logs.ResourceLogs()
-	rls.EnsureCapacity(len(sources))
-
-	for _, source := range sources {
-		rl := rls.AppendEmpty()
-		source.sourceAttrs.CopyTo(rl.Resource().Attributes())
-		sls := rl.ScopeLogs()
-		sl := sls.AppendEmpty()
-		lrs := sl.LogRecords()
-		lrs.EnsureCapacity(len(source.logs))
-		for _, l := range source.logs {
-			l.CopyTo(lrs.AppendEmpty())
-		}
-	}
-
-	logsStats := stats.NewLogsStats()
-	logsStats.Analyze(logs)
-
-	ds := CsvLogsDataset{
-		logs:        []plog.Logs{logs},
-		sizeInBytes: 0,
-		logsStats:   logsStats,
+		logRecord := ReadCsvRow(csvSchema, rec)
+		ds.logs = append(ds.logs, logRecord)
 	}
 
 	return &ds
@@ -254,7 +231,6 @@ func CsvToLogsDataset(file string) dataset.LogsDataset {
 func (d *CsvLogsDataset) ShowStats() {
 	println()
 	println("Logs stats:")
-	d.logsStats.ShowStats()
 }
 
 func (d *CsvLogsDataset) SizeInBytes() int {
@@ -304,7 +280,7 @@ func ReadCsvRowSchema(colNames []string) CsvRowSchema {
 }
 
 // ReadCsvRow returns the source id, source attributes and log record for a CSV row.
-func ReadCsvRow(csvSchema CsvRowSchema, row []string) (string, *pcommon.Map, *plog.LogRecord) {
+func ReadCsvRow(csvSchema CsvRowSchema, row []string) plog.LogRecord {
 	logRecord := plog.NewLogRecord()
 
 	// Read timestamp
@@ -353,7 +329,7 @@ func ReadCsvRow(csvSchema CsvRowSchema, row []string) (string, *pcommon.Map, *pl
 	logRecord.SetSeverityNumber(ToSeverityNumber(level))
 	logRecord.SetSeverityText(level)
 
-	return sourceID.String(), &sourceAttrs, &logRecord
+	return logRecord
 }
 
 // ToSeverityNumber converts a string to a severity number.

@@ -39,15 +39,15 @@ func NewLogsGenerator(entropy TestEntropy, resourceAttributes []pcommon.Map, ins
 func (lg *LogsGenerator) Generate(batchSize int, collectInterval time.Duration) plog.Logs {
 	result := plog.NewLogs()
 
+	resourceLogs := result.ResourceLogs().AppendEmpty()
+	lg.resourceAttributes[lg.generation%len(lg.resourceAttributes)].
+		CopyTo(resourceLogs.Resource().Attributes())
+
+	scopeLogs := resourceLogs.ScopeLogs().AppendEmpty()
+	lg.instrumentationScopes[lg.generation%len(lg.instrumentationScopes)].
+		CopyTo(scopeLogs.Scope())
+
 	for i := 0; i < batchSize; i++ {
-		resourceLogs := result.ResourceLogs().AppendEmpty()
-		lg.resourceAttributes[lg.generation%len(lg.resourceAttributes)].
-			CopyTo(resourceLogs.Resource().Attributes())
-
-		scopeLogs := resourceLogs.ScopeLogs().AppendEmpty()
-		lg.instrumentationScopes[lg.generation%len(lg.instrumentationScopes)].
-			CopyTo(scopeLogs.Scope())
-
 		logRecords := scopeLogs.LogRecords()
 
 		lg.AdvanceTime(collectInterval)
@@ -58,7 +58,7 @@ func (lg *LogsGenerator) Generate(batchSize int, collectInterval time.Duration) 
 		lg.LogInfoRecord(logRecords.AppendEmpty())
 		lg.LogWarnRecord(logRecords.AppendEmpty())
 		lg.LogErrorRecord(logRecords.AppendEmpty())
-		lg.LogInfoComplexRecord(logRecords.AppendEmpty())
+		//lg.LogInfoComplexRecord(logRecords.AppendEmpty())
 	}
 
 	return result

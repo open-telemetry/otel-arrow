@@ -39,7 +39,7 @@ import (
 // defined in RFC 8949.
 
 // Serialize serializes the given pcommon.value into a CBOR byte array.
-func Serialize(v pcommon.Value) ([]byte, error) {
+func Serialize(v *pcommon.Value) ([]byte, error) {
 	var buf bytes.Buffer
 
 	em, err := cbor.EncOptions{Sort: cbor.SortCanonical}.EncMode()
@@ -69,7 +69,7 @@ func Deserialize(cborData []byte, target pcommon.Value) error {
 	return nil
 }
 
-func encode(enc *cbor.Encoder, v pcommon.Value) (err error) {
+func encode(enc *cbor.Encoder, v *pcommon.Value) (err error) {
 	switch v.Type() {
 	case pcommon.ValueTypeStr:
 		err = enc.Encode(v.Str())
@@ -88,7 +88,7 @@ func encode(enc *cbor.Encoder, v pcommon.Value) (err error) {
 			if err := enc.Encode(k); err != nil {
 				return false
 			}
-			if err := encode(enc, v); err != nil {
+			if err := encode(enc, &v); err != nil {
 				return false
 			}
 			return true
@@ -105,7 +105,8 @@ func encode(enc *cbor.Encoder, v pcommon.Value) (err error) {
 
 		slice := v.Slice()
 		for i := 0; i < slice.Len(); i++ {
-			if err := encode(enc, slice.At(i)); err != nil {
+			v := slice.At(i)
+			if err := encode(enc, &v); err != nil {
 				return werror.Wrap(err)
 			}
 		}

@@ -46,6 +46,31 @@ var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
 func TestBackAndForthConversion(t *testing.T) {
 	t.Parallel()
 
+	metricsGen := MetricsGenerator()
+	expectedRequest := pmetricotlp.NewExportRequestFromMetrics(metricsGen.GenerateAllKindOfMetrics(100, 100))
+
+	GenericMetricTests(t, expectedRequest)
+}
+
+func TestSums(t *testing.T) {
+	t.Parallel()
+
+	metricsGen := MetricsGenerator()
+	expectedRequest := pmetricotlp.NewExportRequestFromMetrics(metricsGen.GenerateSums(100, 100))
+
+	GenericMetricTests(t, expectedRequest)
+}
+
+func TestExponentialHistograms(t *testing.T) {
+	t.Parallel()
+
+	metricsGen := MetricsGenerator()
+	expectedRequest := pmetricotlp.NewExportRequestFromMetrics(metricsGen.GenerateExponentialHistograms(100, 100))
+
+	GenericMetricTests(t, expectedRequest)
+}
+
+func MetricsGenerator() *datagen.MetricsGenerator {
 	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
 
 	dg := datagen.NewDataGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes()).
@@ -56,11 +81,10 @@ func TestBackAndForthConversion(t *testing.T) {
 			ProbHistogramHasMin:   0.5,
 			ProbHistogramHasMax:   0.5,
 		})
-	metricsGen := datagen.NewMetricsGeneratorWithDataGenerator(dg)
+	return datagen.NewMetricsGeneratorWithDataGenerator(dg)
+}
 
-	// Generate a random OTLP metrics request.
-	expectedRequest := pmetricotlp.NewExportRequestFromMetrics(metricsGen.Generate(100, 100))
-
+func GenericMetricTests(t *testing.T, expectedRequest pmetricotlp.ExportRequest) {
 	// Convert the OTLP metrics request to Arrow.
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)

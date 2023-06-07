@@ -193,6 +193,8 @@ func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 	eventsAccu := b.relatedData.EventBuilder().Accumulator()
 	linksAccu := b.relatedData.LinkBuilder().Accumulator()
 
+	b.builder.Reserve(len(optimTraces.Spans))
+
 	for _, span := range optimTraces.Spans {
 		spanAttrs := span.Span.Attributes()
 		spanEvents := span.Span.Events()

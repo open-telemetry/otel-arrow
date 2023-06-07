@@ -71,7 +71,7 @@ func (d *FakeMetricsDataset) Len() int {
 }
 
 func (d *FakeMetricsDataset) Metrics(_, size int) []pmetric.Metrics {
-	return []pmetric.Metrics{d.generator.Generate(size, 100)}
+	return []pmetric.Metrics{d.generator.GenerateAllKindOfMetrics(size, 100)}
 }
 
 // ===== Fake logs dataset =====

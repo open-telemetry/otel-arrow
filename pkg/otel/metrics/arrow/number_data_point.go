@@ -203,6 +203,8 @@ func (b *DataPointBuilder) TryBuild(attrsAccu *carrow.Attributes32Accumulator) (
 
 	ID := uint32(0)
 
+	b.builder.Reserve(len(b.dataPointAccumulator.dps))
+
 	for _, ndp := range b.dataPointAccumulator.dps {
 		b.ib.Append(ID)
 		b.pib.Append(b.dataPointAccumulator.sorter.Encode(ndp.ParentID, ndp.Orig))
@@ -227,6 +229,9 @@ func (b *DataPointBuilder) TryBuild(attrsAccu *carrow.Attributes32Accumulator) (
 		case pmetric.NumberDataPointValueTypeDouble:
 			b.dvb.Append(ndp.Orig.DoubleValue())
 			b.ivb.AppendNull()
+		case pmetric.NumberDataPointValueTypeEmpty:
+			b.ivb.AppendNull()
+			b.dvb.AppendNull()
 		}
 		b.fb.Append(uint32(ndp.Orig.Flags()))
 

@@ -229,6 +229,8 @@ func (b *HistogramDataPointBuilder) TryBuild(attrsAccu *carrow.Attributes32Accum
 	b.dataPointAccumulator.sorter.Reset()
 	b.dataPointAccumulator.sorter.Sort(b.dataPointAccumulator.hdps)
 
+	b.builder.Reserve(len(b.dataPointAccumulator.hdps))
+
 	for ID, hdpRec := range b.dataPointAccumulator.hdps {
 		hdp := hdpRec.Orig
 		b.ib.Append(uint32(ID))

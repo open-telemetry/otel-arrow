@@ -86,6 +86,13 @@ func (b *EHistogramDataPointBucketsBuilder) Append(hdpb pmetric.ExponentialHisto
 		return werror.Wrap(acommon.ErrBuilderAlreadyReleased)
 	}
 
+	// If the offset is 0 and there are no bucket counts, no need to append
+	// anything.
+	if hdpb.Offset() == 0 && hdpb.BucketCounts().Len() == 0 {
+		b.builder.AppendNull()
+		return nil
+	}
+
 	return b.builder.Append(hdpb, func() error {
 		b.ob.AppendNonZero(hdpb.Offset())
 

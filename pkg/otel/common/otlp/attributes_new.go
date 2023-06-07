@@ -70,14 +70,14 @@ type (
 	Attrs16ParentIdDecoder struct {
 		prevParentID uint16
 		prevKey      string
-		prevValue    pcommon.Value
+		prevValue    *pcommon.Value
 		encodingType int
 	}
 
 	Attrs32ParentIdDecoder struct {
 		prevParentID uint32
 		prevKey      string
-		prevValue    pcommon.Value
+		prevValue    *pcommon.Value
 		encodingType int
 	}
 )
@@ -107,6 +107,14 @@ func (s *Attributes16Store) AttributesByDeltaID(ID uint16) *pcommon.Map {
 
 // AttributesByID returns the attributes for the given ID.
 func (s *Attributes16Store) AttributesByID(ID uint16) *pcommon.Map {
+	if m, ok := s.attributesByID[ID]; ok {
+		return m
+	}
+	return nil
+}
+
+// AttributesByID returns the attributes for the given ID.
+func (s *Attributes32Store) AttributesByID(ID uint32) *pcommon.Map {
 	if m, ok := s.attributesByID[ID]; ok {
 		return m
 	}
@@ -148,6 +156,7 @@ func Attributes16StoreFrom(record arrow.Record, store *Attributes16Store) error 
 		if err != nil {
 			return werror.Wrap(err)
 		}
+
 		value := pcommon.NewValueEmpty()
 		switch pcommon.ValueType(vType) {
 		case pcommon.ValueTypeStr:
@@ -204,7 +213,7 @@ func Attributes16StoreFrom(record arrow.Record, store *Attributes16Store) error 
 		if err != nil {
 			return werror.Wrap(err)
 		}
-		parentID := parentIdDecoder.Decode(deltaOrParentID, key, value)
+		parentID := parentIdDecoder.Decode(deltaOrParentID, key, &value)
 
 		m, ok := store.attributesByID[parentID]
 		if !ok {
@@ -300,7 +309,7 @@ func Attributes32StoreFrom(record arrow.Record, store *Attributes32Store) error 
 		if err != nil {
 			return werror.Wrap(err)
 		}
-		parentID := parentIdDecoder.Decode(deltaOrParentID, key, value)
+		parentID := parentIdDecoder.Decode(deltaOrParentID, key, &value)
 
 		m, ok := store.attributesByID[parentID]
 		if !ok {
@@ -381,7 +390,7 @@ func NewAttrs16ParentIdDecoder() *Attrs16ParentIdDecoder {
 	}
 }
 
-func (d *Attrs16ParentIdDecoder) Decode(deltaOrParentID uint16, key string, value pcommon.Value) uint16 {
+func (d *Attrs16ParentIdDecoder) Decode(deltaOrParentID uint16, key string, value *pcommon.Value) uint16 {
 	switch d.encodingType {
 	case carrow.ParentIdNoEncoding:
 		return deltaOrParentID
@@ -411,7 +420,7 @@ func NewAttrs32ParentIdDecoder() *Attrs32ParentIdDecoder {
 	}
 }
 
-func (d *Attrs32ParentIdDecoder) Decode(deltaOrParentID uint32, key string, value pcommon.Value) uint32 {
+func (d *Attrs32ParentIdDecoder) Decode(deltaOrParentID uint32, key string, value *pcommon.Value) uint32 {
 	switch d.encodingType {
 	case carrow.ParentIdNoEncoding:
 		return deltaOrParentID

@@ -36,19 +36,21 @@ type (
 		Logs []*FlattenedLog
 	}
 
-	FlattenedLog struct {
+	ResScope struct {
 		// Resource log section.
-		ResourceLogsID    string
-		Resource          *pcommon.Resource
+		ResourceLogsID    int
+		Resource          pcommon.Resource
 		ResourceSchemaUrl string
 
 		// Scope log section.
-		ScopeLogsID    string
-		Scope          *pcommon.InstrumentationScope
+		ScopeLogsID    int
+		Scope          pcommon.InstrumentationScope
 		ScopeSchemaUrl string
+	}
 
-		// Log section.
-		Log *plog.LogRecord
+	FlattenedLog struct {
+		ResScope *ResScope
+		Log      plog.LogRecord
 	}
 
 	LogSorter interface {
@@ -67,34 +69,50 @@ func NewLogsOptimizer(sorter LogSorter) *LogsOptimizer {
 
 func (t *LogsOptimizer) Optimize(logs plog.Logs) *LogsOptimized {
 	logsOptimized := &LogsOptimized{
-		Logs: make([]*FlattenedLog, 0),
+		Logs: make([]*FlattenedLog, 0, 32),
 	}
+
+	resLogsIDs := make(map[string]int)
+	scopeLogsIDs := make(map[string]int)
 
 	resLogsSlice := logs.ResourceLogs()
 	for i := 0; i < resLogsSlice.Len(); i++ {
 		resLogs := resLogsSlice.At(i)
 		resource := resLogs.Resource()
 		resourceSchemaUrl := resLogs.SchemaUrl()
-		resSpanID := otlp.ResourceID(resource, resourceSchemaUrl)
+		ID := otlp.ResourceID(resource, resourceSchemaUrl)
+		resLogsID, found := resLogsIDs[ID]
+		if !found {
+			resLogsID = len(resLogsIDs)
+			resLogsIDs[ID] = resLogsID
+		}
 
 		scopeLogs := resLogs.ScopeLogs()
 		for j := 0; j < scopeLogs.Len(); j++ {
 			scopeSpan := scopeLogs.At(j)
 			scope := scopeSpan.Scope()
 			scopeSchemaUrl := scopeSpan.SchemaUrl()
-			scopeSpanID := otlp.ScopeID(scope, scopeSchemaUrl)
+			ID = otlp.ScopeID(scope, scopeSchemaUrl)
+			scopeLogsID, found := scopeLogsIDs[ID]
+			if !found {
+				scopeLogsID = len(scopeLogsIDs)
+				scopeLogsIDs[ID] = scopeLogsID
+			}
 
-			logs := scopeSpan.LogRecords()
-			for k := 0; k < logs.Len(); k++ {
-				log := logs.At(k)
+			resScope := &ResScope{
+				ResourceLogsID:    resLogsID,
+				Resource:          resource,
+				ResourceSchemaUrl: resourceSchemaUrl,
+				ScopeLogsID:       scopeLogsID,
+				Scope:             scope,
+				ScopeSchemaUrl:    scopeSchemaUrl,
+			}
+
+			logRecords := scopeSpan.LogRecords()
+			for k := 0; k < logRecords.Len(); k++ {
 				logsOptimized.Logs = append(logsOptimized.Logs, &FlattenedLog{
-					ResourceLogsID:    resSpanID,
-					Resource:          &resource,
-					ResourceSchemaUrl: resourceSchemaUrl,
-					ScopeLogsID:       scopeSpanID,
-					Scope:             &scope,
-					ScopeSchemaUrl:    scopeSchemaUrl,
-					Log:               &log,
+					ResScope: resScope,
+					Log:      logRecords.At(k),
 				})
 			}
 		}
@@ -125,16 +143,16 @@ func (s *LogsByResourceLogsIDScopeLogsIDTraceID) Sort(logs []*FlattenedLog) {
 		logI := logs[i]
 		logJ := logs[j]
 
-		if logI.ResourceLogsID == logJ.ResourceLogsID {
-			if logI.ScopeLogsID == logJ.ScopeLogsID {
+		if logI.ResScope.ResourceLogsID == logJ.ResScope.ResourceLogsID {
+			if logI.ResScope.ScopeLogsID == logJ.ResScope.ScopeLogsID {
 				traceIdI := logI.Log.TraceID()
 				traceIdJ := logJ.Log.TraceID()
 				return bytes.Compare(traceIdI[:], traceIdJ[:]) == -1
 			} else {
-				return logI.ScopeLogsID < logJ.ScopeLogsID
+				return logI.ResScope.ScopeLogsID < logJ.ResScope.ScopeLogsID
 			}
 		} else {
-			return logI.ResourceLogsID < logJ.ResourceLogsID
+			return logI.ResScope.ResourceLogsID < logJ.ResScope.ResourceLogsID
 		}
 	})
 }
