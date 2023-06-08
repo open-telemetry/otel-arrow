@@ -117,6 +117,7 @@ func NumberDataPointsStoreFrom(record arrow.Record, exemplarsStore *ExemplarsSto
 
 	count := int(record.NumRows())
 	prevParentID := uint16(0)
+	lastID := uint32(0)
 
 	for row := 0; row < count; row++ {
 		// Number Data Point ID
@@ -176,10 +177,12 @@ func NumberDataPointsStoreFrom(record arrow.Record, exemplarsStore *ExemplarsSto
 		ndp.SetFlags(pmetric.DataPointFlags(flags))
 
 		if ID != nil {
-			exemplars := exemplarsStore.ExemplarsByID(*ID)
+			lastID += *ID
+
+			exemplars := exemplarsStore.ExemplarsByID(lastID)
 			exemplars.MoveAndAppendTo(ndp.Exemplars())
 
-			attrs := attrsStore.AttributesByDeltaID(*ID)
+			attrs := attrsStore.AttributesByID(lastID)
 			if attrs != nil {
 				attrs.CopyTo(ndp.Attributes())
 			}

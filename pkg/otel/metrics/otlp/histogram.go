@@ -146,6 +146,7 @@ func HistogramDataPointsStoreFrom(record arrow.Record, exemplarsStore *Exemplars
 
 	count := int(record.NumRows())
 	prevParentID := uint16(0)
+	lastID := uint32(0)
 
 	for row := 0; row < count; row++ {
 		// Data Point ID
@@ -206,7 +207,7 @@ func HistogramDataPointsStoreFrom(record arrow.Record, exemplarsStore *Exemplars
 			for i := start; i < end; i++ {
 				bucketCountsSlice.Append(values.Value(i))
 			}
-		} else {
+		} else if bucketCounts != nil {
 			return nil, werror.Wrap(ErrNotArrayUint64)
 		}
 
@@ -220,7 +221,7 @@ func HistogramDataPointsStoreFrom(record arrow.Record, exemplarsStore *Exemplars
 			for i := start; i < end; i++ {
 				explicitBoundsSlice.Append(values.Value(i))
 			}
-		} else {
+		} else if explicitBounds != nil {
 			return nil, werror.Wrap(ErrNotArrayFloat64)
 		}
 
@@ -247,10 +248,12 @@ func HistogramDataPointsStoreFrom(record arrow.Record, exemplarsStore *Exemplars
 		}
 
 		if ID != nil {
-			exemplars := exemplarsStore.ExemplarsByID(*ID)
+			lastID += *ID
+
+			exemplars := exemplarsStore.ExemplarsByID(lastID)
 			exemplars.MoveAndAppendTo(hdp.Exemplars())
 
-			attrs := attrsStore.AttributesByDeltaID(*ID)
+			attrs := attrsStore.AttributesByID(lastID)
 			if attrs != nil {
 				attrs.CopyTo(hdp.Attributes())
 			}

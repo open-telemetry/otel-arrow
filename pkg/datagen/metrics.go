@@ -82,6 +82,26 @@ func (mg *MetricsGenerator) GenerateAllKindOfMetrics(batchSize int, collectInter
 	return result
 }
 
+func (mg *MetricsGenerator) GenerateGauges(batchSize int, collectInterval time.Duration) pmetric.Metrics {
+	result, metrics := mg.newResult()
+
+	for i := 0; i < batchSize; i++ {
+		mg.AdvanceTime(collectInterval)
+
+		mg.SystemCpuLoadAverage1m(metrics.AppendEmpty())
+		mg.EmptyMetric(metrics.AppendEmpty())
+		mg.EmptyGaugeMetric(metrics.AppendEmpty())
+		mg.GaugeWithoutAttribute(metrics.AppendEmpty())
+		mg.GaugeWithoutValue(metrics.AppendEmpty())
+		mg.GaugeEmptyDataPoint(metrics.AppendEmpty())
+		mg.GaugeWithExemplars(metrics.AppendEmpty())
+	}
+
+	mg.generation++
+
+	return result
+}
+
 func (mg *MetricsGenerator) GenerateSums(batchSize int, collectInterval time.Duration) pmetric.Metrics {
 	result, metrics := mg.newResult()
 
@@ -94,6 +114,46 @@ func (mg *MetricsGenerator) GenerateSums(batchSize int, collectInterval time.Dur
 		mg.EmptySumMetric(metrics.AppendEmpty())
 		mg.SumWithoutAttribute(metrics.AppendEmpty())
 		mg.SumWithoutValue(metrics.AppendEmpty())
+		mg.SumEmptyDataPoint(metrics.AppendEmpty())
+		mg.SumWithExemplars(metrics.AppendEmpty())
+	}
+
+	mg.generation++
+
+	return result
+}
+
+func (mg *MetricsGenerator) GenerateSummaries(batchSize int, collectInterval time.Duration) pmetric.Metrics {
+	result, metrics := mg.newResult()
+
+	for i := 0; i < batchSize; i++ {
+		mg.AdvanceTime(collectInterval)
+
+		mg.FakeSummary(metrics.AppendEmpty())
+		mg.EmptyMetric(metrics.AppendEmpty())
+		mg.EmptySummaryMetric(metrics.AppendEmpty())
+		mg.SummaryWithoutAttributeAndQuantile(metrics.AppendEmpty())
+		mg.SummaryWithoutValue(metrics.AppendEmpty())
+		mg.SummaryEmptyDataPoint(metrics.AppendEmpty())
+	}
+
+	mg.generation++
+
+	return result
+}
+
+func (mg *MetricsGenerator) GenerateHistograms(batchSize int, collectInterval time.Duration) pmetric.Metrics {
+	result, metrics := mg.newResult()
+
+	for i := 0; i < batchSize; i++ {
+		mg.AdvanceTime(collectInterval)
+
+		mg.HistogramWithNoDataPoints(metrics.AppendEmpty())
+		mg.HistogramWithOnlyTimestamps(metrics.AppendEmpty())
+		mg.HistogramWithoutAttrsAndWithoutBuckets(metrics.AppendEmpty())
+		mg.HistogramWithoutAttrs(metrics.AppendEmpty())
+		mg.HistogramWithEverything(metrics.AppendEmpty())
+		mg.HistogramWithOnlyExemplars(metrics.AppendEmpty())
 	}
 
 	mg.generation++
@@ -306,6 +366,193 @@ func (dg *DataGenerator) SumWithoutValue(metric pmetric.Metric) {
 
 		dataPoint.SetStartTimestamp(dg.PrevTime())
 		dataPoint.SetTimestamp(dg.CurrentTime())
+	}
+}
+
+func (dg *DataGenerator) SumEmptyDataPoint(metric pmetric.Metric) {
+	metric.SetName("sum_with_empty_data_point")
+
+	sum := metric.SetEmptySum()
+	points := sum.DataPoints()
+
+	for cpu := 0; cpu < 5; cpu++ {
+		points.AppendEmpty()
+	}
+}
+
+func (dg *DataGenerator) SumWithExemplars(metric pmetric.Metric) {
+	metric.SetName("sum_with_exemplars")
+	if dg.HasMetricUnit() {
+		metric.SetUnit("s")
+	}
+
+	sum := metric.SetEmptySum()
+	points := sum.DataPoints()
+
+	for cpu := 0; cpu < 5; cpu++ {
+		dataPoint := points.AppendEmpty()
+
+		dataPoint.Attributes().PutInt("cpu", int64(cpu))
+		dataPoint.Attributes().PutStr("cpu_id", fmt.Sprintf("cpu-%d", cpu))
+		dataPoint.Attributes().PutStr("cpu_arch", "x86-64")
+		dataPoint.Attributes().PutStr("cpu_vendor", "intel")
+		dataPoint.Attributes().PutStr("cpu_model", "i7")
+		dataPoint.Attributes().PutStr("cpu_mhz", "2.4")
+		dataPoint.Attributes().PutStr("cpu_cores", "4")
+		dataPoint.Attributes().PutStr("cpu_logical_processors", "8")
+
+		dataPoint.SetStartTimestamp(dg.PrevTime())
+		dataPoint.SetTimestamp(dg.CurrentTime())
+		dataPoint.SetDoubleValue(dg.GenF64Range(0.0, 1.0))
+
+		exemplars := dataPoint.Exemplars()
+		exemplars.EnsureCapacity(10)
+		for j := 0; j < 10; j++ {
+			exemplar := exemplars.AppendEmpty()
+			exemplar.SetTimestamp(dg.CurrentTime())
+			exemplar.SetIntValue(dg.GenI64Range(0, 100))
+			attrs := exemplar.FilteredAttributes()
+			attrs.EnsureCapacity(2)
+			attrs.PutStr("freq", "3GHz")
+			attrs.PutInt("cpu", 0)
+		}
+
+		dataPoint.SetFlags(pmetric.DataPointFlags(1))
+	}
+}
+
+func (dg *DataGenerator) EmptyGaugeMetric(metric pmetric.Metric) {
+	metric.SetName("empty_gauge_metric")
+
+	metric.SetEmptyGauge()
+}
+
+func (dg *DataGenerator) GaugeWithoutAttribute(metric pmetric.Metric) {
+	metric.SetName("gauge_without_attribute")
+
+	gauge := metric.SetEmptyGauge()
+	points := gauge.DataPoints()
+
+	for cpu := 0; cpu < 5; cpu++ {
+		dataPoint := points.AppendEmpty()
+
+		dataPoint.SetStartTimestamp(dg.PrevTime())
+		dataPoint.SetTimestamp(dg.CurrentTime())
+		dataPoint.SetDoubleValue(dg.GenF64Range(0.0, 1.0))
+	}
+}
+
+func (dg *DataGenerator) GaugeWithoutValue(metric pmetric.Metric) {
+	metric.SetName("gauge_without_value")
+
+	gauge := metric.SetEmptyGauge()
+	points := gauge.DataPoints()
+
+	for cpu := 0; cpu < 5; cpu++ {
+		dataPoint := points.AppendEmpty()
+
+		dataPoint.SetStartTimestamp(dg.PrevTime())
+		dataPoint.SetTimestamp(dg.CurrentTime())
+	}
+}
+
+func (dg *DataGenerator) GaugeEmptyDataPoint(metric pmetric.Metric) {
+	metric.SetName("gauge_with_empty_data_point")
+
+	gauge := metric.SetEmptyGauge()
+	points := gauge.DataPoints()
+
+	for cpu := 0; cpu < 5; cpu++ {
+		points.AppendEmpty()
+	}
+}
+
+func (dg *DataGenerator) GaugeWithExemplars(metric pmetric.Metric) {
+	metric.SetName("gauge_with_exemplars")
+	if dg.HasMetricUnit() {
+		metric.SetUnit("s")
+	}
+
+	gauge := metric.SetEmptyGauge()
+	points := gauge.DataPoints()
+
+	for cpu := 0; cpu < 5; cpu++ {
+		dataPoint := points.AppendEmpty()
+
+		dataPoint.Attributes().PutInt("cpu", int64(cpu))
+		dataPoint.Attributes().PutStr("cpu_id", fmt.Sprintf("cpu-%d", cpu))
+		dataPoint.Attributes().PutStr("cpu_arch", "x86-64")
+		dataPoint.Attributes().PutStr("cpu_vendor", "intel")
+		dataPoint.Attributes().PutStr("cpu_model", "i7")
+		dataPoint.Attributes().PutStr("cpu_mhz", "2.4")
+		dataPoint.Attributes().PutStr("cpu_cores", "4")
+		dataPoint.Attributes().PutStr("cpu_logical_processors", "8")
+
+		dataPoint.SetStartTimestamp(dg.PrevTime())
+		dataPoint.SetTimestamp(dg.CurrentTime())
+		dataPoint.SetDoubleValue(dg.GenF64Range(0.0, 1.0))
+
+		exemplars := dataPoint.Exemplars()
+		exemplars.EnsureCapacity(10)
+		for j := 0; j < 10; j++ {
+			exemplar := exemplars.AppendEmpty()
+			exemplar.SetTimestamp(dg.CurrentTime())
+			exemplar.SetIntValue(dg.GenI64Range(0, 100))
+			attrs := exemplar.FilteredAttributes()
+			attrs.EnsureCapacity(2)
+			attrs.PutStr("freq", "3GHz")
+			attrs.PutInt("cpu", 0)
+		}
+
+		dataPoint.SetFlags(pmetric.DataPointFlags(1))
+	}
+}
+
+func (dg *DataGenerator) EmptySummaryMetric(metric pmetric.Metric) {
+	metric.SetName("empty_summary_metric")
+
+	metric.SetEmptySummary()
+}
+
+func (dg *DataGenerator) SummaryWithoutAttributeAndQuantile(metric pmetric.Metric) {
+	metric.SetName("summary_without_attribute")
+
+	sum := metric.SetEmptySummary()
+	points := sum.DataPoints()
+
+	for cpu := 0; cpu < 5; cpu++ {
+		dataPoint := points.AppendEmpty()
+
+		dataPoint.SetStartTimestamp(dg.PrevTime())
+		dataPoint.SetTimestamp(dg.CurrentTime())
+		dataPoint.SetCount(uint64(dg.GenI64Range(0, 100)))
+		dataPoint.SetSum(dg.GenF64Range(0.0, 1.0))
+		dataPoint.SetFlags(pmetric.DataPointFlags(1))
+	}
+}
+
+func (dg *DataGenerator) SummaryWithoutValue(metric pmetric.Metric) {
+	metric.SetName("summary_without_value")
+
+	sum := metric.SetEmptySummary()
+	points := sum.DataPoints()
+
+	for cpu := 0; cpu < 5; cpu++ {
+		dataPoint := points.AppendEmpty()
+
+		dataPoint.SetStartTimestamp(dg.PrevTime())
+		dataPoint.SetTimestamp(dg.CurrentTime())
+	}
+}
+
+func (dg *DataGenerator) SummaryEmptyDataPoint(metric pmetric.Metric) {
+	metric.SetName("summary_with_empty_data_point")
+
+	sum := metric.SetEmptySummary()
+	points := sum.DataPoints()
+
+	for cpu := 0; cpu < 5; cpu++ {
+		points.AppendEmpty()
 	}
 }
 
@@ -636,6 +883,205 @@ func (dg *DataGenerator) ExpHistogramWithOnlyExemplars(metric pmetric.Metric) {
 	metric.SetName("exp_histogram_with_only_exemplars")
 
 	histogram := metric.SetEmptyExponentialHistogram()
+	histogram.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+
+	dps := histogram.DataPoints()
+	dps.EnsureCapacity(10)
+
+	for i := 0; i < 10; i++ {
+		dp := dps.AppendEmpty()
+
+		exemplars := dp.Exemplars()
+		exemplars.EnsureCapacity(10)
+		for j := 0; j < 10; j++ {
+			exemplar := exemplars.AppendEmpty()
+			exemplar.SetTimestamp(dg.CurrentTime())
+			exemplar.SetIntValue(dg.GenI64Range(0, 100))
+			attrs := exemplar.FilteredAttributes()
+			attrs.EnsureCapacity(2)
+			attrs.PutStr("freq", "3GHz")
+			attrs.PutInt("cpu", 0)
+		}
+	}
+}
+
+// HistogramWithEverything generates a fake histogram metric.
+// All field are purposely filled with random values.
+func (dg *DataGenerator) HistogramWithEverything(metric pmetric.Metric) {
+	metric.SetName("histogram_with_everything")
+	// Generate description and unit only half of the time.
+	metric.SetDescription("An histogram with a few buckets.")
+	metric.SetUnit("1")
+
+	histogram := metric.SetEmptyHistogram()
+	histogram.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+
+	dps := histogram.DataPoints()
+	dps.EnsureCapacity(10)
+
+	for i := 0; i < 10; i++ {
+		dp := dps.AppendEmpty()
+		dp.SetStartTimestamp(dg.PrevTime())
+		dp.SetTimestamp(dg.CurrentTime())
+
+		attrs := dp.Attributes()
+		attrs.EnsureCapacity(2)
+		attrs.PutStr("freq", "3GHz")
+		attrs.PutInt("cpu", 0)
+		attrs.PutStr("cpu_id", "cpu-0")
+		attrs.PutStr("cpu_arch", "x86-64")
+		attrs.PutStr("cpu_vendor", "intel")
+		attrs.PutStr("cpu_model", "i7")
+		attrs.PutStr("cpu_mhz", "2.4")
+		attrs.PutStr("cpu_cores", "4")
+		attrs.PutStr("cpu_logical_processors", "8")
+
+		dp.SetCount(uint64(dg.GenI64Range(0, 100)))
+		dp.SetSum(dg.GenF64Range(0, 100))
+
+		bcs := dp.BucketCounts()
+		bcs.EnsureCapacity(10)
+		for j := 0; j < 10; j++ {
+			bcs.Append(uint64(dg.GenI64Range(0, 100)))
+		}
+
+		ebs := dp.ExplicitBounds()
+		ebs.EnsureCapacity(10)
+		for j := 0; j < 10; j++ {
+			ebs.Append(dg.GenF64Range(0, 100))
+		}
+
+		exemplars := dp.Exemplars()
+		exemplars.EnsureCapacity(10)
+		for j := 0; j < 10; j++ {
+			exemplar := exemplars.AppendEmpty()
+			exemplar.SetTimestamp(dg.CurrentTime())
+			exemplar.SetIntValue(dg.GenI64Range(0, 100))
+			attrs := exemplar.FilteredAttributes()
+			attrs.EnsureCapacity(2)
+			attrs.PutStr("freq", "3GHz")
+			attrs.PutInt("cpu", 0)
+		}
+
+		dp.SetMin(dg.GenF64Range(0, 100))
+		dp.SetMax(dg.GenF64Range(0, 100))
+		dp.SetFlags(pmetric.DataPointFlags(dg.GenI64Range(1, 50)))
+	}
+}
+
+func (dg *DataGenerator) HistogramWithoutAttrs(metric pmetric.Metric) {
+	metric.SetName("histogram_without_attrs")
+	// Generate description and unit only half of the time.
+	if dg.HasMetricDescription() {
+		metric.SetDescription("An histogram with a few buckets.")
+	}
+	if dg.HasMetricUnit() {
+		metric.SetUnit("1")
+	}
+
+	histogram := metric.SetEmptyHistogram()
+	histogram.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+
+	dps := histogram.DataPoints()
+	dps.EnsureCapacity(10)
+
+	for i := 0; i < 10; i++ {
+		dp := dps.AppendEmpty()
+		dp.SetStartTimestamp(dg.PrevTime())
+		dp.SetTimestamp(dg.CurrentTime())
+
+		dp.SetCount(uint64(dg.GenI64Range(0, 100)))
+		dp.SetSum(dg.GenF64Range(0, 100))
+
+		bcs := dp.BucketCounts()
+		bcs.EnsureCapacity(10)
+		for j := 0; j < 10; j++ {
+			bcs.Append(uint64(dg.GenI64Range(0, 100)))
+		}
+
+		ebs := dp.ExplicitBounds()
+		ebs.EnsureCapacity(10)
+		for j := 0; j < 10; j++ {
+			ebs.Append(dg.GenF64Range(0, 100))
+		}
+
+		dp.SetMin(dg.GenF64Range(0, 100))
+		dp.SetMax(dg.GenF64Range(0, 100))
+		dp.SetFlags(pmetric.DataPointFlags(dg.GenI64Range(1, 50)))
+	}
+}
+
+func (dg *DataGenerator) HistogramWithoutAttrsAndWithoutBuckets(metric pmetric.Metric) {
+	metric.SetName("histogram_without_attrs_and_buckets")
+	// Generate description and unit only half of the time.
+	if dg.HasMetricDescription() {
+		metric.SetDescription("An histogram with a few buckets.")
+	}
+	if dg.HasMetricUnit() {
+		metric.SetUnit("1")
+	}
+
+	histogram := metric.SetEmptyHistogram()
+	histogram.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+
+	dps := histogram.DataPoints()
+	dps.EnsureCapacity(10)
+
+	for i := 0; i < 10; i++ {
+		dp := dps.AppendEmpty()
+		dp.SetStartTimestamp(dg.PrevTime())
+		dp.SetTimestamp(dg.CurrentTime())
+
+		dp.SetCount(uint64(dg.GenI64Range(0, 100)))
+		dp.SetSum(dg.GenF64Range(0, 100))
+
+		dp.SetMin(dg.GenF64Range(0, 100))
+		dp.SetMax(dg.GenF64Range(0, 100))
+		dp.SetFlags(pmetric.DataPointFlags(dg.GenI64Range(1, 50)))
+	}
+}
+
+func (dg *DataGenerator) HistogramWithOnlyTimestamps(metric pmetric.Metric) {
+	metric.SetName("histogram_with_only_timestamps")
+	// Generate description and unit only half of the time.
+	if dg.HasMetricDescription() {
+		metric.SetDescription("An histogram with a few buckets.")
+	}
+	if dg.HasMetricUnit() {
+		metric.SetUnit("1")
+	}
+
+	histogram := metric.SetEmptyHistogram()
+	histogram.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+
+	dps := histogram.DataPoints()
+	dps.EnsureCapacity(10)
+
+	for i := 0; i < 10; i++ {
+		dp := dps.AppendEmpty()
+		dp.SetStartTimestamp(dg.PrevTime())
+		dp.SetTimestamp(dg.CurrentTime())
+	}
+}
+
+func (dg *DataGenerator) HistogramWithNoDataPoints(metric pmetric.Metric) {
+	metric.SetName("histogram_with_no_data_points")
+	// Generate description and unit only half of the time.
+	if dg.HasMetricDescription() {
+		metric.SetDescription("An histogram with a few buckets.")
+	}
+	if dg.HasMetricUnit() {
+		metric.SetUnit("1")
+	}
+
+	histogram := metric.SetEmptyHistogram()
+	histogram.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+}
+
+func (dg *DataGenerator) HistogramWithOnlyExemplars(metric pmetric.Metric) {
+	metric.SetName("histogram_with_only_exemplars")
+
+	histogram := metric.SetEmptyHistogram()
 	histogram.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
 
 	dps := histogram.DataPoints()
