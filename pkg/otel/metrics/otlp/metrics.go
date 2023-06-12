@@ -48,6 +48,10 @@ func MetricsFrom(record arrow.Record, relatedData *RelatedData) (pmetric.Metrics
 
 	metrics := pmetric.NewMetrics()
 
+	if relatedData == nil {
+		return metrics, werror.Wrap(otlp.ErrMissingRelatedData)
+	}
+
 	metricsIDs, err := SchemaToIds(record.Schema())
 	if err != nil {
 		return metrics, werror.Wrap(err)

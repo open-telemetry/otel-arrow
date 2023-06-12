@@ -15,6 +15,9 @@
 package datagen
 
 import (
+	"fmt"
+
+	"github.com/brianvoe/gofakeit/v6"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 )
 
@@ -39,6 +42,42 @@ func (te TestEntropy) shuffleAttrs(fs ...func(Attrs)) pcommon.Map {
 	for _, f := range fs {
 		f(attrs)
 	}
+	return attrs
+}
+
+// RandomAttributes returns a random set of attributes. The number of attributes
+// is random [0,10). The type and value of each attribute is also random.
+func (te TestEntropy) RandomAttributes() pcommon.Map {
+	count := te.rng.Intn(10)
+
+	attrs := pcommon.NewMap()
+
+	for i := 0; i < count; i++ {
+		switch te.rng.Intn(3) {
+		case 0:
+			attrs.PutStr(fmt.Sprintf("attr_%d", i), gofakeit.LoremIpsumWord())
+		case 1:
+			attrs.PutInt(fmt.Sprintf("attr_%d", i), te.rng.Int63())
+		case 2:
+			attrs.PutDouble(fmt.Sprintf("attr_%d", i), te.rng.Float64())
+		case 3:
+			attrs.PutBool(fmt.Sprintf("attr_%d", i), te.rng.Intn(2) == 0)
+		case 4:
+			attrs.PutEmpty(fmt.Sprintf("attr_%d", i))
+		case 5:
+			attrs.PutEmptyBytes(fmt.Sprintf("attr_%d", i)).FromRaw([]byte(gofakeit.LoremIpsumWord()))
+		case 6:
+			vMap := attrs.PutEmptyMap(fmt.Sprintf("attr_%d", i))
+			vMap.PutInt("int", te.rng.Int63())
+			vMap.PutStr("str", gofakeit.LoremIpsumWord())
+		case 7:
+			vSlice := attrs.PutEmptySlice(fmt.Sprintf("attr_%d", i))
+			vSlice.AppendEmpty().SetBool(te.rng.Intn(2) == 0)
+			vSlice.AppendEmpty().SetDouble(te.rng.Float64())
+			vSlice.AppendEmpty().SetInt(te.rng.Int63())
+		}
+	}
+
 	return attrs
 }
 

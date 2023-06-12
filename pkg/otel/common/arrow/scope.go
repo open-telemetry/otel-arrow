@@ -47,11 +47,6 @@ type ScopeBuilder struct {
 	dacb     *builder.Uint32Builder      // Dropped attributes count builder
 }
 
-// NewScopeBuilder creates a new instrumentation scope array builder with a given allocator.
-func NewScopeBuilder(builder *builder.StructBuilder) *ScopeBuilder {
-	return ScopeBuilderFrom(builder)
-}
-
 // ScopeBuilderFrom creates a new instrumentation scope array builder from an existing struct builder.
 func ScopeBuilderFrom(sb *builder.StructBuilder) *ScopeBuilder {
 	aib := sb.Uint16DeltaBuilder(constants.ID)

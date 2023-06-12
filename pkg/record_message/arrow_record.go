@@ -98,9 +98,17 @@ func (rm *RecordMessage) Record() arrow.Record {
 	return rm.record
 }
 
+func (rm *RecordMessage) SetRecord(record arrow.Record) {
+	rm.record = record
+}
+
 // PayloadType returns the type of payload contained in this RecordMessage.
 func (rm *RecordMessage) PayloadType() PayloadType {
 	return rm.payloadType
+}
+
+func (rm *RecordMessage) SetPayloadType(payloadType PayloadType) {
+	rm.payloadType = payloadType
 }
 
 func (rm *RecordMessage) ShowStats() {

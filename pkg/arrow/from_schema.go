@@ -40,6 +40,19 @@ func FieldIDFromSchema(schema *arrow.Schema, fieldName string) (int, error) {
 	return ids[0], nil
 }
 
+// MandatoryFieldIDFromSchema returns the field id of a field from an Arrow
+// schema or an error if the field is not present or duplicated.
+func MandatoryFieldIDFromSchema(schema *arrow.Schema, fieldName string) (int, error) {
+	ids := schema.FieldIndices(fieldName)
+	if len(ids) == 0 {
+		return 0, werror.WrapWithContext(ErrMissingFieldName, map[string]interface{}{"fieldName": fieldName})
+	}
+	if len(ids) > 1 {
+		return 0, werror.WrapWithContext(ErrDuplicateFieldName, map[string]interface{}{"fieldName": fieldName})
+	}
+	return ids[0], nil
+}
+
 // StructFieldIDFromSchema returns the field id of a struct
 // field from an Arrow schema or AbsentFieldID for an unknown field.
 //

@@ -66,6 +66,10 @@ func TracesFrom(record arrow.Record, relatedData *RelatedData) (ptrace.Traces, e
 
 	traces := ptrace.NewTraces()
 
+	if relatedData == nil {
+		return traces, werror.Wrap(otlp.ErrMissingRelatedData)
+	}
+
 	traceIDs, err := SchemaToIds(record.Schema())
 	if err != nil {
 		return traces, err

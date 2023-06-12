@@ -20,8 +20,6 @@ package arrow
 // Infrastructure to manage related records.
 
 import (
-	"math"
-
 	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
@@ -32,8 +30,6 @@ type (
 	// RelatedData is a collection of related/dependent data to log record
 	// entities.
 	RelatedData struct {
-		logRecordCount uint64
-
 		relatedRecordsManager *carrow.RelatedRecordsManager
 
 		attrsBuilders *AttrsBuilders
@@ -91,23 +87,7 @@ func (r *RelatedData) RecordBuilderExt(payloadType *carrow.PayloadType) *builder
 }
 
 func (r *RelatedData) Reset() {
-	r.logRecordCount = 0
 	r.relatedRecordsManager.Reset()
-}
-
-func (r *RelatedData) LogRecordCount() uint16 {
-	return uint16(r.logRecordCount)
-}
-
-func (r *RelatedData) NextSpanID() uint16 {
-	c := r.logRecordCount
-
-	if c == math.MaxUint16 {
-		panic("maximum number of log records reached per batch, please reduce the batch size to a maximum of 65535 log records")
-	}
-
-	r.logRecordCount++
-	return uint16(c)
 }
 
 func (r *RelatedData) BuildRecordMessages() ([]*record_message.RecordMessage, error) {

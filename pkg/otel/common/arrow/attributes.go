@@ -26,7 +26,6 @@ import (
 	"github.com/apache/arrow/go/v12/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
 	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
 	"github.com/f5/otel-arrow-adapter/pkg/werror"
@@ -180,53 +179,6 @@ func (b *AttributesBuilder) Append(attrs pcommon.Map) error {
 	})
 }
 
-func (b *AttributesBuilder) AppendUniqueAttributes(attrs pcommon.Map, smattrs *common.SharedAttributes, mattrs *common.SharedAttributes) error {
-	if b.released {
-		return werror.Wrap(ErrBuilderAlreadyReleased)
-	}
-
-	uniqueAttrsCount := attrs.Len()
-	if smattrs != nil {
-		uniqueAttrsCount -= smattrs.Len()
-	}
-	if mattrs != nil {
-		uniqueAttrsCount -= mattrs.Len()
-	}
-
-	return b.builder.Append(uniqueAttrsCount, func() error {
-		var err error
-
-		attrs.Range(func(key string, v pcommon.Value) bool {
-			if key == "" {
-				// Skip entries with empty keys
-				return true
-			}
-
-			// Skip the current attribute if it is a scope metric shared attribute
-			// or a metric shared attribute
-			smattrsFound := false
-			mattrsFound := false
-			if smattrs != nil {
-				_, smattrsFound = smattrs.Attributes[key]
-			}
-			if mattrs != nil {
-				_, mattrsFound = mattrs.Attributes[key]
-			}
-			if smattrsFound || mattrsFound {
-				return true
-			}
-
-			b.kb.AppendNonEmpty(key)
-			err = werror.WrapWithContext(b.ib.Append(&v), map[string]interface{}{"key": key, "value": v})
-
-			uniqueAttrsCount--
-			return err == nil && uniqueAttrsCount > 0
-		})
-
-		return err
-	})
-}
-
 // Release releases the memory allocated by the builder.
 func (b *AttributesBuilder) Release() {
 	if !b.released {
@@ -303,60 +255,6 @@ func (c *Attributes16Accumulator) AppendWithID(parentID uint16, attrs pcommon.Ma
 	return nil
 }
 
-// ToDo Remove this method once shared attributes are removed logs and traces.
-
-func (c *Attributes16Accumulator) AppendUniqueAttributesWithID(parentID uint16, attrs pcommon.Map, smattrs *common.SharedAttributes, mattrs *common.SharedAttributes) error {
-	uniqueAttrsCount := attrs.Len()
-	if smattrs != nil {
-		uniqueAttrsCount -= smattrs.Len()
-	}
-	if mattrs != nil {
-		uniqueAttrsCount -= mattrs.Len()
-	}
-
-	if uniqueAttrsCount == 0 {
-		return nil
-	}
-
-	if c.attrsMapCount == math.MaxUint16 {
-		panic("The maximum number of group of attributes has been reached (max is uint16).")
-	}
-
-	attrs.Range(func(key string, v pcommon.Value) bool {
-		if key == "" {
-			// Skip entries with empty keys
-			return true
-		}
-
-		// Skip the current attribute if it is a scope metric shared attribute
-		// or a metric shared attribute
-		smattrsFound := false
-		mattrsFound := false
-		if smattrs != nil {
-			_, smattrsFound = smattrs.Attributes[key]
-		}
-		if mattrs != nil {
-			_, mattrsFound = mattrs.Attributes[key]
-		}
-		if smattrsFound || mattrsFound {
-			return true
-		}
-
-		c.attrs = append(c.attrs, Attr16{
-			ParentID: parentID,
-			Key:      key,
-			Value:    &v,
-		})
-
-		uniqueAttrsCount--
-		return uniqueAttrsCount > 0
-	})
-
-	c.attrsMapCount++
-
-	return nil
-}
-
 // Sort sorts the attributes based on the provided sorter.
 // The sorter is part of the global configuration and can be different for
 // different payload types.
@@ -410,58 +308,6 @@ func (c *Attributes32Accumulator) Append(ID uint32, attrs pcommon.Map) error {
 	return nil
 }
 
-func (c *Attributes32Accumulator) AppendUniqueAttributesWithID(ID uint32, attrs pcommon.Map, smattrs *common.SharedAttributes, mattrs *common.SharedAttributes) error {
-	uniqueAttrsCount := attrs.Len()
-	if smattrs != nil {
-		uniqueAttrsCount -= smattrs.Len()
-	}
-	if mattrs != nil {
-		uniqueAttrsCount -= mattrs.Len()
-	}
-
-	if uniqueAttrsCount == 0 {
-		return nil
-	}
-
-	if c.attrsMapCount == math.MaxUint32 {
-		panic("The maximum number of group of attributes has been reached (max is uint32).")
-	}
-
-	attrs.Range(func(key string, v pcommon.Value) bool {
-		if key == "" {
-			// Skip entries with empty keys
-			return true
-		}
-
-		// Skip the current attribute if it is a scope metric shared attribute
-		// or a metric shared attribute
-		smattrsFound := false
-		mattrsFound := false
-		if smattrs != nil {
-			_, smattrsFound = smattrs.Attributes[key]
-		}
-		if mattrs != nil {
-			_, mattrsFound = mattrs.Attributes[key]
-		}
-		if smattrsFound || mattrsFound {
-			return true
-		}
-
-		c.attrs = append(c.attrs, Attr32{
-			ParentID: ID,
-			Key:      key,
-			Value:    &v,
-		})
-
-		uniqueAttrsCount--
-		return uniqueAttrsCount > 0
-	})
-
-	c.attrsMapCount++
-
-	return nil
-}
-
 // Sort sorts the attributes based on the provided sorter.
 // The sorter is part of the global configuration and can be different for
 // different payload types.
@@ -476,6 +322,10 @@ func (c *Attributes32Accumulator) Reset() {
 }
 
 func Equal(a, b *pcommon.Value) bool {
+	if a == nil || b == nil {
+		return false
+	}
+
 	switch a.Type() {
 	case pcommon.ValueTypeInt:
 		if b.Type() == pcommon.ValueTypeInt {
@@ -519,6 +369,10 @@ func Equal(a, b *pcommon.Value) bool {
 }
 
 func IsLess(a, b *pcommon.Value) bool {
+	if a == nil || b == nil {
+		return false
+	}
+
 	switch a.Type() {
 	case pcommon.ValueTypeInt:
 		if b.Type() == pcommon.ValueTypeInt {
@@ -558,6 +412,10 @@ func IsLess(a, b *pcommon.Value) bool {
 }
 
 func Compare(a, b *pcommon.Value) int {
+	if a == nil || b == nil {
+		return -1
+	}
+
 	switch a.Type() {
 	case pcommon.ValueTypeInt:
 		aI := a.Int()

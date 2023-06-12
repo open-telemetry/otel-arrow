@@ -61,11 +61,6 @@ type ResourceBuilder struct {
 	dacb    *builder.Uint32Builder      // `dropped_attributes_count` field builder
 }
 
-// NewResourceBuilder creates a new resource builder with a given allocator.
-func NewResourceBuilder(builder *builder.StructBuilder) *ResourceBuilder {
-	return ResourceBuilderFrom(builder)
-}
-
 // ResourceBuilderFrom creates a new resource builder from an existing struct builder.
 func ResourceBuilderFrom(builder *builder.StructBuilder) *ResourceBuilder {
 	aib := builder.Uint16DeltaBuilder(constants.ID)

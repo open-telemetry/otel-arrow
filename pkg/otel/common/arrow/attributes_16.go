@@ -87,17 +87,6 @@ type (
 	}
 )
 
-func NewAttrs16Builder(rBuilder *builder.RecordBuilderExt, payloadType *PayloadType, sorter Attrs16Sorter) *Attrs16Builder {
-	b := &Attrs16Builder{
-		released:    false,
-		builder:     rBuilder,
-		accumulator: NewAttributes16Accumulator(sorter),
-		payloadType: payloadType,
-	}
-	b.init()
-	return b
-}
-
 func NewAttrs16BuilderWithEncoding(rBuilder *builder.RecordBuilderExt, payloadType *PayloadType, config *Attrs16Config) *Attrs16Builder {
 	b := &Attrs16Builder{
 		released:    false,

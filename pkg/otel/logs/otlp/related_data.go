@@ -50,6 +50,12 @@ func (r *RelatedData) LogRecordIDFromDelta(delta uint16) uint16 {
 }
 
 func RelatedDataFrom(records []*record_message.RecordMessage) (relatedData *RelatedData, logsRecord *record_message.RecordMessage, err error) {
+	defer func() {
+		for _, record := range records {
+			record.Record().Release()
+		}
+	}()
+
 	relatedData = NewRelatedData()
 
 	// Create the attribute map stores for all the attribute records.

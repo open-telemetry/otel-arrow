@@ -60,6 +60,10 @@ func LogsFrom(record arrow.Record, relatedData *RelatedData) (plog.Logs, error) 
 
 	logs := plog.NewLogs()
 
+	if relatedData == nil {
+		return logs, werror.Wrap(otlp.ErrMissingRelatedData)
+	}
+
 	logRecordIDs, err := SchemaToIDs(record.Schema())
 	if err != nil {
 		return logs, werror.Wrap(err)
@@ -158,60 +162,64 @@ func LogsFrom(record arrow.Record, relatedData *RelatedData) (plog.Logs, error) 
 		if err != nil {
 			return logs, werror.WrapWithContext(err, map[string]interface{}{"row": row})
 		}
-		bodyType, err := arrowutils.U8FromStruct(bodyStruct, row, logRecordIDs.BodyType)
-		if err != nil {
-			return logs, werror.Wrap(err)
-		}
-		body := logRecord.Body()
-		switch pcommon.ValueType(bodyType) {
-		case pcommon.ValueTypeStr:
-			v, err := arrowutils.StringFromStruct(bodyStruct, row, logRecordIDs.BodyStr)
+
+		if bodyStruct != nil {
+			// If there is a body struct, read the body type and value
+			bodyType, err := arrowutils.U8FromStruct(bodyStruct, row, logRecordIDs.BodyType)
 			if err != nil {
 				return logs, werror.Wrap(err)
 			}
-			body.SetStr(v)
-		case pcommon.ValueTypeInt:
-			v, err := arrowutils.I64FromStruct(bodyStruct, row, logRecordIDs.BodyInt)
-			if err != nil {
-				return logs, werror.Wrap(err)
+			body := logRecord.Body()
+			switch pcommon.ValueType(bodyType) {
+			case pcommon.ValueTypeStr:
+				v, err := arrowutils.StringFromStruct(bodyStruct, row, logRecordIDs.BodyStr)
+				if err != nil {
+					return logs, werror.Wrap(err)
+				}
+				body.SetStr(v)
+			case pcommon.ValueTypeInt:
+				v, err := arrowutils.I64FromStruct(bodyStruct, row, logRecordIDs.BodyInt)
+				if err != nil {
+					return logs, werror.Wrap(err)
+				}
+				body.SetInt(v)
+			case pcommon.ValueTypeDouble:
+				v, err := arrowutils.F64FromStruct(bodyStruct, row, logRecordIDs.BodyDouble)
+				if err != nil {
+					return logs, werror.Wrap(err)
+				}
+				body.SetDouble(v)
+			case pcommon.ValueTypeBool:
+				v, err := arrowutils.BoolFromStruct(bodyStruct, row, logRecordIDs.BodyBool)
+				if err != nil {
+					return logs, werror.Wrap(err)
+				}
+				body.SetBool(v)
+			case pcommon.ValueTypeBytes:
+				v, err := arrowutils.BinaryFromStruct(bodyStruct, row, logRecordIDs.BodyBytes)
+				if err != nil {
+					return logs, werror.Wrap(err)
+				}
+				body.SetEmptyBytes().FromRaw(v)
+			case pcommon.ValueTypeSlice:
+				v, err := arrowutils.BinaryFromStruct(bodyStruct, row, logRecordIDs.BodySer)
+				if err != nil {
+					return logs, werror.Wrap(err)
+				}
+				if err = common.Deserialize(v, body); err != nil {
+					return logs, werror.Wrap(err)
+				}
+			case pcommon.ValueTypeMap:
+				v, err := arrowutils.BinaryFromStruct(bodyStruct, row, logRecordIDs.BodySer)
+				if err != nil {
+					return logs, werror.Wrap(err)
+				}
+				if err = common.Deserialize(v, body); err != nil {
+					return logs, werror.Wrap(err)
+				}
+			default:
+				// silently ignore unknown types to avoid DOS attacks
 			}
-			body.SetInt(v)
-		case pcommon.ValueTypeDouble:
-			v, err := arrowutils.F64FromStruct(bodyStruct, row, logRecordIDs.BodyDouble)
-			if err != nil {
-				return logs, werror.Wrap(err)
-			}
-			body.SetDouble(v)
-		case pcommon.ValueTypeBool:
-			v, err := arrowutils.BoolFromStruct(bodyStruct, row, logRecordIDs.BodyBool)
-			if err != nil {
-				return logs, werror.Wrap(err)
-			}
-			body.SetBool(v)
-		case pcommon.ValueTypeBytes:
-			v, err := arrowutils.BinaryFromStruct(bodyStruct, row, logRecordIDs.BodyBytes)
-			if err != nil {
-				return logs, werror.Wrap(err)
-			}
-			body.SetEmptyBytes().FromRaw(v)
-		case pcommon.ValueTypeSlice:
-			v, err := arrowutils.BinaryFromStruct(bodyStruct, row, logRecordIDs.BodySer)
-			if err != nil {
-				return logs, werror.Wrap(err)
-			}
-			if err = common.Deserialize(v, body); err != nil {
-				return logs, werror.Wrap(err)
-			}
-		case pcommon.ValueTypeMap:
-			v, err := arrowutils.BinaryFromStruct(bodyStruct, row, logRecordIDs.BodySer)
-			if err != nil {
-				return logs, werror.Wrap(err)
-			}
-			if err = common.Deserialize(v, body); err != nil {
-				return logs, werror.Wrap(err)
-			}
-		default:
-			// silently ignore unknown types to avoid DOS attacks
 		}
 
 		logRecordAttrs := logRecord.Attributes()

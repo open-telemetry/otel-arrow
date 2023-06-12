@@ -59,6 +59,12 @@ func (r *RelatedData) SpanIDFromDelta(delta uint16) uint16 {
 }
 
 func RelatedDataFrom(records []*record_message.RecordMessage, conf *arrow.Config) (relatedData *RelatedData, tracesRecord *record_message.RecordMessage, err error) {
+	defer func() {
+		for _, record := range records {
+			record.Record().Release()
+		}
+	}()
+
 	var spanEventRecord *record_message.RecordMessage
 	var spanLinkRecord *record_message.RecordMessage
 

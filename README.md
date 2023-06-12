@@ -8,13 +8,13 @@ as the end-to-end performance between telemetry data producers and receivers.
 **This package is still experimental and subject to change.** It is currently used by an [experimental OTLP/Arrow gRPC 
 exporter and receiver](https://github.com/open-telemetry/experimental-arrow-collector).
 
-Other important links:
-- [OTEP/Specification](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md) describing the
-  motivations, the protocol, the schemas, the benchmark results and the different phases of this project. The OTEP is
-  still [pending, unmerged](https://github.com/open-telemetry/oteps/pull/171).
-- [Donation proposal](https://github.com/open-telemetry/community/issues/1332) - approved, but repo not yet transferred in OTel org.
-- [Arrow schemas](docs/data_model.md) used by this package.
-- [Project Roadmap](https://github.com/f5/otel-arrow-adapter/milestones?direction=asc&sort=due_date&state=open) and [project Board](https://github.com/orgs/f5/projects/1/views/2) describing the current state of the project.
+Important links:
+- [OTEP](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md) - protocol specification 
+  (status: [pending, unmerged](https://github.com/open-telemetry/oteps/pull/171)).
+- [Donation](https://github.com/open-telemetry/community/issues/1332) - approved, but repo not yet transferred in OTel org.
+- [Arrow Data Model](docs/data_model.md) - Mapping OTLP entities to Arrow Schemas.
+- [Benchmark results](docs/benchmarks.md) - Based on synthetic and production data.
+- [Validation process](docs/validation_process.md) - Encoding/Decoding validation process. 
 - [Slides](https://docs.google.com/presentation/d/12uLXmMWNelAyAiKFYMR0i7E7N4dPhzBi2_HLshFOLak/edit?usp=sharing) (01/30/2023 Maintainers meeting).
 
 ## Benchmark summary

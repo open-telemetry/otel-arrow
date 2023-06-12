@@ -20,6 +20,7 @@ package otlp
 import "errors"
 
 var (
+	ErrMissingRelatedData  = errors.New("missing related data")
 	ErrInvalidTypeCode     = errors.New("invalid type code")
 	ErrInvalidFieldId      = errors.New("invalid field id")
 	ErrParentIDMissing     = errors.New("parent id missing")

@@ -22,11 +22,8 @@ import (
 )
 
 var (
-	ErrNotArraySparseUnion = errors.New("not an arrow array.SparseUnion")
-	ErrNotArrayInt32       = errors.New("not an arrow array.Int32")
-	ErrNotArrayUint64      = errors.New("not an arrow array.Uint64")
-	ErrNotArrayFloat64     = errors.New("not an arrow array.Float64")
-	ErrNotArrayList        = errors.New("not an arrow array.List")
-	ErrNotArrayBoolean     = errors.New("not an arrow array.Boolean")
-	ErrUnknownTypeCode     = errors.New("unknown type code")
+	ErrNotArrayInt32   = errors.New("not an arrow array.Int32")
+	ErrNotArrayUint64  = errors.New("not an arrow array.Uint64")
+	ErrNotArrayFloat64 = errors.New("not an arrow array.Float64")
+	ErrNotArrayList    = errors.New("not an arrow array.List")
 )

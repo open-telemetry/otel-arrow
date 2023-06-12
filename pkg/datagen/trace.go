@@ -17,6 +17,7 @@ package datagen
 import (
 	"time"
 
+	"github.com/brianvoe/gofakeit/v6"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 )
@@ -62,6 +63,27 @@ func (tg *TraceGenerator) Generate(batchSize int, collectInterval time.Duration)
 	for i := 0; i < batchSize; i++ {
 		tg.AdvanceTime(collectInterval)
 		tg.Spans(spans)
+	}
+
+	return result
+}
+
+func (tg *TraceGenerator) GenerateRandomTraces(batchSize int, collectInterval time.Duration) ptrace.Traces {
+	result := ptrace.NewTraces()
+
+	resourceSpans := result.ResourceSpans().AppendEmpty()
+	pick(tg.TestEntropy, tg.resourceAttributes).CopyTo(resourceSpans.Resource().Attributes())
+
+	scopeSpans := resourceSpans.ScopeSpans().AppendEmpty()
+	pick(tg.TestEntropy, tg.instrumentationScopes).CopyTo(scopeSpans.Scope())
+
+	resourceSpans.SetSchemaUrl("https://opentelemetry.io/schemas/1.0.0")
+
+	spans := scopeSpans.Spans()
+
+	for i := 0; i < batchSize; i++ {
+		tg.AdvanceTime(collectInterval)
+		tg.AddRandomSpansTo(spans)
 	}
 
 	return result
@@ -131,6 +153,68 @@ func (dg *DataGenerator) Spans(spans ptrace.SpanSlice) {
 	)
 }
 
+func (dg *DataGenerator) AddRandomSpansTo(spans ptrace.SpanSlice) {
+	dg.NextId16Bytes()
+	traceId := dg.Id16Bytes()
+
+	dg.NextId8Bytes()
+	rootSpanId := dg.Id8Bytes()
+	rootStartTime := dg.CurrentTime()
+	rootEndTime := dg.CurrentTime() + 1 + pcommon.Timestamp(dg.rng.Intn(6))
+
+	dg.AdvanceTime(time.Duration(dg.rng.Intn(10)))
+
+	span := spans.AppendEmpty()
+	if dg.GenBool() {
+		span.SetTraceID(traceId)
+	}
+	if dg.GenBool() {
+		span.SetSpanID(rootSpanId)
+	}
+	if dg.GenBool() {
+		span.SetParentSpanID(rootSpanId)
+	}
+	if dg.GenBool() {
+		span.TraceState().FromRaw(gofakeit.LoremIpsumWord())
+	}
+	if dg.GenBool() {
+		span.SetName("GET /user-info")
+	}
+	if dg.GenBool() {
+		span.SetStartTimestamp(rootStartTime)
+	}
+	if dg.GenBool() {
+		span.SetEndTimestamp(rootEndTime)
+	}
+	if dg.GenBool() {
+		span.SetKind(ptrace.SpanKindServer)
+	}
+	if dg.GenBool() {
+		dg.RandomAttributes().CopyTo(span.Attributes())
+	}
+	if dg.GenBool() {
+		span.SetDroppedAttributesCount(uint32(dg.rng.Intn(10)))
+	}
+	if dg.GenBool() {
+		dg.RandomEvents(span.Events())
+	}
+	if dg.GenBool() {
+		span.SetDroppedEventsCount(uint32(dg.rng.Intn(10)))
+	}
+	if dg.GenBool() {
+		dg.RandomLinks(span.Links(), traceId, rootSpanId)
+	}
+	if dg.GenBool() {
+		span.SetDroppedLinksCount(uint32(dg.rng.Intn(10)))
+	}
+	if dg.GenBool() {
+		span.Status().SetCode(ptrace.StatusCodeOk)
+	}
+	if dg.GenBool() {
+		span.Status().SetMessage("OK")
+	}
+}
+
 // events returns a slice of events for the span.
 func (dg *DataGenerator) events(ses ptrace.SpanEventSlice) {
 	eventCount := dg.rng.Intn(8) + 2
@@ -148,6 +232,27 @@ func (dg *DataGenerator) events(ses ptrace.SpanEventSlice) {
 	}
 }
 
+func (dg *DataGenerator) RandomEvents(ses ptrace.SpanEventSlice) {
+	eventCount := dg.rng.Intn(10)
+
+	for i := 0; i < eventCount; i++ {
+		event := ses.AppendEmpty()
+		if dg.GenBool() {
+			event.SetTimestamp(dg.CurrentTime() + pcommon.Timestamp(dg.rng.Intn(5)))
+		}
+		if dg.GenBool() {
+			event.SetName(gofakeit.LoremIpsumWord())
+		}
+		if dg.GenBool() {
+			attributes := dg.RandomAttributes()
+			attributes.CopyTo(event.Attributes())
+		}
+		if dg.GenBool() {
+			event.SetDroppedAttributesCount(uint32(dg.rng.Intn(10)))
+		}
+	}
+}
+
 // links returns a slice of links for the span.
 func (dg *DataGenerator) links(sls ptrace.SpanLinkSlice, traceID pcommon.TraceID, spanID pcommon.SpanID) {
 	linkCount := dg.rng.Intn(8) + 2
@@ -158,5 +263,29 @@ func (dg *DataGenerator) links(sls ptrace.SpanLinkSlice, traceID pcommon.TraceID
 		sl.SetSpanID(spanID)
 		sl.TraceState().FromRaw(pick(dg.TestEntropy, TraceStates))
 		dg.NewStandardSpanLinkAttributes().CopyTo(sl.Attributes())
+	}
+}
+
+func (dg *DataGenerator) RandomLinks(sls ptrace.SpanLinkSlice, traceID pcommon.TraceID, spanID pcommon.SpanID) {
+	linkCount := dg.rng.Intn(10)
+
+	for i := 0; i < linkCount; i++ {
+		sl := sls.AppendEmpty()
+		if dg.GenBool() {
+			sl.SetTraceID(traceID)
+		}
+		if dg.GenBool() {
+			sl.SetSpanID(spanID)
+		}
+		if dg.GenBool() {
+			sl.TraceState().FromRaw(gofakeit.LoremIpsumWord())
+		}
+		if dg.GenBool() {
+			attributes := dg.RandomAttributes()
+			attributes.CopyTo(sl.Attributes())
+		}
+		if dg.GenBool() {
+			sl.SetDroppedAttributesCount(uint32(dg.rng.Intn(10)))
+		}
 	}
 }

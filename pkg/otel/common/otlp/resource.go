@@ -30,23 +30,6 @@ type ResourceIds struct {
 	SchemaUrl              int
 }
 
-// ToDo remove this function once metrics have been converted to the model v1
-func NewResourceIds(resSpansDT *arrow.StructType) (*ResourceIds, error) {
-	resId, resDT, err := arrowutils.StructFieldIDFromStruct(resSpansDT, constants.Resource)
-	if err != nil {
-		return nil, werror.Wrap(err)
-	}
-
-	attributeIds, _ := arrowutils.FieldIDFromStruct(resDT, constants.ID)
-	droppedAttributesCount, _ := arrowutils.FieldIDFromStruct(resDT, constants.DroppedAttributesCount)
-
-	return &ResourceIds{
-		Resource:               resId,
-		ID:                     attributeIds,
-		DroppedAttributesCount: droppedAttributesCount,
-	}, nil
-}
-
 func NewResourceIdsFromSchema(schema *arrow.Schema) (*ResourceIds, error) {
 	resource, resDT, err := arrowutils.StructFieldIDFromSchema(schema, constants.Resource)
 	if err != nil {
@@ -63,37 +46,6 @@ func NewResourceIdsFromSchema(schema *arrow.Schema) (*ResourceIds, error) {
 		DroppedAttributesCount: droppedAttributesCount,
 		SchemaUrl:              schemaUrl,
 	}, nil
-}
-
-// ToDo remove this function once metrics have been converted to the model v1
-
-// UpdateResourceWith updates a resource with the content of an Arrow array.
-func UpdateResourceWith(r pcommon.Resource, resList *arrowutils.ListOfStructs, row int, resIds *ResourceIds, attrsStore *Attributes16Store) error {
-	_, resArr, err := resList.StructByID(resIds.Resource, row)
-	if err != nil {
-		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
-	}
-
-	// Read dropped attributes count
-	droppedAttributesCount, err := arrowutils.U32FromStruct(resArr, row, resIds.DroppedAttributesCount)
-	if err != nil {
-		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
-	}
-	r.SetDroppedAttributesCount(droppedAttributesCount)
-
-	// Read attributes
-	attrsId, err := arrowutils.NullableU16FromStruct(resArr, row, resIds.ID)
-	if err != nil {
-		return werror.WrapWithContext(err, map[string]interface{}{"row": row})
-	}
-	if attrsId != nil {
-		attrs := attrsStore.AttributesByDeltaID(*attrsId)
-		if attrs != nil {
-			attrs.CopyTo(r.Attributes())
-		}
-	}
-
-	return err
 }
 
 func UpdateResourceFromRecord(r pcommon.Resource, record arrow.Record, row int, resIds *ResourceIds, attrsStore *Attributes16Store) (schemaUrl string, err error) {

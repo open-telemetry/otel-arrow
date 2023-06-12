@@ -82,6 +82,12 @@ func (r *RelatedData) MetricIDFromDelta(delta uint16) uint16 {
 }
 
 func RelatedDataFrom(records []*record_message.RecordMessage) (relatedData *RelatedData, metricsRecord *record_message.RecordMessage, err error) {
+	defer func() {
+		for _, record := range records {
+			record.Record().Release()
+		}
+	}()
+
 	var numberDPRec *record_message.RecordMessage
 	var summaryDPRec *record_message.RecordMessage
 	var histogramDPRec *record_message.RecordMessage
