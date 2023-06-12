@@ -196,7 +196,7 @@ func TestConversionFromRealData(t *testing.T) {
 	t.Skip("Testing based on production data that is not stored in the")
 
 	// Load a real OTLP traces request.
-	ds := dataset.NewRealTraceDataset("../../../data/nth_first_otlp_traces.pb", []string{"trace_id"})
+	ds := dataset.NewRealTraceDataset("../../../data/nth_first_otlp_traces.pb", "", "proto", []string{"trace_id"})
 
 	batchSizes := []int{1, 10, 100, 1000, 5000, 10000}
 	for _, batchSize := range batchSizes {

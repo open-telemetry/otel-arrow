@@ -22,6 +22,8 @@ import (
 	"github.com/pierrec/lz4"
 )
 
+const CompressionTypeZstd = "zstd"
+
 type CompressionAlgorithm interface {
 	fmt.Stringer
 	Compress(data []byte) ([]byte, error)

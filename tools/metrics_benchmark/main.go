@@ -18,6 +18,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/dustin/go-humanize"
 
@@ -38,6 +39,8 @@ func main() {
 	// The -stats flag displays a series of statistics about the schema and the
 	// dataset. This flag is disabled by default.
 	stats := flag.Bool("stats", false, "stats mode")
+	// The -format flag supports "json" or "proto" file formats
+	format := flag.String("format", "proto", "format of file to read")
 
 	// Parse the flag
 	flag.Parse()
@@ -51,7 +54,7 @@ func main() {
 	// Define default input file
 	inputFiles := flag.Args()
 	if len(inputFiles) == 0 {
-		inputFiles = append(inputFiles, "./data/otlp_metrics.pb")
+		inputFiles = append(inputFiles, filepath.Join("data", "otlp_metrics.pb"))
 	}
 
 	conf := &benchmark.Config{
@@ -70,7 +73,7 @@ func main() {
 		profiler := benchmark.NewProfiler([]int{128, 1024, 2048, 4096}, "output/metrics_benchmark.log", warmUpIter)
 		compressionAlgo := benchmark.Zstd()
 		maxIter := uint64(3)
-		ds := dataset.NewRealMetricsDataset(inputFiles[i])
+		ds := dataset.NewRealMetricsDataset(inputFiles[i], benchmark.CompressionTypeZstd, *format)
 		profiler.Printf("Dataset '%s' (%s) loaded\n", inputFiles[i], humanize.Bytes(uint64(ds.SizeInBytes())))
 		otlpMetrics := otlp.NewMetricsProfileable(ds, compressionAlgo)
 		//otlpDictMetrics := otlpdict.NewMetricsProfileable(ds, compressionAlgo)

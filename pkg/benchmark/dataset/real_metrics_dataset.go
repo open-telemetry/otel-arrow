@@ -15,14 +15,19 @@
 package dataset
 
 import (
+	"bufio"
+	"errors"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 
+	"github.com/klauspost/compress/zstd"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/stats"
+	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
 )
 
 // RealMetricsDataset represents a dataset of real metrics read from a Metrics serialized to a binary file.
@@ -38,8 +43,73 @@ type metrics struct {
 	scope    pmetric.ScopeMetrics
 }
 
-// NewRealMetricsDataset creates a new RealMetricsDataset from a binary file.
-func NewRealMetricsDataset(path string) *RealMetricsDataset {
+type metricReader struct {
+	stringReader *bufio.Reader
+	unmarshaler  *pmetric.JSONUnmarshaler
+	bytesRead    int
+}
+
+func (mr *metricReader) readAllMetrics() (pmetric.Metrics, error) {
+	metrics := pmetric.NewMetrics()
+
+	for {
+		if line, err := mr.stringReader.ReadString('\n'); err == nil {
+			ml, err := mr.unmarshaler.UnmarshalMetrics([]byte(line))
+			if err != nil {
+				return metrics, err
+			}
+			for i := 0; i < ml.ResourceMetrics().Len(); i++ {
+				rm := metrics.ResourceMetrics().AppendEmpty()
+				ml.ResourceMetrics().At(i).CopyTo(rm) 
+			} 
+			mr.bytesRead += len(line)
+		} else { // failed to read line
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					return metrics, nil
+				}
+				return metrics, err
+			}
+		}
+	}
+}
+
+func metricsFromJSON(path string, compression string) (pmetric.Metrics, int) {
+	file, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		log.Fatal("open file:", err)
+	}
+
+	mr := &metricReader{
+		unmarshaler: &pmetric.JSONUnmarshaler{},
+		bytesRead: 0,
+	}
+
+	if compression == benchmark.CompressionTypeZstd {
+		cr, err := zstd.NewReader(file)
+		if err != nil {
+			log.Fatal("Failed to create compressed reader: ", err)
+		}
+		mr.stringReader = bufio.NewReader(cr)
+	} else { // no compression
+		mr.stringReader = bufio.NewReader(file)
+	}
+
+	mdata, err := mr.readAllMetrics() 
+
+	if err != nil {
+		if mr.bytesRead == 0 {
+			log.Fatal("Read zero bytes from file: ", err)
+		}
+		log.Print("Found error when reading file: ", err)
+		log.Print("Bytes read: ", mr.bytesRead)
+	}
+
+	return mdata, mr.bytesRead
+
+}
+
+func metricsFromProto(path string) (pmetric.Metrics, int) {
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		log.Fatal("read file:", err)
@@ -50,9 +120,24 @@ func NewRealMetricsDataset(path string) *RealMetricsDataset {
 	}
 	mdata := otlp.Metrics()
 
+	return mdata, len(data)
+}
+
+
+// NewRealMetricsDataset creates a new RealMetricsDataset from a binary file
+// which is either formatted as otlp protobuf or compressed otlp json.
+func NewRealMetricsDataset(path string, compression string, format string) *RealMetricsDataset {
+	var mdata pmetric.Metrics
+	var bytes int
+	if format == "json" {
+		mdata, bytes = metricsFromJSON(path, compression)
+	} else {
+		mdata, bytes = metricsFromProto(path)
+	}
+
 	ds := &RealMetricsDataset{
 		metrics:      []metrics{},
-		sizeInBytes:  len(data),
+		sizeInBytes:  bytes,
 		metricsStats: stats.NewMetricsStats(),
 	}
 	ds.metricsStats.Analyze(mdata)
