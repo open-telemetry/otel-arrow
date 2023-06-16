@@ -278,12 +278,22 @@ type anyStreamServer interface {
 	grpc.ServerStream
 }
 
-func (r *Receiver) anyStream(serverStream anyStreamServer) error {
+func (r *Receiver) anyStream(serverStream anyStreamServer) (retErr error) {
 	streamCtx := serverStream.Context()
 	ac := r.newConsumer()
 	hrcv := newHeaderReceiver(serverStream.Context(), r.authServer, r.gsettings.IncludeMetadata)
 
 	defer func() {
+		if err := recover(); err != nil {
+			// When this happens, the stacktrace is
+			// important and lost if we don't capture it
+			// here.
+			r.telemetry.Logger.Debug("panic detail in otel-arrow-adapter",
+				zap.Reflect("recovered", err),
+				zap.Stack("stacktrace"),
+			)
+			retErr = fmt.Errorf("panic in otel-arrow-adapter: %v", err)
+		}
 		if err := ac.Close(); err != nil {
 			r.telemetry.Logger.Error("arrow stream close", zap.Error(err))
 		}
