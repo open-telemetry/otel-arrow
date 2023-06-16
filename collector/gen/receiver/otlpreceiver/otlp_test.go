@@ -31,6 +31,9 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testutil"
+	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow/mock"
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
@@ -43,14 +46,11 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/extension/auth"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testutil"
 	"go.opentelemetry.io/collector/obsreport/obsreporttest"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"go.opentelemetry.io/collector/receiver"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow/mock"
 	"go.opentelemetry.io/collector/receiver/receivertest"
 	semconv "go.opentelemetry.io/collector/semconv/v1.5.0"
 )
@@ -1164,96 +1164,109 @@ type anyStreamClient interface {
 }
 
 func TestGRPCArrowReceiver(t *testing.T) {
-	for _, mixed := range []bool{false, true} {
-		t.Run(fmt.Sprint("mixed=", mixed), func(t *testing.T) {
-			addr := testutil.GetAvailableLocalAddress(t)
-			sink := new(tracesSinkWithMetadata)
+	for _, disabled := range []bool{false, true} {
+		for _, mixed := range []bool{false, true} {
+			t.Run(fmt.Sprint("disabled=", disabled, ";mixed=", mixed), func(t *testing.T) {
+				addr := testutil.GetAvailableLocalAddress(t)
+				sink := new(tracesSinkWithMetadata)
 
-			factory := NewFactory()
-			cfg := factory.CreateDefaultConfig().(*Config)
-			cfg.GRPC.NetAddr.Endpoint = addr
-			cfg.GRPC.IncludeMetadata = true
-			cfg.HTTP = nil
-			id := component.NewID("arrow")
-			ocr := newReceiver(t, factory, cfg, id, sink, nil)
+				factory := NewFactory()
+				cfg := factory.CreateDefaultConfig().(*Config)
+				cfg.GRPC.NetAddr.Endpoint = addr
+				cfg.GRPC.IncludeMetadata = true
+				cfg.Arrow.Disabled = disabled
+				cfg.HTTP = nil
+				id := component.NewID("arrow")
+				ocr := newReceiver(t, factory, cfg, id, sink, nil)
 
-			require.NotNil(t, ocr)
-			require.NoError(t, ocr.Start(context.Background(), componenttest.NewNopHost()))
+				require.NotNil(t, ocr)
+				require.NoError(t, ocr.Start(context.Background(), componenttest.NewNopHost()))
 
-			cc, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
-			require.NoError(t, err)
-
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-
-			var stream anyStreamClient
-			if mixed {
-				client := arrowpb.NewArrowStreamServiceClient(cc)
-				stream, err = client.ArrowStream(ctx, grpc.WaitForReady(true))
-			} else {
-				client := arrowpb.NewArrowTracesServiceClient(cc)
-				stream, err = client.ArrowTraces(ctx, grpc.WaitForReady(true))
-			}
-			require.NoError(t, err)
-			producer := arrowRecord.NewProducer()
-
-			var headerBuf bytes.Buffer
-			hpd := hpack.NewEncoder(&headerBuf)
-
-			var expectTraces []ptrace.Traces
-			var expectMDs []metadata.MD
-
-			// Repeatedly send traces via arrow. Set the expected traces
-			// metadata to receive.
-			for i := 0; i < 10; i++ {
-				td := testdata.GenerateTraces(2)
-				expectTraces = append(expectTraces, td)
-
-				headerBuf.Reset()
-				err := hpd.WriteField(hpack.HeaderField{
-					Name:  "seq",
-					Value: fmt.Sprint(i),
-				})
-				require.NoError(t, err)
-				err = hpd.WriteField(hpack.HeaderField{
-					Name:  "test",
-					Value: "value",
-				})
-				require.NoError(t, err)
-				expectMDs = append(expectMDs, metadata.MD{
-					"seq":  []string{fmt.Sprint(i)},
-					"test": []string{"value"},
-				})
-
-				batch, err := producer.BatchArrowRecordsFromTraces(td)
+				cc, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
 				require.NoError(t, err)
 
-				batch.Headers = headerBuf.Bytes()
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
 
-				err = stream.Send(batch)
-				require.NoError(t, err)
-
-				resp, err := stream.Recv()
-				require.NoError(t, err)
-				require.Equal(t, 1, len(resp.Statuses))
-				require.Equal(t, batch.BatchId, resp.Statuses[0].BatchId)
-				require.Equal(t, arrowpb.StatusCode_OK, resp.Statuses[0].StatusCode)
-			}
-
-			assert.NoError(t, cc.Close())
-			require.NoError(t, ocr.Shutdown(context.Background()))
-
-			assert.Equal(t, expectTraces, sink.AllTraces())
-
-			assert.Equal(t, len(expectMDs), len(sink.MDs))
-			// gRPC adds its own metadata keys, so we check for only the
-			// expected ones below:
-			for idx := range expectMDs {
-				for key, vals := range expectMDs[idx] {
-					require.Equal(t, vals, sink.MDs[idx].Get(key), "for key %s", key)
+				var stream anyStreamClient
+				if mixed {
+					client := arrowpb.NewArrowStreamServiceClient(cc)
+					stream, err = client.ArrowStream(ctx, grpc.WaitForReady(true))
+				} else {
+					client := arrowpb.NewArrowTracesServiceClient(cc)
+					stream, err = client.ArrowTraces(ctx, grpc.WaitForReady(true))
 				}
-			}
-		})
+				require.NoError(t, err)
+				producer := arrowRecord.NewProducer()
+
+				var headerBuf bytes.Buffer
+				hpd := hpack.NewEncoder(&headerBuf)
+
+				var expectTraces []ptrace.Traces
+				var expectMDs []metadata.MD
+
+				// Repeatedly send traces via arrow. Set the expected traces
+				// metadata to receive.
+				for i := 0; i < 10; i++ {
+					td := testdata.GenerateTraces(2)
+					expectTraces = append(expectTraces, td)
+
+					headerBuf.Reset()
+					err := hpd.WriteField(hpack.HeaderField{
+						Name:  "seq",
+						Value: fmt.Sprint(i),
+					})
+					require.NoError(t, err)
+					err = hpd.WriteField(hpack.HeaderField{
+						Name:  "test",
+						Value: "value",
+					})
+					require.NoError(t, err)
+					expectMDs = append(expectMDs, metadata.MD{
+						"seq":  []string{fmt.Sprint(i)},
+						"test": []string{"value"},
+					})
+
+					batch, err := producer.BatchArrowRecordsFromTraces(td)
+					require.NoError(t, err)
+
+					batch.Headers = headerBuf.Bytes()
+
+					err = stream.Send(batch)
+
+					if disabled {
+						require.Error(t, err)
+					} else {
+						require.NoError(t, err)
+
+						resp, err := stream.Recv()
+						require.NoError(t, err)
+						require.Equal(t, 1, len(resp.Statuses))
+						require.Equal(t, batch.BatchId, resp.Statuses[0].BatchId)
+						require.Equal(t, arrowpb.StatusCode_OK, resp.Statuses[0].StatusCode)
+					}
+				}
+
+				assert.NoError(t, cc.Close())
+				require.NoError(t, ocr.Shutdown(context.Background()))
+
+				if disabled {
+					// This test ensures we don't crash or act unexpectedly.
+					return
+				}
+
+				assert.Equal(t, expectTraces, sink.AllTraces())
+
+				assert.Equal(t, len(expectMDs), len(sink.MDs))
+				// gRPC adds its own metadata keys, so we check for only the
+				// expected ones below:
+				for idx := range expectMDs {
+					for key, vals := range expectMDs[idx] {
+						require.Equal(t, vals, sink.MDs[idx].Get(key), "for key %s", key)
+					}
+				}
+			})
+		}
 	}
 }
 
