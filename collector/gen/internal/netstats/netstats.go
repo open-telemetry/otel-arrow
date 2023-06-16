@@ -57,7 +57,7 @@ const (
 // NetworkReporter is a helper to add network-level observability to
 // an exporter or receiver.
 type NetworkReporter struct {
-	attrs         []metric.AddOption
+	staticAttr    attribute.KeyValue
 	sentBytes     metric.Int64Counter
 	sentWireBytes metric.Int64Counter
 	recvBytes     metric.Int64Counter
@@ -67,6 +67,7 @@ type NetworkReporter struct {
 // SizesStruct is used to pass uncompressed on-wire message lengths to
 // the CountSend() and CountReceive() methods.
 type SizesStruct struct {
+	Method     string
 	Length     int64
 	WireLength int64
 }
@@ -106,9 +107,7 @@ func NewExporterNetworkReporter(settings exporter.CreateSettings) (*NetworkRepor
 
 	meter := settings.TelemetrySettings.MeterProvider.Meter(scopeName)
 	rep := &NetworkReporter{
-		attrs: []metric.AddOption{
-			metric.WithAttributes(attribute.String(ExporterKey, settings.ID.String())),
-		},
+		staticAttr: attribute.String(ExporterKey, settings.ID.String()),
 	}
 
 	var errors, err error
@@ -136,9 +135,7 @@ func NewReceiverNetworkReporter(settings receiver.CreateSettings) (*NetworkRepor
 
 	meter := settings.MeterProvider.Meter(scopeName)
 	rep := &NetworkReporter{
-		attrs: []metric.AddOption{
-			metric.WithAttributes(attribute.String(ReceiverKey, settings.ID.String())),
-		},
+		staticAttr: attribute.String(ReceiverKey, settings.ID.String()),
 	}
 
 	var errors, err error
@@ -165,10 +162,10 @@ func (rep *NetworkReporter) CountSend(ctx context.Context, ss SizesStruct) {
 	}
 
 	if rep.sentBytes != nil && ss.Length > 0 {
-		rep.sentBytes.Add(ctx, ss.Length, rep.attrs...)
+		rep.sentBytes.Add(ctx, ss.Length, metric.WithAttributes(rep.staticAttr, attribute.String("method", ss.Method)))
 	}
 	if rep.sentWireBytes != nil && ss.WireLength > 0 {
-		rep.sentWireBytes.Add(ctx, ss.WireLength, rep.attrs...)
+		rep.sentWireBytes.Add(ctx, ss.WireLength, metric.WithAttributes(rep.staticAttr, attribute.String("method", ss.Method)))
 	}
 }
 
@@ -182,9 +179,9 @@ func (rep *NetworkReporter) CountReceive(ctx context.Context, ss SizesStruct) {
 	}
 
 	if rep.recvBytes != nil && ss.Length > 0 {
-		rep.recvBytes.Add(ctx, ss.Length, rep.attrs...)
+		rep.recvBytes.Add(ctx, ss.Length, metric.WithAttributes(rep.staticAttr, attribute.String("method", ss.Method)))
 	}
 	if rep.recvWireBytes != nil && ss.WireLength > 0 {
-		rep.recvWireBytes.Add(ctx, ss.WireLength, rep.attrs...)
+		rep.recvWireBytes.Add(ctx, ss.WireLength, metric.WithAttributes(rep.staticAttr, attribute.String("method", ss.Method)))
 	}
 }

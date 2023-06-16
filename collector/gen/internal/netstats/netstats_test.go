@@ -29,14 +29,22 @@ import (
 	"go.opentelemetry.io/collector/receiver"
 )
 
-func metricValues(rm metricdata.ResourceMetrics) map[string]interface{} {
+func metricValues(t *testing.T, rm metricdata.ResourceMetrics) map[string]interface{} {
 	res := map[string]interface{}{}
 	for _, sm := range rm.ScopeMetrics {
 		for _, mm := range sm.Metrics {
 			var value int64
+			var method string
 			for _, dp := range mm.Data.(metricdata.Sum[int64]).DataPoints {
 				value = dp.Value
+				for _, attr := range dp.Attributes.ToSlice() {
+					if attr.Key == "method" {
+						method = attr.Value.AsString()
+					}
+				}
 			}
+			// Require a method named "Hello"
+			require.Equal(t, "Hello", method)
 			res[mm.Name] = value
 		}
 	}
@@ -82,10 +90,12 @@ func testNetStatsExporter(t *testing.T, level configtelemetry.Level, expect map[
 	ctx := context.Background()
 	for i := 0; i < 10; i++ {
 		enr.CountSend(ctx, SizesStruct{
+			Method:     "Hello",
 			Length:     100,
 			WireLength: 10,
 		})
 		enr.CountReceive(ctx, SizesStruct{
+			Method:     "Hello",
 			Length:     10,
 			WireLength: 1,
 		})
@@ -94,7 +104,7 @@ func testNetStatsExporter(t *testing.T, level configtelemetry.Level, expect map[
 	err = rdr.Collect(ctx, &rm)
 	require.NoError(t, err)
 
-	require.Equal(t, expect, metricValues(rm))
+	require.Equal(t, expect, metricValues(t, rm))
 }
 
 func TestNetStatsReceiverNone(t *testing.T) {
@@ -136,10 +146,12 @@ func testNetStatsReceiver(t *testing.T, level configtelemetry.Level, expect map[
 	ctx := context.Background()
 	for i := 0; i < 10; i++ {
 		enr.CountReceive(ctx, SizesStruct{
+			Method:     "Hello",
 			Length:     100,
 			WireLength: 10,
 		})
 		enr.CountSend(ctx, SizesStruct{
+			Method:     "Hello",
 			Length:     10,
 			WireLength: 1,
 		})
@@ -148,5 +160,5 @@ func testNetStatsReceiver(t *testing.T, level configtelemetry.Level, expect map[
 	err = rdr.Collect(ctx, &rm)
 	require.NoError(t, err)
 
-	require.Equal(t, expect, metricValues(rm))
+	require.Equal(t, expect, metricValues(t, rm))
 }
