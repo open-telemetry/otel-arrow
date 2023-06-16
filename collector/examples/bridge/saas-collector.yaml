@@ -5,7 +5,7 @@ receivers:
     protocols:
       grpc:
         # Port 5000 is the endpoint used in edge-collector.
-        endpoint: 127.0.0.1:5000
+        endpoint: 127.0.0.1:8100
 
         # Include metadata so that the exporter can copy it
         # to the next hop.
@@ -18,7 +18,7 @@ receivers:
 
       # Enable arrow for the bridge.
       arrow:
-        enabled: true
+        disabled: false
 
 exporters:
   logging:      
@@ -27,7 +27,7 @@ exporters:
   otlphttp:
     # You can use an HTTP listener on port 5001 to see the headers
     # and raw data.
-    endpoint: http://127.0.0.1:5001
+    endpoint: http://127.0.0.1:8101
     compression: none
 
     # Associate the headers_setter extension with this exporter

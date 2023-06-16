@@ -8,7 +8,7 @@ receivers:
       grpc:
         endpoint: 127.0.0.1:6000
       arrow:
-        enabled: true
+        disabled: false
   file/first_metrics:
     path: "first.metrics.json"
     throttle: 0
@@ -23,7 +23,7 @@ exporters:
     endpoint: 127.0.0.1:6000
     wait_for_ready: true
     arrow:
-      enabled: true
+      disabled: false
       num_streams: 1
       disable_downgrade: true
     tls:

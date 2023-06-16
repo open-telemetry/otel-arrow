@@ -5,7 +5,7 @@ receivers:
       grpc:
         endpoint: 127.0.0.1:4318
       arrow:
-        enabled: true
+        disabled: false
 
   # Data will be repeated to the second pipeline via Arrow.
   otlp/second:
@@ -13,7 +13,7 @@ receivers:
       grpc:
         endpoint: 127.0.0.1:5000
       arrow:
-        enabled: true
+        disabled: false
         
 exporters:
   otlp/forward:
@@ -21,7 +21,7 @@ exporters:
     endpoint: 127.0.0.1:5000
     wait_for_ready: true
     arrow:
-      enabled: true
+      disabled: false
       num_streams: 1
       disable_downgrade: true
     tls:

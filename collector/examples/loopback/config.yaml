@@ -10,7 +10,7 @@ receivers:
       grpc:
         endpoint: 127.0.0.1:4000
       arrow:
-        enabled: true
+        disabled: false
 
 processors:
   batch:
@@ -39,7 +39,7 @@ exporters:
     tls:
       insecure: true
     arrow:
-      enabled: true
+      disabled: false
       num_streams: 1
 
   logging/info:      

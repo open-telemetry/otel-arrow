@@ -60,7 +60,7 @@ exporters:
 
     # Enable the Arrow exporter
     arrow:
-      enabled: true
+      disabled: false
 
       # disable_downgrade forces this connection to use Arrow.
       disable_downgrade: true

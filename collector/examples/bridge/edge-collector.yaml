@@ -14,8 +14,8 @@ exporters:
   # otlp/arrow is an OTLP-Arrow exporter.
   otlp/arrow:
     # For the sample configuration, the other side of the bridge
-    # runs on port 5000.
-    endpoint: 127.0.0.1:5000
+    # runs on port 8100.
+    endpoint: 127.0.0.1:8100
 
     # For demonstration purposes, use an insecure port.  This would
     # also be normal for a collector behind a loadbalancer that
@@ -33,7 +33,7 @@ exporters:
 
     # Enable the Arrow exporter
     arrow:
-      enabled: true
+      disabled: false
 
       # disable_downgrade forces this connection to use Arrow.
       disable_downgrade: true

@@ -17,7 +17,7 @@ receivers:
 
       # Enable arrow for the bridge.
       arrow:
-        enabled: true
+        disabled: false
 
 exporters:
   logging:      
