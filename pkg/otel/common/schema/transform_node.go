@@ -103,7 +103,7 @@ func newTransformNodeFrom(
 	// NoField transformation.
 	metadata := prototype.Metadata
 	keyIdx := metadata.FindKey(OptionalKey)
-	if keyIdx != -1 {
+	if keyIdx != -1 || prototype.Nullable {
 		transforms = append(transforms, &transform2.NoField{})
 	}
 

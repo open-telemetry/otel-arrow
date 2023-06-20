@@ -28,17 +28,17 @@ import (
 
 type PayloadType = v1.ArrowPayloadType
 
-// RecordMessage wraps an Arrow Record with a set of metadata used to identify the batch, sub-stream, and few other
+// RecordMessage wraps an Arrow Record with a set of metadata used to identify the batch, schema ID, and few other
 // properties.
 type RecordMessage struct {
-	batchId     string
-	subStreamId string
+	batchId     int64
+	schemaID    string
 	payloadType PayloadType
 	record      arrow.Record
 }
 
 // NewRecordMessage creates a record message.
-func NewRecordMessage(batchId string, payloadType PayloadType, record arrow.Record) *RecordMessage {
+func NewRecordMessage(batchId int64, payloadType PayloadType, record arrow.Record) *RecordMessage {
 	return &RecordMessage{
 		batchId:     batchId,
 		payloadType: payloadType,
@@ -50,7 +50,7 @@ func NewRecordMessage(batchId string, payloadType PayloadType, record arrow.Reco
 // metrics.
 func NewMetricsMessage(schemaID string, record arrow.Record) *RecordMessage {
 	return &RecordMessage{
-		subStreamId: schemaID,
+		schemaID:    schemaID,
 		payloadType: v1.ArrowPayloadType_METRICS,
 		record:      record,
 	}
@@ -61,7 +61,7 @@ func NewMetricsMessage(schemaID string, record arrow.Record) *RecordMessage {
 func NewLogsMessage(schemaID string, record arrow.Record) *RecordMessage {
 	record.Schema()
 	return &RecordMessage{
-		subStreamId: schemaID,
+		schemaID:    schemaID,
 		payloadType: v1.ArrowPayloadType_LOGS,
 		record:      record,
 	}
@@ -71,7 +71,7 @@ func NewLogsMessage(schemaID string, record arrow.Record) *RecordMessage {
 // traces.
 func NewTraceMessage(schemaID string, record arrow.Record) *RecordMessage {
 	return &RecordMessage{
-		subStreamId: schemaID,
+		schemaID:    schemaID,
 		payloadType: v1.ArrowPayloadType_SPANS,
 		record:      record,
 	}
@@ -79,18 +79,18 @@ func NewTraceMessage(schemaID string, record arrow.Record) *RecordMessage {
 
 func NewRelatedDataMessage(schemaID string, record arrow.Record, payloadType PayloadType) *RecordMessage {
 	return &RecordMessage{
-		subStreamId: schemaID,
+		schemaID:    schemaID,
 		payloadType: payloadType,
 		record:      record,
 	}
 }
 
-func (rm *RecordMessage) BatchId() string {
+func (rm *RecordMessage) BatchId() int64 {
 	return rm.batchId
 }
 
-func (rm *RecordMessage) SubStreamId() string {
-	return rm.subStreamId
+func (rm *RecordMessage) SchemaID() string {
+	return rm.schemaID
 }
 
 // Record returns the Arrow Record associated with this RecordMessage.

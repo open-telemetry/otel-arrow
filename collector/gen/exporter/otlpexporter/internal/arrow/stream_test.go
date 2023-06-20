@@ -22,17 +22,18 @@ import (
 	"testing"
 	"time"
 
-	arrowpb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
-	arrowRecordMock "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record/mock"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+
+	arrowpb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
+	arrowRecordMock "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record/mock"
 
 	"go.opentelemetry.io/collector/consumer/consumererror"
 )
 
 var oneBatch = &arrowpb.BatchArrowRecords{
-	BatchId: "b1",
+	BatchId: 1,
 }
 
 type streamTestCase struct {
@@ -164,7 +165,7 @@ func TestStreamUnknownBatchError(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-channel.sent
-		channel.recv <- statusOKFor("unknown")
+		channel.recv <- statusOKFor(-1 /*unknown*/)
 	}()
 	// sender should get ErrStreamRestarting
 	err := tc.get().SendAndWait(tc.bgctx, twoTraces)

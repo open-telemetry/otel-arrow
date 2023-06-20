@@ -111,9 +111,9 @@ func copyBatch[T any](real func(T) (*arrowpb.BatchArrowRecords, error)) func(T) 
 			rcpy := make([]byte, len(inp.Record))
 			copy(rcpy, inp.Record)
 			pays[i] = &arrowpb.ArrowPayload{
-				SubStreamId: inp.SubStreamId,
-				Type:        inp.Type,
-				Record:      rcpy,
+				SchemaId: inp.SchemaId,
+				Type:     inp.Type,
+				Record:   rcpy,
 			}
 		}
 
@@ -157,7 +157,7 @@ func newExporterTestCaseCommon(t *testing.T, noisy noisyTest, numStreams int, di
 	}
 }
 
-func statusOKFor(id string) *arrowpb.BatchStatus {
+func statusOKFor(id int64) *arrowpb.BatchStatus {
 	return &arrowpb.BatchStatus{
 		Statuses: []*arrowpb.StatusMessage{
 			{
@@ -168,7 +168,7 @@ func statusOKFor(id string) *arrowpb.BatchStatus {
 	}
 }
 
-func statusUnavailableFor(id string) *arrowpb.BatchStatus {
+func statusUnavailableFor(id int64) *arrowpb.BatchStatus {
 	return &arrowpb.BatchStatus{
 		Statuses: []*arrowpb.StatusMessage{
 			{
@@ -181,7 +181,7 @@ func statusUnavailableFor(id string) *arrowpb.BatchStatus {
 	}
 }
 
-func statusInvalidFor(id string) *arrowpb.BatchStatus {
+func statusInvalidFor(id int64) *arrowpb.BatchStatus {
 	return &arrowpb.BatchStatus{
 		Statuses: []*arrowpb.StatusMessage{
 			{
@@ -194,7 +194,7 @@ func statusInvalidFor(id string) *arrowpb.BatchStatus {
 	}
 }
 
-func statusUnrecognizedFor(id string) *arrowpb.BatchStatus {
+func statusUnrecognizedFor(id int64) *arrowpb.BatchStatus {
 	return &arrowpb.BatchStatus{
 		Statuses: []*arrowpb.StatusMessage{
 			{

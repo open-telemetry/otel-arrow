@@ -64,7 +64,7 @@ type (
 		pool            memory.Allocator // Use a custom memory allocator
 		zstd            bool             // Use IPC ZSTD compression
 		streamProducers map[string]*streamProducer
-		nextSubStreamId int64
+		nextSchemaId    int64
 		batchId         int64
 
 		// Builder for each OTEL entities
@@ -100,7 +100,7 @@ type (
 	streamProducer struct {
 		output         bytes.Buffer
 		ipcWriter      *ipc.Writer
-		subStreamId    string
+		schemaID       string
 		lastProduction time.Time
 		schema         *arrow.Schema
 		payloadType    record_message.PayloadType
@@ -334,12 +334,12 @@ func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.Batch
 				rm.Record().Release()
 			}()
 
-			// Retrieves (or creates) the stream Producer for the sub-stream id defined in the RecordMessage.
-			sp := p.streamProducers[rm.SubStreamId()]
+			// Retrieves (or creates) the stream Producer for the schema id defined in the RecordMessage.
+			sp := p.streamProducers[rm.SchemaID()]
 			if sp == nil {
 				// cleanup previous stream producer if any that have the same
 				// PayloadType. The reasoning is that if we have a new
-				// sub-stream ID (i.e. schema change) we should no longer use
+				// schema ID (i.e. schema change) we should no longer use
 				// the previous stream producer for this PayloadType as schema
 				// changes are only additive.
 				// This will release the resources associated with the previous
@@ -357,11 +357,11 @@ func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.Batch
 				var buf bytes.Buffer
 				sp = &streamProducer{
 					output:      buf,
-					subStreamId: fmt.Sprintf("%d", p.nextSubStreamId),
+					schemaID:    fmt.Sprintf("%d", p.nextSchemaId),
 					payloadType: rm.PayloadType(),
 				}
-				p.streamProducers[rm.SubStreamId()] = sp
-				p.nextSubStreamId++
+				p.streamProducers[rm.SchemaID()] = sp
+				p.nextSchemaId++
 				p.stats.StreamProducersCreated++
 			}
 
@@ -401,9 +401,9 @@ func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.Batch
 			sp.output.Reset()
 
 			oapl[i] = &colarspb.ArrowPayload{
-				SubStreamId: sp.subStreamId,
-				Type:        rm.PayloadType(),
-				Record:      buf,
+				SchemaId: sp.schemaID,
+				Type:     rm.PayloadType(),
+				Record:   buf,
 			}
 			return nil
 		}()
@@ -412,7 +412,7 @@ func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.Batch
 		}
 	}
 
-	batchId := fmt.Sprintf("%d", p.batchId)
+	batchId := p.batchId
 	p.batchId++
 
 	return &colarspb.BatchArrowRecords{

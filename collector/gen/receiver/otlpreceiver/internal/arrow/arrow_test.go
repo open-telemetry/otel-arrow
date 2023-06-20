@@ -263,7 +263,7 @@ func (ctc *commonTestCase) wait() error {
 	return <-ctc.streamErr
 }
 
-func statusOKFor(batchID string) *arrowpb.BatchStatus {
+func statusOKFor(batchID int64) *arrowpb.BatchStatus {
 	return &arrowpb.BatchStatus{
 		Statuses: []*arrowpb.StatusMessage{
 			{
@@ -274,7 +274,7 @@ func statusOKFor(batchID string) *arrowpb.BatchStatus {
 	}
 }
 
-func statusUnavailableFor(batchID string, msg string) *arrowpb.BatchStatus {
+func statusUnavailableFor(batchID int64, msg string) *arrowpb.BatchStatus {
 	return &arrowpb.BatchStatus{
 		Statuses: []*arrowpb.StatusMessage{
 			{
@@ -287,7 +287,7 @@ func statusUnavailableFor(batchID string, msg string) *arrowpb.BatchStatus {
 	}
 }
 
-func statusInvalidFor(batchID string, msg string) *arrowpb.BatchStatus {
+func statusInvalidFor(batchID int64, msg string) *arrowpb.BatchStatus {
 	return &arrowpb.BatchStatus{
 		Statuses: []*arrowpb.StatusMessage{
 			{
@@ -561,9 +561,9 @@ func copyBatch(in *arrowpb.BatchArrowRecords) *arrowpb.BatchArrowRecords {
 		rcpy := make([]byte, len(inp.Record))
 		copy(rcpy, inp.Record)
 		pays[i] = &arrowpb.ArrowPayload{
-			SubStreamId: inp.SubStreamId,
-			Type:        inp.Type,
-			Record:      rcpy,
+			SchemaId: inp.SchemaId,
+			Type:     inp.Type,
+			Record:   rcpy,
 		}
 	}
 

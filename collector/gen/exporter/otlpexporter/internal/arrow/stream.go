@@ -68,7 +68,7 @@ type Stream struct {
 	lock sync.Mutex
 
 	// waiters is the response channel for each active batch.
-	waiters map[string]chan error
+	waiters map[int64]chan error
 }
 
 // writeItem is passed from the sender (a pipeline consumer) to the
@@ -95,13 +95,13 @@ func newStream(
 		perRPCCredentials: perRPCCredentials,
 		telemetry:         telemetry,
 		toWrite:           make(chan writeItem, 1),
-		waiters:           map[string]chan error{},
+		waiters:           map[int64]chan error{},
 	}
 }
 
 // setBatchChannel places a waiting consumer's batchID into the waiters map, where
 // the stream reader may find it.
-func (s *Stream) setBatchChannel(batchID string, errCh chan error) {
+func (s *Stream) setBatchChannel(batchID int64, errCh chan error) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -353,7 +353,7 @@ func (s *Stream) getSenderChannels(statuses []*arrowpb.StatusMessage) ([]chan er
 		ch, ok := s.waiters[status.BatchId]
 		if !ok {
 			// Will break the stream.
-			err = multierr.Append(err, fmt.Errorf("unrecognized batch ID: %s", status.BatchId))
+			err = multierr.Append(err, fmt.Errorf("unrecognized batch ID: %d", status.BatchId))
 			continue
 		}
 		delete(s.waiters, status.BatchId)
@@ -385,12 +385,12 @@ func (s *Stream) processBatchStatus(statuses []*arrowpb.StatusMessage) error {
 		case arrowpb.ErrorCode_UNAVAILABLE:
 			// TODO: translate retry information into the form
 			// exporterhelper recognizes.
-			err = fmt.Errorf("destination unavailable: %s: %s", status.BatchId, status.ErrorMessage)
+			err = fmt.Errorf("destination unavailable: %d: %s", status.BatchId, status.ErrorMessage)
 		case arrowpb.ErrorCode_INVALID_ARGUMENT:
 			err = consumererror.NewPermanent(
-				fmt.Errorf("invalid argument: %s: %s", status.BatchId, status.ErrorMessage))
+				fmt.Errorf("invalid argument: %d: %s", status.BatchId, status.ErrorMessage))
 		default:
-			base := fmt.Errorf("unexpected stream response: %s: %s", status.BatchId, status.ErrorMessage)
+			base := fmt.Errorf("unexpected stream response: %d: %s", status.BatchId, status.ErrorMessage)
 			err = consumererror.NewPermanent(base)
 
 			// Will break the stream.

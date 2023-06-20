@@ -163,12 +163,12 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.R
 
 	// Transform each individual OtlpArrowPayload into RecordMessage
 	for _, payload := range bar.ArrowPayloads {
-		// Retrieves (or creates) the stream consumer for the sub-stream id defined in the BatchArrowRecords message.
-		sc := c.streamConsumers[payload.SubStreamId]
+		// Retrieves (or creates) the stream consumer for the schema id defined in the BatchArrowRecords message.
+		sc := c.streamConsumers[payload.SchemaId]
 		if sc == nil {
 			// cleanup previous stream consumer if any that have the same
 			// PayloadType. The reasoning is that if we have a new
-			// sub-stream ID (i.e. schema change) we should no longer use
+			// schema ID (i.e. schema change) we should no longer use
 			// the previous stream consumer for this PayloadType as schema
 			// changes are only additive.
 			// This will release the resources associated with the previous
@@ -185,7 +185,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.R
 				bufReader:   bufReader,
 				payloadType: payload.Type,
 			}
-			c.streamConsumers[payload.SubStreamId] = sc
+			c.streamConsumers[payload.SchemaId] = sc
 		}
 
 		sc.bufReader.Reset(payload.Record)
@@ -221,7 +221,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.R
 	return ibes, nil
 }
 
-// Close closes the consumer and all its sub-stream ipc readers.
+// Close closes the consumer and all its ipc readers.
 func (c *Consumer) Close() error {
 	for _, sc := range c.streamConsumers {
 		if sc.ipcReader != nil {

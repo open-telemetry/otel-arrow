@@ -43,11 +43,11 @@ var (
 		{Name: constants.AttributeKey, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary8)},
 		{Name: constants.AttributeType, Type: arrow.PrimitiveTypes.Uint8},
 		{Name: constants.AttributeStr, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary16)},
-		{Name: constants.AttributeInt, Type: arrow.PrimitiveTypes.Int64, Metadata: schema.Metadata(schema.Optional, schema.Dictionary16)},
-		{Name: constants.AttributeDouble, Type: arrow.PrimitiveTypes.Float64, Metadata: schema.Metadata(schema.Optional)},
-		{Name: constants.AttributeBool, Type: arrow.FixedWidthTypes.Boolean, Metadata: schema.Metadata(schema.Optional)},
-		{Name: constants.AttributeBytes, Type: arrow.BinaryTypes.Binary, Metadata: schema.Metadata(schema.Optional, schema.Dictionary16)},
-		{Name: constants.AttributeSer, Type: arrow.BinaryTypes.Binary, Metadata: schema.Metadata(schema.Optional, schema.Dictionary16)},
+		{Name: constants.AttributeInt, Type: arrow.PrimitiveTypes.Int64, Metadata: schema.Metadata(schema.Dictionary16), Nullable: true},
+		{Name: constants.AttributeDouble, Type: arrow.PrimitiveTypes.Float64, Nullable: true},
+		{Name: constants.AttributeBool, Type: arrow.FixedWidthTypes.Boolean, Nullable: true},
+		{Name: constants.AttributeBytes, Type: arrow.BinaryTypes.Binary, Metadata: schema.Metadata(schema.Dictionary16), Nullable: true},
+		{Name: constants.AttributeSer, Type: arrow.BinaryTypes.Binary, Metadata: schema.Metadata(schema.Dictionary16), Nullable: true},
 	}, nil)
 )
 

@@ -15,9 +15,6 @@ import (
 	"testing"
 	"time"
 
-	arrowpb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
-	arrowpbMock "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1/mock"
-	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,8 +28,10 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 
-	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow/grpcmock"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
+	arrowpb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
+	arrowpbMock "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1/mock"
+	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
+
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
@@ -50,6 +49,9 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
+
+	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow/grpcmock"
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
 )
 
 type mockReceiver struct {
@@ -882,14 +884,14 @@ func testSendArrowTraces(t *testing.T, mixedSignals, clientWaitForReady, streamS
 	require.EqualValues(t, expectedHeader, md.Get("header"))
 }
 
-func okStatusFor(id string) *arrowpb.StatusMessage {
+func okStatusFor(id int64) *arrowpb.StatusMessage {
 	return &arrowpb.StatusMessage{
 		BatchId:    id,
 		StatusCode: arrowpb.StatusCode_OK,
 	}
 }
 
-func failedStatusFor(id string) *arrowpb.StatusMessage {
+func failedStatusFor(id int64) *arrowpb.StatusMessage {
 	return &arrowpb.StatusMessage{
 		BatchId:      id,
 		StatusCode:   arrowpb.StatusCode_ERROR,
@@ -904,7 +906,7 @@ type anyStreamServer interface {
 	grpc.ServerStream
 }
 
-func (r *mockTracesReceiver) startStreamMockArrowTraces(t *testing.T, mixedSignals bool, statusFor func(string) *arrowpb.StatusMessage) {
+func (r *mockTracesReceiver) startStreamMockArrowTraces(t *testing.T, mixedSignals bool, statusFor func(int64) *arrowpb.StatusMessage) {
 	ctrl := gomock.NewController(t)
 
 	doer := func(server anyStreamServer) error {

@@ -34,17 +34,19 @@ var (
 		{
 			Name:     constants.ID,
 			Type:     arrow.PrimitiveTypes.Uint16,
-			Metadata: schema.Metadata(schema.Optional, schema.DeltaEncoding),
+			Metadata: schema.Metadata(schema.DeltaEncoding),
+			Nullable: true,
 		},
 		{
 			Name:     constants.SchemaUrl,
 			Type:     arrow.BinaryTypes.String,
-			Metadata: schema.Metadata(schema.Optional, schema.Dictionary8),
+			Metadata: schema.Metadata(schema.Dictionary8),
+			Nullable: true,
 		},
 		{
 			Name:     constants.DroppedAttributesCount,
 			Type:     arrow.PrimitiveTypes.Uint32,
-			Metadata: schema.Metadata(schema.Optional),
+			Nullable: true,
 		},
 	}...)
 )
