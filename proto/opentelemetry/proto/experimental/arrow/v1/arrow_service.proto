@@ -136,27 +136,13 @@ message ArrowPayload {
 
 // A message sent by a Collector to the exporter that opened the data stream.
 message BatchStatus {
-  repeated StatusMessage statuses = 1;
-}
-
-message StatusMessage {
   int64 batch_id = 1;
   StatusCode status_code = 2;
-  ErrorCode error_code = 3;
-  string error_message = 4;
-  RetryInfo retry_info = 5;
+  string status_message = 3;
 }
 
 enum StatusCode {
   OK = 0;
-  ERROR = 1;
-}
-
-enum ErrorCode {
-  UNAVAILABLE = 0;
-  INVALID_ARGUMENT = 1;
-}
-
-message RetryInfo {
-  int64 retry_delay = 1;
+  UNAVAILABLE = 1;
+  INVALID_ARGUMENT = 2;
 }

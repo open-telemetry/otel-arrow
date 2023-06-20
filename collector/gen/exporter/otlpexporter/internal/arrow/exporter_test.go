@@ -159,51 +159,32 @@ func newExporterTestCaseCommon(t *testing.T, noisy noisyTest, numStreams int, di
 
 func statusOKFor(id int64) *arrowpb.BatchStatus {
 	return &arrowpb.BatchStatus{
-		Statuses: []*arrowpb.StatusMessage{
-			{
-				BatchId:    id,
-				StatusCode: arrowpb.StatusCode_OK,
-			},
-		},
+		BatchId:    id,
+		StatusCode: arrowpb.StatusCode_OK,
 	}
 }
 
 func statusUnavailableFor(id int64) *arrowpb.BatchStatus {
 	return &arrowpb.BatchStatus{
-		Statuses: []*arrowpb.StatusMessage{
-			{
-				BatchId:      id,
-				StatusCode:   arrowpb.StatusCode_ERROR,
-				ErrorCode:    arrowpb.ErrorCode_UNAVAILABLE,
-				ErrorMessage: "test unavailable",
-			},
-		},
+		BatchId:       id,
+		StatusCode:    arrowpb.StatusCode_UNAVAILABLE,
+		StatusMessage: "test unavailable",
 	}
 }
 
 func statusInvalidFor(id int64) *arrowpb.BatchStatus {
 	return &arrowpb.BatchStatus{
-		Statuses: []*arrowpb.StatusMessage{
-			{
-				BatchId:      id,
-				StatusCode:   arrowpb.StatusCode_ERROR,
-				ErrorCode:    arrowpb.ErrorCode_INVALID_ARGUMENT,
-				ErrorMessage: "test invalid",
-			},
-		},
+		BatchId:       id,
+		StatusCode:    arrowpb.StatusCode_INVALID_ARGUMENT,
+		StatusMessage: "test invalid",
 	}
 }
 
 func statusUnrecognizedFor(id int64) *arrowpb.BatchStatus {
 	return &arrowpb.BatchStatus{
-		Statuses: []*arrowpb.StatusMessage{
-			{
-				BatchId:      id,
-				StatusCode:   arrowpb.StatusCode_ERROR,
-				ErrorCode:    1 << 20,
-				ErrorMessage: "test unrecognized",
-			},
-		},
+		BatchId:       id,
+		StatusCode:    1 << 20,
+		StatusMessage: "test unrecognized",
 	}
 }
 

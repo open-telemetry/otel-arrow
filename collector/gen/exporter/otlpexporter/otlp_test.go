@@ -884,19 +884,18 @@ func testSendArrowTraces(t *testing.T, mixedSignals, clientWaitForReady, streamS
 	require.EqualValues(t, expectedHeader, md.Get("header"))
 }
 
-func okStatusFor(id int64) *arrowpb.StatusMessage {
-	return &arrowpb.StatusMessage{
+func okStatusFor(id int64) *arrowpb.BatchStatus {
+	return &arrowpb.BatchStatus{
 		BatchId:    id,
 		StatusCode: arrowpb.StatusCode_OK,
 	}
 }
 
-func failedStatusFor(id int64) *arrowpb.StatusMessage {
-	return &arrowpb.StatusMessage{
-		BatchId:      id,
-		StatusCode:   arrowpb.StatusCode_ERROR,
-		ErrorCode:    arrowpb.ErrorCode_INVALID_ARGUMENT,
-		ErrorMessage: "test failed",
+func failedStatusFor(id int64) *arrowpb.BatchStatus {
+	return &arrowpb.BatchStatus{
+		BatchId:       id,
+		StatusCode:    arrowpb.StatusCode_INVALID_ARGUMENT,
+		StatusMessage: "test failed",
 	}
 }
 
@@ -906,7 +905,7 @@ type anyStreamServer interface {
 	grpc.ServerStream
 }
 
-func (r *mockTracesReceiver) startStreamMockArrowTraces(t *testing.T, mixedSignals bool, statusFor func(int64) *arrowpb.StatusMessage) {
+func (r *mockTracesReceiver) startStreamMockArrowTraces(t *testing.T, mixedSignals bool, statusFor func(int64) *arrowpb.BatchStatus) {
 	ctrl := gomock.NewController(t)
 
 	doer := func(server anyStreamServer) error {
@@ -944,11 +943,7 @@ func (r *mockTracesReceiver) startStreamMockArrowTraces(t *testing.T, mixedSigna
 				_, err := r.Export(ctx, ptraceotlp.NewExportRequestFromTraces(traces))
 				require.NoError(t, err)
 			}
-			require.NoError(t, server.Send(&arrowpb.BatchStatus{
-				Statuses: []*arrowpb.StatusMessage{
-					statusFor(records.BatchId),
-				},
-			}))
+			require.NoError(t, server.Send(statusFor(records.BatchId)))
 		}
 		return nil
 	}

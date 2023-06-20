@@ -265,38 +265,24 @@ func (ctc *commonTestCase) wait() error {
 
 func statusOKFor(batchID int64) *arrowpb.BatchStatus {
 	return &arrowpb.BatchStatus{
-		Statuses: []*arrowpb.StatusMessage{
-			{
-				BatchId:    batchID,
-				StatusCode: arrowpb.StatusCode_OK,
-			},
-		},
+		BatchId:    batchID,
+		StatusCode: arrowpb.StatusCode_OK,
 	}
 }
 
 func statusUnavailableFor(batchID int64, msg string) *arrowpb.BatchStatus {
 	return &arrowpb.BatchStatus{
-		Statuses: []*arrowpb.StatusMessage{
-			{
-				BatchId:      batchID,
-				StatusCode:   arrowpb.StatusCode_ERROR,
-				ErrorCode:    arrowpb.ErrorCode_UNAVAILABLE,
-				ErrorMessage: msg,
-			},
-		},
+		BatchId:       batchID,
+		StatusCode:    arrowpb.StatusCode_UNAVAILABLE,
+		StatusMessage: msg,
 	}
 }
 
 func statusInvalidFor(batchID int64, msg string) *arrowpb.BatchStatus {
 	return &arrowpb.BatchStatus{
-		Statuses: []*arrowpb.StatusMessage{
-			{
-				BatchId:      batchID,
-				StatusCode:   arrowpb.StatusCode_ERROR,
-				ErrorCode:    arrowpb.ErrorCode_INVALID_ARGUMENT,
-				ErrorMessage: msg,
-			},
-		},
+		BatchId:       batchID,
+		StatusCode:    arrowpb.StatusCode_INVALID_ARGUMENT,
+		StatusMessage: msg,
 	}
 }
 
@@ -1125,11 +1111,9 @@ func testReceiverAuthHeaders(t *testing.T, includeMeta bool, dataAuth bool) {
 
 	for idx, batch := range recvBatches {
 		if expectErrs[idx] {
-			require.Equal(t, 1, len(batch.Statuses))
-			require.Equal(t, arrowpb.StatusCode_ERROR, batch.Statuses[0].StatusCode)
+			require.NotEqual(t, arrowpb.StatusCode_OK, batch.StatusCode)
 		} else {
-			require.Equal(t, 1, len(batch.Statuses))
-			require.Equal(t, arrowpb.StatusCode_OK, batch.Statuses[0].StatusCode)
+			require.Equal(t, arrowpb.StatusCode_OK, batch.StatusCode)
 		}
 	}
 }

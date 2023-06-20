@@ -337,27 +337,24 @@ func (r *Receiver) anyStream(serverStream anyStreamServer) (retErr error) {
 
 		// Note: Statuses can be batched, but we do not take
 		// advantage of this feature.
-		resp := &arrowpb.BatchStatus{}
-		status := &arrowpb.StatusMessage{
+		status := &arrowpb.BatchStatus{
 			BatchId: req.GetBatchId(),
 		}
 		if err == nil {
 			status.StatusCode = arrowpb.StatusCode_OK
 		} else {
-			status.StatusCode = arrowpb.StatusCode_ERROR
-			status.ErrorMessage = err.Error()
+			status.StatusMessage = err.Error()
 
 			if consumererror.IsPermanent(err) {
 				r.telemetry.Logger.Error("arrow data error", zap.Error(err))
-				status.ErrorCode = arrowpb.ErrorCode_INVALID_ARGUMENT
+				status.StatusCode = arrowpb.StatusCode_INVALID_ARGUMENT
 			} else {
 				r.telemetry.Logger.Debug("arrow consumer error", zap.Error(err))
-				status.ErrorCode = arrowpb.ErrorCode_UNAVAILABLE
+				status.StatusCode = arrowpb.StatusCode_UNAVAILABLE
 			}
 		}
-		resp.Statuses = append(resp.Statuses, status)
 
-		err = serverStream.Send(resp)
+		err = serverStream.Send(status)
 		if err != nil {
 			r.logStreamError(err)
 			return err

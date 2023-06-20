@@ -330,7 +330,7 @@ func (s *Stream) read(_ context.Context) error {
 			return err
 		}
 
-		if err = s.processBatchStatus(resp.Statuses); err != nil {
+		if err = s.processBatchStatus(resp); err != nil {
 			return fmt.Errorf("process: %w", err)
 		}
 	}
@@ -341,63 +341,49 @@ func (s *Stream) read(_ context.Context) error {
 // with the same index as the original status, for correlation.  Nil
 // channels will be returned when there are errors locating the
 // sender channel.
-func (s *Stream) getSenderChannels(statuses []*arrowpb.StatusMessage) ([]chan error, error) {
-	var err error
-
-	fin := make([]chan error, len(statuses))
-
+func (s *Stream) getSenderChannels(status *arrowpb.BatchStatus) (chan error, error) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	for idx, status := range statuses {
-		ch, ok := s.waiters[status.BatchId]
-		if !ok {
-			// Will break the stream.
-			err = multierr.Append(err, fmt.Errorf("unrecognized batch ID: %d", status.BatchId))
-			continue
-		}
-		delete(s.waiters, status.BatchId)
-		fin[idx] = ch
+	ch, ok := s.waiters[status.BatchId]
+	if !ok {
+		// Will break the stream.
+		return nil, fmt.Errorf("unrecognized batch ID: %d", status.BatchId)
 	}
-
-	return fin, err
+	delete(s.waiters, status.BatchId)
+	return ch, nil
 }
 
 // processBatchStatus processes a single response from the server and unblocks the
-// associated senders.
-func (s *Stream) processBatchStatus(statuses []*arrowpb.StatusMessage) error {
-	fin, ret := s.getSenderChannels(statuses)
+// associated sender.
+func (s *Stream) processBatchStatus(status *arrowpb.BatchStatus) error {
+	ch, ret := s.getSenderChannels(status)
 
-	for idx, ch := range fin {
-		if ch == nil {
-			// In case getSenderChannels encounters a problem, the
-			// channel is nil.
-			continue
-		}
-		status := statuses[idx]
-
-		if status.StatusCode == arrowpb.StatusCode_OK {
-			ch <- nil
-			continue
-		}
-		var err error
-		switch status.ErrorCode {
-		case arrowpb.ErrorCode_UNAVAILABLE:
-			// TODO: translate retry information into the form
-			// exporterhelper recognizes.
-			err = fmt.Errorf("destination unavailable: %d: %s", status.BatchId, status.ErrorMessage)
-		case arrowpb.ErrorCode_INVALID_ARGUMENT:
-			err = consumererror.NewPermanent(
-				fmt.Errorf("invalid argument: %d: %s", status.BatchId, status.ErrorMessage))
-		default:
-			base := fmt.Errorf("unexpected stream response: %d: %s", status.BatchId, status.ErrorMessage)
-			err = consumererror.NewPermanent(base)
-
-			// Will break the stream.
-			ret = multierr.Append(ret, base)
-		}
-		ch <- err
+	if ch == nil {
+		// In case getSenderChannels encounters a problem, the
+		// channel is nil.
+		return ret
 	}
+
+	if status.StatusCode == arrowpb.StatusCode_OK {
+		ch <- nil
+		return nil
+	}
+	var err error
+	switch status.StatusCode {
+	case arrowpb.StatusCode_UNAVAILABLE:
+		err = fmt.Errorf("destination unavailable: %d: %s", status.BatchId, status.StatusMessage)
+	case arrowpb.StatusCode_INVALID_ARGUMENT:
+		err = consumererror.NewPermanent(
+			fmt.Errorf("invalid argument: %d: %s", status.BatchId, status.StatusMessage))
+	default:
+		base := fmt.Errorf("unexpected stream response: %d: %s", status.BatchId, status.StatusMessage)
+		err = consumererror.NewPermanent(base)
+
+		// Will break the stream.
+		ret = multierr.Append(ret, base)
+	}
+	ch <- err
 	return ret
 }
 

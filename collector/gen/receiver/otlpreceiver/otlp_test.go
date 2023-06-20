@@ -1241,9 +1241,8 @@ func TestGRPCArrowReceiver(t *testing.T) {
 
 						resp, err := stream.Recv()
 						require.NoError(t, err)
-						require.Equal(t, 1, len(resp.Statuses))
-						require.Equal(t, batch.BatchId, resp.Statuses[0].BatchId)
-						require.Equal(t, arrowpb.StatusCode_OK, resp.Statuses[0].StatusCode)
+						require.Equal(t, batch.BatchId, resp.BatchId)
+						require.Equal(t, arrowpb.StatusCode_OK, resp.StatusCode)
 					}
 				}
 
@@ -1356,10 +1355,9 @@ func TestGRPCArrowReceiverAuth(t *testing.T) {
 		require.NoError(t, err)
 		// The stream has to be successful to get this far.  The
 		// authenticator fails every data item:
-		require.Equal(t, 1, len(resp.Statuses))
-		require.Equal(t, batch.BatchId, resp.Statuses[0].BatchId)
-		require.Equal(t, arrowpb.StatusCode_ERROR, resp.Statuses[0].StatusCode)
-		require.Equal(t, errorString, resp.Statuses[0].ErrorMessage)
+		require.Equal(t, batch.BatchId, resp.BatchId)
+		require.Equal(t, arrowpb.StatusCode_UNAVAILABLE, resp.StatusCode)
+		require.Equal(t, errorString, resp.StatusMessage)
 	}
 
 	assert.NoError(t, cc.Close())
