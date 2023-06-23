@@ -376,8 +376,6 @@ github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthext
 github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.79.0/go.mod h1:oTHjRYegHhIlYN5vQdH3aauDChKpkzBTnA4zYcAyR2Y=
 github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.79.0 h1:GbQLphSDQ947g/I3248Ww4MD8v6VFACcLGsfj2F6HUg=
 github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.79.0/go.mod h1:7dEWh1aCP3rEuCWBJOJsDtBlBdn+mAeuNCH1HkMo7e4=
-github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filereceiver v0.79.0 h1:g3zs9bnUC+nZICcwOboD28EXWCgTtinvFXQih5Tp21s=
-github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filereceiver v0.79.0/go.mod h1:d8m4KuJKoBfKc+6e9YiJIruKCqbxLWVID5Duhuq4qCQ=
 github.com/pascaldekloe/goe v0.0.0-20180627143212-57f6aae5913c/go.mod h1:lzWF7FIEvWOWxwDKqyGYQf6ZUaNfKdP144TG7ZOy1lc=
 github.com/pascaldekloe/goe v0.1.0/go.mod h1:lzWF7FIEvWOWxwDKqyGYQf6ZUaNfKdP144TG7ZOy1lc=
 github.com/pelletier/go-toml v1.7.0/go.mod h1:vwGMzjaWMwyfHwgIBhI2YUM4fB6nL6lVAvS1LBMMhTE=

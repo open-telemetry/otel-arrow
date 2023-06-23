@@ -9,6 +9,7 @@ require (
 	github.com/brianvoe/gofakeit/v6 v6.17.0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/f5/otel-arrow-adapter/collector/gen/exporter/fileexporter v0.0.0-00010101000000-000000000000
+	github.com/f5/otel-arrow-adapter/collector/receiver/filereceiver v0.0.0-00010101000000-000000000000
 	github.com/fxamacker/cbor/v2 v2.4.0
 	github.com/gogo/protobuf v1.3.2
 	github.com/golang/mock v1.6.0
@@ -16,7 +17,6 @@ require (
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.79.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.79.0
-	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filereceiver v0.79.0
 	github.com/pierrec/lz4 v2.0.5+incompatible
 	github.com/stretchr/testify v1.8.4
 	go.opentelemetry.io/collector v0.80.0
@@ -145,3 +145,5 @@ require (
 )
 
 replace github.com/f5/otel-arrow-adapter/collector/gen/exporter/fileexporter => ./collector/gen/exporter/fileexporter
+
+replace github.com/f5/otel-arrow-adapter/collector/receiver/filereceiver => ./collector/receiver/filereceiver
