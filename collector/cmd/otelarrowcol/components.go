@@ -2,10 +2,10 @@ package main
 
 import (
 	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter"
+	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/fileexporter"
 	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver"
 	"github.com/f5/otel-arrow-adapter/collector/processor/experimentprocessor"
 
-	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filereceiver"
