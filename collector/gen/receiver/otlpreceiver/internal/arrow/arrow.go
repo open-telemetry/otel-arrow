@@ -234,6 +234,10 @@ func (r *Receiver) logStreamError(err error) {
 		switch status.Code() {
 		case codes.Canceled:
 			r.telemetry.Logger.Debug("arrow stream canceled")
+		case codes.Unavailable:
+			r.telemetry.Logger.Info("arrow stream unavailable",
+				zap.String("message", status.Message()),
+			)
 		default:
 			r.telemetry.Logger.Error("arrow stream error",
 				zap.Uint32("code", uint32(status.Code())),

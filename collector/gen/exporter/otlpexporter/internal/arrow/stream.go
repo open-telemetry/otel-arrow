@@ -196,10 +196,23 @@ func (s *Stream) run(bgctx context.Context, streamClient StreamClientFunc, grpcO
 					zap.String("message", status.Message()),
 				)
 
-			case codes.Unavailable:
+			case codes.Unavailable, codes.Internal:
 				// gRPC returns this when max connection age is reached.
 				// The message string will contain NO_ERROR if it's a
 				// graceful shutdown.
+				//
+				// Having seen:
+				//
+				//     arrow stream unknown {"kind": "exporter",
+				//     "data_type": "traces", "name": "otlp/traces",
+				//     "code": 13, "message": "stream terminated by
+				//     RST_STREAM with error code: NO_ERROR"}
+				//
+				// from the default case below print `"code": 13`, this
+				// branch is now used for both Unavailable (witnessed
+				// in local testing) and Internal (witnessed in
+				// production); in both cases "NO_ERROR" is the key
+				// signifier.
 				if strings.Contains(status.Message(), "NO_ERROR") {
 					s.telemetry.Logger.Debug("arrow stream shutdown")
 				} else {
