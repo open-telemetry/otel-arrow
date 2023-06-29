@@ -6,10 +6,11 @@ package otlpexporter // import "github.com/f5/otel-arrow-adapter/collector/gen/e
 import (
 	"fmt"
 
+	"google.golang.org/grpc"
+
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
-	"google.golang.org/grpc"
 )
 
 // Config defines configuration for OTLP exporter.

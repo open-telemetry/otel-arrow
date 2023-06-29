@@ -31,9 +31,6 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testutil"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow/mock"
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
@@ -46,11 +43,14 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/extension/auth"
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testutil"
 	"go.opentelemetry.io/collector/obsreport/obsreporttest"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"go.opentelemetry.io/collector/receiver"
+	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow/mock"
 	"go.opentelemetry.io/collector/receiver/receivertest"
 	semconv "go.opentelemetry.io/collector/semconv/v1.5.0"
 )
@@ -820,7 +820,7 @@ func TestGRPCInvalidTLSCredentials(t *testing.T) {
 
 	assert.EqualError(t,
 		r.Start(context.Background(), componenttest.NewNopHost()),
-		`failed to load TLS config: for auth via TLS, either both certificate and key must be supplied, or neither`)
+		`failed to load TLS config: failed to load TLS cert and key: for auth via TLS, provide both certificate and key, or neither`)
 }
 
 func TestGRPCMaxRecvSize(t *testing.T) {
@@ -886,8 +886,7 @@ func TestHTTPInvalidTLSCredentials(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, r)
 	assert.EqualError(t, r.Start(context.Background(), componenttest.NewNopHost()),
-		`failed to load TLS config: for auth via TLS, either both certificate and key must be supplied, or neither`)
-
+		`failed to load TLS config: failed to load TLS cert and key: for auth via TLS, provide both certificate and key, or neither`)
 }
 
 func testHTTPMaxRequestBodySizeJSON(t *testing.T, payload []byte, size int, expectedStatusCode int) {

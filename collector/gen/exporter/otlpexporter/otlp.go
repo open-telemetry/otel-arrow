@@ -20,12 +20,12 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/netstats"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
+	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow"
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/netstats"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -47,7 +47,6 @@ type baseExporter struct {
 	callOptions    []grpc.CallOption
 	settings       exporter.CreateSettings
 	netStats       *netstats.NetworkReporter
-	dialOptions    []grpc.DialOption
 
 	// Default user-agent header.
 	userAgent string
@@ -176,8 +175,15 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 		return nil
 	}
 	req := ptraceotlp.NewExportRequestFromTraces(td)
-	_, err := e.traceExporter.Export(e.enhanceContext(ctx), req, e.callOptions...)
-	return processGRPCError(err)
+	resp, respErr := e.traceExporter.Export(e.enhanceContext(ctx), req, e.callOptions...)
+	if err := processError(respErr); err != nil {
+		return err
+	}
+	partialSuccess := resp.PartialSuccess()
+	if !(partialSuccess.ErrorMessage() == "" && partialSuccess.RejectedSpans() == 0) {
+		return consumererror.NewPermanent(fmt.Errorf("OTLP partial success: \"%s\" (%d rejected)", resp.PartialSuccess().ErrorMessage(), resp.PartialSuccess().RejectedSpans()))
+	}
+	return nil
 }
 
 func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) error {
@@ -187,8 +193,15 @@ func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) erro
 		return nil
 	}
 	req := pmetricotlp.NewExportRequestFromMetrics(md)
-	_, err := e.metricExporter.Export(e.enhanceContext(ctx), req, e.callOptions...)
-	return processGRPCError(err)
+	resp, respErr := e.metricExporter.Export(e.enhanceContext(ctx), req, e.callOptions...)
+	if err := processError(respErr); err != nil {
+		return err
+	}
+	partialSuccess := resp.PartialSuccess()
+	if !(partialSuccess.ErrorMessage() == "" && partialSuccess.RejectedDataPoints() == 0) {
+		return consumererror.NewPermanent(fmt.Errorf("OTLP partial success: \"%s\" (%d rejected)", resp.PartialSuccess().ErrorMessage(), resp.PartialSuccess().RejectedDataPoints()))
+	}
+	return nil
 }
 
 func (e *baseExporter) pushLogs(ctx context.Context, ld plog.Logs) error {
@@ -198,8 +211,15 @@ func (e *baseExporter) pushLogs(ctx context.Context, ld plog.Logs) error {
 		return nil
 	}
 	req := plogotlp.NewExportRequestFromLogs(ld)
-	_, err := e.logExporter.Export(e.enhanceContext(ctx), req, e.callOptions...)
-	return processGRPCError(err)
+	resp, respErr := e.logExporter.Export(e.enhanceContext(ctx), req, e.callOptions...)
+	if err := processError(respErr); err != nil {
+		return err
+	}
+	partialSuccess := resp.PartialSuccess()
+	if !(partialSuccess.ErrorMessage() == "" && partialSuccess.RejectedLogRecords() == 0) {
+		return consumererror.NewPermanent(fmt.Errorf("OTLP partial success: \"%s\" (%d rejected)", resp.PartialSuccess().ErrorMessage(), resp.PartialSuccess().RejectedLogRecords()))
+	}
+	return nil
 }
 
 func (e *baseExporter) enhanceContext(ctx context.Context) context.Context {
@@ -210,14 +230,13 @@ func (e *baseExporter) enhanceContext(ctx context.Context) context.Context {
 	return ctx
 }
 
-func processGRPCError(err error) error {
+func processError(err error) error {
 	if err == nil {
 		// Request is successful, we are done.
 		return nil
 	}
 
 	// We have an error, check gRPC status code.
-
 	st := status.Convert(err)
 	if st.Code() == codes.OK {
 		// Not really an error, still success.
