@@ -1,0 +1,39 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+  generator:
+    path: ./generator/hipster_shop.yaml
+
+exporters:
+  file/traces:
+    path: ./recorded_traces.json
+    compression: zstd
+    format: json
+  file/metrics:
+    path: ./recorded_metrics.json
+    compression: zstd
+    format: json
+
+  logging:
+
+processors:
+  batch:
+  obfuscation:
+    encrypt_key: "some-32-byte-long-key-to-be-safe"
+    encrypt_round: 128
+    # obfuscate all attributes with string values
+    encrypt_all: true
+
+# Note: to disable obfuscation, simply remove "obfuscation" from the
+# list of processors below.
+service:
+  pipelines:
+    traces:
+      receivers: [generator]
+      processors: [obfuscation, batch]
+      exporters: [file/traces, logging]
+    metrics:
+      receivers: [generator]
+      processors: [obfuscation, batch]
+      exporters: [file/metrics, logging]

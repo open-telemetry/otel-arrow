@@ -79,6 +79,38 @@ generated files present in the `./proto/api/collector/arrow/v1` directory.
 The integration of this package with the OpenTelemetry Collector is done in the following experimental repository:
 * [experimental-arrow-collector](https://github.com/open-telemetry/experimental-arrow-collector)
 
+This above repository houses a fork of the entire core OpenTelemetry
+Collector, where the complete branch history is kept, including
+"mainline" Collector commits as well as Arrow-component development
+commits.
+
+Because that repository contains portions that are not part of the
+OTel-Arrow project, [the components are being maintained in this
+repository](https://github.com/open-telemetry/experimental-arrow-collector/issues/48)
+until they can be merged into the
+[OpenTemetry-Collector-Contrib](github.com/open-telemetry/opentelemetry-collector-contrib)
+repository.
+
+Collector components copied from that repository are currently
+available in the
+[`./collector`](https://github.com/f5/otel-arrow-adapter/blob/main/collector/README.md)
+sub-package of this repository.
+
+Examples demonstrating how to configure and test an OpenTelemetry
+Collector with OTel-Arrow exporter and receiver components are located
+in `./collector/examples`, including:
+
+- [`examples/bridge`](https://github.com/f5/otel-arrow-adapter/tree/main/collector/examples/bridge):
+  A compression bridge between "edge" and "saas" collectors.
+- [`examples/metadata-bridge`](https://github.com/f5/otel-arrow-adapter/tree/main/collector/examples/metadata-bridge):
+  A compression bridge between "edge" and "saas" collectors with metadata support, allowing request headers to transit via OTel-Arrow.
+- [`examples/loopback`](https://github.com/f5/otel-arrow-adapter/tree/main/collector/examples/loopback):
+  A collector that writes Arrow to and from itself.
+- [`examples/recorder`](https://github.com/f5/otel-arrow-adapter/tree/main/collector/examples/recorder):
+  A collector with support for recording data files for diagnostic and benchmark purposes.
+- [`examples/synthesize`](https://github.com/f5/otel-arrow-adapter/tree/main/collector/examples/synthesize):
+  A collector with support for synthesizing telemetry data using a [telemetry-generator](https://github.com/lightstep/telemetry-generator) component.
+
 ## License
 
 OTel Arrow Protocol Adapter is licensed under Apache 2.0.

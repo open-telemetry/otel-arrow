@@ -1,0 +1,585 @@
+topology:
+  services:
+    frontend:
+      tagSets:
+        - weight: 1
+          flag_set: frontend_errors
+          tags:
+            version: v127
+            error: true
+          csv_tags:
+            customer: "./generator/mock_customer_tags.csv"
+        - weight: 1
+          flag_unset: frontend_errors
+          tags:
+            version: v125
+          csv_tags:
+            customer: "./generator/mock_customer_tags.csv"
+      resourceAttrSets:
+        - weight: 1
+          kubernetes:
+            pod_count: 7
+            restart:
+              every: 10m
+              jitter: 2m
+            cluster_name: k8s-cluster-23
+            request:
+              cpu: 0.5
+              memory: 2048
+            limit:
+              cpu: 0.75
+              memory: 3072
+            usage:
+              cpu:
+                target: 0.5
+                jitter: 0.5
+              memory:
+                target: 0.6
+                jitter: 0.4
+          resourceAttrs:
+            cloud.provider: aws
+            cloud.region: us-east-1
+        - weight: 1
+          kubernetes:
+            cluster_name: k8s-cluster-1
+            request:
+              cpu: 0.5
+              memory: 2048
+            limit:
+              cpu: 0.75
+              memory: 3072
+            restart:
+              every: 5m
+          resourceAttrs:
+            cloud.provider: aws
+            cloud.region: us-west-2
+      routes:
+        /product:
+          downstreamCalls:
+            - service: productcatalogservice
+              route: /GetProducts
+            - service: recommendationservice
+              route: /GetRecommendations
+            - service:  adservice
+              route: /AdRequest
+          latencyConfigs:
+            - flag_set: frontend_errors
+              p0: 25ms
+              p50: 185ms
+              p95: 250ms
+              p99: 300ms
+              p99.9: 400ms
+              p100: 600ms
+            - p0: 25ms
+              p50: 75ms
+              p95: 100ms
+              p99: 120ms
+              p99.9: 150ms
+              p100: 200ms
+          tagSets:
+            - weight: 1
+              tags:
+                starter: charmander
+              tagGenerators:
+                - numTags: 50
+                  numVals: 3000
+                  valLength: 16
+            - weight: 1
+              tags:
+                starter: squirtle
+            - weight: 1
+              tags:
+                starter: bulbasaur
+        /cart:
+          downstreamCalls:
+            - service: cartservice
+              route: /GetCart
+            - service: recommendationservice
+              route: /GetRecommendations
+          latencyConfigs:
+            - p0: 25ms
+              p50: 75ms
+              p95: 100ms
+              p99: 120ms
+              p99.9: 150ms
+              p100: 200ms
+        /checkout:
+          downstreamCalls:
+            - service: checkoutservice
+              route: /PlaceOrder
+          maxLatencyMillis: 800
+        /shipping:
+          downstreamCalls:
+            - service: shippingservice
+              route: /GetQuote
+          maxLatencyMillis: 50
+        /currency:
+          downstreamCalls:
+            - service: currencyservice
+              route: /GetConversion
+          maxLatencyMillis: 1500
+        /currency_slow:
+          downstreamCalls:
+            - service: currencyservice
+              route: /DoSomethingSlow
+          flag_set: currencyservice_oom.phase_1
+          maxLatencyMillis: 3500
+    productcatalogservice:
+      tagSets:
+        - weight: 1
+          tags:
+            version: v52
+          inherit:
+            - region
+      resourceAttrSets:
+        - weight: 1
+          kubernetes:
+            cluster_name: k8s-cluster-2
+            request:
+              cpu: 0.5
+              memory: 512
+            limit:
+              cpu: 1
+              memory: 1024
+          resourceAttrs:
+            cloud.provider: azure
+            cloud.region: Central-US
+            host.type: t3.medium
+        - weight: 1
+          resourceAttrs:
+            cloud.provider: azure
+            cloud.region: West-US
+            host.type: t3.medium
+      routes:
+        /GetProducts:
+          downstreamCalls:
+          maxLatencyMillis: 100
+          tagSets:
+            - weight: 1
+              inherit:
+                - starter
+        /SearchProducts:
+          downstreamCalls:
+          tagSets:
+            - weight: 15
+              tags:
+                error: true
+                http.status_code: 503
+            - weight: 85
+              tags:
+          maxLatencyMillis: 400
+    recommendationservice:
+      tagSets:
+        - weight: 1
+          tags:
+            version: v234
+            region: us-east-1
+      resourceAttrSets:
+        - weight: 1
+          kubernetes:
+            cluster_name: k8s-cluster-3
+            request:
+              cpu: 0.5
+              memory: 512
+            limit:
+              cpu: 1
+              memory: 1024
+          resourceAttrs:
+            cloud.provider: aws
+            cloud.region: us-west-2
+        - weight: 1
+          kubernetes:
+            cluster_name: k8s-cluster-3
+            request:
+              cpu: 0.5
+              memory: 512
+            limit:
+              cpu: 1
+              memory: 1024
+          resourceAttrs:
+            cloud.provider: aws
+            cloud.region: us-west-1
+      routes:
+        /GetRecommendations:
+          downstreamCalls:
+            - service: productcatalogservice
+              route: /GetProducts
+          maxLatencyMillis: 200
+    cartservice:
+      tagSets:
+        - weight: 1
+          tags:
+            version: v5
+            region: us-east-1
+          flag_unset: runs_on_azure
+        - weight: 1
+          tags:
+            region: North_Central_US
+          flag_set: runs_on_azure
+      resourceAttrSets:
+        - weight: 1
+          kubernetes:
+            cluster_name: k8s-cluster-4
+            request:
+              cpu: 1
+              memory: 512
+            limit:
+              cpu: 2
+              memory: 1024
+          resourceAttrs:
+            host.name: cartservice-hostname
+      routes:
+        /GetCart:
+          downstreamCalls:
+          maxLatencyMillis: 200
+    checkoutservice:
+      tagSets:
+        - weight: 1
+          tags:
+            version: v37
+            region: us-east-1
+      resourceAttrSets:
+        - weight: 1
+          kubernetes:
+            cluster_name: k8s-cluster-1
+            request:
+              cpu: 0.5
+              memory: 512
+            limit:
+              cpu: 1
+              memory: 1024
+      routes:
+        /PlaceOrder:
+          downstreamCalls:
+            - service: paymentservice
+              route: /CreditCardInfo
+            - service: shippingservice
+              route: /Address
+            - service: currencyservice
+              route: /GetConversion
+            - service: cartservice
+              route: /GetCart
+            - service: emailservice
+              route: /SendOrderConfirmation
+          tagSets:
+            - weight: 25
+              tags:
+                error: true
+                http.status_code: 503
+            - weight: 85
+              tags:
+          maxLatencyMillis: 500
+    paymentservice:
+      tagSets:
+        - weight: 1
+          tags:
+            version: v177
+            region: us-east-1
+      resourceAttrSets:
+        - weight: 1
+          kubernetes:
+            cluster_name: k8s-cluster-6
+            request:
+              cpu: 0.5
+              memory: 512
+            limit:
+              cpu: 1
+              memory: 1024
+          resourceAttrs:
+            host.name: paymentservice-hostname
+      routes:
+        /ChargeRequest:
+          downstreamCalls:
+            - service: paymentservice
+              route: /CreditCardInfo
+          maxLatencyMillis: 700
+        /CreditCardInfo:
+          downstreamCalls:
+          maxLatencyMillis: 50
+    shippingservice:
+      tagSets:
+        - weight: 1
+          tags:
+            version: v127
+            region: us-east-1
+      resourceAttrSets:
+        - weight: 1
+          kubernetes:
+            cluster_name: k8s-cluster-7
+            request:
+              cpu: 0.5
+              memory: 512
+            limit:
+              cpu: 1
+              memory: 1024
+          resourceAttrs:
+            host.name: shippingservice-hostname
+      routes:
+        /GetQuote:
+          downstreamCalls:
+            - service: shippingservice
+              route: /Address
+          maxLatencyMillis: 250
+        /ShipOrder:
+          downstreamCalls:
+            - service: shippingservice
+              route: /Address
+          maxLatencyMillis: 500
+        /Address:
+          downstreamCalls:
+          maxLatencyMillis: 100
+    emailservice:
+      tagSets:
+        - weight: 1
+          tags:
+            version: v27
+            region: us-east-1
+      resourceAttrSets:
+        - weight: 1
+          kubernetes:
+            cluster_name: k8s-cluster-8
+            request:
+              cpu: 0.5
+              memory: 512
+            limit:
+              cpu: 1
+              memory: 1024
+          resourceAttrs:
+            host.name: emailservice-hostname
+      routes:
+        /SendOrderConfirmation:
+          downstreamCalls:
+            - service: emailservice
+              route: /OrderResult
+          tagSets:
+            - weight: 15
+              tags:
+                error: true
+                service.version: v122
+                http.status_code: 503
+            - weight: 85
+              tags:
+          maxLatencyMillis: 500
+        /OrderResult:
+          downstreamCalls:
+          maxLatencyMillis: 100
+    currencyservice:
+      tagSets:
+        - weight: 1
+          tags:
+            version: v27
+            region: us-east-1
+      resourceAttrSets:
+        - weight: 1
+          kubernetes:
+            cluster_name: k8s-cluster-9
+            request:
+              cpu: 0.5
+              memory: 512
+            limit:
+              cpu: 1
+              memory: 1024
+          resourceAttrs:
+            host.name: currencyservice-hostname
+      routes:
+        /GetConversion:
+          downstreamCalls:
+            - service: currencyservice
+              route: /Money
+          maxLatencyMillis: 100
+        /Money:
+          downstreamCalls:
+          maxLatencyMillis: 100
+        /DoSomethingSlow:
+          downstreamCalls:
+          maxLatencyMillis: 4000
+          flag_set: currencyservice_oom.phase_1
+    adservice:
+      tagSets:
+        - weight: 1
+          tags:
+            version: v37
+            region: us-east-1
+      resourceAttrSets:
+        - weight: 1
+          kubernetes:
+            cluster_name: k8s-cluster-10
+            request:
+              cpu: 0.5
+              memory: 512
+            limit:
+              cpu: 1
+              memory: 1024
+          resourceAttrs:
+            host.name: adservice-hostname
+      routes:
+        /AdRequest:
+          downstreamCalls:
+          latencyConfigs:
+            - flag_set: adservice_bug.slow
+              p0: 30ms
+              p50: 100ms
+              p95: 170ms
+              p99: 200ms
+              p99.9: 300ms
+              p100: 500ms
+            - flag_set: adservice_bug.slower
+              p0: 40ms
+              p50: 125ms
+              p95: 200ms
+              p99: 300ms
+              p99.9: 450ms
+              p100: 600ms
+            - p0: 25ms
+              p50: 75ms
+              p95: 100ms
+              p99: 120ms
+              p99.9: 150ms
+              p100: 200ms
+        /Ad:
+          downstreamCalls:
+          maxLatencyMillis: 500
+    iOS:
+      resourceAttrSets:
+        - weight: 1 
+          resourceAttrs:
+            instrument.name: lighstep
+            http.method: POST
+            customer: hipcore
+            client.platform: iOS 
+      metrics:
+        - name: requests
+          type: Sum
+          max: 400
+          min: 0
+          period: 5m
+          shape: triangle
+      routes:
+        /api/make-payment:
+          downstreamCalls:
+            - service: iOS
+              route: /api/submit-payment
+          maxLatencyMillis: 100
+        /api/submit-payment:
+          downstreamCalls:
+            - service: iOS
+              route: /api/payment-status
+          maxLatencyMillis: 100
+        /api/payment-status:
+          maxLatencyMillis: 100
+    android:
+      resourceAttrSets:
+        - weight: 1
+          resourceAttrs:
+            instrument.name: lighstep
+            http.method: POST
+            customer: hipcore
+            client.platform: android
+      metrics:
+        - name: requests
+          type: Sum
+          max: 400
+          min: 0
+          period: 5m
+          shape: triangle
+      routes:
+        /api/make-payment:
+          downstreamCalls:
+            - service: android
+              route: /api/submit-payment
+          maxLatencyMillis: 100
+        /api/submit-payment:
+          downstreamCalls:
+            - service: android
+              route: /api/payment-status
+          maxLatencyMillis: 100
+        /api/payment-status:
+          downstreamCalls:
+          maxLatencyMillis: 100               
+
+flags:
+  # This is a cron-style flag
+  - name: frontend_errors
+    # use https://crontab.guru/
+    cron:
+      start: "0,10,20,30,40,50 * * * *"
+      end: "5,15,25,35,45,55 * * * *"
+  - name: runs_on_azure
+  - name: sev0_total_failure
+  - name: database_outage
+  # OOM on currency service + slower span latency from frontend -> currencyservice
+  - name: currencyservice_oom.default
+    incident:
+      parentFlag: currencyservice_fail
+      start: 0m
+      duration: 10m
+  - name: currencyservice_oom.phase_1
+    incident:
+      parentFlag: currencyservice_fail
+      start: 0m
+      duration: 10m
+  - name: currencyservice_oom.phase_2
+    incident:
+      parentFlag: currencyservice_fail
+      start: 3m
+      duration: 7m
+  - name: frontend_doom
+    cron:
+      start: "57,12,27,42 * * * *"
+      end: "10,25,40,55 * * * *"
+  # This is an incident-style flag; start and end are relative to incident start
+  - name: frontend_doom.phase_1
+    incident:
+      parentFlag: frontend_doom
+      start: 0m
+      end: 10m
+  - name: frontend_doom.phase_2
+    incident:
+      parentFlag: frontend_doom
+      start: 5m
+      # with no duration, lasts until the incident finishes
+  - name: currencyservice_fail
+    cron:
+      start: "57,12,27,42 * * * *"
+      end: "10,25,40,55 * * * *"
+  - name: adservice_bug
+    cron:
+      start: "0,20,40 * * * *"
+      end: "10,30,50 * * * *"
+  - name: adservice_bug.slow
+    incident:
+      parentFlag: adservice_bug
+      start: 0m, 7m
+      duration: 3m
+  - name: adservice_bug.slower
+    incident:
+      parentFlag: adservice_bug
+      start: 3m
+      duration: 4m
+
+rootRoutes:
+  - service: frontend
+    route: /product
+    tracesPerHour: 2880
+  - service: frontend
+    route: /cart
+    tracesPerHour: 1400
+  - service: frontend
+    route: /shipping
+    tracesPerHour: 480
+  - service: frontend
+    route: /currency
+    tracesPerHour: 200
+  - service: frontend
+    route: /checkout
+    tracesPerHour: 480
+  - service: iOS
+    route: /api/make-payment
+    tracesPerHour: 480
+  - service: android  
+    route: /api/make-payment
+    tracesPerHour: 480
+
+config:
+  kubernetes:
+    pod_count: 1
