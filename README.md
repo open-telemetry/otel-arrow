@@ -1,6 +1,6 @@
 # OTel Arrow Protocol implementation
 
-This package is a reference implementation of the OTel Arrow protocol specified in this [OTEP](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md).
+This package is a reference implementation of the OTel Arrow protocol specified in this [OTEP](https://github.com/open-telemetry/oteps/blob/main/text/0156-columnar-encoding.md).
 All OTLP entities are covered (metrics, logs, and traces) as well as all sub-elements such as events, links, gauge, sum, 
 summary, histograms, ... The overall goal is to optimize the compression ratio for telemetry data transmission as well 
 as the end-to-end performance between telemetry data producers and receivers.
@@ -9,13 +9,14 @@ as the end-to-end performance between telemetry data producers and receivers.
 exporter and receiver](https://github.com/open-telemetry/experimental-arrow-collector).
 
 Important links:
-- [OTEP](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md) - protocol specification 
-  (status: [pending, unmerged](https://github.com/open-telemetry/oteps/pull/171)).
-- [Donation](https://github.com/open-telemetry/community/issues/1332) - approved, but repo not yet transferred in OTel org.
+- [OTEP](https://github.com/open-telemetry/oteps/blob/main/text/0156-columnar-encoding.md) - protocol specification.
+- [Donation](https://github.com/open-telemetry/community/issues/1332) - approved by the Technical Committee (repo not yet transferred in OTel org).
 - [Arrow Data Model](docs/data_model.md) - Mapping OTLP entities to Arrow Schemas.
 - [Benchmark results](docs/benchmarks.md) - Based on synthetic and production data.
 - [Validation process](docs/validation_process.md) - Encoding/Decoding validation process. 
-- [Slides](https://docs.google.com/presentation/d/12uLXmMWNelAyAiKFYMR0i7E7N4dPhzBi2_HLshFOLak/edit?usp=sharing) (01/30/2023 Maintainers meeting).
+- Articles describing some of the Arrow techniques used behind the scenes to optimize compression ratio and memory usage:
+  - [Data types, encoding, hierarchical data, denormalization](https://arrow.apache.org/blog/2023/04/11/our-journey-at-f5-with-apache-arrow-part-1/)
+  - [Adaptive Schemas and Sorting to Optimize Arrow Usage](https://arrow.apache.org/blog/2023/06/26/our-journey-at-f5-with-apache-arrow-part-2/)
 
 ## Benchmark summary
 
