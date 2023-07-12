@@ -89,6 +89,7 @@ func LogsFrom(record arrow.Record, relatedData *RelatedData) (plog.Logs, error) 
 			prevResID = int(resID)
 			resLogs = resLogsSlice.AppendEmpty()
 			scopeLogsSlice = resLogs.ScopeLogs()
+			prevScopeID = None
 			schemaUrl, err := otlp.UpdateResourceFromRecord(resLogs.Resource(), record, row, logRecordIDs.Resource, relatedData.ResAttrMapStore)
 			if err != nil {
 				return logs, werror.Wrap(err)

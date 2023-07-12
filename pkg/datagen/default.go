@@ -95,6 +95,18 @@ func (te TestEntropy) NewStandardAttributes() pcommon.Map {
 	)
 }
 
+func (te TestEntropy) NewSingleResourceAttributes() []pcommon.Map {
+	return []pcommon.Map{
+		te.shuffleAttrs(
+			func(attrs Attrs) { attrs.PutStr("hostname", "host1.mydomain.com") },
+			func(attrs Attrs) { attrs.PutStr("ip", "192.168.0.1") },
+			func(attrs Attrs) { attrs.PutBool("up", true) },
+			func(attrs Attrs) { attrs.PutInt("status", 200) },
+			func(attrs Attrs) { attrs.PutDouble("version", 1.0) },
+		),
+	}
+}
+
 func (te TestEntropy) NewStandardResourceAttributes() []pcommon.Map {
 	return []pcommon.Map{
 		te.shuffleAttrs(
@@ -119,6 +131,14 @@ func (te TestEntropy) NewStandardResourceAttributes() []pcommon.Map {
 			func(attrs Attrs) { attrs.PutDouble("version", 1.5) },
 		),
 	}
+}
+
+func (te TestEntropy) NewSingleInstrumentationScopes() []pcommon.InstrumentationScope {
+	s1 := pcommon.NewInstrumentationScope()
+	s1.SetName("fake_generator")
+	s1.SetVersion("1.0.0")
+
+	return []pcommon.InstrumentationScope{s1}
 }
 
 func (te TestEntropy) NewStandardInstrumentationScopes() []pcommon.InstrumentationScope {

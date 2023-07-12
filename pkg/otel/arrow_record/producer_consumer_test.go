@@ -16,6 +16,7 @@ package arrow_record
 
 import (
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"testing"
 	"time"
@@ -199,133 +200,178 @@ func FuzzProducerTraces1(f *testing.F) {
 func TestProducerConsumerTraces(t *testing.T) {
 	ent := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
 
-	dg := datagen.NewTracesGenerator(
-		ent,
-		ent.NewStandardResourceAttributes(),
-		ent.NewStandardInstrumentationScopes(),
-	)
-	traces := dg.Generate(10, time.Minute)
+	for idx, dg := range []*datagen.TraceGenerator{
+		datagen.NewTracesGenerator(
+			ent,
+			ent.NewStandardResourceAttributes(),
+			ent.NewStandardInstrumentationScopes(),
+		),
+		datagen.NewTracesGenerator(
+			ent,
+			ent.NewStandardResourceAttributes(),
+			ent.NewSingleInstrumentationScopes(),
+		),
+		datagen.NewTracesGenerator(
+			ent,
+			ent.NewSingleResourceAttributes(),
+			ent.NewStandardInstrumentationScopes(),
+		),
+	} {
+		t.Run(fmt.Sprint("traces/", idx), func(t *testing.T) {
+			traces := dg.Generate(10, time.Minute)
 
-	// Check memory leak issue.
-	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
-	defer pool.AssertSize(t, 0)
+			// Check memory leak issue.
+			pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+			defer pool.AssertSize(t, 0)
 
-	producer := NewProducerWithOptions(config.WithAllocator(pool))
-	defer func() {
-		if err := producer.Close(); err != nil {
-			t.Error("unexpected fail", err)
-		}
-	}()
+			producer := NewProducerWithOptions(config.WithAllocator(pool))
+			defer func() {
+				if err := producer.Close(); err != nil {
+					t.Error("unexpected fail", err)
+				}
+			}()
 
-	batch, err := producer.BatchArrowRecordsFromTraces(traces)
-	require.NoError(t, err)
-	require.Equal(t, 7, len(batch.ArrowPayloads))
-	require.Equal(t, arrowpb.ArrowPayloadType_SPANS, batch.ArrowPayloads[0].Type)
-	require.Equal(t, arrowpb.ArrowPayloadType_RESOURCE_ATTRS, batch.ArrowPayloads[1].Type)
-	require.Equal(t, arrowpb.ArrowPayloadType_SPAN_ATTRS, batch.ArrowPayloads[2].Type)
-	require.Equal(t, arrowpb.ArrowPayloadType_SPAN_EVENTS, batch.ArrowPayloads[3].Type)
-	require.Equal(t, arrowpb.ArrowPayloadType_SPAN_LINKS, batch.ArrowPayloads[4].Type)
-	require.Equal(t, arrowpb.ArrowPayloadType_SPAN_EVENT_ATTRS, batch.ArrowPayloads[5].Type)
-	require.Equal(t, arrowpb.ArrowPayloadType_SPAN_LINK_ATTRS, batch.ArrowPayloads[6].Type)
+			batch, err := producer.BatchArrowRecordsFromTraces(traces)
+			require.NoError(t, err)
+			require.Equal(t, 7, len(batch.ArrowPayloads))
+			require.Equal(t, arrowpb.ArrowPayloadType_SPANS, batch.ArrowPayloads[0].Type)
+			require.Equal(t, arrowpb.ArrowPayloadType_RESOURCE_ATTRS, batch.ArrowPayloads[1].Type)
+			require.Equal(t, arrowpb.ArrowPayloadType_SPAN_ATTRS, batch.ArrowPayloads[2].Type)
+			require.Equal(t, arrowpb.ArrowPayloadType_SPAN_EVENTS, batch.ArrowPayloads[3].Type)
+			require.Equal(t, arrowpb.ArrowPayloadType_SPAN_LINKS, batch.ArrowPayloads[4].Type)
+			require.Equal(t, arrowpb.ArrowPayloadType_SPAN_EVENT_ATTRS, batch.ArrowPayloads[5].Type)
+			require.Equal(t, arrowpb.ArrowPayloadType_SPAN_LINK_ATTRS, batch.ArrowPayloads[6].Type)
 
-	consumer := NewConsumer()
-	received, err := consumer.TracesFrom(batch)
-	require.NoError(t, err)
-	require.Equal(t, 1, len(received))
+			consumer := NewConsumer()
+			received, err := consumer.TracesFrom(batch)
+			require.NoError(t, err)
+			require.Equal(t, 1, len(received))
 
-	assert.Equiv(
-		t,
-		[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)},
-		[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(received[0])},
-	)
+			assert.Equiv(
+				t,
+				[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)},
+				[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(received[0])},
+			)
+		})
+	}
 }
 
 func TestProducerConsumerLogs(t *testing.T) {
 	ent := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
 
-	dg := datagen.NewLogsGenerator(
-		ent,
-		ent.NewStandardResourceAttributes(),
-		ent.NewStandardInstrumentationScopes(),
-	)
-	logs := dg.Generate(10, time.Minute)
+	for idx, dg := range []*datagen.LogsGenerator{
+		datagen.NewLogsGenerator(
+			ent,
+			ent.NewStandardResourceAttributes(),
+			ent.NewStandardInstrumentationScopes(),
+		),
+		datagen.NewLogsGenerator(
+			ent,
+			ent.NewStandardResourceAttributes(),
+			ent.NewSingleInstrumentationScopes(),
+		),
+		datagen.NewLogsGenerator(
+			ent,
+			ent.NewSingleResourceAttributes(),
+			ent.NewStandardInstrumentationScopes(),
+		),
+	} {
+		t.Run(fmt.Sprint("logs/", idx), func(t *testing.T) {
+			logs := dg.Generate(10, time.Minute)
 
-	// Check memory leak issue.
-	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
-	defer pool.AssertSize(t, 0)
+			// Check memory leak issue.
+			pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+			defer pool.AssertSize(t, 0)
 
-	producer := NewProducerWithOptions(config.WithAllocator(pool))
-	defer func() {
-		if err := producer.Close(); err != nil {
-			t.Error("unexpected fail", err)
-		}
-	}()
+			producer := NewProducerWithOptions(config.WithAllocator(pool))
+			defer func() {
+				if err := producer.Close(); err != nil {
+					t.Error("unexpected fail", err)
+				}
+			}()
 
-	batch, err := producer.BatchArrowRecordsFromLogs(logs)
-	require.NoError(t, err)
-	require.Equal(t, arrowpb.ArrowPayloadType_LOGS, batch.ArrowPayloads[0].Type)
+			batch, err := producer.BatchArrowRecordsFromLogs(logs)
+			require.NoError(t, err)
+			require.Equal(t, arrowpb.ArrowPayloadType_LOGS, batch.ArrowPayloads[0].Type)
 
-	consumer := NewConsumer()
-	received, err := consumer.LogsFrom(batch)
-	require.NoError(t, err)
-	require.Equal(t, 1, len(received))
+			consumer := NewConsumer()
+			received, err := consumer.LogsFrom(batch)
+			require.NoError(t, err)
+			require.Equal(t, 1, len(received))
 
-	assert.Equiv(
-		t,
-		[]json.Marshaler{plogotlp.NewExportRequestFromLogs(logs)},
-		[]json.Marshaler{plogotlp.NewExportRequestFromLogs(received[0])},
-	)
+			assert.Equiv(
+				t,
+				[]json.Marshaler{plogotlp.NewExportRequestFromLogs(logs)},
+				[]json.Marshaler{plogotlp.NewExportRequestFromLogs(received[0])},
+			)
+		})
+	}
 }
 
 func TestProducerConsumerMetrics(t *testing.T) {
 	ent := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
 
-	dg := datagen.NewMetricsGenerator(
-		ent,
-		ent.NewStandardResourceAttributes(),
-		ent.NewStandardInstrumentationScopes(),
-	)
-	metrics := dg.GenerateAllKindOfMetrics(10, time.Minute)
+	for idx, dg := range []*datagen.MetricsGenerator{
+		datagen.NewMetricsGenerator(
+			ent,
+			ent.NewStandardResourceAttributes(),
+			ent.NewStandardInstrumentationScopes(),
+		),
+		datagen.NewMetricsGenerator(
+			ent,
+			ent.NewStandardResourceAttributes(),
+			ent.NewSingleInstrumentationScopes(),
+		),
+		datagen.NewMetricsGenerator(
+			ent,
+			ent.NewSingleResourceAttributes(),
+			ent.NewStandardInstrumentationScopes(),
+		),
+	} {
+		t.Run(fmt.Sprint("metrics/", idx), func(t *testing.T) {
+			metrics := dg.GenerateAllKindOfMetrics(10, time.Minute)
 
-	// Check memory leak issue.
-	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
-	defer pool.AssertSize(t, 0)
+			// Check memory leak issue.
+			pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+			defer pool.AssertSize(t, 0)
 
-	producer := NewProducerWithOptions(config.WithAllocator(pool))
-	defer func() {
-		if err := producer.Close(); err != nil {
-			t.Error("unexpected fail", err)
-		}
-	}()
+			producer := NewProducerWithOptions(config.WithAllocator(pool))
+			defer func() {
+				if err := producer.Close(); err != nil {
+					t.Error("unexpected fail", err)
+				}
+			}()
 
-	// First round.
-	batch, err := producer.BatchArrowRecordsFromMetrics(metrics)
-	require.NoError(t, err)
-	require.Equal(t, arrowpb.ArrowPayloadType_METRICS, batch.ArrowPayloads[0].Type)
+			// First round.
+			batch, err := producer.BatchArrowRecordsFromMetrics(metrics)
+			require.NoError(t, err)
+			require.Equal(t, arrowpb.ArrowPayloadType_METRICS, batch.ArrowPayloads[0].Type)
 
-	consumer := NewConsumer()
-	received, err := consumer.MetricsFrom(batch)
-	require.NoError(t, err)
-	require.Equal(t, 1, len(received))
+			consumer := NewConsumer()
+			received, err := consumer.MetricsFrom(batch)
+			require.NoError(t, err)
+			require.Equal(t, 1, len(received))
 
-	assert.Equiv(
-		t,
-		[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(metrics)},
-		[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(received[0])},
-	)
+			assert.Equiv(
+				t,
+				[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(metrics)},
+				[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(received[0])},
+			)
 
-	// Second round (emit same data).
-	batch, err = producer.BatchArrowRecordsFromMetrics(metrics)
-	require.NoError(t, err)
-	require.Equal(t, arrowpb.ArrowPayloadType_METRICS, batch.ArrowPayloads[0].Type)
+			// Second round (emit same data).
+			batch, err = producer.BatchArrowRecordsFromMetrics(metrics)
+			require.NoError(t, err)
+			require.Equal(t, arrowpb.ArrowPayloadType_METRICS, batch.ArrowPayloads[0].Type)
 
-	received, err = consumer.MetricsFrom(batch)
-	require.NoError(t, err)
-	require.Equal(t, 1, len(received))
+			received, err = consumer.MetricsFrom(batch)
+			require.NoError(t, err)
+			require.Equal(t, 1, len(received))
 
-	assert.Equiv(
-		t,
-		[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(metrics)},
-		[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(received[0])},
-	)
+			assert.Equiv(
+				t,
+				[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(metrics)},
+				[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(received[0])},
+			)
+		})
+	}
 }

@@ -77,6 +77,7 @@ func MetricsFrom(record arrow.Record, relatedData *RelatedData) (pmetric.Metrics
 			prevResID = int(resID)
 			resMetrics = resMetricsSlice.AppendEmpty()
 			scopeMetricsSlice = resMetrics.ScopeMetrics()
+			prevScopeID = None
 			schemaUrl, err := otlp.UpdateResourceFromRecord(resMetrics.Resource(), record, row, metricsIDs.Resource, relatedData.ResAttrMapStore)
 			if err != nil {
 				return metrics, werror.Wrap(err)

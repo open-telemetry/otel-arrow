@@ -95,6 +95,7 @@ func TracesFrom(record arrow.Record, relatedData *RelatedData) (ptrace.Traces, e
 			prevResID = int(resID)
 			resSpans = resSpansSlice.AppendEmpty()
 			scopeSpansSlice = resSpans.ScopeSpans()
+			prevScopeID = None
 			schemaUrl, err := otlp.UpdateResourceFromRecord(resSpans.Resource(), record, row, traceIDs.Resource, relatedData.ResAttrMapStore)
 			if err != nil {
 				return traces, werror.Wrap(err)
