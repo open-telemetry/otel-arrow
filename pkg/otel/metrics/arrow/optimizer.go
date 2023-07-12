@@ -47,7 +47,7 @@ type (
 		ScopeSchemaUrl string
 
 		// Metric section.
-		Metric *pmetric.Metric
+		Metric pmetric.Metric
 	}
 
 	MetricSorter interface {
@@ -95,7 +95,7 @@ func (t *MetricsOptimizer) Optimize(metrics pmetric.Metrics) *MetricsOptimized {
 					ScopeMetricsID:    scopeMetricsID,
 					Scope:             scope,
 					ScopeSchemaUrl:    scopeSchemaUrl,
-					Metric:            &metric,
+					Metric:            metric,
 				})
 			}
 		}

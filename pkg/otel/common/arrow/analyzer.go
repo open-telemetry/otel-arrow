@@ -642,7 +642,7 @@ func NewTimeIntervalStats() *TimeIntervalStats {
 	}
 }
 
-func (t *TimeIntervalStats) UpdateWithSpans(spans []*ptrace.Span) {
+func (t *TimeIntervalStats) UpdateWithSpans(spans []ptrace.Span) {
 	var prevStartTime time.Time
 	var prevEndTime time.Time
 

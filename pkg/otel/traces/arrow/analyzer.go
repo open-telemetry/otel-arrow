@@ -147,7 +147,7 @@ func (r *ResourceSpansStats) UpdateWith(traces *TracesOptimized) {
 	scopeSpansCount := 0
 	spansPerScopeSpans := 0
 
-	var spans []*ptrace.Span
+	var spans []ptrace.Span
 
 	for _, span := range traces.Spans {
 		if prevResID != span.ResourceSpanID {

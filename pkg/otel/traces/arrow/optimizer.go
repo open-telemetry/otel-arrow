@@ -50,7 +50,7 @@ type (
 		ScopeSchemaUrl string
 
 		// Span section.
-		Span *ptrace.Span
+		Span ptrace.Span
 	}
 
 	SpanSorter interface {
@@ -102,7 +102,7 @@ func (t *TracesOptimizer) Optimize(traces ptrace.Traces) *TracesOptimized {
 					ScopeSpanID:       scopeSpanId,
 					Scope:             scope,
 					ScopeSchemaUrl:    scopeSchemaUrl,
-					Span:              &span,
+					Span:              span,
 				})
 			}
 		}
