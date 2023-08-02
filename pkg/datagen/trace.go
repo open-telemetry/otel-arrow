@@ -15,6 +15,7 @@
 package datagen
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/brianvoe/gofakeit/v6"
@@ -71,19 +72,37 @@ func (tg *TraceGenerator) Generate(batchSize int, collectInterval time.Duration)
 func (tg *TraceGenerator) GenerateRandomTraces(batchSize int, collectInterval time.Duration) ptrace.Traces {
 	result := ptrace.NewTraces()
 
-	resourceSpans := result.ResourceSpans().AppendEmpty()
-	pick(tg.TestEntropy, tg.resourceAttributes).CopyTo(resourceSpans.Resource().Attributes())
+	// Generate 4 resource spans per batch.
+	for i := 0; i < 4; i++ {
+		resourceSpans := result.ResourceSpans().AppendEmpty()
+		// ~50% of the time, generate a random resource
+		if tg.GenBool() {
+			pick(tg.TestEntropy, tg.resourceAttributes).CopyTo(resourceSpans.Resource().Attributes())
+		}
 
-	scopeSpans := resourceSpans.ScopeSpans().AppendEmpty()
-	pick(tg.TestEntropy, tg.instrumentationScopes).CopyTo(scopeSpans.Scope())
+		// Generate 4 scope spans per resource span.
+		for j := 0; j < 4; j++ {
+			scopeSpans := resourceSpans.ScopeSpans().AppendEmpty()
+			// ~50% of the time, generate a random scope
+			if tg.GenBool() {
+				pick(tg.TestEntropy, tg.instrumentationScopes).CopyTo(scopeSpans.Scope())
+			}
 
-	resourceSpans.SetSchemaUrl("https://opentelemetry.io/schemas/1.0.0")
+			if tg.GenBool() {
+				scopeSpans.SetSchemaUrl(fmt.Sprintf("https://opentelemetry.io/schemas/1.%d.%d", i, j))
+			}
 
-	spans := scopeSpans.Spans()
+			spans := scopeSpans.Spans()
 
-	for i := 0; i < batchSize; i++ {
-		tg.AdvanceTime(collectInterval)
-		tg.AddRandomSpansTo(spans)
+			spanCount := tg.rng.Intn(batchSize) + 1
+			for i := 0; i < spanCount; i++ {
+				tg.AdvanceTime(time.Duration(tg.rng.Intn(int(collectInterval))))
+				tg.AddRandomSpansTo(spans)
+			}
+		}
+		if tg.GenBool() {
+			resourceSpans.SetSchemaUrl(fmt.Sprintf("https://opentelemetry.io/schemas/1.0.%d", i))
+		}
 	}
 
 	return result

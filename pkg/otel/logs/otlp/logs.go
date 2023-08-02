@@ -79,9 +79,13 @@ func LogsFrom(record arrow.Record, relatedData *RelatedData) (plog.Logs, error) 
 	prevResID := None
 	prevScopeID := None
 
+	var resID uint16
+	var scopeID uint16
+
 	for row := 0; row < rows; row++ {
 		// Process resource logs, resource, schema url (resource)
-		resID, err := otlp.ResourceIDFromRecord(record, row, logRecordIDs.Resource)
+		resDeltaID, err := otlp.ResourceIDFromRecord(record, row, logRecordIDs.Resource)
+		resID += resDeltaID
 		if err != nil {
 			return logs, werror.Wrap(err)
 		}
@@ -98,7 +102,8 @@ func LogsFrom(record arrow.Record, relatedData *RelatedData) (plog.Logs, error) 
 		}
 
 		// Process scope logs, scope, schema url (scope)
-		scopeID, err := otlp.ScopeIDFromRecord(record, row, logRecordIDs.Scope)
+		scopeDeltaID, err := otlp.ScopeIDFromRecord(record, row, logRecordIDs.Scope)
+		scopeID += scopeDeltaID
 		if err != nil {
 			return logs, werror.Wrap(err)
 		}

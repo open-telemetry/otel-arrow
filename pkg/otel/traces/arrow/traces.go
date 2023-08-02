@@ -18,6 +18,8 @@
 package arrow
 
 import (
+	"math"
+
 	"github.com/apache/arrow/go/v12/arrow"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
@@ -185,8 +187,9 @@ func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 	}
 
 	spanID := uint16(0)
+	resID := int64(-1)
+	scopeID := int64(-1)
 	var resSpanID, scopeSpanID string
-	var resID, scopeID int64
 	var err error
 
 	attrsAccu := b.relatedData.AttrsBuilders().Span().Accumulator()
@@ -201,40 +204,61 @@ func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 		spanLinks := span.Span.Links()
 
 		ID := spanID
+		b.ib.Append(ID)
+		spanID++
 
-		if spanAttrs.Len() == 0 && spanEvents.Len() == 0 && spanLinks.Len() == 0 {
-			// No related data found
-			b.ib.AppendNull()
-		} else {
-			b.ib.Append(ID)
-			spanID++
-		}
-
-		// Resource spans
+		// === Process resource and schema URL ===
+		resAttrs := span.Resource.Attributes()
 		if resSpanID != span.ResourceSpanID {
+			// New resource ID detected =>
+			// - Increment the resource ID
+			// - Append the resource attributes to the resource attributes accumulator
 			resSpanID = span.ResourceSpanID
-			resID, err = b.relatedData.AttrsBuilders().Resource().Accumulator().Append(span.Resource.Attributes())
+			resID++
+			err = b.relatedData.AttrsBuilders().Resource().Accumulator().
+				AppendWithID(uint16(resID), resAttrs)
 			if err != nil {
 				return werror.Wrap(err)
 			}
 		}
-		if err = b.rb.AppendWithID(resID, span.Resource, span.ResourceSchemaUrl); err != nil {
+		// Check resID validity
+		if resID == -1 || resID > math.MaxUint16 {
+			return werror.WrapWithContext(acommon.ErrInvalidResourceID, map[string]interface{}{
+				"resource_id": resID,
+			})
+		}
+		// Append the resource schema URL if exists
+		if err = b.rb.Append(resID, span.Resource, span.ResourceSchemaUrl); err != nil {
 			return werror.Wrap(err)
 		}
 
-		// Scope spans
+		// === Process scope and schema URL ===
+		scopeAttrs := span.Scope.Attributes()
 		if scopeSpanID != span.ScopeSpanID {
+			// New scope ID detected =>
+			// - Increment the scope ID
+			// - Append the scope attributes to the scope attributes accumulator
 			scopeSpanID = span.ScopeSpanID
-			scopeID, err = b.relatedData.AttrsBuilders().scope.Accumulator().Append(span.Scope.Attributes())
+			scopeID++
+			err = b.relatedData.AttrsBuilders().scope.Accumulator().
+				AppendWithID(uint16(scopeID), scopeAttrs)
 			if err != nil {
 				return werror.Wrap(err)
 			}
 		}
-		if err = b.scb.AppendWithAttrsID(scopeID, span.Scope); err != nil {
+		// Check scopeID validity
+		if scopeID == -1 || scopeID > math.MaxUint16 {
+			return werror.WrapWithContext(acommon.ErrInvalidScopeID, map[string]interface{}{
+				"scope_id": scopeID,
+			})
+		}
+		// Append the scope name, version, and schema URL (if exists)
+		if err = b.scb.Append(scopeID, span.Scope); err != nil {
 			return werror.Wrap(err)
 		}
 		b.sschb.AppendNonEmpty(span.ScopeSchemaUrl)
 
+		// === Process span ===
 		b.stunb.Append(arrow.Timestamp(span.Span.StartTimestamp()))
 		duration := span.Span.EndTimestamp().AsTime().Sub(span.Span.StartTimestamp().AsTime()).Nanoseconds()
 		b.dtunb.Append(arrow.Duration(duration))

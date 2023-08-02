@@ -15,6 +15,8 @@
 package arrow
 
 import (
+	"math"
+
 	"github.com/apache/arrow/go/v12/arrow"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
@@ -163,8 +165,9 @@ func (b *MetricsBuilder) Append(metrics pmetric.Metrics) error {
 	}
 
 	metricID := uint16(0)
+	resID := int64(-1)
+	scopeID := int64(-1)
 	var resMetricsID, scopeMetricsID string
-	var resID, scopeID int64
 	var err error
 
 	b.builder.Reserve(len(optimizedMetrics.Metrics))
@@ -175,31 +178,58 @@ func (b *MetricsBuilder) Append(metrics pmetric.Metrics) error {
 		b.ib.Append(ID)
 		metricID++
 
-		// Resource spans
+		// === Process resource and schema URL ===
+		resAttrs := metric.Resource.Attributes()
 		if resMetricsID != metric.ResourceMetricsID {
+			// New resource ID detected =>
+			// - Increment the resource ID
+			// - Append the resource attributes to the resource attributes accumulator
 			resMetricsID = metric.ResourceMetricsID
-			resID, err = b.relatedData.AttrsBuilders().Resource().Accumulator().Append(metric.Resource.Attributes())
+			resID++
+			err = b.relatedData.AttrsBuilders().Resource().Accumulator().
+				AppendWithID(uint16(resID), resAttrs)
 			if err != nil {
 				return werror.Wrap(err)
 			}
 		}
-		if err = b.rb.AppendWithID(resID, metric.Resource, metric.ResourceSchemaUrl); err != nil {
+		// Check resID validity
+		if resID == -1 || resID > math.MaxUint16 {
+			return werror.WrapWithContext(carrow.ErrInvalidResourceID, map[string]interface{}{
+				"resource_id": resID,
+			})
+		}
+		// Append the resource schema URL if exists
+		if err = b.rb.Append(resID, metric.Resource, metric.ResourceSchemaUrl); err != nil {
 			return werror.Wrap(err)
 		}
 
-		// Scope spans
+		// === Process scope and schema URL ===
+		scopeAttrs := metric.Scope.Attributes()
 		if scopeMetricsID != metric.ScopeMetricsID {
+			// New scope ID detected =>
+			// - Increment the scope ID
+			// - Append the scope attributes to the scope attributes accumulator
 			scopeMetricsID = metric.ScopeMetricsID
-			scopeID, err = b.relatedData.AttrsBuilders().scope.Accumulator().Append(metric.Scope.Attributes())
+			scopeID++
+			err = b.relatedData.AttrsBuilders().scope.Accumulator().
+				AppendWithID(uint16(scopeID), scopeAttrs)
 			if err != nil {
 				return werror.Wrap(err)
 			}
 		}
-		if err = b.scb.AppendWithAttrsID(scopeID, metric.Scope); err != nil {
+		// Check scopeID validity
+		if scopeID == -1 || scopeID > math.MaxUint16 {
+			return werror.WrapWithContext(carrow.ErrInvalidScopeID, map[string]interface{}{
+				"scope_id": scopeID,
+			})
+		}
+		// Append the scope name, version, and schema URL (if exists)
+		if err = b.scb.Append(scopeID, metric.Scope); err != nil {
 			return werror.Wrap(err)
 		}
 		b.sschb.AppendNonEmpty(metric.ScopeSchemaUrl)
 
+		// === Process metric ===
 		// Metric type is an int32 in the proto spec, but we don't expect more
 		// than 256 types, so we use an uint8 instead.
 		b.mtb.Append(uint8(metric.Metric.Type()))

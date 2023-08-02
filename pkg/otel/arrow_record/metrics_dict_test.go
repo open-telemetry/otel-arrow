@@ -228,7 +228,7 @@ func TestMetricsMultiBatchWithDictionaryLimit(t *testing.T) {
 	require.Equal(t, true, dictionaryWithOverflow["description"])
 
 	// name and description should be utf8 at this point and not dictionaries.
-	require.Equal(t, "description:Str,id:U16,metric_type:U8,name:Str,resource:{schema_url:Dic<U8,Str>},scope:{}", builder.SchemaID())
+	require.Equal(t, "description:Str,id:U16,metric_type:U8,name:Str,resource:{id:U16,schema_url:Dic<U8,Str>},scope:{id:U16}", builder.SchemaID())
 }
 
 func GenerateMetrics(initValue int, metricCount int) pmetric.Metrics {

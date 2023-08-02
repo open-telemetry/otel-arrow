@@ -85,17 +85,23 @@ func TracesFrom(record arrow.Record, relatedData *RelatedData) (ptrace.Traces, e
 	prevResID := None
 	prevScopeID := None
 
+	var resID uint16
+	var scopeID uint16
+
 	for row := 0; row < rows; row++ {
 		// Process resource spans, resource, schema url (resource)
-		resID, err := otlp.ResourceIDFromRecord(record, row, traceIDs.Resource)
+		resDeltaID, err := otlp.ResourceIDFromRecord(record, row, traceIDs.Resource)
+		resID += resDeltaID
 		if err != nil {
 			return traces, werror.Wrap(err)
 		}
+
 		if prevResID != int(resID) {
 			prevResID = int(resID)
 			resSpans = resSpansSlice.AppendEmpty()
 			scopeSpansSlice = resSpans.ScopeSpans()
 			prevScopeID = None
+
 			schemaUrl, err := otlp.UpdateResourceFromRecord(resSpans.Resource(), record, row, traceIDs.Resource, relatedData.ResAttrMapStore)
 			if err != nil {
 				return traces, werror.Wrap(err)
@@ -104,7 +110,8 @@ func TracesFrom(record arrow.Record, relatedData *RelatedData) (ptrace.Traces, e
 		}
 
 		// Process scope spans, scope, schema url (scope)
-		scopeID, err := otlp.ScopeIDFromRecord(record, row, traceIDs.Scope)
+		scopeDeltaID, err := otlp.ScopeIDFromRecord(record, row, traceIDs.Scope)
+		scopeID += scopeDeltaID
 		if err != nil {
 			return traces, werror.Wrap(err)
 		}

@@ -233,14 +233,26 @@ func TestProducerConsumerTraces(t *testing.T) {
 
 			batch, err := producer.BatchArrowRecordsFromTraces(traces)
 			require.NoError(t, err)
-			require.Equal(t, 7, len(batch.ArrowPayloads))
-			require.Equal(t, arrowpb.ArrowPayloadType_SPANS, batch.ArrowPayloads[0].Type)
-			require.Equal(t, arrowpb.ArrowPayloadType_RESOURCE_ATTRS, batch.ArrowPayloads[1].Type)
-			require.Equal(t, arrowpb.ArrowPayloadType_SPAN_ATTRS, batch.ArrowPayloads[2].Type)
-			require.Equal(t, arrowpb.ArrowPayloadType_SPAN_EVENTS, batch.ArrowPayloads[3].Type)
-			require.Equal(t, arrowpb.ArrowPayloadType_SPAN_LINKS, batch.ArrowPayloads[4].Type)
-			require.Equal(t, arrowpb.ArrowPayloadType_SPAN_EVENT_ATTRS, batch.ArrowPayloads[5].Type)
-			require.Equal(t, arrowpb.ArrowPayloadType_SPAN_LINK_ATTRS, batch.ArrowPayloads[6].Type)
+			if len(batch.ArrowPayloads) == 7 {
+				// Traces with resource attributes.
+				require.Equal(t, arrowpb.ArrowPayloadType_SPANS, batch.ArrowPayloads[0].Type)
+				require.Equal(t, arrowpb.ArrowPayloadType_RESOURCE_ATTRS, batch.ArrowPayloads[1].Type)
+				require.Equal(t, arrowpb.ArrowPayloadType_SPAN_ATTRS, batch.ArrowPayloads[2].Type)
+				require.Equal(t, arrowpb.ArrowPayloadType_SPAN_EVENTS, batch.ArrowPayloads[3].Type)
+				require.Equal(t, arrowpb.ArrowPayloadType_SPAN_LINKS, batch.ArrowPayloads[4].Type)
+				require.Equal(t, arrowpb.ArrowPayloadType_SPAN_EVENT_ATTRS, batch.ArrowPayloads[5].Type)
+				require.Equal(t, arrowpb.ArrowPayloadType_SPAN_LINK_ATTRS, batch.ArrowPayloads[6].Type)
+			} else if len(batch.ArrowPayloads) == 6 {
+				// Traces without resource attributes.
+				require.Equal(t, arrowpb.ArrowPayloadType_SPANS, batch.ArrowPayloads[0].Type)
+				require.Equal(t, arrowpb.ArrowPayloadType_SPAN_ATTRS, batch.ArrowPayloads[1].Type)
+				require.Equal(t, arrowpb.ArrowPayloadType_SPAN_EVENTS, batch.ArrowPayloads[2].Type)
+				require.Equal(t, arrowpb.ArrowPayloadType_SPAN_LINKS, batch.ArrowPayloads[3].Type)
+				require.Equal(t, arrowpb.ArrowPayloadType_SPAN_EVENT_ATTRS, batch.ArrowPayloads[4].Type)
+				require.Equal(t, arrowpb.ArrowPayloadType_SPAN_LINK_ATTRS, batch.ArrowPayloads[5].Type)
+			} else {
+				t.Error("unexpected fail")
+			}
 
 			consumer := NewConsumer()
 			received, err := consumer.TracesFrom(batch)

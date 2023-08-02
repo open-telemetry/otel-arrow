@@ -21,4 +21,6 @@ import "errors"
 
 var (
 	ErrBuilderAlreadyReleased = errors.New("builder already released")
+	ErrInvalidResourceID      = errors.New("invalid resource ID")
+	ErrInvalidScopeID         = errors.New("invalid scope ID")
 )

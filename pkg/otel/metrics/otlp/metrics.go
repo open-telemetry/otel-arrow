@@ -67,9 +67,13 @@ func MetricsFrom(record arrow.Record, relatedData *RelatedData) (pmetric.Metrics
 	prevResID := None
 	prevScopeID := None
 
+	var resID uint16
+	var scopeID uint16
+
 	for row := 0; row < rows; row++ {
 		// Process resource spans, resource, schema url (resource)
-		resID, err := otlp.ResourceIDFromRecord(record, row, metricsIDs.Resource)
+		resDeltaID, err := otlp.ResourceIDFromRecord(record, row, metricsIDs.Resource)
+		resID += resDeltaID
 		if err != nil {
 			return metrics, werror.Wrap(err)
 		}
@@ -86,7 +90,8 @@ func MetricsFrom(record arrow.Record, relatedData *RelatedData) (pmetric.Metrics
 		}
 
 		// Process scope spans, scope, schema url (scope)
-		scopeID, err := otlp.ScopeIDFromRecord(record, row, metricsIDs.Scope)
+		scopeDeltaID, err := otlp.ScopeIDFromRecord(record, row, metricsIDs.Scope)
+		scopeID += scopeDeltaID
 		if err != nil {
 			return metrics, werror.Wrap(err)
 		}

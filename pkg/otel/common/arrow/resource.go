@@ -81,42 +81,13 @@ func ResourceBuilderFrom(builder *builder.StructBuilder) *ResourceBuilder {
 	}
 }
 
-// Append appends a new resource to the builder.
-func (b *ResourceBuilder) Append(resource *pcommon.Resource, attrsAccu *Attributes16Accumulator) error {
+func (b *ResourceBuilder) Append(resID int64, resource pcommon.Resource, schemaUrl string) error {
 	if b.released {
 		return werror.Wrap(ErrBuilderAlreadyReleased)
 	}
 
 	return b.builder.Append(resource, func() error {
-		// ToDo Move to AppendWithID in a future PR
-		ID, err := attrsAccu.Append(resource.Attributes())
-		if err != nil {
-			return werror.Wrap(err)
-		}
-		if ID >= 0 {
-			b.aib.Append(uint16(ID))
-		} else {
-			// ID == -1 when the attributes are empty.
-			b.aib.AppendNull()
-		}
-		b.schb.AppendNull()
-		b.dacb.AppendNonZero(resource.DroppedAttributesCount())
-		return nil
-	})
-}
-
-func (b *ResourceBuilder) AppendWithID(attrsID int64, resource pcommon.Resource, schemaUrl string) error {
-	if b.released {
-		return werror.Wrap(ErrBuilderAlreadyReleased)
-	}
-
-	return b.builder.Append(resource, func() error {
-		if attrsID >= 0 {
-			b.aib.Append(uint16(attrsID))
-		} else {
-			// ID == -1 when the attributes are empty.
-			b.aib.AppendNull()
-		}
+		b.aib.Append(uint16(resID))
 		b.schb.AppendNonEmpty(schemaUrl)
 		b.dacb.AppendNonZero(resource.DroppedAttributesCount())
 		return nil

@@ -18,6 +18,8 @@
 package arrow
 
 import (
+	"math"
+
 	"github.com/apache/arrow/go/v12/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
@@ -205,7 +207,8 @@ func (b *LogsBuilder) Append(logs plog.Logs) (err error) {
 	logID := uint16(0)
 	resLogID := -1
 	scopeLogID := -1
-	var resID, scopeID int64
+	resID := int64(-1)
+	scopeID := int64(-1)
 
 	b.builder.Reserve(len(optimLogs.Logs))
 
@@ -222,31 +225,58 @@ func (b *LogsBuilder) Append(logs plog.Logs) (err error) {
 			logID++
 		}
 
-		// Resource logs
+		// === Process resource and schema URL ===
+		resAttrs := logRec.ResScope.Resource.Attributes()
 		if resLogID != logRec.ResScope.ResourceLogsID {
+			// New resource ID detected =>
+			// - Increment the resource ID
+			// - Append the resource attributes to the resource attributes accumulator
 			resLogID = logRec.ResScope.ResourceLogsID
-			resID, err = b.relatedData.AttrsBuilders().Resource().Accumulator().Append(logRec.ResScope.Resource.Attributes())
+			resID++
+			err = b.relatedData.AttrsBuilders().Resource().Accumulator().
+				AppendWithID(uint16(resID), resAttrs)
 			if err != nil {
 				return werror.Wrap(err)
 			}
 		}
-		if err = b.rb.AppendWithID(resID, logRec.ResScope.Resource, logRec.ResScope.ResourceSchemaUrl); err != nil {
+		// Check resID validity
+		if resID == -1 || resID > math.MaxUint16 {
+			return werror.WrapWithContext(acommon.ErrInvalidResourceID, map[string]interface{}{
+				"resource_id": resID,
+			})
+		}
+		// Append the resource schema URL if exists
+		if err = b.rb.Append(resID, logRec.ResScope.Resource, logRec.ResScope.ResourceSchemaUrl); err != nil {
 			return werror.Wrap(err)
 		}
 
-		// Scope logs
+		// === Process scope and schema URL ===
+		scopeAttrs := logRec.ResScope.Scope.Attributes()
 		if scopeLogID != logRec.ResScope.ScopeLogsID {
+			// New scope ID detected =>
+			// - Increment the scope ID
+			// - Append the scope attributes to the scope attributes accumulator
 			scopeLogID = logRec.ResScope.ScopeLogsID
-			scopeID, err = b.relatedData.AttrsBuilders().scope.Accumulator().Append(logRec.ResScope.Scope.Attributes())
+			scopeID++
+			err = b.relatedData.AttrsBuilders().scope.Accumulator().
+				AppendWithID(uint16(scopeID), scopeAttrs)
 			if err != nil {
 				return werror.Wrap(err)
 			}
 		}
-		if err = b.scb.AppendWithAttrsID(scopeID, logRec.ResScope.Scope); err != nil {
+		// Check scopeID validity
+		if scopeID == -1 || scopeID > math.MaxUint16 {
+			return werror.WrapWithContext(acommon.ErrInvalidScopeID, map[string]interface{}{
+				"scope_id": scopeID,
+			})
+		}
+		// Append the scope name, version, and schema URL (if exists)
+		if err = b.scb.Append(scopeID, logRec.ResScope.Scope); err != nil {
 			return werror.Wrap(err)
 		}
 		b.sschb.AppendNonEmpty(logRec.ResScope.ScopeSchemaUrl)
 
+		// === Process log record ===
 		b.tub.Append(arrow.Timestamp(log.Timestamp()))
 		b.otub.Append(arrow.Timestamp(log.ObservedTimestamp()))
 		tib := log.TraceID()

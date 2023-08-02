@@ -15,6 +15,7 @@
 package traces_test
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"math"
 	"math/rand"
@@ -23,6 +24,7 @@ import (
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
 	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
@@ -54,12 +56,210 @@ func TestTracesEncodingDecoding(t *testing.T) {
 
 	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
 
-	tracesGen := datagen.NewTracesGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
+	tracesGen := datagen.NewTracesGenerator(
+		entropy,
+		entropy.NewStandardResourceAttributes(),
+		entropy.NewStandardInstrumentationScopes(),
+	)
 
-	expectedRequest := ptraceotlp.NewExportRequestFromTraces(tracesGen.Generate(100, 100))
+	expectedRequest := ptraceotlp.NewExportRequestFromTraces(
+		tracesGen.Generate(100, 100))
 	CheckEncodeDecode(t, expectedRequest)
+}
 
-	expectedRequest = ptraceotlp.NewExportRequestFromTraces(tracesGen.GenerateRandomTraces(100, 100))
+func TestRandomTracesEncodingDecoding(t *testing.T) {
+	t.Parallel()
+
+	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+
+	tracesGen := datagen.NewTracesGenerator(
+		entropy,
+		entropy.NewRandomResourceAttributes(10),
+		entropy.NewRandomInstrumentationScopes(10),
+	)
+
+	for i := 0; i < 100; i++ {
+		expectedRequest := ptraceotlp.NewExportRequestFromTraces(
+			tracesGen.GenerateRandomTraces(1, 100))
+		CheckEncodeDecode(t, expectedRequest)
+	}
+}
+
+func TestCustom1TracesEncodingDecoding(t *testing.T) {
+	t.Parallel()
+
+	expected := ptrace.NewTraces()
+	rs := expected.ResourceSpans().AppendEmpty()
+	rs.Resource().Attributes().PutStr("hostname", "host3.mydomain.com")
+	rs.Resource().Attributes().PutStr("unique3", "uv3")
+	rs.Resource().Attributes().PutStr("ip", "192.168.0.3")
+	rs.Resource().Attributes().PutDouble("version", 1.5)
+	rs.Resource().Attributes().PutInt("status", 500)
+	rs.Resource().Attributes().PutBool("up", false)
+	rs.SetSchemaUrl("https://opentelemetry.io/schemas/1.0.0")
+
+	ss := rs.ScopeSpans().AppendEmpty()
+	scope := ss.Scope()
+	scope.SetName("fake_generator")
+	scope.SetVersion("1.0.1")
+
+	span := ss.Spans().AppendEmpty()
+	span.SetTraceID(traceID("6d759c9c5e1a049927ca069a497b0508"))
+	span.SetSpanID(spanID("90d5ead3745935bd"))
+	span.TraceState().FromRaw("maiores")
+	span.SetKind(2)
+	span.SetDroppedAttributesCount(9)
+	span.SetDroppedEventsCount(9)
+	span.SetDroppedLinksCount(6)
+	span.Status().SetMessage("OK")
+
+	span = ss.Spans().AppendEmpty()
+	span.SetTraceID(traceID("72e8551d2f079f29231aa57088384785"))
+	span.SetSpanID(spanID("35ce5d0711df60f2"))
+	span.SetParentSpanID(spanID("35ce5d0711df60f2"))
+	span.SetName("GET /user-info")
+	span.SetStartTimestamp(1668124800000010667)
+	span.SetEndTimestamp(1668124800000010668)
+	span.SetDroppedAttributesCount(8)
+
+	event := span.Events().AppendEmpty()
+	event.SetTimestamp(1668124800000010672)
+	event = span.Events().AppendEmpty()
+	event.SetTimestamp(1668124800000010674)
+	event.SetName("odit")
+	event.SetDroppedAttributesCount(2)
+	event = span.Events().AppendEmpty()
+	event.SetTimestamp(1668124800000010672)
+	event.SetName("velit")
+	event.Attributes().PutStr("attr_0", "est")
+	event.Attributes().PutDouble("attr_1", 0.017895097521176077)
+	event.Attributes().PutStr("attr_2", "consectetur")
+	event.SetDroppedAttributesCount(9)
+	event = span.Events().AppendEmpty()
+	event.SetName("exercitationem")
+	event = span.Events().AppendEmpty()
+	event.SetTimestamp(1668124800000010672)
+	event.SetName("soluta")
+	event.SetDroppedAttributesCount(9)
+	event = span.Events().AppendEmpty()
+	event.SetTimestamp(1668124800000010672)
+	event.SetDroppedAttributesCount(7)
+	event = span.Events().AppendEmpty()
+
+	link := span.Links().AppendEmpty()
+	link.SetTraceID(traceID("72e8551d2f079f29231aa57088384785"))
+	link.TraceState().FromRaw("ut")
+	link.Attributes().PutInt("attr_0", 4055508854307121380)
+	link.Attributes().PutInt("attr_1", 2603754219448080514)
+	link.Attributes().PutStr("attr_2", "ut")
+	link.Attributes().PutInt("attr_3", 542986775976848616)
+	link.Attributes().PutInt("attr_4", 5562030613432072994)
+	link.SetDroppedAttributesCount(8)
+	link = span.Links().AppendEmpty()
+	link.TraceState().FromRaw("vel")
+	link.SetDroppedAttributesCount(6)
+
+	span.Status().SetCode(1)
+
+	expectedRequest := ptraceotlp.NewExportRequestFromTraces(expected)
+	CheckEncodeDecode(t, expectedRequest)
+}
+
+func TestCustom2TracesEncodingDecoding(t *testing.T) {
+	t.Parallel()
+
+	expected := ptrace.NewTraces()
+	rs := expected.ResourceSpans().AppendEmpty()
+	rs.SetSchemaUrl("https://opentelemetry.io/schemas/1.0.0")
+
+	// First scope span with a scope
+	ss := rs.ScopeSpans().AppendEmpty()
+	scope := ss.Scope()
+	scope.SetName("fake_generator")
+	scope.SetVersion("1.0.1")
+
+	span := ss.Spans().AppendEmpty()
+	span.SetTraceID(traceID("6d759c9c5e1a049927ca069a497b0508"))
+	span.SetSpanID(spanID("90d5ead3745935bd"))
+	span.TraceState().FromRaw("maiores")
+	span.SetKind(2)
+	span.SetDroppedAttributesCount(9)
+	span.SetDroppedEventsCount(9)
+	span.SetDroppedLinksCount(6)
+	span.Status().SetMessage("OK")
+
+	span = ss.Spans().AppendEmpty()
+	span.SetTraceID(traceID("72e8551d2f079f29231aa57088384785"))
+	span.SetSpanID(spanID("35ce5d0711df60f2"))
+	span.SetParentSpanID(spanID("35ce5d0711df60f2"))
+	span.SetName("GET /user-info")
+	span.SetStartTimestamp(1668124800000010667)
+	span.SetEndTimestamp(1668124800000010668)
+	span.SetDroppedAttributesCount(8)
+
+	event := span.Events().AppendEmpty()
+	event.SetTimestamp(1668124800000010672)
+	event = span.Events().AppendEmpty()
+	event.SetTimestamp(1668124800000010674)
+	event.SetName("odit")
+	event.SetDroppedAttributesCount(2)
+	event = span.Events().AppendEmpty()
+	event.SetTimestamp(1668124800000010672)
+	event.SetName("velit")
+	event.Attributes().PutStr("attr_0", "est")
+	event.Attributes().PutDouble("attr_1", 0.017895097521176077)
+	event.Attributes().PutStr("attr_2", "consectetur")
+	event.SetDroppedAttributesCount(9)
+	event = span.Events().AppendEmpty()
+	event.SetName("exercitationem")
+	event = span.Events().AppendEmpty()
+	event.SetTimestamp(1668124800000010672)
+	event.SetName("soluta")
+	event.SetDroppedAttributesCount(9)
+	event = span.Events().AppendEmpty()
+	event.SetTimestamp(1668124800000010672)
+	event.SetDroppedAttributesCount(7)
+	event = span.Events().AppendEmpty()
+
+	link := span.Links().AppendEmpty()
+	link.SetTraceID(traceID("72e8551d2f079f29231aa57088384785"))
+	link.TraceState().FromRaw("ut")
+	link.Attributes().PutInt("attr_0", 4055508854307121380)
+	link.Attributes().PutInt("attr_1", 2603754219448080514)
+	link.Attributes().PutStr("attr_2", "ut")
+	link.Attributes().PutInt("attr_3", 542986775976848616)
+	link.Attributes().PutInt("attr_4", 5562030613432072994)
+	link.SetDroppedAttributesCount(8)
+	link = span.Links().AppendEmpty()
+	link.TraceState().FromRaw("vel")
+	link.SetDroppedAttributesCount(6)
+
+	span.Status().SetCode(1)
+
+	// Second scope span with an empty scope
+	ss = rs.ScopeSpans().AppendEmpty()
+	scope = ss.Scope()
+
+	span = ss.Spans().AppendEmpty()
+	span.SetTraceID(traceID("6d759c9c5e1a049927ca069a497b0666"))
+	span.SetSpanID(spanID("90d5ead3745923ab"))
+	span.TraceState().FromRaw("maiores2")
+	span.SetKind(1)
+	span.SetDroppedAttributesCount(0)
+	span.SetDroppedEventsCount(0)
+	span.SetDroppedLinksCount(0)
+	span.Status().SetMessage("OK")
+
+	span = ss.Spans().AppendEmpty()
+	span.SetTraceID(traceID("72e8551d2f079f29231aa57088384999"))
+	span.SetSpanID(spanID("35ce5d0711df61f3"))
+	span.SetParentSpanID(spanID("35ce5d0711df61f3"))
+	span.SetName("POST /user-info")
+	span.SetStartTimestamp(1668124800000010456)
+	span.SetEndTimestamp(1668124800000010123)
+	span.SetDroppedAttributesCount(0)
+
+	expectedRequest := ptraceotlp.NewExportRequestFromTraces(expected)
 	CheckEncodeDecode(t, expectedRequest)
 }
 
@@ -248,4 +448,24 @@ func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportReques
 	defer record.Release()
 
 	assert.Equiv(t, []json.Marshaler{expectedRequest}, []json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)})
+}
+
+func traceID(id string) [16]byte {
+	data, err := hex.DecodeString(id)
+	if err != nil {
+		panic(err)
+	}
+	var traceID [16]byte
+	copy(traceID[:], data[:16])
+	return traceID
+}
+
+func spanID(id string) [8]byte {
+	data, err := hex.DecodeString(id)
+	if err != nil {
+		panic(err)
+	}
+	var spanID [8]byte
+	copy(spanID[:], data[:8])
+	return spanID
 }

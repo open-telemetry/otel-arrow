@@ -65,8 +65,7 @@ func ScopeBuilderFrom(sb *builder.StructBuilder) *ScopeBuilder {
 	}
 }
 
-// Append appends a new instrumentation scope to the builder.
-func (b *ScopeBuilder) Append(scope *pcommon.InstrumentationScope, attrsAccu *Attributes16Accumulator) error {
+func (b *ScopeBuilder) Append(scopeID int64, scope pcommon.InstrumentationScope) error {
 	if b.released {
 		return werror.Wrap(ErrBuilderAlreadyReleased)
 	}
@@ -74,40 +73,7 @@ func (b *ScopeBuilder) Append(scope *pcommon.InstrumentationScope, attrsAccu *At
 	return b.builder.Append(scope, func() error {
 		b.nb.AppendNonEmpty(scope.Name())
 		b.vb.AppendNonEmpty(scope.Version())
-
-		// ToDo Move to AppendWithID in a future PR
-		ID, err := attrsAccu.Append(scope.Attributes())
-		if err != nil {
-			return werror.Wrap(err)
-		}
-		if ID >= 0 {
-			b.aib.Append(uint16(ID))
-		} else {
-			// ID == -1 when the attributes are empty.
-			b.aib.AppendNull()
-		}
-
-		b.dacb.AppendNonZero(scope.DroppedAttributesCount())
-		return nil
-	})
-}
-
-func (b *ScopeBuilder) AppendWithAttrsID(ID int64, scope pcommon.InstrumentationScope) error {
-	if b.released {
-		return werror.Wrap(ErrBuilderAlreadyReleased)
-	}
-
-	return b.builder.Append(scope, func() error {
-		b.nb.AppendNonEmpty(scope.Name())
-		b.vb.AppendNonEmpty(scope.Version())
-
-		if ID >= 0 {
-			b.aib.Append(uint16(ID))
-		} else {
-			// ID == -1 when the attributes are empty.
-			b.aib.AppendNull()
-		}
-
+		b.aib.Append(uint16(scopeID))
 		b.dacb.AppendNonZero(scope.DroppedAttributesCount())
 		return nil
 	})
