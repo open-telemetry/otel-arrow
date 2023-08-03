@@ -166,8 +166,39 @@ func (o *obfuscation) processEventAndLinkAttrs(ctx context.Context, span ptrace.
 	}
 }
 
+func (o *obfuscation) processSliceValue(ctx context.Context, slice pcommon.Slice) {
+	cpy := pcommon.NewSlice()
+	for i := 0; i < slice.Len(); i++ {
+		cpyVal := cpy.AppendEmpty()
+		val := slice.At(i)
+
+		switch val.Type() {
+		case pcommon.ValueTypeStr:
+			cpyVal.SetStr(o.encryptString(val.Str()))
+		case pcommon.ValueTypeBytes:
+			obf := o.encryptStringToBytes(string(val.Bytes().AsRaw()))
+			byteSlice := cpyVal.SetEmptyBytes()
+			byteSlice.FromRaw(obf)
+		case pcommon.ValueTypeSlice:
+			cpySlice := cpyVal.SetEmptySlice()
+			o.processSliceValue(ctx, val.Slice())
+			val.Slice().CopyTo(cpySlice)
+		case pcommon.ValueTypeMap:
+			cpyMap := cpyVal.SetEmptyMap()
+			o.processAttrs(ctx, val.Map())
+			val.Map().CopyTo(cpyMap)
+		default:
+			// no need to obfuscate types that cannot contain a string
+			val.CopyTo(cpyVal)
+		}
+
+	}
+
+	cpy.CopyTo(slice)
+}
+
 // processAttrs obfuscates the attributes of a resource span or a span
-func (o *obfuscation) processAttrs(_ context.Context, attributes pcommon.Map) {
+func (o *obfuscation) processAttrs(ctx context.Context, attributes pcommon.Map) {
 	cpy := pcommon.NewMap()
 	attributes.Range(func(k string, value pcommon.Value) bool {
 		if !o.encryptAll {
@@ -181,10 +212,19 @@ func (o *obfuscation) processAttrs(_ context.Context, attributes pcommon.Map) {
 		switch value.Type() {
 		case pcommon.ValueTypeStr:
 			cpy.PutStr(o.encryptString(k), o.encryptString(value.Str()))
+		case pcommon.ValueTypeBytes:
+			byteSlice := cpy.PutEmptyBytes(o.encryptString(k))
+			obf := o.encryptStringToBytes(string(value.Bytes().AsRaw()))
+			byteSlice.FromRaw(obf)
+		case pcommon.ValueTypeSlice:
+			slc := cpy.PutEmptySlice(o.encryptString(k))
+			o.processSliceValue(ctx, value.Slice())
+			value.Slice().CopyTo(slc)
+		case pcommon.ValueTypeMap:
+			mp := cpy.PutEmptyMap(o.encryptString(k))
+			o.processAttrs(ctx, value.Map())
+			value.Map().CopyTo(mp)
 		default:
-			// TODO: This does not cover all string values, needs
-			// to be updated for StringSlice and KVList types at
-			// least.
 			value.CopyTo(cpy.PutEmpty(o.encryptString(k)))
 		}
 		return true
@@ -207,7 +247,20 @@ func (o *obfuscation) Shutdown(context.Context) error {
 	return nil
 }
 
+func (o *obfuscation) encryptStringToBytes(source string) []byte {
+	obfuscated, err := o.encrypt.Encrypt(source)
+	if err != nil {
+		o.logger.Error("failed to obfuscate bytes, returning original", zap.Error(err))
+		return []byte(source)
+	}
+	return obfuscated.Bytes()
+}
+
 func (o *obfuscation) encryptString(source string) string {
-	obfuscated, _ := o.encrypt.Encrypt(source)
+	obfuscated, err := o.encrypt.Encrypt(source)
+	if err != nil {
+		o.logger.Error("failed to obfuscate string, returning original", zap.Error(err))
+		return source
+	}
 	return obfuscated.String(true)
 }
