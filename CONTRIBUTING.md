@@ -1,44 +1,45 @@
-# Contributing to OTEL Arrow Adapter
-We want to make contributing to this project as easy and transparent as
-possible.
+# Contributing to OTel Arrow
 
-## [Code of Conduct]
-
-F5 has adopted a Code of Conduct that we expect project participants to adhere
-to. Please read [the full text](CODE_OF_CONDUCT.md) so that you can understand
-what actions will and will not be tolerated.
+We want to make contributing to this project as easy and transparent
+as possible.  Please see the OpenTelemetry
+[CONTRIBUTING.md](https://github.com/open-telemetry/community/blob/main/CONTRIBUTING.md)
+guidelines for project-wide information, including code of conduct,
+and contributor license agreements, copyright notices, and how to
+engage with the OpenTelemetry community.
 
 ## Our Development Process
 
-[OUTLINE OF DEVELOPMENT PROCESS]
+### Repository background
 
-## Pull Requests
-We actively welcome your pull requests.
+The OTel Arrow project was initially developed using the package name
+`github.com/f5/otel-arrow-adapter`.  At the time of the [OpenTelemetry
+donation](https://github.com/open-telemetry/community/issues/1332),
+this repository was an amalgamation of original code and code copied
+from the [OTel Arrow
+Collector](https://github.com/open-telemetry/otel-arrow-collector) as
+part of [our development
+process](https://github.com/open-telemetry/otel-arrow-collector/issues/48).
 
-1. Fork the repo and create your branch from `dev`.
-2. If you've added code that should be tested, add tests.
-3. If you've changed APIs, update the documentation.
-4. Ensure the test suite passes.
-5. Make sure your code lints.
-6. If you haven't already, complete the Contributor License Agreement ("CLA").
+### Source locations
 
-## Contributor License Agreement ("CLA")
+This repository contains the OTel Arrow protocol definition and Golang
+libraries for producing and consuming OTel Arrow data.
 
-In order to accept your pull request, we need you to submit a CLA, if you
-haven’t submitted one before for this project. You only need to do this
-once, and you’re good to go.
+The OTel Arrow exporter and receiver components for the [OpenTelemetry
+Collector](https://github.com/open-telemetry/opentelemetry-collector)
+components were developed in parallel with this code base.  They are
+maintained as part of the [OTel Arrow
+Collector](https://github.com/open-telemetry/otel-arrow-collector)
+repository, which contains the branch history that relates the OTel
+Arrow exporter and receiver components to the core OTLP
+[exporter](https://github.com/open-telemetry/opentelemetry-collector/tree/main/exporter/otlpexporter)
+and
+[receiver](https://github.com/open-telemetry/opentelemetry-collector/tree/main/receiver/otlpreceiver)
+components.  Prior to the donation, these components were copied into
+`github.com/f5/otel-arrow-adapter/collector`.  Following the donation,
+these components are copied into the [OpenTelemetry Collector
+Contrib](https://github.com/open-telemetry/opentelemetry-collector-contrib)
+repository.
 
-Complete your [CLA here](F5%20Contributor%20License%20Agreement.docx) and email
-the filled out form to [PROJECT_EMAIL].
-
-## License
-By contributing to OTEL Arrow Adapter, you agree that your contributions will be licensed
-its Apache 2.0 license. Copy and paste this to the top of your new file(s):
-
-```js
-/**
- * Copyright (c) F5, Inc.
- *
- * This source code is licensed under the Apache 2.0 license found in the
- * LICENSE file in the root directory of this source tree.
- */
+TODO: Update this document with links when the components are
+includeded in their first `collector-contrib` release.
