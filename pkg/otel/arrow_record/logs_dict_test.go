@@ -54,6 +54,8 @@ func TestLogsWithNoDictionary(t *testing.T) {
 		}
 	}()
 
+	stdTesting := assert.NewStdUnitTest(t)
+
 	for i := 0; i < 300; i++ {
 		logs := GenerateLogs(0, math.MaxUint8+1)
 		batch, err := producer.BatchArrowRecordsFromLogs(logs)
@@ -65,7 +67,7 @@ func TestLogsWithNoDictionary(t *testing.T) {
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
-			t,
+			stdTesting,
 			[]json.Marshaler{plogotlp.NewExportRequestFromLogs(logs)},
 			[]json.Marshaler{plogotlp.NewExportRequestFromLogs(received[0])},
 		)
@@ -102,6 +104,8 @@ func TestLogsMultiBatchWithDictionaryIndexChanges(t *testing.T) {
 		}
 	}()
 
+	stdTesting := assert.NewStdUnitTest(t)
+
 	for i := 0; i < 10; i++ {
 		logs := GenerateLogs(0, math.MaxUint8+1)
 		batch, err := producer.BatchArrowRecordsFromLogs(logs)
@@ -113,7 +117,7 @@ func TestLogsMultiBatchWithDictionaryIndexChanges(t *testing.T) {
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
-			t,
+			stdTesting,
 			[]json.Marshaler{plogotlp.NewExportRequestFromLogs(logs)},
 			[]json.Marshaler{plogotlp.NewExportRequestFromLogs(received[0])},
 		)
@@ -153,6 +157,8 @@ func TestLogsMultiBatchWithDictionaryOverflow(t *testing.T) {
 		}
 	}()
 
+	stdTesting := assert.NewStdUnitTest(t)
+
 	for i := 0; i < 10; i++ {
 		logs := GenerateLogs(i*((math.MaxUint8/2)+1), (math.MaxUint8/2)+1)
 		batch, err := producer.BatchArrowRecordsFromLogs(logs)
@@ -164,7 +170,7 @@ func TestLogsMultiBatchWithDictionaryOverflow(t *testing.T) {
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
-			t,
+			stdTesting,
 			[]json.Marshaler{plogotlp.NewExportRequestFromLogs(logs)},
 			[]json.Marshaler{plogotlp.NewExportRequestFromLogs(received[0])},
 		)
@@ -203,6 +209,8 @@ func TestLogsMultiBatchWithDictionaryLimit(t *testing.T) {
 		}
 	}()
 
+	stdTesting := assert.NewStdUnitTest(t)
+
 	for i := 0; i < 10; i++ {
 		logs := GenerateLogs(0, math.MaxUint8+1)
 		batch, err := producer.BatchArrowRecordsFromLogs(logs)
@@ -214,7 +222,7 @@ func TestLogsMultiBatchWithDictionaryLimit(t *testing.T) {
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
-			t,
+			stdTesting,
 			[]json.Marshaler{plogotlp.NewExportRequestFromLogs(logs)},
 			[]json.Marshaler{plogotlp.NewExportRequestFromLogs(received[0])},
 		)

@@ -44,6 +44,7 @@ var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
 func TestLogs(t *testing.T) {
 	t.Parallel()
 
+	stdTesting := jsonassert.NewStdUnitTest(t)
 	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
@@ -88,7 +89,7 @@ func TestLogs(t *testing.T) {
 ,{"body":{"str":"body2","type":1},"dropped_attributes_count":1,"flags":2,"id":1,"observed_time_unix_nano":"1970-01-01 00:00:00.000000004","resource":{"dropped_attributes_count":1,"id":1,"schema_url":"schema2"},"schema_url":"schema2","scope":{"dropped_attributes_count":1,"id":0,"name":"scope2","version":"1.0.2"},"severity_number":2,"severity_text":"severity2","span_id":"qgAAAAAAAAA=","time_unix_nano":"1970-01-01 00:00:00.000000003","trace_id":"qgAAAAAAAAAAAAAAAAAAAA=="}
 ]`
 
-	jsonassert.JSONCanonicalEq(t, expected, actual)
+	jsonassert.JSONCanonicalEq(stdTesting, expected, actual)
 
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {

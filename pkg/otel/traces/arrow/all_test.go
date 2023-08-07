@@ -245,6 +245,8 @@ func TestLink(t *testing.T) {
 func TestTraces(t *testing.T) {
 	t.Parallel()
 
+	stdTesting := jsonassert.NewStdUnitTest(t)
+
 	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
@@ -292,7 +294,7 @@ func TestTraces(t *testing.T) {
 ,{"dropped_attributes_count":1,"dropped_events_count":1,"dropped_links_count":1,"duration_time_unix_nano":"1ms","id":1,"kind":3,"name":"span2","parent_span_id":"qgAAAAAAAAA=","resource":{"dropped_attributes_count":1,"id":1,"schema_url":"schema2"},"schema_url":"schema2","scope":{"dropped_attributes_count":1,"id":0,"name":"scope2","version":"1.0.2"},"span_id":"qgAAAAAAAAA=","start_time_unix_nano":"1970-01-01 00:00:00.000000003","status":{"code":2,"status_message":"message2"},"trace_id":"qgAAAAAAAAAAAAAAAAAAAA==","trace_state":"key1=value2"}
 ]`
 
-	jsonassert.JSONCanonicalEq(t, expected, actual)
+	jsonassert.JSONCanonicalEq(stdTesting, expected, actual)
 
 	for _, relatedRecord := range relatedRecords {
 		switch relatedRecord.PayloadType() {

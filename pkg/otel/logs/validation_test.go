@@ -80,6 +80,8 @@ func CheckEncodeDecode(
 	t *testing.T,
 	expectedRequest plogotlp.ExportRequest,
 ) {
+	stdTesting := assert.NewStdUnitTest(t)
+
 	// Convert the OTLP logs request to Arrow.
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
@@ -118,7 +120,7 @@ func CheckEncodeDecode(
 
 	record.Release()
 
-	assert.Equiv(t, []json.Marshaler{expectedRequest}, []json.Marshaler{plogotlp.NewExportRequestFromLogs(logs)})
+	assert.Equiv(stdTesting, []json.Marshaler{expectedRequest}, []json.Marshaler{plogotlp.NewExportRequestFromLogs(logs)})
 }
 
 func MultiRoundOfCheckEncodeMessUpDecode(

@@ -1,4 +1,4 @@
-# Encoding/Decoding Validation Process
+# Validation Process
 
 This document describes the validation process employed to confirm the correctness
 and resilience of encoding and decoding process of OTLP entities to/from OTel Arrow
@@ -20,16 +20,20 @@ Mandatory fields will not be generated systematically in order to test the
 robustness of the encoding/decoding process (the original Protobuf encoding 
 doesn't enforce mandatory fields).
 
-## Generic comparison of OTLP entities before and after encoding/decoding
+## Encoding/Decoding validation
 
-OTLP entities are serialized in their JSON representation before encoding and 
-after decoding. These two JSON representations must be logically equivalent.
-This comparison is implemented by a dedicated function that recursively traverses
-the 2 JSON trees and compares the values of the fields taking into account that 
-the fields are not ordered and that the batching process may have changed the 
-internal organization of the data. 
+OTLP entities are encoded to Arrow records and then decoded back to OTLP
+entities. The validation process compares the original OTLP entities with the
+decoded OTLP entities. The comparison is done at the JSON level. These two JSON 
+representations must be logically equivalent. This comparison is implemented by
+a dedicated function that recursively traverses the 2 JSON trees and compares
+the values of the fields taking into account that the fields are not ordered
+and that the batching process may have changed the internal organization of the
+data. The `assert.Equiv` function implements this comparison. 
 
-## Decoding of invalid data  
+![General validation process](./img/OTEL%20-%20validation%20process.png)
+
+## Encoding/Decoding of invalid data  
 
 A generic process has been implemented to inject specific errors and data changes
 in the encoded data. For example, the existing process keep the Arrow records
@@ -37,7 +41,13 @@ but randomly change their payload types. The goal is to test the resilience of
 the decoding process to invalid data. The decoding layer must be able to handle
 any invalid data and return appropriate error messages without crashing.
 
-## Capturing and Replaying production data
+![Decoding of invalid data](./img/OTEL%20-%20Chaos%20Engineering.png)
+
+## Collector validation
+
+ToDo: describe the validation process of the collector (@jmacd).
+
+## Capturing and Replaying staging or production data
 
 A new version of the OTel file exporter has been implemented to capture OTLP
 traffic in a generic JSON format (with ZSTD compression). A set of tools have

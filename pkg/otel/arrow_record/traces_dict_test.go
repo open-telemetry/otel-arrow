@@ -54,6 +54,8 @@ func TestTracesWithNoDictionary(t *testing.T) {
 		}
 	}()
 
+	stdTesting := assert.NewStdUnitTest(t)
+
 	for i := 0; i < 300; i++ {
 		traces := GenerateTraces(0, math.MaxUint8+1)
 		batch, err := producer.BatchArrowRecordsFromTraces(traces)
@@ -65,7 +67,7 @@ func TestTracesWithNoDictionary(t *testing.T) {
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
-			t,
+			stdTesting,
 			[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)},
 			[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(received[0])},
 		)
@@ -102,6 +104,8 @@ func TestTracesMultiBatchWithDictionaryIndexChanges(t *testing.T) {
 		}
 	}()
 
+	stdTesting := assert.NewStdUnitTest(t)
+
 	for i := 0; i < 10; i++ {
 		traces := GenerateTraces(0, math.MaxUint8+1)
 		batch, err := producer.BatchArrowRecordsFromTraces(traces)
@@ -113,7 +117,7 @@ func TestTracesMultiBatchWithDictionaryIndexChanges(t *testing.T) {
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
-			t,
+			stdTesting,
 			[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)},
 			[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(received[0])},
 		)
@@ -153,6 +157,8 @@ func TestTracesMultiBatchWithDictionaryOverflow(t *testing.T) {
 		}
 	}()
 
+	stdTesting := assert.NewStdUnitTest(t)
+
 	for i := 0; i < 10; i++ {
 		traces := GenerateTraces(i*((math.MaxUint8/2)+1), (math.MaxUint8/2)+1)
 		batch, err := producer.BatchArrowRecordsFromTraces(traces)
@@ -164,7 +170,7 @@ func TestTracesMultiBatchWithDictionaryOverflow(t *testing.T) {
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
-			t,
+			stdTesting,
 			[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)},
 			[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(received[0])},
 		)
@@ -203,6 +209,8 @@ func TestTracesMultiBatchWithDictionaryLimit(t *testing.T) {
 		}
 	}()
 
+	stdTesting := assert.NewStdUnitTest(t)
+
 	for i := 0; i < 10; i++ {
 		traces := GenerateTraces(0, math.MaxUint8+1)
 		batch, err := producer.BatchArrowRecordsFromTraces(traces)
@@ -214,7 +222,7 @@ func TestTracesMultiBatchWithDictionaryLimit(t *testing.T) {
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
-			t,
+			stdTesting,
 			[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)},
 			[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(received[0])},
 		)

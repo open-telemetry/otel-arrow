@@ -53,6 +53,8 @@ func TestMetricsWithNoDictionary(t *testing.T) {
 		}
 	}()
 
+	stdTesting := assert.NewStdUnitTest(t)
+
 	for i := 0; i < 300; i++ {
 		metrics := GenerateMetrics(0, math.MaxUint8+1)
 		batch, err := producer.BatchArrowRecordsFromMetrics(metrics)
@@ -64,7 +66,7 @@ func TestMetricsWithNoDictionary(t *testing.T) {
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
-			t,
+			stdTesting,
 			[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(metrics)},
 			[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(received[0])},
 		)
@@ -101,6 +103,8 @@ func TestMetricsMultiBatchWithDictionaryIndexChanges(t *testing.T) {
 		}
 	}()
 
+	stdTesting := assert.NewStdUnitTest(t)
+
 	for i := 0; i < 10; i++ {
 		metrics := GenerateMetrics(0, math.MaxUint8+1)
 		batch, err := producer.BatchArrowRecordsFromMetrics(metrics)
@@ -112,7 +116,7 @@ func TestMetricsMultiBatchWithDictionaryIndexChanges(t *testing.T) {
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
-			t,
+			stdTesting,
 			[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(metrics)},
 			[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(received[0])},
 		)
@@ -153,6 +157,8 @@ func TestMetricsMultiBatchWithDictionaryOverflow(t *testing.T) {
 		}
 	}()
 
+	stdTesting := assert.NewStdUnitTest(t)
+
 	for i := 0; i < 10; i++ {
 		metrics := GenerateMetrics(i*((math.MaxUint8/2)+1), (math.MaxUint8/2)+1)
 		batch, err := producer.BatchArrowRecordsFromMetrics(metrics)
@@ -164,7 +170,7 @@ func TestMetricsMultiBatchWithDictionaryOverflow(t *testing.T) {
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
-			t,
+			stdTesting,
 			[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(metrics)},
 			[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(received[0])},
 		)
@@ -204,6 +210,8 @@ func TestMetricsMultiBatchWithDictionaryLimit(t *testing.T) {
 		}
 	}()
 
+	stdTesting := assert.NewStdUnitTest(t)
+
 	for i := 0; i < 10; i++ {
 		metrics := GenerateMetrics(0, math.MaxUint8+1)
 		batch, err := producer.BatchArrowRecordsFromMetrics(metrics)
@@ -215,7 +223,7 @@ func TestMetricsMultiBatchWithDictionaryLimit(t *testing.T) {
 		require.Equal(t, 1, len(received))
 
 		assert.Equiv(
-			t,
+			stdTesting,
 			[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(metrics)},
 			[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(received[0])},
 		)

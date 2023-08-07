@@ -200,6 +200,8 @@ func FuzzProducerTraces1(f *testing.F) {
 func TestProducerConsumerTraces(t *testing.T) {
 	ent := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
 
+	stdTesting := assert.NewStdUnitTest(t)
+
 	for idx, dg := range []*datagen.TraceGenerator{
 		datagen.NewTracesGenerator(
 			ent,
@@ -260,7 +262,7 @@ func TestProducerConsumerTraces(t *testing.T) {
 			require.Equal(t, 1, len(received))
 
 			assert.Equiv(
-				t,
+				stdTesting,
 				[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)},
 				[]json.Marshaler{ptraceotlp.NewExportRequestFromTraces(received[0])},
 			)
@@ -270,6 +272,8 @@ func TestProducerConsumerTraces(t *testing.T) {
 
 func TestProducerConsumerLogs(t *testing.T) {
 	ent := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+
+	stdTesting := assert.NewStdUnitTest(t)
 
 	for idx, dg := range []*datagen.LogsGenerator{
 		datagen.NewLogsGenerator(
@@ -312,7 +316,7 @@ func TestProducerConsumerLogs(t *testing.T) {
 			require.Equal(t, 1, len(received))
 
 			assert.Equiv(
-				t,
+				stdTesting,
 				[]json.Marshaler{plogotlp.NewExportRequestFromLogs(logs)},
 				[]json.Marshaler{plogotlp.NewExportRequestFromLogs(received[0])},
 			)
@@ -322,6 +326,8 @@ func TestProducerConsumerLogs(t *testing.T) {
 
 func TestProducerConsumerMetrics(t *testing.T) {
 	ent := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+
+	stdTesting := assert.NewStdUnitTest(t)
 
 	for idx, dg := range []*datagen.MetricsGenerator{
 		datagen.NewMetricsGenerator(
@@ -365,7 +371,7 @@ func TestProducerConsumerMetrics(t *testing.T) {
 			require.Equal(t, 1, len(received))
 
 			assert.Equiv(
-				t,
+				stdTesting,
 				[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(metrics)},
 				[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(received[0])},
 			)
@@ -380,7 +386,7 @@ func TestProducerConsumerMetrics(t *testing.T) {
 			require.Equal(t, 1, len(received))
 
 			assert.Equiv(
-				t,
+				stdTesting,
 				[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(metrics)},
 				[]json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(received[0])},
 			)

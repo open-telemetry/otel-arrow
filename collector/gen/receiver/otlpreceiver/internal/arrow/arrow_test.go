@@ -14,11 +14,6 @@ import (
 	"sync"
 	"testing"
 
-	arrowpb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
-	arrowCollectorMock "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1/mock"
-	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
-	arrowRecordMock "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record/mock"
-	otelAssert "github.com/f5/otel-arrow-adapter/pkg/otel/assert"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,18 +21,25 @@ import (
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/grpc/metadata"
 
+	arrowpb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
+	arrowCollectorMock "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1/mock"
+	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
+	arrowRecordMock "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record/mock"
+	otelAssert "github.com/f5/otel-arrow-adapter/pkg/otel/assert"
+
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/extension/auth"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
 	"go.opentelemetry.io/collector/obsreport"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/receiver"
+
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
 	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow/mock"
 )
 
@@ -369,6 +371,7 @@ func TestReceiverLogs(t *testing.T) {
 func TestReceiverMetrics(t *testing.T) {
 	tc := healthyTestChannel{}
 	ctc := newCommonTestCase(t, tc)
+	stdTesting := otelAssert.NewStdUnitTest(t)
 
 	md := testdata.GenerateMetrics(2)
 	batch, err := ctc.testProducer.BatchArrowRecordsFromMetrics(md)
@@ -379,7 +382,7 @@ func TestReceiverMetrics(t *testing.T) {
 	ctc.start(ctc.newRealConsumer)
 	ctc.putBatch(batch, nil)
 
-	otelAssert.Equiv(t, []json.Marshaler{
+	otelAssert.Equiv(stdTesting, []json.Marshaler{
 		compareJSONMetrics{md},
 	}, []json.Marshaler{
 		compareJSONMetrics{(<-ctc.consume).Data.(pmetric.Metrics)},
@@ -424,6 +427,8 @@ func TestReceiverSendError(t *testing.T) {
 }
 
 func TestReceiverConsumeError(t *testing.T) {
+	stdTesting := otelAssert.NewStdUnitTest(t)
+
 	data := []interface{}{
 		testdata.GenerateTraces(2),
 		testdata.GenerateMetrics(2),
@@ -458,19 +463,19 @@ func TestReceiverConsumeError(t *testing.T) {
 
 		switch input := item.(type) {
 		case ptrace.Traces:
-			otelAssert.Equiv(t, []json.Marshaler{
+			otelAssert.Equiv(stdTesting, []json.Marshaler{
 				compareJSONTraces{input},
 			}, []json.Marshaler{
 				compareJSONTraces{(<-ctc.consume).Data.(ptrace.Traces)},
 			})
 		case plog.Logs:
-			otelAssert.Equiv(t, []json.Marshaler{
+			otelAssert.Equiv(stdTesting, []json.Marshaler{
 				compareJSONLogs{input},
 			}, []json.Marshaler{
 				compareJSONLogs{(<-ctc.consume).Data.(plog.Logs)},
 			})
 		case pmetric.Metrics:
-			otelAssert.Equiv(t, []json.Marshaler{
+			otelAssert.Equiv(stdTesting, []json.Marshaler{
 				compareJSONMetrics{input},
 			}, []json.Marshaler{
 				compareJSONMetrics{(<-ctc.consume).Data.(pmetric.Metrics)},

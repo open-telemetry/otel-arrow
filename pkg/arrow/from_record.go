@@ -130,6 +130,35 @@ func U64FromRecord(record arrow.Record, fieldID int, row int) (uint64, error) {
 	}
 }
 
+// NullableU16FromRecord returns the uint16 value for a specific row and column in an
+// Arrow record. If the value is null, it returns nil.
+func NullableU16FromRecord(record arrow.Record, fieldID int, row int) (*uint16, error) {
+	if fieldID == AbsentFieldID {
+		return nil, nil
+	}
+
+	arr := record.Column(fieldID)
+	if arr == nil {
+		return nil, nil
+	}
+
+	if arr.IsNull(row) {
+		return nil, nil
+	}
+
+	switch arr := arr.(type) {
+	case *array.Uint16:
+		if arr.IsNull(row) {
+			return nil, nil
+		} else {
+			val := arr.Value(row)
+			return &val, nil
+		}
+	default:
+		return nil, werror.WrapWithMsg(ErrInvalidArrayType, "not a uint16 array")
+	}
+}
+
 // NullableU32FromRecord returns the uint32 value for a specific row and column in an
 // Arrow record. If the value is null, it returns nil.
 func NullableU32FromRecord(record arrow.Record, fieldID int, row int) (*uint32, error) {

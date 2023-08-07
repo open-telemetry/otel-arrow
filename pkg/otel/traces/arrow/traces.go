@@ -204,8 +204,13 @@ func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 		spanLinks := span.Span.Links()
 
 		ID := spanID
-		b.ib.Append(ID)
-		spanID++
+		if spanAttrs.Len() == 0 && spanEvents.Len() == 0 && spanLinks.Len() == 0 {
+			// No related data found
+			b.ib.AppendNull()
+		} else {
+			b.ib.Append(ID)
+			spanID++
+		}
 
 		// === Process resource and schema URL ===
 		resAttrs := span.Resource.Attributes()

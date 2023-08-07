@@ -27,6 +27,7 @@ import (
 func TestEquiv(t *testing.T) {
 	t.Parallel()
 
+	stdTesting := NewStdUnitTest(t)
 	traces := ptrace.NewTraces()
 	rs := traces.ResourceSpans().AppendEmpty()
 	rs.Resource().Attributes().PutStr("foo1", "bar")
@@ -43,7 +44,7 @@ func TestEquiv(t *testing.T) {
 		ptraceotlp.NewExportRequestFromTraces(traces),
 		ptraceotlp.NewExportRequestFromTraces(traces),
 	}
-	Equiv(t, expectedTraces, actualTraces)
+	Equiv(stdTesting, expectedTraces, actualTraces)
 
 	traces = ptrace.NewTraces()
 	rs = traces.ResourceSpans().AppendEmpty()
@@ -53,12 +54,13 @@ func TestEquiv(t *testing.T) {
 	actualTraces = []json.Marshaler{
 		ptraceotlp.NewExportRequestFromTraces(traces),
 	}
-	NotEquiv(t, expectedTraces, actualTraces)
+	NotEquiv(stdTesting, expectedTraces, actualTraces)
 }
 
 func TestEquivSortAndMerge(t *testing.T) {
 	t.Parallel()
 
+	stdTesting := NewStdUnitTest(t)
 	split_res_and_scope := ptrace.NewTraces()
 	rs := split_res_and_scope.ResourceSpans().AppendEmpty()
 	rs.Resource().Attributes().PutStr("k2", "v2")
@@ -187,12 +189,13 @@ func TestEquivSortAndMerge(t *testing.T) {
 	actualTraces := []json.Marshaler{
 		ptraceotlp.NewExportRequestFromTraces(split_res_and_scope),
 	}
-	Equiv(t, expectedTraces, actualTraces)
+	Equiv(stdTesting, expectedTraces, actualTraces)
 }
 
 func TestSingleResScope(t *testing.T) {
 	t.Parallel()
 
+	stdTesting := NewStdUnitTest(t)
 	expected := "{\n    \"resourceSpans\": [\n      {\n        \"resource\": {\n          \"attributes\": [\n            {\n              \"key\": \"hostname\",\n              \"value\": {\n                \"stringValue\": \"host3.mydomain.com\"\n              }\n            },\n            {\n              \"key\": \"unique3\",\n              \"value\": {\n                \"stringValue\": \"uv3\"\n              }\n            },\n            {\n              \"key\": \"ip\",\n              \"value\": {\n                \"stringValue\": \"192.168.0.3\"\n              }\n            },\n            {\n              \"key\": \"version\",\n              \"value\": {\n                \"doubleValue\": 1.5\n              }\n            },\n            {\n              \"key\": \"status\",\n              \"value\": {\n                \"intValue\": \"500\"\n              }\n            },\n            {\n              \"key\": \"up\",\n              \"value\": {\n                \"boolValue\": false\n              }\n            }\n          ]\n        },\n        \"scopeSpans\": [\n          {\n            \"scope\": {\n              \"name\": \"fake_generator\",\n              \"version\": \"1.0.1\"\n            },\n            \"spans\": [\n              {\n                \"traceId\": \"6d759c9c5e1a049927ca069a497b0508\",\n                \"spanId\": \"90d5ead3745935bd\",\n                \"traceState\": \"maiores\",\n                \"parentSpanId\": \"\",\n                \"kind\": 2,\n                \"droppedAttributesCount\": 9,\n                \"droppedEventsCount\": 9,\n                \"droppedLinksCount\": 6,\n                \"status\": {\n                  \"message\": \"OK\"\n                }\n              },\n              {\n                \"traceId\": \"72e8551d2f079f29231aa57088384785\",\n                \"spanId\": \"35ce5d0711df60f2\",\n                \"parentSpanId\": \"35ce5d0711df60f2\",\n                \"name\": \"GET /user-info\",\n                \"startTimeUnixNano\": \"1668124800000010667\",\n                \"endTimeUnixNano\": \"1668124800000010668\",\n                \"droppedAttributesCount\": 8,\n                \"events\": [\n                  {\n                    \"timeUnixNano\": \"1668124800000010672\"\n                  },\n                  {\n                    \"timeUnixNano\": \"1668124800000010674\",\n                    \"name\": \"odit\",\n                    \"droppedAttributesCount\": 2\n                  },\n                  {\n                    \"timeUnixNano\": \"1668124800000010672\",\n                    \"name\": \"velit\",\n                    \"attributes\": [\n                      {\n                        \"key\": \"attr_0\",\n                        \"value\": {\n                          \"stringValue\": \"est\"\n                        }\n                      },\n                      {\n                        \"key\": \"attr_1\",\n                        \"value\": {\n                          \"doubleValue\": 0.017895097521176077\n                        }\n                      },\n                      {\n                        \"key\": \"attr_2\",\n                        \"value\": {\n                          \"stringValue\": \"consectetur\"\n                        }\n                      }\n                    ],\n                    \"droppedAttributesCount\": 9\n                  },\n                  {\n                    \"name\": \"exercitationem\"\n                  },\n                  {\n                    \"timeUnixNano\": \"1668124800000010672\",\n                    \"name\": \"soluta\",\n                    \"droppedAttributesCount\": 9\n                  },\n                  {\n                    \"timeUnixNano\": \"1668124800000010672\",\n                    \"droppedAttributesCount\": 7\n                  },\n                  {}\n                ],\n                \"links\": [\n                  {\n                    \"traceId\": \"72e8551d2f079f29231aa57088384785\",\n                    \"spanId\": \"\",\n                    \"traceState\": \"ut\",\n                    \"attributes\": [\n                      {\n                        \"key\": \"attr_0\",\n                        \"value\": {\n                          \"intValue\": \"4055508854307121380\"\n                        }\n                      },\n                      {\n                        \"key\": \"attr_1\",\n                        \"value\": {\n                          \"intValue\": \"2603754219448080514\"\n                        }\n                      },\n                      {\n                        \"key\": \"attr_2\",\n                        \"value\": {\n                          \"stringValue\": \"ut\"\n                        }\n                      },\n                      {\n                        \"key\": \"attr_3\",\n                        \"value\": {\n                          \"intValue\": \"542986775976848616\"\n                        }\n                      },\n                      {\n                        \"key\": \"attr_4\",\n                        \"value\": {\n                          \"intValue\": \"5562030613432072994\"\n                        }\n                      }\n                    ],\n                    \"droppedAttributesCount\": 8\n                  },\n                  {\n                    \"traceId\": \"\",\n                    \"spanId\": \"\",\n                    \"traceState\": \"vel\",\n                    \"droppedAttributesCount\": 6\n                  }\n                ],\n                \"status\": {\n                  \"code\": 1\n                }\n              }\n            ]\n          }\n        ],\n        \"schemaUrl\": \"https://opentelemetry.io/schemas/1.0.0\"\n      }\n    ]\n  }"
 
 	actual := ptrace.NewTraces()
@@ -271,12 +274,13 @@ func TestSingleResScope(t *testing.T) {
 	actualTraces, err := ptraceotlp.NewExportRequestFromTraces(actual).MarshalJSON()
 	assert.NoError(t, err)
 
-	EquivFromBytes(t, []byte(expected), actualTraces)
+	EquivFromBytes(stdTesting, []byte(expected), actualTraces)
 }
 
 func TestNotEquivSortAndMerge(t *testing.T) {
 	t.Parallel()
 
+	stdTesting := NewStdUnitTest(t)
 	traces_1 := ptrace.NewTraces()
 	rs := traces_1.ResourceSpans().AppendEmpty()
 	rs.Resource().Attributes().PutStr("k2", "v2")
@@ -351,7 +355,7 @@ func TestNotEquivSortAndMerge(t *testing.T) {
 	actualTraces := []json.Marshaler{
 		ptraceotlp.NewExportRequestFromTraces(traces_1),
 	}
-	NotEquiv(t, expectedTraces, actualTraces)
+	NotEquiv(stdTesting, expectedTraces, actualTraces)
 }
 
 func TestNonPositionalIndex(t *testing.T) {

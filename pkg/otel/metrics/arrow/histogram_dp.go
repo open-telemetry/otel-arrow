@@ -181,6 +181,7 @@ func (b *HistogramDataPointBuilder) Build() (record arrow.Record, err error) {
 	// Intermediaries steps may be required to update the schema.
 	for {
 		b.attrsAccu.Reset()
+		b.exemplarAccumulator.Reset()
 		record, err = b.TryBuild(b.attrsAccu)
 		if err != nil {
 			if record != nil {

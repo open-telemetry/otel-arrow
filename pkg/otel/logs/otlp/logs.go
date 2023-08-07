@@ -124,11 +124,10 @@ func LogsFrom(record arrow.Record, relatedData *RelatedData) (plog.Logs, error) 
 
 		// Process log record fields
 		logRecord := logRecordSlice.AppendEmpty()
-		deltaID, err := arrowutils.U16FromRecord(record, logRecordIDs.ID, row)
+		deltaID, err := arrowutils.NullableU16FromRecord(record, logRecordIDs.ID, row)
 		if err != nil {
 			return logs, werror.Wrap(err)
 		}
-		ID := relatedData.LogRecordIDFromDelta(deltaID)
 
 		timeUnixNano, err := arrowutils.TimestampFromRecord(record, logRecordIDs.TimeUnixNano, row)
 		if err != nil {
@@ -229,10 +228,15 @@ func LogsFrom(record arrow.Record, relatedData *RelatedData) (plog.Logs, error) 
 		}
 
 		logRecordAttrs := logRecord.Attributes()
-		attrs := relatedData.LogRecordAttrMapStore.AttributesByID(ID)
-		if attrs != nil {
-			attrs.CopyTo(logRecordAttrs)
+
+		if deltaID != nil {
+			ID := relatedData.LogRecordIDFromDelta(*deltaID)
+			attrs := relatedData.LogRecordAttrMapStore.AttributesByID(ID)
+			if attrs != nil {
+				attrs.CopyTo(logRecordAttrs)
+			}
 		}
+
 		droppedAttributesCount, err := arrowutils.U32FromRecord(record, logRecordIDs.DropAttributesCount, row)
 		if err != nil {
 			return logs, werror.WrapWithContext(err, map[string]interface{}{"row": row})

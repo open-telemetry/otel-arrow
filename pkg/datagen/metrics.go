@@ -82,6 +82,65 @@ func (mg *MetricsGenerator) GenerateAllKindOfMetrics(batchSize int, collectInter
 	return result
 }
 
+func (mg *MetricsGenerator) GenerateRandomMetrics(batchSize int, collectInterval time.Duration) pmetric.Metrics {
+	result := pmetric.NewMetrics()
+
+	// Generate 4 resource spans per batch.
+	for i := 0; i < 4; i++ {
+		resourceMetrics := result.ResourceMetrics().AppendEmpty()
+		// ~50% of the time, generate a random resource
+		if mg.GenBool() {
+			pick(mg.TestEntropy, mg.resourceAttributes).CopyTo(resourceMetrics.Resource().Attributes())
+		}
+
+		// Generate 4 scope metrics per resource metric.
+		for j := 0; j < 4; j++ {
+			scopeMetrics := resourceMetrics.ScopeMetrics().AppendEmpty()
+			// ~50% of the time, generate a random scope
+			if mg.GenBool() {
+				pick(mg.TestEntropy, mg.instrumentationScopes).CopyTo(scopeMetrics.Scope())
+			}
+
+			if mg.GenBool() {
+				scopeMetrics.SetSchemaUrl(fmt.Sprintf("https://opentelemetry.io/schemas/1.%d.%d", i, j))
+			}
+
+			metrics := scopeMetrics.Metrics()
+
+			spanCount := mg.rng.Intn(batchSize) + 1
+			for i := 0; i < spanCount; i++ {
+				mg.AdvanceTime(time.Duration(mg.rng.Intn(int(collectInterval))))
+
+				if mg.GenBool() {
+					mg.SystemCpuTime(metrics.AppendEmpty(), 1)
+				}
+				if mg.GenBool() {
+					mg.SystemMemoryUsage(metrics.AppendEmpty())
+				}
+				if mg.GenBool() {
+					mg.SystemCpuLoadAverage1m(metrics.AppendEmpty())
+				}
+				if mg.GenBool() {
+					mg.FakeSummary(metrics.AppendEmpty())
+				}
+				if mg.GenBool() {
+					mg.FakeHistogram(metrics.AppendEmpty())
+				}
+				if mg.GenBool() {
+					mg.ExpHistogramWithEverything(metrics.AppendEmpty())
+				}
+			}
+		}
+		if mg.GenBool() {
+			resourceMetrics.SetSchemaUrl(fmt.Sprintf("https://opentelemetry.io/schemas/1.0.%d", i))
+		}
+	}
+
+	mg.generation++
+
+	return result
+}
+
 func (mg *MetricsGenerator) GenerateGauges(batchSize int, collectInterval time.Duration) pmetric.Metrics {
 	result, metrics := mg.newResult()
 

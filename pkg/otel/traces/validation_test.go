@@ -284,6 +284,8 @@ func CheckEncodeDecode(
 	t *testing.T,
 	expectedRequest ptraceotlp.ExportRequest,
 ) {
+	stdTesting := assert.NewStdUnitTest(t)
+
 	// Convert the OTLP traces request to Arrow.
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
@@ -322,7 +324,7 @@ func CheckEncodeDecode(
 
 	record.Release()
 
-	assert.Equiv(t, []json.Marshaler{expectedRequest}, []json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)})
+	assert.Equiv(stdTesting, []json.Marshaler{expectedRequest}, []json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)})
 }
 
 func MultiRoundOfCheckEncodeMessUpDecode(
@@ -411,6 +413,7 @@ func TestConversionFromRealData(t *testing.T) {
 func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportRequest) { //nolint:unused // only used for testing
 	t.Helper()
 
+	stdTesting := assert.NewStdUnitTest(t)
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
@@ -447,7 +450,7 @@ func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportReques
 
 	defer record.Release()
 
-	assert.Equiv(t, []json.Marshaler{expectedRequest}, []json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)})
+	assert.Equiv(stdTesting, []json.Marshaler{expectedRequest}, []json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)})
 }
 
 func traceID(id string) [16]byte {
