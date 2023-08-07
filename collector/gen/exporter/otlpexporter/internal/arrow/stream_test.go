@@ -53,6 +53,7 @@ func newStreamTestCase(t *testing.T) *streamTestCase {
 	ctc.requestMetadataCall.AnyTimes().Return(nil, nil)
 
 	stream := newStream(producer, prio, ctc.telset, ctc.perRPCCredentials)
+	stream.maxStreamLifetime = 10 * time.Second
 
 	fromTracesCall := producer.EXPECT().BatchArrowRecordsFromTraces(gomock.Any()).Times(0)
 	fromMetricsCall := producer.EXPECT().BatchArrowRecordsFromMetrics(gomock.Any()).Times(0)
@@ -116,6 +117,38 @@ func (tc *streamTestCase) connectTestStream(h testChannel) func(context.Context,
 // get returns the stream via the prioritizer it is registered with.
 func (tc *streamTestCase) get() *Stream {
 	return <-tc.prioritizer.readyChannel()
+}
+
+// TestStreamEncodeError verifies that exceeding the
+// max_stream_lifetime results in shutdown that
+// simply restarts the stream.
+func TestStreamGracefulShutdown(t *testing.T) {
+	tc := newStreamTestCase(t)
+	maxStreamLifetime := 1 * time.Second
+	tc.stream.maxStreamLifetime = maxStreamLifetime
+
+	tc.fromTracesCall.Times(1).Return(oneBatch, nil)
+	tc.closeSendCall.Times(1).Return(nil)
+
+	channel := newHealthyTestChannel()
+	tc.start(channel)
+	defer tc.cancelAndWaitForShutdown()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	defer wg.Wait()
+	go func() {
+		defer wg.Done()
+		batch := <-channel.sent
+		channel.recv <- statusOKFor(batch.BatchId)
+	}()
+
+	err := tc.get().SendAndWait(tc.bgctx, twoTraces)
+	require.NoError(t, err)
+	// let stream get closed and send again.
+	time.Sleep(maxStreamLifetime)
+	err = tc.get().SendAndWait(tc.bgctx, twoTraces)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, ErrStreamRestarting))
 }
 
 // TestStreamEncodeError verifies that an encoder error in the sender

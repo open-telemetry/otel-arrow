@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	arrowpb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
 	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
@@ -22,6 +23,8 @@ import (
 type Exporter struct {
 	// numStreams is the number of streams that will be used.
 	numStreams int
+
+	maxStreamLifetime time.Duration
 
 	// disableDowngrade prevents downgrade from occurring, supports
 	// forcing Arrow transport.
@@ -90,6 +93,7 @@ func MakeAnyStreamClient[T AnyStreamClient](clientFunc func(ctx context.Context,
 
 // NewExporter configures a new Exporter.
 func NewExporter(
+	maxStreamLifetime time.Duration,
 	numStreams int,
 	disableDowngrade bool,
 	telemetry component.TelemetrySettings,
@@ -99,6 +103,7 @@ func NewExporter(
 	perRPCCredentials credentials.PerRPCCredentials,
 ) *Exporter {
 	return &Exporter{
+		maxStreamLifetime: maxStreamLifetime,
 		numStreams:        numStreams,
 		disableDowngrade:  disableDowngrade,
 		telemetry:         telemetry,
@@ -175,6 +180,7 @@ func (e *Exporter) runArrowStream(ctx context.Context) {
 	producer := e.newProducer()
 
 	stream := newStream(producer, e.ready, e.telemetry, e.perRPCCredentials)
+	stream.maxStreamLifetime = e.maxStreamLifetime
 
 	defer func() {
 		if err := producer.Close(); err != nil {

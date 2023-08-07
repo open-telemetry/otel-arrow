@@ -97,6 +97,7 @@ type commonTestStream struct {
 	ctxCall         *gomock.Call
 	sendCall        *gomock.Call
 	recvCall        *gomock.Call
+	closeSendCall   *gomock.Call
 }
 
 func (ctc *commonTestCase) newMockStream(ctx context.Context) *commonTestStream {
@@ -109,6 +110,7 @@ func (ctc *commonTestCase) newMockStream(ctx context.Context) *commonTestStream 
 			gomock.Any(), // *arrowpb.BatchArrowRecords
 		).Times(0),
 		recvCall: client.EXPECT().Recv().Times(0),
+		closeSendCall: client.EXPECT().CloseSend().AnyTimes().Return(nil),
 	}
 	return testStream
 }

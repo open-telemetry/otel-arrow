@@ -1,4 +1,14 @@
 receivers:
+  otlp/loopback:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4000
+        keepalive:
+          server_parameters:
+            max_connection_age: 10s
+            max_connection_age_grace: 10s
+      arrow:
+        disabled: false
   otlp:
     protocols:
       grpc:
@@ -6,6 +16,19 @@ receivers:
     path: ./generator/hipster_shop.yaml
 
 exporters:
+  otlp/arrow:
+    endpoint: 127.0.0.1:4000
+    wait_for_ready: true
+    tls:
+      insecure: true
+    arrow:
+      disabled: false
+      num_streams: 1
+      max_stream_lifetime: 5s
+    retry_on_failure:
+      enabled: false
+    sending_queue:
+      enabled: false
   file/traces:
     path: ./recorded_traces.json
     compression: zstd
@@ -29,10 +52,17 @@ processors:
 # list of processors below.
 service:
   pipelines:
-    traces:
+    # This pipeline generates trace data, obfuscates + batches the data, and
+    # send it to the otlp receiver of this same collector
+    traces/generate:
       receivers: [generator]
       processors: [obfuscation, batch]
-      exporters: [file/traces, logging]
+      exporters: [otlp/arrow, logging]
+
+    traces/loop:
+      receivers: [otlp/loopback]
+      exporters: [file/traces]
+
     metrics:
       receivers: [generator]
       processors: [obfuscation, batch]
