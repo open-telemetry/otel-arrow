@@ -14,7 +14,7 @@ is resolved this component cannot be reliably used.
 ## Configuration
 
 This connector can be used to test any exporter and receiver pair that
-are able to propagate metadata using the Colector's
+are able to propagate metadata using the Collector's
 `client.Metadata.Info` mechanism.  For example, to test an OTel Arrow
 collector configuration, configure a loopback receiver:
 
@@ -131,7 +131,8 @@ cases using two kinds of context variable.
    matching data.
    
 For each expected and actual data item, the support method
-`AssertEquiv` library in `../../../pkg/otel/assert/` is used to ensure
-that the data is equivalent.  This package uses a definition of
-equivalence that tolerates reordering of unordered fields, which is
-necesary to validate the OTel Arrow components in this repository.
+`AssertEquiv` library in [pkg/otel/asasert](https://github.com/open-telemetry/otel-arrow/tree/main/pkg/otel/assert/README.md) is used to ensure
+that the data are equivalent.  This package supports the comparison of
+two distinct structures that are semantically equivalent but
+structurally different in several ways that can happen as a result of
+the Arrow encoding.

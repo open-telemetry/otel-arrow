@@ -100,7 +100,7 @@ func createTracesProcessor(
 		processorhelper.WithShutdown(processor.Shutdown))
 }
 
-// createTracesProcessor creates an instance of obfuscation for processing traces
+// createLogsProcessor creates an instance of obfuscation for processing logs.
 func createLogsProcessor(
 	ctx context.Context,
 	set processor.CreateSettings,

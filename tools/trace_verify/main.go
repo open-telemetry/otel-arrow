@@ -20,6 +20,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"flag"
+	"io"
 	"log"
 	"os"
 
@@ -48,11 +49,17 @@ func main() {
 			log.Fatalf("open: %s: %v", file, err)
 			return
 		}
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
+		scanner := bufio.NewReader(f)
+		for {
+			line, err := scanner.ReadString('\n')
+			if err == io.EOF {
+				break
+			} else if err != nil {
+				log.Fatalf("read: %v", err)
+			}
 			var un ptrace.JSONUnmarshaler
 
-			expected, err := un.UnmarshalTraces([]byte(scanner.Text()))
+			expected, err := un.UnmarshalTraces([]byte(line))
 			if err != nil {
 				log.Fatalf("parse: %v", err)
 			}
@@ -77,9 +84,6 @@ func main() {
 			})
 
 			log.Printf("Verified %d traces\n", expected.SpanCount())
-		}
-		if err := scanner.Err(); err != nil {
-			log.Fatalf("read: %v", err)
 		}
 	}
 }

@@ -6,7 +6,7 @@ type Config struct {
 	Rounds int `mapstructure:"rounds"`
 
 	// KeyLength is a Fiestel parameter which determines the
-	// length of the keyt used to obfuscate.  Default 128.
+	// length of the key used to obfuscate.  Default 128.
 	KeyLength int `mapstructure:"key_length"`
 
 	// EncryptAll indicates that all byte-array and string values
