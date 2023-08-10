@@ -18,11 +18,11 @@
 package otlp
 
 import (
-	colarspb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
-	"github.com/f5/otel-arrow-adapter/pkg/otel"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
-	"github.com/f5/otel-arrow-adapter/pkg/record_message"
-	"github.com/f5/otel-arrow-adapter/pkg/werror"
+	colarspb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
+	"github.com/open-telemetry/otel-arrow/pkg/otel"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/otlp"
+	"github.com/open-telemetry/otel-arrow/pkg/record_message"
+	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
 
 // Infrastructure used to process related records.

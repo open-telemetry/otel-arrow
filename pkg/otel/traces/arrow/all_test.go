@@ -28,17 +28,17 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	v1 "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
-	"github.com/f5/otel-arrow-adapter/pkg/config"
-	jsonassert "github.com/f5/otel-arrow-adapter/pkg/otel/assert"
-	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
-	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/internal"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
-	"github.com/f5/otel-arrow-adapter/pkg/record_message"
+	v1 "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
+	"github.com/open-telemetry/otel-arrow/pkg/config"
+	jsonassert "github.com/open-telemetry/otel-arrow/pkg/otel/assert"
+	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
+	acommon "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
+	cfg "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/internal"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
+	"github.com/open-telemetry/otel-arrow/pkg/record_message"
 )
 
 var (

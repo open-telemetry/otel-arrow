@@ -28,10 +28,10 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"google.golang.org/protobuf/proto"
 
-	arrowpb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
-	"github.com/f5/otel-arrow-adapter/pkg/config"
-	"github.com/f5/otel-arrow-adapter/pkg/datagen"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
+	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
+	"github.com/open-telemetry/otel-arrow/pkg/config"
+	"github.com/open-telemetry/otel-arrow/pkg/datagen"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/assert"
 )
 
 // Fuzz-tests the consumer on a sequence of two OTLP protobuf inputs.

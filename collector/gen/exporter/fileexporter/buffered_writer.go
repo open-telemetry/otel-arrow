@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package fileexporter // import "github.com/f5/otel-arrow-adapter/collector/gen/exporter/fileexporter"
+package fileexporter // import "github.com/open-telemetry/otel-arrow/collector/gen/exporter/fileexporter"
 
 import (
 	"bufio"

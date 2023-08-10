@@ -28,11 +28,11 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
-	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
+	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
+	cfg "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
 )
 
 var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)

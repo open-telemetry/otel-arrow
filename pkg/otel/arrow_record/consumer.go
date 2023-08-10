@@ -23,14 +23,14 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	colarspb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
-	common "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-	logsotlp "github.com/f5/otel-arrow-adapter/pkg/otel/logs/otlp"
-	metricsotlp "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/otlp"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/traces/arrow"
-	tracesotlp "github.com/f5/otel-arrow-adapter/pkg/otel/traces/otlp"
-	"github.com/f5/otel-arrow-adapter/pkg/record_message"
-	"github.com/f5/otel-arrow-adapter/pkg/werror"
+	colarspb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
+	common "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
+	logsotlp "github.com/open-telemetry/otel-arrow/pkg/otel/logs/otlp"
+	metricsotlp "github.com/open-telemetry/otel-arrow/pkg/otel/metrics/otlp"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/traces/arrow"
+	tracesotlp "github.com/open-telemetry/otel-arrow/pkg/otel/traces/otlp"
+	"github.com/open-telemetry/otel-arrow/pkg/record_message"
+	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
 
 // This file implements a generic consumer API used to decode BatchArrowRecords messages into

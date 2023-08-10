@@ -1,17 +1,17 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package otlpexporter // import "github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter"
+package otlpexporter // import "github.com/open-telemetry/otel-arrow/collector/gen/exporter/otlpexporter"
 
 import (
 	"context"
 	"runtime"
 	"time"
 
-	arrowpb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
+	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	"google.golang.org/grpc"
 
-	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow"
+	"github.com/open-telemetry/otel-arrow/collector/gen/exporter/otlpexporter/internal/arrow"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configcompression"
 	"go.opentelemetry.io/collector/config/configgrpc"

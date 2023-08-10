@@ -17,7 +17,7 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumertest"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testdata"
+	"github.com/open-telemetry/otel-arrow/collector/gen/internal/testdata"
 	"go.opentelemetry.io/collector/obsreport"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/receiver/receivertest"

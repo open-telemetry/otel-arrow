@@ -25,8 +25,8 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 
-	"github.com/f5/otel-arrow-adapter/pkg/config"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
+	"github.com/open-telemetry/otel-arrow/pkg/config"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/assert"
 )
 
 // TestMetricsWithNoDictionary

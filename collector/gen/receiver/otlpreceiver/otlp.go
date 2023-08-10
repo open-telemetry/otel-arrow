@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package otlpreceiver // import "github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver"
+package otlpreceiver // import "github.com/open-telemetry/otel-arrow/collector/gen/receiver/otlpreceiver"
 
 import (
 	"context"
@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"sync"
 
-	arrowpb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
-	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
+	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
+	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
@@ -21,16 +21,16 @@ import (
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/extension/auth"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/netstats"
+	"github.com/open-telemetry/otel-arrow/collector/gen/internal/netstats"
 	"go.opentelemetry.io/collector/obsreport"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"go.opentelemetry.io/collector/receiver"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/arrow"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/logs"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/metrics"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/trace"
+	"github.com/open-telemetry/otel-arrow/collector/gen/receiver/otlpreceiver/internal/arrow"
+	"github.com/open-telemetry/otel-arrow/collector/gen/receiver/otlpreceiver/internal/logs"
+	"github.com/open-telemetry/otel-arrow/collector/gen/receiver/otlpreceiver/internal/metrics"
+	"github.com/open-telemetry/otel-arrow/collector/gen/receiver/otlpreceiver/internal/trace"
 )
 
 // otlpReceiver is the type that exposes Trace and Metrics reception.

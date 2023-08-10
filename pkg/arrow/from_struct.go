@@ -24,7 +24,7 @@ import (
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/array"
 
-	"github.com/f5/otel-arrow-adapter/pkg/werror"
+	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
 
 // U16FromStruct returns the uint16 value for a specific row in an Arrow struct

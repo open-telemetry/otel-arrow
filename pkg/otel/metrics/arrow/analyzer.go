@@ -25,7 +25,7 @@ import (
 	"github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/axiomhq/hyperloglog"
 
-	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
+	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
 )
 
 type (

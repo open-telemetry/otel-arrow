@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package otlpreceiver // import "github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver"
+package otlpreceiver // import "github.com/open-telemetry/otel-arrow/collector/gen/receiver/otlpreceiver"
 
 import (
 	"io"
@@ -12,9 +12,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/logs"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/metrics"
-	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/trace"
+	"github.com/open-telemetry/otel-arrow/collector/gen/receiver/otlpreceiver/internal/logs"
+	"github.com/open-telemetry/otel-arrow/collector/gen/receiver/otlpreceiver/internal/metrics"
+	"github.com/open-telemetry/otel-arrow/collector/gen/receiver/otlpreceiver/internal/trace"
 )
 
 // Pre-computed status with code=Internal to be used in case of a marshaling error.

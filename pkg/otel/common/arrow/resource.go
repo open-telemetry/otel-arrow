@@ -22,10 +22,10 @@ import (
 	"github.com/apache/arrow/go/v12/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	schema "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
-	"github.com/f5/otel-arrow-adapter/pkg/werror"
+	schema "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
+	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
 
 // ResourceDT is the Arrow Data Type describing a resource.
