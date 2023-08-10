@@ -1,4 +1,4 @@
-module github.com/f5/otel-arrow-adapter
+module github.com/open-telemetry/otel-arrow
 
 go 1.19
 

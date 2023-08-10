@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package otlpreceiver // import "github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver"
+package otlpreceiver // import "github.com/open-telemetry/otel-arrow/collector/gen/receiver/otlpreceiver"
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/consumer"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/sharedcomponent"
+	"github.com/open-telemetry/otel-arrow/collector/gen/internal/sharedcomponent"
 	"go.opentelemetry.io/collector/receiver"
 )
 

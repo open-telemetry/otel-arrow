@@ -12,7 +12,7 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
 
-	"github.com/f5/otel-arrow-adapter/collector/receiver/filereceiver/internal/metadata"
+	"github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver/internal/metadata"
 )
 
 func TestLoadConfig_Validate_Invalid(t *testing.T) {

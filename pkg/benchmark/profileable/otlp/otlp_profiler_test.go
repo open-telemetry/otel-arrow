@@ -18,8 +18,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
-	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
+	"github.com/open-telemetry/otel-arrow/pkg/benchmark"
+	"github.com/open-telemetry/otel-arrow/pkg/benchmark/dataset"
 )
 
 const WarmUpIter = 2

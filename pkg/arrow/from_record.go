@@ -23,8 +23,8 @@ import (
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/array"
 
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
-	"github.com/f5/otel-arrow-adapter/pkg/werror"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
+	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
 
 // U8FromRecord returns the uint8 value for a specific row and column in an

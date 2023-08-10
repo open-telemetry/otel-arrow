@@ -22,7 +22,7 @@ import (
 
 	"github.com/apache/arrow/go/v12/arrow"
 
-	"github.com/f5/otel-arrow-adapter/pkg/record_message"
+	"github.com/open-telemetry/otel-arrow/pkg/record_message"
 )
 
 func MixUpArrowRecords(rng *rand.Rand, record arrow.Record, relatedRecords []*record_message.RecordMessage) (bool, arrow.Record, []*record_message.RecordMessage) {

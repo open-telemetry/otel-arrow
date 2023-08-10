@@ -20,8 +20,8 @@ package builder
 import (
 	"github.com/apache/arrow/go/v12/arrow/array"
 
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/update"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/update"
 )
 
 // BinaryBuilder is a wrapper around the arrow BinaryBuilder.

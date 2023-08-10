@@ -27,7 +27,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 
-	"github.com/f5/otel-arrow-adapter/pkg/datagen"
+	"github.com/open-telemetry/otel-arrow/pkg/datagen"
 )
 
 var help = flag.Bool("help", false, "Show help")

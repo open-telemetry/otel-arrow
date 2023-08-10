@@ -3,4 +3,4 @@
 
 //go:generate mdatagen metadata.yaml
 
-package filereceiver // import "github.com/f5/otel-arrow-adapter/collector/receiver/filereceiver"
+package filereceiver // import "github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver"

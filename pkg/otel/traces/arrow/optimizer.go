@@ -26,7 +26,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/otlp"
 )
 
 type (

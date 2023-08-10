@@ -28,8 +28,8 @@ import (
 	"github.com/axiomhq/hyperloglog"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	arrow2 "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	arrow2 "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
 )
 
 type (

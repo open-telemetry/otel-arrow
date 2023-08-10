@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package filereceiver // import "github.com/f5/otel-arrow-adapter/collector/receiver/filereceiver"
+package filereceiver // import "github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver"
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/receiver"
 
-	"github.com/f5/otel-arrow-adapter/collector/receiver/filereceiver/internal/metadata"
+	"github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver/internal/metadata"
 )
 
 func NewFactory() receiver.Factory {

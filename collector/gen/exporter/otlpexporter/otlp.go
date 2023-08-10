@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package otlpexporter // import "github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter"
+package otlpexporter // import "github.com/open-telemetry/otel-arrow/collector/gen/exporter/otlpexporter"
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"time"
 
 	arrowPkg "github.com/apache/arrow/go/v12/arrow"
-	arrowRecord "github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
+	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 	"go.uber.org/multierr"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
@@ -20,8 +20,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter/internal/arrow"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/netstats"
+	"github.com/open-telemetry/otel-arrow/collector/gen/exporter/otlpexporter/internal/arrow"
+	"github.com/open-telemetry/otel-arrow/collector/gen/internal/netstats"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/exporter"

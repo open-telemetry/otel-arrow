@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package experimentprocessor // import "github.com/f5/otel-arrow-adapter/collector/processor/experimentprocessor"
+package experimentprocessor // import "github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor"
 
 import (
 	"context"

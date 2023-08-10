@@ -8,8 +8,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/fileexporter/internal/metadata"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/sharedcomponent"
+	"github.com/open-telemetry/otel-arrow/collector/gen/exporter/fileexporter/internal/metadata"
+	"github.com/open-telemetry/otel-arrow/collector/gen/internal/sharedcomponent"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/exporter"

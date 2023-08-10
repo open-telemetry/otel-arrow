@@ -30,17 +30,17 @@ import (
 
 	"github.com/apache/arrow/go/v12/arrow"
 
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
 
 	"errors"
 	"math"
 
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
-	"github.com/f5/otel-arrow-adapter/pkg/werror"
+	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
+	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
 
 var (

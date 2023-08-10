@@ -24,8 +24,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/internal"
+	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/internal"
 )
 
 type ExpectedAttributes struct {

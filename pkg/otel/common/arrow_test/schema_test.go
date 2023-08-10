@@ -26,11 +26,11 @@ import (
 	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/stretchr/testify/assert"
 
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
-	config "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
-	"github.com/f5/otel-arrow-adapter/pkg/werror"
+	acommon "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
+	config "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
+	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
 
 const (
