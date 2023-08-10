@@ -1,55 +1,29 @@
 receivers:
-  otlp/loopback:
-    protocols:
-      grpc:
-        endpoint: 127.0.0.1:4000
-        keepalive:
-          server_parameters:
-            max_connection_age: 10s
-            max_connection_age_grace: 10s
-      arrow:
-        disabled: false
-  otlp:
-    protocols:
-      grpc:
   generator:
     path: ./generator/hipster_shop.yaml
 
 exporters:
-  otlp/arrow:
-    endpoint: 127.0.0.1:4000
-    wait_for_ready: true
-    tls:
-      insecure: true
-    arrow:
-      disabled: false
-      num_streams: 1
-      max_stream_lifetime: 5s
-    retry_on_failure:
-      enabled: false
-    sending_queue:
-      enabled: false
   file/traces:
     path: ./recorded_traces.json
-    compression: zstd
+    compression:
     format: json
   file/metrics:
     path: ./recorded_metrics.json
-    compression: zstd
+    compression:
     format: json
 
   logging:
+    loglevel: info
 
 processors:
   batch:
+    send_batch_max_size: 15
+    send_batch_size: 10
+    timeout: 1s
   obfuscation:
-    encrypt_key: "some-32-byte-long-key-to-be-safe"
-    encrypt_round: 128
-    # obfuscate all attributes with string values
-    encrypt_all: true
+    rounds: 20
+    key_length: 256
 
-# Note: to disable obfuscation, simply remove "obfuscation" from the
-# list of processors below.
 service:
   pipelines:
     # This pipeline generates trace data, obfuscates + batches the data, and
@@ -57,11 +31,7 @@ service:
     traces/generate:
       receivers: [generator]
       processors: [obfuscation, batch]
-      exporters: [otlp/arrow, logging]
-
-    traces/loop:
-      receivers: [otlp/loopback]
-      exporters: [file/traces]
+      exporters: [file/traces, logging]
 
     metrics:
       receivers: [generator]

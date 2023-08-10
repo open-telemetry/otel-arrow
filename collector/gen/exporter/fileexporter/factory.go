@@ -37,7 +37,8 @@ func NewFactory() exporter.Factory {
 		createDefaultConfig,
 		exporter.WithTraces(createTracesExporter, metadata.TracesStability),
 		exporter.WithMetrics(createMetricsExporter, metadata.MetricsStability),
-		exporter.WithLogs(createLogsExporter, metadata.LogsStability))
+		exporter.WithLogs(createLogsExporter, metadata.LogsStability),
+	)
 }
 
 func createDefaultConfig() component.Config {
@@ -71,6 +72,12 @@ func createTracesExporter(
 		exporterhelper.WithStart(fe.Start),
 		exporterhelper.WithShutdown(fe.Shutdown),
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
+		exporterhelper.WithRetry(exporterhelper.RetrySettings{
+			Enabled: false,
+		}),
+		exporterhelper.WithQueue(exporterhelper.QueueSettings{
+			Enabled: false,
+		}),
 	)
 }
 
@@ -98,6 +105,12 @@ func createMetricsExporter(
 		exporterhelper.WithStart(fe.Start),
 		exporterhelper.WithShutdown(fe.Shutdown),
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
+		exporterhelper.WithRetry(exporterhelper.RetrySettings{
+			Enabled: false,
+		}),
+		exporterhelper.WithQueue(exporterhelper.QueueSettings{
+			Enabled: false,
+		}),
 	)
 }
 
@@ -125,6 +138,12 @@ func createLogsExporter(
 		exporterhelper.WithStart(fe.Start),
 		exporterhelper.WithShutdown(fe.Shutdown),
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
+		exporterhelper.WithRetry(exporterhelper.RetrySettings{
+			Enabled: false,
+		}),
+		exporterhelper.WithQueue(exporterhelper.QueueSettings{
+			Enabled: false,
+		}),
 	)
 }
 

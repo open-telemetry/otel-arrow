@@ -79,6 +79,7 @@ func TestUnmarshalConfig(t *testing.T) {
 			Arrow: ArrowSettings{
 				NumStreams:         2,
 				EnableMixedSignals: true,
+				MaxStreamLifetime:  2 * time.Hour,
 			},
 		}, cfg)
 }
@@ -87,17 +88,17 @@ func TestArrowSettingsValidate(t *testing.T) {
 	settings := func(enabled bool, numStreams int, maxStreamLifetime time.Duration) *ArrowSettings {
 		return &ArrowSettings{Disabled: !enabled, NumStreams: numStreams, MaxStreamLifetime: maxStreamLifetime}
 	}
-	require.NoError(t, settings(true, 1, 10 * time.Second).Validate())
-	require.NoError(t, settings(false, 1, 10 * time.Second).Validate())
-	require.NoError(t, settings(true, 2, 1 * time.Second).Validate())
-	require.NoError(t, settings(true, math.MaxInt, 10 * time.Second).Validate())
+	require.NoError(t, settings(true, 1, 10*time.Second).Validate())
+	require.NoError(t, settings(false, 1, 10*time.Second).Validate())
+	require.NoError(t, settings(true, 2, 1*time.Second).Validate())
+	require.NoError(t, settings(true, math.MaxInt, 10*time.Second).Validate())
 
-	require.Error(t, settings(true, 0, 10 * time.Second).Validate())
-	require.Contains(t, settings(true, 0, 10 * time.Second).Validate().Error(), "stream count must be")
-	require.Contains(t, settings(true, 1, -1 * time.Second).Validate().Error(), "max stream life must be")
-	require.Error(t, settings(false, -1, 10 * time.Second).Validate())
-	require.Error(t, settings(false, 1, -1 * time.Second).Validate())
-	require.Error(t, settings(true, math.MinInt, 10 * time.Second).Validate())
+	require.Error(t, settings(true, 0, 10*time.Second).Validate())
+	require.Contains(t, settings(true, 0, 10*time.Second).Validate().Error(), "stream count must be")
+	require.Contains(t, settings(true, 1, -1*time.Second).Validate().Error(), "max stream life must be")
+	require.Error(t, settings(false, -1, 10*time.Second).Validate())
+	require.Error(t, settings(false, 1, -1*time.Second).Validate())
+	require.Error(t, settings(true, math.MinInt, 10*time.Second).Validate())
 }
 
 func TestDefaultSettingsValid(t *testing.T) {
@@ -106,5 +107,4 @@ func TestDefaultSettingsValid(t *testing.T) {
 	// validation always checks that a value is set.
 	cfg.(*Config).Arrow.MaxStreamLifetime = 2 * time.Second
 	require.NoError(t, cfg.(*Config).Validate())
-
 }

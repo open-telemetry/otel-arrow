@@ -2,6 +2,9 @@ package obfuscationprocessor
 
 import (
 	"context"
+
+	"crypto/rand"
+
 	"github.com/cyrildever/feistel"
 	"github.com/cyrildever/feistel/common/utils/hash"
 	"go.opentelemetry.io/collector/component"
@@ -16,7 +19,8 @@ const (
 	// The stability level of the exporter.
 	stability = component.StabilityLevelAlpha
 
-	defaultRound = 10
+	defaultRounds    = 10
+	defaultKeyLength = 128
 )
 
 // NewFactory creates a factory for the obfuscation processor.
@@ -25,15 +29,23 @@ func NewFactory() processor.Factory {
 		typeStr,
 		createDefaultConfig,
 		processor.WithTraces(createTracesProcessor, stability),
+		processor.WithLogs(createLogsProcessor, stability),
 		processor.WithMetrics(createMetricsProcessor, stability),
 	)
 }
 
-func createDefaultConfig() component.Config { 
+func newKey(keyLength int) string {
+	buf := make([]byte, keyLength)
+	rand.Reader.Read(buf)
+	return string(buf)
+}
+
+func createDefaultConfig() component.Config {
 	return &Config{
-		EncryptRound: defaultRound,
+		Rounds:    defaultRounds,
+		KeyLength: defaultKeyLength,
 		// encrypt all string attributes by default
-		EncryptAll:   true,
+		EncryptAll: true,
 	}
 }
 
@@ -47,7 +59,7 @@ func createMetricsProcessor(
 	processor := &obfuscation{
 		logger:            set.Logger,
 		nextMetrics:       next,
-		encrypt:           feistel.NewFPECipher(hash.SHA_256, oCfg.EncryptKey, oCfg.EncryptRound),
+		encrypt:           feistel.NewFPECipher(hash.SHA_256, newKey(oCfg.KeyLength), oCfg.Rounds),
 		encryptAttributes: makeEncryptList(oCfg),
 		encryptAll:        oCfg.EncryptAll,
 	}
@@ -73,7 +85,7 @@ func createTracesProcessor(
 	processor := &obfuscation{
 		logger:            set.Logger,
 		nextTraces:        next,
-		encrypt:           feistel.NewFPECipher(hash.SHA_256, oCfg.EncryptKey, oCfg.EncryptRound),
+		encrypt:           feistel.NewFPECipher(hash.SHA_256, newKey(oCfg.KeyLength), oCfg.Rounds),
 		encryptAttributes: makeEncryptList(oCfg),
 		encryptAll:        oCfg.EncryptAll,
 	}
@@ -83,6 +95,32 @@ func createTracesProcessor(
 		cfg,
 		next,
 		processor.processTraces,
+		processorhelper.WithCapabilities(processor.Capabilities()),
+		processorhelper.WithStart(processor.Start),
+		processorhelper.WithShutdown(processor.Shutdown))
+}
+
+// createTracesProcessor creates an instance of obfuscation for processing traces
+func createLogsProcessor(
+	ctx context.Context,
+	set processor.CreateSettings,
+	cfg component.Config,
+	next consumer.Logs,
+) (processor.Logs, error) {
+	oCfg := cfg.(*Config)
+	processor := &obfuscation{
+		logger:            set.Logger,
+		nextLogs:          next,
+		encrypt:           feistel.NewFPECipher(hash.SHA_256, newKey(oCfg.KeyLength), oCfg.Rounds),
+		encryptAttributes: makeEncryptList(oCfg),
+		encryptAll:        oCfg.EncryptAll,
+	}
+	return processorhelper.NewLogsProcessor(
+		ctx,
+		set,
+		cfg,
+		next,
+		processor.processLogs,
 		processorhelper.WithCapabilities(processor.Capabilities()),
 		processorhelper.WithStart(processor.Start),
 		processorhelper.WithShutdown(processor.Shutdown))

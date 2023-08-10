@@ -32,11 +32,12 @@ import (
 // testing framework is not available.
 type Testing interface {
 	Helper()
-	FailNow(failureMessage string, msgAndArgs ...interface{}) bool
-	NoError(err error, msgAndArgs ...interface{})
-	Equal(expected, actual interface{}, msgAndArgs ...interface{}) bool
+	FailNow(failureMessage string, msgAndArgs ...any) bool
+	NoError(err error, msgAndArgs ...any)
+	Equal(expected, actual interface{}, msgAndArgs ...any) bool
 }
 
+// StdUnitTest adapts the Equiv() method for a standard unit test.
 type StdUnitTest struct {
 	t *testing.T
 }
@@ -49,16 +50,58 @@ func (a *StdUnitTest) Helper() {
 	a.t.Helper()
 }
 
-func (a *StdUnitTest) FailNow(failureMessage string, msgAndArgs ...interface{}) bool {
+func (a *StdUnitTest) FailNow(failureMessage string, msgAndArgs ...any) bool {
 	return assert.FailNow(a.t, failureMessage, msgAndArgs...)
 }
 
-func (a *StdUnitTest) NoError(err error, msgAndArgs ...interface{}) {
+func (a *StdUnitTest) NoError(err error, msgAndArgs ...any) {
 	assert.NoError(a.t, err, msgAndArgs...)
 }
 
-func (a *StdUnitTest) Equal(expected, actual interface{}, msgAndArgs ...interface{}) bool {
+func (a *StdUnitTest) Equal(expected, actual interface{}, msgAndArgs ...any) bool {
 	return assert.Equal(a.t, expected, actual, msgAndArgs...)
+}
+
+// StandaloneTest adapts the Equiv() method for a standard unit test.
+type StandaloneTest struct {
+}
+
+func NewStandaloneTest() Testing {
+	return &StandaloneTest{}
+}
+
+func (a *StandaloneTest) Helper() {
+	// n/a
+}
+
+// sprintf is handle's handles `...any` the way the testify library
+// does, meaning to expect a printf formating directive in the first
+// position and format appropriately.
+func sprintf(msgAndArgs ...any) string {
+	if len(msgAndArgs) == 0 {
+		return "" // empty
+	}
+	if s, ok := msgAndArgs[0].(string); ok {
+		return fmt.Sprintf(s, msgAndArgs[1:]...)
+	}
+	return fmt.Sprint(msgAndArgs...) // fallback to sprint()
+}
+
+func (a *StandaloneTest) FailNow(failureMessage string, msgAndArgs ...any) bool {
+	panic(fmt.Sprint(failureMessage, ": ", sprintf(msgAndArgs...)))
+}
+
+func (a *StandaloneTest) NoError(err error, msgAndArgs ...any) {
+	if err != nil {
+		panic(fmt.Sprint("unexpected error: ", sprintf(msgAndArgs...)))
+	}
+}
+
+func (a *StandaloneTest) Equal(expected, actual interface{}, msgAndArgs ...any) bool {
+	if expected != actual {
+		panic(fmt.Sprint("unexpected mismatch: ", expected, "!=", actual, sprintf(msgAndArgs...)))
+	}
+	return true
 }
 
 // Equiv asserts that two arrays of json.Marshaler are equivalent. Metrics, logs, and traces requests implement

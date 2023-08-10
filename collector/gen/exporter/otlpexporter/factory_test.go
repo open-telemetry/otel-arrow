@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testutil"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/configcompression"
 	"go.opentelemetry.io/collector/config/configgrpc"
@@ -20,7 +21,6 @@ import (
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
 	"go.opentelemetry.io/collector/exporter/exportertest"
-	"github.com/f5/otel-arrow-adapter/collector/gen/internal/testutil"
 )
 
 func TestCreateDefaultConfig(t *testing.T) {
@@ -34,7 +34,7 @@ func TestCreateDefaultConfig(t *testing.T) {
 	assert.Equal(t, ocfg.QueueSettings, exporterhelper.NewDefaultQueueSettings())
 	assert.Equal(t, ocfg.TimeoutSettings, exporterhelper.NewDefaultTimeoutSettings())
 	assert.Equal(t, ocfg.Compression, configcompression.Gzip)
-	assert.Equal(t, ocfg.Arrow, ArrowSettings{Disabled: false, NumStreams: runtime.NumCPU()})
+	assert.Equal(t, ocfg.Arrow, ArrowSettings{Disabled: false, NumStreams: runtime.NumCPU(), MaxStreamLifetime: time.Hour})
 }
 
 func TestCreateMetricsExporter(t *testing.T) {

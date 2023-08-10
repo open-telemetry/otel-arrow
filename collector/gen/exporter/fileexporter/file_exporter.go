@@ -124,10 +124,14 @@ func (lw *lineWriter) Close() error {
 }
 
 func (lw *lineWriter) Flush() error {
+	lw.mutex.Lock()
+	defer lw.mutex.Unlock()
 	return lw.file.Flush()
 }
 
 func (lw *lineWriter) getFile() io.WriteCloser {
+	lw.mutex.Lock()
+	defer lw.mutex.Unlock()
 	return lw.file
 }
 

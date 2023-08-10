@@ -19,6 +19,7 @@ type obfuscation struct {
 	// Next trace consumer in line
 	nextTraces  consumer.Traces
 	nextMetrics consumer.Metrics
+	nextLogs    consumer.Logs
 
 	encryptAttributes map[string]struct{}
 	encrypt           *feistel.FPECipher

@@ -1,17 +1,37 @@
 receivers:
-  otlp:
+  otlp/loopback:
     protocols:
       grpc:
+        endpoint: 127.0.0.1:4000
+        include_metadata: true
+      arrow:
+        disabled: false
   file/traces:
     path: ./recorded_traces.json
-    compression: zstd
+    compression:
     format: json
   file/metrics:
     path: ./recorded_metrics.json
-    compression: zstd
+    compression:
     format: json
 
 exporters:
+  otlp/arrow:
+    endpoint: 127.0.0.1:4000
+    wait_for_ready: true
+    tls:
+      insecure: true
+    arrow:
+      disabled: false
+      disable_downgrade: true
+      num_streams: 1
+    retry_on_failure:
+      enabled: false
+    sending_queue:
+      enabled: false
+    auth:
+      authenticator: headers_setter
+    
   file/traces:
     path: ./replayed_traces.json
     format: json
@@ -20,16 +40,58 @@ exporters:
     format: json
   logging:
 
-processors:
-  batch:
+connectors:
+  validation/verify/traces:
+  validation/expect/traces:
+    follower: traces/validate
+
+  validation/verify/metrics:
+  validation/expect/metrics:
+    follower: metrics/validate
+
+extensions:
+  headers_setter:
+    headers:
+      - key: validation-sequence
+        from_context: X-Validation-Sequence
 
 service:
+  extensions: [headers_setter]
   pipelines:
-    traces:
+    traces/input:
       receivers: [file/traces]
-      processors: [batch]
-      exporters: [file/traces, logging]
-    metrics:
+      exporters: [validation/expect/traces]
+    metrics/input:
       receivers: [file/metrics]
-      processors: [batch]
+      exporters: [validation/expect/metrics]
+
+    traces/validate:
+      receivers: [validation/expect/traces]
+      exporters: [validation/verify/traces, otlp/arrow]
+    metrics/validate:
+      receivers: [validation/expect/metrics]
+      exporters: [validation/verify/metrics, otlp/arrow]
+
+    traces/loop:
+      receivers: [otlp/loopback]
+      exporters: [validation/verify/traces]
+    metrics/loop:
+      receivers: [otlp/loopback]
+      exporters: [validation/verify/metrics]
+      
+    traces/output:
+      receivers: [validation/verify/traces]
+      exporters: [file/traces, logging]
+    metrics/output:
+      receivers: [validation/verify/metrics]
       exporters: [file/metrics, logging]
+      
+  telemetry:
+    resource:
+      "service.name": "replayer"
+    metrics:
+      address: 127.0.0.1:8888
+      level: detailed
+    logs:
+      level: debug
+      #level: info

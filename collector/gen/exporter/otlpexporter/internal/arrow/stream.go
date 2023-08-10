@@ -166,7 +166,6 @@ func (s *Stream) run(bgctx context.Context, streamClient StreamClientFunc, grpcO
 	// so we can set s.client = nil in case of a delayed Unimplemented.
 	err = s.read(ctx)
 
-
 	// Wait for the writer to ensure that all waiters are known.
 	cancel()
 	ww.Wait()

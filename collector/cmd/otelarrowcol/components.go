@@ -1,16 +1,18 @@
 package main
 
 import (
-	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter"
+	"github.com/f5/otel-arrow-adapter/collector/connector/validationconnector"
 	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/fileexporter"
+	"github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter"
 	"github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver"
-	"github.com/f5/otel-arrow-adapter/collector/receiver/filereceiver"
-	"github.com/f5/otel-arrow-adapter/collector/processor/obfuscationprocessor"
 	"github.com/f5/otel-arrow-adapter/collector/processor/experimentprocessor"
+	"github.com/f5/otel-arrow-adapter/collector/processor/obfuscationprocessor"
+	"github.com/f5/otel-arrow-adapter/collector/receiver/filereceiver"
 
 	"github.com/lightstep/telemetry-generator/generatorreceiver"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension"
+	"go.opentelemetry.io/collector/connector"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/loggingexporter"
 	"go.opentelemetry.io/collector/exporter/otlphttpexporter"
@@ -66,6 +68,10 @@ func components() (otelcol.Factories, error) {
 	if err != nil {
 		return otelcol.Factories{}, err
 	}
+
+	factories.Connectors, err = connector.MakeFactoryMap(
+		validationconnector.NewFactory(),
+	)
 
 	return factories, nil
 }
