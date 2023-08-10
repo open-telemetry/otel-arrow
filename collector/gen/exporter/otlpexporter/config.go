@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package otlpexporter // import "github.com/f5/otel-arrow-adapter/collector/gen/exporter/otlpexporter"
+package otlpexporter // import "github.com/open-telemetry/otel-arrow/collector/gen/exporter/otlpexporter"
 
 import (
 	"fmt"

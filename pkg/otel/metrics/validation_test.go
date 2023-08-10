@@ -25,17 +25,17 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 
-	"github.com/f5/otel-arrow-adapter/pkg/config"
-	"github.com/f5/otel-arrow-adapter/pkg/datagen"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
-	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
-	ametrics "github.com/f5/otel-arrow-adapter/pkg/otel/metrics/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/metrics/otlp"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
-	"github.com/f5/otel-arrow-adapter/pkg/record_message"
+	"github.com/open-telemetry/otel-arrow/pkg/config"
+	"github.com/open-telemetry/otel-arrow/pkg/datagen"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/assert"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
+	cfg "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
+	ametrics "github.com/open-telemetry/otel-arrow/pkg/otel/metrics/arrow"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/metrics/otlp"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
+	"github.com/open-telemetry/otel-arrow/pkg/record_message"
 )
 
 var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)

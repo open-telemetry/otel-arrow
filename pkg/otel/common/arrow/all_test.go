@@ -23,12 +23,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	acommon "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
-	builder "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
-	cfg "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/internal"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
+	acommon "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
+	builder "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
+	cfg "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/internal"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
 )
 
 var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)

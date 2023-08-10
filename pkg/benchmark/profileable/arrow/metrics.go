@@ -22,11 +22,11 @@ import (
 
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
-	colarspb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
-	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
-	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
-	cfg "github.com/f5/otel-arrow-adapter/pkg/config"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/arrow_record"
+	colarspb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
+	"github.com/open-telemetry/otel-arrow/pkg/benchmark"
+	"github.com/open-telemetry/otel-arrow/pkg/benchmark/dataset"
+	cfg "github.com/open-telemetry/otel-arrow/pkg/config"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 )
 
 type MetricsProfileable struct {

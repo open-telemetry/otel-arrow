@@ -24,14 +24,14 @@ import (
 	"github.com/apache/arrow/go/v12/arrow/array"
 	"github.com/apache/arrow/go/v12/arrow/memory"
 
-	carrow "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/events"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/transform"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/update"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
-	"github.com/f5/otel-arrow-adapter/pkg/werror"
+	carrow "github.com/open-telemetry/otel-arrow/pkg/arrow"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/events"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/transform"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/update"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
+	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
 
 // RecordBuilderExt is a wrapper/decorator around array.RecordBuilder that

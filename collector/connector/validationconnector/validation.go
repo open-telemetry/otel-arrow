@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/f5/otel-arrow-adapter/pkg/otel/assert"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/assert"
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/connector"

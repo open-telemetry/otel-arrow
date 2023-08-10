@@ -17,8 +17,8 @@ package otlp
 import (
 	"io"
 
-	"github.com/f5/otel-arrow-adapter/pkg/benchmark"
-	"github.com/f5/otel-arrow-adapter/pkg/benchmark/dataset"
+	"github.com/open-telemetry/otel-arrow/pkg/benchmark"
+	"github.com/open-telemetry/otel-arrow/pkg/benchmark/dataset"
 
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"

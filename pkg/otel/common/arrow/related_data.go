@@ -23,13 +23,13 @@ package arrow
 import (
 	"github.com/apache/arrow/go/v12/arrow"
 
-	colarspb "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1"
-	cfg "github.com/f5/otel-arrow-adapter/pkg/config"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
-	config "github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/config"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
-	"github.com/f5/otel-arrow-adapter/pkg/record_message"
-	"github.com/f5/otel-arrow-adapter/pkg/werror"
+	colarspb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
+	cfg "github.com/open-telemetry/otel-arrow/pkg/config"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
+	config "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
+	"github.com/open-telemetry/otel-arrow/pkg/record_message"
+	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
 
 type (

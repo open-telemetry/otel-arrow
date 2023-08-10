@@ -23,9 +23,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/schema/builder"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/stats"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
 )
 
 // An empty trace should not cause an error.

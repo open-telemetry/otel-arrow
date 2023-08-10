@@ -4,4 +4,4 @@
 //go:generate mdatagen metadata.yaml
 
 // Package fileexporter exports data to files.
-package fileexporter // import "github.com/f5/otel-arrow-adapter/collector/gen/exporter/fileexporter"
+package fileexporter // import "github.com/open-telemetry/otel-arrow/collector/gen/exporter/fileexporter"

@@ -28,10 +28,10 @@ func TestWError(t *testing.T) {
 	t.Parallel()
 
 	err := Level1a()
-	require.Equal(t, "github.com/f5/otel-arrow-adapter/pkg/werror.Level1a:40->github.com/f5/otel-arrow-adapter/pkg/werror.Level2:48{id=1}->test error", err.Error())
+	require.Equal(t, "github.com/open-telemetry/otel-arrow/pkg/werror.Level1a:40->github.com/open-telemetry/otel-arrow/pkg/werror.Level2:48{id=1}->test error", err.Error())
 
 	err = Level1b()
-	require.Equal(t, "github.com/f5/otel-arrow-adapter/pkg/werror.Level1b:44->github.com/f5/otel-arrow-adapter/pkg/werror.Level2:48{id=2}->test error", err.Error())
+	require.Equal(t, "github.com/open-telemetry/otel-arrow/pkg/werror.Level1b:44->github.com/open-telemetry/otel-arrow/pkg/werror.Level2:48{id=2}->test error", err.Error())
 }
 
 var ErrTest = errors.New("test error")

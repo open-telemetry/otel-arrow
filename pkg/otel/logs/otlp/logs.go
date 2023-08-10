@@ -19,11 +19,11 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/plog"
 
-	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/common/otlp"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
-	"github.com/f5/otel-arrow-adapter/pkg/werror"
+	arrowutils "github.com/open-telemetry/otel-arrow/pkg/arrow"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/otlp"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
+	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
 
 const None = -1

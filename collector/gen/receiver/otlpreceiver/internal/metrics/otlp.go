@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package metrics // import "github.com/f5/otel-arrow-adapter/collector/gen/receiver/otlpreceiver/internal/metrics"
+package metrics // import "github.com/open-telemetry/otel-arrow/collector/gen/receiver/otlpreceiver/internal/metrics"
 
 import (
 	"context"

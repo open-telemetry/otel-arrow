@@ -24,10 +24,10 @@ import (
 	"github.com/apache/arrow/go/v12/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
-	arrowutils "github.com/f5/otel-arrow-adapter/pkg/arrow"
-	carrow "github.com/f5/otel-arrow-adapter/pkg/otel/common/arrow"
-	"github.com/f5/otel-arrow-adapter/pkg/otel/constants"
-	"github.com/f5/otel-arrow-adapter/pkg/werror"
+	arrowutils "github.com/open-telemetry/otel-arrow/pkg/arrow"
+	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
+	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
 
 type (

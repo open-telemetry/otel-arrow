@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package netstats // import "github.com/f5/otel-arrow-adapter/collector/gen/internal/netstats"
+package netstats // import "github.com/open-telemetry/otel-arrow/collector/gen/internal/netstats"
 
 import (
 	"context"
@@ -40,7 +40,7 @@ const (
 	// (includes compression) by exporters and receivers.
 	RecvWireBytes = "recv_wire"
 
-	scopeName = "github.com/f5/otel-arrow-adapter/collector/netstats"
+	scopeName = "github.com/open-telemetry/otel-arrow/collector/netstats"
 )
 
 // NetworkReporter is a helper to add network-level observability to
