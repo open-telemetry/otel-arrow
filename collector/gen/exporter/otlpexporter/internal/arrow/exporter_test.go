@@ -14,25 +14,24 @@ import (
 	"time"
 
 	"github.com/golang/mock/gomock"
+	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
+	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
+	arrowRecordMock "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record/mock"
+	otelAssert "github.com/open-telemetry/otel-arrow/pkg/otel/assert"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
-	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
-	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
-	arrowRecordMock "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record/mock"
-	otelAssert "github.com/open-telemetry/otel-arrow/pkg/otel/assert"
-
+	"github.com/open-telemetry/otel-arrow/collector/gen/internal/testdata"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
-
-	"github.com/open-telemetry/otel-arrow/collector/gen/internal/testdata"
 )
 
 const defaultMaxStreamLifetime = 11 * time.Second
+
 type compareJSONTraces struct{ ptrace.Traces }
 type compareJSONMetrics struct{ pmetric.Metrics }
 type compareJSONLogs struct{ plog.Logs }

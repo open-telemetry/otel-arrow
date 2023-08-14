@@ -9,9 +9,9 @@ import (
 	"io"
 	"testing"
 
+	"github.com/golang/mock/gomock"
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	arrowCollectorMock "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1/mock"
-	"github.com/golang/mock/gomock"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest"
@@ -109,7 +109,7 @@ func (ctc *commonTestCase) newMockStream(ctx context.Context) *commonTestStream 
 		sendCall: client.EXPECT().Send(
 			gomock.Any(), // *arrowpb.BatchArrowRecords
 		).Times(0),
-		recvCall: client.EXPECT().Recv().Times(0),
+		recvCall:      client.EXPECT().Recv().Times(0),
 		closeSendCall: client.EXPECT().CloseSend().AnyTimes().Return(nil),
 	}
 	return testStream

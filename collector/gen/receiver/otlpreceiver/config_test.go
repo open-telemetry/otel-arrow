@@ -115,18 +115,23 @@ func TestUnmarshalConfig(t *testing.T) {
 						},
 					},
 				},
-				HTTP: &confighttp.HTTPServerSettings{
-					Endpoint: "0.0.0.0:4318",
-					TLSSetting: &configtls.TLSServerSetting{
-						TLSSetting: configtls.TLSSetting{
-							CertFile: "test.crt",
-							KeyFile:  "test.key",
+				HTTP: &httpServerSettings{
+					HTTPServerSettings: &confighttp.HTTPServerSettings{
+						Endpoint: "0.0.0.0:4318",
+						TLSSetting: &configtls.TLSServerSetting{
+							TLSSetting: configtls.TLSSetting{
+								CertFile: "test.crt",
+								KeyFile:  "test.key",
+							},
+						},
+						CORS: &confighttp.CORSSettings{
+							AllowedOrigins: []string{"https://*.test.com", "https://test.com"},
+							MaxAge:         7200,
 						},
 					},
-					CORS: &confighttp.CORSSettings{
-						AllowedOrigins: []string{"https://*.test.com", "https://test.com"},
-						MaxAge:         7200,
-					},
+					TracesURLPath:  "/traces",
+					MetricsURLPath: "/v2/metrics",
+					LogsURLPath:    "/log/ingest",
 				},
 				Arrow: &ArrowSettings{
 					Disabled: false,
@@ -152,9 +157,13 @@ func TestUnmarshalConfigUnix(t *testing.T) {
 					},
 					ReadBufferSize: 512 * 1024,
 				},
-				HTTP: &confighttp.HTTPServerSettings{
-					Endpoint: "/tmp/http_otlp.sock",
-					// Transport: "unix",
+				HTTP: &httpServerSettings{
+					HTTPServerSettings: &confighttp.HTTPServerSettings{
+						Endpoint: "/tmp/http_otlp.sock",
+					},
+					TracesURLPath:  defaultTracesURLPath,
+					MetricsURLPath: defaultMetricsURLPath,
+					LogsURLPath:    defaultLogsURLPath,
 				},
 				Arrow: &ArrowSettings{},
 			},
@@ -193,6 +202,36 @@ func TestUnmarshalConfigArrowWithoutGRPC(t *testing.T) {
 	cfg := factory.CreateDefaultConfig()
 	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
 	assert.EqualError(t, component.ValidateConfig(cfg), "must specify at gRPC protocol when using the OTLP+Arrow receiver")
+}
+
+func TestUnmarshalConfigInvalidSignalPath(t *testing.T) {
+	tests := []struct {
+		name       string
+		testDataFn string
+	}{
+		{
+			name:       "Invalid traces URL path",
+			testDataFn: "invalid_traces_path.yaml",
+		},
+		{
+			name:       "Invalid metrics URL path",
+			testDataFn: "invalid_metrics_path.yaml",
+		},
+		{
+			name:       "Invalid logs URL path",
+			testDataFn: "invalid_logs_path.yaml",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cm, err := confmaptest.LoadConf(filepath.Join("testdata", test.testDataFn))
+			require.NoError(t, err)
+			factory := NewFactory()
+			cfg := factory.CreateDefaultConfig()
+			assert.EqualError(t, component.UnmarshalConfig(cm, cfg), "invalid HTTP URL path set for signal: parse \":invalid\": missing protocol scheme")
+		})
+	}
 }
 
 func TestUnmarshalConfigEmpty(t *testing.T) {

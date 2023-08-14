@@ -29,4 +29,4 @@ arrow:
   num_streams: 2
   disabled: false
   enable_mixed_signals: true
-  max_stream_lifetime: "2h"
+  max_stream_lifetime: 2h
