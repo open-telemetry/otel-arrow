@@ -1,17 +1,17 @@
 package main
 
 import (
-	"github.com/open-telemetry/otel-arrow/collector/connector/validationconnector"
-	"github.com/open-telemetry/otel-arrow/collector/gen/exporter/fileexporter"
-	"github.com/open-telemetry/otel-arrow/collector/gen/exporter/otlpexporter"
-	"github.com/open-telemetry/otel-arrow/collector/gen/receiver/otlpreceiver"
-	"github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor"
-	"github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor"
-	"github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver"
-
 	"github.com/lightstep/telemetry-generator/generatorreceiver"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension"
 	"github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension"
+	"github.com/open-telemetry/otel-arrow/collector/connector/validationconnector"
+	"github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter"
+	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter"
+	"github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor"
+	"github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor"
+	"github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver"
+	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver"
+
 	"go.opentelemetry.io/collector/connector"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/loggingexporter"
@@ -41,7 +41,7 @@ func components() (otelcol.Factories, error) {
 	}
 
 	factories.Receivers, err = receiver.MakeFactoryMap(
-		otlpreceiver.NewFactory(),
+		otelarrowreceiver.NewFactory(),
 		filereceiver.NewFactory(),
 		generatorreceiver.NewFactory(),
 	)
@@ -51,7 +51,7 @@ func components() (otelcol.Factories, error) {
 
 	factories.Exporters, err = exporter.MakeFactoryMap(
 		loggingexporter.NewFactory(),
-		otlpexporter.NewFactory(),
+		otelarrowexporter.NewFactory(),
 		otlphttpexporter.NewFactory(),
 		fileexporter.NewFactory(),
 	)
