@@ -280,8 +280,7 @@ func (s *Stream) write(ctx context.Context) error {
 		select {
 		case <-timer.C:
 			s.prioritizer.removeReady(s)
-			s.client.CloseSend()
-			return nil
+			return s.client.CloseSend()
 		case wri, ok = <-s.toWrite:
 			// channel is closed
 			if !ok {

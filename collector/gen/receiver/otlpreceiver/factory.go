@@ -6,12 +6,12 @@ package otlpreceiver // import "github.com/open-telemetry/otel-arrow/collector/g
 import (
 	"context"
 
-	"github.com/open-telemetry/otel-arrow/collector/gen/internal/sharedcomponent"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/consumer"
+	"github.com/open-telemetry/otel-arrow/collector/gen/internal/sharedcomponent"
 	"go.opentelemetry.io/collector/receiver"
 )
 
@@ -20,6 +20,10 @@ const (
 
 	defaultGRPCEndpoint = "0.0.0.0:4317"
 	defaultHTTPEndpoint = "0.0.0.0:4318"
+
+	defaultTracesURLPath  = "/v1/traces"
+	defaultMetricsURLPath = "/v1/metrics"
+	defaultLogsURLPath    = "/v1/logs"
 )
 
 // NewFactory creates a new OTLP receiver factory.
@@ -44,8 +48,13 @@ func createDefaultConfig() component.Config {
 				// We almost write 0 bytes, so no need to tune WriteBufferSize.
 				ReadBufferSize: 512 * 1024,
 			},
-			HTTP: &confighttp.HTTPServerSettings{
-				Endpoint: defaultHTTPEndpoint,
+			HTTP: &httpServerSettings{
+				HTTPServerSettings: &confighttp.HTTPServerSettings{
+					Endpoint: defaultHTTPEndpoint,
+				},
+				TracesURLPath:  defaultTracesURLPath,
+				MetricsURLPath: defaultMetricsURLPath,
+				LogsURLPath:    defaultLogsURLPath,
 			},
 			Arrow: &ArrowSettings{
 				Disabled: false,
