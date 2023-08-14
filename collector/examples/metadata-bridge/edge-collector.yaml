@@ -1,10 +1,10 @@
 receivers:
-  # otlp/standard is a standard OTLP receiver.
-  otlp/standard:
+  # otelarrow/standard is a standard OTLP receiver.
+  otelarrow/standard:
     protocols:
       grpc:
-        # Port 4318 is the standard port for OTLP/gRPC.
-        endpoint: 127.0.0.1:4318
+        # Port 4317 is the standard port for OTLP/gRPC.
+        endpoint: 127.0.0.1:4317
 
         # include_metadata is required for the receiver to pass
         # per-request metadata through the pipeline, in order for the
@@ -33,7 +33,7 @@ extensions:
 exporters:
   # The OTLP/Arrow exporter sends to a local corresponding with
   # saas-collector.yaml.
-  otlp/arrow:
+  otelarrow/arrow:
     endpoint: 127.0.0.1:5000
 
     # For demonstration purposes, use an insecure port.  This would
@@ -84,9 +84,9 @@ service:
   extensions: [headers_setter, basicauth]
   pipelines:
     traces:
-      receivers: [otlp/standard]
+      receivers: [otelarrow/standard]
       processors: []
-      exporters: [logging, otlp/arrow]
+      exporters: [logging, otelarrow/arrow]
 
   telemetry:
     # Enable a prometheus /metrics endpoint on :8888

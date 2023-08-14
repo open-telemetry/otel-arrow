@@ -23,7 +23,7 @@ import (
 
 const (
 	// The value of "type" key in configuration.
-	typeStr = "otlp"
+	typeStr = "otelarrow"
 )
 
 // NewFactory creates a factory for OTLP exporter.

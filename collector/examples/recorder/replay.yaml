@@ -1,26 +1,24 @@
 receivers:
-  otlp/na:
+  otelarrow/first:
     protocols:
       grpc:
-        endpoint: 127.0.0.1:9099
-  otlp/second:
+        endpoint: 127.0.0.1:8081
+  otelarrow/second:
     protocols:
       grpc:
-        endpoint: 127.0.0.1:6000
+        endpoint: 127.0.0.1:8082
       arrow:
         disabled: false
   file/first_metrics:
     path: "first.metrics.json"
     throttle: 0
-
-  # not supported
-  # file/first_traces:
-  #   path: "first.traces.json"
-  #   throttle: 0
+  file/first_traces:
+    path: "first.traces.json"
+    throttle: 0
         
 exporters:
-  otlp/forward:
-    endpoint: 127.0.0.1:6000
+  otelarrow/forward:
+    endpoint: 127.0.0.1:8082
     wait_for_ready: true
     arrow:
       disabled: false
@@ -44,20 +42,20 @@ exporters:
 service:
   pipelines:
     traces/first:
-      receivers: [otlp/na] # @@@ should be file/first_traces, traces not supported
+      receivers: [file/first_traces]
       processors: []
-      exporters: [logging/first, otlp/forward]
+      exporters: [logging/first, otelarrow/forward]
     metrics/first:
       receivers: [file/first_metrics]
       processors: []
-      exporters: [logging/first, otlp/forward]
+      exporters: [logging/first, otelarrow/forward]
 
     traces/second:
-      receivers: [otlp/second]
+      receivers: [otelarrow/second]
       processors: []
       exporters: [logging/second, file/second_traces]
     metrics/second:
-      receivers: [otlp/second]
+      receivers: [otelarrow/second]
       processors: []
       exporters: [logging/second, file/second_metrics]
       

@@ -1,7 +1,7 @@
 receivers:
-  # otlp is an OTLP-Arrow receiver that will operate as the SaaS-side
+  # otelarrow is an OTLP-Arrow receiver that will operate as the SaaS-side
   # of the bridge.
-  otlp:
+  otelarrow:
     protocols:
       grpc:
         # Port 5000 is the endpoint used in edge-collector.
@@ -56,7 +56,7 @@ service:
   extensions: [headers_setter, basicauth]
   pipelines:
     traces:
-      receivers: [otlp]
+      receivers: [otelarrow]
       processors: []
       exporters: [logging, otlphttp]
 

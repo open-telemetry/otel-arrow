@@ -1,11 +1,11 @@
 receivers:
-  # otlp/stdin is for regular traffic on the default gRPC port
-  otlp/stdin:
+  # otelarrow/stdin is for regular traffic on the default gRPC port
+  otelarrow/stdin:
     protocols:
       grpc:
-        endpoint: 127.0.0.1:4318
-  # otlp/loopback receives OTLP-Arrow traffic on port 4000
-  otlp/loopback:
+        endpoint: 127.0.0.1:4317
+  # otelarrow/loopback receives OTLP-Arrow traffic on port 4000
+  otelarrow/loopback:
     protocols:
       grpc:
         endpoint: 127.0.0.1:4000
@@ -19,19 +19,19 @@ processors:
   experiment:
     table:
     - weight: 1
-      exporters: [otlp/arrowout, logging/debug]
+      exporters: [otelarrow/arrowout, logging/debug]
     - weight: 2
-      exporters: [otlp/stdout, logging/info]
+      exporters: [otelarrow/stdout, logging/info]
 
 exporters:
-  # otlp/stdout sends standard OTLP to an external destination
-  otlp/stdout:
+  # otelarrow/stdout sends standard OTLP to an external destination
+  otelarrow/stdout:
     endpoint: ingest.lightstep.com:443
     headers:
       lightstep-access-token: "${LIGHTSTEP_ACCESS_TOKEN}"
 
-  # otlp/arrowout sends standard OTLP to an external destination
-  otlp/arrowout:
+  # otelarrow/arrowout sends standard OTLP to an external destination
+  otelarrow/arrowout:
     endpoint: 127.0.0.1:4000
     # wait_for_ready ensures the exporter doesn't fallback to standard
     # OTLP because the exporter has not started.
@@ -52,16 +52,16 @@ service:
     # the normal traces pipeline either routes directly to the
     # standard output or via the loopback.  it prints an info.
     traces/normal:
-      receivers: [otlp/stdin]
+      receivers: [otelarrow/stdin]
       processors: [batch, experiment]
-      exporters: [logging/info, otlp/stdout, otlp/arrowout]
+      exporters: [logging/info, otelarrow/stdout, otelarrow/arrowout]
 
     # experiment processes data send via Arrow through the loopback.
     # it prints a debug log.
     traces/experiment:
-      receivers: [otlp/loopback]
+      receivers: [otelarrow/loopback]
       processors: [batch]
-      exporters: [logging/debug, otlp/stdout]
+      exporters: [logging/debug, otelarrow/stdout]
 
   telemetry:
     metrics:

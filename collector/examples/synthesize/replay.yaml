@@ -1,5 +1,5 @@
 receivers:
-  otlp/loopback:
+  otelarrow/loopback:
     protocols:
       grpc:
         endpoint: 127.0.0.1:4000
@@ -16,7 +16,7 @@ receivers:
     format: json
 
 exporters:
-  otlp/arrow:
+  otelarrow/arrow:
     endpoint: 127.0.0.1:4000
     wait_for_ready: true
     tls:
@@ -67,16 +67,16 @@ service:
 
     traces/validate:
       receivers: [validation/expect/traces]
-      exporters: [validation/verify/traces, otlp/arrow]
+      exporters: [validation/verify/traces, otelarrow/arrow]
     metrics/validate:
       receivers: [validation/expect/metrics]
-      exporters: [validation/verify/metrics, otlp/arrow]
+      exporters: [validation/verify/metrics, otelarrow/arrow]
 
     traces/loop:
-      receivers: [otlp/loopback]
+      receivers: [otelarrow/loopback]
       exporters: [validation/verify/traces]
     metrics/loop:
-      receivers: [otlp/loopback]
+      receivers: [otelarrow/loopback]
       exporters: [validation/verify/metrics]
       
     traces/output:

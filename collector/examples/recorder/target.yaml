@@ -1,22 +1,25 @@
 receivers:
-  # Send test data to the first pipeline.
-  otlp/first:
+  # Send test data to the first pipeline using standard OTel ports
+  # 4317 and 4318.
+  otelarrow/first:
     protocols:
       grpc:
+        endpoint: 127.0.0.1:4317
+      http:
         endpoint: 127.0.0.1:4318
       arrow:
         disabled: false
 
   # Data will be repeated to the second pipeline via Arrow.
-  otlp/second:
+  otelarrow/second:
     protocols:
       grpc:
         endpoint: 127.0.0.1:5000
       arrow:
         disabled: false
-        
+
 exporters:
-  otlp/forward:
+  otelarrow/forward:
     # Data is forwarded via Arrow to this receiver.
     endpoint: 127.0.0.1:5000
     wait_for_ready: true
@@ -46,20 +49,20 @@ exporters:
 service:
   pipelines:
     traces/first:
-      receivers: [otlp/first]
+      receivers: [otelarrow/first]
       processors: []
-      exporters: [logging/first, file/first_traces, otlp/forward]
+      exporters: [logging/first, file/first_traces, otelarrow/forward]
     metrics/first:
-      receivers: [otlp/first]
+      receivers: [otelarrow/first]
       processors: []
-      exporters: [logging/first, file/first_metrics, otlp/forward]
+      exporters: [logging/first, file/first_metrics, otelarrow/forward]
 
     traces/second:
-      receivers: [otlp/second]
+      receivers: [otelarrow/second]
       processors: []
       exporters: [logging/second, file/second_traces]
     metrics/second:
-      receivers: [otlp/second]
+      receivers: [otelarrow/second]
       processors: []
       exporters: [logging/second, file/second_metrics]
       
