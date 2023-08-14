@@ -14,14 +14,14 @@ receivers:
   otelarrow/second:
     protocols:
       grpc:
-        endpoint: 127.0.0.1:5000
+        endpoint: 127.0.0.1:8081
       arrow:
         disabled: false
 
 exporters:
   otelarrow/forward:
     # Data is forwarded via Arrow to this receiver.
-    endpoint: 127.0.0.1:5000
+    endpoint: 127.0.0.1:8081
     wait_for_ready: true
     arrow:
       disabled: false
