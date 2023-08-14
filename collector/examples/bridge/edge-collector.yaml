@@ -1,18 +1,18 @@
 receivers:
-  # otlp/standard is a standard OTLP receiver.
-  otlp/standard:
+  # otelarrow/standard is an OTelArrow receiver.
+  otelarrow/standard:
     protocols:
       grpc:
-        # Port 4318 is the standard port for OTLP/gRPC.
-        endpoint: 127.0.0.1:4318
+        # Port 4317 is the standard port for OTLP/gRPC.
+        endpoint: 127.0.0.1:4317
 
 processors:
   # The batch processor will benefit pipelines with small export sizes.
   batch:
 
 exporters:
-  # otlp/arrow is an OTLP-Arrow exporter.
-  otlp/arrow:
+  # otelarrow/arrow is an OTel-Arrow exporter.
+  otelarrow/arrow:
     # For the sample configuration, the other side of the bridge
     # runs on port 8100.
     endpoint: 127.0.0.1:8100
@@ -48,13 +48,13 @@ exporters:
 service:
   pipelines:
     traces:
-      receivers: [otlp/standard]
+      receivers: [otelarrow/standard]
       processors: [batch]
-      exporters: [otlp/arrow]
+      exporters: [otelarrow/arrow]
     metrics:
-      receivers: [otlp/standard]
+      receivers: [otelarrow/standard]
       processors: [batch]
-      exporters: [otlp/arrow]
+      exporters: [otelarrow/arrow]
 
   telemetry:
     resource:

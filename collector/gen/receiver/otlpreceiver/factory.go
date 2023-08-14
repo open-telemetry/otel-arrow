@@ -6,17 +6,17 @@ package otlpreceiver // import "github.com/open-telemetry/otel-arrow/collector/g
 import (
 	"context"
 
+	"github.com/open-telemetry/otel-arrow/collector/gen/internal/sharedcomponent"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/consumer"
-	"github.com/open-telemetry/otel-arrow/collector/gen/internal/sharedcomponent"
 	"go.opentelemetry.io/collector/receiver"
 )
 
 const (
-	typeStr = "otlp"
+	typeStr = "otelarrow"
 
 	defaultGRPCEndpoint = "0.0.0.0:4317"
 	defaultHTTPEndpoint = "0.0.0.0:4318"

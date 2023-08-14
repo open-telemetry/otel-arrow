@@ -18,7 +18,7 @@ Arrow in the recording step, e.g.,:
 
 ```
 exporters:
-  otlp/forward:
+  otelarrow/forward:
     arrow:
       enabled: false
 ```
