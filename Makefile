@@ -51,8 +51,8 @@ multimod-prerelease: $(MULTIMOD)
 
 COMMIT?=HEAD
 REMOTE?=git@github.com:open-telemetry/otel-arrow.git
-.PHONY: push-tags
-push-tags: $(MULTIMOD)
+.PHONY: push-release
+push-release: $(MULTIMOD)
 	$(MULTIMOD) verify
 	set -e; for tag in `$(MULTIMOD) tag -m ${MODSET} -c ${COMMIT} --print-tags | grep -v "Using" `; do \
 		echo "pushing tag $${tag}"; \
