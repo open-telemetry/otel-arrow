@@ -50,7 +50,7 @@ multimod-prerelease: $(MULTIMOD)
 	$(MAKE) gotidy
 
 COMMIT?=HEAD
-REMOTE?=git@github.com:open-telemetry/opentelemetry-collector.git
+REMOTE?=git@github.com:open-telemetry/otel-arrow.git
 .PHONY: push-tags
 push-tags: $(MULTIMOD)
 	$(MULTIMOD) verify
@@ -58,46 +58,6 @@ push-tags: $(MULTIMOD)
 		echo "pushing tag $${tag}"; \
 		git push ${REMOTE} $${tag}; \
 	done;
-
-.PHONY: check-changes
-check-changes: $(YQ)
-ifndef MODSET
-	@echo "MODSET not defined"
-	@echo "usage: make check-changes PREVIOUS_VERSION=<version eg 0.52.0> MODSET=beta"
-	exit 1
-endif
-ifndef PREVIOUS_VERSION
-	@echo "PREVIOUS_VERSION not defined"
-	@echo "usage: make check-changes PREVIOUS_VERSION=<version eg 0.52.0> MODSET=beta"
-	exit 1
-else
-ifeq (, $(findstring v,$(PREVIOUS_VERSION)))
-NORMALIZED_PREVIOUS_VERSION="v$(PREVIOUS_VERSION)"
-else
-NORMALIZED_PREVIOUS_VERSION="$(PREVIOUS_VERSION)"
-endif
-endif
-	@all_submods=$$($(YQ) e '.module-sets.*.modules[] | select(. != "go.opentelemetry.io/collector")' versions.yaml | sed 's/^go\.opentelemetry\.io\/collector\///'); \
-	mods=$$($(YQ) e '.module-sets.$(MODSET).modules[]' versions.yaml | sed 's/^go\.opentelemetry\.io\/collector\///'); \
-	changed_files=""; \
-	for mod in $${mods}; do \
-		if [ "$${mod}" == "go.opentelemetry.io/collector" ]; then \
-			changed_files+=$$(git diff --name-only $(NORMALIZED_PREVIOUS_VERSION) -- $$(printf '%s\n' $${all_submods[@]} | sed 's/^/:!/' | paste -sd' ' -) | grep -E '.+\.go$$'); \
-		elif ! git rev-parse --quiet --verify $${mod}/$(NORMALIZED_PREVIOUS_VERSION) >/dev/null; then \
-			echo "Module $${mod} does not have a $(NORMALIZED_PREVIOUS_VERSION) tag"; \
-			echo "$(MODSET) release is required."; \
-			exit 0; \
-		else \
-			changed_files+=$$(git diff --name-only $${mod}/$(NORMALIZED_PREVIOUS_VERSION) -- $${mod} | grep -E '.+\.go$$'); \
-		fi; \
-	done; \
-	if [ -n "$${changed_files}" ]; then \
-		echo "The following files changed in $(MODSET) modules since $(NORMALIZED_PREVIOUS_VERSION): $${changed_files}"; \
-	else \
-		echo "No $(MODSET) modules have changed since $(NORMALIZED_PREVIOUS_VERSION)"; \
-		echo "No need to release $(MODSET)."; \
-		exit 1; \
-	fi
 
 .PHONY: prepare-release
 prepare-release:
@@ -122,21 +82,26 @@ else
 endif
 	# ensure a clean branch
 	git diff -s --exit-code || (echo "local repository not clean"; exit 1)
-	# check if any modules have changed since the previous release
-	$(MAKE) check-changes
 	# update files with new version
 	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' versions.yaml
-	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' ./cmd/builder/internal/builder/config.go
-	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' ./cmd/builder/test/core.builder.yaml
-	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' ./cmd/otelcorecol/builder-config.yaml
-	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' examples/k8s/otel-config.yaml
 	find . -name "*.bak" -type f -delete
 	# commit changes before running multimod
 	git add .
 	git commit -m "prepare release $(RELEASE_CANDIDATE)"
 	$(MAKE) multimod-prerelease
 	# regenerate files
-	$(MAKE) -C cmd/builder config
-	$(MAKE) genotelcorecol
+	$(MAKE) genotelarrowcol
 	git add .
 	git commit -m "add multimod changes $(RELEASE_CANDIDATE)" || (echo "no multimod changes to commit")
+
+# OTC's builder can be installed using:
+#
+#   go install go.opentelemetry.io/collector/cmd/builder@latest
+#
+# TODO install this locally
+BUILDER := builder
+.PHONY: $(BUILDER)
+
+.PHONY: genotelarrowcol
+genotelarrowcol:
+	$(BUILDER) --skip-compilation --config collector/cmd/otelarrowcol/build.yaml --output-path collector/cmd/otelarrowcol
