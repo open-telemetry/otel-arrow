@@ -1,8 +1,7 @@
 dist:
+  module: github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol
   name: otelarrowcol
-  # TODO This should be edited by the release process to the same version as other
-  # collector deps, I suppose.
-  otelcol_version: "0.83.0"
+  description: Development OTel-Arrow Collector binary, testing only.
 
 exporters:
   - import: go.opentelemetry.io/collector/exporter/loggingexporter
@@ -10,18 +9,18 @@ exporters:
   - import: go.opentelemetry.io/collector/exporter/otlphttpexporter
     gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.83.0
   - import: github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter
-    gomod: github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter v0.0.0
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.0.0
   - import: github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter
-    gomod: github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter v0.0.0
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.0.0
 
 receivers:
   - import: github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver
-    gomod: github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver v0.0.0
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.0.0
   - import: github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver
-    gomod: github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver v0.0.0
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.0.0
   # TODO note the t-g repo needs a release, have used the latest sha below
   - import: github.com/lightstep/telemetry-generator/generatorreceiver
-    gomod: github.com/lightstep/telemetry-generator/generatorreceiver 4b4c6003eca7c08a5ae8182aa70d966fc5913228
+    gomod: github.com/lightstep/telemetry-generator/generatorreceiver v0.12.0
 
 processors:
   - import: go.opentelemetry.io/collector/processor/batchprocessor
@@ -29,13 +28,13 @@ processors:
   - import: go.opentelemetry.io/collector/processor/memorylimiterprocessor
     gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.83.0
   - import: github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor
-    gomod: github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor v0.0.0
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.0.0
   - import: github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor
-    gomod: github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.0.0
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.0.0
 
 connectors:
   - import: github.com/open-telemetry/otel-arrow/collector/connector/validationconnector
-    gomod: github.com/open-telemetry/otel-arrow/collector/connector/validationconnector v0.0.0
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.0.0
 
 extensions:
   - import: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension
