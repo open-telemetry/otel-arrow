@@ -1,7 +1,9 @@
-To execute the data recorder:
+First, run `make otelarrowcol` in the top-level directory.
+
+To execute the data recorder, for example, where GOOS=darwin and GOARCH=arm64:
 
 ```
-go run ./cmd/otelarrowcol --config examples/replay/target.yaml
+../../../bin/otelarrowcol_darwin_arm64 --config examples/replay/target.yaml
 ```
 
 During this phase, data received is copied through a "loopback" Arrow
@@ -27,7 +29,7 @@ Then, to re-exercise the same data though an Arrow pipeline using data
 recorded in the first step, run:
 
 ```
-go run ./cmd/otelarrowcol --config examples/replay/replay.yaml
+../../../bin/otelarrowcol_darwin_arm64 --config examples/replay/replay.yaml
 ```
 
 Note that this example only supports traces and metrics.  Logs are not

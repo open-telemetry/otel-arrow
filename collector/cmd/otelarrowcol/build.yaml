@@ -3,6 +3,12 @@ dist:
   name: otelarrowcol
   description: Development OTel-Arrow Collector binary, testing only.
 
+  # Note: this is replaced to match the current release using `sed`
+  version: 0.1.0
+
+  # Note: This should match the version of the core collector components used below
+  otelcol_version: 0.83.0
+
 exporters:
   - import: go.opentelemetry.io/collector/exporter/loggingexporter
     gomod: go.opentelemetry.io/collector/exporter/loggingexporter v0.83.0
