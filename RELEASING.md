@@ -1,4 +1,4 @@
-To make a release of one or more Golang modules in the the OTel Arrow
+To make a release of one or more Golang modules in the OTel Arrow
 repository, follow these steps.
 
 1. Using Git, checkout the version of the repo that will be released
