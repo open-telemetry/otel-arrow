@@ -44,8 +44,8 @@ func createDefaultConfig() component.Config {
 		QueueSettings:   exporterhelper.NewDefaultQueueSettings(),
 		GRPCClientSettings: configgrpc.GRPCClientSettings{
 			Headers: map[string]configopaque.String{},
-			// Default to gzip compression
-			Compression: configcompression.Gzip,
+			// Default to zstd compression
+			Compression: configcompression.Zstd,
 			// We almost read 0 bytes, so no need to tune ReadBufferSize.
 			WriteBufferSize: 512 * 1024,
 		},

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	arrowPkg "github.com/apache/arrow/go/v12/arrow"
+	"github.com/open-telemetry/otel-arrow/pkg/config"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 	"go.uber.org/multierr"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
@@ -132,7 +133,10 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) (err erro
 		}
 
 		e.arrow = arrow.NewExporter(e.config.Arrow.MaxStreamLifetime, e.config.Arrow.NumStreams, e.config.Arrow.DisableDowngrade, e.settings.TelemetrySettings, e.callOptions, func() arrowRecord.ProducerAPI {
-			return arrowRecord.NewProducer()
+			// We configure the producer w/o Arrow-IPC compression because
+			// we have gRPC compression, and with gRPC compression we have
+			// existing instrumentation to monitor compression rate.
+			return arrowRecord.NewProducerWithOptions(config.WithNoZstd())
 		}, e.streamClientFactory(e.config, e.clientConn), perRPCCreds)
 
 		if err := e.arrow.Start(ctx); err != nil {
