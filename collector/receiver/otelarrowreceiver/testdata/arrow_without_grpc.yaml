@@ -1,3 +1,0 @@
-# The following entry initializes the an OTel Arrow receiver without gRPC.
-protocols:
-  http:

@@ -45,7 +45,7 @@ type Protocols struct {
 type ArrowSettings struct {
 }
 
-// Config defines configuration for OTLP receiver.
+// Config defines configuration for OTel Arrow receiver.
 type Config struct {
 	// Protocols is the configuration for the supported protocols, currently gRPC and HTTP (Proto and JSON).
 	Protocols `mapstructure:"protocols"`
@@ -57,10 +57,10 @@ var _ confmap.Unmarshaler = (*Config)(nil)
 // Validate checks the receiver configuration is valid
 func (cfg *Config) Validate() error {
 	if cfg.GRPC == nil && cfg.HTTP == nil {
-		return errors.New("must specify at least one protocol when using the OTLP receiver")
+		return errors.New("must specify at least one protocol when using the OTel Arrow receiver")
 	}
 	if cfg.Arrow != nil && cfg.GRPC == nil {
-		return errors.New("must specify at gRPC protocol when using the OTLP+Arrow receiver")
+		return errors.New("must specify at gRPC protocol when using the OTLP Arrow receiver")
 	}
 	return nil
 }
@@ -73,9 +73,14 @@ func (cfg *Config) Unmarshal(conf *confmap.Conf) error {
 		return err
 	}
 
-	if !conf.IsSet(protoGRPC) {
-		cfg.GRPC = nil
-	}
+	// Note: since this is the OTel-Arrow exporter, not the core component,
+	// we allow a configuration that is free of an explicit protocol, i.e.,
+	// we assume gRPC but we do not assume HTTP, whereas the core component
+	// also has:
+	//
+	//   if !conf.IsSet(protoGRPC) {
+	//   	cfg.GRPC = nil
+	//   }
 
 	if !conf.IsSet(protoHTTP) {
 		cfg.HTTP = nil

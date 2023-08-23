@@ -42,35 +42,34 @@ simply by replacing "otlp" with "otelarrow" as the component name in
 the collector configuration.
 
 To enable the OTel-Arrow receiver, include it in the list of receivers
-for a pipeline.  Arrow functionality is enabled by default, but like the
-component it is based on, each protocol must be listed.
+for a pipeline.  No further configuration is needed.  This receiver
+listens on the standard OTLP/gRPC port 4317 and serves standard OTLP
+over gRPC out of the box.
 
 ```yaml
 receivers:
   otelarrow:
-    protocols:
-      grpc:
-      http:
 ```
-
-The above configuration uses the OTLP-specified default ports 4317
-(gRPC) and 4318 (HTTP).
-
-## Arrow Configuration
-
-To use OTel-Arrow, a `grpc` configuration block must be listed.
 
 ## Advanced Configuration
 
-The endpoint is configurable:
+Users may wish to configure gRPC settings, for example:
+
+```
+receivers:
+  otelarrow:
+    protocols:
+      grpc:
+	    ...
+```
 
 - `endpoint` (default = 0.0.0.0:4317 for grpc protocol, 0.0.0.0:4318 http protocol):
   host:port to which the receiver is going to receive data. The valid syntax is
   described at https://github.com/grpc/grpc/blob/master/doc/naming.md.
 
-Several helper files are leveraged to provide additional capabilities automatically:
+Several common configuration structures provide additional capabilities automatically:
 
-- [gRPC settings](https://github.com/open-telemetry/opentelemetry-collector/blob/main/config/configgrpc/README.md) including CORS
+- [gRPC settings](https://github.com/open-telemetry/opentelemetry-collector/blob/main/config/configgrpc/README.md)
 - [TLS and mTLS settings](https://github.com/open-telemetry/opentelemetry-collector/blob/main/config/configtls/README.md)
 
 Keepalive settings are vital to the operation of OTel-Arrow, because
@@ -85,8 +84,8 @@ receivers:
       grpc:
 		keepalive:
           server_parameters:
-            max_connection_age: 10m
-            max_connection_age_grace: 1m
+            max_connection_age: 1m
+            max_connection_age_grace: 10m
 ```
 
 In the example configuration above, OTel-Arrow streams will have reset
@@ -94,6 +93,16 @@ is initiated after 10 minutes and be forcibly shut down one minute
 later.
 
 ## HTTP-specific documentation
+
+To enable optional OTLP/HTTP support, the HTTP protocol must be
+explicitly listed.  It will use port 4318 by default.
+
+```
+receivers:
+  otelarrow:
+    protocols:
+      http:
+```
 
 See the core OTLP receiver for documentation specific to HTTP
 connections, including:
