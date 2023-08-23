@@ -133,9 +133,7 @@ func TestUnmarshalConfig(t *testing.T) {
 					MetricsURLPath: "/v2/metrics",
 					LogsURLPath:    "/log/ingest",
 				},
-				Arrow: &ArrowSettings{
-					Disabled: false,
-				},
+				Arrow: &ArrowSettings{},
 			},
 		}, cfg)
 

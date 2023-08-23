@@ -60,12 +60,6 @@ The above configuration uses the OTLP-specified default ports 4317
 
 To use OTel-Arrow, a `grpc` configuration block must be listed.
 
-The `arrow` configuration block contains the following settings:
-
-- `disabled` (default: false) prevents serving OTel-Arrow requests, allowing only standard OTLP requests.
-- `disable_separate_signals` (default: false) when true, signal-specific (i.e., traces, metrics, logs) OTel-Arrow streams are not served.
-- `disable_mixed_signals` (default: false) when true, mixed-signal (i.e., traces, metrics, logs) OTel-Arrow streams are not served.
-
 ## Advanced Configuration
 
 The endpoint is configurable:

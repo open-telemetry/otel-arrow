@@ -56,9 +56,7 @@ func createDefaultConfig() component.Config {
 				MetricsURLPath: defaultMetricsURLPath,
 				LogsURLPath:    defaultLogsURLPath,
 			},
-			Arrow: &ArrowSettings{
-				Disabled: false,
-			},
+			Arrow: &ArrowSettings{},
 		},
 	}
 }
