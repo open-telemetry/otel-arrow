@@ -29,7 +29,7 @@ option java_package = "io.opentelemetry.proto.experimental.arrow.v1";
 option java_outer_classname = "ArrowServiceProto";
 
 // Note the following is temporary
-option go_package = "github.com/f5/otel-arrow-adapter/api/experimental/arrow/v1";
+option go_package = "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1";
 
 // This service can be utilized to transmit `BatchArrowRecords` either from an
 // application instrumented with OpenTelemetry to a collector, or between
