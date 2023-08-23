@@ -52,6 +52,10 @@ func createDefaultConfig() component.Config {
 		Arrow: ArrowSettings{
 			NumStreams:        runtime.NumCPU(),
 			MaxStreamLifetime: time.Hour,
+
+			// PayloadCompression is off by default because gRPC
+			// compression is on by default, above.
+			PayloadCompression: "",
 		},
 	}
 }

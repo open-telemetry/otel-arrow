@@ -33,8 +33,13 @@ func TestCreateDefaultConfig(t *testing.T) {
 	assert.Equal(t, ocfg.RetrySettings, exporterhelper.NewDefaultRetrySettings())
 	assert.Equal(t, ocfg.QueueSettings, exporterhelper.NewDefaultQueueSettings())
 	assert.Equal(t, ocfg.TimeoutSettings, exporterhelper.NewDefaultTimeoutSettings())
-	assert.Equal(t, ocfg.Compression, configcompression.Gzip)
-	assert.Equal(t, ocfg.Arrow, ArrowSettings{Disabled: false, NumStreams: runtime.NumCPU(), MaxStreamLifetime: time.Hour})
+	assert.Equal(t, ocfg.Compression, configcompression.Zstd)
+	assert.Equal(t, ocfg.Arrow, ArrowSettings{
+		Disabled:           false,
+		NumStreams:         runtime.NumCPU(),
+		MaxStreamLifetime:  time.Hour,
+		PayloadCompression: "",
+	})
 }
 
 func TestCreateMetricsExporter(t *testing.T) {
