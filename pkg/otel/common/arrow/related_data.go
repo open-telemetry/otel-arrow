@@ -109,7 +109,7 @@ var (
 	PayloadTypes = payloadTypes{
 		Metrics: &PayloadType{
 			prefix:      "metrics",
-			payloadType: colarspb.ArrowPayloadType_METRICS,
+			payloadType: colarspb.ArrowPayloadType_UNIVARIATE_METRICS,
 		},
 		Logs: &PayloadType{
 			prefix:      "logs",
