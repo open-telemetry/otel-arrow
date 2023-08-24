@@ -1,5 +1,0 @@
-# The following entry initializes the an OTLP receiver without gRPC but with arrow.
-protocols:
-  http:
-  arrow:
-    disabled: false

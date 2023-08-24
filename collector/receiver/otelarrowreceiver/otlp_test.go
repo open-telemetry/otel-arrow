@@ -1250,8 +1250,10 @@ func TestGRPCArrowReceiver(t *testing.T) {
 				cfg := factory.CreateDefaultConfig().(*Config)
 				cfg.GRPC.NetAddr.Endpoint = addr
 				cfg.GRPC.IncludeMetadata = true
-				cfg.Arrow.Disabled = disabled
 				cfg.HTTP = nil
+				if disabled {
+					cfg.Arrow = nil
+				}
 				id := component.NewID("arrow")
 				ocr := newReceiver(t, factory, cfg, id, sink, nil)
 
@@ -1382,8 +1384,6 @@ func TestGRPCArrowReceiverAuth(t *testing.T) {
 		AuthenticatorID: authID,
 	}
 	cfg.HTTP = nil
-	cfg.Arrow.Disabled = false
-	cfg.Arrow.DisableSeparateSignals = true
 	id := component.NewID("arrow")
 	ocr := newReceiver(t, factory, cfg, id, sink, nil)
 

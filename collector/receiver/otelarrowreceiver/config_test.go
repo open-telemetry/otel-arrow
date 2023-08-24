@@ -16,7 +16,6 @@ import (
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/config/configtls"
-	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
 )
 
@@ -26,7 +25,9 @@ func TestUnmarshalDefaultConfig(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
 	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
-	assert.Equal(t, factory.CreateDefaultConfig(), cfg)
+	defaultCfg := factory.CreateDefaultConfig().(*Config)
+	defaultCfg.HTTP = nil
+	assert.Equal(t, defaultCfg, cfg)
 }
 
 func TestUnmarshalConfigOnlyGRPC(t *testing.T) {
@@ -49,7 +50,6 @@ func TestUnmarshalConfigOnlyHTTP(t *testing.T) {
 	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
 
 	defaultOnlyHTTP := factory.CreateDefaultConfig().(*Config)
-	defaultOnlyHTTP.GRPC = nil
 	assert.Equal(t, defaultOnlyHTTP, cfg)
 }
 
@@ -61,7 +61,6 @@ func TestUnmarshalConfigOnlyHTTPNull(t *testing.T) {
 	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
 
 	defaultOnlyHTTP := factory.CreateDefaultConfig().(*Config)
-	defaultOnlyHTTP.GRPC = nil
 	assert.Equal(t, defaultOnlyHTTP, cfg)
 }
 
@@ -73,7 +72,6 @@ func TestUnmarshalConfigOnlyHTTPEmptyMap(t *testing.T) {
 	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
 
 	defaultOnlyHTTP := factory.CreateDefaultConfig().(*Config)
-	defaultOnlyHTTP.GRPC = nil
 	assert.Equal(t, defaultOnlyHTTP, cfg)
 }
 
@@ -133,9 +131,7 @@ func TestUnmarshalConfig(t *testing.T) {
 					MetricsURLPath: "/v2/metrics",
 					LogsURLPath:    "/log/ingest",
 				},
-				Arrow: &ArrowSettings{
-					Disabled: false,
-				},
+				Arrow: &ArrowSettings{},
 			},
 		}, cfg)
 
@@ -186,24 +182,6 @@ func TestUnmarshalConfigInvalidProtocol(t *testing.T) {
 	assert.EqualError(t, component.UnmarshalConfig(cm, cfg), "1 error(s) decoding:\n\n* 'protocols' has invalid keys: thrift")
 }
 
-func TestUnmarshalConfigEmptyProtocols(t *testing.T) {
-	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "bad_no_proto_config.yaml"))
-	require.NoError(t, err)
-	factory := NewFactory()
-	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
-	assert.EqualError(t, component.ValidateConfig(cfg), "must specify at least one protocol when using the OTLP receiver")
-}
-
-func TestUnmarshalConfigArrowWithoutGRPC(t *testing.T) {
-	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "arrow_without_grpc.yaml"))
-	require.NoError(t, err)
-	factory := NewFactory()
-	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
-	assert.EqualError(t, component.ValidateConfig(cfg), "must specify at gRPC protocol when using the OTLP+Arrow receiver")
-}
-
 func TestUnmarshalConfigInvalidSignalPath(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -234,9 +212,17 @@ func TestUnmarshalConfigInvalidSignalPath(t *testing.T) {
 	}
 }
 
-func TestUnmarshalConfigEmpty(t *testing.T) {
-	factory := NewFactory()
-	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, component.UnmarshalConfig(confmap.New(), cfg))
-	assert.EqualError(t, component.ValidateConfig(cfg), "must specify at least one protocol when using the OTLP receiver")
+func TestUnmarshalConfigNoProtocols(t *testing.T) {
+	cfg := Config{}
+	assert.EqualError(t, component.ValidateConfig(cfg), "must specify at least one protocol when using the OTel Arrow receiver")
+}
+
+func TestUnmarshalConfigNoGRPC(t *testing.T) {
+	cfg := Config{
+		Protocols: Protocols{
+			HTTP:  &httpServerSettings{},
+			Arrow: &ArrowSettings{},
+		},
+	}
+	assert.EqualError(t, component.ValidateConfig(cfg), "must specify at gRPC protocol when using the OTLP Arrow receiver")
 }

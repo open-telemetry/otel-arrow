@@ -1,4 +1,17 @@
-# OTel Arrow Protocol implementation
+# OTel Arrow Protocol 
+
+**Repository under maintenance.**
+
+This repository recently migrated from the
+[github.com/f5/otel-arrow-adapter](https://github.com/f5/otel-arrow-adapter),
+and we are preparing it for a beta release.  While the repository is
+still in transition, the primary OpenTelemetry Collector components
+are housed here:
+
+- [OTel Arrow Receiver](./collector/receiver/otelarrowreceiver/README.md)
+- OTel Arrow Exporter (TODO)
+
+## Reference implementation.
 
 This package is a reference implementation of the OTel Arrow protocol specified in this [OTEP](https://github.com/open-telemetry/oteps/blob/main/text/0156-columnar-encoding.md).
 All OTLP entities are covered (metrics, logs, and traces) as well as all sub-elements such as events, links, gauge, sum, 

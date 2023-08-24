@@ -4,7 +4,7 @@ receivers:
     protocols:
       grpc:
         endpoint: 127.0.0.1:4317
-  # otelarrow/loopback receives OTLP-Arrow traffic on port 4000
+  # otelarrow/loopback receives OTel-Arrow traffic on port 4000
   otelarrow/loopback:
     protocols:
       grpc:
@@ -24,13 +24,13 @@ processors:
       exporters: [otelarrow/stdout, logging/info]
 
 exporters:
-  # otelarrow/stdout sends standard OTLP to an external destination
+  # otelarrow/stdout sends OTel Arrow to an external destination
   otelarrow/stdout:
     endpoint: ingest.lightstep.com:443
     headers:
       lightstep-access-token: "${LIGHTSTEP_ACCESS_TOKEN}"
 
-  # otelarrow/arrowout sends standard OTLP to an external destination
+  # otelarrow/arrowout sends standard OTal Arrow to an external destination
   otelarrow/arrowout:
     endpoint: 127.0.0.1:4000
     # wait_for_ready ensures the exporter doesn't fallback to standard
