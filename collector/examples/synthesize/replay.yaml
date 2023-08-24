@@ -60,7 +60,7 @@ service:
   pipelines:
     traces/input:
       receivers: [file/traces]
-      exporters: [file/traces, logging]
+      exporters: [validation/expect/traces]
     metrics/input:
       receivers: [file/metrics]
       exporters: [validation/expect/metrics]
