@@ -566,3 +566,14 @@ func TestArrowExporterHeaders(t *testing.T) {
 	require.Equal(t, expectOutput, actualOutput)
 	require.NoError(t, tc.exporter.Shutdown(bg))
 }
+
+func TestAddJitter(t *testing.T) {
+	require.Equal(t, time.Duration(0), addJitter(0))
+
+	// Expect no more than 5% less in each trial.
+	for i := 0; i < 100; i++ {
+		x := addJitter(20 * time.Minute)
+		require.LessOrEqual(t, 19*time.Minute, x)
+		require.Less(t, x, 20*time.Minute)
+	}
+}

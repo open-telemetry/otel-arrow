@@ -9,11 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-telemetry/otel-arrow/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configauth"
+	"go.opentelemetry.io/collector/config/configcompression"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/configopaque"
 	"go.opentelemetry.io/collector/config/configtls"
@@ -60,7 +62,7 @@ func TestUnmarshalConfig(t *testing.T) {
 					"another":                "somevalue",
 				},
 				Endpoint:    "1.2.3.4:1234",
-				Compression: "gzip",
+				Compression: "none",
 				TLSSetting: configtls.TLSClientSetting{
 					TLSSetting: configtls.TLSSetting{
 						CAFile: "/var/lib/mycert.pem",
@@ -80,6 +82,7 @@ func TestUnmarshalConfig(t *testing.T) {
 				NumStreams:         2,
 				EnableMixedSignals: true,
 				MaxStreamLifetime:  2 * time.Hour,
+				PayloadCompression: configcompression.Zstd,
 			},
 		}, cfg)
 }
@@ -107,4 +110,28 @@ func TestDefaultSettingsValid(t *testing.T) {
 	// validation always checks that a value is set.
 	cfg.(*Config).Arrow.MaxStreamLifetime = 2 * time.Second
 	require.NoError(t, cfg.(*Config).Validate())
+}
+
+func TestArrowSettingsPayloadCompressionZstd(t *testing.T) {
+	settings := ArrowSettings{
+		PayloadCompression: configcompression.Zstd,
+	}
+	var config config.Config
+	for _, opt := range settings.ToArrowProducerOptions() {
+		opt(&config)
+	}
+	require.True(t, config.Zstd)
+}
+
+func TestArrowSettingsPayloadCompressionNone(t *testing.T) {
+	for _, value := range []string{"", "none"} {
+		settings := ArrowSettings{
+			PayloadCompression: configcompression.CompressionType(value),
+		}
+		var config config.Config
+		for _, opt := range settings.ToArrowProducerOptions() {
+			opt(&config)
+		}
+		require.False(t, config.Zstd)
+	}
 }

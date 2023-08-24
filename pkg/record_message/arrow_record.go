@@ -51,7 +51,7 @@ func NewRecordMessage(batchId int64, payloadType PayloadType, record arrow.Recor
 func NewMetricsMessage(schemaID string, record arrow.Record) *RecordMessage {
 	return &RecordMessage{
 		schemaID:    schemaID,
-		payloadType: v1.ArrowPayloadType_METRICS,
+		payloadType: v1.ArrowPayloadType_UNIVARIATE_METRICS,
 		record:      record,
 	}
 }

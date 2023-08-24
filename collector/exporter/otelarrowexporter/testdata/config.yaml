@@ -1,5 +1,5 @@
 endpoint: "1.2.3.4:1234"
-compression: "gzip"
+compression: "none"
 tls:
   ca_file: /var/lib/mycert.pem
 timeout: 10s
@@ -30,3 +30,4 @@ arrow:
   disabled: false
   enable_mixed_signals: true
   max_stream_lifetime: 2h
+  payload_compression: "zstd"
