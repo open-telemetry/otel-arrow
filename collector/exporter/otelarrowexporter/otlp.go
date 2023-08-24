@@ -131,8 +131,10 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) (err erro
 			}
 		}
 
+		arrowOpts := e.config.Arrow.ToArrowProducerOptions()
+
 		e.arrow = arrow.NewExporter(e.config.Arrow.MaxStreamLifetime, e.config.Arrow.NumStreams, e.config.Arrow.DisableDowngrade, e.settings.TelemetrySettings, e.callOptions, func() arrowRecord.ProducerAPI {
-			return arrowRecord.NewProducer()
+			return arrowRecord.NewProducerWithOptions(arrowOpts...)
 		}, e.streamClientFactory(e.config, e.clientConn), perRPCCreds)
 
 		if err := e.arrow.Start(ctx); err != nil {
