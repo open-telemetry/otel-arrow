@@ -299,6 +299,11 @@ func (r *Receiver) anyStream(serverStream anyStreamServer) (retErr error) {
 
 		if err != nil {
 			r.logStreamError(err)
+
+			// client called CloseSend()
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
 			return err
 		}
 

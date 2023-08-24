@@ -355,12 +355,6 @@ func (s *Stream) read(_ context.Context) error {
 		// timeout.  TODO: possibly, improve to wait for no outstanding requests and then stop reading.
 		resp, err := s.client.Recv()
 		if err != nil {
-			// Once the send direction of stream is closed the server should return
-			// an error that mentions an EOF. The expected error code is codes.Unknown.
-			status, ok := status.FromError(err)
-			if ok && status.Message() == "EOF" && status.Code() == codes.Unknown {
-				return nil
-			}
 			// Note: do not wrap, contains a Status.
 			return err
 		}
