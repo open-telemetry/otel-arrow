@@ -27,7 +27,7 @@ component with additional support for the
 
 OTel-Arrow supports column-oriented data transport using the Apache
 Arrow data format.  The OTel-Arrow exporter converts OTLP data into an
-optimized representation and then sends rows of data using Apache
+optimized representation and then sends batches of data using Apache
 Arrow to encode the stream.  This component contains logic to reverse
 the process used in the OTel-Arrow exporter.
 
@@ -87,7 +87,7 @@ lifetime, and load balance.
 gRPC libraries do not build-in a facility for long-lived RPCs to learn
 about impending http/2 connection state changes, including the event
 that initiates connection reset.  While the receiver knows its own
-keepalive settings, a shorter maximum conenction lifetime can be
+keepalive settings, a shorter maximum connection lifetime can be
 imposed by intermediate http/2 proxies, and therefore the receiver and
 exporter are expected to independently configure these limits.
 

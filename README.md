@@ -5,7 +5,7 @@
 This repository recently migrated from the
 [github.com/f5/otel-arrow-adapter](https://github.com/f5/otel-arrow-adapter),
 and we are preparing it for a beta release.  While the repository is
-still in transition, the primary OpenTelemetry Collector componebnts
+still in transition, the primary OpenTelemetry Collector components
 are housed here:
 
 - [OTel Arrow Receiver](./collector/receiver/otelarrowreceiver/README.md)
