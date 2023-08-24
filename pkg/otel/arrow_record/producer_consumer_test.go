@@ -363,7 +363,7 @@ func TestProducerConsumerMetrics(t *testing.T) {
 			// First round.
 			batch, err := producer.BatchArrowRecordsFromMetrics(metrics)
 			require.NoError(t, err)
-			require.Equal(t, arrowpb.ArrowPayloadType_METRICS, batch.ArrowPayloads[0].Type)
+			require.Equal(t, arrowpb.ArrowPayloadType_UNIVARIATE_METRICS, batch.ArrowPayloads[0].Type)
 
 			consumer := NewConsumer()
 			received, err := consumer.MetricsFrom(batch)
@@ -379,7 +379,7 @@ func TestProducerConsumerMetrics(t *testing.T) {
 			// Second round (emit same data).
 			batch, err = producer.BatchArrowRecordsFromMetrics(metrics)
 			require.NoError(t, err)
-			require.Equal(t, arrowpb.ArrowPayloadType_METRICS, batch.ArrowPayloads[0].Type)
+			require.Equal(t, arrowpb.ArrowPayloadType_UNIVARIATE_METRICS, batch.ArrowPayloads[0].Type)
 
 			received, err = consumer.MetricsFrom(batch)
 			require.NoError(t, err)

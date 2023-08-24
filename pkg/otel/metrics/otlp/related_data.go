@@ -150,7 +150,7 @@ func RelatedDataFrom(records []*record_message.RecordMessage) (relatedData *Rela
 				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
 			}
 			expHistogramDPRec = record
-		case colarspb.ArrowPayloadType_METRICS:
+		case colarspb.ArrowPayloadType_UNIVARIATE_METRICS:
 			if metricsRecord != nil {
 				return nil, nil, werror.Wrap(otel.ErrDuplicatePayloadType)
 			}

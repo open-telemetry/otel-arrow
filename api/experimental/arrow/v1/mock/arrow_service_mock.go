@@ -8,8 +8,8 @@ import (
 	context "context"
 	reflect "reflect"
 
-	v1 "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	gomock "github.com/golang/mock/gomock"
+	v1 "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	grpc "google.golang.org/grpc"
 	metadata "google.golang.org/grpc/metadata"
 )
