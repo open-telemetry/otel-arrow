@@ -60,7 +60,7 @@ receivers:
   otelarrow:
     protocols:
       grpc:
-	    ...
+        ...
 ```
 
 - `endpoint` (default = 0.0.0.0:4317 for grpc protocol, 0.0.0.0:4318 http protocol):
@@ -96,7 +96,7 @@ receivers:
   otelarrow:
     protocols:
       grpc:
-		keepalive:
+        keepalive:
           server_parameters:
             max_connection_age: 1m
             max_connection_age_grace: 10m
@@ -127,7 +127,7 @@ For example, an exporter with `9m30s` stream lifetime:
 exporters:
   otelarrow:
     # other configuration (e.g., endpoint)
-	...
+    ...
     arrow:
       # other configuration (e.g., num_streams)
       max_stream_lifetime: 9m30s
