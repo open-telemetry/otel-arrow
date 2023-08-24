@@ -72,10 +72,24 @@ Several common configuration structures provide additional capabilities automati
 - [gRPC settings](https://github.com/open-telemetry/opentelemetry-collector/blob/main/config/configgrpc/README.md)
 - [TLS and mTLS settings](https://github.com/open-telemetry/opentelemetry-collector/blob/main/config/configtls/README.md)
 
-Keepalive settings are vital to the operation of OTel-Arrow, because
-longer-lived streams use more memory.  Since every stream of data is
-different, we recommend experimenting to find a good balance between
-memory usage and stream lifetime.
+### Keepalive configuration
+
+As a gRPC streaming service, the OTel Arrow receiver is able to limit
+stream lifetime through configuration of the underlying http/2
+connection via keepalive settings.
+
+Keepalive settings are vital to the operation of OTel Arrow, because
+longer-lived streams use more memory and streams are fixed to a single
+host.  Since every stream of data is different, we recommend
+experimenting to find a good balance between memory usage, stream
+lifetime, and load balance.
+
+gRPC libraries do not build-in a facility for long-lived RPCs to learn
+about impending http/2 connection state changes, including the event
+that initiates connection reset.  While the receiver knows its own
+keepalive settings, a shorter maximum conenction lifetime can be
+imposed by intermediate http/2 proxies, and therefore the receiver and
+exporter are expected to independently configure these limits.
 
 ```
 receivers:
@@ -89,13 +103,41 @@ receivers:
 ```
 
 In the example configuration above, OTel-Arrow streams will have reset
-is initiated after 10 minutes and be forcibly shut down one minute
-later.
+initiated after 10 minutes.  Note that `max_connection_age` is set to
+a small value and we recommend tuning `max_connection_age_grace`.
+
+OTel Arrow exporters are expected to configure their
+`max_stream_lifetime` property to a value that is slightly smaller
+than the receiver's `max_connection_age_grace` setting, which causes
+the exporter to cleanly shut down streams, allowing requests to
+complete before the http/2 connection is forcibly closed.  While the
+exporter will retry data that was in-flight during an unexpected
+stream shutdown, instrumentation about the telemety pipeline will show
+RPC errors when the exporter's `max_stream_lifetime` is not configured
+correctly.
+
+[See the exporter README for more
+guidance](../../exporter/otelarrowexporter/README.md).  For the
+example where `max_connection_age_grace` is set to 10 minutes, the
+exporter's `max_stream_lifetime` should be set to the same number
+minus a reasonable timeout to allow in-flight requests to complete.
+For example, an exporter with `9m30s` stream lifetime:
+
+```
+exporters:
+  otelarrow:
+    # other configuration (e.g., endpoint)
+	...
+    arrow:
+      # other configuration (e.g., num_streams)
+      max_stream_lifetime: 9m30s
+```
 
 ## HTTP-specific documentation
 
 To enable optional OTLP/HTTP support, the HTTP protocol must be
-explicitly listed.  It will use port 4318 by default.
+explicitly listed.  It will use port 4318 by default.  The OTel Arrow
+protocol is not currently supported over HTTP.
 
 ```
 receivers:
