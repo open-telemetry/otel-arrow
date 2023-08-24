@@ -1,10 +1,8 @@
 receivers:
   # otelarrow/standard is an OTelArrow receiver.
+  # it uses port 4317, the standard port for OTLP/gRPC.
+  # There are no required configuration fields.
   otelarrow/standard:
-    protocols:
-      grpc:
-        # Port 4317 is the standard port for OTLP/gRPC.
-        endpoint: 127.0.0.1:4317
 
 processors:
   # The batch processor will benefit pipelines with small export sizes.
