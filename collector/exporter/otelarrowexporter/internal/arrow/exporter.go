@@ -6,6 +6,7 @@ package arrow // import "github.com/open-telemetry/otel-arrow/collector/exporter
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -172,6 +173,17 @@ func (e *Exporter) runStreamController(bgctx context.Context) {
 	}
 }
 
+// addJitter is used to subtract 0-5% from max_stream_lifetime.  Since
+// the max_stream_lifetime value is expected to be close to the
+// receiver's max_connection_age_grace setting, we do not add jitter,
+// only subtract.
+func addJitter(v time.Duration) time.Duration {
+	if v == 0 {
+		return 0
+	}
+	return v - time.Duration(rand.Int63n(int64(v/20)))
+}
+
 // runArrowStream begins one gRPC stream using a child of the background context.
 // If the stream connection is successful, this goroutine starts another goroutine
 // to call writeStream() and performs readStream() itself.  When the stream shuts
@@ -180,7 +192,7 @@ func (e *Exporter) runArrowStream(ctx context.Context) {
 	producer := e.newProducer()
 
 	stream := newStream(producer, e.ready, e.telemetry, e.perRPCCredentials)
-	stream.maxStreamLifetime = e.maxStreamLifetime
+	stream.maxStreamLifetime = addJitter(e.maxStreamLifetime)
 
 	defer func() {
 		if err := producer.Close(); err != nil {
