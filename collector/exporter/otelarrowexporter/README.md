@@ -42,18 +42,7 @@ simply by replacing "otlp" with "otelarrow" as the component name in
 the collector configuration.
 
 To enable the OTel-Arrow exporter, include it in the list of exporters
-for a pipeline.  @@@
-
-
-No further configuration is needed.  This receiver
-listens on the standard OTLP/gRPC port 4317 and serves standard OTLP
-over gRPC out of the box.
-
-```yaml
-receivers:
-  otelarrow:
-```
-
+for a pipeline.  @@@ TODO
 
 The following settings are required:
 
@@ -67,18 +56,20 @@ Example:
 
 ```yaml
 exporters:
-  otlp:
-    endpoint: otelcol2:4317
+  otelarrow/secure:
+    endpoint: external-collector:4317
     tls:
       cert_file: file.cert
       key_file: file.key
-  otlp/2:
-    endpoint: otelcol2:4317
+  otelarrow/insecure:
+    endpoint: internal-collector:4317
     tls:
       insecure: true
 ```
 
-By default, `gzip` compression is enabled. See [compression comparison](../../config/configgrpc/README.md#compression-comparison) for details benchmark information. To disable, configure as follows:
+By default, `zstd` compression is enabled. @@@ WIP
+
+See [compression comparison](../../config/configgrpc/README.md#compression-comparison) for details benchmark information. To disable, configure as follows:
 
 ```yaml
 exporters:
