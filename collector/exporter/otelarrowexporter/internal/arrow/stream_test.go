@@ -151,6 +151,32 @@ func TestStreamGracefulShutdown(t *testing.T) {
 	require.True(t, errors.Is(err, ErrStreamRestarting))
 }
 
+// TestStreamNoMaxLifetime verifies that configuring
+// max_stream_lifetime==0 works and the client never
+// calls CloseSend().
+func TestStreamNoMaxLifetime(t *testing.T) {
+	tc := newStreamTestCase(t)
+	tc.stream.maxStreamLifetime = 0
+
+	tc.fromTracesCall.Times(1).Return(oneBatch, nil)
+	tc.closeSendCall.Times(0)
+
+	channel := newHealthyTestChannel()
+	tc.start(channel)
+	defer tc.cancelAndWaitForShutdown()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	defer wg.Wait()
+	go func() {
+		defer wg.Done()
+		batch := <-channel.sent
+		channel.recv <- statusOKFor(batch.BatchId)
+	}()
+
+	err := tc.get().SendAndWait(tc.bgctx, twoTraces)
+	require.NoError(t, err)
+}
+
 // TestStreamEncodeError verifies that an encoder error in the sender
 // yields a permanent error.
 func TestStreamEncodeError(t *testing.T) {

@@ -266,7 +266,12 @@ func (s *Stream) write(ctx context.Context) error {
 	var hdrsBuf bytes.Buffer
 	hdrsEnc := hpack.NewEncoder(&hdrsBuf)
 
-	timer := time.NewTimer(s.maxStreamLifetime)
+	var timerCh <-chan time.Time
+	if s.maxStreamLifetime != 0 {
+		timer := time.NewTimer(s.maxStreamLifetime)
+		timerCh = timer.C
+		defer timer.Stop()
+	}
 
 	for {
 		// Note: this can't block b/c stream has capacity &
@@ -278,7 +283,8 @@ func (s *Stream) write(ctx context.Context) error {
 		var wri writeItem
 		var ok bool
 		select {
-		case <-timer.C:
+		case <-timerCh:
+			// If timerCh is nil, this will never happen.
 			s.prioritizer.removeReady(s)
 			return s.client.CloseSend()
 		case wri, ok = <-s.toWrite:

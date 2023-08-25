@@ -1,5 +1,1 @@
-# The following entry initializes the default OTLP receiver.
-# The full name of this receiver is `otlp` and can be referenced in pipelines by 'otlp'.
-protocols:
-  grpc:
-  http:
+# The following entry initializes the default otelarrow receiver.
