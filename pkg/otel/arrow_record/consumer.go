@@ -16,6 +16,7 @@ package arrow_record
 
 import (
 	"bytes"
+	"fmt"
 
 	"github.com/apache/arrow/go/v12/arrow/ipc"
 	"github.com/apache/arrow/go/v12/arrow/memory"
@@ -33,6 +34,8 @@ import (
 	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
 
+const defaultMemoryLimit = 70 << 20
+
 // This file implements a generic consumer API used to decode BatchArrowRecords messages into
 // their corresponding OTLP representations (i.e. pmetric.Metrics, plog.Logs, ptrace.Traces).
 // The consumer API is used by the OTLP Arrow receiver.
@@ -48,13 +51,35 @@ type ConsumerAPI interface {
 
 var _ ConsumerAPI = &Consumer{}
 
+var ErrConsumerMemoryLimit = fmt.Errorf(
+	"The number of decoded records is smaller than the number of received payloads. " +
+		"Please increase the memory limit of the consumer.")
+
 // Consumer is a BatchArrowRecords consumer.
 type Consumer struct {
 	streamConsumers map[string]*streamConsumer
 
+	config Config
+}
+
+type Config struct {
 	memLimit uint64
 
 	tracesConfig *arrow.Config
+}
+
+// WithMemoryLimit configures the Arrow limited memory allocator.
+func WithMemoryLimit(bytes uint64) Option {
+	return func(cfg *Config) {
+		cfg.memLimit = bytes
+	}
+}
+
+// WithTracesConfig configures trace-specific Arrow encoding options.
+func WithTracesConfig(tcfg *arrow.Config) Option {
+	return func(cfg *Config) {
+		cfg.tracesConfig = tcfg
+	}
 }
 
 type streamConsumer struct {
@@ -63,15 +88,21 @@ type streamConsumer struct {
 	payloadType record_message.PayloadType
 }
 
+type Option func(*Config)
+
 // NewConsumer creates a new BatchArrowRecords consumer, i.e. a decoder consuming BatchArrowRecords and returning
 // the corresponding OTLP representation (pmetric,Metrics, plog.Logs, ptrace.Traces).
-func NewConsumer() *Consumer {
-	return &Consumer{
-		streamConsumers: make(map[string]*streamConsumer),
-
-		// TODO: configure this limit with a functional option
-		memLimit:     70 << 20,
+func NewConsumer(opts ...Option) *Consumer {
+	cfg := Config{
+		memLimit:     defaultMemoryLimit,
 		tracesConfig: arrow.DefaultConfig(),
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	return &Consumer{
+		config:          cfg,
+		streamConsumers: make(map[string]*streamConsumer),
 	}
 }
 
@@ -141,7 +172,7 @@ func (c *Consumer) TracesFrom(bar *colarspb.BatchArrowRecords) ([]ptrace.Traces,
 	result := make([]ptrace.Traces, 0, len(records))
 
 	// Compute all related records (i.e. Attributes, Events, and Links)
-	relatedData, tracesRecord, err := tracesotlp.RelatedDataFrom(records, c.tracesConfig)
+	relatedData, tracesRecord, err := tracesotlp.RelatedDataFrom(records, c.config.tracesConfig)
 
 	if tracesRecord != nil {
 		// Decode OTLP traces from the combination of the main record and the
@@ -192,7 +223,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.R
 		if sc.ipcReader == nil {
 			ipcReader, err := ipc.NewReader(
 				sc.bufReader,
-				ipc.WithAllocator(common.NewLimitedAllocator(memory.NewGoAllocator(), c.memLimit)),
+				ipc.WithAllocator(common.NewLimitedAllocator(memory.NewGoAllocator(), c.config.memLimit)),
 				ipc.WithDictionaryDeltas(true),
 				ipc.WithZstd(),
 			)
@@ -213,9 +244,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.R
 	}
 
 	if len(ibes) < len(bar.ArrowPayloads) {
-		println("Something is wrong! " +
-			"The number of decoded records is smaller than the number of received payloads. " +
-			"Please consider to increase the memory limit of the consumer.")
+		return ibes, ErrConsumerMemoryLimit
 	}
 
 	return ibes, nil
