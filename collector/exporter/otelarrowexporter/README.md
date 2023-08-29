@@ -42,9 +42,7 @@ simply by replacing "otlp" with "otelarrow" as the component name in
 the collector configuration.
 
 To enable the OTel-Arrow exporter, include it in the list of exporters
-for a pipeline.  @@@ TODO
-
-The following settings are required:
+for a pipeline.  Two settings are required:
 
 - `endpoint` (no default): host:port to which the exporter is going to send OTLP trace data,
 using the gRPC protocol. The valid syntax is described
@@ -67,13 +65,15 @@ exporters:
       insecure: true
 ```
 
-By default, `zstd` compression is enabled. @@@ WIP
-
-See [compression comparison](../../config/configgrpc/README.md#compression-comparison) for details benchmark information. To disable, configure as follows:
+By default, `zstd` compression is enabled at the gRPC level. See
+[compression
+comparison](../../config/configgrpc/README.md#compression-comparison)
+for details and benchmark information.  To disable gRPC-level
+compression, configure as follows:
 
 ```yaml
 exporters:
-  otlp:
+  otelarrow:
     ...
     compression: none
 ```
@@ -85,3 +85,46 @@ Several helper files are leveraged to provide additional capabilities automatica
 - [gRPC settings](https://github.com/open-telemetry/opentelemetry-collector/blob/main/config/configgrpc/README.md)
 - [TLS and mTLS settings](https://github.com/open-telemetry/opentelemetry-collector/blob/main/config/configtls/README.md)
 - [Queuing, retry and timeout settings](https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/exporterhelper/README.md)
+
+### Arrow-specific Configuration
+
+In the `arrow` configuration block, the following settings enable and
+disable the use of OTel Arrow as opposed to standard OTLP.
+
+- `disabled`: disables use of Arrow, causing the exporter to use standard OTLP
+- `disable_downgrade`: prevents this exporter from using standard OTLP
+
+The following settings determine the resources that the exporter will use:
+
+- `num_streams`: the number of concurrent Arrow streams
+- `max_stream_lifetime`: duration after which streams are recycled
+
+### Experimental Configuration
+
+The exporter supports configuring compression at the Arrow IPC level.
+
+- `payload_compression`: compression applied at the Arrow IPC level, "none" by default, "zstd" supported.
+
+The exporter uses the signal-specific Arrow stream methods (i.e.,
+`ArrowTraces`, `ArrowLogs`, and `ArrowMetrics`) by default.  There is
+an option to use the generic `ArrowStream` method instead.
+
+- `enable_mixed_signals`: Use `ArrowStream` instead of per-signal stream methods.
+
+### Exporter metrics
+
+In addition to the the standard
+[exporterhelper](https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/exporterhelper/README.md)
+and
+[obsreport](https://pkg.go.dev/go.opentelemetry.io/collector/obsreport)
+metrics, this component provides network-level measurement instruments
+which we anticipate will become part of `exporterhelper` and/or
+`obsreport` in the future.  At the `normal` level of metrics detail:
+
+- `exporter_sent`: uncompressed bytes sent, prior to compression
+- `exporter_sent_wire`: compressed bytes sent, on the wire.
+
+At the `detailed` level of metrics detail:
+
+- `exporter_recv`: uncompressed bytes received, prior to compression
+- `exporter_recv_wire`: compressed bytes received, on the wire.

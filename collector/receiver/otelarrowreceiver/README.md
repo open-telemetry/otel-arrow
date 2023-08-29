@@ -135,6 +135,26 @@ exporters:
       max_stream_lifetime: 9m30s
 ```
 
+### Receiver metrics
+
+In addition to the the standard
+[obsreport](https://pkg.go.dev/go.opentelemetry.io/collector/obsreport)
+metrics, this component provides network-level measurement instruments
+which we anticipate will become part of `obsreport` in the future.  At
+the `normal` level of metrics detail:
+
+- `recevier_recv`: uncompressed bytes received, prior to compression
+- `recevier_recv_wire`: compressed bytes received, on the wire.
+
+These metrics accurately reflect OTel Arrow compression on the
+network, except when compression is enabled in the exporter (via
+[`payload_compression`](../../exporter/otelarrowexporter/README.md).
+
+At the `detailed` level:
+
+- `recevier_sent`: uncompressed bytes sent, prior to compression
+- `recevier_sent_wire`: compressed bytes sent, on the wire.
+
 ## HTTP-specific documentation
 
 To enable optional OTLP/HTTP support, the HTTP protocol must be
