@@ -359,12 +359,12 @@ func (s *Stream) read(_ context.Context) error {
 			return err
 		}
 
-		if err = s.processBatchStatus(resp); err != nil {
-			return fmt.Errorf("process: %w", err)
+		if resp.StatusCode == arrowpb.StatusCode_STREAM_SHUTDOWN {
+			return nil
 		}
 
-		if resp.BatchId == -1 && resp.StatusCode == arrowpb.StatusCode_OK {
-			return nil
+		if err = s.processBatchStatus(resp); err != nil {
+			return fmt.Errorf("process: %w", err)
 		}
 	}
 }
@@ -390,15 +390,16 @@ func (s *Stream) getSenderChannels(status *arrowpb.BatchStatus) (chan error, err
 // processBatchStatus processes a single response from the server and unblocks the
 // associated sender.
 func (s *Stream) processBatchStatus(status *arrowpb.BatchStatus) error {
+	// This indicates the server received EOF from client shutdown.
+	// This is not an error because this is an expected shutdown
+	// initiated by the client by setting max_stream_lifetime.
+	if status.StatusCode == arrowpb.StatusCode_STREAM_SHUTDOWN {
+		return nil
+	}
+
 	ch, ret := s.getSenderChannels(status)
 
 	if ch == nil {
-		// This indicates the server received EOF from client shutdown.
-		// This is not an error because this is an expected shutdown
-		// initiated by the client by setting max_stream_lifetime.
-		if status.BatchId == -1 && status.StatusCode == arrowpb.StatusCode_OK {
-			return nil
-		}
 		// In case getSenderChannels encounters a problem, the
 		// channel is nil.
 		return ret
