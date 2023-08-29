@@ -153,6 +153,13 @@ func statusOKFor(id int64) *arrowpb.BatchStatus {
 	}
 }
 
+func statusStreamShutdownFor(id int64) *arrowpb.BatchStatus {
+	return &arrowpb.BatchStatus{
+		BatchId:    id,
+		StatusCode: arrowpb.StatusCode_STREAM_SHUTDOWN,
+	}
+}
+
 func statusUnavailableFor(id int64) *arrowpb.BatchStatus {
 	return &arrowpb.BatchStatus{
 		BatchId:       id,

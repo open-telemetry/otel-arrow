@@ -127,7 +127,7 @@ func TestStreamGracefulShutdown(t *testing.T) {
 	maxStreamLifetime := 1 * time.Second
 	tc.stream.maxStreamLifetime = maxStreamLifetime
 
-	tc.fromTracesCall.Times(2).Return(oneBatch, nil)
+	tc.fromTracesCall.Times(1).Return(oneBatch, nil)
 	tc.closeSendCall.Times(1).Return(nil)
 
 	channel := newHealthyTestChannel()
@@ -142,9 +142,9 @@ func TestStreamGracefulShutdown(t *testing.T) {
 		channel.recv <- statusOKFor(batch.BatchId)
 
 		// mimick the server which will send a batchID
-		// of -1 after max_stream_lifetime elapses.
+		// of 0 after max_stream_lifetime elapses.
 		time.Sleep(maxStreamLifetime)
-		channel.recv <- statusOKFor(-1)
+		channel.recv <- statusStreamShutdownFor(0)
 	}()
 
 	err := tc.get().SendAndWait(tc.bgctx, twoTraces)
