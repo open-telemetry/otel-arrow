@@ -301,9 +301,19 @@ func (r *Receiver) anyStream(serverStream anyStreamServer) (retErr error) {
 			r.logStreamError(err)
 
 			// client called CloseSend()
-			if errors.Is(err, io.EOF) {
+			if err.Error() == "EOF" {
+				status := &arrowpb.BatchStatus{
+					BatchId: -1,
+				}
+				status.StatusCode = arrowpb.StatusCode_OK
+				err = serverStream.Send(status)
+				if err != nil {
+					r.logStreamError(err)
+					return err
+				}
 				return nil
 			}
+
 			return err
 		}
 
