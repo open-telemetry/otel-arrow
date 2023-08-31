@@ -28,7 +28,3 @@ jobs:
 
     - name: Test
       run: make test
-
-    - name: Collector
-      run: make genotelarrowcol otelarrowcol
-  
