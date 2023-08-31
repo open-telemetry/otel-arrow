@@ -140,11 +140,17 @@ func TestStreamGracefulShutdown(t *testing.T) {
 		defer wg.Done()
 		batch := <-channel.sent
 		channel.recv <- statusOKFor(batch.BatchId)
+
+		// mimick the server which will send a batchID
+		// of 0 after max_stream_lifetime elapses.
+		time.Sleep(maxStreamLifetime)
+		channel.recv <- statusStreamShutdownFor(0)
 	}()
 
 	err := tc.get().SendAndWait(tc.bgctx, twoTraces)
 	require.NoError(t, err)
-	// let stream get closed and send again.
+
+	// need to sleep so CloseSend will be called.
 	time.Sleep(maxStreamLifetime)
 	err = tc.get().SendAndWait(tc.bgctx, twoTraces)
 	require.Error(t, err)

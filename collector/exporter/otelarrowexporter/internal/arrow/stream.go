@@ -355,20 +355,20 @@ func (s *Stream) read(_ context.Context) error {
 		// timeout.  TODO: possibly, improve to wait for no outstanding requests and then stop reading.
 		resp, err := s.client.Recv()
 		if err != nil {
-			// Once the send direction of stream is closed the server should return
-			// an error that mentions an EOF. The expected error code is codes.Unknown.
-			status, ok := status.FromError(err)
-			if ok && status.Message() == "EOF" && status.Code() == codes.Unknown {
-				return nil
-			}
 			// Note: do not wrap, contains a Status.
 			return err
+		}
+
+		// This indicates the server received EOF from client shutdown.
+		// This is not an error because this is an expected shutdown
+		// initiated by the client by setting max_stream_lifetime.
+		if resp.StatusCode == arrowpb.StatusCode_STREAM_SHUTDOWN {
+			return nil
 		}
 
 		if err = s.processBatchStatus(resp); err != nil {
 			return fmt.Errorf("process: %w", err)
 		}
-
 	}
 }
 
