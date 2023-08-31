@@ -26,15 +26,17 @@ component with additional support for the
 [OTel-Arrow](https://github.com/open-telemetry/otel-arrow) protocol.
 
 OTel-Arrow supports column-oriented data transport using the Apache
-Arrow data format.  The OTel-Arrow exporter converts OTLP data into an
-optimized representation and then sends batches of data using Apache
-Arrow to encode the stream.  This component contains logic to reverse
-the process used in the OTel-Arrow exporter.
+Arrow data format.  The [OTel-Arrow
+exporter](https://github.com/open-telemetry/otel-arrow/blob/main/collector/exporter/otelarrowexporter/README.md)
+converts OTLP data into an optimized representation and then sends
+batches of data using Apache Arrow to encode the stream.  This
+component contains logic to reverse the process used in the OTel-Arrow
+exporter.
 
 The use of an OTel-Arrow exporter-receiver pair is recommended when
 the network is expensive.  Typically, expect to see a 50% reduction in
-bandwidth compared with the same data being sent using standard OTLP,
-unary gRPC, and zstd compression.
+bandwidth compared with the same data being sent using standard
+OTLP/gRPC and gzip compression.
 
 This component includes all the features and configuration of the core
 OTLP receiver, making it possible to upgrade from the core component
@@ -126,12 +128,32 @@ For example, an exporter with `9m30s` stream lifetime:
 ```
 exporters:
   otelarrow:
-    # other configuration (e.g., endpoint)
-    ...
+    timeout: 30s
     arrow:
-      # other configuration (e.g., num_streams)
       max_stream_lifetime: 9m30s
+    endpoint: ...
+    tls: ...
 ```
+
+### Receiver metrics
+
+In addition to the the standard
+[obsreport](https://pkg.go.dev/go.opentelemetry.io/collector/obsreport)
+metrics, this component provides network-level measurement instruments
+which we anticipate will become part of `obsreport` in the future.  At
+the `normal` level of metrics detail:
+
+- `receiver_recv`: uncompressed bytes received, prior to compression
+- `receiver_recv_wire`: compressed bytes received, on the wire.
+
+Arrow's compression performance can be derived by dividing the average
+`receiver_recv` value by the average `receiver_recv_wire` value.
+
+At the `detailed` metrics detail level, information about the stream
+of data being returned from the receiver will be instrumented:
+
+- `receiver_sent`: uncompressed bytes sent, prior to compression
+- `receiver_sent_wire`: compressed bytes sent, on the wire.
 
 ## HTTP-specific documentation
 
