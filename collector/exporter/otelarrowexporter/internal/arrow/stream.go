@@ -211,7 +211,9 @@ func (s *Stream) run(bgctx context.Context, streamClient StreamClientFunc, grpcO
 				// production); in both cases "NO_ERROR" is the key
 				// signifier.
 				if strings.Contains(status.Message(), "NO_ERROR") {
-					s.telemetry.Logger.Debug("arrow stream shutdown")
+					s.telemetry.Logger.Error("arrow stream reset (consider lowering max_stream_lifetime)",
+						zap.String("message", status.Message()),
+					)
 				} else {
 					s.telemetry.Logger.Error("arrow stream unavailable",
 						zap.String("message", status.Message()),
@@ -362,7 +364,7 @@ func (s *Stream) read(_ context.Context) error {
 		// This indicates the server received EOF from client shutdown.
 		// This is not an error because this is an expected shutdown
 		// initiated by the client by setting max_stream_lifetime.
-		if resp.StatusCode == arrowpb.StatusCode_STREAM_SHUTDOWN {
+		if resp.StatusCode == arrowpb.StatusCode_CANCELED {
 			return nil
 		}
 
@@ -392,8 +394,8 @@ func (s *Stream) getSenderChannels(status *arrowpb.BatchStatus) (chan error, err
 
 // processBatchStatus processes a single response from the server and unblocks the
 // associated sender.
-func (s *Stream) processBatchStatus(status *arrowpb.BatchStatus) error {
-	ch, ret := s.getSenderChannels(status)
+func (s *Stream) processBatchStatus(ss *arrowpb.BatchStatus) error {
+	ch, ret := s.getSenderChannels(ss)
 
 	if ch == nil {
 		// In case getSenderChannels encounters a problem, the
@@ -401,23 +403,33 @@ func (s *Stream) processBatchStatus(status *arrowpb.BatchStatus) error {
 		return ret
 	}
 
-	if status.StatusCode == arrowpb.StatusCode_OK {
+	if ss.StatusCode == arrowpb.StatusCode_OK {
 		ch <- nil
 		return nil
 	}
+	// See ../../otlp.go's `shouldRetry()` method, the retry
+	// behavior described here is achieved there by setting these
+	// recognized codes.
 	var err error
-	switch status.StatusCode {
+	switch ss.StatusCode {
 	case arrowpb.StatusCode_UNAVAILABLE:
-		err = fmt.Errorf("destination unavailable: %d: %s", status.BatchId, status.StatusMessage)
+		// Retryable
+		err = status.Errorf(codes.Unavailable, "destination unavailable: %d: %s", ss.BatchId, ss.StatusMessage)
 	case arrowpb.StatusCode_INVALID_ARGUMENT:
-		err = consumererror.NewPermanent(
-			fmt.Errorf("invalid argument: %d: %s", status.BatchId, status.StatusMessage))
+		// Not retryable
+		err = status.Errorf(codes.InvalidArgument, "invalid argument: %d: %s", ss.BatchId, ss.StatusMessage)
+	case arrowpb.StatusCode_RESOURCE_EXHAUSTED:
+		// Retry behavior is configurable
+		err = status.Errorf(codes.ResourceExhausted, "resource exhausted: %d: %s", ss.BatchId, ss.StatusMessage)
 	default:
-		base := fmt.Errorf("unexpected stream response: %d: %s", status.BatchId, status.StatusMessage)
-		err = consumererror.NewPermanent(base)
+		// Note: case arrowpb.StatusCode_CANCELED (a.k.a. codes.Canceled)
+		// is handled before calling processBatchStatus().
+
+		// Unrecognized status code.
+		err = status.Errorf(codes.Internal, "unexpected stream response: %d: %s", ss.BatchId, ss.StatusMessage)
 
 		// Will break the stream.
-		ret = multierr.Append(ret, base)
+		ret = multierr.Append(ret, err)
 	}
 	ch <- err
 	return ret

@@ -144,7 +144,7 @@ func TestStreamGracefulShutdown(t *testing.T) {
 		// mimick the server which will send a batchID
 		// of 0 after max_stream_lifetime elapses.
 		time.Sleep(maxStreamLifetime)
-		channel.recv <- statusStreamShutdownFor(0)
+		channel.recv <- statusCanceledFor(0)
 	}()
 
 	err := tc.get().SendAndWait(tc.bgctx, twoTraces)

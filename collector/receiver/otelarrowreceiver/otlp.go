@@ -149,7 +149,12 @@ func (r *otlpReceiver) startProtocolServers(host component.Host) error {
 			}
 
 			r.arrowReceiver = arrow.New(arrow.Consumers(r), r.settings, r.obsrepGRPC, r.cfg.GRPC, authServer, func() arrowRecord.ConsumerAPI {
-				return arrowRecord.NewConsumer()
+				var opts []arrowRecord.Option
+				if r.cfg.Arrow.MemoryLimit != 0 {
+					// in which case the default is selected in the arrowRecord package.
+					opts = append(opts, arrowRecord.WithMemoryLimit(r.cfg.Arrow.MemoryLimit))
+				}
+				return arrowRecord.NewConsumer(opts...)
 			})
 
 			arrowpb.RegisterArrowStreamServiceServer(r.serverGRPC, r.arrowReceiver)
