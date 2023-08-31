@@ -298,6 +298,18 @@ func (r *Receiver) anyStream(serverStream anyStreamServer) (retErr error) {
 		req, err := serverStream.Recv()
 
 		if err != nil {
+			// client called CloseSend()
+			if err == io.EOF {
+				status := &arrowpb.BatchStatus{}
+				status.StatusCode = arrowpb.StatusCode_STREAM_SHUTDOWN
+				err = serverStream.Send(status)
+				if err != nil {
+					r.logStreamError(err)
+					return err
+				}
+				return nil
+			}
+
 			r.logStreamError(err)
 			return err
 		}

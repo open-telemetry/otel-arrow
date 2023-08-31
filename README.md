@@ -9,7 +9,7 @@ still in transition, the primary OpenTelemetry Collector components
 are housed here:
 
 - [OTel Arrow Receiver](./collector/receiver/otelarrowreceiver/README.md)
-- OTel Arrow Exporter (TODO)
+- [OTel Arrow Exporter](./collector/exporter/otelarrowexporter/README.md)
 
 ## Reference implementation.
 
