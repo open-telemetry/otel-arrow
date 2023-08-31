@@ -364,7 +364,7 @@ func (s *Stream) read(_ context.Context) error {
 		// This indicates the server received EOF from client shutdown.
 		// This is not an error because this is an expected shutdown
 		// initiated by the client by setting max_stream_lifetime.
-		if resp.StatusCode == arrowpb.StatusCode_STREAM_SHUTDOWN {
+		if resp.StatusCode == arrowpb.StatusCode_CANCELED {
 			return nil
 		}
 
@@ -422,7 +422,7 @@ func (s *Stream) processBatchStatus(ss *arrowpb.BatchStatus) error {
 		// Retry behavior is configurable
 		err = status.Errorf(codes.ResourceExhausted, "resource exhausted: %d: %s", ss.BatchId, ss.StatusMessage)
 	default:
-		// Note: case arrowpb.StatusCode_STREAM_SHUTDOWN (a.k.a. codes.Canceled)
+		// Note: case arrowpb.StatusCode_CANCELED (a.k.a. codes.Canceled)
 		// is handled before calling processBatchStatus().
 
 		// Unrecognized status code.

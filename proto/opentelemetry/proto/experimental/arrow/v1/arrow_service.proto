@@ -147,9 +147,9 @@ enum StatusCode {
   // OK indicates successful delivery
   OK = 0;
 
-  // STREAM_SHUTDOWN indicates the server has received the first half of the stream
+  // CANCELED indicates the server has received the first half of the stream
   // close sequence and is closing itself, considered not an error.
-  STREAM_SHUTDOWN = 1;  // a.k.a. codes.Canceled
+  CANCELED = 1;  // a.k.a. codes.Canceled
 
   // UNAVAILABLE indicates the consumer had a retryable error, e.g., a
   // downstream timeout.
