@@ -76,7 +76,7 @@ exporters:
   otelarrow:
     compression: none
     endpoint: ...
-	tls: ...
+    tls: ...
 ```
 
 ## Configuration
@@ -111,7 +111,7 @@ exporters:
   otelarrow:
     balancer_name: pick_first
     endpoint: ...
-	tls: ...
+    tls: ...
 ```
 
 When the server or an intermediate proxy uses a keepalive setting, the
@@ -125,10 +125,10 @@ any of the intermediate proxies), plus the export timeout.
 exporters:
   otelarrow:
     timeout: 30s
-	arrow:
-	  max_stream_lifetime: 9m30s
+    arrow:
+      max_stream_lifetime: 9m30s
     endpoint: ...
-	tls: ...
+    tls: ...
 ```
 
 When this is configured, the stream will terminate cleanly without
