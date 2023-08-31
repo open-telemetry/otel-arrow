@@ -74,11 +74,12 @@ compression, configure as follows:
 ```yaml
 exporters:
   otelarrow:
-    ...
     compression: none
+    endpoint: ...
+	tls: ...
 ```
 
-## Advanced Configuration
+## Configuration
 
 Several helper files are leveraged to provide additional capabilities automatically:
 
@@ -91,25 +92,62 @@ Several helper files are leveraged to provide additional capabilities automatica
 In the `arrow` configuration block, the following settings enable and
 disable the use of OTel Arrow as opposed to standard OTLP.
 
-- `disabled`: disables use of Arrow, causing the exporter to use standard OTLP
-- `disable_downgrade`: prevents this exporter from using standard OTLP
+- `disabled` (default: false): disables use of Arrow, causing the exporter to use standard OTLP
+- `disable_downgrade` (default: false): prevents this exporter from using standard OTLP.
 
 The following settings determine the resources that the exporter will use:
 
-- `num_streams`: the number of concurrent Arrow streams
-- `max_stream_lifetime`: duration after which streams are recycled
+- `num_streams` (default: number of CPUs): the number of concurrent Arrow streams
+- `max_stream_lifetime` (default: unlimited): duration after which streams are recycled.
 
-### Experimental Configuration
+### Network Configuration
 
-The exporter supports configuring compression at the Arrow IPC level.
+This component uses `round_robin` by default as the gRPC load
+balancer.  This can be modified using the `balancer_name` setting, for
+example, to configure the `pick_first` balancer:
 
-- `payload_compression`: compression applied at the Arrow IPC level, "none" by default, "zstd" supported.
+```yaml
+exporters:
+  otelarrow:
+    balancer_name: pick_first
+    endpoint: ...
+	tls: ...
+```
 
-The exporter uses the signal-specific Arrow stream methods (i.e.,
-`ArrowTraces`, `ArrowLogs`, and `ArrowMetrics`) by default.  There is
-an option to use the generic `ArrowStream` method instead.
+When the server or an intermediate proxy uses a keepalive setting, the
+Arrow-specific `max_stream_lifetime` setting is critical to avoiding
+abrupt termination of Arrow streams, which causes retries of the
+in-flight requests.  The maximum stream lifetime should be set to a
+value less than the minimum of the server's keepalive parameter (and
+any of the intermediate proxies), plus the export timeout.
 
-- `enable_mixed_signals`: Use `ArrowStream` instead of per-signal stream methods.
+```yaml
+exporters:
+  otelarrow:
+    timeout: 30s
+	arrow:
+	  max_stream_lifetime: 9m30s
+    endpoint: ...
+	tls: ...
+```
+
+When this is configured, the stream will terminate cleanly without
+causing retries, with `OK` gRPC status.
+
+[The corresponding `otelarrowreceiver` keepalive setting, that is
+compatible with the one above,
+reads](../../receiver/otelarrowreceiver/README.md):
+
+```
+receivers:
+  otelarrow:
+    protocols:
+      grpc:
+        keepalive:
+          server_parameters:
+            max_connection_age: 1m
+            max_connection_age_grace: 10m
+```
 
 ### Exporter metrics
 
@@ -124,7 +162,32 @@ which we anticipate will become part of `exporterhelper` and/or
 - `exporter_sent`: uncompressed bytes sent, prior to compression
 - `exporter_sent_wire`: compressed bytes sent, on the wire.
 
-At the `detailed` level of metrics detail:
+Arrow's compression performance can be derived by dividing the average
+`exporter_sent` value by the average `exporter_sent_wire` value.
+
+At the `detailed` metrics detail level, information about the stream
+of data being returned to the exporter will be instrumented:
 
 - `exporter_recv`: uncompressed bytes received, prior to compression
 - `exporter_recv_wire`: compressed bytes received, on the wire.
+
+### Experimental Configuration
+
+The exporter supports configuring compression at the [Arrow
+columnar-protocol
+level](https://arrow.apache.org/docs/format/Columnar.html#format-ipc).
+
+- `payload_compression`: compression applied at the Arrow IPC level, "none" by default, "zstd" supported.
+
+The exporter uses the signal-specific Arrow stream methods (i.e.,
+`ArrowTraces`, `ArrowLogs`, and `ArrowMetrics`) by default.  There is
+an option to use the generic `ArrowStream` method instead.
+
+- `enable_mixed_signals` (default: false): Use `ArrowStream` instead of per-signal stream methods.
+
+This option has the potential to enable the future exporter to cross
+signals, meaning to allow traces, metrics and logs to refer to the
+same shared-data items across a single stream.  Presently, there is no
+cross-signal compression benefit, this option simply causes one method
+name instead of three method names to be used by the exporter
+instances of different signal types.

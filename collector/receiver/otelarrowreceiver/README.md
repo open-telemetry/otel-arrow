@@ -128,11 +128,11 @@ For example, an exporter with `9m30s` stream lifetime:
 ```
 exporters:
   otelarrow:
-    # other configuration (e.g., endpoint)
-    ...
+    timeout: 30s
     arrow:
-      # other configuration (e.g., num_streams)
       max_stream_lifetime: 9m30s
+    endpoint: ...
+    tls: ...
 ```
 
 ### Receiver metrics
@@ -143,17 +143,17 @@ metrics, this component provides network-level measurement instruments
 which we anticipate will become part of `obsreport` in the future.  At
 the `normal` level of metrics detail:
 
-- `recevier_recv`: uncompressed bytes received, prior to compression
-- `recevier_recv_wire`: compressed bytes received, on the wire.
+- `receiver_recv`: uncompressed bytes received, prior to compression
+- `receiver_recv_wire`: compressed bytes received, on the wire.
 
-These metrics accurately reflect OTel Arrow compression on the
-network, except when compression is enabled in the exporter (via
-[`payload_compression`](../../exporter/otelarrowexporter/README.md).
+Arrow's compression performance can be derived by dividing the average
+`receiver_recv` value by the average `receiver_recv_wire` value.
 
-At the `detailed` level:
+At the `detailed` metrics detail level, information about the stream
+of data being returned from the receiver will be instrumented:
 
-- `recevier_sent`: uncompressed bytes sent, prior to compression
-- `recevier_sent_wire`: compressed bytes sent, on the wire.
+- `receiver_sent`: uncompressed bytes sent, prior to compression
+- `receiver_sent_wire`: compressed bytes sent, on the wire.
 
 ## HTTP-specific documentation
 
