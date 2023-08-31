@@ -570,7 +570,7 @@ func TestReceiverMemoryLimit(t *testing.T) {
 
 		batch = copyBatch(batch)
 
-		ctc.stream.EXPECT().Send(statusExhaustedFor(batch.BatchId, "Permanent error: test oom error The number of decoded records is smaller than the number of received payloads. Please increase the memory limit of the consumer.")).Times(1).Return(nil)
+		ctc.stream.EXPECT().Send(statusExhaustedFor(batch.BatchId, "Permanent error: test oom error "+arrowRecord.ErrConsumerMemoryLimit.Error())).Times(1).Return(nil)
 
 		ctc.start(ctc.newOOMConsumer)
 		ctc.putBatch(batch, nil)
