@@ -48,6 +48,11 @@ func createDefaultConfig() component.Config {
 			Compression: configcompression.Zstd,
 			// We almost read 0 bytes, so no need to tune ReadBufferSize.
 			WriteBufferSize: 512 * 1024,
+			// The `configgrpc` default is pick_first,
+			// which is not great for OTel Arrow exporters
+			// because it concentrates load at a single
+			// destination.
+			BalancerName: "round_robin",
 		},
 		Arrow: ArrowSettings{
 			NumStreams:        runtime.NumCPU(),
