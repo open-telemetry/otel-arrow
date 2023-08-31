@@ -75,7 +75,7 @@ func TestUnmarshalConfig(t *testing.T) {
 					Timeout:             30 * time.Second,
 				},
 				WriteBufferSize: 512 * 1024,
-				BalancerName:    "round_robin",
+				BalancerName:    "experimental",
 				Auth:            &configauth.Authentication{AuthenticatorID: component.NewID("nop")},
 			},
 			Arrow: ArrowSettings{
