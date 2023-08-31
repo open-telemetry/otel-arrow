@@ -18,7 +18,7 @@ func main() {
 	info := component.BuildInfo{
 		Command:     "otelarrowcol",
 		Description: "Development OTel-Arrow Collector binary, testing only.",
-		Version:     "0.2.0",
+		Version:     "0.3.0",
 	}
 
 	if err := run(otelcol.CollectorSettings{BuildInfo: info, Factories: factories}); err != nil {
