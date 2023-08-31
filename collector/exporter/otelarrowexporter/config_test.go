@@ -19,16 +19,18 @@ import (
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/configopaque"
 	"go.opentelemetry.io/collector/config/configtls"
-	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
 )
 
 func TestUnmarshalDefaultConfig(t *testing.T) {
+	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "default.yaml"))
+	require.NoError(t, err)
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, component.UnmarshalConfig(confmap.New(), cfg))
+	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
 	assert.Equal(t, factory.CreateDefaultConfig(), cfg)
+	assert.Equal(t, "round_robin", cfg.(*Config).GRPCClientSettings.BalancerName)
 }
 
 func TestUnmarshalConfig(t *testing.T) {
@@ -75,7 +77,7 @@ func TestUnmarshalConfig(t *testing.T) {
 					Timeout:             30 * time.Second,
 				},
 				WriteBufferSize: 512 * 1024,
-				BalancerName:    "round_robin",
+				BalancerName:    "experimental",
 				Auth:            &configauth.Authentication{AuthenticatorID: component.NewID("nop")},
 			},
 			Arrow: ArrowSettings{
