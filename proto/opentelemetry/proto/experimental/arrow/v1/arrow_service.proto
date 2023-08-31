@@ -146,4 +146,5 @@ enum StatusCode {
   OK = 0;
   UNAVAILABLE = 1;
   INVALID_ARGUMENT = 2;
+  STREAM_SHUTDOWN = 3;
 }
