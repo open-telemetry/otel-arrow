@@ -26,19 +26,19 @@ import (
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/open-telemetry/otel-arrow/collector/internal/testdata"
+	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/arrow/mock"
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/extension/auth"
-	"github.com/open-telemetry/otel-arrow/collector/internal/testdata"
 	"go.opentelemetry.io/collector/obsreport"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/receiver"
-	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/arrow/mock"
 )
 
 type compareJSONTraces struct{ ptrace.Traces }
@@ -273,6 +273,14 @@ func statusInvalidFor(batchID int64, msg string) *arrowpb.BatchStatus {
 	}
 }
 
+func statusExhaustedFor(batchID int64, msg string) *arrowpb.BatchStatus {
+	return &arrowpb.BatchStatus{
+		BatchId:       batchID,
+		StatusCode:    arrowpb.StatusCode_RESOURCE_EXHAUSTED,
+		StatusMessage: msg,
+	}
+}
+
 func (ctc *commonTestCase) newRealConsumer() arrowRecord.ConsumerAPI {
 	mock := arrowRecordMock.NewMockConsumerAPI(ctc.ctrl)
 	cons := arrowRecord.NewConsumer()
@@ -292,6 +300,17 @@ func (ctc *commonTestCase) newErrorConsumer() arrowRecord.ConsumerAPI {
 	mock.EXPECT().TracesFrom(gomock.Any()).AnyTimes().Return(nil, fmt.Errorf("test invalid error"))
 	mock.EXPECT().MetricsFrom(gomock.Any()).AnyTimes().Return(nil, fmt.Errorf("test invalid error"))
 	mock.EXPECT().LogsFrom(gomock.Any()).AnyTimes().Return(nil, fmt.Errorf("test invalid error"))
+
+	return mock
+}
+
+func (ctc *commonTestCase) newOOMConsumer() arrowRecord.ConsumerAPI {
+	mock := arrowRecordMock.NewMockConsumerAPI(ctc.ctrl)
+
+	mock.EXPECT().Close().Times(1).Return(nil)
+	mock.EXPECT().TracesFrom(gomock.Any()).AnyTimes().Return(nil, fmt.Errorf("test oom error %w", arrowRecord.ErrConsumerMemoryLimit))
+	mock.EXPECT().MetricsFrom(gomock.Any()).AnyTimes().Return(nil, fmt.Errorf("test oom error %w", arrowRecord.ErrConsumerMemoryLimit))
+	mock.EXPECT().LogsFrom(gomock.Any()).AnyTimes().Return(nil, fmt.Errorf("test oom error %w", arrowRecord.ErrConsumerMemoryLimit))
 
 	return mock
 }
@@ -524,6 +543,44 @@ func TestReceiverInvalidData(t *testing.T) {
 	}
 }
 
+func TestReceiverMemoryLimit(t *testing.T) {
+	data := []interface{}{
+		testdata.GenerateTraces(2),
+		testdata.GenerateMetrics(2),
+		testdata.GenerateLogs(2),
+	}
+
+	for _, item := range data {
+		tc := healthyTestChannel{}
+		ctc := newCommonTestCase(t, tc)
+
+		var batch *arrowpb.BatchArrowRecords
+		var err error
+		switch input := item.(type) {
+		case ptrace.Traces:
+			batch, err = ctc.testProducer.BatchArrowRecordsFromTraces(input)
+		case plog.Logs:
+			batch, err = ctc.testProducer.BatchArrowRecordsFromLogs(input)
+		case pmetric.Metrics:
+			batch, err = ctc.testProducer.BatchArrowRecordsFromMetrics(input)
+		default:
+			panic(input)
+		}
+		require.NoError(t, err)
+
+		batch = copyBatch(batch)
+
+		ctc.stream.EXPECT().Send(statusExhaustedFor(batch.BatchId, "Permanent error: test oom error The number of decoded records is smaller than the number of received payloads. Please increase the memory limit of the consumer.")).Times(1).Return(nil)
+
+		ctc.start(ctc.newOOMConsumer)
+		ctc.putBatch(batch, nil)
+
+		err = ctc.cancelAndWait()
+		require.Error(t, err)
+		require.True(t, errors.Is(err, context.Canceled), "for %v", err)
+	}
+}
+
 func copyBatch(in *arrowpb.BatchArrowRecords) *arrowpb.BatchArrowRecords {
 	// Because Arrow-IPC uses zero copy, we have to copy inside the test
 	// instead of sharing pointers to BatchArrowRecords.
@@ -560,7 +617,7 @@ func TestReceiverEOF(t *testing.T) {
 	var actualData []ptrace.Traces
 	var expectData []ptrace.Traces
 
-	ctc.stream.EXPECT().Send(gomock.Any()).Times(times+1).Return(nil)
+	ctc.stream.EXPECT().Send(gomock.Any()).Times(times + 1).Return(nil)
 
 	ctc.start(ctc.newRealConsumer)
 
@@ -618,7 +675,7 @@ func testReceiverHeaders(t *testing.T, includeMeta bool) {
 		nil,
 	}
 
-	ctc.stream.EXPECT().Send(gomock.Any()).Times(len(expectData)+1).Return(nil)
+	ctc.stream.EXPECT().Send(gomock.Any()).Times(len(expectData) + 1).Return(nil)
 
 	ctc.start(ctc.newRealConsumer, func(gsettings *configgrpc.GRPCServerSettings, _ *auth.Server) {
 		gsettings.IncludeMetadata = includeMeta
@@ -976,7 +1033,7 @@ func testReceiverAuthHeaders(t *testing.T, includeMeta bool, dataAuth bool) {
 
 	var recvBatches []*arrowpb.BatchStatus
 
-	ctc.stream.EXPECT().Send(gomock.Any()).Times(len(expectData)+1).DoAndReturn(func(batch *arrowpb.BatchStatus) error {
+	ctc.stream.EXPECT().Send(gomock.Any()).Times(len(expectData) + 1).DoAndReturn(func(batch *arrowpb.BatchStatus) error {
 		recvBatches = append(recvBatches, batch)
 		return nil
 	})
