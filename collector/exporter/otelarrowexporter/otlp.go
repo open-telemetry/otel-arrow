@@ -167,7 +167,11 @@ func (e *baseExporter) arrowSendAndWait(ctx context.Context, data interface{}) (
 	if e.arrow == nil {
 		return false, nil
 	}
-	return e.arrow.SendAndWait(ctx, data)
+	sent, err := e.arrow.SendAndWait(ctx, data)
+	if err != nil {
+		return sent, processError(err)
+	}
+	return sent, nil
 }
 
 func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {

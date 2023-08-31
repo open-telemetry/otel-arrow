@@ -422,11 +422,14 @@ func (s *Stream) processBatchStatus(ss *arrowpb.BatchStatus) error {
 		// Retry behavior is configurable
 		err = status.Errorf(codes.ResourceExhausted, "resource exhausted: %d: %s", ss.BatchId, ss.StatusMessage)
 	default:
-		// Unrecognized status code
-		base := status.Errorf(codes.Internal, "unexpected stream response: %d: %s", ss.BatchId, ss.StatusMessage)
+		// Note: case arrowpb.StatusCode_STREAM_SHUTDOWN (a.k.a. codes.Canceled)
+		// is handled before calling processBatchStatus().
+
+		// Unrecognized status code.
+		err = status.Errorf(codes.Internal, "unexpected stream response: %d: %s", ss.BatchId, ss.StatusMessage)
 
 		// Will break the stream.
-		ret = multierr.Append(ret, base)
+		ret = multierr.Append(ret, err)
 	}
 	ch <- err
 	return ret
