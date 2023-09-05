@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package netstats // import "github.com/open-telemetry/otel-arrow/collector/internal/netstats"
+package netstats // import "github.com/open-telemetry/otel-arrow/collector/netstats"
 
 import (
 	"context"

@@ -3,7 +3,7 @@
 
 // Package sharedcomponent exposes util functionality for receivers and exporters
 // that need to share state between different signal types instances such as net.Listener or os.File.
-package sharedcomponent // import "github.com/open-telemetry/otel-arrow/collector/internal/sharedcomponent"
+package sharedcomponent // import "github.com/open-telemetry/otel-arrow/collector/sharedcomponent"
 
 import (
 	"context"
