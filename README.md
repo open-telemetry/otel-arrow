@@ -1,29 +1,116 @@
-# OTel Arrow Protocol 
+# OTel Arrow
 
-**Repository under maintenance.**
+The [OTel Arrow](https://github.com/open-telemetry/otel-arrow) project
+is an effort within [OpenTelemetry](https://opentelemetry.io/) to use
+[Apache Arrow](https://arrow.apache.org/) libraries for bulk data
+transport in OpenTelemetry collection pipelines.  This repository is
+the home of the OTel Arrow protocol and reference implementation.
 
-This repository recently migrated from the
-[github.com/f5/otel-arrow-adapter](https://github.com/f5/otel-arrow-adapter),
-and we are preparing it for a beta release.  While the repository is
-still in transition, the primary OpenTelemetry Collector components
-are housed here:
+## Overview
+
+OpenTelemetry and Apache Arrow have similar charters, so it was
+natural to think about combining them.  Both projects offer
+vendor-neutral interfaces with a cross-language interface
+specification, so that their implementation will feel familiar to
+users as they move between programming languages, and both specify a
+data model that is used throughout the project.
+
+The OpenTelemetry project defines
+[OTLP](https://opentelemetry.io/docs/specs/otlp/), the "OpenTeLemetry
+Prototcol" as the standard form of telemetry data in OpenTelemetry,
+being as similar as possible to the data model underlying the project.
+OTLP is defined in terms of Google protocol buffer definitions.
+
+OTLP is a stateless protocol, where export requests map directly into
+the data model, nothing is omitted, and little is shared.  OTLP export
+requests to not contain external or internal references, making the
+data relatively simple and easy to interpret.  Because of this design,
+users of OTLP will typically configure network compression.  In
+environments where telemetry data will be shipped to a service
+provider across a wide-area network, users would like more compression
+than can be achieved using a stateless protocol.
+
+## Project goals
+
+The OTel Arrow project is organized in phases.  Our initial aim is to
+facilitate traffic reduction between a pair of OpenTelemetry
+collectors, with subsequent milestones for Apache Arrow integration including:
+
+1. Improve compression performance for OpenTelemetry data collection
+1. Output OpenTelemetry data to the Parquet file format, part of the Apache Arrow ecosystem
+2. Extend OpenTelemetry data model with support for multi-variate metrics.
+
+### Improve network-level compression with OTel Arrow
+
+The first general-purpose application for OTel Arrow is traffic
+reduction.  At a high-level, OTel Arrow performs the following steps
+to compactly encode and transmit telemetry using Apache Arrow.
+
+1. Separate the OpenTelemetry Resource and Scope elements from the
+   hierarchy, then encode and transmit each distinct entity once per
+   stream lifetime.
+2. Calculate distinct attribute sets used by Resources, Scopes,
+   Metrics, Logs, Spans, Span Events, and Span Links, then encode and
+   transmit each distinct entity once per stream lifetime.
+3. Use Apache Arrow's built-in support for encoding dictionaries,
+   delta-dictionaries, and other low-level facilities to compactly
+   encode the structure.
+
+Here is a diagram showing how OTel Arrow transforms OTLP Log Records
+into column-oriented data, which also makes the data more compressible.
+
+![OTel Arrow Log Record](https://github.com/open-telemetry/oteps/blob/main/text/img/0156_logs_schema.png?raw=true)
+
+## Project status
+
+The first phase of the project has entered the [Beta stability level,
+as defined by the OpenTelemetry collector
+guidelines](https://github.com/open-telemetry/opentelemetry-collector#beta).
+We do not plan to make breaking changes in this protocol without first
+engineering an approach that ensures forwards and
+backwards-compatibility for existing and new users.  We believe it is
+safe to begin using these components for production data, non-critical
+workloads.
+
+### Project deliverables 
+
+We are pleased to release two new collector components, presently
+housed in this this repository.
 
 - [OTel Arrow Receiver](./collector/receiver/otelarrowreceiver/README.md)
 - [OTel Arrow Exporter](./collector/exporter/otelarrowexporter/README.md)
 
-## Reference implementation.
+We are working with the maintainers of the [OpenTelemetry
+Collector-Contrib](https://github.com/open-telemetry/opentelemetry-collector-contrib)
+to merge these components into that repository.  [See our tracking
+issue](https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/26491).
 
-This package is a reference implementation of the OTel Arrow protocol specified in this [OTEP](https://github.com/open-telemetry/oteps/blob/main/text/0156-columnar-encoding.md).
-All OTLP entities are covered (metrics, logs, and traces) as well as all sub-elements such as events, links, gauge, sum, 
-summary, histograms, ... The overall goal is to optimize the compression ratio for telemetry data transmission as well 
-as the end-to-end performance between telemetry data producers and receivers.
+The OTel Arrow exporter and receiver components are drop-in compatible
+with the core collector's OTLP exporter and receiver components.
+Users with an established OTLP collection pipeline between two
+OpenTelemetry Collectors can re-build their collectors with
+`otelarrow` components, then simply replace the component name `otlp`
+with `otelarrow`.  The exporter and receiver both support falling back
+to standard OTLP in case either side does not recognize the protocol,
+so the upgrade should be painless.  The OTel Arrow receiver serves
+both OTel Arrow and OTLP on the standard port for OTLP gRPC (4317).
 
-**This package is still experimental and subject to change.** It is currently used by an [experimental OTLP/Arrow gRPC 
-exporter and receiver](https://github.com/open-telemetry/experimental-arrow-collector).
+See the [Exporter](collector/exporter/otelarrowexporter/README.md) and
+[Receiver](collector/receiver/otelarrowreceiver/README.md)
+documentation for details and sample configurations.
 
-Important links:
-- [OTEP](https://github.com/open-telemetry/oteps/blob/main/text/0156-columnar-encoding.md) - protocol specification.
-- [Donation](https://github.com/open-telemetry/community/issues/1332) - approved by the Technical Committee (repo not yet transferred in OTel org).
+### Project documentation
+
+This package is a reference implementation of the OTel Arrow protocol
+specified in this
+[OTEP](https://github.com/open-telemetry/oteps/blob/main/text/0156-columnar-encoding.md),
+which is currently the best source of information about OTel Arrow.
+The [Donation
+request](https://github.com/open-telemetry/community/issues/1332)
+describes how the project began.
+
+Here are several more resources that are available to learn more about OTel Arrow.
+
 - [Arrow Data Model](docs/data_model.md) - Mapping OTLP entities to Arrow Schemas.
 - [Benchmark results](docs/benchmarks.md) - Based on synthetic and production data.
 - [Validation process](docs/validation_process.md) - Encoding/Decoding validation process. 
@@ -72,43 +159,25 @@ data has not been updated and this collector is still fundamentally row-oriented
 ### Developers
 
 Pull requests are welcome. For major changes, please open an issue
-first to discuss what you would like to change. For more information, please
+first to discuss what you would like to change.  For more information, please
 read [CONTRIBUTING](CONTRIBUTING.md).
 
-#### How to change the protobuf specification
+#### Version history shared with OpenTelemetry Collector
 
-To (re)generate the ArrowStreamService gRPC service, you need to install the `protoc` compiler and the `protoc-gen-grpc` plugin.
-```shell
-go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.2
-export PATH="$PATH:$(go env GOPATH)/bin"
-cd ./proto
-./generate.sh
-```
-Once the `*.pb.go` files are generated, you need to replace the content of the `api/collector/arrow/v1` directory by the
-generated files present in the `./proto/api/collector/arrow/v1` directory.
+The OTel Arrow exporter and receiver components were derived from the
+core OpenTelemetry Collector's OTLP exporter and receiver components.
+This approach was taken to ensure that the OTel Arrow receiver and
+exporter components remain "drop-in" compatible with OTLP exporters
+and receivers.
 
-## Integration with the OpenTelemetry Collector
+The shared version history describing how the OTel Arrow components
+were derived from the core OTLP components is recorded in [this
+repository](https://github.com/open-telemetry/otel-arrow-collector),
+which is not for general use.  Maintainers of OTel Arrow may use the
+repository to maintain the version history going forward, [as discussed
+here](https://github.com/open-telemetry/otel-arrow/issues/43).
 
-The integration of this package with the OpenTelemetry Collector is done in the following experimental repository:
-* [experimental-arrow-collector](https://github.com/open-telemetry/experimental-arrow-collector)
-
-This above repository houses a fork of the entire core OpenTelemetry
-Collector, where the complete branch history is kept, including
-"mainline" Collector commits as well as Arrow-component development
-commits.
-
-Because that repository contains portions that are not part of the
-OTel-Arrow project, [the components are being maintained in this
-repository](https://github.com/open-telemetry/experimental-arrow-collector/issues/48)
-until they can be merged into the
-[OpenTemetry-Collector-Contrib](github.com/open-telemetry/opentelemetry-collector-contrib)
-repository.
-
-Collector components copied from that repository are currently
-available in the
-[`./collector`](https://github.com/f5/otel-arrow-adapter/blob/main/collector/README.md)
-sub-package of this repository.
+#### Example collector configurations
 
 Examples demonstrating how to configure and test an OpenTelemetry
 Collector with OTel-Arrow exporter and receiver components are located
@@ -124,6 +193,19 @@ in `./collector/examples`, including:
   A collector with support for recording data files for diagnostic and benchmark purposes.
 - [`examples/synthesize`](https://github.com/f5/otel-arrow-adapter/tree/main/collector/examples/synthesize):
   A collector with support for synthesizing telemetry data using a [telemetry-generator](https://github.com/lightstep/telemetry-generator) component.
+
+#### Miscellaneous components
+
+Several components were developed to facilitate testing and debugging
+the primary OTel Arrow components.  Most importantly, these tools can
+be used to report problematic data to the OTel Arrow maintainers.
+These components are:
+
+- `exporter/fileexporter`: Derived from the upstream [fileexporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/fileexporter), this component supports writing files that can be read by the corresponding `filereceiver` in this package (unlike the upstream).
+- `receiver/filereceiver`: Derived from the upstream [filereceiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/filereceiver), this component supports reading files written by the corresponding `fileexporter` in this package (unlike the upstream).
+- `processor/obfuscationprocessor`: Supports obfuscation of OpenTelemetry data using a [Feistel cipher](https://en.wikipedia.org/wiki/Feistel_cipher).
+- `processor/experimentprocessor`: A probabilistic routing component for conducting experiments between exporters.
+- `connector/validationconnector`: A component for on-the-fly validation of a local pipeline.
 
 ## License
 
