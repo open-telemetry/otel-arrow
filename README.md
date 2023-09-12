@@ -34,11 +34,16 @@ than can be achieved using a stateless protocol.
 
 The OTel Arrow project is organized in phases.  Our initial aim is to
 facilitate traffic reduction between a pair of OpenTelemetry
-collectors, with subsequent milestones for Apache Arrow integration including:
+collectors, and ultimately, we believe that an end-to-end OTel Arrow
+pipeline will enable telemetry pipelines with substantially lower
+overhead to be built.  These are our future milestones for
+OpenTelemetry and Apache Arrow integration:
 
 1. Improve compression performance for OpenTelemetry data collection
-1. Output OpenTelemetry data to the Parquet file format, part of the Apache Arrow ecosystem
-2. Extend OpenTelemetry data model with support for multi-variate metrics.
+2. Extend OpenTelemetry client SDKs to natively support the OTel Arrow Protocol
+3. Extend the OpenTelemetry collector with direct support for OTel Arrow pipelines
+4. Extend OpenTelemetry data model with support for multi-variate metrics.
+5. Output OpenTelemetry data to the Parquet file format, part of the Apache Arrow ecosystem
 
 ### Improve network-level compression with OTel Arrow
 
