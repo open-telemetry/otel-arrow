@@ -42,16 +42,18 @@ type Config struct {
 type Option func(*Config)
 
 // DefaultConfig returns a Config with the following default values:
-//  - Pool: memory.NewGoAllocator()
-//  - InitIndexSize: math.MaxUint16
-//  - LimitIndexSize: math.MaxUint32
-//  - Stats: false
-//  - Zstd: true
+//   - Pool: memory.NewGoAllocator()
+//   - InitIndexSize: math.MaxUint16
+//   - LimitIndexSize: math.MaxUint32
+//   - Stats: false
+//   - Zstd: true
 func DefaultConfig() *Config {
 	return &Config{
-		Pool:           memory.NewGoAllocator(),
-		InitIndexSize:  math.MaxUint16,
-		LimitIndexSize: math.MaxUint32,
+		Pool:          memory.NewGoAllocator(),
+		InitIndexSize: math.MaxUint16,
+		// The default dictionary index limit is set to 2^16 - 1
+		// to keep the overall memory usage of the encoder and decoder low.
+		LimitIndexSize: math.MaxUint16,
 		Stats:          false,
 		Zstd:           true,
 	}
