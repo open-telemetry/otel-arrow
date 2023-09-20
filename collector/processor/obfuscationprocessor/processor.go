@@ -158,6 +158,7 @@ func (o *obfuscation) processResourceSpan(ctx context.Context, rs ptrace.Resourc
 func (o *obfuscation) processEventAndLinkAttrs(ctx context.Context, span ptrace.Span) {
 	for i := 0; i < span.Events().Len(); i++ {
 		ev := span.Events().At(i)
+		ev.SetName(o.encryptString(ev.Name()))
 		o.processAttrs(ctx, ev.Attributes())
 	}
 

@@ -24,12 +24,13 @@ var (
 
 	resAttrVal   = "resource-attr-val-1"
 	scopeAttrVal = "scope-attr-val-1"
-	byteIDVal = []byte("abcdefg")
+	byteIDVal    = []byte("abcdefg")
 
 	// span specific attrs
 	spanAttrVal  = "span-attr-val-1"
 	eventAttrVal = "event-attr-val-1"
 	linkAttrVal  = "link-attr-val-1"
+	eventName    = "simple event"
 
 	// metric specific attrs
 	gaugeAttrVal   = "gauge-attr-val-1"
@@ -81,6 +82,7 @@ func setupSpanWithAttrs() ptrace.Traces {
 	link0 := span.Links().AppendEmpty()
 	link0.Attributes().PutStr("span-link-attr", linkAttrVal)
 	ev0 := span.Events().AppendEmpty()
+	ev0.SetName(eventName)
 	ev0.Attributes().PutStr("span-event-attr", eventAttrVal)
 
 	return td
@@ -120,6 +122,7 @@ func validateTraceAttrs(t *testing.T, expected map[string]pair, traces ptrace.Tr
 					val, ok := event.Attributes().Get(expected["span-event-attr"].key)
 					assert.True(t, ok)
 					assert.Equal(t, expected["span-event-attr"].val.AsString(), val.AsString())
+					assert.Equal(t, expected["span-event-name"].val.AsString(), event.Name())
 				}
 
 				for h := 0; h < span.Links().Len(); h++ {
@@ -181,6 +184,7 @@ func TestProcessTraces(t *testing.T) {
 		"span-event-attr":   cryptPair(processor, spanEventAttrKey, pcommon.NewValueStr(eventAttrVal)),
 		"complex-span-attr": cryptPair(processor, "complex-span-attr", csVal),
 		"byte-id":           cryptPair(processor, "byte-id", bVal),
+		"span-event-name":   cryptPair(processor, "span-event-name", pcommon.NewValueStr(eventName)),
 	}
 
 	processedTraces, err := processor.processTraces(context.Background(), traces)
