@@ -16,8 +16,8 @@ import (
 	fileexporter "github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter"
 	headerssetterextension "github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension"
 	basicauthextension "github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension"
+	pprofextension "github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension"
 	batchprocessor "go.opentelemetry.io/collector/processor/batchprocessor"
-	memorylimiterprocessor "go.opentelemetry.io/collector/processor/memorylimiterprocessor"
 	experimentprocessor "github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor"
 	obfuscationprocessor "github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor"
 	otelarrowreceiver "github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver"
@@ -32,6 +32,7 @@ func components() (otelcol.Factories, error) {
 	factories.Extensions, err = extension.MakeFactoryMap(
 		headerssetterextension.NewFactory(),
 		basicauthextension.NewFactory(),
+		pprofextension.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err
@@ -58,7 +59,6 @@ func components() (otelcol.Factories, error) {
 
 	factories.Processors, err = processor.MakeFactoryMap(
 		batchprocessor.NewFactory(),
-		memorylimiterprocessor.NewFactory(),
 		experimentprocessor.NewFactory(),
 		obfuscationprocessor.NewFactory(),
 	)
