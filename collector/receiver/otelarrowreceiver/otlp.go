@@ -154,6 +154,9 @@ func (r *otlpReceiver) startProtocolServers(host component.Host) error {
 					// in which case the default is selected in the arrowRecord package.
 					opts = append(opts, arrowRecord.WithMemoryLimit(r.cfg.Arrow.MemoryLimit))
 				}
+				if r.settings.TelemetrySettings.MeterProvider != nil {
+					opts = append(opts, arrowRecord.WithMeterProvider(r.settings.TelemetrySettings.MeterProvider))
+				}
 				return arrowRecord.NewConsumer(opts...)
 			})
 
