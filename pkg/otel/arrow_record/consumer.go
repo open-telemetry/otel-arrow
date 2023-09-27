@@ -62,16 +62,34 @@ var ErrConsumerMemoryLimit = fmt.Errorf(
 
 // Consumer is a BatchArrowRecords consumer.
 type Consumer struct {
+	// streamConsumers is a map of reader state by SchemaID.
 	streamConsumers map[string]*streamConsumer
 
+	// Config embeds the configurable parameters.
 	Config
 
-	allocator          *common.LimitedAllocator
-	lastInuseValue     uint64
-	recordsCounter     metric.Int64Counter
+	// allocator is the one instrumented in calls to Consume,
+	// it is reused across multiple IPC readers.
+	allocator *common.LimitedAllocator
+	// lastInuseValue is the previously-captured value for
+	// allocator.Inuse().  This is used to work around a
+	// limitation in the OTel synchronous instrument API, which we
+	// are using because we reject the use of atomic operations
+	// for allocators used here, since there is otherwise no
+	// concurrency.  See inuseChangeByCaller() and
+	// inuseChangeObserve().
+	lastInuseValue uint64
+
+	// counts of the number of records consumed.
+	recordsCounter metric.Int64Counter
+	// counts of the number of schema resets by data type.
 	schemaResetCounter metric.Int64Counter
-	memoryCounter      metric.Int64UpDownCounter
-	uniqueAttr         attribute.KeyValue
+	// tracks allocator.Inuse()
+	memoryCounter metric.Int64UpDownCounter
+
+	// uniqueAttr is set to an 8-byte hex digit string with
+	// 32-bits of randomness, applied to all metric events.
+	uniqueAttr attribute.KeyValue
 }
 
 type Config struct {
