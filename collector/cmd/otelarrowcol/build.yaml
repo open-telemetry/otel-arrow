@@ -43,6 +43,3 @@ extensions:
 replaces:
   - github.com/open-telemetry/otel-arrow => ../../..
   - github.com/open-telemetry/otel-arrow/collector => ../../
-  # Note the following uses a fork with a critical performance fix, see
-  # https://github.com/cyrildever/feistel/pull/8
-  - github.com/cyrildever/feistel => github.com/jmacd/feistel 05cc3e324e2a77ee6a54c9de58d78ce0c38d617c
