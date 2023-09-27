@@ -16,6 +16,8 @@ require (
 	github.com/stretchr/testify v1.8.4
 	github.com/zeebo/assert v1.3.0
 	go.opentelemetry.io/collector/pdata v1.0.0-rcv0014
+	go.opentelemetry.io/otel v1.16.0
+	go.opentelemetry.io/otel/metric v1.16.0
 	golang.org/x/exp v0.0.0-20230321023759-10a507213a29
 	google.golang.org/grpc v1.57.0
 	google.golang.org/protobuf v1.31.0
@@ -26,6 +28,8 @@ require (
 	github.com/apache/thrift v0.16.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dgryski/go-metro v0.0.0-20180109044635-280f6062b5bc // indirect
+	github.com/go-logr/logr v1.2.4 // indirect
+	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/goccy/go-json v0.9.11 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
@@ -43,6 +47,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
+	go.opentelemetry.io/otel/trace v1.16.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/mod v0.9.0 // indirect
 	golang.org/x/net v0.14.0 // indirect

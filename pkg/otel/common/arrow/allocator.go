@@ -53,6 +53,10 @@ func (_ LimitError) Is(tgt error) bool {
 	return ok
 }
 
+func (l *LimitedAllocator) Inuse() uint64 {
+	return l.inuse
+}
+
 func (l *LimitedAllocator) Allocate(size int) []byte {
 	change := uint64(size)
 	if l.inuse+change > l.limit {

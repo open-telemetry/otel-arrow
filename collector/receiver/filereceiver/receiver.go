@@ -48,7 +48,7 @@ func (r *fileReceiver) Start(ctx context.Context, _ component.Host) error {
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				r.logger.Debug("EOF reached")
+				r.logger.Info("EOF reached")
 			} else {
 				r.logger.Error("failed to read input file", zap.Error(err))
 			}
