@@ -206,9 +206,6 @@ func (c *Consumer) inuseChangeObserveWhere(where string) {
 
 	c.memoryCounter.Add(ctx, int64(inuse-last), attrs)
 	c.lastInuseValue = inuse
-	if inuse != last {
-		fmt.Println("change by", where, "=", int64(inuse-last), "; current value", inuse)
-	}
 }
 
 // MetricsFrom produces an array of [pmetric.Metrics] from a BatchArrowRecords message.

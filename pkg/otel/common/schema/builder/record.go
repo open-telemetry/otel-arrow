@@ -236,7 +236,7 @@ func (rb *RecordBuilderExt) builder(name string) array.Builder {
 // UpdateSchema updates the schema based on the pending schema update requests
 // the initial prototype schema.
 func (rb *RecordBuilderExt) UpdateSchema() {
-	if rb.stats.SchemaStatsEnabled {
+	if rb.stats.SchemaUpdates {
 		println("=====================================================")
 		fmt.Printf("Updating schema for %q\n", rb.label)
 		println("From =====>")
@@ -266,7 +266,7 @@ func (rb *RecordBuilderExt) UpdateSchema() {
 	rb.updateRequest.Reset()
 	rb.stats.RecordBuilderStats.SchemaUpdatesPerformed++
 
-	if rb.stats.SchemaStatsEnabled {
+	if rb.stats.SchemaUpdates {
 		println("To =====>")
 		rb.ShowSchema()
 	}

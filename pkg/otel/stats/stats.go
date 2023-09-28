@@ -21,6 +21,9 @@ package stats
 
 import (
 	"fmt"
+	"sort"
+
+	"github.com/HdrHistogram/hdrhistogram-go"
 )
 
 type (
@@ -33,13 +36,26 @@ type (
 		StreamProducersClosed  uint64
 		RecordBuilderStats     RecordBuilderStats
 
-		SchemaStatsEnabled bool
+		// SchemaStats is a flag that indicates whether to display schema stats.
+		SchemaStats bool
+		// SchemaUpdates is a flag that indicates whether to display schema updates.
+		SchemaUpdates bool
+		// RecordStats is a flag that indicates whether to display record stats.
+		RecordStats bool
+		// ProducerStats is a flag that indicates whether to display producer stats.
+		ProducerStats bool
+	}
+
+	RecordSizeStats struct {
+		TotalSize int64
+		Dist      *hdrhistogram.Histogram
 	}
 
 	RecordBuilderStats struct {
 		SchemaUpdatesPerformed     uint64
 		DictionaryIndexTypeChanged uint64
 		DictionaryOverflowDetected uint64
+		RecordSizeDistribution     map[string]*RecordSizeStats
 	}
 )
 
@@ -55,8 +71,10 @@ func NewProducerStats() *ProducerStats {
 			SchemaUpdatesPerformed:     0,
 			DictionaryIndexTypeChanged: 0,
 			DictionaryOverflowDetected: 0,
+			RecordSizeDistribution:     make(map[string]*RecordSizeStats),
 		},
-		SchemaStatsEnabled: false,
+		SchemaStats:   false,
+		SchemaUpdates: false,
 	}
 }
 
@@ -100,5 +118,46 @@ func (s *RecordBuilderStats) Show(indent string) {
 	fmt.Printf("%s- Schema updates performed: %d\n", indent, s.SchemaUpdatesPerformed)
 	fmt.Printf("%s- Dictionary index type changed: %d\n", indent, s.DictionaryIndexTypeChanged)
 	fmt.Printf("%s- Dictionary overflow detected: %d\n", indent, s.DictionaryOverflowDetected)
-	fmt.Printf("%s- Dictionary migration stats:\n", indent)
+
+	if len(s.RecordSizeDistribution) > 0 {
+		type RecordSizeStats struct {
+			PayloadType string
+			TotalSize   int64
+			Dist        *hdrhistogram.Histogram
+			Percent     float64
+		}
+
+		var recordSizeStats []RecordSizeStats
+		totalSize := int64(0)
+
+		for k, v := range s.RecordSizeDistribution {
+			recordSizeStats = append(recordSizeStats, RecordSizeStats{
+				PayloadType: k,
+				TotalSize:   v.TotalSize,
+				Dist:        v.Dist,
+				Percent:     0,
+			})
+			totalSize += v.TotalSize
+		}
+
+		// Compute the percentage of each record size
+		for i := range recordSizeStats {
+			recordSizeStats[i].Percent = float64(recordSizeStats[i].TotalSize) / float64(totalSize) * 100.0
+		}
+
+		// Sort the record size stats by percentage (descending)
+		sort.Slice(recordSizeStats, func(i, j int) bool {
+			return recordSizeStats[i].TotalSize > recordSizeStats[j].TotalSize
+		})
+
+		fmt.Printf("%s- Record size distribution:\n", indent)
+		for _, v := range recordSizeStats {
+			fmt.Printf("%s  - %-18s: %8d bytes (%04.1f%%) (min: %7d, max: %7d, mean: %7.1f, stdev: %7.1f, p50: %7d, p99: %7d)\n", indent,
+				v.PayloadType, v.TotalSize, v.Percent,
+				v.Dist.Min(), v.Dist.Max(), v.Dist.Mean(),
+				v.Dist.StdDev(),
+				v.Dist.ValueAtQuantile(50), v.Dist.ValueAtQuantile(99),
+			)
+		}
+	}
 }

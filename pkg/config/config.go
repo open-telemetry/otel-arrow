@@ -35,8 +35,15 @@ type Config struct {
 	LimitIndexSize uint64
 	// Zstd enables the use of ZSTD compression for IPC messages.
 	Zstd bool // Use IPC ZSTD compression
-	// Stats enables the collection of statistics about the data being encoded.
-	Stats bool
+
+	// SchemaStats enables the collection of statistics about Arrow schemas.
+	SchemaStats bool
+	// RecordStats enables the collection of statistics about Arrow records.
+	RecordStats bool
+	// Display schema updates
+	SchemaUpdates bool
+	// Display producer statistics
+	ProducerStats bool
 }
 
 type Option func(*Config)
@@ -45,7 +52,7 @@ type Option func(*Config)
 //   - Pool: memory.NewGoAllocator()
 //   - InitIndexSize: math.MaxUint16
 //   - LimitIndexSize: math.MaxUint32
-//   - Stats: false
+//   - SchemaStats: false
 //   - Zstd: true
 func DefaultConfig() *Config {
 	return &Config{
@@ -54,7 +61,7 @@ func DefaultConfig() *Config {
 		// The default dictionary index limit is set to 2^16 - 1
 		// to keep the overall memory usage of the encoder and decoder low.
 		LimitIndexSize: math.MaxUint16,
-		Stats:          false,
+		SchemaStats:    false,
 		Zstd:           true,
 	}
 }
@@ -144,9 +151,30 @@ func WithNoZstd() Option {
 	}
 }
 
-// WithStats enables the collection of statistics about the data being encoded.
-func WithStats() Option {
+// WithSchemaStats enables the collection of statistics about Arrow schemas.
+func WithSchemaStats() Option {
 	return func(cfg *Config) {
-		cfg.Stats = true
+		cfg.SchemaStats = true
+	}
+}
+
+// WithSchemaUpdates enables the display of schema updates.
+func WithSchemaUpdates() Option {
+	return func(cfg *Config) {
+		cfg.SchemaUpdates = true
+	}
+}
+
+// WithRecordStats enables the collection of statistics about Arrow records.
+func WithRecordStats() Option {
+	return func(cfg *Config) {
+		cfg.RecordStats = true
+	}
+}
+
+// WithProducerStats enables the display of producer statistics.
+func WithProducerStats() Option {
+	return func(cfg *Config) {
+		cfg.ProducerStats = true
 	}
 }

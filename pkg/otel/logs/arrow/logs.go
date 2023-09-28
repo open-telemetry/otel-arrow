@@ -114,7 +114,7 @@ func NewLogsBuilder(
 		panic(err)
 	}
 
-	if stats.SchemaStatsEnabled {
+	if stats.SchemaStats {
 		optimizer = NewLogsOptimizer(cfg.Log.Sorter)
 		analyzer = NewLogsAnalyzer()
 	} else {

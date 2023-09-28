@@ -21,6 +21,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/ipc"
 	"github.com/apache/arrow/go/v12/arrow/memory"
@@ -124,10 +125,12 @@ func NewProducerWithOptions(options ...cfg.Option) *Producer {
 		opt(conf)
 	}
 
+	// Configure the various level of statistics to collect and display.
 	stats := pstats.NewProducerStats()
-	if conf.Stats {
-		stats.SchemaStatsEnabled = true
-	}
+	stats.SchemaStats = conf.SchemaStats
+	stats.SchemaUpdates = conf.SchemaUpdates
+	stats.RecordStats = conf.RecordStats
+	stats.ProducerStats = conf.ProducerStats
 
 	// Record builders
 	metricsRecordBuilder := builder.NewRecordBuilderExt(conf.Pool, metricsarrow.MetricsSchema, config.NewDictionary(conf.LimitIndexSize), stats)
@@ -392,9 +395,25 @@ func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.Batch
 			buf := make([]byte, len(outputBuf))
 			copy(buf, outputBuf)
 
-			if p.stats.SchemaStatsEnabled {
-				// ToDo Create option to display this info
-				fmt.Printf("Record %q -> %d bytes\n", rm.PayloadType().String(), len(buf))
+			if p.stats.RecordStats {
+				payloadType := rm.PayloadType().String()
+				recordSize := int64(len(buf))
+
+				recordSizeDist, ok := p.stats.RecordBuilderStats.RecordSizeDistribution[payloadType]
+				if !ok {
+					recordSizeDist = &pstats.RecordSizeStats{
+						TotalSize: 0,
+						Dist:      hdrhistogram.New(0, 1<<32, 2),
+					}
+					p.stats.RecordBuilderStats.RecordSizeDistribution[payloadType] = recordSizeDist
+				}
+
+				recordSizeDist.TotalSize += recordSize
+				if err := recordSizeDist.Dist.RecordValue(recordSize); err != nil {
+					return werror.Wrap(err)
+				}
+
+				fmt.Printf("Record %q -> %d bytes\n", payloadType, len(buf))
 			}
 
 			// Reset the buffer
@@ -422,29 +441,39 @@ func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.Batch
 }
 
 func (p *Producer) ShowStats() {
-	type TimeSchema struct {
-		time   time.Time
-		schema *arrow.Schema
+	if p.stats == nil {
+		return
 	}
 
-	var schemas []TimeSchema
-
-	println("\n== Producer Stats ==============================================================================")
-	p.stats.Show("")
-
-	for _, producer := range p.streamProducers {
-		schemas = append(schemas, TimeSchema{time: producer.lastProduction, schema: producer.schema})
+	if p.stats.ProducerStats {
+		println("\n== Producer Statistics ==============================================================================")
+		p.stats.Show("")
 	}
-	sort.Slice(schemas, func(i, j int) bool {
-		return schemas[i].time.Before(schemas[j].time)
-	})
-	fmt.Printf("\n== Schema (#stream-producers=%d) ============================================================\n", len(schemas))
-	for _, s := range schemas {
-		fmt.Printf(">> Schema last update at %s:\n", s.time)
-		carrow.ShowSchema(s.schema, "  ")
+
+	if p.stats.SchemaStats {
+		type TimeSchema struct {
+			time   time.Time
+			schema *arrow.Schema
+		}
+
+		var schemas []TimeSchema
+
+		for _, producer := range p.streamProducers {
+			schemas = append(schemas, TimeSchema{time: producer.lastProduction, schema: producer.schema})
+		}
+
+		sort.Slice(schemas, func(i, j int) bool {
+			return schemas[i].time.Before(schemas[j].time)
+		})
+		fmt.Printf("\n== Schema (#stream-producers=%d) ============================================================\n", len(schemas))
+		for _, s := range schemas {
+			fmt.Printf(">> Schema last update at %s:\n", s.time)
+			carrow.ShowSchema(s.schema, "  ")
+		}
+
+		println("------")
+		p.tracesBuilder.ShowSchema()
 	}
-	println("------")
-	p.tracesBuilder.ShowSchema()
 }
 
 func recordBuilder[T pmetric.Metrics | plog.Logs | ptrace.Traces](builder func() (acommon.EntityBuilder[T], error), entity T) (record arrow.Record, err error) {

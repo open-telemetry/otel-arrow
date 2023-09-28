@@ -101,7 +101,7 @@ func NewTracesBuilder(
 		panic(err)
 	}
 
-	if stats.SchemaStatsEnabled {
+	if stats.SchemaStats {
 		optimizer = NewTracesOptimizer(cfg.Span.Sorter)
 		analyzer = NewTraceAnalyzer()
 	} else {
