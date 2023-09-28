@@ -72,14 +72,14 @@ func (s *SpanLinksStore) LinksByID(ID uint16) []*ptrace.SpanLink {
 }
 
 // SpanLinksStoreFrom creates an SpanLinksStore from an arrow.Record.
-// Note: This function consume the record.
+//
+// Important Note: This function doesn't take ownership of the record. The
+// caller is responsible for releasing it.
 func SpanLinksStoreFrom(
 	record arrow.Record,
 	attrsStore *otlp.Attributes32Store,
 	conf *tarrow.LinkConfig,
 ) (*SpanLinksStore, error) {
-	defer record.Release()
-
 	store := &SpanLinksStore{
 		linksByID: make(map[uint16][]*ptrace.SpanLink),
 	}

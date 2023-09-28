@@ -267,9 +267,8 @@ func (m *RelatedRecordsManager) Release() {
 	for _, b := range m.builders {
 		b.Release()
 	}
-	for _, b := range m.builderExts {
-		b.Release()
-	}
+	// m.builderExts are not released because the releasable resources are
+	// already released by the builders.
 }
 
 func (m *RelatedRecordsManager) RecordBuilderExt(payloadType *PayloadType) *builder.RecordBuilderExt {

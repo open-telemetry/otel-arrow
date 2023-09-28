@@ -110,9 +110,11 @@ func SchemaToSummaryIDs(schema *arrow.Schema) (*SummaryDataPointIDs, error) {
 	}, nil
 }
 
+// SummaryDataPointsStoreFrom converts an Arrow record into a SummaryDataPointsStore.
+//
+// Important Note: This function doesn't take ownership of the record. The
+// caller is responsible for releasing it.
 func SummaryDataPointsStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store) (*SummaryDataPointsStore, error) {
-	defer record.Release()
-
 	store := &SummaryDataPointsStore{
 		dataPointsByID: make(map[uint16]pmetric.SummaryDataPointSlice),
 	}

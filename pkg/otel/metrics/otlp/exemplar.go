@@ -102,13 +102,13 @@ func (s *ExemplarsStore) ExemplarsByID(ID uint32) pmetric.ExemplarSlice {
 }
 
 // ExemplarsStoreFrom creates an ExemplarsStore from an arrow.Record.
-// Note: This function consume the record.
+//
+// Important Note: This function doesn't take ownership of the record. The
+// caller is responsible for releasing it.
 func ExemplarsStoreFrom(
 	record arrow.Record,
 	attrsStore *otlp.Attributes32Store,
 ) (*ExemplarsStore, error) {
-	defer record.Release()
-
 	store := &ExemplarsStore{
 		exemplarsByIDs: make(map[uint32]pmetric.ExemplarSlice),
 	}
