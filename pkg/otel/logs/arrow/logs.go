@@ -97,7 +97,10 @@ type LogsBuilder struct {
 	relatedData *RelatedData
 }
 
-// NewLogsBuilder creates a new LogsBuilder with a given allocator.
+// NewLogsBuilder creates a new LogsBuilder.
+//
+// Important Note: The recordBuilder parameter will not be released by this
+// LogsBuilder as it's shared with other instances of log builders.
 func NewLogsBuilder(
 	recordBuilder *builder.RecordBuilderExt,
 	cfg *Config,
@@ -417,10 +420,10 @@ func (b *LogsBuilder) Append(logs plog.Logs) (err error) {
 // Release releases the memory allocated by the builder.
 func (b *LogsBuilder) Release() {
 	if !b.released {
-		b.builder.Release()
-		b.released = true
+		// b.builder is a shared resource => not released here
 
 		b.relatedData.Release()
+		b.released = true
 	}
 }
 

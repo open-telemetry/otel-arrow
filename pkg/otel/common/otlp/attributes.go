@@ -129,10 +129,9 @@ func (s *Attributes32Store) AttributesByDeltaID(ID uint32) *pcommon.Map {
 }
 
 // Attributes16StoreFrom creates an Attribute16Store from an arrow.Record.
-// Note: This function consume the record.
+// Note: This function doesn't release the record passed as argument. This is
+// the responsibility of the caller
 func Attributes16StoreFrom(record arrow.Record, store *Attributes16Store) error {
-	defer record.Release()
-
 	attrIDS, err := SchemaToAttributeIDs(record.Schema())
 	if err != nil {
 		return werror.Wrap(err)
@@ -226,10 +225,9 @@ func Attributes16StoreFrom(record arrow.Record, store *Attributes16Store) error 
 }
 
 // Attributes32StoreFrom creates an Attributes32Store from an arrow.Record.
-// Note: This function consume the record.
+// Note: This function doesn't release the record passed as argument. This is
+// the responsibility of the caller
 func Attributes32StoreFrom(record arrow.Record, store *Attributes32Store) error {
-	defer record.Release()
-
 	attrIDS, err := SchemaToAttributeIDs(record.Schema())
 	if err != nil {
 		return werror.Wrap(err)

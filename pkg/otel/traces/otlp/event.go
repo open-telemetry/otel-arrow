@@ -71,14 +71,14 @@ func (s *SpanEventsStore) EventsByID(ID uint16) []*ptrace.SpanEvent {
 }
 
 // SpanEventsStoreFrom creates an SpanEventsStore from an arrow.Record.
-// Note: This function consume the record.
+//
+// Important Note: This function doesn't take ownership of the record. The
+// caller is responsible for releasing it.
 func SpanEventsStoreFrom(
 	record arrow.Record,
 	attrsStore *otlp.Attributes32Store,
 	conf *tarrow.EventConfig,
 ) (*SpanEventsStore, error) {
-	defer record.Release()
-
 	store := &SpanEventsStore{
 		eventsByID: make(map[uint16][]*ptrace.SpanEvent),
 	}

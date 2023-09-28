@@ -103,9 +103,11 @@ func SchemaToNDPIDs(schema *arrow.Schema) (*NumberDataPointIDs, error) {
 	}, nil
 }
 
+// NumberDataPointsStoreFrom converts an Arrow record to a NumberDataPointsStore.
+//
+// Important Note: This function doesn't take ownership of the record. The
+// caller is responsible for releasing it.
 func NumberDataPointsStoreFrom(record arrow.Record, exemplarsStore *ExemplarsStore, attrsStore *otlp.Attributes32Store) (*NumberDataPointsStore, error) {
-	defer record.Release()
-
 	store := &NumberDataPointsStore{
 		dataPointsByID: make(map[uint16]pmetric.NumberDataPointSlice),
 	}

@@ -68,7 +68,10 @@ type MetricsBuilder struct {
 	relatedData *RelatedData
 }
 
-// NewMetricsBuilder creates a new MetricsBuilder with a given allocator.
+// NewMetricsBuilder creates a new MetricsBuilder.
+//
+// Important Note: The rBuilder parameter will not be released by this
+// MetricsBuilder as it's shared with other instances of metrics builders.
 func NewMetricsBuilder(
 	rBuilder *builder.RecordBuilderExt,
 	cfg *Config,
@@ -285,10 +288,10 @@ func (b *MetricsBuilder) Append(metrics pmetric.Metrics) error {
 // Release releases the memory allocated by the builder.
 func (b *MetricsBuilder) Release() {
 	if !b.released {
-		b.builder.Release()
-		b.released = true
+		// b.builder is a shared resource, so we don't release it here.
 
 		b.relatedData.Release()
+		b.released = true
 	}
 }
 

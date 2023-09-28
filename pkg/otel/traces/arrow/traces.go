@@ -84,7 +84,10 @@ type TracesBuilder struct {
 	relatedData *RelatedData
 }
 
-// NewTracesBuilder creates a new TracesBuilder with a given allocator.
+// NewTracesBuilder creates a new TracesBuilder.
+//
+// Important Note: This function doesn't take ownership of the rBuilder parameter.
+// The caller is responsible for releasing it
 func NewTracesBuilder(
 	rBuilder *builder.RecordBuilderExt,
 	cfg *Config,
@@ -314,10 +317,10 @@ func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 // Release releases the memory allocated by the builder.
 func (b *TracesBuilder) Release() {
 	if !b.released {
-		b.builder.Release()
-		b.released = true
+		// b.builder is a shared resource, we don't own it so we don't release it.
 
 		b.relatedData.Release()
+		b.released = true
 	}
 }
 

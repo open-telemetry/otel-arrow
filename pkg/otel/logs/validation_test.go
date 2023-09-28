@@ -116,9 +116,8 @@ func CheckEncodeDecode(
 
 	// Convert the Arrow records back to OTLP.
 	logs, err := logsotlp.LogsFrom(record, relatedData)
-	require.NoError(t, err)
-
 	record.Release()
+	require.NoError(t, err)
 
 	assert.Equiv(stdTesting, []json.Marshaler{expectedRequest}, []json.Marshaler{plogotlp.NewExportRequestFromLogs(logs)})
 }
@@ -175,12 +174,11 @@ func CheckEncodeMessUpDecode(
 
 	// Convert the Arrow records back to OTLP.
 	_, err = logsotlp.LogsFrom(record, relatedData)
+	record.Release()
 
 	if mainRecordChanged || relatedData == nil {
 		require.Error(t, err)
 	} else {
 		require.NoError(t, err)
 	}
-
-	record.Release()
 }

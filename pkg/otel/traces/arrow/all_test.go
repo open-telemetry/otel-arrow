@@ -402,11 +402,7 @@ func TestTraces(t *testing.T) {
 
 		actual, err := relatedRecord.Record().MarshalJSON()
 		require.NoError(t, err)
-		relatedRecord.Record().Release()
-
 		require.JSONEq(t, expected, string(actual))
-
-		relatedRecord.Record().Release()
 	}
 }
 
