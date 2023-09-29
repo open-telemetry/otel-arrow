@@ -46,7 +46,7 @@ type ArrowSettings struct {
 	// MemoryLimit is the size of a shared memory region used by
 	// all Arrow streams.  When too much load is passing through, they
 	// will see ResourceExhausted errors.
-	MemoryLimit uint64
+	MemoryLimit uint64 `mapstructure:"memory_limit"`
 }
 
 // Config defines configuration for OTel Arrow receiver.
