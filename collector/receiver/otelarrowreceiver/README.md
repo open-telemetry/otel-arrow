@@ -165,6 +165,13 @@ of data being returned from the receiver will be instrumented:
 - `receiver_sent`: uncompressed bytes sent, prior to compression
 - `receiver_sent_wire`: compressed bytes sent, on the wire.
 
+There several OTel-Arrow-consumer related metrics available to help
+diagnose internal performance.
+
+- `arrow_batch_records`: Number of Arrow-IPC records processed
+- `arrow_memory_inuse`: Amount of memory in use by current streams
+- `arrow_schema_resets`: Number of times the schema was adjusted, by data type.
+
 ## HTTP-specific documentation
 
 To enable optional OTLP/HTTP support, the HTTP protocol must be
