@@ -166,7 +166,8 @@ of data being returned from the receiver will be instrumented:
 - `receiver_sent_wire`: compressed bytes sent, on the wire.
 
 There several OTel-Arrow-consumer related metrics available to help
-diagnose internal performance.
+diagnose internal performance.  These are disabled at the basic level
+of detail.  At the normal level, these metrics are introduced:
 
 - `arrow_batch_records`: Counter of Arrow-IPC records processed
 - `arrow_memory_inuse`: UpDownCounter of memory in use by current streams
@@ -174,7 +175,7 @@ diagnose internal performance.
 
 When the configured metrics level is "detailed" unique consumer ID
 corresponding with a single gRPC stream will be attached to the
-counters.  For example.
+counters, for example:
 
 ```
 service
@@ -186,9 +187,9 @@ service
       level: detailed
 ```
 
-Therefore, we recommend to use the "lowmemory" temporality preference
-combined with detail-level metrics in the OTel SDK.  (TODO: Document
-how to do this after the Collector's OTel SDK is configurable.)
+We recommend to use the "lowmemory" temporality preference combined
+with detail-level metrics in the OTel SDK.  (TODO: Document how to do
+this after the Collector's OTel SDK is configurable.)
 
 ## HTTP-specific documentation
 

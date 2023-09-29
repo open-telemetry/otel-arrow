@@ -30,8 +30,10 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 
 	colarspb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
+	"github.com/open-telemetry/otel-arrow/pkg/internal/debug"
 	common "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
 	logsotlp "github.com/open-telemetry/otel-arrow/pkg/otel/logs/otlp"
 	metricsotlp "github.com/open-telemetry/otel-arrow/pkg/otel/metrics/otlp"
@@ -146,21 +148,29 @@ func NewConsumer(opts ...Option) *Consumer {
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	meter := cfg.meterProvider.Meter("otel-arrow/pkg/otel/arrow_record")
 	var baseAlloc memory.Allocator = memory.NewGoAllocator()
-	if cfg.metricsLevel == configtelemetry.LevelDetailed {
+	if debug.AssertionsOn() {
 		baseAlloc = memory.NewCheckedAllocator(baseAlloc)
 	}
 	allocator := common.NewLimitedAllocator(baseAlloc, cfg.memLimit)
-	return &Consumer{
+
+	c := &Consumer{
 		Config:             cfg,
 		allocator:          allocator,
 		uniqueAttr:         attribute.String("stream_unique", fmt.Sprintf("%08x", rand.Uint32())),
 		streamConsumers:    make(map[string]*streamConsumer),
-		recordsCounter:     mustWarn(meter.Int64Counter("arrow_batch_records")),
-		schemaResetCounter: mustWarn(meter.Int64Counter("arrow_schema_resets")),
-		memoryCounter:      mustWarn(meter.Int64UpDownCounter("arrow_memory_inuse")),
+		recordsCounter:     noop.Int64Counter{},
+		schemaResetCounter: noop.Int64Counter{},
+		memoryCounter:      noop.Int64UpDownCounter{},
 	}
+	if cfg.metricsLevel >= configtelemetry.LevelNormal {
+		meter := cfg.meterProvider.Meter("otel-arrow/pkg/otel/arrow_record")
+
+		c.recordsCounter = mustWarn(meter.Int64Counter("arrow_batch_records"))
+		c.schemaResetCounter = mustWarn(meter.Int64Counter("arrow_schema_resets"))
+		c.memoryCounter = mustWarn(meter.Int64UpDownCounter("arrow_memory_inuse"))
+	}
+	return c
 }
 
 func releaseRecords(recs []*record_message.RecordMessage) {
@@ -387,8 +397,8 @@ func (c *Consumer) Close() error {
 	// in the usual way.
 	c.inuseChangeObserve()
 
-	// We expect memory used to be zero. Use the built-in checker in detailed mode.
-	if c.metricsLevel == configtelemetry.LevelDetailed {
+	// We expect memory used to be zero.
+	if debug.AssertionsOn() {
 		c.allocator.Allocator.(*memory.CheckedAllocator).AssertSize(runtimeChecker{}, 0)
 	}
 	// Avoid "drift" in the up-down-counter by resetting this
