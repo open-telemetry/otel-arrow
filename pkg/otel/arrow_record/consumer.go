@@ -188,6 +188,9 @@ func mustWarn[T any](t T, err error) T {
 }
 
 func (c *Consumer) metricOpts(kvs ...attribute.KeyValue) []metric.AddOption {
+	if c.metricsLevel < configtelemetry.LevelNormal {
+		return nil
+	}
 	if c.metricsLevel == configtelemetry.LevelDetailed {
 		kvs = append(kvs, c.uniqueAttr)
 	}
