@@ -1,10 +1,12 @@
 # Trace Analyzer
 
-This tool can be used to analyze traces and generate reports.
+This tool is designed for trace analysis and the generation of statistical
+reports. Its primary function is to ascertain how a given trace dataset is
+encoded using the OTel Arrow Protocol.
 
-The following command displays all the statistics for all the zst files. The
-expected format for the data file is JSON (compressed with ZSTD, extension .zst).
-The size of the batch is configured 2000 spans.
+To view statistics for all .zst files, use the command below. These files should
+be in JSON format, compressed with ZSTD and bearing the .zst extension. Batches
+are configured to handle 2,000 spans.
 
 ```shell
 go run tools/traces_analyzer/main.go --format json --batch-size 2000 --schema-stats --schema-updates --producer-stats --record-stats *.zst
