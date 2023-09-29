@@ -44,6 +44,8 @@ type Config struct {
 	SchemaUpdates bool
 	// Display producer statistics
 	ProducerStats bool
+	// Display compression ratio statistics
+	CompressionRatioStats bool
 }
 
 type Option func(*Config)
@@ -176,5 +178,12 @@ func WithRecordStats() Option {
 func WithProducerStats() Option {
 	return func(cfg *Config) {
 		cfg.ProducerStats = true
+	}
+}
+
+// WithCompressionRatioStats enables the display of compression ratio statistics.
+func WithCompressionRatioStats() Option {
+	return func(cfg *Config) {
+		cfg.CompressionRatioStats = true
 	}
 }

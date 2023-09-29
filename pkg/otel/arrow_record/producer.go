@@ -130,6 +130,7 @@ func NewProducerWithOptions(options ...cfg.Option) *Producer {
 	stats.SchemaStats = conf.SchemaStats
 	stats.SchemaUpdates = conf.SchemaUpdates
 	stats.RecordStats = conf.RecordStats
+	stats.CompressionRatioStats = conf.CompressionRatioStats
 	stats.ProducerStats = conf.ProducerStats
 
 	// Record builders
@@ -395,7 +396,7 @@ func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.Batch
 			buf := make([]byte, len(outputBuf))
 			copy(buf, outputBuf)
 
-			if p.stats.RecordStats {
+			if p.stats.RecordStats || p.stats.CompressionRatioStats {
 				payloadType := rm.PayloadType().String()
 				recordSize := int64(len(buf))
 
@@ -413,7 +414,9 @@ func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.Batch
 					return werror.Wrap(err)
 				}
 
-				fmt.Printf("Record %q -> %d bytes\n", payloadType, len(buf))
+				if p.stats.RecordStats {
+					fmt.Printf("Record %q -> %d bytes\n", payloadType, len(buf))
+				}
 			}
 
 			// Reset the buffer
@@ -440,6 +443,7 @@ func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.Batch
 	}, nil
 }
 
+// ShowStats prints the stats to the console.
 func (p *Producer) ShowStats() {
 	if p.stats == nil {
 		return
@@ -474,6 +478,11 @@ func (p *Producer) ShowStats() {
 		println("------")
 		p.tracesBuilder.ShowSchema()
 	}
+}
+
+// RecordSizeStats returns statistics per record payload type.
+func (p *Producer) RecordSizeStats() map[string]*pstats.RecordSizeStats {
+	return p.stats.RecordSizeStats()
 }
 
 func recordBuilder[T pmetric.Metrics | plog.Logs | ptrace.Traces](builder func() (acommon.EntityBuilder[T], error), entity T) (record arrow.Record, err error) {

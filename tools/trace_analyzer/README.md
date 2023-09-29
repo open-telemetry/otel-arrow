@@ -9,19 +9,21 @@ be in JSON format, compressed with ZSTD and bearing the .zst extension. Batches
 are configured to handle 2,000 spans.
 
 ```shell
-go run tools/traces_analyzer/main.go --format json --batch-size 2000 --schema-stats --schema-updates --producer-stats --record-stats *.zst
+go run tools/traces_analyzer/main.go -format json -batch-size 2000 -schema-stats -schema-updates -producer-stats -record-stats *.zst
 ```
 
 ## Supported flags
 
 By default, there is no flag enabled. All these flags are cumulative.
 
-| Flag             | Description                            |
-|------------------|----------------------------------------|
-| --schema-stats   | Display Arrow schema statistics        |
-| --record-stats   | Display Arrow record statistics        |
-| --schema-updates | Display Arrow schema updates           |
-| --producer-stats | Display OTel Arrow producer statistics |
+| Flag               | Description                               |
+|--------------------|-------------------------------------------|
+| -schema-stats      | Display Arrow schema statistics           |
+| -record-stats      | Display Arrow record statistics           |
+| -schema-updates    | Display Arrow schema updates              |
+| -producer-stats    | Display OTel Arrow producer statistics    |
+| -compression-ratio | Display compression ratio per record type |  
+| -all               | Display all statistics and updates        |
 
 ## Supported formats
 

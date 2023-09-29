@@ -22,6 +22,7 @@ import (
 	"github.com/open-telemetry/otel-arrow/pkg/benchmark/dataset"
 	"github.com/open-telemetry/otel-arrow/pkg/config"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
 )
 
 var help = flag.Bool("help", false, "Show help")
@@ -32,6 +33,8 @@ func main() {
 	recordStats := flag.Bool("record-stats", false, "Display Arrow record statistics")
 	schemaUpdates := flag.Bool("schema-updates", false, "Display Arrow schema updates")
 	producerStats := flag.Bool("producer-stats", false, "Display OTel Arrow producer statistics")
+	compressionRatio := flag.Bool("compression-ratio", false, "Display compression ratio per record type")
+	all := flag.Bool("all", false, "Display all statistics and updates")
 
 	defaultBatchSize := flag.Int("batch-size", 1000, "Batch size")
 
@@ -49,9 +52,16 @@ func main() {
 
 	inputFiles := flag.Args()
 
-	options := []config.Option{
-		config.WithZstd(),
+	var options []config.Option
+
+	if all != nil && *all {
+		schemaStats = all
+		recordStats = all
+		schemaUpdates = all
+		producerStats = all
+		compressionRatio = all
 	}
+
 	if schemaStats != nil && *schemaStats {
 		options = append(options, config.WithSchemaStats())
 	}
@@ -65,7 +75,13 @@ func main() {
 		options = append(options, config.WithProducerStats())
 	}
 
-	producer := arrow_record.NewProducerWithOptions(options...)
+	var producerWithoutCompression *arrow_record.Producer
+
+	if compressionRatio != nil && *compressionRatio {
+		producerWithoutCompression = arrow_record.NewProducerWithOptions(config.WithCompressionRatioStats(), config.WithNoZstd())
+		options = append(options, config.WithCompressionRatioStats())
+	}
+	producerWithCompression := arrow_record.NewProducerWithOptions(append(options, config.WithZstd())...)
 
 	// Analyze all files and report statistics
 	for i := range inputFiles {
@@ -78,7 +94,12 @@ func main() {
 			batchSize := min(ds.Len()-startAt, *defaultBatchSize)
 			traces := ds.Traces(startAt, batchSize)
 			for _, trace := range traces {
-				if _, err := producer.BatchArrowRecordsFromTraces(trace); err != nil {
+				if producerWithoutCompression != nil {
+					if _, err := producerWithoutCompression.BatchArrowRecordsFromTraces(trace); err != nil {
+						panic(err)
+					}
+				}
+				if _, err := producerWithCompression.BatchArrowRecordsFromTraces(trace); err != nil {
 					panic(err)
 				}
 			}
@@ -86,7 +107,14 @@ func main() {
 		}
 	}
 
-	producer.ShowStats()
+	producerWithCompression.ShowStats()
+
+	if producerWithoutCompression != nil {
+		withoutCompressionStats := producerWithoutCompression.RecordSizeStats()
+		withCompressionStats := producerWithCompression.RecordSizeStats()
+		println()
+		stats.CompareRecordSizeStats(withCompressionStats, withoutCompressionStats)
+	}
 }
 
 func min(a, b int) int {

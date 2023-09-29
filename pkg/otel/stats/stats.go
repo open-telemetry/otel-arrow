@@ -44,6 +44,8 @@ type (
 		RecordStats bool
 		// ProducerStats is a flag that indicates whether to display producer stats.
 		ProducerStats bool
+		// CompressionRatioStats is a flag that indicates whether to display compression ratio stats.
+		CompressionRatioStats bool
 	}
 
 	RecordSizeStats struct {
@@ -113,6 +115,11 @@ func (s *ProducerStats) Show(indent string) {
 	s.RecordBuilderStats.Show(indent + "  ")
 }
 
+// RecordSizeStats returns statistics per record payload type.
+func (s *ProducerStats) RecordSizeStats() map[string]*RecordSizeStats {
+	return s.RecordBuilderStats.RecordSizeStats()
+}
+
 // Show prints the RecordBuilder stats to the console.
 func (s *RecordBuilderStats) Show(indent string) {
 	fmt.Printf("%s- Schema updates performed: %d\n", indent, s.SchemaUpdatesPerformed)
@@ -159,5 +166,57 @@ func (s *RecordBuilderStats) Show(indent string) {
 				v.Dist.ValueAtQuantile(50), v.Dist.ValueAtQuantile(99),
 			)
 		}
+	}
+}
+
+// RecordSizeStats returns statistics per record payload type.
+func (s *RecordBuilderStats) RecordSizeStats() map[string]*RecordSizeStats {
+	return s.RecordSizeDistribution
+}
+
+// CompareRecordSizeStats compares the record size stats with and without compression
+// and prints the results to the console.
+func CompareRecordSizeStats(withCompression map[string]*RecordSizeStats, withNoCompression map[string]*RecordSizeStats) {
+	type RecordSizeStats struct {
+		PayloadType                string
+		TotalSizeWithCompression   int64
+		TotalSizeWithNoCompression int64
+		Percent                    float64
+	}
+
+	var recordSizeStats []RecordSizeStats
+	totalSize := int64(0)
+
+	for payloadType, stats := range withCompression {
+		statsWithNoCompression, ok := withNoCompression[payloadType]
+		totalSizeWithNoCompression := int64(0)
+		if ok {
+			totalSizeWithNoCompression = statsWithNoCompression.TotalSize
+		}
+		recordSizeStats = append(recordSizeStats, RecordSizeStats{
+			PayloadType:                payloadType,
+			TotalSizeWithCompression:   stats.TotalSize,
+			TotalSizeWithNoCompression: totalSizeWithNoCompression,
+			Percent:                    0,
+		})
+		totalSize += stats.TotalSize
+	}
+
+	// Compute the percentage of each record size (with compression)
+	for i := range recordSizeStats {
+		recordSizeStats[i].Percent = float64(recordSizeStats[i].TotalSizeWithCompression) / float64(totalSize) * 100.0
+	}
+
+	// Sort the record size stats by percentage (descending)
+	sort.Slice(recordSizeStats, func(i, j int) bool {
+		return recordSizeStats[i].TotalSizeWithCompression > recordSizeStats[j].TotalSizeWithCompression
+	})
+
+	fmt.Printf("Record cumulative size and compression ratio per payload type (sort by cumulative size):\n")
+	for _, v := range recordSizeStats {
+		fmt.Printf("- %-18s: %8d bytes (cumul), %04.1f%% of the total, compression ratio=%4.1fx\n",
+			v.PayloadType, v.TotalSizeWithCompression, v.Percent,
+			float64(v.TotalSizeWithNoCompression)/float64(v.TotalSizeWithCompression),
+		)
 	}
 }
