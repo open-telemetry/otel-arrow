@@ -46,6 +46,9 @@ type Config struct {
 	ProducerStats bool
 	// Display compression ratio statistics
 	CompressionRatioStats bool
+	// DumpRecordRows specifies the number of rows to dump for each record.
+	// If not defined or set to 0, no rows are dumped.
+	DumpRecordRows map[string]int
 }
 
 type Option func(*Config)
@@ -185,5 +188,16 @@ func WithProducerStats() Option {
 func WithCompressionRatioStats() Option {
 	return func(cfg *Config) {
 		cfg.CompressionRatioStats = true
+	}
+}
+
+// WithDumpRecordRows specifies the number of rows to dump for a specific
+// payload type.
+func WithDumpRecordRows(payloadType string, numRows int) Option {
+	return func(cfg *Config) {
+		if cfg.DumpRecordRows == nil {
+			cfg.DumpRecordRows = make(map[string]int)
+		}
+		cfg.DumpRecordRows[payloadType] = numRows
 	}
 }

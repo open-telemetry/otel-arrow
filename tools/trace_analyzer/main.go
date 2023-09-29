@@ -18,6 +18,7 @@ import (
 	"flag"
 	"os"
 
+	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	"github.com/open-telemetry/otel-arrow/pkg/benchmark"
 	"github.com/open-telemetry/otel-arrow/pkg/benchmark/dataset"
 	"github.com/open-telemetry/otel-arrow/pkg/config"
@@ -35,6 +36,15 @@ func main() {
 	producerStats := flag.Bool("producer-stats", false, "Display OTel Arrow producer statistics")
 	compressionRatio := flag.Bool("compression-ratio", false, "Display compression ratio per record type")
 	all := flag.Bool("all", false, "Display all statistics and updates")
+
+	// Record type #rows to display
+	spans := flag.Int("spans", 0, "Number of spans to display per Arrow record")
+	resourceAttrs := flag.Int("resource-attrs", 0, "Number of resource attributes to display per Arrow record")
+	spanAttrs := flag.Int("span-attrs", 0, "Number of span attributes to display per Arrow record")
+	spanEvents := flag.Int("span-events", 0, "Number of span events to display per Arrow record")
+	spanLinks := flag.Int("span-links", 0, "Number of span links to display per Arrow record")
+	spanEventAttrs := flag.Int("span-event-attrs", 0, "Number of span event attributes to display per Arrow record")
+	spanLinkAttrs := flag.Int("span-link-attrs", 0, "Number of span link attributes to display per Arrow record")
 
 	defaultBatchSize := flag.Int("batch-size", 1000, "Batch size")
 
@@ -54,6 +64,7 @@ func main() {
 
 	var options []config.Option
 
+	// Set flags
 	if all != nil && *all {
 		schemaStats = all
 		recordStats = all
@@ -73,6 +84,29 @@ func main() {
 	}
 	if producerStats != nil && *producerStats {
 		options = append(options, config.WithProducerStats())
+	}
+
+	// Set number of rows to display (per payload type)
+	if spans != nil && *spans > 0 {
+		options = append(options, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPANS.String(), *spans))
+	}
+	if resourceAttrs != nil && *resourceAttrs > 0 {
+		options = append(options, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_RESOURCE_ATTRS.String(), *resourceAttrs))
+	}
+	if spanAttrs != nil && *spanAttrs > 0 {
+		options = append(options, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_ATTRS.String(), *spanAttrs))
+	}
+	if spanEvents != nil && *spanEvents > 0 {
+		options = append(options, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_EVENTS.String(), *spanEvents))
+	}
+	if spanLinks != nil && *spanLinks > 0 {
+		options = append(options, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_LINKS.String(), *spanLinks))
+	}
+	if spanEventAttrs != nil && *spanEventAttrs > 0 {
+		options = append(options, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_EVENT_ATTRS.String(), *spanEventAttrs))
+	}
+	if spanLinkAttrs != nil && *spanLinkAttrs > 0 {
+		options = append(options, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_LINK_ATTRS.String(), *spanLinkAttrs))
 	}
 
 	var producerWithoutCompression *arrow_record.Producer

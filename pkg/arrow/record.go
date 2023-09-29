@@ -46,13 +46,21 @@ const (
 )
 
 // PrintRecord prints the contents of an Arrow record to stdout.
-func PrintRecord(name string, record arrow.Record, maxRows, countPrints, maxPrints int) {
-	println()
+func PrintRecord(name string, record arrow.Record, maxRows int) {
+	PrintRecordWithProgression(name, record, maxRows, 0, 0)
+}
+
+// PrintRecordWithProgression prints the contents of an Arrow record to stdout.
+func PrintRecordWithProgression(name string, record arrow.Record, maxRows, countPrints, maxPrints int) {
+	progression := ""
+	if maxPrints > 0 {
+		progression = fmt.Sprintf(", progression %d/%d", countPrints, maxPrints)
+	}
 
 	if record.NumRows() > int64(maxRows) {
-		fmt.Printf("Record %q -> #rows: %d/%d, prints: %d/%d\n", name, maxRows, record.NumRows(), countPrints, maxPrints)
+		fmt.Printf("Dump record %q: %d rows/%d (total)%s\n", name, maxRows, record.NumRows(), progression)
 	} else {
-		fmt.Printf("Record %q -> #rows: %d, prints: %d/%d\n", name, record.NumRows(), countPrints, maxPrints)
+		fmt.Printf("Dump record %q: %d rows%s\n", name, record.NumRows(), progression)
 	}
 
 	schema := record.Schema()
@@ -77,7 +85,7 @@ func PrintRecord(name string, record arrow.Record, maxRows, countPrints, maxPrin
 	}
 	println()
 
-	rows := int(math.Min(500.0, float64(record.NumRows())))
+	rows := int(math.Min(float64(maxRows), float64(record.NumRows())))
 	for row := 0; row < rows; row++ {
 		values := recordColValues(record, row)
 		for _, value := range values {
@@ -162,7 +170,8 @@ func arrayColValues(arr arrow.Array, row int) []string {
 		if len(str) > MaxColSize {
 			str = str[:MaxColSize]
 		}
-		return []string{fmt.Sprintf(MaxValSize, str)}
+
+		return []string{fmt.Sprintf(MaxValSize, escapeNonPrintable(str))}
 	case *array.Binary:
 		bin := c.Value(row)
 		if len(bin) > MaxColSize {
@@ -192,7 +201,8 @@ func arrayColValues(arr arrow.Array, row int) []string {
 			if len(str) > MaxColSize {
 				str = str[:MaxColSize]
 			}
-			return []string{fmt.Sprintf(MaxValSize, str)}
+
+			return []string{fmt.Sprintf(MaxValSize, escapeNonPrintable(str))}
 		case *array.Binary:
 			bin := arr.Value(c.GetValueIndex(row))
 			if len(bin) > MaxColSize {
@@ -224,6 +234,19 @@ func arrayColValues(arr arrow.Array, row int) []string {
 		panic(fmt.Sprintf("unsupported array type %T", arr))
 	}
 	return []string{}
+}
+
+// escapeNonPrintable replaces non-printable characters with escape sequences.
+func escapeNonPrintable(str string) string {
+	var sb strings.Builder
+	for _, r := range str {
+		if r < 32 || r > 126 {
+			sb.WriteString(fmt.Sprintf("\\x%02x", r))
+		} else {
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
 }
 
 func sparseUnionValue(union *array.SparseUnion, row int) string {

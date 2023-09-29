@@ -46,6 +46,9 @@ type (
 		ProducerStats bool
 		// CompressionRatioStats is a flag that indicates whether to display compression ratio stats.
 		CompressionRatioStats bool
+		// DumpRecordRows specifies the number of rows to dump for each record.
+		// If not defined or set to 0, no rows are dumped.
+		DumpRecordRows map[string]int
 	}
 
 	RecordSizeStats struct {

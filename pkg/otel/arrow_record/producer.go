@@ -130,6 +130,7 @@ func NewProducerWithOptions(options ...cfg.Option) *Producer {
 	stats.SchemaStats = conf.SchemaStats
 	stats.SchemaUpdates = conf.SchemaUpdates
 	stats.RecordStats = conf.RecordStats
+	stats.DumpRecordRows = conf.DumpRecordRows
 	stats.CompressionRatioStats = conf.CompressionRatioStats
 	stats.ProducerStats = conf.ProducerStats
 
@@ -416,6 +417,10 @@ func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.Batch
 
 				if p.stats.RecordStats {
 					fmt.Printf("Record %q -> %d bytes\n", payloadType, len(buf))
+					rowsToDisplay := p.stats.DumpRecordRows[payloadType]
+					if rowsToDisplay > 0 {
+						carrow.PrintRecord(payloadType, rm.Record(), rowsToDisplay)
+					}
 				}
 			}
 
@@ -541,6 +546,6 @@ func (o *consoleObserver) OnRecord(record arrow.Record, payloadType record_messa
 	} else {
 		count++
 		o.counters[payloadType] = count
-		carrow.PrintRecord(payloadType.String(), record, o.maxRows, count, o.maxPrints)
+		carrow.PrintRecordWithProgression(payloadType.String(), record, o.maxRows, count, o.maxPrints)
 	}
 }
