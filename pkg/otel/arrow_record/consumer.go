@@ -18,18 +18,22 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"math/rand"
 
 	"github.com/apache/arrow/go/v12/arrow/ipc"
 	"github.com/apache/arrow/go/v12/arrow/memory"
+	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 
 	colarspb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
+	"github.com/open-telemetry/otel-arrow/pkg/internal/debug"
 	common "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
 	logsotlp "github.com/open-telemetry/otel-arrow/pkg/otel/logs/otlp"
 	metricsotlp "github.com/open-telemetry/otel-arrow/pkg/otel/metrics/otlp"
@@ -76,8 +80,7 @@ type Consumer struct {
 	// limitation in the OTel synchronous instrument API, which we
 	// are using because we reject the use of atomic operations
 	// for allocators used here, since there is otherwise no
-	// concurrency.  See inuseChangeByCaller() and
-	// inuseChangeObserve().
+	// concurrency.  See inuseChangeObserve().
 	lastInuseValue uint64
 
 	// counts of the number of records consumed.
@@ -99,6 +102,7 @@ type Config struct {
 
 	// from component.TelemetrySettings
 	meterProvider metric.MeterProvider
+	metricsLevel  configtelemetry.Level
 }
 
 // WithMemoryLimit configures the Arrow limited memory allocator.
@@ -117,8 +121,9 @@ func WithTracesConfig(tcfg *arrow.Config) Option {
 
 // WithMeterProvider configures an OTel metrics provider.  If none is
 // configured, the global meter provider will be used.
-func WithMeterProvider(p metric.MeterProvider) Option {
+func WithMeterProvider(p metric.MeterProvider, l configtelemetry.Level) Option {
 	return func(cfg *Config) {
+		cfg.metricsLevel = l
 		cfg.meterProvider = p
 	}
 }
@@ -138,21 +143,34 @@ func NewConsumer(opts ...Option) *Consumer {
 		memLimit:      defaultMemoryLimit,
 		tracesConfig:  arrow.DefaultConfig(),
 		meterProvider: otel.GetMeterProvider(),
+		metricsLevel:  configtelemetry.LevelNormal,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	meter := cfg.meterProvider.Meter("otel-arrow/pkg/otel/arrow_record")
-	allocator := common.NewLimitedAllocator(memory.NewGoAllocator(), cfg.memLimit)
-	return &Consumer{
+	var baseAlloc memory.Allocator = memory.NewGoAllocator()
+	if debug.AssertionsOn() {
+		baseAlloc = memory.NewCheckedAllocator(baseAlloc)
+	}
+	allocator := common.NewLimitedAllocator(baseAlloc, cfg.memLimit)
+
+	c := &Consumer{
 		Config:             cfg,
 		allocator:          allocator,
 		uniqueAttr:         attribute.String("stream_unique", fmt.Sprintf("%08x", rand.Uint32())),
 		streamConsumers:    make(map[string]*streamConsumer),
-		recordsCounter:     mustWarn(meter.Int64Counter("arrow_batch_records")),
-		schemaResetCounter: mustWarn(meter.Int64Counter("arrow_schema_resets")),
-		memoryCounter:      mustWarn(meter.Int64UpDownCounter("arrow_memory_inuse")),
+		recordsCounter:     noop.Int64Counter{},
+		schemaResetCounter: noop.Int64Counter{},
+		memoryCounter:      noop.Int64UpDownCounter{},
 	}
+	if cfg.metricsLevel >= configtelemetry.LevelNormal {
+		meter := cfg.meterProvider.Meter("otel-arrow/pkg/otel/arrow_record")
+
+		c.recordsCounter = mustWarn(meter.Int64Counter("arrow_batch_records"))
+		c.schemaResetCounter = mustWarn(meter.Int64Counter("arrow_schema_resets"))
+		c.memoryCounter = mustWarn(meter.Int64UpDownCounter("arrow_memory_inuse"))
+	}
+	return c
 }
 
 func releaseRecords(recs []*record_message.RecordMessage) {
@@ -169,21 +187,16 @@ func mustWarn[T any](t T, err error) T {
 	return t
 }
 
-type placeholder struct{}
-
-// inuseChangeByCaller records the change in allocated memory,
-// attributing change to the caller.  The `placeholder` returned
-// is to encourage this idiom at the top of any function that
-// allocates memory in the library.
-//
-//	defer c.inuseChangeObserve(c.inuseChangeByCaller())
-//
-// Note: This is a sanity check. Currently there are no allocator
-// operations in the caller, and the caller is not responsible
-// for releasing memory. The count by where=caller should equal 0.
-func (c *Consumer) inuseChangeByCaller() placeholder {
-	c.inuseChangeObserveWhere("caller")
-	return placeholder{}
+func (c *Consumer) metricOpts(kvs ...attribute.KeyValue) []metric.AddOption {
+	if c.metricsLevel < configtelemetry.LevelNormal {
+		return nil
+	}
+	if c.metricsLevel == configtelemetry.LevelDetailed {
+		kvs = append(kvs, c.uniqueAttr)
+	}
+	return []metric.AddOption{
+		metric.WithAttributes(kvs...),
+	}
 }
 
 // inuseChangeObserve records the change in allocated memory,
@@ -191,29 +204,28 @@ func (c *Consumer) inuseChangeByCaller() placeholder {
 //
 // Note if we have a memory accounting leak, we expect it will
 // show up as a count `arrow_memory_inuse{where=library}`.
-func (c *Consumer) inuseChangeObserve(_ placeholder) {
-	c.inuseChangeObserveWhere("library")
-}
-
-// inuseChangeObserveWhere records synchronous UpDownCounter events
-// tracking changes in allocator state.  If OTel had a synchronous
-// cumulative updowncounter option, that would be easier to use.
-func (c *Consumer) inuseChangeObserveWhere(where string) {
+func (c *Consumer) inuseChangeObserve() {
+	// inuseChangeObserveWhere records synchronous UpDownCounter events
+	// tracking changes in allocator state.  If OTel had a synchronous
+	// cumulative updowncounter option, that would be easier to use.
 	ctx := context.Background()
 	last := c.lastInuseValue
 	inuse := c.allocator.Inuse()
-	attrs := metric.WithAttributes(c.uniqueAttr, attribute.String("where", where))
 
-	c.memoryCounter.Add(ctx, int64(inuse-last), attrs)
-	c.lastInuseValue = inuse
-	if inuse != last {
-		fmt.Println("change by", where, "=", int64(inuse-last), "; current value", inuse)
+	if inuse == last {
+		return
 	}
+
+	c.memoryCounter.Add(ctx, int64(inuse-last), c.metricOpts()...)
+	c.lastInuseValue = inuse
+
+	// To help diagnose leaks, e.g.,
+	// fmt.Println("change by", int64(inuse-last), "; current value", inuse)
 }
 
 // MetricsFrom produces an array of [pmetric.Metrics] from a BatchArrowRecords message.
 func (c *Consumer) MetricsFrom(bar *colarspb.BatchArrowRecords) ([]pmetric.Metrics, error) {
-	defer c.inuseChangeObserve(c.inuseChangeByCaller())
+	defer c.inuseChangeObserve()
 
 	// extracts the records from the BatchArrowRecords message
 	records, err := c.Consume(bar)
@@ -246,7 +258,7 @@ func (c *Consumer) MetricsFrom(bar *colarspb.BatchArrowRecords) ([]pmetric.Metri
 
 // LogsFrom produces an array of [plog.Logs] from a BatchArrowRecords message.
 func (c *Consumer) LogsFrom(bar *colarspb.BatchArrowRecords) ([]plog.Logs, error) {
-	defer c.inuseChangeObserve(c.inuseChangeByCaller())
+	defer c.inuseChangeObserve()
 	records, err := c.Consume(bar)
 	if err != nil {
 		return nil, werror.Wrap(err)
@@ -272,7 +284,7 @@ func (c *Consumer) LogsFrom(bar *colarspb.BatchArrowRecords) ([]plog.Logs, error
 
 // TracesFrom produces an array of [ptrace.Traces] from a BatchArrowRecords message.
 func (c *Consumer) TracesFrom(bar *colarspb.BatchArrowRecords) ([]ptrace.Traces, error) {
-	defer c.inuseChangeObserve(c.inuseChangeByCaller())
+	defer c.inuseChangeObserve()
 	records, err := c.Consume(bar)
 	if err != nil {
 		return nil, werror.Wrap(err)
@@ -303,7 +315,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.R
 
 	var ibes []*record_message.RecordMessage
 	defer func() {
-		c.recordsCounter.Add(ctx, int64(len(ibes)), metric.WithAttributes(c.uniqueAttr))
+		c.recordsCounter.Add(ctx, int64(len(ibes)), c.metricOpts()...)
 	}()
 
 	// Transform each individual OtlpArrowPayload into RecordMessage
@@ -335,7 +347,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.R
 
 		sc.bufReader.Reset(payload.Record)
 		if sc.ipcReader == nil {
-			c.schemaResetCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("payload_type", payload.Type.String()), c.uniqueAttr))
+			c.schemaResetCounter.Add(ctx, 1, c.metricOpts(attribute.String("payload_type", payload.Type.String()))...)
 			ipcReader, err := ipc.NewReader(
 				sc.bufReader,
 				ipc.WithAllocator(c.allocator),
@@ -367,12 +379,45 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.R
 	return ibes, nil
 }
 
+type runtimeChecker struct{}
+
+var _ memory.TestingT = &runtimeChecker{}
+
+func (_ runtimeChecker) Errorf(format string, args ...interface{}) {
+	log.Printf(format, args...)
+}
+
+func (_ runtimeChecker) Helper() {}
+
 // Close closes the consumer and all its ipc readers.
 func (c *Consumer) Close() error {
 	for _, sc := range c.streamConsumers {
 		if sc.ipcReader != nil {
 			sc.ipcReader.Release()
 		}
+	}
+	// Observe the change in allocator state due to Releases above
+	// in the usual way.
+	c.inuseChangeObserve()
+
+	// We expect memory used to be zero.
+	if debug.AssertionsOn() {
+		c.allocator.Allocator.(*memory.CheckedAllocator).AssertSize(runtimeChecker{}, 0)
+	}
+	// Avoid "drift" in the up-down-counter by resetting this
+	// consumer's contribution to the process-lifetime total.
+	if c.allocator.Inuse() != 0 {
+		// Since the underlying allocator is backed by a
+		// garbage collector, nothing bad happens.  However,
+		// we leave behind suspicious looking metrics.  Zero
+		// the in-use count of this allocator.
+		//
+		// Note, however, with a different allocator this
+		// could be a real problem.
+		c.memoryCounter.Add(context.Background(), -int64(c.allocator.Inuse()), c.metricOpts()...)
+
+		// To help diagnose leaks, e.g.,
+		fmt.Println("consumer still holding", c.allocator.Inuse(), "bytes")
 	}
 	return nil
 }

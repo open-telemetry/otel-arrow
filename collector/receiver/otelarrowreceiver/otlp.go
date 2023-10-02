@@ -155,7 +155,7 @@ func (r *otlpReceiver) startProtocolServers(host component.Host) error {
 					opts = append(opts, arrowRecord.WithMemoryLimit(r.cfg.Arrow.MemoryLimit))
 				}
 				if r.settings.TelemetrySettings.MeterProvider != nil {
-					opts = append(opts, arrowRecord.WithMeterProvider(r.settings.TelemetrySettings.MeterProvider))
+					opts = append(opts, arrowRecord.WithMeterProvider(r.settings.TelemetrySettings.MeterProvider, r.settings.TelemetrySettings.MetricsLevel))
 				}
 				return arrowRecord.NewConsumer(opts...)
 			})
