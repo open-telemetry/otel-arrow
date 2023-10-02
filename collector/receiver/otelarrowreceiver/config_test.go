@@ -132,7 +132,7 @@ func TestUnmarshalConfig(t *testing.T) {
 					LogsURLPath:    "/log/ingest",
 				},
 				Arrow: &ArrowSettings{
-					MemoryLimit: defaultMemoryLimit,
+					MemoryLimit: 123456,
 				},
 			},
 		}, cfg)
