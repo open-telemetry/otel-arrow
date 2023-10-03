@@ -22,6 +22,7 @@ package arrow
 import (
 	"errors"
 	"sort"
+	"strings"
 
 	"github.com/apache/arrow/go/v12/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -120,8 +121,9 @@ func (b *Attrs16Builder) TryBuild() (record arrow.Record, err error) {
 		return nil, werror.Wrap(ErrBuilderAlreadyReleased)
 	}
 
-	b.accumulator.Sort()
+	sortingColumns := b.accumulator.Sort()
 
+	b.builder.AddMetadata(constants.SortingColumns, strings.Join(sortingColumns, ","))
 	b.builder.Reserve(len(b.accumulator.attrs))
 
 	for _, attr := range b.accumulator.attrs {
@@ -275,7 +277,7 @@ func SortByParentIdKeyValueAttr16() *Attrs16ByParentIdKeyValue {
 	return &Attrs16ByParentIdKeyValue{}
 }
 
-func (s *Attrs16ByParentIdKeyValue) Sort(attrs []Attr16) {
+func (s *Attrs16ByParentIdKeyValue) Sort(attrs []Attr16) []string {
 	sort.Slice(attrs, func(i, j int) bool {
 		attrsI := attrs[i]
 		attrsJ := attrs[j]
@@ -289,6 +291,7 @@ func (s *Attrs16ByParentIdKeyValue) Sort(attrs []Attr16) {
 			return attrsI.ParentID < attrsJ.ParentID
 		}
 	})
+	return []string{constants.ParentID, constants.AttributeKey, constants.Value}
 }
 
 func (s *Attrs16ByParentIdKeyValue) Encode(parentID uint16, _ string, _ *pcommon.Value) uint16 {
@@ -308,8 +311,9 @@ func UnsortedAttrs16() *Attrs16ByNothing {
 	return &Attrs16ByNothing{}
 }
 
-func (s *Attrs16ByNothing) Sort(_ []Attr16) {
+func (s *Attrs16ByNothing) Sort(_ []Attr16) []string {
 	// Do nothing
+	return []string{}
 }
 
 func (s *Attrs16ByNothing) Encode(parentID uint16, _ string, _ *pcommon.Value) uint16 {
@@ -325,7 +329,7 @@ func SortAttrs16ByKeyParentIdValue() *Attrs16ByKeyParentIdValue {
 	return &Attrs16ByKeyParentIdValue{}
 }
 
-func (s *Attrs16ByKeyParentIdValue) Sort(attrs []Attr16) {
+func (s *Attrs16ByKeyParentIdValue) Sort(attrs []Attr16) []string {
 	sort.Slice(attrs, func(i, j int) bool {
 		attrsI := attrs[i]
 		attrsJ := attrs[j]
@@ -343,6 +347,8 @@ func (s *Attrs16ByKeyParentIdValue) Sort(attrs []Attr16) {
 			return attrsI.Value.Type() < attrsJ.Value.Type()
 		}
 	})
+
+	return []string{constants.AttributeType, constants.AttributeKey, constants.ParentID}
 }
 
 func (s *Attrs16ByKeyParentIdValue) Encode(parentID uint16, key string, value *pcommon.Value) uint16 {
@@ -389,7 +395,7 @@ func SortAttrs16ByKeyValueParentId() *Attrs16ByKeyValueParentId {
 	return &Attrs16ByKeyValueParentId{}
 }
 
-func (s *Attrs16ByKeyValueParentId) Sort(attrs []Attr16) {
+func (s *Attrs16ByKeyValueParentId) Sort(attrs []Attr16) []string {
 	sort.Slice(attrs, func(i, j int) bool {
 		attrsI := attrs[i]
 		attrsJ := attrs[j]
@@ -408,6 +414,7 @@ func (s *Attrs16ByKeyValueParentId) Sort(attrs []Attr16) {
 			return attrsI.Value.Type() < attrsJ.Value.Type()
 		}
 	})
+	return []string{constants.AttributeType, constants.AttributeKey, constants.Value}
 }
 
 func (s *Attrs16ByKeyValueParentId) Encode(parentID uint16, key string, value *pcommon.Value) uint16 {

@@ -153,7 +153,11 @@ func NewProducerWithOptions(options ...cfg.Option) *Producer {
 		panic(err)
 	}
 
-	tracesBuilder, err := tracesarrow.NewTracesBuilder(tracesRecordBuilder, tracesarrow.NewConfig(conf), stats)
+	traceCfg := tracesarrow.NewConfig(conf)
+	traceCfg.Span.Sorter = tracesarrow.FindOrderByFunc(conf.OrderSpanBy)
+	traceCfg.Attrs.Event.Sorter = acommon.FindOrderByFunc(conf.OrderAttrs32By)
+	traceCfg.Attrs.Link.Sorter = acommon.FindOrderByFunc(conf.OrderAttrs32By)
+	tracesBuilder, err := tracesarrow.NewTracesBuilder(tracesRecordBuilder, traceCfg, stats)
 	if err != nil {
 		panic(err)
 	}
@@ -461,27 +465,24 @@ func (p *Producer) ShowStats() {
 
 	if p.stats.SchemaStats {
 		type TimeSchema struct {
-			time   time.Time
-			schema *arrow.Schema
+			payloadType record_message.PayloadType
+			time        time.Time
+			schema      *arrow.Schema
 		}
 
 		var schemas []TimeSchema
 
 		for _, producer := range p.streamProducers {
-			schemas = append(schemas, TimeSchema{time: producer.lastProduction, schema: producer.schema})
+			schemas = append(schemas, TimeSchema{payloadType: producer.payloadType, time: producer.lastProduction, schema: producer.schema})
 		}
 
 		sort.Slice(schemas, func(i, j int) bool {
 			return schemas[i].time.Before(schemas[j].time)
 		})
-		fmt.Printf("\n== Schema (#stream-producers=%d) ============================================================\n", len(schemas))
+		fmt.Printf("\n== Details on the Schema ============================================================\n")
 		for _, s := range schemas {
-			fmt.Printf(">> Schema last update at %s:\n", s.time)
-			carrow.ShowSchema(s.schema, "  ")
+			carrow.ShowSchema(s.schema, fmt.Sprintf("%q", s.payloadType), "")
 		}
-
-		println("------")
-		p.tracesBuilder.ShowSchema()
 	}
 }
 

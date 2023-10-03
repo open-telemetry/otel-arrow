@@ -25,6 +25,46 @@ import (
 	"github.com/apache/arrow/go/v12/arrow/memory"
 )
 
+type OrderSpanBy int8
+
+const (
+	OrderSpanByNothing OrderSpanBy = iota
+	OrderSpanByNameTraceID
+	OrderSpanByTraceIDName
+	OrderSpanByNameStartTime
+	OrderSpanByNameTraceIdStartTime
+	OrderSpanByStartTimeTraceIDName
+	OrderSpanByStartTimeNameTraceID
+)
+
+var OrderSpanByVariants = map[string]OrderSpanBy{
+	"":                         OrderSpanByNothing,
+	"name,trace_id":            OrderSpanByNameTraceID,
+	"trace_id,name":            OrderSpanByTraceIDName,
+	"name,start_time":          OrderSpanByNameStartTime,
+	"name,trace_id,start_time": OrderSpanByNameTraceIdStartTime,
+	"start_time,trace_id,name": OrderSpanByStartTimeTraceIDName,
+	"start_time,name,trace_id": OrderSpanByStartTimeNameTraceID,
+}
+
+type OrderAttrs32By int8
+
+const (
+	OrderAttrs32ByNothing OrderAttrs32By = iota
+	OrderAttrs32ByTypeParentIdKeyValue
+	OrderAttrs32ByTypeKeyParentIdValue
+	OrderAttrs32ByTypeKeyValueParentId
+	OrderAttrs32ByKeyValueParentId
+)
+
+var OrderAttrs32ByVariants = map[string]OrderAttrs32By{
+	"":                         OrderAttrs32ByNothing,
+	"type,parent_id,key,value": OrderAttrs32ByTypeParentIdKeyValue,
+	"type,key,parent_id,value": OrderAttrs32ByTypeKeyParentIdValue,
+	"type,key,value,parent_id": OrderAttrs32ByTypeKeyValueParentId,
+	"key,value,parent_id":      OrderAttrs32ByKeyValueParentId,
+}
+
 type Config struct {
 	Pool memory.Allocator
 
@@ -49,6 +89,11 @@ type Config struct {
 	// DumpRecordRows specifies the number of rows to dump for each record.
 	// If not defined or set to 0, no rows are dumped.
 	DumpRecordRows map[string]int
+
+	// OrderSpanBy specifies how to order spans in a batch.
+	OrderSpanBy OrderSpanBy
+	// OrderAttrs32By specifies how to order attributes in a batch (with 32bits attribute ID).
+	OrderAttrs32By OrderAttrs32By
 }
 
 type Option func(*Config)
@@ -68,6 +113,9 @@ func DefaultConfig() *Config {
 		LimitIndexSize: math.MaxUint16,
 		SchemaStats:    false,
 		Zstd:           true,
+
+		OrderSpanBy:    OrderSpanByNameTraceID,
+		OrderAttrs32By: OrderAttrs32ByTypeKeyValueParentId,
 	}
 }
 
@@ -199,5 +247,20 @@ func WithDumpRecordRows(payloadType string, numRows int) Option {
 			cfg.DumpRecordRows = make(map[string]int)
 		}
 		cfg.DumpRecordRows[payloadType] = numRows
+	}
+}
+
+// WithOrderSpanBy specifies how to order spans in a batch.
+func WithOrderSpanBy(orderSpanBy OrderSpanBy) Option {
+	return func(cfg *Config) {
+		cfg.OrderSpanBy = orderSpanBy
+	}
+}
+
+// WithOrderAttrs32By specifies how to order attributes in a batch
+// (with 32bits attribute ID).
+func WithOrderAttrs32By(orderAttrs32By OrderAttrs32By) Option {
+	return func(cfg *Config) {
+		cfg.OrderAttrs32By = orderAttrs32By
 	}
 }

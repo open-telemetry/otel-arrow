@@ -28,6 +28,7 @@ import (
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/array"
 
+	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
 	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
 
@@ -38,12 +39,13 @@ const (
 	BoolCode   int8 = 3
 	BinaryCode int8 = 4
 	CborCode   int8 = 5
-
-	MaxColSize = 20
-	MaxStrSize = "%20s"
-	MaxValSize = "%20v"
-	MaxBinSize = "%20x"
 )
+
+type TextColumn struct {
+	Name   string
+	MaxLen int
+	Values []string
+}
 
 // PrintRecord prints the contents of an Arrow record to stdout.
 func PrintRecord(name string, record arrow.Record, maxRows int) {
@@ -57,42 +59,61 @@ func PrintRecordWithProgression(name string, record arrow.Record, maxRows, count
 		progression = fmt.Sprintf(", progression %d/%d", countPrints, maxPrints)
 	}
 
+	sortingColumns := ""
+	sc, ok := record.Schema().Metadata().GetValue(constants.SortingColumns)
+	if ok {
+		sortingColumns = fmt.Sprintf(", sort by %q", sc)
+	}
+
 	if record.NumRows() > int64(maxRows) {
-		fmt.Printf("Dump record %q: %d rows/%d (total)%s\n", name, maxRows, record.NumRows(), progression)
+		fmt.Printf("Dump record %q: %d rows/%d (total)%s%s\n", name, maxRows, record.NumRows(), progression, sortingColumns)
 	} else {
-		fmt.Printf("Dump record %q: %d rows%s\n", name, record.NumRows(), progression)
+		fmt.Printf("Dump record %q: %d rows%s%s\n", name, record.NumRows(), progression, sortingColumns)
 	}
 
 	schema := record.Schema()
 	colNames := schemaColNames(schema)
 
+	columns := make([]TextColumn, len(colNames))
 	for i := 0; i < len(colNames); i++ {
-		print(strings.Repeat("-", MaxColSize), "-+")
+		columns[i].Name = colNames[i]
+		columns[i].MaxLen = len(colNames[i])
+	}
+
+	maxColSize := 60
+	rows := int(math.Min(float64(maxRows), float64(record.NumRows())))
+	for row := 0; row < rows; row++ {
+		values := recordColValues(record, row)
+		for i, value := range values {
+			if len(value) > maxColSize {
+				value = value[:maxColSize] + "..."
+			}
+			columns[i].Values = append(columns[i].Values, value)
+			if columns[i].MaxLen < len(value) {
+				columns[i].MaxLen = len(value)
+			}
+		}
+	}
+
+	for i := 0; i < len(columns); i++ {
+		print(strings.Repeat("-", columns[i].MaxLen), "-+")
 	}
 	println()
 
-	for _, colName := range colNames {
-		if len(colName) > MaxColSize {
-			colName = colName[:MaxColSize]
-		}
-		fmt.Printf(MaxStrSize, colName)
+	for i := 0; i < len(columns); i++ {
+		fmt.Printf(fmt.Sprintf("%%%ds", columns[i].MaxLen), columns[i].Name)
 		print(" |")
 	}
 	println()
 
-	for i := 0; i < len(colNames); i++ {
-		print(strings.Repeat("-", MaxColSize), "-+")
+	for i := 0; i < len(columns); i++ {
+		print(strings.Repeat("-", columns[i].MaxLen), "-+")
 	}
 	println()
 
-	rows := int(math.Min(float64(maxRows), float64(record.NumRows())))
 	for row := 0; row < rows; row++ {
-		values := recordColValues(record, row)
-		for _, value := range values {
-			if len(value) > MaxColSize {
-				value = value[:MaxColSize]
-			}
-			fmt.Printf(MaxStrSize, value)
+		for i := 0; i < len(columns); i++ {
+			fmt.Printf(fmt.Sprintf("%%%ds", columns[i].MaxLen), columns[i].Values[row])
 			print(" |")
 		}
 		println()
@@ -102,7 +123,8 @@ func PrintRecordWithProgression(name string, record arrow.Record, maxRows, count
 func schemaColNames(schema *arrow.Schema) []string {
 	var names []string
 	for _, field := range schema.Fields() {
-		names = append(names, fieldColNames("", &field)...)
+		childNames := fieldColNames("", &field)
+		names = append(names, childNames...)
 	}
 	return names
 }
@@ -115,7 +137,8 @@ func fieldColNames(path string, field *arrow.Field) []string {
 		var names []string
 		path = path + "."
 		for _, structField := range st.Fields() {
-			names = append(names, fieldColNames(path, &structField)...)
+			childNames := fieldColNames(path, &structField)
+			names = append(names, childNames...)
 		}
 		return names
 	}
@@ -135,59 +158,50 @@ func recordColValues(record arrow.Record, row int) []string {
 
 func arrayColValues(arr arrow.Array, row int) []string {
 	if arr.IsNull(row) {
-		return []string{fmt.Sprintf(MaxStrSize, "NULL")}
+		return []string{"NULL"}
 	}
 
 	switch c := arr.(type) {
 	case *array.Boolean:
-		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+		return []string{fmt.Sprintf("%v", c.Value(row))}
 	// uints
 	case *array.Uint8:
-		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+		return []string{fmt.Sprintf("%v", c.Value(row))}
 	case *array.Uint16:
-		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+		return []string{fmt.Sprintf("%v", c.Value(row))}
 	case *array.Uint32:
-		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+		return []string{fmt.Sprintf("%v", c.Value(row))}
 	case *array.Uint64:
-		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+		return []string{fmt.Sprintf("%v", c.Value(row))}
 	// ints
 	case *array.Int8:
-		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+		return []string{fmt.Sprintf("%v", c.Value(row))}
 	case *array.Int16:
-		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+		return []string{fmt.Sprintf("%v", c.Value(row))}
 	case *array.Int32:
-		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+		return []string{fmt.Sprintf("%v", c.Value(row))}
 	case *array.Int64:
-		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+		return []string{fmt.Sprintf("%v", c.Value(row))}
 	// floats
 	case *array.Float32:
-		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+		return []string{fmt.Sprintf("%v", c.Value(row))}
 	case *array.Float64:
-		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+		return []string{fmt.Sprintf("%v", c.Value(row))}
 
 	case *array.String:
 		str := c.Value(row)
-		if len(str) > MaxColSize {
-			str = str[:MaxColSize]
-		}
 
-		return []string{fmt.Sprintf(MaxValSize, escapeNonPrintable(str))}
+		return []string{fmt.Sprintf("%v", escapeNonPrintable(str))}
 	case *array.Binary:
 		bin := c.Value(row)
-		if len(bin) > MaxColSize {
-			bin = bin[:MaxColSize]
-		}
-		return []string{fmt.Sprintf(MaxValSize, bin)}
+		return []string{fmt.Sprintf("%v", bin)}
 	case *array.FixedSizeBinary:
 		bin := c.Value(row)
-		if len(bin) > MaxColSize {
-			bin = bin[:MaxColSize]
-		}
-		return []string{fmt.Sprintf(MaxBinSize, bin)}
+		return []string{fmt.Sprintf("%v", bin)}
 	case *array.Timestamp:
-		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+		return []string{fmt.Sprintf("%v", c.Value(row))}
 	case *array.Duration:
-		return []string{fmt.Sprintf(MaxValSize, c.Value(row))}
+		return []string{fmt.Sprintf("%v", c.Value(row))}
 	case *array.Dictionary:
 		switch arr := c.Dictionary().(type) {
 		case *array.Int32:
@@ -198,25 +212,15 @@ func arrayColValues(arr arrow.Array, row int) []string {
 			return []string{fmt.Sprintf("%d", arr.Value(c.GetValueIndex(row)))}
 		case *array.String:
 			str := arr.Value(c.GetValueIndex(row))
-			if len(str) > MaxColSize {
-				str = str[:MaxColSize]
-			}
-
-			return []string{fmt.Sprintf(MaxValSize, escapeNonPrintable(str))}
+			return []string{fmt.Sprintf("%v", escapeNonPrintable(str))}
 		case *array.Binary:
 			bin := arr.Value(c.GetValueIndex(row))
-			if len(bin) > MaxColSize {
-				bin = bin[:MaxColSize]
-			}
-			return []string{fmt.Sprintf(MaxValSize, bin)}
+			return []string{fmt.Sprintf("%v", bin)}
 		case *array.Duration:
-			return []string{fmt.Sprintf(MaxValSize, arr.Value(c.GetValueIndex(row)))}
+			return []string{fmt.Sprintf("%v", arr.Value(c.GetValueIndex(row)))}
 		case *array.FixedSizeBinary:
 			bin := arr.Value(c.GetValueIndex(row))
-			if len(bin) > MaxColSize {
-				bin = bin[:MaxColSize]
-			}
-			return []string{fmt.Sprintf(MaxBinSize, bin)}
+			return []string{fmt.Sprintf("%v", bin)}
 		default:
 			panic(fmt.Sprintf("unsupported dictionary type %T", arr))
 		}

@@ -215,11 +215,14 @@ func CompareRecordSizeStats(withCompression map[string]*RecordSizeStats, withNoC
 		return recordSizeStats[i].TotalSizeWithCompression > recordSizeStats[j].TotalSizeWithCompression
 	})
 
+	totalCumulSize := 0
 	fmt.Printf("Record cumulative size and compression ratio per payload type (sort by cumulative size):\n")
 	for _, v := range recordSizeStats {
 		fmt.Printf("- %-18s: %8d bytes (cumul), %04.1f%% of the total, compression ratio=%4.1fx\n",
 			v.PayloadType, v.TotalSizeWithCompression, v.Percent,
 			float64(v.TotalSizeWithNoCompression)/float64(v.TotalSizeWithCompression),
 		)
+		totalCumulSize += int(v.TotalSizeWithCompression)
 	}
+	fmt.Printf("Total cumulative size: %d bytes\n", totalCumulSize)
 }

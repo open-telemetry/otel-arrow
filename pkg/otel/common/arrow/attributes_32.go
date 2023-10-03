@@ -21,11 +21,14 @@ package arrow
 
 import (
 	"errors"
+	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/apache/arrow/go/v12/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
+	"github.com/open-telemetry/otel-arrow/pkg/config"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
@@ -92,7 +95,12 @@ type (
 		prevParentID uint32
 		prevValue    *pcommon.Value
 	}
-	Attrs32ByKeyParentIdValue struct {
+	Attrs32ByTypeKeyParentIdValue struct {
+		prevParentID uint32
+		prevKey      string
+		prevValue    *pcommon.Value
+	}
+	Attrs32ByTypeKeyValueParentId struct {
 		prevParentID uint32
 		prevKey      string
 		prevValue    *pcommon.Value
@@ -148,7 +156,8 @@ func (b *Attrs32Builder) TryBuild() (record arrow.Record, err error) {
 		return nil, werror.Wrap(ErrBuilderAlreadyReleased)
 	}
 
-	b.accumulator.Sort()
+	sortingColumns := b.accumulator.Sort()
+	b.builder.AddMetadata(constants.SortingColumns, strings.Join(sortingColumns, ","))
 
 	b.builder.Reserve(len(b.accumulator.attrs))
 
@@ -296,6 +305,23 @@ func (b *Attrs32Builder) ShowSchema() {
 	b.builder.ShowSchema()
 }
 
+func FindOrderByFunc(orderBy config.OrderAttrs32By) Attrs32Sorter {
+	switch orderBy {
+	case config.OrderAttrs32ByNothing:
+		return &Attrs32ByNothing{}
+	case config.OrderAttrs32ByTypeParentIdKeyValue:
+		return &Attrs32ByTypeParentIdKeyValue{}
+	case config.OrderAttrs32ByTypeKeyParentIdValue:
+		return &Attrs32ByTypeKeyParentIdValue{}
+	case config.OrderAttrs32ByTypeKeyValueParentId:
+		return &Attrs32ByTypeKeyValueParentId{}
+	case config.OrderAttrs32ByKeyValueParentId:
+		return &Attrs32ByKeyValueParentId{}
+	default:
+		panic(fmt.Sprintf("unknown OrderAttrs32By variant: %d", orderBy))
+	}
+}
+
 // No sorting
 // ==========
 
@@ -303,8 +329,9 @@ func UnsortedAttrs32() *Attrs32ByNothing {
 	return &Attrs32ByNothing{}
 }
 
-func (s *Attrs32ByNothing) Sort(_ []Attr32) {
+func (s *Attrs32ByNothing) Sort(_ []Attr32) []string {
 	// Do nothing
+	return []string{}
 }
 
 func (s *Attrs32ByNothing) Encode(parentID uint32, _ string, _ *pcommon.Value) uint32 {
@@ -320,7 +347,7 @@ func SortAttrs32ByTypeParentIdKeyValue() *Attrs32ByTypeParentIdKeyValue {
 	return &Attrs32ByTypeParentIdKeyValue{}
 }
 
-func (s *Attrs32ByTypeParentIdKeyValue) Sort(attrs []Attr32) {
+func (s *Attrs32ByTypeParentIdKeyValue) Sort(attrs []Attr32) []string {
 	sort.Slice(attrs, func(i, j int) bool {
 		attrsI := attrs[i]
 		attrsJ := attrs[j]
@@ -338,6 +365,7 @@ func (s *Attrs32ByTypeParentIdKeyValue) Sort(attrs []Attr32) {
 			return attrsI.Value.Type() < attrsJ.Value.Type()
 		}
 	})
+	return []string{constants.AttributeType, constants.ParentID, constants.AttributeKey, constants.Value}
 }
 
 func (s *Attrs32ByTypeParentIdKeyValue) Encode(parentID uint32, _ string, value *pcommon.Value) uint32 {
@@ -366,11 +394,11 @@ func (s *Attrs32ByTypeParentIdKeyValue) Reset() {
 // Sorts the attributes by key, parentID, and value
 // ================================================
 
-func SortAttrs32ByKeyParentIdValue() *Attrs32ByKeyParentIdValue {
-	return &Attrs32ByKeyParentIdValue{}
+func SortAttrs32ByTypeKeyParentIdValue() *Attrs32ByTypeKeyParentIdValue {
+	return &Attrs32ByTypeKeyParentIdValue{}
 }
 
-func (s *Attrs32ByKeyParentIdValue) Sort(attrs []Attr32) {
+func (s *Attrs32ByTypeKeyParentIdValue) Sort(attrs []Attr32) []string {
 	sort.Slice(attrs, func(i, j int) bool {
 		attrsI := attrs[i]
 		attrsJ := attrs[j]
@@ -388,9 +416,10 @@ func (s *Attrs32ByKeyParentIdValue) Sort(attrs []Attr32) {
 			return attrsI.Value.Type() < attrsJ.Value.Type()
 		}
 	})
+	return []string{constants.AttributeType, constants.AttributeKey, constants.ParentID, constants.Value}
 }
 
-func (s *Attrs32ByKeyParentIdValue) Encode(parentID uint32, key string, value *pcommon.Value) uint32 {
+func (s *Attrs32ByTypeKeyParentIdValue) Encode(parentID uint32, key string, value *pcommon.Value) uint32 {
 	if s.prevValue == nil {
 		s.prevKey = key
 		s.prevValue = value
@@ -410,13 +439,13 @@ func (s *Attrs32ByKeyParentIdValue) Encode(parentID uint32, key string, value *p
 	}
 }
 
-func (s *Attrs32ByKeyParentIdValue) Reset() {
+func (s *Attrs32ByTypeKeyParentIdValue) Reset() {
 	s.prevParentID = 0
 	s.prevKey = ""
 	s.prevValue = nil
 }
 
-func (s *Attrs32ByKeyParentIdValue) IsSameGroup(key string, value *pcommon.Value) bool {
+func (s *Attrs32ByTypeKeyParentIdValue) IsSameGroup(key string, value *pcommon.Value) bool {
 	if s.prevValue == nil {
 		return false
 	}
@@ -427,14 +456,14 @@ func (s *Attrs32ByKeyParentIdValue) IsSameGroup(key string, value *pcommon.Value
 	return false
 }
 
-// Sorts the attributes by key, value, and parentID
-// ================================================
+// Sorts the attributes by type, key, value, and parentID
+// ======================================================
 
-func SortAttrs32ByKeyValueParentId() *Attrs32ByKeyValueParentId {
-	return &Attrs32ByKeyValueParentId{}
+func SortAttrs32ByTypeKeyValueParentId() *Attrs32ByTypeKeyValueParentId {
+	return &Attrs32ByTypeKeyValueParentId{}
 }
 
-func (s *Attrs32ByKeyValueParentId) Sort(attrs []Attr32) {
+func (s *Attrs32ByTypeKeyValueParentId) Sort(attrs []Attr32) []string {
 	sort.Slice(attrs, func(i, j int) bool {
 		attrsI := attrs[i]
 		attrsJ := attrs[j]
@@ -453,6 +482,70 @@ func (s *Attrs32ByKeyValueParentId) Sort(attrs []Attr32) {
 			return attrsI.Value.Type() < attrsJ.Value.Type()
 		}
 	})
+	return []string{constants.AttributeType, constants.AttributeKey, constants.Value, constants.ParentID}
+}
+
+func (s *Attrs32ByTypeKeyValueParentId) Encode(parentID uint32, key string, value *pcommon.Value) uint32 {
+	if s.prevValue == nil {
+		s.prevKey = key
+		s.prevValue = value
+		s.prevParentID = parentID
+		return parentID
+	}
+
+	if s.IsSameGroup(key, value) {
+		delta := parentID - s.prevParentID
+		s.prevParentID = parentID
+		return delta
+	} else {
+		s.prevKey = key
+		s.prevValue = value
+		s.prevParentID = parentID
+		return parentID
+	}
+}
+
+func (s *Attrs32ByTypeKeyValueParentId) Reset() {
+	s.prevParentID = 0
+	s.prevKey = ""
+	s.prevValue = nil
+}
+
+func (s *Attrs32ByTypeKeyValueParentId) IsSameGroup(key string, value *pcommon.Value) bool {
+	if s.prevValue == nil {
+		return false
+	}
+
+	if s.prevKey == key {
+		return Equal(s.prevValue, value)
+	} else {
+		return false
+	}
+}
+
+// Sorts the attributes by key, value, and parentID
+// ======================================================
+
+func SortAttrs32ByKeyValueParentId() *Attrs32ByKeyValueParentId {
+	return &Attrs32ByKeyValueParentId{}
+}
+
+func (s *Attrs32ByKeyValueParentId) Sort(attrs []Attr32) []string {
+	sort.Slice(attrs, func(i, j int) bool {
+		attrsI := attrs[i]
+		attrsJ := attrs[j]
+		if attrsI.Key == attrsJ.Key {
+			cmp := Compare(attrsI.Value, attrsJ.Value)
+			if cmp == 0 {
+				return attrsI.ParentID < attrsJ.ParentID
+			} else {
+				return cmp < 0
+			}
+		} else {
+			return attrsI.Key < attrsJ.Key
+		}
+	})
+	return []string{constants.AttributeType, constants.Value, constants.AttributeKey, constants.ParentID}
 }
 
 func (s *Attrs32ByKeyValueParentId) Encode(parentID uint32, key string, value *pcommon.Value) uint32 {

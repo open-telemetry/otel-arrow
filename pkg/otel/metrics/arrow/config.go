@@ -126,25 +126,25 @@ func NewConfig(globalConf *cfg.Config) *Config {
 				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
 			},
 			NumberDataPoint: &arrow.Attrs32Config{
-				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
 			},
 			NumberDataPointExemplar: &arrow.Attrs32Config{
-				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
 			},
 			Summary: &arrow.Attrs32Config{
-				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
 			},
 			Histogram: &arrow.Attrs32Config{
-				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
 			},
 			HistogramExemplar: &arrow.Attrs32Config{
-				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
 			},
 			ExpHistogram: &arrow.Attrs32Config{
-				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
 			},
 			ExpHistogramExemplar: &arrow.Attrs32Config{
-				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
 			},
 		},
 	}

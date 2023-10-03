@@ -21,11 +21,13 @@ package arrow
 
 import (
 	"bytes"
+	"fmt"
 	"sort"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
+	"github.com/open-telemetry/otel-arrow/pkg/config"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/otlp"
 )
 
@@ -111,6 +113,27 @@ func (t *TracesOptimizer) Optimize(traces ptrace.Traces) *TracesOptimized {
 	t.sorter.Sort(tracesOptimized.Spans)
 
 	return tracesOptimized
+}
+
+func FindOrderByFunc(orderBy config.OrderSpanBy) SpanSorter {
+	switch orderBy {
+	case config.OrderSpanByNothing:
+		return &SpansByNothing{}
+	case config.OrderSpanByNameTraceID:
+		return &SpansByResourceSpanIdScopeSpanIdNameTraceId{}
+	case config.OrderSpanByTraceIDName:
+		return &SpansByResourceSpanIdScopeSpanIdTraceIdName{}
+	case config.OrderSpanByNameStartTime:
+		return &SpansByResourceSpanIdScopeSpanIdNameStartTimestamp{}
+	case config.OrderSpanByNameTraceIdStartTime:
+		return &SpansByResourceSpanIdScopeSpanIdNameTraceIdStartTimestamp{}
+	case config.OrderSpanByStartTimeTraceIDName:
+		return &SpansByResourceSpanIdScopeSpanIdStartTimestampTraceIdName{}
+	case config.OrderSpanByStartTimeNameTraceID:
+		return &SpansByResourceSpanIdScopeSpanIdStartTimestampNameTraceId{}
+	default:
+		panic(fmt.Sprintf("unknown OrderSpanBy variant: %d", orderBy))
+	}
 }
 
 // No sorting

@@ -16,6 +16,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
@@ -51,6 +52,8 @@ func main() {
 	// supports "proto" and "json" formats
 	format := flag.String("format", "proto", "file format")
 
+	testSorting := flag.Bool("test-sorting", false, "Test sorting")
+
 	// Parse the flag
 	flag.Parse()
 
@@ -62,7 +65,7 @@ func main() {
 
 	inputFiles := flag.Args()
 
-	var options []config.Option
+	var commonOptions []config.Option
 
 	// Set flags
 	if all != nil && *all {
@@ -74,54 +77,134 @@ func main() {
 	}
 
 	if schemaStats != nil && *schemaStats {
-		options = append(options, config.WithSchemaStats())
+		commonOptions = append(commonOptions, config.WithSchemaStats())
 	}
 	if recordStats != nil && *recordStats {
-		options = append(options, config.WithRecordStats())
+		commonOptions = append(commonOptions, config.WithRecordStats())
 	}
 	if schemaUpdates != nil && *schemaUpdates {
-		options = append(options, config.WithSchemaUpdates())
+		commonOptions = append(commonOptions, config.WithSchemaUpdates())
 	}
 	if producerStats != nil && *producerStats {
-		options = append(options, config.WithProducerStats())
+		commonOptions = append(commonOptions, config.WithProducerStats())
 	}
 
 	// Set number of rows to display (per payload type)
 	if spans != nil && *spans > 0 {
-		options = append(options, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPANS.String(), *spans))
+		commonOptions = append(commonOptions, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPANS.String(), *spans))
 	}
 	if resourceAttrs != nil && *resourceAttrs > 0 {
-		options = append(options, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_RESOURCE_ATTRS.String(), *resourceAttrs))
+		commonOptions = append(commonOptions, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_RESOURCE_ATTRS.String(), *resourceAttrs))
 	}
 	if spanAttrs != nil && *spanAttrs > 0 {
-		options = append(options, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_ATTRS.String(), *spanAttrs))
+		commonOptions = append(commonOptions, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_ATTRS.String(), *spanAttrs))
 	}
 	if spanEvents != nil && *spanEvents > 0 {
-		options = append(options, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_EVENTS.String(), *spanEvents))
+		commonOptions = append(commonOptions, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_EVENTS.String(), *spanEvents))
 	}
 	if spanLinks != nil && *spanLinks > 0 {
-		options = append(options, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_LINKS.String(), *spanLinks))
+		commonOptions = append(commonOptions, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_LINKS.String(), *spanLinks))
 	}
 	if spanEventAttrs != nil && *spanEventAttrs > 0 {
-		options = append(options, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_EVENT_ATTRS.String(), *spanEventAttrs))
+		commonOptions = append(commonOptions, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_EVENT_ATTRS.String(), *spanEventAttrs))
 	}
 	if spanLinkAttrs != nil && *spanLinkAttrs > 0 {
-		options = append(options, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_LINK_ATTRS.String(), *spanLinkAttrs))
+		commonOptions = append(commonOptions, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_LINK_ATTRS.String(), *spanLinkAttrs))
 	}
 
-	var producerWithoutCompression *arrow_record.Producer
+	// Preload all datasets
+	datasets := loadAllDatasets(inputFiles, format)
 
-	if compressionRatio != nil && *compressionRatio {
-		producerWithoutCompression = arrow_record.NewProducerWithOptions(config.WithCompressionRatioStats(), config.WithNoZstd())
-		options = append(options, config.WithCompressionRatioStats())
+	if testSorting != nil && *testSorting {
+		// Run all possible combinations of sorting options
+		// One trial per combination
+		results := make(map[string]int64)
+		totalNumberOfTrials := len(config.OrderSpanByVariants) * len(config.OrderAttrs32ByVariants)
+
+		// Run all possible combinations of sorting options.
+		// This is a brute force approach, but it's fine for now since we
+		// don't have a lot of options.
+		// If the number of options increases, we should consider a more
+		// efficient approach such as black box optimization.
+		for orderSpanByLabel, orderSpanBy := range config.OrderSpanByVariants {
+			for orderAttrs32ByLabel, orderByAttrs32 := range config.OrderAttrs32ByVariants {
+				withoutCompressionOptions := []config.Option{
+					config.WithNoZstd(),
+					config.WithCompressionRatioStats(),
+					config.WithOrderSpanBy(orderSpanBy),
+					config.WithOrderAttrs32By(orderByAttrs32),
+				}
+				withCompressionOptions := append([]config.Option{
+					config.WithZstd(),
+					config.WithCompressionRatioStats(),
+					config.WithOrderSpanBy(orderSpanBy),
+					config.WithOrderAttrs32By(orderByAttrs32),
+				}, commonOptions...)
+
+				println("=====================================================================")
+				fmt.Printf("Trial %d/%d with parameters => order spans with %q, order attrs32 by %q\n",
+					len(results)+1, totalNumberOfTrials, orderSpanByLabel, orderAttrs32ByLabel)
+
+				totalCompressedSize := runTrial(datasets, defaultBatchSize, withoutCompressionOptions, withCompressionOptions)
+				results[fmt.Sprintf("spans order by: %s - attrs 32 order by: %s", orderSpanByLabel, orderAttrs32ByLabel)] = totalCompressedSize
+			}
+		}
+		minTotalSize := int64(0)
+		minTotalLabel := ""
+		for label, totalSize := range results {
+			if minTotalSize == 0 || totalSize < minTotalSize {
+				minTotalSize = totalSize
+				minTotalLabel = label
+			}
+		}
+		fmt.Printf("Min total size: %d bytes for %s\n", minTotalSize, minTotalLabel)
+	} else {
+		// Run a single trial with the default sorting options
+		var withoutCompressionOptions []config.Option
+
+		withCompressionOptions := append([]config.Option{
+			config.WithZstd(),
+		}, commonOptions...)
+
+		if compressionRatio != nil && *compressionRatio {
+			withoutCompressionOptions = []config.Option{
+				config.WithNoZstd(),
+				config.WithCompressionRatioStats(),
+			}
+			withCompressionOptions = append(withCompressionOptions, config.WithCompressionRatioStats())
+		}
+
+		runTrial(datasets, defaultBatchSize, withoutCompressionOptions, withCompressionOptions)
 	}
-	producerWithCompression := arrow_record.NewProducerWithOptions(append(options, config.WithZstd())...)
+}
 
-	// Analyze all files and report statistics
+// loadAllDatasets loads all datasets from the input files.
+func loadAllDatasets(inputFiles []string, format *string) []*dataset.RealTraceDataset {
+	var datasets []*dataset.RealTraceDataset
+
 	for i := range inputFiles {
 		ds := dataset.NewRealTraceDataset(inputFiles[i], benchmark.CompressionTypeZstd, *format, []string{"trace_id"})
-		ds.Resize(4000)
+		datasets = append(datasets, ds)
+	}
 
+	return datasets
+}
+
+// runTrial runs a single trial with the given options.
+func runTrial(
+	datasets []*dataset.RealTraceDataset,
+	defaultBatchSize *int,
+	withoutCompressionOptions []config.Option,
+	withCompressionOptions []config.Option) int64 {
+	var producerWithoutCompression *arrow_record.Producer
+
+	if withoutCompressionOptions != nil && len(withoutCompressionOptions) > 0 {
+		producerWithoutCompression = arrow_record.NewProducerWithOptions(withoutCompressionOptions...)
+	}
+	producerWithCompression := arrow_record.NewProducerWithOptions(withCompressionOptions...)
+
+	// Analyze all datasets and report statistics
+	for _, ds := range datasets {
 		startAt := 0
 
 		for startAt < ds.Len() {
@@ -142,13 +225,20 @@ func main() {
 	}
 
 	producerWithCompression.ShowStats()
+	withCompressionStats := producerWithCompression.RecordSizeStats()
 
 	if producerWithoutCompression != nil {
 		withoutCompressionStats := producerWithoutCompression.RecordSizeStats()
-		withCompressionStats := producerWithCompression.RecordSizeStats()
 		println()
 		stats.CompareRecordSizeStats(withCompressionStats, withoutCompressionStats)
 	}
+
+	totalSize := int64(0)
+	for _, s := range withCompressionStats {
+		totalSize += s.TotalSize
+	}
+
+	return totalSize
 }
 
 func min(a, b int) int {
