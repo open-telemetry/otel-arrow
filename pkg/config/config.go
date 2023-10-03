@@ -27,6 +27,7 @@ import (
 
 type OrderSpanBy int8
 
+// Enumeration defining how to order spans in a batch.
 const (
 	OrderSpanByNothing OrderSpanBy = iota
 	OrderSpanByNameTraceID
@@ -37,6 +38,9 @@ const (
 	OrderSpanByStartTimeNameTraceID
 )
 
+// OrderSpanByVariants is a map of string to OrderSpanBy.
+// It is used to iterate over the possible values of OrderSpanBy.
+// This map must be kept in sync with the OrderSpanBy enumeration.
 var OrderSpanByVariants = map[string]OrderSpanBy{
 	"":                         OrderSpanByNothing,
 	"name,trace_id":            OrderSpanByNameTraceID,
@@ -49,6 +53,8 @@ var OrderSpanByVariants = map[string]OrderSpanBy{
 
 type OrderAttrs32By int8
 
+// Enumeration defining how to order attributes in a batch
+// (with 32bits attribute ID).
 const (
 	OrderAttrs32ByNothing OrderAttrs32By = iota
 	OrderAttrs32ByTypeParentIdKeyValue
@@ -57,6 +63,9 @@ const (
 	OrderAttrs32ByKeyValueParentId
 )
 
+// OrderAttrs32ByVariants is a map of string to OrderAttrs32By.
+// It is used to iterate over the possible values of OrderAttrs32By.
+// This map must be kept in sync with the OrderAttrs32By enumeration.
 var OrderAttrs32ByVariants = map[string]OrderAttrs32By{
 	"":                         OrderAttrs32ByNothing,
 	"type,parent_id,key,value": OrderAttrs32ByTypeParentIdKeyValue,
