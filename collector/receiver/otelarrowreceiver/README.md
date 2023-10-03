@@ -165,6 +165,32 @@ of data being returned from the receiver will be instrumented:
 - `receiver_sent`: uncompressed bytes sent, prior to compression
 - `receiver_sent_wire`: compressed bytes sent, on the wire.
 
+There several OTel-Arrow-consumer related metrics available to help
+diagnose internal performance.  These are disabled at the basic level
+of detail.  At the normal level, these metrics are introduced:
+
+- `arrow_batch_records`: Counter of Arrow-IPC records processed
+- `arrow_memory_inuse`: UpDownCounter of memory in use by current streams
+- `arrow_schema_resets`: Counter of times the schema was adjusted, by data type.
+
+When the configured metrics level is "detailed" unique consumer ID
+corresponding with a single gRPC stream will be attached to the
+counters, for example:
+
+```
+service
+  ...
+  telemetry:
+    ...
+    metrics:
+	  ...
+      level: detailed
+```
+
+We recommend to use the "lowmemory" temporality preference combined
+with detail-level metrics in the OTel SDK.  (TODO: Document how to do
+this after the Collector's OTel SDK is configurable.)
+
 ## HTTP-specific documentation
 
 To enable optional OTLP/HTTP support, the HTTP protocol must be
