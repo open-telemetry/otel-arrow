@@ -305,7 +305,8 @@ func (b *Attrs32Builder) ShowSchema() {
 	b.builder.ShowSchema()
 }
 
-func FindOrderByFunc(orderBy config.OrderAttrs32By) Attrs32Sorter {
+// Attrs32FindOrderByFunc returns the sorter for the given order by
+func Attrs32FindOrderByFunc(orderBy config.OrderAttrs32By) Attrs32Sorter {
 	switch orderBy {
 	case config.OrderAttrs32ByNothing:
 		return &Attrs32ByNothing{}
@@ -545,7 +546,7 @@ func (s *Attrs32ByKeyValueParentId) Sort(attrs []Attr32) []string {
 			return attrsI.Key < attrsJ.Key
 		}
 	})
-	return []string{constants.AttributeType, constants.Value, constants.AttributeKey, constants.ParentID}
+	return []string{constants.AttributeKey, constants.Value, constants.ParentID}
 }
 
 func (s *Attrs32ByKeyValueParentId) Encode(parentID uint32, key string, value *pcommon.Value) uint32 {

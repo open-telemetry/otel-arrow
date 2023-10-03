@@ -119,34 +119,38 @@ func main() {
 		// Run all possible combinations of sorting options
 		// One trial per combination
 		results := make(map[string]int64)
-		totalNumberOfTrials := len(config.OrderSpanByVariants) * len(config.OrderAttrs32ByVariants)
+		totalNumberOfTrials := len(config.OrderSpanByVariants) * len(config.OrderAttrs16ByVariants) * len(config.OrderAttrs32ByVariants)
 
 		// Run all possible combinations of sorting options.
 		// This is a brute force approach, but it's fine for now since we
-		// don't have a lot of options.
+		// don't have a lot of options (140 options).
 		// If the number of options increases, we should consider a more
 		// efficient approach such as black box optimization.
 		for orderSpanByLabel, orderSpanBy := range config.OrderSpanByVariants {
-			for orderAttrs32ByLabel, orderByAttrs32 := range config.OrderAttrs32ByVariants {
-				withoutCompressionOptions := []config.Option{
-					config.WithNoZstd(),
-					config.WithCompressionRatioStats(),
-					config.WithOrderSpanBy(orderSpanBy),
-					config.WithOrderAttrs32By(orderByAttrs32),
+			for orderAttrs16ByLabel, orderByAttrs16 := range config.OrderAttrs16ByVariants {
+				for orderAttrs32ByLabel, orderByAttrs32 := range config.OrderAttrs32ByVariants {
+					withoutCompressionOptions := []config.Option{
+						config.WithNoZstd(),
+						config.WithCompressionRatioStats(),
+						config.WithOrderSpanBy(orderSpanBy),
+						config.WithOrderAttrs16By(orderByAttrs16),
+						config.WithOrderAttrs32By(orderByAttrs32),
+					}
+					withCompressionOptions := append([]config.Option{
+						config.WithZstd(),
+						config.WithCompressionRatioStats(),
+						config.WithOrderSpanBy(orderSpanBy),
+						config.WithOrderAttrs16By(orderByAttrs16),
+						config.WithOrderAttrs32By(orderByAttrs32),
+					}, commonOptions...)
+
+					println("=====================================================================")
+					fmt.Printf("Trial %d/%d with parameters => order spans with %q, order attrs16 by %q, order attrs32 by %q\n",
+						len(results)+1, totalNumberOfTrials, orderSpanByLabel, orderAttrs16ByLabel, orderAttrs32ByLabel)
+
+					totalCompressedSize := runTrial(datasets, defaultBatchSize, withoutCompressionOptions, withCompressionOptions)
+					results[fmt.Sprintf("spans order by: %s - attrs 16 order by: %s - attrs 32 order by: %s", orderSpanByLabel, orderAttrs16ByLabel, orderAttrs32ByLabel)] = totalCompressedSize
 				}
-				withCompressionOptions := append([]config.Option{
-					config.WithZstd(),
-					config.WithCompressionRatioStats(),
-					config.WithOrderSpanBy(orderSpanBy),
-					config.WithOrderAttrs32By(orderByAttrs32),
-				}, commonOptions...)
-
-				println("=====================================================================")
-				fmt.Printf("Trial %d/%d with parameters => order spans with %q, order attrs32 by %q\n",
-					len(results)+1, totalNumberOfTrials, orderSpanByLabel, orderAttrs32ByLabel)
-
-				totalCompressedSize := runTrial(datasets, defaultBatchSize, withoutCompressionOptions, withCompressionOptions)
-				results[fmt.Sprintf("spans order by: %s - attrs 32 order by: %s", orderSpanByLabel, orderAttrs32ByLabel)] = totalCompressedSize
 			}
 		}
 		minTotalSize := int64(0)

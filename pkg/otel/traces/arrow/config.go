@@ -65,12 +65,7 @@ func NewConfig(globalConf *cfg.Config) *Config {
 	return &Config{
 		Global: globalConf,
 		Span: &SpanConfig{
-			//Sorter: SortSpansByResourceSpanIdScopeSpanIdNameTraceId(),
-			//Sorter: SortSpansByResourceSpanIdScopeSpanIdTraceIdName(),
-			//Sorter: SortSpansByResourceSpanIdScopeSpanIdNameStartTimestamp(),
-			//Sorter: SortSpansByResourceSpanIdScopeSpanIdStartTimestampTraceIdName(),
-			//Sorter: SortSpansByResourceSpanIdScopeSpanIdStartTimestampNameTraceId(),
-			Sorter: SortSpansByResourceSpanIdScopeSpanIdNameTraceIdStartTimestamp(),
+			Sorter: SortSpansByResourceSpanIdScopeSpanIdNameTraceId(),
 		},
 		Event: &EventConfig{
 			Sorter: SortEventsByNameParentId(),
@@ -80,22 +75,19 @@ func NewConfig(globalConf *cfg.Config) *Config {
 		},
 		Attrs: &AttrsConfig{
 			Resource: &arrow.Attrs16Config{
-				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs16ByTypeKeyValueParentId(),
 			},
 			Scope: &arrow.Attrs16Config{
-				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs16ByTypeKeyValueParentId(),
 			},
 			Span: &arrow.Attrs16Config{
-				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs16ByTypeKeyValueParentId(),
 			},
 			Event: &arrow.Attrs32Config{
 				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
-				// Sorter: arrow.SortAttrs32ByKeyValueParentId(),
-				//Sorter:           arrow.SortAttrs32ByTypeParentIdKeyValue(),
 			},
 			Link: &arrow.Attrs32Config{
 				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
-				//Sorter:           arrow.SortAttrs32ByTypeParentIdKeyValue(),
 			},
 		},
 	}

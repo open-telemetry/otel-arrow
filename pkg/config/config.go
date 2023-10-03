@@ -74,6 +74,27 @@ var OrderAttrs32ByVariants = map[string]OrderAttrs32By{
 	"key,value,parent_id":      OrderAttrs32ByKeyValueParentId,
 }
 
+type OrderAttrs16By int8
+
+// Enumeration defining how to order attributes in a batch
+// (with 16bits attribute ID).
+const (
+	OrderAttrs16ByNothing OrderAttrs16By = iota
+	OrderAttrs16ByParentIdKeyValue
+	OrderAttrs16ByTypeKeyParentIdValue
+	OrderAttrs16ByTypeKeyValueParentId
+)
+
+// OrderAttrs16ByVariants is a map of string to OrderAttrs16By.
+// It is used to iterate over the possible values of OrderAttrs16By.
+// This map must be kept in sync with the OrderAttrs16By enumeration.
+var OrderAttrs16ByVariants = map[string]OrderAttrs16By{
+	"":                         OrderAttrs16ByNothing,
+	"parent_id,key,value":      OrderAttrs16ByParentIdKeyValue,
+	"type,key,parent_id,value": OrderAttrs16ByTypeKeyParentIdValue,
+	"type,key,value,parent_id": OrderAttrs16ByTypeKeyValueParentId,
+}
+
 type Config struct {
 	Pool memory.Allocator
 
@@ -101,7 +122,11 @@ type Config struct {
 
 	// OrderSpanBy specifies how to order spans in a batch.
 	OrderSpanBy OrderSpanBy
-	// OrderAttrs32By specifies how to order attributes in a batch (with 32bits attribute ID).
+	// OrderAttrs16By specifies how to order attributes in a batch
+	// (with 16bits attribute ID).
+	OrderAttrs16By OrderAttrs16By
+	// OrderAttrs32By specifies how to order attributes in a batch
+	// (with 32bits attribute ID).
 	OrderAttrs32By OrderAttrs32By
 }
 
@@ -124,6 +149,7 @@ func DefaultConfig() *Config {
 		Zstd:           true,
 
 		OrderSpanBy:    OrderSpanByNameTraceID,
+		OrderAttrs16By: OrderAttrs16ByTypeKeyValueParentId,
 		OrderAttrs32By: OrderAttrs32ByTypeKeyValueParentId,
 	}
 }
@@ -271,5 +297,13 @@ func WithOrderSpanBy(orderSpanBy OrderSpanBy) Option {
 func WithOrderAttrs32By(orderAttrs32By OrderAttrs32By) Option {
 	return func(cfg *Config) {
 		cfg.OrderAttrs32By = orderAttrs32By
+	}
+}
+
+// WithOrderAttrs16By specifies how to order attributes in a batch
+// (with 16bits attribute ID).
+func WithOrderAttrs16By(orderAttrs16By OrderAttrs16By) Option {
+	return func(cfg *Config) {
+		cfg.OrderAttrs16By = orderAttrs16By
 	}
 }

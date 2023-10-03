@@ -155,8 +155,14 @@ func NewProducerWithOptions(options ...cfg.Option) *Producer {
 
 	traceCfg := tracesarrow.NewConfig(conf)
 	traceCfg.Span.Sorter = tracesarrow.FindOrderByFunc(conf.OrderSpanBy)
-	traceCfg.Attrs.Event.Sorter = acommon.FindOrderByFunc(conf.OrderAttrs32By)
-	traceCfg.Attrs.Link.Sorter = acommon.FindOrderByFunc(conf.OrderAttrs32By)
+
+	traceCfg.Attrs.Resource.Sorter = acommon.Attrs16FindOrderByFunc(conf.OrderAttrs16By)
+	traceCfg.Attrs.Scope.Sorter = acommon.Attrs16FindOrderByFunc(conf.OrderAttrs16By)
+	traceCfg.Attrs.Span.Sorter = acommon.Attrs16FindOrderByFunc(conf.OrderAttrs16By)
+
+	traceCfg.Attrs.Event.Sorter = acommon.Attrs32FindOrderByFunc(conf.OrderAttrs32By)
+	traceCfg.Attrs.Link.Sorter = acommon.Attrs32FindOrderByFunc(conf.OrderAttrs32By)
+
 	tracesBuilder, err := tracesarrow.NewTracesBuilder(tracesRecordBuilder, traceCfg, stats)
 	if err != nil {
 		panic(err)

@@ -120,10 +120,10 @@ func NewConfig(globalConf *cfg.Config) *Config {
 		},
 		Attrs: &AttrsConfig{
 			Resource: &arrow.Attrs16Config{
-				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs16ByTypeKeyValueParentId(),
 			},
 			Scope: &arrow.Attrs16Config{
-				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs16ByTypeKeyValueParentId(),
 			},
 			NumberDataPoint: &arrow.Attrs32Config{
 				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
