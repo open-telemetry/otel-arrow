@@ -17,8 +17,8 @@
 
 package arrow
 
-// This package contains functions for printing Arrow records to stdout.
-// This is mostly used for debugging purposes.
+// Package providing functions to print Arrow records to stdout for
+// debugging and analysis.
 
 import (
 	"fmt"
@@ -41,6 +41,8 @@ const (
 	CborCode   int8 = 5
 )
 
+// TextColumn memorizes the contents of a column for printing.
+// MaxLen is used to determine the column width.
 type TextColumn struct {
 	Name   string
 	MaxLen int
