@@ -54,6 +54,19 @@ The following screenshot shows the output of the `-span-events=<n>` option.
 
 ![Span event record dump](./imgs/span_event_record.png)
 
+## Test sorting
+
+The option `-test-sorting` can be used to test all the combinations of sorting
+arrow records. This option is useful to ensure that the default sorting is
+working correctly.
+
+> Note: This option should not be combined with any other option.
+ 
+The following screenshot is an example of the output. At the end, the best
+combination is displayed.
+
+![Test sorting](./imgs/test_sorting.png)
+
 ## Schema-stats output
 
 For each batch (i.e. instance of ExportTraceServiceRequest), the following
