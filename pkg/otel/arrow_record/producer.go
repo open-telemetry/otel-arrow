@@ -337,6 +337,10 @@ func (p *Producer) GetAndResetStats() pstats.ProducerStats {
 func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.BatchArrowRecords, error) {
 	oapl := make([]*colarspb.ArrowPayload, len(rms))
 
+	if p.stats.RecordStats {
+		fmt.Printf("==> Batch id %d\n", p.batchId)
+	}
+
 	for i, rm := range rms {
 		err := func() error {
 			defer func() {

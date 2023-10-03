@@ -16,14 +16,14 @@ go run tools/traces_analyzer/main.go -format json -batch-size 2000 -all *.zst
 
 By default, there is no flag enabled. All these flags are cumulative.
 
-| Flag               | Description                                                           |
-|--------------------|-----------------------------------------------------------------------|
-| -schema-stats      | Display Arrow schema statistics (see [details](#schema-stats-output)) |
-| -record-stats      | Display Arrow record statistics                                       |
-| -schema-updates    | Display Arrow schema updates                                          |
-| -producer-stats    | Display OTel Arrow producer statistics                                |
-| -compression-ratio | Display compression ratio per record type                             |  
-| -all               | Display all statistics and updates                                    |
+| Flag               | Description                                                                          |
+|--------------------|--------------------------------------------------------------------------------------|
+| -schema-stats      | Display Arrow schema statistics (see [details](#schema-stats-output))                |
+| -record-stats      | Display Arrow record statistics (see [details](#record-stats-output))                |
+| -schema-updates    | Display Arrow schema updates (see [details](#schema-updates-output))                 | 
+| -producer-stats    | Display OTel Arrow producer statistics (see [details](#producer-stats-output))       |
+| -compression-ratio | Display compression ratio per record type (see [details](#compression-ratio-output)) |  
+| -all               | Display all statistics and updates                                                   |
 
 ## Supported formats
 
@@ -38,6 +38,8 @@ Use the `-format` option to specify the format of your input file.
 
 Use these options to dump <n> rows per Arrow record type (e.g. spans, span-attrs, ...).
 
+> Note: These options require the `-record-stats` flag to be enabled.
+
 | Option                    | Description                                                 |
 |---------------------------|-------------------------------------------------------------|
 | -spans=<#rows>            | Number of spans to display per Arrow record                 |
@@ -47,6 +49,10 @@ Use these options to dump <n> rows per Arrow record type (e.g. spans, span-attrs
 | -span-links=<#rows>       | Number of span links to display per Arrow record            |
 | -span-event-attrs=<#rows> | Number of span event attributes to display per Arrow record |
 | -span-link-attrs=<#rows>  | Number of span link attributes to display per Arrow record  |
+
+The following screenshot shows the output of the `-span-events=<n>` option.
+
+![Span event record dump](./imgs/span_event_record.png)
 
 ## Schema-stats output
 
@@ -66,3 +72,32 @@ At the end a detailed view of the Arrow schema for each record type is displayed
 
 ## Record stats output
 
+This option displays the number of bytes (after compression) per record type for
+each batch. 
+
+![Record stats](./imgs/record_stats.png)
+
+## Schema updates output
+
+This option displays all the schema update events that occurred during the
+processing of the trace dataset. For each schema update, the previous (from) and
+new schema are displayed (to).
+
+![Schema updates](./imgs/schema_updates.png)
+
+## Producer stats output
+
+This option displays various statistics about the OTel Arrow producer. See below
+for more details.
+
+![Producer stats](./imgs/producer_stats.png)
+
+## Compression ratio output
+
+This option displays the compression ratio per record type. The records are
+displayed by decreasing cumulative size.
+
+The total number of bytes across all batches is displayed at the end (compressed
+size).
+
+![Compression ratio](./imgs/compression_ratio.png)

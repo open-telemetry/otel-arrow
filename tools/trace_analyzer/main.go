@@ -224,6 +224,10 @@ func runTrial(
 		}
 	}
 
+	err := producerWithCompression.Close()
+	if err != nil {
+		panic(err)
+	}
 	producerWithCompression.ShowStats()
 	withCompressionStats := producerWithCompression.RecordSizeStats()
 
