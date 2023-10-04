@@ -57,13 +57,13 @@ func NewConfig(globalConf *cfg.Config) *Config {
 		},
 		Attrs: &AttrsConfig{
 			Resource: &arrow.Attrs16Config{
-				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs16ByTypeKeyValueParentId(),
 			},
 			Scope: &arrow.Attrs16Config{
-				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs16ByTypeKeyValueParentId(),
 			},
 			Log: &arrow.Attrs16Config{
-				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs16ByTypeKeyValueParentId(),
 			},
 		},
 	}

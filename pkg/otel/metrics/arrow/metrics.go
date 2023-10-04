@@ -85,7 +85,7 @@ func NewMetricsBuilder(
 		panic(err)
 	}
 
-	if stats.SchemaStatsEnabled {
+	if stats.SchemaStats {
 		optimizer = NewMetricsOptimizer(cfg.Metric.Sorter)
 		analyzer = NewMetricsAnalyzer()
 	} else {

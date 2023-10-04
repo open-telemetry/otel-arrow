@@ -183,17 +183,17 @@ func TestProcessTraces(t *testing.T) {
 	bVal.SetEmptyBytes().FromRaw(byteIDVal)
 
 	expected := map[string]pair{
-		"resource-attr":     cryptPair(processor, resAttrKey, pcommon.NewValueStr(resAttrVal)),
-		"scope-attr":        cryptPair(processor, scopeAttrKey, pcommon.NewValueStr(scopeAttrVal)),
-		"span-attr":         cryptPair(processor, spanAttrKey, pcommon.NewValueStr(spanAttrVal)),
-		"span-link-attr":    cryptPair(processor, spanLinkAttrKey, pcommon.NewValueStr(linkAttrVal)),
-		"span-event-attr":   cryptPair(processor, spanEventAttrKey, pcommon.NewValueStr(eventAttrVal)),
-		"complex-span-attr": cryptPair(processor, "complex-span-attr", csVal),
-		"byte-id":           cryptPair(processor, "byte-id", bVal),
-		"span-event-name":   cryptPair(processor, "span-event-name", pcommon.NewValueStr(eventName)),
+		"resource-attr":      cryptPair(processor, resAttrKey, pcommon.NewValueStr(resAttrVal)),
+		"scope-attr":         cryptPair(processor, scopeAttrKey, pcommon.NewValueStr(scopeAttrVal)),
+		"span-attr":          cryptPair(processor, spanAttrKey, pcommon.NewValueStr(spanAttrVal)),
+		"span-link-attr":     cryptPair(processor, spanLinkAttrKey, pcommon.NewValueStr(linkAttrVal)),
+		"span-event-attr":    cryptPair(processor, spanEventAttrKey, pcommon.NewValueStr(eventAttrVal)),
+		"complex-span-attr":  cryptPair(processor, "complex-span-attr", csVal),
+		"byte-id":            cryptPair(processor, "byte-id", bVal),
+		"span-event-name":    cryptPair(processor, "span-event-name", pcommon.NewValueStr(eventName)),
 		"sensitive-key-name": cryptPair(processor, "sensitive-key-name", pcommon.NewValueStr("dummy name")),
-		"sensitive-version": cryptPair(processor, "sensitive-version", pcommon.NewValueStr("dummy version")),
-		"status-message": cryptPair(processor, "status-message", pcommon.NewValueStr("dummy error message")),
+		"sensitive-version":  cryptPair(processor, "sensitive-version", pcommon.NewValueStr("dummy version")),
+		"status-message":     cryptPair(processor, "status-message", pcommon.NewValueStr("dummy error message")),
 	}
 
 	processedTraces, err := processor.processTraces(context.Background(), traces)

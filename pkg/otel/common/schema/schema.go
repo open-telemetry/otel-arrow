@@ -63,7 +63,7 @@ func Metadata(keys ...MetadataKey) arrow.Metadata {
 }
 
 // NewSchemaFrom creates a new schema from a prototype schema and a transformation tree.
-func NewSchemaFrom(prototype *arrow.Schema, transformTree *TransformNode) *arrow.Schema {
+func NewSchemaFrom(prototype *arrow.Schema, transformTree *TransformNode, md map[string]string) *arrow.Schema {
 	protoFields := prototype.Fields()
 	fields := make([]arrow.Field, 0, len(protoFields))
 
@@ -74,7 +74,8 @@ func NewSchemaFrom(prototype *arrow.Schema, transformTree *TransformNode) *arrow
 		}
 	}
 
-	metadata := cleanMetadata(prototype.Metadata())
+	metadata := cleanMetadata(prototype.Metadata(), md)
+
 	return arrow.NewSchema(fields, &metadata)
 
 }
@@ -93,7 +94,7 @@ func NewFieldFrom(prototype *arrow.Field, transformNode *TransformNode) *arrow.F
 			return nil
 		}
 	}
-	metadata := cleanMetadata(field.Metadata)
+	metadata := cleanMetadata(field.Metadata, nil)
 
 	switch dt := field.Type.(type) {
 	case *arrow.StructType:
@@ -151,9 +152,17 @@ func NewFieldFrom(prototype *arrow.Field, transformNode *TransformNode) *arrow.F
 	}
 }
 
-func cleanMetadata(metadata arrow.Metadata) arrow.Metadata {
-	keys := make([]string, 0, len(metadata.Keys()))
-	values := make([]string, 0, len(metadata.Values()))
+func cleanMetadata(metadata arrow.Metadata, otherMetadata map[string]string) arrow.Metadata {
+	keyCount := len(metadata.Keys())
+	valueCount := len(metadata.Values())
+
+	if otherMetadata != nil {
+		keyCount += len(otherMetadata)
+		valueCount += len(otherMetadata)
+	}
+
+	keys := make([]string, 0, keyCount)
+	values := make([]string, 0, valueCount)
 
 	for i, key := range metadata.Keys() {
 		if key == OptionalKey || key == DictionaryKey {
@@ -161,6 +170,13 @@ func cleanMetadata(metadata arrow.Metadata) arrow.Metadata {
 		}
 		keys = append(keys, key)
 		values = append(values, metadata.Values()[i])
+	}
+
+	if otherMetadata != nil {
+		for key, value := range otherMetadata {
+			keys = append(keys, key)
+			values = append(values, value)
+		}
 	}
 
 	return arrow.NewMetadata(keys, values)
