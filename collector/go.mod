@@ -8,7 +8,7 @@ require (
 	github.com/gogo/protobuf v1.3.2
 	github.com/golang/mock v1.6.0
 	github.com/klauspost/compress v1.16.7
-	github.com/open-telemetry/otel-arrow v0.4.0
+	github.com/open-telemetry/otel-arrow v0.5.0
 	github.com/stretchr/testify v1.8.4
 	go.opentelemetry.io/collector v0.83.0
 	go.opentelemetry.io/collector/component v0.83.0
