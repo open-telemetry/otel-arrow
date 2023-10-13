@@ -679,7 +679,7 @@ func (p *Profiler) ExportMetricsTimesCSV(filePrefix string) {
 		panic(fmt.Sprintf("failed closing the file: %s", err))
 	}
 
-	_, _ = fmt.Fprintf(p.writer, "Time meseasurements exported to %s\n", filename)
+	_, _ = fmt.Fprintf(p.writer, "Time measurements exported to %s\n", filename)
 }
 
 func (p *Profiler) ExportMetricsBytesCSV(filePrefix string) {
@@ -728,7 +728,7 @@ func (p *Profiler) ExportMetricsBytesCSV(filePrefix string) {
 		panic(fmt.Sprintf("failed closing the file: %s", err))
 	}
 
-	_, _ = fmt.Fprintf(p.writer, "Meseasurements of the message sizes exported to %s\n", filename)
+	_, _ = fmt.Fprintf(p.writer, "Measurements of the message sizes exported to %s\n", filename)
 }
 
 func min(a, b int) int {

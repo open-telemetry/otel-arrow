@@ -29,6 +29,7 @@ import (
 	"errors"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/apache/arrow/go/v12/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -94,7 +95,7 @@ type (
 	}
 
 	LinkSorter interface {
-		Sort(links []*Link)
+		Sort(links []*Link) []string
 		Encode(parentID uint16, link *Link) uint16
 		Reset()
 	}
@@ -195,7 +196,8 @@ func (b *LinkBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (reco
 	}
 
 	b.accumulator.sorter.Reset()
-	b.accumulator.sorter.Sort(b.accumulator.links)
+	sortingColumns := b.accumulator.sorter.Sort(b.accumulator.links)
+	b.builder.AddMetadata(constants.SortingColumns, strings.Join(sortingColumns, ","))
 
 	linkID := uint32(0)
 
@@ -292,7 +294,8 @@ func UnsortedLinks() *LinksByNothing {
 	return &LinksByNothing{}
 }
 
-func (s *LinksByNothing) Sort(_ []*Link) {
+func (s *LinksByNothing) Sort(_ []*Link) []string {
+	return []string{}
 }
 
 func (s *LinksByNothing) Encode(parentID uint16, _ *Link) uint16 {
@@ -308,7 +311,7 @@ func SortLinksByTraceIdParentId() *LinksByTraceIdParentId {
 	return &LinksByTraceIdParentId{}
 }
 
-func (s *LinksByTraceIdParentId) Sort(links []*Link) {
+func (s *LinksByTraceIdParentId) Sort(links []*Link) []string {
 	sort.Slice(links, func(i, j int) bool {
 		linkI := links[i]
 		linkJ := links[j]
@@ -320,6 +323,7 @@ func (s *LinksByTraceIdParentId) Sort(links []*Link) {
 			return cmp == -1
 		}
 	})
+	return []string{constants.TraceId, constants.ParentID}
 }
 
 func (s *LinksByTraceIdParentId) Encode(parentID uint16, link *Link) uint16 {

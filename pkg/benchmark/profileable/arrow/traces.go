@@ -55,7 +55,7 @@ func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *be
 		tracesProducerOptions = append(tracesProducerOptions, cfg.WithNoZstd())
 	}
 	if config.Stats {
-		tracesProducerOptions = append(tracesProducerOptions, cfg.WithStats())
+		tracesProducerOptions = append(tracesProducerOptions, cfg.WithSchemaStats())
 	}
 
 	return &TracesProfileable{

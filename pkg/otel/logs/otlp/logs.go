@@ -54,10 +54,10 @@ type LogRecordIDs struct {
 }
 
 // LogsFrom creates a [plog.Logs] from the given Arrow Record.
-// Note: This function consume the record.
+//
+// Important Note: This function doesn't take ownership of the record, so the
+// record must be released by the caller.
 func LogsFrom(record arrow.Record, relatedData *RelatedData) (plog.Logs, error) {
-	defer record.Release()
-
 	logs := plog.NewLogs()
 
 	if relatedData == nil {

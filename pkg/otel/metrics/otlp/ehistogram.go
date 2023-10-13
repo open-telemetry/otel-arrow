@@ -145,9 +145,11 @@ func SchemaToEHistogramIDs(schema *arrow.Schema) (*EHistogramDataPointIDs, error
 	}, nil
 }
 
+// EHistogramDataPointsStoreFrom converts an arrow Record into an EHistogramDataPointsStore.
+//
+// Important Note: This function doesn't take ownership of the record. The
+// caller is responsible for releasing it.
 func EHistogramDataPointsStoreFrom(record arrow.Record, exemplarsStore *ExemplarsStore, attrsStore *otlp.Attributes32Store) (*EHistogramDataPointsStore, error) {
-	defer record.Release()
-
 	store := &EHistogramDataPointsStore{
 		dataPointsByID: make(map[uint16]pmetric.ExponentialHistogramDataPointSlice),
 	}

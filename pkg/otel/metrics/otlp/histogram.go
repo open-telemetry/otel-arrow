@@ -132,9 +132,11 @@ func SchemaToHistogramIDs(schema *arrow.Schema) (*HistogramDataPointIDs, error) 
 	}, nil
 }
 
+// HistogramDataPointsStoreFrom converts an arrow Record to a HistogramDataPointsStore.
+//
+// Important Note: This function doesn't take ownership of the record. The
+// caller is responsible for releasing it.
 func HistogramDataPointsStoreFrom(record arrow.Record, exemplarsStore *ExemplarsStore, attrsStore *otlp.Attributes32Store) (*HistogramDataPointsStore, error) {
-	defer record.Release()
-
 	store := &HistogramDataPointsStore{
 		dataPointsByID: make(map[uint16]pmetric.HistogramDataPointSlice),
 	}

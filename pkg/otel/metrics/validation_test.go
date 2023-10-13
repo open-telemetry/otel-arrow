@@ -163,9 +163,8 @@ func CheckEncodeDecode(t *testing.T, expectedRequest pmetricotlp.ExportRequest) 
 
 	// Convert the Arrow records back to OTLP.
 	metrics, err := otlp.MetricsFrom(record, relatedData)
-	require.NoError(t, err)
-
 	record.Release()
+	require.NoError(t, err)
 
 	assert.Equiv(stdTesting, []json.Marshaler{expectedRequest}, []json.Marshaler{pmetricotlp.NewExportRequestFromMetrics(metrics)})
 }
@@ -224,12 +223,11 @@ func OneRoundOfMessUpArrowRecords(t *testing.T, expectedRequest pmetricotlp.Expo
 
 	// Convert the Arrow records back to OTLP.
 	_, err = otlp.MetricsFrom(record, relatedData)
+	record.Release()
 
 	if mainRecordChanged || relatedData == nil {
 		require.Error(t, err)
 	} else {
 		require.NoError(t, err)
 	}
-
-	record.Release()
 }

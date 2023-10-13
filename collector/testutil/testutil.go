@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package testutil // import "github.com/open-telemetry/otel-arrow/collector/internal/testutil"
+package testutil // import "github.com/open-telemetry/otel-arrow/collector/testutil"
 
 import (
 	"net"

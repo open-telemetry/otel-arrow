@@ -28,6 +28,7 @@ import (
 	"errors"
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/apache/arrow/go/v12/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -90,7 +91,7 @@ type (
 	}
 
 	EventSorter interface {
-		Sort(events []*Event)
+		Sort(events []*Event) []string
 		Encode(parentID uint16, event *Event) uint16
 		Reset()
 	}
@@ -185,7 +186,8 @@ func (b *EventBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (rec
 	}
 
 	b.accumulator.sorter.Reset()
-	b.accumulator.sorter.Sort(b.accumulator.events)
+	sortingColumns := b.accumulator.sorter.Sort(b.accumulator.events)
+	b.builder.AddMetadata(constants.SortingColumns, strings.Join(sortingColumns, ","))
 
 	eventID := uint32(0)
 
@@ -288,7 +290,8 @@ func UnsortedEvents() *EventsByNothing {
 	return &EventsByNothing{}
 }
 
-func (s *EventsByNothing) Sort(_ []*Event) {
+func (s *EventsByNothing) Sort(_ []*Event) []string {
+	return []string{}
 }
 
 func (s *EventsByNothing) Encode(parentID uint16, _ *Event) uint16 {
@@ -304,7 +307,7 @@ func SortEventsByNameTimeUnixNano() *EventsByNameTimeUnixNano {
 	return &EventsByNameTimeUnixNano{}
 }
 
-func (s *EventsByNameTimeUnixNano) Sort(events []*Event) {
+func (s *EventsByNameTimeUnixNano) Sort(events []*Event) []string {
 	sort.Slice(events, func(i, j int) bool {
 		if events[i].Name == events[j].Name {
 			return events[i].TimeUnixNano < events[j].TimeUnixNano
@@ -312,6 +315,7 @@ func (s *EventsByNameTimeUnixNano) Sort(events []*Event) {
 			return events[i].Name < events[j].Name
 		}
 	})
+	return []string{constants.Name, constants.TimeUnixNano}
 }
 
 func (s *EventsByNameTimeUnixNano) Encode(parentID uint16, _ *Event) uint16 {
@@ -331,7 +335,7 @@ func SortEventsByNameParentId() *EventsByNameParentId {
 	return &EventsByNameParentId{}
 }
 
-func (s *EventsByNameParentId) Sort(events []*Event) {
+func (s *EventsByNameParentId) Sort(events []*Event) []string {
 	sort.Slice(events, func(i, j int) bool {
 		if events[i].Name == events[j].Name {
 			return events[i].ParentID < events[j].ParentID
@@ -339,6 +343,7 @@ func (s *EventsByNameParentId) Sort(events []*Event) {
 			return events[i].Name < events[j].Name
 		}
 	})
+	return []string{constants.Name, constants.ParentID}
 }
 
 func (s *EventsByNameParentId) Encode(parentID uint16, event *Event) uint16 {

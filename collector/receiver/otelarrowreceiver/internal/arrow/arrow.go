@@ -27,8 +27,8 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/extension/auth"
-	"go.opentelemetry.io/collector/obsreport"
 	"go.opentelemetry.io/collector/receiver"
+	"go.opentelemetry.io/collector/receiver/receiverhelper"
 )
 
 const (
@@ -58,7 +58,7 @@ type Receiver struct {
 	arrowpb.UnsafeArrowMetricsServiceServer
 
 	telemetry   component.TelemetrySettings
-	obsrecv     *obsreport.Receiver
+	obsrecv     *receiverhelper.ObsReport
 	gsettings   *configgrpc.GRPCServerSettings
 	authServer  auth.Server
 	newConsumer func() arrowRecord.ConsumerAPI
@@ -68,7 +68,7 @@ type Receiver struct {
 func New(
 	cs Consumers,
 	set receiver.CreateSettings,
-	obsrecv *obsreport.Receiver,
+	obsrecv *receiverhelper.ObsReport,
 	gsettings *configgrpc.GRPCServerSettings,
 	authServer auth.Server,
 	newConsumer func() arrowRecord.ConsumerAPI,
@@ -301,7 +301,7 @@ func (r *Receiver) anyStream(serverStream anyStreamServer) (retErr error) {
 			// client called CloseSend()
 			if err == io.EOF {
 				status := &arrowpb.BatchStatus{}
-				status.StatusCode = arrowpb.StatusCode_STREAM_SHUTDOWN
+				status.StatusCode = arrowpb.StatusCode_CANCELED
 				err = serverStream.Send(status)
 				if err != nil {
 					r.logStreamError(err)
@@ -349,8 +349,10 @@ func (r *Receiver) anyStream(serverStream anyStreamServer) (retErr error) {
 			status.StatusCode = arrowpb.StatusCode_OK
 		} else {
 			status.StatusMessage = err.Error()
-
-			if consumererror.IsPermanent(err) {
+			if errors.Is(err, arrowRecord.ErrConsumerMemoryLimit) {
+				r.telemetry.Logger.Error("arrow resource exhausted", zap.Error(err))
+				status.StatusCode = arrowpb.StatusCode_RESOURCE_EXHAUSTED
+			} else if consumererror.IsPermanent(err) {
 				r.telemetry.Logger.Error("arrow data error", zap.Error(err))
 				status.StatusCode = arrowpb.StatusCode_INVALID_ARGUMENT
 			} else {

@@ -20,7 +20,6 @@ package arrow
 import (
 	"bytes"
 	"math"
-	"strings"
 
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/array"
@@ -78,7 +77,7 @@ type (
 
 	// Attrs16Sorter is used to sort attributes with 16-bit ParentIDs.
 	Attrs16Sorter interface {
-		Sort(attrs []Attr16)
+		Sort(attrs []Attr16) []string
 		Encode(parentID uint16, key string, value *pcommon.Value) uint16
 		Reset()
 	}
@@ -92,7 +91,7 @@ type (
 
 	// Attrs32Sorter is used to sort attributes with 32-bit ParentIDs.
 	Attrs32Sorter interface {
-		Sort(attrs []Attr32)
+		Sort(attrs []Attr32) []string
 		Encode(parentID uint32, key string, value *pcommon.Value) uint32
 		Reset()
 	}
@@ -258,9 +257,10 @@ func (c *Attributes16Accumulator) AppendWithID(parentID uint16, attrs pcommon.Ma
 // Sort sorts the attributes based on the provided sorter.
 // The sorter is part of the global configuration and can be different for
 // different payload types.
-func (c *Attributes16Accumulator) Sort() {
-	c.sorter.Sort(c.attrs)
+func (c *Attributes16Accumulator) Sort() []string {
+	sortingColumns := c.sorter.Sort(c.attrs)
 	c.sorter.Reset()
+	return sortingColumns
 }
 
 func (c *Attributes16Accumulator) Reset() {
@@ -311,9 +311,10 @@ func (c *Attributes32Accumulator) Append(ID uint32, attrs pcommon.Map) error {
 // Sort sorts the attributes based on the provided sorter.
 // The sorter is part of the global configuration and can be different for
 // different payload types.
-func (c *Attributes32Accumulator) Sort() {
-	c.sorter.Sort(c.attrs)
+func (c *Attributes32Accumulator) Sort() []string {
+	sortingColumns := c.sorter.Sort(c.attrs)
 	c.sorter.Reset()
+	return sortingColumns
 }
 
 func (c *Attributes32Accumulator) Reset() {
@@ -457,7 +458,8 @@ func Compare(a, b *pcommon.Value) int {
 		}
 	case pcommon.ValueTypeStr:
 		if b.Type() == pcommon.ValueTypeStr {
-			return strings.Compare(a.Str(), b.Str())
+			// Compare strings as bytes (in case strings are not utf8)
+			return bytes.Compare([]byte(a.Str()), []byte(b.Str()))
 		} else {
 			return 1
 		}

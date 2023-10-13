@@ -41,5 +41,17 @@ these components are copied into the [OpenTelemetry Collector
 Contrib](https://github.com/open-telemetry/opentelemetry-collector-contrib)
 repository.
 
+### How to change the protobuf specification
+
+To (re)generate the ArrowStreamService gRPC service, you need to install the `protoc` compiler and the `protoc-gen-grpc` plugin.
+```shell
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.2
+export PATH="$PATH:$(go env GOPATH)/bin"
+./proto/generate.sh
+```
+Once the `*.pb.go` files are generated, you need to replace the content of the `api/collector/arrow/v1` directory by the
+generated files present in the `./proto/api/collector/arrow/v1` directory.
+
 TODO: Update this document with links when the components are
 includeded in their first `collector-contrib` release.

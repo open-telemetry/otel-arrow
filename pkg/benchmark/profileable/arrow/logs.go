@@ -57,7 +57,7 @@ func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *benc
 		logsProducerOptions = append(logsProducerOptions, cfg.WithNoZstd())
 	}
 	if config.Stats {
-		logsProducerOptions = append(logsProducerOptions, cfg.WithStats())
+		logsProducerOptions = append(logsProducerOptions, cfg.WithSchemaStats())
 	}
 
 	producer := arrow_record.NewProducerWithOptions(logsProducerOptions...)

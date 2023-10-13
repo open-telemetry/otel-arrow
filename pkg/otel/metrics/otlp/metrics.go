@@ -43,9 +43,10 @@ type (
 )
 
 // MetricsFrom creates a [pmetric.Metrics] from the given Arrow Record.
+//
+// Important Note: This function doesn't take ownership of the record, so the
+// record must be released by the caller.
 func MetricsFrom(record arrow.Record, relatedData *RelatedData) (pmetric.Metrics, error) {
-	defer record.Release()
-
 	metrics := pmetric.NewMetrics()
 
 	if relatedData == nil {

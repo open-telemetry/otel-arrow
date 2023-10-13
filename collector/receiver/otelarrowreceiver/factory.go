@@ -6,7 +6,7 @@ package otelarrowreceiver // import "github.com/open-telemetry/otel-arrow/collec
 import (
 	"context"
 
-	"github.com/open-telemetry/otel-arrow/collector/internal/sharedcomponent"
+	"github.com/open-telemetry/otel-arrow/collector/sharedcomponent"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confighttp"
@@ -24,6 +24,8 @@ const (
 	defaultTracesURLPath  = "/v1/traces"
 	defaultMetricsURLPath = "/v1/metrics"
 	defaultLogsURLPath    = "/v1/logs"
+
+	defaultMemoryLimit = 128 << 20 // 128MB
 )
 
 // NewFactory creates a new OTLP receiver factory.
@@ -56,7 +58,9 @@ func createDefaultConfig() component.Config {
 				MetricsURLPath: defaultMetricsURLPath,
 				LogsURLPath:    defaultLogsURLPath,
 			},
-			Arrow: &ArrowSettings{},
+			Arrow: &ArrowSettings{
+				MemoryLimit: defaultMemoryLimit,
+			},
 		},
 	}
 }

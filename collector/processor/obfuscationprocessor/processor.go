@@ -142,10 +142,13 @@ func (o *obfuscation) processResourceSpan(ctx context.Context, rs ptrace.Resourc
 		ils := rs.ScopeSpans().At(j)
 		ilsScopeAttrs := ils.Scope().Attributes()
 		o.processAttrs(ctx, ilsScopeAttrs)
+		ils.Scope().SetName(o.encryptString(ils.Scope().Name()))
+		ils.Scope().SetVersion(o.encryptString(ils.Scope().Version()))
 
 		for k := 0; k < ils.Spans().Len(); k++ {
 			span := ils.Spans().At(k)
 			span.SetName(o.encryptString(span.Name()))
+			span.Status().SetMessage(o.encryptString(span.Status().Message()))
 			spanAttrs := span.Attributes()
 
 			// Attributes can also be part of span
@@ -158,6 +161,7 @@ func (o *obfuscation) processResourceSpan(ctx context.Context, rs ptrace.Resourc
 func (o *obfuscation) processEventAndLinkAttrs(ctx context.Context, span ptrace.Span) {
 	for i := 0; i < span.Events().Len(); i++ {
 		ev := span.Events().At(i)
+		ev.SetName(o.encryptString(ev.Name()))
 		o.processAttrs(ctx, ev.Attributes())
 	}
 

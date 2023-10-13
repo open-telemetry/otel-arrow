@@ -22,15 +22,15 @@ import (
 )
 
 type LimitedAllocator struct {
-	mem   memory.Allocator
-	inuse uint64
-	limit uint64
+	Allocator memory.Allocator
+	inuse     uint64
+	limit     uint64
 }
 
-func NewLimitedAllocator(mem memory.Allocator, limit uint64) *LimitedAllocator {
+func NewLimitedAllocator(allocator memory.Allocator, limit uint64) *LimitedAllocator {
 	return &LimitedAllocator{
-		mem:   mem,
-		limit: limit,
+		Allocator: allocator,
+		limit:     limit,
 	}
 }
 
@@ -53,6 +53,10 @@ func (_ LimitError) Is(tgt error) bool {
 	return ok
 }
 
+func (l *LimitedAllocator) Inuse() uint64 {
+	return l.inuse
+}
+
 func (l *LimitedAllocator) Allocate(size int) []byte {
 	change := uint64(size)
 	if l.inuse+change > l.limit {
@@ -67,7 +71,7 @@ func (l *LimitedAllocator) Allocate(size int) []byte {
 		panic(err)
 	}
 
-	res := l.mem.Allocate(size)
+	res := l.Allocator.Allocate(size)
 
 	// This update will be skipped if Allocate() panics.
 	l.inuse += change
@@ -88,7 +92,7 @@ func (l *LimitedAllocator) Reallocate(size int, b []byte) []byte {
 		panic(err)
 	}
 
-	res := l.mem.Reallocate(size, b)
+	res := l.Allocator.Reallocate(size, b)
 
 	// This update will be skipped if Reallocate() panics.
 	l.inuse += change
@@ -96,7 +100,7 @@ func (l *LimitedAllocator) Reallocate(size int, b []byte) []byte {
 }
 
 func (l *LimitedAllocator) Free(b []byte) {
-	l.mem.Free(b)
+	l.Allocator.Free(b)
 
 	// This update will be skipped if Free() panics.
 	l.inuse -= uint64(len(b))

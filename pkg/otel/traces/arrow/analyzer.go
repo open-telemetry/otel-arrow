@@ -198,6 +198,7 @@ func (r *ResourceSpansStats) UpdateWith(traces *TracesOptimized) {
 	carrow.RequireNoError(r.ScopeSpansStats.Distribution.RecordValue(int64(scopeSpansCount)))
 
 	r.ScopeSpansStats.SpanStats.TimeIntervalStats.UpdateWithSpans(spans)
+	r.ScopeSpansStats.SpanStats.Distribution.RecordValue(int64(len(spans)))
 }
 
 func (r *ResourceSpansStats) ShowStats(indent string) {

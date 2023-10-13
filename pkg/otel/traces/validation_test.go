@@ -320,9 +320,8 @@ func CheckEncodeDecode(
 
 	// Convert the Arrow record back to OTLP.
 	traces, err := tracesotlp.TracesFrom(record, relatedData)
-	require.NoError(t, err)
-
 	record.Release()
+	require.NoError(t, err)
 
 	assert.Equiv(stdTesting, []json.Marshaler{expectedRequest}, []json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)})
 }
@@ -379,14 +378,13 @@ func CheckEncodeMessUpDecode(
 
 	// Convert the Arrow record back to OTLP.
 	_, err = tracesotlp.TracesFrom(record, relatedData)
+	record.Release()
 
 	if mainRecordChanged || relatedData == nil {
 		require.Error(t, err)
 	} else {
 		require.NoError(t, err)
 	}
-
-	record.Release()
 }
 
 // TestConversionFromRealData tests the conversion of OTLP traces to Arrow and back to OTLP.
@@ -427,6 +425,8 @@ func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportReques
 
 	for {
 		tb, err := tracesarrow.NewTracesBuilder(rBuilder, tracesarrow.NewConfig(conf), stats.NewProducerStats())
+		defer tb.Release()
+
 		require.NoError(t, err)
 		err = tb.Append(expectedRequest.Traces())
 		require.NoError(t, err)
@@ -444,11 +444,10 @@ func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportReques
 
 	// Convert the Arrow records back to OTLP.
 	traces, err := tracesotlp.TracesFrom(record, relatedData)
+	record.Release()
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	defer record.Release()
 
 	assert.Equiv(stdTesting, []json.Marshaler{expectedRequest}, []json.Marshaler{ptraceotlp.NewExportRequestFromTraces(traces)})
 }

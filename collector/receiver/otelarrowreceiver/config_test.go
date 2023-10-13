@@ -131,7 +131,9 @@ func TestUnmarshalConfig(t *testing.T) {
 					MetricsURLPath: "/v2/metrics",
 					LogsURLPath:    "/log/ingest",
 				},
-				Arrow: &ArrowSettings{},
+				Arrow: &ArrowSettings{
+					MemoryLimit: 123456,
+				},
 			},
 		}, cfg)
 
@@ -161,7 +163,9 @@ func TestUnmarshalConfigUnix(t *testing.T) {
 					MetricsURLPath: defaultMetricsURLPath,
 					LogsURLPath:    defaultLogsURLPath,
 				},
-				Arrow: &ArrowSettings{},
+				Arrow: &ArrowSettings{
+					MemoryLimit: defaultMemoryLimit,
+				},
 			},
 		}, cfg)
 }

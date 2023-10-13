@@ -21,7 +21,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter/internal/arrow"
-	"github.com/open-telemetry/otel-arrow/collector/internal/netstats"
+	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/exporter"
@@ -167,7 +167,11 @@ func (e *baseExporter) arrowSendAndWait(ctx context.Context, data interface{}) (
 	if e.arrow == nil {
 		return false, nil
 	}
-	return e.arrow.SendAndWait(ctx, data)
+	sent, err := e.arrow.SendAndWait(ctx, data)
+	if err != nil {
+		return sent, processError(err)
+	}
+	return sent, nil
 }
 
 func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {

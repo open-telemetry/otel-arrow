@@ -193,8 +193,8 @@ func DataTypeToID(dt arrow.DataType) string {
 	return id
 }
 
-func ShowSchema(schema *arrow.Schema, prefix string) {
-	println(prefix + "Schema {")
+func ShowSchema(schema *arrow.Schema, schemaName string, prefix string) {
+	println(prefix + "Schema " + schemaName + " {")
 	for _, f := range schema.Fields() {
 		ShowField(&f, prefix+"  ")
 	}

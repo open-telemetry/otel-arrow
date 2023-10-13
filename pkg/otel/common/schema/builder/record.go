@@ -71,6 +71,9 @@ type RecordBuilderExt struct {
 	// Label is a string that is used to identify the source of the data.
 	// [optional].
 	label string
+
+	// Metadata to be added to the schema.
+	metadata map[string]string
 }
 
 // NewRecordBuilderExt creates a new RecordBuilderExt from the given allocator
@@ -87,7 +90,7 @@ func NewRecordBuilderExt(
 		DictionariesIndexTypeChanged: make(map[string]string),
 	}
 	transformTree, dictTransformNodes := schema.NewTransformTreeFrom(protoSchema, dictConfig, schemaUpdateRequest, evts)
-	s := schema.NewSchemaFrom(protoSchema, transformTree)
+	s := schema.NewSchemaFrom(protoSchema, transformTree, nil)
 	schemaID := carrow.SchemaToID(s)
 	recordBuilder := array.NewRecordBuilder(allocator, s)
 
@@ -101,6 +104,7 @@ func NewRecordBuilderExt(
 		schemaID:           schemaID,
 		events:             evts,
 		stats:              stats,
+		metadata:           make(map[string]string),
 	}
 }
 
@@ -122,6 +126,15 @@ func (rb *RecordBuilderExt) SchemaID() string {
 
 func (rb *RecordBuilderExt) Schema() *arrow.Schema {
 	return rb.recordBuilder.Schema()
+}
+
+func (rb *RecordBuilderExt) AddMetadata(key, value string) {
+	prevValue, ok := rb.metadata[key]
+	if !ok || prevValue != value {
+		rb.metadata[key] = value
+		// If the metadata has changed, then the schema must be updated.
+		rb.updateRequest.Inc()
+	}
 }
 
 func (rb *RecordBuilderExt) Reserve(size int) {
@@ -236,7 +249,7 @@ func (rb *RecordBuilderExt) builder(name string) array.Builder {
 // UpdateSchema updates the schema based on the pending schema update requests
 // the initial prototype schema.
 func (rb *RecordBuilderExt) UpdateSchema() {
-	if rb.stats.SchemaStatsEnabled {
+	if rb.stats.SchemaUpdates {
 		println("=====================================================")
 		fmt.Printf("Updating schema for %q\n", rb.label)
 		println("From =====>")
@@ -244,7 +257,7 @@ func (rb *RecordBuilderExt) UpdateSchema() {
 	}
 
 	rb.transformTree.RevertCounters()
-	s := schema.NewSchemaFrom(rb.protoSchema, rb.transformTree)
+	s := schema.NewSchemaFrom(rb.protoSchema, rb.transformTree, rb.metadata)
 
 	// Build a new record builder with the updated schema
 	// and transfer the dictionaries from the old record builder
@@ -266,7 +279,7 @@ func (rb *RecordBuilderExt) UpdateSchema() {
 	rb.updateRequest.Reset()
 	rb.stats.RecordBuilderStats.SchemaUpdatesPerformed++
 
-	if rb.stats.SchemaStatsEnabled {
+	if rb.stats.SchemaUpdates {
 		println("To =====>")
 		rb.ShowSchema()
 	}

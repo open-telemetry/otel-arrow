@@ -75,21 +75,19 @@ func NewConfig(globalConf *cfg.Config) *Config {
 		},
 		Attrs: &AttrsConfig{
 			Resource: &arrow.Attrs16Config{
-				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs16ByTypeKeyValueParentId(),
 			},
 			Scope: &arrow.Attrs16Config{
-				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs16ByTypeKeyValueParentId(),
 			},
 			Span: &arrow.Attrs16Config{
-				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs16ByTypeKeyValueParentId(),
 			},
 			Event: &arrow.Attrs32Config{
-				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
-				//Sorter:           arrow.SortAttrs32ByTypeParentIdKeyValue(),
+				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
 			},
 			Link: &arrow.Attrs32Config{
-				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
-				//Sorter:           arrow.SortAttrs32ByTypeParentIdKeyValue(),
+				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
 			},
 		},
 	}

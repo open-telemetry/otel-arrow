@@ -7,8 +7,8 @@ import (
 	"context"
 
 	"go.opentelemetry.io/collector/consumer"
-	"go.opentelemetry.io/collector/obsreport"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
+	"go.opentelemetry.io/collector/receiver/receiverhelper"
 )
 
 const dataFormatProtobuf = "protobuf"
@@ -17,11 +17,11 @@ const dataFormatProtobuf = "protobuf"
 type Receiver struct {
 	ptraceotlp.UnimplementedGRPCServer
 	nextConsumer consumer.Traces
-	obsrecv      *obsreport.Receiver
+	obsrecv      *receiverhelper.ObsReport
 }
 
 // New creates a new Receiver reference.
-func New(nextConsumer consumer.Traces, obsrecv *obsreport.Receiver) *Receiver {
+func New(nextConsumer consumer.Traces, obsrecv *receiverhelper.ObsReport) *Receiver {
 	return &Receiver{
 		nextConsumer: nextConsumer,
 		obsrecv:      obsrecv,
