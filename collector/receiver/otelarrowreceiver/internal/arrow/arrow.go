@@ -27,8 +27,8 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/extension/auth"
-	"go.opentelemetry.io/collector/obsreport"
 	"go.opentelemetry.io/collector/receiver"
+	"go.opentelemetry.io/collector/receiver/receiverhelper"
 )
 
 const (
@@ -58,7 +58,7 @@ type Receiver struct {
 	arrowpb.UnsafeArrowMetricsServiceServer
 
 	telemetry   component.TelemetrySettings
-	obsrecv     *obsreport.Receiver
+	obsrecv     *receiverhelper.ObsReport
 	gsettings   *configgrpc.GRPCServerSettings
 	authServer  auth.Server
 	newConsumer func() arrowRecord.ConsumerAPI
@@ -68,7 +68,7 @@ type Receiver struct {
 func New(
 	cs Consumers,
 	set receiver.CreateSettings,
-	obsrecv *obsreport.Receiver,
+	obsrecv *receiverhelper.ObsReport,
 	gsettings *configgrpc.GRPCServerSettings,
 	authServer auth.Server,
 	newConsumer func() arrowRecord.ConsumerAPI,
