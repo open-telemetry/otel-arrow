@@ -8,7 +8,7 @@ require (
 	github.com/gogo/protobuf v1.3.2
 	github.com/golang/mock v1.6.0
 	github.com/klauspost/compress v1.17.0
-	github.com/open-telemetry/otel-arrow v0.5.0
+	github.com/open-telemetry/otel-arrow v0.5.1-0.20231013162502-55cc63ebed1d
 	github.com/stretchr/testify v1.8.4
 	go.opentelemetry.io/collector v0.87.0
 	go.opentelemetry.io/collector/component v0.87.0
@@ -81,7 +81,8 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/asmfmt v1.3.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
-	github.com/knadh/koanf v1.5.0 // indirect
+	github.com/knadh/koanf/maps v0.1.1 // indirect
+	github.com/knadh/koanf/providers/confmap v0.1.0 // indirect
 	github.com/knadh/koanf/v2 v2.0.1 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.17 // indirect
