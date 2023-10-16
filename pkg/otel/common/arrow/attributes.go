@@ -462,9 +462,10 @@ func Compare(a, b *pcommon.Value) int {
 			// Compare strings as bytes (in case strings are not utf8)
 			// Note: this requires Go 1.20, for the new `StringData`.
 			// See e.g., https://blog.devops.dev/fast-string-to-byte-and-byte-to-string-conversion-in-go-1-20-85bdb859ee67
-			abytes := unsafe.Slice(unsafe.StringData(a.Str()), len(a.Str()))
-			bbytes := unsafe.Slice(unsafe.StringData(b.Str()), len(b.Str()))
-			return bytes.Compare(abytes, bbytes)
+			return bytes.Compare(
+				unsafe.Slice(unsafe.StringData(a.Str()), len(a.Str())),
+				unsafe.Slice(unsafe.StringData(b.Str()), len(b.Str())),
+			)
 		} else {
 			return 1
 		}
