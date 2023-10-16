@@ -26,11 +26,11 @@ import (
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/extension/auth"
-	"go.opentelemetry.io/collector/obsreport"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"go.opentelemetry.io/collector/receiver"
+	"go.opentelemetry.io/collector/receiver/receiverhelper"
 )
 
 // otlpReceiver is the type that exposes Trace and Metrics reception.
@@ -46,8 +46,8 @@ type otlpReceiver struct {
 	arrowReceiver   *arrow.Receiver
 	shutdownWG      sync.WaitGroup
 
-	obsrepGRPC *obsreport.Receiver
-	obsrepHTTP *obsreport.Receiver
+	obsrepGRPC *receiverhelper.ObsReport
+	obsrepHTTP *receiverhelper.ObsReport
 	netStats   *netstats.NetworkReporter
 
 	settings receiver.CreateSettings
@@ -70,7 +70,7 @@ func newOtlpReceiver(cfg *Config, set receiver.CreateSettings) (*otlpReceiver, e
 		r.httpMux = http.NewServeMux()
 	}
 
-	r.obsrepGRPC, err = obsreport.NewReceiver(obsreport.ReceiverSettings{
+	r.obsrepGRPC, err = receiverhelper.NewObsReport(receiverhelper.ObsReportSettings{
 		ReceiverID:             set.ID,
 		Transport:              "grpc",
 		ReceiverCreateSettings: set,
@@ -78,7 +78,7 @@ func newOtlpReceiver(cfg *Config, set receiver.CreateSettings) (*otlpReceiver, e
 	if err != nil {
 		return nil, err
 	}
-	r.obsrepHTTP, err = obsreport.NewReceiver(obsreport.ReceiverSettings{
+	r.obsrepHTTP, err = receiverhelper.NewObsReport(receiverhelper.ObsReportSettings{
 		ReceiverID:             set.ID,
 		Transport:              "http",
 		ReceiverCreateSettings: set,
