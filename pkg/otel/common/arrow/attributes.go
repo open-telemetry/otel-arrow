@@ -20,6 +20,7 @@ package arrow
 import (
 	"bytes"
 	"math"
+	"unsafe"
 
 	"github.com/apache/arrow/go/v12/arrow"
 	"github.com/apache/arrow/go/v12/arrow/array"
@@ -459,7 +460,12 @@ func Compare(a, b *pcommon.Value) int {
 	case pcommon.ValueTypeStr:
 		if b.Type() == pcommon.ValueTypeStr {
 			// Compare strings as bytes (in case strings are not utf8)
-			return bytes.Compare([]byte(a.Str()), []byte(b.Str()))
+			// Note: this requires Go 1.20, for the new `StringData`.
+			// See e.g., https://blog.devops.dev/fast-string-to-byte-and-byte-to-string-conversion-in-go-1-20-85bdb859ee67
+			return bytes.Compare(
+				unsafe.Slice(unsafe.StringData(a.Str()), len(a.Str())),
+				unsafe.Slice(unsafe.StringData(b.Str()), len(b.Str())),
+			)
 		} else {
 			return 1
 		}

@@ -1,6 +1,6 @@
 module github.com/open-telemetry/otel-arrow/collector
 
-go 1.19
+go 1.20
 
 require (
 	github.com/apache/arrow/go/v12 v12.0.0-20230404000714-f02d35119ae6
