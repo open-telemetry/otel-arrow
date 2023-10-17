@@ -6,9 +6,9 @@ go 1.20
 
 require (
 	github.com/lightstep/telemetry-generator/generatorreceiver v0.13.0
-	github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.83.0
-	github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.83.0
-	github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.83.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.87.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.87.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.87.0
 	github.com/open-telemetry/otel-arrow/collector v0.5.0
 	github.com/stretchr/testify v1.8.4
 	go.opentelemetry.io/collector/component v0.87.0
@@ -21,7 +21,7 @@ require (
 	go.opentelemetry.io/collector/processor v0.87.0
 	go.opentelemetry.io/collector/processor/batchprocessor v0.87.0
 	go.opentelemetry.io/collector/receiver v0.87.0
-	golang.org/x/sys v0.12.0
+	golang.org/x/sys v0.13.0
 )
 
 require (
@@ -29,7 +29,7 @@ require (
 	github.com/GehirnInc/crypt v0.0.0-20200316065508-bb7000b8a962 // indirect
 	github.com/HdrHistogram/hdrhistogram-go v1.1.2 // indirect
 	github.com/andybalholm/brotli v1.0.5 // indirect
-	github.com/apache/arrow/go/v12 v12.0.0-20230404000714-f02d35119ae6 // indirect
+	github.com/apache/arrow/go/v12 v12.0.1 // indirect
 	github.com/apache/thrift v0.16.0 // indirect
 	github.com/axiomhq/hyperloglog v0.0.0-20230201085229-3ddf4bad03dc // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
@@ -67,7 +67,8 @@ require (
 	github.com/klauspost/asmfmt v1.3.2 // indirect
 	github.com/klauspost/compress v1.17.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
-	github.com/knadh/koanf v1.5.0 // indirect
+	github.com/knadh/koanf/maps v0.1.1 // indirect
+	github.com/knadh/koanf/providers/confmap v0.1.0 // indirect
 	github.com/knadh/koanf/v2 v2.0.1 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
@@ -144,9 +145,9 @@ require (
 	go.opentelemetry.io/proto/otlp v1.0.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.26.0 // indirect
-	golang.org/x/crypto v0.13.0 // indirect
+	golang.org/x/crypto v0.14.0 // indirect
 	golang.org/x/mod v0.11.0 // indirect
-	golang.org/x/net v0.15.0 // indirect
+	golang.org/x/net v0.17.0 // indirect
 	golang.org/x/text v0.13.0 // indirect
 	golang.org/x/tools v0.9.1 // indirect
 	golang.org/x/xerrors v0.0.0-20220907171357-04be3eba64a2 // indirect
