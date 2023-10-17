@@ -7,11 +7,11 @@ dist:
   version: 0.5.0
 
   # Note: This should match the version of the core collector components used below
-  otelcol_version: 0.83.0
+  otelcol_version: 0.87.0
 
 exporters:
-  - gomod: go.opentelemetry.io/collector/exporter/loggingexporter v0.83.0
-  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.83.0
+  - gomod: go.opentelemetry.io/collector/exporter/loggingexporter v0.87.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.87.0
   - import: github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter
     gomod: github.com/open-telemetry/otel-arrow/collector v0.5.0
   - import: github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter
@@ -25,7 +25,7 @@ receivers:
   - gomod: github.com/lightstep/telemetry-generator/generatorreceiver v0.13.0
 
 processors:
-  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.83.0
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.87.0
   - import: github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor
     gomod: github.com/open-telemetry/otel-arrow/collector v0.5.0
   - import: github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor
@@ -36,9 +36,9 @@ connectors:
     gomod: github.com/open-telemetry/otel-arrow/collector v0.5.0
 
 extensions:
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.83.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.83.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.83.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.87.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.87.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.87.0
 
 replaces:
   - github.com/open-telemetry/otel-arrow => ../../..
