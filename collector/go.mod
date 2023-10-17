@@ -3,7 +3,7 @@ module github.com/open-telemetry/otel-arrow/collector
 go 1.20
 
 require (
-	github.com/apache/arrow/go/v12 v12.0.0-20230404000714-f02d35119ae6
+	github.com/apache/arrow/go/v12 v12.0.1
 	github.com/cyrildever/feistel v1.5.5
 	github.com/gogo/protobuf v1.3.2
 	github.com/golang/mock v1.6.0
