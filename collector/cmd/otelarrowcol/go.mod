@@ -9,7 +9,7 @@ require (
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.87.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.87.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.87.0
-	github.com/open-telemetry/otel-arrow/collector v0.5.0
+	github.com/open-telemetry/otel-arrow/collector v0.6.0
 	github.com/stretchr/testify v1.8.4
 	go.opentelemetry.io/collector/component v0.87.0
 	go.opentelemetry.io/collector/connector v0.87.0
@@ -82,7 +82,7 @@ require (
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/mostynb/go-grpc-compression v1.2.1 // indirect
-	github.com/open-telemetry/otel-arrow v0.5.1-0.20231013162502-55cc63ebed1d // indirect
+	github.com/open-telemetry/otel-arrow v0.6.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.17 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
