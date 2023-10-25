@@ -20,11 +20,11 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/consumer/consumertest"
+	"github.com/open-telemetry/otel-arrow/collector/processor/batchprocessor/testdata"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/processor/processortest"
-	"github.com/open-telemetry/otel-arrow/collector/processor/batchprocessor/testdata"
 )
 
 func TestProcessorShutdown(t *testing.T) {
