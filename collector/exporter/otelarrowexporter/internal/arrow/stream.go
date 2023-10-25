@@ -14,6 +14,7 @@ import (
 	"time"
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
+	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
@@ -55,6 +56,9 @@ type Stream struct {
 	// endpoint recognizes OTLP+Arrow.
 	client arrowpb.ArrowStreamService_ArrowStreamClient
 
+	// method the gRPC method name, used for additional instrumentation.
+	method string
+
 	// toWrite is passes a batch from the sender to the stream writer, which
 	// includes a dedicated channel for the response.
 	toWrite chan writeItem
@@ -64,6 +68,9 @@ type Stream struct {
 
 	// waiters is the response channel for each active batch.
 	waiters map[int64]chan error
+
+	// netReporter provides network-level metrics.
+	netReporter netstats.Interface
 }
 
 // writeItem is passed from the sender (a pipeline consumer) to the
@@ -75,6 +82,9 @@ type writeItem struct {
 	md map[string]string
 	// errCh is used by the stream reader to unblock the sender
 	errCh chan error
+	// uncompSize is computed by the appropriate sizer (in the
+	// caller's goroutine)
+	uncompSize int
 }
 
 // newStream constructs a stream
@@ -83,6 +93,7 @@ func newStream(
 	prioritizer *streamPrioritizer,
 	telemetry component.TelemetrySettings,
 	perRPCCredentials credentials.PerRPCCredentials,
+	netReporter netstats.Interface,
 ) *Stream {
 	return &Stream{
 		producer:          producer,
@@ -91,6 +102,7 @@ func newStream(
 		telemetry:         telemetry,
 		toWrite:           make(chan writeItem, 1),
 		waiters:           map[int64]chan error{},
+		netReporter:       netReporter,
 	}
 }
 
@@ -123,7 +135,7 @@ func (s *Stream) run(bgctx context.Context, streamClient StreamClientFunc, grpcO
 	ctx, cancel := context.WithCancel(bgctx)
 	defer cancel()
 
-	sc, err := streamClient(ctx, grpcOptions...)
+	sc, method, err := streamClient(ctx, grpcOptions...)
 	if err != nil {
 		// Returning with stream.client == nil signals the
 		// lack of an Arrow stream endpoint.  When all the
@@ -146,6 +158,7 @@ func (s *Stream) run(bgctx context.Context, streamClient StreamClientFunc, grpcO
 	// Setting .client != nil indicates that the endpoint was valid,
 	// streaming may start.  When this stream finishes, it will be
 	// restarted.
+	s.method = method
 	s.client = sc
 
 	// ww is used to wait for the writer.  Since we wait for the writer,
@@ -337,6 +350,14 @@ func (s *Stream) write(ctx context.Context) error {
 		// Let the receiver knows what to look for.
 		s.setBatchChannel(batch.BatchId, wri.errCh)
 
+		// We can't inform the gRPC stats handler of the
+		// uncompressed size in the following Send(), because
+		// there is no context passed.  Report it directly.
+		var sized netstats.SizesStruct
+		sized.Method = s.method
+		sized.Length = int64(wri.uncompSize)
+		s.netReporter.CountSend(ctx, sized)
+
 		if err := s.client.Send(batch); err != nil {
 			// The error will be sent to errCh during cleanup for this stream.
 			// Note: do not wrap this error, it may contain a Status.
@@ -460,11 +481,28 @@ func (s *Stream) SendAndWait(ctx context.Context, records interface{}) error {
 			return err
 		}
 	}
+	// Note that the uncompressed size as measured by the receiver
+	// will be different than uncompressed size as measured by the
+	// exporter, because of the optimization phase performed in the
+	// conversion to Arrow.
+	var uncompSize int
+	switch data := records.(type) {
+	case ptrace.Traces:
+		var sizer ptrace.ProtoMarshaler
+		uncompSize = sizer.TracesSize(data)
+	case plog.Logs:
+		var sizer plog.ProtoMarshaler
+		uncompSize = sizer.LogsSize(data)
+	case pmetric.Metrics:
+		var sizer pmetric.ProtoMarshaler
+		uncompSize = sizer.MetricsSize(data)
+	}
 
 	s.toWrite <- writeItem{
-		records: records,
-		md:      md,
-		errCh:   errCh,
+		records:    records,
+		md:         md,
+		uncompSize: uncompSize,
+		errCh:      errCh,
 	}
 
 	// Note this ensures the caller's timeout is respected.

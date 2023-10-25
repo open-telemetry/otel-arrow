@@ -56,10 +56,33 @@ type NetworkReporter struct {
 // SizesStruct is used to pass uncompressed on-wire message lengths to
 // the CountSend() and CountReceive() methods.
 type SizesStruct struct {
-	Method     string
-	Length     int64
+	// Method refers to the gRPC method name
+	Method string
+	// Length is the uncompressed size
+	Length int64
+	// WireLength is compressed size
 	WireLength int64
+	// WireIsPayload indicates WireLength is a payload (suitable
+	// for a histogram).
+	WireIsPayload bool
 }
+
+// Interface describes a *NetworkReporter or a Noop.
+type Interface interface {
+	// CountSend reports outbound bytes.
+	CountSend(ctx context.Context, ss SizesStruct)
+
+	// CountSend reports inbound bytes.
+	CountReceive(ctx context.Context, ss SizesStruct)
+}
+
+// Noop is a no-op implementation of Interface.
+type Noop struct{}
+
+var _ Interface = Noop{}
+
+func (Noop) CountSend(ctx context.Context, ss SizesStruct)    {}
+func (Noop) CountReceive(ctx context.Context, ss SizesStruct) {}
 
 const (
 	bytesUnit           = "bytes"
@@ -150,6 +173,8 @@ func (rep *NetworkReporter) CountSend(ctx context.Context, ss SizesStruct) {
 		return
 	}
 
+	// @@@ HERE a histogram of sent uncompressed/compressed byte size
+
 	if rep.sentBytes != nil && ss.Length > 0 {
 		rep.sentBytes.Add(ctx, ss.Length, metric.WithAttributes(rep.staticAttr, attribute.String("method", ss.Method)))
 	}
@@ -166,6 +191,8 @@ func (rep *NetworkReporter) CountReceive(ctx context.Context, ss SizesStruct) {
 	if rep == nil {
 		return
 	}
+
+	// @@@ HERE a histogram of sent uncompressed/compressed byte size
 
 	if rep.recvBytes != nil && ss.Length > 0 {
 		rep.recvBytes.Add(ctx, ss.Length, metric.WithAttributes(rep.staticAttr, attribute.String("method", ss.Method)))

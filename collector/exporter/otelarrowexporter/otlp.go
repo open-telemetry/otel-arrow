@@ -57,7 +57,7 @@ type baseExporter struct {
 	streamClientFactory streamClientFactory
 }
 
-type streamClientFactory func(cfg *Config, conn *grpc.ClientConn) func(ctx context.Context, opts ...grpc.CallOption) (arrow.AnyStreamClient, error)
+type streamClientFactory func(cfg *Config, conn *grpc.ClientConn) arrow.StreamClientFunc
 
 // Crete new exporter and start it. The exporter will begin connecting but
 // this function may return before the connection is established.
@@ -115,7 +115,7 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) (err erro
 
 	if !e.config.Arrow.Disabled {
 		// Note this sets static outgoing context for all future stream requests.
-		ctx := e.enhanceContext(context.Background())
+		ctx := e.enhanceContext(context.Background(), 0)
 
 		var perRPCCreds credentials.PerRPCCredentials
 		if e.config.GRPCClientSettings.Auth != nil {
@@ -135,7 +135,7 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) (err erro
 
 		e.arrow = arrow.NewExporter(e.config.Arrow.MaxStreamLifetime, e.config.Arrow.NumStreams, e.config.Arrow.DisableDowngrade, e.settings.TelemetrySettings, e.callOptions, func() arrowRecord.ProducerAPI {
 			return arrowRecord.NewProducerWithOptions(arrowOpts...)
-		}, e.streamClientFactory(e.config, e.clientConn), perRPCCreds)
+		}, e.streamClientFactory(e.config, e.clientConn), perRPCCreds, e.netStats)
 
 		if err := e.arrow.Start(ctx); err != nil {
 			return err
@@ -180,8 +180,9 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 	} else if sent {
 		return nil
 	}
+	var sizer ptrace.ProtoMarshaler
 	req := ptraceotlp.NewExportRequestFromTraces(td)
-	resp, respErr := e.traceExporter.Export(e.enhanceContext(ctx), req, e.callOptions...)
+	resp, respErr := e.traceExporter.Export(e.enhanceContext(ctx, sizer.TracesSize(td)), req, e.callOptions...)
 	if err := processError(respErr); err != nil {
 		return err
 	}
@@ -198,8 +199,9 @@ func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) erro
 	} else if sent {
 		return nil
 	}
+	var sizer pmetric.ProtoMarshaler
 	req := pmetricotlp.NewExportRequestFromMetrics(md)
-	resp, respErr := e.metricExporter.Export(e.enhanceContext(ctx), req, e.callOptions...)
+	resp, respErr := e.metricExporter.Export(e.enhanceContext(ctx, sizer.MetricsSize(md)), req, e.callOptions...)
 	if err := processError(respErr); err != nil {
 		return err
 	}
@@ -216,8 +218,9 @@ func (e *baseExporter) pushLogs(ctx context.Context, ld plog.Logs) error {
 	} else if sent {
 		return nil
 	}
+	var sizer plog.ProtoMarshaler
 	req := plogotlp.NewExportRequestFromLogs(ld)
-	resp, respErr := e.logExporter.Export(e.enhanceContext(ctx), req, e.callOptions...)
+	resp, respErr := e.logExporter.Export(e.enhanceContext(ctx, sizer.LogsSize(ld)), req, e.callOptions...)
 	if err := processError(respErr); err != nil {
 		return err
 	}
@@ -228,9 +231,12 @@ func (e *baseExporter) pushLogs(ctx context.Context, ld plog.Logs) error {
 	return nil
 }
 
-func (e *baseExporter) enhanceContext(ctx context.Context) context.Context {
+func (e *baseExporter) enhanceContext(ctx context.Context, size int) context.Context {
 	if e.metadata.Len() > 0 {
-		return metadata.NewOutgoingContext(ctx, e.metadata)
+		ctx = metadata.NewOutgoingContext(ctx, e.metadata)
+	}
+	if size > 0 {
+		ctx = netstats.UncompressedSizeContext(ctx, size)
 	}
 
 	return ctx
