@@ -46,7 +46,7 @@ type baseExporter struct {
 	metadata       metadata.MD
 	callOptions    []grpc.CallOption
 	settings       exporter.CreateSettings
-	netStats       *netstats.NetworkReporter
+	netReporter    *netstats.NetworkReporter
 
 	// Default user-agent header.
 	userAgent string
@@ -57,7 +57,7 @@ type baseExporter struct {
 	streamClientFactory streamClientFactory
 }
 
-type streamClientFactory func(cfg *Config, conn *grpc.ClientConn) func(ctx context.Context, opts ...grpc.CallOption) (arrow.AnyStreamClient, error)
+type streamClientFactory func(cfg *Config, conn *grpc.ClientConn) arrow.StreamClientFunc
 
 // Crete new exporter and start it. The exporter will begin connecting but
 // this function may return before the connection is established.
@@ -68,7 +68,7 @@ func newExporter(cfg component.Config, set exporter.CreateSettings, streamClient
 		return nil, errors.New("OTLP exporter config requires an Endpoint")
 	}
 
-	netStats, err := netstats.NewExporterNetworkReporter(set)
+	netReporter, err := netstats.NewExporterNetworkReporter(set)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +83,7 @@ func newExporter(cfg component.Config, set exporter.CreateSettings, streamClient
 		config:              oCfg,
 		settings:            set,
 		userAgent:           userAgent,
-		netStats:            netStats,
+		netReporter:         netReporter,
 		streamClientFactory: streamClientFactory,
 	}, nil
 }
@@ -94,8 +94,8 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) (err erro
 	dialOpts := []grpc.DialOption{
 		grpc.WithUserAgent(e.userAgent),
 	}
-	if e.netStats != nil {
-		dialOpts = append(dialOpts, grpc.WithStatsHandler(e.netStats))
+	if e.netReporter != nil {
+		dialOpts = append(dialOpts, grpc.WithStatsHandler(e.netReporter.Handler()))
 	}
 	dialOpts = append(dialOpts, e.config.UserDialOptions...)
 	if e.clientConn, err = e.config.GRPCClientSettings.ToClientConn(ctx, host, e.settings.TelemetrySettings, dialOpts...); err != nil {
@@ -135,7 +135,7 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) (err erro
 
 		e.arrow = arrow.NewExporter(e.config.Arrow.MaxStreamLifetime, e.config.Arrow.NumStreams, e.config.Arrow.DisableDowngrade, e.settings.TelemetrySettings, e.callOptions, func() arrowRecord.ProducerAPI {
 			return arrowRecord.NewProducerWithOptions(arrowOpts...)
-		}, e.streamClientFactory(e.config, e.clientConn), perRPCCreds)
+		}, e.streamClientFactory(e.config, e.clientConn), perRPCCreds, e.netReporter)
 
 		if err := e.arrow.Start(ctx); err != nil {
 			return err
@@ -230,9 +230,8 @@ func (e *baseExporter) pushLogs(ctx context.Context, ld plog.Logs) error {
 
 func (e *baseExporter) enhanceContext(ctx context.Context) context.Context {
 	if e.metadata.Len() > 0 {
-		return metadata.NewOutgoingContext(ctx, e.metadata)
+		ctx = metadata.NewOutgoingContext(ctx, e.metadata)
 	}
-
 	return ctx
 }
 

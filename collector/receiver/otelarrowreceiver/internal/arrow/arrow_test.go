@@ -26,6 +26,7 @@ import (
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/grpc/metadata"
 
+	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/arrow/mock"
 	"github.com/open-telemetry/otel-arrow/collector/testdata"
 	"go.opentelemetry.io/collector/client"
@@ -339,6 +340,7 @@ func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opt
 		gsettings,
 		authServer,
 		newConsumer,
+		netstats.Noop{},
 	)
 	go func() {
 		ctc.streamErr <- rcvr.ArrowStream(ctc.stream)

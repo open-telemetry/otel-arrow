@@ -85,7 +85,7 @@ func newCommonTestCase(t *testing.T, noisy noisyTest) *commonTestCase {
 		ctrl:                ctrl,
 		telset:              telset,
 		observedLogs:        obslogs,
-		streamClient:        MakeAnyStreamClient(client.ArrowStream),
+		streamClient:        MakeAnyStreamClient("ArrowStream", client.ArrowStream),
 		streamCall:          streamCall,
 		perRPCCredentials:   creds,
 		requestMetadataCall: requestMetadataCall,

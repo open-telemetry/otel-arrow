@@ -19,14 +19,19 @@ import (
 	"google.golang.org/grpc/status"
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
+	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
+	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/extension/auth"
+	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/receiverhelper"
 )
@@ -62,6 +67,7 @@ type Receiver struct {
 	gsettings   *configgrpc.GRPCServerSettings
 	authServer  auth.Server
 	newConsumer func() arrowRecord.ConsumerAPI
+	netReporter netstats.Interface
 }
 
 // New creates a new Receiver reference.
@@ -72,6 +78,7 @@ func New(
 	gsettings *configgrpc.GRPCServerSettings,
 	authServer auth.Server,
 	newConsumer func() arrowRecord.ConsumerAPI,
+	netReporter netstats.Interface,
 ) *Receiver {
 	return &Receiver{
 		Consumers:   cs,
@@ -80,6 +87,7 @@ func New(
 		authServer:  authServer,
 		newConsumer: newConsumer,
 		gsettings:   gsettings,
+		netReporter: netReporter,
 	}
 }
 
@@ -249,20 +257,31 @@ func (r *Receiver) logStreamError(err error) {
 	}
 }
 
+func gRPCName(desc grpc.ServiceDesc) string {
+	return netstats.GRPCStreamMethodName(desc, desc.Streams[0])
+}
+
+var (
+	arrowStreamMethod  = gRPCName(arrowpb.ArrowStreamService_ServiceDesc)
+	arrowTracesMethod  = gRPCName(arrowpb.ArrowTracesService_ServiceDesc)
+	arrowMetricsMethod = gRPCName(arrowpb.ArrowMetricsService_ServiceDesc)
+	arrowLogsMethod    = gRPCName(arrowpb.ArrowLogsService_ServiceDesc)
+)
+
 func (r *Receiver) ArrowStream(serverStream arrowpb.ArrowStreamService_ArrowStreamServer) error {
-	return r.anyStream(serverStream)
+	return r.anyStream(serverStream, arrowStreamMethod)
 }
 
 func (r *Receiver) ArrowTraces(serverStream arrowpb.ArrowTracesService_ArrowTracesServer) error {
-	return r.anyStream(serverStream)
+	return r.anyStream(serverStream, arrowTracesMethod)
 }
 
 func (r *Receiver) ArrowLogs(serverStream arrowpb.ArrowLogsService_ArrowLogsServer) error {
-	return r.anyStream(serverStream)
+	return r.anyStream(serverStream, arrowLogsMethod)
 }
 
 func (r *Receiver) ArrowMetrics(serverStream arrowpb.ArrowMetricsService_ArrowMetricsServer) error {
-	return r.anyStream(serverStream)
+	return r.anyStream(serverStream, arrowMetricsMethod)
 }
 
 type anyStreamServer interface {
@@ -271,7 +290,7 @@ type anyStreamServer interface {
 	grpc.ServerStream
 }
 
-func (r *Receiver) anyStream(serverStream anyStreamServer) (retErr error) {
+func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retErr error) {
 	streamCtx := serverStream.Context()
 	ac := r.newConsumer()
 	hrcv := newHeaderReceiver(serverStream.Context(), r.authServer, r.gsettings.IncludeMetadata)
@@ -337,7 +356,7 @@ func (r *Receiver) anyStream(serverStream anyStreamServer) (retErr error) {
 		if authErr != nil {
 			err = authErr
 		} else {
-			err = r.processRecords(thisCtx, ac, req)
+			err = r.processRecords(thisCtx, method, ac, req)
 		}
 
 		// Note: Statuses can be batched, but we do not take
@@ -373,25 +392,43 @@ func (r *Receiver) anyStream(serverStream anyStreamServer) (retErr error) {
 // the error (true) was from processing the data (i.e., invalid
 // argument) or (false) from the consuming pipeline.  The boolean is
 // not used when success (nil error) is returned.
-func (r *Receiver) processRecords(ctx context.Context, arrowConsumer arrowRecord.ConsumerAPI, records *arrowpb.BatchArrowRecords) error {
+func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, records *arrowpb.BatchArrowRecords) error {
 	payloads := records.GetArrowPayloads()
 	if len(payloads) == 0 {
 		return nil
+	}
+	var uncompSize int64
+	if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
+		defer func() {
+			// The netstats code knows that uncompressed size is
+			// unreliable for arrow transport, so we instrument it
+			// directly here.  Only the primary direction of transport
+			// is instrumented this way.
+			var sized netstats.SizesStruct
+			sized.Method = method
+			sized.Length = uncompSize
+			r.netReporter.CountReceive(ctx, sized)
+		}()
 	}
 	switch payloads[0].Type {
 	case arrowpb.ArrowPayloadType_UNIVARIATE_METRICS:
 		if r.Metrics() == nil {
 			return status.Error(codes.Unimplemented, "metrics service not available")
 		}
+		var sizer pmetric.ProtoMarshaler
 		var numPts int
+
 		ctx = r.obsrecv.StartMetricsOp(ctx)
 
-		otlp, err := arrowConsumer.MetricsFrom(records)
+		data, err := arrowConsumer.MetricsFrom(records)
 		if err != nil {
 			err = consumererror.NewPermanent(err)
 		} else {
-			for _, metrics := range otlp {
+			for _, metrics := range data {
 				numPts += metrics.DataPointCount()
+				if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
+					uncompSize += int64(sizer.MetricsSize(metrics))
+				}
 				err = multierr.Append(err,
 					r.Metrics().ConsumeMetrics(ctx, metrics),
 				)
@@ -404,15 +441,19 @@ func (r *Receiver) processRecords(ctx context.Context, arrowConsumer arrowRecord
 		if r.Logs() == nil {
 			return status.Error(codes.Unimplemented, "logs service not available")
 		}
+		var sizer plog.ProtoMarshaler
 		var numLogs int
 		ctx = r.obsrecv.StartLogsOp(ctx)
 
-		otlp, err := arrowConsumer.LogsFrom(records)
+		data, err := arrowConsumer.LogsFrom(records)
 		if err != nil {
 			err = consumererror.NewPermanent(err)
 		} else {
-			for _, logs := range otlp {
+			for _, logs := range data {
 				numLogs += logs.LogRecordCount()
+				if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
+					uncompSize += int64(sizer.LogsSize(logs))
+				}
 				err = multierr.Append(err,
 					r.Logs().ConsumeLogs(ctx, logs),
 				)
@@ -425,15 +466,19 @@ func (r *Receiver) processRecords(ctx context.Context, arrowConsumer arrowRecord
 		if r.Traces() == nil {
 			return status.Error(codes.Unimplemented, "traces service not available")
 		}
+		var sizer ptrace.ProtoMarshaler
 		var numSpans int
 		ctx = r.obsrecv.StartTracesOp(ctx)
 
-		otlp, err := arrowConsumer.TracesFrom(records)
+		data, err := arrowConsumer.TracesFrom(records)
 		if err != nil {
 			err = consumererror.NewPermanent(err)
 		} else {
-			for _, traces := range otlp {
+			for _, traces := range data {
 				numSpans += traces.SpanCount()
+				if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
+					uncompSize += int64(sizer.TracesSize(traces))
+				}
 				err = multierr.Append(err,
 					r.Traces().ConsumeTraces(ctx, traces),
 				)
