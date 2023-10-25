@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -354,10 +355,12 @@ func (s *Stream) write(ctx context.Context) error {
 		// unreliable for arrow transport, so we instrument it
 		// directly here.  Only the primary direction of transport
 		// is instrumented this way.
-		var sized netstats.SizesStruct
-		sized.Method = s.method
-		sized.Length = int64(wri.uncompSize)
-		s.netReporter.CountSend(ctx, sized)
+		if wri.uncompSize != 0 {
+			var sized netstats.SizesStruct
+			sized.Method = s.method
+			sized.Length = int64(wri.uncompSize)
+			s.netReporter.CountSend(ctx, sized)
+		}
 
 		if err := s.client.Send(batch); err != nil {
 			// The error will be sent to errCh during cleanup for this stream.
@@ -487,16 +490,18 @@ func (s *Stream) SendAndWait(ctx context.Context, records interface{}) error {
 	// exporter, because of the optimization phase performed in the
 	// conversion to Arrow.
 	var uncompSize int
-	switch data := records.(type) {
-	case ptrace.Traces:
-		var sizer ptrace.ProtoMarshaler
-		uncompSize = sizer.TracesSize(data)
-	case plog.Logs:
-		var sizer plog.ProtoMarshaler
-		uncompSize = sizer.LogsSize(data)
-	case pmetric.Metrics:
-		var sizer pmetric.ProtoMarshaler
-		uncompSize = sizer.MetricsSize(data)
+	if s.telemetry.MetricsLevel > configtelemetry.LevelNormal {
+		switch data := records.(type) {
+		case ptrace.Traces:
+			var sizer ptrace.ProtoMarshaler
+			uncompSize = sizer.TracesSize(data)
+		case plog.Logs:
+			var sizer plog.ProtoMarshaler
+			uncompSize = sizer.LogsSize(data)
+		case pmetric.Metrics:
+			var sizer pmetric.ProtoMarshaler
+			uncompSize = sizer.MetricsSize(data)
+		}
 	}
 
 	s.toWrite <- writeItem{

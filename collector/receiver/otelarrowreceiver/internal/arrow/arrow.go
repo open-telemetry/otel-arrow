@@ -25,6 +25,7 @@ import (
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
+	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/extension/auth"
@@ -397,16 +398,18 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 		return nil
 	}
 	var uncompSize int64
-	defer func() {
-		// The netstats code knows that uncompressed size is
-		// unreliable for arrow transport, so we instrument it
-		// directly here.  Only the primary direction of transport
-		// is instrumented this way.
-		var sized netstats.SizesStruct
-		sized.Method = method
-		sized.Length = uncompSize
-		r.netReporter.CountReceive(ctx, sized)
-	}()
+	if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
+		defer func() {
+			// The netstats code knows that uncompressed size is
+			// unreliable for arrow transport, so we instrument it
+			// directly here.  Only the primary direction of transport
+			// is instrumented this way.
+			var sized netstats.SizesStruct
+			sized.Method = method
+			sized.Length = uncompSize
+			r.netReporter.CountReceive(ctx, sized)
+		}()
+	}
 	switch payloads[0].Type {
 	case arrowpb.ArrowPayloadType_UNIVARIATE_METRICS:
 		if r.Metrics() == nil {
@@ -423,7 +426,9 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 		} else {
 			for _, metrics := range data {
 				numPts += metrics.DataPointCount()
-				uncompSize += int64(sizer.MetricsSize(metrics))
+				if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
+					uncompSize += int64(sizer.MetricsSize(metrics))
+				}
 				err = multierr.Append(err,
 					r.Metrics().ConsumeMetrics(ctx, metrics),
 				)
@@ -446,7 +451,9 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 		} else {
 			for _, logs := range data {
 				numLogs += logs.LogRecordCount()
-				uncompSize += int64(sizer.LogsSize(logs))
+				if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
+					uncompSize += int64(sizer.LogsSize(logs))
+				}
 				err = multierr.Append(err,
 					r.Logs().ConsumeLogs(ctx, logs),
 				)
@@ -469,7 +476,9 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 		} else {
 			for _, traces := range data {
 				numSpans += traces.SpanCount()
-				uncompSize += int64(sizer.TracesSize(traces))
+				if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
+					uncompSize += int64(sizer.TracesSize(traces))
+				}
 				err = multierr.Append(err,
 					r.Traces().ConsumeTraces(ctx, traces),
 				)
