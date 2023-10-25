@@ -46,9 +46,9 @@ type otlpReceiver struct {
 	arrowReceiver   *arrow.Receiver
 	shutdownWG      sync.WaitGroup
 
-	obsrepGRPC *receiverhelper.ObsReport
-	obsrepHTTP *receiverhelper.ObsReport
-	netStats   *netstats.NetworkReporter
+	obsrepGRPC  *receiverhelper.ObsReport
+	obsrepHTTP  *receiverhelper.ObsReport
+	netReporter *netstats.NetworkReporter
 
 	settings receiver.CreateSettings
 }
@@ -57,14 +57,14 @@ type otlpReceiver struct {
 // responsibility to invoke the respective Start*Reception methods as well
 // as the various Stop*Reception methods to end it.
 func newOtlpReceiver(cfg *Config, set receiver.CreateSettings) (*otlpReceiver, error) {
-	netStats, err := netstats.NewReceiverNetworkReporter(set)
+	netReporter, err := netstats.NewReceiverNetworkReporter(set)
 	if err != nil {
 		return nil, err
 	}
 	r := &otlpReceiver{
-		cfg:      cfg,
-		settings: set,
-		netStats: netStats,
+		cfg:         cfg,
+		settings:    set,
+		netReporter: netReporter,
 	}
 	if cfg.HTTP != nil {
 		r.httpMux = http.NewServeMux()
@@ -131,8 +131,8 @@ func (r *otlpReceiver) startProtocolServers(host component.Host) error {
 	if r.cfg.GRPC != nil {
 		var serverOpts []grpc.ServerOption
 
-		if r.netStats != nil {
-			serverOpts = append(serverOpts, grpc.StatsHandler(r.netStats))
+		if r.netReporter != nil {
+			serverOpts = append(serverOpts, grpc.StatsHandler(r.netReporter.Handler()))
 		}
 		r.serverGRPC, err = r.cfg.GRPC.ToServer(host, r.settings.TelemetrySettings, serverOpts...)
 		if err != nil {
@@ -158,7 +158,7 @@ func (r *otlpReceiver) startProtocolServers(host component.Host) error {
 					opts = append(opts, arrowRecord.WithMeterProvider(r.settings.TelemetrySettings.MeterProvider, r.settings.TelemetrySettings.MetricsLevel))
 				}
 				return arrowRecord.NewConsumer(opts...)
-			})
+			}, r.netReporter)
 
 			arrowpb.RegisterArrowStreamServiceServer(r.serverGRPC, r.arrowReceiver)
 		}

@@ -5,34 +5,42 @@ package netstats // import "github.com/open-telemetry/otel-arrow/collector/netst
 
 import (
 	"context"
-	"fmt"
-	"strconv"
+	"strings"
 
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/stats"
 )
 
-type uncompressedSizeContext struct{} // value: string
-type netstatsContext struct{}         // value: int
+type netstatsContext struct{} // value: string
+
+type statsHandler struct {
+	rep *NetworkReporter
+}
+
+var _ stats.Handler = statsHandler{}
+
+func (rep *NetworkReporter) Handler() stats.Handler {
+	return statsHandler{rep: rep}
+}
 
 // TagRPC implements grpc/stats.Handler
-func (rep *NetworkReporter) TagRPC(ctx context.Context, s *stats.RPCTagInfo) context.Context {
+func (statsHandler) TagRPC(ctx context.Context, s *stats.RPCTagInfo) context.Context {
 	return context.WithValue(ctx, netstatsContext{}, s.FullMethodName)
 }
 
-// UncompressedSizeContext installs a context that knows the true
-// uncompressed size of the data.
-func UncompressedSizeContext(ctx context.Context, size int) context.Context {
-	ctx = internalUncompressedSizeContext(ctx, size)
-	return metadata.AppendToOutgoingContext(ctx, "otlp-uncompressed-size", fmt.Sprint(size))
+// trustUncompressed is a super hacky way of knowing when the
+// uncompressed size is realistic.  nothing else would work -- the
+// same handler is used by both arrow and non-arrow, and the
+// `*stats.Begin` which indicates streaming vs. not streaming does not
+// appear in TagRPC() where we could store it in context.  this
+// approach is considered a better alternative than others, however
+// ugly.  when non-arrow RPCs are sent, the instrumentation works
+// correctly, this avoids special instrumentation outside of the Arrow
+// components.
+func trustUncompressed(method string) bool {
+	return !strings.Contains(method, "arrow.v1")
 }
 
-func internalUncompressedSizeContext(ctx context.Context, size int) context.Context {
-	return context.WithValue(ctx, uncompressedSizeContext{}, size)
-}
-
-// HandleRPC implements grpc/stats.Handler
-func (rep *NetworkReporter) HandleRPC(ctx context.Context, rs stats.RPCStats) {
+func (h statsHandler) HandleRPC(ctx context.Context, rs stats.RPCStats) {
 	switch rs.(type) {
 	case *stats.Begin, *stats.OutHeader, *stats.OutTrailer:
 		return
@@ -46,55 +54,42 @@ func (rep *NetworkReporter) HandleRPC(ctx context.Context, rs stats.RPCStats) {
 		var ss SizesStruct
 		ss.Method = method
 		ss.WireLength = int64(s.WireLength)
-
-		// The exporter should have included the uncompressed size,
-		// use it here in the receiver.
-		if sentSize := s.Header.Get("otlp-uncompressed-size"); len(sentSize) == 1 {
-			if uncompSize, err := strconv.ParseUint(sentSize[0], 10, 64); err == nil && uncompSize > 0 {
-				ss.Length = int64(uncompSize)
-			}
-		}
-		rep.CountReceive(ctx, ss)
+		h.rep.CountReceive(ctx, ss)
 
 	case *stats.InTrailer:
 		var ss SizesStruct
 		ss.Method = method
 		ss.WireLength = int64(s.WireLength)
-		rep.CountReceive(ctx, ss)
+		h.rep.CountReceive(ctx, ss)
 
 	case *stats.InPayload:
-		usize := 0
-		if uncompSize := ctx.Value(uncompressedSizeContext{}); uncompSize != nil {
-			usize = uncompSize.(int)
-		}
-
 		var ss SizesStruct
 		ss.Method = method
-		ss.Length = int64(usize)
+		if trustUncompressed(method) {
+			ss.Length = int64(s.Length)
+		}
 		ss.WireLength = int64(s.WireLength)
 		ss.WireIsPayload = true
-		rep.CountReceive(ctx, ss)
+		h.rep.CountReceive(ctx, ss)
 
 	case *stats.OutPayload:
-		usize := 0
-		if uncompSize := ctx.Value(uncompressedSizeContext{}); uncompSize != nil {
-			usize = uncompSize.(int)
-		}
 		var ss SizesStruct
 		ss.Method = method
-		ss.Length = int64(usize)
+		if trustUncompressed(method) {
+			ss.Length = int64(s.Length)
+		}
 		ss.WireLength = int64(s.WireLength)
 		ss.WireIsPayload = true
-		rep.CountSend(ctx, ss)
+		h.rep.CountSend(ctx, ss)
 	}
 }
 
 // TagConn implements grpc/stats.Handler
-func (rep *NetworkReporter) TagConn(ctx context.Context, _ *stats.ConnTagInfo) context.Context {
+func (statsHandler) TagConn(ctx context.Context, _ *stats.ConnTagInfo) context.Context {
 	return ctx
 }
 
 // HandleConn implements grpc/stats.Handler
-func (rep *NetworkReporter) HandleConn(_ context.Context, _ stats.ConnStats) {
+func (statsHandler) HandleConn(_ context.Context, _ stats.ConnStats) {
 	// Note: ConnBegin and ConnEnd
 }

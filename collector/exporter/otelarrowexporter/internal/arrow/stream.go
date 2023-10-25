@@ -382,6 +382,10 @@ func (s *Stream) read(_ context.Context) error {
 			return err
 		}
 
+		// Note that netstats does not instrument uncompressed
+		// size for backwards flow in the pipeline (i.e., no
+		// need for CountReceive() here).
+
 		// This indicates the server received EOF from client shutdown.
 		// This is not an error because this is an expected shutdown
 		// initiated by the client by setting max_stream_lifetime.

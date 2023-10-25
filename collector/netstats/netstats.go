@@ -8,6 +8,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	noopmetric "go.opentelemetry.io/otel/metric/noop"
 	"go.uber.org/multierr"
 
 	"go.opentelemetry.io/collector/config/configtelemetry"
@@ -94,16 +95,26 @@ const (
 
 // makeSentMetrics builds the sent and sent-wire metric instruments
 // for an exporter or receiver using the corresponding `prefix`.
-func makeSentMetrics(prefix string, meter metric.Meter) (sent, sentWire metric.Int64Counter, _ error) {
-	sentBytes, err1 := meter.Int64Counter(prefix+"_"+SentBytes, metric.WithDescription(sentDescription), metric.WithUnit(bytesUnit))
+func makeSentMetrics(prefix string, meter metric.Meter, major bool) (sent, sentWire metric.Int64Counter, _ error) {
+	var sentBytes metric.Int64Counter = noopmetric.Int64Counter{}
+	var err1 error
+	if major {
+		sentBytes, err1 = meter.Int64Counter(prefix+"_"+SentBytes, metric.WithDescription(sentDescription), metric.WithUnit(bytesUnit))
+	}
 	sentWireBytes, err2 := meter.Int64Counter(prefix+"_"+SentWireBytes, metric.WithDescription(sentWireDescription), metric.WithUnit(bytesUnit))
 	return sentBytes, sentWireBytes, multierr.Append(err1, err2)
 }
 
-// makeRecvMetrics builds the received and received-wire metric instruments
-// for an exporter or receiver using the corresponding `prefix`.
-func makeRecvMetrics(prefix string, meter metric.Meter) (recv, recvWire metric.Int64Counter, _ error) {
-	recvBytes, err1 := meter.Int64Counter(prefix+"_"+RecvBytes, metric.WithDescription(recvDescription), metric.WithUnit(bytesUnit))
+// makeRecvMetrics builds the received and received-wire metric
+// instruments for an exporter or receiver using the corresponding
+// `prefix`.  `major` indicates the major direction of the pipeline,
+// which is true when sending for exporters, receiving for receivers.
+func makeRecvMetrics(prefix string, meter metric.Meter, major bool) (recv, recvWire metric.Int64Counter, _ error) {
+	var recvBytes metric.Int64Counter = noopmetric.Int64Counter{}
+	var err1 error
+	if major {
+		recvBytes, err1 = meter.Int64Counter(prefix+"_"+RecvBytes, metric.WithDescription(recvDescription), metric.WithUnit(bytesUnit))
+	}
 	recvWireBytes, err2 := meter.Int64Counter(prefix+"_"+RecvWireBytes, metric.WithDescription(recvWireDescription), metric.WithUnit(bytesUnit))
 	return recvBytes, recvWireBytes, multierr.Append(err1, err2)
 }
@@ -123,13 +134,13 @@ func NewExporterNetworkReporter(settings exporter.CreateSettings) (*NetworkRepor
 	}
 
 	var errors, err error
-	rep.sentBytes, rep.sentWireBytes, err = makeSentMetrics(ExporterKey, meter)
+	rep.sentBytes, rep.sentWireBytes, err = makeSentMetrics(ExporterKey, meter, true)
 	errors = multierr.Append(errors, err)
 
 	// Normally, an exporter counts sent bytes, and skips received
 	// bytes.  LevelDetailed will reveal exporter-received bytes.
 	if level > configtelemetry.LevelNormal {
-		rep.recvBytes, rep.recvWireBytes, err = makeRecvMetrics(ExporterKey, meter)
+		rep.recvBytes, rep.recvWireBytes, err = makeRecvMetrics(ExporterKey, meter, false)
 		errors = multierr.Append(errors, err)
 	}
 
@@ -151,13 +162,13 @@ func NewReceiverNetworkReporter(settings receiver.CreateSettings) (*NetworkRepor
 	}
 
 	var errors, err error
-	rep.recvBytes, rep.recvWireBytes, err = makeRecvMetrics(ReceiverKey, meter)
+	rep.recvBytes, rep.recvWireBytes, err = makeRecvMetrics(ReceiverKey, meter, true)
 	errors = multierr.Append(errors, err)
 
 	// Normally, a receiver counts received bytes, and skips sent
 	// bytes.  LevelDetailed will reveal receiver-sent bytes.
 	if level > configtelemetry.LevelNormal {
-		rep.sentBytes, rep.sentWireBytes, err = makeSentMetrics(ReceiverKey, meter)
+		rep.sentBytes, rep.sentWireBytes, err = makeSentMetrics(ReceiverKey, meter, false)
 		errors = multierr.Append(errors, err)
 	}
 

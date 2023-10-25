@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter/internal/arrow"
+	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configcompression"
 	"go.opentelemetry.io/collector/config/configgrpc"
@@ -76,11 +77,8 @@ func (oce *baseExporter) helperOptions() []exporterhelper.Option {
 	}
 }
 
-// gRPCName applies the logic gRPC uses but does not expose to construct
-// method names.  This allows direct calling of the netstats interface
-// from outside a gRPC stats handler.
 func gRPCName(desc grpc.ServiceDesc) string {
-	return "/" + desc.ServiceName + "/" + desc.Streams[0].StreamName
+	return netstats.GRPCStreamMethodName(desc, desc.Streams[0])
 }
 
 var (
