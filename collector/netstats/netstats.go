@@ -41,17 +41,21 @@ const (
 	// (includes compression) by exporters and receivers.
 	RecvWireBytes = "recv_wire"
 
+	CompSize = "comp_size"
+
 	scopeName = "github.com/open-telemetry/otel-arrow/collector/netstats"
 )
 
 // NetworkReporter is a helper to add network-level observability to
 // an exporter or receiver.
 type NetworkReporter struct {
+	isExporter    bool
 	staticAttr    attribute.KeyValue
 	sentBytes     metric.Int64Counter
 	sentWireBytes metric.Int64Counter
 	recvBytes     metric.Int64Counter
 	recvWireBytes metric.Int64Counter
+	compSizeHisto metric.Int64Histogram
 }
 
 // SizesStruct is used to pass uncompressed on-wire message lengths to
@@ -91,6 +95,7 @@ const (
 	sentWireDescription = "Number of bytes sent on the wire by the component."
 	recvDescription     = "Number of bytes received by the component."
 	recvWireDescription = "Number of bytes received on the wire by the component."
+	compSizeDescription = "Size of compressed payload"
 )
 
 // makeSentMetrics builds the sent and sent-wire metric instruments
@@ -130,10 +135,17 @@ func NewExporterNetworkReporter(settings exporter.CreateSettings) (*NetworkRepor
 
 	meter := settings.TelemetrySettings.MeterProvider.Meter(scopeName)
 	rep := &NetworkReporter{
-		staticAttr: attribute.String(ExporterKey, settings.ID.String()),
+		isExporter:    true,
+		staticAttr:    attribute.String(ExporterKey, settings.ID.String()),
+		compSizeHisto: noopmetric.Int64Histogram{},
 	}
 
 	var errors, err error
+	if level > configtelemetry.LevelNormal {
+		rep.compSizeHisto, err = meter.Int64Histogram(ExporterKey+"_"+CompSize, metric.WithDescription(compSizeDescription), metric.WithUnit(bytesUnit))
+		errors = multierr.Append(errors, err)
+	}
+
 	rep.sentBytes, rep.sentWireBytes, err = makeSentMetrics(ExporterKey, meter, true)
 	errors = multierr.Append(errors, err)
 
@@ -158,10 +170,17 @@ func NewReceiverNetworkReporter(settings receiver.CreateSettings) (*NetworkRepor
 
 	meter := settings.MeterProvider.Meter(scopeName)
 	rep := &NetworkReporter{
-		staticAttr: attribute.String(ReceiverKey, settings.ID.String()),
+		isExporter:    false,
+		staticAttr:    attribute.String(ReceiverKey, settings.ID.String()),
+		compSizeHisto: noopmetric.Int64Histogram{},
 	}
 
 	var errors, err error
+	if level > configtelemetry.LevelNormal {
+		rep.compSizeHisto, err = meter.Int64Histogram(ReceiverKey+"_"+CompSize, metric.WithDescription(compSizeDescription), metric.WithUnit(bytesUnit))
+		errors = multierr.Append(errors, err)
+	}
+
 	rep.recvBytes, rep.recvWireBytes, err = makeRecvMetrics(ReceiverKey, meter, true)
 	errors = multierr.Append(errors, err)
 
@@ -184,13 +203,16 @@ func (rep *NetworkReporter) CountSend(ctx context.Context, ss SizesStruct) {
 		return
 	}
 
-	// @@@ HERE a histogram of sent uncompressed/compressed byte size
+	attrs := metric.WithAttributes(rep.staticAttr, attribute.String("method", ss.Method))
 
+	if rep.isExporter && ss.WireIsPayload && ss.WireLength > 0 {
+		rep.compSizeHisto.Record(ctx, ss.WireLength, attrs)
+	}
 	if rep.sentBytes != nil && ss.Length > 0 {
-		rep.sentBytes.Add(ctx, ss.Length, metric.WithAttributes(rep.staticAttr, attribute.String("method", ss.Method)))
+		rep.sentBytes.Add(ctx, ss.Length, attrs)
 	}
 	if rep.sentWireBytes != nil && ss.WireLength > 0 {
-		rep.sentWireBytes.Add(ctx, ss.WireLength, metric.WithAttributes(rep.staticAttr, attribute.String("method", ss.Method)))
+		rep.sentWireBytes.Add(ctx, ss.WireLength, attrs)
 	}
 }
 
@@ -203,12 +225,14 @@ func (rep *NetworkReporter) CountReceive(ctx context.Context, ss SizesStruct) {
 		return
 	}
 
-	// @@@ HERE a histogram of sent uncompressed/compressed byte size
-
+	attrs := metric.WithAttributes(rep.staticAttr, attribute.String("method", ss.Method))
+	if !rep.isExporter && ss.WireIsPayload && ss.WireLength > 0 {
+		rep.compSizeHisto.Record(ctx, ss.WireLength, attrs)
+	}
 	if rep.recvBytes != nil && ss.Length > 0 {
-		rep.recvBytes.Add(ctx, ss.Length, metric.WithAttributes(rep.staticAttr, attribute.String("method", ss.Method)))
+		rep.recvBytes.Add(ctx, ss.Length, attrs)
 	}
 	if rep.recvWireBytes != nil && ss.WireLength > 0 {
-		rep.recvWireBytes.Add(ctx, ss.WireLength, metric.WithAttributes(rep.staticAttr, attribute.String("method", ss.Method)))
+		rep.recvWireBytes.Add(ctx, ss.WireLength, attrs)
 	}
 }
