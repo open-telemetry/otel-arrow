@@ -98,6 +98,8 @@ const (
 
 // makeSentMetrics builds the sent and sent-wire metric instruments
 // for an exporter or receiver using the corresponding `prefix`.
+// major` indicates the major direction of the pipeline,
+// which is true when sending for exporters, receiving for receivers.
 func makeSentMetrics(prefix string, meter metric.Meter, major bool) (sent, sentWire metric.Int64Counter, _ error) {
 	var sentBytes metric.Int64Counter = noopmetric.Int64Counter{}
 	var err1 error

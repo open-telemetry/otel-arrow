@@ -350,9 +350,10 @@ func (s *Stream) write(ctx context.Context) error {
 		// Let the receiver knows what to look for.
 		s.setBatchChannel(batch.BatchId, wri.errCh)
 
-		// We can't inform the gRPC stats handler of the
-		// uncompressed size in the following Send(), because
-		// there is no context passed.  Report it directly.
+		// The netstats code knows that uncompressed size is
+		// unreliable for arrow transport, so we instrument it
+		// directly here.  Only the primary direction of transport
+		// is instrumented this way.
 		var sized netstats.SizesStruct
 		sized.Method = s.method
 		sized.Length = int64(wri.uncompSize)
@@ -381,10 +382,6 @@ func (s *Stream) read(_ context.Context) error {
 			// Note: do not wrap, contains a Status.
 			return err
 		}
-
-		// Note that netstats does not instrument uncompressed
-		// size for backwards flow in the pipeline (i.e., no
-		// need for CountReceive() here).
 
 		// This indicates the server received EOF from client shutdown.
 		// This is not an error because this is an expected shutdown

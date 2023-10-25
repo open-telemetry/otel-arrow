@@ -43,6 +43,8 @@ func trustUncompressed(method string) bool {
 func (h statsHandler) HandleRPC(ctx context.Context, rs stats.RPCStats) {
 	switch rs.(type) {
 	case *stats.InHeader, *stats.InTrailer, *stats.Begin, *stats.OutHeader, *stats.OutTrailer:
+		// Note we have some info about header WireLength,
+		// but intentionally not counting.
 		return
 	}
 	method := "unknown"

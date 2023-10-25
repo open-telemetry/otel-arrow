@@ -398,6 +398,10 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 	}
 	var uncompSize int64
 	defer func() {
+		// The netstats code knows that uncompressed size is
+		// unreliable for arrow transport, so we instrument it
+		// directly here.  Only the primary direction of transport
+		// is instrumented this way.
 		var sized netstats.SizesStruct
 		sized.Method = method
 		sized.Length = uncompSize
