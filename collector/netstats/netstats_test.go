@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -19,22 +20,32 @@ import (
 	"go.opentelemetry.io/collector/receiver"
 )
 
-func metricValues(t *testing.T, rm metricdata.ResourceMetrics) map[string]interface{} {
+func metricValues(t *testing.T, rm metricdata.ResourceMetrics, expectMethod string) map[string]interface{} {
 	res := map[string]interface{}{}
 	for _, sm := range rm.ScopeMetrics {
 		for _, mm := range sm.Metrics {
 			var value int64
-			var method string
-			for _, dp := range mm.Data.(metricdata.Sum[int64]).DataPoints {
-				value = dp.Value
-				for _, attr := range dp.Attributes.ToSlice() {
-					if attr.Key == "method" {
-						method = attr.Value.AsString()
-					}
+			var attrs attribute.Set
+			switch t := mm.Data.(type) {
+			case metricdata.Histogram[int64]:
+				for _, dp := range t.DataPoints {
+					value = dp.Sum // histogram tested as the sum
+					attrs = dp.Attributes
+				}
+			case metricdata.Sum[int64]:
+				for _, dp := range t.DataPoints {
+					value = dp.Value
+					attrs = dp.Attributes
 				}
 			}
-			// Require a method named "Hello"
-			require.Equal(t, "Hello", method)
+			var method string
+			for _, attr := range attrs.ToSlice() {
+				if attr.Key == "method" {
+					method = attr.Value.AsString()
+				}
+			}
+
+			require.Equal(t, expectMethod, method)
 			res[mm.Name] = value
 		}
 	}
@@ -54,10 +65,10 @@ func TestNetStatsExporterNormal(t *testing.T) {
 
 func TestNetStatsExporterDetailed(t *testing.T) {
 	testNetStatsExporter(t, configtelemetry.LevelDetailed, map[string]interface{}{
-		"exporter_sent":      int64(1000),
-		"exporter_sent_wire": int64(100),
-		"exporter_recv":      int64(100),
-		"exporter_recv_wire": int64(10),
+		"exporter_sent":            int64(1000),
+		"exporter_sent_wire":       int64(100),
+		"exporter_recv_wire":       int64(10),
+		"exporter_compressed_size": int64(100), // same as sent_wire b/c sum metricValue uses histogram sum
 	})
 }
 
@@ -82,6 +93,7 @@ func testNetStatsExporter(t *testing.T, level configtelemetry.Level, expect map[
 				},
 			})
 			require.NoError(t, err)
+			handler := enr.Handler()
 
 			ctx := context.Background()
 			for i := 0; i < 10; i++ {
@@ -99,14 +111,16 @@ func testNetStatsExporter(t *testing.T, level configtelemetry.Level, expect map[
 					})
 				} else {
 					// simulate the RPC path
-					enr.HandleRPC(enr.TagRPC(UncompressedSizeContext(ctx, 100), &stats.RPCTagInfo{
+					handler.HandleRPC(handler.TagRPC(ctx, &stats.RPCTagInfo{
 						FullMethodName: "Hello",
 					}), &stats.OutPayload{
+						Length:     100,
 						WireLength: 10,
 					})
-					enr.HandleRPC(enr.TagRPC(UncompressedSizeContext(ctx, 10), &stats.RPCTagInfo{
+					handler.HandleRPC(handler.TagRPC(ctx, &stats.RPCTagInfo{
 						FullMethodName: "Hello",
 					}), &stats.InPayload{
+						Length:     10,
 						WireLength: 1,
 					})
 				}
@@ -115,7 +129,7 @@ func testNetStatsExporter(t *testing.T, level configtelemetry.Level, expect map[
 			err = rdr.Collect(ctx, &rm)
 			require.NoError(t, err)
 
-			require.Equal(t, expect, metricValues(t, rm))
+			require.Equal(t, expect, metricValues(t, rm, "Hello"))
 		})
 	}
 }
@@ -133,10 +147,10 @@ func TestNetStatsReceiverNormal(t *testing.T) {
 
 func TestNetStatsReceiverDetailed(t *testing.T) {
 	testNetStatsReceiver(t, configtelemetry.LevelDetailed, map[string]interface{}{
-		"receiver_recv":      int64(1000),
-		"receiver_recv_wire": int64(100),
-		"receiver_sent":      int64(100),
-		"receiver_sent_wire": int64(10),
+		"receiver_recv":            int64(1000),
+		"receiver_recv_wire":       int64(100),
+		"receiver_sent_wire":       int64(10),
+		"receiver_compressed_size": int64(100), // same as recv_wire b/c sum metricValue uses histogram sum
 	})
 }
 
@@ -161,6 +175,7 @@ func testNetStatsReceiver(t *testing.T, level configtelemetry.Level, expect map[
 				},
 			})
 			require.NoError(t, err)
+			handler := rer.Handler()
 
 			ctx := context.Background()
 			for i := 0; i < 10; i++ {
@@ -178,14 +193,16 @@ func testNetStatsReceiver(t *testing.T, level configtelemetry.Level, expect map[
 					})
 				} else {
 					// simulate the RPC path
-					rer.HandleRPC(rer.TagRPC(UncompressedSizeContext(ctx, 100), &stats.RPCTagInfo{
+					handler.HandleRPC(handler.TagRPC(ctx, &stats.RPCTagInfo{
 						FullMethodName: "Hello",
 					}), &stats.InPayload{
+						Length:     100,
 						WireLength: 10,
 					})
-					rer.HandleRPC(rer.TagRPC(UncompressedSizeContext(ctx, 10), &stats.RPCTagInfo{
+					handler.HandleRPC(handler.TagRPC(ctx, &stats.RPCTagInfo{
 						FullMethodName: "Hello",
 					}), &stats.OutPayload{
+						Length:     10,
 						WireLength: 1,
 					})
 				}
@@ -194,7 +211,58 @@ func testNetStatsReceiver(t *testing.T, level configtelemetry.Level, expect map[
 			err = rdr.Collect(ctx, &rm)
 			require.NoError(t, err)
 
-			require.Equal(t, expect, metricValues(t, rm))
+			require.Equal(t, expect, metricValues(t, rm, "Hello"))
 		})
 	}
+}
+
+func TestUncompressedSizeBypass(t *testing.T) {
+	rdr := metric.NewManualReader()
+	mp := metric.NewMeterProvider(
+		metric.WithResource(resource.Empty()),
+		metric.WithReader(rdr),
+	)
+	enr, err := NewExporterNetworkReporter(exporter.CreateSettings{
+		ID: component.NewID("test"),
+		TelemetrySettings: component.TelemetrySettings{
+			MeterProvider: mp,
+			MetricsLevel:  configtelemetry.LevelDetailed,
+		},
+	})
+	require.NoError(t, err)
+	handler := enr.Handler()
+
+	ctx := context.Background()
+	for i := 0; i < 10; i++ {
+		// simulate the RPC path
+		handler.HandleRPC(handler.TagRPC(ctx, &stats.RPCTagInfo{
+			FullMethodName: "my.arrow.v1.method",
+		}), &stats.OutPayload{
+			Length:     9999,
+			WireLength: 10,
+		})
+		handler.HandleRPC(handler.TagRPC(ctx, &stats.RPCTagInfo{
+			FullMethodName: "my.arrow.v1.method",
+		}), &stats.InPayload{
+			Length:     9999,
+			WireLength: 1,
+		})
+		// There would bo no uncompressed size metric w/o this call
+		// and if the bypass didn't work, we would count the 9999s above.
+		enr.CountSend(ctx, SizesStruct{
+			Method: "my.arrow.v1.method",
+			Length: 100,
+		})
+	}
+	var rm metricdata.ResourceMetrics
+	err = rdr.Collect(ctx, &rm)
+	require.NoError(t, err)
+
+	expect := map[string]interface{}{
+		"exporter_sent":            int64(1000),
+		"exporter_sent_wire":       int64(100),
+		"exporter_recv_wire":       int64(10),
+		"exporter_compressed_size": int64(100),
+	}
+	require.Equal(t, expect, metricValues(t, rm, "my.arrow.v1.method"))
 }

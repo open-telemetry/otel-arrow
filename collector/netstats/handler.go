@@ -42,7 +42,7 @@ func trustUncompressed(method string) bool {
 
 func (h statsHandler) HandleRPC(ctx context.Context, rs stats.RPCStats) {
 	switch rs.(type) {
-	case *stats.Begin, *stats.OutHeader, *stats.OutTrailer:
+	case *stats.InHeader, *stats.InTrailer, *stats.Begin, *stats.OutHeader, *stats.OutTrailer:
 		return
 	}
 	method := "unknown"
@@ -50,18 +50,6 @@ func (h statsHandler) HandleRPC(ctx context.Context, rs stats.RPCStats) {
 		method = name.(string)
 	}
 	switch s := rs.(type) {
-	case *stats.InHeader:
-		var ss SizesStruct
-		ss.Method = method
-		ss.WireLength = int64(s.WireLength)
-		h.rep.CountReceive(ctx, ss)
-
-	case *stats.InTrailer:
-		var ss SizesStruct
-		ss.Method = method
-		ss.WireLength = int64(s.WireLength)
-		h.rep.CountReceive(ctx, ss)
-
 	case *stats.InPayload:
 		var ss SizesStruct
 		ss.Method = method
@@ -69,7 +57,6 @@ func (h statsHandler) HandleRPC(ctx context.Context, rs stats.RPCStats) {
 			ss.Length = int64(s.Length)
 		}
 		ss.WireLength = int64(s.WireLength)
-		ss.WireIsPayload = true
 		h.rep.CountReceive(ctx, ss)
 
 	case *stats.OutPayload:
@@ -79,7 +66,6 @@ func (h statsHandler) HandleRPC(ctx context.Context, rs stats.RPCStats) {
 			ss.Length = int64(s.Length)
 		}
 		ss.WireLength = int64(s.WireLength)
-		ss.WireIsPayload = true
 		h.rep.CountSend(ctx, ss)
 	}
 }

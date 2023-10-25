@@ -41,7 +41,8 @@ const (
 	// (includes compression) by exporters and receivers.
 	RecvWireBytes = "recv_wire"
 
-	CompSize = "comp_size"
+	// CompSize is used for compressed size histogram metrics.
+	CompSize = "compressed_size"
 
 	scopeName = "github.com/open-telemetry/otel-arrow/collector/netstats"
 )
@@ -67,9 +68,6 @@ type SizesStruct struct {
 	Length int64
 	// WireLength is compressed size
 	WireLength int64
-	// WireIsPayload indicates WireLength is a payload (suitable
-	// for a histogram).
-	WireIsPayload bool
 }
 
 // Interface describes a *NetworkReporter or a Noop.
@@ -205,7 +203,7 @@ func (rep *NetworkReporter) CountSend(ctx context.Context, ss SizesStruct) {
 
 	attrs := metric.WithAttributes(rep.staticAttr, attribute.String("method", ss.Method))
 
-	if rep.isExporter && ss.WireIsPayload && ss.WireLength > 0 {
+	if rep.isExporter && ss.WireLength > 0 {
 		rep.compSizeHisto.Record(ctx, ss.WireLength, attrs)
 	}
 	if rep.sentBytes != nil && ss.Length > 0 {
@@ -226,7 +224,7 @@ func (rep *NetworkReporter) CountReceive(ctx context.Context, ss SizesStruct) {
 	}
 
 	attrs := metric.WithAttributes(rep.staticAttr, attribute.String("method", ss.Method))
-	if !rep.isExporter && ss.WireIsPayload && ss.WireLength > 0 {
+	if !rep.isExporter && ss.WireLength > 0 {
 		rep.compSizeHisto.Record(ctx, ss.WireLength, attrs)
 	}
 	if rep.recvBytes != nil && ss.Length > 0 {
