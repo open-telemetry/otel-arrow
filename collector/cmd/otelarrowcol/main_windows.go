@@ -7,9 +7,9 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"golang.org/x/sys/windows/svc"
 	"go.opentelemetry.io/collector/otelcol"
+	"golang.org/x/sys/windows/svc"
+	"os"
 )
 
 func run(params otelcol.CollectorSettings) error {
