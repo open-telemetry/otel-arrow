@@ -22,7 +22,7 @@ receivers:
     gomod: github.com/open-telemetry/otel-arrow/collector v0.6.0
   - import: github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver
     gomod: github.com/open-telemetry/otel-arrow/collector v0.6.0
-  - gomod: github.com/lightstep/telemetry-generator/generatorreceiver v0.13.0
+  - gomod: github.com/lightstep/telemetry-generator/generatorreceiver v0.14.3-0.20231026213604-a9e7cd5f6cea
 
 processors:
   - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.88.0

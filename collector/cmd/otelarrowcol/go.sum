@@ -683,8 +683,8 @@ github.com/labstack/gommon v0.3.1/go.mod h1:uW6kP17uPlLJsD3ijUYn3/M5bAxtlZhMI6m3
 github.com/leanovate/gopter v0.2.9/go.mod h1:U2L/78B+KVFIx2VmW6onHJQzXtFb+p5y3y2Sh+Jxxv8=
 github.com/leodido/go-urn v1.2.1/go.mod h1:zt4jvISO2HfUBqxjfIshjdMTYS56ZS/qv49ictyFfxY=
 github.com/lib/pq v1.0.0/go.mod h1:5WUZQaWbwv1U+lTReE5YruASi9Al49XbQIvNi/34Woo=
-github.com/lightstep/telemetry-generator/generatorreceiver v0.13.0 h1:6pzP/yUzK/AA/ThmH68czKd4rYpXX0Pw/i85cnnO7gY=
-github.com/lightstep/telemetry-generator/generatorreceiver v0.13.0/go.mod h1:/3BCVEZfwIzHCi3nx+aFQi6U1R9FZewgR2UoaxgkG+o=
+github.com/lightstep/telemetry-generator/generatorreceiver v0.14.3-0.20231026213604-a9e7cd5f6cea h1:Q0oNZ2wgmuYPM+GrGOoeA/bcouLsU0oUtKxzZkfdgRE=
+github.com/lightstep/telemetry-generator/generatorreceiver v0.14.3-0.20231026213604-a9e7cd5f6cea/go.mod h1:pXv7/nt9MWXKio5S2deXbgq0q8JEKvm8IWJTLpNolqQ=
 github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 h1:6E+4a0GO5zZEnZ81pIr0yLvtUWk2if982qA3F3QD6H4=
 github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0/go.mod h1:zJYVVT2jmtg6P3p1VtQj7WsuWi/y4VnjVBn7F8KPB3I=
 github.com/magiconair/properties v1.8.0/go.mod h1:PppfXfuXeibc/6YijjN8zIbojt8czPbwD3XqdrwzmxQ=
