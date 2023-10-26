@@ -58,8 +58,6 @@ func main() {
 	traces := ds.Traces(0, spanCount)
 	request := ptraceotlp.NewExportRequestFromTraces(traces[0])
 
-
-
 	// Write protobuf to file
 	if _, err := os.Stat(outputFile); os.IsNotExist(err) {
 		err = os.MkdirAll(path.Dir(outputFile), 0700)

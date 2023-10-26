@@ -26,8 +26,8 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark/stats"
 	"github.com/open-telemetry/otel-arrow/pkg/benchmark"
+	"github.com/open-telemetry/otel-arrow/pkg/benchmark/stats"
 )
 
 // RealMetricsDataset represents a dataset of real metrics read from a Metrics serialized to a binary file.
@@ -60,8 +60,8 @@ func (mr *metricReader) readAllMetrics() (pmetric.Metrics, error) {
 			}
 			for i := 0; i < ml.ResourceMetrics().Len(); i++ {
 				rm := metrics.ResourceMetrics().AppendEmpty()
-				ml.ResourceMetrics().At(i).CopyTo(rm) 
-			} 
+				ml.ResourceMetrics().At(i).CopyTo(rm)
+			}
 			mr.bytesRead += len(line)
 		} else { // failed to read line
 			if err != nil {
@@ -82,7 +82,7 @@ func metricsFromJSON(path string, compression string) (pmetric.Metrics, int) {
 
 	mr := &metricReader{
 		unmarshaler: &pmetric.JSONUnmarshaler{},
-		bytesRead: 0,
+		bytesRead:   0,
 	}
 
 	if compression == benchmark.CompressionTypeZstd {
@@ -95,7 +95,7 @@ func metricsFromJSON(path string, compression string) (pmetric.Metrics, int) {
 		mr.stringReader = bufio.NewReader(file)
 	}
 
-	mdata, err := mr.readAllMetrics() 
+	mdata, err := mr.readAllMetrics()
 
 	if err != nil {
 		if mr.bytesRead == 0 {
@@ -122,7 +122,6 @@ func metricsFromProto(path string) (pmetric.Metrics, int) {
 
 	return mdata, len(data)
 }
-
 
 // NewRealMetricsDataset creates a new RealMetricsDataset from a binary file
 // which is either formatted as otlp protobuf or compressed otlp json.
