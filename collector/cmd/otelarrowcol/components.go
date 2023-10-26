@@ -23,6 +23,7 @@ import (
 	"go.opentelemetry.io/collector/processor"
 	batchprocessor "go.opentelemetry.io/collector/processor/batchprocessor"
 	"go.opentelemetry.io/collector/receiver"
+	// batchprocessor "go.opentelemetry.io/collector/processor/batchprocessor"
 )
 
 func components() (otelcol.Factories, error) {

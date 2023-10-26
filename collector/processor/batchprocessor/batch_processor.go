@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"runtime"
 	"sort"
 	"strings"
@@ -44,6 +43,7 @@ type batchProcessor struct {
 	timeout          time.Duration
 	sendBatchSize    int
 	sendBatchMaxSize int
+	maxInFlightBytes int
 
 	// batchFunc is a factory for new batch objects corresponding
 	// with the appropriate signal.
@@ -94,7 +94,11 @@ type shard struct {
 	// underlying data types.
 	batch batch
 
-	sem *semaphore.Weighted 
+	sem *semaphore.Weighted
+
+	errCh chan error
+
+	cancelFn context.CancelFunc
 }
 
 // batch is an interface generalizing the individual signal types.
@@ -107,6 +111,9 @@ type batch interface {
 
 	// add item to the current batch
 	add(item any)
+
+	// return size in bytes of any item.
+	sizeBytes(item any) int
 }
 
 var _ consumer.Traces = (*batchProcessor)(nil)
@@ -126,6 +133,7 @@ func newBatchProcessor(set processor.CreateSettings, cfg *Config, batchFunc func
 
 		sendBatchSize:    int(cfg.SendBatchSize),
 		sendBatchMaxSize: int(cfg.SendBatchMaxSize),
+		maxInFlightBytes: int(cfg.MaxInFlightBytes),
 		timeout:          cfg.Timeout,
 		batchFunc:        batchFunc,
 		shutdownC:        make(chan struct{}, 1),
@@ -159,13 +167,8 @@ func (bp *batchProcessor) newShard(md map[string][]string) *shard {
 		newItem:   make(chan any, runtime.NumCPU()),
 		exportCtx: exportCtx,
 		batch:     bp.batchFunc(),
-		sem:       semaphore.NewWeighted(int64(math.Max(float64bp.sendBatchSize, bp.sendBatchMaxSize))),
-	}
-
-	if bp.sendBatchMaxSize > bp.sendBatchSize {
-		b.sem = semaphore.NewWeighted(bp.sendBatchMaxSize)
-	} else {
-		b.sem = semaphore.NewWeighted(bp.sendBatchSize)
+		errCh:     make(chan error, 1),
+		sem:       semaphore.NewWeighted(int64(bp.maxInFlightBytes)),
 	}
 
 	b.processor.goroutines.Add(1)
@@ -193,6 +196,9 @@ func (bp *batchProcessor) Shutdown(context.Context) error {
 
 func (b *shard) start() {
 	defer b.processor.goroutines.Done()
+	var cancel context.CancelFunc
+	b.exportCtx, cancel = context.WithTimeout(b.exportCtx, b.processor.timeout)
+	defer cancel()
 
 	// timerCh ensures we only block when there is a
 	// timer, since <- from a nil channel is blocking.
@@ -208,7 +214,11 @@ func (b *shard) start() {
 			for {
 				select {
 				case item := <-b.newItem:
-					b.processItem(item)
+					b.sem.Release(int64(b.batch.sizeBytes(item)))
+					err := b.processItem(item)
+					if err != nil {
+						b.errCh <- err
+					}
 				default:
 					break DONE
 				}
@@ -217,35 +227,48 @@ func (b *shard) start() {
 			if b.batch.itemCount() > 0 {
 				// TODO: Set a timeout on sendTraces or
 				// make it cancellable using the context that Shutdown gets as a parameter
-				b.sendItems(triggerTimeout)
+				err := b.sendItems(triggerTimeout)
+				if err != nil {
+					b.errCh <- err
+				}
 			}
 			return
 		case item := <-b.newItem:
 			if item == nil {
 				continue
 			}
-			b.processItem(item)
+			b.sem.Release(int64(b.batch.sizeBytes(item)))
+			err := b.processItem(item)
+			if err != nil {
+				b.errCh <- err
+			}
 		case <-timerCh:
 			if b.batch.itemCount() > 0 {
-				b.sendItems(triggerTimeout)
+				err := b.sendItems(triggerTimeout)
+				if err != nil {
+					b.errCh <- err
+				}
 			}
 			b.resetTimer()
 		}
 	}
 }
 
-func (b *shard) processItem(item any) {
+func (b *shard) processItem(item any) error {
 	b.batch.add(item)
 	sent := false
 	for b.batch.itemCount() > 0 && (!b.hasTimer() || b.batch.itemCount() >= b.processor.sendBatchSize) {
 		sent = true
-		b.sendItems(triggerBatchSize)
+		err := b.sendItems(triggerBatchSize)
+		return err
 	}
 
 	if sent {
 		b.stopTimer()
 		b.resetTimer()
 	}
+
+	return nil
 }
 
 func (b *shard) hasTimer() bool {
@@ -272,6 +295,7 @@ func (b *shard) sendItems(trigger trigger) error {
 	} else {
 		b.processor.telemetry.record(trigger, int64(sent), int64(bytes))
 	}
+	return nil
 }
 
 // singleShardBatcher is used when metadataKeys is empty, to avoid the
@@ -281,7 +305,18 @@ type singleShardBatcher struct {
 }
 
 func (sb *singleShardBatcher) consume(_ context.Context, data any) error {
+	err := sb.batcher.sem.Acquire(sb.batcher.exportCtx, int64(sb.batcher.batch.sizeBytes(data)))
+	if err != nil {
+		return err
+	}
 	sb.batcher.newItem <- data
+
+	select {
+	case err := <-sb.batcher.errCh:
+		return err
+	case <-sb.batcher.exportCtx.Done():
+		return sb.batcher.exportCtx.Err()
+	}
 	return nil
 }
 
@@ -337,10 +372,20 @@ func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
 		}
 		mb.lock.Unlock()
 	}
-	// need to acquire semaphore before adding data to the channel
-	weight := math.Min(float64(b.(*shard).batch.itemCount()), float64())
-	b.(*shard).sem.Acquire(ctx, 1)
+	err := b.(*shard).sem.Acquire(b.(*shard).exportCtx, int64(b.(*shard).batch.sizeBytes(data)))
+	// err := b.(*shard).sem.Acquire(b.(*shard).exportCtx, 1) 
+	if err != nil {
+		return err
+	}
+
 	b.(*shard).newItem <- data
+
+	select {
+	case err := <-b.(*shard).errCh:
+		return err
+	case <-b.(*shard).exportCtx.Done():
+		return ctx.Err()
+	}
 	return nil
 }
 
@@ -423,6 +468,10 @@ func (bt *batchTraces) export(ctx context.Context, sendBatchMaxSize int, returnB
 	return sent, bytes, bt.nextConsumer.ConsumeTraces(ctx, req)
 }
 
+func (bt *batchTraces) sizeBytes(data any) int {
+	return bt.sizer.TracesSize(data.(ptrace.Traces))
+}
+
 func (bt *batchTraces) itemCount() int {
 	return bt.spanCount
 }
@@ -460,6 +509,9 @@ func (bm *batchMetrics) export(ctx context.Context, sendBatchMaxSize int, return
 
 func (bm *batchMetrics) itemCount() int {
 	return bm.dataPointCount
+}
+func (bm *batchMetrics) sizeBytes(data any) int {
+	return bm.sizer.MetricsSize(data.(pmetric.Metrics))
 }
 
 func (bm *batchMetrics) add(item any) {
@@ -507,6 +559,10 @@ func (bl *batchLogs) export(ctx context.Context, sendBatchMaxSize int, returnByt
 
 func (bl *batchLogs) itemCount() int {
 	return bl.logCount
+}
+
+func (bl *batchLogs) sizeBytes(data any) int {
+	return bl.sizer.LogsSize(data.(plog.Logs))
 }
 
 func (bl *batchLogs) add(item any) {
