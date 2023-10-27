@@ -28,10 +28,6 @@ type Config struct {
 	// Default value is 0, that means no maximum size.
 	SendBatchMaxSize uint32 `mapstructure:"send_batch_max_size"`
 
-	// MaxInFlightBytes limits the number of bytes in queue waiting to be
-	// processed by the senders.
-	MaxInFlightBytes uint32 `mapstructure:"max_in_flight_bytes"`
-
 	// MetadataKeys is a list of client.Metadata keys that will be
 	// used to form distinct batchers.  If this setting is empty,
 	// a single batcher instance will be used.  When this setting
