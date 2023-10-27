@@ -9,7 +9,6 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
-	// "go.opentelemetry.io/collector/featuregate"
 	"go.opentelemetry.io/collector/processor"
 )
 

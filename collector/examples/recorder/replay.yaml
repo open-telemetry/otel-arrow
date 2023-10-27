@@ -18,14 +18,14 @@ receivers:
         
 exporters:
   otelarrow/forward:
-    endpoint: 127.0.0.1:8082
+    endpoint: ingest.staging.lightstep.com:443 
+    headers:
+      "lightstep-access-token": ${LS_TOKEN}
     wait_for_ready: true
     arrow:
       disabled: false
       num_streams: 1
       disable_downgrade: true
-    tls:
-      insecure: true
     retry_on_failure:
       enabled: false
     sending_queue:

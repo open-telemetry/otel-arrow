@@ -99,7 +99,7 @@ type shard struct {
 }
 
 type dataItem struct {
-	data any
+	data       any
 	responseCh chan error
 }
 
@@ -292,15 +292,18 @@ func (sb *singleShardBatcher) consume(ctx context.Context, data any) error {
 	// TODO: add a semaphore to only write to channel if sizeof(data) keeps
 	// us below some configured inflight byte limit.
 	sb.batcher.newItem <- dataItem{
-		data: data,
+		data:       data,
 		responseCh: respCh,
 	}
 
 	select {
 	case err := <-respCh:
-		return err
+		// if err != nil {
+		return recordBatchError(err)
+		// }
+		// return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return recordBatchError(ctx.Err())
 	}
 	return nil
 }
@@ -360,17 +363,24 @@ func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
 	}
 
 	b.(*shard).newItem <- dataItem{
-		data: data,
+		data:       data,
 		responseCh: respCh,
 	}
 
 	select {
 	case err := <-respCh:
-		return err
+		// if err != nil {
+		return recordBatchError(err)
+		// }
+		// return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return recordBatchError(ctx.Err())
 	}
 	return nil
+}
+
+func recordBatchError(err error) error {
+	return fmt.Errorf("Batch contained errors: %w", err)
 }
 
 func (mb *multiShardBatcher) currentMetadataCardinality() int {
