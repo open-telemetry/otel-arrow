@@ -45,8 +45,8 @@ type Protocols struct {
 
 // ArrowSettings support configuring the Arrow receiver.
 type ArrowSettings struct {
-	// MemoryLimit is deprecated, use MemoryLimitMiB.
-	MemoryLimit uint64 `mapstructure:"memory_limit"`
+	// DeprecatedMemoryLimit is deprecated, use MemoryLimitMiB.
+	DeprecatedMemoryLimit uint64 `mapstructure:"memory_limit"`
 
 	// MemoryLimitMiB is the size of a shared memory region used
 	// by all Arrow streams, in MiB.  When too much load is
@@ -71,13 +71,13 @@ func (cfg *Config) Validate() error {
 	if cfg.Arrow != nil && cfg.GRPC == nil {
 		return errors.New("must specify at gRPC protocol when using the OTLP Arrow receiver")
 	}
-	if cfg.Arrow.MemoryLimit != 0 && cfg.Arrow.MemoryLimitMiB != 0 {
+	if cfg.Arrow.DeprecatedMemoryLimit != 0 && cfg.Arrow.MemoryLimitMiB != 0 {
 		return errors.New("memory_limit is deprected, use only memory_limit_mib")
 	}
-	if cfg.Arrow.MemoryLimit != 0 {
+	if cfg.Arrow.DeprecatedMemoryLimit != 0 {
 		// Round up
-		cfg.Arrow.MemoryLimitMiB = (cfg.Arrow.MemoryLimit - 1 + 1<<20) >> 20
-		cfg.Arrow.MemoryLimit = 0
+		cfg.Arrow.MemoryLimitMiB = (cfg.Arrow.DeprecatedMemoryLimit - 1 + 1<<20) >> 20
+		cfg.Arrow.DeprecatedMemoryLimit = 0
 	}
 	return nil
 }
