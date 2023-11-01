@@ -44,4 +44,4 @@ protocols:
     metrics_url_path: /v2/metrics
     logs_url_path: log/ingest
   arrow:
-    memory_limit: 123456
+    memory_limit_mib: 123
