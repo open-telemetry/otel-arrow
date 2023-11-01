@@ -46,6 +46,19 @@ type TracesProfileable struct {
 	observer arrow_record.ProducerObserver
 }
 
+func WithOption(tags []string, options ...cfg.Option) *TracesProfileable {
+	return &TracesProfileable{
+		tags:                  tags,
+		compression:           benchmark.Zstd(),
+		producer:              arrow_record.NewProducerWithOptions(options...),
+		consumer:              arrow_record.NewConsumer(),
+		batchArrowRecords:     make([]*v1.BatchArrowRecords, 0, 10),
+		pool:                  memory.NewGoAllocator(),
+		unaryRpcMode:          false,
+		tracesProducerOptions: options,
+	}
+}
+
 func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *benchmark.Config) *TracesProfileable {
 	var tracesProducerOptions []cfg.Option
 
@@ -71,6 +84,10 @@ func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *be
 		stats:                 config.Stats,
 		tracesProducerOptions: tracesProducerOptions,
 	}
+}
+
+func (s *TracesProfileable) SetDataset(dataset dataset.TraceDataset) {
+	s.dataset = dataset
 }
 
 func (s *TracesProfileable) SetObserver(observer arrow_record.ProducerObserver) {
