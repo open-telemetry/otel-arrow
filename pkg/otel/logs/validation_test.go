@@ -86,7 +86,7 @@ func CheckEncodeDecode(
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, logsarrow.LogsSchema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, logsarrow.LogsSchema, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	conf := config.DefaultConfig()
@@ -95,7 +95,7 @@ func CheckEncodeDecode(
 	var relatedRecords []*record_message.RecordMessage
 
 	for {
-		lb, err := logsarrow.NewLogsBuilder(rBuilder, logsarrow.NewConfig(conf), stats.NewProducerStats())
+		lb, err := logsarrow.NewLogsBuilder(rBuilder, logsarrow.NewConfig(conf), stats.NewProducerStats(), nil)
 		require.NoError(t, err)
 		defer lb.Release()
 
@@ -142,7 +142,7 @@ func CheckEncodeMessUpDecode(
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, logsarrow.LogsSchema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, logsarrow.LogsSchema, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	conf := config.DefaultConfig()
@@ -151,7 +151,7 @@ func CheckEncodeMessUpDecode(
 	var relatedRecords []*record_message.RecordMessage
 
 	for {
-		lb, err := logsarrow.NewLogsBuilder(rBuilder, logsarrow.NewConfig(conf), stats.NewProducerStats())
+		lb, err := logsarrow.NewLogsBuilder(rBuilder, logsarrow.NewConfig(conf), stats.NewProducerStats(), nil)
 		require.NoError(t, err)
 		defer lb.Release()
 

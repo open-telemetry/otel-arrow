@@ -38,6 +38,7 @@ import (
 	config "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
 	logsarrow "github.com/open-telemetry/otel-arrow/pkg/otel/logs/arrow"
 	metricsarrow "github.com/open-telemetry/otel-arrow/pkg/otel/metrics/arrow"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
 	pstats "github.com/open-telemetry/otel-arrow/pkg/otel/stats"
 	tracesarrow "github.com/open-telemetry/otel-arrow/pkg/otel/traces/arrow"
 	"github.com/open-telemetry/otel-arrow/pkg/record_message"
@@ -82,11 +83,7 @@ type (
 		stats *pstats.ProducerStats
 
 		// Producer observer
-		observer ProducerObserver
-	}
-
-	ProducerObserver interface {
-		OnRecord(arrow.Record, record_message.PayloadType)
+		observer observer.ProducerObserver
 	}
 
 	consoleObserver struct {
@@ -135,20 +132,20 @@ func NewProducerWithOptions(options ...cfg.Option) *Producer {
 	stats.ProducerStats = conf.ProducerStats
 
 	// Record builders
-	metricsRecordBuilder := builder.NewRecordBuilderExt(conf.Pool, metricsarrow.MetricsSchema, config.NewDictionary(conf.LimitIndexSize), stats)
+	metricsRecordBuilder := builder.NewRecordBuilderExt(conf.Pool, metricsarrow.MetricsSchema, config.NewDictionary(conf.LimitIndexSize), stats, conf.Observer)
 	metricsRecordBuilder.SetLabel("metrics")
-	logsRecordBuilder := builder.NewRecordBuilderExt(conf.Pool, logsarrow.LogsSchema, config.NewDictionary(conf.LimitIndexSize), stats)
+	logsRecordBuilder := builder.NewRecordBuilderExt(conf.Pool, logsarrow.LogsSchema, config.NewDictionary(conf.LimitIndexSize), stats, conf.Observer)
 	logsRecordBuilder.SetLabel("logs")
-	tracesRecordBuilder := builder.NewRecordBuilderExt(conf.Pool, tracesarrow.TracesSchema, config.NewDictionary(conf.LimitIndexSize), stats)
+	tracesRecordBuilder := builder.NewRecordBuilderExt(conf.Pool, tracesarrow.TracesSchema, config.NewDictionary(conf.LimitIndexSize), stats, conf.Observer)
 	tracesRecordBuilder.SetLabel("traces")
 
 	// Entity builders
-	metricsBuilder, err := metricsarrow.NewMetricsBuilder(metricsRecordBuilder, metricsarrow.NewConfig(conf), stats)
+	metricsBuilder, err := metricsarrow.NewMetricsBuilder(metricsRecordBuilder, metricsarrow.NewConfig(conf), stats, conf.Observer)
 	if err != nil {
 		panic(err)
 	}
 
-	logsBuilder, err := logsarrow.NewLogsBuilder(logsRecordBuilder, logsarrow.NewConfig(conf), stats)
+	logsBuilder, err := logsarrow.NewLogsBuilder(logsRecordBuilder, logsarrow.NewConfig(conf), stats, conf.Observer)
 	if err != nil {
 		panic(err)
 	}
@@ -163,7 +160,7 @@ func NewProducerWithOptions(options ...cfg.Option) *Producer {
 	traceCfg.Attrs.Event.Sorter = acommon.Attrs32FindOrderByFunc(conf.OrderAttrs32By)
 	traceCfg.Attrs.Link.Sorter = acommon.Attrs32FindOrderByFunc(conf.OrderAttrs32By)
 
-	tracesBuilder, err := tracesarrow.NewTracesBuilder(tracesRecordBuilder, traceCfg, stats)
+	tracesBuilder, err := tracesarrow.NewTracesBuilder(tracesRecordBuilder, traceCfg, stats, conf.Observer)
 	if err != nil {
 		panic(err)
 	}
@@ -182,12 +179,13 @@ func NewProducerWithOptions(options ...cfg.Option) *Producer {
 		logsRecordBuilder:    logsRecordBuilder,
 		tracesRecordBuilder:  tracesRecordBuilder,
 
-		stats: stats,
+		stats:    stats,
+		observer: conf.Observer,
 	}
 }
 
 // SetObserver adds an observer to the producer.
-func (p *Producer) SetObserver(observer ProducerObserver) {
+func (p *Producer) SetObserver(observer observer.ProducerObserver) {
 	p.observer = observer
 }
 
@@ -201,7 +199,7 @@ func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colar
 		// This is especially important after a schema update.
 		p.metricsBuilder.RelatedData().Reset()
 		return p.metricsBuilder, nil
-	}, metrics)
+	}, metrics, p.observer)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
@@ -234,7 +232,7 @@ func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrow
 	record, err := recordBuilder[plog.Logs](func() (acommon.EntityBuilder[plog.Logs], error) {
 		p.logsBuilder.RelatedData().Reset()
 		return p.logsBuilder, nil
-	}, ls)
+	}, ls, p.observer)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
@@ -265,7 +263,7 @@ func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.Batc
 	record, err := recordBuilder[ptrace.Traces](func() (acommon.EntityBuilder[ptrace.Traces], error) {
 		p.tracesBuilder.RelatedData().Reset()
 		return p.tracesBuilder, nil
-	}, ts)
+	}, ts, p.observer)
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
@@ -501,7 +499,13 @@ func (p *Producer) RecordSizeStats() map[string]*pstats.RecordSizeStats {
 	return p.stats.RecordSizeStats()
 }
 
-func recordBuilder[T pmetric.Metrics | plog.Logs | ptrace.Traces](builder func() (acommon.EntityBuilder[T], error), entity T) (record arrow.Record, err error) {
+// recordBuilder is a generic function that builds an Arrow Record from an OTel
+// entity.
+func recordBuilder[T pmetric.Metrics | plog.Logs | ptrace.Traces](
+	builder func() (acommon.EntityBuilder[T], error),
+	entity T,
+	observer observer.ProducerObserver,
+) (record arrow.Record, err error) {
 	schemaNotUpToDateCount := 0
 
 	// Build an Arrow Record from an OTEL entity.
@@ -541,7 +545,7 @@ func recordBuilder[T pmetric.Metrics | plog.Logs | ptrace.Traces](builder func()
 	return record, werror.Wrap(err)
 }
 
-func NewConsoleObserver(maxRows, maxPrints int) ProducerObserver {
+func NewConsoleObserver(maxRows, maxPrints int) observer.ProducerObserver {
 	return &consoleObserver{
 		maxRows:   maxRows,
 		maxPrints: maxPrints,
@@ -560,3 +564,11 @@ func (o *consoleObserver) OnRecord(record arrow.Record, payloadType record_messa
 		carrow.PrintRecordWithProgression(payloadType.String(), record, o.maxRows, count, o.maxPrints)
 	}
 }
+
+func (o *consoleObserver) OnDictionaryUpgrade(recordName string, fieldPath string, prevIndexType, newIndexType arrow.DataType, card, total uint64) {
+}
+
+func (o *consoleObserver) OnDictionaryOverflow(recordName string, fieldPath string, card, total uint64) {
+}
+
+func (o *consoleObserver) OnSchemaUpdate(recordName string, old, new *arrow.Schema) {}

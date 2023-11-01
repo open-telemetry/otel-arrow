@@ -48,7 +48,7 @@ func TestLogs(t *testing.T) {
 	producerStats := stats.NewProducerStats()
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
-	rBuilder := builder.NewRecordBuilderExt(pool, LogsSchema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, LogsSchema, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -58,7 +58,7 @@ func TestLogs(t *testing.T) {
 	stats := stats.NewProducerStats()
 
 	for {
-		tb, err := NewLogsBuilder(rBuilder, NewConfig(conf), stats)
+		tb, err := NewLogsBuilder(rBuilder, NewConfig(conf), stats, nil)
 		require.NoError(t, err)
 		defer tb.Release()
 

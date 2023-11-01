@@ -48,7 +48,7 @@ func TestEmptyAnyValue(t *testing.T) {
 		{Name: "any_value", Type: carrow.AnyValueDT, Metadata: schema.Metadata(schema.Optional)},
 	}, nil)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, s, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, s, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -89,7 +89,7 @@ func TestMultipleAnyValues(t *testing.T) {
 		{Name: "any_value", Type: carrow.AnyValueDT, Metadata: schema.Metadata(schema.Optional)},
 	}, nil)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, s, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, s, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record

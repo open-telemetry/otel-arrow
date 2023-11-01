@@ -30,11 +30,11 @@ import (
 
 	"github.com/apache/arrow/go/v12/arrow"
 
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
-
 	"errors"
 	"math"
+
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
 
 	"go.opentelemetry.io/collector/pdata/pmetric"
 

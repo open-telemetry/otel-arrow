@@ -23,6 +23,8 @@ import (
 	"math"
 
 	"github.com/apache/arrow/go/v12/arrow/memory"
+
+	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
 )
 
 type OrderSpanBy int8
@@ -128,6 +130,9 @@ type Config struct {
 	// OrderAttrs32By specifies how to order attributes in a batch
 	// (with 32bits attribute ID).
 	OrderAttrs32By OrderAttrs32By
+
+	// Observer is the optional observer to use for the producer.
+	Observer observer.ProducerObserver
 }
 
 type Option func(*Config)
@@ -305,5 +310,12 @@ func WithOrderAttrs32By(orderAttrs32By OrderAttrs32By) Option {
 func WithOrderAttrs16By(orderAttrs16By OrderAttrs16By) Option {
 	return func(cfg *Config) {
 		cfg.OrderAttrs16By = orderAttrs16By
+	}
+}
+
+// WithObserver sets the optional observer to use for the producer.
+func WithObserver(observer observer.ProducerObserver) Option {
+	return func(cfg *Config) {
+		cfg.Observer = observer
 	}
 }

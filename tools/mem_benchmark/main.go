@@ -85,7 +85,7 @@ func Report(name string, schema *arrow.Schema) {
 	ReportMemUsageOf("NewRecordBuilder(...).NewRecord() - empty", func() {
 		b := builder.NewRecordBuilderExt(pool, schema, DictConfig, stats.NewProducerStats())
 		defer b.Release()
-		record, err := b.NewRecord()
+		record, err := b.NewRecord(nil)
 		if err != nil {
 			panic(err)
 		}
@@ -94,13 +94,13 @@ func Report(name string, schema *arrow.Schema) {
 
 	b := builder.NewRecordBuilderExt(pool, schema, DictConfig, stats.NewProducerStats())
 	defer b.Release()
-	record, err := b.NewRecord()
+	record, err := b.NewRecord(nil)
 	if err != nil {
 		panic(err)
 	}
 	defer record.Release()
 	ReportMemUsageOf("reusedRecordBuilder.NewRecord() - empty", func() {
-		r, err := b.NewRecord()
+		r, err := b.NewRecord(nil)
 		if err != nil {
 			panic(err)
 		}
@@ -109,7 +109,7 @@ func Report(name string, schema *arrow.Schema) {
 	ReportMemUsageOf("builder.Analyze(...) + builder.UpdateSchema(...) if needed", func() {
 		if b.IsSchemaUpToDate() {
 			println("overflow detected")
-			b.UpdateSchema()
+			b.UpdateSchema(nil)
 		}
 	})
 }

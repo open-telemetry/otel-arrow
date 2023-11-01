@@ -20,15 +20,33 @@ import (
 	"math"
 	"os"
 
+	"github.com/apache/arrow/go/v12/arrow"
+
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	"github.com/open-telemetry/otel-arrow/pkg/benchmark"
 	"github.com/open-telemetry/otel-arrow/pkg/benchmark/dataset"
-	"github.com/open-telemetry/otel-arrow/pkg/benchmark/profileable/arrow"
+	parrow "github.com/open-telemetry/otel-arrow/pkg/benchmark/profileable/arrow"
 	"github.com/open-telemetry/otel-arrow/pkg/benchmark/profileable/otlp"
 	"github.com/open-telemetry/otel-arrow/pkg/config"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
+	"github.com/open-telemetry/otel-arrow/pkg/record_message"
 )
 
 var help = flag.Bool("help", false, "Show help")
+
+type SimuObserver struct{}
+
+func (o *SimuObserver) OnRecord(arrow.Record, record_message.PayloadType) {}
+
+func (o *SimuObserver) OnDictionaryUpgrade(recordName string, fieldPath string, prevIndexType, newIndexType arrow.DataType, card, total uint64) {
+	fmt.Printf("OnDictionaryUpgrade: %s.%s (%s -> %s, card: %d, total: %d)\n", recordName, fieldPath, prevIndexType, newIndexType, card, total)
+}
+func (o *SimuObserver) OnDictionaryOverflow(recordName string, fieldPath string, card, total uint64) {
+	fmt.Printf("OnDictionaryOverflow: %s.%s (card: %d, total: %d)\n", recordName, fieldPath, card, total)
+}
+func (o *SimuObserver) OnSchemaUpdate(recordName string, old, new *arrow.Schema) {
+	fmt.Printf("OnSchemaUpdate: %s\n", recordName)
+}
 
 // This command simulates an OTel Arrow producer running for different
 // configurations of batch size and stream duration.
@@ -115,12 +133,14 @@ func main() {
 		commonOptions = append(commonOptions, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_LINK_ATTRS.String(), *spanLinkAttrs))
 	}
 
+	observer := &SimuObserver{}
 	options := append([]config.Option{
 		config.WithZstd(),
+		config.WithObserver(observer),
 	}, commonOptions...)
 
 	var otlpProfile *otlp.TracesProfileable
-	var otelArrowProfile *arrow.TracesProfileable
+	var otelArrowProfile *parrow.TracesProfileable
 	batchesPerStreamCount := 0
 
 	for i := range inputFiles {
@@ -133,7 +153,7 @@ func main() {
 		for batchNum := uint64(0); batchNum < maxBatchCount; batchNum++ {
 			if batchesPerStreamCount >= *maxBatchesPerStream || otlpProfile == nil || otelArrowProfile == nil {
 				otlpProfile = OtlpStream(otlpProfile, *batchSize)
-				otelArrowProfile = OtelArrowStream(otelArrowProfile, *batchSize, options...)
+				otelArrowProfile = OtelArrowStream(otelArrowProfile, *batchSize, observer, options...)
 				batchesPerStreamCount = 0
 			}
 			otlpProfile.SetDataset(ds)
@@ -182,12 +202,18 @@ func OtlpStream(prevStream *otlp.TracesProfileable, batchSize int) *otlp.TracesP
 	return profile
 }
 
-func OtelArrowStream(prevStream *arrow.TracesProfileable, batchSize int, options ...config.Option) *arrow.TracesProfileable {
+func OtelArrowStream(
+	prevStream *parrow.TracesProfileable,
+	batchSize int,
+	observer observer.ProducerObserver,
+	options ...config.Option,
+) *parrow.TracesProfileable {
 	if prevStream != nil {
 		prevStream.EndProfiling(os.Stdout)
 	}
 
-	profile := arrow.WithOption([]string{"stream mode"}, options...)
+	profile := parrow.WithOption([]string{"stream mode"}, options...)
+	profile.SetObserver(observer)
 	profile.StartProfiling(os.Stdout)
 	profile.InitBatchSize(os.Stdout, batchSize)
 	return profile

@@ -102,7 +102,7 @@ func TestTimestampOnly(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -117,7 +117,7 @@ func TestU8Only(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -132,7 +132,7 @@ func TestU64Only(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -147,7 +147,7 @@ func TestI64Only(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -162,7 +162,7 @@ func TestBoolOnly(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -177,7 +177,7 @@ func TestBinaryOnly(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -192,7 +192,7 @@ func TestU32Only(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -207,7 +207,7 @@ func TestI32Only(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -222,7 +222,7 @@ func TestStringOnly(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -237,7 +237,7 @@ func TestValuesOnly1(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -254,7 +254,7 @@ func TestValuesOnly2(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -271,7 +271,7 @@ func TestValuesOnly3(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -289,7 +289,7 @@ func TestFixedSize8Only(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -304,7 +304,7 @@ func TestFixedSize16Only(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -319,7 +319,7 @@ func TestHMapOnly1(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -336,7 +336,7 @@ func TestHMapOnly2(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -353,7 +353,7 @@ func TestFullSchema(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -384,7 +384,7 @@ func TestSchemaEvolution(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)
@@ -592,7 +592,7 @@ func TestDictionaryOverflow(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats)
+	recordBuilderExt := builder.NewRecordBuilderExt(pool, protoSchema, DictConfig, producerStats, nil)
 	defer recordBuilderExt.Release()
 
 	rootBuilder := NewRootBuilderFrom(recordBuilderExt)

@@ -27,6 +27,7 @@ import (
 	cfg "github.com/open-telemetry/otel-arrow/pkg/config"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
 	config "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
 	"github.com/open-telemetry/otel-arrow/pkg/record_message"
 	"github.com/open-telemetry/otel-arrow/pkg/werror"
@@ -219,8 +220,14 @@ func NewRelatedRecordsManager(cfg *cfg.Config, stats *stats.ProducerStats) *Rela
 	}
 }
 
-func (m *RelatedRecordsManager) Declare(payloadType *PayloadType, parentPayloadType *PayloadType, schema *arrow.Schema, rrBuilder func(b *builder.RecordBuilderExt) RelatedRecordBuilder) RelatedRecordBuilder {
-	builderExt := builder.NewRecordBuilderExt(m.cfg.Pool, schema, config.NewDictionary(m.cfg.LimitIndexSize), m.stats)
+func (m *RelatedRecordsManager) Declare(
+	payloadType *PayloadType,
+	parentPayloadType *PayloadType,
+	schema *arrow.Schema,
+	rrBuilder func(b *builder.RecordBuilderExt) RelatedRecordBuilder,
+	observer observer.ProducerObserver,
+) RelatedRecordBuilder {
+	builderExt := builder.NewRecordBuilderExt(m.cfg.Pool, schema, config.NewDictionary(m.cfg.LimitIndexSize), m.stats, observer)
 	builderExt.SetLabel(payloadType.SchemaPrefix())
 	rBuilder := rrBuilder(builderExt)
 	m.builders = append(m.builders, rBuilder)

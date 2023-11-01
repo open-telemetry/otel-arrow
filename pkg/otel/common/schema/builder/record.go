@@ -30,6 +30,7 @@ import (
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/events"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/transform"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/update"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
 	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
@@ -74,6 +75,9 @@ type RecordBuilderExt struct {
 
 	// Metadata to be added to the schema.
 	metadata map[string]string
+
+	// The observer that is notified when certain events occur.
+	observer observer.ProducerObserver
 }
 
 // NewRecordBuilderExt creates a new RecordBuilderExt from the given allocator
@@ -83,6 +87,7 @@ func NewRecordBuilderExt(
 	protoSchema *arrow.Schema,
 	dictConfig *builder.Dictionary,
 	stats *stats.ProducerStats,
+	observer observer.ProducerObserver,
 ) *RecordBuilderExt {
 	schemaUpdateRequest := update.NewSchemaUpdateRequest()
 	evts := &events.Events{
@@ -105,6 +110,7 @@ func NewRecordBuilderExt(
 		events:             evts,
 		stats:              stats,
 		metadata:           make(map[string]string),
+		observer:           observer,
 	}
 }
 
@@ -217,8 +223,16 @@ func (rb *RecordBuilderExt) detectDictionaryOverflow(field *arrow.Field, column 
 			if dictTransform, ok := rb.dictTransformNodes[dictId]; ok {
 				switch dictColumn := column.(type) {
 				case *array.Dictionary:
+					prevIndexType := dictTransform.IndexType()
 					dictTransform.AddTotal(dictColumn.Len())
-					dictTransform.SetCardinality(uint64(dictColumn.Dictionary().Len()), &rb.stats.RecordBuilderStats)
+					updated := dictTransform.SetCardinality(uint64(dictColumn.Dictionary().Len()), &rb.stats.RecordBuilderStats)
+					if updated && rb.observer != nil {
+						if dictTransform.IndexType() == nil {
+							rb.observer.OnDictionaryOverflow(rb.label, dictTransform.Path(), dictTransform.Cardinality(), dictTransform.CumulativeTotal())
+						} else {
+							rb.observer.OnDictionaryUpgrade(rb.label, dictTransform.Path(), prevIndexType, dictTransform.IndexType(), dictTransform.Cardinality(), dictTransform.CumulativeTotal())
+						}
+					}
 				}
 			} else {
 				panic(fmt.Sprintf("Dictionary transform not found for field %s", field.Name))
@@ -257,12 +271,13 @@ func (rb *RecordBuilderExt) UpdateSchema() {
 	}
 
 	rb.transformTree.RevertCounters()
-	s := schema.NewSchemaFrom(rb.protoSchema, rb.transformTree, rb.metadata)
+	oldSchema := rb.Schema()
+	newSchema := schema.NewSchemaFrom(rb.protoSchema, rb.transformTree, rb.metadata)
 
 	// Build a new record builder with the updated schema
 	// and transfer the dictionaries from the old record builder
 	// to the new one.
-	newRecBuilder := array.NewRecordBuilder(rb.allocator, s)
+	newRecBuilder := array.NewRecordBuilder(rb.allocator, newSchema)
 
 	// Note: dictionaries are no longer copied between schema changes as it can
 	// be very expensive when the number of reusable dictionary entries is not
@@ -274,7 +289,7 @@ func (rb *RecordBuilderExt) UpdateSchema() {
 
 	rb.recordBuilder.Release()
 	rb.recordBuilder = newRecBuilder
-	rb.schemaID = carrow.SchemaToID(s)
+	rb.schemaID = carrow.SchemaToID(newSchema)
 
 	rb.updateRequest.Reset()
 	rb.stats.RecordBuilderStats.SchemaUpdatesPerformed++
@@ -282,6 +297,9 @@ func (rb *RecordBuilderExt) UpdateSchema() {
 	if rb.stats.SchemaUpdates {
 		println("To =====>")
 		rb.ShowSchema()
+	}
+	if rb.observer != nil {
+		rb.observer.OnSchemaUpdate(rb.label, oldSchema, newSchema)
 	}
 }
 

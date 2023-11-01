@@ -91,19 +91,29 @@ func (t *DictionaryField) AddTotal(total int) {
 	t.cumulativeTotal += uint64(total)
 }
 
-func (t *DictionaryField) SetCardinality(card uint64, stats *stats.RecordBuilderStats) {
+func (t *DictionaryField) SetCardinality(card uint64, stats *stats.RecordBuilderStats) (updated bool) {
 	t.cardinality = card
-	t.updateIndexType(stats)
+	updated = t.updateIndexType(stats)
+	return
 }
 
+// Path returns the path of the dictionary field.
+func (t *DictionaryField) Path() string {
+	return t.path
+}
+
+// Cardinality returns the cardinality of the dictionary field.
 func (t *DictionaryField) Cardinality() uint64 {
 	return t.cardinality
 }
 
+// CumulativeTotal returns the number of values inserted in the corresponding
+// column since its creation.
 func (t *DictionaryField) CumulativeTotal() uint64 {
 	return t.cumulativeTotal
 }
 
+// IndexType returns the index type of the column.
 func (t *DictionaryField) IndexType() arrow.DataType {
 	if t.indexTypes == nil {
 		return nil
@@ -151,7 +161,8 @@ func (t *DictionaryField) Transform(field *arrow.Field) *arrow.Field {
 	}
 }
 
-func (t *DictionaryField) updateIndexType(stats *stats.RecordBuilderStats) {
+func (t *DictionaryField) updateIndexType(stats *stats.RecordBuilderStats) (updated bool) {
+	updated = false
 	if t.indexTypes == nil {
 		return
 	}
@@ -168,11 +179,14 @@ func (t *DictionaryField) updateIndexType(stats *stats.RecordBuilderStats) {
 		t.schemaUpdateRequest.Inc()
 		t.events.DictionariesWithOverflow[t.path] = true
 		stats.DictionaryOverflowDetected++
+		updated = true
 	} else if t.currentIndex != currentIndex {
 		t.schemaUpdateRequest.Inc()
 		t.events.DictionariesIndexTypeChanged[t.path] = t.indexTypes[t.currentIndex].Name()
 		stats.DictionaryIndexTypeChanged++
+		updated = true
 	}
+	return
 }
 
 func (t *DictionaryField) initIndices(config *cfg.Dictionary) {

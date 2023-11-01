@@ -290,7 +290,7 @@ func CheckEncodeDecode(
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, tracesarrow.TracesSchema, DefaultDictConfig, ProducerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, tracesarrow.TracesSchema, DefaultDictConfig, ProducerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -299,7 +299,7 @@ func CheckEncodeDecode(
 	conf := config.DefaultConfig()
 
 	for {
-		tb, err := tracesarrow.NewTracesBuilder(rBuilder, tracesarrow.NewConfig(conf), stats.NewProducerStats())
+		tb, err := tracesarrow.NewTracesBuilder(rBuilder, tracesarrow.NewConfig(conf), stats.NewProducerStats(), nil)
 		require.NoError(t, err)
 		defer tb.Release()
 
@@ -346,7 +346,7 @@ func CheckEncodeMessUpDecode(
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, tracesarrow.TracesSchema, DefaultDictConfig, ProducerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, tracesarrow.TracesSchema, DefaultDictConfig, ProducerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -355,7 +355,7 @@ func CheckEncodeMessUpDecode(
 	conf := config.DefaultConfig()
 
 	for {
-		tb, err := tracesarrow.NewTracesBuilder(rBuilder, tracesarrow.NewConfig(conf), stats.NewProducerStats())
+		tb, err := tracesarrow.NewTracesBuilder(rBuilder, tracesarrow.NewConfig(conf), stats.NewProducerStats(), nil)
 		require.NoError(t, err)
 		defer tb.Release()
 
@@ -415,7 +415,7 @@ func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportReques
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, tracesarrow.TracesSchema, DefaultDictConfig, ProducerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, tracesarrow.TracesSchema, DefaultDictConfig, ProducerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -424,7 +424,7 @@ func checkTracesConversion(t *testing.T, expectedRequest ptraceotlp.ExportReques
 	conf := config.DefaultConfig()
 
 	for {
-		tb, err := tracesarrow.NewTracesBuilder(rBuilder, tracesarrow.NewConfig(conf), stats.NewProducerStats())
+		tb, err := tracesarrow.NewTracesBuilder(rBuilder, tracesarrow.NewConfig(conf), stats.NewProducerStats(), nil)
 		defer tb.Release()
 
 		require.NoError(t, err)

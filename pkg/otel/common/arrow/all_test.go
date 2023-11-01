@@ -43,7 +43,7 @@ func TestAttributesBuilder(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.Attributes, Type: AttributesDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, ProducerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, ProducerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
