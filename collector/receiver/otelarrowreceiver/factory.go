@@ -25,7 +25,7 @@ const (
 	defaultMetricsURLPath = "/v1/metrics"
 	defaultLogsURLPath    = "/v1/logs"
 
-	defaultMemoryLimit = 128 << 20 // 128MB
+	defaultMemoryLimitMiB = 128
 )
 
 // NewFactory creates a new OTLP receiver factory.
@@ -59,7 +59,7 @@ func createDefaultConfig() component.Config {
 				LogsURLPath:    defaultLogsURLPath,
 			},
 			Arrow: &ArrowSettings{
-				MemoryLimit: defaultMemoryLimit,
+				MemoryLimitMiB: defaultMemoryLimitMiB,
 			},
 		},
 	}

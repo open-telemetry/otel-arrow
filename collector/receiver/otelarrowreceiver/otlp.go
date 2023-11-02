@@ -150,9 +150,9 @@ func (r *otlpReceiver) startProtocolServers(host component.Host) error {
 
 			r.arrowReceiver = arrow.New(arrow.Consumers(r), r.settings, r.obsrepGRPC, r.cfg.GRPC, authServer, func() arrowRecord.ConsumerAPI {
 				var opts []arrowRecord.Option
-				if r.cfg.Arrow.MemoryLimit != 0 {
+				if r.cfg.Arrow.MemoryLimitMiB != 0 {
 					// in which case the default is selected in the arrowRecord package.
-					opts = append(opts, arrowRecord.WithMemoryLimit(r.cfg.Arrow.MemoryLimit))
+					opts = append(opts, arrowRecord.WithMemoryLimit(r.cfg.Arrow.MemoryLimitMiB<<20))
 				}
 				if r.settings.TelemetrySettings.MeterProvider != nil {
 					opts = append(opts, arrowRecord.WithMeterProvider(r.settings.TelemetrySettings.MeterProvider, r.settings.TelemetrySettings.MetricsLevel))

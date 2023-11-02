@@ -1,0 +1,4 @@
+protocols:
+  arrow:
+    # This has to be rounded up to 1MB
+    memory_limit: 123456
