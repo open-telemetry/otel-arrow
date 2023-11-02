@@ -75,6 +75,29 @@ func TestUnmarshalConfigOnlyHTTPEmptyMap(t *testing.T) {
 	assert.Equal(t, defaultOnlyHTTP, cfg)
 }
 
+func TestUnmarshalOldMemoryLimitConfig(t *testing.T) {
+	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "oldmemlimit.yaml"))
+	require.NoError(t, err)
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig()
+	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
+	expectCfg := factory.CreateDefaultConfig().(*Config)
+	// The number in config is <1MB, so Validate() rounds up.
+	expectCfg.Arrow.MemoryLimitMiB = 1
+	expectCfg.HTTP = nil
+	assert.NoError(t, cfg.(*Config).Validate())
+	assert.Equal(t, expectCfg, cfg)
+}
+
+func TestUnmarshalBothMemoryLimitConfig(t *testing.T) {
+	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "bothmemlimit.yaml"))
+	require.NoError(t, err)
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig()
+	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
+	assert.Error(t, cfg.(*Config).Validate())
+}
+
 func TestUnmarshalConfig(t *testing.T) {
 	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "config.yaml"))
 	require.NoError(t, err)
@@ -132,7 +155,7 @@ func TestUnmarshalConfig(t *testing.T) {
 					LogsURLPath:    "/log/ingest",
 				},
 				Arrow: &ArrowSettings{
-					MemoryLimit: 123456,
+					MemoryLimitMiB: 123,
 				},
 			},
 		}, cfg)
@@ -164,7 +187,7 @@ func TestUnmarshalConfigUnix(t *testing.T) {
 					LogsURLPath:    defaultLogsURLPath,
 				},
 				Arrow: &ArrowSettings{
-					MemoryLimit: defaultMemoryLimit,
+					MemoryLimitMiB: defaultMemoryLimitMiB,
 				},
 			},
 		}, cfg)

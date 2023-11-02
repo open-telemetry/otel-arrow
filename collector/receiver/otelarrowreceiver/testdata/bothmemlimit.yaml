@@ -1,0 +1,4 @@
+protocols:
+  arrow:
+    memory_limit: 123456000
+    memory_limit_mib: 123
