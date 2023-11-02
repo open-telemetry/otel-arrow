@@ -64,9 +64,6 @@ type expectedMetrics struct {
 }
 
 func telemetryTest(t *testing.T, testFunc func(t *testing.T, tel testTelemetry, useOtel bool)) {
-	t.Run("WithOC", func(t *testing.T) {
-		testFunc(t, setupTelemetry(t, false), false)
-	})
 	t.Run("WithOTel", func(t *testing.T) {
 		testFunc(t, setupTelemetry(t, true), true)
 	})

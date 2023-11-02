@@ -35,6 +35,7 @@ type trigger int
 const (
 	triggerTimeout trigger = iota
 	triggerBatchSize
+	triggerShutdown
 )
 
 func init() {
