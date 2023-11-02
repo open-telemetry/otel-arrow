@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/open-telemetry/otel-arrow/collector/compression/zstd"
 	"github.com/open-telemetry/otel-arrow/pkg/config"
 	"google.golang.org/grpc"
 
@@ -54,11 +55,19 @@ type ArrowSettings struct {
 	// grpc: keepalive: max_connection_age_grace plus the timeout.
 	MaxStreamLifetime time.Duration `mapstructure:"max_stream_lifetime"`
 
+	// Zstd settings apply to OTel-Arrow use of gRPC specifically.
+	// Note that when multiple Otel-Arrow exporters are configured
+	// their settings will be applied in arbitrary order.
+	// Identical Zstd settings are recommended when multiple
+	// OTel-Arrow exporters are in use.
+	Zstd zstd.EncoderConfig `mapstructure:"zstd"`
+
 	// PayloadCompression is applied on the Arrow IPC stream
 	// internally and may have different results from using
 	// gRPC-level compression.  This is disabled by default, since
 	// gRPC-level compression is enabled by default.  This can be
 	// set to "zstd" to turn on Arrow-Zstd compression.
+	// Note that `Zstd` applies to gRPC, not Arrow compression.
 	PayloadCompression configcompression.CompressionType `mapstructure:"payload_compression"`
 }
 
@@ -84,6 +93,10 @@ func (cfg *ArrowSettings) Validate() error {
 
 	if cfg.MaxStreamLifetime.Seconds() < float64(1) {
 		return fmt.Errorf("max stream life must be > 0: %d", cfg.MaxStreamLifetime)
+	}
+
+	if err := cfg.Zstd.Validate(); err != nil {
+		return fmt.Errorf("zstd settings are invalid: %w", err)
 	}
 
 	// The cfg.PayloadCompression field is validated by the underlying library,

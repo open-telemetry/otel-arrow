@@ -20,9 +20,11 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/open-telemetry/otel-arrow/collector/compression/zstd"
 	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter/internal/arrow"
 	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/config/configcompression"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
@@ -76,6 +78,9 @@ func newExporter(cfg component.Config, set exporter.CreateSettings, streamClient
 		set.BuildInfo.Description, set.BuildInfo.Version, runtime.GOOS, runtime.GOARCH)
 
 	if !oCfg.Arrow.Disabled {
+		// Ignoring an error because Validate() was called.
+		_ = zstd.SetEncoderConfig(oCfg.Arrow.Zstd)
+
 		userAgent += fmt.Sprintf(" ApacheArrow/%s (NumStreams/%d)", arrowPkg.PkgVersion, oCfg.Arrow.NumStreams)
 	}
 
@@ -133,7 +138,17 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) (err erro
 
 		arrowOpts := e.config.Arrow.ToArrowProducerOptions()
 
-		e.arrow = arrow.NewExporter(e.config.Arrow.MaxStreamLifetime, e.config.Arrow.NumStreams, e.config.Arrow.DisableDowngrade, e.settings.TelemetrySettings, e.callOptions, func() arrowRecord.ProducerAPI {
+		arrowCallOpts := e.callOptions
+
+		if e.config.GRPCClientSettings.Compression == configcompression.Zstd &&
+			e.config.Arrow.Zstd.Level != 0 {
+			// ignore the error below b/c Validate() was called
+			_ = zstd.SetEncoderConfig(e.config.Arrow.Zstd)
+			// use the configured compressor.
+			arrowCallOpts = append(arrowCallOpts, e.config.Arrow.Zstd.CallOption())
+		}
+
+		e.arrow = arrow.NewExporter(e.config.Arrow.MaxStreamLifetime, e.config.Arrow.NumStreams, e.config.Arrow.DisableDowngrade, e.settings.TelemetrySettings, arrowCallOpts, func() arrowRecord.ProducerAPI {
 			return arrowRecord.NewProducerWithOptions(arrowOpts...)
 		}, e.streamClientFactory(e.config, e.clientConn), perRPCCreds, e.netReporter)
 

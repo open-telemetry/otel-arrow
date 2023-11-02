@@ -11,6 +11,7 @@ import (
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	"google.golang.org/grpc"
 
+	"github.com/open-telemetry/otel-arrow/collector/compression/zstd"
 	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter/internal/arrow"
 	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	"go.opentelemetry.io/collector/component"
@@ -59,10 +60,18 @@ func createDefaultConfig() component.Config {
 			NumStreams:        runtime.NumCPU(),
 			MaxStreamLifetime: time.Hour,
 
+			Zstd: zstd.DefaultEncoderConfig(),
+
 			// PayloadCompression is off by default because gRPC
 			// compression is on by default, above.
 			PayloadCompression: "",
+
+			// @@@
+			// PayloadCompression is on by default in addition to gRPC-level
+			// compression because it leads to a substantial improvement.
+			// PayloadCompression: configcompression.Zstd,
 		},
+		Zstd: zstd.EncoderConfig{},
 	}
 }
 
