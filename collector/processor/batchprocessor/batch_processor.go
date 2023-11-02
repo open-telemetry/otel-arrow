@@ -103,7 +103,6 @@ type shard struct {
 }
 
 type pendingItem struct {
-	batchID int
 	numItems int
 	respCh   chan error
 }
@@ -274,7 +273,6 @@ func (b *shard) start() {
 			b.processItem(item)
 		case <-timerCh:
 			if b.batch.itemCount() > 0 {
-				fmt.Println("timed out")
 				b.sendItems(triggerTimeout)
 			}
 			b.resetTimer()
@@ -291,7 +289,6 @@ func (b *shard) processItem(item dataItem) {
 	b.pending = append(b.pending, pendingItem{
 		numItems: totalItems,
 		respCh: item.responseCh,
-		batchID: len(b.pending),
 	})
 
 	b.flushItems()
@@ -336,27 +333,22 @@ func (b *shard) sendItems(trigger trigger) {
 	for len(b.pending) > 0 && numItemsBefore < numItemsAfter {
 		// Waiter only had some items in the current batch
 		if numItemsBefore + b.pending[0].numItems > numItemsAfter {
-			// remaining items that will be sent in future batch.
-			// fmt.Println("enter partial")
-			b.pending[0].numItems += (numItemsBefore - numItemsAfter)
+			b.pending[0].numItems -= (numItemsAfter - numItemsBefore)
 			b.pending[0].respCh <- partialError{err: err}
 			numItemsBefore = numItemsAfter
-			// fmt.Println("exit partial")
 		} else { // waiter gets a complete response.
-			// fmt.Println("enter complete")
 			numItemsBefore += b.pending[0].numItems
 			if trigger == triggerTimeout {
-				// waiter is getting complete response and should
-				// be notified if there was a timeout.
 				err = multierr.Append(err, errTimedOut)
 			}
 			b.pending[0].respCh <- completeError{err: err}
+
+			// complete response sent so b.pending[0] can be popped from queue.
 			if len(b.pending) > 1 {
 				b.pending = b.pending[1:]
 			} else {
 				b.pending = []pendingItem{}
 			}
-			// fmt.Println("exit complete")
 		}
 	}
 

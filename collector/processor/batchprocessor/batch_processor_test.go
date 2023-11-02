@@ -5,6 +5,7 @@ package batchprocessor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"sync"
@@ -16,14 +17,15 @@ import (
 
 	"github.com/open-telemetry/otel-arrow/collector/processor/batchprocessor/testdata"
 	"go.opentelemetry.io/collector/client"
+	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/consumer"
-	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/collector/processor"
 	"go.opentelemetry.io/collector/processor/processortest"
 )
 
@@ -965,7 +967,44 @@ func logsReceivedBySeverityText(lds []plog.Logs) map[string]plog.LogRecord {
 
 func TestShutdown(t *testing.T) {
 	factory := NewFactory()
-	processortest.VerifyShutdown(t, factory, factory.CreateDefaultConfig())
+	verifyTracesDoesNotProduceAfterShutdown(t, factory, factory.CreateDefaultConfig())
+}
+func verifyTracesDoesNotProduceAfterShutdown(t *testing.T, factory processor.Factory, cfg component.Config) {
+	// Create a proc and output its produce to a sink.
+	nextSink := new(consumertest.TracesSink)
+	proc, err := factory.CreateTracesProcessor(context.Background(), processortest.NewNopCreateSettings(), cfg, nextSink)
+	if err != nil {
+		if errors.Is(err, component.ErrDataTypeIsNotSupported) {
+			return
+		}
+		require.NoError(t, err)
+	}
+	assert.NoError(t, proc.Start(context.Background(), componenttest.NewNopHost()))
+
+	// Send some traces to the proc.
+	const generatedCount = 10
+	var wg sync.WaitGroup
+	for i := 0; i < generatedCount; i++ {
+		wg.Add(1)
+		go func() {
+			err := proc.ConsumeTraces(context.Background(), testdata.GenerateTraces(1))
+			if err != nil {
+				// partial response can lead to timeout.
+				assert.ErrorIs(t, err, errTimedOut)
+			} else {
+				assert.NoError(t, err)
+			}
+			wg.Done()
+		}()
+	}
+
+	// Now shutdown the proc.
+	wg.Wait()
+	assert.NoError(t, proc.Shutdown(context.Background()))
+
+	// The Shutdown() is done. It means the proc must have sent everything we
+	// gave it to the next sink.
+	assert.EqualValues(t, generatedCount, nextSink.SpanCount())
 }
 
 type metadataTracesSink struct {
@@ -1000,7 +1039,7 @@ func TestBatchProcessorSpansBatchedByMetadata(t *testing.T) {
 	}
 	cfg := createDefaultConfig().(*Config)
 	cfg.SendBatchSize = 1000
-	cfg.Timeout = 10 * time.Minute
+	cfg.Timeout = 1 * time.Second
 	cfg.MetadataKeys = []string{"token1", "token2"}
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
@@ -1043,6 +1082,7 @@ func TestBatchProcessorSpansBatchedByMetadata(t *testing.T) {
 	requestCount := 1000
 	spansPerRequest := 33
 	sentResourceSpans := ptrace.NewTraces().ResourceSpans()
+	var wg sync.WaitGroup
 	for requestNum := 0; requestNum < requestCount; requestNum++ {
 		td := testdata.GenerateTraces(spansPerRequest)
 		spans := td.ResourceSpans().At(0).ScopeSpans().At(0).Spans()
@@ -1053,10 +1093,19 @@ func TestBatchProcessorSpansBatchedByMetadata(t *testing.T) {
 		// use round-robin to assign context.
 		num := requestNum % len(callCtxs)
 		expectByContext[num] += spansPerRequest
-		go func() {assert.NoError(t, batcher.ConsumeTraces(callCtxs[num], td))}()
+		wg.Add(1)
+		go func() {
+			err = batcher.ConsumeTraces(callCtxs[num], td)
+			if err != nil {
+				assert.ErrorIs(t, err, errTimedOut)
+			} else {
+				assert.NoError(t, err)
+			}
+			wg.Done()
+		}()
 	}
 
-	time.Sleep(1 * time.Second)
+	wg.Wait()
 	require.NoError(t, batcher.Shutdown(context.Background()))
 
 	// The following tests are the same as TestBatchProcessorSpansDelivered().
@@ -1097,14 +1146,15 @@ func TestBatchProcessorMetadataCardinalityLimit(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.MetadataKeys = []string{"token"}
 	cfg.MetadataCardinalityLimit = cardLimit
-	cfg.Timeout = 1 * time.Minute
+	cfg.Timeout = 1 * time.Second
 	creationSet := processortest.NewNopCreateSettings()
 	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg, true)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
 	bg := context.Background()
-	for requestNum := 0; requestNum < cardLimit-1; requestNum++ {
+	var wg sync.WaitGroup
+	for requestNum := 0; requestNum < cardLimit; requestNum++ {
 		td := testdata.GenerateTraces(1)
 		ctx := client.NewContext(bg, client.Info{
 			Metadata: client.NewMetadata(map[string][]string{
@@ -1112,23 +1162,34 @@ func TestBatchProcessorMetadataCardinalityLimit(t *testing.T) {
 			}),
 		})
 
-		go func() {assert.NoError(t, batcher.ConsumeTraces(ctx, td))}()
+		wg.Add(1)
+		go func() {
+			err = batcher.ConsumeTraces(ctx, td)
+			if err != nil {
+				assert.ErrorIs(t, err, errTimedOut)
+			} else {
+				assert.NoError(t, err)
+			}
+			wg.Done()
+		}()
 	}
 
-	td := testdata.GenerateTraces(1)
+	wg.Wait()
+	td := testdata.GenerateTraces(2)
 	ctx := client.NewContext(bg, client.Info{
 		Metadata: client.NewMetadata(map[string][]string{
 			"token": {"limit_exceeded"},
 		}),
 	})
+
+	wg.Add(1)
 	go func()  {
 		err := batcher.ConsumeTraces(ctx, td)
-		assert.Error(t, err)
-		assert.True(t, consumererror.IsPermanent(err))
-		assert.Contains(t, err.Error(), "too many")
+		assert.ErrorIs(t, err, errTooManyBatchers)
+		wg.Done()
 	}()
 
-	time.Sleep(1 * time.Second)
+	wg.Wait()
 	require.NoError(t, batcher.Shutdown(context.Background()))
 }
 
