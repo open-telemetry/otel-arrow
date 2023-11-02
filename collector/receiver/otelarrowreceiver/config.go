@@ -72,7 +72,7 @@ func (cfg *Config) Validate() error {
 		return errors.New("must specify at gRPC protocol when using the OTLP Arrow receiver")
 	}
 	if cfg.Arrow.DeprecatedMemoryLimit != 0 && cfg.Arrow.MemoryLimitMiB != 0 {
-		return errors.New("memory_limit is deprected, use only memory_limit_mib")
+		return errors.New("memory_limit is deprecated, use only memory_limit_mib")
 	}
 	if cfg.Arrow.DeprecatedMemoryLimit != 0 {
 		// Round up
