@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 package zstd
 
 import (
@@ -16,8 +19,8 @@ import (
 const NamePrefix = "zstdarrow"
 
 // Level is an integer value mapping to compression level.
-// [0] implies disablement; not a registered level
-// [1,2] fastest
+// [0] implies disablement; not registered in grpc
+// [1,2] fastest i.e., "zstdarrow1", "zstdarrow2"
 // [3-5] default
 // [6-9] better
 // [10] best.
@@ -81,7 +84,9 @@ type instance struct {
 
 var _ encoding.Compressor = &combined{}
 
-var staticInstances = &instance{}
+var staticInstances = &instance{
+	byLevel: map[Level]*combined{},
+}
 
 func DefaultEncoderConfig() EncoderConfig {
 	return EncoderConfig{

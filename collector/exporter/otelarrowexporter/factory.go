@@ -71,7 +71,6 @@ func createDefaultConfig() component.Config {
 			// compression because it leads to a substantial improvement.
 			// PayloadCompression: configcompression.Zstd,
 		},
-		Zstd: zstd.EncoderConfig{},
 	}
 }
 

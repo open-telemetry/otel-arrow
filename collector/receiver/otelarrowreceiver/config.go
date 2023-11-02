@@ -88,7 +88,7 @@ func (cfg *Config) Validate() error {
 }
 
 func (cfg *ArrowSettings) Validate() error {
-	if cfg.DeprecatedMemoryLimit != 0 && cfg.Arrow.MemoryLimitMiB != 0 {
+	if cfg.DeprecatedMemoryLimit != 0 && cfg.MemoryLimitMiB != 0 {
 		return errors.New("memory_limit is deprecated, use only memory_limit_mib")
 	}
 	if cfg.DeprecatedMemoryLimit != 0 {
@@ -97,7 +97,7 @@ func (cfg *ArrowSettings) Validate() error {
 		cfg.DeprecatedMemoryLimit = 0
 	}
 	if err := cfg.Zstd.Validate(); err != nil {
-		return errors.New("zstd decoder: invalid configuration: %w", err)
+		return fmt.Errorf("zstd decoder: invalid configuration: %w", err)
 	}
 	return nil
 }

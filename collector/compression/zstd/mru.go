@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 package zstd
 
 import (
@@ -29,6 +32,9 @@ type mru[T any] struct {
 	zero     T
 }
 
+// TTL is modified in testing.
+var TTL time.Duration = time.Minute
+
 // Get returns an object from the freelist. If the list is empty, the return
 // value is the zero value of T.
 func (mru *mru[T]) Get() T {
@@ -54,10 +60,18 @@ func (mru *mru[T]) Put(item T) {
 	mru.putTimes = append(mru.putTimes, time.Now())
 
 	// Evict any objects that haven't been touched recently.
-	const ttl = time.Minute
-	for len(mru.putTimes) > 0 && time.Since(mru.putTimes[0]) > ttl {
-		mru.freelist[0] = mru.zero // Allow GC to occur.
-		mru.freelist = mru.freelist[1:]
-		mru.putTimes = mru.putTimes[1:]
+	for len(mru.putTimes) > 0 && time.Since(mru.putTimes[0]) > TTL {
+		l := len(mru.freelist)
+		copy(mru.freelist[0:l-1], mru.freelist[1:])
+		copy(mru.putTimes[0:l-1], mru.putTimes[1:])
+		mru.freelist[l-1] = mru.zero // Allow GC to occur.
+		mru.freelist = mru.freelist[:l-1]
+		mru.putTimes = mru.putTimes[:l-1]
 	}
+}
+
+func (mru *mru[T]) Size() int {
+	mru.mu.Lock()
+	defer mru.mu.Unlock()
+	return len(mru.putTimes)
 }

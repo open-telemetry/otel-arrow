@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-telemetry/otel-arrow/collector/compression/zstd"
 	"github.com/open-telemetry/otel-arrow/pkg/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -85,6 +86,7 @@ func TestUnmarshalConfig(t *testing.T) {
 				EnableMixedSignals: true,
 				MaxStreamLifetime:  2 * time.Hour,
 				PayloadCompression: configcompression.Zstd,
+				Zstd:               zstd.DefaultEncoderConfig(),
 			},
 		}, cfg)
 }
