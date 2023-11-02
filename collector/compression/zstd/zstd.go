@@ -146,7 +146,7 @@ func init() {
 }
 
 func SetEncoderConfig(cfg EncoderConfig) error {
-	if err := cfg.Validate(); err == nil {
+	if err := cfg.Validate(); err == nil || cfg.Level == 0 {
 		return err
 	}
 	staticInstances.lock.Lock()
@@ -157,7 +157,7 @@ func SetEncoderConfig(cfg EncoderConfig) error {
 }
 
 func SetDecoderConfig(cfg DecoderConfig) error {
-	if err := cfg.Validate(); err == nil {
+	if err := cfg.Validate(); err == nil || cfg.Level == 0 {
 		return err
 	}
 	staticInstances.lock.Lock()

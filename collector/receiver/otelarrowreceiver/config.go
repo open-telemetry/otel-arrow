@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"path"
 
+	"github.com/open-telemetry/otel-arrow/collector/compression/zstd"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confighttp"
@@ -52,6 +53,13 @@ type ArrowSettings struct {
 	// by all Arrow streams, in MiB.  When too much load is
 	// passing through, they will see ResourceExhausted errors.
 	MemoryLimitMiB uint64 `mapstructure:"memory_limit_mib"`
+
+	// Zstd settings apply to OTel-Arrow use of gRPC specifically.
+	// Note that when multiple Otel-Arrow exporters are configured
+	// their settings will be applied in arbitrary order.
+	// Identical Zstd settings are recommended when multiple
+	// OTel-Arrow exporters are in use.
+	Zstd zstd.DecoderConfig `mapstructure:"zstd"`
 }
 
 // Config defines configuration for OTel Arrow receiver.
@@ -71,13 +79,25 @@ func (cfg *Config) Validate() error {
 	if cfg.Arrow != nil && cfg.GRPC == nil {
 		return errors.New("must specify at gRPC protocol when using the OTLP Arrow receiver")
 	}
-	if cfg.Arrow.DeprecatedMemoryLimit != 0 && cfg.Arrow.MemoryLimitMiB != 0 {
+	if cfg.Arrow != nil {
+		if err := cfg.Arrow.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (cfg *ArrowSettings) Validate() error {
+	if cfg.DeprecatedMemoryLimit != 0 && cfg.Arrow.MemoryLimitMiB != 0 {
 		return errors.New("memory_limit is deprecated, use only memory_limit_mib")
 	}
-	if cfg.Arrow.DeprecatedMemoryLimit != 0 {
+	if cfg.DeprecatedMemoryLimit != 0 {
 		// Round up
-		cfg.Arrow.MemoryLimitMiB = (cfg.Arrow.DeprecatedMemoryLimit - 1 + 1<<20) >> 20
-		cfg.Arrow.DeprecatedMemoryLimit = 0
+		cfg.MemoryLimitMiB = (cfg.DeprecatedMemoryLimit - 1 + 1<<20) >> 20
+		cfg.DeprecatedMemoryLimit = 0
+	}
+	if err := cfg.Zstd.Validate(); err != nil {
+		return errors.New("zstd decoder: invalid configuration: %w", err)
 	}
 	return nil
 }

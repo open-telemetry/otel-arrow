@@ -96,7 +96,7 @@ func (cfg *ArrowSettings) Validate() error {
 	}
 
 	if err := cfg.Zstd.Validate(); err != nil {
-		return fmt.Errorf("zstd settings are invalid: %w", err)
+		return fmt.Errorf("zstd encoder: invalid configuration: %w", err)
 	}
 
 	// The cfg.PayloadCompression field is validated by the underlying library,
