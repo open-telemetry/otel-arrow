@@ -1,40 +1,62 @@
 package zstd
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"runtime"
 	"sync"
 
-	"github.com/klauspost/compress/zstd"
 	zstdlib "github.com/klauspost/compress/zstd"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/encoding"
 )
 
-// Name is the customized for Arrow so that the Arrow exporter and
-// receiver can be configured without clobbering others use of "zstd".
-const Name = "zstdarrow"
+// NamePrefix is prefix, with N for compression level.
+const NamePrefix = "zstdarrow"
 
-type CompressionLevel zstd.EncoderLevel
+// Level is an integer value mapping to compression level.
+// [0] implies disablement; not a registered level
+// [1,2] fastest
+// [3-5] default
+// [6-9] better
+// [10] best.
+type Level uint
+
+const (
+	DefaultLevel Level = 5
+	MinLevel     Level = 1
+	MaxLevel     Level = 10
+)
 
 type EncoderConfig struct {
-	Level         CompressionLevel `mapstructure:"level"`
-	WindowSizeMiB uint64           `mapstructure:"window_size_mib"`
-	Concurrency   int              `mapstructure:"concurrency"`
+	// Level is meaningful in the range [0, 10].  No invalid
+	// values, they all map into 4 default configurations.
+	Level         Level  `mapstructure:"level"`
+	WindowSizeMiB uint32 `mapstructure:"window_size_mib"`
+	Concurrency   uint   `mapstructure:"concurrency"`
 }
 
 type DecoderConfig struct {
-	Concurrency      int    `mapstructure:"concurrency"`
-	MaxMemoryMiB     uint64 `mapstructure:"max_memory_mib"`
-	MaxWindowSizeMiB uint64 `mapstructure:"max_window_size_mib"`
+	// Level is symmetric with encoder config.  Although the
+	// decoder object does not use this configuration, it is the
+	// key used to lookup configuration corresponding with the
+	// same setting on the encoder, so provides a means of
+	// multi-configuration.
+	Level            Level  `mapstructure:"level"`
+	Concurrency      uint   `mapstructure:"concurrency"`
+	MemoryLimitMiB   uint32 `mapstructure:"memory_limit_mib"`
+	MaxWindowSizeMiB uint32 `mapstructure:"max_window_size_mib"`
 }
 
-type instance struct {
-	lock             sync.Mutex
-	encodeOpts       []zstdlib.EOption
-	decodeOpts       []zstdlib.DOption
-	poolCompressor   mru[*writer]
-	poolDecompressor mru[*reader]
+type encoder struct {
+	cfg  EncoderConfig
+	pool mru[*writer]
+}
+
+type decoder struct {
+	cfg  DecoderConfig
+	pool mru[*reader]
 }
 
 type reader struct {
@@ -47,88 +69,147 @@ type writer struct {
 	pool *mru[*writer]
 }
 
+type combined struct {
+	enc encoder
+	dec decoder
+}
+
+type instance struct {
+	lock    sync.Mutex
+	byLevel map[Level]*combined
+}
+
+var _ encoding.Compressor = &combined{}
+
+var staticInstances = &instance{}
+
 func DefaultEncoderConfig() EncoderConfig {
 	return EncoderConfig{
-		Concurrency: 1,                                      // Avoids extra CPU/memory
-		Level:       CompressionLevel(zstdlib.SpeedDefault), // Determines other defaults
-
+		Level:       DefaultLevel, // Determines other defaults
+		Concurrency: 1,            // Avoids extra CPU/memory
 	}
 }
 
 func DefaultDecoderConfig() DecoderConfig {
 	return DecoderConfig{
-		Concurrency:      1,   // Avoids extra CPU/memory
-		MaxMemoryMiB:     512, // More conservative than library default
-		MaxWindowSizeMiB: 32,  // Corresponds w/ "best" level default
+		Level:            DefaultLevel, // Default speed
+		Concurrency:      1,            // Avoids extra CPU/memory
+		MemoryLimitMiB:   512,          // More conservative than library default
+		MaxWindowSizeMiB: 32,           // Corresponds w/ "best" level default
 	}
 }
 
-var staticInstance = &instance{}
+func validate(level Level, f func() error) error {
+	if level > MaxLevel {
+		return fmt.Errorf("level out of range [0,10]: %d", level)
+	}
+	if level == 0 {
+		return nil
+	}
+	return f()
+}
 
-var _ encoding.Compressor = &instance{}
+func (cfg *EncoderConfig) Validate() error {
+	return validate(cfg.Level, func() error {
+		var buf bytes.Buffer
+		test, err := zstdlib.NewWriter(&buf, cfg.options()...)
+		if test != nil {
+			test.Close()
+		}
+		return err
+	})
+}
+
+func (cfg *DecoderConfig) Validate() error {
+	return validate(cfg.Level, func() error {
+		var buf bytes.Buffer
+		test, err := zstdlib.NewReader(&buf, cfg.options()...)
+		if test != nil {
+			test.Close()
+		}
+		return err
+	})
+}
 
 func init() {
-	SetEncoderConfig(DefaultEncoderConfig())
-	SetDecoderConfig(DefaultDecoderConfig())
-	encoding.RegisterCompressor(staticInstance)
-}
-
-func SetEncoderConfig(enc EncoderConfig) {
-	staticInstance.setEncoderConfig(enc)
-}
-
-func SetDecoderConfig(dec DecoderConfig) {
-	staticInstance.setDecoderConfig(dec)
-}
-
-func (c *instance) setEncoderConfig(enc EncoderConfig) {
-	var opts []zstdlib.EOption{}
-
-	opts = append(opts, zstdlib.WithEncoderLevel(enc.Level))
-	if enc.Concurrency != 0 {
-		opts = append(opts, zstdlib.WithEncoderConcurrency(enc.Concurrency))
+	staticInstances.lock.Lock()
+	defer staticInstances.lock.Unlock()
+	for level := Level(MinLevel); level <= MaxLevel; level++ {
+		var combi combined
+		combi.enc.cfg = DefaultEncoderConfig()
+		combi.dec.cfg = DefaultDecoderConfig()
+		combi.enc.cfg.Level = level
+		combi.dec.cfg.Level = level
+		encoding.RegisterCompressor(&combi)
+		staticInstances.byLevel[level] = &combi
 	}
-	if enc.WindowSizeMiB != 0 {
-		opts = append(opts, zstdlib.WithWindowSize(enc.WindowSizeMiB<<20))
+}
+
+func SetEncoderConfig(cfg EncoderConfig) error {
+	if err := cfg.Validate(); err == nil {
+		return err
 	}
-		
-	c.lock.Lock()
-	defer c.lock.Unlock()
+	staticInstances.lock.Lock()
+	defer staticInstances.lock.Unlock()
 
-	c.encodeOpts = opts
+	staticInstances.byLevel[cfg.Level].enc.cfg = cfg
+	return nil
 }
 
-func (c *instance) setDecoderConfig(dec DecoderConfig) {
-	var opts []zstdlib.DOption{}
+func SetDecoderConfig(cfg DecoderConfig) error {
+	if err := cfg.Validate(); err == nil {
+		return err
+	}
+	staticInstances.lock.Lock()
+	defer staticInstances.lock.Unlock()
 
-	// @@@
-		
-	c.lock.Lock()
-	defer c.lock.Unlock()
-
-	c.decodeOpts = opts
+	staticInstances.byLevel[cfg.Level].dec.cfg = cfg
+	return nil
 }
 
-func (c *instance) decoderOptions() []zstdlib.DOption {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	return c.decodeOpts
+func (cfg *EncoderConfig) options() (opts []zstdlib.EOption) {
+	opts = append(opts, zstdlib.WithEncoderLevel(zstdlib.EncoderLevelFromZstd(int(cfg.Level))))
+
+	if cfg.Concurrency != 0 {
+		opts = append(opts, zstdlib.WithEncoderConcurrency(int(cfg.Concurrency)))
+	}
+	if cfg.WindowSizeMiB != 0 {
+		opts = append(opts, zstdlib.WithWindowSize(int(cfg.WindowSizeMiB<<20)))
+	}
+
+	return opts
 }
 
-func (c *instance) encoderOptions() []zstdlib.EOption {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-	return c.encodeOpts
+func (cfg *EncoderConfig) Name() string {
+	return fmt.Sprint(NamePrefix, cfg.Level)
 }
 
-func (c *instance) Compress(w io.Writer) (io.WriteCloser, error) {
-	z := c.poolCompressor.Get()
+func (cfg *EncoderConfig) CallOption() grpc.CallOption {
+	return grpc.UseCompressor(cfg.Name())
+}
+
+func (cfg *DecoderConfig) options() (opts []zstdlib.DOption) {
+	if cfg.Concurrency != 0 {
+		opts = append(opts, zstdlib.WithDecoderConcurrency(int(cfg.Concurrency)))
+	}
+	if cfg.MaxWindowSizeMiB != 0 {
+		opts = append(opts, zstdlib.WithDecoderMaxWindow(uint64(cfg.MaxWindowSizeMiB)<<20))
+	}
+	if cfg.MemoryLimitMiB != 0 {
+		opts = append(opts, zstdlib.WithDecoderMaxMemory(uint64(cfg.MemoryLimitMiB)<<20))
+	}
+
+	return opts
+}
+
+func (c *combined) Compress(w io.Writer) (io.WriteCloser, error) {
+	z := c.enc.pool.Get()
 	if z == nil {
-		encoder, err := zstdlib.NewWriter(w, c.encoderOptions()...)
+		encoder, err := zstdlib.NewWriter(w, c.enc.cfg.options()...)
 		if err != nil {
 			return nil, err
 		}
-		z = &writer{Encoder: encoder, pool: &c.poolCompressor}
+		z = &writer{Encoder: encoder, pool: &c.enc.pool}
 	} else {
 		z.Encoder.Reset(w)
 	}
@@ -140,14 +221,14 @@ func (w *writer) Close() error {
 	return w.Encoder.Close()
 }
 
-func (c *instance) Decompress(r io.Reader) (io.Reader, error) {
-	z := c.poolDecompressor.Get()
+func (c *combined) Decompress(r io.Reader) (io.Reader, error) {
+	z := c.dec.pool.Get()
 	if z == nil {
-		decoder, err := zstdlib.NewReader(r, c.decoderOptions()...)
+		decoder, err := zstdlib.NewReader(r, c.dec.cfg.options()...)
 		if err != nil {
 			return nil, err
 		}
-		z = &reader{Decoder: decoder, pool: &c.poolDecompressor}
+		z = &reader{Decoder: decoder, pool: &c.dec.pool}
 
 		// zstd decoders need to be closed when they are evicted from
 		// the freelist. Note that the finalizer is attached to the
@@ -169,21 +250,6 @@ func (r *reader) Read(p []byte) (n int, err error) {
 	return n, err
 }
 
-func (c *instance) Name() string {
-	return Name
-}
-
-func (cl *CompressionLevel) UnmarshalText(in []byte) error {
-	lstr := string(in)
-	if len(lstr) == 0 {
-		*cl = CompressionLevel(zstdlib.SpeedDefault)
-		return nil
-	}
-
-	ok, level := zstdlib.EncoderLevelFromString(lstr)
-	if !ok {
-		return fmt.Errorf("unsupported compression level %q", lstr)
-	}
-	*cl = CompressionLevel(level)
-	return nil
+func (c *combined) Name() string {
+	return c.enc.cfg.Name()
 }
