@@ -79,28 +79,28 @@ func Report(name string, schema *arrow.Schema) {
 	println("--------------------------------------------------")
 	fmt.Printf("%s%s - Memory usage%s\n", ColorGreen, name, ColorReset)
 	ReportMemUsageOf("NewRecordBuilderExt(schema)", func() {
-		b := builder.NewRecordBuilderExt(pool, schema, DictConfig, stats.NewProducerStats())
+		b := builder.NewRecordBuilderExt(pool, schema, DictConfig, stats.NewProducerStats(), nil)
 		defer b.Release()
 	})
 	ReportMemUsageOf("NewRecordBuilder(...).NewRecord() - empty", func() {
-		b := builder.NewRecordBuilderExt(pool, schema, DictConfig, stats.NewProducerStats())
+		b := builder.NewRecordBuilderExt(pool, schema, DictConfig, stats.NewProducerStats(), nil)
 		defer b.Release()
-		record, err := b.NewRecord(nil)
+		record, err := b.NewRecord()
 		if err != nil {
 			panic(err)
 		}
 		defer record.Release()
 	})
 
-	b := builder.NewRecordBuilderExt(pool, schema, DictConfig, stats.NewProducerStats())
+	b := builder.NewRecordBuilderExt(pool, schema, DictConfig, stats.NewProducerStats(), nil)
 	defer b.Release()
-	record, err := b.NewRecord(nil)
+	record, err := b.NewRecord()
 	if err != nil {
 		panic(err)
 	}
 	defer record.Release()
 	ReportMemUsageOf("reusedRecordBuilder.NewRecord() - empty", func() {
-		r, err := b.NewRecord(nil)
+		r, err := b.NewRecord()
 		if err != nil {
 			panic(err)
 		}
@@ -109,7 +109,7 @@ func Report(name string, schema *arrow.Schema) {
 	ReportMemUsageOf("builder.Analyze(...) + builder.UpdateSchema(...) if needed", func() {
 		if b.IsSchemaUpToDate() {
 			println("overflow detected")
-			b.UpdateSchema(nil)
+			b.UpdateSchema()
 		}
 	})
 }

@@ -139,7 +139,7 @@ func (rb *RecordBuilderExt) AddMetadata(key, value string) {
 	if !ok || prevValue != value {
 		rb.metadata[key] = value
 		// If the metadata has changed, then the schema must be updated.
-		rb.updateRequest.Inc()
+		rb.updateRequest.Inc(&update.MetadataEvent{MetadataKey: key})
 	}
 }
 
@@ -223,16 +223,8 @@ func (rb *RecordBuilderExt) detectDictionaryOverflow(field *arrow.Field, column 
 			if dictTransform, ok := rb.dictTransformNodes[dictId]; ok {
 				switch dictColumn := column.(type) {
 				case *array.Dictionary:
-					prevIndexType := dictTransform.IndexType()
 					dictTransform.AddTotal(dictColumn.Len())
-					updated := dictTransform.SetCardinality(uint64(dictColumn.Dictionary().Len()), &rb.stats.RecordBuilderStats)
-					if updated && rb.observer != nil {
-						if dictTransform.IndexType() == nil {
-							rb.observer.OnDictionaryOverflow(rb.label, dictTransform.Path(), dictTransform.Cardinality(), dictTransform.CumulativeTotal())
-						} else {
-							rb.observer.OnDictionaryUpgrade(rb.label, dictTransform.Path(), prevIndexType, dictTransform.IndexType(), dictTransform.Cardinality(), dictTransform.CumulativeTotal())
-						}
-					}
+					dictTransform.SetCardinality(uint64(dictColumn.Dictionary().Len()), &rb.stats.RecordBuilderStats)
 				}
 			} else {
 				panic(fmt.Sprintf("Dictionary transform not found for field %s", field.Name))
@@ -263,6 +255,9 @@ func (rb *RecordBuilderExt) builder(name string) array.Builder {
 // UpdateSchema updates the schema based on the pending schema update requests
 // the initial prototype schema.
 func (rb *RecordBuilderExt) UpdateSchema() {
+	if rb.observer != nil {
+		rb.updateRequest.Notify(rb.label, rb.observer)
+	}
 	if rb.stats.SchemaUpdates {
 		println("=====================================================")
 		fmt.Printf("Updating schema for %q\n", rb.label)

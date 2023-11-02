@@ -50,10 +50,11 @@ func (b *MapBuilder) Reserve(numEntries int) {
 		return
 	}
 
-	if numEntries > 0 {
+	if numEntries > 0 && b.updateRequest != nil {
 		// If the builder is nil, then the transform node is not optional.
 		b.transformNode.RemoveOptional()
-		b.updateRequest.Inc()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
 	}
 }
 

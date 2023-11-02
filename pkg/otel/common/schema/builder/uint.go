@@ -51,10 +51,11 @@ func (b *Uint8Builder) Append(value uint8) {
 		return
 	}
 
-	if value != 0 {
+	if value != 0 && b.updateRequest != nil {
 		// If the builder is nil, then the transform node is not optional.
 		b.transformNode.RemoveOptional()
-		b.updateRequest.Inc()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
 	}
 }
 
@@ -79,10 +80,11 @@ func (b *Uint8Builder) AppendNonZero(value uint8) {
 		return
 	}
 
-	if value != 0 {
+	if value != 0 && b.updateRequest != nil {
 		// If the builder is nil, then the transform node is not optional.
 		b.transformNode.RemoveOptional()
-		b.updateRequest.Inc()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
 	}
 }
 
@@ -110,10 +112,11 @@ func (b *Uint16Builder) Append(value uint16) {
 		return
 	}
 
-	if value != 0 {
+	if value != 0 && b.updateRequest != nil {
 		// If the builder is nil, then the transform node is not optional.
 		b.transformNode.RemoveOptional()
-		b.updateRequest.Inc()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
 	}
 }
 
@@ -138,10 +141,11 @@ func (b *Uint16Builder) AppendNonZero(value uint16) {
 		return
 	}
 
-	if value != 0 {
+	if value != 0 && b.updateRequest != nil {
 		// If the builder is nil, then the transform node is not optional.
 		b.transformNode.RemoveOptional()
-		b.updateRequest.Inc()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
 	}
 }
 
@@ -176,10 +180,11 @@ func (b *Uint32Builder) Append(value uint32) {
 		return
 	}
 
-	if value != 0 {
+	if value != 0 && b.updateRequest != nil {
 		// If the builder is nil, then the transform node is not optional.
 		b.transformNode.RemoveOptional()
-		b.updateRequest.Inc()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
 	}
 }
 
@@ -204,10 +209,11 @@ func (b *Uint32Builder) AppendNonZero(value uint32) {
 		return
 	}
 
-	if value != 0 {
+	if value != 0 && b.updateRequest != nil {
 		// If the builder is nil, then the transform node is not optional.
 		b.transformNode.RemoveOptional()
-		b.updateRequest.Inc()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
 	}
 }
 
@@ -275,9 +281,12 @@ func (b *Uint16DeltaBuilder) Append(value uint16) {
 		return
 	}
 
-	// If the builder is nil, then the transform node is not optional.
-	b.transformNode.RemoveOptional()
-	b.updateRequest.Inc()
+	if b.updateRequest != nil {
+		// If the builder is nil, then the transform node is not optional.
+		b.transformNode.RemoveOptional()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
+	}
 }
 
 func (b *Uint16DeltaBuilder) AppendNull() {
@@ -347,9 +356,12 @@ func (b *Uint32DeltaBuilder) Append(value uint32) {
 		return
 	}
 
-	// If the builder is nil, then the transform node is not optional.
-	b.transformNode.RemoveOptional()
-	b.updateRequest.Inc()
+	if b.updateRequest != nil {
+		// If the builder is nil, then the transform node is not optional.
+		b.transformNode.RemoveOptional()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
+	}
 }
 
 func (b *Uint32DeltaBuilder) AppendNull() {
@@ -386,10 +398,11 @@ func (b *Uint64Builder) Append(value uint64) {
 		return
 	}
 
-	if value != 0 {
+	if value != 0 && b.updateRequest != nil {
 		// If the builder is nil, then the transform node is not optional.
 		b.transformNode.RemoveOptional()
-		b.updateRequest.Inc()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
 	}
 }
 
@@ -414,10 +427,11 @@ func (b *Uint64Builder) AppendNonZero(value uint64) {
 		return
 	}
 
-	if value != 0 {
+	if value != 0 && b.updateRequest != nil {
 		// If the builder is nil, then the transform node is not optional.
 		b.transformNode.RemoveOptional()
-		b.updateRequest.Inc()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
 	}
 }
 

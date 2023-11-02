@@ -216,7 +216,10 @@ func (sub *SparseUnionBuilder) Append(code int8) {
 		return
 	}
 
-	// If the builder is nil, then the transform node is not optional.
-	sub.transformNode.RemoveOptional()
-	sub.updateRequest.Inc()
+	if sub.updateRequest != nil {
+		// If the builder is nil, then the transform node is not optional.
+		sub.transformNode.RemoveOptional()
+		sub.updateRequest.Inc(&update.NewFieldEvent{FieldName: sub.transformNode.Path()})
+		sub.updateRequest = nil // No need to report this again.
+	}
 }

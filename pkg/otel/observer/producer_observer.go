@@ -8,6 +8,9 @@ import (
 
 // ProducerObserver is an interface for observing the OTel Arrow producer.
 type ProducerObserver interface {
+	// OnNewField is called when a new field is added to the schema.
+	OnNewField(recordName string, fieldPath string)
+
 	// OnDictionaryUpgrade is called when a dictionary index is upgraded.
 	OnDictionaryUpgrade(recordName string, fieldPath string, prevIndexType, newIndexType arrow.DataType, card, total uint64)
 

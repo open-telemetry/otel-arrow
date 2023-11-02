@@ -40,10 +40,11 @@ func (b *TimestampBuilder) Append(value arrow.Timestamp) {
 		return
 	}
 
-	if value != 0 {
+	if value != 0 && b.updateRequest != nil {
 		// If the builder is nil, then the transform node is not optional.
 		b.transformNode.RemoveOptional()
-		b.updateRequest.Inc()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
 	}
 }
 

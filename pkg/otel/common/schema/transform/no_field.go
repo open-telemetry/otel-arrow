@@ -28,3 +28,7 @@ func (t *NoField) Transform(_ *arrow.Field) *arrow.Field {
 }
 
 func (t *NoField) RevertCounters() {}
+
+func (t *NoField) Path() string {
+	return "undefined"
+}

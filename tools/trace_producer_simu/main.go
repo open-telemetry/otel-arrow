@@ -34,18 +34,42 @@ import (
 
 var help = flag.Bool("help", false, "Show help")
 
-type SimuObserver struct{}
+type SimObserver struct {
+	BatchId uint64
+	Label   string
+}
 
-func (o *SimuObserver) OnRecord(arrow.Record, record_message.PayloadType) {}
+func (o *SimObserver) OnRecord(arrow.Record, record_message.PayloadType) {}
 
-func (o *SimuObserver) OnDictionaryUpgrade(recordName string, fieldPath string, prevIndexType, newIndexType arrow.DataType, card, total uint64) {
+// batch-id, event-type, record-name, field-path, comment
+func (o *SimObserver) OnNewField(recordName string, fieldPath string) {
+	fmt.Printf("OnNewField: %s.%s\n", recordName, fieldPath)
+	if o.Label != "" {
+		o.Label += ", "
+	}
+	o.Label = o.Label + fmt.Sprintf("Add %s.%s", recordName, fieldPath)
+}
+
+func (o *SimObserver) OnDictionaryUpgrade(recordName string, fieldPath string, prevIndexType, newIndexType arrow.DataType, card, total uint64) {
 	fmt.Printf("OnDictionaryUpgrade: %s.%s (%s -> %s, card: %d, total: %d)\n", recordName, fieldPath, prevIndexType, newIndexType, card, total)
+	if o.Label != "" {
+		o.Label += ", "
+	}
+	o.Label = o.Label + fmt.Sprintf("DictUpgrade %s.%s", recordName, fieldPath)
 }
-func (o *SimuObserver) OnDictionaryOverflow(recordName string, fieldPath string, card, total uint64) {
+func (o *SimObserver) OnDictionaryOverflow(recordName string, fieldPath string, card, total uint64) {
 	fmt.Printf("OnDictionaryOverflow: %s.%s (card: %d, total: %d)\n", recordName, fieldPath, card, total)
+	if o.Label != "" {
+		o.Label += ", "
+	}
+	o.Label = o.Label + fmt.Sprintf("DictOverflow %s.%s", recordName, fieldPath)
 }
-func (o *SimuObserver) OnSchemaUpdate(recordName string, old, new *arrow.Schema) {
+func (o *SimObserver) OnSchemaUpdate(recordName string, old, new *arrow.Schema) {
 	fmt.Printf("OnSchemaUpdate: %s\n", recordName)
+	if o.Label != "" {
+		o.Label += ", "
+	}
+	o.Label = o.Label + "Schema Update"
 }
 
 // This command simulates an OTel Arrow producer running for different
@@ -55,6 +79,7 @@ func main() {
 	batchSize := flag.Int("batch-size", 10000, "Batch size")
 	maxBatchesPerStream := flag.Int("max-batches-per-stream", 10, "Maximum number of batches per stream")
 	verbose := flag.Bool("verbose", false, "Verbose mode")
+	output := flag.String("output", "compression-efficiency-gain.csv", "Output file")
 
 	// Statistics related flags (no statistics by default)
 	schemaStats := flag.Bool("schema-stats", false, "Display Arrow schema statistics")
@@ -85,6 +110,16 @@ func main() {
 	inputFiles := flag.Args()
 	if len(inputFiles) == 0 {
 		panic("No input file specified")
+	}
+
+	// Create the output file
+	fOutput, err := os.Create(*output)
+	if err != nil {
+		panic(err)
+	}
+	defer func() { _ = fOutput.Close() }()
+	if _, err = fOutput.WriteString("Batch ID\tCompression Efficiency Gain (%%)\tEvents\n"); err != nil {
+		panic(err)
 	}
 
 	var commonOptions []config.Option
@@ -133,10 +168,10 @@ func main() {
 		commonOptions = append(commonOptions, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_LINK_ATTRS.String(), *spanLinkAttrs))
 	}
 
-	observer := &SimuObserver{}
+	simObserver := &SimObserver{}
 	options := append([]config.Option{
 		config.WithZstd(),
-		config.WithObserver(observer),
+		config.WithObserver(simObserver),
 	}, commonOptions...)
 
 	var otlpProfile *otlp.TracesProfileable
@@ -153,7 +188,7 @@ func main() {
 		for batchNum := uint64(0); batchNum < maxBatchCount; batchNum++ {
 			if batchesPerStreamCount >= *maxBatchesPerStream || otlpProfile == nil || otelArrowProfile == nil {
 				otlpProfile = OtlpStream(otlpProfile, *batchSize)
-				otelArrowProfile = OtelArrowStream(otelArrowProfile, *batchSize, observer, options...)
+				otelArrowProfile = OtelArrowStream(otelArrowProfile, *batchSize, simObserver, options...)
 				batchesPerStreamCount = 0
 			}
 			otlpProfile.SetDataset(ds)
@@ -182,7 +217,10 @@ func main() {
 			}
 			otelArrowImprovement := 100.0 - (otlpCompressionImprovement/otelArrowCompressionImprovement)*100.0
 			fmt.Printf("OTel Arrow compression improvement=%5.2f%% (batch: #%06d)\n", otelArrowImprovement, batchesPerStreamCount)
-
+			if _, err = fOutput.WriteString(fmt.Sprintf("%d\t%f\t%s\n", batchesPerStreamCount, otelArrowImprovement, simObserver.Label)); err != nil {
+				panic(err)
+			}
+			simObserver.Label = ""
 			startAt += *batchSize
 			batchesPerStreamCount++
 		}

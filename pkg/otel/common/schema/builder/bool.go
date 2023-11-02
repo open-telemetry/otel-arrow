@@ -39,10 +39,13 @@ func (b *BooleanBuilder) Append(value bool) {
 		return
 	}
 
-	// If the builder is nil and value is true (default value being false),
-	// then the transform node is not optional.
-	b.transformNode.RemoveOptional()
-	b.updateRequest.Inc()
+	if b.updateRequest != nil {
+		// If the builder is nil and value is true (default value being false),
+		// then the transform node is not optional.
+		b.transformNode.RemoveOptional()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
+	}
 }
 
 // AppendNonFalse appends a value to the underlying builder and updates the
@@ -59,11 +62,12 @@ func (b *BooleanBuilder) AppendNonFalse(value bool) {
 		return
 	}
 
-	if value {
+	if value && b.updateRequest != nil {
 		// If the builder is nil and value is true (default value being false),
 		// then the transform node is not optional.
 		b.transformNode.RemoveOptional()
-		b.updateRequest.Inc()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
 	}
 }
 

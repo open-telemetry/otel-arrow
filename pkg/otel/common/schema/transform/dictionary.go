@@ -91,10 +91,9 @@ func (t *DictionaryField) AddTotal(total int) {
 	t.cumulativeTotal += uint64(total)
 }
 
-func (t *DictionaryField) SetCardinality(card uint64, stats *stats.RecordBuilderStats) (updated bool) {
+func (t *DictionaryField) SetCardinality(card uint64, stats *stats.RecordBuilderStats) {
 	t.cardinality = card
-	updated = t.updateIndexType(stats)
-	return
+	t.updateIndexType(stats)
 }
 
 // Path returns the path of the dictionary field.
@@ -161,12 +160,12 @@ func (t *DictionaryField) Transform(field *arrow.Field) *arrow.Field {
 	}
 }
 
-func (t *DictionaryField) updateIndexType(stats *stats.RecordBuilderStats) (updated bool) {
-	updated = false
+func (t *DictionaryField) updateIndexType(stats *stats.RecordBuilderStats) {
 	if t.indexTypes == nil {
 		return
 	}
 
+	prevIndexType := t.IndexType()
 	currentIndex := t.currentIndex
 
 	for t.currentIndex < len(t.indexTypes) && t.cardinality > t.indexMaxCard[t.currentIndex] {
@@ -176,15 +175,13 @@ func (t *DictionaryField) updateIndexType(stats *stats.RecordBuilderStats) (upda
 		t.indexTypes = nil
 		t.indexMaxCard = nil
 		t.currentIndex = 0
-		t.schemaUpdateRequest.Inc()
+		t.schemaUpdateRequest.Inc(&update.DictionaryOverflowEvent{FieldName: t.path, PrevIndexType: prevIndexType, NewIndexType: t.IndexType(), Cardinality: t.cardinality, Total: t.cumulativeTotal})
 		t.events.DictionariesWithOverflow[t.path] = true
 		stats.DictionaryOverflowDetected++
-		updated = true
 	} else if t.currentIndex != currentIndex {
-		t.schemaUpdateRequest.Inc()
+		t.schemaUpdateRequest.Inc(&update.DictionaryUpgradeEvent{FieldName: t.path, PrevIndexType: prevIndexType, NewIndexType: t.IndexType(), Cardinality: t.cardinality, Total: t.cumulativeTotal})
 		t.events.DictionariesIndexTypeChanged[t.path] = t.indexTypes[t.currentIndex].Name()
 		stats.DictionaryIndexTypeChanged++
-		updated = true
 	}
 	return
 }

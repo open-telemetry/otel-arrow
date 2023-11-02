@@ -39,9 +39,12 @@ func (b *Float64Builder) Append(value float64) {
 		return
 	}
 
-	// If the builder is nil, then the transform node is not optional.
-	b.transformNode.RemoveOptional()
-	b.updateRequest.Inc()
+	if b.updateRequest != nil {
+		// If the builder is nil, then the transform node is not optional.
+		b.transformNode.RemoveOptional()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
+	}
 }
 
 // AppendNonZero adds a value to the underlying builder or updates the transform node
@@ -58,10 +61,11 @@ func (b *Float64Builder) AppendNonZero(value float64) {
 		return
 	}
 
-	if value != 0 {
+	if value != 0 && b.updateRequest != nil {
 		// If the builder is nil, then the transform node is not optional.
 		b.transformNode.RemoveOptional()
-		b.updateRequest.Inc()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
 	}
 }
 

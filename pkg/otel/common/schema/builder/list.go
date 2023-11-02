@@ -76,9 +76,10 @@ func (lb *ListBuilder) Reserve(numItems int) {
 	}
 
 	// If the builder is nil, then the transform node is not optional.
-	if numItems > 0 {
+	if numItems > 0 && lb.updateRequest != nil {
 		lb.transformNode.RemoveOptional()
-		lb.updateRequest.Inc()
+		lb.updateRequest.Inc(&update.NewFieldEvent{FieldName: lb.transformNode.Path()})
+		lb.updateRequest = nil // No need to report this again.
 	}
 }
 

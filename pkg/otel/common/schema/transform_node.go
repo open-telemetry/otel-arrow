@@ -39,6 +39,7 @@ type FieldTransform interface {
 // It can be a leaf node or a node with children.
 type TransformNode struct {
 	name       string
+	path       string
 	transforms []FieldTransform
 	Children   []*TransformNode
 }
@@ -131,10 +132,10 @@ func newTransformNodeFrom(
 
 	// If no transformation was added, then add an Identity transformation.
 	if len(transforms) == 0 {
-		transforms = append(transforms, &transform2.IdentityField{})
+		transforms = append(transforms, transform2.NewIdentityField(path))
 	}
 
-	node := TransformNode{name: prototype.Name, transforms: transforms}
+	node := TransformNode{name: prototype.Name, path: path, transforms: transforms}
 
 	switch dt := prototype.Type.(type) {
 	case *arrow.DictionaryType:
@@ -219,7 +220,7 @@ func (t *TransformNode) RemoveOptional() {
 	}
 
 	if n == 0 {
-		t.transforms = []FieldTransform{&transform2.IdentityField{}}
+		t.transforms = []FieldTransform{transform2.NewIdentityField(t.path)}
 	} else {
 		t.transforms = t.transforms[:n]
 	}
@@ -232,4 +233,8 @@ func (t *TransformNode) RevertCounters() {
 	for _, child := range t.Children {
 		child.RevertCounters()
 	}
+}
+
+func (t *TransformNode) Path() string {
+	return t.path
 }

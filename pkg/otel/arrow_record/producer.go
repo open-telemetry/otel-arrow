@@ -565,6 +565,8 @@ func (o *consoleObserver) OnRecord(record arrow.Record, payloadType record_messa
 	}
 }
 
+func (o *consoleObserver) OnNewField(recordName string, fieldPath string) {}
+
 func (o *consoleObserver) OnDictionaryUpgrade(recordName string, fieldPath string, prevIndexType, newIndexType arrow.DataType, card, total uint64) {
 }
 

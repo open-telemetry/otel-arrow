@@ -55,9 +55,12 @@ func (b *BinaryBuilder) Append(value []byte) {
 		return
 	}
 
-	// If the builder is nil, then the transform node is not optional.
-	b.transformNode.RemoveOptional()
-	b.updateRequest.Inc()
+	if b.updateRequest != nil {
+		// If the builder is nil, then the transform node is not optional.
+		b.transformNode.RemoveOptional()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
+	}
 }
 
 // AppendNonNil appends a value to the underlying builder and updates the
@@ -85,10 +88,11 @@ func (b *BinaryBuilder) AppendNonNil(value []byte) {
 		return
 	}
 
-	if value != nil {
+	if value != nil && b.updateRequest != nil {
 		// If the builder is nil, then the transform node is not optional.
 		b.transformNode.RemoveOptional()
-		b.updateRequest.Inc()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
 	}
 }
 
@@ -134,10 +138,11 @@ func (b *FixedSizeBinaryBuilder) Append(value []byte) {
 		return
 	}
 
-	if value != nil {
+	if value != nil && b.updateRequest != nil {
 		// If the builder is nil, then the transform node is not optional.
 		b.transformNode.RemoveOptional()
-		b.updateRequest.Inc()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
 	}
 }
 
