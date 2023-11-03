@@ -55,11 +55,7 @@ type ArrowSettings struct {
 	MemoryLimitMiB uint64 `mapstructure:"memory_limit_mib"`
 
 	// Zstd settings apply to OTel-Arrow use of gRPC specifically.
-	// Note that when multiple Otel-Arrow exporters are configured
-	// their settings will be applied in arbitrary order.
-	// Identical Zstd settings are recommended when multiple
-	// OTel-Arrow exporters are in use.
-	Zstd zstd.DecoderConfig `mapstructure:"zstd"`
+	Zstd []zstd.DecoderConfig `mapstructure:"zstd"`
 }
 
 // Config defines configuration for OTel Arrow receiver.

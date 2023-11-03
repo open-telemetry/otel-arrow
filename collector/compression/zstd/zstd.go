@@ -41,12 +41,6 @@ type EncoderConfig struct {
 }
 
 type DecoderConfig struct {
-	// Level is symmetric with encoder config.  Although the
-	// decoder object does not use this configuration, it is the
-	// key used to lookup configuration corresponding with the
-	// same setting on the encoder, so provides a means of
-	// multi-configuration.
-	Level            Level  `mapstructure:"level"`
 	Concurrency      uint   `mapstructure:"concurrency"`
 	MemoryLimitMiB   uint32 `mapstructure:"memory_limit_mib"`
 	MaxWindowSizeMiB uint32 `mapstructure:"max_window_size_mib"`
@@ -105,10 +99,9 @@ func DefaultEncoderConfig() EncoderConfig {
 
 func DefaultDecoderConfig() DecoderConfig {
 	return DecoderConfig{
-		Level:            DefaultLevel, // Default speed
-		Concurrency:      1,            // Avoids extra CPU/memory
-		MemoryLimitMiB:   512,          // More conservative than library default
-		MaxWindowSizeMiB: 32,           // Corresponds w/ "best" level default
+		Concurrency:      1,   // Avoids extra CPU/memory
+		MemoryLimitMiB:   128, // More conservative than library default
+		MaxWindowSizeMiB: 32,  // Corresponds w/ "best" level default
 	}
 }
 
@@ -116,8 +109,8 @@ func validate(level Level, f func() error) error {
 	if level > MaxLevel {
 		return fmt.Errorf("level out of range [0,10]: %d", level)
 	}
-	if level == 0 {
-		return nil
+	if level < MinLevel {
+		return fmt.Errorf("level out of range [0,10]: %d", level)
 	}
 	return f()
 }
@@ -134,7 +127,7 @@ func (cfg EncoderConfig) Validate() error {
 }
 
 func (cfg DecoderConfig) Validate() error {
-	return validate(cfg.Level, func() error {
+	return validate(MinLevel, func() error {
 		var buf bytes.Buffer
 		test, err := zstdlib.NewReader(&buf, cfg.options()...)
 		if test != nil {
@@ -147,47 +140,58 @@ func (cfg DecoderConfig) Validate() error {
 func init() {
 	staticInstances.lock.Lock()
 	defer staticInstances.lock.Unlock()
+	resetLibrary()
+}
+
+func resetLibrary() {
 	for level := Level(MinLevel); level <= MaxLevel; level++ {
 		var combi combined
 		combi.enc.cfg = DefaultEncoderConfig()
 		combi.dec.cfg = DefaultDecoderConfig()
 		combi.enc.cfg.Level = level
-		combi.dec.cfg.Level = level
 		encoding.RegisterCompressor(&combi)
 		staticInstances.byLevel[level] = &combi
 	}
 }
 
 func SetEncoderConfig(cfg EncoderConfig) error {
-	if err := cfg.Validate(); err != nil || cfg.Level == 0 {
+	if err := cfg.Validate(); err != nil {
 		return err
 	}
+
+	updateOne := func(enc *encoder) {
+		enc.lock.Lock()
+		defer enc.lock.Unlock()
+		enc.cfg = cfg
+		enc.pool.Reset()
+	}
+
 	staticInstances.lock.Lock()
 	defer staticInstances.lock.Unlock()
 
-	enc := &staticInstances.byLevel[cfg.Level].enc
-	enc.lock.Lock()
-	defer enc.lock.Unlock()
-
-	enc.cfg = cfg
-	enc.pool.Reset()
+	updateOne(&staticInstances.byLevel[cfg.Level].enc)
 	return nil
 }
 
 func SetDecoderConfig(cfg DecoderConfig) error {
-	if err := cfg.Validate(); err != nil || cfg.Level == 0 {
+	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	updateOne := func(dec *decoder) {
+		dec.lock.Lock()
+		defer dec.lock.Unlock()
+		dec.cfg = cfg
+		dec.pool.Reset()
+	}
+
 	staticInstances.lock.Lock()
 	defer staticInstances.lock.Unlock()
 
-	dec := &staticInstances.byLevel[cfg.Level].dec
-	dec.lock.Lock()
-	defer dec.lock.Unlock()
-
-	dec.cfg = cfg
-	dec.pool.Reset()
+	for level := MinLevel; level <= MaxLevel; level++ {
+		updateOne(&staticInstances.byLevel[level].dec)
+	}
 	return nil
+
 }
 
 func (cfg EncoderConfig) options() (opts []zstdlib.EOption) {
@@ -214,12 +218,8 @@ func (cfg EncoderConfig) Name() string {
 }
 
 func (cfg EncoderConfig) CallOption() grpc.CallOption {
-	if cfg.Level == 0 {
-		// The caller is meant to avoid configuring this call
-		// option entirely when level is zero.  If somehow
-		// this happens, use the well-known configuration in
-		// OTC and not the invalid configuration we have here.
-		return grpc.UseCompressor("zstd")
+	if cfg.Level < MinLevel || cfg.Level > MaxLevel {
+		return grpc.UseCompressor(EncoderConfig{Level: DefaultLevel}.Name())
 	}
 	return grpc.UseCompressor(cfg.Name())
 }

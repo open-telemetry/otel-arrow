@@ -10,10 +10,18 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/encoding"
 )
 
+func resetTest() {
+	TTL = time.Minute
+	resetLibrary()
+}
+
 func TestCompressorNonNil(t *testing.T) {
+	defer resetTest()
+
 	for i := 1; i <= 10; i++ {
 		require.NotNil(t, encoding.GetCompressor(fmt.Sprint(NamePrefix, i)))
 	}
@@ -21,50 +29,37 @@ func TestCompressorNonNil(t *testing.T) {
 	require.Nil(t, encoding.GetCompressor(fmt.Sprint(NamePrefix, MaxLevel+1)))
 }
 
-func TestConfigLevelZeroNoop(t *testing.T) {
-	// Test that level zero misconfiguration is a noop, because
-	// there is no level-zero compressor.  The same configuration
-	// at level 1 is an error.
-	require.NoError(t, SetEncoderConfig(EncoderConfig{
-		Level:         0,
-		WindowSizeMiB: 1024,
-	}))
+func TestConfigLibraryError(t *testing.T) {
+	defer resetTest()
+
 	require.Error(t, SetEncoderConfig(EncoderConfig{
 		Level:         1,
 		WindowSizeMiB: 1024,
 	}))
 	require.NoError(t, SetDecoderConfig(DecoderConfig{
-		Level:            0,
-		MaxWindowSizeMiB: 1024,
-	}))
-	require.NoError(t, SetDecoderConfig(DecoderConfig{
-		Level:            1,
 		MaxWindowSizeMiB: 1024,
 	}))
 }
 
 func TestInvalidCompressorLevel(t *testing.T) {
+	defer resetTest()
+
 	require.Error(t, SetEncoderConfig(EncoderConfig{
 		Level:         12,
 		Concurrency:   10,
 		WindowSizeMiB: 16,
 	}))
-	require.Error(t, SetDecoderConfig(DecoderConfig{
-		Level:            12,
-		Concurrency:      10,
-		MaxWindowSizeMiB: 16,
-		MemoryLimitMiB:   256,
-	}))
 }
 
 func TestAllCompressorOptions(t *testing.T) {
+	defer resetTest()
+
 	require.NoError(t, SetEncoderConfig(EncoderConfig{
 		Level:         9,
 		Concurrency:   10,
 		WindowSizeMiB: 16,
 	}))
 	require.NoError(t, SetDecoderConfig(DecoderConfig{
-		Level:            9,
 		Concurrency:      10,
 		MaxWindowSizeMiB: 16,
 		MemoryLimitMiB:   256,
@@ -72,7 +67,7 @@ func TestAllCompressorOptions(t *testing.T) {
 }
 
 func TestCompressorReset(t *testing.T) {
-	TTL = time.Minute
+	defer resetTest()
 
 	// Get compressor configs 1 and 2.
 	comp1 := encoding.GetCompressor("zstdarrow1").(*combined)
@@ -125,7 +120,7 @@ func TestCompressorReset(t *testing.T) {
 }
 
 func TestDecompressorReset(t *testing.T) {
-	TTL = time.Minute
+	defer resetTest()
 
 	// Get compressor configs 3 and 4.
 	comp3 := encoding.GetCompressor("zstdarrow3").(*combined)
@@ -151,7 +146,6 @@ func TestDecompressorReset(t *testing.T) {
 	cpyCfg3 := decCfg3
 	cpyCfg3.MaxWindowSizeMiB = 128
 
-	require.Equal(t, Level(3), cpyCfg3.Level)
 	require.NotEqual(t, cpyCfg3, decCfg3, "see %v %v", cpyCfg3, decCfg3)
 
 	require.NoError(t, SetDecoderConfig(cpyCfg3))
@@ -160,12 +154,28 @@ func TestDecompressorReset(t *testing.T) {
 	require.Equal(t, comp3, encoding.GetCompressor("zstdarrow3").(*combined))
 	require.Equal(t, comp4, encoding.GetCompressor("zstdarrow4").(*combined))
 
-	// Level 4 is unchanged
-	require.Equal(t, decCfg4, comp4.dec.getConfig())
+	// Level 4 is _also changed_
+	require.Equal(t, cpyCfg3, comp4.dec.getConfig())
+	require.NotEqual(t, decCfg4, comp4.dec.getConfig())
 
 	// Level 3 is changed
 	require.NotEqual(t, decCfg3, comp3.dec.getConfig(), "see %v %v", decCfg3, comp3.dec.getConfig())
 
 	// Unlike the encoder test, which has an explicit Close() to its advantage,
 	// we aren't testing the behavior of the finalizer that puts back into the MRU.
+}
+
+func TestGRPCCallOption(t *testing.T) {
+	cfgN := func(l Level) EncoderConfig {
+		return EncoderConfig{
+			Level: l,
+		}
+	}
+	cfg2 := cfgN(2)
+	require.Equal(t, cfg2.Name(), cfg2.CallOption().(grpc.CompressorCallOption).CompressorType)
+
+	cfgD := cfgN(DefaultLevel)
+	cfg13 := cfgN(13)
+	// Invalid maps to default call option
+	require.Equal(t, cfgD.Name(), cfg13.CallOption().(grpc.CompressorCallOption).CompressorType)
 }
