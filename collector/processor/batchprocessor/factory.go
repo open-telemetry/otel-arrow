@@ -9,7 +9,6 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
-	// "go.opentelemetry.io/collector/featuregate"
 	"go.opentelemetry.io/collector/processor"
 )
 
@@ -26,11 +25,9 @@ const (
 	defaultMetadataCardinalityLimit = 1000
 )
 
-// var UseOtelForInternalMetricsfeatureGate = featuregate.GlobalRegistry().MustRegister(
-// 	"telemetry.useOtelForInternalMetrics",
-// 	featuregate.StageAlpha,
-// 	featuregate.WithRegisterDescription("controls whether the collector uses OpenTelemetry for internal metrics"),
-// )
+// This featuregate might already be registered, but is access is internal to the collector repo.
+// In the meantime this batchprocessor will only support otel for metrics (no support for opencensus).
+var UseOtelForInternalMetricsfeatureGate = true
 
 // NewFactory returns a new factory for the Batch processor.
 func NewFactory() processor.Factory {
@@ -56,7 +53,7 @@ func createTraces(
 	cfg component.Config,
 	nextConsumer consumer.Traces,
 ) (processor.Traces, error) {
-	return newBatchTracesProcessor(set, nextConsumer, cfg.(*Config), true) 
+	return newBatchTracesProcessor(set, nextConsumer, cfg.(*Config), UseOtelForInternalMetricsfeatureGate)
 }
 
 func createMetrics(
@@ -65,7 +62,7 @@ func createMetrics(
 	cfg component.Config,
 	nextConsumer consumer.Metrics,
 ) (processor.Metrics, error) {
-	return newBatchMetricsProcessor(set, nextConsumer, cfg.(*Config), true) 
+	return newBatchMetricsProcessor(set, nextConsumer, cfg.(*Config), UseOtelForInternalMetricsfeatureGate)
 }
 
 func createLogs(
@@ -74,5 +71,5 @@ func createLogs(
 	cfg component.Config,
 	nextConsumer consumer.Logs,
 ) (processor.Logs, error) {
-	return newBatchLogsProcessor(set, nextConsumer, cfg.(*Config), true) 
+	return newBatchLogsProcessor(set, nextConsumer, cfg.(*Config), UseOtelForInternalMetricsfeatureGate)
 }

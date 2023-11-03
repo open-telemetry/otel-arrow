@@ -1,13 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package batchprocessor // import "github.com/open-telemetry/otel-arrow/collector/processor/batchprocessor
+package batchprocessor // import "github.com/open-telemetry/otel-arrow/collector/processor/batchprocessor"
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"runtime"
 	"sort"
 	"strings"
@@ -16,7 +15,6 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.uber.org/zap"
-	"golang.org/x/sync/semaphore"
 
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
@@ -93,8 +91,6 @@ type shard struct {
 	// batch is an in-flight data item containing one of the
 	// underlying data types.
 	batch batch
-
-	sem *semaphore.Weighted 
 }
 
 // batch is an interface generalizing the individual signal types.
@@ -159,15 +155,7 @@ func (bp *batchProcessor) newShard(md map[string][]string) *shard {
 		newItem:   make(chan any, runtime.NumCPU()),
 		exportCtx: exportCtx,
 		batch:     bp.batchFunc(),
-		sem:       semaphore.NewWeighted(int64(math.Max(float64bp.sendBatchSize, bp.sendBatchMaxSize))),
 	}
-
-	if bp.sendBatchMaxSize > bp.sendBatchSize {
-		b.sem = semaphore.NewWeighted(bp.sendBatchMaxSize)
-	} else {
-		b.sem = semaphore.NewWeighted(bp.sendBatchSize)
-	}
-
 	b.processor.goroutines.Add(1)
 	go b.start()
 	return b
@@ -264,11 +252,10 @@ func (b *shard) resetTimer() {
 	}
 }
 
-func (b *shard) sendItems(trigger trigger) error {
+func (b *shard) sendItems(trigger trigger) {
 	sent, bytes, err := b.batch.export(b.exportCtx, b.processor.sendBatchMaxSize, b.processor.telemetry.detailed)
 	if err != nil {
 		b.processor.logger.Warn("Sender failed", zap.Error(err))
-		return err
 	} else {
 		b.processor.telemetry.record(trigger, int64(sent), int64(bytes))
 	}
@@ -337,9 +324,6 @@ func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
 		}
 		mb.lock.Unlock()
 	}
-	// need to acquire semaphore before adding data to the channel
-	weight := math.Min(float64(b.(*shard).batch.itemCount()), float64())
-	b.(*shard).sem.Acquire(ctx, 1)
 	b.(*shard).newItem <- data
 	return nil
 }
