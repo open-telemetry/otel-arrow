@@ -46,7 +46,6 @@ type batchProcessor struct {
 	timeout          time.Duration
 	sendBatchSize    int
 	sendBatchMaxSize int
-	maxInFlightBytes int
 
 	// batchFunc is a factory for new batch objects corresponding
 	// with the appropriate signal.
