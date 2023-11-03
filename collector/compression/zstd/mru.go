@@ -25,11 +25,20 @@ import (
 // is less sophisticated than sync.Pool's.
 //
 // A zero-initialized MRU is safe to use. Threadsafe.
-type mru[T any] struct {
+type mru[T generational] struct {
 	mu       sync.Mutex
+	reset    Gen
 	freelist []T
 	putTimes []time.Time // putTimes[i] is when freelist[i] was Put()
 	zero     T
+}
+
+// Gen is the reset time.
+type Gen time.Time
+
+type generational interface {
+	// generation uses monotonic time
+	generation() Gen
 }
 
 // TTL is modified in testing.
@@ -37,7 +46,7 @@ var TTL time.Duration = time.Minute
 
 // Get returns an object from the freelist. If the list is empty, the return
 // value is the zero value of T.
-func (mru *mru[T]) Get() T {
+func (mru *mru[T]) Get() (T, Gen) {
 	mru.mu.Lock()
 	defer mru.mu.Unlock()
 
@@ -46,21 +55,32 @@ func (mru *mru[T]) Get() T {
 		mru.freelist[n-1] = mru.zero // Allow GC to occur.
 		mru.freelist = mru.freelist[:n-1]
 		mru.putTimes = mru.putTimes[:n-1]
-		return ret
+		return ret, mru.reset
 	}
 
-	return mru.zero
+	return mru.zero, mru.reset
+}
+
+func before(a, b Gen) bool {
+	return time.Time(a).Before(time.Time(b))
 }
 
 func (mru *mru[T]) Put(item T) {
 	mru.mu.Lock()
 	defer mru.mu.Unlock()
 
+	if before(item.generation(), mru.reset) {
+		return
+	}
+
+	now := time.Now()
+
 	mru.freelist = append(mru.freelist, item)
-	mru.putTimes = append(mru.putTimes, time.Now())
+	mru.putTimes = append(mru.putTimes, now)
 
 	// Evict any objects that haven't been touched recently.
-	for len(mru.putTimes) > 0 && time.Since(mru.putTimes[0]) > TTL {
+	for len(mru.putTimes) > 0 && now.Sub(mru.putTimes[0]) >= TTL {
+		// Shift values by one index in the slice, to preserve capacity.
 		l := len(mru.freelist)
 		copy(mru.freelist[0:l-1], mru.freelist[1:])
 		copy(mru.putTimes[0:l-1], mru.putTimes[1:])
@@ -74,4 +94,11 @@ func (mru *mru[T]) Size() int {
 	mru.mu.Lock()
 	defer mru.mu.Unlock()
 	return len(mru.putTimes)
+}
+
+func (mru *mru[T]) Reset() Gen {
+	mru.mu.Lock()
+	defer mru.mu.Unlock()
+	mru.reset = Gen(time.Now())
+	return mru.reset
 }

@@ -10,39 +10,60 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type gint struct {
+	value int
+	Gen
+}
+
 func TestMRUGet(t *testing.T) {
-	var m mru[*int]
+	var m mru[*gint]
 	const cnt = 5
 
 	TTL = time.Minute
 
-	require.Nil(t, m.Get())
+	v, g := m.Get()
+	require.Nil(t, v)
 
 	for i := 0; i < cnt; i++ {
-		p := new(int)
-		*p += i + 1
+		p := &gint{
+			value: i + 1,
+			Gen:   g,
+		}
 		m.Put(p)
 	}
 
 	for i := 0; i < cnt; i++ {
-		require.Equal(t, 5-i, *m.Get())
+		v, _ = m.Get()
+		require.Equal(t, 5-i, v.value)
 	}
 
-	require.Nil(t, m.Get())
+	v, _ = m.Get()
+	require.Nil(t, v)
 }
 
 func TestMRUPut(t *testing.T) {
-	var m mru[*int]
+	var m mru[*gint]
 	const cnt = 5
 
 	TTL = 0
 
+	g := m.Reset()
+
 	for i := 0; i < cnt; i++ {
-		p := new(int)
-		*p += i + 1
+		p := &gint{
+			value: i + 1,
+			Gen:   g,
+		}
 		m.Put(p)
 	}
-	// Up to 1 can be kept, w/ 0 TTL, or 1 in case the
-	// time.Since(time.Now()) returns 0.
-	require.LessOrEqual(t, m.Size(), 1)
+	require.Equal(t, 0, m.Size())
 }
+
+// func TestMRUReset(t *testing.T) {
+// 	var m mru[*gint]
+// 	TTL = time.Minute
+// 	m.Put(new(gint))
+// 	require.Equal(t, 1, m.Size())
+// 	m.Reset()
+// 	require.Equal(t, 1, m.Size())
+// }

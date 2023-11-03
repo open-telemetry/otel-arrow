@@ -53,22 +53,26 @@ type DecoderConfig struct {
 }
 
 type encoder struct {
+	lock sync.Mutex // protects cfg
 	cfg  EncoderConfig
 	pool mru[*writer]
 }
 
 type decoder struct {
+	lock sync.Mutex // protects cfg
 	cfg  DecoderConfig
 	pool mru[*reader]
 }
 
 type reader struct {
 	*zstdlib.Decoder
+	Gen
 	pool *mru[*reader]
 }
 
 type writer struct {
 	*zstdlib.Encoder
+	Gen
 	pool *mru[*writer]
 }
 
@@ -86,6 +90,10 @@ var _ encoding.Compressor = &combined{}
 
 var staticInstances = &instance{
 	byLevel: map[Level]*combined{},
+}
+
+func (g *Gen) generation() Gen {
+	return *g
 }
 
 func DefaultEncoderConfig() EncoderConfig {
@@ -114,7 +122,7 @@ func validate(level Level, f func() error) error {
 	return f()
 }
 
-func (cfg *EncoderConfig) Validate() error {
+func (cfg EncoderConfig) Validate() error {
 	return validate(cfg.Level, func() error {
 		var buf bytes.Buffer
 		test, err := zstdlib.NewWriter(&buf, cfg.options()...)
@@ -125,7 +133,7 @@ func (cfg *EncoderConfig) Validate() error {
 	})
 }
 
-func (cfg *DecoderConfig) Validate() error {
+func (cfg DecoderConfig) Validate() error {
 	return validate(cfg.Level, func() error {
 		var buf bytes.Buffer
 		test, err := zstdlib.NewReader(&buf, cfg.options()...)
@@ -151,28 +159,38 @@ func init() {
 }
 
 func SetEncoderConfig(cfg EncoderConfig) error {
-	if err := cfg.Validate(); err == nil || cfg.Level == 0 {
+	if err := cfg.Validate(); err != nil || cfg.Level == 0 {
 		return err
 	}
 	staticInstances.lock.Lock()
 	defer staticInstances.lock.Unlock()
 
-	staticInstances.byLevel[cfg.Level].enc.cfg = cfg
+	enc := &staticInstances.byLevel[cfg.Level].enc
+	enc.lock.Lock()
+	defer enc.lock.Unlock()
+
+	enc.cfg = cfg
+	enc.pool.Reset()
 	return nil
 }
 
 func SetDecoderConfig(cfg DecoderConfig) error {
-	if err := cfg.Validate(); err == nil || cfg.Level == 0 {
+	if err := cfg.Validate(); err != nil || cfg.Level == 0 {
 		return err
 	}
 	staticInstances.lock.Lock()
 	defer staticInstances.lock.Unlock()
 
-	staticInstances.byLevel[cfg.Level].dec.cfg = cfg
+	dec := &staticInstances.byLevel[cfg.Level].dec
+	dec.lock.Lock()
+	defer dec.lock.Unlock()
+
+	dec.cfg = cfg
+	dec.pool.Reset()
 	return nil
 }
 
-func (cfg *EncoderConfig) options() (opts []zstdlib.EOption) {
+func (cfg EncoderConfig) options() (opts []zstdlib.EOption) {
 	opts = append(opts, zstdlib.WithEncoderLevel(zstdlib.EncoderLevelFromZstd(int(cfg.Level))))
 
 	if cfg.Concurrency != 0 {
@@ -185,15 +203,21 @@ func (cfg *EncoderConfig) options() (opts []zstdlib.EOption) {
 	return opts
 }
 
-func (cfg *EncoderConfig) Name() string {
+func (e *encoder) getConfig() EncoderConfig {
+	e.lock.Lock()
+	defer e.lock.Unlock()
+	return e.cfg
+}
+
+func (cfg EncoderConfig) Name() string {
 	return fmt.Sprint(NamePrefix, cfg.Level)
 }
 
-func (cfg *EncoderConfig) CallOption() grpc.CallOption {
+func (cfg EncoderConfig) CallOption() grpc.CallOption {
 	return grpc.UseCompressor(cfg.Name())
 }
 
-func (cfg *DecoderConfig) options() (opts []zstdlib.DOption) {
+func (cfg DecoderConfig) options() (opts []zstdlib.DOption) {
 	if cfg.Concurrency != 0 {
 		opts = append(opts, zstdlib.WithDecoderConcurrency(int(cfg.Concurrency)))
 	}
@@ -207,14 +231,20 @@ func (cfg *DecoderConfig) options() (opts []zstdlib.DOption) {
 	return opts
 }
 
+func (d *decoder) getConfig() DecoderConfig {
+	d.lock.Lock()
+	defer d.lock.Unlock()
+	return d.cfg
+}
+
 func (c *combined) Compress(w io.Writer) (io.WriteCloser, error) {
-	z := c.enc.pool.Get()
+	z, gen := c.enc.pool.Get()
 	if z == nil {
-		encoder, err := zstdlib.NewWriter(w, c.enc.cfg.options()...)
+		encoder, err := zstdlib.NewWriter(w, c.enc.getConfig().options()...)
 		if err != nil {
 			return nil, err
 		}
-		z = &writer{Encoder: encoder, pool: &c.enc.pool}
+		z = &writer{Encoder: encoder, pool: &c.enc.pool, Gen: gen}
 	} else {
 		z.Encoder.Reset(w)
 	}
@@ -227,13 +257,13 @@ func (w *writer) Close() error {
 }
 
 func (c *combined) Decompress(r io.Reader) (io.Reader, error) {
-	z := c.dec.pool.Get()
+	z, gen := c.dec.pool.Get()
 	if z == nil {
-		decoder, err := zstdlib.NewReader(r, c.dec.cfg.options()...)
+		decoder, err := zstdlib.NewReader(r, c.dec.getConfig().options()...)
 		if err != nil {
 			return nil, err
 		}
-		z = &reader{Decoder: decoder, pool: &c.dec.pool}
+		z = &reader{Decoder: decoder, pool: &c.dec.pool, Gen: gen}
 
 		// zstd decoders need to be closed when they are evicted from
 		// the freelist. Note that the finalizer is attached to the
