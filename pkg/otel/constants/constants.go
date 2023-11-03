@@ -101,3 +101,6 @@ const BodyDouble string = "double"
 const BodyBool string = "bool"
 const BodyBytes string = "bytes"
 const BodySer string = "ser"
+
+const SortingColumns string = "sorting_columns"
+const Value string = "value"

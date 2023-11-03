@@ -43,3 +43,5 @@ protocols:
     traces_url_path: traces
     metrics_url_path: /v2/metrics
     logs_url_path: log/ingest
+  arrow:
+    memory_limit_mib: 123

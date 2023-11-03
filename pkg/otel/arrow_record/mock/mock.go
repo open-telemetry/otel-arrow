@@ -7,8 +7,8 @@ package mock
 import (
 	reflect "reflect"
 
-	v1 "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	gomock "github.com/golang/mock/gomock"
+	v1 "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	plog "go.opentelemetry.io/collector/pdata/plog"
 	pmetric "go.opentelemetry.io/collector/pdata/pmetric"
 	ptrace "go.opentelemetry.io/collector/pdata/ptrace"

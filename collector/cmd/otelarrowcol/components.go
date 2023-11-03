@@ -3,26 +3,26 @@
 package main
 
 import (
+	generatorreceiver "github.com/lightstep/telemetry-generator/generatorreceiver"
+	basicauthextension "github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension"
+	headerssetterextension "github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension"
+	pprofextension "github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension"
+	validationconnector "github.com/open-telemetry/otel-arrow/collector/connector/validationconnector"
+	fileexporter "github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter"
+	otelarrowexporter "github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter"
+	experimentprocessor "github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor"
+	obfuscationprocessor "github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor"
+	filereceiver "github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver"
+	otelarrowreceiver "github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver"
 	"go.opentelemetry.io/collector/connector"
 	"go.opentelemetry.io/collector/exporter"
+	loggingexporter "go.opentelemetry.io/collector/exporter/loggingexporter"
+	otlphttpexporter "go.opentelemetry.io/collector/exporter/otlphttpexporter"
 	"go.opentelemetry.io/collector/extension"
 	"go.opentelemetry.io/collector/otelcol"
 	"go.opentelemetry.io/collector/processor"
-	"go.opentelemetry.io/collector/receiver"
-	validationconnector "github.com/open-telemetry/otel-arrow/collector/connector/validationconnector"
-	loggingexporter "go.opentelemetry.io/collector/exporter/loggingexporter"
-	otlphttpexporter "go.opentelemetry.io/collector/exporter/otlphttpexporter"
-	otelarrowexporter "github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter"
-	fileexporter "github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter"
-	headerssetterextension "github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension"
-	basicauthextension "github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension"
 	batchprocessor "go.opentelemetry.io/collector/processor/batchprocessor"
-	memorylimiterprocessor "go.opentelemetry.io/collector/processor/memorylimiterprocessor"
-	experimentprocessor "github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor"
-	obfuscationprocessor "github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor"
-	otelarrowreceiver "github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver"
-	filereceiver "github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver"
-	generatorreceiver "github.com/lightstep/telemetry-generator/generatorreceiver"
+	"go.opentelemetry.io/collector/receiver"
 )
 
 func components() (otelcol.Factories, error) {
@@ -32,6 +32,7 @@ func components() (otelcol.Factories, error) {
 	factories.Extensions, err = extension.MakeFactoryMap(
 		headerssetterextension.NewFactory(),
 		basicauthextension.NewFactory(),
+		pprofextension.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err
@@ -58,7 +59,6 @@ func components() (otelcol.Factories, error) {
 
 	factories.Processors, err = processor.MakeFactoryMap(
 		batchprocessor.NewFactory(),
-		memorylimiterprocessor.NewFactory(),
 		experimentprocessor.NewFactory(),
 		obfuscationprocessor.NewFactory(),
 	)

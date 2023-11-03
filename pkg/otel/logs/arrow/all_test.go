@@ -141,8 +141,6 @@ func TestLogs(t *testing.T) {
 		relatedRecord.Record().Release()
 
 		require.JSONEq(t, expected, string(observed))
-
-		relatedRecord.Record().Release()
 	}
 }
 

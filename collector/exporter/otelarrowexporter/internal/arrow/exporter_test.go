@@ -24,7 +24,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/open-telemetry/otel-arrow/collector/internal/testdata"
+	"github.com/open-telemetry/otel-arrow/collector/netstats"
+	"github.com/open-telemetry/otel-arrow/collector/testdata"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -138,7 +139,7 @@ func newExporterTestCaseCommon(t *testing.T, noisy noisyTest, numStreams int, di
 			copyBatch(prod.BatchArrowRecordsFromMetrics))
 		mock.EXPECT().Close().Times(1).Return(nil)
 		return mock
-	}, ctc.streamClient, ctc.perRPCCredentials)
+	}, ctc.streamClient, ctc.perRPCCredentials, netstats.Noop{})
 
 	return &exporterTestCase{
 		commonTestCase: ctc,
@@ -153,10 +154,10 @@ func statusOKFor(id int64) *arrowpb.BatchStatus {
 	}
 }
 
-func statusStreamShutdownFor(id int64) *arrowpb.BatchStatus {
+func statusCanceledFor(id int64) *arrowpb.BatchStatus {
 	return &arrowpb.BatchStatus{
 		BatchId:    id,
-		StatusCode: arrowpb.StatusCode_STREAM_SHUTDOWN,
+		StatusCode: arrowpb.StatusCode_CANCELED,
 	}
 }
 

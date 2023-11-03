@@ -14,6 +14,7 @@ import (
 	"time"
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
+	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
@@ -24,6 +25,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -55,6 +57,9 @@ type Stream struct {
 	// endpoint recognizes OTLP+Arrow.
 	client arrowpb.ArrowStreamService_ArrowStreamClient
 
+	// method the gRPC method name, used for additional instrumentation.
+	method string
+
 	// toWrite is passes a batch from the sender to the stream writer, which
 	// includes a dedicated channel for the response.
 	toWrite chan writeItem
@@ -64,6 +69,9 @@ type Stream struct {
 
 	// waiters is the response channel for each active batch.
 	waiters map[int64]chan error
+
+	// netReporter provides network-level metrics.
+	netReporter netstats.Interface
 }
 
 // writeItem is passed from the sender (a pipeline consumer) to the
@@ -75,6 +83,9 @@ type writeItem struct {
 	md map[string]string
 	// errCh is used by the stream reader to unblock the sender
 	errCh chan error
+	// uncompSize is computed by the appropriate sizer (in the
+	// caller's goroutine)
+	uncompSize int
 }
 
 // newStream constructs a stream
@@ -83,6 +94,7 @@ func newStream(
 	prioritizer *streamPrioritizer,
 	telemetry component.TelemetrySettings,
 	perRPCCredentials credentials.PerRPCCredentials,
+	netReporter netstats.Interface,
 ) *Stream {
 	return &Stream{
 		producer:          producer,
@@ -91,6 +103,7 @@ func newStream(
 		telemetry:         telemetry,
 		toWrite:           make(chan writeItem, 1),
 		waiters:           map[int64]chan error{},
+		netReporter:       netReporter,
 	}
 }
 
@@ -123,7 +136,7 @@ func (s *Stream) run(bgctx context.Context, streamClient StreamClientFunc, grpcO
 	ctx, cancel := context.WithCancel(bgctx)
 	defer cancel()
 
-	sc, err := streamClient(ctx, grpcOptions...)
+	sc, method, err := streamClient(ctx, grpcOptions...)
 	if err != nil {
 		// Returning with stream.client == nil signals the
 		// lack of an Arrow stream endpoint.  When all the
@@ -146,6 +159,7 @@ func (s *Stream) run(bgctx context.Context, streamClient StreamClientFunc, grpcO
 	// Setting .client != nil indicates that the endpoint was valid,
 	// streaming may start.  When this stream finishes, it will be
 	// restarted.
+	s.method = method
 	s.client = sc
 
 	// ww is used to wait for the writer.  Since we wait for the writer,
@@ -211,7 +225,9 @@ func (s *Stream) run(bgctx context.Context, streamClient StreamClientFunc, grpcO
 				// production); in both cases "NO_ERROR" is the key
 				// signifier.
 				if strings.Contains(status.Message(), "NO_ERROR") {
-					s.telemetry.Logger.Debug("arrow stream shutdown")
+					s.telemetry.Logger.Error("arrow stream reset (consider lowering max_stream_lifetime)",
+						zap.String("message", status.Message()),
+					)
 				} else {
 					s.telemetry.Logger.Error("arrow stream unavailable",
 						zap.String("message", status.Message()),
@@ -335,6 +351,17 @@ func (s *Stream) write(ctx context.Context) error {
 		// Let the receiver knows what to look for.
 		s.setBatchChannel(batch.BatchId, wri.errCh)
 
+		// The netstats code knows that uncompressed size is
+		// unreliable for arrow transport, so we instrument it
+		// directly here.  Only the primary direction of transport
+		// is instrumented this way.
+		if wri.uncompSize != 0 {
+			var sized netstats.SizesStruct
+			sized.Method = s.method
+			sized.Length = int64(wri.uncompSize)
+			s.netReporter.CountSend(ctx, sized)
+		}
+
 		if err := s.client.Send(batch); err != nil {
 			// The error will be sent to errCh during cleanup for this stream.
 			// Note: do not wrap this error, it may contain a Status.
@@ -362,7 +389,7 @@ func (s *Stream) read(_ context.Context) error {
 		// This indicates the server received EOF from client shutdown.
 		// This is not an error because this is an expected shutdown
 		// initiated by the client by setting max_stream_lifetime.
-		if resp.StatusCode == arrowpb.StatusCode_STREAM_SHUTDOWN {
+		if resp.StatusCode == arrowpb.StatusCode_CANCELED {
 			return nil
 		}
 
@@ -392,8 +419,8 @@ func (s *Stream) getSenderChannels(status *arrowpb.BatchStatus) (chan error, err
 
 // processBatchStatus processes a single response from the server and unblocks the
 // associated sender.
-func (s *Stream) processBatchStatus(status *arrowpb.BatchStatus) error {
-	ch, ret := s.getSenderChannels(status)
+func (s *Stream) processBatchStatus(ss *arrowpb.BatchStatus) error {
+	ch, ret := s.getSenderChannels(ss)
 
 	if ch == nil {
 		// In case getSenderChannels encounters a problem, the
@@ -401,23 +428,33 @@ func (s *Stream) processBatchStatus(status *arrowpb.BatchStatus) error {
 		return ret
 	}
 
-	if status.StatusCode == arrowpb.StatusCode_OK {
+	if ss.StatusCode == arrowpb.StatusCode_OK {
 		ch <- nil
 		return nil
 	}
+	// See ../../otlp.go's `shouldRetry()` method, the retry
+	// behavior described here is achieved there by setting these
+	// recognized codes.
 	var err error
-	switch status.StatusCode {
+	switch ss.StatusCode {
 	case arrowpb.StatusCode_UNAVAILABLE:
-		err = fmt.Errorf("destination unavailable: %d: %s", status.BatchId, status.StatusMessage)
+		// Retryable
+		err = status.Errorf(codes.Unavailable, "destination unavailable: %d: %s", ss.BatchId, ss.StatusMessage)
 	case arrowpb.StatusCode_INVALID_ARGUMENT:
-		err = consumererror.NewPermanent(
-			fmt.Errorf("invalid argument: %d: %s", status.BatchId, status.StatusMessage))
+		// Not retryable
+		err = status.Errorf(codes.InvalidArgument, "invalid argument: %d: %s", ss.BatchId, ss.StatusMessage)
+	case arrowpb.StatusCode_RESOURCE_EXHAUSTED:
+		// Retry behavior is configurable
+		err = status.Errorf(codes.ResourceExhausted, "resource exhausted: %d: %s", ss.BatchId, ss.StatusMessage)
 	default:
-		base := fmt.Errorf("unexpected stream response: %d: %s", status.BatchId, status.StatusMessage)
-		err = consumererror.NewPermanent(base)
+		// Note: case arrowpb.StatusCode_CANCELED (a.k.a. codes.Canceled)
+		// is handled before calling processBatchStatus().
+
+		// Unrecognized status code.
+		err = status.Errorf(codes.Internal, "unexpected stream response: %d: %s", ss.BatchId, ss.StatusMessage)
 
 		// Will break the stream.
-		ret = multierr.Append(ret, base)
+		ret = multierr.Append(ret, err)
 	}
 	ch <- err
 	return ret
@@ -448,11 +485,30 @@ func (s *Stream) SendAndWait(ctx context.Context, records interface{}) error {
 			return err
 		}
 	}
+	// Note that the uncompressed size as measured by the receiver
+	// will be different than uncompressed size as measured by the
+	// exporter, because of the optimization phase performed in the
+	// conversion to Arrow.
+	var uncompSize int
+	if s.telemetry.MetricsLevel > configtelemetry.LevelNormal {
+		switch data := records.(type) {
+		case ptrace.Traces:
+			var sizer ptrace.ProtoMarshaler
+			uncompSize = sizer.TracesSize(data)
+		case plog.Logs:
+			var sizer plog.ProtoMarshaler
+			uncompSize = sizer.LogsSize(data)
+		case pmetric.Metrics:
+			var sizer pmetric.ProtoMarshaler
+			uncompSize = sizer.MetricsSize(data)
+		}
+	}
 
 	s.toWrite <- writeItem{
-		records: records,
-		md:      md,
-		errCh:   errCh,
+		records:    records,
+		md:         md,
+		uncompSize: uncompSize,
+		errCh:      errCh,
 	}
 
 	// Note this ensures the caller's timeout is respected.

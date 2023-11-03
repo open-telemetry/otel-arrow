@@ -11,6 +11,7 @@ import (
 	"time"
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
+	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -70,6 +71,9 @@ type Exporter struct {
 	//     ...
 	//   }()
 	wg sync.WaitGroup
+
+	// netReporter measures network traffic.
+	netReporter netstats.Interface
 }
 
 // AnyStreamClient is the interface supported by all Arrow streams,
@@ -80,15 +84,19 @@ type AnyStreamClient interface {
 	grpc.ClientStream
 }
 
-// streamClientFunc is a constructor for AnyStreamClients.
-type StreamClientFunc func(context.Context, ...grpc.CallOption) (AnyStreamClient, error)
+// streamClientFunc is a constructor for AnyStreamClients.  These return
+// the method name to assist with instrumentation, since the gRPC stats
+// handler isn't able to see the correct uncompressed size.
+type StreamClientFunc func(context.Context, ...grpc.CallOption) (AnyStreamClient, string, error)
 
 // MakeAnyStreamClient accepts any Arrow-like stream (mixed signal or
-// not) and turns it into an AnyStreamClient.
-func MakeAnyStreamClient[T AnyStreamClient](clientFunc func(ctx context.Context, opts ...grpc.CallOption) (T, error)) StreamClientFunc {
-	return func(ctx context.Context, opts ...grpc.CallOption) (AnyStreamClient, error) {
+// not) and turns it into an AnyStreamClient.  The method name is
+// carried through because once constructed, gRPC clients will not
+// reveal their service and method names.
+func MakeAnyStreamClient[T AnyStreamClient](method string, clientFunc func(ctx context.Context, opts ...grpc.CallOption) (T, error)) StreamClientFunc {
+	return func(ctx context.Context, opts ...grpc.CallOption) (AnyStreamClient, string, error) {
 		client, err := clientFunc(ctx, opts...)
-		return client, err
+		return client, method, err
 	}
 }
 
@@ -102,6 +110,7 @@ func NewExporter(
 	newProducer func() arrowRecord.ProducerAPI,
 	streamClient StreamClientFunc,
 	perRPCCredentials credentials.PerRPCCredentials,
+	netReporter netstats.Interface,
 ) *Exporter {
 	return &Exporter{
 		maxStreamLifetime: maxStreamLifetime,
@@ -113,6 +122,7 @@ func NewExporter(
 		streamClient:      streamClient,
 		perRPCCredentials: perRPCCredentials,
 		returning:         make(chan *Stream, numStreams),
+		netReporter:       netReporter,
 	}
 }
 
@@ -191,7 +201,7 @@ func addJitter(v time.Duration) time.Duration {
 func (e *Exporter) runArrowStream(ctx context.Context) {
 	producer := e.newProducer()
 
-	stream := newStream(producer, e.ready, e.telemetry, e.perRPCCredentials)
+	stream := newStream(producer, e.ready, e.telemetry, e.perRPCCredentials, e.netReporter)
 	stream.maxStreamLifetime = addJitter(e.maxStreamLifetime)
 
 	defer func() {

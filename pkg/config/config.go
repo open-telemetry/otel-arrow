@@ -25,6 +25,76 @@ import (
 	"github.com/apache/arrow/go/v12/arrow/memory"
 )
 
+type OrderSpanBy int8
+
+// Enumeration defining how to order spans in a batch.
+const (
+	OrderSpanByNothing OrderSpanBy = iota
+	OrderSpanByNameTraceID
+	OrderSpanByTraceIDName
+	OrderSpanByNameStartTime
+	OrderSpanByNameTraceIdStartTime
+	OrderSpanByStartTimeTraceIDName
+	OrderSpanByStartTimeNameTraceID
+)
+
+// OrderSpanByVariants is a map of string to OrderSpanBy.
+// It is used to iterate over the possible values of OrderSpanBy.
+// This map must be kept in sync with the OrderSpanBy enumeration.
+var OrderSpanByVariants = map[string]OrderSpanBy{
+	"":                         OrderSpanByNothing,
+	"name,trace_id":            OrderSpanByNameTraceID,
+	"trace_id,name":            OrderSpanByTraceIDName,
+	"name,start_time":          OrderSpanByNameStartTime,
+	"name,trace_id,start_time": OrderSpanByNameTraceIdStartTime,
+	"start_time,trace_id,name": OrderSpanByStartTimeTraceIDName,
+	"start_time,name,trace_id": OrderSpanByStartTimeNameTraceID,
+}
+
+type OrderAttrs32By int8
+
+// Enumeration defining how to order attributes in a batch
+// (with 32bits attribute ID).
+const (
+	OrderAttrs32ByNothing OrderAttrs32By = iota
+	OrderAttrs32ByTypeParentIdKeyValue
+	OrderAttrs32ByTypeKeyParentIdValue
+	OrderAttrs32ByTypeKeyValueParentId
+	OrderAttrs32ByKeyValueParentId
+)
+
+// OrderAttrs32ByVariants is a map of string to OrderAttrs32By.
+// It is used to iterate over the possible values of OrderAttrs32By.
+// This map must be kept in sync with the OrderAttrs32By enumeration.
+var OrderAttrs32ByVariants = map[string]OrderAttrs32By{
+	"":                         OrderAttrs32ByNothing,
+	"type,parent_id,key,value": OrderAttrs32ByTypeParentIdKeyValue,
+	"type,key,parent_id,value": OrderAttrs32ByTypeKeyParentIdValue,
+	"type,key,value,parent_id": OrderAttrs32ByTypeKeyValueParentId,
+	"key,value,parent_id":      OrderAttrs32ByKeyValueParentId,
+}
+
+type OrderAttrs16By int8
+
+// Enumeration defining how to order attributes in a batch
+// (with 16bits attribute ID).
+const (
+	OrderAttrs16ByNothing OrderAttrs16By = iota
+	OrderAttrs16ByParentIdKeyValue
+	OrderAttrs16ByTypeKeyParentIdValue
+	OrderAttrs16ByTypeKeyValueParentId
+)
+
+// OrderAttrs16ByVariants is a map of string to OrderAttrs16By.
+// It is used to iterate over the possible values of OrderAttrs16By.
+// This map must be kept in sync with the OrderAttrs16By enumeration.
+var OrderAttrs16ByVariants = map[string]OrderAttrs16By{
+	"":                         OrderAttrs16ByNothing,
+	"parent_id,key,value":      OrderAttrs16ByParentIdKeyValue,
+	"type,key,parent_id,value": OrderAttrs16ByTypeKeyParentIdValue,
+	"type,key,value,parent_id": OrderAttrs16ByTypeKeyValueParentId,
+}
+
 type Config struct {
 	Pool memory.Allocator
 
@@ -35,25 +105,52 @@ type Config struct {
 	LimitIndexSize uint64
 	// Zstd enables the use of ZSTD compression for IPC messages.
 	Zstd bool // Use IPC ZSTD compression
-	// Stats enables the collection of statistics about the data being encoded.
-	Stats bool
+
+	// SchemaStats enables the collection of statistics about Arrow schemas.
+	SchemaStats bool
+	// RecordStats enables the collection of statistics about Arrow records.
+	RecordStats bool
+	// Display schema updates
+	SchemaUpdates bool
+	// Display producer statistics
+	ProducerStats bool
+	// Display compression ratio statistics
+	CompressionRatioStats bool
+	// DumpRecordRows specifies the number of rows to dump for each record.
+	// If not defined or set to 0, no rows are dumped.
+	DumpRecordRows map[string]int
+
+	// OrderSpanBy specifies how to order spans in a batch.
+	OrderSpanBy OrderSpanBy
+	// OrderAttrs16By specifies how to order attributes in a batch
+	// (with 16bits attribute ID).
+	OrderAttrs16By OrderAttrs16By
+	// OrderAttrs32By specifies how to order attributes in a batch
+	// (with 32bits attribute ID).
+	OrderAttrs32By OrderAttrs32By
 }
 
 type Option func(*Config)
 
 // DefaultConfig returns a Config with the following default values:
-//  - Pool: memory.NewGoAllocator()
-//  - InitIndexSize: math.MaxUint16
-//  - LimitIndexSize: math.MaxUint32
-//  - Stats: false
-//  - Zstd: true
+//   - Pool: memory.NewGoAllocator()
+//   - InitIndexSize: math.MaxUint16
+//   - LimitIndexSize: math.MaxUint32
+//   - SchemaStats: false
+//   - Zstd: true
 func DefaultConfig() *Config {
 	return &Config{
-		Pool:           memory.NewGoAllocator(),
-		InitIndexSize:  math.MaxUint16,
-		LimitIndexSize: math.MaxUint32,
-		Stats:          false,
+		Pool:          memory.NewGoAllocator(),
+		InitIndexSize: math.MaxUint16,
+		// The default dictionary index limit is set to 2^16 - 1
+		// to keep the overall memory usage of the encoder and decoder low.
+		LimitIndexSize: math.MaxUint16,
+		SchemaStats:    false,
 		Zstd:           true,
+
+		OrderSpanBy:    OrderSpanByNameTraceID,
+		OrderAttrs16By: OrderAttrs16ByTypeKeyValueParentId,
+		OrderAttrs32By: OrderAttrs32ByTypeKeyValueParentId,
 	}
 }
 
@@ -142,9 +239,71 @@ func WithNoZstd() Option {
 	}
 }
 
-// WithStats enables the collection of statistics about the data being encoded.
-func WithStats() Option {
+// WithSchemaStats enables the collection of statistics about Arrow schemas.
+func WithSchemaStats() Option {
 	return func(cfg *Config) {
-		cfg.Stats = true
+		cfg.SchemaStats = true
+	}
+}
+
+// WithSchemaUpdates enables the display of schema updates.
+func WithSchemaUpdates() Option {
+	return func(cfg *Config) {
+		cfg.SchemaUpdates = true
+	}
+}
+
+// WithRecordStats enables the collection of statistics about Arrow records.
+func WithRecordStats() Option {
+	return func(cfg *Config) {
+		cfg.RecordStats = true
+	}
+}
+
+// WithProducerStats enables the display of producer statistics.
+func WithProducerStats() Option {
+	return func(cfg *Config) {
+		cfg.ProducerStats = true
+	}
+}
+
+// WithCompressionRatioStats enables the display of compression ratio statistics.
+func WithCompressionRatioStats() Option {
+	return func(cfg *Config) {
+		cfg.CompressionRatioStats = true
+	}
+}
+
+// WithDumpRecordRows specifies the number of rows to dump for a specific
+// payload type.
+func WithDumpRecordRows(payloadType string, numRows int) Option {
+	return func(cfg *Config) {
+		if cfg.DumpRecordRows == nil {
+			cfg.DumpRecordRows = make(map[string]int)
+		}
+		cfg.DumpRecordRows[payloadType] = numRows
+	}
+}
+
+// WithOrderSpanBy specifies how to order spans in a batch.
+func WithOrderSpanBy(orderSpanBy OrderSpanBy) Option {
+	return func(cfg *Config) {
+		cfg.OrderSpanBy = orderSpanBy
+	}
+}
+
+// WithOrderAttrs32By specifies how to order attributes in a batch
+// (with 32bits attribute ID).
+func WithOrderAttrs32By(orderAttrs32By OrderAttrs32By) Option {
+	return func(cfg *Config) {
+		cfg.OrderAttrs32By = orderAttrs32By
+	}
+}
+
+// WithOrderAttrs16By specifies how to order attributes in a batch
+// (with 16bits attribute ID).
+func WithOrderAttrs16By(orderAttrs16By OrderAttrs16By) Option {
+	return func(cfg *Config) {
+		cfg.OrderAttrs16By = orderAttrs16By
 	}
 }

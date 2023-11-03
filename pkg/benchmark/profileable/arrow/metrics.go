@@ -54,7 +54,7 @@ func NewMetricsProfileable(tags []string, dataset dataset.MetricsDataset, config
 		options = append(options, cfg.WithNoZstd())
 	}
 	if config.Stats {
-		options = append(options, cfg.WithStats())
+		options = append(options, cfg.WithSchemaStats())
 	}
 
 	producer := arrow_record.NewProducerWithOptions(options...)

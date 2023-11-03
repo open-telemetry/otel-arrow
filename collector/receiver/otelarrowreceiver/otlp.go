@@ -16,7 +16,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	"github.com/open-telemetry/otel-arrow/collector/internal/netstats"
+	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/arrow"
 	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/logs"
 	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/metrics"
@@ -26,11 +26,11 @@ import (
 	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/extension/auth"
-	"go.opentelemetry.io/collector/obsreport"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"go.opentelemetry.io/collector/receiver"
+	"go.opentelemetry.io/collector/receiver/receiverhelper"
 )
 
 // otlpReceiver is the type that exposes Trace and Metrics reception.
@@ -46,9 +46,9 @@ type otlpReceiver struct {
 	arrowReceiver   *arrow.Receiver
 	shutdownWG      sync.WaitGroup
 
-	obsrepGRPC *obsreport.Receiver
-	obsrepHTTP *obsreport.Receiver
-	netStats   *netstats.NetworkReporter
+	obsrepGRPC  *receiverhelper.ObsReport
+	obsrepHTTP  *receiverhelper.ObsReport
+	netReporter *netstats.NetworkReporter
 
 	settings receiver.CreateSettings
 }
@@ -57,20 +57,20 @@ type otlpReceiver struct {
 // responsibility to invoke the respective Start*Reception methods as well
 // as the various Stop*Reception methods to end it.
 func newOtlpReceiver(cfg *Config, set receiver.CreateSettings) (*otlpReceiver, error) {
-	netStats, err := netstats.NewReceiverNetworkReporter(set)
+	netReporter, err := netstats.NewReceiverNetworkReporter(set)
 	if err != nil {
 		return nil, err
 	}
 	r := &otlpReceiver{
-		cfg:      cfg,
-		settings: set,
-		netStats: netStats,
+		cfg:         cfg,
+		settings:    set,
+		netReporter: netReporter,
 	}
 	if cfg.HTTP != nil {
 		r.httpMux = http.NewServeMux()
 	}
 
-	r.obsrepGRPC, err = obsreport.NewReceiver(obsreport.ReceiverSettings{
+	r.obsrepGRPC, err = receiverhelper.NewObsReport(receiverhelper.ObsReportSettings{
 		ReceiverID:             set.ID,
 		Transport:              "grpc",
 		ReceiverCreateSettings: set,
@@ -78,7 +78,7 @@ func newOtlpReceiver(cfg *Config, set receiver.CreateSettings) (*otlpReceiver, e
 	if err != nil {
 		return nil, err
 	}
-	r.obsrepHTTP, err = obsreport.NewReceiver(obsreport.ReceiverSettings{
+	r.obsrepHTTP, err = receiverhelper.NewObsReport(receiverhelper.ObsReportSettings{
 		ReceiverID:             set.ID,
 		Transport:              "http",
 		ReceiverCreateSettings: set,
@@ -131,8 +131,8 @@ func (r *otlpReceiver) startProtocolServers(host component.Host) error {
 	if r.cfg.GRPC != nil {
 		var serverOpts []grpc.ServerOption
 
-		if r.netStats != nil {
-			serverOpts = append(serverOpts, grpc.StatsHandler(r.netStats))
+		if r.netReporter != nil {
+			serverOpts = append(serverOpts, grpc.StatsHandler(r.netReporter.Handler()))
 		}
 		r.serverGRPC, err = r.cfg.GRPC.ToServer(host, r.settings.TelemetrySettings, serverOpts...)
 		if err != nil {
@@ -149,8 +149,16 @@ func (r *otlpReceiver) startProtocolServers(host component.Host) error {
 			}
 
 			r.arrowReceiver = arrow.New(arrow.Consumers(r), r.settings, r.obsrepGRPC, r.cfg.GRPC, authServer, func() arrowRecord.ConsumerAPI {
-				return arrowRecord.NewConsumer()
-			})
+				var opts []arrowRecord.Option
+				if r.cfg.Arrow.MemoryLimitMiB != 0 {
+					// in which case the default is selected in the arrowRecord package.
+					opts = append(opts, arrowRecord.WithMemoryLimit(r.cfg.Arrow.MemoryLimitMiB<<20))
+				}
+				if r.settings.TelemetrySettings.MeterProvider != nil {
+					opts = append(opts, arrowRecord.WithMeterProvider(r.settings.TelemetrySettings.MeterProvider, r.settings.TelemetrySettings.MetricsLevel))
+				}
+				return arrowRecord.NewConsumer(opts...)
+			}, r.netReporter)
 
 			arrowpb.RegisterArrowStreamServiceServer(r.serverGRPC, r.arrowReceiver)
 		}

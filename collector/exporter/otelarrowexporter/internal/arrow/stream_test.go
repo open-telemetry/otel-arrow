@@ -13,6 +13,7 @@ import (
 
 	"github.com/golang/mock/gomock"
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
+	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	arrowRecordMock "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record/mock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -52,7 +53,7 @@ func newStreamTestCase(t *testing.T) *streamTestCase {
 	// metadata functionality is tested in exporter_test.go
 	ctc.requestMetadataCall.AnyTimes().Return(nil, nil)
 
-	stream := newStream(producer, prio, ctc.telset, ctc.perRPCCredentials)
+	stream := newStream(producer, prio, ctc.telset, ctc.perRPCCredentials, netstats.Noop{})
 	stream.maxStreamLifetime = 10 * time.Second
 
 	fromTracesCall := producer.EXPECT().BatchArrowRecordsFromTraces(gomock.Any()).Times(0)
@@ -81,7 +82,7 @@ func (tc *streamTestCase) start(channel testChannel) {
 
 	go func() {
 		defer tc.wait.Done()
-		tc.stream.run(tc.bgctx, MakeAnyStreamClient(tc.streamClient), nil)
+		tc.stream.run(tc.bgctx, tc.streamClient, nil)
 	}()
 }
 
@@ -144,7 +145,7 @@ func TestStreamGracefulShutdown(t *testing.T) {
 		// mimick the server which will send a batchID
 		// of 0 after max_stream_lifetime elapses.
 		time.Sleep(maxStreamLifetime)
-		channel.recv <- statusStreamShutdownFor(0)
+		channel.recv <- statusCanceledFor(0)
 	}()
 
 	err := tc.get().SendAndWait(tc.bgctx, twoTraces)

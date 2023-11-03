@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter/internal/arrow"
+	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configcompression"
 	"go.opentelemetry.io/collector/config/configgrpc"
@@ -76,11 +77,22 @@ func (oce *baseExporter) helperOptions() []exporterhelper.Option {
 	}
 }
 
-func createArrowTracesStream(cfg *Config, conn *grpc.ClientConn) func(ctx context.Context, opts ...grpc.CallOption) (arrow.AnyStreamClient, error) {
+func gRPCName(desc grpc.ServiceDesc) string {
+	return netstats.GRPCStreamMethodName(desc, desc.Streams[0])
+}
+
+var (
+	arrowStreamMethod  = gRPCName(arrowpb.ArrowStreamService_ServiceDesc)
+	arrowTracesMethod  = gRPCName(arrowpb.ArrowTracesService_ServiceDesc)
+	arrowMetricsMethod = gRPCName(arrowpb.ArrowMetricsService_ServiceDesc)
+	arrowLogsMethod    = gRPCName(arrowpb.ArrowLogsService_ServiceDesc)
+)
+
+func createArrowTracesStream(cfg *Config, conn *grpc.ClientConn) arrow.StreamClientFunc {
 	if cfg.Arrow.EnableMixedSignals {
-		return arrow.MakeAnyStreamClient(arrowpb.NewArrowStreamServiceClient(conn).ArrowStream)
+		return arrow.MakeAnyStreamClient(arrowStreamMethod, arrowpb.NewArrowStreamServiceClient(conn).ArrowStream)
 	}
-	return arrow.MakeAnyStreamClient(arrowpb.NewArrowTracesServiceClient(conn).ArrowTraces)
+	return arrow.MakeAnyStreamClient(arrowTracesMethod, arrowpb.NewArrowTracesServiceClient(conn).ArrowTraces)
 }
 
 func createTracesExporter(
@@ -98,11 +110,11 @@ func createTracesExporter(
 	)
 }
 
-func createArrowMetricsStream(cfg *Config, conn *grpc.ClientConn) func(ctx context.Context, opts ...grpc.CallOption) (arrow.AnyStreamClient, error) {
+func createArrowMetricsStream(cfg *Config, conn *grpc.ClientConn) arrow.StreamClientFunc {
 	if cfg.Arrow.EnableMixedSignals {
-		return arrow.MakeAnyStreamClient(arrowpb.NewArrowStreamServiceClient(conn).ArrowStream)
+		return arrow.MakeAnyStreamClient(arrowStreamMethod, arrowpb.NewArrowStreamServiceClient(conn).ArrowStream)
 	}
-	return arrow.MakeAnyStreamClient(arrowpb.NewArrowMetricsServiceClient(conn).ArrowMetrics)
+	return arrow.MakeAnyStreamClient(arrowMetricsMethod, arrowpb.NewArrowMetricsServiceClient(conn).ArrowMetrics)
 }
 
 func createMetricsExporter(
@@ -120,11 +132,11 @@ func createMetricsExporter(
 	)
 }
 
-func createArrowLogsStream(cfg *Config, conn *grpc.ClientConn) func(ctx context.Context, opts ...grpc.CallOption) (arrow.AnyStreamClient, error) {
+func createArrowLogsStream(cfg *Config, conn *grpc.ClientConn) arrow.StreamClientFunc {
 	if cfg.Arrow.EnableMixedSignals {
-		return arrow.MakeAnyStreamClient(arrowpb.NewArrowStreamServiceClient(conn).ArrowStream)
+		return arrow.MakeAnyStreamClient(arrowStreamMethod, arrowpb.NewArrowStreamServiceClient(conn).ArrowStream)
 	}
-	return arrow.MakeAnyStreamClient(arrowpb.NewArrowLogsServiceClient(conn).ArrowLogs)
+	return arrow.MakeAnyStreamClient(arrowLogsMethod, arrowpb.NewArrowLogsServiceClient(conn).ArrowLogs)
 }
 
 func createLogsExporter(

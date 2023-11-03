@@ -60,10 +60,10 @@ type (
 )
 
 // TracesFrom creates a [ptrace.Traces] from the given Arrow Record.
-// Note: This function consume the record.
+//
+// Important Note: This function doesn't take ownership of the record, so the
+// record must be released by the caller.
 func TracesFrom(record arrow.Record, relatedData *RelatedData) (ptrace.Traces, error) {
-	defer record.Release()
-
 	traces := ptrace.NewTraces()
 
 	if relatedData == nil {

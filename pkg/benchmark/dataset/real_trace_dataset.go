@@ -91,25 +91,25 @@ func tracesFromJSON(path string, compression string) (ptrace.Traces, int) {
 
 	tr := &traceReader{
 		unmarshaler: &ptrace.JSONUnmarshaler{},
-		bytesRead: 0,
+		bytesRead:   0,
 	}
 
 	if compression == benchmark.CompressionTypeZstd {
 		cr, err := zstd.NewReader(file)
 		if err != nil {
-			log.Fatal("Failed to create compressed reader: ", err)
+			log.Fatal("Failed to create compressed reader for `", path, "`: ", err)
 		}
 		tr.stringReader = bufio.NewReader(cr)
 	} else { // no compression
 		tr.stringReader = bufio.NewReader(file)
 	}
 
-	traces, err := tr.readAllTraces() 
+	traces, err := tr.readAllTraces()
 	if err != nil {
 		if tr.bytesRead == 0 {
-			log.Fatal("Read zero bytes from file: ", err)
+			log.Fatal("Read zero bytes from file `", path, "`: ", err)
 		}
-		log.Print("Found error when reading file: ", err)
+		log.Print("Found error when reading file `", path, "`: ", err)
 		log.Print("Bytes read: ", tr.bytesRead)
 	}
 

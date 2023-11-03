@@ -101,11 +101,11 @@ func main() {
 		if strings.HasSuffix(inputFile, ".csv") {
 			ds = CsvToLogsDataset(inputFile)
 		} else {
-			rds := dataset.NewRealLogsDataset(inputFiles[i], benchmark.CompressionTypeZstd, *formatFlag) 
+			rds := dataset.NewRealLogsDataset(inputFiles[i], benchmark.CompressionTypeZstd, *formatFlag)
 			//rds.Resize(10)
 			ds = rds
 		}
-		
+
 		profiler.Printf("Dataset '%s' (%s) loaded\n", inputFiles[i], humanize.Bytes(uint64(ds.SizeInBytes())))
 
 		otlpLogs := otlp.NewLogsProfileable(ds, compressionAlgo)

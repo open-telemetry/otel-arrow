@@ -16,9 +16,11 @@ import (
 )
 
 const (
-	// Protocol values.
-	protoGRPC = "protocols::grpc"
-	protoHTTP = "protocols::http"
+	// Confmap values.
+	protoGRPC                = "protocols::grpc"
+	protoHTTP                = "protocols::http"
+	protoArrowOldMemoryLimit = "protocols::arrow::memory_limit"
+	protoArrowMemoryLimitMiB = "protocols::arrow::memory_limit_mib"
 )
 
 type httpServerSettings struct {
@@ -41,8 +43,15 @@ type Protocols struct {
 	Arrow *ArrowSettings                 `mapstructure:"arrow"`
 }
 
-// ArrowSettings support disabling the Arrow receiver.
+// ArrowSettings support configuring the Arrow receiver.
 type ArrowSettings struct {
+	// DeprecatedMemoryLimit is deprecated, use MemoryLimitMiB.
+	DeprecatedMemoryLimit uint64 `mapstructure:"memory_limit"`
+
+	// MemoryLimitMiB is the size of a shared memory region used
+	// by all Arrow streams, in MiB.  When too much load is
+	// passing through, they will see ResourceExhausted errors.
+	MemoryLimitMiB uint64 `mapstructure:"memory_limit_mib"`
 }
 
 // Config defines configuration for OTel Arrow receiver.
@@ -61,6 +70,14 @@ func (cfg *Config) Validate() error {
 	}
 	if cfg.Arrow != nil && cfg.GRPC == nil {
 		return errors.New("must specify at gRPC protocol when using the OTLP Arrow receiver")
+	}
+	if cfg.Arrow.DeprecatedMemoryLimit != 0 && cfg.Arrow.MemoryLimitMiB != 0 {
+		return errors.New("memory_limit is deprecated, use only memory_limit_mib")
+	}
+	if cfg.Arrow.DeprecatedMemoryLimit != 0 {
+		// Round up
+		cfg.Arrow.MemoryLimitMiB = (cfg.Arrow.DeprecatedMemoryLimit - 1 + 1<<20) >> 20
+		cfg.Arrow.DeprecatedMemoryLimit = 0
 	}
 	return nil
 }
@@ -81,6 +98,12 @@ func (cfg *Config) Unmarshal(conf *confmap.Conf) error {
 	//   if !conf.IsSet(protoGRPC) {
 	//   	cfg.GRPC = nil
 	//   }
+
+	// Allow the deprecated field, when explicitly set, to unset
+	// the new default value.
+	if conf.IsSet(protoArrowOldMemoryLimit) && !conf.IsSet(protoArrowMemoryLimitMiB) {
+		cfg.Arrow.MemoryLimitMiB = 0
+	}
 
 	if !conf.IsSet(protoHTTP) {
 		cfg.HTTP = nil

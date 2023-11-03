@@ -120,31 +120,31 @@ func NewConfig(globalConf *cfg.Config) *Config {
 		},
 		Attrs: &AttrsConfig{
 			Resource: &arrow.Attrs16Config{
-				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs16ByTypeKeyValueParentId(),
 			},
 			Scope: &arrow.Attrs16Config{
-				Sorter: arrow.SortAttrs16ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs16ByTypeKeyValueParentId(),
 			},
 			NumberDataPoint: &arrow.Attrs32Config{
-				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
 			},
 			NumberDataPointExemplar: &arrow.Attrs32Config{
-				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
 			},
 			Summary: &arrow.Attrs32Config{
-				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
 			},
 			Histogram: &arrow.Attrs32Config{
-				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
 			},
 			HistogramExemplar: &arrow.Attrs32Config{
-				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
 			},
 			ExpHistogram: &arrow.Attrs32Config{
-				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
 			},
 			ExpHistogramExemplar: &arrow.Attrs32Config{
-				Sorter: arrow.SortAttrs32ByKeyValueParentId(),
+				Sorter: arrow.SortAttrs32ByTypeKeyValueParentId(),
 			},
 		},
 	}

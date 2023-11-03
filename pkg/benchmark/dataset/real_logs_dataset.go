@@ -82,7 +82,7 @@ func logsFromJSON(path string, compression string) (plog.Logs, int) {
 
 	lr := &logReader{
 		unmarshaler: &plog.JSONUnmarshaler{},
-		bytesRead: 0,
+		bytesRead:   0,
 	}
 
 	if compression == benchmark.CompressionTypeZstd {
@@ -95,7 +95,7 @@ func logsFromJSON(path string, compression string) (plog.Logs, int) {
 		lr.stringReader = bufio.NewReader(file)
 	}
 
-	logs, err := lr.readAllLogs() 
+	logs, err := lr.readAllLogs()
 	if err != nil {
 		if lr.bytesRead == 0 {
 			log.Fatal("Read zero bytes from file: ", err)
@@ -121,7 +121,6 @@ func logsFromProto(path string) (plog.Logs, int) {
 
 	return logs, len(data)
 }
-
 
 // NewRealLogsDataset creates a new RealLogsDataset from a binary file
 // which is either formatted as otlp protobuf or compressed otlp json.

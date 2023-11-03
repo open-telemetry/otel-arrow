@@ -21,10 +21,10 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 
+	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter/internal/arrow/grpcmock"
+	"github.com/open-telemetry/otel-arrow/collector/testdata"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
-	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter/internal/arrow/grpcmock"
-	"github.com/open-telemetry/otel-arrow/collector/internal/testdata"
 )
 
 var (
@@ -85,7 +85,7 @@ func newCommonTestCase(t *testing.T, noisy noisyTest) *commonTestCase {
 		ctrl:                ctrl,
 		telset:              telset,
 		observedLogs:        obslogs,
-		streamClient:        MakeAnyStreamClient(client.ArrowStream),
+		streamClient:        MakeAnyStreamClient("ArrowStream", client.ArrowStream),
 		streamCall:          streamCall,
 		perRPCCredentials:   creds,
 		requestMetadataCall: requestMetadataCall,
