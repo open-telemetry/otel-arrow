@@ -21,6 +21,56 @@ func TestCompressorNonNil(t *testing.T) {
 	require.Nil(t, encoding.GetCompressor(fmt.Sprint(NamePrefix, MaxLevel+1)))
 }
 
+func TestConfigLevelZeroNoop(t *testing.T) {
+	// Test that level zero misconfiguration is a noop, because
+	// there is no level-zero compressor.  The same configuration
+	// at level 1 is an error.
+	require.NoError(t, SetEncoderConfig(EncoderConfig{
+		Level:         0,
+		WindowSizeMiB: 1024,
+	}))
+	require.Error(t, SetEncoderConfig(EncoderConfig{
+		Level:         1,
+		WindowSizeMiB: 1024,
+	}))
+	require.NoError(t, SetDecoderConfig(DecoderConfig{
+		Level:            0,
+		MaxWindowSizeMiB: 1024,
+	}))
+	require.NoError(t, SetDecoderConfig(DecoderConfig{
+		Level:            1,
+		MaxWindowSizeMiB: 1024,
+	}))
+}
+
+func TestInvalidCompressorLevel(t *testing.T) {
+	require.Error(t, SetEncoderConfig(EncoderConfig{
+		Level:         12,
+		Concurrency:   10,
+		WindowSizeMiB: 16,
+	}))
+	require.Error(t, SetDecoderConfig(DecoderConfig{
+		Level:            12,
+		Concurrency:      10,
+		MaxWindowSizeMiB: 16,
+		MemoryLimitMiB:   256,
+	}))
+}
+
+func TestAllCompressorOptions(t *testing.T) {
+	require.NoError(t, SetEncoderConfig(EncoderConfig{
+		Level:         9,
+		Concurrency:   10,
+		WindowSizeMiB: 16,
+	}))
+	require.NoError(t, SetDecoderConfig(DecoderConfig{
+		Level:            9,
+		Concurrency:      10,
+		MaxWindowSizeMiB: 16,
+		MemoryLimitMiB:   256,
+	}))
+}
+
 func TestCompressorReset(t *testing.T) {
 	TTL = time.Minute
 
@@ -77,44 +127,44 @@ func TestCompressorReset(t *testing.T) {
 func TestDecompressorReset(t *testing.T) {
 	TTL = time.Minute
 
-	// Get compressor configs 1 and 2.
-	comp1 := encoding.GetCompressor("zstdarrow1").(*combined)
-	comp2 := encoding.GetCompressor("zstdarrow2").(*combined)
+	// Get compressor configs 3 and 4.
+	comp3 := encoding.GetCompressor("zstdarrow3").(*combined)
+	comp4 := encoding.GetCompressor("zstdarrow4").(*combined)
 
-	// Get an object for level 1
+	// Get an object for level 3
 	buf := new(bytes.Buffer)
-	rd, err := comp1.Decompress(buf)
+	rd, err := comp3.Decompress(buf)
 	require.NoError(t, err)
 	_, err = rd.Read([]byte{})
 	require.Error(t, err)
 
 	// We get the same object pointer again.
 	buf = new(bytes.Buffer)
-	rd, err = comp1.Decompress(buf)
+	rd, err = comp3.Decompress(buf)
 	require.NoError(t, err)
 	_, err = rd.Read(nil)
 	require.Error(t, err)
 
-	// Modify 1's encoder configuration.
-	decCfg1 := comp1.dec.getConfig()
-	decCfg2 := comp2.dec.getConfig()
-	cpyCfg1 := decCfg1
-	cpyCfg1.MaxWindowSizeMiB = 128
+	// Modify 3's encoder configuration.
+	decCfg3 := comp3.dec.getConfig()
+	decCfg4 := comp4.dec.getConfig()
+	cpyCfg3 := decCfg3
+	cpyCfg3.MaxWindowSizeMiB = 128
 
-	require.Equal(t, Level(1), cpyCfg1.Level)
-	require.NotEqual(t, cpyCfg1, decCfg1, "see %v %v", cpyCfg1, decCfg1)
+	require.Equal(t, Level(3), cpyCfg3.Level)
+	require.NotEqual(t, cpyCfg3, decCfg3, "see %v %v", cpyCfg3, decCfg3)
 
-	require.NoError(t, SetDecoderConfig(cpyCfg1))
+	require.NoError(t, SetDecoderConfig(cpyCfg3))
 
 	// The instances can't have changed.
-	require.Equal(t, comp1, encoding.GetCompressor("zstdarrow1").(*combined))
-	require.Equal(t, comp2, encoding.GetCompressor("zstdarrow2").(*combined))
+	require.Equal(t, comp3, encoding.GetCompressor("zstdarrow3").(*combined))
+	require.Equal(t, comp4, encoding.GetCompressor("zstdarrow4").(*combined))
 
-	// Level 2 is unchanged
-	require.Equal(t, decCfg2, comp2.dec.getConfig())
+	// Level 4 is unchanged
+	require.Equal(t, decCfg4, comp4.dec.getConfig())
 
-	// Level 1 is changed
-	require.NotEqual(t, decCfg1, comp1.dec.getConfig(), "see %v %v", decCfg1, comp1.dec.getConfig())
+	// Level 3 is changed
+	require.NotEqual(t, decCfg3, comp3.dec.getConfig(), "see %v %v", decCfg3, comp3.dec.getConfig())
 
 	// Unlike the encoder test, which has an explicit Close() to its advantage,
 	// we aren't testing the behavior of the finalizer that puts back into the MRU.

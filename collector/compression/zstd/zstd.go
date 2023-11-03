@@ -214,6 +214,13 @@ func (cfg EncoderConfig) Name() string {
 }
 
 func (cfg EncoderConfig) CallOption() grpc.CallOption {
+	if cfg.Level == 0 {
+		// The caller is meant to avoid configuring this call
+		// option entirely when level is zero.  If somehow
+		// this happens, use the well-known configuration in
+		// OTC and not the invalid configuration we have here.
+		return grpc.UseCompressor("zstd")
+	}
 	return grpc.UseCompressor(cfg.Name())
 }
 
