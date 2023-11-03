@@ -92,20 +92,31 @@ func TestUnmarshalConfig(t *testing.T) {
 }
 
 func TestArrowSettingsValidate(t *testing.T) {
-	settings := func(enabled bool, numStreams int, maxStreamLifetime time.Duration) *ArrowSettings {
-		return &ArrowSettings{Disabled: !enabled, NumStreams: numStreams, MaxStreamLifetime: maxStreamLifetime}
+	settings := func(enabled bool, numStreams int, maxStreamLifetime time.Duration, level zstd.Level) *ArrowSettings {
+		return &ArrowSettings{
+			Disabled:          !enabled,
+			NumStreams:        numStreams,
+			MaxStreamLifetime: maxStreamLifetime,
+			Zstd: zstd.EncoderConfig{
+				Level: level,
+			},
+		}
 	}
-	require.NoError(t, settings(true, 1, 10*time.Second).Validate())
-	require.NoError(t, settings(false, 1, 10*time.Second).Validate())
-	require.NoError(t, settings(true, 2, 1*time.Second).Validate())
-	require.NoError(t, settings(true, math.MaxInt, 10*time.Second).Validate())
+	require.NoError(t, settings(true, 1, 10*time.Second, zstd.DefaultLevel).Validate())
+	require.NoError(t, settings(false, 1, 10*time.Second, zstd.DefaultLevel).Validate())
+	require.NoError(t, settings(true, 2, 1*time.Second, zstd.DefaultLevel).Validate())
+	require.NoError(t, settings(true, math.MaxInt, 10*time.Second, zstd.DefaultLevel).Validate())
+	require.NoError(t, settings(true, math.MaxInt, 10*time.Second, zstd.MaxLevel).Validate())
+	require.NoError(t, settings(true, math.MaxInt, 10*time.Second, zstd.MinLevel).Validate())
 
-	require.Error(t, settings(true, 0, 10*time.Second).Validate())
-	require.Contains(t, settings(true, 0, 10*time.Second).Validate().Error(), "stream count must be")
-	require.Contains(t, settings(true, 1, -1*time.Second).Validate().Error(), "max stream life must be")
-	require.Error(t, settings(false, -1, 10*time.Second).Validate())
-	require.Error(t, settings(false, 1, -1*time.Second).Validate())
-	require.Error(t, settings(true, math.MinInt, 10*time.Second).Validate())
+	require.Error(t, settings(true, 0, 10*time.Second, zstd.DefaultLevel).Validate())
+	require.Contains(t, settings(true, 0, 10*time.Second, zstd.DefaultLevel).Validate().Error(), "stream count must be")
+	require.Contains(t, settings(true, 1, -1*time.Second, zstd.DefaultLevel).Validate().Error(), "max stream life must be")
+	require.Error(t, settings(false, -1, 10*time.Second, zstd.DefaultLevel).Validate())
+	require.Error(t, settings(false, 1, -1*time.Second, zstd.DefaultLevel).Validate())
+	require.Error(t, settings(true, math.MinInt, 10*time.Second, zstd.DefaultLevel).Validate())
+	require.Error(t, settings(true, math.MaxInt, 10*time.Second, zstd.MinLevel-1).Validate())
+	require.Error(t, settings(true, math.MaxInt, 10*time.Second, zstd.MaxLevel+1).Validate())
 }
 
 func TestDefaultSettingsValid(t *testing.T) {

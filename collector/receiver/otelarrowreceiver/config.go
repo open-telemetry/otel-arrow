@@ -55,7 +55,7 @@ type ArrowSettings struct {
 	MemoryLimitMiB uint64 `mapstructure:"memory_limit_mib"`
 
 	// Zstd settings apply to OTel-Arrow use of gRPC specifically.
-	Zstd []zstd.DecoderConfig `mapstructure:"zstd"`
+	Zstd zstd.DecoderConfig `mapstructure:"zstd"`
 }
 
 // Config defines configuration for OTel Arrow receiver.
