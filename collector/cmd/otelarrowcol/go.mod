@@ -14,10 +14,10 @@ require (
 	go.opentelemetry.io/collector/component v0.88.0
 	go.opentelemetry.io/collector/connector v0.88.0
 	go.opentelemetry.io/collector/exporter v0.88.0
-	go.opentelemetry.io/collector/exporter/loggingexporter v0.87.0
-	go.opentelemetry.io/collector/exporter/otlphttpexporter v0.87.0
+	go.opentelemetry.io/collector/exporter/loggingexporter v0.88.0
+	go.opentelemetry.io/collector/exporter/otlphttpexporter v0.88.0
 	go.opentelemetry.io/collector/extension v0.88.0
-	go.opentelemetry.io/collector/otelcol v0.87.0
+	go.opentelemetry.io/collector/otelcol v0.88.0
 	go.opentelemetry.io/collector/processor v0.88.0
 	go.opentelemetry.io/collector/processor/batchprocessor v0.88.0
 	go.opentelemetry.io/collector/receiver v0.88.0
@@ -110,7 +110,7 @@ require (
 	go.opentelemetry.io/collector v0.88.0 // indirect
 	go.opentelemetry.io/collector/config/configauth v0.88.0 // indirect
 	go.opentelemetry.io/collector/config/configcompression v0.88.0 // indirect
-	go.opentelemetry.io/collector/config/configgrpc v0.87.0 // indirect
+	go.opentelemetry.io/collector/config/configgrpc v0.88.0 // indirect
 	go.opentelemetry.io/collector/config/confighttp v0.88.0 // indirect
 	go.opentelemetry.io/collector/config/confignet v0.88.0 // indirect
 	go.opentelemetry.io/collector/config/configopaque v0.88.0 // indirect
