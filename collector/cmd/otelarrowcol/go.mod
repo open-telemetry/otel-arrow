@@ -165,4 +165,5 @@ replace github.com/open-telemetry/otel-arrow => ../../..
 
 replace github.com/open-telemetry/otel-arrow/collector => ../../
 
+// ambiguous import: found package cloud.google.com/go/compute/metadata in multiple modules
 replace cloud.google.com/go => cloud.google.com/go v0.110.2
