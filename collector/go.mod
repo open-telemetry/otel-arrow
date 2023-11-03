@@ -1,6 +1,6 @@
 module github.com/open-telemetry/otel-arrow/collector
 
-go 1.20
+go 1.21
 
 require (
 	contrib.go.opencensus.io/exporter/prometheus v0.4.2
