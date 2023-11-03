@@ -30,7 +30,6 @@ import (
 var (
 	// errTooManyBatchers is returned when the MetadataCardinalityLimit has been reached.
 	errTooManyBatchers = consumererror.NewPermanent(errors.New("too many batcher metadata-value combinations"))
-	errTimedOut = errors.New("processing items timed out")
 )
 
 // batch_processor is a component that accepts spans and metrics, places them
@@ -337,9 +336,6 @@ func (b *shard) sendItems(trigger trigger) {
 			numItemsBefore = numItemsAfter
 		} else { // waiter gets a complete response.
 			numItemsBefore += b.pending[0].numItems
-			if trigger == triggerTimeout {
-				err = multierr.Append(err, errTimedOut)
-			}
 			b.pending[0].respCh <- completeError{err: err}
 
 			// complete response sent so b.pending[0] can be popped from queue.
@@ -353,7 +349,7 @@ func (b *shard) sendItems(trigger trigger) {
 
 	b.totalSent = numItemsAfter
 
-	if err != nil && err != errTimedOut {
+	if err != nil {
 		b.processor.logger.Warn("Sender failed", zap.Error(err))
 	} else {
 		b.processor.telemetry.record(trigger, int64(sent), int64(bytes))

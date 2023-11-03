@@ -158,13 +158,7 @@ func TestBatchProcessorSpansDeliveredEnforceBatchSize(t *testing.T) {
 		}
 		wg.Add(1)
 		go func() {
-			err = batcher.ConsumeTraces(context.Background(), td)
-			if err != nil {
-				// partial response can lead to timeout.
-				assert.ErrorIs(t, err, errTimedOut)
-			} else {
-				assert.NoError(t, err)
-			}
+			assert.NoError(t, batcher.ConsumeTraces(context.Background(), td))
 			wg.Done()
 		}()
 	}
@@ -278,13 +272,7 @@ func testBatchProcessorSentBySizeWithMaxSize(t *testing.T, tel testTelemetry, us
 		// this should be a noerr but need to separate triggerTimeout from triggerShutdown
 		wg.Add(1)
 		go func() {
-			err = batcher.ConsumeTraces(context.Background(), td)
-			if err != nil {
-				// partial response can lead to timeout.
-				assert.ErrorIs(t, err, errTimedOut)
-			} else {
-				assert.NoError(t, err)
-			}
+			assert.NoError(t, batcher.ConsumeTraces(context.Background(), td))
 			wg.Done()
 		}()
 	}
@@ -323,16 +311,19 @@ func TestBatchProcessorSentByTimeout(t *testing.T) {
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
 	var wg sync.WaitGroup
+	start := time.Now()
 	for requestNum := 0; requestNum < requestCount; requestNum++ {
 		td := testdata.GenerateTraces(spansPerRequest)
 		wg.Add(1)
 		go func() {
-			assert.Error(t, batcher.ConsumeTraces(context.Background(), td), errTimedOut)
+			assert.NoError(t, batcher.ConsumeTraces(context.Background(), td))
 			wg.Done()
 		}()
 	}
 
 	wg.Wait()
+	elapsed := time.Since(start)
+	require.LessOrEqual(t, cfg.Timeout.Nanoseconds(), elapsed.Nanoseconds())
 	require.NoError(t, batcher.Shutdown(context.Background()))
 
 	expectedBatchesNum := 1
@@ -370,13 +361,7 @@ func TestBatchProcessorTraceSendWhenClosing(t *testing.T) {
 		td := testdata.GenerateTraces(spansPerRequest)
 		wg.Add(1)
 		go func() {
-			err = batcher.ConsumeTraces(context.Background(), td)
-			if err != nil {
-				// partial response can lead to timeout.
-				assert.ErrorIs(t, err, errTimedOut)
-			} else {
-				assert.NoError(t, err)
-			}
+			assert.NoError(t, batcher.ConsumeTraces(context.Background(), td))
 			wg.Done()
 		}()
 	}
@@ -418,13 +403,7 @@ func TestBatchMetricProcessor_ReceivingData(t *testing.T) {
 		md.ResourceMetrics().At(0).CopyTo(sentResourceMetrics.AppendEmpty())
 		wg.Add(1)
 		go func() {
-			err = batcher.ConsumeMetrics(context.Background(), md)
-			if err != nil {
-				// partial response can lead to timeout.
-				assert.ErrorIs(t, err, errTimedOut)
-			} else {
-				assert.NoError(t, err)
-			}
+			assert.NoError(t, batcher.ConsumeMetrics(context.Background(), md))
 			wg.Done()
 		}()
 	}
@@ -486,13 +465,7 @@ func testBatchMetricProcessorBatchSize(t *testing.T, tel testTelemetry, useOtel 
 		size += sizer.MetricsSize(md)
 		wg.Add(1)
 		go func() {
-			err = batcher.ConsumeMetrics(context.Background(), md)
-			if err != nil {
-				// partial response can lead to timeout.
-				assert.ErrorIs(t, err, errTimedOut)
-			} else {
-				assert.NoError(t, err)
-			}
+			assert.NoError(t, batcher.ConsumeMetrics(context.Background(), md))
 			wg.Done()
 		}()
 	}
@@ -555,16 +528,19 @@ func TestBatchMetricsProcessor_Timeout(t *testing.T) {
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
 	var wg sync.WaitGroup
+	start := time.Now()
 	for requestNum := 0; requestNum < requestCount; requestNum++ {
 		md := testdata.GenerateMetrics(metricsPerRequest)
 		wg.Add(1)
 		go func() {
-			assert.Error(t, batcher.ConsumeMetrics(context.Background(), md), errTimedOut)
+			assert.NoError(t, batcher.ConsumeMetrics(context.Background(), md))
 			wg.Done()
 		}()
 	}
 
 	wg.Wait()
+	elapsed := time.Since(start)
+	require.LessOrEqual(t, cfg.Timeout.Nanoseconds(), elapsed.Nanoseconds())
 	require.NoError(t, batcher.Shutdown(context.Background()))
 
 	expectedBatchesNum := 1
@@ -601,12 +577,7 @@ func TestBatchMetricProcessor_Shutdown(t *testing.T) {
 		md := testdata.GenerateMetrics(metricsPerRequest)
 		wg.Add(1)
 		go func() {
-			err = batcher.ConsumeMetrics(context.Background(), md)
-			if err != nil {
-				assert.ErrorIs(t, err, errTimedOut)
-			} else {
-				assert.NoError(t, err)
-			}
+			assert.NoError(t, batcher.ConsumeMetrics(context.Background(), md))
 			wg.Done()
 		}()
 	}
@@ -765,12 +736,7 @@ func TestBatchLogProcessor_ReceivingData(t *testing.T) {
 		ld.ResourceLogs().At(0).CopyTo(sentResourceLogs.AppendEmpty())
 		wg.Add(1)
 		go func() {
-			err = batcher.ConsumeLogs(context.Background(), ld)
-			if err != nil {
-				assert.ErrorIs(t, err, errTimedOut)
-			} else {
-				assert.NoError(t, err)
-			}
+			assert.NoError(t, batcher.ConsumeLogs(context.Background(), ld))
 			wg.Done()
 		}()
 	}
@@ -830,12 +796,7 @@ func testBatchLogProcessorBatchSize(t *testing.T, tel testTelemetry, useOtel boo
 		size += sizer.LogsSize(ld)
 		wg.Add(1)
 		go func() {
-			err = batcher.ConsumeLogs(context.Background(), ld)
-			if err != nil {
-				assert.ErrorIs(t, err, errTimedOut)
-			} else {
-				assert.NoError(t, err)
-			}
+			assert.NoError(t, batcher.ConsumeLogs(context.Background(), ld))
 			wg.Done()
 		}()
 	}
@@ -879,16 +840,19 @@ func TestBatchLogsProcessor_Timeout(t *testing.T) {
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
 	var wg sync.WaitGroup
+	start := time.Now()
 	for requestNum := 0; requestNum < requestCount; requestNum++ {
 		ld := testdata.GenerateLogs(logsPerRequest)
 		wg.Add(1)
 		go func() {
-			assert.Error(t, batcher.ConsumeLogs(context.Background(), ld), errTimedOut)
+			assert.NoError(t, batcher.ConsumeLogs(context.Background(), ld))
 			wg.Done()
 		}()
 	}
 
 	wg.Wait()
+	elapsed := time.Since(start)
+	require.LessOrEqual(t, cfg.Timeout.Nanoseconds(), elapsed.Nanoseconds())
 	require.NoError(t, batcher.Shutdown(context.Background()))
 
 	expectedBatchesNum := 1
@@ -925,12 +889,7 @@ func TestBatchLogProcessor_Shutdown(t *testing.T) {
 		ld := testdata.GenerateLogs(logsPerRequest)
 		wg.Add(1)
 		go func() {
-			err = batcher.ConsumeLogs(context.Background(), ld)
-			if err != nil {
-				assert.ErrorIs(t, err, errTimedOut)
-			} else {
-				assert.NoError(t, err)
-			}
+			assert.NoError(t, batcher.ConsumeLogs(context.Background(), ld))
 			wg.Done()
 		}()
 	}
@@ -987,13 +946,7 @@ func verifyTracesDoesNotProduceAfterShutdown(t *testing.T, factory processor.Fac
 	for i := 0; i < generatedCount; i++ {
 		wg.Add(1)
 		go func() {
-			err := proc.ConsumeTraces(context.Background(), testdata.GenerateTraces(1))
-			if err != nil {
-				// partial response can lead to timeout.
-				assert.ErrorIs(t, err, errTimedOut)
-			} else {
-				assert.NoError(t, err)
-			}
+			assert.NoError(t, proc.ConsumeTraces(context.Background(), testdata.GenerateTraces(1)))
 			wg.Done()
 		}()
 	}
@@ -1095,12 +1048,7 @@ func TestBatchProcessorSpansBatchedByMetadata(t *testing.T) {
 		expectByContext[num] += spansPerRequest
 		wg.Add(1)
 		go func() {
-			err = batcher.ConsumeTraces(callCtxs[num], td)
-			if err != nil {
-				assert.ErrorIs(t, err, errTimedOut)
-			} else {
-				assert.NoError(t, err)
-			}
+			assert.NoError(t, batcher.ConsumeTraces(callCtxs[num], td))
 			wg.Done()
 		}()
 	}
@@ -1164,12 +1112,7 @@ func TestBatchProcessorMetadataCardinalityLimit(t *testing.T) {
 
 		wg.Add(1)
 		go func() {
-			err = batcher.ConsumeTraces(ctx, td)
-			if err != nil {
-				assert.ErrorIs(t, err, errTimedOut)
-			} else {
-				assert.NoError(t, err)
-			}
+			assert.NoError(t, batcher.ConsumeTraces(ctx, td))
 			wg.Done()
 		}()
 	}
