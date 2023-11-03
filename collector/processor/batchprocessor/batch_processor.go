@@ -370,9 +370,14 @@ func (sb *singleShardBatcher) consume(ctx context.Context, data any) error {
 	respCh := make(chan error, 1)
 	// TODO: add a semaphore to only write to channel if sizeof(data) keeps
 	// us below some configured inflight byte limit.
-	sb.batcher.newItem <- dataItem{
+	item := dataItem{
 		data:       data,
 		responseCh: respCh,
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case sb.batcher.newItem <- item:
 	}
 	var err error
 
@@ -451,9 +456,14 @@ func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
 		mb.lock.Unlock()
 	}
 
-	b.(*shard).newItem <- dataItem{
+	item := dataItem{
 		data:       data,
 		responseCh: respCh,
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case b.(*shard).newItem <- item:
 	}
 
 	var err error
