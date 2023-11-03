@@ -5,7 +5,6 @@ package zstd
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -16,10 +15,10 @@ type gint struct {
 }
 
 func TestMRUGet(t *testing.T) {
+	defer resetTest()
+
 	var m mru[*gint]
 	const cnt = 5
-
-	TTL = time.Minute
 
 	v, g := m.Get()
 	require.Nil(t, v)
@@ -42,9 +41,12 @@ func TestMRUGet(t *testing.T) {
 }
 
 func TestMRUPut(t *testing.T) {
+	defer resetTest()
+
 	var m mru[*gint]
 	const cnt = 5
 
+	// Use zero TTL => no freelist
 	TTL = 0
 
 	g := m.Reset()
@@ -59,11 +61,24 @@ func TestMRUPut(t *testing.T) {
 	require.Equal(t, 0, m.Size())
 }
 
-// func TestMRUReset(t *testing.T) {
-// 	var m mru[*gint]
-// 	TTL = time.Minute
-// 	m.Put(new(gint))
-// 	require.Equal(t, 1, m.Size())
-// 	m.Reset()
-// 	require.Equal(t, 1, m.Size())
-// }
+func TestMRUReset(t *testing.T) {
+	defer resetTest()
+
+	var m mru[*gint]
+
+	g := m.Reset()
+
+	m.Put(&gint{
+		Gen: g,
+	})
+	require.Equal(t, 1, m.Size())
+
+	m.Reset()
+	require.Equal(t, 0, m.Size())
+
+	// This doesn't take because its generation is before the reset.
+	m.Put(&gint{
+		Gen: g,
+	})
+	require.Equal(t, 0, m.Size())
+}

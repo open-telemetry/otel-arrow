@@ -100,5 +100,7 @@ func (mru *mru[T]) Reset() Gen {
 	mru.mu.Lock()
 	defer mru.mu.Unlock()
 	mru.reset = Gen(time.Now())
+	mru.freelist = nil
+	mru.putTimes = nil
 	return mru.reset
 }
