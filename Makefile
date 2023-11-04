@@ -111,6 +111,7 @@ BUILDER := builder
 
 .PHONY: genotelarrowcol
 genotelarrowcol:
+	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@latest
 	$(BUILDER) --skip-compilation --config collector/cmd/otelarrowcol/build.yaml --output-path collector/cmd/otelarrowcol
 
 .PHONY: otelarrowcol

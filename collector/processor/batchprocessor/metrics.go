@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package batchprocessor // import "github.com/open-telemetry/otel-arrow/collector/processor/batchprocessor
+package batchprocessor // import "github.com/open-telemetry/otel-arrow/collector/processor/batchprocessor"
 
 import (
 	"context"
@@ -35,6 +35,7 @@ type trigger int
 const (
 	triggerTimeout trigger = iota
 	triggerBatchSize
+	triggerShutdown
 )
 
 func init() {

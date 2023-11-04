@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.uber.org/multierr"
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/client"
@@ -26,8 +27,10 @@ import (
 	"go.opentelemetry.io/collector/processor"
 )
 
-// errTooManyBatchers is returned when the MetadataCardinalityLimit has been reached.
-var errTooManyBatchers = consumererror.NewPermanent(errors.New("too many batcher metadata-value combinations"))
+var (
+	// errTooManyBatchers is returned when the MetadataCardinalityLimit has been reached.
+	errTooManyBatchers = consumererror.NewPermanent(errors.New("too many batcher metadata-value combinations"))
+)
 
 // batch_processor is a component that accepts spans and metrics, places them
 // into batches and sends downstream.
@@ -86,11 +89,25 @@ type shard struct {
 	timer *time.Timer
 
 	// newItem is used to receive data items from producers.
-	newItem chan any
+	newItem chan dataItem
 
 	// batch is an in-flight data item containing one of the
 	// underlying data types.
 	batch batch
+
+	pending []pendingItem
+
+	totalSent int
+}
+
+type pendingItem struct {
+	numItems int
+	respCh   chan error
+}
+
+type dataItem struct {
+	data       any
+	responseCh chan error
 }
 
 // batch is an interface generalizing the individual signal types.
@@ -103,6 +120,44 @@ type batch interface {
 
 	// add item to the current batch
 	add(item any)
+}
+
+// partialError is useful when a producer adds items that are split
+// between multiple batches. This signals that producers should continue
+// waiting until a completeError is received.
+type partialError struct {
+	err error
+}
+
+func (pe partialError) Error() string {
+	if pe.err == nil {
+		return ""
+	}
+	return fmt.Sprintf("batch partial error: %s", pe.err.Error())
+}
+
+func (pe partialError) Unwrap() error {
+	return pe.err
+}
+
+func isPartialError(err error) bool {
+	return errors.Is(err, partialError{err: errors.Unwrap(err)})
+}
+
+type completeError struct {
+	err error
+}
+
+func (ce completeError) Error() string {
+	if ce.err == nil {
+		return ""
+	}
+	return fmt.Sprintf("batch complete error: %s", ce.err.Error())
+
+}
+
+func (ce completeError) Unwrap() error {
+	return ce.err
 }
 
 var _ consumer.Traces = (*batchProcessor)(nil)
@@ -152,10 +207,11 @@ func (bp *batchProcessor) newShard(md map[string][]string) *shard {
 	})
 	b := &shard{
 		processor: bp,
-		newItem:   make(chan any, runtime.NumCPU()),
+		newItem:   make(chan dataItem, runtime.NumCPU()),
 		exportCtx: exportCtx,
 		batch:     bp.batchFunc(),
 	}
+
 	b.processor.goroutines.Add(1)
 	go b.start()
 	return b
@@ -205,11 +261,11 @@ func (b *shard) start() {
 			if b.batch.itemCount() > 0 {
 				// TODO: Set a timeout on sendTraces or
 				// make it cancellable using the context that Shutdown gets as a parameter
-				b.sendItems(triggerTimeout)
+				b.sendItems(triggerShutdown)
 			}
 			return
 		case item := <-b.newItem:
-			if item == nil {
+			if item.data == nil {
 				continue
 			}
 			b.processItem(item)
@@ -222,12 +278,26 @@ func (b *shard) start() {
 	}
 }
 
-func (b *shard) processItem(item any) {
-	b.batch.add(item)
+func (b *shard) processItem(item dataItem) {
+	before := b.batch.itemCount()
+	b.batch.add(item.data)
+	after := b.batch.itemCount()
+
+	totalItems := after - before
+	b.pending = append(b.pending, pendingItem{
+		numItems: totalItems,
+		respCh: item.responseCh,
+	})
+
+	b.flushItems()
+}
+
+func (b *shard) flushItems() {
 	sent := false
+
 	for b.batch.itemCount() > 0 && (!b.hasTimer() || b.batch.itemCount() >= b.processor.sendBatchSize) {
-		sent = true
 		b.sendItems(triggerBatchSize)
+		sent = true
 	}
 
 	if sent {
@@ -254,6 +324,31 @@ func (b *shard) resetTimer() {
 
 func (b *shard) sendItems(trigger trigger) {
 	sent, bytes, err := b.batch.export(b.exportCtx, b.processor.sendBatchMaxSize, b.processor.telemetry.detailed)
+
+	numItemsBefore := b.totalSent
+	numItemsAfter := b.totalSent + sent
+	// The current batch can contain items from several different producers. Ensure each producer gets a response back.
+	for len(b.pending) > 0 && numItemsBefore < numItemsAfter {
+		// Waiter only had some items in the current batch
+		if numItemsBefore + b.pending[0].numItems > numItemsAfter {
+			b.pending[0].numItems -= (numItemsAfter - numItemsBefore)
+			b.pending[0].respCh <- partialError{err: err}
+			numItemsBefore = numItemsAfter
+		} else { // waiter gets a complete response.
+			numItemsBefore += b.pending[0].numItems
+			b.pending[0].respCh <- completeError{err: err}
+
+			// complete response sent so b.pending[0] can be popped from queue.
+			if len(b.pending) > 1 {
+				b.pending = b.pending[1:]
+			} else {
+				b.pending = []pendingItem{}
+			}
+		}
+	}
+
+	b.totalSent = numItemsAfter
+
 	if err != nil {
 		b.processor.logger.Warn("Sender failed", zap.Error(err))
 	} else {
@@ -267,8 +362,39 @@ type singleShardBatcher struct {
 	batcher *shard
 }
 
-func (sb *singleShardBatcher) consume(_ context.Context, data any) error {
-	sb.batcher.newItem <- data
+func (sb *singleShardBatcher) consume(ctx context.Context, data any) error {
+	respCh := make(chan error, 1)
+	// TODO: add a semaphore to only write to channel if sizeof(data) keeps
+	// us below some configured inflight byte limit.
+	item := dataItem{
+		data:       data,
+		responseCh: respCh,
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case sb.batcher.newItem <- item:
+	}
+	var err error
+
+	for {
+		select {
+		case newErr := <-respCh:
+			// nil response might be wrapped as an error.
+			if errors.Unwrap(newErr) != nil {
+				err = multierr.Append(err, newErr)
+			}
+
+			if isPartialError(newErr) {
+				continue
+			}
+
+			return err
+		case <-ctx.Done():
+			err = multierr.Append(err, ctx.Err())
+			return err
+		}
+	}
 	return nil
 }
 
@@ -288,6 +414,7 @@ type multiShardBatcher struct {
 }
 
 func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
+	respCh := make(chan error, 1)
 	// Get each metadata key value, form the corresponding
 	// attribute set for use as a map lookup key.
 	info := client.FromContext(ctx)
@@ -324,8 +451,41 @@ func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
 		}
 		mb.lock.Unlock()
 	}
-	b.(*shard).newItem <- data
+
+	item := dataItem{
+		data:       data,
+		responseCh: respCh,
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case b.(*shard).newItem <- item:
+	}
+
+	var err error
+	for {
+		select {
+		case newErr := <-respCh:
+			// nil response might be wrapped as an error.
+			if errors.Unwrap(newErr) != nil {
+				err = multierr.Append(err, newErr)
+			}
+
+			if isPartialError(newErr) {
+				continue
+			}
+
+			return err
+		case <-ctx.Done():
+			err = multierr.Append(err, ctx.Err())
+			return err
+		}
+	}
 	return nil
+}
+
+func recordBatchError(err error) error {
+	return fmt.Errorf("Batch contained errors: %w", err)
 }
 
 func (mb *multiShardBatcher) currentMetadataCardinality() int {
@@ -378,6 +538,7 @@ func newBatchTraces(nextConsumer consumer.Traces) *batchTraces {
 // add updates current batchTraces by adding new TraceData object
 func (bt *batchTraces) add(item any) {
 	td := item.(ptrace.Traces)
+
 	newSpanCount := td.SpanCount()
 	if newSpanCount == 0 {
 		return
