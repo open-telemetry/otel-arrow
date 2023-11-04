@@ -227,7 +227,13 @@ func (m *RelatedRecordsManager) Declare(
 	rrBuilder func(b *builder.RecordBuilderExt) RelatedRecordBuilder,
 	observer observer.ProducerObserver,
 ) RelatedRecordBuilder {
-	builderExt := builder.NewRecordBuilderExt(m.cfg.Pool, schema, config.NewDictionary(m.cfg.LimitIndexSize), m.stats, observer)
+	builderExt := builder.NewRecordBuilderExt(
+		m.cfg.Pool,
+		schema,
+		config.NewDictionary(m.cfg.LimitIndexSize, m.cfg.DictResetThreshold),
+		m.stats,
+		observer,
+	)
 	builderExt.SetLabel(payloadType.SchemaPrefix())
 	rBuilder := rrBuilder(builderExt)
 	m.builders = append(m.builders, rBuilder)

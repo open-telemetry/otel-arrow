@@ -19,8 +19,10 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"testing"
 
 	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	"github.com/open-telemetry/otel-arrow/pkg/benchmark"
@@ -58,7 +60,7 @@ func (o *SimObserver) OnDictionaryUpgrade(recordName string, fieldPath string, p
 	o.Label = o.Label + fmt.Sprintf("DictUpgrade %s.%s", recordName, fieldPath)
 }
 func (o *SimObserver) OnDictionaryOverflow(recordName string, fieldPath string, card, total uint64) {
-	fmt.Printf("OnDictionaryOverflow: %s.%s (card: %d, total: %d)\n", recordName, fieldPath, card, total)
+	fmt.Printf("OnDictionaryOverflow: %s.%s (card: %d, total: %d, ratio: %f)\n", recordName, fieldPath, card, total, float64(card)/float64(total))
 	if o.Label != "" {
 		o.Label += ", "
 	}
@@ -71,6 +73,20 @@ func (o *SimObserver) OnSchemaUpdate(recordName string, old, new *arrow.Schema) 
 	}
 	o.Label = o.Label + "Schema Update"
 }
+func (o *SimObserver) OnDictionaryReset(recordName string, fieldPath string, indexType arrow.DataType, card, total uint64) {
+	fmt.Printf("OnDictionaryReset: %s.%s (type: %s, card: %d, total: %d, ratio: %f)\n", recordName, fieldPath, indexType, card, total, float64(card)/float64(total))
+	if o.Label != "" {
+		o.Label += ", "
+	}
+	o.Label = o.Label + fmt.Sprintf("DictReset %s.%s", recordName, fieldPath)
+}
+func (o *SimObserver) OnMetadataUpdate(recordName, metadataKey string) {
+	fmt.Printf("OnMetadataUpdate: %s (metadata-key: %s)\n", recordName, metadataKey)
+	if o.Label != "" {
+		o.Label += ", "
+	}
+	o.Label = o.Label + fmt.Sprintf("MetadataUpdate %s key=%s", recordName, metadataKey)
+}
 
 // This command simulates an OTel Arrow producer running for different
 // configurations of batch size and stream duration.
@@ -80,6 +96,8 @@ func main() {
 	maxBatchesPerStream := flag.Int("max-batches-per-stream", 10, "Maximum number of batches per stream")
 	verbose := flag.Bool("verbose", false, "Verbose mode")
 	output := flag.String("output", "compression-efficiency-gain.csv", "Output file")
+	dictResetThreshold := flag.Float64("dict-reset-threshold", 0.3, "Dictionary reset threshold (0.3 by default)")
+	checkMemoryLeak := flag.Bool("check-memory-leak", false, "Check memory leak")
 
 	// Statistics related flags (no statistics by default)
 	schemaStats := flag.Bool("schema-stats", false, "Display Arrow schema statistics")
@@ -168,15 +186,56 @@ func main() {
 		commonOptions = append(commonOptions, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_LINK_ATTRS.String(), *spanLinkAttrs))
 	}
 
+	if *checkMemoryLeak {
+		// Create a closure having the signature of a test function.
+		run := func(t *testing.T) {
+			Run(t, dictResetThreshold, commonOptions, inputFiles, batchSize, maxBatchesPerStream, verbose, err, fOutput)
+		}
+
+		testing.Main(matchString, []testing.InternalTest{
+			{"Test", run},
+		}, nil, nil)
+	} else {
+		Run(nil, dictResetThreshold, commonOptions, inputFiles, batchSize, maxBatchesPerStream, verbose, err, fOutput)
+	}
+}
+
+func Run(t *testing.T, dictResetThreshold *float64, commonOptions []config.Option, inputFiles []string, batchSize *int, maxBatchesPerStream *int, verbose *bool, err error, fOutput *os.File) {
+	// Initialize the allocator based the memory leak check flag
+	// If t is nil -> standard Go allocator
+	// If t is not nil -> checked allocator
+	var pool memory.Allocator = memory.NewGoAllocator()
+	deferFunc := func() {}
+
+	if t != nil {
+		checkedPool := memory.NewCheckedAllocator(pool)
+		deferFunc = func() {
+			checkedPool.AssertSize(t, 0)
+			println("No memory leak detected")
+		}
+		pool = checkedPool
+		println("Memory leak check enabled")
+	}
+	defer deferFunc()
+
 	simObserver := &SimObserver{}
 	options := append([]config.Option{
 		config.WithZstd(),
 		config.WithObserver(simObserver),
+		config.WithDictResetThreshold(*dictResetThreshold),
+		config.WithAllocator(pool),
 	}, commonOptions...)
 
 	var otlpProfile *otlp.TracesProfileable
 	var otelArrowProfile *parrow.TracesProfileable
 	batchesPerStreamCount := 0
+
+	// Data structure to compute Compression Efficiency Gain (CEG) moving
+	// average
+	cegWindowSize := 50
+	cegWindowData := make([]float64, cegWindowSize)
+	currentCegIndex := 0
+	cegCount := 0
 
 	for i := range inputFiles {
 		ds := dataset.NewRealTraceDataset(inputFiles[i], benchmark.CompressionTypeZstd, "json", []string{"trace_id"})
@@ -215,9 +274,25 @@ func main() {
 					fmt.Printf(">>> OTLP compression ratio=%5.2f vs OTel_ARROW compression ratio=%5.2f (batch: #%06d)\n", float64(otlpUncompressed)/float64(otlpCompressed), float64(otlpUncompressed)/float64(otelArrowCompressed), batchesPerStreamCount)
 				}
 			}
-			otelArrowImprovement := 100.0 - (otlpCompressionImprovement/otelArrowCompressionImprovement)*100.0
-			fmt.Printf("OTel Arrow compression improvement=%5.2f%% (batch: #%06d)\n", otelArrowImprovement, batchesPerStreamCount)
-			if _, err = fOutput.WriteString(fmt.Sprintf("%d\t%f\t%s\n", batchesPerStreamCount, otelArrowImprovement, simObserver.Label)); err != nil {
+			// Compute Compression Efficiency Gain (CEG)
+			ceg := 100.0 - (otlpCompressionImprovement/otelArrowCompressionImprovement)*100.0
+			cegMovingAvg := 0.0
+			cegWindowData[currentCegIndex] = ceg
+			currentCegIndex = (currentCegIndex + 1) % cegWindowSize
+			if cegCount < cegWindowSize {
+				cegCount++
+				for i := 0; i < cegCount; i++ {
+					cegMovingAvg += cegWindowData[i]
+				}
+				cegMovingAvg /= float64(cegCount)
+			} else {
+				for i := 0; i < cegWindowSize; i++ {
+					cegMovingAvg += cegWindowData[i]
+				}
+				cegMovingAvg /= float64(cegWindowSize)
+			}
+			fmt.Printf("OTel Arrow Compression Efficiency Gain(CEG)=%5.2f%%, CEG moving avg=%5.2f%% (batch: #%06d)\n", ceg, cegMovingAvg, batchesPerStreamCount)
+			if _, err = fOutput.WriteString(fmt.Sprintf("%d\t%f\t%s\n", batchesPerStreamCount, ceg, simObserver.Label)); err != nil {
 				panic(err)
 			}
 			simObserver.Label = ""
@@ -228,6 +303,10 @@ func main() {
 
 	otlpProfile.EndProfiling(os.Stdout)
 	otelArrowProfile.EndProfiling(os.Stdout)
+}
+
+func matchString(a, b string) (bool, error) {
+	return a == b, nil
 }
 
 func OtlpStream(prevStream *otlp.TracesProfileable, batchSize int) *otlp.TracesProfileable {

@@ -42,7 +42,7 @@ import (
 )
 
 var (
-	DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
+	DefaultDictConfig = cfg.NewDictionary(math.MaxUint16, 0.0)
 )
 
 func TestStatus(t *testing.T) {

@@ -52,6 +52,16 @@ type DictionaryUpgradeEvent struct {
 	Total         uint64
 }
 
+// DictionaryResetEvent is an event that is triggered when a dictionary is reset
+// instead of being overflowed. This happens when dictionary entries are reused
+// in average more than a specific threshold.
+type DictionaryResetEvent struct {
+	FieldName   string
+	IndexType   arrow.DataType
+	Cardinality uint64
+	Total       uint64
+}
+
 // DictionaryOverflowEvent is an event that is triggered when a dictionary
 // overflows its index type.
 type DictionaryOverflowEvent struct {
@@ -122,6 +132,19 @@ func (e *DictionaryOverflowEvent) Notify(recordName string, observer observer.Pr
 	)
 }
 
+func (e *DictionaryResetEvent) Notify(recordName string, observer observer.ProducerObserver) {
+	observer.OnDictionaryReset(
+		recordName,
+		e.FieldName,
+		e.IndexType,
+		e.Cardinality,
+		e.Total,
+	)
+}
+
 func (e *MetadataEvent) Notify(recordName string, observer observer.ProducerObserver) {
-	// ToDo
+	observer.OnMetadataUpdate(
+		recordName,
+		e.MetadataKey,
+	)
 }

@@ -39,7 +39,7 @@ import (
 )
 
 var (
-	DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
+	DefaultDictConfig = cfg.NewDictionary(math.MaxUint16, 0.0)
 	producerStats     = stats.NewProducerStats()
 )
 

@@ -96,7 +96,7 @@ var (
 	producerStats = stats.NewProducerStats()
 )
 
-var DictConfig = config.NewDictionary(math.MaxUint16)
+var DictConfig = config.NewDictionary(math.MaxUint16, 0.0)
 
 func TestTimestampOnly(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())

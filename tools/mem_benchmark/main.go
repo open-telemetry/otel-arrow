@@ -72,7 +72,7 @@ func main() {
 	Report("TRACES", traces.TracesSchema)
 }
 
-var DictConfig = config.NewDictionary(math.MaxUint16)
+var DictConfig = config.NewDictionary(math.MaxUint16, 0.0)
 
 func Report(name string, schema *arrow.Schema) {
 	pool := memory.NewGoAllocator()

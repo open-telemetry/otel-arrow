@@ -132,11 +132,31 @@ func NewProducerWithOptions(options ...cfg.Option) *Producer {
 	stats.ProducerStats = conf.ProducerStats
 
 	// Record builders
-	metricsRecordBuilder := builder.NewRecordBuilderExt(conf.Pool, metricsarrow.MetricsSchema, config.NewDictionary(conf.LimitIndexSize), stats, conf.Observer)
+	metricsRecordBuilder := builder.NewRecordBuilderExt(
+		conf.Pool,
+		metricsarrow.MetricsSchema,
+		config.NewDictionary(conf.LimitIndexSize, conf.DictResetThreshold),
+		stats,
+		conf.Observer,
+	)
 	metricsRecordBuilder.SetLabel("metrics")
-	logsRecordBuilder := builder.NewRecordBuilderExt(conf.Pool, logsarrow.LogsSchema, config.NewDictionary(conf.LimitIndexSize), stats, conf.Observer)
+
+	logsRecordBuilder := builder.NewRecordBuilderExt(
+		conf.Pool,
+		logsarrow.LogsSchema,
+		config.NewDictionary(conf.LimitIndexSize, conf.DictResetThreshold),
+		stats,
+		conf.Observer,
+	)
 	logsRecordBuilder.SetLabel("logs")
-	tracesRecordBuilder := builder.NewRecordBuilderExt(conf.Pool, tracesarrow.TracesSchema, config.NewDictionary(conf.LimitIndexSize), stats, conf.Observer)
+
+	tracesRecordBuilder := builder.NewRecordBuilderExt(
+		conf.Pool,
+		tracesarrow.TracesSchema,
+		config.NewDictionary(conf.LimitIndexSize, conf.DictResetThreshold),
+		stats,
+		conf.Observer,
+	)
 	tracesRecordBuilder.SetLabel("traces")
 
 	// Entity builders
@@ -574,3 +594,7 @@ func (o *consoleObserver) OnDictionaryOverflow(recordName string, fieldPath stri
 }
 
 func (o *consoleObserver) OnSchemaUpdate(recordName string, old, new *arrow.Schema) {}
+
+func (o *consoleObserver) OnDictionaryReset(recordName string, fieldPath string, indexType arrow.DataType, card, total uint64) {
+}
+func (o *consoleObserver) OnMetadataUpdate(recordName, metadataKey string) {}

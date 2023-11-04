@@ -35,7 +35,7 @@ import (
 	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
 )
 
-var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
+var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16, 0.0)
 var producerStats = stats.NewProducerStats()
 
 func TestEmptyAnyValue(t *testing.T) {

@@ -38,7 +38,7 @@ import (
 	"github.com/open-telemetry/otel-arrow/pkg/record_message"
 )
 
-var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
+var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16, 0.0)
 
 // TestMetricsEncodingDecoding tests the conversion of OTLP metrics to Arrow and back to OTLP.
 // The initial OTLP metrics are generated from a synthetic dataset.

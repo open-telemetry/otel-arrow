@@ -39,6 +39,11 @@ var (
 // a given index type.
 // If the index type is nil, the dictionary is downgraded to its value type.
 type DictionaryField struct {
+	// Configuration for this dictionary.
+	// This configuration could be shared between multiple dictionaries.
+	config *cfg.Dictionary
+
+	// Path of the dictionary field.
 	path string
 
 	// Dictionary ID
@@ -71,6 +76,7 @@ func NewDictionaryField(
 	events *events.Events,
 ) *DictionaryField {
 	df := DictionaryField{
+		config:              config,
 		path:                path,
 		DictID:              dictID,
 		cardinality:         0,
@@ -172,12 +178,19 @@ func (t *DictionaryField) updateIndexType(stats *stats.RecordBuilderStats) {
 		t.currentIndex++
 	}
 	if t.currentIndex >= len(t.indexTypes) {
-		t.indexTypes = nil
-		t.indexMaxCard = nil
-		t.currentIndex = 0
-		t.schemaUpdateRequest.Inc(&update.DictionaryOverflowEvent{FieldName: t.path, PrevIndexType: prevIndexType, NewIndexType: t.IndexType(), Cardinality: t.cardinality, Total: t.cumulativeTotal})
-		t.events.DictionariesWithOverflow[t.path] = true
-		stats.DictionaryOverflowDetected++
+		ratio := float64(t.cardinality) / float64(t.cumulativeTotal)
+		if ratio < t.config.ResetThreshold {
+			t.currentIndex = len(t.indexTypes) - 1
+			t.schemaUpdateRequest.Inc(&update.DictionaryResetEvent{FieldName: t.path, IndexType: t.IndexType(), Cardinality: t.cardinality, Total: t.cumulativeTotal})
+			t.cumulativeTotal = 0
+		} else {
+			t.indexTypes = nil
+			t.indexMaxCard = nil
+			t.currentIndex = 0
+			t.schemaUpdateRequest.Inc(&update.DictionaryOverflowEvent{FieldName: t.path, PrevIndexType: prevIndexType, NewIndexType: t.IndexType(), Cardinality: t.cardinality, Total: t.cumulativeTotal})
+			t.events.DictionariesWithOverflow[t.path] = true
+			stats.DictionaryOverflowDetected++
+		}
 	} else if t.currentIndex != currentIndex {
 		t.schemaUpdateRequest.Inc(&update.DictionaryUpgradeEvent{FieldName: t.path, PrevIndexType: prevIndexType, NewIndexType: t.IndexType(), Cardinality: t.cardinality, Total: t.cumulativeTotal})
 		t.events.DictionariesIndexTypeChanged[t.path] = t.indexTypes[t.currentIndex].Name()

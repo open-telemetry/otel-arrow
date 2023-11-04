@@ -39,7 +39,7 @@ import (
 	"github.com/open-telemetry/otel-arrow/pkg/record_message"
 )
 
-var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
+var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16, 0.0)
 
 func TestLogs(t *testing.T) {
 	t.Parallel()
