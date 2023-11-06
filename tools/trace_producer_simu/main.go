@@ -272,8 +272,7 @@ func Run(t *testing.T, maxSpanCount int, dictResetThreshold float64, commonOptio
 
 Loop:
 	for i := range inputFiles {
-		//ds := dataset.NewRealTraceDataset(inputFiles[i], benchmark.CompressionTypeZstd, "json", []string{"trace_id"})
-		ds := dataset.NewRealTraceDataset(inputFiles[i], "", "proto", []string{"trace_id"})
+		ds := dataset.NewRealTraceDataset(inputFiles[i], benchmark.CompressionTypeZstd, "json", []string{"trace_id"})
 		fmt.Printf("Dataset '%s' loaded %d spans\n", inputFiles[i], ds.Len())
 
 		maxBatchCount := uint64(math.Ceil(float64(ds.Len()) / float64(batchSize)))
