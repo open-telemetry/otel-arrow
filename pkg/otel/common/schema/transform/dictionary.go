@@ -60,9 +60,23 @@ type DictionaryField struct {
 	// cardinality of the dictionary used to determine dictionary overflow
 	cardinality uint64
 
-	indexMaxCard []uint64
-	indexTypes   []arrow.DataType
+	// The following index defines which index type and max cardinality is
+	// currently used. Each time the cardinality is updated, the index is
+	// index type is reevaluated to determine if the new cardinality exceeds
+	// the max cardinality of the current index type. If it does, the index
+	// is incremented until the max cardinality of the new index type is
+	// greater than the current cardinality.
+	// When the cardinality exceeds the max cardinality of the last index
+	// type, the dictionary is either reset or overflowed depending on the
+	// ratio between the cardinality and the cumulative total.
 	currentIndex int
+	// The different max cardinalities used for this column. This slice is
+	// initialized based on the min and max cardinalities defined in the
+	// dictionary configuration.
+	indexMaxCard []uint64
+	// The different index types used for this column aligned with the
+	// indexMaxCard slice.
+	indexTypes []arrow.DataType
 
 	schemaUpdateRequest *update.SchemaUpdateRequest
 	events              *events.Events
