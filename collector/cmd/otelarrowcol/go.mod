@@ -2,7 +2,9 @@
 
 module github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol
 
-go 1.20
+go 1.21
+
+toolchain go1.21.3
 
 require (
 	github.com/lightstep/telemetry-generator/generatorreceiver v0.15.0
