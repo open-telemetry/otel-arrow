@@ -27,6 +27,7 @@ import (
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
 	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
@@ -92,11 +93,12 @@ func NewTracesBuilder(
 	rBuilder *builder.RecordBuilderExt,
 	cfg *Config,
 	stats *stats.ProducerStats,
+	observer observer.ProducerObserver,
 ) (*TracesBuilder, error) {
 	var optimizer *TracesOptimizer
 	var analyzer *TracesAnalyzer
 
-	relatedData, err := NewRelatedData(cfg, stats)
+	relatedData, err := NewRelatedData(cfg, stats, observer)
 	if err != nil {
 		panic(err)
 	}

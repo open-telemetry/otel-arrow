@@ -28,6 +28,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
 )
 
 const (
@@ -188,7 +189,7 @@ func (b *DynAttrsBuilder) IsEmpty() bool {
 	return len(b.parentIDColumn.values) == 0
 }
 
-func (b *DynAttrsBuilder) Build() (arrow.Record, error) {
+func (b *DynAttrsBuilder) Build(observer observer.ProducerObserver) (arrow.Record, error) {
 	if b.newColumn {
 		b.sortColumns()
 		b.createBuilder()

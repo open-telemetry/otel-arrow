@@ -42,7 +42,7 @@ import (
 )
 
 var (
-	DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
+	DefaultDictConfig = cfg.NewDictionary(math.MaxUint16, 0.0)
 )
 
 func TestStatus(t *testing.T) {
@@ -55,7 +55,7 @@ func TestStatus(t *testing.T) {
 	schema := arrow.NewSchema([]arrow.Field{
 		{Name: constants.Status, Type: StatusDT, Metadata: acommon.Metadata(acommon.Optional)},
 	}, nil)
-	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, schema, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -96,9 +96,9 @@ func TestEvent(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	eventRBuilder := builder.NewRecordBuilderExt(pool, EventSchema, DefaultDictConfig, producerStats)
+	eventRBuilder := builder.NewRecordBuilderExt(pool, EventSchema, DefaultDictConfig, producerStats, nil)
 	defer eventRBuilder.Release()
-	attrsRBuilder := builder.NewRecordBuilderExt(pool, carrow.AttrsSchema32, DefaultDictConfig, producerStats)
+	attrsRBuilder := builder.NewRecordBuilderExt(pool, carrow.AttrsSchema32, DefaultDictConfig, producerStats, nil)
 	defer attrsRBuilder.Release()
 
 	var eventsRecord, attrsRecord arrow.Record
@@ -173,9 +173,9 @@ func TestLink(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	linkRBuilder := builder.NewRecordBuilderExt(pool, LinkSchema, DefaultDictConfig, producerStats)
+	linkRBuilder := builder.NewRecordBuilderExt(pool, LinkSchema, DefaultDictConfig, producerStats, nil)
 	defer linkRBuilder.Release()
-	attrsRBuilder := builder.NewRecordBuilderExt(pool, carrow.AttrsSchema32, DefaultDictConfig, producerStats)
+	attrsRBuilder := builder.NewRecordBuilderExt(pool, carrow.AttrsSchema32, DefaultDictConfig, producerStats, nil)
 	defer attrsRBuilder.Release()
 
 	var linksRecord, attrsRecord arrow.Record
@@ -251,7 +251,7 @@ func TestTraces(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -261,7 +261,7 @@ func TestTraces(t *testing.T) {
 	statistics := stats.NewProducerStats()
 
 	for {
-		tb, err := NewTracesBuilder(rBuilder, NewConfig(conf), statistics)
+		tb, err := NewTracesBuilder(rBuilder, NewConfig(conf), statistics, nil)
 		require.NoError(t, err)
 		defer tb.Release()
 

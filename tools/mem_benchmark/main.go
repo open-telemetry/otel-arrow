@@ -72,18 +72,18 @@ func main() {
 	Report("TRACES", traces.TracesSchema)
 }
 
-var DictConfig = config.NewDictionary(math.MaxUint16)
+var DictConfig = config.NewDictionary(math.MaxUint16, 0.0)
 
 func Report(name string, schema *arrow.Schema) {
 	pool := memory.NewGoAllocator()
 	println("--------------------------------------------------")
 	fmt.Printf("%s%s - Memory usage%s\n", ColorGreen, name, ColorReset)
 	ReportMemUsageOf("NewRecordBuilderExt(schema)", func() {
-		b := builder.NewRecordBuilderExt(pool, schema, DictConfig, stats.NewProducerStats())
+		b := builder.NewRecordBuilderExt(pool, schema, DictConfig, stats.NewProducerStats(), nil)
 		defer b.Release()
 	})
 	ReportMemUsageOf("NewRecordBuilder(...).NewRecord() - empty", func() {
-		b := builder.NewRecordBuilderExt(pool, schema, DictConfig, stats.NewProducerStats())
+		b := builder.NewRecordBuilderExt(pool, schema, DictConfig, stats.NewProducerStats(), nil)
 		defer b.Release()
 		record, err := b.NewRecord()
 		if err != nil {
@@ -92,7 +92,7 @@ func Report(name string, schema *arrow.Schema) {
 		defer record.Release()
 	})
 
-	b := builder.NewRecordBuilderExt(pool, schema, DictConfig, stats.NewProducerStats())
+	b := builder.NewRecordBuilderExt(pool, schema, DictConfig, stats.NewProducerStats(), nil)
 	defer b.Release()
 	record, err := b.NewRecord()
 	if err != nil {

@@ -27,6 +27,7 @@ import (
 	"github.com/open-telemetry/otel-arrow/pkg/benchmark/dataset"
 	cfg "github.com/open-telemetry/otel-arrow/pkg/config"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
 )
 
 type TracesProfileable struct {
@@ -43,7 +44,20 @@ type TracesProfileable struct {
 	stats                 bool
 	tracesProducerOptions []cfg.Option
 
-	observer arrow_record.ProducerObserver
+	observer observer.ProducerObserver
+}
+
+func WithOption(tags []string, options ...cfg.Option) *TracesProfileable {
+	return &TracesProfileable{
+		tags:                  tags,
+		compression:           benchmark.Zstd(),
+		producer:              arrow_record.NewProducerWithOptions(options...),
+		consumer:              arrow_record.NewConsumer(),
+		batchArrowRecords:     make([]*v1.BatchArrowRecords, 0, 10),
+		pool:                  memory.NewGoAllocator(),
+		unaryRpcMode:          false,
+		tracesProducerOptions: options,
+	}
 }
 
 func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *benchmark.Config) *TracesProfileable {
@@ -73,7 +87,11 @@ func NewTraceProfileable(tags []string, dataset dataset.TraceDataset, config *be
 	}
 }
 
-func (s *TracesProfileable) SetObserver(observer arrow_record.ProducerObserver) {
+func (s *TracesProfileable) SetDataset(dataset dataset.TraceDataset) {
+	s.dataset = dataset
+}
+
+func (s *TracesProfileable) SetObserver(observer observer.ProducerObserver) {
 	s.observer = observer
 }
 

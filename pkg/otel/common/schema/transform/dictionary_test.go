@@ -51,7 +51,7 @@ func TestNoDictionary(t *testing.T) {
 func TestDictUint8Overflow(t *testing.T) {
 	rbStats := &stats.RecordBuilderStats{}
 	schemaUpdateRequest := update.NewSchemaUpdateRequest()
-	dictConfig := cfg.NewDictionary(math.MaxUint8)
+	dictConfig := cfg.NewDictionary(math.MaxUint8, 0.0)
 
 	dict := NewDictionaryField("", "1", dictConfig, schemaUpdateRequest, evts)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
@@ -73,7 +73,7 @@ func TestDictUint8Overflow(t *testing.T) {
 func TestDictUint16Overflow(t *testing.T) {
 	rbStats := &stats.RecordBuilderStats{}
 	schemaUpdateRequest := update.NewSchemaUpdateRequest()
-	dictConfig := cfg.NewDictionary(math.MaxUint16)
+	dictConfig := cfg.NewDictionary(math.MaxUint16, 0.0)
 
 	dict := NewDictionaryField("", "1", dictConfig, schemaUpdateRequest, evts)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
@@ -104,7 +104,7 @@ func TestDictUint16Overflow(t *testing.T) {
 func TestDictUint32Overflow(t *testing.T) {
 	rbStats := &stats.RecordBuilderStats{}
 	schemaUpdateRequest := update.NewSchemaUpdateRequest()
-	dictConfig := cfg.NewDictionary(math.MaxUint32)
+	dictConfig := cfg.NewDictionary(math.MaxUint32, 0.0)
 
 	dict := NewDictionaryField("", "1", dictConfig, schemaUpdateRequest, evts)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")
@@ -144,7 +144,7 @@ func TestDictUint32Overflow(t *testing.T) {
 func TestDictUint64Overflow(t *testing.T) {
 	rbStats := &stats.RecordBuilderStats{}
 	schemaUpdateRequest := update.NewSchemaUpdateRequest()
-	dictConfig := cfg.NewDictionary(math.MaxUint64)
+	dictConfig := cfg.NewDictionary(math.MaxUint64, 0.0)
 
 	dict := NewDictionaryField("", "1", dictConfig, schemaUpdateRequest, evts)
 	assert.Equal(t, arrow.PrimitiveTypes.Uint8, dict.IndexType(), "index type should be uint8")

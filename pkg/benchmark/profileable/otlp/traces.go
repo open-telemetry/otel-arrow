@@ -30,6 +30,10 @@ type TracesProfileable struct {
 	traces      []ptrace.Traces
 }
 
+func New(compression benchmark.CompressionAlgorithm) *TracesProfileable {
+	return &TracesProfileable{compression: compression}
+}
+
 func NewTraceProfileable(dataset dataset.TraceDataset, compression benchmark.CompressionAlgorithm) *TracesProfileable {
 	return &TracesProfileable{dataset: dataset, compression: compression}
 }
@@ -46,6 +50,10 @@ func (s *TracesProfileable) DatasetSize() int { return s.dataset.Len() }
 
 func (s *TracesProfileable) CompressionAlgorithm() benchmark.CompressionAlgorithm {
 	return s.compression
+}
+
+func (s *TracesProfileable) SetDataset(dataset dataset.TraceDataset) {
+	s.dataset = dataset
 }
 
 func (s *TracesProfileable) StartProfiling(io.Writer) {}

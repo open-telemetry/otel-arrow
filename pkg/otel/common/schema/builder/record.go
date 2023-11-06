@@ -30,6 +30,7 @@ import (
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/events"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/transform"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/update"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
 	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
@@ -74,6 +75,9 @@ type RecordBuilderExt struct {
 
 	// Metadata to be added to the schema.
 	metadata map[string]string
+
+	// The observer that is notified when certain events occur.
+	observer observer.ProducerObserver
 }
 
 // NewRecordBuilderExt creates a new RecordBuilderExt from the given allocator
@@ -83,6 +87,7 @@ func NewRecordBuilderExt(
 	protoSchema *arrow.Schema,
 	dictConfig *builder.Dictionary,
 	stats *stats.ProducerStats,
+	observer observer.ProducerObserver,
 ) *RecordBuilderExt {
 	schemaUpdateRequest := update.NewSchemaUpdateRequest()
 	evts := &events.Events{
@@ -105,6 +110,7 @@ func NewRecordBuilderExt(
 		events:             evts,
 		stats:              stats,
 		metadata:           make(map[string]string),
+		observer:           observer,
 	}
 }
 
@@ -133,7 +139,7 @@ func (rb *RecordBuilderExt) AddMetadata(key, value string) {
 	if !ok || prevValue != value {
 		rb.metadata[key] = value
 		// If the metadata has changed, then the schema must be updated.
-		rb.updateRequest.Inc()
+		rb.updateRequest.Inc(&update.MetadataEvent{MetadataKey: key})
 	}
 }
 
@@ -249,6 +255,9 @@ func (rb *RecordBuilderExt) builder(name string) array.Builder {
 // UpdateSchema updates the schema based on the pending schema update requests
 // the initial prototype schema.
 func (rb *RecordBuilderExt) UpdateSchema() {
+	if rb.observer != nil {
+		rb.updateRequest.Notify(rb.label, rb.observer)
+	}
 	if rb.stats.SchemaUpdates {
 		println("=====================================================")
 		fmt.Printf("Updating schema for %q\n", rb.label)
@@ -257,12 +266,13 @@ func (rb *RecordBuilderExt) UpdateSchema() {
 	}
 
 	rb.transformTree.RevertCounters()
-	s := schema.NewSchemaFrom(rb.protoSchema, rb.transformTree, rb.metadata)
+	oldSchema := rb.Schema()
+	newSchema := schema.NewSchemaFrom(rb.protoSchema, rb.transformTree, rb.metadata)
 
 	// Build a new record builder with the updated schema
 	// and transfer the dictionaries from the old record builder
 	// to the new one.
-	newRecBuilder := array.NewRecordBuilder(rb.allocator, s)
+	newRecBuilder := array.NewRecordBuilder(rb.allocator, newSchema)
 
 	// Note: dictionaries are no longer copied between schema changes as it can
 	// be very expensive when the number of reusable dictionary entries is not
@@ -274,7 +284,7 @@ func (rb *RecordBuilderExt) UpdateSchema() {
 
 	rb.recordBuilder.Release()
 	rb.recordBuilder = newRecBuilder
-	rb.schemaID = carrow.SchemaToID(s)
+	rb.schemaID = carrow.SchemaToID(newSchema)
 
 	rb.updateRequest.Reset()
 	rb.stats.RecordBuilderStats.SchemaUpdatesPerformed++
@@ -282,6 +292,9 @@ func (rb *RecordBuilderExt) UpdateSchema() {
 	if rb.stats.SchemaUpdates {
 		println("To =====>")
 		rb.ShowSchema()
+	}
+	if rb.observer != nil {
+		rb.observer.OnSchemaUpdate(rb.label, oldSchema, newSchema)
 	}
 }
 
