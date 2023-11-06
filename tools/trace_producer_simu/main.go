@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/apache/arrow/go/v12/arrow"
@@ -47,7 +49,7 @@ func (o *SimObserver) OnRecord(arrow.Record, record_message.PayloadType) {}
 func (o *SimObserver) OnNewField(recordName string, fieldPath string) {
 	fmt.Printf("OnNewField: %s.%s\n", recordName, fieldPath)
 	if o.Label != "" {
-		o.Label += ", "
+		o.Label += "; "
 	}
 	o.Label = o.Label + fmt.Sprintf("Add %s.%s", recordName, fieldPath)
 }
@@ -55,35 +57,35 @@ func (o *SimObserver) OnNewField(recordName string, fieldPath string) {
 func (o *SimObserver) OnDictionaryUpgrade(recordName string, fieldPath string, prevIndexType, newIndexType arrow.DataType, card, total uint64) {
 	fmt.Printf("OnDictionaryUpgrade: %s.%s (%s -> %s, card: %d, total: %d)\n", recordName, fieldPath, prevIndexType, newIndexType, card, total)
 	if o.Label != "" {
-		o.Label += ", "
+		o.Label += "; "
 	}
 	o.Label = o.Label + fmt.Sprintf("DictUpgrade %s.%s", recordName, fieldPath)
 }
 func (o *SimObserver) OnDictionaryOverflow(recordName string, fieldPath string, card, total uint64) {
 	fmt.Printf("OnDictionaryOverflow: %s.%s (card: %d, total: %d, ratio: %f)\n", recordName, fieldPath, card, total, float64(card)/float64(total))
 	if o.Label != "" {
-		o.Label += ", "
+		o.Label += "; "
 	}
 	o.Label = o.Label + fmt.Sprintf("DictOverflow %s.%s", recordName, fieldPath)
 }
 func (o *SimObserver) OnSchemaUpdate(recordName string, old, new *arrow.Schema) {
 	fmt.Printf("OnSchemaUpdate: %s\n", recordName)
 	if o.Label != "" {
-		o.Label += ", "
+		o.Label += "; "
 	}
 	o.Label = o.Label + "Schema Update"
 }
 func (o *SimObserver) OnDictionaryReset(recordName string, fieldPath string, indexType arrow.DataType, card, total uint64) {
 	fmt.Printf("OnDictionaryReset: %s.%s (type: %s, card: %d, total: %d, ratio: %f)\n", recordName, fieldPath, indexType, card, total, float64(card)/float64(total))
 	if o.Label != "" {
-		o.Label += ", "
+		o.Label += "; "
 	}
 	o.Label = o.Label + fmt.Sprintf("DictReset %s.%s", recordName, fieldPath)
 }
 func (o *SimObserver) OnMetadataUpdate(recordName, metadataKey string) {
 	fmt.Printf("OnMetadataUpdate: %s (metadata-key: %s)\n", recordName, metadataKey)
 	if o.Label != "" {
-		o.Label += ", "
+		o.Label += "; "
 	}
 	o.Label = o.Label + fmt.Sprintf("MetadataUpdate %s key=%s", recordName, metadataKey)
 }
@@ -92,8 +94,8 @@ func (o *SimObserver) OnMetadataUpdate(recordName, metadataKey string) {
 // configurations of batch size and stream duration.
 func main() {
 	// General flags
-	batchSize := flag.Int("batch-size", 10000, "Batch size")
-	maxBatchesPerStream := flag.Int("max-batches-per-stream", 10, "Maximum number of batches per stream")
+	batchSizeList := flag.String("batch-size", "10000", "Batch size (use a comma separated list to specify multiple batch sizes)")
+	maxBatchesPerStreamList := flag.String("max-batches-per-stream", "10", "Maximum number of batches per stream (use a comma separated list to specify multiple values)")
 	verbose := flag.Bool("verbose", false, "Verbose mode")
 	output := flag.String("output", "compression-efficiency-gain.csv", "Output file")
 	dictResetThreshold := flag.Float64("dict-reset-threshold", 0.3, "Dictionary reset threshold (0.3 by default)")
@@ -124,6 +126,9 @@ func main() {
 		os.Exit(0)
 	}
 
+	batchSizeArray := ToIntList(batchSizeList, "batch size")
+	maxBatchesPerStreamArray := ToIntList(maxBatchesPerStreamList, "max batches per stream")
+
 	// Define default input file
 	inputFiles := flag.Args()
 	if len(inputFiles) == 0 {
@@ -136,7 +141,7 @@ func main() {
 		panic(err)
 	}
 	defer func() { _ = fOutput.Close() }()
-	if _, err = fOutput.WriteString("Batch ID\tCompression Efficiency Gain (%%)\tEvents\n"); err != nil {
+	if _, err = fOutput.WriteString("Batch ID, Number of spans, Compression Efficiency Gain (%), Batch size, Max batches per stream, Dictionary Reset Threshold, OTLP batch uncompressed size, OTLP batch compressed size, OTel Arrow batch uncompressed size, OTel Arrow batch compressed size, Schema Events\n"); err != nil {
 		panic(err)
 	}
 
@@ -186,21 +191,46 @@ func main() {
 		commonOptions = append(commonOptions, config.WithDumpRecordRows(arrowpb.ArrowPayloadType_SPAN_LINK_ATTRS.String(), *spanLinkAttrs))
 	}
 
-	if *checkMemoryLeak {
-		// Create a closure having the signature of a test function.
-		run := func(t *testing.T) {
-			Run(t, dictResetThreshold, commonOptions, inputFiles, batchSize, maxBatchesPerStream, verbose, err, fOutput)
-		}
+	maxSpanCount := 250 * 10000
+	for _, batchSize := range batchSizeArray {
+		for _, maxBatchesPerStream := range maxBatchesPerStreamArray {
+			println("--------------------------------------------------")
+			fmt.Printf("Batch size: %d, Max batches per stream: %d\n", batchSize, maxBatchesPerStream)
+			if *checkMemoryLeak {
+				// Create a closure having the signature of a test function.
+				run := func(t *testing.T) {
+					Run(t, maxSpanCount, *dictResetThreshold, commonOptions, inputFiles, batchSize, maxBatchesPerStream, *verbose, err, fOutput)
+				}
 
-		testing.Main(matchString, []testing.InternalTest{
-			{"Test", run},
-		}, nil, nil)
-	} else {
-		Run(nil, dictResetThreshold, commonOptions, inputFiles, batchSize, maxBatchesPerStream, verbose, err, fOutput)
+				testing.Main(matchString, []testing.InternalTest{
+					{"Test", run},
+				}, nil, nil)
+			} else {
+				Run(nil, maxSpanCount, *dictResetThreshold, commonOptions, inputFiles, batchSize, maxBatchesPerStream, *verbose, err, fOutput)
+			}
+		}
 	}
 }
 
-func Run(t *testing.T, dictResetThreshold *float64, commonOptions []config.Option, inputFiles []string, batchSize *int, maxBatchesPerStream *int, verbose *bool, err error, fOutput *os.File) {
+func ToIntList(value *string, elemType string) []int {
+	var intArray []int
+	elems := strings.Split(*value, ",")
+	for _, elem := range elems {
+		if elem != "" {
+			intValue, err := strconv.Atoi(elem)
+			if err != nil {
+				panic(fmt.Sprintf("Each %s must be a valid integer: %s", elemType, err.Error()))
+			}
+			if intValue <= 0 {
+				panic(fmt.Sprintf("Each %s must be greater than 0", elemType))
+			}
+			intArray = append(intArray, intValue)
+		}
+	}
+	return intArray
+}
+
+func Run(t *testing.T, maxSpanCount int, dictResetThreshold float64, commonOptions []config.Option, inputFiles []string, batchSize int, maxBatchesPerStream int, verbose bool, err error, fOutput *os.File) {
 	// Initialize the allocator based the memory leak check flag
 	// If t is nil -> standard Go allocator
 	// If t is not nil -> checked allocator
@@ -222,7 +252,7 @@ func Run(t *testing.T, dictResetThreshold *float64, commonOptions []config.Optio
 	options := append([]config.Option{
 		config.WithZstd(),
 		config.WithObserver(simObserver),
-		config.WithDictResetThreshold(*dictResetThreshold),
+		config.WithDictResetThreshold(dictResetThreshold),
 		config.WithAllocator(pool),
 	}, commonOptions...)
 
@@ -237,35 +267,40 @@ func Run(t *testing.T, dictResetThreshold *float64, commonOptions []config.Optio
 	currentCegIndex := 0
 	cegCount := 0
 
+	batchID := 0
+	spanCount := 0
+
+Loop:
 	for i := range inputFiles {
-		ds := dataset.NewRealTraceDataset(inputFiles[i], benchmark.CompressionTypeZstd, "json", []string{"trace_id"})
+		//ds := dataset.NewRealTraceDataset(inputFiles[i], benchmark.CompressionTypeZstd, "json", []string{"trace_id"})
+		ds := dataset.NewRealTraceDataset(inputFiles[i], "", "proto", []string{"trace_id"})
 		fmt.Printf("Dataset '%s' loaded %d spans\n", inputFiles[i], ds.Len())
 
-		maxBatchCount := uint64(math.Ceil(float64(ds.Len()) / float64(*batchSize)))
+		maxBatchCount := uint64(math.Ceil(float64(ds.Len()) / float64(batchSize)))
 		startAt := 0
 
 		for batchNum := uint64(0); batchNum < maxBatchCount; batchNum++ {
-			if batchesPerStreamCount >= *maxBatchesPerStream || otlpProfile == nil || otelArrowProfile == nil {
-				otlpProfile = OtlpStream(otlpProfile, *batchSize)
-				otelArrowProfile = OtelArrowStream(otelArrowProfile, *batchSize, simObserver, options...)
+			if batchesPerStreamCount >= maxBatchesPerStream || otlpProfile == nil || otelArrowProfile == nil {
+				otlpProfile = OtlpStream(otlpProfile, batchSize)
+				otelArrowProfile = OtelArrowStream(otelArrowProfile, batchSize, simObserver, options...)
 				batchesPerStreamCount = 0
 			}
 			otlpProfile.SetDataset(ds)
 			otelArrowProfile.SetDataset(ds)
-			correctedBatchSize := Min(otelArrowProfile.DatasetSize()-startAt, *batchSize)
+			correctedBatchSize := Min(otelArrowProfile.DatasetSize()-startAt, batchSize)
 
 			// OTLP
-			otlpUncompressed, otlpCompressed := ProcessBatch(otlpProfile, startAt, correctedBatchSize, *verbose)
+			otlpUncompressed, otlpCompressed := ProcessBatch(otlpProfile, startAt, correctedBatchSize, verbose)
 			otlpProfile.Clear()
 
 			// OTel Arrow Protocol
-			otelArrowUncompressed, otelArrowCompressed := ProcessBatch(otelArrowProfile, startAt, correctedBatchSize, *verbose)
+			otelArrowUncompressed, otelArrowCompressed := ProcessBatch(otelArrowProfile, startAt, correctedBatchSize, verbose)
 			otelArrowProfile.Clear()
 
 			// Comparison OTLP vs OTel Arrow Protocol
 			otlpCompressionImprovement := float64(otlpUncompressed) / float64(otlpCompressed)
 			otelArrowCompressionImprovement := float64(otlpUncompressed) / float64(otelArrowCompressed)
-			if *verbose {
+			if verbose {
 				fmt.Printf("OTel_ARROW uncompressed message is %f smaller\n", float64(otlpUncompressed)/float64(otelArrowUncompressed))
 				fmt.Printf("OTel_ARROW compressed message is   %f smaller\n", float64(otlpCompressed)/float64(otelArrowCompressed))
 				if otelArrowCompressionImprovement > otlpCompressionImprovement {
@@ -291,13 +326,21 @@ func Run(t *testing.T, dictResetThreshold *float64, commonOptions []config.Optio
 				}
 				cegMovingAvg /= float64(cegWindowSize)
 			}
-			fmt.Printf("OTel Arrow Compression Efficiency Gain(CEG)=%5.2f%%, CEG moving avg=%5.2f%% (batch: #%06d)\n", ceg, cegMovingAvg, batchesPerStreamCount)
-			if _, err = fOutput.WriteString(fmt.Sprintf("%d\t%f\t%s\n", batchesPerStreamCount, ceg, simObserver.Label)); err != nil {
+
+			spanCount += correctedBatchSize
+
+			fmt.Printf("OTel Arrow Compression Efficiency Gain(CEG)=%5.2f%%, CEG moving avg=%5.2f%% (batch: #%06d)\n", ceg, cegMovingAvg, batchID)
+			if _, err = fOutput.WriteString(fmt.Sprintf("%d, %d, %f, %d, %d, %f, %d, %d, %d, %d, %q\n", batchID, spanCount, ceg, batchSize, maxBatchesPerStream, dictResetThreshold, otlpUncompressed, otlpCompressed, otelArrowUncompressed, otelArrowCompressed, simObserver.Label)); err != nil {
 				panic(err)
 			}
 			simObserver.Label = ""
-			startAt += *batchSize
+			startAt += batchSize
 			batchesPerStreamCount++
+			batchID++
+
+			if spanCount >= maxSpanCount {
+				break Loop
+			}
 		}
 	}
 
