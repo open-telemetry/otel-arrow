@@ -16,6 +16,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
+	"github.com/open-telemetry/otel-arrow/collector/compression/zstd"
 	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/arrow"
 	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/logs"
@@ -68,6 +69,9 @@ func newOtlpReceiver(cfg *Config, set receiver.CreateSettings) (*otlpReceiver, e
 	}
 	if cfg.HTTP != nil {
 		r.httpMux = http.NewServeMux()
+	}
+	if cfg.Arrow != nil {
+		zstd.SetDecoderConfig(cfg.Arrow.Zstd)
 	}
 
 	r.obsrepGRPC, err = receiverhelper.NewObsReport(receiverhelper.ObsReportSettings{

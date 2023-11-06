@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/open-telemetry/otel-arrow/collector/compression/zstd"
 	"github.com/open-telemetry/otel-arrow/collector/testutil"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/configcompression"
@@ -39,6 +40,7 @@ func TestCreateDefaultConfig(t *testing.T) {
 		NumStreams:         runtime.NumCPU(),
 		MaxStreamLifetime:  time.Hour,
 		PayloadCompression: "",
+		Zstd:               zstd.DefaultEncoderConfig(),
 	})
 }
 

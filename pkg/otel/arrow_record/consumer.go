@@ -417,7 +417,7 @@ func (c *Consumer) Close() error {
 		c.memoryCounter.Add(context.Background(), -int64(c.allocator.Inuse()), c.metricOpts()...)
 
 		// To help diagnose leaks, e.g.,
-		fmt.Println("consumer still holding", c.allocator.Inuse(), "bytes")
+		// fmt.Println("consumer still holding", c.allocator.Inuse(), "bytes")
 	}
 	return nil
 }

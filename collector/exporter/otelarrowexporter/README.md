@@ -171,13 +171,56 @@ of data being returned to the exporter will be instrumented:
 - `exporter_recv`: uncompressed bytes received, prior to compression
 - `exporter_recv_wire`: compressed bytes received, on the wire.
 
-### Experimental Configuration
+### Compression Configuration
+
+The exporter supports configuring Zstd compression at both the gRPC
+and the Arrow level.  The exporter metrics described above will be
+correct in either case.  The default settings are subject to change as
+we gain experience.
+
+The gRPC-level Zstd compression can be configured, however there is an
+important caveat.  The gRPC-Go library requires that compressor
+implementations be registered statically.  These libraries use
+compressors named `zstdarrow1`, `zstdarrow2`, ..., `zstdarrow10`,
+supporting 10 configurable compression levels.  Note, however that
+these configurations are static and only one unique configuration is
+possible per level.  It is possible to configure multiple OTel-Arrow
+exporters with different Zstd configuration simply by using distinct
+levels.
+
+Under `arrow`, the `zstd` sub-configuration has the following fields:
+
+- `level`: in the range 1-10 determines a number of defaults (default 5)
+- `window_size_mib`: size of the Zstd window in MiB, 0 indicates to determine based on level (default 0)
+- `concurrency`: controls background CPU used for compression, 0 indicates to let `zstd` library decide (default 1)
 
 The exporter supports configuring compression at the [Arrow
 columnar-protocol
 level](https://arrow.apache.org/docs/format/Columnar.html#format-ipc).
 
 - `payload_compression`: compression applied at the Arrow IPC level, "none" by default, "zstd" supported.
+
+Compression settings at the Arrow IPC level cannot be further configured.
+
+For example, two exporters may be configured with multiple zstd
+configurations, provided they use different levels:
+
+```yaml
+exporters:
+  otelarrow/best:
+    compression: zstd  # describes gRPC-level compression (default "zstd")
+    arrow:
+      zstd:
+        level: 10      # describes gRPC-level compression level (default 5)
+      payload_compression: zstd  # describes Arrow-IPC compression (default "none")
+  otelarrow/fastest:
+    compression: zstd
+    arrow:
+      zstd:
+        level: 1       # 1 is the "fastest" compression level
+```
+
+### Experimental Configuration
 
 The exporter uses the signal-specific Arrow stream methods (i.e.,
 `ArrowTraces`, `ArrowLogs`, and `ArrowMetrics`) by default.  There is
