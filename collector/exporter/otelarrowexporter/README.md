@@ -208,16 +208,16 @@ configurations, provided they use different levels:
 ```yaml
 exporters:
   otelarrow/best:
-	compression: zstd  # describes gRPC-level compression (default "zstd")
+    compression: zstd  # describes gRPC-level compression (default "zstd")
     arrow:
-	  zstd:
-	    level: 10      # describes gRPC-level compression level (default 5)
-	  payload_compression: zstd  # describes Arrow-IPC compression (default "none")
+      zstd:
+        level: 10      # describes gRPC-level compression level (default 5)
+      payload_compression: zstd  # describes Arrow-IPC compression (default "none")
   otelarrow/fastest:
-	compression: zstd
+    compression: zstd
     arrow:
-	  zstd:
-	    level: 1       # 1 is the "fastest" compression level
+      zstd:
+        level: 1       # 1 is the "fastest" compression level
 ```
 
 ### Experimental Configuration
