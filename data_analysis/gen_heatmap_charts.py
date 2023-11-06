@@ -45,7 +45,8 @@ plt.ylabel('Batch Size')
 # Add percentage signs to the annotations
 for text in plt.gca().texts:
     text.set_text(text.get_text() + "%")
-plt.show()
+#plt.show()
+plt.savefig('average_improvement_heatmap.png', bbox_inches='tight')
 
 # Side-by-side Heatmaps for Compressed Size
 # Define the function to create a side-by-side heatmap for the given dataset using a blue-to-yellow color scale without overlapping color bar
@@ -85,8 +86,8 @@ def create_side_by_side_heatmap(data):
 
     # Adjust layout
     plt.tight_layout(rect=[0, 0, .9, 1])
-
-    plt.show()
+    plt.savefig('side_by_side_heatmap.png', bbox_inches='tight')
+    # plt.show()
 
 # Call the function with the data
 create_side_by_side_heatmap(new_data)
