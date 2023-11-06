@@ -65,11 +65,6 @@ func createDefaultConfig() component.Config {
 			// PayloadCompression is off by default because gRPC
 			// compression is on by default, above.
 			PayloadCompression: "",
-
-			// @@@
-			// PayloadCompression is on by default in addition to gRPC-level
-			// compression because it leads to a substantial improvement.
-			// PayloadCompression: configcompression.Zstd,
 		},
 	}
 }

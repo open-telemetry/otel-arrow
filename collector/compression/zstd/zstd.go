@@ -27,23 +27,49 @@ const NamePrefix = "zstdarrow"
 type Level uint
 
 const (
+	// DefaultLevel is a reasonable balance of compression and cpu usage.
 	DefaultLevel Level = 5
-	MinLevel     Level = 1
-	MaxLevel     Level = 10
+	// MinLevel is fast and cheap.
+	MinLevel Level = 1
+	// MaxLevel is slow and expensive.
+	MaxLevel Level = 10
 )
 
 type EncoderConfig struct {
 	// Level is meaningful in the range [0, 10].  No invalid
-	// values, they all map into 4 default configurations.
-	Level         Level  `mapstructure:"level"`
+	// values, they all map into 4 default configurations.  (default: 5)
+	// See `zstdlib.WithEncoderLevel()`.
+	Level Level `mapstructure:"level"`
+	// WindowSizeMiB is a Zstd-library parameter that controls how
+	// much window of text is visible to the compressor at a time.
+	// It is the dominant factor that determines memory usage.
+	// If zero, the window size is determined by level.  (default: 0)
+	// See `zstdlib.WithWindowSize()`.
 	WindowSizeMiB uint32 `mapstructure:"window_size_mib"`
-	Concurrency   uint   `mapstructure:"concurrency"`
+	// Concurrency is a Zstd-library parameter that configures the
+	// use of background goroutines to improve compression speed.
+	// 0 means to let the library decide (it will use up to GOMAXPROCS),
+	// and 1 means to avoid background workers.  (default: 1)
+	// See `zstdlib.WithEncoderConcurrency()`.
+	Concurrency uint `mapstructure:"concurrency"`
 }
 
 type DecoderConfig struct {
-	Concurrency      uint   `mapstructure:"concurrency"`
-	MemoryLimitMiB   uint32 `mapstructure:"memory_limit_mib"`
+	// MemoryLimitMiB is a memory limit control for the decoder,
+	// as a way to limit overall memory use by Zstd.
+	// See `zstdlib.WithDecoderMaxMemory()`.
+	MemoryLimitMiB uint32 `mapstructure:"memory_limit_mib"`
+	// MaxWindowSizeMiB limits window sizes that can be configured
+	// in the corresponding encoder's `EncoderConfig.WindowSizeMiB`
+	// setting, as a way to control memory usage.
+	// See `zstdlib.WithDecoderMaxWindow()`.
 	MaxWindowSizeMiB uint32 `mapstructure:"max_window_size_mib"`
+	// Concurrency is a Zstd-library parameter that configures the
+	// use of background goroutines to improve decompression speed.
+	// 0 means to let the library decide (it will use up to GOMAXPROCS),
+	// and 1 means to avoid background workers.  (default: 1)
+	// See `zstdlib.WithDecoderConcurrency()`.
+	Concurrency uint `mapstructure:"concurrency"`
 }
 
 type encoder struct {
