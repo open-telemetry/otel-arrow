@@ -27,6 +27,7 @@ import (
 	"github.com/open-telemetry/otel-arrow/pkg/benchmark/dataset"
 	cfg "github.com/open-telemetry/otel-arrow/pkg/config"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
 )
 
 type MetricsProfileable struct {
@@ -42,7 +43,7 @@ type MetricsProfileable struct {
 	unaryRpcMode      bool
 	options           []cfg.Option
 
-	observer arrow_record.ProducerObserver
+	observer observer.ProducerObserver
 }
 
 func NewMetricsProfileable(tags []string, dataset dataset.MetricsDataset, config *benchmark.Config) *MetricsProfileable {
@@ -81,7 +82,7 @@ func (s *MetricsProfileable) EnableUnaryRpcMode() {
 	s.unaryRpcMode = true
 }
 
-func (s *MetricsProfileable) SetObserver(observer arrow_record.ProducerObserver) {
+func (s *MetricsProfileable) SetObserver(observer observer.ProducerObserver) {
 	s.observer = observer
 }
 

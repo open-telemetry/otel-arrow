@@ -24,6 +24,7 @@ import (
 
 	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
 	"github.com/open-telemetry/otel-arrow/pkg/record_message"
 )
@@ -68,92 +69,92 @@ type (
 	}
 )
 
-func NewRelatedData(cfg *Config, stats *stats.ProducerStats) (*RelatedData, error) {
+func NewRelatedData(cfg *Config, stats *stats.ProducerStats, observer observer.ProducerObserver) (*RelatedData, error) {
 	rrManager := carrow.NewRelatedRecordsManager(cfg.Global, stats)
 
 	resourceAttrsBuilder := rrManager.Declare(carrow.PayloadTypes.ResourceAttrs, carrow.PayloadTypes.Metrics, carrow.AttrsSchema16, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		return carrow.NewAttrs16BuilderWithEncoding(b, carrow.PayloadTypes.ResourceAttrs, cfg.Attrs.Resource)
-	})
+	}, observer)
 
 	scopeAttrsBuilder := rrManager.Declare(carrow.PayloadTypes.ScopeAttrs, carrow.PayloadTypes.Metrics, carrow.AttrsSchema16, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		return carrow.NewAttrs16BuilderWithEncoding(b, carrow.PayloadTypes.ScopeAttrs, cfg.Attrs.Scope)
-	})
+	}, observer)
 
 	numberDPBuilder := rrManager.Declare(carrow.PayloadTypes.NumberDataPoints, carrow.PayloadTypes.Metrics, DataPointSchema, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		return NewDataPointBuilder(b, carrow.PayloadTypes.NumberDataPoints, cfg.NumberDP)
-	})
+	}, observer)
 
 	numberDPAttrsBuilder := rrManager.Declare(carrow.PayloadTypes.NumberDataPointAttrs, carrow.PayloadTypes.NumberDataPoints, carrow.DeltaEncodedAttrsSchema32, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		nab := carrow.NewAttrs32BuilderWithEncoding(b, carrow.PayloadTypes.NumberDataPointAttrs, cfg.Attrs.NumberDataPoint)
 		numberDPBuilder.(*DataPointBuilder).SetAttributesAccumulator(nab.Accumulator())
 		return nab
-	})
+	}, observer)
 
 	numberDPExemplarBuilder := rrManager.Declare(carrow.PayloadTypes.NumberDataPointExemplars, carrow.PayloadTypes.NumberDataPoints, ExemplarSchema, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		eb := NewExemplarBuilder(b, carrow.PayloadTypes.NumberDataPointExemplars, cfg.NumberDataPointExemplar)
 		numberDPBuilder.(*DataPointBuilder).SetExemplarAccumulator(eb.Accumulator())
 		return eb
-	})
+	}, observer)
 
 	numberDPExemplarAttrsBuilder := rrManager.Declare(carrow.PayloadTypes.NumberDataPointExemplarAttrs, carrow.PayloadTypes.NumberDataPointExemplars, carrow.DeltaEncodedAttrsSchema32, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		eb := carrow.NewAttrs32BuilderWithEncoding(b, carrow.PayloadTypes.NumberDataPointExemplarAttrs, cfg.Attrs.NumberDataPointExemplar)
 		numberDPExemplarBuilder.(*ExemplarBuilder).SetAttributesAccumulator(eb.Accumulator())
 		return eb
-	})
+	}, observer)
 
 	summaryDPBuilder := rrManager.Declare(carrow.PayloadTypes.Summary, carrow.PayloadTypes.Metrics, SummaryDataPointSchema, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		return NewSummaryDataPointBuilder(b, cfg.Summary)
-	})
+	}, observer)
 
 	summaryAttrsBuilder := rrManager.Declare(carrow.PayloadTypes.SummaryAttrs, carrow.PayloadTypes.Summary, carrow.DeltaEncodedAttrsSchema32, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		sab := carrow.NewAttrs32BuilderWithEncoding(b, carrow.PayloadTypes.SummaryAttrs, cfg.Attrs.Summary)
 		summaryDPBuilder.(*SummaryDataPointBuilder).SetAttributesAccumulator(sab.Accumulator())
 		return sab
-	})
+	}, observer)
 
 	histogramDPBuilder := rrManager.Declare(carrow.PayloadTypes.Histogram, carrow.PayloadTypes.Metrics, HistogramDataPointSchema, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		return NewHistogramDataPointBuilder(b, cfg.Histogram)
-	})
+	}, observer)
 
 	histogramAttrsBuilder := rrManager.Declare(carrow.PayloadTypes.HistogramAttrs, carrow.PayloadTypes.Histogram, carrow.DeltaEncodedAttrsSchema32, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		hab := carrow.NewAttrs32BuilderWithEncoding(b, carrow.PayloadTypes.HistogramAttrs, cfg.Attrs.Histogram)
 		histogramDPBuilder.(*HistogramDataPointBuilder).SetAttributesAccumulator(hab.Accumulator())
 		return hab
-	})
+	}, observer)
 
 	histogramExemplarBuilder := rrManager.Declare(carrow.PayloadTypes.HistogramExemplars, carrow.PayloadTypes.Histogram, ExemplarSchema, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		eb := NewExemplarBuilder(b, carrow.PayloadTypes.HistogramExemplars, cfg.HistogramExemplar)
 		histogramDPBuilder.(*HistogramDataPointBuilder).SetExemplarAccumulator(eb.Accumulator())
 		return eb
-	})
+	}, observer)
 
 	histogramExemplarAttrsBuilder := rrManager.Declare(carrow.PayloadTypes.HistogramExemplarAttrs, carrow.PayloadTypes.HistogramExemplars, carrow.DeltaEncodedAttrsSchema32, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		eb := carrow.NewAttrs32BuilderWithEncoding(b, carrow.PayloadTypes.HistogramExemplarAttrs, cfg.Attrs.HistogramExemplar)
 		histogramExemplarBuilder.(*ExemplarBuilder).SetAttributesAccumulator(eb.Accumulator())
 		return eb
-	})
+	}, observer)
 
 	ehistogramDPBuilder := rrManager.Declare(carrow.PayloadTypes.ExpHistogram, carrow.PayloadTypes.Metrics, EHistogramDataPointSchema, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		return NewEHistogramDataPointBuilder(b, cfg.ExpHistogram)
-	})
+	}, observer)
 
 	ehistogramAttrsBuilder := rrManager.Declare(carrow.PayloadTypes.ExpHistogramAttrs, carrow.PayloadTypes.ExpHistogram, carrow.DeltaEncodedAttrsSchema32, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		hab := carrow.NewAttrs32BuilderWithEncoding(b, carrow.PayloadTypes.ExpHistogramAttrs, cfg.Attrs.ExpHistogram)
 		ehistogramDPBuilder.(*EHistogramDataPointBuilder).SetAttributesAccumulator(hab.Accumulator())
 		return hab
-	})
+	}, observer)
 
 	ehistogramExemplarBuilder := rrManager.Declare(carrow.PayloadTypes.ExpHistogramExemplars, carrow.PayloadTypes.ExpHistogram, ExemplarSchema, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		eb := NewExemplarBuilder(b, carrow.PayloadTypes.ExpHistogramExemplars, cfg.HistogramExemplar)
 		ehistogramDPBuilder.(*EHistogramDataPointBuilder).SetExemplarAccumulator(eb.Accumulator())
 		return eb
-	})
+	}, observer)
 
 	ehistogramExemplarAttrsBuilder := rrManager.Declare(carrow.PayloadTypes.ExpHistogramExemplarAttrs, carrow.PayloadTypes.ExpHistogramExemplars, carrow.DeltaEncodedAttrsSchema32, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		eb := carrow.NewAttrs32BuilderWithEncoding(b, carrow.PayloadTypes.ExpHistogramExemplarAttrs, cfg.Attrs.HistogramExemplar)
 		ehistogramExemplarBuilder.(*ExemplarBuilder).SetAttributesAccumulator(eb.Accumulator())
 		return eb
-	})
+	}, observer)
 
 	return &RelatedData{
 		relatedRecordsManager: rrManager,

@@ -23,6 +23,8 @@ import (
 	"math"
 
 	"github.com/apache/arrow/go/v12/arrow/memory"
+
+	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
 )
 
 type OrderSpanBy int8
@@ -103,6 +105,14 @@ type Config struct {
 	// LimitIndexSize sets the maximum size of a dictionary index
 	// before it is no longer encoded as a dictionary.
 	LimitIndexSize uint64
+	// DictResetThreshold specifies the ratio under which a dictionary overflow
+	// is converted to a dictionary reset. This ratio is calculated as:
+	//   (# of unique values in the dict) / (# of values inserted in the dict.)
+	// This ratio characterizes the efficiency of the dictionary. Smaller is the
+	// ratio, more efficient is the dictionary in term compression ratio because
+	// it means that the dictionary entries are reused more often.
+	DictResetThreshold float64
+
 	// Zstd enables the use of ZSTD compression for IPC messages.
 	Zstd bool // Use IPC ZSTD compression
 
@@ -128,6 +138,9 @@ type Config struct {
 	// OrderAttrs32By specifies how to order attributes in a batch
 	// (with 32bits attribute ID).
 	OrderAttrs32By OrderAttrs32By
+
+	// Observer is the optional observer to use for the producer.
+	Observer observer.ProducerObserver
 }
 
 type Option func(*Config)
@@ -140,13 +153,19 @@ type Option func(*Config)
 //   - Zstd: true
 func DefaultConfig() *Config {
 	return &Config{
-		Pool:          memory.NewGoAllocator(),
+		Pool: memory.NewGoAllocator(),
+
 		InitIndexSize: math.MaxUint16,
 		// The default dictionary index limit is set to 2^16 - 1
 		// to keep the overall memory usage of the encoder and decoder low.
 		LimitIndexSize: math.MaxUint16,
-		SchemaStats:    false,
-		Zstd:           true,
+		// The default dictionary reset threshold is set to 0.3 based on
+		// empirical observations. I suggest to run more controlled experiments
+		// to find a more optimal value for the majority of workloads.
+		DictResetThreshold: 0.3,
+
+		SchemaStats: false,
+		Zstd:        true,
 
 		OrderSpanBy:    OrderSpanByNameTraceID,
 		OrderAttrs16By: OrderAttrs16ByTypeKeyValueParentId,
@@ -305,5 +324,22 @@ func WithOrderAttrs32By(orderAttrs32By OrderAttrs32By) Option {
 func WithOrderAttrs16By(orderAttrs16By OrderAttrs16By) Option {
 	return func(cfg *Config) {
 		cfg.OrderAttrs16By = orderAttrs16By
+	}
+}
+
+// WithObserver sets the optional observer to use for the producer.
+func WithObserver(observer observer.ProducerObserver) Option {
+	return func(cfg *Config) {
+		cfg.Observer = observer
+	}
+}
+
+// WithDictResetThreshold sets the ratio under which a dictionary overflow
+// is converted to a dictionary reset. This ratio is calculated as:
+//
+//	(# of unique values in the dict) / (# of values inserted in the dict.)
+func WithDictResetThreshold(dictResetThreshold float64) Option {
+	return func(cfg *Config) {
+		cfg.DictResetThreshold = dictResetThreshold
 	}
 }

@@ -36,13 +36,13 @@ func TestEmptyTrace(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
 
 	for {
-		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats())
+		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats(), nil)
 		require.NoError(t, err)
 		defer b.Release()
 
@@ -69,13 +69,13 @@ func TestEmptyResource(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
 
 	for {
-		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats())
+		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats(), nil)
 		require.NoError(t, err)
 		defer b.Release()
 
@@ -105,13 +105,13 @@ func TestEmptyResourceAttribute(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
 
 	for {
-		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats())
+		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats(), nil)
 		require.NoError(t, err)
 		defer b.Release()
 
@@ -142,13 +142,13 @@ func TestEmptyScopeSpan(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
 
 	for {
-		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats())
+		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats(), nil)
 		require.NoError(t, err)
 		defer b.Release()
 
@@ -179,13 +179,13 @@ func TestEmptyScope(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
 
 	for {
-		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats())
+		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats(), nil)
 		require.NoError(t, err)
 		defer b.Release()
 
@@ -217,13 +217,13 @@ func TestEmptyScopeAttribute(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
 
 	for {
-		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats())
+		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats(), nil)
 		require.NoError(t, err)
 		defer b.Release()
 
@@ -256,13 +256,13 @@ func TestEmptySpans(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
 
 	for {
-		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats())
+		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats(), nil)
 		require.NoError(t, err)
 		defer b.Release()
 
@@ -293,13 +293,13 @@ func TestEmptySpanAttribute(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
 
 	for {
-		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats())
+		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats(), nil)
 		require.NoError(t, err)
 		defer b.Release()
 
@@ -332,13 +332,13 @@ func TestEmptySpanStatus(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
 
 	for {
-		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats())
+		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats(), nil)
 		require.NoError(t, err)
 		defer b.Release()
 
@@ -371,13 +371,13 @@ func TestEmptySpanLink(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
 
 	for {
-		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats())
+		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats(), nil)
 		require.NoError(t, err)
 		defer b.Release()
 
@@ -410,13 +410,13 @@ func TestEmptySpanEvent(t *testing.T) {
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats)
+	rBuilder := builder.NewRecordBuilderExt(pool, TracesSchema, DefaultDictConfig, producerStats, nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
 
 	for {
-		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats())
+		b, err := NewTracesBuilder(rBuilder, DefaultConfig(), stats.NewProducerStats(), nil)
 		require.NoError(t, err)
 		defer b.Release()
 

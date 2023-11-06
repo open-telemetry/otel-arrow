@@ -39,6 +39,11 @@ var (
 // a given index type.
 // If the index type is nil, the dictionary is downgraded to its value type.
 type DictionaryField struct {
+	// Configuration for this dictionary.
+	// This configuration could be shared between multiple dictionaries.
+	config *cfg.Dictionary
+
+	// Path of the dictionary field.
 	path string
 
 	// Dictionary ID
@@ -55,9 +60,23 @@ type DictionaryField struct {
 	// cardinality of the dictionary used to determine dictionary overflow
 	cardinality uint64
 
-	indexMaxCard []uint64
-	indexTypes   []arrow.DataType
+	// The following index defines which index type and max cardinality is
+	// currently used. Each time the cardinality is updated, the index is
+	// index type is reevaluated to determine if the new cardinality exceeds
+	// the max cardinality of the current index type. If it does, the index
+	// is incremented until the max cardinality of the new index type is
+	// greater than the current cardinality.
+	// When the cardinality exceeds the max cardinality of the last index
+	// type, the dictionary is either reset or overflowed depending on the
+	// ratio between the cardinality and the cumulative total.
 	currentIndex int
+	// The different max cardinalities used for this column. This slice is
+	// initialized based on the min and max cardinalities defined in the
+	// dictionary configuration.
+	indexMaxCard []uint64
+	// The different index types used for this column aligned with the
+	// indexMaxCard slice.
+	indexTypes []arrow.DataType
 
 	schemaUpdateRequest *update.SchemaUpdateRequest
 	events              *events.Events
@@ -71,6 +90,7 @@ func NewDictionaryField(
 	events *events.Events,
 ) *DictionaryField {
 	df := DictionaryField{
+		config:              config,
 		path:                path,
 		DictID:              dictID,
 		cardinality:         0,
@@ -96,14 +116,23 @@ func (t *DictionaryField) SetCardinality(card uint64, stats *stats.RecordBuilder
 	t.updateIndexType(stats)
 }
 
+// Path returns the path of the dictionary field.
+func (t *DictionaryField) Path() string {
+	return t.path
+}
+
+// Cardinality returns the cardinality of the dictionary field.
 func (t *DictionaryField) Cardinality() uint64 {
 	return t.cardinality
 }
 
+// CumulativeTotal returns the number of values inserted in the corresponding
+// column since its creation.
 func (t *DictionaryField) CumulativeTotal() uint64 {
 	return t.cumulativeTotal
 }
 
+// IndexType returns the index type of the column.
 func (t *DictionaryField) IndexType() arrow.DataType {
 	if t.indexTypes == nil {
 		return nil
@@ -156,23 +185,32 @@ func (t *DictionaryField) updateIndexType(stats *stats.RecordBuilderStats) {
 		return
 	}
 
+	prevIndexType := t.IndexType()
 	currentIndex := t.currentIndex
 
 	for t.currentIndex < len(t.indexTypes) && t.cardinality > t.indexMaxCard[t.currentIndex] {
 		t.currentIndex++
 	}
 	if t.currentIndex >= len(t.indexTypes) {
-		t.indexTypes = nil
-		t.indexMaxCard = nil
-		t.currentIndex = 0
-		t.schemaUpdateRequest.Inc()
-		t.events.DictionariesWithOverflow[t.path] = true
-		stats.DictionaryOverflowDetected++
+		ratio := float64(t.cardinality) / float64(t.cumulativeTotal)
+		if ratio < t.config.ResetThreshold {
+			t.currentIndex = len(t.indexTypes) - 1
+			t.schemaUpdateRequest.Inc(&update.DictionaryResetEvent{FieldName: t.path, IndexType: t.IndexType(), Cardinality: t.cardinality, Total: t.cumulativeTotal})
+			t.cumulativeTotal = 0
+		} else {
+			t.indexTypes = nil
+			t.indexMaxCard = nil
+			t.currentIndex = 0
+			t.schemaUpdateRequest.Inc(&update.DictionaryOverflowEvent{FieldName: t.path, PrevIndexType: prevIndexType, NewIndexType: t.IndexType(), Cardinality: t.cardinality, Total: t.cumulativeTotal})
+			t.events.DictionariesWithOverflow[t.path] = true
+			stats.DictionaryOverflowDetected++
+		}
 	} else if t.currentIndex != currentIndex {
-		t.schemaUpdateRequest.Inc()
+		t.schemaUpdateRequest.Inc(&update.DictionaryUpgradeEvent{FieldName: t.path, PrevIndexType: prevIndexType, NewIndexType: t.IndexType(), Cardinality: t.cardinality, Total: t.cumulativeTotal})
 		t.events.DictionariesIndexTypeChanged[t.path] = t.indexTypes[t.currentIndex].Name()
 		stats.DictionaryIndexTypeChanged++
 	}
+	return
 }
 
 func (t *DictionaryField) initIndices(config *cfg.Dictionary) {

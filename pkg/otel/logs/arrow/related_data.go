@@ -22,6 +22,7 @@ package arrow
 import (
 	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
 	"github.com/open-telemetry/otel-arrow/pkg/record_message"
 )
@@ -45,20 +46,20 @@ type (
 	}
 )
 
-func NewRelatedData(cfg *Config, stats *stats.ProducerStats) (*RelatedData, error) {
+func NewRelatedData(cfg *Config, stats *stats.ProducerStats, observer observer.ProducerObserver) (*RelatedData, error) {
 	rrManager := carrow.NewRelatedRecordsManager(cfg.Global, stats)
 
 	attrsResourceBuilder := rrManager.Declare(carrow.PayloadTypes.ResourceAttrs, carrow.PayloadTypes.Logs, carrow.AttrsSchema16, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		return carrow.NewAttrs16BuilderWithEncoding(b, carrow.PayloadTypes.ResourceAttrs, cfg.Attrs.Resource)
-	})
+	}, observer)
 
 	attrsScopeBuilder := rrManager.Declare(carrow.PayloadTypes.ScopeAttrs, carrow.PayloadTypes.Logs, carrow.AttrsSchema16, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		return carrow.NewAttrs16BuilderWithEncoding(b, carrow.PayloadTypes.ScopeAttrs, cfg.Attrs.Scope)
-	})
+	}, observer)
 
 	attrsLogRecordBuilder := rrManager.Declare(carrow.PayloadTypes.LogRecordAttrs, carrow.PayloadTypes.Logs, carrow.AttrsSchema16, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		return carrow.NewAttrs16BuilderWithEncoding(b, carrow.PayloadTypes.LogRecordAttrs, cfg.Attrs.Log)
-	})
+	}, observer)
 
 	return &RelatedData{
 		relatedRecordsManager: rrManager,

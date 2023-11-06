@@ -56,7 +56,7 @@ func TestDynAttrs(t *testing.T) {
 		assert.NoError(t, err)
 	}
 
-	record, err := dynAttrs.Build()
+	record, err := dynAttrs.Build(nil)
 	defer record.Release()
 	assert.NoError(t, err)
 
@@ -74,7 +74,7 @@ func TestDynAttrs(t *testing.T) {
 		assert.NoError(t, err)
 	}
 
-	record, err = dynAttrs.Build()
+	record, err = dynAttrs.Build(nil)
 	defer record.Release()
 	assert.NoError(t, err)
 
@@ -90,7 +90,7 @@ func TestDynAttrs(t *testing.T) {
 		assert.NoError(t, err)
 	}
 
-	record, err = dynAttrs.Build()
+	record, err = dynAttrs.Build(nil)
 	defer record.Release()
 	assert.NoError(t, err)
 

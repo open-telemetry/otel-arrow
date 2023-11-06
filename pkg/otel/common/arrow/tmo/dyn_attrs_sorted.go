@@ -30,6 +30,7 @@ import (
 
 	arrow2 "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
 )
 
 type (
@@ -214,7 +215,7 @@ func (b *DynAttrsBuilder) IsEmpty() bool {
 	return len(b.parentIDColumn.values) == 0
 }
 
-func (b *DynAttrsBuilder) Build() (arrow.Record, error) {
+func (b *DynAttrsBuilder) Build(observer observer.ProducerObserver) (arrow.Record, error) {
 	if b.newColumn {
 		b.sortColumns()
 		b.createBuilder()

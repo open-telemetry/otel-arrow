@@ -27,6 +27,7 @@ import (
 	"github.com/open-telemetry/otel-arrow/pkg/benchmark/dataset"
 	cfg "github.com/open-telemetry/otel-arrow/pkg/config"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
 )
 
 const OtelArrow = "OTel_ARROW"
@@ -45,7 +46,7 @@ type LogsProfileable struct {
 	stats               bool
 	logsProducerOptions []cfg.Option
 
-	observer arrow_record.ProducerObserver
+	observer observer.ProducerObserver
 }
 
 func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *benchmark.Config) *LogsProfileable {
@@ -77,7 +78,7 @@ func NewLogsProfileable(tags []string, dataset dataset.LogsDataset, config *benc
 	}
 }
 
-func (s *LogsProfileable) SetObserver(observer arrow_record.ProducerObserver) {
+func (s *LogsProfileable) SetObserver(observer observer.ProducerObserver) {
 	s.observer = observer
 }
 

@@ -303,10 +303,11 @@ func (sb *StructBuilder) Append(data interface{}, fieldAppenders func() error) (
 		return
 	}
 
-	if data != nil {
+	if data != nil && sb.updateRequest != nil {
 		// If the builder is nil, then the transform node is not optional.
 		sb.transformNode.RemoveOptional()
-		sb.updateRequest.Inc()
+		sb.updateRequest.Inc(&update.NewFieldEvent{FieldName: sb.transformNode.Path()})
+		sb.updateRequest = nil // No need to report this again.
 
 		err = fieldAppenders()
 	}

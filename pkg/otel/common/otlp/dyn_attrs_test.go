@@ -59,7 +59,7 @@ func TestDynAttrsFromRecord(t *testing.T) {
 		assert.NoError(t, err)
 	}
 
-	record, err := dynAttrs.Build()
+	record, err := dynAttrs.Build(nil)
 	assert.NoError(t, err)
 
 	store, err := DynAttrsStoreFromRecord(record)

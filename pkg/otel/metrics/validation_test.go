@@ -38,7 +38,7 @@ import (
 	"github.com/open-telemetry/otel-arrow/pkg/record_message"
 )
 
-var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16)
+var DefaultDictConfig = cfg.NewDictionary(math.MaxUint16, 0.0)
 
 // TestMetricsEncodingDecoding tests the conversion of OTLP metrics to Arrow and back to OTLP.
 // The initial OTLP metrics are generated from a synthetic dataset.
@@ -133,7 +133,7 @@ func CheckEncodeDecode(t *testing.T, expectedRequest pmetricotlp.ExportRequest) 
 	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	defer pool.AssertSize(t, 0)
 
-	rBuilder := builder.NewRecordBuilderExt(pool, ametrics.MetricsSchema, DefaultDictConfig, stats.NewProducerStats())
+	rBuilder := builder.NewRecordBuilderExt(pool, ametrics.MetricsSchema, DefaultDictConfig, stats.NewProducerStats(), nil)
 	defer rBuilder.Release()
 
 	var record arrow.Record
@@ -142,7 +142,7 @@ func CheckEncodeDecode(t *testing.T, expectedRequest pmetricotlp.ExportRequest) 
 	conf := config.DefaultConfig()
 
 	for {
-		lb, err := ametrics.NewMetricsBuilder(rBuilder, ametrics.NewConfig(conf), stats.NewProducerStats())
+		lb, err := ametrics.NewMetricsBuilder(rBuilder, ametrics.NewConfig(conf), stats.NewProducerStats(), nil)
 		require.NoError(t, err)
 		defer lb.Release()
 
@@ -189,7 +189,7 @@ func OneRoundOfMessUpArrowRecords(t *testing.T, expectedRequest pmetricotlp.Expo
 		pool.AssertSize(t, 0)
 	}()
 
-	rBuilder := builder.NewRecordBuilderExt(pool, ametrics.MetricsSchema, DefaultDictConfig, stats.NewProducerStats())
+	rBuilder := builder.NewRecordBuilderExt(pool, ametrics.MetricsSchema, DefaultDictConfig, stats.NewProducerStats(), nil)
 	defer func() {
 		rBuilder.Release()
 	}()
@@ -200,7 +200,7 @@ func OneRoundOfMessUpArrowRecords(t *testing.T, expectedRequest pmetricotlp.Expo
 	conf := config.DefaultConfig()
 
 	for {
-		lb, err := ametrics.NewMetricsBuilder(rBuilder, ametrics.NewConfig(conf), stats.NewProducerStats())
+		lb, err := ametrics.NewMetricsBuilder(rBuilder, ametrics.NewConfig(conf), stats.NewProducerStats(), nil)
 		require.NoError(t, err)
 		defer lb.Release()
 

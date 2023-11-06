@@ -24,6 +24,7 @@ import (
 
 	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/stats"
 	"github.com/open-telemetry/otel-arrow/pkg/record_message"
 )
@@ -52,40 +53,40 @@ type (
 	}
 )
 
-func NewRelatedData(cfg *Config, stats *stats.ProducerStats) (*RelatedData, error) {
+func NewRelatedData(cfg *Config, stats *stats.ProducerStats, observer observer.ProducerObserver) (*RelatedData, error) {
 	rrManager := carrow.NewRelatedRecordsManager(cfg.Global, stats)
 
 	attrsResourceBuilder := rrManager.Declare(carrow.PayloadTypes.ResourceAttrs, carrow.PayloadTypes.Spans, carrow.AttrsSchema16, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		return carrow.NewAttrs16BuilderWithEncoding(b, carrow.PayloadTypes.ResourceAttrs, cfg.Attrs.Resource)
-	})
+	}, observer)
 
 	attrsScopeBuilder := rrManager.Declare(carrow.PayloadTypes.ScopeAttrs, carrow.PayloadTypes.Spans, carrow.AttrsSchema16, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		return carrow.NewAttrs16BuilderWithEncoding(b, carrow.PayloadTypes.ScopeAttrs, cfg.Attrs.Scope)
-	})
+	}, observer)
 
 	attrsSpanBuilder := rrManager.Declare(carrow.PayloadTypes.SpanAttrs, carrow.PayloadTypes.Spans, carrow.AttrsSchema16, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		return carrow.NewAttrs16BuilderWithEncoding(b, carrow.PayloadTypes.SpanAttrs, cfg.Attrs.Span)
-	})
+	}, observer)
 
 	eventBuilder := rrManager.Declare(carrow.PayloadTypes.Event, carrow.PayloadTypes.Spans, EventSchema, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		return NewEventBuilder(b, cfg.Event)
-	})
+	}, observer)
 
 	linkBuilder := rrManager.Declare(carrow.PayloadTypes.Link, carrow.PayloadTypes.Spans, LinkSchema, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		return NewLinkBuilder(b, cfg.Link)
-	})
+	}, observer)
 
 	attrsEventBuilder := rrManager.Declare(carrow.PayloadTypes.EventAttrs, carrow.PayloadTypes.Event, carrow.AttrsSchema32, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		ab := carrow.NewAttrs32BuilderWithEncoding(b, carrow.PayloadTypes.EventAttrs, cfg.Attrs.Event)
 		eventBuilder.(*EventBuilder).SetAttributesAccumulator(ab.Accumulator())
 		return ab
-	})
+	}, observer)
 
 	attrsLinkBuilder := rrManager.Declare(carrow.PayloadTypes.LinkAttrs, carrow.PayloadTypes.Link, carrow.AttrsSchema32, func(b *builder.RecordBuilderExt) carrow.RelatedRecordBuilder {
 		ab := carrow.NewAttrs32BuilderWithEncoding(b, carrow.PayloadTypes.LinkAttrs, cfg.Attrs.Link)
 		linkBuilder.(*LinkBuilder).SetAttributesAccumulator(ab.Accumulator())
 		return ab
-	})
+	}, observer)
 
 	return &RelatedData{
 		relatedRecordsManager: rrManager,

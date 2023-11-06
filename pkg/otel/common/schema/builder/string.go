@@ -71,8 +71,11 @@ func (b *StringBuilder) Append(value string) {
 		return
 	}
 
-	b.transformNode.RemoveOptional()
-	b.updateRequest.Inc()
+	if b.updateRequest != nil {
+		b.transformNode.RemoveOptional()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
+	}
 }
 
 func (b *StringBuilder) AppendNonEmpty(value string) {
@@ -98,8 +101,9 @@ func (b *StringBuilder) AppendNonEmpty(value string) {
 		return
 	}
 
-	if value != "" {
+	if value != "" && b.updateRequest != nil {
 		b.transformNode.RemoveOptional()
-		b.updateRequest.Inc()
+		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
+		b.updateRequest = nil // No need to report this again.
 	}
 }

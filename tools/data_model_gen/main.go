@@ -105,7 +105,7 @@ func check(err error) {
 
 func VisitMetricsDataModel(domain *Domain) {
 	mainSchema := metrics.MetricsSchema
-	relatedData, err := metrics.NewRelatedData(metrics.DefaultConfig(), stats.NewProducerStats())
+	relatedData, err := metrics.NewRelatedData(metrics.DefaultConfig(), stats.NewProducerStats(), nil)
 	if err != nil {
 		panic(err)
 	}
@@ -121,7 +121,7 @@ func VisitMetricsDataModel(domain *Domain) {
 
 func VisitLogsDataModel(domain *Domain) {
 	mainSchema := logsarrow.LogsSchema
-	relatedData, err := logsarrow.NewRelatedData(logsarrow.DefaultConfig(), stats.NewProducerStats())
+	relatedData, err := logsarrow.NewRelatedData(logsarrow.DefaultConfig(), stats.NewProducerStats(), nil)
 	if err != nil {
 		panic(err)
 	}
@@ -137,7 +137,7 @@ func VisitLogsDataModel(domain *Domain) {
 
 func VisitTracesDataModel(domain *Domain) {
 	mainSchema := traces.TracesSchema
-	relatedData, err := traces.NewRelatedData(traces.DefaultConfig(), stats.NewProducerStats())
+	relatedData, err := traces.NewRelatedData(traces.DefaultConfig(), stats.NewProducerStats(), nil)
 	if err != nil {
 		panic(err)
 	}
