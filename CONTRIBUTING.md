@@ -1,4 +1,4 @@
-# Contributing to OTel Arrow
+# Contributing to the OpenTelemetry Protocol with Apache Arrow project
 
 We want to make contributing to this project as easy and transparent
 as possible.  Please see the OpenTelemetry
@@ -11,35 +11,32 @@ engage with the OpenTelemetry community.
 
 ### Repository background
 
-The OTel Arrow project was initially developed using the package name
-`github.com/f5/otel-arrow-adapter`.  At the time of the [OpenTelemetry
-donation](https://github.com/open-telemetry/community/issues/1332),
-this repository was an amalgamation of original code and code copied
-from the [OTel Arrow
-Collector](https://github.com/open-telemetry/otel-arrow-collector) as
-part of [our development
-process](https://github.com/open-telemetry/otel-arrow-collector/issues/48).
+The OpenTelemetry Protocol with Apache Arrow project was initially
+developed in the `github.com/f5/otel-arrow-adapter` repository.  At
+the time of the [OpenTelemetry donation][DONATION], this repository
+was a construction of original code and code copied from the
+[OpenTelemetry Protocol with Apache Arrow Collector][OACGH], which is
+a fork of the [OpenTelemetry Collector][OTCGH], as part of [our
+development process][DEVPROCESS].
 
 ### Source locations
 
-This repository contains the OTel Arrow protocol definition and Golang
-libraries for producing and consuming OTel Arrow data.
+This repository contains the OpenTelemetry Protocol with Apache Arrow
+definition and Golang libraries for producing and consuming streams of
+data in this format.
 
-The OTel Arrow exporter and receiver components for the [OpenTelemetry
-Collector](https://github.com/open-telemetry/opentelemetry-collector)
-components were developed in parallel with this code base.  They are
-maintained as part of the [OTel Arrow
-Collector](https://github.com/open-telemetry/otel-arrow-collector)
-repository, which contains the branch history that relates the OTel
-Arrow exporter and receiver components to the core OTLP
-[exporter](https://github.com/open-telemetry/opentelemetry-collector/tree/main/exporter/otlpexporter)
-and
-[receiver](https://github.com/open-telemetry/opentelemetry-collector/tree/main/receiver/otlpreceiver)
-components.  Prior to the donation, these components were copied into
-`github.com/f5/otel-arrow-adapter/collector`.  Following the donation,
-these components are copied into the [OpenTelemetry Collector
-Contrib](https://github.com/open-telemetry/opentelemetry-collector-contrib)
-repository.
+Exporter and receiver components for the [OpenTelemetry
+Collector][OTCDOCS] were developed in parallel and are currently
+maintained in this repository.
+
+- [Exporter][EXPORTER]: Send telemetry data using OpenTelemetry Protocol with Apache Arrow
+- [Receiver][RECEIVER]: Receive telemetry data using OpenTelemetry Protocol with Apache Arrow.
+
+Historically, the exporter and receiver components were forked from
+the Collector's core [OTLP Exporter][OTLPEXPORTER] and [OTLP
+Receiver][OTLPRECEIVER], and the original branch history is now
+archived in the [OpenTelemetry Protocol with Apache Arrow
+Collector][OACGH] repository.
 
 ### How to change the protobuf specification
 
@@ -53,5 +50,37 @@ export PATH="$PATH:$(go env GOPATH)/bin"
 Once the `*.pb.go` files are generated, you need to replace the content of the `api/collector/arrow/v1` directory by the
 generated files present in the `./proto/api/collector/arrow/v1` directory.
 
-TODO: Update this document with links when the components are
-includeded in their first `collector-contrib` release.
+### Local development issues
+
+The network of dependencies involved in building OpenTelemetry
+Collector images has at times pushed the `go mod` toolchain to its
+limits.  While we would like to recommend the `go work` tool for local
+development, there are currently unresolvable dependency problems that
+happen as a result of this.
+
+The traditional solutiuon to multi-module repositories before `go
+work` was introduced is the Go module `replace` statement, which
+allows mapping inter-repository dependencies to local directory paths,
+allowing you to build and test an OpenTelemetry collector with
+locally-modified sources.
+
+While the use of replace statements works to enable local development,
+it prevents running code directly from the repository, which raises a
+barrier to entry.  To work around this problem, the checked-in
+contents of `./collector/cmd/otelarrowcol/go.mod` must not contain
+`replace` statements.  To build an `otelarrowcol` from locally
+modified sources requires uncommenting the `replaces` directive in
+`./collector/cmd/otelarrowcol/build-config.yaml` and re-running `make
+genotelarrowcol otelarrowcol`.
+
+### References
+
+[OTCDOCS]: https://opentelemetry.io/docs/collector/
+[OTCGH]: https://github.com/open-telemetry/opentelemetry-collector
+[OACGH]: https://github.com/open-telemetry/otel-arrow-collector
+[EXPORTER]: https://github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter
+[RECEIVER]: https://github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver
+[DONATION]: https://github.com/open-telemetry/community/issues/1332
+[DEVPROCESS]: https://github.com/open-telemetry/otel-arrow-collector/issues/48
+[OTLPRECEIVER]: https://github.com/open-telemetry/opentelemetry-collector/receiver/otlpreceiver
+[OTLPEXPORTER]: https://github.com/open-telemetry/opentelemetry-collector/exporter/otlpexporter
