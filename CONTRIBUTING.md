@@ -73,8 +73,6 @@ modified sources requires uncommenting the `replaces` directive in
 `./collector/cmd/otelarrowcol/build-config.yaml` and re-running `make
 genotelarrowcol otelarrowcol`.
 
-### References
-
 [OTCDOCS]: https://opentelemetry.io/docs/collector/
 [OTCGH]: https://github.com/open-telemetry/opentelemetry-collector
 [OACGH]: https://github.com/open-telemetry/otel-arrow-collector
