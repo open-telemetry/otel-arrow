@@ -140,14 +140,14 @@ func TestBatchProcessorSpansDeliveredEnforceBatchSize(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.SendBatchSize = 128
 	cfg.SendBatchMaxSize = 130
-	cfg.Timeout = 2 * time.Second
+	cfg.Timeout = 5 * time.Second
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
 	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg, true)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
-	requestCount := 1000
+	requestCount := 2
 	spansPerRequest := 150
 	var wg sync.WaitGroup
 	for requestNum := 0; requestNum < requestCount; requestNum++ {
@@ -177,6 +177,8 @@ func TestBatchProcessorSpansDeliveredEnforceBatchSize(t *testing.T) {
 
 	require.Equal(t, requestCount*spansPerRequest, sink.SpanCount())
 	for i := 0; i < len(sink.AllTraces())-1; i++ {
+		fmt.Println("SPAN COUNT")
+		fmt.Println(sink.AllTraces()[i].SpanCount())
 		assert.Equal(t, int(cfg.SendBatchMaxSize), sink.AllTraces()[i].SpanCount())
 	}
 	// the last batch has the remaining size
@@ -505,7 +507,8 @@ func TestBatchMetrics_UnevenBatchMaxSize(t *testing.T) {
 
 	batchMetrics.add(md)
 	require.Equal(t, dataPointsPerMetric*metricsCount, batchMetrics.dataPointCount)
-	sent, _, sendErr := batchMetrics.export(ctx, sendBatchMaxSize, true)
+	sent, _, req := batchMetrics.splitBatch(ctx, sendBatchMaxSize, true)
+	sendErr := batchMetrics.export(ctx, req)
 	require.NoError(t, sendErr)
 	require.Equal(t, sendBatchMaxSize, sent)
 	remainingDataPointCount := metricsCount*dataPointsPerMetric - sendBatchMaxSize

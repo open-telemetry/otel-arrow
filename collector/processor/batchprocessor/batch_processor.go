@@ -66,6 +66,7 @@ type batchProcessor struct {
 
 	//  batcher will be either *singletonBatcher or *multiBatcher
 	batcher batcher
+
 }
 
 type batcher interface {
@@ -98,6 +99,7 @@ type shard struct {
 	pending []pendingItem
 
 	totalSent int
+	mtx sync.Mutex
 }
 
 type pendingItem struct {
@@ -113,7 +115,8 @@ type dataItem struct {
 // batch is an interface generalizing the individual signal types.
 type batch interface {
 	// export the current batch
-	export(ctx context.Context, sendBatchMaxSize int, returnBytes bool) (sentBatchSize int, sentBatchBytes int, err error)
+	export(ctx context.Context, req any) error
+	splitBatch(ctx context.Context, sendBatchMaxSize int, returnBytes bool) (sentBatchSize int, bytes int, req any) 
 
 	// itemCount returns the size of the current batch
 	itemCount() int
@@ -252,7 +255,9 @@ func (b *shard) start() {
 			for {
 				select {
 				case item := <-b.newItem:
+					b.mtx.Lock()
 					b.processItem(item)
+					b.mtx.Unlock()
 				default:
 					break DONE
 				}
@@ -261,18 +266,24 @@ func (b *shard) start() {
 			if b.batch.itemCount() > 0 {
 				// TODO: Set a timeout on sendTraces or
 				// make it cancellable using the context that Shutdown gets as a parameter
+				b.mtx.Lock()
 				b.sendItems(triggerShutdown)
+				b.mtx.Unlock()
 			}
 			return
 		case item := <-b.newItem:
 			if item.data == nil {
 				continue
 			}
+			b.mtx.Lock()
 			b.processItem(item)
+			b.mtx.Unlock()
 		case <-timerCh:
+			b.mtx.Lock()
 			if b.batch.itemCount() > 0 {
 				b.sendItems(triggerTimeout)
 			}
+			b.mtx.Unlock()
 			b.resetTimer()
 		}
 	}
@@ -295,11 +306,15 @@ func (b *shard) processItem(item dataItem) {
 func (b *shard) flushItems() {
 	sent := false
 
+	var wg sync.WaitGroup
 	for b.batch.itemCount() > 0 && (!b.hasTimer() || b.batch.itemCount() >= b.processor.sendBatchSize) {
-		b.sendItems(triggerBatchSize)
+		go func() {
+			b.sendItems(triggerBatchSize)
+		}()
 		sent = true
 	}
 
+	wg.Wait()
 	if sent {
 		b.stopTimer()
 		b.resetTimer()
@@ -323,20 +338,53 @@ func (b *shard) resetTimer() {
 }
 
 func (b *shard) sendItems(trigger trigger) {
-	sent, bytes, err := b.batch.export(b.exportCtx, b.processor.sendBatchMaxSize, b.processor.telemetry.detailed)
+	// b.mtx.Lock()
+	// defer b.mtx.Unlock()
+	sent, bytes, req := b.batch.splitBatch(b.exportCtx, b.processor.sendBatchMaxSize, b.processor.telemetry.detailed)
+	fmt.Println("REQ")
+	fmt.Println(req)
+	
+	var waiters []chan error
+	var isComplete []bool
 
 	numItemsBefore := b.totalSent
 	numItemsAfter := b.totalSent + sent
+
+	for len(b.pending) > 0 && numItemsBefore < numItemsAfter {
+
+
+	}
+
+
+	for _, pr := range b.pending {
+		if numItemsBefore + pr.numItems > numItemsAfter {
+			partialSent := numItemsAfter - numItemsBefore
+			b.pending[0].numItems -= partialSent
+			// b.pending[0].respCh <- partialError{err: err}
+			waiters = append(waiters, b.pending[0].respCh)
+			isComplete = append(isComplete, b.pending[0].numItems <= 0)
+			numItemsBefore += partialSent 
+		} else {
+
+		}
+
+	}
+
 	// The current batch can contain items from several different producers. Ensure each producer gets a response back.
 	for len(b.pending) > 0 && numItemsBefore < numItemsAfter {
 		// Waiter only had some items in the current batch
 		if numItemsBefore + b.pending[0].numItems > numItemsAfter {
-			b.pending[0].numItems -= (numItemsAfter - numItemsBefore)
-			b.pending[0].respCh <- partialError{err: err}
-			numItemsBefore = numItemsAfter
+			partialSent := numItemsAfter - numItemsBefore
+			b.pending[0].numItems -= partialSent
+			// b.pending[0].respCh <- partialError{err: err}
+			waiters = append(waiters, b.pending[0].respCh)
+			isComplete = append(isComplete, b.pending[0].numItems <= 0)
+			numItemsBefore += partialSent 
 		} else { // waiter gets a complete response.
 			numItemsBefore += b.pending[0].numItems
-			b.pending[0].respCh <- completeError{err: err}
+			waiters = append(waiters, b.pending[0].respCh)
+			isComplete = append(isComplete, true)
+			// b.pending[0].respCh <- completeError{err: err}
 
 			// complete response sent so b.pending[0] can be popped from queue.
 			if len(b.pending) > 1 {
@@ -346,14 +394,33 @@ func (b *shard) sendItems(trigger trigger) {
 			}
 		}
 	}
+	
+	sendResponse := func(waiter chan error, err error, idx int) {
+		if isComplete[idx] {
+			fmt.Println("IsCOMPLETE")
+			waiter <- completeError{err: err}
+		} else {
+			fmt.Println("IsPARTIAL")
+			waiter <- partialError{err: err}
+		}
+	}
+
+	go func() {
+		// b.mtx.Lock()
+		err := b.batch.export(b.exportCtx, req)
+		// b.mtx.Unlock()
+		for i, waiter := range waiters{
+			sendResponse(waiter, err, i)
+		}
+
+		if err != nil {
+			b.processor.logger.Warn("Sender failed", zap.Error(err))
+		} else {
+			b.processor.telemetry.record(trigger, int64(sent), int64(bytes))
+		}
+	}()
 
 	b.totalSent = numItemsAfter
-
-	if err != nil {
-		b.processor.logger.Warn("Sender failed", zap.Error(err))
-	} else {
-		b.processor.telemetry.record(trigger, int64(sent), int64(bytes))
-	}
 }
 
 // singleShardBatcher is used when metadataKeys is empty, to avoid the
@@ -529,6 +596,7 @@ type batchTraces struct {
 	traceData    ptrace.Traces
 	spanCount    int
 	sizer        ptrace.Sizer
+	mtx          sync.Mutex
 }
 
 func newBatchTraces(nextConsumer consumer.Traces) *batchTraces {
@@ -548,7 +616,12 @@ func (bt *batchTraces) add(item any) {
 	td.ResourceSpans().MoveAndAppendTo(bt.traceData.ResourceSpans())
 }
 
-func (bt *batchTraces) export(ctx context.Context, sendBatchMaxSize int, returnBytes bool) (int, int, error) {
+func (bt *batchTraces) export(ctx context.Context, req any) error {
+	td := req.(ptrace.Traces)
+	return bt.nextConsumer.ConsumeTraces(ctx, td)
+}
+
+func (bt *batchTraces) splitBatch(ctx context.Context, sendBatchMaxSize int, returnBytes bool) (int, int, any) {
 	var req ptrace.Traces
 	var sent int
 	var bytes int
@@ -565,7 +638,7 @@ func (bt *batchTraces) export(ctx context.Context, sendBatchMaxSize int, returnB
 	if returnBytes {
 		bytes = bt.sizer.TracesSize(req)
 	}
-	return sent, bytes, bt.nextConsumer.ConsumeTraces(ctx, req)
+	return sent, bytes, req
 }
 
 func (bt *batchTraces) itemCount() int {
@@ -577,13 +650,19 @@ type batchMetrics struct {
 	metricData     pmetric.Metrics
 	dataPointCount int
 	sizer          pmetric.Sizer
+	mtx          sync.Mutex
 }
 
 func newBatchMetrics(nextConsumer consumer.Metrics) *batchMetrics {
 	return &batchMetrics{nextConsumer: nextConsumer, metricData: pmetric.NewMetrics(), sizer: &pmetric.ProtoMarshaler{}}
 }
 
-func (bm *batchMetrics) export(ctx context.Context, sendBatchMaxSize int, returnBytes bool) (int, int, error) {
+func (bm *batchMetrics) export(ctx context.Context, req any) error {
+	md := req.(pmetric.Metrics)
+	return bm.nextConsumer.ConsumeMetrics(ctx, md)
+}
+
+func (bm *batchMetrics) splitBatch(ctx context.Context, sendBatchMaxSize int, returnBytes bool) (int, int, any) {
 	var req pmetric.Metrics
 	var sent int
 	var bytes int
@@ -597,10 +676,11 @@ func (bm *batchMetrics) export(ctx context.Context, sendBatchMaxSize int, return
 		bm.metricData = pmetric.NewMetrics()
 		bm.dataPointCount = 0
 	}
+
 	if returnBytes {
 		bytes = bm.sizer.MetricsSize(req)
 	}
-	return sent, bytes, bm.nextConsumer.ConsumeMetrics(ctx, req)
+	return sent, bytes, req
 }
 
 func (bm *batchMetrics) itemCount() int {
@@ -623,13 +703,19 @@ type batchLogs struct {
 	logData      plog.Logs
 	logCount     int
 	sizer        plog.Sizer
+	mtx          sync.Mutex
 }
 
 func newBatchLogs(nextConsumer consumer.Logs) *batchLogs {
 	return &batchLogs{nextConsumer: nextConsumer, logData: plog.NewLogs(), sizer: &plog.ProtoMarshaler{}}
 }
 
-func (bl *batchLogs) export(ctx context.Context, sendBatchMaxSize int, returnBytes bool) (int, int, error) {
+func (bl *batchLogs) export(ctx context.Context, req any) error {
+	ld := req.(plog.Logs)
+	return bl.nextConsumer.ConsumeLogs(ctx, ld)
+}
+
+func (bl *batchLogs) splitBatch(ctx context.Context, sendBatchMaxSize int, returnBytes bool) (int, int, any) {
 	var req plog.Logs
 	var sent int
 	var bytes int
@@ -647,7 +733,7 @@ func (bl *batchLogs) export(ctx context.Context, sendBatchMaxSize int, returnByt
 	if returnBytes {
 		bytes = bl.sizer.LogsSize(req)
 	}
-	return sent, bytes, bl.nextConsumer.ConsumeLogs(ctx, req)
+	return sent, bytes, req
 }
 
 func (bl *batchLogs) itemCount() int {
