@@ -58,7 +58,7 @@ limits.  While we would like to recommend the `go work` tool for local
 development, there are currently unresolvable dependency problems that
 happen as a result of this.
 
-The traditional solutiuon to multi-module repositories before `go
+The traditional solution to multi-module repositories before `go
 work` was introduced is the Go module `replace` statement, which
 allows mapping inter-repository dependencies to local directory paths,
 allowing you to build and test an OpenTelemetry collector with
