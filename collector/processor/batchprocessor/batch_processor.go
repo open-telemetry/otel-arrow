@@ -66,7 +66,6 @@ type batchProcessor struct {
 
 	//  batcher will be either *singletonBatcher or *multiBatcher
 	batcher batcher
-
 }
 
 type batcher interface {
@@ -99,7 +98,6 @@ type shard struct {
 	pending []pendingItem
 
 	totalSent int
-	mtx sync.Mutex
 }
 
 type pendingItem struct {
@@ -237,9 +235,7 @@ func (b *shard) start() {
 			for {
 				select {
 				case item := <-b.newItem:
-					b.mtx.Lock()
 					b.processItem(item)
-					b.mtx.Unlock()
 				default:
 					break DONE
 				}
@@ -248,24 +244,18 @@ func (b *shard) start() {
 			if b.batch.itemCount() > 0 {
 				// TODO: Set a timeout on sendTraces or
 				// make it cancellable using the context that Shutdown gets as a parameter
-				b.mtx.Lock()
 				b.sendItems(triggerShutdown)
-				b.mtx.Unlock()
 			}
 			return
 		case item := <-b.newItem:
 			if item.data == nil {
 				continue
 			}
-			b.mtx.Lock()
 			b.processItem(item)
-			b.mtx.Unlock()
 		case <-timerCh:
-			b.mtx.Lock()
 			if b.batch.itemCount() > 0 {
 				b.sendItems(triggerTimeout)
 			}
-			b.mtx.Unlock()
 			b.resetTimer()
 		}
 	}
@@ -552,7 +542,6 @@ type batchTraces struct {
 	traceData    ptrace.Traces
 	spanCount    int
 	sizer        ptrace.Sizer
-	mtx          sync.Mutex
 }
 
 func newBatchTraces(nextConsumer consumer.Traces) *batchTraces {
@@ -606,7 +595,6 @@ type batchMetrics struct {
 	metricData     pmetric.Metrics
 	dataPointCount int
 	sizer          pmetric.Sizer
-	mtx          sync.Mutex
 }
 
 func newBatchMetrics(nextConsumer consumer.Metrics) *batchMetrics {
@@ -659,7 +647,6 @@ type batchLogs struct {
 	logData      plog.Logs
 	logCount     int
 	sizer        plog.Sizer
-	mtx          sync.Mutex
 }
 
 func newBatchLogs(nextConsumer consumer.Logs) *batchLogs {
