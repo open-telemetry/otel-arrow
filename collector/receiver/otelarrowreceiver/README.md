@@ -78,11 +78,20 @@ Several common configuration structures provide additional capabilities automati
 
 In the `arrow` configuration block, the following settings are available:
 
-- `memory_limit` (default: 128MiB): limits the amount of concurrent memory used by Arrow data buffers.
+- `memory_limit_mib` (default: 128): limits the amount of concurrent memory used by Arrow data buffers.
 
 When the limit is reached, the receiver will return RESOURCE_EXHAUSTED
 error codes to the receiver, which are [conditionally retryable, see
 exporter retry configuration](https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/exporterhelper/README.md).
+
+### Compression Configuration
+
+In the `arrow` configuration block, `zstd` sub-section applies to all
+compression levels used by exporters:
+
+- `memory_limit_mib` limits memory dedicated to Zstd decompression, per stream (default 128)
+- `max_window_size_mib`: maximum size of the Zstd window in MiB, 0 indicates to determine based on level (default 32)
+- `concurrency`: controls background CPU used for decompression, 0 indicates to let `zstd` library decide (default 1)
 
 ### Keepalive configuration
 
@@ -183,7 +192,7 @@ service
   telemetry:
     ...
     metrics:
-	  ...
+      ...
       level: detailed
 ```
 
