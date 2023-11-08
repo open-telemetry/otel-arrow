@@ -161,56 +161,17 @@ data has not been updated and this collector is still fundamentally row-oriented
 > Note 2: A future phase 2 of this project will focus on implementing end-to-end OTel Arrow to improve the overall
 > performance.
 
-### Developers
+### Collector components
 
 Pull requests are welcome. For major changes, please open an issue
 first to discuss what you would like to change.  For more information, please
 read [CONTRIBUTING](CONTRIBUTING.md).
 
-#### Version history shared with OpenTelemetry Collector
+### Developers
 
-The OTel Arrow exporter and receiver components were derived from the
-core OpenTelemetry Collector's OTLP exporter and receiver components.
-This approach was taken to ensure that the OTel Arrow receiver and
-exporter components remain "drop-in" compatible with OTLP exporters
-and receivers.
-
-The shared version history describing how the OTel Arrow components
-were derived from the core OTLP components is recorded in [this
-repository](https://github.com/open-telemetry/otel-arrow-collector),
-which is not for general use.  Maintainers of OTel Arrow may use the
-repository to maintain the version history going forward, [as discussed
-here](https://github.com/open-telemetry/otel-arrow/issues/43).
-
-#### Example collector configurations
-
-Examples demonstrating how to configure and test an OpenTelemetry
-Collector with OTel-Arrow exporter and receiver components are located
-in `./collector/examples`, including:
-
-- [`examples/bridge`](https://github.com/f5/otel-arrow-adapter/tree/main/collector/examples/bridge):
-  A compression bridge between "edge" and "saas" collectors.
-- [`examples/metadata-bridge`](https://github.com/f5/otel-arrow-adapter/tree/main/collector/examples/metadata-bridge):
-  A compression bridge between "edge" and "saas" collectors with metadata support, allowing request headers to transit via OTel-Arrow.
-- [`examples/loopback`](https://github.com/f5/otel-arrow-adapter/tree/main/collector/examples/loopback):
-  A collector that writes Arrow to and from itself.
-- [`examples/recorder`](https://github.com/f5/otel-arrow-adapter/tree/main/collector/examples/recorder):
-  A collector with support for recording data files for diagnostic and benchmark purposes.
-- [`examples/synthesize`](https://github.com/f5/otel-arrow-adapter/tree/main/collector/examples/synthesize):
-  A collector with support for synthesizing telemetry data using a [telemetry-generator](https://github.com/lightstep/telemetry-generator) component.
-
-#### Miscellaneous components
-
-Several components were developed to facilitate testing and debugging
-the primary OTel Arrow components.  Most importantly, these tools can
-be used to report problematic data to the OTel Arrow maintainers.
-These components are:
-
-- `exporter/fileexporter`: Derived from the upstream [fileexporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/fileexporter), this component supports writing files that can be read by the corresponding `filereceiver` in this package (unlike the upstream).
-- `receiver/filereceiver`: Derived from the upstream [filereceiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/filereceiver), this component supports reading files written by the corresponding `fileexporter` in this package (unlike the upstream).
-- `processor/obfuscationprocessor`: Supports obfuscation of OpenTelemetry data using a [Feistel cipher](https://en.wikipedia.org/wiki/Feistel_cipher).
-- `processor/experimentprocessor`: A probabilistic routing component for conducting experiments between exporters.
-- `connector/validationconnector`: A component for on-the-fly validation of a local pipeline.
+Pull requests are welcome. For major changes, please open an issue
+first to discuss what you would like to change.  For more information, please
+read [CONTRIBUTING](CONTRIBUTING.md).
 
 ## License
 

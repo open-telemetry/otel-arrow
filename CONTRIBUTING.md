@@ -76,8 +76,8 @@ genotelarrowcol otelarrowcol`.
 [OTCDOCS]: https://opentelemetry.io/docs/collector/
 [OTCGH]: https://github.com/open-telemetry/opentelemetry-collector
 [OACGH]: https://github.com/open-telemetry/otel-arrow-collector
-[EXPORTER]: https://github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter
-[RECEIVER]: https://github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver
+[EXPORTER]: ./collector/exporter/otelarrowexporter/README.md
+[RECEIVER]: ./collector/receiver/otelarrowreceiver/README.md
 [DONATION]: https://github.com/open-telemetry/community/issues/1332
 [DEVPROCESS]: https://github.com/open-telemetry/otel-arrow-collector/issues/48
 [OTLPRECEIVER]: https://github.com/open-telemetry/opentelemetry-collector/receiver/otlpreceiver

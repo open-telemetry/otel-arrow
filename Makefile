@@ -104,18 +104,14 @@ endif
 	git add .
 	git commit -m "add multimod changes $(RELEASE_CANDIDATE)" || (echo "no multimod changes to commit")
 
-# OTC's builder can be installed using:
-#
-#   $(GOCMD) install go.opentelemetry.io/collector/cmd/builder@latest
-#
-# TODO install this locally
+# Install OTC's builder at the latest version
 BUILDER := builder
 .PHONY: $(BUILDER)
+	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@latest
 
 .PHONY: genotelarrowcol
-genotelarrowcol:
-	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@latest
-	$(BUILDER) --skip-compilation --config collector/cmd/otelarrowcol/build.yaml --output-path collector/cmd/otelarrowcol
+genotelarrowcol: builder
+	$(BUILDER) --skip-compilation --config collector/otelarrowcol-build.yaml
 
 .PHONY: otelarrowcol
 otelarrowcol:
