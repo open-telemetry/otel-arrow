@@ -88,6 +88,8 @@ else
 endif
 	# ensure a clean branch
 	git diff -s --exit-code || (echo "local repository not clean"; exit 1)
+	# ensure the main go.mod does not have replace statements
+	@if grep ^replace collector/cmd/otelarrowcol/go.mod; then echo "otelarrowcol go.mod contains replace statements, please fix"; exit 1; fi
 	# update files with new version
 	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' versions.yaml
 	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' collector/cmd/otelarrowcol/build.yaml
@@ -97,7 +99,8 @@ endif
 	git commit -m "prepare release $(RELEASE_CANDIDATE)"
 	$(MAKE) multimod-prerelease
 	# regenerate files
-	$(MAKE) genotelarrowcol
+	# note we do not make genotelarrowcol as this is a manual step
+	$(MAKE) gotidy
 	git add .
 	git commit -m "add multimod changes $(RELEASE_CANDIDATE)" || (echo "no multimod changes to commit")
 
