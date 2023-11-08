@@ -147,7 +147,7 @@ func TestBatchProcessorSpansDeliveredEnforceBatchSize(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
-	requestCount := 2
+	requestCount := 1000
 	spansPerRequest := 150
 	var wg sync.WaitGroup
 	for requestNum := 0; requestNum < requestCount; requestNum++ {
@@ -177,8 +177,6 @@ func TestBatchProcessorSpansDeliveredEnforceBatchSize(t *testing.T) {
 
 	require.Equal(t, requestCount*spansPerRequest, sink.SpanCount())
 	for i := 0; i < len(sink.AllTraces())-1; i++ {
-		fmt.Println("SPAN COUNT")
-		fmt.Println(sink.AllTraces()[i].SpanCount())
 		assert.Equal(t, int(cfg.SendBatchMaxSize), sink.AllTraces()[i].SpanCount())
 	}
 	// the last batch has the remaining size

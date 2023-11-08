@@ -110,6 +110,7 @@ type pendingItem struct {
 type dataItem struct {
 	data       any
 	responseCh chan error
+	count      int
 }
 
 // batch is an interface generalizing the individual signal types.
@@ -125,41 +126,22 @@ type batch interface {
 	add(item any)
 }
 
-// partialError is useful when a producer adds items that are split
+// countedError is useful when a producer adds items that are split
 // between multiple batches. This signals that producers should continue
-// waiting until a completeError is received.
-type partialError struct {
+// waiting until all its items receive a response.
+type countedError struct {
 	err error
+	count int
 }
 
-func (pe partialError) Error() string {
-	if pe.err == nil {
-		return ""
-	}
-	return fmt.Sprintf("batch partial error: %s", pe.err.Error())
-}
-
-func (pe partialError) Unwrap() error {
-	return pe.err
-}
-
-func isPartialError(err error) bool {
-	return errors.Is(err, partialError{err: errors.Unwrap(err)})
-}
-
-type completeError struct {
-	err error
-}
-
-func (ce completeError) Error() string {
+func (ce countedError) Error() string {
 	if ce.err == nil {
 		return ""
 	}
-	return fmt.Sprintf("batch complete error: %s", ce.err.Error())
-
+	return fmt.Sprintf("batch error: %s", ce.err.Error())
 }
 
-func (ce completeError) Unwrap() error {
+func (ce countedError) Unwrap() error {
 	return ce.err
 }
 
@@ -306,15 +288,11 @@ func (b *shard) processItem(item dataItem) {
 func (b *shard) flushItems() {
 	sent := false
 
-	var wg sync.WaitGroup
 	for b.batch.itemCount() > 0 && (!b.hasTimer() || b.batch.itemCount() >= b.processor.sendBatchSize) {
-		go func() {
-			b.sendItems(triggerBatchSize)
-		}()
+		b.sendItems(triggerBatchSize)
 		sent = true
 	}
 
-	wg.Wait()
 	if sent {
 		b.stopTimer()
 		b.resetTimer()
@@ -338,37 +316,13 @@ func (b *shard) resetTimer() {
 }
 
 func (b *shard) sendItems(trigger trigger) {
-	// b.mtx.Lock()
-	// defer b.mtx.Unlock()
 	sent, bytes, req := b.batch.splitBatch(b.exportCtx, b.processor.sendBatchMaxSize, b.processor.telemetry.detailed)
-	fmt.Println("REQ")
-	fmt.Println(req)
 	
 	var waiters []chan error
-	var isComplete []bool
+	var countItems []int
 
 	numItemsBefore := b.totalSent
 	numItemsAfter := b.totalSent + sent
-
-	for len(b.pending) > 0 && numItemsBefore < numItemsAfter {
-
-
-	}
-
-
-	for _, pr := range b.pending {
-		if numItemsBefore + pr.numItems > numItemsAfter {
-			partialSent := numItemsAfter - numItemsBefore
-			b.pending[0].numItems -= partialSent
-			// b.pending[0].respCh <- partialError{err: err}
-			waiters = append(waiters, b.pending[0].respCh)
-			isComplete = append(isComplete, b.pending[0].numItems <= 0)
-			numItemsBefore += partialSent 
-		} else {
-
-		}
-
-	}
 
 	// The current batch can contain items from several different producers. Ensure each producer gets a response back.
 	for len(b.pending) > 0 && numItemsBefore < numItemsAfter {
@@ -376,15 +330,13 @@ func (b *shard) sendItems(trigger trigger) {
 		if numItemsBefore + b.pending[0].numItems > numItemsAfter {
 			partialSent := numItemsAfter - numItemsBefore
 			b.pending[0].numItems -= partialSent
-			// b.pending[0].respCh <- partialError{err: err}
-			waiters = append(waiters, b.pending[0].respCh)
-			isComplete = append(isComplete, b.pending[0].numItems <= 0)
 			numItemsBefore += partialSent 
+			waiters = append(waiters, b.pending[0].respCh)
+			countItems = append(countItems, partialSent)
 		} else { // waiter gets a complete response.
 			numItemsBefore += b.pending[0].numItems
 			waiters = append(waiters, b.pending[0].respCh)
-			isComplete = append(isComplete, true)
-			// b.pending[0].respCh <- completeError{err: err}
+			countItems = append(countItems, b.pending[0].numItems)
 
 			// complete response sent so b.pending[0] can be popped from queue.
 			if len(b.pending) > 1 {
@@ -394,23 +346,13 @@ func (b *shard) sendItems(trigger trigger) {
 			}
 		}
 	}
-	
-	sendResponse := func(waiter chan error, err error, idx int) {
-		if isComplete[idx] {
-			fmt.Println("IsCOMPLETE")
-			waiter <- completeError{err: err}
-		} else {
-			fmt.Println("IsPARTIAL")
-			waiter <- partialError{err: err}
-		}
-	}
 
 	go func() {
-		// b.mtx.Lock()
 		err := b.batch.export(b.exportCtx, req)
-		// b.mtx.Unlock()
-		for i, waiter := range waiters{
-			sendResponse(waiter, err, i)
+		for i := range waiters {
+			count := countItems[i]
+			waiter := waiters[i]
+			waiter <- countedError{err: err, count: count}
 		}
 
 		if err != nil {
@@ -437,6 +379,16 @@ func (sb *singleShardBatcher) consume(ctx context.Context, data any) error {
 		data:       data,
 		responseCh: respCh,
 	}
+
+	switch telem := data.(type) {
+	case ptrace.Traces:
+		item.count = telem.SpanCount()
+	case pmetric.Metrics:
+		item.count = telem.DataPointCount()
+	case plog.Logs:
+		item.count = telem.LogRecordCount()
+	}
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -448,11 +400,13 @@ func (sb *singleShardBatcher) consume(ctx context.Context, data any) error {
 		select {
 		case newErr := <-respCh:
 			// nil response might be wrapped as an error.
-			if errors.Unwrap(newErr) != nil {
+			unwrap := newErr.(countedError)
+			if unwrap.err != nil {
 				err = multierr.Append(err, newErr)
 			}
 
-			if isPartialError(newErr) {
+			item.count -= unwrap.count
+			if item.count != 0 {
 				continue
 			}
 
@@ -534,11 +488,13 @@ func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
 		select {
 		case newErr := <-respCh:
 			// nil response might be wrapped as an error.
-			if errors.Unwrap(newErr) != nil {
+			unwrap := newErr.(countedError)
+			if unwrap.err != nil {
 				err = multierr.Append(err, newErr)
 			}
 
-			if isPartialError(newErr) {
+			item.count -= unwrap.count
+			if item.count > 0 {
 				continue
 			}
 
