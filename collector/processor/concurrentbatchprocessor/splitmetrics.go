@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package batchprocessor // import "github.com/open-telemetry/otel-arrow/collector/processor/batchprocessor"
+package concurrentbatchprocessor // import "github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor"
 
 import (
 	"go.opentelemetry.io/collector/pdata/pmetric"

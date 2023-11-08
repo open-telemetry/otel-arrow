@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package batchprocessor // import "github.com/open-telemetry/otel-arrow/collector/processor/batchprocessor"
+package concurrentbatchprocessor // import "github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor"
 
 import (
 	"context"
@@ -137,10 +137,6 @@ func (ce countedError) Error() string {
 		return ""
 	}
 	return fmt.Sprintf("batch error: %s", ce.err.Error())
-}
-
-func (ce countedError) Unwrap() error {
-	return ce.err
 }
 
 var _ consumer.Traces = (*batchProcessor)(nil)
