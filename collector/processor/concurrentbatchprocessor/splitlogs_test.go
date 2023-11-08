@@ -1,14 +1,14 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package batchprocessor
+package concurrentbatchprocessor
 
 import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/open-telemetry/otel-arrow/collector/processor/batchprocessor/testdata"
+	"github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor/testdata"
 	"go.opentelemetry.io/collector/pdata/plog"
 )
 
