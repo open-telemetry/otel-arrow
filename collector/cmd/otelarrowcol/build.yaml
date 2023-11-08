@@ -40,6 +40,18 @@ extensions:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.88.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.88.0
 
-replaces:
-  - github.com/open-telemetry/otel-arrow => ../../..
-  - github.com/open-telemetry/otel-arrow/collector => ../../
+# Note! The following replaces are commented out so that the `otelarrowcol` main
+# function can be run via `go run` from an arbitrary location.
+#
+# To build the `otelarrowcol` using a modified version of the local
+# repository, developers should use a `go.work` file containing all
+# the go.mod files in this repo.
+#
+# Note: the Collector builder has at times inserted replace statements
+# on its own.  In such cases, this repository should be manually
+# edited to remove replace statements in checked-in code, if possible.
+# See ../../../CONTRIBUTING.md for details.
+#
+# replaces:
+#   - github.com/open-telemetry/otel-arrow => ../../..
+#   - github.com/open-telemetry/otel-arrow/collector => ../../

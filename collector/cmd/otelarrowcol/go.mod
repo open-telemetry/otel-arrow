@@ -2,9 +2,7 @@
 
 module github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol
 
-go 1.21
-
-toolchain go1.21.3
+go 1.20
 
 require (
 	github.com/lightstep/telemetry-generator/generatorreceiver v0.15.0
@@ -162,10 +160,3 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/open-telemetry/otel-arrow => ../../..
-
-replace github.com/open-telemetry/otel-arrow/collector => ../../
-
-// ambiguous import: found package cloud.google.com/go/compute/metadata in multiple modules
-replace cloud.google.com/go => cloud.google.com/go v0.110.2
