@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package batchprocessor // import "github.com/open-telemetry/otel-arrow/collector/processor/batchprocessor"
+package concurrentbatchprocessor // import "github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor"
 
 import (
 	"context"
@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	scopeName = "github.com/open-telemetry/otel-arrow/collector/processor/batchprocessor"
+	scopeName = "github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor"
 )
 
 var (
