@@ -98,7 +98,6 @@ endif
 	$(MAKE) multimod-prerelease
 	# regenerate files
 	# note we do not make genotelarrowcol as this is a manual step
-	$(MAKE) gotidy
 	git add .
 	git commit -m "add multimod changes $(RELEASE_CANDIDATE)" || (echo "no multimod changes to commit")
 
