@@ -58,9 +58,8 @@ TODO ALSO
 #   pprof:        Allows use of Golang profiling tools.
 #
 # Processors:
-#   batch:       Designed and built for use with OpenTelemetry Protocol
-#                with Apache Arrow pipelines.  TODO: replace me, see
-#                https://github.com/open-telemetry/otel-arrow/issues/80.
+#   concurrentbatch: Designed and built for use with OpenTelemetry Protocol
+#                    with Apache Arrow pipelines.
 #   experiment:  Supports fractional routing of data, for experimenting
 #                with alternative configurations.
 #   obfuscation: Supports recording obfuscated telemetry data, which can

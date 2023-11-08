@@ -23,8 +23,10 @@ distribution:
   # components used below (e.g., the loggingexporter version below).
   otelcol_version: 0.88.0
 
-  # Project use: Directory path required for the `make genotelarrowcol`,
-  # which the Docker build also knows about.
+  # Project-internal use: Directory path required for the `make
+  # genotelarrowcol`, which the Dockerfile also recognizes.
+  #
+  # Users: This can be customized for integration into your CI/CD system.
   output_path: collector/cmd/otelarrowcol
 
 exporters:
@@ -45,8 +47,8 @@ receivers:
   - gomod: github.com/lightstep/telemetry-generator/generatorreceiver v0.15.0
 
 processors:
-  # TODO: replace me, see https://github.com/open-telemetry/otel-arrow/issues/80
-  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.88.0
+  - import: github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.6.0
   - import: github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor
     gomod: github.com/open-telemetry/otel-arrow/collector v0.6.0
   - import: github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor
