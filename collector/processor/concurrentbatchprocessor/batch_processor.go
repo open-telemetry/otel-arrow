@@ -351,13 +351,8 @@ func (b *shard) sendItems(trigger trigger) {
 	b.totalSent = numItemsAfter
 }
 
-// singleShardBatcher is used when metadataKeys is empty, to avoid the
-// additional lock and map operations used in multiBatcher.
-type singleShardBatcher struct {
-	batcher *shard
-}
 
-func (sb *singleShardBatcher) consume(ctx context.Context, data any) error {
+func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 	respCh := make(chan error, 1)
 	// TODO: add a semaphore to only write to channel if sizeof(data) keeps
 	// us below some configured inflight byte limit.
@@ -378,7 +373,7 @@ func (sb *singleShardBatcher) consume(ctx context.Context, data any) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case sb.batcher.newItem <- item:
+	case b.newItem <- item:
 	}
 	var err error
 
@@ -405,6 +400,16 @@ func (sb *singleShardBatcher) consume(ctx context.Context, data any) error {
 	return nil
 }
 
+// singleShardBatcher is used when metadataKeys is empty, to avoid the
+// additional lock and map operations used in multiBatcher.
+type singleShardBatcher struct {
+	batcher *shard
+}
+
+func (sb *singleShardBatcher) consume(ctx context.Context, data any) error {
+	return sb.batcher.consumeAndWait(ctx, data)
+}
+
 func (sb *singleShardBatcher) currentMetadataCardinality() int {
 	return 1
 }
@@ -421,7 +426,6 @@ type multiShardBatcher struct {
 }
 
 func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
-	respCh := make(chan error, 1)
 	// Get each metadata key value, form the corresponding
 	// attribute set for use as a map lookup key.
 	info := client.FromContext(ctx)
@@ -459,38 +463,7 @@ func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
 		mb.lock.Unlock()
 	}
 
-	item := dataItem{
-		data:       data,
-		responseCh: respCh,
-	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case b.(*shard).newItem <- item:
-	}
-
-	var err error
-	for {
-		select {
-		case newErr := <-respCh:
-			// nil response might be wrapped as an error.
-			unwrap := newErr.(countedError)
-			if unwrap.err != nil {
-				err = multierr.Append(err, newErr)
-			}
-
-			item.count -= unwrap.count
-			if item.count > 0 {
-				continue
-			}
-
-			return err
-		case <-ctx.Done():
-			err = multierr.Append(err, ctx.Err())
-			return err
-		}
-	}
-	return nil
+	return b.(*shard).consumeAndWait(ctx, data)
 }
 
 func recordBatchError(err error) error {
