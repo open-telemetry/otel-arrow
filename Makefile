@@ -124,4 +124,4 @@ otelarrowcol:
 
 .PHONY: docker-otelarrowcol
 docker-otelarrowcol:
-	docker build . -t otelarrowcol:latest
+	docker build . -t otelarrowcol

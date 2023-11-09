@@ -18,6 +18,9 @@ building and testing the components in this repository.
 [Instructions for building an OpenTelemetry Collector with support for
 OpenTelemetry Protocol with Apache Arrow.][BUILDING]
 
+After you have built a collector using one of the documented methods,
+see the [examples][EXAMPLES].
+
 [We would prefer to include these components in the OpenTelemetry
 Contrib Collector, because it is an officially maintained artifact.
 At this time, however, these components are new and the migration
@@ -56,7 +59,7 @@ maintainers.  These components are:
 - [`connector/validationconnector`][VALIDATIONCONNECTOR]: A component
   for on-the-fly validation of a local pipeline.
 
-## Other extensions built into `otelarrowcol`
+## Other components built into `otelarrowcol`
 
 Several Collector-Contrib extensions are included in the build:
 
@@ -71,9 +74,9 @@ From the core collector repository:
 - [otelhttpexporter][UPSTREAMHTTPOTLP]:  Useful for debugging, sends standard OTLP over HTTP
 - [debugexporter][UPSTREAMDEBUG]:   Useful for debugging, prints OTLP data to the console
 
-Also, a synthetic telemetry data generator:
+Also, the build includes a synthetic telemetry data generator:
 
-- [generator](https://github.com/lightstep/telemetry-generator/blob/main/README.md): Produces synthetic telemetry data.
+- [generator][GENERATOR]: Produces synthetic telemetry data.
 
 
 [BUILDING]: ./BUILDING.md
@@ -94,4 +97,6 @@ Also, a synthetic telemetry data generator:
 [PPROFEXT]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/pprofextension/README.md
 https://github.com/open-telemetry/opentelemetry-collector/blob/main/processor/batchprocessor/README.md
 [UPSTREAMHTTPOTLP]: https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/otlphttpexporter/README.md
-[UPSTREAMDEBUG]:
+[UPSTREAMDEBUG]: https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/debugexporter/README.md
+[GENERATOR]: https://github.com/lightstep/telemetry-generator/blob/main/README.md
+[EXAMPLES]: ./examples/README.md
