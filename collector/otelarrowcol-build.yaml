@@ -10,7 +10,7 @@
 # This configuration file be used as a starting point for building a
 # custom gateway collector for deploying OpenTelemetry Protocol with
 # Apache Arrow in production.  See the instructions in BUILDING.md.
-distribution:
+dist:
   module: github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol
   name: otelarrowcol
   description: OpenTelemetry Protocol with Apache Arrow development collector, for testing and evaluation
@@ -19,8 +19,9 @@ distribution:
   # during the release process, see ../../../RELEASING.md.
   version: 0.6.0
 
-  # Note: This should match the version of the core and contrib collector
-  # components used below (e.g., the loggingexporter version below).
+  # Note: This should match the version of the core and contrib
+  # collector components used below (e.g., the debugexporter and
+  # otlphttpexporter versions below).
   otelcol_version: 0.88.0
 
   # Project-internal use: Directory path required for the `make
@@ -33,7 +34,7 @@ exporters:
   # This is the core OpenTelemetry Protocol with Apache Arrow exporter
   - import: github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter
     gomod: github.com/open-telemetry/otel-arrow/collector v0.6.0
-  - gomod: go.opentelemetry.io/collector/exporter/loggingexporter v0.88.0
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.88.0
   - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.88.0
   - import: github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter
     gomod: github.com/open-telemetry/otel-arrow/collector v0.6.0

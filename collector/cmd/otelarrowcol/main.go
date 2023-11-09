@@ -17,7 +17,7 @@ func main() {
 
 	info := component.BuildInfo{
 		Command:     "otelarrowcol",
-		Description: "Development OTel-Arrow Collector binary, testing only.",
+		Description: "OpenTelemetry Protocol with Apache Arrow development collector, for testing and evaluation",
 		Version:     "0.6.0",
 	}
 

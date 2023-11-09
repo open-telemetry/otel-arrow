@@ -20,19 +20,16 @@ ENV CGO_ENABLED=0
 # to the last-successful version of the OpenTelemetry collector.
 RUN go install go.opentelemetry.io/collector/cmd/builder@latest
 
-# This command generates main.go, go.mod, and then builds using the
-# container's go toolchain.  Note the 'exit 0' at the end of this
-# command ignores the result of the builder.  See commands in
-# Makefile above the `genotelarrow` rule for an explanation.
-RUN builder --skip-compilation --config=collector/otelarrowcol-build.yaml; exit 0
+# This command generates main.go, go.mod but does not update deps.
+RUN builder --skip-compilation --skip-get-modules --config=collector/otelarrowcol-build.yaml
 
-# This two-stage build will succeed because there is a `go.work`
-# checked-in to the repository.
-RUN go install ./collector/cmd/otelarrowcol
+# This build will update the go.mod, using the checked-in go.work file
+# in the repository.
+RUN go build -o otelarrowcol ./collector/cmd/otelarrowcol
 
 # This build uses an Alpine Linux container.
 FROM alpine AS release
-COPY --from=sandbox /otel-arrow/collector/cmd/otelarrowcol/otelarrowcol /
+COPY --from=sandbox /otel-arrow/otelarrowcol /
 
 # Network ports
 # 4317 - OpenTelemetry gRPC services:
@@ -41,4 +38,4 @@ COPY --from=sandbox /otel-arrow/collector/cmd/otelarrowcol/otelarrowcol /
 # 1777 - Profiling support
 EXPOSE 4317/tcp 1777/tcp
 
-CMD ["/otelarrowcol"]
+ENTRYPOINT ["/otelarrowcol"]

@@ -105,17 +105,15 @@ endif
 	git commit -m "add multimod changes $(RELEASE_CANDIDATE)" || (echo "no multimod changes to commit")
 
 # Install OTC's builder at the latest version
-BUILDER := builder
+BUILDER = builder
 .PHONY: $(BUILDER)
+builder:
 	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@latest
 
-# Note the /bin/true at the end of the builder command is because with
-# current practice (for some reason) the initial `go mod tidy` will
-# fail and not recognize the go.work.  Immediately after, the `make
-# otelarrowcol` step is expected to succeed.
 .PHONY: genotelarrowcol
 genotelarrowcol: builder
-	$(BUILDER) --skip-compilation --config collector/otelarrowcol-build.yaml || (echo "build did not succeed, but this may be a known module problem; please run make otelarrowcol next"; true)
+	rm -f collector/cmd/otelarrowcol/*
+	$(BUILDER) --skip-compilation --skip-get-modules --config collector/otelarrowcol-build.yaml
 
 .PHONY: otelarrowcol
 otelarrowcol:
