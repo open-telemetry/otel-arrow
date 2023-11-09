@@ -114,6 +114,7 @@ builder:
 genotelarrowcol: builder
 	rm -f collector/cmd/otelarrowcol/*
 	$(BUILDER) --skip-compilation --skip-get-modules --config collector/otelarrowcol-build.yaml
+	$(GOCMD) work sync
 
 .PHONY: otelarrowcol
 otelarrowcol:
