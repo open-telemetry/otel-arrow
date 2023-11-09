@@ -109,12 +109,20 @@ BUILDER := builder
 .PHONY: $(BUILDER)
 	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@latest
 
+# Note the /bin/true at the end of the builder command is because with
+# current practice (for some reason) the initial `go mod tidy` will
+# fail and not recognize the go.work.  Immediately after, the `make
+# otelarrowcol` step is expected to succeed.
 .PHONY: genotelarrowcol
 genotelarrowcol: builder
-	$(BUILDER) --skip-compilation --config collector/otelarrowcol-build.yaml
+	$(BUILDER) --skip-compilation --config collector/otelarrowcol-build.yaml || (echo "build did not succeed, but this may be a known module problem; please run make otelarrowcol next"; true)
 
 .PHONY: otelarrowcol
 otelarrowcol:
 	(cd collector/cmd/otelarrowcol && \
 		GO111MODULE=on CGO_ENABLED=0 \
 		$(GOCMD) build -trimpath -o ../../../bin/otelarrowcol_$(GOOS)_$(GOARCH) $(BUILD_INFO) .)
+
+.PHONY: docker-otelarrowcol
+docker-otelarrowcol:
+	docker build . -t otelarrowcol:latest

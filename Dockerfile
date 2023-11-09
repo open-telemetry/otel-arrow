@@ -21,8 +21,14 @@ ENV CGO_ENABLED=0
 RUN go install go.opentelemetry.io/collector/cmd/builder@latest
 
 # This command generates main.go, go.mod, and then builds using the
-# container's go toolchain.
-RUN builder --config=collector/otelarrowcol-build.yaml
+# container's go toolchain.  Note the 'exit 0' at the end of this
+# command ignores the result of the builder.  See commands in
+# Makefile above the `genotelarrow` rule for an explanation.
+RUN builder --skip-compilation --config=collector/otelarrowcol-build.yaml; exit 0
+
+# This two-stage build will succeed because there is a `go.work`
+# checked-in to the repository.
+RUN go install ./collector/cmd/otelarrowcol
 
 # This build uses an Alpine Linux container.
 FROM alpine AS release

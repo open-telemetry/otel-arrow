@@ -50,28 +50,30 @@ export PATH="$PATH:$(go env GOPATH)/bin"
 Once the `*.pb.go` files are generated, you need to replace the content of the `api/collector/arrow/v1` directory by the
 generated files present in the `./proto/api/collector/arrow/v1` directory.
 
+### Releasing this repository
+
+See the instructions in [RELEASING.md][./RELEASING.md].
+
 ### Local development issues
 
-The network of dependencies involved in building OpenTelemetry
-Collector images has at times pushed the `go mod` toolchain to its
-limits.  While we would like to recommend the `go work` tool for local
-development, there are currently unresolvable dependency problems that
-happen as a result of this.
+This repository contains a top-level `go.work` file, as an experiment.
+This enables the Go modules defined here to avoid relative replace
+statements, which interfere with the ability to run them via simple
+`go install` and `go run` commands.  The `go.work` file names the
+three module definitions inside this repository and allows them all to
+be used at once during local development.
 
-The traditional solution to multi-module repositories before `go
-work` was introduced is the Go module `replace` statement, which
-allows mapping inter-repository dependencies to local directory paths,
-allowing you to build and test an OpenTelemetry collector with
-locally-modified sources.
+### Upgrading OpenTelemtry Collector dependencies
 
-While the use of replace statements works to enable local development,
-it prevents running code directly from the repository, which raises a
-barrier to entry.  To work around this problem, the checked-in
-contents of `./collector/cmd/otelarrowcol/go.mod` must not contain
-`replace` statements.  To build an `otelarrowcol` from locally
-modified sources requires uncommenting the `replaces` directive in
-`./collector/cmd/otelarrowcol/build-config.yaml` and re-running `make
-genotelarrowcol otelarrowcol`.
+When a new version of the OpenTelemetry collector, is available,
+the easiest way to upgrade this repository is:
+
+1. Update the `distribution::otelcol_version` field in `otelarrowcol-build.yaml`
+2. Modify any components from the core or contrib repositories to use
+   the corresponding versions (e.g., pprofextension's module version
+   should match the new collector release).
+3. Regenerate `otelarrowcol` via `make genotelarrowcol`
+4. Run `go work sync` to update the other modules with fresh dependencies.
 
 [OTCDOCS]: https://opentelemetry.io/docs/collector/
 [OTCGH]: https://github.com/open-telemetry/opentelemetry-collector
