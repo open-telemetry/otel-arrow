@@ -95,7 +95,6 @@ Also, the build includes a synthetic telemetry data generator:
 [BASICAUTHEXT]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/basicauthextension/README.md
 [HEADERSETTEREXT]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/headerssetterextension/README.md
 [PPROFEXT]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/pprofextension/README.md
-https://github.com/open-telemetry/opentelemetry-collector/blob/main/processor/batchprocessor/README.md
 [UPSTREAMHTTPOTLP]: https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/otlphttpexporter/README.md
 [UPSTREAMDEBUG]: https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/debugexporter/README.md
 [GENERATOR]: https://github.com/lightstep/telemetry-generator/blob/main/README.md
