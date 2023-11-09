@@ -4,7 +4,11 @@ module github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol
 
 go 1.21
 
+<<<<<<< HEAD
 toolchain go1.21.3
+=======
+toolchain go1.21.4
+>>>>>>> e367aca (add config, semaphore, fix unit tests)
 
 require (
 	github.com/lightstep/telemetry-generator/generatorreceiver v0.15.0
@@ -171,6 +175,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
+<<<<<<< HEAD
 
 
 
@@ -181,3 +186,13 @@ require (
 
 
 
+=======
+replace github.com/open-telemetry/otel-arrow => ../../..
+
+replace github.com/open-telemetry/otel-arrow/collector => ../../
+
+// ambiguous import: found package cloud.google.com/go/compute/metadata in multiple modules
+replace cloud.google.com/go => cloud.google.com/go v0.110.2
+
+replace github.com/lightstep/telemetry-generator/generatorreceiver => ../../../../telemetry-generator/generatorreceiver/
+>>>>>>> e367aca (add config, semaphore, fix unit tests)
