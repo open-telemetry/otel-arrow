@@ -1,0 +1,26 @@
+# This configuration sends synthetic telemetry with no batching
+# to 127.0.0.1:4317.
+receivers:
+  generator:
+    path: ./hipster_shop.yaml
+
+exporters:
+  otelarrow/standard_otlp:
+    endpoint: 127.0.0.1:4317
+    tls:
+      insecure: true
+    arrow:
+      disabled: true
+    
+service:
+  pipelines:
+    traces/generate:
+      receivers: [generator]
+      processors: []
+      exporters: [otelarrow/standard_otlp]
+
+    metrics:
+      receivers: [generator]
+      processors: []
+      exporters: [otelarrow/standard_otlp]
+    

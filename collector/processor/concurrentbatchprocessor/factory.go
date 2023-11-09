@@ -14,7 +14,7 @@ import (
 
 const (
 	// The value of "type" key in configuration.
-	typeStr = "batch"
+	typeStr = "concurrentbatch"
 
 	defaultSendBatchSize = uint32(8192)
 	defaultTimeout       = 200 * time.Millisecond

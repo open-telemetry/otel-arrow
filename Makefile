@@ -11,8 +11,6 @@ MODULES := $(shell find . -name go.mod)
 
 GODIRS := $(foreach d,$(MODULES),$(shell dirname $d))
 GOCMD?= go
-GOOS := $(shell $(GOCMD) env GOOS)
-GOARCH := $(shell $(GOCMD) env GOARCH)
 BUILD_INFO=-ldflags "-X $(BUILD_INFO_IMPORT_PATH).Version=$(VERSION)"
 VERSION=$(shell git describe --always --match "v[0-9]*" HEAD)
 BUILD_INFO_IMPORT_PATH=go.opentelemetry.io/collector/internal/version
@@ -120,7 +118,7 @@ genotelarrowcol: builder
 otelarrowcol:
 	(cd collector/cmd/otelarrowcol && \
 		GO111MODULE=on CGO_ENABLED=0 \
-		$(GOCMD) build -trimpath -o ../../../bin/otelarrowcol_$(GOOS)_$(GOARCH) $(BUILD_INFO) .)
+		$(GOCMD) build -trimpath -o ../../../bin/otelarrowcol $(BUILD_INFO) .)
 
 .PHONY: docker-otelarrowcol
 docker-otelarrowcol:

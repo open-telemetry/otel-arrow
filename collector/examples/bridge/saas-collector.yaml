@@ -16,13 +16,8 @@ receivers:
             max_connection_age: 10s
             max_connection_age_grace: 10s
 
-      # Enable arrow for the bridge.
-      arrow:
-        disabled: false
-
 exporters:
-  logging:      
-    verbosity: detailed
+  debug:      
 
   otlphttp:
     # You can use an HTTP listener on port 5001 to see the headers
@@ -52,12 +47,12 @@ service:
       # Note there is no need to re-apply the batch processor on the
       # SaaS-side of a bridge.
       processors: []
-      exporters: [otlphttp]
+      exporters: [debug, otlphttp]
 
     metrics:
       receivers: [otelarrow]
       processors: []
-      exporters: [otlphttp]
+      exporters: [debug, otlphttp]
       
   telemetry:
     metrics:

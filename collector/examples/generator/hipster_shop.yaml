@@ -8,13 +8,13 @@ topology:
             version: v127
             error: true
           csv_tags:
-            customer: "./generator/mock_customer_tags.csv"
+            customer: "./mock_customer_tags.csv"
         - weight: 1
           flag_unset: frontend_errors
           tags:
             version: v125
           csv_tags:
-            customer: "./generator/mock_customer_tags.csv"
+            customer: "./mock_customer_tags.csv"
       resourceAttrSets:
         - weight: 1
           kubernetes:

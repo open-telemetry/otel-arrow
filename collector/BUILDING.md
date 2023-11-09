@@ -13,7 +13,7 @@ you are trying to modify and build code in this repository, see
 [../CONTRIBUTING.md][CONTRIBUTING], otherwise the instructions here
 will help you simply build the code in order to try it out.
 
-## Building the demonstration collector from an installed Golang toolchain
+## Building a collector from local sources using an installed Golang toolchain
 
 The `./cmd/otelarrowcol` directory contains a pre-generated collector
 build with a set of demonstration components detailed in
@@ -22,8 +22,8 @@ build with a set of demonstration components detailed in
 Users who have a recent Golang toolchain installed and wish to build a
 collector for the host operating system can simply run `make
 otelarrowcol` at the top level of this repository.  The executable is
-placed in `./bin/otelarrowcol_$(GOOS)_$(GOARCH)`.  You will be able to
-run the [examples][EXAMPLES] using the resulting artifact.
+placed in `./bin/otelarrowcol`.  You will be able to run the
+[examples][EXAMPLES] using the resulting artifact.
 
 ```
 make otelarrowcol
@@ -40,7 +40,22 @@ go run ./collector/cmd/otelarrowcol --config collector/examples/bridge/edge-coll
 Note that the `go.work` file in the top-level of this repository
 enables running `otelarrowcol` from the top-level directory.
 
-## Building a custom collector using Docker
+## Installing a collector using remote sources with an installed Golang toolchain
+
+The `go install` command can build and install a collector by
+downloading the sources to the latest release itself.
+
+```
+go install github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol
+```
+
+This installs `otelarrowcol`, which can be run with, e.g.,
+
+```
+otelarrowcol --config <path-to-config.yaml>
+```
+
+## Building a collector from local sources using Docker
 
 Some vendors and platform providers offer pre-built OpenTelemetry
 collector "distros" including compoments they recommend for use.  When
