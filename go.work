@@ -4,4 +4,5 @@ use (
 	.
 	./collector
 	./collector/cmd/otelarrowcol
+	./collector/examples/printer
 )

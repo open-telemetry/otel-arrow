@@ -1,10 +1,9 @@
 # Building the components in this repository
 
 There are several options for building the components in this
-repository.  This is a Golang code base, however users familiar with
-building and installing Golang code using `go install` commands will
-be disappointed.  Due to complications with Go module dependencies,
-the process is a bit more elaborate.
+repository.  This is a Golang code base, so users familiar with
+building and installing Golang will find this easy to do using Golang
+tools.  Docker build instructions are also provided.
 
 The recommended practice for building the OpenTelemetry Collector uses
 a [`builder` tool][BUILDER].  The builder synthesizes a Golang

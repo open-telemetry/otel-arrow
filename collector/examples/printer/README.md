@@ -7,4 +7,11 @@ requests to the console,
 go run .
 ```
 
+or
+
+```
+docker build . -t printer
+docker run printer
+```
+
 Optionally, add `--verbose` to print the data in JSON format.
