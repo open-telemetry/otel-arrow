@@ -7,6 +7,15 @@ receivers:
 exporters:
   otelarrow/standard_otlp:
     endpoint: 127.0.0.1:4317
+    headers:
+      # the following is the value of:
+      #   fmt.Println(func(user, pw string) string {
+      #   	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pw))
+      #   }("testuser", "testpw"))
+      # which is what the ../metadata-bridge/edge-collector.yaml example 
+      # is configured to accept.
+      - Authorization: "Basic dGVzdHVzZXI6dGVzdHB3"
+        
     tls:
       insecure: true
     arrow:

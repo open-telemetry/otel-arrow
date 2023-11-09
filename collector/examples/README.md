@@ -15,10 +15,6 @@ one of the methods document in [BUILDING](../BUILDING.md).
   and from itself.
 - [`recorder`](./recorder/README.md): A collector with support for
   recording data files for diagnostic and benchmark purposes.
-- [`synthesize`](./synthesize/README.md): A collector with support for
-  synthesizing telemetry data using a
-  [telemetry-generator](https://github.com/lightstep/telemetry-generator)
-  component.
   
 Here are some tools used in running these examples:
 

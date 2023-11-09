@@ -1,4 +1,4 @@
-# Telemetry generator example configuration
+# Example: Telemetry generator configuration
 
 The collector configuration in this directory produces synthetic
 telemetry and exports to the standard port (4317) used by OTLP and

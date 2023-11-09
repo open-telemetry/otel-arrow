@@ -1,4 +1,4 @@
-# Example OpenTelemetry Protocol data printer
+# Example: OpenTelemetry Protocol headers and data printer
 
 To execute the printer, which writes a summary of OpenTelemetry export
 requests to the console,
