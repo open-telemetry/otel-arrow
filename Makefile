@@ -29,7 +29,7 @@ build:
 	for dir in $(GODIRS); do (cd $${dir} && $(GOCMD) build ./...); done
 
 gotidy:
-	$(GOCMD) go work sync
+	$(GOCMD) work sync
 
 doc:
 	$(GOCMD) run tools/data_model_gen/main.go
