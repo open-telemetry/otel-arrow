@@ -10,6 +10,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [0.7.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.7.0) - 2023-11-10
 
+- New "concurrentbatchprocessor" component under development (#71, #79, #90)
 - Update examples, add Docker build (#92)
 - Collector v0.88.0 dependency updates (#76)
 - Network statistics correctness (#70)
