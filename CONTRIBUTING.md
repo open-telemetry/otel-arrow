@@ -1,8 +1,7 @@
 # Contributing to the OpenTelemetry Protocol with Apache Arrow project
 
 We want to make contributing to this project as easy and transparent
-as possible.  Please see the OpenTelemetry
-[CONTRIBUTING.md](https://github.com/open-telemetry/community/blob/main/CONTRIBUTING.md)
+as possible.  Please see the OpenTelemetry [CONTRIBUTING.md][]
 guidelines for project-wide information, including code of conduct,
 and contributor license agreements, copyright notices, and how to
 engage with the OpenTelemetry community.
@@ -52,7 +51,7 @@ generated files present in the `./proto/api/collector/arrow/v1` directory.
 
 ### Releasing this repository
 
-See the instructions in [RELEASING.md][./RELEASING.md].
+See the instructions in [RELEASING.md][].
 
 ### Local development issues
 
@@ -75,6 +74,8 @@ the easiest way to upgrade this repository is:
 3. Regenerate `otelarrowcol` via `make genotelarrowcol`
 4. Run `go work sync` to update the other modules with fresh dependencies.
 
+[CONTRIBUTING.md]: ./CONTRIBUTING.md
+[RELEASING.md]: ./RELEASING.md
 [OTCDOCS]: https://opentelemetry.io/docs/collector/
 [OTCGH]: https://github.com/open-telemetry/opentelemetry-collector
 [OACGH]: https://github.com/open-telemetry/otel-arrow-collector
