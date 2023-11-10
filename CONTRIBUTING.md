@@ -63,7 +63,7 @@ statements, which interfere with the ability to run them via simple
 three module definitions inside this repository and allows them all to
 be used at once during local development.
 
-### Upgrading OpenTelemtry Collector dependencies
+### Upgrading OpenTelemetry Collector dependencies
 
 When a new version of the OpenTelemetry collector, is available,
 the easiest way to upgrade this repository is:
