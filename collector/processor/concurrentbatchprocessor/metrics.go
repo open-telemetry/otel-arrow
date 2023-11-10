@@ -36,6 +36,11 @@ const (
 	triggerTimeout trigger = iota
 	triggerBatchSize
 	triggerShutdown
+
+	// metricTypeStr is the name used in metrics, so that this component can be
+	// monitored using the same metric names of the upstream batchprocessor.
+	// They still have different `processor` attributes.
+	metricTypeStr = "batch"
 )
 
 func init() {
@@ -48,7 +53,7 @@ func metricViews() []*view.View {
 	processorTagKeys := []tag.Key{processorTagKey}
 
 	countBatchSizeTriggerSendView := &view.View{
-		Name:        processorhelper.BuildCustomMetricName(typeStr, statBatchSizeTriggerSend.Name()),
+		Name:        processorhelper.BuildCustomMetricName(metricTypeStr, statBatchSizeTriggerSend.Name()),
 		Measure:     statBatchSizeTriggerSend,
 		Description: statBatchSizeTriggerSend.Description(),
 		TagKeys:     processorTagKeys,
@@ -56,7 +61,7 @@ func metricViews() []*view.View {
 	}
 
 	countTimeoutTriggerSendView := &view.View{
-		Name:        processorhelper.BuildCustomMetricName(typeStr, statTimeoutTriggerSend.Name()),
+		Name:        processorhelper.BuildCustomMetricName(metricTypeStr, statTimeoutTriggerSend.Name()),
 		Measure:     statTimeoutTriggerSend,
 		Description: statTimeoutTriggerSend.Description(),
 		TagKeys:     processorTagKeys,
@@ -64,7 +69,7 @@ func metricViews() []*view.View {
 	}
 
 	distributionBatchSendSizeView := &view.View{
-		Name:        processorhelper.BuildCustomMetricName(typeStr, statBatchSendSize.Name()),
+		Name:        processorhelper.BuildCustomMetricName(metricTypeStr, statBatchSendSize.Name()),
 		Measure:     statBatchSendSize,
 		Description: statBatchSendSize.Description(),
 		TagKeys:     processorTagKeys,
@@ -72,7 +77,7 @@ func metricViews() []*view.View {
 	}
 
 	distributionBatchSendSizeBytesView := &view.View{
-		Name:        processorhelper.BuildCustomMetricName(typeStr, statBatchSendSizeBytes.Name()),
+		Name:        processorhelper.BuildCustomMetricName(metricTypeStr, statBatchSendSizeBytes.Name()),
 		Measure:     statBatchSendSizeBytes,
 		Description: statBatchSendSizeBytes.Description(),
 		TagKeys:     processorTagKeys,
@@ -134,35 +139,35 @@ func (bpt *batchProcessorTelemetry) createOtelMetrics(mp metric.MeterProvider, c
 	meter := mp.Meter(scopeName)
 
 	bpt.batchSizeTriggerSend, err = meter.Int64Counter(
-		processorhelper.BuildCustomMetricName(typeStr, "batch_size_trigger_send"),
+		processorhelper.BuildCustomMetricName(metricTypeStr, "batch_size_trigger_send"),
 		metric.WithDescription("Number of times the batch was sent due to a size trigger"),
 		metric.WithUnit("1"),
 	)
 	errors = multierr.Append(errors, err)
 
 	bpt.timeoutTriggerSend, err = meter.Int64Counter(
-		processorhelper.BuildCustomMetricName(typeStr, "timeout_trigger_send"),
+		processorhelper.BuildCustomMetricName(metricTypeStr, "timeout_trigger_send"),
 		metric.WithDescription("Number of times the batch was sent due to a timeout trigger"),
 		metric.WithUnit("1"),
 	)
 	errors = multierr.Append(errors, err)
 
 	bpt.batchSendSize, err = meter.Int64Histogram(
-		processorhelper.BuildCustomMetricName(typeStr, "batch_send_size"),
+		processorhelper.BuildCustomMetricName(metricTypeStr, "batch_send_size"),
 		metric.WithDescription("Number of units in the batch"),
 		metric.WithUnit("1"),
 	)
 	errors = multierr.Append(errors, err)
 
 	bpt.batchSendSizeBytes, err = meter.Int64Histogram(
-		processorhelper.BuildCustomMetricName(typeStr, "batch_send_size_bytes"),
+		processorhelper.BuildCustomMetricName(metricTypeStr, "batch_send_size_bytes"),
 		metric.WithDescription("Number of bytes in batch that was sent"),
 		metric.WithUnit("By"),
 	)
 	errors = multierr.Append(errors, err)
 
 	bpt.batchMetadataCardinality, err = meter.Int64ObservableUpDownCounter(
-		processorhelper.BuildCustomMetricName(typeStr, "metadata_cardinality"),
+		processorhelper.BuildCustomMetricName(metricTypeStr, "metadata_cardinality"),
 		metric.WithDescription("Number of distinct metadata value combinations being processed"),
 		metric.WithUnit("1"),
 		metric.WithInt64Callback(func(_ context.Context, obs metric.Int64Observer) error {

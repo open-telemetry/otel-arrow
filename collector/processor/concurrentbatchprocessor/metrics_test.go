@@ -112,7 +112,7 @@ func setupTelemetry(t *testing.T, useOtel bool) testTelemetry {
 func (tt *testTelemetry) NewProcessorCreateSettings() processor.CreateSettings {
 	settings := processortest.NewNopCreateSettings()
 	settings.MeterProvider = tt.meterProvider
-	settings.ID = component.NewID(typeStr)
+	settings.ID = component.NewID(metricTypeStr)
 
 	return settings
 }
