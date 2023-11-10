@@ -56,12 +56,12 @@ See the instructions in [RELEASING.md][./RELEASING.md].
 
 ### Local development issues
 
-This repository contains a top-level `go.work` file, as an experiment.
-This enables the Go modules defined here to avoid relative replace
-statements, which interfere with the ability to run them via simple
-`go install` and `go run` commands.  The `go.work` file names the
-three module definitions inside this repository and allows them all to
-be used at once during local development.
+This repository contains a top-level `go.work` file.  This enables the
+Go modules defined here to avoid relative replace statements, which
+interfere with the ability to run them via simple `go install` and `go
+run` commands.  The `go.work` file names all the module definitions
+inside this repository and allows them all to be used at once during
+local development.
 
 ### Upgrading OpenTelemetry Collector dependencies
 
