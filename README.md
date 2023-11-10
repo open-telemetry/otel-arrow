@@ -11,7 +11,7 @@ reference implementation.
 ## Quick start
 
 Instructions for building an OpenTelemetry Collector with the modules
-in this repository are provided in [`BUILDING.md`][./collector/BUILDING.md].
+in this repository are provided in [BUILDING.md][].
 
 Examples for running the OpenTelemetry Collector with the modules in
 this repository are documented in
@@ -175,8 +175,12 @@ data has not been updated and this collector is still fundamentally row-oriented
 
 Pull requests are welcome. For major changes, please open an issue
 first to discuss what you would like to change.  For more information, please
-read [CONTRIBUTING](CONTRIBUTING.md).
+read [CONTRIBUTING.md][].
 
 ## License
 
 OpenTelemetry Protocol with Apache Arrow Protocol Adapter is licensed under Apache 2.0.
+
+[CONTRIBUTING.md]: ./CONTRIBUTING.md
+[BUILDING.md]: ./BUILDING.md
+

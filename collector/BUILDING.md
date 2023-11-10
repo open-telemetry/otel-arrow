@@ -9,7 +9,7 @@ The recommended practice for building the OpenTelemetry Collector uses
 a [`builder` tool][BUILDER].  The builder synthesizes a Golang
 `go.mod` file and main package with a specific set of components.  If
 you are trying to modify and build code in this repository, see
-[../CONTRIBUTING.md][CONTRIBUTING], otherwise the instructions here
+[CONTRIBUTING.md][], otherwise the instructions here
 will help you simply build the code in order to try it out.
 
 ## Building a collector from local sources using an installed Golang toolchain
@@ -69,19 +69,13 @@ modified for integration into a custom build and release pipeline.
 With Docker installed, simply run:
 
 ```
-docker build . -t otelarrowcol
+make docker-otelarrowcol
 ```
 
-This command is also available as `make docker-otelarrowcol`.  You
-will be able to run the [examples][EXAMPLES] using the resulting
-`otelarrowcol` image, e.g.,
-
-```
-docker run otelarrowcol --config collector/examples/bridge/edge-collector.yaml
-```
+You will now be able to run the [examples][EXAMPLES] using the
+resulting `otelarrowcol` image.
 
 [BUILDER]: https://github.com/open-telemetry/opentelemetry-collector/blob/main/cmd/builder/README.md
-[CONTRIBUTING]: ../CONTRIBUTING.md
+[CONTRIBUTING.md]: ../CONTRIBUTING.md
 [EXAMPLES]: ./examples/README.md
-[BUILDCONFIG]: ./cmd/otelarrowcol/build-config.yaml
-[GCPSAMPLE]: https://github.com/GoogleCloudPlatform/opentelemetry-collector-builder-sample
+[BUILDCONFIG]: ./otelarrowcol-build.yaml
