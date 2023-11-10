@@ -6,7 +6,7 @@ receivers:
 
 processors:
   # The batch processor will benefit pipelines with small export sizes.
-  batch:
+  concurrentbatch:
 
 exporters:
   # otelarrow/arrow is an OTel-Arrow exporter.
@@ -29,30 +29,18 @@ exporters:
     # is ready.
     wait_for_ready: true
 
-    # Enable the Arrow exporter
-    arrow:
-      disabled: false
-
-      # disable_downgrade forces this connection to use Arrow.
-      disable_downgrade: true
-
-      # num_streams can be set to the the number of available CPUs
-      # to maximize throughput.
-      num_streams: 4
-
-  logging:
-    verbosity: detailed
+  debug:
 
 service:
   pipelines:
     traces:
       receivers: [otelarrow/standard]
-      processors: [batch]
-      exporters: [otelarrow/arrow]
+      processors: [concurrentbatch]
+      exporters: [otelarrow/arrow, debug]
     metrics:
       receivers: [otelarrow/standard]
-      processors: [batch]
-      exporters: [otelarrow/arrow]
+      processors: [concurrentbatch]
+      exporters: [otelarrow/arrow, debug]
 
   telemetry:
     resource:

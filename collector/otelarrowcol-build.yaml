@@ -1,0 +1,65 @@
+# This file describes a sample OpenTelemetry Collector build
+# containing the primary OpenTelemetry Protocol with Apache Arrow
+# components and a few generally useful components from the
+# OpenTelemetry Collector Contrib repository that have proven useful.
+#
+# The full list of components is detailed below.  Many of these
+# components are optional and meant to assist with experimentation
+# and validation of the primary components.
+#
+# This configuration file be used as a starting point for building a
+# custom gateway collector for deploying OpenTelemetry Protocol with
+# Apache Arrow in production.  See the instructions in BUILDING.md.
+dist:
+  module: github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol
+  name: otelarrowcol
+  description: OpenTelemetry Protocol with Apache Arrow development collector, for testing and evaluation
+
+  # Note: this version number is replaced to match the current release using `sed`
+  # during the release process, see ../../../RELEASING.md.
+  version: 0.6.0
+
+  # Note: This should match the version of the core and contrib
+  # collector components used below (e.g., the debugexporter and
+  # otlphttpexporter versions below).
+  otelcol_version: 0.88.0
+
+  # Project-internal use: Directory path required for the `make
+  # genotelarrowcol`, which the Dockerfile also recognizes.
+  #
+  # Users: This can be customized for integration into your CI/CD system.
+  output_path: collector/cmd/otelarrowcol
+
+exporters:
+  # This is the core OpenTelemetry Protocol with Apache Arrow exporter
+  - import: github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.6.0
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.88.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.88.0
+  - import: github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.6.0
+
+receivers:
+  # This is the core OpenTelemetry Protocol with Apache Arrow receiver
+  - import: github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.6.0
+  - import: github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.6.0
+  - gomod: github.com/lightstep/telemetry-generator/generatorreceiver v0.15.0
+
+processors:
+  - import: github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.6.0
+  - import: github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.6.0
+  - import: github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.6.0
+
+connectors:
+  - import: github.com/open-telemetry/otel-arrow/collector/connector/validationconnector
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.6.0
+
+extensions:
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.88.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.88.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.88.0

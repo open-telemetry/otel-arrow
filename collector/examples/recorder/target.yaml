@@ -7,24 +7,19 @@ receivers:
         endpoint: 127.0.0.1:4317
       http:
         endpoint: 127.0.0.1:4318
-      arrow:
-        disabled: false
 
   # Data will be repeated to the second pipeline via Arrow.
   otelarrow/second:
     protocols:
       grpc:
-        endpoint: 127.0.0.1:8081
-      arrow:
-        disabled: false
+        endpoint: 127.0.0.1:8100
 
 exporters:
   otelarrow/forward:
     # Data is forwarded via Arrow to this receiver.
-    endpoint: 127.0.0.1:8081
+    endpoint: 127.0.0.1:8100
     wait_for_ready: true
     arrow:
-      disabled: false
       num_streams: 1
       disable_downgrade: true
     tls:
@@ -33,7 +28,6 @@ exporters:
       enabled: false
     sending_queue:
       enabled: false
-      num_consumers: 1
     timeout: 1s
   file/first_traces:
     path: "first.traces.json"
@@ -43,28 +37,28 @@ exporters:
     path: "first.metrics.json"
   file/second_metrics:
     path: "second.metrics.json"
-  logging/first:
-  logging/second:
+  debug/first:
+  debug/second:
 
 service:
   pipelines:
     traces/first:
       receivers: [otelarrow/first]
       processors: []
-      exporters: [logging/first, file/first_traces, otelarrow/forward]
+      exporters: [debug/first, file/first_traces, otelarrow/forward]
     metrics/first:
       receivers: [otelarrow/first]
       processors: []
-      exporters: [logging/first, file/first_metrics, otelarrow/forward]
+      exporters: [debug/first, file/first_metrics, otelarrow/forward]
 
     traces/second:
       receivers: [otelarrow/second]
       processors: []
-      exporters: [logging/second, file/second_traces]
+      exporters: [debug/second, file/second_traces]
     metrics/second:
       receivers: [otelarrow/second]
       processors: []
-      exporters: [logging/second, file/second_metrics]
+      exporters: [debug/second, file/second_metrics]
       
   telemetry:
     resource:
