@@ -11,8 +11,6 @@ MODULES := $(shell find . -name go.mod)
 
 GODIRS := $(foreach d,$(MODULES),$(shell dirname $d))
 GOCMD?= go
-GOOS := $(shell $(GOCMD) env GOOS)
-GOARCH := $(shell $(GOCMD) env GOARCH)
 BUILD_INFO=-ldflags "-X $(BUILD_INFO_IMPORT_PATH).Version=$(VERSION)"
 VERSION=$(shell git describe --always --match "v[0-9]*" HEAD)
 BUILD_INFO_IMPORT_PATH=go.opentelemetry.io/collector/internal/version
@@ -31,7 +29,7 @@ build:
 	for dir in $(GODIRS); do (cd $${dir} && $(GOCMD) build ./...); done
 
 gotidy:
-	for dir in $(GODIRS); do (cd $${dir} && $(GOCMD) mod tidy); done
+	$(GOCMD) work sync
 
 doc:
 	$(GOCMD) run tools/data_model_gen/main.go
@@ -90,32 +88,37 @@ endif
 	git diff -s --exit-code || (echo "local repository not clean"; exit 1)
 	# update files with new version
 	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' versions.yaml
-	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' collector/cmd/otelarrowcol/build.yaml
+	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' collector/otelarrowcol-build.yaml
 	find . -name "*.bak" -type f -delete
 	# commit changes before running multimod
 	git add .
 	git commit -m "prepare release $(RELEASE_CANDIDATE)"
 	$(MAKE) multimod-prerelease
-	# regenerate files
-	$(MAKE) genotelarrowcol
 	git add .
+	# regenerate files
+	$(MAKE) gotidy
+	# ensure a clean branch
+	git diff -s --exit-code || (echo "local repository not clean"; exit 1)
 	git commit -m "add multimod changes $(RELEASE_CANDIDATE)" || (echo "no multimod changes to commit")
 
-# OTC's builder can be installed using:
-#
-#   $(GOCMD) install go.opentelemetry.io/collector/cmd/builder@latest
-#
-# TODO install this locally
-BUILDER := builder
+# Install OTC's builder at the latest version
+BUILDER = builder
 .PHONY: $(BUILDER)
+builder:
+	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@latest
 
 .PHONY: genotelarrowcol
-genotelarrowcol:
-	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@latest
-	$(BUILDER) --skip-compilation --config collector/cmd/otelarrowcol/build.yaml --output-path collector/cmd/otelarrowcol
+genotelarrowcol: builder
+	rm -f collector/cmd/otelarrowcol/*
+	$(BUILDER) --skip-compilation --skip-get-modules --config collector/otelarrowcol-build.yaml
+	$(GOCMD) work sync
 
 .PHONY: otelarrowcol
 otelarrowcol:
 	(cd collector/cmd/otelarrowcol && \
 		GO111MODULE=on CGO_ENABLED=0 \
-		$(GOCMD) build -trimpath -o ../../../bin/otelarrowcol_$(GOOS)_$(GOARCH) $(BUILD_INFO) .)
+		$(GOCMD) build -trimpath -o ../../../bin/otelarrowcol $(BUILD_INFO) .)
+
+.PHONY: docker-otelarrowcol
+docker-otelarrowcol:
+	docker build . -t otelarrowcol

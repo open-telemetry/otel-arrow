@@ -4,8 +4,8 @@ receivers:
   otelarrow:
     protocols:
       grpc:
-        # Port 5000 is the endpoint used in edge-collector.
-        endpoint: 127.0.0.1:5000
+        # Port 8100 is the endpoint used in edge-collector.
+        endpoint: 127.0.0.1:8100
 
         # include_metadata is required for the receiver to pass
         # per-request metadata through to the pipeline.  This
@@ -15,18 +15,14 @@ receivers:
         auth:
           authenticator: basicauth
 
-      # Enable arrow for the bridge.
-      arrow:
-        disabled: false
-
 exporters:
-  logging:      
-    verbosity: detailed
+  debug:      
+    verbosity: normal
 
   otlphttp:
-    # You can use an HTTP listener on port 5001 to see the headers
+    # You can use an HTTP listener on port 8101 to see the headers
     # and raw data.
-    endpoint: http://127.0.0.1:5001
+    endpoint: http://127.0.0.1:8101
     compression: none
 
     # Associate the headers_setter extension with this exporter
@@ -58,7 +54,7 @@ service:
     traces:
       receivers: [otelarrow]
       processors: []
-      exporters: [logging, otlphttp]
+      exporters: [debug, otlphttp]
 
   telemetry:
     metrics:

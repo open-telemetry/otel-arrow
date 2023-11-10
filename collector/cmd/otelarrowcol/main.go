@@ -4,9 +4,9 @@
 package main
 
 import (
+	"log"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/otelcol"
-	"log"
 )
 
 func main() {
@@ -17,7 +17,7 @@ func main() {
 
 	info := component.BuildInfo{
 		Command:     "otelarrowcol",
-		Description: "Development OTel-Arrow Collector binary, testing only.",
+		Description: "OpenTelemetry Protocol with Apache Arrow development collector, for testing and evaluation",
 		Version:     "0.6.0",
 	}
 

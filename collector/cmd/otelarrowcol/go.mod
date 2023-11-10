@@ -2,26 +2,23 @@
 
 module github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol
 
-go 1.21
-
-toolchain go1.21.3
+go 1.20
 
 require (
 	github.com/lightstep/telemetry-generator/generatorreceiver v0.15.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.88.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.88.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.88.0
-	github.com/open-telemetry/otel-arrow/collector v0.6.0
+	github.com/open-telemetry/otel-arrow/collector v0.7.0
 	github.com/stretchr/testify v1.8.4
 	go.opentelemetry.io/collector/component v0.88.0
 	go.opentelemetry.io/collector/connector v0.88.0
 	go.opentelemetry.io/collector/exporter v0.88.0
-	go.opentelemetry.io/collector/exporter/loggingexporter v0.88.0
+	go.opentelemetry.io/collector/exporter/debugexporter v0.88.0
 	go.opentelemetry.io/collector/exporter/otlphttpexporter v0.88.0
 	go.opentelemetry.io/collector/extension v0.88.0
 	go.opentelemetry.io/collector/otelcol v0.88.0
 	go.opentelemetry.io/collector/processor v0.88.0
-	go.opentelemetry.io/collector/processor/batchprocessor v0.88.0
 	go.opentelemetry.io/collector/receiver v0.88.0
 	golang.org/x/sys v0.13.0
 )
@@ -84,7 +81,7 @@ require (
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/mostynb/go-grpc-compression v1.2.2 // indirect
-	github.com/open-telemetry/otel-arrow v0.6.0 // indirect
+	github.com/open-telemetry/otel-arrow v0.7.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.18 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
@@ -151,10 +148,10 @@ require (
 	golang.org/x/mod v0.11.0 // indirect
 	golang.org/x/net v0.17.0 // indirect
 	golang.org/x/text v0.13.0 // indirect
-	golang.org/x/tools v0.9.1 // indirect
+	golang.org/x/tools v0.10.0 // indirect
 	golang.org/x/xerrors v0.0.0-20220907171357-04be3eba64a2 // indirect
 	gonum.org/v1/gonum v0.14.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20230822172742-b8732ec3820d // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20230920204549-e6e6cdab5c13 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20231012201019-e917dd12ba7a // indirect
 	google.golang.org/grpc v1.59.0 // indirect
 	google.golang.org/protobuf v1.31.0 // indirect
@@ -163,9 +160,5 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/open-telemetry/otel-arrow => ../../..
-
-replace github.com/open-telemetry/otel-arrow/collector => ../../
-
 // ambiguous import: found package cloud.google.com/go/compute/metadata in multiple modules
-replace cloud.google.com/go => cloud.google.com/go v0.110.2
+replace cloud.google.com/go => cloud.google.com/go v0.110.9

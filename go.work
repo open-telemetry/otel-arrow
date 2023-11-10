@@ -1,0 +1,16 @@
+go 1.21.3
+
+use (
+	.
+	./collector
+	./collector/cmd/otelarrowcol
+	./collector/connector/validationconnector
+	./collector/examples/printer
+	./collector/exporter/fileexporter
+	./collector/exporter/otelarrowexporter
+	./collector/processor/concurrentbatchprocessor
+	./collector/processor/experimentprocessor
+	./collector/processor/obfuscationprocessor
+	./collector/receiver/filereceiver
+	./collector/receiver/otelarrowreceiver
+)

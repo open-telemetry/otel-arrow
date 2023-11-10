@@ -4,16 +4,14 @@ receivers:
     protocols:
       grpc:
         endpoint: 127.0.0.1:4317
-  # otelarrow/loopback receives OTel-Arrow traffic on port 4000
+  # otelarrow/loopback receives OTel-Arrow traffic on port 8100
   otelarrow/loopback:
     protocols:
       grpc:
-        endpoint: 127.0.0.1:4000
-      arrow:
-        disabled: false
+        endpoint: 127.0.0.1:8100
 
 processors:
-  batch:
+  concurrentbatch:
   # the experiment processor routes 1 in 3 requests to the Arrow
   # loopback exporter
   experiment:
@@ -32,20 +30,20 @@ exporters:
 
   # otelarrow/arrowout sends standard OTal Arrow to an external destination
   otelarrow/arrowout:
-    endpoint: 127.0.0.1:4000
+    endpoint: 127.0.0.1:8100
     # wait_for_ready ensures the exporter doesn't fallback to standard
     # OTLP because the exporter has not started.
     wait_for_ready: true
     tls:
       insecure: true
     arrow:
-      disabled: false
       num_streams: 1
+      disable_downgrade: true
 
-  logging/info:      
-    loglevel: info
-  logging/debug:      
-    loglevel: debug
+  debug/info:      
+    verbosity: normal
+  debug/debug:      
+    verbosity: detailed
 
 service:
   pipelines:
@@ -53,15 +51,15 @@ service:
     # standard output or via the loopback.  it prints an info.
     traces/normal:
       receivers: [otelarrow/stdin]
-      processors: [batch, experiment]
-      exporters: [logging/info, otelarrow/stdout, otelarrow/arrowout]
+      processors: [concurrentbatch, experiment]
+      exporters: [debug/info, otelarrow/stdout, otelarrow/arrowout]
 
     # experiment processes data send via Arrow through the loopback.
     # it prints a debug log.
     traces/experiment:
       receivers: [otelarrow/loopback]
-      processors: [batch]
-      exporters: [logging/debug, otelarrow/stdout]
+      processors: []
+      exporters: [debug/debug, otelarrow/stdout]
 
   telemetry:
     metrics:

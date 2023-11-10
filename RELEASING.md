@@ -10,24 +10,27 @@ git pull upstream main
 git checkout -b release_xx_yy_zz
 ```
 
-2. Using Make, prepare the release means updating Go modules and
-   checking in the changes, for example,
+2. Make sure the CHANGELOG.md file is up to date, add entries 
+   describing the changes in the new release.
+
+3. Using Make, prepare the release means updating Go modules and
+   checking in the changes, for example.  Edit 
 
 ```
 make prepare-release
 ```
 
-3. Push the branch and open a PR to submit these changes to the
+4. Push the branch and open a PR to submit these changes to the
    upstream repository's main branch.
 
-4. After merging the PR, pull the upstream commit, for example,
+5. After merging the PR, pull the upstream commit, for example,
 
 ```
 git checkout main
 git pull upstream main
 ```
 
-5. Push the release, for example,
+6. Push the release, for example,
 
 ```
 make push-release

@@ -7,8 +7,6 @@ receivers:
     protocols:
       grpc:
         endpoint: 127.0.0.1:8082
-      arrow:
-        disabled: false
   file/first_metrics:
     path: "first.metrics.json"
     throttle: 0
@@ -21,7 +19,6 @@ exporters:
     endpoint: 127.0.0.1:8082
     wait_for_ready: true
     arrow:
-      disabled: false
       num_streams: 1
       disable_downgrade: true
     tls:
@@ -30,10 +27,9 @@ exporters:
       enabled: false
     sending_queue:
       enabled: false
-      num_consumers: 1
-    timeout: 1s
-  logging/first:
-  logging/second:
+    timeout: 10s
+  debug/first:
+  debug/second:
   file/second_traces:
     path: "second.traces.json"
   file/second_metrics:
@@ -44,20 +40,20 @@ service:
     traces/first:
       receivers: [file/first_traces]
       processors: []
-      exporters: [logging/first, otelarrow/forward]
+      exporters: [debug/first, otelarrow/forward]
     metrics/first:
       receivers: [file/first_metrics]
       processors: []
-      exporters: [logging/first, otelarrow/forward]
+      exporters: [debug/first, otelarrow/forward]
 
     traces/second:
       receivers: [otelarrow/second]
       processors: []
-      exporters: [logging/second, file/second_traces]
+      exporters: [debug/second, file/second_traces]
     metrics/second:
       receivers: [otelarrow/second]
       processors: []
-      exporters: [logging/second, file/second_metrics]
+      exporters: [debug/second, file/second_metrics]
       
   telemetry:
     resource:

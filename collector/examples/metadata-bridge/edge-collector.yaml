@@ -34,7 +34,7 @@ exporters:
   # The OTLP/Arrow exporter sends to a local corresponding with
   # saas-collector.yaml.
   otelarrow/arrow:
-    endpoint: 127.0.0.1:5000
+    endpoint: 127.0.0.1:8100
 
     # For demonstration purposes, use an insecure port.  This would
     # also be normal for a collector behind a loadbalancer that
@@ -73,7 +73,7 @@ exporters:
     auth:
       authenticator: headers_setter
 
-  logging:      
+  debug:      
     verbosity: normal
 
 processors:
@@ -86,7 +86,7 @@ service:
     traces:
       receivers: [otelarrow/standard]
       processors: []
-      exporters: [logging, otelarrow/arrow]
+      exporters: [debug, otelarrow/arrow]
 
   telemetry:
     # Enable a prometheus /metrics endpoint on :8888
