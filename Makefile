@@ -88,7 +88,7 @@ endif
 	git diff -s --exit-code || (echo "local repository not clean"; exit 1)
 	# update files with new version
 	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' versions.yaml
-	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' collector/otelarrow-build.yaml
+	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' collector/otelarrowcol-build.yaml
 	find . -name "*.bak" -type f -delete
 	# commit changes before running multimod
 	git add .
