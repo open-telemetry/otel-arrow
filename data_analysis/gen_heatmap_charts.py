@@ -39,9 +39,9 @@ pivot_improvement = grouped_improvement.pivot(index='Batch size', columns='Max b
 # Plot the heatmap for the average percentage of compressed size improvement with an inverted color scale
 plt.figure(figsize=(12, 9))
 sns.heatmap(pivot_improvement, annot=True, fmt=".1f", cmap="YlGnBu_r", linewidths=.5)
-plt.title('Average Percentage of Compressed Size Improvement of OTel Arrow over OTLP')
-plt.xlabel('Max Batches Per Stream')
-plt.ylabel('Batch Size')
+plt.title('Avg % of Compressed Size Improvement of\nOpenTelemetry Protocol with Apache Arrow over OTLP (zstd compression)')
+plt.xlabel('Connection duration (in max batches per connection)')
+plt.ylabel('Batch Size (in spans per batch)')
 # Add percentage signs to the annotations
 for text in plt.gca().texts:
     text.set_text(text.get_text() + "%")
