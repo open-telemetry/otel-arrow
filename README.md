@@ -11,7 +11,7 @@ reference implementation.
 ## Quick start
 
 Instructions for building an OpenTelemetry Collector with the modules
-in this repository are provided in [BUILDING.md][].
+in this repository are provided in [BUILDING.md](./collector/BUILDING.md).
 
 Examples for running the OpenTelemetry Collector with the modules in
 this repository are documented in
@@ -39,22 +39,36 @@ data relatively simple and easy to interpret.  Because of this design,
 users of OTLP will typically configure network compression.  In
 environments where telemetry data will be shipped to a service
 provider across a wide-area network, users would like more compression
-than can be achieved using a stateless protocol.
+than can be achieved using a row-based data model and a stateless protocol.
 
 ## Project goals
 
-The OpenTelemetry Protocol with Apache Arrow project is organized in phases.  Our initial aim is to
-facilitate traffic reduction between a pair of OpenTelemetry
-collectors, and ultimately, we believe that an end-to-end OpenTelemetry Protocol with Apache Arrow
-pipeline will enable telemetry pipelines with substantially lower
-overhead to be built.  These are our future milestones for
-OpenTelemetry and Apache Arrow integration:
+This is organized in phases. Our initial aim is to facilitate traffic reduction
+between a pair of OpenTelemetry collectors as illustrated in the following
+diagram.
 
-1. Improve compression performance for OpenTelemetry data collection
-2. Extend OpenTelemetry client SDKs to natively support the OpenTelemetry Protocol with Apache Arrow Protocol
-3. Extend the OpenTelemetry collector with direct support for OpenTelemetry Protocol with Apache Arrow pipelines
-4. Extend OpenTelemetry data model with support for multi-variate metrics.
-5. Output OpenTelemetry data to the Parquet file format, part of the Apache Arrow ecosystem
+![Traffic reduction use case](docs/img/traffic_reduction_use_case.png)
+
+The collector provided in this repository implements a new Arrow Receiver and
+Exporter able to fallback on standard OTLP when needed. The following diagram is
+an overview of this integration. In this first phase, the internal
+representation of the telemetry data is still fundamentally row-oriented.
+
+![collector internal overview](docs/img/collector_internal_overview.png)
+
+Ultimately, we believe that an end-to-end OpenTelemetry Protocol with Apache
+Arrow pipeline will enable telemetry pipelines with substantially lower
+overhead to be built. These are our future milestones for OpenTelemetry and
+Apache Arrow integration:
+
+1. Extend OpenTelemetry client SDKs to natively support the OpenTelemetry  
+   Protocol with Apache Arrow Protocol
+2. Extend the OpenTelemetry collector with direct support for OpenTelemetry
+   Protocol with Apache Arrow pipelines
+3. Extend OpenTelemetry data model with native support for multi-variate
+   metrics.
+4. Output OpenTelemetry data to the Parquet file format, part of the Apache
+   Arrow ecosystem
 
 ### Improve network-level compression with OpenTelemetry Protocol with Apache Arrow
 
@@ -68,9 +82,9 @@ to compactly encode and transmit telemetry using Apache Arrow.
 2. Calculate distinct attribute sets used by Resources, Scopes,
    Metrics, Logs, Spans, Span Events, and Span Links, then encode and
    transmit each distinct entity once per stream lifetime.
-3. Use Apache Arrow's built-in support for encoding dictionaries,
-   delta-dictionaries, and other low-level facilities to compactly
-   encode the structure.
+3. Use Apache Arrow's built-in support for encoding dictionaries and leverage
+   other purpose-built low-level facilities, such as delta-dictionaries and 
+   sorting, to encode structures compactly.
 
 Here is a diagram showing how the protocol transforms OTLP Log Records
 into column-oriented data, which also makes the data more compressible.
@@ -149,27 +163,27 @@ metrics (see left column).
 
 ![compression_ratio](./docs/img/compression_ratio_summary_multivariate_metrics.png)
 
+The following heatmap represents, for different combinations of batch sizes and
+connection durations (expressed as the number of batches per stream), the
+additional percentage of compression gain between this new protocol and OTLP,
+both compressed with ZSTD. The data used here comes from a traffic of spans
+captured in a production environment. The gains are substantial in most cases.
+It is even interesting to note that these gains compared to OTLP+ZSTD are more
+significant for moderate-sized batches (e.g., 100 and 1000 spans per batch),
+which makes this protocol also interesting for scenarios where the additional
+latency introduced by batching must be minimized. There is hardly any scenario
+where micro-batches (e.g., 10 spans per batch) make the overhead of the Arrow
+schema prohibitive, and the advantage of a columnar representation becomes
+negligible. In other cases, this initial overhead is very quickly offset after
+just the first few batches. The columnar organization also lends itself better
+to compression. For very large batch sizes, ZSTD does an excellent job as long
+as the compression window is sufficiently large, but even in this case, the new
+protocol remains superior. As previously mentioned, these compression gains can
+be higher for traffic predominantly containing multivariate metrics.
+
+![Avg % of compressed size improvement of OpenTelemetry Protocol with Apache Arrow over OTLP (zstd compression)](./docs/img/average_improvement_heatmap.png)
+
 For more details, see the following [benchmark results](docs/benchmarks.md) page.
- 
-## Phase 1 (current implementation)
-
-This first step is intended to address the specific use cases of traffic reduction. Based on community feedback, many
-companies want to reduce the cost of transferring telemetry data over the Internet. By adding a collector that acts as
-a point of integration and traffic conversion at the edge of a client environment, we can take advantage of the columnar
-format to eliminate redundant data and optimize the compression rate. This is illustrated in the following diagram.
-
-![Traffic reduction use case](docs/img/traffic_reduction_use_case.png)
-
-> Note 1: A fallback mechanism can be used to handle the case where the new protocol is not supported by the target. 
-> More on this mechanism in this [section](https://github.com/lquerel/oteps/blob/main/text/0156-columnar-encoding.md#protocol-extension-and-fallback-mechanism) of the OTEP. 
-
-The experimental collector implements on top of this library a new Arrow Receiver and Exporter able to fallback on
-standard OTLP when needed. The following diagram is an overview of this integration. The internal representation of the
-data has not been updated and this collector is still fundamentally row-oriented internally.
-
-![collector internal overview](docs/img/collector_internal_overview.png)
-
-> Note 2: A future phase 2 of this project will focus on implementing end-to-end OpenTelemetry Protocol with Apache Arrow to improve the overall performance.
 
 ### Developers
 
