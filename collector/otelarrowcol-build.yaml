@@ -22,7 +22,7 @@ dist:
   # Note: This should match the version of the core and contrib
   # collector components used below (e.g., the debugexporter and
   # otlphttpexporter versions below).
-  otelcol_version: 0.88.0
+  otelcol_version: 0.89.0
 
   # Project-internal use: Directory path required for the `make
   # genotelarrowcol`, which the Dockerfile also recognizes.
@@ -33,31 +33,31 @@ dist:
 exporters:
   # This is the core OpenTelemetry Protocol with Apache Arrow exporter
   - import: github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter
-    gomod: github.com/open-telemetry/otel-arrow/collector v0.7.0
-  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.88.0
-  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.88.0
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.8.0
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.89.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.89.0
   - import: github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter
-    gomod: github.com/open-telemetry/otel-arrow/collector v0.7.0
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.8.0
 
 receivers:
   # This is the core OpenTelemetry Protocol with Apache Arrow receiver
   - import: github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver
-    gomod: github.com/open-telemetry/otel-arrow/collector v0.7.0
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.8.0
   - import: github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver
-    gomod: github.com/open-telemetry/otel-arrow/collector v0.7.0
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.8.0
   - gomod: github.com/lightstep/telemetry-generator/generatorreceiver v0.15.0
 
 processors:
   - import: github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor
-    gomod: github.com/open-telemetry/otel-arrow/collector v0.7.0
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.8.0
   - import: github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor
-    gomod: github.com/open-telemetry/otel-arrow/collector v0.7.0
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.8.0
   - import: github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor
-    gomod: github.com/open-telemetry/otel-arrow/collector v0.7.0
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.8.0
 
 connectors:
   - import: github.com/open-telemetry/otel-arrow/collector/connector/validationconnector
-    gomod: github.com/open-telemetry/otel-arrow/collector v0.7.0
+    gomod: github.com/open-telemetry/otel-arrow/collector v0.8.0
 
 extensions:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.88.0

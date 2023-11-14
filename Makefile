@@ -29,7 +29,7 @@ build:
 	for dir in $(GODIRS); do (cd $${dir} && $(GOCMD) build ./...); done
 
 gotidy:
-	$(GOCMD) work sync
+	for dir in $(GODIRS); do (cd $${dir} && GOWORK="off" $(GOCMD) mod tidy); done
 
 doc:
 	$(GOCMD) run tools/data_model_gen/main.go
@@ -97,21 +97,26 @@ endif
 	git add .
 	# regenerate files
 	$(MAKE) gotidy
-	# ensure a clean branch
+	# ensure a clean branch (that was a test--gotidy should be idempotent and should not change the working dir again)
 	git diff -s --exit-code || (echo "local repository not clean"; exit 1)
+	$(GOCMD) run ./tools/replacer unfix
+	git add .
 	git commit -m "add multimod changes $(RELEASE_CANDIDATE)" || (echo "no multimod changes to commit")
 
-# Install OTC's builder at the latest version
+# Install OTC's builder at the version WHICH MUST MATCH collector/otelarrowcol-build.yaml
 BUILDER = builder
 .PHONY: $(BUILDER)
 builder:
-	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@latest
+	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@v0.89.0
 
 .PHONY: genotelarrowcol
 genotelarrowcol: builder
 	rm -f collector/cmd/otelarrowcol/*
-	$(BUILDER) --skip-compilation --skip-get-modules --config collector/otelarrowcol-build.yaml
+	GOWORK="off" $(GOCMD) run ./tools/replacer fix
+	GOWORK="off" $(BUILDER) --skip-compilation --config collector/otelarrowcol-build.yaml
+	GOWORK="off" $(GOCMD) run ./tools/replacer fix
 	$(GOCMD) work sync
+	$(MAKE) gotidy
 
 .PHONY: otelarrowcol
 otelarrowcol:
