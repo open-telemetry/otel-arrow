@@ -111,6 +111,8 @@ builder:
 genotelarrowcol: builder
 	rm -f collector/cmd/otelarrowcol/*
 	$(BUILDER) --skip-compilation --skip-get-modules --config collector/otelarrowcol-build.yaml
+	# this prevents ambiguious import for cloud.google.com/go/compute/metadata module
+	cd collector/cmd/otelarrowcol && $(GOCMD) get cloud.google.com/go && cd -
 	$(GOCMD) work sync
 
 .PHONY: otelarrowcol
