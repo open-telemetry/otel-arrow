@@ -87,7 +87,11 @@ func (pc *panicConsumer) ConsumeTraces(ctx context.Context, td ptrace.Traces) er
 	panic("testing panic")
 	return nil
 }
-func (pc *panicConsumer) ConsumeMetrics(ctx context.Context, td pmetric.Metrics) error {
+func (pc *panicConsumer) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
+	panic("testing panic")
+	return nil
+}
+func (pc *panicConsumer) ConsumeLogs(ctx context.Context, ld plog.Logs) error {
 	panic("testing panic")
 	return nil
 }
@@ -166,13 +170,13 @@ func TestBatchProcessorMetricsPanicRecover(t *testing.T) {
 	require.NoError(t, bp.Shutdown(context.Background()))
 }
 
-func TestBatchProcessorMetricsPanicRecover(t *testing.T) {
+func TestBatchProcessorLogsPanicRecover(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.SendBatchSize = 128
 	cfg.Timeout = 10 * time.Second
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	bp, err := newBatchMetricsProcessor(creationSet, &panicConsumer{}, cfg, true)
+	bp, err := newBatchLogsProcessor(creationSet, &panicConsumer{}, cfg, true)
 
 	require.NoError(t, err)
 	require.NoError(t, bp.Start(context.Background(), componenttest.NewNopHost()))
@@ -190,7 +194,7 @@ func TestBatchProcessorMetricsPanicRecover(t *testing.T) {
 		ld.ResourceLogs().At(0).CopyTo(sentResourceLogs.AppendEmpty())
 		wg.Add(1)
 		go func() {
-			err = batcher.ConsumeLogs(context.Background(), ld)
+			err = bp.ConsumeLogs(context.Background(), ld)
 			assert.Contains(t, err.Error(), "testing panic")
 			wg.Done()
 		}()
