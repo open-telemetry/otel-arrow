@@ -89,19 +89,24 @@ endif
 	# update files with new version
 	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' versions.yaml
 	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' collector/otelarrowcol-build.yaml
+	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' collector/cmd/otelarrowcol/main.go
 	find . -name "*.bak" -type f -delete
+	$(GOCMD) run ./tools/replacer fix
 	# commit changes before running multimod
 	git add .
 	git commit -m "prepare release $(RELEASE_CANDIDATE)"
 	$(MAKE) multimod-prerelease
 	git add .
+	git commit -m "multimode changes $(RELEASE_CANDIDATE)"
 	# regenerate files
 	$(MAKE) gotidy
-	# ensure a clean branch (that was a test--gotidy should be idempotent and should not change the working dir again)
-	git diff -s --exit-code || (echo "local repository not clean"; exit 1)
 	$(GOCMD) run ./tools/replacer unfix
 	git add .
-	git commit -m "add multimod changes $(RELEASE_CANDIDATE)" || (echo "no multimod changes to commit")
+	git commit -m "go mod tidy $(RELEASE_CANDIDATE)"
+	# ensure a clean branch (that was a test--gotidy should be idempotent and should not change the working dir again)
+	git diff -s --exit-code || (echo "local repository not clean"; exit 1)
+	git add .
+	git commit -m "remove replace statements $(RELEASE_CANDIDATE)" || (echo "no multimod changes to commit")
 
 # Install OTC's builder at the version WHICH MUST MATCH collector/otelarrowcol-build.yaml
 BUILDER = builder
@@ -117,6 +122,7 @@ genotelarrowcol: builder
 	GOWORK="off" $(GOCMD) run ./tools/replacer fix
 	$(GOCMD) work sync
 	$(MAKE) gotidy
+	GOWORK="off" $(GOCMD) run ./tools/replacer unfix
 
 .PHONY: otelarrowcol
 otelarrowcol:
