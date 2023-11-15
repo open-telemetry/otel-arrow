@@ -8,6 +8,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## [0.9.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.9.0) - 2023-11-15
+
+- No changes, testing release process.
+
+## [0.8.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.8.0) - 2023-11-15
+
+- No changes, testing release process.
+
 ## [0.7.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.7.0) - 2023-11-10
 
 - New "concurrentbatchprocessor" component under development (#71, #79, #90)
