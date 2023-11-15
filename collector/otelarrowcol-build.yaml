@@ -17,7 +17,7 @@ dist:
 
   # Note: this version number is replaced to match the current release using `sed`
   # during the release process, see ../../../RELEASING.md.
-  version: 0.7.0
+  version: 0.9.0
 
   # Note: This should match the version of the core and contrib
   # collector components used below (e.g., the debugexporter and
