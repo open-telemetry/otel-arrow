@@ -13,12 +13,8 @@ WORKDIR /otel-arrow
 COPY . .
 ENV CGO_ENABLED=0
 
-# Note we recommend using the latest released builder, which will
-# update the core OpenTelemetry collector libraries to the newest
-# possible versions.  When the latest set of collector dependencies
-# leads to a broken build here, this `latest` can instead be set
-# to the last-successful version of the OpenTelemetry collector.
-RUN go install go.opentelemetry.io/collector/cmd/builder@latest
+# Note the version MUST MATCH otelarrowcol-build.yaml
+RUN go install go.opentelemetry.io/collector/cmd/builder@v0.89.0
 
 # This command generates main.go, go.mod but does not update deps.
 RUN builder --skip-compilation --skip-get-modules --config=collector/otelarrowcol-build.yaml

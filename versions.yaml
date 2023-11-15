@@ -3,11 +3,12 @@
 
 module-sets:
   beta:
-    version: v0.7.0
+    version: v0.8.0
     modules:
       - github.com/open-telemetry/otel-arrow
       - github.com/open-telemetry/otel-arrow/collector
       - github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol
+      - github.com/open-telemetry/otel-arrow/collector/examples/printer
       - github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter
       - github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver
       - github.com/open-telemetry/otel-arrow/collector/connector/validationconnector
