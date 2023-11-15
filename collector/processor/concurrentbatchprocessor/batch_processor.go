@@ -362,8 +362,6 @@ func (b *shard) sendItems(trigger trigger) {
 
 func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 	respCh := make(chan error, 1)
-	// TODO: add a semaphore to only write to channel if sizeof(data) keeps
-	// us below some configured inflight byte limit.
 	item := dataItem{
 		data:       data,
 		responseCh: respCh,
@@ -379,7 +377,7 @@ func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 	}
 
 	bytes := int64(b.batch.sizeBytes(data))
-	err := b.sem.Acquire(b.exportCtx, bytes)
+	err := b.sem.Acquire(ctx, bytes)
 	if err != nil {
 		return err
 	}
