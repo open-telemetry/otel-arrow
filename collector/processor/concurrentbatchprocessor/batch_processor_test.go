@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor/testdata"
 	"go.opentelemetry.io/collector/client"
@@ -202,6 +204,106 @@ func TestBatchProcessorLogsPanicRecover(t *testing.T) {
 
 	wg.Wait()
 	require.NoError(t, bp.Shutdown(context.Background()))
+}
+
+func (b *shard) blockStart(done chan int) {
+	var items []dataItem
+	for {
+		select {
+		case item := <-b.newItem:
+			if item.data == nil {
+				continue
+			}
+			items = append(items, item)
+		case <-done:
+			for i := range items {
+				b.processItem(items[i])
+
+			}
+			return
+		}
+	}
+}
+
+func newBlockingBatchProcessor(set processor.CreateSettings, cfg *Config, batchFunc func() batch, useOtel bool) (*batchProcessor, error, chan int) {
+	bp := &batchProcessor{
+		logger: set.Logger,
+
+		sendBatchSize:    int(cfg.SendBatchSize),
+		sendBatchMaxSize: int(cfg.SendBatchMaxSize),
+		timeout:          cfg.Timeout,
+		batchFunc:        batchFunc,
+		shutdownC:        make(chan struct{}, 1),
+		maxInFlightBytes: int(cfg.MaxInFlightBytes),
+	}
+	exportCtx := client.NewContext(context.Background(), client.Info{
+		Metadata: client.NewMetadata(nil),
+	})
+	b := &shard{
+		processor: bp,
+		newItem:   make(chan dataItem, runtime.NumCPU()),
+		exportCtx: exportCtx,
+		batch:     bp.batchFunc(),
+		sem:       semaphore.NewWeighted(int64(bp.maxInFlightBytes)),
+	}
+
+	b.processor.goroutines.Add(1)
+	done := make(chan int, 1)
+	go b.blockStart(done)
+
+	bp.batcher = &singleShardBatcher{batcher: b}
+
+	bpt, err := newBatchProcessorTelemetry(set, bp.batcher.currentMetadataCardinality, useOtel)
+	if err != nil {
+		return nil, fmt.Errorf("error creating batch processor telemetry: %w", err), done
+	}
+	bp.telemetry = bpt
+
+	return bp, nil, done
+}
+
+func TestBatchProcessorCancelContext(t *testing.T) {
+	sink := new(consumertest.TracesSink)
+	cfg := createDefaultConfig().(*Config)
+	cfg.SendBatchSize = 128
+	cfg.Timeout = 10 * time.Second
+	creationSet := processortest.NewNopCreateSettings()
+	creationSet.MetricsLevel = configtelemetry.LevelDetailed
+	batcher, err, doneCh := newBlockingBatchProcessor(creationSet, cfg, func() batch { return newBatchTraces(sink) }, true)
+	require.NoError(t, err)
+	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
+
+	requestCount := 10
+	spansPerRequest := 250
+	sentResourceSpans := ptrace.NewTraces().ResourceSpans()
+	var wg sync.WaitGroup
+	ctxTimeout, _ := context.WithTimeout(context.Background(), time.Second*1)
+	for requestNum := 0; requestNum < requestCount; requestNum++ {
+		td := testdata.GenerateTraces(spansPerRequest)
+		spans := td.ResourceSpans().At(0).ScopeSpans().At(0).Spans()
+		for spanIndex := 0; spanIndex < spansPerRequest; spanIndex++ {
+			spans.At(spanIndex).SetName(getTestSpanName(requestNum, spanIndex))
+		}
+		td.ResourceSpans().At(0).CopyTo(sentResourceSpans.AppendEmpty())
+		// ConsumeTraces is a blocking function and should be run in a go routine
+		// until batch size reached to unblock.
+		wg.Add(1)
+		go func() {
+			assert.Error(t, batcher.ConsumeTraces(ctxTimeout, td))
+			wg.Done()
+		}()
+	}
+
+	wg.Wait()
+
+	// signal to the sender to process and send records.
+	doneCh <- 1
+
+
+	// Semaphore should be released once all requests are sent. Confirm we can acquire MaxInFlightBytes bytes.
+	require.Eventually(t, func() bool {
+		return batcher.batcher.(*singleShardBatcher).batcher.sem.TryAcquire(int64(cfg.MaxInFlightBytes))
+	}, 5 * time.Second, 10 * time.Millisecond)
 }
 
 func TestBatchProcessorSpansDelivered(t *testing.T) {
