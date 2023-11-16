@@ -566,19 +566,19 @@ rootRoutes:
     tracesPerHour: 1400
   - service: frontend
     route: /shipping
-    tracesPerHour: 4800
+    tracesPerHour: 480
   - service: frontend
     route: /currency
-    tracesPerHour: 2000
+    tracesPerHour: 200
   - service: frontend
     route: /checkout
-    tracesPerHour: 4800
+    tracesPerHour: 480
   - service: iOS
     route: /api/make-payment
-    tracesPerHour: 4800
+    tracesPerHour: 480
   - service: android  
     route: /api/make-payment
-    tracesPerHour: 4800
+    tracesPerHour: 480
 
 config:
   kubernetes:
