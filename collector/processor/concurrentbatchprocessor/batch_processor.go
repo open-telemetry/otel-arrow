@@ -382,12 +382,17 @@ func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 		return err
 	}
 
+	// The purpose of this function is to ensure semaphore
+	// releases all previously acquired bytes
 	defer func() {
 		if item.count == 0 {
 			b.sem.Release(bytes)
 			return
 		}
 
+		// context may have timed out before we received all
+		// responses. Start goroutine to wait and release
+		// all acquired bytes after the parent thread returns.
 		go func() {
 			for newErr := range respCh {
 				unwrap := newErr.(countedError)
@@ -537,6 +542,12 @@ func newBatchLogsProcessor(set processor.CreateSettings, next consumer.Logs, cfg
 	return newBatchProcessor(set, cfg, func() batch { return newBatchLogs(next) }, useOtel)
 }
 
+func recoverError(retErr *error) {
+	if r := recover(); r != nil {
+		*retErr = fmt.Errorf("%v", r)
+	}
+}
+
 type batchTraces struct {
 	nextConsumer consumer.Traces
 	traceData    ptrace.Traces
@@ -566,11 +577,7 @@ func (bt *batchTraces) sizeBytes(data any) int {
 }
 
 func (bt *batchTraces) export(ctx context.Context, req any) (retErr error) {
-	defer func() {
-		if r := recover(); r != nil {
-			retErr = errors.New(r.(string))
-		}
-	}()
+	defer recoverError(&retErr)
 	td := req.(ptrace.Traces)
 	return bt.nextConsumer.ConsumeTraces(ctx, td)
 }
@@ -611,11 +618,7 @@ func (bm *batchMetrics) sizeBytes(data any) int {
 }
 
 func (bm *batchMetrics) export(ctx context.Context, req any) (retErr error) {
-	defer func() {
-		if r := recover(); r != nil {
-			retErr = errors.New(r.(string))
-		}
-	}()
+	defer recoverError(&retErr)
 	md := req.(pmetric.Metrics)
 	return bm.nextConsumer.ConsumeMetrics(ctx, md)
 }
@@ -668,11 +671,7 @@ func (bl *batchLogs) sizeBytes(data any) int {
 }
 
 func (bl *batchLogs) export(ctx context.Context, req any) (retErr error) {
-	defer func() {
-		if r := recover(); r != nil {
-			retErr = errors.New(r.(string))
-		}
-	}()
+	defer recoverError(&retErr)
 	ld := req.(plog.Logs)
 	return bl.nextConsumer.ConsumeLogs(ctx, ld)
 }
