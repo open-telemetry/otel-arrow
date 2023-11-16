@@ -206,7 +206,7 @@ func TestBatchProcessorLogsPanicRecover(t *testing.T) {
 	require.NoError(t, bp.Shutdown(context.Background()))
 }
 
-func (b *shard) blockStart(done chan int) {
+func blockStart(b *shard, done chan int) {
 	var items []dataItem
 	for {
 		select {
@@ -249,7 +249,7 @@ func newBlockingBatchProcessor(set processor.CreateSettings, cfg *Config, batchF
 
 	b.processor.goroutines.Add(1)
 	done := make(chan int, 1)
-	go b.blockStart(done)
+	go blockStart(b, done)
 
 	bp.batcher = &singleShardBatcher{batcher: b}
 
