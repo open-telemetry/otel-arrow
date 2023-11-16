@@ -262,6 +262,8 @@ func newBlockingBatchProcessor(set processor.CreateSettings, cfg *Config, batchF
 	return bp, nil, done
 }
 
+// This test is meant to confirm that semaphore is still
+// released if the client context is canceled.
 func TestBatchProcessorCancelContext(t *testing.T) {
 	sink := new(consumertest.TracesSink)
 	cfg := createDefaultConfig().(*Config)
@@ -289,11 +291,13 @@ func TestBatchProcessorCancelContext(t *testing.T) {
 		// until batch size reached to unblock.
 		wg.Add(1)
 		go func() {
-			assert.Error(t, batcher.ConsumeTraces(ctxTimeout, td))
+			err = batcher.ConsumeTraces(ctxTimeout, td)
+			assert.Contains(t, err.Error(), "context deadline exceeded")
 			wg.Done()
 		}()
 	}
 
+	// wait until context deadline is exceeded.
 	wg.Wait()
 
 	// signal to the sender to process and send records.
