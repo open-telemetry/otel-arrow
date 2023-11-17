@@ -23,6 +23,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.20.0
 	go.uber.org/multierr v1.11.0
 	go.uber.org/zap v1.26.0
+	golang.org/x/sync v0.3.0
 )
 
 require (
@@ -64,24 +65,24 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-
-
-
-
-
-
-
-
-
-
 replace github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol => ../../../collector/cmd/otelarrowcol
+
 replace github.com/open-telemetry/otel-arrow/collector/connector/validationconnector => ../../../collector/connector/validationconnector
+
 replace github.com/open-telemetry/otel-arrow/collector/examples/printer => ../../../collector/examples/printer
+
 replace github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter => ../../../collector/exporter/fileexporter
+
 replace github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter => ../../../collector/exporter/otelarrowexporter
+
 replace github.com/open-telemetry/otel-arrow/collector => ../../../collector
+
 replace github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor => ../../../collector/processor/experimentprocessor
+
 replace github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor => ../../../collector/processor/obfuscationprocessor
+
 replace github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver => ../../../collector/receiver/filereceiver
+
 replace github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver => ../../../collector/receiver/otelarrowreceiver
+
 replace github.com/open-telemetry/otel-arrow => ../../..
