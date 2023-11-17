@@ -23,6 +23,7 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.20.0
 	go.uber.org/multierr v1.11.0
 	go.uber.org/zap v1.26.0
+	golang.org/x/sync v0.3.0
 )
 
 require (
