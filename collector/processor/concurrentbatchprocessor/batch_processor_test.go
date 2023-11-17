@@ -205,18 +205,29 @@ func TestBatchProcessorLogsPanicRecover(t *testing.T) {
 }
 
 type blockingConsumer struct {
+	lock     sync.Mutex
 	numItems int
-	wg sync.WaitGroup
+	blocking chan struct{}
+}
+
+func (bc *blockingConsumer) getItemsWaiting() int {
+	bc.lock.Lock()
+	defer bc.lock.Unlock()
+	return bc.numItems
 }
 
 func (bc *blockingConsumer) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
+	bc.lock.Lock()
 	bc.numItems += td.SpanCount()
-	bc.wg.Wait()
+	bc.lock.Unlock()
+	<-bc.blocking
 	return nil
 }
 
 func (bc *blockingConsumer) unblock() {
-	bc.wg.Done()
+	bc.lock.Lock()
+	defer bc.lock.Unlock()
+	close(bc.blocking)
 }
 
 func (bc *blockingConsumer) Capabilities() consumer.Capabilities {
@@ -249,8 +260,7 @@ func TestBatchProcessorCancelContext(t *testing.T) {
 	cfg.MaxInFlightBytes = calculateMaxInFlightBytes(requestCount, spansPerRequest)
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	bc := &blockingConsumer{}
-	bc.wg.Add(1)
+	bc := &blockingConsumer{blocking: make(chan struct{}, 1)}
 	bp, err := newBatchTracesProcessor(creationSet, bc, cfg, true)
 	require.NoError(t, err)
 	require.NoError(t, bp.Start(context.Background(), componenttest.NewNopHost()))
@@ -278,7 +288,7 @@ func TestBatchProcessorCancelContext(t *testing.T) {
 	// check all spans arrived in blockingConsumer.
 	require.Eventually(t, func() bool {
 		numSpans := requestCount * spansPerRequest
-		return bc.numItems == numSpans
+		return bc.getItemsWaiting() == numSpans
 	}, 5 * time.Second, 10 * time.Millisecond)
 
 	// semaphore should be fully acquired at this point.
