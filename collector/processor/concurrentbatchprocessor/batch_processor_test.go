@@ -306,7 +306,7 @@ func TestBatchProcessorCancelContext(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return bp.batcher.(*singleShardBatcher).batcher.sem.TryAcquire(int64(cfg.MaxInFlightBytes))
 	}, 5 * time.Second, 10 * time.Millisecond)
-	require.NoError(t, batcher.Shutdown(context.Background()))
+	require.NoError(t, bp.Shutdown(context.Background()))
 }
 
 func TestBatchProcessorSpansDelivered(t *testing.T) {
