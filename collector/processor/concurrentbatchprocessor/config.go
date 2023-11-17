@@ -44,6 +44,10 @@ type Config struct {
 	// batcher instances that will be created through a distinct
 	// combination of MetadataKeys.
 	MetadataCardinalityLimit uint32 `mapstructure:"metadata_cardinality_limit"`
+
+	// MaxInFlightBytes limits the number of bytes in queue waiting to be
+	// processed by the senders.
+	MaxInFlightBytes uint32 `mapstructure:"max_in_flight_bytes"`
 }
 
 var _ component.Config = (*Config)(nil)
