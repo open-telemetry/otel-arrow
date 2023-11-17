@@ -24,7 +24,7 @@ jobs:
         go-version: "1.21"
 
     - name: Build all modules
-      run: make build || true
+      run: make build
 
     - name: Test all modules
-      run: make test || true
+      run: make test
