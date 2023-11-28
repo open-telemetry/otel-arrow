@@ -118,7 +118,7 @@ type dataItem struct {
 type batch interface {
 	// export the current batch
 	export(ctx context.Context, req any) error
-	splitBatch(ctx context.Context, sendBatchMaxSize int, returnBytes bool) (sentBatchSize int, req any) 
+	splitBatch(ctx context.Context, sendBatchMaxSize int, returnBytes bool) (sentBatchSize int, req any)
 
 	// itemCount returns the size of the current batch
 	itemCount() int
@@ -133,7 +133,7 @@ type batch interface {
 // between multiple batches. This signals that producers should continue
 // waiting until all its items receive a response.
 type countedError struct {
-	err error
+	err   error
 	count int
 }
 
@@ -272,7 +272,7 @@ func (b *shard) processItem(item dataItem) {
 	totalItems := after - before
 	b.pending = append(b.pending, pendingItem{
 		numItems: totalItems,
-		respCh: item.responseCh,
+		respCh:   item.responseCh,
 	})
 
 	b.flushItems()
@@ -311,7 +311,7 @@ func (b *shard) resetTimer() {
 func (b *shard) sendItems(trigger trigger) {
 	sent, req := b.batch.splitBatch(b.exportCtx, b.processor.sendBatchMaxSize, b.processor.telemetry.detailed)
 	bytes := int64(b.batch.sizeBytes(req))
-	
+
 	var waiters []chan error
 	var countItems []int
 
@@ -321,10 +321,10 @@ func (b *shard) sendItems(trigger trigger) {
 	// The current batch can contain items from several different producers. Ensure each producer gets a response back.
 	for len(b.pending) > 0 && numItemsBefore < numItemsAfter {
 		// Waiter only had some items in the current batch
-		if numItemsBefore + b.pending[0].numItems > numItemsAfter {
+		if numItemsBefore+b.pending[0].numItems > numItemsAfter {
 			partialSent := numItemsAfter - numItemsBefore
 			b.pending[0].numItems -= partialSent
-			numItemsBefore += partialSent 
+			numItemsBefore += partialSent
 			waiters = append(waiters, b.pending[0].respCh)
 			countItems = append(countItems, partialSent)
 		} else { // waiter gets a complete response.
@@ -342,7 +342,9 @@ func (b *shard) sendItems(trigger trigger) {
 	}
 
 	go func() {
+		before := time.Now()
 		err := b.batch.export(b.exportCtx, req)
+		latency := time.Since(before)
 		for i := range waiters {
 			count := countItems[i]
 			waiter := waiters[i]
@@ -352,13 +354,12 @@ func (b *shard) sendItems(trigger trigger) {
 		if err != nil {
 			b.processor.logger.Warn("Sender failed", zap.Error(err))
 		} else {
-			b.processor.telemetry.record(trigger, int64(sent), bytes)
+			b.processor.telemetry.record(latency, trigger, int64(sent), bytes)
 		}
 	}()
 
 	b.totalSent = numItemsAfter
 }
-
 
 func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 	respCh := make(chan error, 1)
