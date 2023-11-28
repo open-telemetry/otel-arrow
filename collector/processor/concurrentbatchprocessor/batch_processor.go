@@ -343,7 +343,9 @@ func (b *shard) sendItems(trigger trigger) {
 	}
 
 	go func() {
+		before := time.Now()
 		err := b.batch.export(b.exportCtx, req)
+		latency := time.Since(before)
 		for i := range waiters {
 			count := countItems[i]
 			waiter := waiters[i]
@@ -353,7 +355,7 @@ func (b *shard) sendItems(trigger trigger) {
 		if err != nil {
 			b.processor.logger.Warn("Sender failed", zap.Error(err))
 		} else {
-			b.processor.telemetry.record(trigger, int64(sent), bytes)
+			b.processor.telemetry.record(latency, trigger, int64(sent), bytes)
 		}
 	}()
 
