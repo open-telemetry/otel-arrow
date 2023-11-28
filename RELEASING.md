@@ -10,8 +10,10 @@ git pull upstream main
 git checkout -b release_xx_yy_zz
 ```
 
-2. Make sure the CHANGELOG.md file is up to date, add entries 
-   describing the changes in the new release.
+2. Make sure the CHANGELOG.md file is up to date, add entries
+   describing the changes in the new release.  Consider re-generating
+   the `otelarrowcol` if collector dependencies have changed during
+   this release cycle.
 
 3. Using Make, prepare the release means updating Go modules and
    checking in the changes, for example.  Edit 
