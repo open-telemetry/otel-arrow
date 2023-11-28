@@ -8,6 +8,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## [0.11.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.11.0) - 2023-11-28
+
+- "concurrentbatchprocessor" supports two new metrics, names ending
+  `_in_flight_bytes` and `_batch_send_latency`. (#111, #112)
+
 ## [0.10.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.10.0) - 2023-11-17
 
 - "concurrentbatchprocessor" component is ready for production testing. (#93)
