@@ -48,7 +48,7 @@ type batchProcessor struct {
 	sendBatchMaxSize int
 
 	// batchFunc is a factory for new batch objects corresponding
-	// with the appropriate signal.a
+	// with the appropriate signal.
 	batchFunc func() batch
 
 	// metadataKeys is the configured list of metadata keys.  When
