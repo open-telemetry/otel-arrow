@@ -107,6 +107,7 @@ type batchProcessorTelemetry struct {
 	batchSendSize            metric.Int64Histogram
 	batchSendSizeBytes       metric.Int64Histogram
 	batchMetadataCardinality metric.Int64ObservableUpDownCounter
+	batchInFlightBytes       metric.Int64ObservableUpDownCounter
 }
 
 func newBatchProcessorTelemetry(set processor.CreateSettings, currentMetadataCardinality func() int, useOtel bool) (*batchProcessorTelemetry, error) {
@@ -170,6 +171,17 @@ func (bpt *batchProcessorTelemetry) createOtelMetrics(mp metric.MeterProvider, c
 		processorhelper.BuildCustomMetricName(metricTypeStr, "metadata_cardinality"),
 		metric.WithDescription("Number of distinct metadata value combinations being processed"),
 		metric.WithUnit("1"),
+		metric.WithInt64Callback(func(_ context.Context, obs metric.Int64Observer) error {
+			obs.Observe(int64(currentMetadataCardinality()))
+			return nil
+		}),
+	)
+	errors = multierr.Append(errors, err)
+
+	bpt.batchInFlightBytes, err = meter.Int64ObservableUpDownCounter(
+		processorhelper.BuildCustomMetricName(metricTypeStr, "in_flight_bytes"),
+		metric.WithDescription("Number of bytes in flight"),
+		metric.WithUnit("By"),
 		metric.WithInt64Callback(func(_ context.Context, obs metric.Int64Observer) error {
 			obs.Observe(int64(currentMetadataCardinality()))
 			return nil

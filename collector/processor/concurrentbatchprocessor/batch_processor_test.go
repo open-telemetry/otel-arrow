@@ -292,7 +292,7 @@ func TestBatchProcessorCancelContext(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond)
 
 	// semaphore should be fully acquired at this point.
-	assert.False(t, bp.batcher.(*singleShardBatcher).batcher.sem.TryAcquire(int64(1)))
+	assert.False(t, bp.batcher.(*singleShardBatcher).batcher.processor.sem.TryAcquire(int64(1)))
 
 	wg.Add(1)
 	go func() {
@@ -307,14 +307,14 @@ func TestBatchProcessorCancelContext(t *testing.T) {
 	wg.Wait()
 
 	// check sending another request does not change the semaphore count, even after ConsumeTraces returns.
-	assert.False(t, bp.batcher.(*singleShardBatcher).batcher.sem.TryAcquire(int64(1)))
+	assert.False(t, bp.batcher.(*singleShardBatcher).batcher.processor.sem.TryAcquire(int64(1)))
 
 	// signal to the blockingConsumer to return response to waiters.
 	bc.unblock()
 
 	// Semaphore should be released once all responses are returned. Confirm we can acquire MaxInFlightBytes bytes.
 	require.Eventually(t, func() bool {
-		return bp.batcher.(*singleShardBatcher).batcher.sem.TryAcquire(int64(cfg.MaxInFlightBytes))
+		return bp.batcher.(*singleShardBatcher).batcher.processor.sem.TryAcquire(int64(cfg.MaxInFlightBytes))
 	}, 5*time.Second, 10*time.Millisecond)
 	require.NoError(t, bp.Shutdown(context.Background()))
 }
