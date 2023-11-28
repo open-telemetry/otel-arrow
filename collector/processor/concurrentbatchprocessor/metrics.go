@@ -103,12 +103,18 @@ type batchProcessorTelemetry struct {
 	exportCtx context.Context
 
 	processorAttr            []attribute.KeyValue
+	processorAttrOption      metric.MeasurementOption
 	batchSizeTriggerSend     metric.Int64Counter
 	timeoutTriggerSend       metric.Int64Counter
 	batchSendSize            metric.Int64Histogram
 	batchSendSizeBytes       metric.Int64Histogram
 	batchSendLatency         metric.Float64Histogram
 	batchMetadataCardinality metric.Int64ObservableUpDownCounter
+
+	// Note: since the semaphore does not provide access to its current
+	// value, we instrument the number of in-flight bytes using parallel
+	// instrumentation counting acquired and released bytes.
+	batchInFlightBytes metric.Int64UpDownCounter
 }
 
 func newBatchProcessorTelemetry(set processor.CreateSettings, currentMetadataCardinality func() int, useOtel bool) (*batchProcessorTelemetry, error) {
@@ -136,6 +142,8 @@ func (bpt *batchProcessorTelemetry) createOtelMetrics(mp metric.MeterProvider, c
 	if !bpt.useOtel {
 		return nil
 	}
+
+	bpt.processorAttrOption = metric.WithAttributes(bpt.processorAttr...)
 
 	var errors, err error
 	meter := mp.Meter(scopeName)
@@ -180,9 +188,16 @@ func (bpt *batchProcessorTelemetry) createOtelMetrics(mp metric.MeterProvider, c
 		metric.WithDescription("Number of distinct metadata value combinations being processed"),
 		metric.WithUnit("1"),
 		metric.WithInt64Callback(func(_ context.Context, obs metric.Int64Observer) error {
-			obs.Observe(int64(currentMetadataCardinality()))
+			obs.Observe(int64(currentMetadataCardinality()), bpt.processorAttrOption)
 			return nil
 		}),
+	)
+	errors = multierr.Append(errors, err)
+
+	bpt.batchInFlightBytes, err = meter.Int64UpDownCounter(
+		processorhelper.BuildCustomMetricName(metricTypeStr, "in_flight_bytes"),
+		metric.WithDescription("Number of bytes in flight"),
+		metric.WithUnit("By"),
 	)
 	errors = multierr.Append(errors, err)
 
@@ -214,17 +229,16 @@ func (bpt *batchProcessorTelemetry) recordWithOC(latency time.Duration, trigger 
 }
 
 func (bpt *batchProcessorTelemetry) recordWithOtel(latency time.Duration, trigger trigger, sent, bytes int64) {
-	attrs := metric.WithAttributes(bpt.processorAttr...)
 	switch trigger {
 	case triggerBatchSize:
-		bpt.batchSizeTriggerSend.Add(bpt.exportCtx, 1, attrs)
+		bpt.batchSizeTriggerSend.Add(bpt.exportCtx, 1, bpt.processorAttrOption)
 	case triggerTimeout:
-		bpt.timeoutTriggerSend.Add(bpt.exportCtx, 1, attrs)
+		bpt.timeoutTriggerSend.Add(bpt.exportCtx, 1, bpt.processorAttrOption)
 	}
 
-	bpt.batchSendSize.Record(bpt.exportCtx, sent, attrs)
+	bpt.batchSendSize.Record(bpt.exportCtx, sent, bpt.processorAttrOption)
 	if bpt.detailed {
-		bpt.batchSendLatency.Record(bpt.exportCtx, latency.Seconds(), attrs)
-		bpt.batchSendSizeBytes.Record(bpt.exportCtx, bytes, attrs)
+		bpt.batchSendLatency.Record(bpt.exportCtx, latency.Seconds(), bpt.processorAttrOption)
+		bpt.batchSendSizeBytes.Record(bpt.exportCtx, bytes, bpt.processorAttrOption)
 	}
 }

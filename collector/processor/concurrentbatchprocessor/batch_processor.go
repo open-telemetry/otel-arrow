@@ -46,7 +46,6 @@ type batchProcessor struct {
 	timeout          time.Duration
 	sendBatchSize    int
 	sendBatchMaxSize int
-	maxInFlightBytes int
 
 	// batchFunc is a factory for new batch objects corresponding
 	// with the appropriate signal.
@@ -68,6 +67,8 @@ type batchProcessor struct {
 
 	//  batcher will be either *singletonBatcher or *multiBatcher
 	batcher batcher
+
+	sem *semaphore.Weighted
 }
 
 type batcher interface {
@@ -93,7 +94,6 @@ type shard struct {
 	// newItem is used to receive data items from producers.
 	newItem chan dataItem
 
-	sem *semaphore.Weighted
 	// batch is an in-flight data item containing one of the
 	// underlying data types.
 	batch batch
@@ -166,7 +166,7 @@ func newBatchProcessor(set processor.CreateSettings, cfg *Config, batchFunc func
 		shutdownC:        make(chan struct{}, 1),
 		metadataKeys:     mks,
 		metadataLimit:    int(cfg.MetadataCardinalityLimit),
-		maxInFlightBytes: int(cfg.MaxInFlightBytes),
+		sem:              semaphore.NewWeighted(int64(cfg.MaxInFlightBytes)),
 	}
 	if len(bp.metadataKeys) == 0 {
 		bp.batcher = &singleShardBatcher{batcher: bp.newShard(nil)}
@@ -195,7 +195,6 @@ func (bp *batchProcessor) newShard(md map[string][]string) *shard {
 		newItem:   make(chan dataItem, runtime.NumCPU()),
 		exportCtx: exportCtx,
 		batch:     bp.batchFunc(),
-		sem:       semaphore.NewWeighted(int64(bp.maxInFlightBytes)),
 	}
 
 	b.processor.goroutines.Add(1)
@@ -361,6 +360,20 @@ func (b *shard) sendItems(trigger trigger) {
 	b.totalSent = numItemsAfter
 }
 
+func (bp *batchProcessor) countAcquire(ctx context.Context, bytes int64) error {
+	if bp.telemetry.batchInFlightBytes != nil {
+		bp.telemetry.batchInFlightBytes.Add(ctx, bytes, bp.telemetry.processorAttrOption)
+	}
+	return bp.sem.Acquire(ctx, bytes)
+}
+
+func (bp *batchProcessor) countRelease(bytes int64) {
+	if bp.telemetry.batchInFlightBytes != nil {
+		bp.telemetry.batchInFlightBytes.Add(context.Background(), -bytes, bp.telemetry.processorAttrOption)
+	}
+	bp.sem.Release(bytes)
+}
+
 func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 	respCh := make(chan error, 1)
 	item := dataItem{
@@ -378,7 +391,7 @@ func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 	}
 
 	bytes := int64(b.batch.sizeBytes(data))
-	err := b.sem.Acquire(ctx, bytes)
+	err := b.processor.countAcquire(ctx, bytes)
 	if err != nil {
 		return err
 	}
@@ -387,7 +400,7 @@ func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 	// releases all previously acquired bytes
 	defer func() {
 		if item.count == 0 {
-			b.sem.Release(bytes)
+			b.processor.countRelease(bytes)
 			return
 		}
 
@@ -404,7 +417,7 @@ func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 				}
 				break
 			}
-			b.sem.Release(bytes)
+			b.processor.countRelease(bytes)
 		}()
 	}()
 
