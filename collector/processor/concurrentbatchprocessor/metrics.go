@@ -5,6 +5,7 @@ package concurrentbatchprocessor // import "github.com/open-telemetry/otel-arrow
 
 import (
 	"context"
+	"time"
 
 	"go.opencensus.io/stats"
 	"go.opencensus.io/stats/view"
@@ -106,6 +107,7 @@ type batchProcessorTelemetry struct {
 	timeoutTriggerSend       metric.Int64Counter
 	batchSendSize            metric.Int64Histogram
 	batchSendSizeBytes       metric.Int64Histogram
+	batchSendLatency         metric.Float64Histogram
 	batchMetadataCardinality metric.Int64ObservableUpDownCounter
 }
 
@@ -166,6 +168,13 @@ func (bpt *batchProcessorTelemetry) createOtelMetrics(mp metric.MeterProvider, c
 	)
 	errors = multierr.Append(errors, err)
 
+	bpt.batchSendLatency, err = meter.Float64Histogram(
+		processorhelper.BuildCustomMetricName(metricTypeStr, "batch_send_latency"),
+		metric.WithDescription("Duration of the export request"),
+		metric.WithUnit("s"),
+	)
+	errors = multierr.Append(errors, err)
+
 	bpt.batchMetadataCardinality, err = meter.Int64ObservableUpDownCounter(
 		processorhelper.BuildCustomMetricName(metricTypeStr, "metadata_cardinality"),
 		metric.WithDescription("Number of distinct metadata value combinations being processed"),
@@ -180,15 +189,16 @@ func (bpt *batchProcessorTelemetry) createOtelMetrics(mp metric.MeterProvider, c
 	return errors
 }
 
-func (bpt *batchProcessorTelemetry) record(trigger trigger, sent, bytes int64) {
+func (bpt *batchProcessorTelemetry) record(latency time.Duration, trigger trigger, sent, bytes int64) {
 	if bpt.useOtel {
-		bpt.recordWithOtel(trigger, sent, bytes)
+		bpt.recordWithOtel(latency, trigger, sent, bytes)
 	} else {
-		bpt.recordWithOC(trigger, sent, bytes)
+		bpt.recordWithOC(latency, trigger, sent, bytes)
 	}
 }
 
-func (bpt *batchProcessorTelemetry) recordWithOC(trigger trigger, sent, bytes int64) {
+func (bpt *batchProcessorTelemetry) recordWithOC(latency time.Duration, trigger trigger, sent, bytes int64) {
+	// Note: latency is not used in the OC configuration.
 	var triggerMeasure *stats.Int64Measure
 	switch trigger {
 	case triggerBatchSize:
@@ -203,16 +213,18 @@ func (bpt *batchProcessorTelemetry) recordWithOC(trigger trigger, sent, bytes in
 	}
 }
 
-func (bpt *batchProcessorTelemetry) recordWithOtel(trigger trigger, sent, bytes int64) {
+func (bpt *batchProcessorTelemetry) recordWithOtel(latency time.Duration, trigger trigger, sent, bytes int64) {
+	attrs := metric.WithAttributes(bpt.processorAttr...)
 	switch trigger {
 	case triggerBatchSize:
-		bpt.batchSizeTriggerSend.Add(bpt.exportCtx, 1, metric.WithAttributes(bpt.processorAttr...))
+		bpt.batchSizeTriggerSend.Add(bpt.exportCtx, 1, attrs)
 	case triggerTimeout:
-		bpt.timeoutTriggerSend.Add(bpt.exportCtx, 1, metric.WithAttributes(bpt.processorAttr...))
+		bpt.timeoutTriggerSend.Add(bpt.exportCtx, 1, attrs)
 	}
 
-	bpt.batchSendSize.Record(bpt.exportCtx, sent, metric.WithAttributes(bpt.processorAttr...))
+	bpt.batchSendSize.Record(bpt.exportCtx, sent, attrs)
 	if bpt.detailed {
-		bpt.batchSendSizeBytes.Record(bpt.exportCtx, bytes, metric.WithAttributes(bpt.processorAttr...))
+		bpt.batchSendLatency.Record(bpt.exportCtx, latency.Seconds(), attrs)
+		bpt.batchSendSizeBytes.Record(bpt.exportCtx, bytes, attrs)
 	}
 }
