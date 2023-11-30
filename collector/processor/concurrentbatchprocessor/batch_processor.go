@@ -361,10 +361,11 @@ func (b *shard) sendItems(trigger trigger) {
 }
 
 func (bp *batchProcessor) countAcquire(ctx context.Context, bytes int64) error {
-	if bp.telemetry.batchInFlightBytes != nil {
+	err := bp.sem.Acquire(ctx, bytes)
+	if err == nil && bp.telemetry.batchInFlightBytes != nil {
 		bp.telemetry.batchInFlightBytes.Add(ctx, bytes, bp.telemetry.processorAttrOption)
 	}
-	return bp.sem.Acquire(ctx, bytes)
+	return err
 }
 
 func (bp *batchProcessor) countRelease(bytes int64) {
