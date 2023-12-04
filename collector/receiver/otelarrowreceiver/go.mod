@@ -6,8 +6,8 @@ require (
 	github.com/gogo/protobuf v1.3.2
 	github.com/golang/mock v1.6.0
 	github.com/klauspost/compress v1.17.3
-	github.com/open-telemetry/otel-arrow v0.11.0
-	github.com/open-telemetry/otel-arrow/collector v0.11.0
+	github.com/open-telemetry/otel-arrow v0.12.0
+	github.com/open-telemetry/otel-arrow/collector v0.12.0
 	github.com/stretchr/testify v1.8.4
 	go.opentelemetry.io/collector v0.90.1
 	go.opentelemetry.io/collector/component v0.90.1
@@ -107,3 +107,14 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+
+
+
+
+
+
+
+
+
+
