@@ -8,6 +8,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## [0.12.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.11.0) - 2023-12-28
+
+- Update to OpenTelemetry Collector v0.90.1 dependencies. (#116)
+- Bug-fix for `_in_flight_bytes` metric. (#115)
+
 ## [0.11.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.11.0) - 2023-11-28
 
 - "concurrentbatchprocessor" supports two new metrics, names ending
