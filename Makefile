@@ -112,7 +112,7 @@ endif
 BUILDER = builder
 .PHONY: $(BUILDER)
 builder:
-	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@v0.89.0
+	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@v0.90.1
 
 .PHONY: genotelarrowcol
 genotelarrowcol: builder
@@ -123,6 +123,7 @@ genotelarrowcol: builder
 	$(GOCMD) work sync
 	$(MAKE) gotidy
 	GOWORK="off" $(GOCMD) run ./tools/replacer unfix
+	$(MAKE) gotidy
 
 .PHONY: otelarrowcol
 otelarrowcol:
