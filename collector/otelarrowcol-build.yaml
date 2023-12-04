@@ -22,7 +22,7 @@ dist:
   # Note: This should match the version of the core and contrib
   # collector components used below (e.g., the debugexporter and
   # otlphttpexporter versions below).
-  otelcol_version: 0.89.0
+  otelcol_version: 0.90.1
 
   # Project-internal use: Directory path required for the `make
   # genotelarrowcol`, which the Dockerfile also recognizes.
@@ -34,8 +34,8 @@ exporters:
   # This is the core OpenTelemetry Protocol with Apache Arrow exporter
   - import: github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter
     gomod: github.com/open-telemetry/otel-arrow/collector v0.11.0
-  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.89.0
-  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.89.0
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.90.1
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.90.1
   - import: github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter
     gomod: github.com/open-telemetry/otel-arrow/collector v0.11.0
 
@@ -60,6 +60,6 @@ connectors:
     gomod: github.com/open-telemetry/otel-arrow/collector v0.11.0
 
 extensions:
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.88.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.88.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.88.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.90.1
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.90.1
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.90.1
