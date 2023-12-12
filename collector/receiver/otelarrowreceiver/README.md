@@ -50,8 +50,8 @@ over gRPC out of the box.
 
 ```yaml
 receivers:
-  otelarrow:`
-``
+  otelarrow:
+```
 
 ## Advanced Configuration
 
