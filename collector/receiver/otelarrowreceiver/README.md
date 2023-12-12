@@ -15,7 +15,7 @@ Receives telemetry data using the
 [OTel-Arrow](https://github.com/open-telemetry/otel-arrow) protocol
 via gRPC and standard [OTLP](
 https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/protocol/otlp.md)
-protocol via gRPC or HTTP.
+protocol via gRPC.
 
 ## Getting Started
 
@@ -50,8 +50,8 @@ over gRPC out of the box.
 
 ```yaml
 receivers:
-  otelarrow:
-```
+  otelarrow:`
+``
 
 ## Advanced Configuration
 
@@ -65,7 +65,7 @@ receivers:
         ...
 ```
 
-- `endpoint` (default = 0.0.0.0:4317 for grpc protocol, 0.0.0.0:4318 http protocol):
+- `endpoint` (default = 0.0.0.0:4317 for grpc protocol):
   host:port to which the receiver is going to receive data. The valid syntax is
   described at https://github.com/grpc/grpc/blob/master/doc/naming.md.
 
@@ -182,10 +182,6 @@ of detail.  At the normal level, these metrics are introduced:
 - `arrow_memory_inuse`: UpDownCounter of memory in use by current streams
 - `arrow_schema_resets`: Counter of times the schema was adjusted, by data type.
 
-When the configured metrics level is "detailed" unique consumer ID
-corresponding with a single gRPC stream will be attached to the
-counters, for example:
-
 ```
 service
   ...
@@ -195,26 +191,3 @@ service
       ...
       level: detailed
 ```
-
-We recommend to use the "lowmemory" temporality preference combined
-with detail-level metrics in the OTel SDK.  (TODO: Document how to do
-this after the Collector's OTel SDK is configurable.)
-
-## HTTP-specific documentation
-
-To enable optional OTLP/HTTP support, the HTTP protocol must be
-explicitly listed.  It will use port 4318 by default.  The OTel Arrow
-protocol is not currently supported over HTTP.
-
-```
-receivers:
-  otelarrow:
-    protocols:
-      http:
-```
-
-See the core OTLP receiver for documentation specific to HTTP
-connections, including:
-
-- [Writing with HTTP/JSON](https://github.com/open-telemetry/opentelemetry-collector/tree/main/receiver/otlpreceiver#writing-with-httpjson)
-- [CORS (Cross-origin resource sharing)](https://github.com/open-telemetry/opentelemetry-collector/tree/main/receiver/otlpreceiver#cors-cross-origin-resource-sharing)

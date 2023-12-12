@@ -6,8 +6,6 @@ package otelarrowreceiver // import "github.com/open-telemetry/otel-arrow/collec
 import (
 	"context"
 	"errors"
-	"fmt"
-	"net/http"
 	"sync"
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
@@ -194,16 +192,6 @@ func (r *otlpReceiver) registerLogsConsumer(lc consumer.Logs) error {
 	}
 	r.logsReceiver = logs.New(lc, r.obsrepGRPC)
 	return nil
-}
-
-func handleUnmatchedMethod(resp http.ResponseWriter) {
-	status := http.StatusMethodNotAllowed
-	writeResponse(resp, "text/plain", status, []byte(fmt.Sprintf("%v method not allowed, supported: [POST]", status)))
-}
-
-func handleUnmatchedContentType(resp http.ResponseWriter) {
-	status := http.StatusUnsupportedMediaType
-	writeResponse(resp, "text/plain", status, []byte(fmt.Sprintf("%v unsupported media type, supported: [%s, %s]", status, jsonContentType, pbContentType)))
 }
 
 var _ arrow.Consumers = &otlpReceiver{}
