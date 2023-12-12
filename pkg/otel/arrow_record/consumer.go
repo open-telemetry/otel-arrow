@@ -91,7 +91,8 @@ type Consumer struct {
 	memoryCounter metric.Int64UpDownCounter
 
 	// uniqueAttr is set to an 8-byte hex digit string with
-	// 32-bits of randomness, applied to all metric events.
+	// 32-bits of randomness, applied to all metric events
+	// when MetricsLevel is > Detailed (i.e., above detailed).
 	uniqueAttr attribute.KeyValue
 }
 
@@ -191,7 +192,7 @@ func (c *Consumer) metricOpts(kvs ...attribute.KeyValue) []metric.AddOption {
 	if c.metricsLevel < configtelemetry.LevelNormal {
 		return nil
 	}
-	if c.metricsLevel == configtelemetry.LevelDetailed {
+	if c.metricsLevel > configtelemetry.LevelDetailed {
 		kvs = append(kvs, c.uniqueAttr)
 	}
 	return []metric.AddOption{
