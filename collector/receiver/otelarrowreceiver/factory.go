@@ -9,7 +9,6 @@ import (
 	"github.com/open-telemetry/otel-arrow/collector/sharedcomponent"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
-	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/receiver"
@@ -42,7 +41,7 @@ func NewFactory() receiver.Factory {
 func createDefaultConfig() component.Config {
 	return &Config{
 		Protocols: Protocols{
-			GRPC: &configgrpc.GRPCServerSettings{
+			GRPC: configgrpc.GRPCServerSettings{
 				NetAddr: confignet.NetAddr{
 					Endpoint:  defaultGRPCEndpoint,
 					Transport: "tcp",
@@ -50,15 +49,7 @@ func createDefaultConfig() component.Config {
 				// We almost write 0 bytes, so no need to tune WriteBufferSize.
 				ReadBufferSize: 512 * 1024,
 			},
-			HTTP: &httpServerSettings{
-				HTTPServerSettings: &confighttp.HTTPServerSettings{
-					Endpoint: defaultHTTPEndpoint,
-				},
-				TracesURLPath:  defaultTracesURLPath,
-				MetricsURLPath: defaultMetricsURLPath,
-				LogsURLPath:    defaultLogsURLPath,
-			},
-			Arrow: &ArrowSettings{
+			Arrow: ArrowSettings{
 				MemoryLimitMiB: defaultMemoryLimitMiB,
 			},
 		},
