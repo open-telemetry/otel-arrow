@@ -13,7 +13,6 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
-	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/config/configtls"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
@@ -26,7 +25,6 @@ func TestUnmarshalDefaultConfig(t *testing.T) {
 	cfg := factory.CreateDefaultConfig()
 	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
 	defaultCfg := factory.CreateDefaultConfig().(*Config)
-	defaultCfg.HTTP = nil
 	assert.Equal(t, defaultCfg, cfg)
 }
 
@@ -38,41 +36,7 @@ func TestUnmarshalConfigOnlyGRPC(t *testing.T) {
 	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
 
 	defaultOnlyGRPC := factory.CreateDefaultConfig().(*Config)
-	defaultOnlyGRPC.HTTP = nil
 	assert.Equal(t, defaultOnlyGRPC, cfg)
-}
-
-func TestUnmarshalConfigOnlyHTTP(t *testing.T) {
-	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "only_http.yaml"))
-	require.NoError(t, err)
-	factory := NewFactory()
-	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
-
-	defaultOnlyHTTP := factory.CreateDefaultConfig().(*Config)
-	assert.Equal(t, defaultOnlyHTTP, cfg)
-}
-
-func TestUnmarshalConfigOnlyHTTPNull(t *testing.T) {
-	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "only_http_null.yaml"))
-	require.NoError(t, err)
-	factory := NewFactory()
-	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
-
-	defaultOnlyHTTP := factory.CreateDefaultConfig().(*Config)
-	assert.Equal(t, defaultOnlyHTTP, cfg)
-}
-
-func TestUnmarshalConfigOnlyHTTPEmptyMap(t *testing.T) {
-	cm, err := confmaptest.LoadConf(filepath.Join("testdata", "only_http_empty_map.yaml"))
-	require.NoError(t, err)
-	factory := NewFactory()
-	cfg := factory.CreateDefaultConfig()
-	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
-
-	defaultOnlyHTTP := factory.CreateDefaultConfig().(*Config)
-	assert.Equal(t, defaultOnlyHTTP, cfg)
 }
 
 func TestUnmarshalOldMemoryLimitConfig(t *testing.T) {
@@ -84,7 +48,6 @@ func TestUnmarshalOldMemoryLimitConfig(t *testing.T) {
 	expectCfg := factory.CreateDefaultConfig().(*Config)
 	// The number in config is <1MB, so Validate() rounds up.
 	expectCfg.Arrow.MemoryLimitMiB = 1
-	expectCfg.HTTP = nil
 	assert.NoError(t, cfg.(*Config).Validate())
 	assert.Equal(t, expectCfg, cfg)
 }
@@ -107,7 +70,7 @@ func TestUnmarshalConfig(t *testing.T) {
 	assert.Equal(t,
 		&Config{
 			Protocols: Protocols{
-				GRPC: &configgrpc.GRPCServerSettings{
+				GRPC: configgrpc.GRPCServerSettings{
 					NetAddr: confignet.NetAddr{
 						Endpoint:  "0.0.0.0:4317",
 						Transport: "tcp",
@@ -136,25 +99,7 @@ func TestUnmarshalConfig(t *testing.T) {
 						},
 					},
 				},
-				HTTP: &httpServerSettings{
-					HTTPServerSettings: &confighttp.HTTPServerSettings{
-						Endpoint: "0.0.0.0:4318",
-						TLSSetting: &configtls.TLSServerSetting{
-							TLSSetting: configtls.TLSSetting{
-								CertFile: "test.crt",
-								KeyFile:  "test.key",
-							},
-						},
-						CORS: &confighttp.CORSSettings{
-							AllowedOrigins: []string{"https://*.test.com", "https://test.com"},
-							MaxAge:         7200,
-						},
-					},
-					TracesURLPath:  "/traces",
-					MetricsURLPath: "/v2/metrics",
-					LogsURLPath:    "/log/ingest",
-				},
-				Arrow: &ArrowSettings{
+				Arrow: ArrowSettings{
 					MemoryLimitMiB: 123,
 				},
 			},
@@ -171,22 +116,14 @@ func TestUnmarshalConfigUnix(t *testing.T) {
 	assert.Equal(t,
 		&Config{
 			Protocols: Protocols{
-				GRPC: &configgrpc.GRPCServerSettings{
+				GRPC: configgrpc.GRPCServerSettings{
 					NetAddr: confignet.NetAddr{
 						Endpoint:  "/tmp/grpc_otlp.sock",
 						Transport: "unix",
 					},
 					ReadBufferSize: 512 * 1024,
 				},
-				HTTP: &httpServerSettings{
-					HTTPServerSettings: &confighttp.HTTPServerSettings{
-						Endpoint: "/tmp/http_otlp.sock",
-					},
-					TracesURLPath:  defaultTracesURLPath,
-					MetricsURLPath: defaultMetricsURLPath,
-					LogsURLPath:    defaultLogsURLPath,
-				},
-				Arrow: &ArrowSettings{
+				Arrow: ArrowSettings{
 					MemoryLimitMiB: defaultMemoryLimitMiB,
 				},
 			},
@@ -209,47 +146,7 @@ func TestUnmarshalConfigInvalidProtocol(t *testing.T) {
 	assert.EqualError(t, component.UnmarshalConfig(cm, cfg), "1 error(s) decoding:\n\n* 'protocols' has invalid keys: thrift")
 }
 
-func TestUnmarshalConfigInvalidSignalPath(t *testing.T) {
-	tests := []struct {
-		name       string
-		testDataFn string
-	}{
-		{
-			name:       "Invalid traces URL path",
-			testDataFn: "invalid_traces_path.yaml",
-		},
-		{
-			name:       "Invalid metrics URL path",
-			testDataFn: "invalid_metrics_path.yaml",
-		},
-		{
-			name:       "Invalid logs URL path",
-			testDataFn: "invalid_logs_path.yaml",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			cm, err := confmaptest.LoadConf(filepath.Join("testdata", test.testDataFn))
-			require.NoError(t, err)
-			factory := NewFactory()
-			cfg := factory.CreateDefaultConfig()
-			assert.EqualError(t, component.UnmarshalConfig(cm, cfg), "invalid HTTP URL path set for signal: parse \":invalid\": missing protocol scheme")
-		})
-	}
-}
-
 func TestUnmarshalConfigNoProtocols(t *testing.T) {
 	cfg := Config{}
-	assert.EqualError(t, component.ValidateConfig(cfg), "must specify at least one protocol when using the OTel Arrow receiver")
-}
-
-func TestUnmarshalConfigNoGRPC(t *testing.T) {
-	cfg := Config{
-		Protocols: Protocols{
-			HTTP:  &httpServerSettings{},
-			Arrow: &ArrowSettings{},
-		},
-	}
-	assert.EqualError(t, component.ValidateConfig(cfg), "must specify at gRPC protocol when using the OTLP Arrow receiver")
+	assert.NoError(t, component.ValidateConfig(cfg))
 }

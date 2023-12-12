@@ -318,9 +318,9 @@ func (ctc *commonTestCase) newOOMConsumer() arrowRecord.ConsumerAPI {
 
 func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opts ...func(*configgrpc.GRPCServerSettings, *auth.Server)) {
 	var authServer auth.Server
-	gsettings := &configgrpc.GRPCServerSettings{}
+	var gsettings configgrpc.GRPCServerSettings
 	for _, gf := range opts {
-		gf(gsettings, &authServer)
+		gf(&gsettings, &authServer)
 	}
 	rc := receiver.CreateSettings{
 		TelemetrySettings: ctc.telset,
