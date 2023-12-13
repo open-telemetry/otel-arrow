@@ -29,7 +29,6 @@ import (
 
 type testTelemetry struct {
 	promHandler   http.Handler
-	useOtel       bool
 	meterProvider *sdkmetric.MeterProvider
 }
 
@@ -47,32 +46,28 @@ type expectedMetrics struct {
 	timeoutTrigger float64
 }
 
-func telemetryTest(t *testing.T, testFunc func(t *testing.T, tel testTelemetry, useOtel bool)) {
+func telemetryTest(t *testing.T, testFunc func(t *testing.T, tel testTelemetry)) {
 	t.Run("WithOTel", func(t *testing.T) {
-		testFunc(t, setupTelemetry(t, true), true)
+		testFunc(t, setupTelemetry(t))
 	})
 }
 
-func setupTelemetry(t *testing.T, useOtel bool) testTelemetry {
-	telemetry := testTelemetry{
-		useOtel: useOtel,
-	}
+func setupTelemetry(t *testing.T) testTelemetry {
+	telemetry := testTelemetry{}
 
-	if useOtel {
-		promReg := prometheus.NewRegistry()
-		exporter, err := otelprom.New(otelprom.WithRegisterer(promReg), otelprom.WithoutUnits(), otelprom.WithoutScopeInfo())
-		require.NoError(t, err)
+	promReg := prometheus.NewRegistry()
+	exporter, err := otelprom.New(otelprom.WithRegisterer(promReg), otelprom.WithoutUnits(), otelprom.WithoutScopeInfo())
+	require.NoError(t, err)
 
-		telemetry.meterProvider = sdkmetric.NewMeterProvider(
-			sdkmetric.WithResource(resource.Empty()),
-			sdkmetric.WithReader(exporter),
-			sdkmetric.WithView(batchViews()...),
-		)
+	telemetry.meterProvider = sdkmetric.NewMeterProvider(
+		sdkmetric.WithResource(resource.Empty()),
+		sdkmetric.WithReader(exporter),
+		sdkmetric.WithView(batchViews()...),
+	)
 
-		telemetry.promHandler = promhttp.HandlerFor(promReg, promhttp.HandlerOpts{})
+	telemetry.promHandler = promhttp.HandlerFor(promReg, promhttp.HandlerOpts{})
 
-		t.Cleanup(func() { assert.NoError(t, telemetry.meterProvider.Shutdown(context.Background())) })
-	}
+	t.Cleanup(func() { assert.NoError(t, telemetry.meterProvider.Shutdown(context.Background())) })
 
 	return telemetry
 }
@@ -161,7 +156,7 @@ func (tt *testTelemetry) assertBoundaries(t *testing.T, expected []float64, hist
 }
 
 func (tt *testTelemetry) getMetric(t *testing.T, name string, mtype io_prometheus_client.MetricType, got map[string]*io_prometheus_client.MetricFamily) *io_prometheus_client.Metric {
-	if tt.useOtel && mtype == io_prometheus_client.MetricType_COUNTER {
+	if mtype == io_prometheus_client.MetricType_COUNTER {
 		// OTel Go suffixes counters with `_total`
 		name += "_total"
 	}

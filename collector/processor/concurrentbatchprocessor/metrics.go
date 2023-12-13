@@ -41,7 +41,6 @@ const (
 type batchProcessorTelemetry struct {
 	level    configtelemetry.Level
 	detailed bool
-	useOtel  bool
 
 	exportCtx context.Context
 
@@ -60,11 +59,10 @@ type batchProcessorTelemetry struct {
 	batchInFlightBytes metric.Int64UpDownCounter
 }
 
-func newBatchProcessorTelemetry(set processor.CreateSettings, currentMetadataCardinality func() int, useOtel bool) (*batchProcessorTelemetry, error) {
+func newBatchProcessorTelemetry(set processor.CreateSettings, currentMetadataCardinality func() int) (*batchProcessorTelemetry, error) {
 	exportCtx := context.WithValue(context.Background(), processorTagKey, set.ID.String())
 
 	bpt := &batchProcessorTelemetry{
-		useOtel:       useOtel,
 		processorAttr: []attribute.KeyValue{attribute.String("processor", set.ID.String())},
 		exportCtx:     exportCtx,
 		level:         set.MetricsLevel,
@@ -79,10 +77,6 @@ func newBatchProcessorTelemetry(set processor.CreateSettings, currentMetadataCar
 }
 
 func (bpt *batchProcessorTelemetry) createOtelMetrics(mp metric.MeterProvider, currentMetadataCardinality func() int) error {
-	if !bpt.useOtel {
-		return nil
-	}
-
 	bpt.processorAttrOption = metric.WithAttributes(bpt.processorAttr...)
 
 	var errors, err error
