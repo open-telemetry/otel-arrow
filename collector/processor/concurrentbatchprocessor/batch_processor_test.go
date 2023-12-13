@@ -234,9 +234,9 @@ func (bc *blockingConsumer) Capabilities() consumer.Capabilities {
 	return consumer.Capabilities{MutatesData: false}
 }
 
-// helper function to help determine a setting for cfg.MaxInFlightBytes based
+// helper function to help determine a setting for cfg.MaxInFlightBytesMiB based
 // on the number of requests and number of spans per request.
-func calculateMaxInFlightBytes(numRequests, spansPerRequest int) uint32 {
+func calculateMaxInFlightBytesMiB(numRequests, spansPerRequest int) uint32 {
 	sentResourceSpans := ptrace.NewTraces().ResourceSpans()
 	td := testdata.GenerateTraces(spansPerRequest)
 	spans := td.ResourceSpans().At(0).ScopeSpans().At(0).Spans()
@@ -257,7 +257,7 @@ func TestBatchProcessorCancelContext(t *testing.T) {
 	cfg := createDefaultConfig().(*Config)
 	cfg.SendBatchSize = 128
 	cfg.Timeout = 10 * time.Second
-	cfg.MaxInFlightBytes = calculateMaxInFlightBytes(requestCount, spansPerRequest)
+	cfg.MaxInFlightBytesMiB = calculateMaxInFlightBytesMiB(requestCount, spansPerRequest)
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
 	bc := &blockingConsumer{blocking: make(chan struct{}, 1)}
@@ -292,7 +292,7 @@ func TestBatchProcessorCancelContext(t *testing.T) {
 	}, 5*time.Second, 10*time.Millisecond)
 
 	// semaphore should be fully acquired at this point.
-	assert.False(t, bp.batcher.(*singleShardBatcher).batcher.processor.sem.TryAcquire(int64(1)))
+	assert.False(t, bp.sem.TryAcquire(int64(1)))
 
 	wg.Add(1)
 	go func() {
@@ -307,14 +307,14 @@ func TestBatchProcessorCancelContext(t *testing.T) {
 	wg.Wait()
 
 	// check sending another request does not change the semaphore count, even after ConsumeTraces returns.
-	assert.False(t, bp.batcher.(*singleShardBatcher).batcher.processor.sem.TryAcquire(int64(1)))
+	assert.False(t, bp.sem.TryAcquire(int64(1)))
 
 	// signal to the blockingConsumer to return response to waiters.
 	bc.unblock()
 
-	// Semaphore should be released once all responses are returned. Confirm we can acquire MaxInFlightBytes bytes.
+	// Semaphore should be released once all responses are returned. Confirm we can acquire MaxInFlightBytesMiB bytes.
 	require.Eventually(t, func() bool {
-		return bp.batcher.(*singleShardBatcher).batcher.processor.sem.TryAcquire(int64(cfg.MaxInFlightBytes))
+		return bp.sem.TryAcquire(int64(cfg.MaxInFlightBytesMiB))
 	}, 5*time.Second, 10*time.Millisecond)
 	require.NoError(t, bp.Shutdown(context.Background()))
 }
@@ -582,9 +582,9 @@ func TestBatchProcessorSentByTimeout(t *testing.T) {
 
 func TestBatchProcessorTraceSendWhenClosing(t *testing.T) {
 	cfg := Config{
-		Timeout:          3 * time.Second,
-		SendBatchSize:    1000,
-		MaxInFlightBytes: defaultMaxBytes,
+		Timeout:             3 * time.Second,
+		SendBatchSize:       1000,
+		MaxInFlightBytesMiB: defaultMaxBytes,
 	}
 	sink := new(consumertest.TracesSink)
 
@@ -617,9 +617,9 @@ func TestBatchMetricProcessor_ReceivingData(t *testing.T) {
 	// Instantiate the batch processor with low config values to test data
 	// gets sent through the processor.
 	cfg := Config{
-		Timeout:          200 * time.Millisecond,
-		SendBatchSize:    50,
-		MaxInFlightBytes: defaultMaxBytes,
+		Timeout:             200 * time.Millisecond,
+		SendBatchSize:       50,
+		MaxInFlightBytesMiB: defaultMaxBytes,
 	}
 
 	requestCount := 100
@@ -683,9 +683,9 @@ func testBatchMetricProcessorBatchSize(t *testing.T, tel testTelemetry, useOtel 
 	// Instantiate the batch processor with low config values to test data
 	// gets sent through the processor.
 	cfg := Config{
-		Timeout:          2 * time.Second,
-		SendBatchSize:    50,
-		MaxInFlightBytes: defaultMaxBytes,
+		Timeout:             2 * time.Second,
+		SendBatchSize:       50,
+		MaxInFlightBytesMiB: defaultMaxBytes,
 	}
 
 	requestCount := 100
@@ -757,9 +757,9 @@ func TestBatchMetrics_UnevenBatchMaxSize(t *testing.T) {
 
 func TestBatchMetricsProcessor_Timeout(t *testing.T) {
 	cfg := Config{
-		Timeout:          100 * time.Millisecond,
-		SendBatchSize:    101,
-		MaxInFlightBytes: defaultMaxBytes,
+		Timeout:             100 * time.Millisecond,
+		SendBatchSize:       101,
+		MaxInFlightBytesMiB: defaultMaxBytes,
 	}
 	requestCount := 5
 	metricsPerRequest := 10
@@ -803,9 +803,9 @@ func TestBatchMetricsProcessor_Timeout(t *testing.T) {
 
 func TestBatchMetricProcessor_Shutdown(t *testing.T) {
 	cfg := Config{
-		Timeout:          3 * time.Second,
-		SendBatchSize:    1000,
-		MaxInFlightBytes: defaultMaxBytes,
+		Timeout:             3 * time.Second,
+		SendBatchSize:       1000,
+		MaxInFlightBytesMiB: defaultMaxBytes,
 	}
 	requestCount := 5
 	metricsPerRequest := 10
@@ -896,9 +896,9 @@ func BenchmarkTraceSizeSpanCount(b *testing.B) {
 func BenchmarkBatchMetricProcessor(b *testing.B) {
 	b.StopTimer()
 	cfg := Config{
-		Timeout:          100 * time.Millisecond,
-		SendBatchSize:    2000,
-		MaxInFlightBytes: defaultMaxBytes,
+		Timeout:             100 * time.Millisecond,
+		SendBatchSize:       2000,
+		MaxInFlightBytesMiB: defaultMaxBytes,
 	}
 	runMetricsProcessorBenchmark(b, cfg)
 }
@@ -906,10 +906,10 @@ func BenchmarkBatchMetricProcessor(b *testing.B) {
 func BenchmarkMultiBatchMetricProcessor(b *testing.B) {
 	b.StopTimer()
 	cfg := Config{
-		Timeout:          100 * time.Millisecond,
-		SendBatchSize:    2000,
-		MetadataKeys:     []string{"test", "test2"},
-		MaxInFlightBytes: defaultMaxBytes,
+		Timeout:             100 * time.Millisecond,
+		SendBatchSize:       2000,
+		MetadataKeys:        []string{"test", "test2"},
+		MaxInFlightBytesMiB: defaultMaxBytes,
 	}
 	runMetricsProcessorBenchmark(b, cfg)
 }
@@ -957,9 +957,9 @@ func TestBatchLogProcessor_ReceivingData(t *testing.T) {
 	// Instantiate the batch processor with low config values to test data
 	// gets sent through the processor.
 	cfg := Config{
-		Timeout:          200 * time.Millisecond,
-		SendBatchSize:    50,
-		MaxInFlightBytes: defaultMaxBytes,
+		Timeout:             200 * time.Millisecond,
+		SendBatchSize:       50,
+		MaxInFlightBytesMiB: defaultMaxBytes,
 	}
 
 	requestCount := 100
@@ -1023,9 +1023,9 @@ func testBatchLogProcessorBatchSize(t *testing.T, tel testTelemetry, useOtel boo
 	// Instantiate the batch processor with low config values to test data
 	// gets sent through the processor.
 	cfg := Config{
-		Timeout:          2 * time.Second,
-		SendBatchSize:    50,
-		MaxInFlightBytes: defaultMaxBytes,
+		Timeout:             2 * time.Second,
+		SendBatchSize:       50,
+		MaxInFlightBytesMiB: defaultMaxBytes,
 	}
 
 	requestCount := 100
@@ -1075,9 +1075,9 @@ func testBatchLogProcessorBatchSize(t *testing.T, tel testTelemetry, useOtel boo
 
 func TestBatchLogsProcessor_Timeout(t *testing.T) {
 	cfg := Config{
-		Timeout:          3 * time.Second,
-		SendBatchSize:    100,
-		MaxInFlightBytes: defaultMaxBytes,
+		Timeout:             3 * time.Second,
+		SendBatchSize:       100,
+		MaxInFlightBytesMiB: defaultMaxBytes,
 	}
 	requestCount := 5
 	logsPerRequest := 10
@@ -1121,9 +1121,9 @@ func TestBatchLogsProcessor_Timeout(t *testing.T) {
 
 func TestBatchLogProcessor_Shutdown(t *testing.T) {
 	cfg := Config{
-		Timeout:          3 * time.Second,
-		SendBatchSize:    1000,
-		MaxInFlightBytes: defaultMaxBytes,
+		Timeout:             3 * time.Second,
+		SendBatchSize:       1000,
+		MaxInFlightBytesMiB: defaultMaxBytes,
 	}
 	requestCount := 5
 	logsPerRequest := 10
@@ -1391,7 +1391,7 @@ func TestBatchZeroConfig(t *testing.T) {
 	// This is a no-op configuration. No need for a timer, no
 	// minimum, no mxaimum, just a pass through.
 	cfg := Config{
-		MaxInFlightBytes: defaultMaxBytes,
+		MaxInFlightBytesMiB: defaultMaxBytes,
 	}
 
 	require.NoError(t, cfg.Validate())
@@ -1433,8 +1433,8 @@ func TestBatchSplitOnly(t *testing.T) {
 	const logsPerRequest = 100
 
 	cfg := Config{
-		SendBatchMaxSize: maxBatch,
-		MaxInFlightBytes: defaultMaxBytes,
+		SendBatchMaxSize:    maxBatch,
+		MaxInFlightBytesMiB: defaultMaxBytes,
 	}
 
 	require.NoError(t, cfg.Validate())
