@@ -11,14 +11,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	ocprom "contrib.go.opencensus.io/exporter/prometheus"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	io_prometheus_client "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.opencensus.io/stats/view"
 	otelprom "go.opentelemetry.io/otel/exporters/prometheus"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -29,21 +27,7 @@ import (
 	"go.opentelemetry.io/collector/processor/processortest"
 )
 
-func TestBatchProcessorMetrics(t *testing.T) {
-	viewNames := []string{
-		"batch_size_trigger_send",
-		"timeout_trigger_send",
-		"batch_send_size",
-		"batch_send_size_bytes",
-	}
-	views := metricViews()
-	for i, viewName := range viewNames {
-		assert.Equal(t, "processor/batch/"+viewName, views[i].Name)
-	}
-}
-
 type testTelemetry struct {
-	meter         view.Meter
 	promHandler   http.Handler
 	useOtel       bool
 	meterProvider *sdkmetric.MeterProvider
@@ -70,13 +54,7 @@ func telemetryTest(t *testing.T, testFunc func(t *testing.T, tel testTelemetry, 
 }
 
 func setupTelemetry(t *testing.T, useOtel bool) testTelemetry {
-	// Unregister the views first since they are registered by the init, this way we reset them.
-	views := metricViews()
-	view.Unregister(views...)
-	require.NoError(t, view.Register(views...))
-
 	telemetry := testTelemetry{
-		meter:   view.NewMeter(),
 		useOtel: useOtel,
 	}
 
@@ -94,16 +72,6 @@ func setupTelemetry(t *testing.T, useOtel bool) testTelemetry {
 		telemetry.promHandler = promhttp.HandlerFor(promReg, promhttp.HandlerOpts{})
 
 		t.Cleanup(func() { assert.NoError(t, telemetry.meterProvider.Shutdown(context.Background())) })
-	} else {
-		promReg := prometheus.NewRegistry()
-
-		ocExporter, err := ocprom.NewExporter(ocprom.Options{Registry: promReg})
-		require.NoError(t, err)
-
-		telemetry.promHandler = ocExporter
-
-		view.RegisterExporter(ocExporter)
-		t.Cleanup(func() { view.UnregisterExporter(ocExporter) })
 	}
 
 	return telemetry
@@ -118,11 +86,6 @@ func (tt *testTelemetry) NewProcessorCreateSettings() processor.CreateSettings {
 }
 
 func (tt *testTelemetry) assertMetrics(t *testing.T, expected expectedMetrics) {
-	for _, v := range metricViews() {
-		// Forces a flush for the opencensus view data.
-		_, _ = view.RetrieveData(v.Name)
-	}
-
 	req, err := http.NewRequest(http.MethodGet, "/metrics", nil)
 	require.NoError(t, err)
 
