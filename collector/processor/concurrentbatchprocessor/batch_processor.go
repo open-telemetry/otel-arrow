@@ -166,7 +166,7 @@ func newBatchProcessor(set processor.CreateSettings, cfg *Config, batchFunc func
 		shutdownC:        make(chan struct{}, 1),
 		metadataKeys:     mks,
 		metadataLimit:    int(cfg.MetadataCardinalityLimit),
-		sem:              semaphore.NewWeighted(int64(cfg.MaxInFlightBytesMiB)),
+		sem:              semaphore.NewWeighted(int64(cfg.MaxInFlightBytesMiB)<<20),
 	}
 	if len(bp.metadataKeys) == 0 {
 		bp.batcher = &singleShardBatcher{batcher: bp.newShard(nil)}

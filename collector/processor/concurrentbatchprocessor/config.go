@@ -72,9 +72,14 @@ func (cfg *Config) Validate() error {
 		return errors.New("timeout must be greater or equal to 0")
 	}
 
-	// remove this check once MaxInFlightBytes is removed.
-	if cfg.MaxInFlightBytes != 0 {
-		return errors.New("max_in_flight_bytes is deprecated, use max_in_flight_bytes_mib instead")
+	if cfg.MaxInFlightBytes != 0 && cfg.MaxInFlightBytesMiB != 0 {
+		return errors.New("max_in_flight_bytes is deprecated, use only max_in_flight_bytes_mib instead")
+	}
+
+	if cfg.MaxInFlightBytes > 0 {
+		// Round up
+		cfg.MaxInFlightBytesMiB = (cfg.MaxInFlightBytes - 1 + 1<<20) >> 20
+		cfg.MaxInFlightBytes = 0
 	}
 
 	if cfg.MaxInFlightBytesMiB < 0 {
