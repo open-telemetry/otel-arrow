@@ -13,7 +13,9 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
@@ -71,6 +73,8 @@ type batchProcessor struct {
 	// in-flight bytes limit mechanism
 	limitBytes int64
 	sem        *semaphore.Weighted
+
+	tracer trace.TracerProvider
 }
 
 type batcher interface {
@@ -103,14 +107,18 @@ type shard struct {
 	pending []pendingItem
 
 	totalSent int
+
+	tracer trace.TracerProvider
 }
 
 type pendingItem struct {
-	numItems int
-	respCh   chan error
+	parentCtx context.Context
+	numItems  int
+	respCh    chan error
 }
 
 type dataItem struct {
+	parentCtx  context.Context
 	data       any
 	responseCh chan error
 	count      int
@@ -172,6 +180,7 @@ func newBatchProcessor(set processor.CreateSettings, cfg *Config, batchFunc func
 		metadataLimit:    int(cfg.MetadataCardinalityLimit),
 		limitBytes:       limitBytes,
 		sem:              semaphore.NewWeighted(limitBytes),
+		tracer:           otel.GetTracerProvider(),
 	}
 	if len(bp.metadataKeys) == 0 {
 		bp.batcher = &singleShardBatcher{batcher: bp.newShard(nil)}
@@ -200,6 +209,7 @@ func (bp *batchProcessor) newShard(md map[string][]string) *shard {
 		newItem:   make(chan dataItem, runtime.NumCPU()),
 		exportCtx: exportCtx,
 		batch:     bp.batchFunc(),
+		tracer:    bp.tracer,
 	}
 
 	b.processor.goroutines.Add(1)
@@ -275,8 +285,9 @@ func (b *shard) processItem(item dataItem) {
 
 	totalItems := after - before
 	b.pending = append(b.pending, pendingItem{
-		numItems: totalItems,
-		respCh:   item.responseCh,
+		parentCtx: item.parentCtx,
+		numItems:  totalItems,
+		respCh:    item.responseCh,
 	})
 
 	b.flushItems()
@@ -318,6 +329,7 @@ func (b *shard) sendItems(trigger trigger) {
 
 	var waiters []chan error
 	var countItems []int
+	var contexts []context.Context
 
 	numItemsBefore := b.totalSent
 	numItemsAfter := b.totalSent + sent
@@ -330,10 +342,12 @@ func (b *shard) sendItems(trigger trigger) {
 			b.pending[0].numItems -= partialSent
 			numItemsBefore += partialSent
 			waiters = append(waiters, b.pending[0].respCh)
+			contexts = append(contexts, b.pending[0].parentCtx)
 			countItems = append(countItems, partialSent)
 		} else { // waiter gets a complete response.
 			numItemsBefore += b.pending[0].numItems
 			waiters = append(waiters, b.pending[0].respCh)
+			contexts = append(contexts, b.pending[0].parentCtx)
 			countItems = append(countItems, b.pending[0].numItems)
 
 			// complete response sent so b.pending[0] can be popped from queue.
@@ -347,7 +361,26 @@ func (b *shard) sendItems(trigger trigger) {
 
 	go func() {
 		before := time.Now()
-		err := b.batch.export(b.exportCtx, req)
+		var err error
+
+		var parent context.Context
+		isSingleCtx := allSame(contexts)
+
+		// For SDK's we can reuse the parent context because there is
+		// only one possible parent. This is not the case
+		// for collector batchprocessors which must break the parent context
+		// because batch items can be incoming from multiple receivers.
+		if isSingleCtx {
+			parent = contexts[0]
+		} else {
+			var sp trace.Span
+			links := buildLinks(contexts)
+			parent = context.Background()
+			parent, sp = b.tracer.Tracer("otel").Start(context.Background(), "concurrent_batch_processor/export", trace.WithLinks(links...))
+			sp.End()
+		}
+		err = b.batch.export(parent, req)
+
 		latency := time.Since(before)
 		for i := range waiters {
 			count := countItems[i]
@@ -363,6 +396,35 @@ func (b *shard) sendItems(trigger trigger) {
 	}()
 
 	b.totalSent = numItemsAfter
+}
+
+func buildLinks(contexts []context.Context) []trace.Link {
+	var links []trace.Link
+	unique := make(map[context.Context]bool)
+	for i := range contexts {
+		_, ok := unique[contexts[i]]
+		if ok {
+			continue
+		}
+
+		unique[contexts[i]] = true
+
+		link := trace.Link{SpanContext: trace.SpanContextFromContext(contexts[i])}
+		links = append(links, link)
+	}
+
+	return links
+}
+
+// helper function to check if a slice of contexts contains more than one unique context.
+// If the contexts are all the same then we can
+func allSame(x []context.Context) bool {
+	for idx := range x[1:] {
+		if x[idx] != x[0] {
+			return false
+		}
+	}
+	return true
 }
 
 func (bp *batchProcessor) countAcquire(ctx context.Context, bytes int64) error {
@@ -383,6 +445,7 @@ func (bp *batchProcessor) countRelease(bytes int64) {
 func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 	respCh := make(chan error, 1)
 	item := dataItem{
+		parentCtx:  ctx,
 		data:       data,
 		responseCh: respCh,
 	}

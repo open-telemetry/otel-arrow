@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
 
 	"github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor/testdata"
@@ -23,11 +24,16 @@ import (
 	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumertest"
+	"go.opentelemetry.io/collector/exporter"
+	"go.opentelemetry.io/collector/exporter/exporterhelper"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/processor"
 	"go.opentelemetry.io/collector/processor/processortest"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 func TestProcessorShutdown(t *testing.T) {
@@ -223,9 +229,12 @@ func (bc *blockingConsumer) getItemsWaiting() int {
 func (bc *blockingConsumer) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
 	sz := int64(bc.szr.TracesSize(td))
 	bc.lock.Lock()
+
 	bc.numItems += td.SpanCount()
 	bc.numBytesAcquired += sz
+
 	bc.lock.Unlock()
+
 	bc.sem.Acquire(ctx, sz)
 	defer bc.sem.Release(sz)
 	<-bc.blocking
@@ -237,6 +246,7 @@ func (bc *blockingConsumer) unblock() {
 	bc.lock.Lock()
 	defer bc.lock.Unlock()
 	close(bc.blocking)
+	bc.numItems = 0
 }
 
 func (bc *blockingConsumer) Capabilities() consumer.Capabilities {
@@ -325,6 +335,167 @@ func TestBatchProcessorCancelContext(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return bp.sem.TryAcquire(int64(cfg.MaxInFlightSizeMiB << 20))
 	}, 5*time.Second, 10*time.Millisecond)
+	require.NoError(t, bp.Shutdown(context.Background()))
+}
+
+func TestBatchProcessorUnbrokenParentContext(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.SendBatchSize = 100
+	cfg.SendBatchMaxSize = 100
+	cfg.Timeout = 3 * time.Second
+	cfg.MaxInFlightSizeMiB = 2
+	creationSet := processortest.NewNopCreateSettings()
+	creationSet.MetricsLevel = configtelemetry.LevelDetailed
+	requestCount := 10
+	spansPerRequest := 5249
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exp),
+	)
+	otel.SetTracerProvider(tp)
+	tracer := tp.Tracer("otel")
+	bg, rootSp := tracer.Start(context.Background(), "test_start_parent")
+	rootSp.End()
+
+	createSet := exporter.CreateSettings{
+		TelemetrySettings: component.TelemetrySettings{
+			TracerProvider: tp,
+			Logger:         zap.NewNop(),
+		},
+	}
+
+	opt := exporterhelper.WithQueue(exporterhelper.QueueSettings{
+		Enabled: false,
+	})
+	next, err := exporterhelper.NewTracesExporter(bg, createSet, Config{}, func(ctx context.Context, td ptrace.Traces) error { return nil }, opt)
+	require.NoError(t, err)
+
+	bp, err := newBatchTracesProcessor(creationSet, next, cfg, true)
+	require.NoError(t, err)
+	require.NoError(t, bp.Start(context.Background(), componenttest.NewNopHost()))
+
+	sentResourceSpans := ptrace.NewTraces().ResourceSpans()
+	var wg sync.WaitGroup
+	for requestNum := 0; requestNum < requestCount; requestNum++ {
+		td := testdata.GenerateTraces(spansPerRequest)
+		spans := td.ResourceSpans().At(0).ScopeSpans().At(0).Spans()
+		for spanIndex := 0; spanIndex < spansPerRequest; spanIndex++ {
+			spans.At(spanIndex).SetName(getTestSpanName(requestNum, spanIndex))
+		}
+		td.ResourceSpans().At(0).CopyTo(sentResourceSpans.AppendEmpty())
+		// ConsumeTraces is a blocking function and should be run in a go routine
+		// until batch size reached to unblock.
+		wg.Add(1)
+		go func() {
+			assert.NoError(t, bp.ConsumeTraces(bg, td))
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+
+	// need to flush tracerprovider
+	tp.ForceFlush(bg)
+	td := exp.GetSpans()
+
+	numBatches := float64(spansPerRequest*requestCount) / float64(cfg.SendBatchMaxSize)
+	assert.Equal(t, int(math.Ceil(numBatches))+1, len(td))
+	for i := range td {
+		if !td[i].Parent.HasTraceID() {
+			assert.Equal(t, td[i].SpanContext, rootSp.SpanContext())
+			continue
+		}
+		// confirm parent is rootSp
+		assert.Equal(t, td[i].Parent, rootSp.SpanContext())
+	}
+
+	require.NoError(t, bp.Shutdown(context.Background()))
+}
+
+func TestBatchProcessorUnbrokenParentContextMultiple(t *testing.T) {
+	cfg := createDefaultConfig().(*Config)
+	cfg.SendBatchSize = 100
+	cfg.SendBatchMaxSize = 100
+	cfg.Timeout = 3 * time.Second
+	cfg.MaxInFlightSizeMiB = 2
+	creationSet := processortest.NewNopCreateSettings()
+	creationSet.MetricsLevel = configtelemetry.LevelDetailed
+	requestCount := 50
+	// keep spansPerRequest small to ensure multiple contexts end up in the same batch.
+	spansPerRequest := 5
+	exp := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exp),
+	)
+	otel.SetTracerProvider(tp)
+	tracer := tp.Tracer("otel")
+	bg, rootSp := tracer.Start(context.Background(), "test_start_parent")
+	rootSp.End()
+
+	createSet := exporter.CreateSettings{
+		TelemetrySettings: component.TelemetrySettings{
+			TracerProvider: tp,
+			Logger:         zap.NewNop(),
+		},
+	}
+	opt := exporterhelper.WithQueue(exporterhelper.QueueSettings{
+		Enabled: false,
+	})
+	next, err := exporterhelper.NewTracesExporter(bg, createSet, Config{}, func(ctx context.Context, td ptrace.Traces) error { return nil }, opt)
+	require.NoError(t, err)
+
+	bp, err := newBatchTracesProcessor(creationSet, next, cfg, true)
+	require.NoError(t, err)
+	require.NoError(t, bp.Start(context.Background(), componenttest.NewNopHost()))
+
+	callCtxs := []context.Context{
+		bg,
+		client.NewContext(bg, client.Info{
+			Metadata: client.NewMetadata(map[string][]string{
+				"token1": {"single"},
+				"token3": {"n/a"},
+			}),
+		}),
+		client.NewContext(bg, client.Info{
+			Metadata: client.NewMetadata(map[string][]string{
+				"token1": {"single"},
+				"token2": {"one", "two"},
+				"token4": {"n/a"},
+			}),
+		}),
+	}
+
+	sentResourceSpans := ptrace.NewTraces().ResourceSpans()
+	var wg sync.WaitGroup
+	for requestNum := 0; requestNum < requestCount; requestNum++ {
+		num := requestNum % len(callCtxs)
+		td := testdata.GenerateTraces(spansPerRequest)
+		spans := td.ResourceSpans().At(0).ScopeSpans().At(0).Spans()
+		for spanIndex := 0; spanIndex < spansPerRequest; spanIndex++ {
+			spans.At(spanIndex).SetName(getTestSpanName(requestNum, spanIndex))
+		}
+		td.ResourceSpans().At(0).CopyTo(sentResourceSpans.AppendEmpty())
+		// ConsumeTraces is a blocking function and should be run in a go routine
+		// until batch size reached to unblock.
+		wg.Add(1)
+		go func() {
+			assert.NoError(t, bp.ConsumeTraces(callCtxs[num], td))
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+
+	// need to flush tracerprovider
+	tp.ForceFlush(bg)
+	td := exp.GetSpans()
+	numBatches := float64(spansPerRequest*requestCount) / float64(cfg.SendBatchMaxSize)
+	assert.Equal(t, 2*int(math.Ceil(numBatches))+1, len(td))
+	for i := range td {
+		if len(td[i].Links) != 0 {
+			assert.Equal(t, len(td[i].Links), len(callCtxs))
+			assert.Equal(t, td[i].Links[0].SpanContext, rootSp.SpanContext())
+		}
+	}
+
 	require.NoError(t, bp.Shutdown(context.Background()))
 }
 
@@ -1251,7 +1422,7 @@ func TestBatchProcessorSpansBatchedByMetadata(t *testing.T) {
 		spanCountByToken12: map[string]int{},
 	}
 	cfg := createDefaultConfig().(*Config)
-	cfg.SendBatchSize = 1000
+	cfg.SendBatchSize = 100
 	cfg.Timeout = 1 * time.Second
 	cfg.MetadataKeys = []string{"token1", "token2"}
 	creationSet := processortest.NewNopCreateSettings()
