@@ -45,11 +45,11 @@ type Config struct {
 	// combination of MetadataKeys.
 	MetadataCardinalityLimit uint32 `mapstructure:"metadata_cardinality_limit"`
 
-	// MaxInFlightBytes limits the number of bytes in queue waiting to be
+	// MaxInFlightSizeMiB limits the number of bytes in queue waiting to be
 	// processed by the senders.
-	MaxInFlightBytesMiB uint32 `mapstructure:"max_in_flight_bytes_mib"`
+	MaxInFlightSizeMiB uint32 `mapstructure:"max_in_flight_size_mib"`
 
-	// Deprecated: Use MaxInFlightBytesMiB instead.
+	// Deprecated: Use MaxInFlightSizeMiB instead.
 	MaxInFlightBytes uint32 `mapstructure:"max_in_flight_bytes"`
 }
 
@@ -72,18 +72,18 @@ func (cfg *Config) Validate() error {
 		return errors.New("timeout must be greater or equal to 0")
 	}
 
-	if cfg.MaxInFlightBytes != 0 && cfg.MaxInFlightBytesMiB != 0 {
-		return errors.New("max_in_flight_bytes is deprecated, use only max_in_flight_bytes_mib instead")
+	if cfg.MaxInFlightBytes != 0 && cfg.MaxInFlightSizeMiB != 0 {
+		return errors.New("max_in_flight_bytes is deprecated, use only max_in_flight_size_mib instead")
 	}
 
 	if cfg.MaxInFlightBytes > 0 {
 		// Round up
-		cfg.MaxInFlightBytesMiB = (cfg.MaxInFlightBytes - 1 + 1<<20) >> 20
+		cfg.MaxInFlightSizeMiB = (cfg.MaxInFlightBytes - 1 + 1<<20) >> 20
 		cfg.MaxInFlightBytes = 0
 	}
 
-	if cfg.MaxInFlightBytesMiB < 0 {
-		return errors.New("max_in_flight_bytes_mib must be greater than or equal to 0")
+	if cfg.MaxInFlightSizeMiB < 0 {
+		return errors.New("max_in_flight_size_mib must be greater than or equal to 0")
 	}
 	return nil
 }

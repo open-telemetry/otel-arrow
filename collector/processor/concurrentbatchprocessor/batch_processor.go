@@ -68,7 +68,9 @@ type batchProcessor struct {
 	//  batcher will be either *singletonBatcher or *multiBatcher
 	batcher batcher
 
-	sem *semaphore.Weighted
+	// in-flight bytes limit mechanism
+	limitBytes int64
+	sem        *semaphore.Weighted
 }
 
 type batcher interface {
@@ -150,12 +152,14 @@ var _ consumer.Logs = (*batchProcessor)(nil)
 
 // newBatchProcessor returns a new batch processor component.
 func newBatchProcessor(set processor.CreateSettings, cfg *Config, batchFunc func() batch, useOtel bool) (*batchProcessor, error) {
+
 	// use lower-case, to be consistent with http/2 headers.
 	mks := make([]string, len(cfg.MetadataKeys))
 	for i, k := range cfg.MetadataKeys {
 		mks[i] = strings.ToLower(k)
 	}
 	sort.Strings(mks)
+	limitBytes := int64(cfg.MaxInFlightSizeMiB) << 20
 	bp := &batchProcessor{
 		logger: set.Logger,
 
@@ -166,7 +170,8 @@ func newBatchProcessor(set processor.CreateSettings, cfg *Config, batchFunc func
 		shutdownC:        make(chan struct{}, 1),
 		metadataKeys:     mks,
 		metadataLimit:    int(cfg.MetadataCardinalityLimit),
-		sem:              semaphore.NewWeighted(int64(cfg.MaxInFlightBytesMiB)<<20),
+		limitBytes:       limitBytes,
+		sem:              semaphore.NewWeighted(limitBytes),
 	}
 	if len(bp.metadataKeys) == 0 {
 		bp.batcher = &singleShardBatcher{batcher: bp.newShard(nil)}
@@ -392,6 +397,11 @@ func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 	}
 
 	bytes := int64(b.batch.sizeBytes(data))
+
+	if bytes > b.processor.limitBytes {
+		return fmt.Errorf("request size exceeds max-in-flight bytes: %d", bytes)
+	}
+
 	err := b.processor.countAcquire(ctx, bytes)
 	if err != nil {
 		return err
