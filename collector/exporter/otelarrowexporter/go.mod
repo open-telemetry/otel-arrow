@@ -5,8 +5,8 @@ go 1.21
 require (
 	github.com/apache/arrow/go/v12 v12.0.1
 	github.com/golang/mock v1.6.0
-	github.com/open-telemetry/otel-arrow v0.12.0
-	github.com/open-telemetry/otel-arrow/collector v0.12.0
+	github.com/open-telemetry/otel-arrow v0.13.0
+	github.com/open-telemetry/otel-arrow/collector v0.13.0
 	github.com/stretchr/testify v1.8.4
 	go.opentelemetry.io/collector v0.90.1
 	go.opentelemetry.io/collector/component v0.90.1
@@ -89,3 +89,14 @@ require (
 	golang.org/x/xerrors v0.0.0-20220907171357-04be3eba64a2 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+
+
+
+
+
+
+
+
+
+

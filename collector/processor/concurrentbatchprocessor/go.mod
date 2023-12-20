@@ -14,6 +14,7 @@ require (
 	go.opentelemetry.io/collector/config/configtelemetry v0.90.1
 	go.opentelemetry.io/collector/confmap v0.90.1
 	go.opentelemetry.io/collector/consumer v0.90.0
+	go.opentelemetry.io/collector/exporter v0.90.0
 	go.opentelemetry.io/collector/pdata v1.0.0
 	go.opentelemetry.io/collector/processor v0.90.0
 	go.opentelemetry.io/otel v1.21.0
@@ -29,6 +30,7 @@ require (
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/cenkalti/backoff/v4 v4.2.1 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/go-kit/log v0.2.1 // indirect
@@ -53,6 +55,7 @@ require (
 	github.com/prometheus/procfs v0.11.1 // indirect
 	github.com/prometheus/statsd_exporter v0.22.7 // indirect
 	github.com/rogpeppe/go-internal v1.11.0 // indirect
+	go.opentelemetry.io/collector/extension v0.90.1 // indirect
 	go.opentelemetry.io/collector/featuregate v1.0.0 // indirect
 	go.uber.org/goleak v1.3.0 // indirect
 	golang.org/x/net v0.18.0 // indirect
@@ -64,3 +67,14 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+
+
+
+
+
+
+
+
+
+

@@ -14,7 +14,7 @@ func main() {
 	info := component.BuildInfo{
 		Command:     "otelarrowcol",
 		Description: "OpenTelemetry Protocol with Apache Arrow development collector, for testing and evaluation",
-		Version:     "0.12.0",
+		Version:     "0.13.0",
 	}
 
 	if err := run(otelcol.CollectorSettings{BuildInfo: info, Factories: components}); err != nil {
