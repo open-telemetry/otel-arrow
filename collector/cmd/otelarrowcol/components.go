@@ -23,6 +23,7 @@ import (
 	otelarrowreceiver "github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver"
 	filereceiver "github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver"
 	generatorreceiver "github.com/lightstep/telemetry-generator/generatorreceiver"
+	otlpreceiver "go.opentelemetry.io/collector/receiver/otlpreceiver"
 )
 
 func components() (otelcol.Factories, error) {
@@ -42,6 +43,7 @@ func components() (otelcol.Factories, error) {
 		otelarrowreceiver.NewFactory(),
 		filereceiver.NewFactory(),
 		generatorreceiver.NewFactory(),
+		otlpreceiver.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err

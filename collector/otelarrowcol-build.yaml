@@ -46,6 +46,9 @@ receivers:
   - import: github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver
     gomod: github.com/open-telemetry/otel-arrow/collector v0.12.0
   - gomod: github.com/lightstep/telemetry-generator/generatorreceiver v0.15.0
+  # Users wanting the OTLP/HTTP Receiver will use the otlp receiver.
+  # Users wanting OTLP/gRPC may use the otelarrowreceiver.
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.90.1
 
 processors:
   - import: github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor
