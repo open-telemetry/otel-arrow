@@ -9,6 +9,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Remove two deprecated fields, both concurrent batch processor `max_in_flight_bytes`
   and otelarrow receiver `memory_limit` fields have corresponding `_mib` field names
   for consistency.
+- OTel-Arrow exporter: Do not treat PartialSuccess as errors (see https://github.com/open-telemetry/opentelemetry-collector/issues/9243). []()
 
 ## [0.13.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.13.0) - 2023-12-20
 
