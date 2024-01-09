@@ -13,6 +13,7 @@ import (
 	arrowPkg "github.com/apache/arrow/go/v12/arrow"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 	"go.uber.org/multierr"
+	"go.uber.org/zap"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -201,7 +202,11 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 	}
 	partialSuccess := resp.PartialSuccess()
 	if !(partialSuccess.ErrorMessage() == "" && partialSuccess.RejectedSpans() == 0) {
-		return consumererror.NewPermanent(fmt.Errorf("OTLP partial success: \"%s\" (%d rejected)", resp.PartialSuccess().ErrorMessage(), resp.PartialSuccess().RejectedSpans()))
+		// TODO: These should be counted, similar to dropped items.
+		e.settings.Logger.Warn("partial success",
+			zap.String("message", resp.PartialSuccess().ErrorMessage()),
+			zap.Int64("num_rejected", resp.PartialSuccess().RejectedSpans()),
+		)
 	}
 	return nil
 }
@@ -219,7 +224,11 @@ func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) erro
 	}
 	partialSuccess := resp.PartialSuccess()
 	if !(partialSuccess.ErrorMessage() == "" && partialSuccess.RejectedDataPoints() == 0) {
-		return consumererror.NewPermanent(fmt.Errorf("OTLP partial success: \"%s\" (%d rejected)", resp.PartialSuccess().ErrorMessage(), resp.PartialSuccess().RejectedDataPoints()))
+		// TODO: These should be counted, similar to dropped items.
+		e.settings.Logger.Warn("partial success",
+			zap.String("message", resp.PartialSuccess().ErrorMessage()),
+			zap.Int64("num_rejected", resp.PartialSuccess().RejectedDataPoints()),
+		)
 	}
 	return nil
 }
@@ -237,7 +246,11 @@ func (e *baseExporter) pushLogs(ctx context.Context, ld plog.Logs) error {
 	}
 	partialSuccess := resp.PartialSuccess()
 	if !(partialSuccess.ErrorMessage() == "" && partialSuccess.RejectedLogRecords() == 0) {
-		return consumererror.NewPermanent(fmt.Errorf("OTLP partial success: \"%s\" (%d rejected)", resp.PartialSuccess().ErrorMessage(), resp.PartialSuccess().RejectedLogRecords()))
+		// TODO: These should be counted, similar to dropped items.
+		e.settings.Logger.Warn("partial success",
+			zap.String("message", resp.PartialSuccess().ErrorMessage()),
+			zap.Int64("num_rejected", resp.PartialSuccess().RejectedLogRecords()),
+		)
 	}
 	return nil
 }
