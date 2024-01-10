@@ -10,6 +10,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   and otelarrow receiver `memory_limit` fields have corresponding `_mib` field names
   for consistency.
 - OTel-Arrow exporter: Do not treat PartialSuccess as errors (see https://github.com/open-telemetry/opentelemetry-collector/issues/9243). []()
+- Use Apache Arrow v14.0.2 dependencies. [#132](https://github.com/open-telemetry/otel-arrow/pull/132)
 
 ## [0.13.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.13.0) - 2023-12-20
 
