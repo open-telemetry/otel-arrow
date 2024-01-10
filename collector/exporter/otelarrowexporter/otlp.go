@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"time"
 
-	arrowPkg "github.com/apache/arrow/go/v12/arrow"
+	arrowPkg "github.com/apache/arrow/go/v14/arrow"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"

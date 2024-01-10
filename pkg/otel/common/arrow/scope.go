@@ -18,8 +18,8 @@
 package arrow
 
 import (
-	"github.com/apache/arrow/go/v12/arrow"
-	"github.com/apache/arrow/go/v12/arrow/array"
+	"github.com/apache/arrow/go/v14/arrow"
+	"github.com/apache/arrow/go/v14/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	acommon "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
