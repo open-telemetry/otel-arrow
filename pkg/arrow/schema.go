@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v14/arrow"
 )
 
 // Constants used to create schema id signature.

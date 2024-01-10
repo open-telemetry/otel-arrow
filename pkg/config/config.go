@@ -22,7 +22,7 @@ package config
 import (
 	"math"
 
-	"github.com/apache/arrow/go/v12/arrow/memory"
+	"github.com/apache/arrow/go/v14/arrow/memory"
 
 	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
 )
