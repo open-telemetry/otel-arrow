@@ -113,7 +113,7 @@ func TestBatchProcessorSpansPanicRecover(t *testing.T) {
 	cfg.Timeout = 10 * time.Second
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	bp, err := newBatchTracesProcessor(creationSet, &panicConsumer{}, cfg, true)
+	bp, err := newBatchTracesProcessor(creationSet, &panicConsumer{}, cfg)
 
 	require.NoError(t, err)
 	require.NoError(t, bp.Start(context.Background(), componenttest.NewNopHost()))
@@ -149,7 +149,7 @@ func TestBatchProcessorMetricsPanicRecover(t *testing.T) {
 	cfg.Timeout = 10 * time.Second
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	bp, err := newBatchMetricsProcessor(creationSet, &panicConsumer{}, cfg, true)
+	bp, err := newBatchMetricsProcessor(creationSet, &panicConsumer{}, cfg)
 
 	require.NoError(t, err)
 	require.NoError(t, bp.Start(context.Background(), componenttest.NewNopHost()))
@@ -183,7 +183,7 @@ func TestBatchProcessorLogsPanicRecover(t *testing.T) {
 	cfg.Timeout = 10 * time.Second
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	bp, err := newBatchLogsProcessor(creationSet, &panicConsumer{}, cfg, true)
+	bp, err := newBatchLogsProcessor(creationSet, &panicConsumer{}, cfg)
 
 	require.NoError(t, err)
 	require.NoError(t, bp.Start(context.Background(), componenttest.NewNopHost()))
@@ -288,7 +288,7 @@ func TestBatchProcessorCancelContext(t *testing.T) {
 		sem:      semaphore.NewWeighted(int64(cfg.MaxInFlightSizeMiB << 20)),
 		szr:      &ptrace.ProtoMarshaler{},
 	}
-	bp, err := newBatchTracesProcessor(creationSet, bc, cfg, true)
+	bp, err := newBatchTracesProcessor(creationSet, bc, cfg)
 	require.NoError(t, err)
 	require.NoError(t, bp.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -506,7 +506,7 @@ func TestBatchProcessorSpansDelivered(t *testing.T) {
 	cfg.Timeout = 10 * time.Second
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg, true)
+	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -562,7 +562,7 @@ func TestBatchProcessorSpansDeliveredEnforceBatchSize(t *testing.T) {
 	cfg.Timeout = 2 * time.Second
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg, true)
+	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -606,7 +606,7 @@ func TestBatchProcessorSentBySize(t *testing.T) {
 	telemetryTest(t, testBatchProcessorSentBySize)
 }
 
-func testBatchProcessorSentBySize(t *testing.T, tel testTelemetry, useOtel bool) {
+func testBatchProcessorSentBySize(t *testing.T, tel testTelemetry) {
 	sizer := &ptrace.ProtoMarshaler{}
 	sink := new(consumertest.TracesSink)
 	cfg := createDefaultConfig().(*Config)
@@ -615,7 +615,7 @@ func testBatchProcessorSentBySize(t *testing.T, tel testTelemetry, useOtel bool)
 	cfg.Timeout = 5 * time.Second
 	creationSet := tel.NewProcessorCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg, useOtel)
+	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -667,7 +667,7 @@ func TestBatchProcessorSentBySizeWithMaxSize(t *testing.T) {
 	telemetryTest(t, testBatchProcessorSentBySizeWithMaxSize)
 }
 
-func testBatchProcessorSentBySizeWithMaxSize(t *testing.T, tel testTelemetry, useOtel bool) {
+func testBatchProcessorSentBySizeWithMaxSize(t *testing.T, tel testTelemetry) {
 	sink := new(consumertest.TracesSink)
 	cfg := createDefaultConfig().(*Config)
 	sendBatchSize := 20
@@ -677,7 +677,7 @@ func testBatchProcessorSentBySizeWithMaxSize(t *testing.T, tel testTelemetry, us
 	cfg.Timeout = 5 * time.Second
 	creationSet := tel.NewProcessorCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg, useOtel)
+	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -725,7 +725,7 @@ func TestBatchProcessorSentByTimeout(t *testing.T) {
 
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg, true)
+	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -770,7 +770,7 @@ func TestBatchProcessorTraceSendWhenClosing(t *testing.T) {
 
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchTracesProcessor(creationSet, sink, &cfg, true)
+	batcher, err := newBatchTracesProcessor(creationSet, sink, &cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -808,7 +808,7 @@ func TestBatchMetricProcessor_ReceivingData(t *testing.T) {
 
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchMetricsProcessor(creationSet, sink, &cfg, true)
+	batcher, err := newBatchMetricsProcessor(creationSet, sink, &cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -857,7 +857,7 @@ func TestBatchMetricProcessorBatchSize(t *testing.T) {
 	telemetryTest(t, testBatchMetricProcessorBatchSize)
 }
 
-func testBatchMetricProcessorBatchSize(t *testing.T, tel testTelemetry, useOtel bool) {
+func testBatchMetricProcessorBatchSize(t *testing.T, tel testTelemetry) {
 	sizer := &pmetric.ProtoMarshaler{}
 
 	// Instantiate the batch processor with low config values to test data
@@ -876,7 +876,7 @@ func testBatchMetricProcessorBatchSize(t *testing.T, tel testTelemetry, useOtel 
 
 	creationSet := tel.NewProcessorCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchMetricsProcessor(creationSet, sink, &cfg, useOtel)
+	batcher, err := newBatchMetricsProcessor(creationSet, sink, &cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -947,7 +947,7 @@ func TestBatchMetricsProcessor_Timeout(t *testing.T) {
 
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchMetricsProcessor(creationSet, sink, &cfg, true)
+	batcher, err := newBatchMetricsProcessor(creationSet, sink, &cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -993,7 +993,7 @@ func TestBatchMetricProcessor_Shutdown(t *testing.T) {
 
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchMetricsProcessor(creationSet, sink, &cfg, true)
+	batcher, err := newBatchMetricsProcessor(creationSet, sink, &cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -1100,7 +1100,7 @@ func runMetricsProcessorBenchmark(b *testing.B, cfg Config) {
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
 	metricsPerRequest := 1000
-	batcher, err := newBatchMetricsProcessor(creationSet, sink, &cfg, true)
+	batcher, err := newBatchMetricsProcessor(creationSet, sink, &cfg)
 	require.NoError(b, err)
 	require.NoError(b, batcher.Start(ctx, componenttest.NewNopHost()))
 
@@ -1148,7 +1148,7 @@ func TestBatchLogProcessor_ReceivingData(t *testing.T) {
 
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchLogsProcessor(creationSet, sink, &cfg, true)
+	batcher, err := newBatchLogsProcessor(creationSet, sink, &cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -1197,7 +1197,7 @@ func TestBatchLogProcessor_BatchSize(t *testing.T) {
 	telemetryTest(t, testBatchLogProcessorBatchSize)
 }
 
-func testBatchLogProcessorBatchSize(t *testing.T, tel testTelemetry, useOtel bool) {
+func testBatchLogProcessorBatchSize(t *testing.T, tel testTelemetry) {
 	sizer := &plog.ProtoMarshaler{}
 
 	// Instantiate the batch processor with low config values to test data
@@ -1214,7 +1214,7 @@ func testBatchLogProcessorBatchSize(t *testing.T, tel testTelemetry, useOtel boo
 
 	creationSet := tel.NewProcessorCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchLogsProcessor(creationSet, sink, &cfg, useOtel)
+	batcher, err := newBatchLogsProcessor(creationSet, sink, &cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -1265,7 +1265,7 @@ func TestBatchLogsProcessor_Timeout(t *testing.T) {
 
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchLogsProcessor(creationSet, sink, &cfg, true)
+	batcher, err := newBatchLogsProcessor(creationSet, sink, &cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -1311,7 +1311,7 @@ func TestBatchLogProcessor_Shutdown(t *testing.T) {
 
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchLogsProcessor(creationSet, sink, &cfg, true)
+	batcher, err := newBatchLogsProcessor(creationSet, sink, &cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -1427,7 +1427,7 @@ func TestBatchProcessorSpansBatchedByMetadata(t *testing.T) {
 	cfg.MetadataKeys = []string{"token1", "token2"}
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg, true)
+	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -1527,7 +1527,7 @@ func TestBatchProcessorMetadataCardinalityLimit(t *testing.T) {
 	cfg.MetadataCardinalityLimit = cardLimit
 	cfg.Timeout = 1 * time.Second
 	creationSet := processortest.NewNopCreateSettings()
-	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg, true)
+	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -1581,7 +1581,7 @@ func TestBatchZeroConfig(t *testing.T) {
 	sink := new(consumertest.LogsSink)
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchLogsProcessor(creationSet, sink, &cfg, true)
+	batcher, err := newBatchLogsProcessor(creationSet, sink, &cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -1622,7 +1622,7 @@ func TestBatchSplitOnly(t *testing.T) {
 	sink := new(consumertest.LogsSink)
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchLogsProcessor(creationSet, sink, &cfg, true)
+	batcher, err := newBatchLogsProcessor(creationSet, sink, &cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
