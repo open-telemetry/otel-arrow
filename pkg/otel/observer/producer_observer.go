@@ -1,7 +1,7 @@
 package observer
 
 import (
-	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v14/arrow"
 
 	"github.com/open-telemetry/otel-arrow/pkg/record_message"
 )

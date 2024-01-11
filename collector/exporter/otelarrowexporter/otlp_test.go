@@ -412,8 +412,9 @@ func TestSendTraces(t *testing.T) {
 	// A request with 2 Trace entries.
 	td = testdata.GenerateTraces(2)
 
+	// PartialSuccess is not an error.
 	err = exp.ConsumeTraces(callCtx1, td)
-	assert.Error(t, err)
+	assert.NoError(t, err)
 }
 
 func TestSendTracesWhenEndpointHasHttpScheme(t *testing.T) {
@@ -590,7 +591,7 @@ func TestSendMetrics(t *testing.T) {
 
 	// Send two metrics.
 	md = testdata.GenerateMetrics(2)
-	assert.Error(t, exp.ConsumeMetrics(context.Background(), md))
+	assert.NoError(t, exp.ConsumeMetrics(context.Background(), md))
 }
 
 func TestSendTraceDataServerDownAndUp(t *testing.T) {
@@ -883,7 +884,7 @@ func TestSendLogData(t *testing.T) {
 	ld = testdata.GenerateLogs(2)
 
 	err = exp.ConsumeLogs(context.Background(), ld)
-	assert.Error(t, err)
+	assert.NoError(t, err)
 }
 
 // TestSendArrowTracesNotSupported tests a successful OTLP export w/

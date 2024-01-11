@@ -4,7 +4,6 @@
 package otelarrowreceiver // import "github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver"
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/open-telemetry/otel-arrow/collector/compression/zstd"
@@ -16,7 +15,6 @@ import (
 const (
 	// Confmap values.
 	protoGRPC                = "protocols::grpc"
-	protoArrowOldMemoryLimit = "protocols::arrow::memory_limit"
 	protoArrowMemoryLimitMiB = "protocols::arrow::memory_limit_mib"
 )
 
@@ -28,9 +26,6 @@ type Protocols struct {
 
 // ArrowSettings support configuring the Arrow receiver.
 type ArrowSettings struct {
-	// DeprecatedMemoryLimit is deprecated, use MemoryLimitMiB.
-	DeprecatedMemoryLimit uint64 `mapstructure:"memory_limit"`
-
 	// MemoryLimitMiB is the size of a shared memory region used
 	// by all Arrow streams, in MiB.  When too much load is
 	// passing through, they will see ResourceExhausted errors.
@@ -58,14 +53,6 @@ func (cfg *Config) Validate() error {
 }
 
 func (cfg *ArrowSettings) Validate() error {
-	if cfg.DeprecatedMemoryLimit != 0 && cfg.MemoryLimitMiB != 0 {
-		return errors.New("memory_limit is deprecated, use only memory_limit_mib")
-	}
-	if cfg.DeprecatedMemoryLimit != 0 {
-		// Round up
-		cfg.MemoryLimitMiB = (cfg.DeprecatedMemoryLimit - 1 + 1<<20) >> 20
-		cfg.DeprecatedMemoryLimit = 0
-	}
 	if err := cfg.Zstd.Validate(); err != nil {
 		return fmt.Errorf("zstd decoder: invalid configuration: %w", err)
 	}
@@ -78,12 +65,6 @@ func (cfg *Config) Unmarshal(conf *confmap.Conf) error {
 	err := conf.Unmarshal(cfg, confmap.WithErrorUnused())
 	if err != nil {
 		return err
-	}
-
-	// Allow the deprecated field, when explicitly set, to unset
-	// the new default value.
-	if conf.IsSet(protoArrowOldMemoryLimit) && !conf.IsSet(protoArrowMemoryLimitMiB) {
-		cfg.Arrow.MemoryLimitMiB = 0
 	}
 
 	return nil

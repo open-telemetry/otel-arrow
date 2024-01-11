@@ -45,9 +45,9 @@ type Config struct {
 	// combination of MetadataKeys.
 	MetadataCardinalityLimit uint32 `mapstructure:"metadata_cardinality_limit"`
 
-	// MaxInFlightBytes limits the number of bytes in queue waiting to be
+	// MaxInFlightSizeMiB limits the number of bytes in queue waiting to be
 	// processed by the senders.
-	MaxInFlightBytes uint32 `mapstructure:"max_in_flight_bytes"`
+	MaxInFlightSizeMiB uint32 `mapstructure:"max_in_flight_size_mib"`
 }
 
 var _ component.Config = (*Config)(nil)
@@ -67,6 +67,9 @@ func (cfg *Config) Validate() error {
 	}
 	if cfg.Timeout < 0 {
 		return errors.New("timeout must be greater or equal to 0")
+	}
+	if cfg.MaxInFlightSizeMiB <= 0 {
+		return errors.New("max_in_flight_size_mib must be greater than 0")
 	}
 	return nil
 }

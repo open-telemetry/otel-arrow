@@ -6,9 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+- Remove two deprecated fields, both concurrent batch processor `max_in_flight_bytes`
+  and otelarrow receiver `memory_limit` fields have corresponding `_mib` field names
+  for consistency.
+- OTel-Arrow exporter: Do not treat PartialSuccess as errors (see https://github.com/open-telemetry/opentelemetry-collector/issues/9243). [#130](https://github.com/open-telemetry/otel-arrow/pull/130)
+- Use OTel Collector v0.92.0. [#131](https://github.com/open-telemetry/otel-arrow/pull/131)
+- Use Apache Arrow v14.0.2 dependencies. [#132](https://github.com/open-telemetry/otel-arrow/pull/132)
 
-## [0.12.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.11.0) - 2023-12-28
+## [0.13.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.13.0) - 2023-12-20
+
+- Concurrent batch processor: Fail fast for large batch sizes. [#126](https://github.com/open-telemetry/otel-arrow/pull/126)
+- Add the core OTLP receiver to the otelarrowcol build, for its HTTP support. [#125](https://github.com/open-telemetry/otel-arrow/pull/125)
+- Let span context propagate through the concurrent batch processor. [#123](https://github.com/open-telemetry/otel-arrow/pull/123)
+- Lint: use `max_in_flight_size_mib` as the configuration for maximum in-flight-bytes. [#121](https://github.com/open-telemetry/otel-arrow/pull/121)
+- Remove HTTP support from the OTel-Arrwo receiver. [#120](https://github.com/open-telemetry/otel-arrow/pull/120)
+- Remove the stream_unique metric attribute. [#119](https://github.com/open-telemetry/otel-arrow/pull/119)
+
+## [0.12.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.12.0) - 2023-12-04
 
 - Update to OpenTelemetry Collector v0.90.1 dependencies. (#116)
 - Bug-fix for `_in_flight_bytes` metric. (#115)

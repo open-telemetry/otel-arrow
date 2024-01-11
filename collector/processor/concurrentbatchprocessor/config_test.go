@@ -35,22 +35,24 @@ func TestUnmarshalConfig(t *testing.T) {
 			SendBatchMaxSize:         uint32(11000),
 			Timeout:                  time.Second * 10,
 			MetadataCardinalityLimit: 1000,
-			MaxInFlightBytes:         12345,
+			MaxInFlightSizeMiB:       12345,
 		}, cfg)
 }
 
 func TestValidateConfig_DefaultBatchMaxSize(t *testing.T) {
 	cfg := &Config{
-		SendBatchSize:    100,
-		SendBatchMaxSize: 0,
+		SendBatchSize:      100,
+		SendBatchMaxSize:   0,
+		MaxInFlightSizeMiB: 1,
 	}
 	assert.NoError(t, cfg.Validate())
 }
 
 func TestValidateConfig_ValidBatchSizes(t *testing.T) {
 	cfg := &Config{
-		SendBatchSize:    100,
-		SendBatchMaxSize: 1000,
+		SendBatchSize:      100,
+		SendBatchMaxSize:   1000,
+		MaxInFlightSizeMiB: 1,
 	}
 	assert.NoError(t, cfg.Validate())
 
@@ -58,20 +60,22 @@ func TestValidateConfig_ValidBatchSizes(t *testing.T) {
 
 func TestValidateConfig_InvalidBatchSize(t *testing.T) {
 	cfg := &Config{
-		SendBatchSize:    1000,
-		SendBatchMaxSize: 100,
+		SendBatchSize:      1000,
+		SendBatchMaxSize:   100,
+		MaxInFlightSizeMiB: 1,
 	}
 	assert.Error(t, cfg.Validate())
 }
 
 func TestValidateConfig_InvalidTimeout(t *testing.T) {
 	cfg := &Config{
-		Timeout: -time.Second,
+		Timeout:            -time.Second,
+		MaxInFlightSizeMiB: 1,
 	}
 	assert.Error(t, cfg.Validate())
 }
 
-func TestValidateConfig_ValidZero(t *testing.T) {
+func TestValidateConfig_InvalidZero(t *testing.T) {
 	cfg := &Config{}
-	assert.NoError(t, cfg.Validate())
+	assert.Error(t, cfg.Validate())
 }
