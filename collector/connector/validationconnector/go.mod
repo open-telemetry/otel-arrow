@@ -3,7 +3,7 @@ module github.com/open-telemetry/otel-arrow/collector/connector/validationconnec
 go 1.21
 
 require (
-	github.com/open-telemetry/otel-arrow v0.13.0
+	github.com/open-telemetry/otel-arrow v0.14.0
 	go.opentelemetry.io/collector v0.92.0
 	go.opentelemetry.io/collector/component v0.92.0
 	go.opentelemetry.io/collector/connector v0.92.0
