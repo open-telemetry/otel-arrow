@@ -4,7 +4,7 @@ go 1.21
 
 require (
 	github.com/klauspost/compress v1.17.4
-	github.com/open-telemetry/otel-arrow/collector v0.13.0
+	github.com/open-telemetry/otel-arrow/collector v0.14.0
 	github.com/stretchr/testify v1.8.4
 	go.opentelemetry.io/collector/component v0.92.0
 	go.opentelemetry.io/collector/confmap v0.92.0
@@ -50,3 +50,14 @@ require (
 	google.golang.org/protobuf v1.32.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+
+
+
+
+
+
+
+
+
+

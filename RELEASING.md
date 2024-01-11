@@ -11,9 +11,20 @@ git checkout -b release_xx_yy_zz
 ```
 
 2. Make sure the CHANGELOG.md file is up to date, add entries
-   describing the changes in the new release.  Consider re-generating
-   the `otelarrowcol` if collector dependencies have changed during
-   this release cycle.
+   describing the changes in the new release.  If collector
+   dependencies have changed during this release cycle, `make
+   genotelarrowcol` should have been run to synchronize dependencies.
+   
+   Disable the CI/CD pipeline temporarily. This is required by the
+   release process.  Add `|| true` to this stanza in `.github/workflows/ci.yml`.
+
+```
+    - name: Build all modules
+      run: make build || true
+
+    - name: Test all modules
+      run: make test || true
+```
 
 3. Using Make, prepare the release means updating Go modules and
    checking in the changes, for example.  Edit 
@@ -41,3 +52,5 @@ make push-release
 The release has been published.  Note that these instructions do not
 cover the use of multiple module sets, since this repository uses a
 single module set named "beta" at this time.
+
+7. Re-enable CI/CD by reverting the change to `.github/workflows/ci.yml`.
