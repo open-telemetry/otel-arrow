@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+## [0.14.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.14.0) - 2024-01-11
+
 - Remove two deprecated fields, both concurrent batch processor `max_in_flight_bytes`
   and otelarrow receiver `memory_limit` fields have corresponding `_mib` field names
   for consistency.
