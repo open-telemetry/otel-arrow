@@ -104,7 +104,7 @@ func (r *mockTracesReceiver) setExportResponse(fn func() ptraceotlp.ExportRespon
 	r.exportResponse = fn
 }
 
-func otlpTracesReceiverOnGRPCServer(ln net.Listener, useTLS bool) (*mockTracesReceiver, error) {
+func otelArrowTracesReceiverOnGRPCServer(ln net.Listener, useTLS bool) (*mockTracesReceiver, error) {
 	sopts := []grpc.ServerOption{}
 
 	if useTLS {
@@ -171,7 +171,7 @@ func (r *mockLogsReceiver) setExportResponse(fn func() plogotlp.ExportResponse) 
 	r.exportResponse = fn
 }
 
-func otlpLogsReceiverOnGRPCServer(ln net.Listener) *mockLogsReceiver {
+func otelArrowLogsReceiverOnGRPCServer(ln net.Listener) *mockLogsReceiver {
 	rcv := &mockLogsReceiver{
 		mockReceiver: mockReceiver{
 			srv:          grpc.NewServer(),
@@ -220,7 +220,7 @@ func (r *mockMetricsReceiver) setExportResponse(fn func() pmetricotlp.ExportResp
 	r.exportResponse = fn
 }
 
-func otlpMetricsReceiverOnGRPCServer(ln net.Listener) *mockMetricsReceiver {
+func otelArrowMetricsReceiverOnGRPCServer(ln net.Listener) *mockMetricsReceiver {
 	rcv := &mockMetricsReceiver{
 		mockReceiver: mockReceiver{
 			srv:          grpc.NewServer(),
@@ -284,10 +284,10 @@ func (a *testAuthExtension) PerRPCCredentials() (credentials.PerRPCCredentials, 
 }
 
 func TestSendTraces(t *testing.T) {
-	// Start an OTLP-compatible receiver.
+	// Start an OTel-Arrow receiver.
 	ln, err := net.Listen("tcp", "localhost:")
 	require.NoError(t, err, "Failed to find an available address to run the gRPC server: %v", err)
-	rcv, _ := otlpTracesReceiverOnGRPCServer(ln, false)
+	rcv, _ := otelArrowTracesReceiverOnGRPCServer(ln, false)
 	rcv.start()
 	// Also closes the connection.
 	defer rcv.srv.GracefulStop()
@@ -444,10 +444,10 @@ func TestSendTracesWhenEndpointHasHttpScheme(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			// Start an OTLP-compatible receiver.
+			// Start an OTel-Arrow receiver.
 			ln, err := net.Listen("tcp", "localhost:")
 			require.NoError(t, err, "Failed to find an available address to run the gRPC server: %v", err)
-			rcv, err := otlpTracesReceiverOnGRPCServer(ln, test.useTLS)
+			rcv, err := otelArrowTracesReceiverOnGRPCServer(ln, test.useTLS)
 			rcv.start()
 			require.NoError(t, err, "Failed to start mock OTLP receiver")
 			// Also closes the connection.
@@ -493,10 +493,10 @@ func TestSendTracesWhenEndpointHasHttpScheme(t *testing.T) {
 }
 
 func TestSendMetrics(t *testing.T) {
-	// Start an OTLP-compatible receiver.
+	// Start an OTel-Arrow receiver.
 	ln, err := net.Listen("tcp", "localhost:")
 	require.NoError(t, err, "Failed to find an available address to run the gRPC server: %v", err)
-	rcv := otlpMetricsReceiverOnGRPCServer(ln)
+	rcv := otelArrowMetricsReceiverOnGRPCServer(ln)
 	// Also closes the connection.
 	defer rcv.srv.GracefulStop()
 
@@ -599,7 +599,7 @@ func TestSendTraceDataServerDownAndUp(t *testing.T) {
 	ln, err := net.Listen("tcp", "localhost:")
 	require.NoError(t, err, "Failed to find an available address to run the gRPC server: %v", err)
 
-	// Start an OTLP exporter and point to the receiver.
+	// Start an OTel-Arrow exporter and point to the receiver.
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
 	// Disable queuing to ensure that we execute the request when calling ConsumeTraces
@@ -663,7 +663,7 @@ func TestSendTraceDataServerStartWhileRequest(t *testing.T) {
 	ln, err := net.Listen("tcp", "localhost:")
 	require.NoError(t, err, "Failed to find an available address to run the gRPC server: %v", err)
 
-	// Start an OTLP exporter and point to the receiver.
+	// Start an OTel-Arrow exporter and point to the receiver.
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.GRPCClientSettings = configgrpc.GRPCClientSettings{
@@ -696,7 +696,7 @@ func TestSendTraceDataServerStartWhileRequest(t *testing.T) {
 	}()
 
 	time.Sleep(2 * time.Second)
-	rcv, _ := otlpTracesReceiverOnGRPCServer(ln, false)
+	rcv, _ := otelArrowTracesReceiverOnGRPCServer(ln, false)
 	rcv.start()
 	defer rcv.srv.GracefulStop()
 	// Wait until one of the conditions below triggers.
@@ -712,7 +712,7 @@ func TestSendTraceDataServerStartWhileRequest(t *testing.T) {
 func TestSendTracesOnResourceExhaustion(t *testing.T) {
 	ln, err := net.Listen("tcp", "localhost:")
 	require.NoError(t, err)
-	rcv, _ := otlpTracesReceiverOnGRPCServer(ln, false)
+	rcv, _ := otelArrowTracesReceiverOnGRPCServer(ln, false)
 	rcv.setExportError(status.Error(codes.ResourceExhausted, "resource exhausted"))
 	rcv.start()
 	defer rcv.srv.GracefulStop()
@@ -764,7 +764,7 @@ func TestSendTracesOnResourceExhaustion(t *testing.T) {
 }
 
 func startServerAndMakeRequest(t *testing.T, exp exporter.Traces, td ptrace.Traces, ln net.Listener) {
-	rcv, _ := otlpTracesReceiverOnGRPCServer(ln, false)
+	rcv, _ := otelArrowTracesReceiverOnGRPCServer(ln, false)
 	rcv.start()
 	defer rcv.srv.GracefulStop()
 	// Ensure that initially there is no data in the receiver.
@@ -790,14 +790,14 @@ func startServerAndMakeRequest(t *testing.T, exp exporter.Traces, td ptrace.Trac
 }
 
 func TestSendLogData(t *testing.T) {
-	// Start an OTLP-compatible receiver.
+	// Start an OTel-Arrow receiver.
 	ln, err := net.Listen("tcp", "localhost:")
 	require.NoError(t, err, "Failed to find an available address to run the gRPC server: %v", err)
-	rcv := otlpLogsReceiverOnGRPCServer(ln)
+	rcv := otelArrowLogsReceiverOnGRPCServer(ln)
 	// Also closes the connection.
 	defer rcv.srv.GracefulStop()
 
-	// Start an OTLP exporter and point to the receiver.
+	// Start an OTel-Arrow exporter and point to the receiver.
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
 	// Disable queuing to ensure that we execute the request when calling ConsumeLogs
@@ -887,25 +887,23 @@ func TestSendLogData(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestSendArrowTracesNotSupported tests a successful OTLP export w/
+// TestSendArrowTracesNotSupported tests a successful OTel-Arrow export w/
 // and without Arrow, w/ WaitForReady and without.
 func TestSendArrowTracesNotSupported(t *testing.T) {
-	for _, mixed := range []bool{true, false} {
-		for _, waitForReady := range []bool{true, false} {
-			for _, available := range []bool{true, false} {
-				t.Run(fmt.Sprintf("mixed=%v waitForReady=%v available=%v", mixed, waitForReady, available),
-					func(t *testing.T) { testSendArrowTraces(t, mixed, waitForReady, available) })
-			}
+	for _, waitForReady := range []bool{true, false} {
+		for _, available := range []bool{true, false} {
+			t.Run(fmt.Sprintf("waitForReady=%v available=%v", waitForReady, available),
+				func(t *testing.T) { testSendArrowTraces(t, waitForReady, available) })
 		}
 	}
 }
 
-func testSendArrowTraces(t *testing.T, mixedSignals, clientWaitForReady, streamServiceAvailable bool) {
-	// Start an OTLP-compatible receiver.
+func testSendArrowTraces(t *testing.T, clientWaitForReady, streamServiceAvailable bool) {
+	// Start an OTel-Arrow receiver.
 	ln, err := net.Listen("tcp", "127.0.0.1:")
 	require.NoError(t, err, "Failed to find an available address to run the gRPC server: %v", err)
 
-	// Start an OTLP exporter and point to the receiver.
+	// Start an OTel-Arrow exporter and point to the receiver.
 	factory := NewFactory()
 	authID := component.NewID("testauth")
 	expectedHeader := []string{"arrow-ftw"}
@@ -925,9 +923,8 @@ func testSendArrowTraces(t *testing.T, mixedSignals, clientWaitForReady, streamS
 	}
 	// Arrow client is enabled, but the server doesn't support it.
 	cfg.Arrow = ArrowSettings{
-		NumStreams:         1,
-		EnableMixedSignals: mixedSignals,
-		MaxStreamLifetime:  100 * time.Second,
+		NumStreams:        1,
+		MaxStreamLifetime: 100 * time.Second,
 	}
 
 	set := exportertest.NewNopCreateSettings()
@@ -956,9 +953,9 @@ func testSendArrowTraces(t *testing.T, mixedSignals, clientWaitForReady, streamS
 	)
 	assert.NoError(t, exp.Start(context.Background(), host))
 
-	rcv, _ := otlpTracesReceiverOnGRPCServer(ln, false)
+	rcv, _ := otelArrowTracesReceiverOnGRPCServer(ln, false)
 	if streamServiceAvailable {
-		rcv.startStreamMockArrowTraces(t, mixedSignals, okStatusFor)
+		rcv.startStreamMockArrowTraces(t, okStatusFor)
 	}
 
 	// Delay the server start, slightly.
@@ -1012,7 +1009,7 @@ type anyStreamServer interface {
 	grpc.ServerStream
 }
 
-func (r *mockTracesReceiver) startStreamMockArrowTraces(t *testing.T, mixedSignals bool, statusFor func(int64) *arrowpb.BatchStatus) {
+func (r *mockTracesReceiver) startStreamMockArrowTraces(t *testing.T, statusFor func(int64) *arrowpb.BatchStatus) {
 	ctrl := gomock.NewController(t)
 
 	doer := func(server anyStreamServer) error {
@@ -1055,19 +1052,6 @@ func (r *mockTracesReceiver) startStreamMockArrowTraces(t *testing.T, mixedSigna
 		return nil
 	}
 
-	if mixedSignals {
-		type mixedBinding struct {
-			arrowpb.UnsafeArrowStreamServiceServer
-			*arrowpbMock.MockArrowStreamServiceServer
-		}
-		svc := arrowpbMock.NewMockArrowStreamServiceServer(ctrl)
-
-		arrowpb.RegisterArrowStreamServiceServer(r.srv, mixedBinding{
-			MockArrowStreamServiceServer: svc,
-		})
-		svc.EXPECT().ArrowStream(gomock.Any()).Times(1).DoAndReturn(doer)
-		return
-	}
 	type singleBinding struct {
 		arrowpb.UnsafeArrowTracesServiceServer
 		*arrowpbMock.MockArrowTracesServiceServer
@@ -1082,11 +1066,11 @@ func (r *mockTracesReceiver) startStreamMockArrowTraces(t *testing.T, mixedSigna
 }
 
 func TestSendArrowFailedTraces(t *testing.T) {
-	// Start an OTLP-compatible receiver.
+	// Start an OTel-Arrow receiver.
 	ln, err := net.Listen("tcp", "127.0.0.1:")
 	require.NoError(t, err, "Failed to find an available address to run the gRPC server: %v", err)
 
-	// Start an OTLP exporter and point to the receiver.
+	// Start an OTel-Arrow exporter and point to the receiver.
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.GRPCClientSettings = configgrpc.GRPCClientSettings{
@@ -1098,9 +1082,8 @@ func TestSendArrowFailedTraces(t *testing.T) {
 	}
 	// Arrow client is enabled, but the server doesn't support it.
 	cfg.Arrow = ArrowSettings{
-		NumStreams:         1,
-		EnableMixedSignals: true,
-		MaxStreamLifetime:  100 * time.Second,
+		NumStreams:        1,
+		MaxStreamLifetime: 100 * time.Second,
 	}
 	cfg.QueueSettings.Enabled = false
 
@@ -1117,8 +1100,8 @@ func TestSendArrowFailedTraces(t *testing.T) {
 	host := componenttest.NewNopHost()
 	assert.NoError(t, exp.Start(context.Background(), host))
 
-	rcv, _ := otlpTracesReceiverOnGRPCServer(ln, false)
-	rcv.startStreamMockArrowTraces(t, true, failedStatusFor)
+	rcv, _ := otelArrowTracesReceiverOnGRPCServer(ln, false)
+	rcv.startStreamMockArrowTraces(t, failedStatusFor)
 
 	// Delay the server start, slightly.
 	go func() {
@@ -1144,11 +1127,11 @@ func TestSendArrowFailedTraces(t *testing.T) {
 }
 
 func TestUserDialOptions(t *testing.T) {
-	// Start an OTLP-compatible receiver.
+	// Start an OTel-Arrow receiver.
 	ln, err := net.Listen("tcp", "127.0.0.1:")
 	require.NoError(t, err, "Failed to find an available address to run the gRPC server: %v", err)
 
-	// Start an OTLP exporter and point to the receiver.
+	// Start an OTel-Arrow exporter and point to the receiver.
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.GRPCClientSettings = configgrpc.GRPCClientSettings{
@@ -1163,7 +1146,7 @@ func TestUserDialOptions(t *testing.T) {
 
 	const testAgent = "test-user-agent (release=:+1:)"
 
-	// This overrides the default provided in otlp.go
+	// This overrides the default provided in otelArrow.go
 	cfg.UserDialOptions = []grpc.DialOption{
 		grpc.WithUserAgent(testAgent),
 	}
@@ -1183,7 +1166,7 @@ func TestUserDialOptions(t *testing.T) {
 
 	td := testdata.GenerateTraces(2)
 
-	rcv, _ := otlpTracesReceiverOnGRPCServer(ln, false)
+	rcv, _ := otelArrowTracesReceiverOnGRPCServer(ln, false)
 	rcv.start()
 	defer rcv.srv.GracefulStop()
 

@@ -54,9 +54,9 @@ type baseExporter struct {
 	// Default user-agent header.
 	userAgent string
 
-	// OTLP+Arrow optional state
+	// OTel-Arrow optional state
 	arrow *arrow.Exporter
-	// streamClientFunc is the stream constructor, depends on EnableMixedTelemetry.
+	// streamClientFunc is the stream constructor
 	streamClientFactory streamClientFactory
 }
 

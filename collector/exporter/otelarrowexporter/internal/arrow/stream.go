@@ -54,7 +54,7 @@ type Stream struct {
 
 	// client uses the exporter's grpc.ClientConn.  this is
 	// initially nil only set when ArrowStream() calls meaning the
-	// endpoint recognizes OTLP+Arrow.
+	// endpoint recognizes OTel-Arrow.
 	client arrowpb.ArrowStreamService_ArrowStreamClient
 
 	// method the gRPC method name, used for additional instrumentation.
@@ -432,7 +432,7 @@ func (s *Stream) processBatchStatus(ss *arrowpb.BatchStatus) error {
 		ch <- nil
 		return nil
 	}
-	// See ../../otlp.go's `shouldRetry()` method, the retry
+	// See ../../otelarrow.go's `shouldRetry()` method, the retry
 	// behavior described here is achieved there by setting these
 	// recognized codes.
 	var err error

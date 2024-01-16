@@ -92,9 +92,6 @@ var (
 )
 
 func createArrowTracesStream(cfg *Config, conn *grpc.ClientConn) arrow.StreamClientFunc {
-	if cfg.Arrow.EnableMixedSignals {
-		return arrow.MakeAnyStreamClient(arrowStreamMethod, arrowpb.NewArrowStreamServiceClient(conn).ArrowStream)
-	}
 	return arrow.MakeAnyStreamClient(arrowTracesMethod, arrowpb.NewArrowTracesServiceClient(conn).ArrowTraces)
 }
 
@@ -114,9 +111,6 @@ func createTracesExporter(
 }
 
 func createArrowMetricsStream(cfg *Config, conn *grpc.ClientConn) arrow.StreamClientFunc {
-	if cfg.Arrow.EnableMixedSignals {
-		return arrow.MakeAnyStreamClient(arrowStreamMethod, arrowpb.NewArrowStreamServiceClient(conn).ArrowStream)
-	}
 	return arrow.MakeAnyStreamClient(arrowMetricsMethod, arrowpb.NewArrowMetricsServiceClient(conn).ArrowMetrics)
 }
 
@@ -136,9 +130,6 @@ func createMetricsExporter(
 }
 
 func createArrowLogsStream(cfg *Config, conn *grpc.ClientConn) arrow.StreamClientFunc {
-	if cfg.Arrow.EnableMixedSignals {
-		return arrow.MakeAnyStreamClient(arrowStreamMethod, arrowpb.NewArrowStreamServiceClient(conn).ArrowStream)
-	}
 	return arrow.MakeAnyStreamClient(arrowLogsMethod, arrowpb.NewArrowLogsServiceClient(conn).ArrowLogs)
 }
 
