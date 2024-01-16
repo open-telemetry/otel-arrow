@@ -47,10 +47,10 @@ type otlpReceiver struct {
 	settings receiver.CreateSettings
 }
 
-// newOtlpReceiver just creates the OpenTelemetry receiver services. It is the caller's
+// newOTelArrowReceiver just creates the OpenTelemetry receiver services. It is the caller's
 // responsibility to invoke the respective Start*Reception methods as well
 // as the various Stop*Reception methods to end it.
-func newOtlpReceiver(cfg *Config, set receiver.CreateSettings) (*otlpReceiver, error) {
+func newOTelArrowReceiver(cfg *Config, set receiver.CreateSettings) (*otlpReceiver, error) {
 	netReporter, err := netstats.NewReceiverNetworkReporter(set)
 	if err != nil {
 		return nil, err
@@ -123,8 +123,6 @@ func (r *otlpReceiver) startProtocolServers(host component.Host) error {
 		}
 		return arrowRecord.NewConsumer(opts...)
 	}, r.netReporter)
-
-	arrowpb.RegisterArrowStreamServiceServer(r.serverGRPC, r.arrowReceiver)
 
 	if r.tracesReceiver != nil {
 		ptraceotlp.RegisterGRPCServer(r.serverGRPC, r.tracesReceiver)

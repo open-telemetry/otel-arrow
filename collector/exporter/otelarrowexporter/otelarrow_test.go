@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	arrowpbMock "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1/mock"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 	"go.uber.org/zap/zaptest"
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"

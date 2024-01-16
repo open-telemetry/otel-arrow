@@ -9,7 +9,6 @@ require (
 	github.com/brianvoe/gofakeit/v6 v6.17.0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/fxamacker/cbor/v2 v2.4.0
-	github.com/golang/mock v1.6.0
 	github.com/klauspost/compress v1.17.4
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/pierrec/lz4 v2.0.5+incompatible
@@ -19,6 +18,7 @@ require (
 	go.opentelemetry.io/collector/pdata v1.0.1
 	go.opentelemetry.io/otel v1.21.0
 	go.opentelemetry.io/otel/metric v1.21.0
+	go.uber.org/mock v0.4.0
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d
 	google.golang.org/grpc v1.60.1
 	google.golang.org/protobuf v1.32.0

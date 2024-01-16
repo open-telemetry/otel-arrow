@@ -14,7 +14,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	arrowCollectorMock "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1/mock"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
@@ -22,6 +21,7 @@ import (
 	otelAssert "github.com/open-telemetry/otel-arrow/pkg/otel/assert"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 	"go.uber.org/zap/zaptest"
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/grpc/metadata"
@@ -73,7 +73,7 @@ type commonTestCase struct {
 	cancel    context.CancelFunc
 	telset    component.TelemetrySettings
 	consumers mockConsumers
-	stream    *arrowCollectorMock.MockArrowStreamService_ArrowStreamServer
+	stream    *arrowCollectorMock.MockArrowTracesService_ArrowTracesServer
 	receive   chan recvResult
 	consume   chan consumeResult
 	streamErr chan error
@@ -212,7 +212,7 @@ var _ Consumers = mockConsumers{}
 
 func newCommonTestCase(t *testing.T, tc testChannel) *commonTestCase {
 	ctrl := gomock.NewController(t)
-	stream := arrowCollectorMock.NewMockArrowStreamService_ArrowStreamServer(ctrl)
+	stream := arrowCollectorMock.NewMockArrowTracesService_ArrowTracesServer(ctrl)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ctx = metadata.NewIncomingContext(ctx, metadata.MD{
@@ -343,7 +343,7 @@ func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opt
 		netstats.Noop{},
 	)
 	go func() {
-		ctc.streamErr <- rcvr.ArrowStream(ctc.stream)
+		ctc.streamErr <- rcvr.ArrowTraces(ctc.stream)
 	}()
 }
 

@@ -19,8 +19,8 @@ mv api/github.com/open-telemetry/otel-arrow/api/experimental api
 rm -rf api/github.com
 
 # Generate the mock files
-go get github.com/golang/mock
-go install github.com/golang/mock
+go install go.uber.org/mock/mockgen@latest
+
 mkdir -p api/experimental/arrow/v1/mock
-mockgen -package mock github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1 ArrowStreamServiceClient,ArrowStreamService_ArrowStreamClient,ArrowStreamServiceServer,ArrowStreamService_ArrowStreamServer,ArrowTracesServiceClient,ArrowTracesService_ArrowTracesClient,ArrowTracesServiceServer,ArrowTracesService_ArrowTracesServer,ArrowLogsServiceClient,ArrowLogsService_ArrowLogsClient,ArrowLogsServiceServer,ArrowLogsService_ArrowLogsServer,ArrowMetricsServiceClient,ArrowMetricsService_ArrowMetricsClient,ArrowMetricsServiceServer,ArrowMetricsService_ArrowMetricsServer > api/experimental/arrow/v1/mock/arrow_service_mock.go
+mockgen -package mock github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1 ArrowTracesServiceClient,ArrowTracesService_ArrowTracesClient,ArrowTracesServiceServer,ArrowTracesService_ArrowTracesServer,ArrowLogsServiceClient,ArrowLogsService_ArrowLogsClient,ArrowLogsServiceServer,ArrowLogsService_ArrowLogsServer,ArrowMetricsServiceClient,ArrowMetricsService_ArrowMetricsClient,ArrowMetricsServiceServer,ArrowMetricsService_ArrowMetricsServer > api/experimental/arrow/v1/mock/arrow_service_mock.go
 go mod tidy

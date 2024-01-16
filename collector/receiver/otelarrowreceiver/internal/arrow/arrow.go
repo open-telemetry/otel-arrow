@@ -57,7 +57,6 @@ type Consumers interface {
 type Receiver struct {
 	Consumers
 
-	arrowpb.UnsafeArrowStreamServiceServer
 	arrowpb.UnsafeArrowTracesServiceServer
 	arrowpb.UnsafeArrowLogsServiceServer
 	arrowpb.UnsafeArrowMetricsServiceServer
@@ -262,15 +261,10 @@ func gRPCName(desc grpc.ServiceDesc) string {
 }
 
 var (
-	arrowStreamMethod  = gRPCName(arrowpb.ArrowStreamService_ServiceDesc)
 	arrowTracesMethod  = gRPCName(arrowpb.ArrowTracesService_ServiceDesc)
 	arrowMetricsMethod = gRPCName(arrowpb.ArrowMetricsService_ServiceDesc)
 	arrowLogsMethod    = gRPCName(arrowpb.ArrowLogsService_ServiceDesc)
 )
-
-func (r *Receiver) ArrowStream(serverStream arrowpb.ArrowStreamService_ArrowStreamServer) error {
-	return r.anyStream(serverStream, arrowStreamMethod)
-}
 
 func (r *Receiver) ArrowTraces(serverStream arrowpb.ArrowTracesService_ArrowTracesServer) error {
 	return r.anyStream(serverStream, arrowTracesMethod)
