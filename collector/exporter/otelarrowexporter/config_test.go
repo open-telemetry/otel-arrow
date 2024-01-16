@@ -83,7 +83,6 @@ func TestUnmarshalConfig(t *testing.T) {
 			},
 			Arrow: ArrowSettings{
 				NumStreams:         2,
-				EnableMixedSignals: true,
 				MaxStreamLifetime:  2 * time.Hour,
 				PayloadCompression: configcompression.Zstd,
 				Zstd:               zstd.DefaultEncoderConfig(),

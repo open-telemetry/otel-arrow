@@ -38,18 +38,8 @@ type Config struct {
 // ArrowSettings includes whether Arrow is enabled and the number of
 // concurrent Arrow streams.
 type ArrowSettings struct {
-	// Disabled prevents registering the OTel Arrow service.
-	Disabled bool `mapstructure:"disabled"`
-
 	// NumStreams determines the number of OTel Arrow streams.
 	NumStreams int `mapstructure:"num_streams"`
-
-	// DisableDowngrade prevents this exporter from fallback back to
-	// standard OTLP.
-	DisableDowngrade bool `mapstructure:"disable_downgrade"`
-
-	// EnableMixedSignals allows the use of multi-signal streams.
-	EnableMixedSignals bool `mapstructure:"enable_mixed_signals"`
 
 	// MaxStreamLifetime should be set to less than the value of
 	// grpc: keepalive: max_connection_age_grace plus the timeout.
@@ -69,6 +59,13 @@ type ArrowSettings struct {
 	// set to "zstd" to turn on Arrow-Zstd compression.
 	// Note that `Zstd` applies to gRPC, not Arrow compression.
 	PayloadCompression configcompression.CompressionType `mapstructure:"payload_compression"`
+
+	// Disabled prevents registering the OTel Arrow service.
+	Disabled bool `mapstructure:"disabled"`
+
+	// DisableDowngrade prevents this exporter from fallback back to
+	// standard OTLP.
+	DisableDowngrade bool `mapstructure:"disable_downgrade"`
 }
 
 var _ component.Config = (*Config)(nil)

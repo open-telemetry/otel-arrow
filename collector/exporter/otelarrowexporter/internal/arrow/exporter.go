@@ -76,8 +76,7 @@ type Exporter struct {
 	netReporter netstats.Interface
 }
 
-// AnyStreamClient is the interface supported by all Arrow streams,
-// mixed signals or not.
+// AnyStreamClient is the interface supported by all Arrow streams.
 type AnyStreamClient interface {
 	Send(*arrowpb.BatchArrowRecords) error
 	Recv() (*arrowpb.BatchStatus, error)
@@ -89,10 +88,10 @@ type AnyStreamClient interface {
 // handler isn't able to see the correct uncompressed size.
 type StreamClientFunc func(context.Context, ...grpc.CallOption) (AnyStreamClient, string, error)
 
-// MakeAnyStreamClient accepts any Arrow-like stream (mixed signal or
-// not) and turns it into an AnyStreamClient.  The method name is
-// carried through because once constructed, gRPC clients will not
-// reveal their service and method names.
+// MakeAnyStreamClient accepts any Arrow-like stream and turns it into
+// an AnyStreamClient.  The method name is carried through because
+// once constructed, gRPC clients will not reveal their service and
+// method names.
 func MakeAnyStreamClient[T AnyStreamClient](method string, clientFunc func(ctx context.Context, opts ...grpc.CallOption) (T, error)) StreamClientFunc {
 	return func(ctx context.Context, opts ...grpc.CallOption) (AnyStreamClient, string, error) {
 		client, err := clientFunc(ctx, opts...)
@@ -142,7 +141,7 @@ func (e *Exporter) Start(ctx context.Context) error {
 
 // runStreamController starts the initial set of streams, then waits for streams to
 // terminate one at a time and restarts them.  If streams come back with a nil
-// client (meaning that OTLP+Arrow was not supported by the endpoint), it will
+// client (meaning that OTel-Arrow was not supported by the endpoint), it will
 // not be restarted.
 func (e *Exporter) runStreamController(bgctx context.Context) {
 	defer e.cancel()
