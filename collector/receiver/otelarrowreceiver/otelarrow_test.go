@@ -137,8 +137,8 @@ func TestGRPCNewPortAlreadyUsed(t *testing.T) {
 	t.Cleanup(func() {
 		assert.NoError(t, ln.Close())
 	})
-
-	r := newGRPCReceiver(t, addr, consumertest.NewNop(), consumertest.NewNop())
+	tt := componenttest.NewNopTelemetrySettings()
+	r := newGRPCReceiver(t, addr, tt, consumertest.NewNop(), consumertest.NewNop())
 	require.NotNil(t, r)
 
 	require.Error(t, r.Start(context.Background(), componenttest.NewNopHost()))
@@ -157,7 +157,6 @@ func TestOTLPReceiverGRPCTracesIngestTest(t *testing.T) {
 	}
 
 	expectedReceivedBatches := 2
-	expectedIngestionBlockedRPCs := 1
 	ingestionStates := []ingestionStateTest{
 		{
 			okToIngest:   true,
@@ -182,7 +181,7 @@ func TestOTLPReceiverGRPCTracesIngestTest(t *testing.T) {
 
 	sink := &errOrSinkConsumer{TracesSink: new(consumertest.TracesSink)}
 
-	ocr := newGRPCReceiver(t, addr, sink, nil)
+	ocr := newGRPCReceiver(t, addr, tt.TelemetrySettings, sink, nil)
 	require.NotNil(t, ocr)
 	require.NoError(t, ocr.Start(context.Background(), componenttest.NewNopHost()))
 	t.Cleanup(func() { require.NoError(t, ocr.Shutdown(context.Background())) })
@@ -208,9 +207,8 @@ func TestOTLPReceiverGRPCTracesIngestTest(t *testing.T) {
 
 	require.Equal(t, expectedReceivedBatches, len(sink.AllTraces()))
 
-	// TODO: Re-enable when it is clear why this test fails when the
-	// identical test in the v0.92.0 core OTLP receiver still passes.
-	// require.NoError(t, tt.CheckReceiverTraces("grpc", int64(expectedReceivedBatches), int64(expectedIngestionBlockedRPCs)))
+	expectedIngestionBlockedRPCs := 1
+	require.NoError(t, tt.CheckReceiverTraces("grpc", int64(expectedReceivedBatches), int64(expectedIngestionBlockedRPCs)))
 }
 
 func TestGRPCInvalidTLSCredentials(t *testing.T) {
@@ -251,7 +249,8 @@ func TestGRPCMaxRecvSize(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.GRPC.NetAddr.Endpoint = addr
-	ocr := newReceiver(t, factory, cfg, testReceiverID, sink, nil)
+	tt := componenttest.NewNopTelemetrySettings()
+	ocr := newReceiver(t, factory, tt, cfg, testReceiverID, sink, nil)
 
 	require.NotNil(t, ocr)
 	require.NoError(t, ocr.Start(context.Background(), componenttest.NewNopHost()))
@@ -265,7 +264,8 @@ func TestGRPCMaxRecvSize(t *testing.T) {
 	require.NoError(t, ocr.Shutdown(context.Background()))
 
 	cfg.GRPC.MaxRecvMsgSizeMiB = 100
-	ocr = newReceiver(t, factory, cfg, testReceiverID, sink, nil)
+
+	ocr = newReceiver(t, factory, tt, cfg, testReceiverID, sink, nil)
 
 	require.NotNil(t, ocr)
 	require.NoError(t, ocr.Start(context.Background(), componenttest.NewNopHost()))
@@ -283,15 +283,16 @@ func TestGRPCMaxRecvSize(t *testing.T) {
 	assert.Equal(t, td, sink.AllTraces()[0])
 }
 
-func newGRPCReceiver(t *testing.T, endpoint string, tc consumer.Traces, mc consumer.Metrics) component.Component {
+func newGRPCReceiver(t *testing.T, endpoint string, settings component.TelemetrySettings, tc consumer.Traces, mc consumer.Metrics) component.Component {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.GRPC.NetAddr.Endpoint = endpoint
-	return newReceiver(t, factory, cfg, testReceiverID, tc, mc)
+	return newReceiver(t, factory, settings, cfg, testReceiverID, tc, mc)
 }
 
-func newReceiver(t *testing.T, factory receiver.Factory, cfg *Config, id component.ID, tc consumer.Traces, mc consumer.Metrics) component.Component {
+func newReceiver(t *testing.T, factory receiver.Factory, settings component.TelemetrySettings, cfg *Config, id component.ID, tc consumer.Traces, mc consumer.Metrics) component.Component {
 	set := receivertest.NewNopCreateSettings()
+	set.TelemetrySettings = settings
 	set.TelemetrySettings.MetricsLevel = configtelemetry.LevelNormal
 	set.ID = id
 	var r component.Component
@@ -514,7 +515,8 @@ func TestGRPCArrowReceiver(t *testing.T) {
 	cfg.GRPC.NetAddr.Endpoint = addr
 	cfg.GRPC.IncludeMetadata = true
 	id := component.NewID("arrow")
-	ocr := newReceiver(t, factory, cfg, id, sink, nil)
+	tt := componenttest.NewNopTelemetrySettings()
+	ocr := newReceiver(t, factory, tt, cfg, id, sink, nil)
 
 	require.NotNil(t, ocr)
 	require.NoError(t, ocr.Start(context.Background(), componenttest.NewNopHost()))
@@ -626,7 +628,8 @@ func TestGRPCArrowReceiverAuth(t *testing.T) {
 		AuthenticatorID: authID,
 	}
 	id := component.NewID("arrow")
-	ocr := newReceiver(t, factory, cfg, id, sink, nil)
+	tt := componenttest.NewNopTelemetrySettings()
+	ocr := newReceiver(t, factory, tt, cfg, id, sink, nil)
 
 	require.NotNil(t, ocr)
 
