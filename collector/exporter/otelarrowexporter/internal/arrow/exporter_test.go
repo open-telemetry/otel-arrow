@@ -29,6 +29,9 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const defaultMaxStreamLifetime = 11 * time.Second
@@ -556,6 +559,77 @@ func TestArrowExporterHeaders(t *testing.T) {
 			md := metadata.MD{
 				"expected1": []string{"metadata1"},
 				"expected2": []string{fmt.Sprint(times)},
+			}
+			expectOutput = append(expectOutput, md)
+		} else {
+			expectOutput = append(expectOutput, nil)
+		}
+
+		sent, err := tc.exporter.SendAndWait(ctx, input)
+		require.NoError(t, err)
+		require.True(t, sent)
+	}
+	// Stop the test conduit started above.  If the sender were
+	// still sending, it would panic on a closed channel.
+	close(channel.sent)
+	wg.Wait()
+
+	require.Equal(t, expectOutput, actualOutput)
+	require.NoError(t, tc.exporter.Shutdown(bg))
+}
+
+// TestArrowExporterIsTraced tests whether trace and span ID are
+// propagated.
+func TestArrowExporterIsTraced(t *testing.T) {
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	tc := newSingleStreamTestCase(t)
+	channel := newHealthyTestChannel()
+
+	tc.traceCall.AnyTimes().DoAndReturn(tc.returnNewStream(channel))
+
+	bg := context.Background()
+	require.NoError(t, tc.exporter.Start(bg))
+
+	var expectOutput []metadata.MD
+	var actualOutput []metadata.MD
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		md := metadata.MD{}
+		hpd := hpack.NewDecoder(4096, func(f hpack.HeaderField) {
+			md[f.Name] = append(md[f.Name], f.Value)
+		})
+		for data := range channel.sent {
+			if len(data.Headers) == 0 {
+				actualOutput = append(actualOutput, nil)
+			} else {
+				_, err := hpd.Write(data.Headers)
+				require.NoError(t, err)
+				actualOutput = append(actualOutput, md)
+				md = metadata.MD{}
+			}
+			channel.recv <- statusOKFor(data.BatchId)
+		}
+	}()
+
+	for times := 0; times < 10; times++ {
+		input := testdata.GenerateTraces(2)
+		ctx := context.Background()
+
+		if times%2 == 1 {
+			ctx = trace.ContextWithSpanContext(ctx,
+				trace.NewSpanContext(trace.SpanContextConfig{
+					TraceID: [16]byte{byte(times), 1, 2, 3, 4, 5, 6, 7, 8, 9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf},
+					SpanID:  [8]byte{byte(times), 1, 2, 3, 4, 5, 6, 7},
+				}),
+			)
+			expectMap := map[string]string{}
+			propagation.TraceContext{}.Inject(ctx, propagation.MapCarrier(expectMap))
+
+			md := metadata.MD{
+				"traceparent": []string{expectMap["traceparent"]},
 			}
 			expectOutput = append(expectOutput, md)
 		} else {

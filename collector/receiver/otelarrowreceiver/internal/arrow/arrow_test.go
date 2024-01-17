@@ -40,6 +40,9 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/receiverhelper"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type compareJSONTraces struct{ ptrace.Traces }
@@ -1168,5 +1171,59 @@ func testReceiverAuthHeaders(t *testing.T, includeMeta bool, dataAuth bool) {
 		} else {
 			require.Equal(t, arrowpb.StatusCode_OK, batch.StatusCode)
 		}
+	}
+}
+
+func TestHeaderReceiverIsTraced(t *testing.T) {
+	streamHeaders := map[string][]string{
+		"K": {"k1", "k2"},
+	}
+	requestHeaders := map[string][]string{
+		"L":           {"l1"},
+		"traceparent": {"00-00112233445566778899aabbccddeeff-0011223344556677-01"},
+	}
+	expectCombined := map[string][]string{
+		"K": {"k1", "k2"},
+		"L": {"l1"},
+	}
+
+	var hpb bytes.Buffer
+
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	hpe := hpack.NewEncoder(&hpb)
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.MD(streamHeaders))
+
+	h := newHeaderReceiver(ctx, nil, true)
+
+	for i := 0; i < 3; i++ {
+		hpb.Reset()
+
+		for key, vals := range requestHeaders {
+			for _, val := range vals {
+				err := hpe.WriteField(hpack.HeaderField{
+					Name:  strings.ToLower(key),
+					Value: val,
+				})
+				require.NoError(t, err)
+			}
+		}
+
+		newCtx, _, err := h.combineHeaders(ctx, hpb.Bytes())
+
+		require.NoError(t, err)
+		requireContainsAll(t, client.FromContext(newCtx).Metadata, expectCombined)
+
+		// Check for hard-coded trace and span IDs from `traceparent` header above.
+		spanCtx := trace.SpanContextFromContext(newCtx)
+		require.Equal(
+			t,
+			trace.TraceID{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff},
+			spanCtx.TraceID())
+		require.Equal(
+			t,
+			trace.SpanID{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77},
+			spanCtx.SpanID())
 	}
 }

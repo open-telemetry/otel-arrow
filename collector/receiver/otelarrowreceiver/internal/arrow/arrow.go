@@ -34,6 +34,9 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/receiverhelper"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -62,6 +65,7 @@ type Receiver struct {
 	arrowpb.UnsafeArrowMetricsServiceServer
 
 	telemetry   component.TelemetrySettings
+	tracer      trace.Tracer
 	obsrecv     *receiverhelper.ObsReport
 	gsettings   configgrpc.GRPCServerSettings
 	authServer  auth.Server
@@ -79,10 +83,12 @@ func New(
 	newConsumer func() arrowRecord.ConsumerAPI,
 	netReporter netstats.Interface,
 ) *Receiver {
+	tracer := set.TelemetrySettings.TracerProvider.Tracer("otel-arrow-receiver")
 	return &Receiver{
 		Consumers:   cs,
 		obsrecv:     obsrecv,
 		telemetry:   set.TelemetrySettings,
+		tracer:      tracer,
 		authServer:  authServer,
 		newConsumer: newConsumer,
 		gsettings:   gsettings,
@@ -153,39 +159,54 @@ func (h *headerReceiver) combineHeaders(ctx context.Context, hdrsBytes []byte) (
 	}
 
 	// Note that we will parse the headers even if they are not
-	// used, to check for validity.  tmpHdrsAppend() will skip
-	// modifying tmpHdrs if it is nil.
-	h.tmpHdrs = nil
-
-	needMergedHeaders := h.includeMetadata || h.hasAuthServer
-
-	// If headers are being merged, allocate a new map.
-	if needMergedHeaders {
-		h.tmpHdrs = map[string][]string{}
-	}
+	// used, to check for validity and/or trace context.  Also
+	// note this code was once optimized to avoid the following
+	// map allocation in cases where the return value would not be
+	// used.  This logic was "is metadata present" or "is auth
+	// server used".  Then we added to this, "is trace propagation
+	// in use" and simplified this function to always store the
+	// headers into a temporary map.
+	h.tmpHdrs = map[string][]string{}
 
 	// Write calls the emitFunc, appending directly into `tmpHdrs`.
 	if _, err := h.decoder.Write(hdrsBytes); err != nil {
 		return ctx, nil, err
 	}
 
-	if needMergedHeaders {
-		// Add streamHdrs that were not carried in the per-request headers.
-		for k, v := range h.streamHdrs {
-			// Note: This is done after the per-request metadata is defined
-			// in recognition of a potential for duplicated values stemming
-			// from the Arrow exporter's independent call to the Auth
-			// extension's GetRequestMetadata().  This paired with the
-			// headersetter's return of empty-string values means, we would
-			// end up with an empty-string element for any headersetter
-			// `from_context` rules b/c the stream uses background context.
-			// This allows static headers through.
-			//
-			// See https://github.com/open-telemetry/opentelemetry-collector/issues/6965
-			lk := strings.ToLower(k)
-			if _, ok := h.tmpHdrs[lk]; !ok {
-				h.tmpHdrs[lk] = v
+	// Get the global propagator, to extract context.  When there
+	// are no fields, it's a no-op propagator implementation and
+	// we can skip the allocations inside this block.
+	carrier := otel.GetTextMapPropagator()
+	if len(carrier.Fields()) != 0 {
+		// When there are no fields, it's a no-op
+		// implementation and we can skip the allocations.
+		flat := map[string]string{}
+		for _, key := range carrier.Fields() {
+			have := h.tmpHdrs[key]
+			if len(have) > 0 {
+				flat[key] = have[0]
+				delete(h.tmpHdrs, key)
 			}
+		}
+
+		ctx = carrier.Extract(ctx, propagation.MapCarrier(flat))
+	}
+
+	// Add streamHdrs that were not carried in the per-request headers.
+	for k, v := range h.streamHdrs {
+		// Note: This is done after the per-request metadata is defined
+		// in recognition of a potential for duplicated values stemming
+		// from the Arrow exporter's independent call to the Auth
+		// extension's GetRequestMetadata().  This paired with the
+		// headersetter's return of empty-string values means, we would
+		// end up with an empty-string element for any headersetter
+		// `from_context` rules b/c the stream uses background context.
+		// This allows static headers through.
+		//
+		// See https://github.com/open-telemetry/opentelemetry-collector/issues/6965
+		lk := strings.ToLower(k)
+		if _, ok := h.tmpHdrs[lk]; !ok {
+			h.tmpHdrs[lk] = v
 		}
 	}
 
@@ -345,41 +366,53 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 			}
 		}
 
-		// Process records: an error in this code path does
-		// not necessarily break the stream.
-		if authErr != nil {
-			err = authErr
-		} else {
-			err = r.processRecords(thisCtx, method, ac, req)
-		}
-
-		// Note: Statuses can be batched, but we do not take
-		// advantage of this feature.
-		status := &arrowpb.BatchStatus{
-			BatchId: req.GetBatchId(),
-		}
-		if err == nil {
-			status.StatusCode = arrowpb.StatusCode_OK
-		} else {
-			status.StatusMessage = err.Error()
-			if errors.Is(err, arrowRecord.ErrConsumerMemoryLimit) {
-				r.telemetry.Logger.Error("arrow resource exhausted", zap.Error(err))
-				status.StatusCode = arrowpb.StatusCode_RESOURCE_EXHAUSTED
-			} else if consumererror.IsPermanent(err) {
-				r.telemetry.Logger.Error("arrow data error", zap.Error(err))
-				status.StatusCode = arrowpb.StatusCode_INVALID_ARGUMENT
-			} else {
-				r.telemetry.Logger.Debug("arrow consumer error", zap.Error(err))
-				status.StatusCode = arrowpb.StatusCode_UNAVAILABLE
-			}
-		}
-
-		err = serverStream.Send(status)
-		if err != nil {
-			r.logStreamError(err)
+		if err := r.processAndConsume(thisCtx, method, ac, req, serverStream, authErr); err != nil {
 			return err
 		}
 	}
+}
+
+func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, req *arrowpb.BatchArrowRecords, serverStream anyStreamServer, authErr error) error {
+	var err error
+
+	ctx, span := r.tracer.Start(ctx, "otel_arrow_stream_recv")
+	defer span.End()
+
+	// Process records: an error in this code path does
+	// not necessarily break the stream.
+	if authErr != nil {
+		err = authErr
+	} else {
+		err = r.processRecords(ctx, method, arrowConsumer, req)
+	}
+
+	// Note: Statuses can be batched, but we do not take
+	// advantage of this feature.
+	status := &arrowpb.BatchStatus{
+		BatchId: req.GetBatchId(),
+	}
+	if err == nil {
+		status.StatusCode = arrowpb.StatusCode_OK
+	} else {
+		status.StatusMessage = err.Error()
+		if errors.Is(err, arrowRecord.ErrConsumerMemoryLimit) {
+			r.telemetry.Logger.Error("arrow resource exhausted", zap.Error(err))
+			status.StatusCode = arrowpb.StatusCode_RESOURCE_EXHAUSTED
+		} else if consumererror.IsPermanent(err) {
+			r.telemetry.Logger.Error("arrow data error", zap.Error(err))
+			status.StatusCode = arrowpb.StatusCode_INVALID_ARGUMENT
+		} else {
+			r.telemetry.Logger.Debug("arrow consumer error", zap.Error(err))
+			status.StatusCode = arrowpb.StatusCode_UNAVAILABLE
+		}
+	}
+
+	err = serverStream.Send(status)
+	if err != nil {
+		r.logStreamError(err)
+		return err
+	}
+	return nil
 }
 
 // processRecords returns an error and a boolean indicating whether
