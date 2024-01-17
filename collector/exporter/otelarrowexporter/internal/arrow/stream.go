@@ -340,8 +340,13 @@ func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hp
 	ctx, span := s.tracer.Start(wri.parent, "otel_arrow_stream_send")
 	defer span.End()
 
+	// Get the global propagator, to inject context.  When there
+	// are no fields, it's a no-op propagator implementation and
+	// we can skip the allocations inside this block.
 	prop := otel.GetTextMapPropagator()
 	if len(prop.Fields()) > 0 {
+		// When the incoming context carries nothing, the map
+		// will be nil.  Allocate, if necessary.
 		if wri.md == nil {
 			wri.md = map[string]string{}
 		}

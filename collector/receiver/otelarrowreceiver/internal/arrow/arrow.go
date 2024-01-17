@@ -159,7 +159,13 @@ func (h *headerReceiver) combineHeaders(ctx context.Context, hdrsBytes []byte) (
 	}
 
 	// Note that we will parse the headers even if they are not
-	// used, to check for validity and/or trace context.
+	// used, to check for validity and/or trace context.  Also
+	// note this code was once optimized to avoid the following
+	// map allocation in cases where the return value would not be
+	// used.  This logic was "is metadata present" or "is auth
+	// server used".  Then we added to this, "is trace propagation
+	// in use" and simplified this function to always store the
+	// headers into a temporary map.
 	h.tmpHdrs = map[string][]string{}
 
 	// Write calls the emitFunc, appending directly into `tmpHdrs`.
@@ -167,13 +173,13 @@ func (h *headerReceiver) combineHeaders(ctx context.Context, hdrsBytes []byte) (
 		return ctx, nil, err
 	}
 
-	// Extract trace context, if present, from the per-request
-	// headers before stream context values are added.  First
-	// check if tracing is enabled, since allocations will be
-	// required to turn the multi-string-valued headers map into a
-	// single-string-value map.
+	// Get the global propagator, to extract context.  When there
+	// are no fields, it's a no-op propagator implementation and
+	// we can skip the allocations inside this block.
 	carrier := otel.GetTextMapPropagator()
 	if len(carrier.Fields()) != 0 {
+		// When there are no fields, it's a no-op
+		// implementation and we can skip the allocations.
 		flat := map[string]string{}
 		for _, key := range carrier.Fields() {
 			have := h.tmpHdrs[key]
