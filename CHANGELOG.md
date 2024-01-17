@@ -8,6 +8,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## [0.15.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.15.0) - 2024-01-17
+
+- Remove unused `mixed_signals` feature and associated protocol elements, regenerate mocks using go.uber.org/mock@v0.4.0, repair CI/CD pipeline. [#135](https://github.com/open-telemetry/otel-arrow/pull/135), [#136](https://github.com/open-telemetry/otel-arrow/pull/136).
+- Add tracing support to the OTel-Arrow exporter and receiver. [#137](https://github.com/open-telemetry/otel-arrow/pull/139)
+
 ## [0.14.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.14.0) - 2024-01-11
 
 - Remove two deprecated fields, both concurrent batch processor `max_in_flight_bytes`
