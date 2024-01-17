@@ -30,6 +30,8 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // Stream is 1:1 with gRPC stream.
@@ -485,6 +487,15 @@ func (s *Stream) SendAndWait(ctx context.Context, records interface{}) error {
 			return err
 		}
 	}
+	if md == nil {
+		md = map[string]string{}
+	}
+
+	// Use the global propagator to inject trace context.  Note that
+	// OpenTelemetry Collector will set a global propagator from the
+	// service::telemetry::traces configuration.
+	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(md))
+
 	// Note that the uncompressed size as measured by the receiver
 	// will be different than uncompressed size as measured by the
 	// exporter, because of the optimization phase performed in the
