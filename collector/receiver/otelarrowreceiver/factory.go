@@ -18,11 +18,6 @@ const (
 	typeStr = "otelarrow"
 
 	defaultGRPCEndpoint = "0.0.0.0:4317"
-	defaultHTTPEndpoint = "0.0.0.0:4318"
-
-	defaultTracesURLPath  = "/v1/traces"
-	defaultMetricsURLPath = "/v1/metrics"
-	defaultLogsURLPath    = "/v1/logs"
 
 	defaultMemoryLimitMiB = 128
 )
@@ -65,7 +60,7 @@ func createTraces(
 ) (receiver.Traces, error) {
 	oCfg := cfg.(*Config)
 	r, err := receivers.GetOrAdd(oCfg, func() (*otlpReceiver, error) {
-		return newOtlpReceiver(oCfg, set)
+		return newOTelArrowReceiver(oCfg, set)
 	})
 	if err != nil {
 		return nil, err
@@ -86,7 +81,7 @@ func createMetrics(
 ) (receiver.Metrics, error) {
 	oCfg := cfg.(*Config)
 	r, err := receivers.GetOrAdd(oCfg, func() (*otlpReceiver, error) {
-		return newOtlpReceiver(oCfg, set)
+		return newOTelArrowReceiver(oCfg, set)
 	})
 	if err != nil {
 		return nil, err
@@ -107,7 +102,7 @@ func createLog(
 ) (receiver.Logs, error) {
 	oCfg := cfg.(*Config)
 	r, err := receivers.GetOrAdd(oCfg, func() (*otlpReceiver, error) {
-		return newOtlpReceiver(oCfg, set)
+		return newOTelArrowReceiver(oCfg, set)
 	})
 	if err != nil {
 		return nil, err

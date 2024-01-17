@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	"github.com/klauspost/compress/zstd"
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -52,7 +52,7 @@ import (
 
 const otlpReceiverName = "receiver_test"
 
-var otlpReceiverID = component.NewIDWithName(typeStr, otlpReceiverName)
+var testReceiverID = component.NewIDWithName(typeStr, otlpReceiverName)
 
 var traceJSON = []byte(`
 	{
@@ -137,8 +137,8 @@ func TestGRPCNewPortAlreadyUsed(t *testing.T) {
 	t.Cleanup(func() {
 		assert.NoError(t, ln.Close())
 	})
-
-	r := newGRPCReceiver(t, addr, consumertest.NewNop(), consumertest.NewNop())
+	tt := componenttest.NewNopTelemetrySettings()
+	r := newGRPCReceiver(t, addr, tt, consumertest.NewNop(), consumertest.NewNop())
 	require.NotNil(t, r)
 
 	require.Error(t, r.Start(context.Background(), componenttest.NewNopHost()))
@@ -157,7 +157,6 @@ func TestOTLPReceiverGRPCTracesIngestTest(t *testing.T) {
 	}
 
 	expectedReceivedBatches := 2
-	expectedIngestionBlockedRPCs := 1
 	ingestionStates := []ingestionStateTest{
 		{
 			okToIngest:   true,
@@ -176,13 +175,13 @@ func TestOTLPReceiverGRPCTracesIngestTest(t *testing.T) {
 	addr := testutil.GetAvailableLocalAddress(t)
 	td := testdata.GenerateTraces(1)
 
-	tt, err := obsreporttest.SetupTelemetry(otlpReceiverID)
+	tt, err := obsreporttest.SetupTelemetry(testReceiverID)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, tt.Shutdown(context.Background())) })
 
 	sink := &errOrSinkConsumer{TracesSink: new(consumertest.TracesSink)}
 
-	ocr := newGRPCReceiver(t, addr, sink, nil)
+	ocr := newGRPCReceiver(t, addr, tt.TelemetrySettings, sink, nil)
 	require.NotNil(t, ocr)
 	require.NoError(t, ocr.Start(context.Background(), componenttest.NewNopHost()))
 	t.Cleanup(func() { require.NoError(t, ocr.Shutdown(context.Background())) })
@@ -208,6 +207,7 @@ func TestOTLPReceiverGRPCTracesIngestTest(t *testing.T) {
 
 	require.Equal(t, expectedReceivedBatches, len(sink.AllTraces()))
 
+	expectedIngestionBlockedRPCs := 1
 	require.NoError(t, tt.CheckReceiverTraces("grpc", int64(expectedReceivedBatches), int64(expectedIngestionBlockedRPCs)))
 }
 
@@ -249,7 +249,8 @@ func TestGRPCMaxRecvSize(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.GRPC.NetAddr.Endpoint = addr
-	ocr := newReceiver(t, factory, cfg, otlpReceiverID, sink, nil)
+	tt := componenttest.NewNopTelemetrySettings()
+	ocr := newReceiver(t, factory, tt, cfg, testReceiverID, sink, nil)
 
 	require.NotNil(t, ocr)
 	require.NoError(t, ocr.Start(context.Background(), componenttest.NewNopHost()))
@@ -263,7 +264,8 @@ func TestGRPCMaxRecvSize(t *testing.T) {
 	require.NoError(t, ocr.Shutdown(context.Background()))
 
 	cfg.GRPC.MaxRecvMsgSizeMiB = 100
-	ocr = newReceiver(t, factory, cfg, otlpReceiverID, sink, nil)
+
+	ocr = newReceiver(t, factory, tt, cfg, testReceiverID, sink, nil)
 
 	require.NotNil(t, ocr)
 	require.NoError(t, ocr.Start(context.Background(), componenttest.NewNopHost()))
@@ -281,15 +283,16 @@ func TestGRPCMaxRecvSize(t *testing.T) {
 	assert.Equal(t, td, sink.AllTraces()[0])
 }
 
-func newGRPCReceiver(t *testing.T, endpoint string, tc consumer.Traces, mc consumer.Metrics) component.Component {
+func newGRPCReceiver(t *testing.T, endpoint string, settings component.TelemetrySettings, tc consumer.Traces, mc consumer.Metrics) component.Component {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.GRPC.NetAddr.Endpoint = endpoint
-	return newReceiver(t, factory, cfg, otlpReceiverID, tc, mc)
+	return newReceiver(t, factory, settings, cfg, testReceiverID, tc, mc)
 }
 
-func newReceiver(t *testing.T, factory receiver.Factory, cfg *Config, id component.ID, tc consumer.Traces, mc consumer.Metrics) component.Component {
+func newReceiver(t *testing.T, factory receiver.Factory, settings component.TelemetrySettings, cfg *Config, id component.ID, tc consumer.Traces, mc consumer.Metrics) component.Component {
 	set := receivertest.NewNopCreateSettings()
+	set.TelemetrySettings = settings
 	set.TelemetrySettings.MetricsLevel = configtelemetry.LevelNormal
 	set.ID = id
 	var r component.Component
@@ -349,7 +352,7 @@ func TestShutdown(t *testing.T) {
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.GRPC.NetAddr.Endpoint = endpointGrpc
 	set := receivertest.NewNopCreateSettings()
-	set.ID = otlpReceiverID
+	set.ID = testReceiverID
 	r, err := NewFactory().CreateTracesReceiver(
 		context.Background(),
 		set,
@@ -504,95 +507,87 @@ type anyStreamClient interface {
 }
 
 func TestGRPCArrowReceiver(t *testing.T) {
-	for _, mixed := range []bool{false, true} {
-		t.Run(fmt.Sprint("mixed=", mixed), func(t *testing.T) {
-			addr := testutil.GetAvailableLocalAddress(t)
-			sink := new(tracesSinkWithMetadata)
+	addr := testutil.GetAvailableLocalAddress(t)
+	sink := new(tracesSinkWithMetadata)
 
-			factory := NewFactory()
-			cfg := factory.CreateDefaultConfig().(*Config)
-			cfg.GRPC.NetAddr.Endpoint = addr
-			cfg.GRPC.IncludeMetadata = true
-			id := component.NewID("arrow")
-			ocr := newReceiver(t, factory, cfg, id, sink, nil)
+	factory := NewFactory()
+	cfg := factory.CreateDefaultConfig().(*Config)
+	cfg.GRPC.NetAddr.Endpoint = addr
+	cfg.GRPC.IncludeMetadata = true
+	id := component.NewID("arrow")
+	tt := componenttest.NewNopTelemetrySettings()
+	ocr := newReceiver(t, factory, tt, cfg, id, sink, nil)
 
-			require.NotNil(t, ocr)
-			require.NoError(t, ocr.Start(context.Background(), componenttest.NewNopHost()))
+	require.NotNil(t, ocr)
+	require.NoError(t, ocr.Start(context.Background(), componenttest.NewNopHost()))
 
-			cc, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
-			require.NoError(t, err)
+	cc, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	require.NoError(t, err)
 
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-			var stream anyStreamClient
-			if mixed {
-				client := arrowpb.NewArrowStreamServiceClient(cc)
-				stream, err = client.ArrowStream(ctx, grpc.WaitForReady(true))
-			} else {
-				client := arrowpb.NewArrowTracesServiceClient(cc)
-				stream, err = client.ArrowTraces(ctx, grpc.WaitForReady(true))
-			}
-			require.NoError(t, err)
-			producer := arrowRecord.NewProducer()
+	var stream anyStreamClient
+	client := arrowpb.NewArrowTracesServiceClient(cc)
+	stream, err = client.ArrowTraces(ctx, grpc.WaitForReady(true))
+	require.NoError(t, err)
+	producer := arrowRecord.NewProducer()
 
-			var headerBuf bytes.Buffer
-			hpd := hpack.NewEncoder(&headerBuf)
+	var headerBuf bytes.Buffer
+	hpd := hpack.NewEncoder(&headerBuf)
 
-			var expectTraces []ptrace.Traces
-			var expectMDs []metadata.MD
+	var expectTraces []ptrace.Traces
+	var expectMDs []metadata.MD
 
-			// Repeatedly send traces via arrow. Set the expected traces
-			// metadata to receive.
-			for i := 0; i < 10; i++ {
-				td := testdata.GenerateTraces(2)
-				expectTraces = append(expectTraces, td)
+	// Repeatedly send traces via arrow. Set the expected traces
+	// metadata to receive.
+	for i := 0; i < 10; i++ {
+		td := testdata.GenerateTraces(2)
+		expectTraces = append(expectTraces, td)
 
-				headerBuf.Reset()
-				err := hpd.WriteField(hpack.HeaderField{
-					Name:  "seq",
-					Value: fmt.Sprint(i),
-				})
-				require.NoError(t, err)
-				err = hpd.WriteField(hpack.HeaderField{
-					Name:  "test",
-					Value: "value",
-				})
-				require.NoError(t, err)
-				expectMDs = append(expectMDs, metadata.MD{
-					"seq":  []string{fmt.Sprint(i)},
-					"test": []string{"value"},
-				})
-
-				batch, err := producer.BatchArrowRecordsFromTraces(td)
-				require.NoError(t, err)
-
-				batch.Headers = headerBuf.Bytes()
-
-				err = stream.Send(batch)
-
-				require.NoError(t, err)
-
-				resp, err := stream.Recv()
-				require.NoError(t, err)
-				require.Equal(t, batch.BatchId, resp.BatchId)
-				require.Equal(t, arrowpb.StatusCode_OK, resp.StatusCode)
-			}
-
-			assert.NoError(t, cc.Close())
-			require.NoError(t, ocr.Shutdown(context.Background()))
-
-			assert.Equal(t, expectTraces, sink.AllTraces())
-
-			assert.Equal(t, len(expectMDs), len(sink.MDs))
-			// gRPC adds its own metadata keys, so we check for only the
-			// expected ones below:
-			for idx := range expectMDs {
-				for key, vals := range expectMDs[idx] {
-					require.Equal(t, vals, sink.MDs[idx].Get(key), "for key %s", key)
-				}
-			}
+		headerBuf.Reset()
+		err := hpd.WriteField(hpack.HeaderField{
+			Name:  "seq",
+			Value: fmt.Sprint(i),
 		})
+		require.NoError(t, err)
+		err = hpd.WriteField(hpack.HeaderField{
+			Name:  "test",
+			Value: "value",
+		})
+		require.NoError(t, err)
+		expectMDs = append(expectMDs, metadata.MD{
+			"seq":  []string{fmt.Sprint(i)},
+			"test": []string{"value"},
+		})
+
+		batch, err := producer.BatchArrowRecordsFromTraces(td)
+		require.NoError(t, err)
+
+		batch.Headers = headerBuf.Bytes()
+
+		err = stream.Send(batch)
+
+		require.NoError(t, err)
+
+		resp, err := stream.Recv()
+		require.NoError(t, err)
+		require.Equal(t, batch.BatchId, resp.BatchId)
+		require.Equal(t, arrowpb.StatusCode_OK, resp.StatusCode)
+	}
+
+	assert.NoError(t, cc.Close())
+	require.NoError(t, ocr.Shutdown(context.Background()))
+
+	assert.Equal(t, expectTraces, sink.AllTraces())
+
+	assert.Equal(t, len(expectMDs), len(sink.MDs))
+	// gRPC adds its own metadata keys, so we check for only the
+	// expected ones below:
+	for idx := range expectMDs {
+		for key, vals := range expectMDs[idx] {
+			require.Equal(t, vals, sink.MDs[idx].Get(key), "for key %s", key)
+		}
 	}
 }
 
@@ -633,7 +628,8 @@ func TestGRPCArrowReceiverAuth(t *testing.T) {
 		AuthenticatorID: authID,
 	}
 	id := component.NewID("arrow")
-	ocr := newReceiver(t, factory, cfg, id, sink, nil)
+	tt := componenttest.NewNopTelemetrySettings()
+	ocr := newReceiver(t, factory, tt, cfg, id, sink, nil)
 
 	require.NotNil(t, ocr)
 
@@ -660,8 +656,8 @@ func TestGRPCArrowReceiverAuth(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	client := arrowpb.NewArrowStreamServiceClient(cc)
-	stream, err := client.ArrowStream(ctx, grpc.WaitForReady(true))
+	client := arrowpb.NewArrowTracesServiceClient(cc)
+	stream, err := client.ArrowTraces(ctx, grpc.WaitForReady(true))
 	require.NoError(t, err)
 	producer := arrowRecord.NewProducer()
 

@@ -31,20 +31,20 @@ option java_outer_classname = "ArrowServiceProto";
 // Note the following is temporary
 option go_package = "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1";
 
-// This service can be utilized to transmit `BatchArrowRecords` either from an
-// application instrumented with OpenTelemetry to a collector, or between
-// multiple collectors.
+// Each signal-specific service can be utilized to transmit `BatchArrowRecords`
+// either from an application instrumented with OpenTelemetry to a collector,
+// or between multiple collectors.
 //
-// Note: If your deployment requires to load-balance the telemetry data based on
-// the nature of the telemetry data (e.g. traces, metrics, logs), then you should
-// use the `ArrowTracesService`, `ArrowMetricsService`, and `ArrowLogsService`.
-service ArrowStreamService {
-  // The ArrowStream endpoint is a bi-directional stream used to send batch of
-  // `BatchArrowRecords` from the exporter to the collector. The collector
-  // returns `BatchStatus` messages to acknowledge the `BatchArrowRecords`
-  // messages received.
-  rpc ArrowStream(stream BatchArrowRecords) returns (stream BatchStatus) {}
-}
+// For each service, the ArrowSIGNAL method starts a bi-directional stream
+// used to send batch of `BatchArrowRecords` from the exporter to the
+// collector. The collector returns `BatchStatus` messages to acknowledge
+// the `BatchArrowRecords` messages received.
+
+// Historical note: this code base once declared a mixed-signal protocol
+// which would allow any OpenTelemetry signal to be transmitted.  While this
+// could potentially avoid repetition of common telemetry elementrs (e.g.,
+// resource attributes), it has been removed because at this time the OpenTelemetry
+// Collector does not support mixed-signal receivers or exporters.
 
 // ArrowTracesService is a traces-only Arrow stream.
 service ArrowTracesService {

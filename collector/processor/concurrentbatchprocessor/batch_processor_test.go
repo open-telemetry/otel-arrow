@@ -32,6 +32,7 @@ import (
 	"go.opentelemetry.io/collector/processor"
 	"go.opentelemetry.io/collector/processor/processortest"
 	"go.opentelemetry.io/otel"
+	noopmetric "go.opentelemetry.io/otel/metric/noop"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
@@ -360,6 +361,7 @@ func TestBatchProcessorUnbrokenParentContext(t *testing.T) {
 	createSet := exporter.CreateSettings{
 		TelemetrySettings: component.TelemetrySettings{
 			TracerProvider: tp,
+			MeterProvider:  noopmetric.MeterProvider{},
 			Logger:         zap.NewNop(),
 		},
 	}
@@ -370,7 +372,7 @@ func TestBatchProcessorUnbrokenParentContext(t *testing.T) {
 	next, err := exporterhelper.NewTracesExporter(bg, createSet, Config{}, func(ctx context.Context, td ptrace.Traces) error { return nil }, opt)
 	require.NoError(t, err)
 
-	bp, err := newBatchTracesProcessor(creationSet, next, cfg, true)
+	bp, err := newBatchTracesProcessor(creationSet, next, cfg)
 	require.NoError(t, err)
 	require.NoError(t, bp.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -434,6 +436,7 @@ func TestBatchProcessorUnbrokenParentContextMultiple(t *testing.T) {
 	createSet := exporter.CreateSettings{
 		TelemetrySettings: component.TelemetrySettings{
 			TracerProvider: tp,
+			MeterProvider:  noopmetric.MeterProvider{},
 			Logger:         zap.NewNop(),
 		},
 	}
@@ -443,7 +446,7 @@ func TestBatchProcessorUnbrokenParentContextMultiple(t *testing.T) {
 	next, err := exporterhelper.NewTracesExporter(bg, createSet, Config{}, func(ctx context.Context, td ptrace.Traces) error { return nil }, opt)
 	require.NoError(t, err)
 
-	bp, err := newBatchTracesProcessor(creationSet, next, cfg, true)
+	bp, err := newBatchTracesProcessor(creationSet, next, cfg)
 	require.NoError(t, err)
 	require.NoError(t, bp.Start(context.Background(), componenttest.NewNopHost()))
 
@@ -1656,7 +1659,7 @@ func TestBatchTooLarge(t *testing.T) {
 	sink := new(consumertest.LogsSink)
 	creationSet := processortest.NewNopCreateSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
-	batcher, err := newBatchLogsProcessor(creationSet, sink, &cfg, true)
+	batcher, err := newBatchLogsProcessor(creationSet, sink, &cfg)
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 

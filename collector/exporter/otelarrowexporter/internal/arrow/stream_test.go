@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	arrowRecordMock "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record/mock"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 	"google.golang.org/grpc"
 
 	"go.opentelemetry.io/collector/consumer/consumererror"
@@ -76,13 +76,13 @@ func newStreamTestCase(t *testing.T) *streamTestCase {
 
 // start runs a test stream according to the behavior of testChannel.
 func (tc *streamTestCase) start(channel testChannel) {
-	tc.streamCall.Times(1).DoAndReturn(tc.connectTestStream(channel))
+	tc.traceCall.Times(1).DoAndReturn(tc.connectTestStream(channel))
 
 	tc.wait.Add(1)
 
 	go func() {
 		defer tc.wait.Done()
-		tc.stream.run(tc.bgctx, tc.streamClient, nil)
+		tc.stream.run(tc.bgctx, tc.traceClient, nil)
 	}()
 }
 
@@ -99,11 +99,11 @@ func (tc *streamTestCase) waitForShutdown() {
 
 // connectTestStream returns the stream under test from the common test's mock ArrowStream().
 func (tc *streamTestCase) connectTestStream(h testChannel) func(context.Context, ...grpc.CallOption) (
-	arrowpb.ArrowStreamService_ArrowStreamClient,
+	arrowpb.ArrowTracesService_ArrowTracesClient,
 	error,
 ) {
 	return func(ctx context.Context, _ ...grpc.CallOption) (
-		arrowpb.ArrowStreamService_ArrowStreamClient,
+		arrowpb.ArrowTracesService_ArrowTracesClient,
 		error,
 	) {
 		if err := h.onConnect(ctx); err != nil {

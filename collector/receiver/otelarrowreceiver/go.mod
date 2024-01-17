@@ -4,7 +4,6 @@ go 1.21
 
 require (
 	github.com/gogo/protobuf v1.3.2
-	github.com/golang/mock v1.6.0
 	github.com/klauspost/compress v1.17.4
 	github.com/open-telemetry/otel-arrow v0.14.0
 	github.com/open-telemetry/otel-arrow/collector v0.14.0
@@ -22,6 +21,7 @@ require (
 	go.opentelemetry.io/collector/pdata v1.0.1
 	go.opentelemetry.io/collector/receiver v0.92.0
 	go.opentelemetry.io/collector/semconv v0.92.0
+	go.uber.org/mock v0.4.0
 	go.uber.org/multierr v1.11.0
 	go.uber.org/zap v1.26.0
 	golang.org/x/net v0.20.0
@@ -47,6 +47,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
+	github.com/golang/mock v1.6.0 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/golang/snappy v0.0.5-0.20220116011046-fa5810519dcb // indirect
 	github.com/google/flatbuffers v23.5.26+incompatible // indirect
@@ -97,14 +98,3 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-
-
-
-
-
-
-
-
-
-

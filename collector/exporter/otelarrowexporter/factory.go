@@ -85,7 +85,6 @@ func gRPCName(desc grpc.ServiceDesc) string {
 }
 
 var (
-	arrowStreamMethod  = gRPCName(arrowpb.ArrowStreamService_ServiceDesc)
 	arrowTracesMethod  = gRPCName(arrowpb.ArrowTracesService_ServiceDesc)
 	arrowMetricsMethod = gRPCName(arrowpb.ArrowMetricsService_ServiceDesc)
 	arrowLogsMethod    = gRPCName(arrowpb.ArrowLogsService_ServiceDesc)

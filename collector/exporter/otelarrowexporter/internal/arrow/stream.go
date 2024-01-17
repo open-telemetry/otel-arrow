@@ -55,7 +55,7 @@ type Stream struct {
 	// client uses the exporter's grpc.ClientConn.  this is
 	// initially nil only set when ArrowStream() calls meaning the
 	// endpoint recognizes OTel-Arrow.
-	client arrowpb.ArrowStreamService_ArrowStreamClient
+	client AnyStreamClient
 
 	// method the gRPC method name, used for additional instrumentation.
 	method string
