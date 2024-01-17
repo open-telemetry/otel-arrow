@@ -54,7 +54,9 @@ type Stream struct {
 
 	// telemetry are a copy of the exporter's telemetry settings
 	telemetry component.TelemetrySettings
-	tracer    trace.Tracer
+
+	// tracer is used to create a span describing the export.
+	tracer trace.Tracer
 
 	// client uses the exporter's grpc.ClientConn.  this is
 	// initially nil only set when ArrowStream() calls meaning the
@@ -102,7 +104,7 @@ func newStream(
 	perRPCCredentials credentials.PerRPCCredentials,
 	netReporter netstats.Interface,
 ) *Stream {
-	tracer := telemetry.TracerProvider.Tracer("otel-arrow")
+	tracer := telemetry.TracerProvider.Tracer("otel-arrow-exporter")
 	return &Stream{
 		producer:          producer,
 		prioritizer:       prioritizer,

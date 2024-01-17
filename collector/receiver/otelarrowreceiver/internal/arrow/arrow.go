@@ -36,6 +36,7 @@ import (
 	"go.opentelemetry.io/collector/receiver/receiverhelper"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -64,6 +65,7 @@ type Receiver struct {
 	arrowpb.UnsafeArrowMetricsServiceServer
 
 	telemetry   component.TelemetrySettings
+	tracer      trace.Tracer
 	obsrecv     *receiverhelper.ObsReport
 	gsettings   configgrpc.GRPCServerSettings
 	authServer  auth.Server
@@ -81,10 +83,12 @@ func New(
 	newConsumer func() arrowRecord.ConsumerAPI,
 	netReporter netstats.Interface,
 ) *Receiver {
+	tracer := set.TelemetrySettings.TracerProvider.Tracer("otel-arrow-receiver")
 	return &Receiver{
 		Consumers:   cs,
 		obsrecv:     obsrecv,
 		telemetry:   set.TelemetrySettings,
+		tracer:      tracer,
 		authServer:  authServer,
 		newConsumer: newConsumer,
 		gsettings:   gsettings,
@@ -356,41 +360,53 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 			}
 		}
 
-		// Process records: an error in this code path does
-		// not necessarily break the stream.
-		if authErr != nil {
-			err = authErr
-		} else {
-			err = r.processRecords(thisCtx, method, ac, req)
-		}
-
-		// Note: Statuses can be batched, but we do not take
-		// advantage of this feature.
-		status := &arrowpb.BatchStatus{
-			BatchId: req.GetBatchId(),
-		}
-		if err == nil {
-			status.StatusCode = arrowpb.StatusCode_OK
-		} else {
-			status.StatusMessage = err.Error()
-			if errors.Is(err, arrowRecord.ErrConsumerMemoryLimit) {
-				r.telemetry.Logger.Error("arrow resource exhausted", zap.Error(err))
-				status.StatusCode = arrowpb.StatusCode_RESOURCE_EXHAUSTED
-			} else if consumererror.IsPermanent(err) {
-				r.telemetry.Logger.Error("arrow data error", zap.Error(err))
-				status.StatusCode = arrowpb.StatusCode_INVALID_ARGUMENT
-			} else {
-				r.telemetry.Logger.Debug("arrow consumer error", zap.Error(err))
-				status.StatusCode = arrowpb.StatusCode_UNAVAILABLE
-			}
-		}
-
-		err = serverStream.Send(status)
-		if err != nil {
-			r.logStreamError(err)
+		if err := r.processAndConsume(thisCtx, method, ac, req, serverStream, authErr); err != nil {
 			return err
 		}
 	}
+}
+
+func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, req *arrowpb.BatchArrowRecords, serverStream anyStreamServer, authErr error) error {
+	var err error
+
+	ctx, span := r.tracer.Start(ctx, "otel_arrow_stream_recv")
+	defer span.End()
+
+	// Process records: an error in this code path does
+	// not necessarily break the stream.
+	if authErr != nil {
+		err = authErr
+	} else {
+		err = r.processRecords(ctx, method, arrowConsumer, req)
+	}
+
+	// Note: Statuses can be batched, but we do not take
+	// advantage of this feature.
+	status := &arrowpb.BatchStatus{
+		BatchId: req.GetBatchId(),
+	}
+	if err == nil {
+		status.StatusCode = arrowpb.StatusCode_OK
+	} else {
+		status.StatusMessage = err.Error()
+		if errors.Is(err, arrowRecord.ErrConsumerMemoryLimit) {
+			r.telemetry.Logger.Error("arrow resource exhausted", zap.Error(err))
+			status.StatusCode = arrowpb.StatusCode_RESOURCE_EXHAUSTED
+		} else if consumererror.IsPermanent(err) {
+			r.telemetry.Logger.Error("arrow data error", zap.Error(err))
+			status.StatusCode = arrowpb.StatusCode_INVALID_ARGUMENT
+		} else {
+			r.telemetry.Logger.Debug("arrow consumer error", zap.Error(err))
+			status.StatusCode = arrowpb.StatusCode_UNAVAILABLE
+		}
+	}
+
+	err = serverStream.Send(status)
+	if err != nil {
+		r.logStreamError(err)
+		return err
+	}
+	return nil
 }
 
 // processRecords returns an error and a boolean indicating whether
