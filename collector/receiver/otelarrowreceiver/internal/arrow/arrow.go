@@ -155,16 +155,8 @@ func (h *headerReceiver) combineHeaders(ctx context.Context, hdrsBytes []byte) (
 	}
 
 	// Note that we will parse the headers even if they are not
-	// used, to check for validity.  tmpHdrsAppend() will skip
-	// modifying tmpHdrs if it is nil.
-	h.tmpHdrs = nil
-
-	needMergedHeaders := h.includeMetadata || h.hasAuthServer
-
-	// If headers are being merged, allocate a new map.
-	if needMergedHeaders {
-		h.tmpHdrs = map[string][]string{}
-	}
+	// used, to check for validity and/or trace context.
+	h.tmpHdrs = map[string][]string{}
 
 	// Write calls the emitFunc, appending directly into `tmpHdrs`.
 	if _, err := h.decoder.Write(hdrsBytes); err != nil {
@@ -190,23 +182,21 @@ func (h *headerReceiver) combineHeaders(ctx context.Context, hdrsBytes []byte) (
 		ctx = carrier.Extract(ctx, propagation.MapCarrier(flat))
 	}
 
-	if needMergedHeaders {
-		// Add streamHdrs that were not carried in the per-request headers.
-		for k, v := range h.streamHdrs {
-			// Note: This is done after the per-request metadata is defined
-			// in recognition of a potential for duplicated values stemming
-			// from the Arrow exporter's independent call to the Auth
-			// extension's GetRequestMetadata().  This paired with the
-			// headersetter's return of empty-string values means, we would
-			// end up with an empty-string element for any headersetter
-			// `from_context` rules b/c the stream uses background context.
-			// This allows static headers through.
-			//
-			// See https://github.com/open-telemetry/opentelemetry-collector/issues/6965
-			lk := strings.ToLower(k)
-			if _, ok := h.tmpHdrs[lk]; !ok {
-				h.tmpHdrs[lk] = v
-			}
+	// Add streamHdrs that were not carried in the per-request headers.
+	for k, v := range h.streamHdrs {
+		// Note: This is done after the per-request metadata is defined
+		// in recognition of a potential for duplicated values stemming
+		// from the Arrow exporter's independent call to the Auth
+		// extension's GetRequestMetadata().  This paired with the
+		// headersetter's return of empty-string values means, we would
+		// end up with an empty-string element for any headersetter
+		// `from_context` rules b/c the stream uses background context.
+		// This allows static headers through.
+		//
+		// See https://github.com/open-telemetry/opentelemetry-collector/issues/6965
+		lk := strings.ToLower(k)
+		if _, ok := h.tmpHdrs[lk]; !ok {
+			h.tmpHdrs[lk] = v
 		}
 	}
 

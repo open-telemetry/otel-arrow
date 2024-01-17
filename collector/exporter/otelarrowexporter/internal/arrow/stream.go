@@ -32,6 +32,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Stream is 1:1 with gRPC stream.
@@ -53,6 +54,7 @@ type Stream struct {
 
 	// telemetry are a copy of the exporter's telemetry settings
 	telemetry component.TelemetrySettings
+	tracer    trace.Tracer
 
 	// client uses the exporter's grpc.ClientConn.  this is
 	// initially nil only set when ArrowStream() calls meaning the
@@ -88,6 +90,8 @@ type writeItem struct {
 	// uncompSize is computed by the appropriate sizer (in the
 	// caller's goroutine)
 	uncompSize int
+	// parent will be used to create a span around the stream request.
+	parent context.Context
 }
 
 // newStream constructs a stream
@@ -98,11 +102,13 @@ func newStream(
 	perRPCCredentials credentials.PerRPCCredentials,
 	netReporter netstats.Interface,
 ) *Stream {
+	tracer := telemetry.TracerProvider.Tracer("otel-arrow")
 	return &Stream{
 		producer:          producer,
 		prioritizer:       prioritizer,
 		perRPCCredentials: perRPCCredentials,
 		telemetry:         telemetry,
+		tracer:            tracer,
 		toWrite:           make(chan writeItem, 1),
 		waiters:           map[int64]chan error{},
 		netReporter:       netReporter,
@@ -317,59 +323,82 @@ func (s *Stream) write(ctx context.Context) error {
 			s.prioritizer.removeReady(s)
 			return ctx.Err()
 		}
-		// Note: For the two return statements below there is no potential
-		// sender race because the stream is not available, as indicated by
-		// the successful <-stream.toWrite.
 
-		batch, err := s.encode(wri.records)
+		err := s.encodeAndSend(wri, &hdrsBuf, hdrsEnc)
 		if err != nil {
-			// This is some kind of internal error.  We will restart the
-			// stream and mark this record as a permanent one.
-			err = fmt.Errorf("encode: %w", err)
-			wri.errCh <- consumererror.NewPermanent(err)
-			return err
-		}
-
-		// Optionally include outgoing metadata, if present.
-		if len(wri.md) != 0 {
-			hdrsBuf.Reset()
-			for key, val := range wri.md {
-				err := hdrsEnc.WriteField(hpack.HeaderField{
-					Name:  key,
-					Value: val,
-				})
-				if err != nil {
-					// This case is like the encode-failure case
-					// above, we will restart the stream but consider
-					// this a permenent error.
-					err = fmt.Errorf("hpack: %w", err)
-					wri.errCh <- consumererror.NewPermanent(err)
-					return err
-				}
-			}
-			batch.Headers = hdrsBuf.Bytes()
-		}
-
-		// Let the receiver knows what to look for.
-		s.setBatchChannel(batch.BatchId, wri.errCh)
-
-		// The netstats code knows that uncompressed size is
-		// unreliable for arrow transport, so we instrument it
-		// directly here.  Only the primary direction of transport
-		// is instrumented this way.
-		if wri.uncompSize != 0 {
-			var sized netstats.SizesStruct
-			sized.Method = s.method
-			sized.Length = int64(wri.uncompSize)
-			s.netReporter.CountSend(ctx, sized)
-		}
-
-		if err := s.client.Send(batch); err != nil {
-			// The error will be sent to errCh during cleanup for this stream.
-			// Note: do not wrap this error, it may contain a Status.
+			// Note: For the return statement below, there is no potential
+			// sender race because the stream is not available, as indicated by
+			// the successful <-stream.toWrite above
 			return err
 		}
 	}
+}
+
+func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hpack.Encoder) error {
+	ctx, span := s.tracer.Start(wri.parent, "otel_arrow_stream_send")
+	defer span.End()
+
+	prop := otel.GetTextMapPropagator()
+	if len(prop.Fields()) > 0 {
+		if wri.md == nil {
+			wri.md = map[string]string{}
+		}
+		// Use the global propagator to inject trace context.  Note that
+		// OpenTelemetry Collector will set a global propagator from the
+		// service::telemetry::traces configuration.
+		otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(wri.md))
+	}
+
+	batch, err := s.encode(wri.records)
+	if err != nil {
+		// This is some kind of internal error.  We will restart the
+		// stream and mark this record as a permanent one.
+		err = fmt.Errorf("encode: %w", err)
+		wri.errCh <- consumererror.NewPermanent(err)
+		return err
+	}
+
+	// Optionally include outgoing metadata, if present.
+	if len(wri.md) != 0 {
+		hdrsBuf.Reset()
+		for key, val := range wri.md {
+			err := hdrsEnc.WriteField(hpack.HeaderField{
+				Name:  key,
+				Value: val,
+			})
+			if err != nil {
+				// This case is like the encode-failure case
+				// above, we will restart the stream but consider
+				// this a permenent error.
+				err = fmt.Errorf("hpack: %w", err)
+				wri.errCh <- consumererror.NewPermanent(err)
+				return err
+			}
+		}
+		batch.Headers = hdrsBuf.Bytes()
+	}
+
+	// Let the receiver knows what to look for.
+	s.setBatchChannel(batch.BatchId, wri.errCh)
+
+	// The netstats code knows that uncompressed size is
+	// unreliable for arrow transport, so we instrument it
+	// directly here.  Only the primary direction of transport
+	// is instrumented this way.
+	if wri.uncompSize != 0 {
+		var sized netstats.SizesStruct
+		sized.Method = s.method
+		sized.Length = int64(wri.uncompSize)
+		s.netReporter.CountSend(ctx, sized)
+	}
+
+	if err := s.client.Send(batch); err != nil {
+		// The error will be sent to errCh during cleanup for this stream.
+		// Note: do not wrap this error, it may contain a Status.
+		return err
+	}
+
+	return nil
 }
 
 // read repeatedly reads a batch status and releases the consumers waiting for
@@ -487,14 +516,6 @@ func (s *Stream) SendAndWait(ctx context.Context, records interface{}) error {
 			return err
 		}
 	}
-	if md == nil {
-		md = map[string]string{}
-	}
-
-	// Use the global propagator to inject trace context.  Note that
-	// OpenTelemetry Collector will set a global propagator from the
-	// service::telemetry::traces configuration.
-	otel.GetTextMapPropagator().Inject(ctx, propagation.MapCarrier(md))
 
 	// Note that the uncompressed size as measured by the receiver
 	// will be different than uncompressed size as measured by the
@@ -520,6 +541,7 @@ func (s *Stream) SendAndWait(ctx context.Context, records interface{}) error {
 		md:         md,
 		uncompSize: uncompSize,
 		errCh:      errCh,
+		parent:     ctx,
 	}
 
 	// Note this ensures the caller's timeout is respected.
