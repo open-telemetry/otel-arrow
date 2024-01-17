@@ -34,6 +34,8 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/receiverhelper"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 const (
@@ -167,6 +169,25 @@ func (h *headerReceiver) combineHeaders(ctx context.Context, hdrsBytes []byte) (
 	// Write calls the emitFunc, appending directly into `tmpHdrs`.
 	if _, err := h.decoder.Write(hdrsBytes); err != nil {
 		return ctx, nil, err
+	}
+
+	// Extract trace context, if present, from the per-request
+	// headers before stream context values are added.  First
+	// check if tracing is enabled, since allocations will be
+	// required to turn the multi-string-valued headers map into a
+	// single-string-value map.
+	carrier := otel.GetTextMapPropagator()
+	if len(carrier.Fields()) != 0 {
+		flat := map[string]string{}
+		for _, key := range carrier.Fields() {
+			have := h.tmpHdrs[key]
+			if len(have) > 0 {
+				flat[key] = have[0]
+				delete(h.tmpHdrs, key)
+			}
+		}
+
+		ctx = carrier.Extract(ctx, propagation.MapCarrier(flat))
 	}
 
 	if needMergedHeaders {
