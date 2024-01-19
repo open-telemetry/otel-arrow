@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## [0.16.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.15.0) - 2024-01-19
+
+- Use go-1.20 in CI/CD and go.mods. [#144](https://github.com/open-telemetry/otel-arrow/pull/144)
+
 ## [0.15.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.15.0) - 2024-01-17
 
 - Remove unused `mixed_signals` feature and associated protocol elements, regenerate mocks using go.uber.org/mock@v0.4.0, repair CI/CD pipeline. [#135](https://github.com/open-telemetry/otel-arrow/pull/135), [#136](https://github.com/open-telemetry/otel-arrow/pull/136).
