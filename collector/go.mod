@@ -1,6 +1,6 @@
 module github.com/open-telemetry/otel-arrow/collector
 
-go 1.21
+go 1.20
 
 require (
 	github.com/klauspost/compress v1.17.4
