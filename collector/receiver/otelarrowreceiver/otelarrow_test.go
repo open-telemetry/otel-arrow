@@ -28,6 +28,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/arrow/mock"
+	componentMetadata "github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/metadata"
 	"github.com/open-telemetry/otel-arrow/collector/testdata"
 	"github.com/open-telemetry/otel-arrow/collector/testutil"
 	"go.opentelemetry.io/collector/client"
@@ -52,7 +53,7 @@ import (
 
 const otlpReceiverName = "receiver_test"
 
-var testReceiverID = component.NewIDWithName(typeStr, otlpReceiverName)
+var testReceiverID = component.NewIDWithName(componentMetadata.Type, otlpReceiverName)
 
 var traceJSON = []byte(`
 	{

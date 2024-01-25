@@ -6,7 +6,8 @@ package otelarrowreceiver // import "github.com/open-telemetry/otel-arrow/collec
 import (
 	"context"
 
-	"github.com/open-telemetry/otel-arrow/collector/sharedcomponent"
+	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/metadata"
+	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/sharedcomponent"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confignet"
@@ -15,8 +16,6 @@ import (
 )
 
 const (
-	typeStr = "otelarrow"
-
 	defaultGRPCEndpoint = "0.0.0.0:4317"
 
 	defaultMemoryLimitMiB = 128
@@ -25,11 +24,11 @@ const (
 // NewFactory creates a new OTLP receiver factory.
 func NewFactory() receiver.Factory {
 	return receiver.NewFactory(
-		typeStr,
+		metadata.Type,
 		createDefaultConfig,
-		receiver.WithTraces(createTraces, component.StabilityLevelStable),
-		receiver.WithMetrics(createMetrics, component.StabilityLevelStable),
-		receiver.WithLogs(createLog, component.StabilityLevelBeta))
+		receiver.WithTraces(createTraces, metadata.TracesStability),
+		receiver.WithMetrics(createMetrics, metadata.MetricsStability),
+		receiver.WithLogs(createLog, metadata.LogsStability))
 }
 
 // createDefaultConfig creates the default configuration for receiver.
@@ -59,7 +58,7 @@ func createTraces(
 	nextConsumer consumer.Traces,
 ) (receiver.Traces, error) {
 	oCfg := cfg.(*Config)
-	r, err := receivers.GetOrAdd(oCfg, func() (*otlpReceiver, error) {
+	r, err := receivers.GetOrAdd(oCfg, func() (*otelArrowReceiver, error) {
 		return newOTelArrowReceiver(oCfg, set)
 	})
 	if err != nil {
@@ -80,7 +79,7 @@ func createMetrics(
 	consumer consumer.Metrics,
 ) (receiver.Metrics, error) {
 	oCfg := cfg.(*Config)
-	r, err := receivers.GetOrAdd(oCfg, func() (*otlpReceiver, error) {
+	r, err := receivers.GetOrAdd(oCfg, func() (*otelArrowReceiver, error) {
 		return newOTelArrowReceiver(oCfg, set)
 	})
 	if err != nil {
@@ -101,7 +100,7 @@ func createLog(
 	consumer consumer.Logs,
 ) (receiver.Logs, error) {
 	oCfg := cfg.(*Config)
-	r, err := receivers.GetOrAdd(oCfg, func() (*otlpReceiver, error) {
+	r, err := receivers.GetOrAdd(oCfg, func() (*otelArrowReceiver, error) {
 		return newOTelArrowReceiver(oCfg, set)
 	})
 	if err != nil {
@@ -117,7 +116,7 @@ func createLog(
 // This is the map of already created OTLP receivers for particular configurations.
 // We maintain this map because the Factory is asked trace and metric receivers separately
 // when it gets CreateTracesReceiver() and CreateMetricsReceiver() but they must not
-// create separate objects, they must use one otlpReceiver object per configuration.
+// create separate objects, they must use one otelArrowReceiver object per configuration.
 // When the receiver is shutdown it should be removed from this map so the same configuration
 // can be recreated successfully.
-var receivers = sharedcomponent.NewSharedComponents[*Config, *otlpReceiver]()
+var receivers = sharedcomponent.NewSharedComponents[*Config, *otelArrowReceiver]()
