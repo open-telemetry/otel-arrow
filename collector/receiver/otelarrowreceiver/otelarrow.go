@@ -60,7 +60,9 @@ func newOTelArrowReceiver(cfg *Config, set receiver.CreateSettings) (*otelArrowR
 		settings:    set,
 		netReporter: netReporter,
 	}
-	zstd.SetDecoderConfig(cfg.Arrow.Zstd)
+	if err := zstd.SetDecoderConfig(cfg.Arrow.Zstd); err != nil {
+		return nil, err
+	}
 
 	r.obsrepGRPC, err = receiverhelper.NewObsReport(receiverhelper.ObsReportSettings{
 		ReceiverID:             set.ID,
