@@ -60,7 +60,7 @@ func newOTelArrowReceiver(cfg *Config, set receiver.CreateSettings) (*otelArrowR
 		settings:    set,
 		netReporter: netReporter,
 	}
-	if err := zstd.SetDecoderConfig(cfg.Arrow.Zstd); err != nil {
+	if err = zstd.SetDecoderConfig(cfg.Arrow.Zstd); err != nil {
 		return nil, err
 	}
 
