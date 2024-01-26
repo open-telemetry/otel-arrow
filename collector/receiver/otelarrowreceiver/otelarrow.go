@@ -30,8 +30,8 @@ import (
 	"go.opentelemetry.io/collector/receiver/receiverhelper"
 )
 
-// otlpReceiver is the type that exposes Trace and Metrics reception.
-type otlpReceiver struct {
+// otelArrowReceiver is the type that exposes Trace and Metrics reception.
+type otelArrowReceiver struct {
 	cfg        *Config
 	serverGRPC *grpc.Server
 
@@ -50,17 +50,19 @@ type otlpReceiver struct {
 // newOTelArrowReceiver just creates the OpenTelemetry receiver services. It is the caller's
 // responsibility to invoke the respective Start*Reception methods as well
 // as the various Stop*Reception methods to end it.
-func newOTelArrowReceiver(cfg *Config, set receiver.CreateSettings) (*otlpReceiver, error) {
+func newOTelArrowReceiver(cfg *Config, set receiver.CreateSettings) (*otelArrowReceiver, error) {
 	netReporter, err := netstats.NewReceiverNetworkReporter(set)
 	if err != nil {
 		return nil, err
 	}
-	r := &otlpReceiver{
+	r := &otelArrowReceiver{
 		cfg:         cfg,
 		settings:    set,
 		netReporter: netReporter,
 	}
-	zstd.SetDecoderConfig(cfg.Arrow.Zstd)
+	if err = zstd.SetDecoderConfig(cfg.Arrow.Zstd); err != nil {
+		return nil, err
+	}
 
 	r.obsrepGRPC, err = receiverhelper.NewObsReport(receiverhelper.ObsReportSettings{
 		ReceiverID:             set.ID,
@@ -74,7 +76,7 @@ func newOTelArrowReceiver(cfg *Config, set receiver.CreateSettings) (*otlpReceiv
 	return r, nil
 }
 
-func (r *otlpReceiver) startGRPCServer(cfg configgrpc.GRPCServerSettings, host component.Host) error {
+func (r *otelArrowReceiver) startGRPCServer(cfg configgrpc.GRPCServerSettings, host component.Host) error {
 	r.settings.Logger.Info("Starting GRPC server", zap.String("endpoint", cfg.NetAddr.Endpoint))
 
 	gln, err := cfg.ToListener()
@@ -92,7 +94,7 @@ func (r *otlpReceiver) startGRPCServer(cfg configgrpc.GRPCServerSettings, host c
 	return nil
 }
 
-func (r *otlpReceiver) startProtocolServers(host component.Host) error {
+func (r *otelArrowReceiver) startProtocolServers(host component.Host) error {
 	var err error
 	var serverOpts []grpc.ServerOption
 
@@ -152,12 +154,12 @@ func (r *otlpReceiver) startProtocolServers(host component.Host) error {
 
 // Start runs the trace receiver on the gRPC server. Currently
 // it also enables the metrics receiver too.
-func (r *otlpReceiver) Start(_ context.Context, host component.Host) error {
+func (r *otelArrowReceiver) Start(_ context.Context, host component.Host) error {
 	return r.startProtocolServers(host)
 }
 
 // Shutdown is a method to turn off receiving.
-func (r *otlpReceiver) Shutdown(ctx context.Context) error {
+func (r *otelArrowReceiver) Shutdown(ctx context.Context) error {
 	var err error
 
 	if r.serverGRPC != nil {
@@ -168,7 +170,7 @@ func (r *otlpReceiver) Shutdown(ctx context.Context) error {
 	return err
 }
 
-func (r *otlpReceiver) registerTraceConsumer(tc consumer.Traces) error {
+func (r *otelArrowReceiver) registerTraceConsumer(tc consumer.Traces) error {
 	if tc == nil {
 		return component.ErrNilNextConsumer
 	}
@@ -176,7 +178,7 @@ func (r *otlpReceiver) registerTraceConsumer(tc consumer.Traces) error {
 	return nil
 }
 
-func (r *otlpReceiver) registerMetricsConsumer(mc consumer.Metrics) error {
+func (r *otelArrowReceiver) registerMetricsConsumer(mc consumer.Metrics) error {
 	if mc == nil {
 		return component.ErrNilNextConsumer
 	}
@@ -184,7 +186,7 @@ func (r *otlpReceiver) registerMetricsConsumer(mc consumer.Metrics) error {
 	return nil
 }
 
-func (r *otlpReceiver) registerLogsConsumer(lc consumer.Logs) error {
+func (r *otelArrowReceiver) registerLogsConsumer(lc consumer.Logs) error {
 	if lc == nil {
 		return component.ErrNilNextConsumer
 	}
@@ -192,23 +194,23 @@ func (r *otlpReceiver) registerLogsConsumer(lc consumer.Logs) error {
 	return nil
 }
 
-var _ arrow.Consumers = &otlpReceiver{}
+var _ arrow.Consumers = &otelArrowReceiver{}
 
-func (r *otlpReceiver) Traces() consumer.Traces {
+func (r *otelArrowReceiver) Traces() consumer.Traces {
 	if r.tracesReceiver == nil {
 		return nil
 	}
 	return r.tracesReceiver.Consumer()
 }
 
-func (r *otlpReceiver) Metrics() consumer.Metrics {
+func (r *otelArrowReceiver) Metrics() consumer.Metrics {
 	if r.metricsReceiver == nil {
 		return nil
 	}
 	return r.metricsReceiver.Consumer()
 }
 
-func (r *otlpReceiver) Logs() consumer.Logs {
+func (r *otelArrowReceiver) Logs() consumer.Logs {
 	if r.logsReceiver == nil {
 		return nil
 	}
