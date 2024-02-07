@@ -81,8 +81,10 @@ type Interface interface {
 	CountReceive(ctx context.Context, ss SizesStruct)
 
 	// SetSpanAttributes takes a context and adds attributes to the associated span.
-	// If there is an non-nil error provided, it will set the span status explicitly as well.
-	SetSpanAttributes(ctx context.Context, err error, attrs... attribute.KeyValue)
+	SetSpanSizeAttributes(ctx context.Context, ss SizesStruct)
+
+	// SetSpanError set span status explicitly, if there is an non-nil error provided.
+	SetSpanError(ctx context.Context, err error)
 }
 
 // Noop is a no-op implementation of Interface.
@@ -92,7 +94,8 @@ var _ Interface = Noop{}
 
 func (Noop) CountSend(ctx context.Context, ss SizesStruct)    {}
 func (Noop) CountReceive(ctx context.Context, ss SizesStruct) {}
-func (Noop) SetSpanAttributes(ctx context.Context, err error, attrs... attribute.KeyValue) {}
+func (Noop) SetSpanSizeAttributes(ctx context.Context, ss SizesStruct) {}
+func (Noop) SetSpanError(ctx context.Context, err error) {}
 
 const (
 	bytesUnit           = "bytes"
@@ -244,11 +247,38 @@ func (rep *NetworkReporter) CountReceive(ctx context.Context, ss SizesStruct) {
 	}
 }
 
-func (rep *NetworkReporter) SetSpanAttributes(ctx context.Context, err error, attrs... attribute.KeyValue) {
-	span := trace.SpanFromContext(ctx)
-	span.SetAttributes(attrs...)
-
-	if err != nil {
-		span.SetStatus(otelcodes.Error, err.Error())
+func (rep *NetworkReporter) SetSpanSizeAttributes(ctx context.Context, ss SizesStruct) {
+	if rep == nil {
+		return
 	}
+
+	span := trace.SpanFromContext(ctx)
+
+	var compressedName string
+	var uncompressedName string
+	// set attribute name based on exporter vs receiver
+	if rep.isExporter {
+		compressedName = "stream_client_compressed_bytes_sent"
+		uncompressedName = "stream_client_uncompressed_bytes_sent"
+	} else { // receiver attributes
+		compressedName = "stream_server_compressed_bytes_recv"
+		uncompressedName = "stream_server_uncompressed_bytes_recv"
+	}
+
+	if ss.Length > 0 {
+		span.SetAttributes(attribute.Int(uncompressedName, int(ss.Length)))
+	}
+
+	if ss.WireLength > 0 {
+		span.SetAttributes(attribute.Int(compressedName, int(ss.WireLength)))
+	}
+}
+
+func (rep *NetworkReporter) SetSpanError(ctx context.Context, err error) {
+	if err == nil {
+		return
+	}
+
+	span := trace.SpanFromContext(ctx)
+	span.SetStatus(otelcodes.Error, err.Error())
 }

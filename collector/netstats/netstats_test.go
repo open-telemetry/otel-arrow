@@ -140,12 +140,12 @@ func testNetStatsExporter(t *testing.T, level configtelemetry.Level, expect map[
 func TestNetStatsSetSpanAttrs(t *testing.T) {
 	testErr := fmt.Errorf("test error")
 
-	enr, err := NewExporterNetworkReporter(exporter.CreateSettings{
-		ID: component.NewID("test"),
-	})
-	require.NoError(t, err)
+	enr := &NetworkReporter{
+		isExporter:    true,
+	}
+
 	expectedAttrs := []attribute.KeyValue{
-		attribute.Int("stream_client_uncompressed_request_size", 1234567),
+		attribute.Int("stream_client_uncompressed_bytes_sent", 1234567),
 	}
 	expectedStatus := sdktrace.Status{
 		Code: otelcodes.Error,
@@ -155,7 +155,11 @@ func TestNetStatsSetSpanAttrs(t *testing.T) {
 	tp := sdktrace.NewTracerProvider()
 	ctx, sp := tp.Tracer("test/span").Start(context.Background(), "test-op")
 
-	enr.SetSpanAttributes(ctx, testErr, expectedAttrs...)
+	var sized SizesStruct
+	sized.Method = "test"
+	sized.Length = 1234567
+	enr.SetSpanSizeAttributes(ctx, sized)
+	enr.SetSpanError(ctx, testErr)
 
 	actualAttrs := sp.(sdktrace.ReadOnlySpan).Attributes()
 	actualStatus := sp.(sdktrace.ReadOnlySpan).Status()

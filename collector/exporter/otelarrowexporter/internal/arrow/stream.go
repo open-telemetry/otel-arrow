@@ -342,7 +342,11 @@ func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hp
 
 	var err error
 	defer func() {
-		s.netReporter.SetSpanAttributes(ctx, err, attribute.Int("stream_client_uncompressed_request_size", wri.uncompSize))
+		// Due to potential double compression the netstats code knows uncompressed bytes
+		// value can be unreliable. Add span attributes for uncompressed size and set
+		// span Status if an error is returned.
+		s.netReporter.SetSpanSizeAttributes(ctx, sized)
+		s.netReporter.SetSpanError(ctx, err)
 	}
 	// Get the global propagator, to inject context.  When there
 	// are no fields, it's a no-op propagator implementation and
@@ -396,8 +400,8 @@ func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hp
 	// unreliable for arrow transport, so we instrument it
 	// directly here.  Only the primary direction of transport
 	// is instrumented this way.
+	var sized netstats.SizesStruct
 	if wri.uncompSize != 0 {
-		var sized netstats.SizesStruct
 		sized.Method = s.method
 		sized.Length = int64(wri.uncompSize)
 		s.netReporter.CountSend(ctx, sized)

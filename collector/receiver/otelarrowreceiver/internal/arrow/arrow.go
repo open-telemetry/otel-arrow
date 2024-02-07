@@ -381,7 +381,14 @@ func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowCo
 
 	var err error
 	defer func() {
-		s.netReporter.SetSpanAttributes(ctx, err, attribute.Int("stream_client_uncompressed_request_size", int(bytesProcessed)))
+		// Due to potential double compression the netstats code knows uncompressed bytes
+		// value can be unreliable. Add span attributes for uncompressed size and set
+		// span Status if an error is returned.
+		var sized netstats.SizesStruct
+		sized.Method = method
+		sized.Length = bytesProcessed
+		s.netReporter.SetSpanSizeAttributes(ctx, sized)
+		s.netReporter.SetSpanError(ctx, err)
 	}
 
 	// Process records: an error in this code path does
