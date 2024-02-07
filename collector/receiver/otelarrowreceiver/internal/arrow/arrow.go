@@ -374,16 +374,22 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 
 func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, req *arrowpb.BatchArrowRecords, serverStream anyStreamServer, authErr error) error {
 	var err error
+	var bytesProcessed int64
 
 	ctx, span := r.tracer.Start(ctx, "otel_arrow_stream_recv")
 	defer span.End()
+
+	var err error
+	defer func() {
+		s.netReporter.SetSpanAttributes(ctx, err, attribute.Int("stream_client_uncompressed_request_size", int(bytesProcessed)))
+	}
 
 	// Process records: an error in this code path does
 	// not necessarily break the stream.
 	if authErr != nil {
 		err = authErr
 	} else {
-		err = r.processRecords(ctx, method, arrowConsumer, req)
+		bytesProcessed, err = r.processRecords(ctx, method, arrowConsumer, req)
 	}
 
 	// Note: Statuses can be batched, but we do not take
@@ -422,7 +428,7 @@ func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowCo
 func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, records *arrowpb.BatchArrowRecords) error {
 	payloads := records.GetArrowPayloads()
 	if len(payloads) == 0 {
-		return nil
+		return int64(0), nil
 	}
 	var uncompSize int64
 	if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
@@ -440,7 +446,7 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 	switch payloads[0].Type {
 	case arrowpb.ArrowPayloadType_UNIVARIATE_METRICS:
 		if r.Metrics() == nil {
-			return status.Error(codes.Unimplemented, "metrics service not available")
+			return int64(0), status.Error(codes.Unimplemented, "metrics service not available")
 		}
 		var sizer pmetric.ProtoMarshaler
 		var numPts int
@@ -462,11 +468,11 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			}
 		}
 		r.obsrecv.EndMetricsOp(ctx, streamFormat, numPts, err)
-		return err
+		return uncompSize, err
 
 	case arrowpb.ArrowPayloadType_LOGS:
 		if r.Logs() == nil {
-			return status.Error(codes.Unimplemented, "logs service not available")
+			return int64(0), status.Error(codes.Unimplemented, "logs service not available")
 		}
 		var sizer plog.ProtoMarshaler
 		var numLogs int
@@ -487,11 +493,11 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			}
 		}
 		r.obsrecv.EndLogsOp(ctx, streamFormat, numLogs, err)
-		return err
+		return uncompSize, err
 
 	case arrowpb.ArrowPayloadType_SPANS:
 		if r.Traces() == nil {
-			return status.Error(codes.Unimplemented, "traces service not available")
+			return int64(0), status.Error(codes.Unimplemented, "traces service not available")
 		}
 		var sizer ptrace.ProtoMarshaler
 		var numSpans int
@@ -512,9 +518,9 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			}
 		}
 		r.obsrecv.EndTracesOp(ctx, streamFormat, numSpans, err)
-		return err
+		return uncompSize, err
 
 	default:
-		return ErrUnrecognizedPayload
+		return int64(0), ErrUnrecognizedPayload
 	}
 }

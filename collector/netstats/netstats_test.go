@@ -5,13 +5,16 @@ package netstats
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"google.golang.org/grpc/stats"
 
 	"go.opentelemetry.io/collector/component"
@@ -132,6 +135,33 @@ func testNetStatsExporter(t *testing.T, level configtelemetry.Level, expect map[
 			require.Equal(t, expect, metricValues(t, rm, "Hello"))
 		})
 	}
+}
+
+func TestNetStatsSetSpanAttrs(t *testing.T) {
+	testErr := fmt.Errorf("test error")
+
+	enr, err := NewExporterNetworkReporter(exporter.CreateSettings{
+		ID: component.NewID("test"),
+	})
+	require.NoError(t, err)
+	expectedAttrs := []attribute.KeyValue{
+		attribute.Int("stream_client_uncompressed_request_size", 1234567),
+	}
+	expectedStatus := sdktrace.Status{
+		Code: otelcodes.Error,
+		Description: "test error",
+	}
+
+	tp := sdktrace.NewTracerProvider()
+	ctx, sp := tp.Tracer("test/span").Start(context.Background(), "test-op")
+
+	enr.SetSpanAttributes(ctx, testErr, expectedAttrs...)
+
+	actualAttrs := sp.(sdktrace.ReadOnlySpan).Attributes()
+	actualStatus := sp.(sdktrace.ReadOnlySpan).Status()
+
+	require.Equal(t, expectedAttrs, actualAttrs)
+	require.Equal(t, expectedStatus, actualStatus)
 }
 
 func TestNetStatsReceiverNone(t *testing.T) {

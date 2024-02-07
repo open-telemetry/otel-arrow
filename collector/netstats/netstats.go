@@ -7,7 +7,9 @@ import (
 	"context"
 
 	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	noopmetric "go.opentelemetry.io/otel/metric/noop"
 	"go.uber.org/multierr"
 
@@ -77,6 +79,10 @@ type Interface interface {
 
 	// CountSend reports inbound bytes.
 	CountReceive(ctx context.Context, ss SizesStruct)
+
+	// SetSpanAttributes takes a context and adds attributes to the associated span.
+	// If there is an non-nil error provided, it will set the span status explicitly as well.
+	SetSpanAttributes(ctx context.Context, err error, attrs... attribute.KeyValue)
 }
 
 // Noop is a no-op implementation of Interface.
@@ -86,6 +92,7 @@ var _ Interface = Noop{}
 
 func (Noop) CountSend(ctx context.Context, ss SizesStruct)    {}
 func (Noop) CountReceive(ctx context.Context, ss SizesStruct) {}
+func (Noop) SetSpanAttributes(ctx context.Context, err error, attrs... attribute.KeyValue) {}
 
 const (
 	bytesUnit           = "bytes"
@@ -234,5 +241,14 @@ func (rep *NetworkReporter) CountReceive(ctx context.Context, ss SizesStruct) {
 	}
 	if rep.recvWireBytes != nil && ss.WireLength > 0 {
 		rep.recvWireBytes.Add(ctx, ss.WireLength, attrs)
+	}
+}
+
+func (rep *NetworkReporter) SetSpanAttributes(ctx context.Context, err error, attrs... attribute.KeyValue) {
+	span := trace.SpanFromContext(ctx)
+	span.SetAttributes(attrs...)
+
+	if err != nil {
+		span.SetStatus(otelcodes.Error, err.Error())
 	}
 }

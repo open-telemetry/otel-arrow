@@ -340,6 +340,10 @@ func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hp
 	ctx, span := s.tracer.Start(wri.parent, "otel_arrow_stream_send")
 	defer span.End()
 
+	var err error
+	defer func() {
+		s.netReporter.SetSpanAttributes(ctx, err, attribute.Int("stream_client_uncompressed_request_size", wri.uncompSize))
+	}
 	// Get the global propagator, to inject context.  When there
 	// are no fields, it's a no-op propagator implementation and
 	// we can skip the allocations inside this block.
