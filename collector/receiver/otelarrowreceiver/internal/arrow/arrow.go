@@ -500,13 +500,10 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 				err = multierr.Append(err,
 					r.Metrics().ConsumeMetrics(ctx, metrics),
 				)
-
-				// Once ConsumeMetrics returns we can decrement
-				// the updown counters as this memory will no
-				// longer be held by the receiver.
-				r.recvInFlightBytes.Add(ctx, -sz)
-				r.recvInFlightItems.Add(ctx, -int64(items))
 			}
+			// entire request has been processed, decrement counter.
+			r.recvInFlightBytes.Add(ctx, -uncompSize)
+			r.recvInFlightItems.Add(ctx, int64(-numPts))
 		}
 		r.obsrecv.EndMetricsOp(ctx, streamFormat, numPts, err)
 		return err
@@ -536,13 +533,10 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 				err = multierr.Append(err,
 					r.Logs().ConsumeLogs(ctx, logs),
 				)
-
-				// Once ConsumeLogs returns we can decrement
-				// the updown counters as this memory will no
-				// longer be held by the receiver.
-				r.recvInFlightBytes.Add(ctx, -sz)
-				r.recvInFlightItems.Add(ctx, int64(-items))
 			}
+			// entire request has been processed, decrement counter.
+			r.recvInFlightBytes.Add(ctx, -uncompSize)
+			r.recvInFlightItems.Add(ctx, int64(-numLogs))
 		}
 		r.obsrecv.EndLogsOp(ctx, streamFormat, numLogs, err)
 		return err
@@ -573,13 +567,11 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 				err = multierr.Append(err,
 					r.Traces().ConsumeTraces(ctx, traces),
 				)
-
-				// Once ConsumeTraces returns we can decrement
-				// the updown counters as this memory will no
-				// longer be held by the receiver.
-				r.recvInFlightBytes.Add(ctx, -sz)
-				r.recvInFlightItems.Add(ctx, int64(-items))
 			}
+
+			// entire request has been processed, decrement counter.
+			r.recvInFlightBytes.Add(ctx, -uncompSize)
+			r.recvInFlightItems.Add(ctx, int64(-numSpans))
 		}
 		r.obsrecv.EndTracesOp(ctx, streamFormat, numSpans, err)
 		return err
