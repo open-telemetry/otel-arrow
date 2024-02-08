@@ -467,7 +467,9 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			// is instrumented this way.
 			var sized netstats.SizesStruct
 			sized.Method = method
-			sized.Length = uncompSize
+			if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
+				sized.Length = uncompSize
+			}
 			r.netReporter.CountReceive(ctx, sized)
 			r.netReporter.SetSpanSizeAttributes(ctx, sized)
 		}()
@@ -494,9 +496,7 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 				r.recvInFlightItems.Add(ctx, int64(items))
 
 				numPts += items
-				if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
-					uncompSize += sz
-				}
+				uncompSize += sz
 				err = multierr.Append(err,
 					r.Metrics().ConsumeMetrics(ctx, metrics),
 				)
@@ -527,9 +527,7 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 				r.recvInFlightBytes.Add(ctx, sz)
 				r.recvInFlightItems.Add(ctx, int64(items))
 				numLogs += items
-				if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
-					uncompSize += sz
-				}
+				uncompSize += sz
 				err = multierr.Append(err,
 					r.Logs().ConsumeLogs(ctx, logs),
 				)
@@ -561,9 +559,7 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 				r.recvInFlightItems.Add(ctx, int64(items))
 
 				numSpans += items
-				if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
-					uncompSize += sz
-				}
+				uncompSize += sz
 				err = multierr.Append(err,
 					r.Traces().ConsumeTraces(ctx, traces),
 				)
