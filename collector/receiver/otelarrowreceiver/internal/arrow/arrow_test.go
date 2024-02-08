@@ -336,7 +336,7 @@ func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opt
 	})
 	require.NoError(ctc.T, err)
 
-	rcvr := New(
+	rcvr, err := New(
 		ctc.consumers,
 		rc,
 		obsrecv,
@@ -345,6 +345,7 @@ func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opt
 		newConsumer,
 		netstats.Noop{},
 	)
+	require.NoError(ctc.T, err)
 	go func() {
 		ctc.streamErr <- rcvr.ArrowTraces(ctc.stream)
 	}()
