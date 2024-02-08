@@ -31,6 +31,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/otel"
+	otelcodes "go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -336,10 +337,17 @@ func (s *Stream) write(ctx context.Context) error {
 	}
 }
 
-func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hpack.Encoder) error {
+func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hpack.Encoder) (retErr error) {
 	ctx, span := s.tracer.Start(wri.parent, "otel_arrow_stream_send")
 	defer span.End()
 
+	defer func() {
+		// Set span status if an error is returned.
+		if retErr != nil {
+			span := trace.SpanFromContext(ctx)
+			span.SetStatus(otelcodes.Error, retErr.Error())
+		}
+	}()
 	// Get the global propagator, to inject context.  When there
 	// are no fields, it's a no-op propagator implementation and
 	// we can skip the allocations inside this block.
@@ -397,6 +405,7 @@ func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hp
 		sized.Method = s.method
 		sized.Length = int64(wri.uncompSize)
 		s.netReporter.CountSend(ctx, sized)
+		s.netReporter.SetSpanSizeAttributes(ctx, sized)
 	}
 
 	if err := s.client.Send(batch); err != nil {

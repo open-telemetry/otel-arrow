@@ -35,6 +35,7 @@ import (
 	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/receiverhelper"
 	"go.opentelemetry.io/otel"
+	otelcodes "go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -372,11 +373,19 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	}
 }
 
-func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, req *arrowpb.BatchArrowRecords, serverStream anyStreamServer, authErr error) error {
+func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, req *arrowpb.BatchArrowRecords, serverStream anyStreamServer, authErr error) (retErr error) {
 	var err error
 
 	ctx, span := r.tracer.Start(ctx, "otel_arrow_stream_recv")
 	defer span.End()
+
+	defer func() {
+		// Set span status if an error is returned.
+		if retErr != nil {
+			span := trace.SpanFromContext(ctx)
+			span.SetStatus(otelcodes.Error, retErr.Error())
+		}
+	}()
 
 	// Process records: an error in this code path does
 	// not necessarily break the stream.
@@ -435,6 +444,7 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			sized.Method = method
 			sized.Length = uncompSize
 			r.netReporter.CountReceive(ctx, sized)
+			r.netReporter.SetSpanSizeAttributes(ctx, sized)
 		}()
 	}
 	switch payloads[0].Type {
