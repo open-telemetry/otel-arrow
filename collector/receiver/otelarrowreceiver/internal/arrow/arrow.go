@@ -76,6 +76,7 @@ type Receiver struct {
 	netReporter netstats.Interface
 	recvInFlightBytes metric.Int64UpDownCounter
 	recvInFlightItems metric.Int64UpDownCounter
+	recvInFlightRequests metric.Int64UpDownCounter
 }
 
 // New creates a new Receiver reference.
@@ -103,15 +104,21 @@ func New(
 
 	meter := recv.telemetry.MeterProvider.Meter(scopeName)
 	recv.recvInFlightBytes, err = meter.Int64UpDownCounter(
-		"otelarrow_receiver_in_flight_bytes",
+		"otel_arrow_receiver_in_flight_bytes",
 		metric.WithDescription("Number of bytes in flight"),
 		metric.WithUnit("By"),
 	)
 	errors = multierr.Append(errors, err)
 
 	recv.recvInFlightItems, err = meter.Int64UpDownCounter(
-		"otelarrow_receiver_in_flight_items",
+		"otel_arrow_receiver_in_flight_items",
 		metric.WithDescription("Number of items in flight"),
+	)
+	errors = multierr.Append(errors, err)
+
+	recv.recvInFlightRequests, err = meter.Int64UpDownCounter(
+		"otel_arrow_receiver_in_flight_requests",
+		metric.WithDescription("Number of requests in flight"),
 	)
 	errors = multierr.Append(errors, err)
 
@@ -392,9 +399,11 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 			}
 		}
 
+		r.recvInFlightRequests.Add(thisCtx, 1)
 		if err := r.processAndConsume(thisCtx, method, ac, req, serverStream, authErr); err != nil {
 			return err
 		}
+		r.recvInFlightRequests.Add(thisCtx, -1)
 	}
 }
 
@@ -474,6 +483,8 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			r.netReporter.SetSpanSizeAttributes(ctx, sized)
 		}()
 	}
+
+
 	switch payloads[0].Type {
 	case arrowpb.ArrowPayloadType_UNIVARIATE_METRICS:
 		if r.Metrics() == nil {
