@@ -31,6 +31,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/otel"
+	otelcodes "go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -342,12 +343,12 @@ func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hp
 
 	var err error
 	defer func() {
-		// Due to potential double compression the netstats code knows uncompressed bytes
-		// value can be unreliable. Add span attributes for uncompressed size and set
-		// span Status if an error is returned.
-		s.netReporter.SetSpanSizeAttributes(ctx, sized)
-		s.netReporter.SetSpanError(ctx, err)
-	}
+		// Set span status if an error is returned.
+		if err != nil {
+			span := trace.SpanFromContext(ctx)
+			span.SetStatus(otelcodes.Error, err.Error())
+		}
+	}()
 	// Get the global propagator, to inject context.  When there
 	// are no fields, it's a no-op propagator implementation and
 	// we can skip the allocations inside this block.
@@ -400,11 +401,12 @@ func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hp
 	// unreliable for arrow transport, so we instrument it
 	// directly here.  Only the primary direction of transport
 	// is instrumented this way.
-	var sized netstats.SizesStruct
 	if wri.uncompSize != 0 {
+		var sized netstats.SizesStruct
 		sized.Method = s.method
 		sized.Length = int64(wri.uncompSize)
 		s.netReporter.CountSend(ctx, sized)
+		s.netReporter.SetSpanSizeAttributes(ctx, sized)
 	}
 
 	if err := s.client.Send(batch); err != nil {

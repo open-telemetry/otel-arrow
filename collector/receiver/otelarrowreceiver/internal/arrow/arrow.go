@@ -35,6 +35,7 @@ import (
 	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/receiverhelper"
 	"go.opentelemetry.io/otel"
+	otelcodes "go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -374,29 +375,24 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 
 func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, req *arrowpb.BatchArrowRecords, serverStream anyStreamServer, authErr error) error {
 	var err error
-	var bytesProcessed int64
 
 	ctx, span := r.tracer.Start(ctx, "otel_arrow_stream_recv")
 	defer span.End()
 
-	var err error
 	defer func() {
-		// Due to potential double compression the netstats code knows uncompressed bytes
-		// value can be unreliable. Add span attributes for uncompressed size and set
-		// span Status if an error is returned.
-		var sized netstats.SizesStruct
-		sized.Method = method
-		sized.Length = bytesProcessed
-		s.netReporter.SetSpanSizeAttributes(ctx, sized)
-		s.netReporter.SetSpanError(ctx, err)
-	}
+		// Set span status if an error is returned.
+		if err != nil {
+			span := trace.SpanFromContext(ctx)
+			span.SetStatus(otelcodes.Error, err.Error())
+		}
+	}()
 
 	// Process records: an error in this code path does
 	// not necessarily break the stream.
 	if authErr != nil {
 		err = authErr
 	} else {
-		bytesProcessed, err = r.processRecords(ctx, method, arrowConsumer, req)
+		err = r.processRecords(ctx, method, arrowConsumer, req)
 	}
 
 	// Note: Statuses can be batched, but we do not take
@@ -435,7 +431,7 @@ func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowCo
 func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, records *arrowpb.BatchArrowRecords) error {
 	payloads := records.GetArrowPayloads()
 	if len(payloads) == 0 {
-		return int64(0), nil
+		return nil
 	}
 	var uncompSize int64
 	if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
@@ -448,12 +444,13 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			sized.Method = method
 			sized.Length = uncompSize
 			r.netReporter.CountReceive(ctx, sized)
+			r.netReporter.SetSpanSizeAttributes(ctx, sized)
 		}()
 	}
 	switch payloads[0].Type {
 	case arrowpb.ArrowPayloadType_UNIVARIATE_METRICS:
 		if r.Metrics() == nil {
-			return int64(0), status.Error(codes.Unimplemented, "metrics service not available")
+			return status.Error(codes.Unimplemented, "metrics service not available")
 		}
 		var sizer pmetric.ProtoMarshaler
 		var numPts int
@@ -475,11 +472,11 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			}
 		}
 		r.obsrecv.EndMetricsOp(ctx, streamFormat, numPts, err)
-		return uncompSize, err
+		return err
 
 	case arrowpb.ArrowPayloadType_LOGS:
 		if r.Logs() == nil {
-			return int64(0), status.Error(codes.Unimplemented, "logs service not available")
+			return status.Error(codes.Unimplemented, "logs service not available")
 		}
 		var sizer plog.ProtoMarshaler
 		var numLogs int
@@ -500,11 +497,11 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			}
 		}
 		r.obsrecv.EndLogsOp(ctx, streamFormat, numLogs, err)
-		return uncompSize, err
+		return err
 
 	case arrowpb.ArrowPayloadType_SPANS:
 		if r.Traces() == nil {
-			return int64(0), status.Error(codes.Unimplemented, "traces service not available")
+			return status.Error(codes.Unimplemented, "traces service not available")
 		}
 		var sizer ptrace.ProtoMarshaler
 		var numSpans int
@@ -525,9 +522,9 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			}
 		}
 		r.obsrecv.EndTracesOp(ctx, streamFormat, numSpans, err)
-		return uncompSize, err
+		return err
 
 	default:
-		return int64(0), ErrUnrecognizedPayload
+		return ErrUnrecognizedPayload
 	}
 }
