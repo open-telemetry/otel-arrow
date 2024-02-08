@@ -373,7 +373,7 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	}
 }
 
-func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, req *arrowpb.BatchArrowRecords, serverStream anyStreamServer, authErr error) error {
+func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, req *arrowpb.BatchArrowRecords, serverStream anyStreamServer, authErr error) (retErr error) {
 	var err error
 
 	ctx, span := r.tracer.Start(ctx, "otel_arrow_stream_recv")
@@ -381,9 +381,9 @@ func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowCo
 
 	defer func() {
 		// Set span status if an error is returned.
-		if err != nil {
+		if retErr != nil {
 			span := trace.SpanFromContext(ctx)
-			span.SetStatus(otelcodes.Error, err.Error())
+			span.SetStatus(otelcodes.Error, retErr.Error())
 		}
 	}()
 

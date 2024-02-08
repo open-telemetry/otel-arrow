@@ -337,16 +337,15 @@ func (s *Stream) write(ctx context.Context) error {
 	}
 }
 
-func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hpack.Encoder) error {
+func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hpack.Encoder) (retErr error) {
 	ctx, span := s.tracer.Start(wri.parent, "otel_arrow_stream_send")
 	defer span.End()
 
-	var err error
 	defer func() {
 		// Set span status if an error is returned.
-		if err != nil {
+		if retErr != nil {
 			span := trace.SpanFromContext(ctx)
-			span.SetStatus(otelcodes.Error, err.Error())
+			span.SetStatus(otelcodes.Error, retErr.Error())
 		}
 	}()
 	// Get the global propagator, to inject context.  When there
