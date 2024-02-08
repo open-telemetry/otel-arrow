@@ -137,16 +137,16 @@ func testNetStatsExporter(t *testing.T, level configtelemetry.Level, expect map[
 
 func TestNetStatsSetSpanAttrs(t *testing.T) {
 	tests := []struct {
-		name          string
-		attrs []attribute.KeyValue
-		isExporter    bool
-		length int
+		name       string
+		attrs      []attribute.KeyValue
+		isExporter bool
+		length     int
 		wireLength int
 	}{
 		{
-			name: "set exporter attributes",
+			name:       "set exporter attributes",
 			isExporter: true,
-			length: 1234567,
+			length:     1234567,
 			wireLength: 123,
 			attrs: []attribute.KeyValue{
 				attribute.Int("stream_client_uncompressed_bytes_sent", 1234567),
@@ -154,9 +154,9 @@ func TestNetStatsSetSpanAttrs(t *testing.T) {
 			},
 		},
 		{
-			name: "set receiver attributes",
+			name:       "set receiver attributes",
 			isExporter: false,
-			length: 8901234,
+			length:     8901234,
 			wireLength: 890,
 			attrs: []attribute.KeyValue{
 				attribute.Int("stream_server_uncompressed_bytes_recv", 8901234),
@@ -167,7 +167,7 @@ func TestNetStatsSetSpanAttrs(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			enr := &NetworkReporter{
-				isExporter:    tc.isExporter,
+				isExporter: tc.isExporter,
 			}
 
 			tp := sdktrace.NewTracerProvider()

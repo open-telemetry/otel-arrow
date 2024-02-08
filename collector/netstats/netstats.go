@@ -8,8 +8,8 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/trace"
 	noopmetric "go.opentelemetry.io/otel/metric/noop"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/multierr"
 
 	"go.opentelemetry.io/collector/config/configtelemetry"
@@ -88,8 +88,8 @@ type Noop struct{}
 
 var _ Interface = Noop{}
 
-func (Noop) CountSend(ctx context.Context, ss SizesStruct)    {}
-func (Noop) CountReceive(ctx context.Context, ss SizesStruct) {}
+func (Noop) CountSend(ctx context.Context, ss SizesStruct)             {}
+func (Noop) CountReceive(ctx context.Context, ss SizesStruct)          {}
 func (Noop) SetSpanSizeAttributes(ctx context.Context, ss SizesStruct) {}
 
 const (
