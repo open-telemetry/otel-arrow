@@ -36,6 +36,7 @@ import (
 	"go.opentelemetry.io/collector/receiver/receiverhelper"
 	"go.opentelemetry.io/otel"
 	otelcodes "go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -43,6 +44,7 @@ import (
 const (
 	streamFormat        = "arrow"
 	hpackMaxDynamicSize = 4096
+	scopeName           = "github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver"
 )
 
 var (
@@ -72,6 +74,9 @@ type Receiver struct {
 	authServer  auth.Server
 	newConsumer func() arrowRecord.ConsumerAPI
 	netReporter netstats.Interface
+	recvInFlightBytes metric.Int64UpDownCounter
+	recvInFlightItems metric.Int64UpDownCounter
+	recvInFlightRequests metric.Int64UpDownCounter
 }
 
 // New creates a new Receiver reference.
@@ -83,9 +88,10 @@ func New(
 	authServer auth.Server,
 	newConsumer func() arrowRecord.ConsumerAPI,
 	netReporter netstats.Interface,
-) *Receiver {
+) (*Receiver, error) {
 	tracer := set.TelemetrySettings.TracerProvider.Tracer("otel-arrow-receiver")
-	return &Receiver{
+	var errors, err error
+	recv := &Receiver{
 		Consumers:   cs,
 		obsrecv:     obsrecv,
 		telemetry:   set.TelemetrySettings,
@@ -95,6 +101,32 @@ func New(
 		gsettings:   gsettings,
 		netReporter: netReporter,
 	}
+
+	meter := recv.telemetry.MeterProvider.Meter(scopeName)
+	recv.recvInFlightBytes, err = meter.Int64UpDownCounter(
+		"otel_arrow_receiver_in_flight_bytes",
+		metric.WithDescription("Number of bytes in flight"),
+		metric.WithUnit("By"),
+	)
+	errors = multierr.Append(errors, err)
+
+	recv.recvInFlightItems, err = meter.Int64UpDownCounter(
+		"otel_arrow_receiver_in_flight_items",
+		metric.WithDescription("Number of items in flight"),
+	)
+	errors = multierr.Append(errors, err)
+
+	recv.recvInFlightRequests, err = meter.Int64UpDownCounter(
+		"otel_arrow_receiver_in_flight_requests",
+		metric.WithDescription("Number of requests in flight"),
+	)
+	errors = multierr.Append(errors, err)
+
+	if errors != nil {
+		return nil, errors
+	}
+
+	return recv, nil
 }
 
 // headerReceiver contains the state necessary to decode per-request metadata
@@ -379,7 +411,9 @@ func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowCo
 	ctx, span := r.tracer.Start(ctx, "otel_arrow_stream_recv")
 	defer span.End()
 
+	r.recvInFlightRequests.Add(ctx, 1)
 	defer func() {
+		r.recvInFlightRequests.Add(ctx, -1)
 		// Set span status if an error is returned.
 		if retErr != nil {
 			span := trace.SpanFromContext(ctx)
@@ -442,11 +476,15 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			// is instrumented this way.
 			var sized netstats.SizesStruct
 			sized.Method = method
-			sized.Length = uncompSize
+			if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
+				sized.Length = uncompSize
+			}
 			r.netReporter.CountReceive(ctx, sized)
 			r.netReporter.SetSpanSizeAttributes(ctx, sized)
 		}()
 	}
+
+
 	switch payloads[0].Type {
 	case arrowpb.ArrowPayloadType_UNIVARIATE_METRICS:
 		if r.Metrics() == nil {
@@ -462,14 +500,21 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			err = consumererror.NewPermanent(err)
 		} else {
 			for _, metrics := range data {
-				numPts += metrics.DataPointCount()
-				if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
-					uncompSize += int64(sizer.MetricsSize(metrics))
-				}
+				items := metrics.DataPointCount()
+				sz := int64(sizer.MetricsSize(metrics))
+
+				r.recvInFlightBytes.Add(ctx, sz)
+				r.recvInFlightItems.Add(ctx, int64(items))
+
+				numPts += items
+				uncompSize += sz
 				err = multierr.Append(err,
 					r.Metrics().ConsumeMetrics(ctx, metrics),
 				)
 			}
+			// entire request has been processed, decrement counter.
+			r.recvInFlightBytes.Add(ctx, -uncompSize)
+			r.recvInFlightItems.Add(ctx, int64(-numPts))
 		}
 		r.obsrecv.EndMetricsOp(ctx, streamFormat, numPts, err)
 		return err
@@ -487,14 +532,20 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			err = consumererror.NewPermanent(err)
 		} else {
 			for _, logs := range data {
-				numLogs += logs.LogRecordCount()
-				if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
-					uncompSize += int64(sizer.LogsSize(logs))
-				}
+				items := logs.LogRecordCount()
+				sz := int64(sizer.LogsSize(logs))
+
+				r.recvInFlightBytes.Add(ctx, sz)
+				r.recvInFlightItems.Add(ctx, int64(items))
+				numLogs += items
+				uncompSize += sz
 				err = multierr.Append(err,
 					r.Logs().ConsumeLogs(ctx, logs),
 				)
 			}
+			// entire request has been processed, decrement counter.
+			r.recvInFlightBytes.Add(ctx, -uncompSize)
+			r.recvInFlightItems.Add(ctx, int64(-numLogs))
 		}
 		r.obsrecv.EndLogsOp(ctx, streamFormat, numLogs, err)
 		return err
@@ -512,14 +563,22 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			err = consumererror.NewPermanent(err)
 		} else {
 			for _, traces := range data {
-				numSpans += traces.SpanCount()
-				if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
-					uncompSize += int64(sizer.TracesSize(traces))
-				}
+				items := traces.SpanCount()
+				sz := int64(sizer.TracesSize(traces))
+
+				r.recvInFlightBytes.Add(ctx, sz)
+				r.recvInFlightItems.Add(ctx, int64(items))
+
+				numSpans += items
+				uncompSize += sz
 				err = multierr.Append(err,
 					r.Traces().ConsumeTraces(ctx, traces),
 				)
 			}
+
+			// entire request has been processed, decrement counter.
+			r.recvInFlightBytes.Add(ctx, -uncompSize)
+			r.recvInFlightItems.Add(ctx, int64(-numSpans))
 		}
 		r.obsrecv.EndTracesOp(ctx, streamFormat, numSpans, err)
 		return err
