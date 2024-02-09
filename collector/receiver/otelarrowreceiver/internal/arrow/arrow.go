@@ -399,11 +399,9 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 			}
 		}
 
-		r.recvInFlightRequests.Add(thisCtx, 1)
 		if err := r.processAndConsume(thisCtx, method, ac, req, serverStream, authErr); err != nil {
 			return err
 		}
-		r.recvInFlightRequests.Add(thisCtx, -1)
 	}
 }
 
@@ -413,7 +411,9 @@ func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowCo
 	ctx, span := r.tracer.Start(ctx, "otel_arrow_stream_recv")
 	defer span.End()
 
+	r.recvInFlightRequests.Add(ctx, 1)
 	defer func() {
+		r.recvInFlightRequests.Add(ctx, -1)
 		// Set span status if an error is returned.
 		if retErr != nil {
 			span := trace.SpanFromContext(ctx)
