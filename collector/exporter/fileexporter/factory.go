@@ -11,6 +11,7 @@ import (
 	"github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter/internal/metadata"
 	"github.com/open-telemetry/otel-arrow/collector/sharedcomponent"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
@@ -72,7 +73,7 @@ func createTracesExporter(
 		exporterhelper.WithStart(fe.Start),
 		exporterhelper.WithShutdown(fe.Shutdown),
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
-		exporterhelper.WithRetry(exporterhelper.RetrySettings{
+		exporterhelper.WithRetry(configretry.BackOffConfig{
 			Enabled: false,
 		}),
 		exporterhelper.WithQueue(exporterhelper.QueueSettings{
@@ -105,7 +106,7 @@ func createMetricsExporter(
 		exporterhelper.WithStart(fe.Start),
 		exporterhelper.WithShutdown(fe.Shutdown),
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
-		exporterhelper.WithRetry(exporterhelper.RetrySettings{
+		exporterhelper.WithRetry(configretry.BackOffConfig{
 			Enabled: false,
 		}),
 		exporterhelper.WithQueue(exporterhelper.QueueSettings{
@@ -138,7 +139,7 @@ func createLogsExporter(
 		exporterhelper.WithStart(fe.Start),
 		exporterhelper.WithShutdown(fe.Shutdown),
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
-		exporterhelper.WithRetry(exporterhelper.RetrySettings{
+		exporterhelper.WithRetry(configretry.BackOffConfig{
 			Enabled: false,
 		}),
 		exporterhelper.WithQueue(exporterhelper.QueueSettings{

@@ -719,7 +719,7 @@ func TestSendTracesOnResourceExhaustion(t *testing.T) {
 
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
-	cfg.RetrySettings.InitialInterval = 0
+	cfg.RetryConfig.InitialInterval = 0
 	cfg.GRPCClientSettings = configgrpc.GRPCClientSettings{
 		Endpoint: ln.Addr().String(),
 		TLSSetting: configtls.TLSClientSetting{
