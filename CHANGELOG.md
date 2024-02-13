@@ -8,7 +8,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
-## [0.16.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.15.0) - 2024-01-19
+## [0.17.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.17.0) - 2024-02-13
+
+- Otel-Arrow receiver cleanups to help migrate component to `opentelemetry-collector-contrib` repo. [#146](https://github.com/open-telemetry/otel-arrow/pull/146)
+
+- Add span attributes for uncompressed request size as part of netstats package. [#149](https://github.com/open-telemetry/otel-arrow/pull/149)
+
+- Add metrics to record Otel-Arrow receiver in-flight bytes and items [#150](https://github.com/open-telemetry/otel-arrow/pull/150)
+
+## [0.16.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.16.0) - 2024-01-19
 
 - Use go-1.20 in CI/CD and go.mods. [#144](https://github.com/open-telemetry/otel-arrow/pull/144)
 
