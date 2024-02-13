@@ -182,7 +182,7 @@ func TestOTLPReceiverGRPCTracesIngestTest(t *testing.T) {
 
 	sink := &errOrSinkConsumer{TracesSink: new(consumertest.TracesSink)}
 
-	ocr := newGRPCReceiver(t, addr, tt.TelemetrySettings, sink, nil)
+	ocr := newGRPCReceiver(t, addr, tt.TelemetrySettings(), sink, nil)
 	require.NotNil(t, ocr)
 	require.NoError(t, ocr.Start(context.Background(), componenttest.NewNopHost()))
 	t.Cleanup(func() { require.NoError(t, ocr.Shutdown(context.Background())) })
