@@ -14,7 +14,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - Add span attributes for uncompressed request size as part of netstats package. [#149](https://github.com/open-telemetry/otel-arrow/pull/149)
 
-- Add metrics to record Otel-Arrow receiver in-flight bytes and items [#150](https://github.com/open-telemetry/otel-arrow/pull/150)
+- Add metrics to record Otel-Arrow receiver in-flight bytes and items. [#150](https://github.com/open-telemetry/otel-arrow/pull/150)
+
+- Cleanup deprecated telemetry object. [#151](https://github.com/open-telemetry/otel-arrow/pull/151)
+
+- Update Otel Collector core dependency from `v0.92.0` to `v0.94.1`. [#153](https://github.com/open-telemetry/otel-arrow/pull/153)
 
 ## [0.16.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.16.0) - 2024-01-19
 
