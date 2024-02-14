@@ -4,7 +4,7 @@ go 1.20
 
 require (
 	github.com/klauspost/compress v1.17.5
-	github.com/open-telemetry/otel-arrow/collector v0.16.0
+	github.com/open-telemetry/otel-arrow/collector v0.17.0
 	github.com/stretchr/testify v1.8.4
 	go.opentelemetry.io/collector/component v0.94.1
 	go.opentelemetry.io/collector/config/configretry v0.94.1
