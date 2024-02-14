@@ -56,3 +56,14 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240102182953-50ed04b92917 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+replace github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol => ./collector/cmd/otelarrowcol
+replace github.com/open-telemetry/otel-arrow/collector/connector/validationconnector => ./collector/connector/validationconnector
+replace github.com/open-telemetry/otel-arrow/collector/examples/printer => ./collector/examples/printer
+replace github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter => ./collector/exporter/fileexporter
+replace github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter => ./collector/exporter/otelarrowexporter
+replace github.com/open-telemetry/otel-arrow/collector => ./collector
+replace github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor => ./collector/processor/concurrentbatchprocessor
+replace github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor => ./collector/processor/experimentprocessor
+replace github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor => ./collector/processor/obfuscationprocessor
+replace github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver => ./collector/receiver/filereceiver
+replace github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver => ./collector/receiver/otelarrowreceiver
