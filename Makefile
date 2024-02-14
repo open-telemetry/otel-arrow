@@ -51,6 +51,9 @@ MODSET?=beta
 .PHONY: multimod-prerelease
 multimod-prerelease: $(MULTIMOD)
 	$(MULTIMOD) prerelease -s=true -b=false -v ./versions.yaml -m ${MODSET}
+# this is a hack to sync the otelarrowreceiver during this process
+# to avoid gomod ambigious imports.
+	(cd collector/receiver/otelarrowreceiver/ && $(GOCMD) work sync)
 	$(MAKE) gotidy
 
 COMMIT?=HEAD
