@@ -49,6 +49,8 @@ git pull upstream main
 make push-release
 ```
 
+7. The tag has now been published, but need to manually create the release in the Github UI. Go to https://github.com/open-telemetry/otel-arrow/releases and click `Draft a new release`. Select the tag you pushed in step 6 and link the Changelog in the description, following the convention of previous releases. TODO: automate this step to trigger whenever a new release tag is pushed.
+
 The release has been published.  Note that these instructions do not
 cover the use of multiple module sets, since this repository uses a
 single module set named "beta" at this time.
