@@ -32,7 +32,7 @@ func TestUnmarshalDefaultConfig(t *testing.T) {
 	cfg := factory.CreateDefaultConfig()
 	assert.NoError(t, component.UnmarshalConfig(cm, cfg))
 	assert.Equal(t, factory.CreateDefaultConfig(), cfg)
-	assert.Equal(t, "round_robin", cfg.(*Config).GRPCClientSettings.BalancerName)
+	assert.Equal(t, "round_robin", cfg.(*Config).ClientConfig.BalancerName)
 }
 
 func TestUnmarshalConfig(t *testing.T) {
@@ -59,7 +59,7 @@ func TestUnmarshalConfig(t *testing.T) {
 				NumConsumers: 2,
 				QueueSize:    10,
 			},
-			GRPCClientSettings: configgrpc.GRPCClientSettings{
+			ClientConfig: configgrpc.ClientConfig{
 				Headers: map[string]configopaque.String{
 					"can you have a . here?": "F0000000-0000-0000-0000-000000000000",
 					"header1":                "234",
@@ -85,7 +85,7 @@ func TestUnmarshalConfig(t *testing.T) {
 			Arrow: ArrowSettings{
 				NumStreams:         2,
 				MaxStreamLifetime:  2 * time.Hour,
-				PayloadCompression: configcompression.Zstd,
+				PayloadCompression: configcompression.TypeZstd,
 				Zstd:               zstd.DefaultEncoderConfig(),
 			},
 		}, cfg)
@@ -129,7 +129,7 @@ func TestDefaultSettingsValid(t *testing.T) {
 
 func TestArrowSettingsPayloadCompressionZstd(t *testing.T) {
 	settings := ArrowSettings{
-		PayloadCompression: configcompression.Zstd,
+		PayloadCompression: configcompression.TypeZstd,
 	}
 	var config config.Config
 	for _, opt := range settings.ToArrowProducerOptions() {
@@ -141,7 +141,7 @@ func TestArrowSettingsPayloadCompressionZstd(t *testing.T) {
 func TestArrowSettingsPayloadCompressionNone(t *testing.T) {
 	for _, value := range []string{"", "none"} {
 		settings := ArrowSettings{
-			PayloadCompression: configcompression.CompressionType(value),
+			PayloadCompression: configcompression.Type(value),
 		}
 		var config config.Config
 		for _, opt := range settings.ToArrowProducerOptions() {
