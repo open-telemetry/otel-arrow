@@ -6,8 +6,8 @@ toolchain go1.21.4
 
 require (
 	github.com/apache/arrow/go/v14 v14.0.2
-	github.com/open-telemetry/otel-arrow v0.17.0
-	github.com/open-telemetry/otel-arrow/collector v0.17.0
+	github.com/open-telemetry/otel-arrow v0.18.0
+	github.com/open-telemetry/otel-arrow/collector v0.18.0
 	github.com/stretchr/testify v1.8.4
 	go.opentelemetry.io/collector v0.96.0
 	go.opentelemetry.io/collector/component v0.96.0
