@@ -20,7 +20,7 @@ const (
 
 // Protocols is the configuration for the supported protocols.
 type Protocols struct {
-	GRPC  configgrpc.GRPCServerSettings `mapstructure:"grpc"`
+	GRPC  configgrpc.ServerConfig `mapstructure:"grpc"`
 	Arrow ArrowSettings                 `mapstructure:"arrow"`
 }
 
@@ -62,7 +62,7 @@ func (cfg *ArrowSettings) Validate() error {
 // Unmarshal a confmap.Conf into the config struct.
 func (cfg *Config) Unmarshal(conf *confmap.Conf) error {
 	// first load the config normally
-	err := conf.Unmarshal(cfg, confmap.WithErrorUnused())
+	err := conf.Unmarshal(cfg)
 	if err != nil {
 		return err
 	}

@@ -45,10 +45,10 @@ func createDefaultConfig() component.Config {
 		TimeoutSettings: exporterhelper.NewDefaultTimeoutSettings(),
 		RetryConfig:     configretry.NewDefaultBackOffConfig(),
 		QueueSettings:   exporterhelper.NewDefaultQueueSettings(),
-		GRPCClientSettings: configgrpc.GRPCClientSettings{
+		ClientConfig: configgrpc.ClientConfig{
 			Headers: map[string]configopaque.String{},
 			// Default to zstd compression
-			Compression: configcompression.Zstd,
+			Compression: configcompression.TypeZstd,
 			// We almost read 0 bytes, so no need to tune ReadBufferSize.
 			WriteBufferSize: 512 * 1024,
 			// The `configgrpc` default is pick_first,

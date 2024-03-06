@@ -319,9 +319,9 @@ func (ctc *commonTestCase) newOOMConsumer() arrowRecord.ConsumerAPI {
 	return mock
 }
 
-func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opts ...func(*configgrpc.GRPCServerSettings, *auth.Server)) {
+func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opts ...func(*configgrpc.ServerConfig, *auth.Server)) {
 	var authServer auth.Server
-	var gsettings configgrpc.GRPCServerSettings
+	var gsettings configgrpc.ServerConfig
 	for _, gf := range opts {
 		gf(&gsettings, &authServer)
 	}
@@ -683,7 +683,7 @@ func testReceiverHeaders(t *testing.T, includeMeta bool) {
 
 	ctc.stream.EXPECT().Send(gomock.Any()).Times(len(expectData) + 1).Return(nil)
 
-	ctc.start(ctc.newRealConsumer, func(gsettings *configgrpc.GRPCServerSettings, _ *auth.Server) {
+	ctc.start(ctc.newRealConsumer, func(gsettings *configgrpc.ServerConfig, _ *auth.Server) {
 		gsettings.IncludeMetadata = includeMeta
 	})
 
@@ -1045,7 +1045,7 @@ func testReceiverAuthHeaders(t *testing.T, includeMeta bool, dataAuth bool) {
 	})
 
 	var authCall *gomock.Call
-	ctc.start(ctc.newRealConsumer, func(gsettings *configgrpc.GRPCServerSettings, authPtr *auth.Server) {
+	ctc.start(ctc.newRealConsumer, func(gsettings *configgrpc.ServerConfig, authPtr *auth.Server) {
 		gsettings.IncludeMetadata = includeMeta
 
 		as := mock.NewMockServer(ctc.ctrl)

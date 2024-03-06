@@ -104,19 +104,19 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) (err erro
 		dialOpts = append(dialOpts, grpc.WithStatsHandler(e.netReporter.Handler()))
 	}
 	dialOpts = append(dialOpts, e.config.UserDialOptions...)
-	if e.clientConn, err = e.config.GRPCClientSettings.ToClientConn(ctx, host, e.settings.TelemetrySettings, dialOpts...); err != nil {
+	if e.clientConn, err = e.config.ClientConfig.ToClientConn(ctx, host, e.settings.TelemetrySettings, dialOpts...); err != nil {
 		return err
 	}
 	e.traceExporter = ptraceotlp.NewGRPCClient(e.clientConn)
 	e.metricExporter = pmetricotlp.NewGRPCClient(e.clientConn)
 	e.logExporter = plogotlp.NewGRPCClient(e.clientConn)
 	headers := map[string]string{}
-	for k, v := range e.config.GRPCClientSettings.Headers {
+	for k, v := range e.config.ClientConfig.Headers {
 		headers[k] = string(v)
 	}
 	e.metadata = metadata.New(headers)
 	e.callOptions = []grpc.CallOption{
-		grpc.WaitForReady(e.config.GRPCClientSettings.WaitForReady),
+		grpc.WaitForReady(e.config.ClientConfig.WaitForReady),
 	}
 
 	if !e.config.Arrow.Disabled {
@@ -124,9 +124,9 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) (err erro
 		ctx := e.enhanceContext(context.Background())
 
 		var perRPCCreds credentials.PerRPCCredentials
-		if e.config.GRPCClientSettings.Auth != nil {
+		if e.config.ClientConfig.Auth != nil {
 			// Get the auth extension, we'll use it to enrich the request context.
-			authClient, err := e.config.GRPCClientSettings.Auth.GetClientAuthenticator(host.GetExtensions())
+			authClient, err := e.config.ClientConfig.Auth.GetClientAuthenticator(host.GetExtensions())
 			if err != nil {
 				return err
 			}
@@ -141,7 +141,7 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) (err erro
 
 		arrowCallOpts := e.callOptions
 
-		if e.config.GRPCClientSettings.Compression == configcompression.Zstd {
+		if e.config.ClientConfig.Compression == configcompression.TypeZstd {
 			// ignore the error below b/c Validate() was called
 			_ = zstd.SetEncoderConfig(e.config.Arrow.Zstd)
 			// use the configured compressor.

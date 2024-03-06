@@ -301,7 +301,7 @@ func TestSendTraces(t *testing.T) {
 	// Disable queuing to ensure that we execute the request when calling ConsumeTraces
 	// otherwise we will not see any errors.
 	cfg.QueueSettings.Enabled = false
-	cfg.GRPCClientSettings = configgrpc.GRPCClientSettings{
+	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
 		TLSSetting: configtls.TLSClientSetting{
 			Insecure: true,
@@ -422,19 +422,19 @@ func TestSendTracesWhenEndpointHasHttpScheme(t *testing.T) {
 		name               string
 		useTLS             bool
 		scheme             string
-		gRPCClientSettings configgrpc.GRPCClientSettings
+		gRPCClientSettings configgrpc.ClientConfig
 	}{
 		{
 			name:               "Use https scheme",
 			useTLS:             true,
 			scheme:             "https://",
-			gRPCClientSettings: configgrpc.GRPCClientSettings{},
+			gRPCClientSettings: configgrpc.ClientConfig{},
 		},
 		{
 			name:   "Use http scheme",
 			useTLS: false,
 			scheme: "http://",
-			gRPCClientSettings: configgrpc.GRPCClientSettings{
+			gRPCClientSettings: configgrpc.ClientConfig{
 				TLSSetting: configtls.TLSClientSetting{
 					Insecure: true,
 				},
@@ -456,11 +456,11 @@ func TestSendTracesWhenEndpointHasHttpScheme(t *testing.T) {
 			// Start an OTLP exporter and point to the receiver.
 			factory := NewFactory()
 			cfg := factory.CreateDefaultConfig().(*Config)
-			cfg.GRPCClientSettings = test.gRPCClientSettings
-			cfg.GRPCClientSettings.Endpoint = test.scheme + ln.Addr().String()
+			cfg.ClientConfig = test.gRPCClientSettings
+			cfg.ClientConfig.Endpoint = test.scheme + ln.Addr().String()
 			cfg.Arrow.MaxStreamLifetime = 100 * time.Second
 			if test.useTLS {
-				cfg.GRPCClientSettings.TLSSetting.InsecureSkipVerify = true
+				cfg.ClientConfig.TLSSetting.InsecureSkipVerify = true
 			}
 			set := exportertest.NewNopCreateSettings()
 			exp, err := factory.CreateTracesExporter(context.Background(), set, cfg)
@@ -506,7 +506,7 @@ func TestSendMetrics(t *testing.T) {
 	// Disable queuing to ensure that we execute the request when calling ConsumeMetrics
 	// otherwise we will not see any errors.
 	cfg.QueueSettings.Enabled = false
-	cfg.GRPCClientSettings = configgrpc.GRPCClientSettings{
+	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
 		TLSSetting: configtls.TLSClientSetting{
 			Insecure: true,
@@ -605,7 +605,7 @@ func TestSendTraceDataServerDownAndUp(t *testing.T) {
 	// Disable queuing to ensure that we execute the request when calling ConsumeTraces
 	// otherwise we will not see the error.
 	cfg.QueueSettings.Enabled = false
-	cfg.GRPCClientSettings = configgrpc.GRPCClientSettings{
+	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
 		TLSSetting: configtls.TLSClientSetting{
 			Insecure: true,
@@ -666,7 +666,7 @@ func TestSendTraceDataServerStartWhileRequest(t *testing.T) {
 	// Start an OTel-Arrow exporter and point to the receiver.
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
-	cfg.GRPCClientSettings = configgrpc.GRPCClientSettings{
+	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
 		TLSSetting: configtls.TLSClientSetting{
 			Insecure: true,
@@ -720,7 +720,7 @@ func TestSendTracesOnResourceExhaustion(t *testing.T) {
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.RetryConfig.InitialInterval = 0
-	cfg.GRPCClientSettings = configgrpc.GRPCClientSettings{
+	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
 		TLSSetting: configtls.TLSClientSetting{
 			Insecure: true,
@@ -803,7 +803,7 @@ func TestSendLogData(t *testing.T) {
 	// Disable queuing to ensure that we execute the request when calling ConsumeLogs
 	// otherwise we will not see any errors.
 	cfg.QueueSettings.Enabled = false
-	cfg.GRPCClientSettings = configgrpc.GRPCClientSettings{
+	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
 		TLSSetting: configtls.TLSClientSetting{
 			Insecure: true,
@@ -908,7 +908,7 @@ func testSendArrowTraces(t *testing.T, clientWaitForReady, streamServiceAvailabl
 	authID := component.NewID("testauth")
 	expectedHeader := []string{"arrow-ftw"}
 	cfg := factory.CreateDefaultConfig().(*Config)
-	cfg.GRPCClientSettings = configgrpc.GRPCClientSettings{
+	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
 		TLSSetting: configtls.TLSClientSetting{
 			Insecure: true,
@@ -1073,7 +1073,7 @@ func TestSendArrowFailedTraces(t *testing.T) {
 	// Start an OTel-Arrow exporter and point to the receiver.
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
-	cfg.GRPCClientSettings = configgrpc.GRPCClientSettings{
+	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
 		TLSSetting: configtls.TLSClientSetting{
 			Insecure: true,
@@ -1134,7 +1134,7 @@ func TestUserDialOptions(t *testing.T) {
 	// Start an OTel-Arrow exporter and point to the receiver.
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
-	cfg.GRPCClientSettings = configgrpc.GRPCClientSettings{
+	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
 		TLSSetting: configtls.TLSClientSetting{
 			Insecure: true,
