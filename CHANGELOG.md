@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## [0.18.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.18.0) - 2024-03-06
+
+- Update Otel Collector core dependency from `v0.94.1` to `v0.96.0`. [#155](https://github.com/open-telemetry/otel-arrow/pull/155)
+
 ## [0.17.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.17.0) - 2024-02-13
 
 - Otel-Arrow receiver cleanups to help migrate component to `opentelemetry-collector-contrib` repo. [#146](https://github.com/open-telemetry/otel-arrow/pull/146)
