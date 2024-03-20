@@ -128,7 +128,7 @@ type KeepaliveEnforcementPolicy struct {
 // ServerConfig defines common settings for a gRPC server configuration.
 type ServerConfig struct {
 	// Server net.Addr config. For transport only "tcp" and "unix" are valid options.
-	NetAddr confignet.NetAddr `mapstructure:",squash"`
+	NetAddr confignet.AddrConfig `mapstructure:",squash"`
 
 	// Configures the protocol to use TLS.
 	// The default value is nil, which will cause the protocol to not use TLS.
@@ -162,7 +162,7 @@ type ServerConfig struct {
 	MemoryLimiter *component.ID `mapstructure:"memory_limiter"`
 }
 
-type memoryLimiterExtension = interface{ MustRefuse() bool }
+type memoryLimiterExtension = interface{ MustRefuse(req any) bool }
 
 // SanitizedEndpoint strips the prefix of either http:// or https:// from configgrpc.ClientConfig.Endpoint.
 func (gcs *ClientConfig) SanitizedEndpoint() string {
@@ -451,7 +451,7 @@ func memoryLimiterUnaryServerInterceptor(ctx context.Context, req any, _ *grpc.U
 
 func memoryLimiterStreamServerInterceptor(srv any, stream grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler, ml memoryLimiterExtension) error {
 	ctx := stream.Context()
-	if ml.MustRefuse(req) {
+	if ml.MustRefuse(wrapServerStream(ctx, stream)) {
 		return errMemoryLimitReached
 	}
 

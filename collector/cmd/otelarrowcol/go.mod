@@ -2,7 +2,7 @@
 
 module github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol
 
-go 1.21
+go 1.22.1
 
 require (
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.97.0

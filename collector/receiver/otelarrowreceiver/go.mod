@@ -1,8 +1,6 @@
 module github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver
 
-go 1.21
-
-toolchain go1.21.4
+go 1.22.1
 
 require (
 	github.com/gogo/protobuf v1.3.2
@@ -90,13 +88,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-
-
-
-
-
-
-
-
-
-
+replace github.com/open-telemetry/otel-arrow/collector/config/configgrpc => ../../config/configgrpc

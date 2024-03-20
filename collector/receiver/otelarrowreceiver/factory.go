@@ -9,7 +9,7 @@ import (
 	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/metadata"
 	"github.com/open-telemetry/otel-arrow/collector/sharedcomponent"
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/config/configgrpc"
+	"github.com/open-telemetry/otel-arrow/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/receiver"

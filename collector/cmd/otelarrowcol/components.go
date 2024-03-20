@@ -34,7 +34,7 @@ func components() (otelcol.Factories, error) {
 		headerssetterextension.NewFactory(),
 		basicauthextension.NewFactory(),
 		pprofextension.NewFactory(),
-		memorylimitextension.NewFactory(),
+		memorylimiterextension.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err

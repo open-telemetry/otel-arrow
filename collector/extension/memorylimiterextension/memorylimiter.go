@@ -11,6 +11,8 @@ import (
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 )
 
 type memoryLimiterExtension struct {
@@ -37,7 +39,15 @@ func (ml *memoryLimiterExtension) Shutdown(ctx context.Context) error {
 
 // MustRefuse returns if the caller should deny because memory has reached it's configured limits
 func (ml *memoryLimiterExtension) MustRefuse(req any) bool {
-	fmt.Println(req)
+	fmt.Println("TYPE OF REQ")
+	switch td := req.(type) {
+	case ptrace.Traces:
+		fmt.Println("thank God")
+	
+	default:
+		fmt.Println("default")
+		fmt.Println(td.(ptraceotlp.ExportRequest).MarshalJSON())
+	}
 	return true
 
 

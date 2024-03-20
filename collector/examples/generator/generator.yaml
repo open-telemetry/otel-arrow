@@ -3,22 +3,14 @@ extensions:
     memory_limit_mib: 8
 
 receivers:
-  otlp:
+  otelarrow:
     protocols:
       grpc:
         endpoint: localhost:4317
         memory_limiter: memory_limiter
-      http:
-        endpoint: localhost:4318
 
 processors:
-  batch:
-  memory_limiter:
-    # 75% of maximum memory up to 2G
-    limit_mib: 1536
-    # 25% of limit up to 2G
-    spike_limit_mib: 512
-    check_interval: 5s
+  concurrentbatch:
 
 exporters:
   debug:
@@ -27,8 +19,8 @@ exporters:
 service:
   pipelines:
     traces:
-      receivers: [otlp]
-      processors: [batch]
+      receivers: [otelarrow]
+      processors: [concurrentbatch]
       exporters: [debug]
 
   extensions: [memory_limiter]
