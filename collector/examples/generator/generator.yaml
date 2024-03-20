@@ -1,35 +1,34 @@
-# This configuration sends synthetic telemetry with no batching
-# to 127.0.0.1:4317.
+extensions:
+  memory_limiter:
+    memory_limit_mib: 8
+
 receivers:
-  generator:
-    path: ./hipster_shop.yaml
+  otlp:
+    protocols:
+      grpc:
+        endpoint: localhost:4317
+        memory_limiter: memory_limiter
+      http:
+        endpoint: localhost:4318
+
+processors:
+  batch:
+  memory_limiter:
+    # 75% of maximum memory up to 2G
+    limit_mib: 1536
+    # 25% of limit up to 2G
+    spike_limit_mib: 512
+    check_interval: 5s
 
 exporters:
-  otelarrow/standard_otlp:
-    endpoint: 127.0.0.1:4317
-    headers:
-      # the following is the value of:
-      #   fmt.Println(func(user, pw string) string {
-      #   	return "Basic " + base64.StdEncoding.EncodeToString([]byte(user+":"+pw))
-      #   }("testuser", "testpw"))
-      # which is what the ../metadata-bridge/edge-collector.yaml example 
-      # is configured to accept.
-      - Authorization: "Basic dGVzdHVzZXI6dGVzdHB3"
-        
-    tls:
-      insecure: true
-    arrow:
-      disabled: true
-    
+  debug:
+    verbosity: basic
+
 service:
   pipelines:
-    traces/generate:
-      receivers: [generator]
-      processors: []
-      exporters: [otelarrow/standard_otlp]
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
 
-    metrics:
-      receivers: [generator]
-      processors: []
-      exporters: [otelarrow/standard_otlp]
-    
+  extensions: [memory_limiter]

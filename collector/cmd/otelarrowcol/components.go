@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/collector/receiver"
 	validationconnector "github.com/open-telemetry/otel-arrow/collector/connector/validationconnector"
 	otelarrowexporter "github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter"
+	memorylimiterextension "github.com/open-telemetry/otel-arrow/collector/extension/memorylimiterextension"
 	debugexporter "go.opentelemetry.io/collector/exporter/debugexporter"
 	otlphttpexporter "go.opentelemetry.io/collector/exporter/otlphttpexporter"
 	fileexporter "github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter"
@@ -33,6 +34,7 @@ func components() (otelcol.Factories, error) {
 		headerssetterextension.NewFactory(),
 		basicauthextension.NewFactory(),
 		pprofextension.NewFactory(),
+		memorylimitextension.NewFactory(),
 	)
 	if err != nil {
 		return otelcol.Factories{}, err

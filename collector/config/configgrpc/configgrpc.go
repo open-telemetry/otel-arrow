@@ -442,7 +442,7 @@ func (gss *ServerConfig) toServerOption(host component.Host, settings component.
 }
 
 func memoryLimiterUnaryServerInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler, ml memoryLimiterExtension) (any, error) {
-	if ml.MustRefuse() {
+	if ml.MustRefuse(req) {
 		return nil, errMemoryLimitReached
 	}
 
@@ -451,7 +451,7 @@ func memoryLimiterUnaryServerInterceptor(ctx context.Context, req any, _ *grpc.U
 
 func memoryLimiterStreamServerInterceptor(srv any, stream grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler, ml memoryLimiterExtension) error {
 	ctx := stream.Context()
-	if ml.MustRefuse() {
+	if ml.MustRefuse(req) {
 		return errMemoryLimitReached
 	}
 
