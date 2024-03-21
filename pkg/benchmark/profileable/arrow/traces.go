@@ -17,7 +17,7 @@ package arrow
 import (
 	"io"
 
-	"github.com/apache/arrow/go/v12/arrow/memory"
+	"github.com/apache/arrow/go/v14/arrow/memory"
 	"google.golang.org/protobuf/proto"
 
 	"go.opentelemetry.io/collector/pdata/ptrace"

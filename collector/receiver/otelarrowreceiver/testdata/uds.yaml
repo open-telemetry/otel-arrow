@@ -3,6 +3,3 @@ protocols:
   grpc:
     transport: unix
     endpoint: /tmp/grpc_otlp.sock
-  http:
-    # transport: unix
-    endpoint: /tmp/http_otlp.sock

@@ -44,6 +44,10 @@ type Config struct {
 	// batcher instances that will be created through a distinct
 	// combination of MetadataKeys.
 	MetadataCardinalityLimit uint32 `mapstructure:"metadata_cardinality_limit"`
+
+	// MaxInFlightSizeMiB limits the number of bytes in queue waiting to be
+	// processed by the senders.
+	MaxInFlightSizeMiB uint32 `mapstructure:"max_in_flight_size_mib"`
 }
 
 var _ component.Config = (*Config)(nil)
@@ -63,6 +67,9 @@ func (cfg *Config) Validate() error {
 	}
 	if cfg.Timeout < 0 {
 		return errors.New("timeout must be greater or equal to 0")
+	}
+	if cfg.MaxInFlightSizeMiB <= 0 {
+		return errors.New("max_in_flight_size_mib must be greater than 0")
 	}
 	return nil
 }

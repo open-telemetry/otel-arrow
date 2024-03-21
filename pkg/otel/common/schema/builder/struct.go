@@ -20,8 +20,8 @@ package builder
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v12/arrow"
-	"github.com/apache/arrow/go/v12/arrow/array"
+	"github.com/apache/arrow/go/v14/arrow"
+	"github.com/apache/arrow/go/v14/arrow/array"
 
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/update"

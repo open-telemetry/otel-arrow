@@ -20,7 +20,7 @@ package transform
 import (
 	"math"
 
-	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v14/arrow"
 
 	cfg "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
 	events "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/events"

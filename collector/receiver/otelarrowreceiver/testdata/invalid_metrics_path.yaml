@@ -1,3 +1,0 @@
-protocols:
-  http:
-    metrics_url_path: ":invalid"

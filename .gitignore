@@ -17,6 +17,9 @@ dist/
 *.sw[op]
 *.DS_Store
 
+# Go work sum can break things if checked-in. It cannot be checked-in with its own sum.
+go.work.sum
+
 # Coverage
 coverage.out
 coverage.txt

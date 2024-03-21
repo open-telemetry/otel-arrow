@@ -8,6 +8,71 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## [0.18.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.18.0) - 2024-03-06
+
+- Update Otel Collector core dependency from `v0.94.1` to `v0.96.0`. [#155](https://github.com/open-telemetry/otel-arrow/pull/155)
+
+## [0.17.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.17.0) - 2024-02-13
+
+- Otel-Arrow receiver cleanups to help migrate component to `opentelemetry-collector-contrib` repo. [#146](https://github.com/open-telemetry/otel-arrow/pull/146)
+
+- Add span attributes for uncompressed request size as part of netstats package. [#149](https://github.com/open-telemetry/otel-arrow/pull/149)
+
+- Add metrics to record Otel-Arrow receiver in-flight bytes and items. [#150](https://github.com/open-telemetry/otel-arrow/pull/150)
+
+- Cleanup deprecated telemetry object. [#151](https://github.com/open-telemetry/otel-arrow/pull/151)
+
+- Update Otel Collector core dependency from `v0.92.0` to `v0.94.1`. [#153](https://github.com/open-telemetry/otel-arrow/pull/153)
+
+## [0.16.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.16.0) - 2024-01-19
+
+- Use go-1.20 in CI/CD and go.mods. [#144](https://github.com/open-telemetry/otel-arrow/pull/144)
+
+## [0.15.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.15.0) - 2024-01-17
+
+- Remove unused `mixed_signals` feature and associated protocol elements, regenerate mocks using go.uber.org/mock@v0.4.0, repair CI/CD pipeline. [#135](https://github.com/open-telemetry/otel-arrow/pull/135), [#136](https://github.com/open-telemetry/otel-arrow/pull/136).
+- Add tracing support to the OTel-Arrow exporter and receiver. [#137](https://github.com/open-telemetry/otel-arrow/pull/139)
+
+## [0.14.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.14.0) - 2024-01-11
+
+- Remove two deprecated fields, both concurrent batch processor `max_in_flight_bytes`
+  and otelarrow receiver `memory_limit` fields have corresponding `_mib` field names
+  for consistency.
+- OTel-Arrow exporter: Do not treat PartialSuccess as errors (see https://github.com/open-telemetry/opentelemetry-collector/issues/9243). [#130](https://github.com/open-telemetry/otel-arrow/pull/130)
+- Use OTel Collector v0.92.0. [#131](https://github.com/open-telemetry/otel-arrow/pull/131)
+- Use Apache Arrow v14.0.2 dependencies. [#132](https://github.com/open-telemetry/otel-arrow/pull/132)
+
+## [0.13.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.13.0) - 2023-12-20
+
+- Concurrent batch processor: Fail fast for large batch sizes. [#126](https://github.com/open-telemetry/otel-arrow/pull/126)
+- Add the core OTLP receiver to the otelarrowcol build, for its HTTP support. [#125](https://github.com/open-telemetry/otel-arrow/pull/125)
+- Let span context propagate through the concurrent batch processor. [#123](https://github.com/open-telemetry/otel-arrow/pull/123)
+- Lint: use `max_in_flight_size_mib` as the configuration for maximum in-flight-bytes. [#121](https://github.com/open-telemetry/otel-arrow/pull/121)
+- Remove HTTP support from the OTel-Arrwo receiver. [#120](https://github.com/open-telemetry/otel-arrow/pull/120)
+- Remove the stream_unique metric attribute. [#119](https://github.com/open-telemetry/otel-arrow/pull/119)
+
+## [0.12.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.12.0) - 2023-12-04
+
+- Update to OpenTelemetry Collector v0.90.1 dependencies. (#116)
+- Bug-fix for `_in_flight_bytes` metric. (#115)
+
+## [0.11.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.11.0) - 2023-11-28
+
+- "concurrentbatchprocessor" supports two new metrics, names ending
+  `_in_flight_bytes` and `_batch_send_latency`. (#111, #112)
+
+## [0.10.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.10.0) - 2023-11-17
+
+- "concurrentbatchprocessor" component is ready for production testing. (#93)
+
+## [0.9.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.9.0) - 2023-11-15
+
+- No changes, testing release process.
+
+## [0.8.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.8.0) - 2023-11-15
+
+- No changes, testing release process.
+
 ## [0.7.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.7.0) - 2023-11-10
 
 - New "concurrentbatchprocessor" component under development (#71, #79, #90)

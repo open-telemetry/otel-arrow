@@ -9,9 +9,9 @@ import (
 	"io"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	arrowCollectorMock "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1/mock"
+	"go.uber.org/mock/gomock"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest"
@@ -43,8 +43,8 @@ type commonTestCase struct {
 	ctrl                *gomock.Controller
 	telset              component.TelemetrySettings
 	observedLogs        *observer.ObservedLogs
-	streamClient        StreamClientFunc
-	streamCall          *gomock.Call
+	traceClient         StreamClientFunc
+	traceCall           *gomock.Call
 	perRPCCredentials   credentials.PerRPCCredentials
 	requestMetadataCall *gomock.Call
 }
@@ -75,9 +75,9 @@ func newCommonTestCase(t *testing.T, noisy noisyTest) *commonTestCase {
 		gomock.Any(), // ...string (unused `uri` parameter)
 	).Times(0)
 
-	client := arrowCollectorMock.NewMockArrowStreamServiceClient(ctrl)
+	traceClient := arrowCollectorMock.NewMockArrowTracesServiceClient(ctrl)
 
-	streamCall := client.EXPECT().ArrowStream(
+	traceCall := traceClient.EXPECT().ArrowTraces(
 		gomock.Any(), // context.Context
 		gomock.Any(), // ...grpc.CallOption
 	).Times(0)
@@ -85,8 +85,8 @@ func newCommonTestCase(t *testing.T, noisy noisyTest) *commonTestCase {
 		ctrl:                ctrl,
 		telset:              telset,
 		observedLogs:        obslogs,
-		streamClient:        MakeAnyStreamClient("ArrowStream", client.ArrowStream),
-		streamCall:          streamCall,
+		traceClient:         MakeAnyStreamClient("ArrowTraces", traceClient.ArrowTraces),
+		traceCall:           traceCall,
 		perRPCCredentials:   creds,
 		requestMetadataCall: requestMetadataCall,
 	}
@@ -101,7 +101,7 @@ type commonTestStream struct {
 }
 
 func (ctc *commonTestCase) newMockStream(ctx context.Context) *commonTestStream {
-	client := arrowCollectorMock.NewMockArrowStreamService_ArrowStreamClient(ctc.ctrl)
+	client := arrowCollectorMock.NewMockArrowTracesService_ArrowTracesClient(ctc.ctrl)
 
 	testStream := &commonTestStream{
 		anyStreamClient: client,
@@ -119,12 +119,12 @@ func (ctc *commonTestCase) newMockStream(ctx context.Context) *commonTestStream 
 // construct new streams.  The final entry is re-used for new streams
 // when it is reached.
 func (ctc *commonTestCase) returnNewStream(hs ...testChannel) func(context.Context, ...grpc.CallOption) (
-	arrowpb.ArrowStreamService_ArrowStreamClient,
+	arrowpb.ArrowTracesService_ArrowTracesClient,
 	error,
 ) {
 	var pos int
 	return func(ctx context.Context, _ ...grpc.CallOption) (
-		arrowpb.ArrowStreamService_ArrowStreamClient,
+		arrowpb.ArrowTracesService_ArrowTracesClient,
 		error,
 	) {
 		h := hs[pos]
@@ -144,11 +144,11 @@ func (ctc *commonTestCase) returnNewStream(hs ...testChannel) func(context.Conte
 // repeatedNewStream returns a stream configured with a new test
 // channel on every ArrowStream() request.
 func (ctc *commonTestCase) repeatedNewStream(nc func() testChannel) func(context.Context, ...grpc.CallOption) (
-	arrowpb.ArrowStreamService_ArrowStreamClient,
+	arrowpb.ArrowTracesService_ArrowTracesClient,
 	error,
 ) {
 	return func(ctx context.Context, opts ...grpc.CallOption) (
-		arrowpb.ArrowStreamService_ArrowStreamClient,
+		arrowpb.ArrowTracesService_ArrowTracesClient,
 		error,
 	) {
 		h := nc()
@@ -334,7 +334,7 @@ func (tc *sendErrorTestChannel) onRecv(_ context.Context) func() (*arrowpb.Batch
 	}
 }
 
-// connectErrorTestChannel returns an error from the ArrowStream() call
+// connectErrorTestChannel returns an error from the ArrowTraces() call
 type connectErrorTestChannel struct {
 }
 

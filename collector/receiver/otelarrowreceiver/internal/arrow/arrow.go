@@ -34,11 +34,17 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/receiverhelper"
+	"go.opentelemetry.io/otel"
+	otelcodes "go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
 	streamFormat        = "arrow"
 	hpackMaxDynamicSize = 4096
+	scopeName           = "github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver"
 )
 
 var (
@@ -57,17 +63,20 @@ type Consumers interface {
 type Receiver struct {
 	Consumers
 
-	arrowpb.UnsafeArrowStreamServiceServer
 	arrowpb.UnsafeArrowTracesServiceServer
 	arrowpb.UnsafeArrowLogsServiceServer
 	arrowpb.UnsafeArrowMetricsServiceServer
 
 	telemetry   component.TelemetrySettings
+	tracer      trace.Tracer
 	obsrecv     *receiverhelper.ObsReport
-	gsettings   *configgrpc.GRPCServerSettings
+	gsettings   configgrpc.ServerConfig
 	authServer  auth.Server
 	newConsumer func() arrowRecord.ConsumerAPI
 	netReporter netstats.Interface
+	recvInFlightBytes metric.Int64UpDownCounter
+	recvInFlightItems metric.Int64UpDownCounter
+	recvInFlightRequests metric.Int64UpDownCounter
 }
 
 // New creates a new Receiver reference.
@@ -75,20 +84,49 @@ func New(
 	cs Consumers,
 	set receiver.CreateSettings,
 	obsrecv *receiverhelper.ObsReport,
-	gsettings *configgrpc.GRPCServerSettings,
+	gsettings configgrpc.ServerConfig,
 	authServer auth.Server,
 	newConsumer func() arrowRecord.ConsumerAPI,
 	netReporter netstats.Interface,
-) *Receiver {
-	return &Receiver{
+) (*Receiver, error) {
+	tracer := set.TelemetrySettings.TracerProvider.Tracer("otel-arrow-receiver")
+	var errors, err error
+	recv := &Receiver{
 		Consumers:   cs,
 		obsrecv:     obsrecv,
 		telemetry:   set.TelemetrySettings,
+		tracer:      tracer,
 		authServer:  authServer,
 		newConsumer: newConsumer,
 		gsettings:   gsettings,
 		netReporter: netReporter,
 	}
+
+	meter := recv.telemetry.MeterProvider.Meter(scopeName)
+	recv.recvInFlightBytes, err = meter.Int64UpDownCounter(
+		"otel_arrow_receiver_in_flight_bytes",
+		metric.WithDescription("Number of bytes in flight"),
+		metric.WithUnit("By"),
+	)
+	errors = multierr.Append(errors, err)
+
+	recv.recvInFlightItems, err = meter.Int64UpDownCounter(
+		"otel_arrow_receiver_in_flight_items",
+		metric.WithDescription("Number of items in flight"),
+	)
+	errors = multierr.Append(errors, err)
+
+	recv.recvInFlightRequests, err = meter.Int64UpDownCounter(
+		"otel_arrow_receiver_in_flight_requests",
+		metric.WithDescription("Number of requests in flight"),
+	)
+	errors = multierr.Append(errors, err)
+
+	if errors != nil {
+		return nil, errors
+	}
+
+	return recv, nil
 }
 
 // headerReceiver contains the state necessary to decode per-request metadata
@@ -154,39 +192,54 @@ func (h *headerReceiver) combineHeaders(ctx context.Context, hdrsBytes []byte) (
 	}
 
 	// Note that we will parse the headers even if they are not
-	// used, to check for validity.  tmpHdrsAppend() will skip
-	// modifying tmpHdrs if it is nil.
-	h.tmpHdrs = nil
-
-	needMergedHeaders := h.includeMetadata || h.hasAuthServer
-
-	// If headers are being merged, allocate a new map.
-	if needMergedHeaders {
-		h.tmpHdrs = map[string][]string{}
-	}
+	// used, to check for validity and/or trace context.  Also
+	// note this code was once optimized to avoid the following
+	// map allocation in cases where the return value would not be
+	// used.  This logic was "is metadata present" or "is auth
+	// server used".  Then we added to this, "is trace propagation
+	// in use" and simplified this function to always store the
+	// headers into a temporary map.
+	h.tmpHdrs = map[string][]string{}
 
 	// Write calls the emitFunc, appending directly into `tmpHdrs`.
 	if _, err := h.decoder.Write(hdrsBytes); err != nil {
 		return ctx, nil, err
 	}
 
-	if needMergedHeaders {
-		// Add streamHdrs that were not carried in the per-request headers.
-		for k, v := range h.streamHdrs {
-			// Note: This is done after the per-request metadata is defined
-			// in recognition of a potential for duplicated values stemming
-			// from the Arrow exporter's independent call to the Auth
-			// extension's GetRequestMetadata().  This paired with the
-			// headersetter's return of empty-string values means, we would
-			// end up with an empty-string element for any headersetter
-			// `from_context` rules b/c the stream uses background context.
-			// This allows static headers through.
-			//
-			// See https://github.com/open-telemetry/opentelemetry-collector/issues/6965
-			lk := strings.ToLower(k)
-			if _, ok := h.tmpHdrs[lk]; !ok {
-				h.tmpHdrs[lk] = v
+	// Get the global propagator, to extract context.  When there
+	// are no fields, it's a no-op propagator implementation and
+	// we can skip the allocations inside this block.
+	carrier := otel.GetTextMapPropagator()
+	if len(carrier.Fields()) != 0 {
+		// When there are no fields, it's a no-op
+		// implementation and we can skip the allocations.
+		flat := map[string]string{}
+		for _, key := range carrier.Fields() {
+			have := h.tmpHdrs[key]
+			if len(have) > 0 {
+				flat[key] = have[0]
+				delete(h.tmpHdrs, key)
 			}
+		}
+
+		ctx = carrier.Extract(ctx, propagation.MapCarrier(flat))
+	}
+
+	// Add streamHdrs that were not carried in the per-request headers.
+	for k, v := range h.streamHdrs {
+		// Note: This is done after the per-request metadata is defined
+		// in recognition of a potential for duplicated values stemming
+		// from the Arrow exporter's independent call to the Auth
+		// extension's GetRequestMetadata().  This paired with the
+		// headersetter's return of empty-string values means, we would
+		// end up with an empty-string element for any headersetter
+		// `from_context` rules b/c the stream uses background context.
+		// This allows static headers through.
+		//
+		// See https://github.com/open-telemetry/opentelemetry-collector/issues/6965
+		lk := strings.ToLower(k)
+		if _, ok := h.tmpHdrs[lk]; !ok {
+			h.tmpHdrs[lk] = v
 		}
 	}
 
@@ -262,15 +315,10 @@ func gRPCName(desc grpc.ServiceDesc) string {
 }
 
 var (
-	arrowStreamMethod  = gRPCName(arrowpb.ArrowStreamService_ServiceDesc)
 	arrowTracesMethod  = gRPCName(arrowpb.ArrowTracesService_ServiceDesc)
 	arrowMetricsMethod = gRPCName(arrowpb.ArrowMetricsService_ServiceDesc)
 	arrowLogsMethod    = gRPCName(arrowpb.ArrowLogsService_ServiceDesc)
 )
-
-func (r *Receiver) ArrowStream(serverStream arrowpb.ArrowStreamService_ArrowStreamServer) error {
-	return r.anyStream(serverStream, arrowStreamMethod)
-}
 
 func (r *Receiver) ArrowTraces(serverStream arrowpb.ArrowTracesService_ArrowTracesServer) error {
 	return r.anyStream(serverStream, arrowTracesMethod)
@@ -351,41 +399,63 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 			}
 		}
 
-		// Process records: an error in this code path does
-		// not necessarily break the stream.
-		if authErr != nil {
-			err = authErr
-		} else {
-			err = r.processRecords(thisCtx, method, ac, req)
-		}
-
-		// Note: Statuses can be batched, but we do not take
-		// advantage of this feature.
-		status := &arrowpb.BatchStatus{
-			BatchId: req.GetBatchId(),
-		}
-		if err == nil {
-			status.StatusCode = arrowpb.StatusCode_OK
-		} else {
-			status.StatusMessage = err.Error()
-			if errors.Is(err, arrowRecord.ErrConsumerMemoryLimit) {
-				r.telemetry.Logger.Error("arrow resource exhausted", zap.Error(err))
-				status.StatusCode = arrowpb.StatusCode_RESOURCE_EXHAUSTED
-			} else if consumererror.IsPermanent(err) {
-				r.telemetry.Logger.Error("arrow data error", zap.Error(err))
-				status.StatusCode = arrowpb.StatusCode_INVALID_ARGUMENT
-			} else {
-				r.telemetry.Logger.Debug("arrow consumer error", zap.Error(err))
-				status.StatusCode = arrowpb.StatusCode_UNAVAILABLE
-			}
-		}
-
-		err = serverStream.Send(status)
-		if err != nil {
-			r.logStreamError(err)
+		if err := r.processAndConsume(thisCtx, method, ac, req, serverStream, authErr); err != nil {
 			return err
 		}
 	}
+}
+
+func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, req *arrowpb.BatchArrowRecords, serverStream anyStreamServer, authErr error) (retErr error) {
+	var err error
+
+	ctx, span := r.tracer.Start(ctx, "otel_arrow_stream_recv")
+	defer span.End()
+
+	r.recvInFlightRequests.Add(ctx, 1)
+	defer func() {
+		r.recvInFlightRequests.Add(ctx, -1)
+		// Set span status if an error is returned.
+		if retErr != nil {
+			span := trace.SpanFromContext(ctx)
+			span.SetStatus(otelcodes.Error, retErr.Error())
+		}
+	}()
+
+	// Process records: an error in this code path does
+	// not necessarily break the stream.
+	if authErr != nil {
+		err = authErr
+	} else {
+		err = r.processRecords(ctx, method, arrowConsumer, req)
+	}
+
+	// Note: Statuses can be batched, but we do not take
+	// advantage of this feature.
+	status := &arrowpb.BatchStatus{
+		BatchId: req.GetBatchId(),
+	}
+	if err == nil {
+		status.StatusCode = arrowpb.StatusCode_OK
+	} else {
+		status.StatusMessage = err.Error()
+		if errors.Is(err, arrowRecord.ErrConsumerMemoryLimit) {
+			r.telemetry.Logger.Error("arrow resource exhausted", zap.Error(err))
+			status.StatusCode = arrowpb.StatusCode_RESOURCE_EXHAUSTED
+		} else if consumererror.IsPermanent(err) {
+			r.telemetry.Logger.Error("arrow data error", zap.Error(err))
+			status.StatusCode = arrowpb.StatusCode_INVALID_ARGUMENT
+		} else {
+			r.telemetry.Logger.Debug("arrow consumer error", zap.Error(err))
+			status.StatusCode = arrowpb.StatusCode_UNAVAILABLE
+		}
+	}
+
+	err = serverStream.Send(status)
+	if err != nil {
+		r.logStreamError(err)
+		return err
+	}
+	return nil
 }
 
 // processRecords returns an error and a boolean indicating whether
@@ -406,10 +476,15 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			// is instrumented this way.
 			var sized netstats.SizesStruct
 			sized.Method = method
-			sized.Length = uncompSize
+			if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
+				sized.Length = uncompSize
+			}
 			r.netReporter.CountReceive(ctx, sized)
+			r.netReporter.SetSpanSizeAttributes(ctx, sized)
 		}()
 	}
+
+
 	switch payloads[0].Type {
 	case arrowpb.ArrowPayloadType_UNIVARIATE_METRICS:
 		if r.Metrics() == nil {
@@ -425,14 +500,21 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			err = consumererror.NewPermanent(err)
 		} else {
 			for _, metrics := range data {
-				numPts += metrics.DataPointCount()
-				if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
-					uncompSize += int64(sizer.MetricsSize(metrics))
-				}
+				items := metrics.DataPointCount()
+				sz := int64(sizer.MetricsSize(metrics))
+
+				r.recvInFlightBytes.Add(ctx, sz)
+				r.recvInFlightItems.Add(ctx, int64(items))
+
+				numPts += items
+				uncompSize += sz
 				err = multierr.Append(err,
 					r.Metrics().ConsumeMetrics(ctx, metrics),
 				)
 			}
+			// entire request has been processed, decrement counter.
+			r.recvInFlightBytes.Add(ctx, -uncompSize)
+			r.recvInFlightItems.Add(ctx, int64(-numPts))
 		}
 		r.obsrecv.EndMetricsOp(ctx, streamFormat, numPts, err)
 		return err
@@ -450,14 +532,20 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			err = consumererror.NewPermanent(err)
 		} else {
 			for _, logs := range data {
-				numLogs += logs.LogRecordCount()
-				if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
-					uncompSize += int64(sizer.LogsSize(logs))
-				}
+				items := logs.LogRecordCount()
+				sz := int64(sizer.LogsSize(logs))
+
+				r.recvInFlightBytes.Add(ctx, sz)
+				r.recvInFlightItems.Add(ctx, int64(items))
+				numLogs += items
+				uncompSize += sz
 				err = multierr.Append(err,
 					r.Logs().ConsumeLogs(ctx, logs),
 				)
 			}
+			// entire request has been processed, decrement counter.
+			r.recvInFlightBytes.Add(ctx, -uncompSize)
+			r.recvInFlightItems.Add(ctx, int64(-numLogs))
 		}
 		r.obsrecv.EndLogsOp(ctx, streamFormat, numLogs, err)
 		return err
@@ -475,14 +563,22 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			err = consumererror.NewPermanent(err)
 		} else {
 			for _, traces := range data {
-				numSpans += traces.SpanCount()
-				if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
-					uncompSize += int64(sizer.TracesSize(traces))
-				}
+				items := traces.SpanCount()
+				sz := int64(sizer.TracesSize(traces))
+
+				r.recvInFlightBytes.Add(ctx, sz)
+				r.recvInFlightItems.Add(ctx, int64(items))
+
+				numSpans += items
+				uncompSize += sz
 				err = multierr.Append(err,
 					r.Traces().ConsumeTraces(ctx, traces),
 				)
 			}
+
+			// entire request has been processed, decrement counter.
+			r.recvInFlightBytes.Add(ctx, -uncompSize)
+			r.recvInFlightItems.Add(ctx, int64(-numSpans))
 		}
 		r.obsrecv.EndTracesOp(ctx, streamFormat, numSpans, err)
 		return err

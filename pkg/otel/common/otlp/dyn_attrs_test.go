@@ -20,7 +20,7 @@ package otlp
 import (
 	"testing"
 
-	"github.com/apache/arrow/go/v12/arrow/memory"
+	"github.com/apache/arrow/go/v14/arrow/memory"
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 

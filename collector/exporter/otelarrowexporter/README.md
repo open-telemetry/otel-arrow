@@ -219,18 +219,3 @@ exporters:
       zstd:
         level: 1       # 1 is the "fastest" compression level
 ```
-
-### Experimental Configuration
-
-The exporter uses the signal-specific Arrow stream methods (i.e.,
-`ArrowTraces`, `ArrowLogs`, and `ArrowMetrics`) by default.  There is
-an option to use the generic `ArrowStream` method instead.
-
-- `enable_mixed_signals` (default: false): Use `ArrowStream` instead of per-signal stream methods.
-
-This option has the potential to enable the future exporter to cross
-signals, meaning to allow traces, metrics and logs to refer to the
-same shared-data items across a single stream.  Presently, there is no
-cross-signal compression benefit, this option simply causes one method
-name instead of three method names to be used by the exporter
-instances of different signal types.

@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configcompression"
 	"go.opentelemetry.io/collector/config/configgrpc"
+	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/config/configopaque"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/exporter"
@@ -42,12 +43,12 @@ func NewFactory() exporter.Factory {
 func createDefaultConfig() component.Config {
 	return &Config{
 		TimeoutSettings: exporterhelper.NewDefaultTimeoutSettings(),
-		RetrySettings:   exporterhelper.NewDefaultRetrySettings(),
+		RetryConfig:     configretry.NewDefaultBackOffConfig(),
 		QueueSettings:   exporterhelper.NewDefaultQueueSettings(),
-		GRPCClientSettings: configgrpc.GRPCClientSettings{
+		ClientConfig: configgrpc.ClientConfig{
 			Headers: map[string]configopaque.String{},
 			// Default to zstd compression
-			Compression: configcompression.Zstd,
+			Compression: configcompression.TypeZstd,
 			// We almost read 0 bytes, so no need to tune ReadBufferSize.
 			WriteBufferSize: 512 * 1024,
 			// The `configgrpc` default is pick_first,
@@ -73,7 +74,7 @@ func (oce *baseExporter) helperOptions() []exporterhelper.Option {
 	return []exporterhelper.Option{
 		exporterhelper.WithCapabilities(consumer.Capabilities{MutatesData: false}),
 		exporterhelper.WithTimeout(oce.config.TimeoutSettings),
-		exporterhelper.WithRetry(oce.config.RetrySettings),
+		exporterhelper.WithRetry(oce.config.RetryConfig),
 		exporterhelper.WithQueue(oce.config.QueueSettings),
 		exporterhelper.WithStart(oce.start),
 		exporterhelper.WithShutdown(oce.shutdown),
@@ -85,16 +86,12 @@ func gRPCName(desc grpc.ServiceDesc) string {
 }
 
 var (
-	arrowStreamMethod  = gRPCName(arrowpb.ArrowStreamService_ServiceDesc)
 	arrowTracesMethod  = gRPCName(arrowpb.ArrowTracesService_ServiceDesc)
 	arrowMetricsMethod = gRPCName(arrowpb.ArrowMetricsService_ServiceDesc)
 	arrowLogsMethod    = gRPCName(arrowpb.ArrowLogsService_ServiceDesc)
 )
 
 func createArrowTracesStream(cfg *Config, conn *grpc.ClientConn) arrow.StreamClientFunc {
-	if cfg.Arrow.EnableMixedSignals {
-		return arrow.MakeAnyStreamClient(arrowStreamMethod, arrowpb.NewArrowStreamServiceClient(conn).ArrowStream)
-	}
 	return arrow.MakeAnyStreamClient(arrowTracesMethod, arrowpb.NewArrowTracesServiceClient(conn).ArrowTraces)
 }
 
@@ -114,9 +111,6 @@ func createTracesExporter(
 }
 
 func createArrowMetricsStream(cfg *Config, conn *grpc.ClientConn) arrow.StreamClientFunc {
-	if cfg.Arrow.EnableMixedSignals {
-		return arrow.MakeAnyStreamClient(arrowStreamMethod, arrowpb.NewArrowStreamServiceClient(conn).ArrowStream)
-	}
 	return arrow.MakeAnyStreamClient(arrowMetricsMethod, arrowpb.NewArrowMetricsServiceClient(conn).ArrowMetrics)
 }
 
@@ -136,9 +130,6 @@ func createMetricsExporter(
 }
 
 func createArrowLogsStream(cfg *Config, conn *grpc.ClientConn) arrow.StreamClientFunc {
-	if cfg.Arrow.EnableMixedSignals {
-		return arrow.MakeAnyStreamClient(arrowStreamMethod, arrowpb.NewArrowStreamServiceClient(conn).ArrowStream)
-	}
 	return arrow.MakeAnyStreamClient(arrowLogsMethod, arrowpb.NewArrowLogsServiceClient(conn).ArrowLogs)
 }
 

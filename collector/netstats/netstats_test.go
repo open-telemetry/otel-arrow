@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"google.golang.org/grpc/stats"
 
 	"go.opentelemetry.io/collector/component"
@@ -130,6 +131,57 @@ func testNetStatsExporter(t *testing.T, level configtelemetry.Level, expect map[
 			require.NoError(t, err)
 
 			require.Equal(t, expect, metricValues(t, rm, "Hello"))
+		})
+	}
+}
+
+func TestNetStatsSetSpanAttrs(t *testing.T) {
+	tests := []struct {
+		name       string
+		attrs      []attribute.KeyValue
+		isExporter bool
+		length     int
+		wireLength int
+	}{
+		{
+			name:       "set exporter attributes",
+			isExporter: true,
+			length:     1234567,
+			wireLength: 123,
+			attrs: []attribute.KeyValue{
+				attribute.Int("stream_client_uncompressed_bytes_sent", 1234567),
+				attribute.Int("stream_client_compressed_bytes_sent", 123),
+			},
+		},
+		{
+			name:       "set receiver attributes",
+			isExporter: false,
+			length:     8901234,
+			wireLength: 890,
+			attrs: []attribute.KeyValue{
+				attribute.Int("stream_server_uncompressed_bytes_recv", 8901234),
+				attribute.Int("stream_server_compressed_bytes_recv", 890),
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			enr := &NetworkReporter{
+				isExporter: tc.isExporter,
+			}
+
+			tp := sdktrace.NewTracerProvider()
+			ctx, sp := tp.Tracer("test/span").Start(context.Background(), "test-op")
+
+			var sized SizesStruct
+			sized.Method = "test"
+			sized.Length = int64(tc.length)
+			sized.WireLength = int64(tc.wireLength)
+			enr.SetSpanSizeAttributes(ctx, sized)
+
+			actualAttrs := sp.(sdktrace.ReadOnlySpan).Attributes()
+
+			require.Equal(t, tc.attrs, actualAttrs)
 		})
 	}
 }

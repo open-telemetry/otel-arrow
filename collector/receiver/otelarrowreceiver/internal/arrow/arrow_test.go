@@ -14,7 +14,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	arrowCollectorMock "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1/mock"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
@@ -22,6 +21,7 @@ import (
 	otelAssert "github.com/open-telemetry/otel-arrow/pkg/otel/assert"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 	"go.uber.org/zap/zaptest"
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/grpc/metadata"
@@ -40,6 +40,9 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/receiverhelper"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type compareJSONTraces struct{ ptrace.Traces }
@@ -73,7 +76,7 @@ type commonTestCase struct {
 	cancel    context.CancelFunc
 	telset    component.TelemetrySettings
 	consumers mockConsumers
-	stream    *arrowCollectorMock.MockArrowStreamService_ArrowStreamServer
+	stream    *arrowCollectorMock.MockArrowTracesService_ArrowTracesServer
 	receive   chan recvResult
 	consume   chan consumeResult
 	streamErr chan error
@@ -212,7 +215,7 @@ var _ Consumers = mockConsumers{}
 
 func newCommonTestCase(t *testing.T, tc testChannel) *commonTestCase {
 	ctrl := gomock.NewController(t)
-	stream := arrowCollectorMock.NewMockArrowStreamService_ArrowStreamServer(ctrl)
+	stream := arrowCollectorMock.NewMockArrowTracesService_ArrowTracesServer(ctrl)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ctx = metadata.NewIncomingContext(ctx, metadata.MD{
@@ -316,11 +319,11 @@ func (ctc *commonTestCase) newOOMConsumer() arrowRecord.ConsumerAPI {
 	return mock
 }
 
-func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opts ...func(*configgrpc.GRPCServerSettings, *auth.Server)) {
+func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opts ...func(*configgrpc.ServerConfig, *auth.Server)) {
 	var authServer auth.Server
-	gsettings := &configgrpc.GRPCServerSettings{}
+	var gsettings configgrpc.ServerConfig
 	for _, gf := range opts {
-		gf(gsettings, &authServer)
+		gf(&gsettings, &authServer)
 	}
 	rc := receiver.CreateSettings{
 		TelemetrySettings: ctc.telset,
@@ -333,7 +336,7 @@ func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opt
 	})
 	require.NoError(ctc.T, err)
 
-	rcvr := New(
+	rcvr, err := New(
 		ctc.consumers,
 		rc,
 		obsrecv,
@@ -342,8 +345,9 @@ func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opt
 		newConsumer,
 		netstats.Noop{},
 	)
+	require.NoError(ctc.T, err)
 	go func() {
-		ctc.streamErr <- rcvr.ArrowStream(ctc.stream)
+		ctc.streamErr <- rcvr.ArrowTraces(ctc.stream)
 	}()
 }
 
@@ -679,7 +683,7 @@ func testReceiverHeaders(t *testing.T, includeMeta bool) {
 
 	ctc.stream.EXPECT().Send(gomock.Any()).Times(len(expectData) + 1).Return(nil)
 
-	ctc.start(ctc.newRealConsumer, func(gsettings *configgrpc.GRPCServerSettings, _ *auth.Server) {
+	ctc.start(ctc.newRealConsumer, func(gsettings *configgrpc.ServerConfig, _ *auth.Server) {
 		gsettings.IncludeMetadata = includeMeta
 	})
 
@@ -1041,7 +1045,7 @@ func testReceiverAuthHeaders(t *testing.T, includeMeta bool, dataAuth bool) {
 	})
 
 	var authCall *gomock.Call
-	ctc.start(ctc.newRealConsumer, func(gsettings *configgrpc.GRPCServerSettings, authPtr *auth.Server) {
+	ctc.start(ctc.newRealConsumer, func(gsettings *configgrpc.ServerConfig, authPtr *auth.Server) {
 		gsettings.IncludeMetadata = includeMeta
 
 		as := mock.NewMockServer(ctc.ctrl)
@@ -1168,5 +1172,59 @@ func testReceiverAuthHeaders(t *testing.T, includeMeta bool, dataAuth bool) {
 		} else {
 			require.Equal(t, arrowpb.StatusCode_OK, batch.StatusCode)
 		}
+	}
+}
+
+func TestHeaderReceiverIsTraced(t *testing.T) {
+	streamHeaders := map[string][]string{
+		"K": {"k1", "k2"},
+	}
+	requestHeaders := map[string][]string{
+		"L":           {"l1"},
+		"traceparent": {"00-00112233445566778899aabbccddeeff-0011223344556677-01"},
+	}
+	expectCombined := map[string][]string{
+		"K": {"k1", "k2"},
+		"L": {"l1"},
+	}
+
+	var hpb bytes.Buffer
+
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	hpe := hpack.NewEncoder(&hpb)
+
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.MD(streamHeaders))
+
+	h := newHeaderReceiver(ctx, nil, true)
+
+	for i := 0; i < 3; i++ {
+		hpb.Reset()
+
+		for key, vals := range requestHeaders {
+			for _, val := range vals {
+				err := hpe.WriteField(hpack.HeaderField{
+					Name:  strings.ToLower(key),
+					Value: val,
+				})
+				require.NoError(t, err)
+			}
+		}
+
+		newCtx, _, err := h.combineHeaders(ctx, hpb.Bytes())
+
+		require.NoError(t, err)
+		requireContainsAll(t, client.FromContext(newCtx).Metadata, expectCombined)
+
+		// Check for hard-coded trace and span IDs from `traceparent` header above.
+		spanCtx := trace.SpanContextFromContext(newCtx)
+		require.Equal(
+			t,
+			trace.TraceID{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff},
+			spanCtx.TraceID())
+		require.Equal(
+			t,
+			trace.SpanID{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77},
+			spanCtx.SpanID())
 	}
 }

@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 	arrowRecordMock "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record/mock"
 	otelAssert "github.com/open-telemetry/otel-arrow/pkg/otel/assert"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -29,6 +29,9 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const defaultMaxStreamLifetime = 11 * time.Second
@@ -139,7 +142,7 @@ func newExporterTestCaseCommon(t *testing.T, noisy noisyTest, numStreams int, di
 			copyBatch(prod.BatchArrowRecordsFromMetrics))
 		mock.EXPECT().Close().Times(1).Return(nil)
 		return mock
-	}, ctc.streamClient, ctc.perRPCCredentials, netstats.Noop{})
+	}, ctc.traceClient, ctc.perRPCCredentials, netstats.Noop{})
 
 	return &exporterTestCase{
 		commonTestCase: ctc,
@@ -192,7 +195,7 @@ func TestArrowExporterSuccess(t *testing.T) {
 		tc := newSingleStreamTestCase(t)
 		channel := newHealthyTestChannel()
 
-		tc.streamCall.Times(1).DoAndReturn(tc.returnNewStream(channel))
+		tc.traceCall.Times(1).DoAndReturn(tc.returnNewStream(channel))
 
 		ctx := context.Background()
 		require.NoError(t, tc.exporter.Start(ctx))
@@ -252,7 +255,7 @@ func TestArrowExporterTimeout(t *testing.T) {
 	tc := newSingleStreamTestCase(t)
 	channel := newUnresponsiveTestChannel()
 
-	tc.streamCall.Times(1).DoAndReturn(tc.returnNewStream(channel))
+	tc.traceCall.Times(1).DoAndReturn(tc.returnNewStream(channel))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	require.NoError(t, tc.exporter.Start(ctx))
@@ -274,7 +277,7 @@ func TestArrowExporterStreamConnectError(t *testing.T) {
 	tc := newSingleStreamTestCase(t)
 	channel := newConnectErrorTestChannel()
 
-	tc.streamCall.AnyTimes().DoAndReturn(tc.returnNewStream(channel))
+	tc.traceCall.AnyTimes().DoAndReturn(tc.returnNewStream(channel))
 
 	bg := context.Background()
 	require.NoError(t, tc.exporter.Start(bg))
@@ -296,7 +299,7 @@ func TestArrowExporterDowngrade(t *testing.T) {
 	tc := newSingleStreamTestCase(t)
 	channel := newArrowUnsupportedTestChannel()
 
-	tc.streamCall.AnyTimes().DoAndReturn(tc.returnNewStream(channel))
+	tc.traceCall.AnyTimes().DoAndReturn(tc.returnNewStream(channel))
 
 	bg := context.Background()
 	require.NoError(t, tc.exporter.Start(bg))
@@ -321,8 +324,8 @@ func TestArrowExporterDisableDowngrade(t *testing.T) {
 	goodChannel := newHealthyTestChannel()
 
 	fails := 0
-	tc.streamCall.AnyTimes().DoAndReturn(func(ctx context.Context, opts ...grpc.CallOption) (
-		arrowpb.ArrowStreamService_ArrowStreamClient,
+	tc.traceCall.AnyTimes().DoAndReturn(func(ctx context.Context, opts ...grpc.CallOption) (
+		arrowpb.ArrowTracesService_ArrowTracesClient,
 		error,
 	) {
 		defer func() { fails++ }()
@@ -363,7 +366,7 @@ func TestArrowExporterConnectTimeout(t *testing.T) {
 	tc := newSingleStreamTestCase(t)
 	channel := newDisconnectedTestChannel()
 
-	tc.streamCall.AnyTimes().DoAndReturn(tc.returnNewStream(channel))
+	tc.traceCall.AnyTimes().DoAndReturn(tc.returnNewStream(channel))
 
 	bg := context.Background()
 	ctx, cancel := context.WithCancel(bg)
@@ -387,7 +390,7 @@ func TestArrowExporterStreamFailure(t *testing.T) {
 	channel0 := newUnresponsiveTestChannel()
 	channel1 := newHealthyTestChannel()
 
-	tc.streamCall.AnyTimes().DoAndReturn(tc.returnNewStream(channel0, channel1))
+	tc.traceCall.AnyTimes().DoAndReturn(tc.returnNewStream(channel0, channel1))
 
 	bg := context.Background()
 	require.NoError(t, tc.exporter.Start(bg))
@@ -425,7 +428,7 @@ func TestArrowExporterStreamRace(t *testing.T) {
 
 	var tries atomic.Int32
 
-	tc.streamCall.AnyTimes().DoAndReturn(tc.repeatedNewStream(func() testChannel {
+	tc.traceCall.AnyTimes().DoAndReturn(tc.repeatedNewStream(func() testChannel {
 		noResponse := newUnresponsiveTestChannel()
 		// Immediately unblock to return the EOF to the stream
 		// receiver and shut down the stream.
@@ -471,7 +474,7 @@ func TestArrowExporterStreaming(t *testing.T) {
 	tc := newSingleStreamTestCase(t)
 	channel := newHealthyTestChannel()
 
-	tc.streamCall.AnyTimes().DoAndReturn(tc.returnNewStream(channel))
+	tc.traceCall.AnyTimes().DoAndReturn(tc.returnNewStream(channel))
 
 	bg := context.Background()
 	require.NoError(t, tc.exporter.Start(bg))
@@ -519,7 +522,7 @@ func TestArrowExporterHeaders(t *testing.T) {
 	tc := newSingleStreamMetadataTestCase(t)
 	channel := newHealthyTestChannel()
 
-	tc.streamCall.AnyTimes().DoAndReturn(tc.returnNewStream(channel))
+	tc.traceCall.AnyTimes().DoAndReturn(tc.returnNewStream(channel))
 
 	bg := context.Background()
 	require.NoError(t, tc.exporter.Start(bg))
@@ -556,6 +559,77 @@ func TestArrowExporterHeaders(t *testing.T) {
 			md := metadata.MD{
 				"expected1": []string{"metadata1"},
 				"expected2": []string{fmt.Sprint(times)},
+			}
+			expectOutput = append(expectOutput, md)
+		} else {
+			expectOutput = append(expectOutput, nil)
+		}
+
+		sent, err := tc.exporter.SendAndWait(ctx, input)
+		require.NoError(t, err)
+		require.True(t, sent)
+	}
+	// Stop the test conduit started above.  If the sender were
+	// still sending, it would panic on a closed channel.
+	close(channel.sent)
+	wg.Wait()
+
+	require.Equal(t, expectOutput, actualOutput)
+	require.NoError(t, tc.exporter.Shutdown(bg))
+}
+
+// TestArrowExporterIsTraced tests whether trace and span ID are
+// propagated.
+func TestArrowExporterIsTraced(t *testing.T) {
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	tc := newSingleStreamTestCase(t)
+	channel := newHealthyTestChannel()
+
+	tc.traceCall.AnyTimes().DoAndReturn(tc.returnNewStream(channel))
+
+	bg := context.Background()
+	require.NoError(t, tc.exporter.Start(bg))
+
+	var expectOutput []metadata.MD
+	var actualOutput []metadata.MD
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		md := metadata.MD{}
+		hpd := hpack.NewDecoder(4096, func(f hpack.HeaderField) {
+			md[f.Name] = append(md[f.Name], f.Value)
+		})
+		for data := range channel.sent {
+			if len(data.Headers) == 0 {
+				actualOutput = append(actualOutput, nil)
+			} else {
+				_, err := hpd.Write(data.Headers)
+				require.NoError(t, err)
+				actualOutput = append(actualOutput, md)
+				md = metadata.MD{}
+			}
+			channel.recv <- statusOKFor(data.BatchId)
+		}
+	}()
+
+	for times := 0; times < 10; times++ {
+		input := testdata.GenerateTraces(2)
+		ctx := context.Background()
+
+		if times%2 == 1 {
+			ctx = trace.ContextWithSpanContext(ctx,
+				trace.NewSpanContext(trace.SpanContextConfig{
+					TraceID: [16]byte{byte(times), 1, 2, 3, 4, 5, 6, 7, 8, 9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf},
+					SpanID:  [8]byte{byte(times), 1, 2, 3, 4, 5, 6, 7},
+				}),
+			)
+			expectMap := map[string]string{}
+			propagation.TraceContext{}.Inject(ctx, propagation.MapCarrier(expectMap))
+
+			md := metadata.MD{
+				"traceparent": []string{expectMap["traceparent"]},
 			}
 			expectOutput = append(expectOutput, md)
 		} else {

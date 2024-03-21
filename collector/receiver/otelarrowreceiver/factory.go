@@ -6,24 +6,17 @@ package otelarrowreceiver // import "github.com/open-telemetry/otel-arrow/collec
 import (
 	"context"
 
+	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/metadata"
 	"github.com/open-telemetry/otel-arrow/collector/sharedcomponent"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
-	"go.opentelemetry.io/collector/config/confighttp"
 	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/receiver"
 )
 
 const (
-	typeStr = "otelarrow"
-
 	defaultGRPCEndpoint = "0.0.0.0:4317"
-	defaultHTTPEndpoint = "0.0.0.0:4318"
-
-	defaultTracesURLPath  = "/v1/traces"
-	defaultMetricsURLPath = "/v1/metrics"
-	defaultLogsURLPath    = "/v1/logs"
 
 	defaultMemoryLimitMiB = 128
 )
@@ -31,34 +24,26 @@ const (
 // NewFactory creates a new OTLP receiver factory.
 func NewFactory() receiver.Factory {
 	return receiver.NewFactory(
-		typeStr,
+		metadata.Type,
 		createDefaultConfig,
-		receiver.WithTraces(createTraces, component.StabilityLevelStable),
-		receiver.WithMetrics(createMetrics, component.StabilityLevelStable),
-		receiver.WithLogs(createLog, component.StabilityLevelBeta))
+		receiver.WithTraces(createTraces, metadata.TracesStability),
+		receiver.WithMetrics(createMetrics, metadata.MetricsStability),
+		receiver.WithLogs(createLog, metadata.LogsStability))
 }
 
 // createDefaultConfig creates the default configuration for receiver.
 func createDefaultConfig() component.Config {
 	return &Config{
 		Protocols: Protocols{
-			GRPC: &configgrpc.GRPCServerSettings{
-				NetAddr: confignet.NetAddr{
+			GRPC: configgrpc.ServerConfig{
+				NetAddr: confignet.AddrConfig{
 					Endpoint:  defaultGRPCEndpoint,
 					Transport: "tcp",
 				},
 				// We almost write 0 bytes, so no need to tune WriteBufferSize.
 				ReadBufferSize: 512 * 1024,
 			},
-			HTTP: &httpServerSettings{
-				HTTPServerSettings: &confighttp.HTTPServerSettings{
-					Endpoint: defaultHTTPEndpoint,
-				},
-				TracesURLPath:  defaultTracesURLPath,
-				MetricsURLPath: defaultMetricsURLPath,
-				LogsURLPath:    defaultLogsURLPath,
-			},
-			Arrow: &ArrowSettings{
+			Arrow: ArrowSettings{
 				MemoryLimitMiB: defaultMemoryLimitMiB,
 			},
 		},
@@ -73,8 +58,8 @@ func createTraces(
 	nextConsumer consumer.Traces,
 ) (receiver.Traces, error) {
 	oCfg := cfg.(*Config)
-	r, err := receivers.GetOrAdd(oCfg, func() (*otlpReceiver, error) {
-		return newOtlpReceiver(oCfg, set)
+	r, err := receivers.GetOrAdd(oCfg, func() (*otelArrowReceiver, error) {
+		return newOTelArrowReceiver(oCfg, set)
 	})
 	if err != nil {
 		return nil, err
@@ -94,8 +79,8 @@ func createMetrics(
 	consumer consumer.Metrics,
 ) (receiver.Metrics, error) {
 	oCfg := cfg.(*Config)
-	r, err := receivers.GetOrAdd(oCfg, func() (*otlpReceiver, error) {
-		return newOtlpReceiver(oCfg, set)
+	r, err := receivers.GetOrAdd(oCfg, func() (*otelArrowReceiver, error) {
+		return newOTelArrowReceiver(oCfg, set)
 	})
 	if err != nil {
 		return nil, err
@@ -115,8 +100,8 @@ func createLog(
 	consumer consumer.Logs,
 ) (receiver.Logs, error) {
 	oCfg := cfg.(*Config)
-	r, err := receivers.GetOrAdd(oCfg, func() (*otlpReceiver, error) {
-		return newOtlpReceiver(oCfg, set)
+	r, err := receivers.GetOrAdd(oCfg, func() (*otelArrowReceiver, error) {
+		return newOTelArrowReceiver(oCfg, set)
 	})
 	if err != nil {
 		return nil, err
@@ -131,7 +116,7 @@ func createLog(
 // This is the map of already created OTLP receivers for particular configurations.
 // We maintain this map because the Factory is asked trace and metric receivers separately
 // when it gets CreateTracesReceiver() and CreateMetricsReceiver() but they must not
-// create separate objects, they must use one otlpReceiver object per configuration.
+// create separate objects, they must use one otelArrowReceiver object per configuration.
 // When the receiver is shutdown it should be removed from this map so the same configuration
 // can be recreated successfully.
-var receivers = sharedcomponent.NewSharedComponents[*Config, *otlpReceiver]()
+var receivers = sharedcomponent.NewSharedComponents[*Config, *otelArrowReceiver]()

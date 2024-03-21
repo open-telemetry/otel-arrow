@@ -20,16 +20,16 @@ BUILD_INFO_IMPORT_PATH=go.opentelemetry.io/collector/internal/version
 all: gotidy test build
 
 test:
-	for dir in $(GODIRS); do (cd $${dir} && $(GOCMD) test --tags=assert ./...); done
+	for dir in $(GODIRS); do (cd $${dir}; $(GOCMD) test --tags=assert ./...) || exit 1; done
 
 fmt:
-	for dir in $(GODIRS); do (cd $${dir} && $(GOCMD) fmt ./...); done
+	for dir in $(GODIRS); do (cd $${dir}; $(GOCMD) fmt ./...) || exit 1; done
 
 build:
-	for dir in $(GODIRS); do (cd $${dir} && $(GOCMD) build ./...); done
+	for dir in $(GODIRS); do (cd $${dir}; $(GOCMD) build ./...) || exit 1; done
 
 gotidy:
-	$(GOCMD) work sync
+	for dir in $(GODIRS); do (cd $${dir}; GOWORK="off" $(GOCMD) mod tidy) || exit 1; done
 
 doc:
 	$(GOCMD) run tools/data_model_gen/main.go
@@ -51,6 +51,9 @@ MODSET?=beta
 .PHONY: multimod-prerelease
 multimod-prerelease: $(MULTIMOD)
 	$(MULTIMOD) prerelease -s=true -b=false -v ./versions.yaml -m ${MODSET}
+# this is a hack to sync the otelarrowreceiver during this process
+# to avoid gomod ambigious imports.
+	(cd collector/receiver/otelarrowreceiver/ && $(GOCMD) work sync)
 	$(MAKE) gotidy
 
 COMMIT?=HEAD
@@ -89,29 +92,41 @@ endif
 	# update files with new version
 	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' versions.yaml
 	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' collector/otelarrowcol-build.yaml
+	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' collector/cmd/otelarrowcol/main.go
 	find . -name "*.bak" -type f -delete
+	$(GOCMD) run ./tools/replacer fix
 	# commit changes before running multimod
 	git add .
 	git commit -m "prepare release $(RELEASE_CANDIDATE)"
 	$(MAKE) multimod-prerelease
 	git add .
+	git commit -m "multimode changes $(RELEASE_CANDIDATE)"
 	# regenerate files
 	$(MAKE) gotidy
-	# ensure a clean branch
+	$(GOCMD) run ./tools/replacer unfix
+	git add .
+	git commit -m "go mod tidy $(RELEASE_CANDIDATE)"
+	# ensure a clean branch (that was a test--gotidy should be idempotent and should not change the working dir again)
 	git diff -s --exit-code || (echo "local repository not clean"; exit 1)
-	git commit -m "add multimod changes $(RELEASE_CANDIDATE)" || (echo "no multimod changes to commit")
+	git add .
+	git commit -m "remove replace statements $(RELEASE_CANDIDATE)" || (echo "no multimod changes to commit")
 
-# Install OTC's builder at the latest version
+# Install OTC's builder at the version WHICH MUST MATCH collector/otelarrowcol-build.yaml
 BUILDER = builder
 .PHONY: $(BUILDER)
 builder:
-	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@latest
+	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@v0.96.0
 
 .PHONY: genotelarrowcol
 genotelarrowcol: builder
 	rm -f collector/cmd/otelarrowcol/*
-	$(BUILDER) --skip-compilation --skip-get-modules --config collector/otelarrowcol-build.yaml
+	GOWORK="off" $(GOCMD) run ./tools/replacer fix
+	GOWORK="off" $(BUILDER) --skip-compilation --config collector/otelarrowcol-build.yaml
+	GOWORK="off" $(GOCMD) run ./tools/replacer fix
 	$(GOCMD) work sync
+	$(MAKE) gotidy
+	GOWORK="off" $(GOCMD) run ./tools/replacer unfix
+	$(MAKE) gotidy
 
 .PHONY: otelarrowcol
 otelarrowcol:

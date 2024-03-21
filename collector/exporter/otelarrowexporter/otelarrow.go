@@ -10,9 +10,10 @@ import (
 	"runtime"
 	"time"
 
-	arrowPkg "github.com/apache/arrow/go/v12/arrow"
+	arrowPkg "github.com/apache/arrow/go/v14/arrow"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 	"go.uber.org/multierr"
+	"go.uber.org/zap"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -53,9 +54,9 @@ type baseExporter struct {
 	// Default user-agent header.
 	userAgent string
 
-	// OTLP+Arrow optional state
+	// OTel-Arrow optional state
 	arrow *arrow.Exporter
-	// streamClientFunc is the stream constructor, depends on EnableMixedTelemetry.
+	// streamClientFunc is the stream constructor
 	streamClientFactory streamClientFactory
 }
 
@@ -103,19 +104,19 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) (err erro
 		dialOpts = append(dialOpts, grpc.WithStatsHandler(e.netReporter.Handler()))
 	}
 	dialOpts = append(dialOpts, e.config.UserDialOptions...)
-	if e.clientConn, err = e.config.GRPCClientSettings.ToClientConn(ctx, host, e.settings.TelemetrySettings, dialOpts...); err != nil {
+	if e.clientConn, err = e.config.ClientConfig.ToClientConn(ctx, host, e.settings.TelemetrySettings, dialOpts...); err != nil {
 		return err
 	}
 	e.traceExporter = ptraceotlp.NewGRPCClient(e.clientConn)
 	e.metricExporter = pmetricotlp.NewGRPCClient(e.clientConn)
 	e.logExporter = plogotlp.NewGRPCClient(e.clientConn)
 	headers := map[string]string{}
-	for k, v := range e.config.GRPCClientSettings.Headers {
+	for k, v := range e.config.ClientConfig.Headers {
 		headers[k] = string(v)
 	}
 	e.metadata = metadata.New(headers)
 	e.callOptions = []grpc.CallOption{
-		grpc.WaitForReady(e.config.GRPCClientSettings.WaitForReady),
+		grpc.WaitForReady(e.config.ClientConfig.WaitForReady),
 	}
 
 	if !e.config.Arrow.Disabled {
@@ -123,9 +124,9 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) (err erro
 		ctx := e.enhanceContext(context.Background())
 
 		var perRPCCreds credentials.PerRPCCredentials
-		if e.config.GRPCClientSettings.Auth != nil {
+		if e.config.ClientConfig.Auth != nil {
 			// Get the auth extension, we'll use it to enrich the request context.
-			authClient, err := e.config.GRPCClientSettings.Auth.GetClientAuthenticator(host.GetExtensions())
+			authClient, err := e.config.ClientConfig.Auth.GetClientAuthenticator(host.GetExtensions())
 			if err != nil {
 				return err
 			}
@@ -140,7 +141,7 @@ func (e *baseExporter) start(ctx context.Context, host component.Host) (err erro
 
 		arrowCallOpts := e.callOptions
 
-		if e.config.GRPCClientSettings.Compression == configcompression.Zstd {
+		if e.config.ClientConfig.Compression == configcompression.TypeZstd {
 			// ignore the error below b/c Validate() was called
 			_ = zstd.SetEncoderConfig(e.config.Arrow.Zstd)
 			// use the configured compressor.
@@ -201,7 +202,11 @@ func (e *baseExporter) pushTraces(ctx context.Context, td ptrace.Traces) error {
 	}
 	partialSuccess := resp.PartialSuccess()
 	if !(partialSuccess.ErrorMessage() == "" && partialSuccess.RejectedSpans() == 0) {
-		return consumererror.NewPermanent(fmt.Errorf("OTLP partial success: \"%s\" (%d rejected)", resp.PartialSuccess().ErrorMessage(), resp.PartialSuccess().RejectedSpans()))
+		// TODO: These should be counted, similar to dropped items.
+		e.settings.Logger.Warn("partial success",
+			zap.String("message", resp.PartialSuccess().ErrorMessage()),
+			zap.Int64("num_rejected", resp.PartialSuccess().RejectedSpans()),
+		)
 	}
 	return nil
 }
@@ -219,7 +224,11 @@ func (e *baseExporter) pushMetrics(ctx context.Context, md pmetric.Metrics) erro
 	}
 	partialSuccess := resp.PartialSuccess()
 	if !(partialSuccess.ErrorMessage() == "" && partialSuccess.RejectedDataPoints() == 0) {
-		return consumererror.NewPermanent(fmt.Errorf("OTLP partial success: \"%s\" (%d rejected)", resp.PartialSuccess().ErrorMessage(), resp.PartialSuccess().RejectedDataPoints()))
+		// TODO: These should be counted, similar to dropped items.
+		e.settings.Logger.Warn("partial success",
+			zap.String("message", resp.PartialSuccess().ErrorMessage()),
+			zap.Int64("num_rejected", resp.PartialSuccess().RejectedDataPoints()),
+		)
 	}
 	return nil
 }
@@ -237,7 +246,11 @@ func (e *baseExporter) pushLogs(ctx context.Context, ld plog.Logs) error {
 	}
 	partialSuccess := resp.PartialSuccess()
 	if !(partialSuccess.ErrorMessage() == "" && partialSuccess.RejectedLogRecords() == 0) {
-		return consumererror.NewPermanent(fmt.Errorf("OTLP partial success: \"%s\" (%d rejected)", resp.PartialSuccess().ErrorMessage(), resp.PartialSuccess().RejectedLogRecords()))
+		// TODO: These should be counted, similar to dropped items.
+		e.settings.Logger.Warn("partial success",
+			zap.String("message", resp.PartialSuccess().ErrorMessage()),
+			zap.Int64("num_rejected", resp.PartialSuccess().RejectedLogRecords()),
+		)
 	}
 	return nil
 }

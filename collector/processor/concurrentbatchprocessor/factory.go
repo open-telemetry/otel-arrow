@@ -19,15 +19,14 @@ const (
 	defaultSendBatchSize = uint32(8192)
 	defaultTimeout       = 200 * time.Millisecond
 
+	// default inflight bytes is 32 MiB
+	defaultMaxInFlightSizeMiB = 32
+
 	// defaultMetadataCardinalityLimit should be set to the number
 	// of metadata configurations the user expects to submit to
 	// the collector.
 	defaultMetadataCardinalityLimit = 1000
 )
-
-// This featuregate might already be registered, but is access is internal to the collector repo.
-// In the meantime this batchprocessor will only support otel for metrics (no support for opencensus).
-var UseOtelForInternalMetricsfeatureGate = true
 
 // NewFactory returns a new factory for the Batch processor.
 func NewFactory() processor.Factory {
@@ -43,6 +42,7 @@ func createDefaultConfig() component.Config {
 	return &Config{
 		SendBatchSize:            defaultSendBatchSize,
 		Timeout:                  defaultTimeout,
+		MaxInFlightSizeMiB:       defaultMaxInFlightSizeMiB,
 		MetadataCardinalityLimit: defaultMetadataCardinalityLimit,
 	}
 }
@@ -53,7 +53,7 @@ func createTraces(
 	cfg component.Config,
 	nextConsumer consumer.Traces,
 ) (processor.Traces, error) {
-	return newBatchTracesProcessor(set, nextConsumer, cfg.(*Config), UseOtelForInternalMetricsfeatureGate)
+	return newBatchTracesProcessor(set, nextConsumer, cfg.(*Config))
 }
 
 func createMetrics(
@@ -62,7 +62,7 @@ func createMetrics(
 	cfg component.Config,
 	nextConsumer consumer.Metrics,
 ) (processor.Metrics, error) {
-	return newBatchMetricsProcessor(set, nextConsumer, cfg.(*Config), UseOtelForInternalMetricsfeatureGate)
+	return newBatchMetricsProcessor(set, nextConsumer, cfg.(*Config))
 }
 
 func createLogs(
@@ -71,5 +71,5 @@ func createLogs(
 	cfg component.Config,
 	nextConsumer consumer.Logs,
 ) (processor.Logs, error) {
-	return newBatchLogsProcessor(set, nextConsumer, cfg.(*Config), UseOtelForInternalMetricsfeatureGate)
+	return newBatchLogsProcessor(set, nextConsumer, cfg.(*Config))
 }
