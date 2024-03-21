@@ -236,8 +236,12 @@ func (c *Attributes16Accumulator) AppendWithID(parentID uint16, attrs pcommon.Ma
 	}
 
 	attrs.Range(func(key string, v pcommon.Value) bool {
+		// Attribute without key or value are ignored.
 		if key == "" {
 			// Skip entries with empty keys
+			return true
+		}
+		if v.Type() == pcommon.ValueTypeEmpty {
 			return true
 		}
 
