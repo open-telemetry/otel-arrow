@@ -12,7 +12,7 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/pdata/ptrace"
-	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
+	"github.com/open-telemetry/otel-arrow/api/experimental/otlp/collector/trace/v1"
 )
 
 type memoryLimiterExtension struct {
@@ -46,7 +46,7 @@ func (ml *memoryLimiterExtension) MustRefuse(req any) bool {
 	
 	default:
 		fmt.Println("default")
-		fmt.Println(td.(ptraceotlp.ExportRequest).MarshalJSON())
+		fmt.Println(td.(*v1.ExportTraceServiceRequest))
 	}
 	return true
 
