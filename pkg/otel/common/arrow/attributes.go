@@ -168,10 +168,11 @@ func (b *AttributesBuilder) Append(attrs pcommon.Map) error {
 	return b.builder.Append(attrs.Len(), func() error {
 		var err error
 		attrs.Range(func(key string, v pcommon.Value) bool {
-			if key == "" {
-				// Skip entries with empty keys
+			// Attribute without key or without value are ignored.
+			if key == "" || v.Type() == pcommon.ValueTypeEmpty {
 				return true
 			}
+
 			b.kb.AppendNonEmpty(key)
 			return b.ib.Append(&v) == nil
 		})
@@ -236,12 +237,8 @@ func (c *Attributes16Accumulator) AppendWithID(parentID uint16, attrs pcommon.Ma
 	}
 
 	attrs.Range(func(key string, v pcommon.Value) bool {
-		// Attribute without key or value are ignored.
-		if key == "" {
-			// Skip entries with empty keys
-			return true
-		}
-		if v.Type() == pcommon.ValueTypeEmpty {
+		// Attribute without key or without value are ignored.
+		if key == "" || v.Type() == pcommon.ValueTypeEmpty {
 			return true
 		}
 
@@ -294,8 +291,8 @@ func (c *Attributes32Accumulator) Append(ID uint32, attrs pcommon.Map) error {
 	}
 
 	attrs.Range(func(key string, v pcommon.Value) bool {
-		if key == "" {
-			// Skip entries with empty keys
+		// Attribute without key or without value are ignored.
+		if key == "" || v.Type() == pcommon.ValueTypeEmpty {
 			return true
 		}
 
