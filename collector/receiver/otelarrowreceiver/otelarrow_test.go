@@ -42,7 +42,6 @@ import (
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/extension/auth"
-	"go.opentelemetry.io/collector/obsreport/obsreporttest"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
@@ -176,7 +175,7 @@ func TestOTLPReceiverGRPCTracesIngestTest(t *testing.T) {
 	addr := testutil.GetAvailableLocalAddress(t)
 	td := testdata.GenerateTraces(1)
 
-	tt, err := obsreporttest.SetupTelemetry(testReceiverID)
+	tt, err := componenttest.SetupTelemetry(testReceiverID)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, tt.Shutdown(context.Background())) })
 
