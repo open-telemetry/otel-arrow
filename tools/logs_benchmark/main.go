@@ -81,6 +81,7 @@ func main() {
 	// Compare the performance for each input file
 	for i := range inputFiles {
 		var ds dataset.LogsDataset
+		var compression = benchmark.CompressionTypeZstd
 
 		inputFile := inputFiles[i]
 		compressionAlgo := benchmark.Zstd()
@@ -93,6 +94,7 @@ func main() {
 		// in case formatFlag was not passed
 		if strings.HasSuffix(inputFile, ".json") {
 			*formatFlag = "json"
+			compression = benchmark.CompressionTypeNone
 		} else if strings.HasSuffix(inputFile, ".pb") {
 			*formatFlag = "proto"
 		}
@@ -101,7 +103,7 @@ func main() {
 		if strings.HasSuffix(inputFile, ".csv") {
 			ds = CsvToLogsDataset(inputFile)
 		} else {
-			rds := dataset.NewRealLogsDataset(inputFiles[i], benchmark.CompressionTypeZstd, *formatFlag)
+			rds := dataset.NewRealLogsDataset(inputFiles[i], compression, *formatFlag)
 			//rds.Resize(10)
 			ds = rds
 		}

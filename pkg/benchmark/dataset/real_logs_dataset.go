@@ -26,6 +26,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
 
 	"github.com/klauspost/compress/zstd"
+
 	"github.com/open-telemetry/otel-arrow/pkg/benchmark"
 	"github.com/open-telemetry/otel-arrow/pkg/benchmark/stats"
 )

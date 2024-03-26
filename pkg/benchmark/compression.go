@@ -23,6 +23,7 @@ import (
 )
 
 const CompressionTypeZstd = "zstd"
+const CompressionTypeNone = ""
 
 type CompressionAlgorithm interface {
 	fmt.Stringer
