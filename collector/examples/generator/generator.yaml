@@ -1,6 +1,6 @@
 extensions:
   memory_limiter:
-    memory_limit_mib: 8
+    memory_limit_mib: 1
 
 receivers:
   otelarrow:
@@ -8,6 +8,7 @@ receivers:
       grpc:
         endpoint: localhost:4317
         memory_limiter: memory_limiter
+        max_recv_msg_size_mib: 3000
 
 processors:
   concurrentbatch:
@@ -20,7 +21,7 @@ service:
   pipelines:
     traces:
       receivers: [otelarrow]
-      processors: [concurrentbatch]
+      processors: []
       exporters: [debug]
 
   extensions: [memory_limiter]

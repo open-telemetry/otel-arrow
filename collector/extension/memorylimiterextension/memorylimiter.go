@@ -6,19 +6,21 @@ package memorylimiterextension // import "go.opentelemetry.io/collector/extensio
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"golang.org/x/sync/semaphore"
 	"go.uber.org/zap"
 
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/pdata/ptrace"
-	"github.com/open-telemetry/otel-arrow/api/experimental/otlp/collector/trace/v1"
 )
 
 type memoryLimiterExtension struct {
 	limitBytes int64
 	sem        *semaphore.Weighted
+	logger     *zap.Logger
+	timeout    time.Duration
 }
+
 
 // newMemoryLimiter returns a new memorylimiter extension.
 func newMemoryLimiter(cfg *Config, logger *zap.Logger) (*memoryLimiterExtension, error) {
@@ -26,6 +28,8 @@ func newMemoryLimiter(cfg *Config, logger *zap.Logger) (*memoryLimiterExtension,
 	return &memoryLimiterExtension{
 		limitBytes: limitBytes,
 		sem: semaphore.NewWeighted(limitBytes),
+		timeout: cfg.Timeout,
+		logger: logger,
 	}, nil
 }
 
@@ -38,21 +42,25 @@ func (ml *memoryLimiterExtension) Shutdown(ctx context.Context) error {
 }
 
 // MustRefuse returns if the caller should deny because memory has reached it's configured limits
-func (ml *memoryLimiterExtension) MustRefuse(req any) bool {
+func (ml *memoryLimiterExtension) MustRefuse(sizeBytes int64) bool {
 	fmt.Println("TYPE OF REQ")
-	switch td := req.(type) {
-	case ptrace.Traces:
-		fmt.Println("thank God")
-	
-	default:
-		fmt.Println("default")
-		fmt.Println(td.(*v1.ExportTraceServiceRequest))
+
+	fmt.Println("ACQUIRING")
+	fmt.Println(sizeBytes)
+	ctx, cancel := context.WithTimeout(context.Background(), ml.timeout)
+	defer cancel()
+
+	err := ml.sem.Acquire(ctx, sizeBytes)
+	if err != nil {
+		ml.logger.Debug("rejecting request exceeded memory limit", zap.Error(err))
+		return true
 	}
-	return true
 
+	return false
+}
 
-	// check if there is room for another request. Note that the request might push us over limitBytes, but we won't know the request size until
-	// the Handler() handles the request. If the request exceeds the limit then we will block until more room is available 
-	// TODO: Should this always return false and have the handler handle the logic?
-	return ml.sem.TryAcquire(1)
+func (ml *memoryLimiterExtension) ReleaseMemory(sizeBytes int64) {
+	fmt.Println("RELEASING")
+	fmt.Println(sizeBytes)
+	ml.sem.Release(sizeBytes)
 }

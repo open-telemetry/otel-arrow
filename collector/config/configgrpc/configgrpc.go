@@ -162,7 +162,13 @@ type ServerConfig struct {
 	MemoryLimiter *component.ID `mapstructure:"memory_limiter"`
 }
 
-type memoryLimiterExtension = interface{ MustRefuse(req any) bool }
+type memoryLimiterExtension = interface{ 
+	MustRefuse(int64) bool
+	ReleaseMemory(int64)
+}
+
+// type preHookFn func (req any) bool
+// type postHookFn func(req any)
 
 // SanitizedEndpoint strips the prefix of either http:// or https:// from configgrpc.ClientConfig.Endpoint.
 func (gcs *ClientConfig) SanitizedEndpoint() string {
@@ -441,21 +447,35 @@ func (gss *ServerConfig) toServerOption(host component.Host, settings component.
 	return opts, nil
 }
 
+// This interface is meant to access the size of a
+// ExportTraceServiceRequest, ExportMetricsServiceRequest, ExportLogsServicesRequest
+type telemetryServiceRequest = interface { Size() int }
+
 func memoryLimiterUnaryServerInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler, ml memoryLimiterExtension) (any, error) {
-	if ml.MustRefuse(req) {
+	a := req.(telemetryServiceRequest)
+	requestSize := int64(a.Size())
+	if ml.MustRefuse(requestSize) {
 		return nil, errMemoryLimitReached
 	}
 
-	return handler(ctx, req)
+	resp, err := handler(ctx, req)
+
+	ml.ReleaseMemory(requestSize)
+
+	return resp, err
 }
 
+// this won't work I need to get the request by calling stream.Recv().. the issue is how can I pass this onto the handler? i.e. recv should only 
 func memoryLimiterStreamServerInterceptor(srv any, stream grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler, ml memoryLimiterExtension) error {
 	ctx := stream.Context()
-	if ml.MustRefuse(wrapServerStream(ctx, stream)) {
+	if ml.MustRefuse(int64(1)) {
 		return errMemoryLimitReached
 	}
 
-	return handler(srv, wrapServerStream(ctx, stream))
+	err := handler(srv, wrapServerStream(ctx, stream))
+	ml.ReleaseMemory(int64(1))
+
+	return err
 }
 
 func getMemoryLimiterExtension(extID *component.ID, extensions map[component.ID]component.Component) (memoryLimiterExtension, error) {

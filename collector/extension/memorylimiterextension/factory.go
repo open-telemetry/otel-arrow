@@ -7,6 +7,7 @@ package memorylimiterextension // import "go.opentelemetry.io/collector/extensio
 
 import (
 	"context"
+	"time"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/extension"
@@ -26,6 +27,7 @@ func NewFactory() extension.Factory {
 func createDefaultConfig() component.Config {
 	return &Config{
 		MemoryLimitMiB: 32,
+		Timeout: 1 * time.Second,
 	}
 }
 
