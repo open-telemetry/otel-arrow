@@ -53,7 +53,7 @@ var testReceiverID = component.NewIDWithName(component.MustNewType(componentMeta
 
 func TestGRPCNewPortAlreadyUsed(t *testing.T) {
 	addr := testutil.GetAvailableLocalAddress(t)
-	ln, err := net.Listen("tcp", addr)
+	ln, err := net.Listen(confignet.TransportTypeTCP, addr)
 	require.NoError(t, err, "failed to listen on %q: %v", addr, err)
 	t.Cleanup(func() {
 		assert.NoError(t, ln.Close())
@@ -138,7 +138,7 @@ func TestGRPCInvalidTLSCredentials(t *testing.T) {
 			GRPC: configgrpc.ServerConfig{
 				NetAddr: confignet.AddrConfig{
 					Endpoint:  testutil.GetAvailableLocalAddress(t),
-					Transport: "tcp",
+					Transport: confignet.TransportTypeTCP,
 				},
 				TLSSetting: &configtls.TLSServerSetting{
 					TLSSetting: configtls.TLSSetting{
