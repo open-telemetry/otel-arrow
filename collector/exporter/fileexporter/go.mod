@@ -6,7 +6,7 @@ toolchain go1.21.4
 
 require (
 	github.com/klauspost/compress v1.17.7
-	github.com/open-telemetry/otel-arrow/collector v0.19.0
+	github.com/open-telemetry/otel-arrow/collector v0.20.0
 	github.com/stretchr/testify v1.9.0
 	go.opentelemetry.io/collector/component v0.97.0
 	go.opentelemetry.io/collector/config/configretry v0.97.0
