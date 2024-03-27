@@ -330,7 +330,7 @@ func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opt
 		BuildInfo:         component.NewDefaultBuildInfo(),
 	}
 	obsrecv, err := receiverhelper.NewObsReport(receiverhelper.ObsReportSettings{
-		ReceiverID:             component.NewID("arrowtest"),
+		ReceiverID:             component.NewID(component.MustNewType("arrowtest")),
 		Transport:              "grpc",
 		ReceiverCreateSettings: rc,
 	})

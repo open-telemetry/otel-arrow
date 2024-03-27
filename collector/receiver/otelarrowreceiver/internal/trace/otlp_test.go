@@ -75,7 +75,7 @@ func otlpReceiverOnGRPCServer(t *testing.T, tc consumer.Traces) net.Addr {
 	})
 
 	set := receivertest.NewNopCreateSettings()
-	set.ID = component.NewIDWithName("otlp", "trace")
+	set.ID = component.NewIDWithName(component.MustNewType("otlp"), "trace")
 	obsrecv, err := receiverhelper.NewObsReport(receiverhelper.ObsReportSettings{
 		ReceiverID:             set.ID,
 		Transport:              "grpc",

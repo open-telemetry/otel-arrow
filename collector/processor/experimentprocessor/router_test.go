@@ -64,9 +64,9 @@ func TestTraces(t *testing.T) {
 
 		host := newMockHost(map[component.DataType]map[component.ID]component.Component{
 			component.DataTypeTraces: {
-				component.NewIDWithName("otlp", "1"): exps[0],
-				component.NewIDWithName("otlp", "2"): exps[1],
-				component.NewID("otlp"):              exps[2],
+				component.NewIDWithName(component.MustNewType("otlp"), "1"): exps[0],
+				component.NewIDWithName(component.MustNewType("otlp"), "2"): exps[1],
+				component.NewID(component.MustNewType("otlp")):              exps[2],
 			},
 		})
 

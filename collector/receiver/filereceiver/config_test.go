@@ -35,17 +35,17 @@ func TestLoadConfig(t *testing.T) {
 		errorMessage string
 	}{
 		{
-			id:           component.NewIDWithName(metadata.Type, ""),
+			id:           component.NewIDWithName(component.MustNewType(metadata.Type), ""),
 			errorMessage: "path cannot be empty",
 		}, {
-			id: component.NewIDWithName(metadata.Type, "1"),
+			id: component.NewIDWithName(component.MustNewType(metadata.Type), "1"),
 			expected: &Config{
 				Path:       "./filename.json",
 				Throttle:   1,
 				FormatType: "json",
 			},
 		}, {
-			id:           component.NewIDWithName(metadata.Type, "2"),
+			id:           component.NewIDWithName(component.MustNewType(metadata.Type), "2"),
 			errorMessage: "throttle cannot be negative",
 		},
 	}
