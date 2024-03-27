@@ -8,6 +8,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## [0.19.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.19.0) - 2024-03-26
+
+- Fix arrow log encoder panic caused by empty attribute values. [#159](https://github.com/open-telemetry/otel-arrow/pull/159)
+
+- Remove deprecated obsreporttest package. [#161](https://github.com/open-telemetry/otel-arrow/pull/161)
+
 ## [0.18.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.18.0) - 2024-03-06
 
 - Update Otel Collector core dependency from `v0.94.1` to `v0.96.0`. [#155](https://github.com/open-telemetry/otel-arrow/pull/155)
