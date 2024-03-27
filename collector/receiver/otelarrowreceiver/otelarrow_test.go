@@ -53,7 +53,7 @@ var testReceiverID = component.NewIDWithName(component.MustNewType(componentMeta
 
 func TestGRPCNewPortAlreadyUsed(t *testing.T) {
 	addr := testutil.GetAvailableLocalAddress(t)
-	ln, err := net.Listen(confignet.TransportTypeTCP, addr)
+	ln, err := net.Listen("tcp", addr)
 	require.NoError(t, err, "failed to listen on %q: %v", addr, err)
 	t.Cleanup(func() {
 		assert.NoError(t, ln.Close())
