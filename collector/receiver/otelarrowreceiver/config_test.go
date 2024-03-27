@@ -10,7 +10,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confignet"
@@ -77,7 +76,7 @@ func TestUnmarshalConfig(t *testing.T) {
 						},
 					},
 				},
-				Arrow: ArrowSettings{
+				Arrow: ArrowConfig{
 					MemoryLimitMiB: 123,
 				},
 			},
@@ -101,7 +100,7 @@ func TestUnmarshalConfigUnix(t *testing.T) {
 					},
 					ReadBufferSize: 512 * 1024,
 				},
-				Arrow: ArrowSettings{
+				Arrow: ArrowConfig{
 					MemoryLimitMiB: defaultMemoryLimitMiB,
 				},
 			},
