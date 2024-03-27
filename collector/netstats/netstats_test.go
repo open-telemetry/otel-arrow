@@ -87,7 +87,7 @@ func testNetStatsExporter(t *testing.T, level configtelemetry.Level, expect map[
 				metric.WithReader(rdr),
 			)
 			enr, err := NewExporterNetworkReporter(exporter.CreateSettings{
-				ID: component.NewID("test"),
+				ID: component.NewID(component.MustNewType("test")),
 				TelemetrySettings: component.TelemetrySettings{
 					MeterProvider: mp,
 					MetricsLevel:  level,
@@ -220,7 +220,7 @@ func testNetStatsReceiver(t *testing.T, level configtelemetry.Level, expect map[
 				metric.WithReader(rdr),
 			)
 			rer, err := NewReceiverNetworkReporter(receiver.CreateSettings{
-				ID: component.NewID("test"),
+				ID: component.NewID(component.MustNewType("test")),
 				TelemetrySettings: component.TelemetrySettings{
 					MeterProvider: mp,
 					MetricsLevel:  level,
@@ -275,7 +275,7 @@ func TestUncompressedSizeBypass(t *testing.T) {
 		metric.WithReader(rdr),
 	)
 	enr, err := NewExporterNetworkReporter(exporter.CreateSettings{
-		ID: component.NewID("test"),
+		ID: component.NewID(component.MustNewType("test")),
 		TelemetrySettings: component.TelemetrySettings{
 			MeterProvider: mp,
 			MetricsLevel:  configtelemetry.LevelDetailed,

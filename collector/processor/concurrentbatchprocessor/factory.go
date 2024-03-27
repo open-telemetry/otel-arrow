@@ -31,7 +31,7 @@ const (
 // NewFactory returns a new factory for the Batch processor.
 func NewFactory() processor.Factory {
 	return processor.NewFactory(
-		typeStr,
+		component.MustNewType(typeStr),
 		createDefaultConfig,
 		processor.WithTraces(createTraces, component.StabilityLevelStable),
 		processor.WithMetrics(createMetrics, component.StabilityLevelStable),

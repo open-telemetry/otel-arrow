@@ -70,7 +70,7 @@ var (
 
 func NewFactory() connector.Factory {
 	return connector.NewFactory(
-		typeStr,
+		component.MustNewType(typeStr),
 		createDefaultConfig,
 		connector.WithTracesToTraces(createTracesToTraces, component.StabilityLevelBeta),
 		connector.WithMetricsToMetrics(createMetricsToMetrics, component.StabilityLevelBeta),
@@ -83,7 +83,7 @@ func createDefaultConfig() component.Config {
 }
 
 func (c *Config) hasFollower() bool {
-	return c.Follower.Type() != ""
+	return c.Follower.Type().String() != ""
 }
 
 // reorder _was an attempt_ to solve the problem described in
@@ -174,7 +174,7 @@ func createTracesToTraces(
 ) (connector.Traces, error) {
 	v := newValidation(cfg.(*Config), set.Logger)
 
-	tr, ok := nextConsumer.(connector.TracesRouter)
+	tr, ok := nextConsumer.(connector.TracesRouterAndConsumer)
 	if !ok {
 		return nil, errUnexpectedConsumer
 	}
@@ -198,7 +198,7 @@ func createMetricsToMetrics(
 ) (connector.Metrics, error) {
 	v := newValidation(cfg.(*Config), set.Logger)
 
-	tr, ok := nextConsumer.(connector.MetricsRouter)
+	tr, ok := nextConsumer.(connector.MetricsRouterAndConsumer)
 	if !ok {
 		return nil, errUnexpectedConsumer
 	}
@@ -222,7 +222,7 @@ func createLogsToLogs(
 ) (connector.Logs, error) {
 	v := newValidation(cfg.(*Config), set.Logger)
 
-	tr, ok := nextConsumer.(connector.LogsRouter)
+	tr, ok := nextConsumer.(connector.LogsRouterAndConsumer)
 	if !ok {
 		return nil, errUnexpectedConsumer
 	}

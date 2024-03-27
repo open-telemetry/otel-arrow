@@ -26,7 +26,7 @@ const (
 // NewFactory creates a factory for the obfuscation processor.
 func NewFactory() processor.Factory {
 	return processor.NewFactory(
-		typeStr,
+		component.MustNewType(typeStr),
 		createDefaultConfig,
 		processor.WithTraces(createTracesProcessor, stability),
 		processor.WithLogs(createLogsProcessor, stability),

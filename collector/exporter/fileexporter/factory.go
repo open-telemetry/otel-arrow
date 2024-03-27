@@ -34,7 +34,7 @@ const (
 // NewFactory creates a factory for OTLP exporter.
 func NewFactory() exporter.Factory {
 	return exporter.NewFactory(
-		metadata.Type,
+		component.MustNewType(metadata.Type),
 		createDefaultConfig,
 		exporter.WithTraces(createTracesExporter, metadata.TracesStability),
 		exporter.WithMetrics(createMetricsExporter, metadata.MetricsStability),

@@ -15,7 +15,7 @@ import (
 
 func NewFactory() receiver.Factory {
 	return receiver.NewFactory(
-		metadata.Type,
+		component.MustNewType(metadata.Type),
 		createDefaultConfig,
 		receiver.WithMetrics(createMetricsReceiver, metadata.MetricsStability),
 		receiver.WithTraces(createTracesReceiver, metadata.TracesStability),

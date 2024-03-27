@@ -52,7 +52,7 @@ import (
 
 const otlpReceiverName = "receiver_test"
 
-var testReceiverID = component.NewIDWithName(componentMetadata.Type, otlpReceiverName)
+var testReceiverID = component.NewIDWithName(component.MustNewType(componentMetadata.Type), otlpReceiverName)
 
 var traceJSON = []byte(`
 	{
@@ -514,7 +514,7 @@ func TestGRPCArrowReceiver(t *testing.T) {
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.GRPC.NetAddr.Endpoint = addr
 	cfg.GRPC.IncludeMetadata = true
-	id := component.NewID("arrow")
+	id := component.NewID(component.MustNewType("arrow"))
 	tt := componenttest.NewNopTelemetrySettings()
 	ocr := newReceiver(t, factory, tt, cfg, id, sink, nil)
 
@@ -618,7 +618,7 @@ func TestGRPCArrowReceiverAuth(t *testing.T) {
 	addr := testutil.GetAvailableLocalAddress(t)
 	sink := new(tracesSinkWithMetadata)
 
-	authID := component.NewID("testauth")
+	authID := component.NewID(component.MustNewType("testauth"))
 
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
@@ -627,7 +627,7 @@ func TestGRPCArrowReceiverAuth(t *testing.T) {
 	cfg.GRPC.Auth = &configauth.Authentication{
 		AuthenticatorID: authID,
 	}
-	id := component.NewID("arrow")
+	id := component.NewID(component.MustNewType("arrow"))
 	tt := componenttest.NewNopTelemetrySettings()
 	ocr := newReceiver(t, factory, tt, cfg, id, sink, nil)
 
