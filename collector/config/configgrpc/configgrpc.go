@@ -163,12 +163,9 @@ type ServerConfig struct {
 }
 
 type memoryLimiterExtension = interface{ 
-	MustRefuse(int64) bool
-	ReleaseMemory(int64)
+	MustRefuse() bool
+	WrappedUnaryHandle(ctx context.Context, req any, handler grpc.UnaryHandler) (any, error)
 }
-
-// type preHookFn func (req any) bool
-// type postHookFn func(req any)
 
 // SanitizedEndpoint strips the prefix of either http:// or https:// from configgrpc.ClientConfig.Endpoint.
 func (gcs *ClientConfig) SanitizedEndpoint() string {
@@ -424,7 +421,11 @@ func (gss *ServerConfig) toServerOption(host component.Host, settings component.
 		}
 
 		uInterceptors = append(uInterceptors, func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
-			return memoryLimiterUnaryServerInterceptor(ctx, req, info, handler, memoryLimiter)
+			wrappedHandler := &wrappedUnaryHandler{
+				handler: handler,
+				ml: memoryLimiter,
+			}
+			return memoryLimiterUnaryServerInterceptor(ctx, req, info, wrappedHandler.Handler, memoryLimiter)
 		})
 		sInterceptors = append(sInterceptors, func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 			return memoryLimiterStreamServerInterceptor(srv, ss, info, handler, memoryLimiter)
@@ -447,22 +448,27 @@ func (gss *ServerConfig) toServerOption(host component.Host, settings component.
 	return opts, nil
 }
 
+type struct wrappedUnaryHandler {
+	handler grpc.UnaryHandler
+	ml memoryLimiterExtension
+}
+
+func (wh *wrappedUnaryHandler) Handler(ctx context.Context, req any) (any, error) {
+	return ml.UnaryHandle(ctx, req, wh.handler)
+}
+
 // This interface is meant to access the size of a
 // ExportTraceServiceRequest, ExportMetricsServiceRequest, ExportLogsServicesRequest
 type telemetryServiceRequest = interface { Size() int }
 
-func memoryLimiterUnaryServerInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler, ml memoryLimiterExtension) (any, error) {
-	a := req.(telemetryServiceRequest)
-	requestSize := int64(a.Size())
-	if ml.MustRefuse(requestSize) {
+type wrappedHandlerFn func(ctx context.Context, req any, handler grpc.UnaryHandler) (any, error)
+
+func memoryLimiterUnaryServerInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler, ml memoryLimiterExtension, handlerFn wrappedHandlerFn) (any, error) {
+	if ml.MustRefuse() {
 		return nil, errMemoryLimitReached
 	}
 
-	resp, err := handler(ctx, req)
-
-	ml.ReleaseMemory(requestSize)
-
-	return resp, err
+	return handler(ctx, req)
 }
 
 // this won't work I need to get the request by calling stream.Recv().. the issue is how can I pass this onto the handler? i.e. recv should only 

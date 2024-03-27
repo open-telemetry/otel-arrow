@@ -14,13 +14,38 @@ import (
 	"go.opentelemetry.io/collector/component"
 )
 
+type wrappedHandlerFn func(ctx context.Context, req any, handler grpc.UnaryHandler) (any, error)
 type memoryLimiterExtension struct {
 	limitBytes int64
 	sem        *semaphore.Weighted
 	logger     *zap.Logger
 	timeout    time.Duration
+	UnaryHandlerFn wrappedHandlerFn 
 }
 
+// This interface is meant to access the size of a
+// ExportTraceServiceRequest, ExportMetricsServiceRequest, ExportLogsServicesRequest
+type telemetryServiceRequest = interface { Size() int }
+
+func (ml *memoryLimiterExtension) UnaryWrappedHandle(handlerCtx context.Context, req any, handler grpc.UnaryHandler) (any, handler) {
+	a := req.(telemetryServiceRequest)
+	requestSize := int64(a.Size())
+	fmt.Println("ACQUIRING")
+	fmt.Println(requestSize)
+	semCtx, cancel := context.WithTimeout(context.Background(), ml.timeout)
+	defer cancel()
+
+	err := ml.sem.Acquire(semCtx, sizeBytes)
+	if err != nil {
+		return nil, fmt.Errorf("not enough memory available to process request, %w", err)
+	}
+
+	resp, err := handler(handlerCtx, req)
+
+	ml.sem.Release(sizeBytes)
+
+	return resp, err
+}
 
 // newMemoryLimiter returns a new memorylimiter extension.
 func newMemoryLimiter(cfg *Config, logger *zap.Logger) (*memoryLimiterExtension, error) {
@@ -42,20 +67,7 @@ func (ml *memoryLimiterExtension) Shutdown(ctx context.Context) error {
 }
 
 // MustRefuse returns if the caller should deny because memory has reached it's configured limits
-func (ml *memoryLimiterExtension) MustRefuse(sizeBytes int64) bool {
-	fmt.Println("TYPE OF REQ")
-
-	fmt.Println("ACQUIRING")
-	fmt.Println(sizeBytes)
-	ctx, cancel := context.WithTimeout(context.Background(), ml.timeout)
-	defer cancel()
-
-	err := ml.sem.Acquire(ctx, sizeBytes)
-	if err != nil {
-		ml.logger.Debug("rejecting request exceeded memory limit", zap.Error(err))
-		return true
-	}
-
+func (ml *memoryLimiterExtension) MustRefuse() bool {
 	return false
 }
 
