@@ -6,13 +6,14 @@ package otelarrowreceiver // import "github.com/open-telemetry/otel-arrow/collec
 import (
 	"context"
 
-	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/metadata"
 	"github.com/open-telemetry/otel-arrow/collector/sharedcomponent"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
 	"go.opentelemetry.io/collector/config/confignet"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/receiver"
+
+	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/metadata"
 )
 
 const (
@@ -43,7 +44,7 @@ func createDefaultConfig() component.Config {
 				// We almost write 0 bytes, so no need to tune WriteBufferSize.
 				ReadBufferSize: 512 * 1024,
 			},
-			Arrow: ArrowSettings{
+			Arrow: ArrowConfig{
 				MemoryLimitMiB: defaultMemoryLimitMiB,
 			},
 		},
