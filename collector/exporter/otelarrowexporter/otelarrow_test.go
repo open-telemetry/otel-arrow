@@ -17,22 +17,10 @@ import (
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	arrowpbMock "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1/mock"
+	"github.com/open-telemetry/otel-arrow/collector/testdata"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
-	"go.uber.org/zap/zaptest"
-	"golang.org/x/net/http2/hpack"
-	"google.golang.org/genproto/googleapis/rpc/errdetails"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/durationpb"
-
-	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter/internal/arrow/grpcmock"
-	"github.com/open-telemetry/otel-arrow/collector/testdata"
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
@@ -50,6 +38,18 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
+	"go.uber.org/mock/gomock"
+	"go.uber.org/zap/zaptest"
+	"golang.org/x/net/http2/hpack"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
+
+	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter/internal/arrow/grpcmock"
 )
 
 type mockReceiver struct {
@@ -294,7 +294,7 @@ func TestSendTraces(t *testing.T) {
 
 	// Start an OTLP exporter and point to the receiver.
 	factory := NewFactory()
-	authID := component.NewID("testauth")
+	authID := component.NewID(component.MustNewType("testauth"))
 	expectedHeader := []string{"header-value"}
 
 	cfg := factory.CreateDefaultConfig().(*Config)
@@ -905,7 +905,7 @@ func testSendArrowTraces(t *testing.T, clientWaitForReady, streamServiceAvailabl
 
 	// Start an OTel-Arrow exporter and point to the receiver.
 	factory := NewFactory()
-	authID := component.NewID("testauth")
+	authID := component.NewID(component.MustNewType("testauth"))
 	expectedHeader := []string{"arrow-ftw"}
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.ClientConfig = configgrpc.ClientConfig{
@@ -922,7 +922,7 @@ func testSendArrowTraces(t *testing.T, clientWaitForReady, streamServiceAvailabl
 		},
 	}
 	// Arrow client is enabled, but the server doesn't support it.
-	cfg.Arrow = ArrowSettings{
+	cfg.Arrow = ArrowConfig{
 		NumStreams:        1,
 		MaxStreamLifetime: 100 * time.Second,
 	}
@@ -1081,7 +1081,7 @@ func TestSendArrowFailedTraces(t *testing.T) {
 		WaitForReady: true,
 	}
 	// Arrow client is enabled, but the server doesn't support it.
-	cfg.Arrow = ArrowSettings{
+	cfg.Arrow = ArrowConfig{
 		NumStreams:        1,
 		MaxStreamLifetime: 100 * time.Second,
 	}

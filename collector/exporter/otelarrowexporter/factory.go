@@ -9,34 +9,30 @@ import (
 	"time"
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
-	"google.golang.org/grpc"
-
 	"github.com/open-telemetry/otel-arrow/collector/compression/zstd"
-	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter/internal/arrow"
 	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configcompression"
 	"go.opentelemetry.io/collector/config/configgrpc"
-	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/config/configopaque"
+	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/exporterhelper"
-)
+	"google.golang.org/grpc"
 
-const (
-	// The value of "type" key in configuration.
-	typeStr = "otelarrow"
+	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter/internal/arrow"
+	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter/internal/metadata"
 )
 
 // NewFactory creates a factory for OTLP exporter.
 func NewFactory() exporter.Factory {
 	return exporter.NewFactory(
-		typeStr,
+		metadata.Type,
 		createDefaultConfig,
-		exporter.WithTraces(createTracesExporter, component.StabilityLevelStable),
-		exporter.WithMetrics(createMetricsExporter, component.StabilityLevelStable),
-		exporter.WithLogs(createLogsExporter, component.StabilityLevelBeta),
+		exporter.WithTraces(createTracesExporter, metadata.TracesStability),
+		exporter.WithMetrics(createMetricsExporter, metadata.MetricsStability),
+		exporter.WithLogs(createLogsExporter, metadata.LogsStability),
 	)
 }
 
@@ -57,7 +53,7 @@ func createDefaultConfig() component.Config {
 			// destination.
 			BalancerName: "round_robin",
 		},
-		Arrow: ArrowSettings{
+		Arrow: ArrowConfig{
 			NumStreams:        runtime.NumCPU(),
 			MaxStreamLifetime: time.Hour,
 
@@ -91,7 +87,7 @@ var (
 	arrowLogsMethod    = gRPCName(arrowpb.ArrowLogsService_ServiceDesc)
 )
 
-func createArrowTracesStream(cfg *Config, conn *grpc.ClientConn) arrow.StreamClientFunc {
+func createArrowTracesStream(conn *grpc.ClientConn) arrow.StreamClientFunc {
 	return arrow.MakeAnyStreamClient(arrowTracesMethod, arrowpb.NewArrowTracesServiceClient(conn).ArrowTraces)
 }
 
@@ -110,7 +106,7 @@ func createTracesExporter(
 	)
 }
 
-func createArrowMetricsStream(cfg *Config, conn *grpc.ClientConn) arrow.StreamClientFunc {
+func createArrowMetricsStream(conn *grpc.ClientConn) arrow.StreamClientFunc {
 	return arrow.MakeAnyStreamClient(arrowMetricsMethod, arrowpb.NewArrowMetricsServiceClient(conn).ArrowMetrics)
 }
 
@@ -129,7 +125,7 @@ func createMetricsExporter(
 	)
 }
 
-func createArrowLogsStream(cfg *Config, conn *grpc.ClientConn) arrow.StreamClientFunc {
+func createArrowLogsStream(conn *grpc.ClientConn) arrow.StreamClientFunc {
 	return arrow.MakeAnyStreamClient(arrowLogsMethod, arrowpb.NewArrowLogsServiceClient(conn).ArrowLogs)
 }
 
