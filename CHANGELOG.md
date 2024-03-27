@@ -8,6 +8,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## [0.20.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.20.0) - 2024-03-27
+
+- Lint fixes, renames, and validation update to follow conventions of otel-collector-contrib repository. [#163](https://github.com/open-telemetry/otel-arrow/pull/163)
+
+- Update Otel Collector core dependency from `v0.96.0` to `v0.97.0` [#164](https://github.com/open-telemetry/otel-arrow/pull/164)
+
 ## [0.19.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.19.0) - 2024-03-26
 
 - Fix arrow log encoder panic caused by empty attribute values. [#159](https://github.com/open-telemetry/otel-arrow/pull/159)
