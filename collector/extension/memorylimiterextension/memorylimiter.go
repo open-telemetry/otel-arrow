@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/sync/semaphore"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
 
 	"go.opentelemetry.io/collector/component"
 )
@@ -27,7 +28,7 @@ type memoryLimiterExtension struct {
 // ExportTraceServiceRequest, ExportMetricsServiceRequest, ExportLogsServicesRequest
 type telemetryServiceRequest = interface { Size() int }
 
-func (ml *memoryLimiterExtension) UnaryWrappedHandle(handlerCtx context.Context, req any, handler grpc.UnaryHandler) (any, handler) {
+func (ml *memoryLimiterExtension) UnaryHandle(handlerCtx context.Context, req any, handler grpc.UnaryHandler) (any, error) {
 	a := req.(telemetryServiceRequest)
 	requestSize := int64(a.Size())
 	fmt.Println("ACQUIRING")
@@ -35,14 +36,14 @@ func (ml *memoryLimiterExtension) UnaryWrappedHandle(handlerCtx context.Context,
 	semCtx, cancel := context.WithTimeout(context.Background(), ml.timeout)
 	defer cancel()
 
-	err := ml.sem.Acquire(semCtx, sizeBytes)
+	err := ml.sem.Acquire(semCtx, requestSize)
 	if err != nil {
 		return nil, fmt.Errorf("not enough memory available to process request, %w", err)
 	}
 
 	resp, err := handler(handlerCtx, req)
 
-	ml.sem.Release(sizeBytes)
+	ml.sem.Release(requestSize)
 
 	return resp, err
 }

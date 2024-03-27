@@ -164,7 +164,7 @@ type ServerConfig struct {
 
 type memoryLimiterExtension = interface{ 
 	MustRefuse() bool
-	WrappedUnaryHandle(ctx context.Context, req any, handler grpc.UnaryHandler) (any, error)
+	UnaryHandle(ctx context.Context, req any, handler grpc.UnaryHandler) (any, error)
 }
 
 // SanitizedEndpoint strips the prefix of either http:// or https:// from configgrpc.ClientConfig.Endpoint.
@@ -448,13 +448,13 @@ func (gss *ServerConfig) toServerOption(host component.Host, settings component.
 	return opts, nil
 }
 
-type struct wrappedUnaryHandler {
+type wrappedUnaryHandler struct {
 	handler grpc.UnaryHandler
 	ml memoryLimiterExtension
 }
 
 func (wh *wrappedUnaryHandler) Handler(ctx context.Context, req any) (any, error) {
-	return ml.UnaryHandle(ctx, req, wh.handler)
+	return wh.ml.UnaryHandle(ctx, req, wh.handler)
 }
 
 // This interface is meant to access the size of a
@@ -463,7 +463,7 @@ type telemetryServiceRequest = interface { Size() int }
 
 type wrappedHandlerFn func(ctx context.Context, req any, handler grpc.UnaryHandler) (any, error)
 
-func memoryLimiterUnaryServerInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler, ml memoryLimiterExtension, handlerFn wrappedHandlerFn) (any, error) {
+func memoryLimiterUnaryServerInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler, ml memoryLimiterExtension) (any, error) {
 	if ml.MustRefuse() {
 		return nil, errMemoryLimitReached
 	}
@@ -474,12 +474,11 @@ func memoryLimiterUnaryServerInterceptor(ctx context.Context, req any, _ *grpc.U
 // this won't work I need to get the request by calling stream.Recv().. the issue is how can I pass this onto the handler? i.e. recv should only 
 func memoryLimiterStreamServerInterceptor(srv any, stream grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler, ml memoryLimiterExtension) error {
 	ctx := stream.Context()
-	if ml.MustRefuse(int64(1)) {
+	if ml.MustRefuse() {
 		return errMemoryLimitReached
 	}
 
 	err := handler(srv, wrapServerStream(ctx, stream))
-	ml.ReleaseMemory(int64(1))
 
 	return err
 }

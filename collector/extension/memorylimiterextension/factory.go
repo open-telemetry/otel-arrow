@@ -27,7 +27,7 @@ func NewFactory() extension.Factory {
 func createDefaultConfig() component.Config {
 	return &Config{
 		MemoryLimitMiB: 32,
-		Timeout: 1 * time.Second,
+		Timeout: 1 * time.Nanosecond,
 	}
 }
 
