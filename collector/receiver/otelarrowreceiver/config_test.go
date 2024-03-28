@@ -50,10 +50,10 @@ func TestUnmarshalConfig(t *testing.T) {
 				GRPC: configgrpc.ServerConfig{
 					NetAddr: confignet.AddrConfig{
 						Endpoint:  "0.0.0.0:4317",
-						Transport: "tcp",
+						Transport: confignet.TransportTypeTCP,
 					},
-					TLSSetting: &configtls.TLSServerSetting{
-						TLSSetting: configtls.TLSSetting{
+					TLSSetting: &configtls.ServerConfig{
+						TLSSetting: configtls.Config{
 							CertFile: "test.crt",
 							KeyFile:  "test.key",
 						},
