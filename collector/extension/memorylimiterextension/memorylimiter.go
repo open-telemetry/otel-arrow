@@ -28,6 +28,10 @@ type memoryLimiterExtension struct {
 // ExportTraceServiceRequest, ExportMetricsServiceRequest, ExportLogsServicesRequest
 type telemetryServiceRequest = interface { Size() int }
 
+func (ml *memoryLimiterExtension) UnaryInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+	return nil, nil
+}
+
 func (ml *memoryLimiterExtension) UnaryHandle(handlerCtx context.Context, req any, handler grpc.UnaryHandler) (any, error) {
 	a := req.(telemetryServiceRequest)
 	requestSize := int64(a.Size())

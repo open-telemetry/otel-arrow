@@ -32,3 +32,45 @@ func wrapServerStream(wrappedCtx context.Context, stream grpc.ServerStream) *wra
 	}
 	return &wrappedServerStream{ServerStream: stream, wrappedCtx: wrappedCtx}
 }
+
+type requestWrappedServerStream struct {
+	wrappedCtx context.Context
+	stream grpc.ServerStream
+	pendingReqs chan any
+}
+
+func (rss *requestWrappedServerStream) SetHeader(md metadata.MD) error {
+	return rss.stream.SetHeader(md)
+}
+
+func (rss *requestWrappedServerStream) SendHeader(md metadata.MD) error {
+	return rss.stream.SendHeader(md)
+}
+
+func (rss *requestWrappedServerStream) SetTrailer(md metadata.MD) {
+	rss.stream.SetTrailer(md)
+}
+
+func (rss *requestWrappedServerStream) Context() context.Context {
+	return rss.stream.Context()
+}
+
+func (rss *requestWrappedServerStream) SendMsg(m any) error {
+	return rss.stream.SendMsg(m)
+}
+
+type telemetryServiceRequest = interface { Size() int }
+func (rss *requestWrappedServerStream) RecvMsg(m any) error {
+	select {
+	case item := <-pendingReqs:
+	default:
+	}
+
+	err := stream.RecvMsg(m)
+	if err != nil {
+		return err
+	}
+
+
+
+}

@@ -258,7 +258,7 @@ func TestGrpcServerAuthSettings_Deprecated(t *testing.T) {
 			mockID: auth.NewServer(),
 		},
 	}
-	srv, err := gss.ToServer(host, componenttest.NewNopTelemetrySettings())
+	srv, err := gss.ToServer(context.Background(), host, componenttest.NewNopTelemetrySettings())
 	assert.NoError(t, err)
 	assert.NotNil(t, srv)
 }
@@ -333,7 +333,7 @@ func TestGetMemoryLimiterExtension(t *testing.T) {
 			}
 
 			// ToServer calls getMemoryLimiterExtension().
-			srv, err := gss.ToServer(host, componenttest.NewNopTelemetrySettings())
+			srv, err := gss.ToServer(context.Background(), host, componenttest.NewNopTelemetrySettings())
 
 			// desired extension was not found.
 			if test.getExtErr != nil {
@@ -386,7 +386,7 @@ func TestGrpcUnaryServerMemoryLimiterSettings(t *testing.T) {
 				ext: extList,
 			}
 
-			srv, err := gss.ToServer(host, componenttest.NewNopTelemetrySettings())
+			srv, err := gss.ToServer(context.Background(), host, componenttest.NewNopTelemetrySettings())
 
 			// found extension so finish setting up server and client to test interceptor.
 			assert.NoError(t, err)

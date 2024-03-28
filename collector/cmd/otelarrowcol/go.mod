@@ -11,6 +11,7 @@ require (
 	github.com/open-telemetry/otel-arrow/collector/connector/validationconnector v0.20.0
 	github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter v0.20.0
 	github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter v0.20.0
+	github.com/open-telemetry/otel-arrow/collector/extension/memorylimiterextension v0.0.0-00010101000000-000000000000
 	github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.20.0
 	github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor v0.20.0
 	github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.20.0
