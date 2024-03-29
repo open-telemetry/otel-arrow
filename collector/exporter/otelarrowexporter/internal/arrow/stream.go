@@ -288,6 +288,9 @@ func (s *Stream) run(bgctx context.Context, streamClient StreamClientFunc, grpcO
 // performs a blocking send().  This returns when the data is in the write buffer,
 // the caller waiting on its error channel.
 func (s *Stream) write(ctx context.Context) error {
+	// always close send()
+	defer s.client.CloseSend()
+
 	// headers are encoding using hpack, reusing a buffer on each call.
 	var hdrsBuf bytes.Buffer
 	hdrsEnc := hpack.NewEncoder(&hdrsBuf)
@@ -312,7 +315,7 @@ func (s *Stream) write(ctx context.Context) error {
 		case <-timerCh:
 			// If timerCh is nil, this will never happen.
 			s.prioritizer.removeReady(s)
-			return s.client.CloseSend()
+			return nil
 		case wri, ok = <-s.toWrite:
 			// channel is closed
 			if !ok {
@@ -436,6 +439,7 @@ func (s *Stream) read(_ context.Context) error {
 		// This is not an error because this is an expected shutdown
 		// initiated by the client by setting max_stream_lifetime.
 		if resp.StatusCode == arrowpb.StatusCode_CANCELED {
+			// Note: this is not tested.  Legacy compat.
 			return nil
 		}
 

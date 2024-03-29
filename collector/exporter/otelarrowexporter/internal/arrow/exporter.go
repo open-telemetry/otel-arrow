@@ -59,7 +59,12 @@ type Exporter struct {
 	// Exporter, used for shutdown.
 	cancel context.CancelFunc
 
-	// wg counts one per active goroutine belonging to all strings
+	// shutdown is closed when Shutdown is called, which allows clients
+	// not to block indefinitely, if for some reason there are clients
+	// shutting down out-of-order.
+	shutdown chan struct{}
+
+	// wg counts one per active goroutine belonging to all streams
 	// of this exporter.  The wait group has Add(1) called before
 	// starting goroutines so that they can be properly waited for
 	// in shutdown(), so the pattern is:
@@ -120,6 +125,7 @@ func NewExporter(
 		streamClient:      streamClient,
 		perRPCCredentials: perRPCCredentials,
 		returning:         make(chan *Stream, numStreams),
+		shutdown:          make(chan struct{}),
 		netReporter:       netReporter,
 	}
 }
@@ -228,6 +234,8 @@ func (e *Exporter) SendAndWait(ctx context.Context, data any) (bool, error) {
 		select {
 		case <-ctx.Done():
 			err = ctx.Err()
+		case <-e.shutdown:
+			err = context.Canceled
 		case stream = <-e.ready.readyChannel():
 		}
 
@@ -251,6 +259,7 @@ func (e *Exporter) SendAndWait(ctx context.Context, data any) (bool, error) {
 
 // Shutdown returns when all Arrow-associated goroutines have returned.
 func (e *Exporter) Shutdown(_ context.Context) error {
+	close(e.shutdown)
 	e.cancel()
 	e.wg.Wait()
 	return nil

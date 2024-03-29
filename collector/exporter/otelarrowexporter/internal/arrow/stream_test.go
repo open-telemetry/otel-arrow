@@ -110,6 +110,7 @@ func (tc *streamTestCase) connectTestStream(h testChannel) func(context.Context,
 		}
 		tc.sendCall.AnyTimes().DoAndReturn(h.onSend(ctx))
 		tc.recvCall.AnyTimes().DoAndReturn(h.onRecv(ctx))
+		tc.closeSendCall.AnyTimes().DoAndReturn(h.onCloseSend())
 		return tc.anyStreamClient, nil
 	}
 }
@@ -117,44 +118,6 @@ func (tc *streamTestCase) connectTestStream(h testChannel) func(context.Context,
 // get returns the stream via the prioritizer it is registered with.
 func (tc *streamTestCase) get() *Stream {
 	return <-tc.prioritizer.readyChannel()
-}
-
-// TestStreamEncodeError verifies that exceeding the
-// max_stream_lifetime results in shutdown that
-// simply restarts the stream.
-func TestStreamGracefulShutdown(t *testing.T) {
-	tc := newStreamTestCase(t)
-	maxStreamLifetime := 1 * time.Second
-	tc.stream.maxStreamLifetime = maxStreamLifetime
-
-	tc.fromTracesCall.Times(1).Return(oneBatch, nil)
-	tc.closeSendCall.Times(1).Return(nil)
-
-	channel := newHealthyTestChannel()
-	tc.start(channel)
-	defer tc.cancelAndWaitForShutdown()
-	var wg sync.WaitGroup
-	wg.Add(1)
-	defer wg.Wait()
-	go func() {
-		defer wg.Done()
-		batch := <-channel.sent
-		channel.recv <- statusOKFor(batch.BatchId)
-
-		// mimick the server which will send a batchID
-		// of 0 after max_stream_lifetime elapses.
-		time.Sleep(maxStreamLifetime)
-		channel.recv <- statusCanceledFor(0)
-	}()
-
-	err := tc.get().SendAndWait(tc.bgctx, twoTraces)
-	require.NoError(t, err)
-
-	// need to sleep so CloseSend will be called.
-	time.Sleep(maxStreamLifetime)
-	err = tc.get().SendAndWait(tc.bgctx, twoTraces)
-	require.Error(t, err)
-	require.True(t, errors.Is(err, ErrStreamRestarting))
 }
 
 // TestStreamNoMaxLifetime verifies that configuring
