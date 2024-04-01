@@ -30,6 +30,7 @@ package v1
 
 import (
 	context "context"
+	"fmt"
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -138,9 +139,13 @@ func (x *arrowTracesServiceArrowTracesServer) Send(m *BatchStatus) error {
 
 func (x *arrowTracesServiceArrowTracesServer) Recv() (*BatchArrowRecords, error) {
 	m := new(BatchArrowRecords)
+	fmt.Println("enter trace server recv")
 	if err := x.ServerStream.RecvMsg(m); err != nil {
+		fmt.Println("err trace server")
 		return nil, err
 	}
+	fmt.Println("arrowpb lololol")
+	fmt.Println(m)
 	return m, nil
 }
 

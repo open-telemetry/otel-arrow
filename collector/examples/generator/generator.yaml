@@ -16,12 +16,16 @@ processors:
 exporters:
   debug:
     verbosity: basic
+  otelarrow/ls:
+    endpoint: ingest.lightstep.com:443
+    headers:
+      "lightstep-access-token": ${LS_TOKEN} 
 
 service:
   pipelines:
     traces:
       receivers: [otelarrow]
       processors: []
-      exporters: [debug]
+      exporters: [debug, otelarrow/ls]
 
   extensions: [memory_limiter]

@@ -9,6 +9,7 @@ receivers:
     protocols:
       grpc:
         endpoint: 127.0.0.1:8100
+        max_recv_msg_size_mib: 3000
 
 processors:
   concurrentbatch:
@@ -24,9 +25,14 @@ processors:
 exporters:
   # otelarrow/stdout sends OTel Arrow to an external destination
   otelarrow/stdout:
-    endpoint: ingest.lightstep.com:443
-    headers:
-      lightstep-access-token: "${LIGHTSTEP_ACCESS_TOKEN}"
+    endpoint: localhost:4317 
+    arrow:
+      disabled: false
+      disable_downgrade: true
+    tls:
+      insecure: true
+    # headers:
+      # lightstep-access-token: "${LIGHTSTEP_ACCESS_TOKEN}"
 
   # otelarrow/arrowout sends standard OTal Arrow to an external destination
   otelarrow/arrowout:
@@ -49,17 +55,17 @@ service:
   pipelines:
     # the normal traces pipeline either routes directly to the
     # standard output or via the loopback.  it prints an info.
-    traces/normal:
-      receivers: [otelarrow/stdin]
-      processors: [concurrentbatch, experiment]
-      exporters: [debug/info, otelarrow/stdout, otelarrow/arrowout]
+    # traces/normal:
+    #   receivers: [otelarrow/stdin]
+    #   processors: [concurrentbatch, experiment]
+    #   exporters: [debug/info, otelarrow/stdout, otelarrow/arrowout]
 
     # experiment processes data send via Arrow through the loopback.
     # it prints a debug log.
     traces/experiment:
       receivers: [otelarrow/loopback]
       processors: []
-      exporters: [debug/debug, otelarrow/stdout]
+      exporters: [debug/info, otelarrow/stdout]
 
   telemetry:
     metrics:
