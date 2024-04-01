@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"sync"
 	"time"
 
@@ -126,17 +125,30 @@ func (s *Stream) setBatchChannel(batchID int64, errCh chan error) {
 	s.waiters[batchID] = errCh
 }
 
-func (s *Stream) logStreamError(err error) {
-	isEOF := errors.Is(err, io.EOF)
-	isCanceled := errors.Is(err, context.Canceled)
-
-	switch {
-	case !isEOF && !isCanceled:
-		s.telemetry.Logger.Error("arrow stream error", zap.Error(err))
-	case isEOF:
-		s.telemetry.Logger.Debug("arrow stream end")
-	case isCanceled:
-		s.telemetry.Logger.Debug("arrow stream canceled")
+// logStreamError decides how to log an error.  `which` indicates the
+// stream direction, will be "reader" or "writer".
+func (s *Stream) logStreamError(which string, err error) {
+	var code codes.Code
+	var msg string
+	// gRPC tends to supply status-wrapped errors, so we always
+	// unpack them.  A wrapped Canceled code indicates intentional
+	// shutdown, which can be due to normal causes (EOF, e.g.,
+	// max-stream-lifetime reached) or unusual causes (Canceled,
+	// e.g., because the other stream direction reached an error).
+	if status, ok := status.FromError(err); ok {
+		code = status.Code()
+		msg = status.Message()
+	} else if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+		code = codes.Canceled
+		msg = err.Error()
+	} else {
+		code = codes.Internal
+		msg = err.Error()
+	}
+	if code == codes.Canceled {
+		s.telemetry.Logger.Debug("arrow stream shutdown", zap.String("which", which), zap.String("message", msg))
+	} else {
+		s.telemetry.Logger.Error("arrow stream error", zap.String("which", which), zap.String("message", msg), zap.Int("code", int(code)))
 	}
 }
 
@@ -151,7 +163,7 @@ func (s *Stream) run(bgctx context.Context, streamClient StreamClientFunc, grpcO
 		// Returning with stream.client == nil signals the
 		// lack of an Arrow stream endpoint.  When all the
 		// streams return with .client == nil, the ready
-		// channel will be closed.
+		// channel will be closed, which causes downgrade.
 		//
 		// Note: These are gRPC server internal errors and
 		// will cause downgrade to standard OTLP.  These
@@ -161,8 +173,6 @@ func (s *Stream) run(bgctx context.Context, streamClient StreamClientFunc, grpcO
 		// gRPC server the first Unimplemented code is
 		// generally delivered to the Recv() call below, so
 		// this code path is not taken for an ordinary downgrade.
-		//
-		// TODO: a more graceful recovery strategy?
 		s.telemetry.Logger.Error("cannot start arrow stream", zap.Error(err))
 		return
 	}
@@ -197,89 +207,30 @@ func (s *Stream) run(bgctx context.Context, streamClient StreamClientFunc, grpcO
 	if err != nil {
 		// This branch is reached with an unimplemented status
 		// with or without the WaitForReady flag.
-		status, ok := status.FromError(err)
-
-		if ok {
-			switch status.Code() {
-			case codes.Unimplemented:
-				// This (client == nil) signals the controller
-				// to downgrade when all streams have returned
-				// in that status.
-				//
-				// TODO: Note there are partial failure modes
-				// that will continue to function in a
-				// degraded mode, such as when half of the
-				// streams are successful and half of streams
-				// take this return path.  Design a graceful
-				// recovery mechanism?
-				s.client = nil
-				s.telemetry.Logger.Info("arrow is not supported",
-					zap.String("message", status.Message()),
-				)
-
-			case codes.Unavailable, codes.Internal:
-				// gRPC returns this when max connection age is reached.
-				// The message string will contain NO_ERROR if it's a
-				// graceful shutdown.
-				//
-				// Having seen:
-				//
-				//     arrow stream unknown {"kind": "exporter",
-				//     "data_type": "traces", "name": "otlp/traces",
-				//     "code": 13, "message": "stream terminated by
-				//     RST_STREAM with error code: NO_ERROR"}
-				//
-				// from the default case below print `"code": 13`, this
-				// branch is now used for both Unavailable (witnessed
-				// in local testing) and Internal (witnessed in
-				// production); in both cases "NO_ERROR" is the key
-				// signifier.
-				if strings.Contains(status.Message(), "NO_ERROR") {
-					s.telemetry.Logger.Error("arrow stream reset (consider lowering max_stream_lifetime)",
-						zap.String("message", status.Message()),
-					)
-				} else {
-					s.telemetry.Logger.Error("arrow stream unavailable",
-						zap.String("message", status.Message()),
-					)
-				}
-
-			case codes.Canceled:
-				// Note that when the writer encounters a local error (such
-				// as a panic in the encoder) it will cancel the context and
-				// writeErr will be set to an actual error, while the error
-				// returned from read() will be the cancellation by the
-				// writer. So if the reader's error is canceled and the
-				// writer's error is non-nil, use it instead.
-				if writeErr != nil {
-					s.telemetry.Logger.Error("arrow stream internal error",
-						zap.Error(writeErr),
-					)
-					// reset the writeErr so it doesn't print below.
-					writeErr = nil
-				} else {
-					s.telemetry.Logger.Error("arrow stream canceled",
-						zap.String("message", status.Message()),
-					)
-				}
-			default:
-				s.telemetry.Logger.Error("arrow stream unknown",
-					zap.Uint32("code", uint32(status.Code())),
-					zap.String("message", status.Message()),
-				)
-			}
+		if status, ok := status.FromError(err); ok && status.Code() == codes.Unimplemented {
+			// This (client == nil) signals the controller to
+			// downgrade when all streams have returned in that
+			// status.
+			//
+			// This is a special case because we reset s.client,
+			// which sets up a downgrade after the streams return.
+			s.client = nil
+			s.telemetry.Logger.Info("arrow is not supported",
+				zap.String("message", status.Message()),
+			)
 		} else {
-			s.logStreamError(err)
+			// All other cases, use the standard log handler.
+			s.logStreamError("reader", err)
 		}
 	}
 	if writeErr != nil {
-		s.logStreamError(writeErr)
+		s.logStreamError("writer", writeErr)
 	}
 
 	// The reader and writer have both finished; respond to any
 	// outstanding waiters.
 	for _, ch := range s.waiters {
-		// Note: the top-level OTLP exporter will retry.
+		z // Note: the top-level OTLP exporter will retry.
 		ch <- ErrStreamRestarting
 	}
 }
@@ -287,9 +238,11 @@ func (s *Stream) run(bgctx context.Context, streamClient StreamClientFunc, grpcO
 // write repeatedly places this stream into the next-available queue, then
 // performs a blocking send().  This returns when the data is in the write buffer,
 // the caller waiting on its error channel.
-func (s *Stream) write(ctx context.Context) error {
+func (s *Stream) write(ctx context.Context) (retErr error) {
 	// always close send()
-	defer s.client.CloseSend()
+	defer func() {
+		s.client.CloseSend()
+	}()
 
 	// headers are encoding using hpack, reusing a buffer on each call.
 	var hdrsBuf bytes.Buffer
@@ -435,14 +388,6 @@ func (s *Stream) read(_ context.Context) error {
 			return err
 		}
 
-		// This indicates the server received EOF from client shutdown.
-		// This is not an error because this is an expected shutdown
-		// initiated by the client by setting max_stream_lifetime.
-		if resp.StatusCode == arrowpb.StatusCode_CANCELED {
-			// Note: this is not tested.  Legacy compat.
-			return nil
-		}
-
 		if err = s.processBatchStatus(resp); err != nil {
 			return fmt.Errorf("process: %w", err)
 		}
@@ -497,8 +442,10 @@ func (s *Stream) processBatchStatus(ss *arrowpb.BatchStatus) error {
 		// Retry behavior is configurable
 		err = status.Errorf(codes.ResourceExhausted, "resource exhausted: %d: %s", ss.BatchId, ss.StatusMessage)
 	default:
-		// Note: case arrowpb.StatusCode_CANCELED (a.k.a. codes.Canceled)
-		// is handled before calling processBatchStatus().
+		// Note: a Canceled StatusCode was once returned by receivers following
+		// a CloseSend() from the exporter.  This is now handled using error
+		// status codes.  If an exporter is upgraded before a receiver, the exporter
+		// will log this error when the receiver closes streams.
 
 		// Unrecognized status code.
 		err = status.Errorf(codes.Internal, "unexpected stream response: %d: %s", ss.BatchId, ss.StatusMessage)
