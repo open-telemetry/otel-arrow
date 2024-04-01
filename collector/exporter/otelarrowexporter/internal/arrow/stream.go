@@ -230,7 +230,7 @@ func (s *Stream) run(bgctx context.Context, streamClient StreamClientFunc, grpcO
 	// The reader and writer have both finished; respond to any
 	// outstanding waiters.
 	for _, ch := range s.waiters {
-		z // Note: the top-level OTLP exporter will retry.
+		// Note: the top-level OTLP exporter will retry.
 		ch <- ErrStreamRestarting
 	}
 }
