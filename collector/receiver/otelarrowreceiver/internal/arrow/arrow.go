@@ -363,18 +363,7 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 		req, err := serverStream.Recv()
 
 		if err != nil {
-			// client called CloseSend()
-			if errors.Is(err, io.EOF) {
-				status := &arrowpb.BatchStatus{}
-				status.StatusCode = arrowpb.StatusCode_CANCELED
-				err = serverStream.Send(status)
-				if err != nil {
-					r.logStreamError(err)
-					return err
-				}
-				return nil
-			}
-
+			// This includes the case where a client called CloseSend()
 			r.logStreamError(err)
 			return err
 		}

@@ -623,7 +623,7 @@ func TestReceiverEOF(t *testing.T) {
 	var actualData []ptrace.Traces
 	var expectData []ptrace.Traces
 
-	ctc.stream.EXPECT().Send(gomock.Any()).Times(times + 1).Return(nil)
+	ctc.stream.EXPECT().Send(gomock.Any()).Times(times).Return(nil)
 
 	ctc.start(ctc.newRealConsumer)
 
@@ -647,9 +647,9 @@ func TestReceiverEOF(t *testing.T) {
 
 	go func() {
 		err := ctc.wait()
-		// Once receiver receives EOF it will call Send() to signal shutdown for the client.
-		// Then the receiver returns nil, so we expect no error in this case
-		require.NoError(t, err)
+		// Once close(ctc.receive) is called above, it
+		// will return EOF to signal shutdown for the client.
+		require.True(t, errors.Is(err, io.EOF), "error is %v", err)
 		wg.Done()
 	}()
 
@@ -681,7 +681,7 @@ func testReceiverHeaders(t *testing.T, includeMeta bool) {
 		nil,
 	}
 
-	ctc.stream.EXPECT().Send(gomock.Any()).Times(len(expectData) + 1).Return(nil)
+	ctc.stream.EXPECT().Send(gomock.Any()).Times(len(expectData)).Return(nil)
 
 	ctc.start(ctc.newRealConsumer, func(gsettings *configgrpc.ServerConfig, _ *auth.Server) {
 		gsettings.IncludeMetadata = includeMeta
@@ -724,7 +724,7 @@ func testReceiverHeaders(t *testing.T, includeMeta bool) {
 
 	go func() {
 		err := ctc.wait()
-		require.NoError(t, err)
+		require.True(t, errors.Is(err, io.EOF), "error is %v", err)
 		wg.Done()
 	}()
 
@@ -1039,7 +1039,7 @@ func testReceiverAuthHeaders(t *testing.T, includeMeta bool, dataAuth bool) {
 
 	var recvBatches []*arrowpb.BatchStatus
 
-	ctc.stream.EXPECT().Send(gomock.Any()).Times(len(expectData) + 1).DoAndReturn(func(batch *arrowpb.BatchStatus) error {
+	ctc.stream.EXPECT().Send(gomock.Any()).Times(len(expectData)).DoAndReturn(func(batch *arrowpb.BatchStatus) error {
 		recvBatches = append(recvBatches, batch)
 		return nil
 	})
@@ -1155,16 +1155,13 @@ func testReceiverAuthHeaders(t *testing.T, includeMeta bool, dataAuth bool) {
 	}
 
 	err := ctc.wait()
-	require.NoError(t, err)
+	require.True(t, errors.Is(err, io.EOF), "error is %v", err)
 	// Add in expectErrs for when receiver sees EOF,
 	// the status code will not be arrowpb.StatusCode_OK.
 	expectErrs = append(expectErrs, true)
 
 	require.Equal(t, len(expectData), dataCount)
-
-	// recvBatches will be 1 more than dataCount, because of the extra
-	// Send() call the receiver makes when it encounters EOF.
-	require.Equal(t, len(recvBatches), dataCount+1)
+	require.Equal(t, len(recvBatches), dataCount)
 
 	for idx, batch := range recvBatches {
 		if expectErrs[idx] {
