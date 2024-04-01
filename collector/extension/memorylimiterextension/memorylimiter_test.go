@@ -135,8 +135,6 @@ func TestUnaryInterceptorMemoryLimited(t *testing.T) {
 				memoryLimiterExtension: ml,
 				blockCh: make(chan struct{}),
 			}
-			fmt.Println("MOCK ML")
-			fmt.Println(mockML)
 			assert.NoError(t, err)
 
 			assert.NoError(t, ml.Start(ctx, &mockHost{}))
@@ -211,16 +209,10 @@ func TestUnaryInterceptorMemoryLimited(t *testing.T) {
 
 					retErr = multierr.Append(retErr, errResp)
 					wg.Done()
-					fmt.Println(tt.name)
-					fmt.Println(resp)
-					fmt.Println(errResp)
-					fmt.Println(tt.name)
-					fmt.Println()
 				}()
 			}
 
 
-			fmt.Println(mockML.memoryLimiterExtension.sem.TryAcquire(int64(10000)))
 			// sleep so multiple requests have time to be blocked after calling sem.Acquire()
 			time.Sleep(tt.sleep)
 			close(mockML.blockCh)
@@ -229,8 +221,6 @@ func TestUnaryInterceptorMemoryLimited(t *testing.T) {
 			if tt.expectError {
 				assert.ErrorContains(t, retErr, "not enough memory available to process request")
 			} else {
-				fmt.Println("IT HAPPENED")
-				fmt.Println(retErr)
 				assert.NoError(t, retErr)
 			}
 

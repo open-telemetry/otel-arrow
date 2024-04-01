@@ -139,13 +139,9 @@ func (x *arrowTracesServiceArrowTracesServer) Send(m *BatchStatus) error {
 
 func (x *arrowTracesServiceArrowTracesServer) Recv() (*BatchArrowRecords, error) {
 	m := new(BatchArrowRecords)
-	fmt.Println("enter trace server recv")
 	if err := x.ServerStream.RecvMsg(m); err != nil {
-		fmt.Println("err trace server")
 		return nil, err
 	}
-	fmt.Println("arrowpb lololol")
-	fmt.Println(m)
 	return m, nil
 }
 

@@ -362,10 +362,7 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	for {
 		// Receive a batch corresponding with one ptrace.Traces, pmetric.Metrics,
 		// or plog.Logs item.
-		fmt.Println("THIS IS THE RECV IN THE RECEIVER")
 		req, err := serverStream.Recv()
-		fmt.Println("THIS IS THE REQ IN THE RECEIVER")
-		fmt.Println(req)
 
 		if err != nil {
 			// client called CloseSend()
@@ -381,8 +378,6 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 			}
 
 			r.logStreamError(err)
-			fmt.Println("error")
-			fmt.Println(err)
 			return err
 		}
 
@@ -409,7 +404,6 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 		}
 		break
 	}
-	fmt.Println("RETURN")
 	return nil
 }
 
@@ -432,12 +426,8 @@ func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowCo
 	// Process records: an error in this code path does
 	// not necessarily break the stream.
 	if authErr != nil {
-		fmt.Println("authErr")
-		fmt.Println(authErr)
 		err = authErr
 	} else {
-		fmt.Println("about to process records")
-		fmt.Println(req)
 		err = r.processRecords(ctx, method, arrowConsumer, req)
 	}
 
@@ -447,7 +437,6 @@ func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowCo
 		BatchId: req.GetBatchId(),
 	}
 	if err == nil {
-		fmt.Println("STATUS")
 		fmt.Println(status.BatchId)
 		status.StatusCode = arrowpb.StatusCode_OK
 	} else {
@@ -464,9 +453,7 @@ func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowCo
 		}
 	}
 
-	fmt.Println("BEFORE SEND")
 	err = serverStream.Send(status)
-	fmt.Println("AFTER SEND")
 	if err != nil {
 		r.logStreamError(err)
 		return err
@@ -570,9 +557,7 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 		return err
 
 	case arrowpb.ArrowPayloadType_SPANS:
-		fmt.Println("arrow.go:563: found spans!")
 		if r.Traces() == nil {
-			fmt.Println("arrow.go:565: error!")
 			return status.Error(codes.Unimplemented, "traces service not available")
 		}
 		var sizer ptrace.ProtoMarshaler
@@ -581,11 +566,9 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 
 		data, err := arrowConsumer.TracesFrom(records)
 		if err != nil {
-			fmt.Println("arrow.go:574: no error TracesFrom!")
 			err = consumererror.NewPermanent(err)
 		} else {
 			for _, traces := range data {
-				fmt.Println("arrow.go:578: iterating!")
 				items := traces.SpanCount()
 				sz := int64(sizer.TracesSize(traces))
 
@@ -604,8 +587,6 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			r.recvInFlightItems.Add(ctx, int64(-numSpans))
 		}
 		r.obsrecv.EndTracesOp(ctx, streamFormat, numSpans, err)
-		fmt.Println("arrow.go:597: processRecords final error")
-		fmt.Println(err)
 		return err
 
 	default:

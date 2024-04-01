@@ -55,12 +55,9 @@ func (rss *requestWrappedServerStream) SendMsg(m any) error {
 	return rss.stream.SendMsg(m)
 }
 
-
-
 func (rss *requestWrappedServerStream) RecvMsg(m any) error {
-	return rss.stream.RecvMsg(m)
+	// return rss.stream.RecvMsg(m)
 	fmt.Println("ENTERED RECVMSG")
-	// m = new(arrowpb.BatchArrowRecords)
 
 	select {
 	case a := <-rss.pendingReqs:
@@ -70,8 +67,6 @@ func (rss *requestWrappedServerStream) RecvMsg(m any) error {
 	case err := <-rss.errCh:
 		return err
 	}
-	fmt.Println("THIS IS M")
-	fmt.Println(m)
 	return nil
 }
 
@@ -85,15 +80,11 @@ func (ml *memoryLimiterExtension) UnaryInterceptorGenerator() grpc.UnaryServerIn
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
 		a := req.(telemetryServiceRequest)
 		requestSize := int64(a.Size())
-		fmt.Println("ACQUIRING")
-		fmt.Println(requestSize)	
 		
 		semCtx, cancel := context.WithTimeout(context.Background(), ml.timeout)
 		defer cancel()
 
-		fmt.Println("before acquire")
 		err = ml.sem.Acquire(semCtx, requestSize)
-		fmt.Println("after acquire")
 		if err != nil {
 			return nil, fmt.Errorf("not enough memory available to process request, %w", err)
 		}
@@ -119,17 +110,11 @@ func (ml *memoryLimiterExtension) StreamInterceptorGenerator() grpc.StreamServer
 		}
 		a := new(arrowpb.BatchArrowRecords)
 		var err error
-		// TODO: need to propagate this error to an errCh in rss.RecvMsg()
 		err = ss.RecvMsg(a)
 		if err != nil {
-			fmt.Println("SAD ERROR")
-			fmt.Println(err)
 			rss.errCh <- err
 			return err
 		}
-
-
-		// b := a.(telemetryServiceRequest)
 
 		requestSize := int64(proto.Size(a))
 		fmt.Println("ACQUIRING")
@@ -140,13 +125,10 @@ func (ml *memoryLimiterExtension) StreamInterceptorGenerator() grpc.StreamServer
 
 		err = ml.sem.Acquire(semCtx, requestSize)
 		if err != nil {
-			fmt.Println("oom error")
 			return fmt.Errorf("not enough memory available to process request, %w", err)
 		}
 
-		fmt.Println("before stream chan add")
 		rss.pendingReqs <- a
-		fmt.Println("after stream chan add")
 
 		err = handler(srv, rss)
 
@@ -157,26 +139,6 @@ func (ml *memoryLimiterExtension) StreamInterceptorGenerator() grpc.StreamServer
 		return err
 	}
 }
-
-// func (ml *memoryLimiterExtension) UnaryHandle(handlerCtx context.Context, req any, handler grpc.UnaryHandler) (any, error) {
-// 	a := req.(telemetryServiceRequest)
-// 	requestSize := int64(a.Size())
-// 	fmt.Println("ACQUIRING")
-// 	fmt.Println(requestSize)
-// 	semCtx, cancel := context.WithTimeout(context.Background(), ml.timeout)
-// 	defer cancel()
-
-// 	err := ml.sem.Acquire(semCtx, requestSize)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("not enough memory available to process request, %w", err)
-// 	}
-
-// 	resp, err := handler(handlerCtx, req)
-
-// 	ml.sem.Release(requestSize)
-
-// 	return resp, err
-// }
 
 // newMemoryLimiter returns a new memorylimiter extension.
 func newMemoryLimiter(cfg *Config, logger *zap.Logger) (*memoryLimiterExtension, error) {
