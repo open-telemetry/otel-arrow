@@ -60,16 +60,20 @@ type exporterTestCase struct {
 }
 
 func newSingleStreamTestCase(t *testing.T) *exporterTestCase {
-	return newExporterTestCaseCommon(t, NotNoisy, 1, false, nil)
+	return newExporterTestCaseCommon(t, NotNoisy, defaultMaxStreamLifetime, 1, false, nil)
+}
+
+func newShortLifetimeStreamTestCase(t *testing.T) *exporterTestCase {
+	return newExporterTestCaseCommon(t, NotNoisy, time.Second/2, 1, false, nil)
 }
 
 func newSingleStreamDowngradeDisabledTestCase(t *testing.T) *exporterTestCase {
-	return newExporterTestCaseCommon(t, NotNoisy, 1, true, nil)
+	return newExporterTestCaseCommon(t, NotNoisy, defaultMaxStreamLifetime, 1, true, nil)
 }
 
 func newSingleStreamMetadataTestCase(t *testing.T) *exporterTestCase {
 	var count int
-	return newExporterTestCaseCommon(t, NotNoisy, 1, false, func(ctx context.Context) (map[string]string, error) {
+	return newExporterTestCaseCommon(t, NotNoisy, defaultMaxStreamLifetime, 1, false, func(ctx context.Context) (map[string]string, error) {
 		defer func() { count++ }()
 		if count%2 == 0 {
 			return nil, nil
@@ -82,7 +86,7 @@ func newSingleStreamMetadataTestCase(t *testing.T) *exporterTestCase {
 }
 
 func newExporterNoisyTestCase(t *testing.T, numStreams int) *exporterTestCase {
-	return newExporterTestCaseCommon(t, Noisy, numStreams, false, nil)
+	return newExporterTestCaseCommon(t, Noisy, defaultMaxStreamLifetime, numStreams, false, nil)
 }
 
 func copyBatch[T any](recordFunc func(T) (*arrowpb.BatchArrowRecords, error)) func(T) (*arrowpb.BatchArrowRecords, error) {
@@ -117,7 +121,7 @@ func copyBatch[T any](recordFunc func(T) (*arrowpb.BatchArrowRecords, error)) fu
 	}
 }
 
-func newExporterTestCaseCommon(t *testing.T, noisy noisyTest, numStreams int, disableDowngrade bool, metadataFunc func(ctx context.Context) (map[string]string, error)) *exporterTestCase {
+func newExporterTestCaseCommon(t *testing.T, noisy noisyTest, maxLifetime time.Duration, numStreams int, disableDowngrade bool, metadataFunc func(ctx context.Context) (map[string]string, error)) *exporterTestCase {
 	ctc := newCommonTestCase(t, noisy)
 
 	if metadataFunc == nil {
@@ -128,7 +132,7 @@ func newExporterTestCaseCommon(t *testing.T, noisy noisyTest, numStreams int, di
 		})
 	}
 
-	exp := NewExporter(defaultMaxStreamLifetime, numStreams, disableDowngrade, ctc.telset, nil, func() arrowRecord.ProducerAPI {
+	exp := NewExporter(maxLifetime, numStreams, disableDowngrade, ctc.telset, nil, func() arrowRecord.ProducerAPI {
 		// Mock the close function, use a real producer for testing dataflow.
 		mock := arrowRecordMock.NewMockProducerAPI(ctc.ctrl)
 		prod := arrowRecord.NewProducer()
@@ -506,8 +510,8 @@ func TestArrowExporterStreaming(t *testing.T) {
 		expectOutput = append(expectOutput, input)
 	}
 	// Stop the test conduit started above.  If the sender were
-	// still sending, it would panic on a closed channel.
-	close(channel.sent)
+	// still sending, the test would panic on a closed channel.
+	channel.doClose()
 	wg.Wait()
 
 	// As this equality check doesn't support out of order slices,
@@ -569,8 +573,8 @@ func TestArrowExporterHeaders(t *testing.T) {
 		require.True(t, sent)
 	}
 	// Stop the test conduit started above.  If the sender were
-	// still sending, it would panic on a closed channel.
-	close(channel.sent)
+	// still sending, the test would panic on a closed channel.
+	channel.doClose()
 	wg.Wait()
 
 	require.Equal(t, expectOutput, actualOutput)
@@ -640,8 +644,8 @@ func TestArrowExporterIsTraced(t *testing.T) {
 		require.True(t, sent)
 	}
 	// Stop the test conduit started above.  If the sender were
-	// still sending, it would panic on a closed channel.
-	close(channel.sent)
+	// still sending, the test would panic on a closed channel.
+	channel.doClose()
 	wg.Wait()
 
 	require.Equal(t, expectOutput, actualOutput)
@@ -657,4 +661,66 @@ func TestAddJitter(t *testing.T) {
 		require.LessOrEqual(t, 19*time.Minute, x)
 		require.Less(t, x, 20*time.Minute)
 	}
+}
+
+// TestArrowExporterStreamLifetimeAndShutdown exercises multiple
+// stream lifetimes and then shuts down, inspects the logs for
+// legibility.
+func TestArrowExporterStreamLifetimeAndShutdown(t *testing.T) {
+	tc := newShortLifetimeStreamTestCase(t)
+
+	var wg sync.WaitGroup
+
+	var expectCount uint64
+	var actualCount uint64
+
+	tc.traceCall.AnyTimes().DoAndReturn(func(ctx context.Context, opts ...grpc.CallOption) (
+		arrowpb.ArrowTracesService_ArrowTracesClient,
+		error,
+	) {
+		wg.Add(1)
+		channel := newHealthyTestChannel()
+
+		go func() {
+			defer wg.Done()
+			testCon := arrowRecord.NewConsumer()
+
+			for data := range channel.sent {
+				traces, err := testCon.TracesFrom(data)
+				require.NoError(t, err)
+				require.Equal(t, 1, len(traces))
+				atomic.AddUint64(&actualCount, 1)
+				channel.recv <- statusOKFor(data.BatchId)
+			}
+
+			// @@@ is this???
+			close(channel.recv)
+		}()
+
+		return tc.returnNewStream(channel)(ctx, opts...)
+	})
+
+	bg := context.Background()
+	require.NoError(t, tc.exporter.Start(bg))
+
+	start := time.Now()
+	// This is 10 stream lifetimes using the "ShortLifetime" test.
+	for time.Since(start) < 5*time.Second {
+		input := testdata.GenerateTraces(2)
+		ctx := context.Background()
+
+		sent, err := tc.exporter.SendAndWait(ctx, input)
+		require.NoError(t, err)
+		require.True(t, sent)
+
+		expectCount++
+	}
+
+	require.NoError(t, tc.exporter.Shutdown(bg))
+
+	require.Equal(t, expectCount, actualCount)
+
+	wg.Wait()
+
+	require.Empty(t, tc.observedLogs.All())
 }

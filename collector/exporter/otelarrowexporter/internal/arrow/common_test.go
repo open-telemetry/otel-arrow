@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync"
 	"testing"
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
@@ -37,6 +38,7 @@ type testChannel interface {
 	onRecv(context.Context) func() (*arrowpb.BatchStatus, error)
 	onSend(context.Context) func(*arrowpb.BatchArrowRecords) error
 	onConnect(context.Context) error
+	onCloseSend() func() error
 }
 
 type commonTestCase struct {
@@ -110,7 +112,7 @@ func (ctc *commonTestCase) newMockStream(ctx context.Context) *commonTestStream 
 			gomock.Any(), // *arrowpb.BatchArrowRecords
 		).Times(0),
 		recvCall:      client.EXPECT().Recv().Times(0),
-		closeSendCall: client.EXPECT().CloseSend().AnyTimes().Return(nil),
+		closeSendCall: client.EXPECT().CloseSend().Times(0),
 	}
 	return testStream
 }
@@ -137,6 +139,7 @@ func (ctc *commonTestCase) returnNewStream(hs ...testChannel) func(context.Conte
 		str := ctc.newMockStream(ctx)
 		str.sendCall.AnyTimes().DoAndReturn(h.onSend(ctx))
 		str.recvCall.AnyTimes().DoAndReturn(h.onRecv(ctx))
+		str.closeSendCall.AnyTimes().DoAndReturn(h.onCloseSend())
 		return str.anyStreamClient, nil
 	}
 }
@@ -158,12 +161,14 @@ func (ctc *commonTestCase) repeatedNewStream(nc func() testChannel) func(context
 		str := ctc.newMockStream(ctx)
 		str.sendCall.AnyTimes().DoAndReturn(h.onSend(ctx))
 		str.recvCall.AnyTimes().DoAndReturn(h.onRecv(ctx))
+		str.closeSendCall.AnyTimes().DoAndReturn(h.onCloseSend())
 		return str.anyStreamClient, nil
 	}
 }
 
 // healthyTestChannel accepts the connection and returns an OK status immediately.
 type healthyTestChannel struct {
+	lock sync.Mutex
 	sent chan *arrowpb.BatchArrowRecords
 	recv chan *arrowpb.BatchStatus
 }
@@ -175,14 +180,33 @@ func newHealthyTestChannel() *healthyTestChannel {
 	}
 }
 
+func (tc *healthyTestChannel) doClose() {
+	tc.lock.Lock()
+	defer tc.lock.Unlock()
+	if tc.sent != nil {
+		close(tc.sent)
+		tc.sent = nil
+	}
+}
+
 func (tc *healthyTestChannel) onConnect(_ context.Context) error {
 	return nil
 }
 
+func (tc *healthyTestChannel) onCloseSend() func() error {
+	return func() error {
+		tc.doClose()
+		return nil
+	}
+}
+
 func (tc *healthyTestChannel) onSend(ctx context.Context) func(*arrowpb.BatchArrowRecords) error {
 	return func(req *arrowpb.BatchArrowRecords) error {
+		tc.lock.Lock()
+		sent := tc.sent
+		tc.lock.Unlock()
 		select {
-		case tc.sent <- req:
+		case sent <- req:
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()
@@ -219,6 +243,12 @@ func newUnresponsiveTestChannel() *unresponsiveTestChannel {
 
 func (tc *unresponsiveTestChannel) onConnect(_ context.Context) error {
 	return nil
+}
+
+func (tc *unresponsiveTestChannel) onCloseSend() func() error {
+	return func() error {
+		return nil
+	}
 }
 
 func (tc *unresponsiveTestChannel) onSend(ctx context.Context) func(*arrowpb.BatchArrowRecords) error {
@@ -263,6 +293,12 @@ func (tc *arrowUnsupportedTestChannel) onConnect(_ context.Context) error {
 	return nil
 }
 
+func (tc *arrowUnsupportedTestChannel) onCloseSend() func() error {
+	return func() error {
+		return nil
+	}
+}
+
 func (tc *arrowUnsupportedTestChannel) onSend(ctx context.Context) func(*arrowpb.BatchArrowRecords) error {
 	return func(req *arrowpb.BatchArrowRecords) error {
 		<-ctx.Done()
@@ -288,6 +324,12 @@ func newDisconnectedTestChannel() *disconnectedTestChannel {
 func (tc *disconnectedTestChannel) onConnect(ctx context.Context) error {
 	<-ctx.Done()
 	return ctx.Err()
+}
+
+func (tc *disconnectedTestChannel) onCloseSend() func() error {
+	return func() error {
+		panic("unreachable")
+	}
 }
 
 func (tc *disconnectedTestChannel) onSend(_ context.Context) func(*arrowpb.BatchArrowRecords) error {
@@ -317,6 +359,12 @@ func (tc *sendErrorTestChannel) onConnect(_ context.Context) error {
 	return nil
 }
 
+func (tc *sendErrorTestChannel) onCloseSend() func() error {
+	return func() error {
+		return nil
+	}
+}
+
 func (tc *sendErrorTestChannel) onSend(_ context.Context) func(*arrowpb.BatchArrowRecords) error {
 	return func(*arrowpb.BatchArrowRecords) error {
 		return io.EOF
@@ -344,6 +392,12 @@ func newConnectErrorTestChannel() *connectErrorTestChannel {
 
 func (tc *connectErrorTestChannel) onConnect(_ context.Context) error {
 	return fmt.Errorf("test connect error")
+}
+
+func (tc *connectErrorTestChannel) onCloseSend() func() error {
+	return func() error {
+		panic("unreachable")
+	}
 }
 
 func (tc *connectErrorTestChannel) onSend(_ context.Context) func(*arrowpb.BatchArrowRecords) error {
