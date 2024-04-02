@@ -1,3 +1,6 @@
+# This collector listens for OTLP/gRPC on port 8101 and forwards to a
+# debug exporter.
+
 receivers:
   otelarrow:
     protocols:
@@ -6,7 +9,7 @@ receivers:
 
         keepalive:
           server_parameters:
-            max_connection_age: 10s
+            max_connection_age: 5s
             max_connection_age_grace: 60s
 
 exporters:

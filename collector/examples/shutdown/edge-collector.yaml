@@ -1,3 +1,6 @@
+# This collector listens on the standard OTLP/gRPC port (4317)
+# and forwards to an OTel-Arrow on port 8100.
+
 receivers:
   otelarrow:
 
@@ -13,8 +16,9 @@ exporters:
 
     wait_for_ready: true
 
-  debug:
-
+    arrow:
+      max_stream_lifetime: 120s
+    
 service:
   pipelines:
     traces:
