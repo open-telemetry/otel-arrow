@@ -1,0 +1,44 @@
+receivers:
+  otelarrow:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:8100
+        keepalive:
+          server_parameters:
+            max_connection_age: 5s
+            max_connection_age_grace: 20s
+
+processors:
+  concurrentbatch:
+
+exporters:
+  otelarrow:
+    endpoint: 127.0.0.1:8101
+
+    tls:
+      insecure: true
+
+    wait_for_ready: true
+
+  debug:
+
+service:
+  pipelines:
+    traces:
+      receivers: [otelarrow]
+      processors: [concurrentbatch]
+      exporters: [otelarrow]
+    metrics:
+      receivers: [otelarrow]
+      processors: [concurrentbatch]
+      exporters: [otelarrow]
+    logs:
+      receivers: [otelarrow]
+      processors: [concurrentbatch]
+      exporters: [otelarrow]
+
+  telemetry:
+    metrics:
+      level: none
+    logs:
+      level: info
