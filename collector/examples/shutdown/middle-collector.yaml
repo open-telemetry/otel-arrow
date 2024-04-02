@@ -1,0 +1,48 @@
+# This collector listens for OTLP/gRPC on port 8100 and forwards to an
+# OTel-Arrow on port 8101.
+
+receivers:
+  otelarrow:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:8100
+        keepalive:
+          server_parameters:
+            max_connection_age: 5s
+            max_connection_age_grace: 20s
+
+processors:
+  concurrentbatch:
+
+exporters:
+  otelarrow:
+    endpoint: 127.0.0.1:8101
+
+    tls:
+      insecure: true
+
+    wait_for_ready: true
+
+    arrow:
+      max_stream_lifetime: 120s
+
+service:
+  pipelines:
+    traces:
+      receivers: [otelarrow]
+      processors: [concurrentbatch]
+      exporters: [otelarrow]
+    metrics:
+      receivers: [otelarrow]
+      processors: [concurrentbatch]
+      exporters: [otelarrow]
+    logs:
+      receivers: [otelarrow]
+      processors: [concurrentbatch]
+      exporters: [otelarrow]
+
+  telemetry:
+    metrics:
+      level: none
+    logs:
+      level: info
