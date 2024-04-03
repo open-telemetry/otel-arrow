@@ -59,7 +59,7 @@ type Exporter struct {
 	// Exporter, used for shutdown.
 	cancel context.CancelFunc
 
-	// wg counts one per active goroutine belonging to all strings
+	// wg counts one per active goroutine belonging to all streams
 	// of this exporter.  The wait group has Add(1) called before
 	// starting goroutines so that they can be properly waited for
 	// in shutdown(), so the pattern is:

@@ -6,6 +6,7 @@ package otelarrowexporter
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -1023,7 +1024,12 @@ func (r *mockTracesReceiver) startStreamMockArrowTraces(t *testing.T, statusFor 
 			if status, ok := status.FromError(err); ok && status.Code() == codes.Canceled {
 				break
 			}
-			require.NoError(t, err)
+			if err != nil {
+				// No errors are allowed, except EOF.
+				require.Equal(t, io.EOF, err)
+				break
+			}
+
 			got, err := consumer.TracesFrom(records)
 			require.NoError(t, err)
 
