@@ -15,9 +15,13 @@ To run the receiving side of the bridge,
 $COLLECTOR --config saas-collector.yaml
 ```
 
-You may use the [`generator`](../generator/README.md) example to
-produce data and the [`printer`](../printer/README.md) to display data
-received on the other end.
+You may use the
+[`telemetrygen`](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/cmd/telemetrygen/README.md)
+generator to exercise this pipeline.  For example, to send traces:
+
+```
+telemetrygen traces --otlp-insecure --duration 1000s
+```
 
 Prometheus metrics describing the OpenTelemetry Protocol with Apache
 Arrow components are available at `127.0.0.1:8888` and `127.0.0.1:8889`.
