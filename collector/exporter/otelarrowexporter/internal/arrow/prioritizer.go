@@ -12,10 +12,32 @@ import (
 
 var ErrStreamRestarting = status.Error(codes.Aborted, "stream is restarting")
 
-// streamPrioritizer is a placeholder for a configurable mechanism
-// that selects the next stream to write.
-type streamPrioritizer struct {
-	// done corresponds with the background context Done channel..
+// streamPrioritizer is an interface for prioritizing multiple
+// streams.
+type streamPrioritizer interface {
+	nextWriter(context.Context) (streamWriter, error)
+	downgrade()
+
+	// On every stream
+	setAvailable(*Stream)
+	unsetAvailable(*Stream)
+
+	// On every send/recv pair
+	setReady(*Stream)
+	unsetReady(*Stream)
+}
+
+// streamWriter is the caller's interface to a stream.
+type streamWriter interface {
+	// streamWrite is called to begin a write.  After completing
+	// the call, wait on writeItem.errCh for the response.
+	streamWrite(writeItem) error
+}
+
+// fifoPrioritizer is a prioritizer that selects the next stream to write.
+// It is the simplest prioritizer implementation.
+type fifoPrioritizer struct {
+	// done corresponds with the background context Done channel.
 	done <-chan struct{}
 
 	// channel will be closed to downgrade to standard OTLP,
@@ -23,51 +45,72 @@ type streamPrioritizer struct {
 	channel chan *Stream
 }
 
-// newStreamPrioritizer constructs a channel-based first-available prioritizer.
-func newStreamPrioritizer(bgctx context.Context, numStreams int) *streamPrioritizer {
-	return &streamPrioritizer{
+var _ streamPrioritizer = &fifoPrioritizer{}
+
+func newStreamPrioritizer(bgctx context.Context, numStreams int) streamPrioritizer {
+	// TODO: More options
+	return newFifoPrioritizer(bgctx, numStreams)
+}
+
+// newFifoPrioritizer constructs a channel-based first-available prioritizer.
+func newFifoPrioritizer(bgctx context.Context, numStreams int) *fifoPrioritizer {
+	return &fifoPrioritizer{
 		done:    bgctx.Done(),
 		channel: make(chan *Stream, numStreams),
 	}
 }
 
 // downgrade indicates that streams are never going to be ready.  Note
-// the caller is required to ensure that setReady() and removeReady()
+// the caller is required to ensure that setReady() and unsetReady()
 // cannot be called concurrently; this is done by waiting for
 // Stream.writeStream() calls to return before downgrading.
-func (sp *streamPrioritizer) downgrade() {
-	close(sp.channel)
+func (fp *fifoPrioritizer) downgrade() {
+	close(fp.channel)
 }
 
-// readyChannel returns channel to select a ready stream.  The caller
-// is expected to select on this and ctx.Done() simultaneously.  If
-// the exporter is downgraded, the channel will be closed.
-func (sp *streamPrioritizer) readyChannel() chan *Stream {
-	return sp.channel
+// nextWriter returns the first-available stream.
+func (fp *fifoPrioritizer) nextWriter(ctx context.Context) (streamWriter, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case stream := <-fp.channel:
+		if stream == nil {
+			return nil, nil
+		}
+		return stream, nil
+	}
+}
+
+// setAvailable is a no-op for fifoPrioritizer, see setReady.
+func (fp *fifoPrioritizer) setAvailable(stream *Stream) {
+}
+
+// unsetAvailable is a no-op for fifoPrioritizer, see unsetReady.
+func (fp *fifoPrioritizer) unsetAvailable(stream *Stream) {
 }
 
 // setReady marks this stream ready for use.
-func (sp *streamPrioritizer) setReady(stream *Stream) {
+func (fp *fifoPrioritizer) setReady(stream *Stream) {
 	// Note: downgrade() can't be called concurrently.
-	sp.channel <- stream
+	fp.channel <- stream
 }
 
-// removeReady removes this stream from the ready set, used in cases
+// unsetReady removes this stream from the ready set, used in cases
 // where the stream has broken unexpectedly.
-func (sp *streamPrioritizer) removeReady(stream *Stream) {
+func (fp *fifoPrioritizer) unsetReady(stream *Stream) {
 	// Note: downgrade() can't be called concurrently.
 	for {
 		// Searching for this stream to get it out of the ready queue.
 		select {
-		case <-sp.done:
+		case <-fp.done:
 			// Shutdown case
 			return
-		case alternate := <-sp.channel:
+		case alternate := <-fp.channel:
 			if alternate == stream {
 				// Success: removed from ready queue.
 				return
 			}
-			sp.channel <- alternate
+			fp.channel <- alternate
 		case wri := <-stream.toWrite:
 			// A consumer got us first, means this stream has been removed
 			// from the ready queue.

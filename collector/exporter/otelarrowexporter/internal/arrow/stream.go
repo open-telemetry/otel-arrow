@@ -10,13 +10,13 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -30,7 +30,6 @@ import (
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 )
 
@@ -46,10 +45,7 @@ type Stream struct {
 	producer arrowRecord.ProducerAPI
 
 	// prioritizer has a reference to the stream, this allows it to be severed.
-	prioritizer *streamPrioritizer
-
-	// perRPCCredentials from the auth extension, or nil.
-	perRPCCredentials credentials.PerRPCCredentials
+	prioritizer streamPrioritizer
 
 	// telemetry are a copy of the exporter's telemetry settings
 	telemetry component.TelemetrySettings
@@ -77,6 +73,10 @@ type Stream struct {
 
 	// netReporter provides network-level metrics.
 	netReporter netstats.Interface
+
+	// outstandingRequests is a count of requests that were sent
+	// for which no response has been received.
+	outstandingRequests atomic.Uint32
 }
 
 // writeItem is passed from the sender (a pipeline consumer) to the
@@ -98,21 +98,19 @@ type writeItem struct {
 // newStream constructs a stream
 func newStream(
 	producer arrowRecord.ProducerAPI,
-	prioritizer *streamPrioritizer,
+	prioritizer streamPrioritizer,
 	telemetry component.TelemetrySettings,
-	perRPCCredentials credentials.PerRPCCredentials,
 	netReporter netstats.Interface,
 ) *Stream {
 	tracer := telemetry.TracerProvider.Tracer("otel-arrow-exporter")
 	return &Stream{
-		producer:          producer,
-		prioritizer:       prioritizer,
-		perRPCCredentials: perRPCCredentials,
-		telemetry:         telemetry,
-		tracer:            tracer,
-		toWrite:           make(chan writeItem, 1),
-		waiters:           map[int64]chan error{},
-		netReporter:       netReporter,
+		producer:    producer,
+		prioritizer: prioritizer,
+		telemetry:   telemetry,
+		tracer:      tracer,
+		toWrite:     make(chan writeItem, 1),
+		waiters:     map[int64]chan error{},
+		netReporter: netReporter,
 	}
 }
 
@@ -122,6 +120,7 @@ func (s *Stream) setBatchChannel(batchID int64, errCh chan error) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
+	s.outstandingRequests.Add(1)
 	s.waiters[batchID] = errCh
 }
 
@@ -255,6 +254,9 @@ func (s *Stream) write(ctx context.Context) (retErr error) {
 		defer timer.Stop()
 	}
 
+	s.prioritizer.setAvailable(s)
+	defer s.prioritizer.unsetAvailable(s)
+
 	for {
 		// Note: this can't block b/c stream has capacity &
 		// individual streams shut down synchronously.
@@ -267,7 +269,7 @@ func (s *Stream) write(ctx context.Context) (retErr error) {
 		select {
 		case <-timerCh:
 			// If timerCh is nil, this will never happen.
-			s.prioritizer.removeReady(s)
+			s.prioritizer.unsetReady(s)
 			return nil
 		case wri, ok = <-s.toWrite:
 			// channel is closed
@@ -278,7 +280,7 @@ func (s *Stream) write(ctx context.Context) (retErr error) {
 			// Because we did not <-stream.toWrite, there
 			// is a potential sender race since the stream
 			// is currently in the ready set.
-			s.prioritizer.removeReady(s)
+			s.prioritizer.unsetReady(s)
 			return ctx.Err()
 		}
 
@@ -408,6 +410,8 @@ func (s *Stream) getSenderChannels(status *arrowpb.BatchStatus) (chan error, err
 		// Will break the stream.
 		return nil, fmt.Errorf("unrecognized batch ID: %d", status.BatchId)
 	}
+
+	s.outstandingRequests.Add(^uint32(0))
 	delete(s.waiters, status.BatchId)
 	return ch, nil
 }
@@ -457,65 +461,18 @@ func (s *Stream) processBatchStatus(ss *arrowpb.BatchStatus) error {
 	return ret
 }
 
-// SendAndWait submits a batch of records to be encoded and sent.  Meanwhile, this
+// streamWait submits a batch of records to be encoded and sent.  Meanwhile, this
 // goroutine waits on the incoming context or for the asynchronous response to be
 // received by the stream reader.
-func (s *Stream) SendAndWait(ctx context.Context, records any) error {
-	errCh := make(chan error, 1)
-
-	// Note that if the OTLP exporter's gRPC Headers field was
-	// set, those (static) headers were used to establish the
-	// stream.  The caller's context was returned by
-	// baseExporter.enhanceContext() includes the static headers
-	// plus optional client metadata.  Here, get whatever
-	// headers that gRPC would have transmitted for a unary RPC
-	// and convey them via the Arrow batch.
-
-	// Note that the "uri" parameter to GetRequestMetadata is
-	// not used by the headersetter extension and is not well
-	// documented.  Since it's an optional list, we omit it.
-	var md map[string]string
-	if s.perRPCCredentials != nil {
-		var err error
-		md, err = s.perRPCCredentials.GetRequestMetadata(ctx)
-		if err != nil {
-			return err
-		}
-	}
-
-	// Note that the uncompressed size as measured by the receiver
-	// will be different than uncompressed size as measured by the
-	// exporter, because of the optimization phase performed in the
-	// conversion to Arrow.
-	var uncompSize int
-	if s.telemetry.MetricsLevel > configtelemetry.LevelNormal {
-		switch data := records.(type) {
-		case ptrace.Traces:
-			var sizer ptrace.ProtoMarshaler
-			uncompSize = sizer.TracesSize(data)
-		case plog.Logs:
-			var sizer plog.ProtoMarshaler
-			uncompSize = sizer.LogsSize(data)
-		case pmetric.Metrics:
-			var sizer pmetric.ProtoMarshaler
-			uncompSize = sizer.MetricsSize(data)
-		}
-	}
-
-	s.toWrite <- writeItem{
-		records:    records,
-		md:         md,
-		uncompSize: uncompSize,
-		errCh:      errCh,
-		parent:     ctx,
-	}
+func (s *Stream) streamWrite(wri writeItem) error {
+	s.toWrite <- wri
 
 	// Note this ensures the caller's timeout is respected.
 	select {
-	case <-ctx.Done():
+	case <-wri.parent.Done():
 		// This caller's context timed out.
-		return ctx.Err()
-	case err := <-errCh:
+		return wri.parent.Err()
+	case err := <-wri.errCh:
 		// Note: includes err == nil and err != nil cases.
 		return err
 	}

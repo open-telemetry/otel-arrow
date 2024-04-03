@@ -14,6 +14,10 @@ import (
 	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/config/configtelemetry"
+	"go.opentelemetry.io/collector/pdata/plog"
+	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -53,7 +57,7 @@ type Exporter struct {
 	returning chan *Stream
 
 	// ready prioritizes streams that are ready to send
-	ready *streamPrioritizer
+	ready streamPrioritizer
 
 	// cancel cancels the background context of this
 	// Exporter, used for shutdown.
@@ -199,7 +203,7 @@ func addJitter(v time.Duration) time.Duration {
 func (e *Exporter) runArrowStream(ctx context.Context) {
 	producer := e.newProducer()
 
-	stream := newStream(producer, e.ready, e.telemetry, e.perRPCCredentials, e.netReporter)
+	stream := newStream(producer, e.ready, e.telemetry, e.netReporter)
 	stream.maxStreamLifetime = addJitter(e.maxStreamLifetime)
 
 	defer func() {
@@ -222,14 +226,57 @@ func (e *Exporter) runArrowStream(ctx context.Context) {
 //
 // consumer should fall back to standard OTLP, (true, nil)
 func (e *Exporter) SendAndWait(ctx context.Context, data any) (bool, error) {
-	for {
-		var stream *Stream
+	errCh := make(chan error, 1)
+
+	// Note that if the OTLP exporter's gRPC Headers field was
+	// set, those (static) headers were used to establish the
+	// stream.  The caller's context was returned by
+	// baseExporter.enhanceContext() includes the static headers
+	// plus optional client metadata.  Here, get whatever
+	// headers that gRPC would have transmitted for a unary RPC
+	// and convey them via the Arrow batch.
+
+	// Note that the "uri" parameter to GetRequestMetadata is
+	// not used by the headersetter extension and is not well
+	// documented.  Since it's an optional list, we omit it.
+	var md map[string]string
+	if e.perRPCCredentials != nil {
 		var err error
-		select {
-		case <-ctx.Done():
-			err = ctx.Err()
-		case stream = <-e.ready.readyChannel():
+		md, err = e.perRPCCredentials.GetRequestMetadata(ctx)
+		if err != nil {
+			return false, err
 		}
+	}
+
+	// Note that the uncompressed size as measured by the receiver
+	// will be different than uncompressed size as measured by the
+	// exporter, because of the optimization phase performed in the
+	// conversion to Arrow.
+	var uncompSize int
+	if e.telemetry.MetricsLevel > configtelemetry.LevelNormal {
+		switch data := data.(type) {
+		case ptrace.Traces:
+			var sizer ptrace.ProtoMarshaler
+			uncompSize = sizer.TracesSize(data)
+		case plog.Logs:
+			var sizer plog.ProtoMarshaler
+			uncompSize = sizer.LogsSize(data)
+		case pmetric.Metrics:
+			var sizer pmetric.ProtoMarshaler
+			uncompSize = sizer.MetricsSize(data)
+		}
+	}
+
+	wri := writeItem{
+		records:    data,
+		md:         md,
+		uncompSize: uncompSize,
+		errCh:      errCh,
+		parent:     ctx,
+	}
+
+	for {
+		stream, err := e.ready.nextWriter(ctx)
 
 		if err != nil {
 			return false, err // a Context error
@@ -238,7 +285,7 @@ func (e *Exporter) SendAndWait(ctx context.Context, data any) (bool, error) {
 			return false, nil // a downgraded connection
 		}
 
-		err = stream.SendAndWait(ctx, data)
+		err = stream.streamWrite(wri)
 		if err != nil && errors.Is(err, ErrStreamRestarting) {
 			continue // an internal retry
 

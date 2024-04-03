@@ -168,9 +168,6 @@ func (ctc *commonTestCase) repeatedNewStream(nc func() testChannel) func(context
 
 // healthyTestChannel accepts the connection and returns an OK status immediately.
 type healthyTestChannel struct {
-	// This lock is needed to avoid a race because CloseSend() now closes the sent channel,
-	// which some former tests were doing manually. Now CloseSend() is always called and
-	// the closed channel serves to assist with some tests.
 	lock sync.Mutex
 	sent chan *arrowpb.BatchArrowRecords
 	recv chan *arrowpb.BatchStatus
