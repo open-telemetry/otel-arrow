@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
@@ -35,6 +34,9 @@ import (
 
 // Stream is 1:1 with gRPC stream.
 type Stream struct {
+	// done is the background context that will be canceled on shutdown.
+	done <-chan struct{}
+
 	// maxStreamLifetime is the max timeout before stream
 	// should be closed on the client side. This ensures a
 	// graceful shutdown before max_connection_age is reached
@@ -61,6 +63,17 @@ type Stream struct {
 	// method the gRPC method name, used for additional instrumentation.
 	method string
 
+	// netReporter provides network-level metrics.
+	netReporter netstats.Interface
+
+	// streamWorkState is the interface to prioritizer/balancer, contains
+	// outstanding request (by batch ID) and the write channel used by
+	// the stream.  All of this state will be inherited by the successor
+	// stream.
+	workState *streamWorkState
+}
+
+type streamWorkState struct {
 	// toWrite is passes a batch from the sender to the stream writer, which
 	// includes a dedicated channel for the response.
 	toWrite chan writeItem
@@ -70,13 +83,12 @@ type Stream struct {
 
 	// waiters is the response channel for each active batch.
 	waiters map[int64]chan error
+}
 
-	// netReporter provides network-level metrics.
-	netReporter netstats.Interface
-
-	// outstandingRequests is a count of requests that were sent
-	// for which no response has been received.
-	outstandingRequests atomic.Uint32
+func (sws *streamWorkState) count() int {
+	sws.lock.Lock()
+	defer sws.lock.Unlock()
+	return len(sws.waiters) + len(sws.toWrite)
 }
 
 // writeItem is passed from the sender (a pipeline consumer) to the
@@ -101,38 +113,30 @@ func newStream(
 	prioritizer streamPrioritizer,
 	telemetry component.TelemetrySettings,
 	netReporter netstats.Interface,
-	exitingStream *Stream,
+	workState *streamWorkState,
 ) *Stream {
 	tracer := telemetry.TracerProvider.Tracer("otel-arrow-exporter")
-
-	var writeCh chan writeItem
-	if exitingStream != nil {
-		// the toWrite channel is in-use and may have
-		// unstarted work items left behind by the previous
-		// stream, including waiters.
-		writeCh = exitingStream.toWrite
-	} else {
-		writeCh = make(chan writeItem, 1)
+	if workState == nil {
+		panic("IMPOS")
 	}
+
 	return &Stream{
 		producer:    producer,
 		prioritizer: prioritizer,
 		telemetry:   telemetry,
 		tracer:      tracer,
-		toWrite:     writeCh,
-		waiters:     map[int64]chan error{},
 		netReporter: netReporter,
+		workState:   workState,
 	}
 }
 
 // setBatchChannel places a waiting consumer's batchID into the waiters map, where
 // the stream reader may find it.
 func (s *Stream) setBatchChannel(batchID int64, errCh chan error) {
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	s.workState.lock.Lock()
+	defer s.workState.lock.Unlock()
 
-	s.outstandingRequests.Add(1)
-	s.waiters[batchID] = errCh
+	s.workState.waiters[batchID] = errCh
 }
 
 // logStreamError decides how to log an error.  `which` indicates the
@@ -237,12 +241,17 @@ func (s *Stream) run(bgctx context.Context, streamClient StreamClientFunc, grpcO
 		s.logStreamError("writer", writeErr)
 	}
 
+	s.workState.lock.Lock()
+	defer s.workState.lock.Unlock()
+
 	// The reader and writer have both finished; respond to any
 	// outstanding waiters.
-	for _, ch := range s.waiters {
+	for _, ch := range s.workState.waiters {
 		// Note: the top-level OTLP exporter will retry.
 		ch <- ErrStreamRestarting
 	}
+
+	s.workState.waiters = map[int64]chan error{}
 }
 
 // write repeatedly places this stream into the next-available queue, then
@@ -265,9 +274,6 @@ func (s *Stream) write(ctx context.Context) (retErr error) {
 		defer timer.Stop()
 	}
 
-	s.prioritizer.setAvailable(s)
-	defer s.prioritizer.unsetAvailable(s)
-
 	for {
 		// Note: this can't block b/c stream has capacity &
 		// individual streams shut down synchronously.
@@ -282,7 +288,7 @@ func (s *Stream) write(ctx context.Context) (retErr error) {
 			// If timerCh is nil, this will never happen.
 			s.prioritizer.unsetReady(s)
 			return nil
-		case wri, ok = <-s.toWrite:
+		case wri, ok = <-s.workState.toWrite:
 			// channel is closed
 			if !ok {
 				return nil
@@ -407,30 +413,26 @@ func (s *Stream) read(_ context.Context) error {
 	}
 }
 
-// getSenderChannels takes the stream lock and removes the
-// corresonding sender channel for each BatchId.  They are returned
-// with the same index as the original status, for correlation.  Nil
-// channels will be returned when there are errors locating the
+// getSenderChannel takes the stream lock and removes the corresonding
 // sender channel.
-func (s *Stream) getSenderChannels(status *arrowpb.BatchStatus) (chan error, error) {
-	s.lock.Lock()
-	defer s.lock.Unlock()
+func (sws *streamWorkState) getSenderChannel(status *arrowpb.BatchStatus) (chan error, error) {
+	sws.lock.Lock()
+	defer sws.lock.Unlock()
 
-	ch, ok := s.waiters[status.BatchId]
+	ch, ok := sws.waiters[status.BatchId]
 	if !ok {
 		// Will break the stream.
 		return nil, fmt.Errorf("unrecognized batch ID: %d", status.BatchId)
 	}
 
-	s.outstandingRequests.Add(^uint32(0))
-	delete(s.waiters, status.BatchId)
+	delete(sws.waiters, status.BatchId)
 	return ch, nil
 }
 
 // processBatchStatus processes a single response from the server and unblocks the
 // associated sender.
 func (s *Stream) processBatchStatus(ss *arrowpb.BatchStatus) error {
-	ch, ret := s.getSenderChannels(ss)
+	ch, ret := s.workState.getSenderChannel(ss)
 
 	if ch == nil {
 		// In case getSenderChannels encounters a problem, the
@@ -472,20 +474,15 @@ func (s *Stream) processBatchStatus(ss *arrowpb.BatchStatus) error {
 	return ret
 }
 
-// streamWait submits a batch of records to be encoded and sent.  Meanwhile, this
+// sendAndWait submits a batch of records to be encoded and sent.  Meanwhile, this
 // goroutine waits on the incoming context or for the asynchronous response to be
 // received by the stream reader.
-func (s *Stream) streamWrite(wri writeItem) error {
-	s.toWrite <- wri
-
-	// Note this ensures the caller's timeout is respected.
+func (s *Stream) sendAndWait(wri writeItem, done <-chan struct{}) error {
 	select {
-	case <-wri.parent.Done():
-		// This caller's context timed out.
-		return wri.parent.Err()
-	case err := <-wri.errCh:
-		// Note: includes err == nil and err != nil cases.
-		return err
+	case <-done:
+		return ErrStreamRestarting
+	case s.workState.toWrite <- wri:
+		return wri.waitForWrite(done)
 	}
 }
 

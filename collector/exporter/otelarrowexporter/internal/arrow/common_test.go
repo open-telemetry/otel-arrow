@@ -189,6 +189,12 @@ func (tc *healthyTestChannel) doClose() {
 	}
 }
 
+func (tc *healthyTestChannel) sendChannel() <-chan *arrowpb.BatchArrowRecords {
+	tc.lock.Lock()
+	defer tc.lock.Unlock()
+	return tc.sent
+}
+
 func (tc *healthyTestChannel) onConnect(_ context.Context) error {
 	return nil
 }

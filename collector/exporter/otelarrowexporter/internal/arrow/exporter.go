@@ -128,16 +128,27 @@ func NewExporter(
 	}
 }
 
+func newStreamWorkState() *streamWorkState {
+	return &streamWorkState{
+		waiters: map[int64]chan error{},
+		toWrite: make(chan writeItem), // @@@ ?
+	}
+}
+
 // Start creates the background context used by all streams and starts
 // a stream controller, which initializes the initial set of streams.
 func (e *Exporter) Start(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 
+	var sws []*streamWorkState
+	for i := 0; i < e.numStreams; i++ {
+		sws = append(sws, newStreamWorkState())
+	}
+
+	e.ready = newStreamPrioritizer(ctx, sws...)
 	e.cancel = cancel
 	e.wg.Add(1)
-	e.ready = newStreamPrioritizer(ctx, e.numStreams)
-
-	go e.runStreamController(ctx)
+	go e.runStreamController(ctx, sws)
 
 	return nil
 }
@@ -146,7 +157,7 @@ func (e *Exporter) Start(ctx context.Context) error {
 // terminate one at a time and restarts them.  If streams come back with a nil
 // client (meaning that OTel-Arrow was not supported by the endpoint), it will
 // not be restarted.
-func (e *Exporter) runStreamController(bgctx context.Context) {
+func (e *Exporter) runStreamController(bgctx context.Context, state []*streamWorkState) {
 	defer e.cancel()
 	defer e.wg.Done()
 
@@ -155,7 +166,7 @@ func (e *Exporter) runStreamController(bgctx context.Context) {
 	// Start the initial number of streams
 	for i := 0; i < running; i++ {
 		e.wg.Add(1)
-		go e.runArrowStream(bgctx, nil)
+		go e.runArrowStream(bgctx, state[i])
 	}
 
 	for {
@@ -164,7 +175,7 @@ func (e *Exporter) runStreamController(bgctx context.Context) {
 			if stream.client != nil || e.disableDowngrade {
 				// The stream closed or broken.  Restart it.
 				e.wg.Add(1)
-				go e.runArrowStream(bgctx, stream)
+				go e.runArrowStream(bgctx, stream.workState)
 				continue
 			}
 			// Otherwise, the stream never got started.  It was
@@ -176,6 +187,7 @@ func (e *Exporter) runStreamController(bgctx context.Context) {
 			if running == 0 {
 				e.telemetry.Logger.Info("could not establish arrow streams, downgrading to standard OTLP export")
 				e.ready.downgrade()
+				return
 			}
 
 		case <-bgctx.Done():
@@ -200,10 +212,10 @@ func addJitter(v time.Duration) time.Duration {
 // If the stream connection is successful, this goroutine starts another goroutine
 // to call writeStream() and performs readStream() itself.  When the stream shuts
 // down this call synchronously waits for and unblocks the consumers.
-func (e *Exporter) runArrowStream(ctx context.Context, replace *Stream) {
+func (e *Exporter) runArrowStream(ctx context.Context, state *streamWorkState) {
 	producer := e.newProducer()
 
-	stream := newStream(producer, e.ready, e.telemetry, e.netReporter, replace)
+	stream := newStream(producer, e.ready, e.telemetry, e.netReporter, state)
 	stream.maxStreamLifetime = addJitter(e.maxStreamLifetime)
 
 	defer func() {
@@ -285,7 +297,7 @@ func (e *Exporter) SendAndWait(ctx context.Context, data any) (bool, error) {
 			return false, nil // a downgraded connection
 		}
 
-		err = stream.streamWrite(wri)
+		err = stream.sendAndWait(wri)
 		if err != nil && errors.Is(err, ErrStreamRestarting) {
 			continue // an internal retry
 
@@ -301,4 +313,17 @@ func (e *Exporter) Shutdown(_ context.Context) error {
 	e.cancel()
 	e.wg.Wait()
 	return nil
+}
+
+func (wri writeItem) waitForWrite(done <-chan struct{}) error {
+	select {
+	case <-done:
+		return ErrStreamRestarting
+	case <-wri.parent.Done():
+		// This caller's context timed out.
+		return wri.parent.Err()
+	case err := <-wri.errCh:
+		// Note: includes err == nil and err != nil cases.
+		return err
+	}
 }

@@ -208,7 +208,7 @@ func TestArrowExporterSuccess(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			outputData = <-channel.sent
+			outputData = <-channel.sendChannel()
 			channel.recv <- statusOKFor(outputData.BatchId)
 		}()
 
@@ -267,7 +267,8 @@ func TestArrowExporterTimeout(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 		cancel()
 	}()
-	_, err := tc.exporter.SendAndWait(ctx, twoTraces)
+	sent, err := tc.exporter.SendAndWait(ctx, twoTraces)
+	require.True(t, sent)
 	require.Error(t, err)
 	require.True(t, errors.Is(err, context.Canceled))
 

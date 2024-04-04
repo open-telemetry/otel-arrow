@@ -18,10 +18,6 @@ type streamPrioritizer interface {
 	nextWriter(context.Context) (streamWriter, error)
 	downgrade()
 
-	// On every stream
-	setAvailable(*Stream)
-	unsetAvailable(*Stream)
-
 	// On every send/recv pair
 	setReady(*Stream)
 	unsetReady(*Stream)
@@ -29,9 +25,9 @@ type streamPrioritizer interface {
 
 // streamWriter is the caller's interface to a stream.
 type streamWriter interface {
-	// streamWrite is called to begin a write.  After completing
+	// sendAndWait is called to begin a write.  After completing
 	// the call, wait on writeItem.errCh for the response.
-	streamWrite(writeItem) error
+	sendAndWait(writeItem) error
 }
 
 // fifoPrioritizer is a prioritizer that selects the next stream to write.
@@ -47,17 +43,17 @@ type fifoPrioritizer struct {
 
 var _ streamPrioritizer = &fifoPrioritizer{}
 
-func newStreamPrioritizer(bgctx context.Context, numStreams int) streamPrioritizer {
+func newStreamPrioritizer(bgctx context.Context, state ...*streamWorkState) streamPrioritizer {
 	// TODO: More options @@@
-	//return newFifoPrioritizer(bgctx, numStreams)
-	return newLoadPrioritizer(bgctx, numStreams)
+	// return newFifoPrioritizer(bgctx, numStreams)
+	return newLoadPrioritizer(bgctx, state)
 }
 
 // newFifoPrioritizer constructs a channel-based first-available prioritizer.
-func newFifoPrioritizer(bgctx context.Context, numStreams int) *fifoPrioritizer {
+func newFifoPrioritizer(bgctx context.Context, state []*streamWorkState) *fifoPrioritizer {
 	return &fifoPrioritizer{
 		done:    bgctx.Done(),
-		channel: make(chan *Stream, numStreams),
+		channel: make(chan *Stream, len(state)),
 	}
 }
 
@@ -78,16 +74,22 @@ func (fp *fifoPrioritizer) nextWriter(ctx context.Context) (streamWriter, error)
 		if stream == nil {
 			return nil, nil
 		}
-		return stream, nil
+		return &streamSender{
+			done:   fp.done,
+			stream: stream,
+		}, nil
 	}
 }
 
-// setAvailable is a no-op for fifoPrioritizer, see setReady.
-func (fp *fifoPrioritizer) setAvailable(stream *Stream) {
+type streamSender struct {
+	done   <-chan struct{}
+	stream *Stream
 }
 
-// unsetAvailable is a no-op for fifoPrioritizer, see unsetReady.
-func (fp *fifoPrioritizer) unsetAvailable(stream *Stream) {
+var _ streamWriter = &streamSender{}
+
+func (ss *streamSender) sendAndWait(wri writeItem) error {
+	return ss.stream.sendAndWait(wri, ss.done)
 }
 
 // setReady marks this stream ready for use.
@@ -112,7 +114,7 @@ func (fp *fifoPrioritizer) unsetReady(stream *Stream) {
 				return
 			}
 			fp.channel <- alternate
-		case wri := <-stream.toWrite:
+		case wri := <-stream.workState.toWrite:
 			// A consumer got us first, means this stream has been removed
 			// from the ready queue.
 			//
