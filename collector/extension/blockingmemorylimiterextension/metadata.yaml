@@ -1,0 +1,13 @@
+type: blocking_memory_limiter
+
+status:
+  class: extension
+  stability:
+    development: [extension]
+  distributions: []
+
+tests:
+  config:
+    check_interval: 5s
+    limit_mib: 400
+    spike_limit_mib: 50

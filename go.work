@@ -1,6 +1,4 @@
-go 1.21
-
-toolchain go1.21.4
+go 1.22.1
 
 use (
 	.
@@ -10,6 +8,7 @@ use (
 	./collector/examples/printer
 	./collector/exporter/fileexporter
 	./collector/exporter/otelarrowexporter
+	./collector/extension/blockingmemorylimiterextension
 	./collector/processor/concurrentbatchprocessor
 	./collector/processor/experimentprocessor
 	./collector/processor/obfuscationprocessor
