@@ -165,7 +165,6 @@ type ServerConfig struct {
 type memoryLimiterExtension = interface{
 	MustRefuse() bool
 	UnaryInterceptorGenerator() grpc.UnaryServerInterceptor
-	StreamInterceptorGenerator() grpc.StreamServerInterceptor
 }
 
 // SanitizedEndpoint strips the prefix of either http:// or https:// from configgrpc.ClientConfig.Endpoint.
@@ -422,7 +421,6 @@ func (gss *ServerConfig) toServerOption(host component.Host, settings component.
 		}
 
 		uInterceptors = append(uInterceptors, memoryLimiter.UnaryInterceptorGenerator())
-		sInterceptors = append(sInterceptors, memoryLimiter.StreamInterceptorGenerator())
 	}
 
 	otelOpts := []otelgrpc.Option{

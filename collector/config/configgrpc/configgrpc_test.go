@@ -283,12 +283,6 @@ func (mml *mockMemoryLimiterExtension) UnaryInterceptorGenerator() grpc.UnarySer
 	}
 }
 
-func (mml *mockMemoryLimiterExtension) StreamInterceptorGenerator() grpc.StreamServerInterceptor {
-	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error { 
-		return nil
-	}
-}
-
 func TestGetMemoryLimiterExtension(t *testing.T) {
 	badID := component.NewID(component.MustNewType("badmemlimiter"))
 	notMLExtensionErr := fmt.Errorf("requested MemoryLimiter, %s, is not a memoryLimiterExtension", badID)
