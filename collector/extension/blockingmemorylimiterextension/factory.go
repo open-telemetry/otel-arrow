@@ -11,17 +11,17 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/extension"
-
-	"github.com/open-telemetry/otel-arrow/collector/extension/blockingmemorylimiterextension/internal/metadata"
 )
+var	Type      = component.MustNewType("blocking_memory_limiter")
+const ExtensionStability = component.StabilityLevelDevelopment
 
 // NewFactory returns a new factory for the Memory Limiter extension.
 func NewFactory() extension.Factory {
 	return extension.NewFactory(
-		metadata.Type,
+		Type,
 		createDefaultConfig,
 		createExtension,
-		metadata.ExtensionStability)
+		ExtensionStability)
 }
 
 // CreateDefaultConfig creates the default configuration for extension. Notice
