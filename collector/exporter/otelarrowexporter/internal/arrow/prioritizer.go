@@ -15,7 +15,6 @@ var ErrStreamRestarting = status.Error(codes.Aborted, "stream is restarting")
 // streamPrioritizer is an interface for prioritizing multiple
 // streams.
 type streamPrioritizer interface {
-	chanSize() int
 	nextWriter(context.Context) (streamWriter, error)
 	downgrade()
 
@@ -49,8 +48,9 @@ type fifoPrioritizer struct {
 var _ streamPrioritizer = &fifoPrioritizer{}
 
 func newStreamPrioritizer(bgctx context.Context, numStreams int) streamPrioritizer {
-	// TODO: More options
-	return newFifoPrioritizer(bgctx, numStreams)
+	// TODO: More options @@@
+	//return newFifoPrioritizer(bgctx, numStreams)
+	return newLoadPrioritizer(bgctx, numStreams)
 }
 
 // newFifoPrioritizer constructs a channel-based first-available prioritizer.
@@ -67,10 +67,6 @@ func newFifoPrioritizer(bgctx context.Context, numStreams int) *fifoPrioritizer 
 // Stream.writeStream() calls to return before downgrading.
 func (fp *fifoPrioritizer) downgrade() {
 	close(fp.channel)
-}
-
-func (fp *fifoPrioritizer) chanSize() int {
-	return 1
 }
 
 // nextWriter returns the first-available stream.

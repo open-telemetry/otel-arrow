@@ -52,7 +52,7 @@ func newStreamTestCase(t *testing.T) *streamTestCase {
 	// metadata functionality is tested in exporter_test.go
 	ctc.requestMetadataCall.AnyTimes().Return(nil, nil)
 
-	stream := newStream(producer, prio, ctc.telset, netstats.Noop{})
+	stream := newStream(producer, prio, ctc.telset, netstats.Noop{}, nil)
 	stream.maxStreamLifetime = 10 * time.Second
 
 	fromTracesCall := producer.EXPECT().BatchArrowRecordsFromTraces(gomock.Any()).Times(0)

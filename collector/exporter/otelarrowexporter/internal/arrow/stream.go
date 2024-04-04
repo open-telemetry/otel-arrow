@@ -101,15 +101,18 @@ func newStream(
 	prioritizer streamPrioritizer,
 	telemetry component.TelemetrySettings,
 	netReporter netstats.Interface,
-	replacement *Stream,
+	exitingStream *Stream,
 ) *Stream {
 	tracer := telemetry.TracerProvider.Tracer("otel-arrow-exporter")
 
 	var writeCh chan writeItem
-	if replacement != nil {
-		writeCh = replacement.toWrite
+	if exitingStream != nil {
+		// the toWrite channel is in-use and may have
+		// unstarted work items left behind by the previous
+		// stream, including waiters.
+		writeCh = exitingStream.toWrite
 	} else {
-		writeCh = make(chan writeItem, prioritizer.chanSize())
+		writeCh = make(chan writeItem, 1)
 	}
 	return &Stream{
 		producer:    producer,

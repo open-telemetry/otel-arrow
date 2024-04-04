@@ -5,7 +5,6 @@ package arrow // import "github.com/open-telemetry/otel-arrow/collector/exporter
 
 import (
 	"context"
-	"math/rand"
 	"sync"
 )
 
@@ -40,10 +39,16 @@ func newLoadPrioritizer(ctx context.Context, numStreams int) *loadPrioritizer {
 		done:  ctx.Done(),
 		down:  make(chan struct{}),
 		input: make(chan writeItem, numStreams),
-		avail: make([]*Stream, 0, numStreams),
+		avail: map[*Stream]struct{}{},
 	}
 	lp.cond = sync.NewCond(&lp.lock)
-	go lp.run()
+
+	// Note that multiple intermediate goroutines are created.
+	// One is sufficient, but streams `toWrite` channels are
+	// limited size and eventually we have to block.
+	for i := 0; i < max(1, numStreams/2); i++ {
+		go lp.run()
+	}
 	return lp
 }
 
@@ -85,28 +90,27 @@ func (lp *loadPrioritizer) streamFor(wri writeItem) *Stream {
 	for len(lp.avail) == 0 {
 		lp.cond.Wait()
 	}
-	num := len(lp.avail)
-	if num == 1 {
-		return lp.avail[0]
+	if len(lp.avail) == 1 {
+		for stream := range lp.avail {
+			return stream
+		}
 	}
-
-	// TODO: having turned .avail into a map, there is a range function
-	// which gives random order through the list.  next, we want to ensure
-	// that this goroutine isn't blocked, so we can only write to channels
-	// for which there is space available.  if this prioritizer uses chanSize
-	// of two (2) ?? no that doesn't help, something else needed.  we either
-	// have a stream limit, or we don't.
+	var pick [2]*Stream
+	cnt := 0
+	for stream := range lp.avail {
+		pick[cnt] = stream
+		if cnt++; cnt == 2 {
+			break
+		}
+	}
+	l0 := pick[0].outstandingRequests.Load() + uint32(len(pick[0].toWrite))
+	l1 := pick[1].outstandingRequests.Load() + uint32(len(pick[1].toWrite))
 
 	// Choose two at random, then pick the one with less load.
-	a := rand.Intn(num)
-	b := rand.Intn(num - 1)
-	if b >= a {
-		b++
+	if l0 < l1 {
+		return pick[0]
 	}
-	if lp.avail[a].outstandingRequests.Load() < lp.avail[b].outstandingRequests.Load() {
-		return lp.avail[a]
-	}
-	return lp.avail[b]
+	return pick[1]
 }
 
 func (lp *loadPrioritizer) setReady(stream *Stream) {
@@ -119,20 +123,18 @@ func (lp *loadPrioritizer) setAvailable(stream *Stream) {
 	lp.lock.Lock()
 	defer lp.lock.Unlock()
 
-	lp.avail = append(lp.avail, stream)
-	lp.cond.Signal()
+	lp.avail[stream] = struct{}{}
+	lp.cond.Broadcast()
 }
 
 func (lp *loadPrioritizer) unsetAvailable(stream *Stream) {
 	lp.lock.Lock()
 	defer lp.lock.Unlock()
 
-	num := len(lp.avail)
-	for idx, st := range lp.avail {
-		if st == stream {
-			lp.avail[idx], lp.avail[num-1] = lp.avail[num-1], lp.avail[idx]
-			lp.avail = lp.avail[:num-1]
-			break
-		}
-	}
+	// Note that when we unset availability, there may still
+	// be one or more items pending on the `toWrite` channel.
+	// The toWrite channel is transferred to the replacement
+	// stream for this reason.
+
+	delete(lp.avail, stream)
 }
