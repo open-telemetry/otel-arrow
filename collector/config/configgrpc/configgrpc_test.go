@@ -183,7 +183,7 @@ func TestAllGrpcClientSettings(t *testing.T) {
 
 func TestDefaultGrpcServerSettings(t *testing.T) {
 	gss := &ServerConfig{
-		NetAddr: confignet.NetAddr{
+		NetAddr: confignet.AddrConfig{
 			Endpoint: "0.0.0.0:1234",
 		},
 	}
@@ -194,7 +194,7 @@ func TestDefaultGrpcServerSettings(t *testing.T) {
 
 func TestAllGrpcServerSettingsExceptAuth(t *testing.T) {
 	gss := &ServerConfig{
-		NetAddr: confignet.NetAddr{
+		NetAddr: confignet.AddrConfig{
 			Endpoint:  "localhost:1234",
 			Transport: "tcp",
 		},
@@ -227,7 +227,7 @@ func TestAllGrpcServerSettingsExceptAuth(t *testing.T) {
 
 func TestGrpcServerAuthSettings(t *testing.T) {
 	gss := &ServerConfig{
-		NetAddr: confignet.NetAddr{
+		NetAddr: confignet.AddrConfig{
 			Endpoint: "0.0.0.0:1234",
 		},
 	}
@@ -246,7 +246,7 @@ func TestGrpcServerAuthSettings(t *testing.T) {
 
 func TestGrpcServerAuthSettings_Deprecated(t *testing.T) {
 	gss := &ServerConfig{
-		NetAddr: confignet.NetAddr{
+		NetAddr: confignet.AddrConfig{
 			Endpoint: "0.0.0.0:1234",
 		},
 	}
@@ -258,7 +258,7 @@ func TestGrpcServerAuthSettings_Deprecated(t *testing.T) {
 			mockID: auth.NewServer(),
 		},
 	}
-	srv, err := gss.ToServer(host, componenttest.NewNopTelemetrySettings())
+	srv, err := gss.ToServer(context.Background(), host, componenttest.NewNopTelemetrySettings())
 	assert.NoError(t, err)
 	assert.NotNil(t, srv)
 }
@@ -274,14 +274,29 @@ func (mml *mockMemoryLimiterExtension) MustRefuse() bool {
 	return mml.mustRefuse
 }
 
+func (mml *mockMemoryLimiterExtension) UnaryInterceptorGenerator() grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
+		if mml.MustRefuse() {
+			return nil, errMemoryLimitReached
+		}
+		return nil, nil
+	}
+}
+
+func (mml *mockMemoryLimiterExtension) StreamInterceptorGenerator() grpc.StreamServerInterceptor {
+	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error { 
+		return nil
+	}
+}
+
 func TestGetMemoryLimiterExtension(t *testing.T) {
-	badID := component.NewID("badmemlimiter")
+	badID := component.NewID(component.MustNewType("badmemlimiter"))
 	notMLExtensionErr := fmt.Errorf("requested MemoryLimiter, %s, is not a memoryLimiterExtension", badID)
 
-	missingID := component.NewID("missingmemlimiter")
+	missingID := component.NewID(component.MustNewType("missingmemlimiter"))
 	missingMLExtensionErr := fmt.Errorf("failed to resolve memoryLimiterExtension %q: %s", missingID, "memory limiter extension not found")
 
-	validID := component.NewID("memorylimiter")
+	validID := component.NewID(component.MustNewType("memorylimiter"))
 
 	tests := []struct {
 		name        string
@@ -309,7 +324,7 @@ func TestGetMemoryLimiterExtension(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			comID := test.componentID
 			gss := &ServerConfig{
-				NetAddr: confignet.NetAddr{
+				NetAddr: confignet.AddrConfig{
 					Endpoint:  "localhost:0",
 					Transport: "tcp",
 				},
@@ -320,7 +335,7 @@ func TestGetMemoryLimiterExtension(t *testing.T) {
 			assert.NoError(t, err)
 			ml := &mockMemoryLimiterExtension{iD: comID}
 			extList := map[component.ID]component.Component{
-				component.NewID("memorylimiter"): ml,
+				component.NewID(component.MustNewType("memorylimiter")): ml,
 				badID:                            nopExt,
 			}
 
@@ -329,7 +344,7 @@ func TestGetMemoryLimiterExtension(t *testing.T) {
 			}
 
 			// ToServer calls getMemoryLimiterExtension().
-			srv, err := gss.ToServer(host, componenttest.NewNopTelemetrySettings())
+			srv, err := gss.ToServer(context.Background(), host, componenttest.NewNopTelemetrySettings())
 
 			// desired extension was not found.
 			if test.getExtErr != nil {
@@ -341,7 +356,6 @@ func TestGetMemoryLimiterExtension(t *testing.T) {
 			assert.NoError(t, err)
 		})
 	}
-
 }
 
 func TestGrpcUnaryServerMemoryLimiterSettings(t *testing.T) {
@@ -364,9 +378,9 @@ func TestGrpcUnaryServerMemoryLimiterSettings(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			comID := component.NewID("memorylimiter")
+			comID := component.NewID(component.MustNewType("memorylimiter"))
 			gss := &ServerConfig{
-				NetAddr: confignet.NetAddr{
+				NetAddr: confignet.AddrConfig{
 					Endpoint:  "localhost:0",
 					Transport: "tcp",
 				},
@@ -382,7 +396,7 @@ func TestGrpcUnaryServerMemoryLimiterSettings(t *testing.T) {
 				ext: extList,
 			}
 
-			srv, err := gss.ToServer(host, componenttest.NewNopTelemetrySettings())
+			srv, err := gss.ToServer(context.Background(), host, componenttest.NewNopTelemetrySettings())
 
 			// found extension so finish setting up server and client to test interceptor.
 			assert.NoError(t, err)
@@ -432,54 +446,6 @@ func TestGrpcUnaryServerMemoryLimiterSettings(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestGrpcStreamServerMemoryLimiterSettings(t *testing.T) {
-	tests := []struct {
-		name    string
-		refused bool
-		// interceptErr refers to whether memorylimiterextension allowed the request.
-		interceptErr error
-	}{
-		{
-			name:         "stream memory limiter extension accept",
-			refused:      false,
-			interceptErr: nil,
-		},
-		{
-			name:         "stream memory limiter extension refuse",
-			refused:      true,
-			interceptErr: errMemoryLimitReached,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			comID := component.NewID("memorylimiter")
-
-			ml := &mockMemoryLimiterExtension{iD: comID, mustRefuse: test.refused}
-			handlerCalled := false
-			handler := func(_ any, _ grpc.ServerStream) error {
-				handlerCalled = true
-				return nil
-			}
-			ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "some-auth-data"))
-			streamServer := &mockServerStream{
-				ctx: ctx,
-			}
-
-			// test
-			err := memoryLimiterStreamServerInterceptor(nil, streamServer, &grpc.StreamServerInfo{}, handler, ml)
-
-			// verify
-			assert.ErrorIs(t, test.interceptErr, err)
-			if test.refused {
-				assert.False(t, handlerCalled)
-			} else {
-				assert.True(t, handlerCalled)
-			}
-		})
-	}
-
 }
 
 func TestGRPCClientSettingsError(t *testing.T) {
@@ -630,7 +596,7 @@ func TestGRPCServerWarning(t *testing.T) {
 	}{
 		{
 			settings: ServerConfig{
-				NetAddr: confignet.NetAddr{
+				NetAddr: confignet.AddrConfig{
 					Endpoint:  "0.0.0.0:1234",
 					Transport: "tcp",
 				},
@@ -639,7 +605,7 @@ func TestGRPCServerWarning(t *testing.T) {
 		},
 		{
 			settings: ServerConfig{
-				NetAddr: confignet.NetAddr{
+				NetAddr: confignet.AddrConfig{
 					Endpoint:  "127.0.0.1:1234",
 					Transport: "tcp",
 				},
@@ -648,7 +614,7 @@ func TestGRPCServerWarning(t *testing.T) {
 		},
 		{
 			settings: ServerConfig{
-				NetAddr: confignet.NetAddr{
+				NetAddr: confignet.AddrConfig{
 					Endpoint:  "0.0.0.0:1234",
 					Transport: "unix",
 				},
@@ -681,7 +647,7 @@ func TestGRPCServerSettingsError(t *testing.T) {
 		{
 			err: "^failed to load TLS config: failed to load CA CertPool File: failed to load cert /doesnt/exist:",
 			settings: ServerConfig{
-				NetAddr: confignet.NetAddr{
+				NetAddr: confignet.AddrConfig{
 					Endpoint:  "127.0.0.1:1234",
 					Transport: "tcp",
 				},
@@ -695,7 +661,7 @@ func TestGRPCServerSettingsError(t *testing.T) {
 		{
 			err: "^failed to load TLS config: failed to load TLS cert and key: for auth via TLS, provide both certificate and key, or neither",
 			settings: ServerConfig{
-				NetAddr: confignet.NetAddr{
+				NetAddr: confignet.AddrConfig{
 					Endpoint:  "127.0.0.1:1234",
 					Transport: "tcp",
 				},
@@ -709,7 +675,7 @@ func TestGRPCServerSettingsError(t *testing.T) {
 		{
 			err: "^failed to load client CA CertPool: failed to load CA /doesnt/exist:",
 			settings: ServerConfig{
-				NetAddr: confignet.NetAddr{
+				NetAddr: confignet.AddrConfig{
 					Endpoint:  "127.0.0.1:1234",
 					Transport: "tcp",
 				},
@@ -729,7 +695,7 @@ func TestGRPCServerSettingsError(t *testing.T) {
 
 func TestGRPCServerSettings_ToListener_Error(t *testing.T) {
 	settings := ServerConfig{
-		NetAddr: confignet.NetAddr{
+		NetAddr: confignet.AddrConfig{
 			Endpoint:  "127.0.0.1:1234567",
 			Transport: "tcp",
 		},
@@ -850,7 +816,7 @@ func TestHttpReception(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			gss := &ServerConfig{
-				NetAddr: confignet.NetAddr{
+				NetAddr: confignet.AddrConfig{
 					Endpoint:  "localhost:0",
 					Transport: "tcp",
 				},
@@ -898,7 +864,7 @@ func TestReceiveOnUnixDomainSocket(t *testing.T) {
 
 	socketName := tempSocketName(t)
 	gss := &ServerConfig{
-		NetAddr: confignet.NetAddr{
+		NetAddr: confignet.AddrConfig{
 			Endpoint:  socketName,
 			Transport: "unix",
 		},
@@ -1094,7 +1060,7 @@ func TestClientInfoInterceptors(t *testing.T) {
 			// prepare the server
 			{
 				gss := &ServerConfig{
-					NetAddr: confignet.NetAddr{
+					NetAddr: confignet.AddrConfig{
 						Endpoint:  "localhost:0",
 						Transport: "tcp",
 					},

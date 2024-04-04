@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-package configgrpc // import "go.opentelemetry.io/collector/config/configgrpc"
+package configgrpc // import "github.com/open-telemetry/otel-arrow/collector/config/configgrpc"
 
 import (
 	"context"
@@ -128,7 +128,7 @@ type KeepaliveEnforcementPolicy struct {
 // ServerConfig defines common settings for a gRPC server configuration.
 type ServerConfig struct {
 	// Server net.Addr config. For transport only "tcp" and "unix" are valid options.
-	NetAddr confignet.NetAddr `mapstructure:",squash"`
+	NetAddr confignet.AddrConfig `mapstructure:",squash"`
 
 	// Configures the protocol to use TLS.
 	// The default value is nil, which will cause the protocol to not use TLS.
@@ -162,7 +162,11 @@ type ServerConfig struct {
 	MemoryLimiter *component.ID `mapstructure:"memory_limiter"`
 }
 
-type memoryLimiterExtension = interface{ MustRefuse() bool }
+type memoryLimiterExtension = interface{
+	MustRefuse() bool
+	UnaryInterceptorGenerator() grpc.UnaryServerInterceptor
+	StreamInterceptorGenerator() grpc.StreamServerInterceptor
+}
 
 // SanitizedEndpoint strips the prefix of either http:// or https:// from configgrpc.ClientConfig.Endpoint.
 func (gcs *ClientConfig) SanitizedEndpoint() string {
@@ -283,7 +287,7 @@ func validateBalancerName(balancerName string) bool {
 
 // ToServer returns a grpc.Server for the configuration
 // Deprecated: [0.96.0] Use ToServerContext instead.
-func (gss *ServerConfig) ToServer(host component.Host, settings component.TelemetrySettings, extraOpts ...grpc.ServerOption) (*grpc.Server, error) {
+func (gss *ServerConfig) ToServer(_ context.Context, host component.Host, settings component.TelemetrySettings, extraOpts ...grpc.ServerOption) (*grpc.Server, error) {
 	return gss.ToServerContext(context.Background(), host, settings, extraOpts...)
 }
 
@@ -417,12 +421,8 @@ func (gss *ServerConfig) toServerOption(host component.Host, settings component.
 			return nil, err
 		}
 
-		uInterceptors = append(uInterceptors, func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
-			return memoryLimiterUnaryServerInterceptor(ctx, req, info, handler, memoryLimiter)
-		})
-		sInterceptors = append(sInterceptors, func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-			return memoryLimiterStreamServerInterceptor(srv, ss, info, handler, memoryLimiter)
-		})
+		uInterceptors = append(uInterceptors, memoryLimiter.UnaryInterceptorGenerator())
+		sInterceptors = append(sInterceptors, memoryLimiter.StreamInterceptorGenerator())
 	}
 
 	otelOpts := []otelgrpc.Option{
@@ -439,23 +439,6 @@ func (gss *ServerConfig) toServerOption(host component.Host, settings component.
 	opts = append(opts, grpc.StatsHandler(otelgrpc.NewServerHandler(otelOpts...)), grpc.ChainUnaryInterceptor(uInterceptors...), grpc.ChainStreamInterceptor(sInterceptors...))
 
 	return opts, nil
-}
-
-func memoryLimiterUnaryServerInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler, ml memoryLimiterExtension) (any, error) {
-	if ml.MustRefuse() {
-		return nil, errMemoryLimitReached
-	}
-
-	return handler(ctx, req)
-}
-
-func memoryLimiterStreamServerInterceptor(srv any, stream grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler, ml memoryLimiterExtension) error {
-	ctx := stream.Context()
-	if ml.MustRefuse() {
-		return errMemoryLimitReached
-	}
-
-	return handler(srv, wrapServerStream(ctx, stream))
 }
 
 func getMemoryLimiterExtension(extID *component.ID, extensions map[component.ID]component.Component) (memoryLimiterExtension, error) {
