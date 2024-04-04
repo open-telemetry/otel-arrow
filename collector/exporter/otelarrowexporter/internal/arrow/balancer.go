@@ -31,7 +31,8 @@ type loadPrioritizer struct {
 	// cond is used to wait while available streams is empty.
 	cond *sync.Cond
 
-	avail []*Stream
+	// avail tracks the streams that are available.
+	avail map[*Stream]struct{}
 }
 
 func newLoadPrioritizer(ctx context.Context, numStreams int) *loadPrioritizer {
@@ -89,6 +90,13 @@ func (lp *loadPrioritizer) streamFor(wri writeItem) *Stream {
 		return lp.avail[0]
 	}
 
+	// TODO: having turned .avail into a map, there is a range function
+	// which gives random order through the list.  next, we want to ensure
+	// that this goroutine isn't blocked, so we can only write to channels
+	// for which there is space available.  if this prioritizer uses chanSize
+	// of two (2) ?? no that doesn't help, something else needed.  we either
+	// have a stream limit, or we don't.
+
 	// Choose two at random, then pick the one with less load.
 	a := rand.Intn(num)
 	b := rand.Intn(num - 1)
@@ -126,9 +134,5 @@ func (lp *loadPrioritizer) unsetAvailable(stream *Stream) {
 			lp.avail = lp.avail[:num-1]
 			break
 		}
-	}
-
-	for len(stream.toWrite) > 0 {
-
 	}
 }

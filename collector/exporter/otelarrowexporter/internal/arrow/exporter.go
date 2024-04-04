@@ -155,7 +155,7 @@ func (e *Exporter) runStreamController(bgctx context.Context) {
 	// Start the initial number of streams
 	for i := 0; i < running; i++ {
 		e.wg.Add(1)
-		go e.runArrowStream(bgctx)
+		go e.runArrowStream(bgctx, nil)
 	}
 
 	for {
@@ -164,7 +164,7 @@ func (e *Exporter) runStreamController(bgctx context.Context) {
 			if stream.client != nil || e.disableDowngrade {
 				// The stream closed or broken.  Restart it.
 				e.wg.Add(1)
-				go e.runArrowStream(bgctx)
+				go e.runArrowStream(bgctx, stream)
 				continue
 			}
 			// Otherwise, the stream never got started.  It was
@@ -200,10 +200,10 @@ func addJitter(v time.Duration) time.Duration {
 // If the stream connection is successful, this goroutine starts another goroutine
 // to call writeStream() and performs readStream() itself.  When the stream shuts
 // down this call synchronously waits for and unblocks the consumers.
-func (e *Exporter) runArrowStream(ctx context.Context) {
+func (e *Exporter) runArrowStream(ctx context.Context, replace *Stream) {
 	producer := e.newProducer()
 
-	stream := newStream(producer, e.ready, e.telemetry, e.netReporter)
+	stream := newStream(producer, e.ready, e.telemetry, e.netReporter, replace)
 	stream.maxStreamLifetime = addJitter(e.maxStreamLifetime)
 
 	defer func() {

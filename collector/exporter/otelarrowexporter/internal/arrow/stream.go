@@ -101,14 +101,22 @@ func newStream(
 	prioritizer streamPrioritizer,
 	telemetry component.TelemetrySettings,
 	netReporter netstats.Interface,
+	replacement *Stream,
 ) *Stream {
 	tracer := telemetry.TracerProvider.Tracer("otel-arrow-exporter")
+
+	var writeCh chan writeItem
+	if replacement != nil {
+		writeCh = replacement.toWrite
+	} else {
+		writeCh = make(chan writeItem, prioritizer.chanSize())
+	}
 	return &Stream{
 		producer:    producer,
 		prioritizer: prioritizer,
 		telemetry:   telemetry,
 		tracer:      tracer,
-		toWrite:     make(chan writeItem, 1),
+		toWrite:     writeCh,
 		waiters:     map[int64]chan error{},
 		netReporter: netReporter,
 	}
