@@ -131,7 +131,7 @@ func NewExporter(
 func newStreamWorkState() *streamWorkState {
 	return &streamWorkState{
 		waiters: map[int64]chan error{},
-		toWrite: make(chan writeItem), // @@@ ?
+		toWrite: make(chan writeItem, 1), // @@@ Can't be zero?
 	}
 }
 

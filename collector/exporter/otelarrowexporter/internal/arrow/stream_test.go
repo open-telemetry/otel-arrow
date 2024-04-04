@@ -278,7 +278,13 @@ func TestStreamUnsupported(t *testing.T) {
 
 	channel := newArrowUnsupportedTestChannel()
 	tc.start(channel)
-	defer tc.cancelAndWaitForShutdown()
+	defer func() {
+		// When the stream returns, the downgrade is needed to
+		// cause the request to respond or else it waits for a new
+		// stream.
+		tc.waitForShutdown()
+		tc.prioritizer.downgrade()
+	}()
 
 	err := tc.get().sendAndWait(testWriteItem(tc.bgctx))
 	require.Error(t, err)

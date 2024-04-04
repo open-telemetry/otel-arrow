@@ -54,6 +54,8 @@ func (lp *loadPrioritizer) sendOne(item writeItem) {
 	writeCh := lp.streamFor(item).toWrite
 	select {
 	case writeCh <- item:
+	case <-lp.down:
+		item.errCh <- ErrStreamRestarting
 	case <-lp.done:
 		item.errCh <- ErrStreamRestarting
 	}
