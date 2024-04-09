@@ -53,6 +53,10 @@ func newStreamTestCase(t *testing.T) *streamTestCase {
 	// metadata functionality is tested in exporter_test.go
 	ctc.requestMetadataCall.AnyTimes().Return(nil, nil)
 
+	state.lock.Lock()
+	state.done = bg.Done()
+	state.lock.Unlock()
+
 	stream := newStream(producer, prio, ctc.telset, netstats.Noop{}, state)
 	stream.maxStreamLifetime = 10 * time.Second
 
@@ -82,7 +86,7 @@ func (tc *streamTestCase) start(channel testChannel) {
 
 	go func() {
 		defer tc.wait.Done()
-		tc.stream.run(tc.bgctx, tc.traceClient, nil)
+		tc.stream.run(tc.bgctx, tc.bgcancel, tc.traceClient, nil)
 	}()
 }
 
@@ -125,9 +129,9 @@ func (tc *streamTestCase) get() streamWriter {
 	return stream
 }
 
-func testWriteItem(ctx context.Context) writeItem {
+func testWriteItem() writeItem {
 	return writeItem{
-		parent:  ctx,
+		parent:  context.Background(),
 		records: twoTraces,
 		errCh:   make(chan error, 1),
 	}
@@ -155,7 +159,7 @@ func TestStreamNoMaxLifetime(t *testing.T) {
 		channel.recv <- statusOKFor(batch.BatchId)
 	}()
 
-	err := tc.get().sendAndWait(testWriteItem(tc.bgctx))
+	err := tc.get().sendAndWait(testWriteItem())
 	require.NoError(t, err)
 }
 
@@ -171,7 +175,7 @@ func TestStreamEncodeError(t *testing.T) {
 	defer tc.cancelAndWaitForShutdown()
 
 	// sender should get a permanent testErr
-	err := tc.get().sendAndWait(testWriteItem(tc.bgctx))
+	err := tc.get().sendAndWait(testWriteItem())
 	require.Error(t, err)
 	require.True(t, errors.Is(err, testErr))
 	require.True(t, consumererror.IsPermanent(err))
@@ -197,7 +201,7 @@ func TestStreamUnknownBatchError(t *testing.T) {
 		channel.recv <- statusOKFor(-1 /*unknown*/)
 	}()
 	// sender should get ErrStreamRestarting
-	err := tc.get().sendAndWait(testWriteItem(tc.bgctx))
+	err := tc.get().sendAndWait(testWriteItem())
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrStreamRestarting))
 }
@@ -226,15 +230,15 @@ func TestStreamStatusUnavailableInvalid(t *testing.T) {
 		channel.recv <- statusOKFor(batch.BatchId)
 	}()
 	// sender should get "test unavailable" once, success second time.
-	err := tc.get().sendAndWait(testWriteItem(tc.bgctx))
+	err := tc.get().sendAndWait(testWriteItem())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "test unavailable")
 
-	err = tc.get().sendAndWait(testWriteItem(tc.bgctx))
+	err = tc.get().sendAndWait(testWriteItem())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "test invalid")
 
-	err = tc.get().sendAndWait(testWriteItem(tc.bgctx))
+	err = tc.get().sendAndWait(testWriteItem())
 	require.NoError(t, err)
 }
 
@@ -257,7 +261,7 @@ func TestStreamStatusUnrecognized(t *testing.T) {
 		batch := <-channel.sent
 		channel.recv <- statusUnrecognizedFor(batch.BatchId)
 	}()
-	err := tc.get().sendAndWait(testWriteItem(tc.bgctx))
+	err := tc.get().sendAndWait(testWriteItem())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "test unrecognized")
 
@@ -283,10 +287,10 @@ func TestStreamUnsupported(t *testing.T) {
 		// cause the request to respond or else it waits for a new
 		// stream.
 		tc.waitForShutdown()
-		tc.prioritizer.downgrade()
+		tc.bgcancel()
 	}()
 
-	err := tc.get().sendAndWait(testWriteItem(tc.bgctx))
+	err := tc.get().sendAndWait(testWriteItem())
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrStreamRestarting))
 
@@ -312,7 +316,7 @@ func TestStreamSendError(t *testing.T) {
 		channel.unblock()
 	}()
 	// sender should get ErrStreamRestarting
-	err := tc.get().sendAndWait(testWriteItem(tc.bgctx))
+	err := tc.get().sendAndWait(testWriteItem())
 	require.Error(t, err)
 	require.True(t, errors.Is(err, ErrStreamRestarting))
 }

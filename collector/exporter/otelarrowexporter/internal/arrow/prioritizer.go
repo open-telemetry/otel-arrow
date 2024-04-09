@@ -43,16 +43,16 @@ type fifoPrioritizer struct {
 
 var _ streamPrioritizer = &fifoPrioritizer{}
 
-func newStreamPrioritizer(bgctx context.Context, state ...*streamWorkState) streamPrioritizer {
+func newStreamPrioritizer(ctx context.Context, state ...*streamWorkState) streamPrioritizer {
 	// TODO: More options @@@
-	// return newFifoPrioritizer(bgctx, numStreams)
-	return newLoadPrioritizer(bgctx, state)
+	// return newFifoPrioritizer(ctx, numStreams)
+	return newLoadPrioritizer(ctx, state)
 }
 
 // newFifoPrioritizer constructs a channel-based first-available prioritizer.
-func newFifoPrioritizer(bgctx context.Context, state []*streamWorkState) *fifoPrioritizer {
+func newFifoPrioritizer(ctx context.Context, state []*streamWorkState) *fifoPrioritizer {
 	return &fifoPrioritizer{
-		done:    bgctx.Done(),
+		done:    ctx.Done(),
 		channel: make(chan *Stream, len(state)),
 	}
 }
@@ -75,21 +75,19 @@ func (fp *fifoPrioritizer) nextWriter(ctx context.Context) (streamWriter, error)
 			return nil, nil
 		}
 		return &streamSender{
-			done:   fp.done,
 			stream: stream,
 		}, nil
 	}
 }
 
 type streamSender struct {
-	done   <-chan struct{}
 	stream *Stream
 }
 
 var _ streamWriter = &streamSender{}
 
 func (ss *streamSender) sendAndWait(wri writeItem) error {
-	return ss.stream.sendAndWait(wri, ss.done)
+	return ss.stream.sendAndWait(wri)
 }
 
 // setReady marks this stream ready for use.

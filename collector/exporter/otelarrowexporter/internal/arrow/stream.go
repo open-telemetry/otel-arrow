@@ -34,9 +34,6 @@ import (
 
 // Stream is 1:1 with gRPC stream.
 type Stream struct {
-	// done is the background context that will be canceled on shutdown.
-	done <-chan struct{}
-
 	// maxStreamLifetime is the max timeout before stream
 	// should be closed on the client side. This ensures a
 	// graceful shutdown before max_connection_age is reached
@@ -74,21 +71,25 @@ type Stream struct {
 }
 
 type streamWorkState struct {
-	// toWrite is passes a batch from the sender to the stream writer, which
-	// includes a dedicated channel for the response.
+	// toWrite is passes a batch from the prioritizer to the
+	// stream writer, which includes a dedicated channel for the
+	// response.
 	toWrite chan writeItem
 
-	// lock protects waiters.
+	// lock protects waiters and done.
 	lock sync.Mutex
 
 	// waiters is the response channel for each active batch.
 	waiters map[int64]chan error
+
+	// done is the currently-running stream's context Done() channel
+	done <-chan struct{}
 }
 
-func (sws *streamWorkState) count() int {
+func (sws *streamWorkState) count() (cnt int, done <-chan struct{}) {
 	sws.lock.Lock()
 	defer sws.lock.Unlock()
-	return len(sws.waiters) + len(sws.toWrite)
+	return len(sws.waiters) + len(sws.toWrite), sws.done
 }
 
 // writeItem is passed from the sender (a pipeline consumer) to the
@@ -168,10 +169,7 @@ func (s *Stream) logStreamError(which string, err error) {
 
 // run blocks the calling goroutine while executing stream logic.  run
 // will return when the reader and writer are finished.  errors will be logged.
-func (s *Stream) run(bgctx context.Context, streamClient StreamClientFunc, grpcOptions []grpc.CallOption) {
-	ctx, cancel := context.WithCancel(bgctx)
-	defer cancel()
-
+func (s *Stream) run(ctx context.Context, cancel context.CancelFunc, streamClient StreamClientFunc, grpcOptions []grpc.CallOption) {
 	sc, method, err := streamClient(ctx, grpcOptions...)
 	if err != nil {
 		// Returning with stream.client == nil signals the
@@ -326,6 +324,7 @@ func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hp
 	// are no fields, it's a no-op propagator implementation and
 	// we can skip the allocations inside this block.
 	prop := otel.GetTextMapPropagator()
+
 	if len(prop.Fields()) > 0 {
 		// When the incoming context carries nothing, the map
 		// will be nil.  Allocate, if necessary.
@@ -477,13 +476,9 @@ func (s *Stream) processBatchStatus(ss *arrowpb.BatchStatus) error {
 // sendAndWait submits a batch of records to be encoded and sent.  Meanwhile, this
 // goroutine waits on the incoming context or for the asynchronous response to be
 // received by the stream reader.
-func (s *Stream) sendAndWait(wri writeItem, done <-chan struct{}) error {
-	select {
-	case <-done:
-		return ErrStreamRestarting
-	case s.workState.toWrite <- wri:
-		return wri.waitForWrite(done)
-	}
+func (s *Stream) sendAndWait(wri writeItem) error {
+	s.workState.toWrite <- wri
+	return wri.waitForWrite()
 }
 
 // encode produces the next batch of Arrow records.
