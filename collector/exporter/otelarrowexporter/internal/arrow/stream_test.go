@@ -39,13 +39,13 @@ type streamTestCase struct {
 	wait            sync.WaitGroup
 }
 
-func newStreamTestCase(t *testing.T) *streamTestCase {
+func newStreamTestCase(t *testing.T, pname PrioritizerName) *streamTestCase {
 	ctrl := gomock.NewController(t)
 	producer := arrowRecordMock.NewMockProducerAPI(ctrl)
 
 	bg, cancel := context.WithCancel(context.Background())
 	state := newStreamWorkState()
-	prio := newStreamPrioritizer(bg, state)
+	prio := newStreamPrioritizer(bg, pname, state)
 
 	ctc := newCommonTestCase(t, NotNoisy)
 	cts := ctc.newMockStream(bg)
@@ -141,182 +141,211 @@ func testWriteItem() writeItem {
 // max_stream_lifetime==0 works and the client never
 // calls CloseSend().
 func TestStreamNoMaxLifetime(t *testing.T) {
-	tc := newStreamTestCase(t)
-	tc.stream.maxStreamLifetime = 0
+	for _, pname := range AllPrioritizers {
+		t.Run(string(pname), func(t *testing.T) {
 
-	tc.fromTracesCall.Times(1).Return(oneBatch, nil)
-	tc.closeSendCall.Times(0)
+			tc := newStreamTestCase(t, pname)
+			tc.stream.maxStreamLifetime = 0
 
-	channel := newHealthyTestChannel()
-	tc.start(channel)
-	defer tc.cancelAndWaitForShutdown()
-	var wg sync.WaitGroup
-	wg.Add(1)
-	defer wg.Wait()
-	go func() {
-		defer wg.Done()
-		batch := <-channel.sent
-		channel.recv <- statusOKFor(batch.BatchId)
-	}()
+			tc.fromTracesCall.Times(1).Return(oneBatch, nil)
+			tc.closeSendCall.Times(0)
 
-	err := tc.get().sendAndWait(testWriteItem())
-	require.NoError(t, err)
+			channel := newHealthyTestChannel()
+			tc.start(channel)
+			defer tc.cancelAndWaitForShutdown()
+			var wg sync.WaitGroup
+			wg.Add(1)
+			defer wg.Wait()
+			go func() {
+				defer wg.Done()
+				batch := <-channel.sent
+				channel.recv <- statusOKFor(batch.BatchId)
+			}()
+
+			err := tc.get().sendAndWait(testWriteItem())
+			require.NoError(t, err)
+		})
+	}
 }
 
 // TestStreamEncodeError verifies that an encoder error in the sender
 // yields a permanent error.
 func TestStreamEncodeError(t *testing.T) {
-	tc := newStreamTestCase(t)
+	for _, pname := range AllPrioritizers {
+		t.Run(string(pname), func(t *testing.T) {
+			tc := newStreamTestCase(t, pname)
 
-	testErr := fmt.Errorf("test encode error")
-	tc.fromTracesCall.Times(1).Return(nil, testErr)
+			testErr := fmt.Errorf("test encode error")
+			tc.fromTracesCall.Times(1).Return(nil, testErr)
 
-	tc.start(newHealthyTestChannel())
-	defer tc.cancelAndWaitForShutdown()
+			tc.start(newHealthyTestChannel())
+			defer tc.cancelAndWaitForShutdown()
 
-	// sender should get a permanent testErr
-	err := tc.get().sendAndWait(testWriteItem())
-	require.Error(t, err)
-	require.True(t, errors.Is(err, testErr))
-	require.True(t, consumererror.IsPermanent(err))
+			// sender should get a permanent testErr
+			err := tc.get().sendAndWait(testWriteItem())
+			require.Error(t, err)
+			require.True(t, errors.Is(err, testErr))
+			require.True(t, consumererror.IsPermanent(err))
+		})
+	}
 }
 
 // TestStreamUnknownBatchError verifies that the stream reader handles
 // a unknown BatchID.
 func TestStreamUnknownBatchError(t *testing.T) {
-	tc := newStreamTestCase(t)
+	for _, pname := range AllPrioritizers {
+		t.Run(string(pname), func(t *testing.T) {
+			tc := newStreamTestCase(t, pname)
 
-	tc.fromTracesCall.Times(1).Return(oneBatch, nil)
+			tc.fromTracesCall.Times(1).Return(oneBatch, nil)
 
-	channel := newHealthyTestChannel()
-	tc.start(channel)
-	defer tc.cancelAndWaitForShutdown()
+			channel := newHealthyTestChannel()
+			tc.start(channel)
+			defer tc.cancelAndWaitForShutdown()
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	defer wg.Wait()
-	go func() {
-		defer wg.Done()
-		<-channel.sent
-		channel.recv <- statusOKFor(-1 /*unknown*/)
-	}()
-	// sender should get ErrStreamRestarting
-	err := tc.get().sendAndWait(testWriteItem())
-	require.Error(t, err)
-	require.True(t, errors.Is(err, ErrStreamRestarting))
+			var wg sync.WaitGroup
+			wg.Add(1)
+			defer wg.Wait()
+			go func() {
+				defer wg.Done()
+				<-channel.sent
+				channel.recv <- statusOKFor(-1 /*unknown*/)
+			}()
+			// sender should get ErrStreamRestarting
+			err := tc.get().sendAndWait(testWriteItem())
+			require.Error(t, err)
+			require.True(t, errors.Is(err, ErrStreamRestarting))
+		})
+	}
 }
 
 // TestStreamStatusUnavailableInvalid verifies that the stream reader handles
 // an unavailable or invalid status w/o breaking the stream.
 func TestStreamStatusUnavailableInvalid(t *testing.T) {
-	tc := newStreamTestCase(t)
+	for _, pname := range AllPrioritizers {
+		t.Run(string(pname), func(t *testing.T) {
+			tc := newStreamTestCase(t, pname)
 
-	tc.fromTracesCall.Times(3).Return(oneBatch, nil)
+			tc.fromTracesCall.Times(3).Return(oneBatch, nil)
 
-	channel := newHealthyTestChannel()
-	tc.start(channel)
-	defer tc.cancelAndWaitForShutdown()
+			channel := newHealthyTestChannel()
+			tc.start(channel)
+			defer tc.cancelAndWaitForShutdown()
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	defer wg.Wait()
-	go func() {
-		defer wg.Done()
-		batch := <-channel.sent
-		channel.recv <- statusUnavailableFor(batch.BatchId)
-		batch = <-channel.sent
-		channel.recv <- statusInvalidFor(batch.BatchId)
-		batch = <-channel.sent
-		channel.recv <- statusOKFor(batch.BatchId)
-	}()
-	// sender should get "test unavailable" once, success second time.
-	err := tc.get().sendAndWait(testWriteItem())
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "test unavailable")
+			var wg sync.WaitGroup
+			wg.Add(1)
+			defer wg.Wait()
+			go func() {
+				defer wg.Done()
+				batch := <-channel.sent
+				channel.recv <- statusUnavailableFor(batch.BatchId)
+				batch = <-channel.sent
+				channel.recv <- statusInvalidFor(batch.BatchId)
+				batch = <-channel.sent
+				channel.recv <- statusOKFor(batch.BatchId)
+			}()
+			// sender should get "test unavailable" once, success second time.
+			err := tc.get().sendAndWait(testWriteItem())
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "test unavailable")
 
-	err = tc.get().sendAndWait(testWriteItem())
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "test invalid")
+			err = tc.get().sendAndWait(testWriteItem())
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "test invalid")
 
-	err = tc.get().sendAndWait(testWriteItem())
-	require.NoError(t, err)
+			err = tc.get().sendAndWait(testWriteItem())
+			require.NoError(t, err)
+		})
+	}
 }
 
 // TestStreamStatusUnrecognized verifies that the stream reader handles
 // an unrecognized status by breaking the stream.
 func TestStreamStatusUnrecognized(t *testing.T) {
-	tc := newStreamTestCase(t)
+	for _, pname := range AllPrioritizers {
+		t.Run(string(pname), func(t *testing.T) {
+			tc := newStreamTestCase(t, pname)
 
-	tc.fromTracesCall.Times(1).Return(oneBatch, nil)
+			tc.fromTracesCall.Times(1).Return(oneBatch, nil)
 
-	channel := newHealthyTestChannel()
-	tc.start(channel)
-	defer tc.cancelAndWaitForShutdown()
+			channel := newHealthyTestChannel()
+			tc.start(channel)
+			defer tc.cancelAndWaitForShutdown()
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	defer wg.Wait()
-	go func() {
-		defer wg.Done()
-		batch := <-channel.sent
-		channel.recv <- statusUnrecognizedFor(batch.BatchId)
-	}()
-	err := tc.get().sendAndWait(testWriteItem())
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "test unrecognized")
+			var wg sync.WaitGroup
+			wg.Add(1)
+			defer wg.Wait()
+			go func() {
+				defer wg.Done()
+				batch := <-channel.sent
+				channel.recv <- statusUnrecognizedFor(batch.BatchId)
+			}()
+			err := tc.get().sendAndWait(testWriteItem())
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "test unrecognized")
 
-	// Note: do not cancel the context, the stream should be
-	// shutting down due to the error.
-	tc.waitForShutdown()
+			// Note: do not cancel the context, the stream should be
+			// shutting down due to the error.
+			tc.waitForShutdown()
+		})
+	}
 }
 
 // TestStreamUnsupported verifies that the stream signals downgrade
 // when an Unsupported code is received, which is how the gRPC client
 // responds when the server does not support arrow.
 func TestStreamUnsupported(t *testing.T) {
-	tc := newStreamTestCase(t)
+	for _, pname := range AllPrioritizers {
+		t.Run(string(pname), func(t *testing.T) {
+			tc := newStreamTestCase(t, pname)
 
-	// If the write succeeds before the read, then the FromTraces
-	// call will occur.  Otherwise, it will not.
-	tc.fromTracesCall.MinTimes(0).MaxTimes(1).Return(oneBatch, nil)
+			// If the write succeeds before the read, then the FromTraces
+			// call will occur.  Otherwise, it will not.
+			tc.fromTracesCall.MinTimes(0).MaxTimes(1).Return(oneBatch, nil)
 
-	channel := newArrowUnsupportedTestChannel()
-	tc.start(channel)
-	defer func() {
-		// When the stream returns, the downgrade is needed to
-		// cause the request to respond or else it waits for a new
-		// stream.
-		tc.waitForShutdown()
-		tc.bgcancel()
-	}()
+			channel := newArrowUnsupportedTestChannel()
+			tc.start(channel)
+			defer func() {
+				// When the stream returns, the downgrade is needed to
+				// cause the request to respond or else it waits for a new
+				// stream.
+				tc.waitForShutdown()
+				tc.bgcancel()
+			}()
 
-	err := tc.get().sendAndWait(testWriteItem())
-	require.Error(t, err)
-	require.True(t, errors.Is(err, ErrStreamRestarting))
+			err := tc.get().sendAndWait(testWriteItem())
+			require.Error(t, err)
+			require.True(t, errors.Is(err, ErrStreamRestarting))
 
-	tc.waitForShutdown()
+			tc.waitForShutdown()
 
-	require.Less(t, 0, len(tc.observedLogs.All()), "should have at least one log: %v", tc.observedLogs.All())
-	require.Equal(t, tc.observedLogs.All()[0].Message, "arrow is not supported")
+			require.Less(t, 0, len(tc.observedLogs.All()), "should have at least one log: %v", tc.observedLogs.All())
+			require.Equal(t, tc.observedLogs.All()[0].Message, "arrow is not supported")
+		})
+	}
 }
 
 // TestStreamSendError verifies that the stream reader handles a
 // Send() error.
 func TestStreamSendError(t *testing.T) {
-	tc := newStreamTestCase(t)
+	for _, pname := range AllPrioritizers {
+		t.Run(string(pname), func(t *testing.T) {
+			tc := newStreamTestCase(t, pname)
 
-	tc.fromTracesCall.Times(1).Return(oneBatch, nil)
+			tc.fromTracesCall.Times(1).Return(oneBatch, nil)
 
-	channel := newSendErrorTestChannel()
-	tc.start(channel)
-	defer tc.cancelAndWaitForShutdown()
+			channel := newSendErrorTestChannel()
+			tc.start(channel)
+			defer tc.cancelAndWaitForShutdown()
 
-	go func() {
-		time.Sleep(200 * time.Millisecond)
-		channel.unblock()
-	}()
-	// sender should get ErrStreamRestarting
-	err := tc.get().sendAndWait(testWriteItem())
-	require.Error(t, err)
-	require.True(t, errors.Is(err, ErrStreamRestarting))
+			go func() {
+				time.Sleep(200 * time.Millisecond)
+				channel.unblock()
+			}()
+			// sender should get ErrStreamRestarting
+			err := tc.get().sendAndWait(testWriteItem())
+			require.Error(t, err)
+			require.True(t, errors.Is(err, ErrStreamRestarting))
+		})
+	}
 }

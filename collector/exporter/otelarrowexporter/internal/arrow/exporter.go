@@ -29,6 +29,12 @@ type Exporter struct {
 	// numStreams is the number of streams that will be used.
 	numStreams int
 
+	// prioritizerName the name of a balancer policy.
+	prioritizerName PrioritizerName
+
+	// maxStreamLifetime is a limit on duration for streams.  A
+	// slight "jitter" is applied relative to this value on a
+	// per-stream basis.
 	maxStreamLifetime time.Duration
 
 	// disableDowngrade prevents downgrade from occurring, supports
@@ -106,6 +112,7 @@ func MakeAnyStreamClient[T AnyStreamClient](method string, clientFunc func(ctx c
 func NewExporter(
 	maxStreamLifetime time.Duration,
 	numStreams int,
+	prioritizerName PrioritizerName,
 	disableDowngrade bool,
 	telemetry component.TelemetrySettings,
 	grpcOptions []grpc.CallOption,
@@ -117,6 +124,7 @@ func NewExporter(
 	return &Exporter{
 		maxStreamLifetime: maxStreamLifetime,
 		numStreams:        numStreams,
+		prioritizerName:   prioritizerName,
 		disableDowngrade:  disableDowngrade,
 		telemetry:         telemetry,
 		grpcOptions:       grpcOptions,
@@ -132,7 +140,7 @@ func newStreamWorkState() *streamWorkState {
 	return &streamWorkState{
 		waiters: map[int64]chan error{},
 
-		// Can't be zero. @@@
+		// Note: toWrite must be unbuffered.
 		toWrite: make(chan writeItem),
 	}
 }
@@ -152,7 +160,7 @@ func (e *Exporter) Start(ctx context.Context) error {
 		sws = append(sws, ws)
 	}
 
-	e.ready = newStreamPrioritizer(ctx, sws...)
+	e.ready = newStreamPrioritizer(ctx, e.prioritizerName, sws...)
 	e.cancel = cancel
 
 	for _, ws := range sws {

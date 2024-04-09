@@ -70,10 +70,11 @@ type Stream struct {
 	workState *streamWorkState
 }
 
+// streamWorkState contains the state assigned to an Arrow stream.  When
+// a stream shuts down, the work state is handed to the replacement stream.
 type streamWorkState struct {
-	// toWrite is passes a batch from the prioritizer to the
-	// stream writer, which includes a dedicated channel for the
-	// response.
+	// toWrite is an unbuffered channel used to pass pending data
+	// between a caller, the prioritizer and a stream.
 	toWrite chan writeItem
 
 	// lock protects waiters and done.
@@ -82,11 +83,12 @@ type streamWorkState struct {
 	// waiters is the response channel for each active batch.
 	waiters map[int64]chan error
 
-	// done is the currently-running stream's context Done() channel
+	// done is the currently-running stream's context Done() channel.
 	done <-chan struct{}
 }
 
-func (sws *streamWorkState) count() (cnt int, done <-chan struct{}) {
+// pendingRequests
+func (sws *streamWorkState) pendingRequests() (cnt int, done <-chan struct{}) {
 	sws.lock.Lock()
 	defer sws.lock.Unlock()
 	return len(sws.waiters) + len(sws.toWrite), sws.done
@@ -477,8 +479,12 @@ func (s *Stream) processBatchStatus(ss *arrowpb.BatchStatus) error {
 // goroutine waits on the incoming context or for the asynchronous response to be
 // received by the stream reader.
 func (s *Stream) sendAndWait(wri writeItem) error {
-	s.workState.toWrite <- wri
-	return wri.waitForWrite()
+	select {
+	case s.workState.toWrite <- wri:
+		return wri.waitForWrite()
+	case <-s.workState.done:
+		return ErrStreamRestarting
+	}
 }
 
 // encode produces the next batch of Arrow records.

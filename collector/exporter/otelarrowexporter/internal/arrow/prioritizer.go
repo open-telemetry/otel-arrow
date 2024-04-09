@@ -5,12 +5,25 @@ package arrow // import "github.com/open-telemetry/otel-arrow/collector/exporter
 
 import (
 	"context"
+	"fmt"
 
+	"go.opentelemetry.io/collector/component"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 var ErrStreamRestarting = status.Error(codes.Aborted, "stream is restarting")
+
+type PrioritizerName string
+
+var _ component.ConfigValidator = PrioritizerName("")
+
+const (
+	FifoPrioritizer      PrioritizerName = "fifo"
+	BestOfTwoPrioritizer PrioritizerName = "bestoftwo"
+	DefaultPrioritizer   PrioritizerName = FifoPrioritizer
+	unsetPrioritizer     PrioritizerName = ""
+)
 
 // streamPrioritizer is an interface for prioritizing multiple
 // streams.
@@ -30,95 +43,19 @@ type streamWriter interface {
 	sendAndWait(writeItem) error
 }
 
-// fifoPrioritizer is a prioritizer that selects the next stream to write.
-// It is the simplest prioritizer implementation.
-type fifoPrioritizer struct {
-	// done corresponds with the background context Done channel.
-	done <-chan struct{}
-
-	// channel will be closed to downgrade to standard OTLP,
-	// otherwise it returns the first-available.
-	channel chan *Stream
-}
-
-var _ streamPrioritizer = &fifoPrioritizer{}
-
-func newStreamPrioritizer(ctx context.Context, state ...*streamWorkState) streamPrioritizer {
-	// TODO: More options @@@
-	// return newFifoPrioritizer(ctx, numStreams)
-	return newLoadPrioritizer(ctx, state)
-}
-
-// newFifoPrioritizer constructs a channel-based first-available prioritizer.
-func newFifoPrioritizer(ctx context.Context, state []*streamWorkState) *fifoPrioritizer {
-	return &fifoPrioritizer{
-		done:    ctx.Done(),
-		channel: make(chan *Stream, len(state)),
+func newStreamPrioritizer(ctx context.Context, name PrioritizerName, state ...*streamWorkState) streamPrioritizer {
+	switch name {
+	case BestOfTwoPrioritizer:
+		return newBestOfTwoPrioritizer(ctx, state)
+	default:
+		return newFifoPrioritizer(ctx, state)
 	}
 }
 
-// downgrade indicates that streams are never going to be ready.  Note
-// the caller is required to ensure that setReady() and unsetReady()
-// cannot be called concurrently; this is done by waiting for
-// Stream.writeStream() calls to return before downgrading.
-func (fp *fifoPrioritizer) downgrade() {
-	close(fp.channel)
-}
-
-// nextWriter returns the first-available stream.
-func (fp *fifoPrioritizer) nextWriter(ctx context.Context) (streamWriter, error) {
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case stream := <-fp.channel:
-		if stream == nil {
-			return nil, nil
-		}
-		return &streamSender{
-			stream: stream,
-		}, nil
+func (p PrioritizerName) Validate() error {
+	switch p {
+	case FifoPrioritizer, BestOfTwoPrioritizer, unsetPrioritizer:
+		return nil
 	}
-}
-
-type streamSender struct {
-	stream *Stream
-}
-
-var _ streamWriter = &streamSender{}
-
-func (ss *streamSender) sendAndWait(wri writeItem) error {
-	return ss.stream.sendAndWait(wri)
-}
-
-// setReady marks this stream ready for use.
-func (fp *fifoPrioritizer) setReady(stream *Stream) {
-	// Note: downgrade() can't be called concurrently.
-	fp.channel <- stream
-}
-
-// unsetReady removes this stream from the ready set, used in cases
-// where the stream has broken unexpectedly.
-func (fp *fifoPrioritizer) unsetReady(stream *Stream) {
-	// Note: downgrade() can't be called concurrently.
-	for {
-		// Searching for this stream to get it out of the ready queue.
-		select {
-		case <-fp.done:
-			// Shutdown case
-			return
-		case alternate := <-fp.channel:
-			if alternate == stream {
-				// Success: removed from ready queue.
-				return
-			}
-			fp.channel <- alternate
-		case wri := <-stream.workState.toWrite:
-			// A consumer got us first, means this stream has been removed
-			// from the ready queue.
-			//
-			// Note: the top-level OTLP exporter will retry.
-			wri.errCh <- ErrStreamRestarting
-			return
-		}
-	}
+	return fmt.Errorf("unrecognized prioritizer: %q", string(p))
 }

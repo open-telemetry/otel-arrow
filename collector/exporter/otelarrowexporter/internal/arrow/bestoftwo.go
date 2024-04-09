@@ -8,13 +8,17 @@ import (
 	"runtime"
 )
 
-// loadPrioritizer is a prioritizer that selects a less-loaded stream to write.
+// bestOfTwoPrioritizer is a prioritizer that selects a less-loaded stream to write.
 // https://smallrye.io/smallrye-stork/1.1.1/load-balancer/power-of-two-choices/
-type loadPrioritizer struct {
+type bestOfTwoPrioritizer struct {
 	// done corresponds with the background context Done channel.
+	// the prioritizer will stop background activity when this
+	// channel is closed.
 	done <-chan struct{}
 
-	// down is closed to indicate a downgrade.
+	// down is closed to indicate a downgrade.  Note that `done` and
+	// `down` have similar effect, but that one signal is internal and
+	// one signal is external.
 	down chan struct{}
 
 	// input from the pipeline, as processed data with headers and
@@ -29,10 +33,10 @@ type loadPrioritizer struct {
 	state []*streamWorkState
 }
 
-var _ streamPrioritizer = &loadPrioritizer{}
+var _ streamPrioritizer = &bestOfTwoPrioritizer{}
 
-func newLoadPrioritizer(ctx context.Context, state []*streamWorkState) *loadPrioritizer {
-	lp := &loadPrioritizer{
+func newBestOfTwoPrioritizer(ctx context.Context, state []*streamWorkState) *bestOfTwoPrioritizer {
+	lp := &bestOfTwoPrioritizer{
 		done:  ctx.Done(),
 		down:  make(chan struct{}),
 		input: make(chan writeItem, runtime.NumCPU()),
@@ -45,11 +49,11 @@ func newLoadPrioritizer(ctx context.Context, state []*streamWorkState) *loadPrio
 	return lp
 }
 
-func (lp *loadPrioritizer) downgrade() {
+func (lp *bestOfTwoPrioritizer) downgrade() {
 	close(lp.down)
 }
 
-func (lp *loadPrioritizer) sendOne(item writeItem) {
+func (lp *bestOfTwoPrioritizer) sendOne(item writeItem) {
 	stream, done := lp.streamFor(item)
 	writeCh := stream.toWrite
 	select {
@@ -64,7 +68,7 @@ func (lp *loadPrioritizer) sendOne(item writeItem) {
 	item.errCh <- ErrStreamRestarting
 }
 
-func (lp *loadPrioritizer) run() {
+func (lp *bestOfTwoPrioritizer) run() {
 	for {
 		select {
 		case <-lp.done:
@@ -75,8 +79,11 @@ func (lp *loadPrioritizer) run() {
 	}
 }
 
-func (lp *loadPrioritizer) sendAndWait(wri writeItem) error {
+// sendAndWait implements streamWriter
+func (lp *bestOfTwoPrioritizer) sendAndWait(wri writeItem) error {
 	select {
+	case <-lp.down:
+		return ErrStreamRestarting
 	case <-lp.done:
 		return ErrStreamRestarting
 	case <-wri.parent.Done():
@@ -86,19 +93,21 @@ func (lp *loadPrioritizer) sendAndWait(wri writeItem) error {
 	}
 }
 
-func (lp *loadPrioritizer) nextWriter(ctx context.Context) (streamWriter, error) {
-	// @@@ Say why not using <-done case
+func (lp *bestOfTwoPrioritizer) nextWriter(ctx context.Context) (streamWriter, error) {
 	select {
 	case <-lp.down:
+		// In case of downgrade, return nil to return into a
+		// non-Arrow code path.
 		return nil, nil
 	default:
+		// Fall through to sendAndWait().
 		return lp, nil
 	}
 }
 
-func (lp *loadPrioritizer) streamFor(_ writeItem) (*streamWorkState, <-chan struct{}) {
+func (lp *bestOfTwoPrioritizer) streamFor(_ writeItem) (*streamWorkState, <-chan struct{}) {
 	if len(lp.state) == 1 {
-		_, done := lp.state[0].count()
+		_, done := lp.state[0].pendingRequests()
 		return lp.state[0], done
 	}
 	var pick [2]*streamWorkState
@@ -109,8 +118,8 @@ func (lp *loadPrioritizer) streamFor(_ writeItem) (*streamWorkState, <-chan stru
 			break
 		}
 	}
-	l0, done0 := pick[0].count()
-	l1, done1 := pick[1].count()
+	l0, done0 := pick[0].pendingRequests()
+	l1, done1 := pick[1].pendingRequests()
 
 	// Choose two at random, then pick the one with less load.
 	if l0 < l1 {
@@ -119,8 +128,10 @@ func (lp *loadPrioritizer) streamFor(_ writeItem) (*streamWorkState, <-chan stru
 	return pick[1], done1
 }
 
-func (lp *loadPrioritizer) setReady(stream *Stream) {
+func (lp *bestOfTwoPrioritizer) setReady(stream *Stream) {
+	// not used -- the prioritizer considers pending request
+	// count, not readiness.
 }
 
-func (lp *loadPrioritizer) unsetReady(stream *Stream) {
+func (lp *bestOfTwoPrioritizer) unsetReady(stream *Stream) {
 }
