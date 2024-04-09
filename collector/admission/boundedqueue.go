@@ -1,0 +1,136 @@
+package admission
+
+import (
+	"context"
+	"fmt"
+	"sync"
+
+	"github.com/google/uuid"
+	orderedmap "github.com/wk8/go-ordered-map/v2"
+)
+
+type boundedQueue struct {
+	maxLimitBytes int64
+	maxLimitWaiters int64
+	currentBytes int64
+	currentWaiters int64
+	mtx sync.Mutex
+	// waiters waiters 
+	waiters *orderedmap.OrderedMap[uuid.UUID, waiter]
+}
+
+type waiter struct {
+	readyCh chan struct{} 
+	pendingBytes int64
+	ID uuid.UUID 
+}
+
+func NewBoundedQueue(maxLimitBytes, maxLimitWaiters int64) *boundedQueue {
+	return &boundedQueue{
+		maxLimitBytes: maxLimitBytes,
+		maxLimitWaiters: maxLimitWaiters,
+		currentBytes: int64(0),
+		currentWaiters: int64(0),
+		waiters: orderedmap.New[uuid.UUID, waiter](), 
+	}
+}
+
+func (bq *boundedQueue) admit(pendingBytes int64) (bool, error) {
+	bq.mtx.Lock()
+	defer bq.mtx.Unlock()
+
+	if pendingBytes > bq.maxLimitBytes { // will never succeed
+		return false, fmt.Errorf("rejecting request, request size larger than configured limit")
+	}
+
+	if bq.currentBytes + pendingBytes <= bq.maxLimitBytes { // no need to wait to admit
+		bq.currentBytes += pendingBytes
+		return true, nil
+	}
+
+	// since we were unable to admit, check if we can wait.
+	if bq.currentWaiters + 1 > bq.maxLimitWaiters { // too many waiters
+		return false, fmt.Errorf("rejecting request, too many waiters")
+	}
+
+	// if we got to this point we need to wait to acquire bytes, so update currentWaiters before releasing mutex.
+	bq.currentWaiters += 1
+	return false, nil
+}
+
+func (bq *boundedQueue) Acquire(ctx context.Context, pendingBytes int64) error {
+	success, err := bq.admit(pendingBytes)
+	if err != nil || success {
+		return err
+	}
+
+	// otherwise we need to wait for bytes to be released
+	curWaiter := waiter{
+		pendingBytes: pendingBytes,
+		readyCh: make(chan struct{}),
+		ID: uuid.New(), 
+	}
+
+	bq.mtx.Lock()
+	_, dupped := bq.waiters.Set(curWaiter.ID, curWaiter)
+	if dupped {
+		panic("duplicate keys found")
+	}
+
+	bq.mtx.Unlock()
+
+	select {
+	case <-curWaiter.readyCh:
+		return nil
+	case <-ctx.Done():
+		// canceled before acquired so remove waiter.
+		bq.mtx.Lock()
+		defer bq.mtx.Unlock()
+
+		_, found := bq.waiters.Delete(curWaiter.ID)
+		if !found {
+			panic("deleting key that doesn't exist")
+		}
+
+		bq.currentWaiters -= 1
+		return fmt.Errorf("context canceled: %w ", ctx.Err())
+	}
+}
+
+func (bq *boundedQueue) Release(pendingBytes int64) {
+	bq.mtx.Lock()
+	defer bq.mtx.Unlock()
+
+	bq.currentBytes -= pendingBytes
+
+	for {
+		if bq.waiters.Len() == 0 {
+			return
+		}
+		next := bq.waiters.Oldest()
+		nextWaiter := next.Value
+		nextKey := next.Key
+		if bq.currentBytes + nextWaiter.pendingBytes <= bq.maxLimitBytes {
+			bq.currentBytes += nextWaiter.pendingBytes
+			bq.currentWaiters -= 1
+			close(nextWaiter.readyCh)
+			_, found := bq.waiters.Delete(nextKey)
+			if !found {
+				panic("deleting key that doesn't exist")
+			}
+
+		} else {
+			break
+		}
+	}
+}
+
+func (bq *boundedQueue) TryAcquire(pendingBytes int64) bool {
+	bq.mtx.Lock()
+	defer bq.mtx.Unlock()
+	if bq.currentBytes + pendingBytes <= bq.maxLimitBytes {
+		bq.currentBytes += pendingBytes
+		return true
+	}
+	return false
+}
