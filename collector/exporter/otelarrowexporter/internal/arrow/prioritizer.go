@@ -36,10 +36,11 @@ type streamPrioritizer interface {
 type streamWriter interface {
 	// sendAndWait is called to begin a write.  After completing
 	// the call, wait on writeItem.errCh for the response.
-	sendAndWait(writeItem) error
+	sendAndWait(context.Context, writeItem) error
 }
 
 func newStreamPrioritizer(ctx context.Context, name PrioritizerName, numStreams int) (streamPrioritizer, []*streamWorkState) {
+
 	switch name {
 	case BestOfTwoPrioritizer:
 		return newBestOfTwoPrioritizer(ctx, numStreams)
@@ -54,4 +55,21 @@ func (p PrioritizerName) Validate() error {
 		return nil
 	}
 	return fmt.Errorf("unrecognized prioritizer: %q", string(p))
+}
+
+// drain helps avoid a race condition when downgrade happens, it ensures that
+// any late-arriving work will immediately see ErrStreamRestarting, and this
+// continues until the exporter shuts down.
+//
+// Note: the downgrade function is a major source of complexity and it is
+// probably best removed, instead of having this level of complexity.
+func drain(ch <-chan writeItem, done <-chan struct{}) {
+	for {
+		select {
+		case <-done:
+			return
+		case item := <-ch:
+			item.errCh <- ErrStreamRestarting
+		}
+	}
 }

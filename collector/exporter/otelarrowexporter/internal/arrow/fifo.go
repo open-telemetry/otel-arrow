@@ -10,9 +10,7 @@ import (
 // fifoPrioritizer is a prioritizer that selects the next stream to write.
 // It is the simplest prioritizer implementation.
 type fifoPrioritizer struct {
-	// down corresponds with the background context Done channel.
-	down <-chan struct{}
-
+	done   <-chan struct{}
 	cancel context.CancelFunc
 
 	// shared is shared by all streams.  will be closed to
@@ -39,7 +37,7 @@ func newFifoPrioritizer(ctx context.Context, numStreams int) (*fifoPrioritizer, 
 	}
 
 	return &fifoPrioritizer{
-		down:   ctx.Done(),
+		done:   ctx.Done(),
 		cancel: cancel,
 		shared: shared,
 	}, state
@@ -51,12 +49,14 @@ func newFifoPrioritizer(ctx context.Context, numStreams int) (*fifoPrioritizer, 
 // Stream.writeStream() calls to return before downgrading.
 func (fp *fifoPrioritizer) downgrade() {
 	fp.cancel()
+
+	go drain(fp.shared, fp.done)
 }
 
 // nextWriter returns the first-available stream.
 func (fp *fifoPrioritizer) nextWriter(ctx context.Context) (streamWriter, error) {
 	select {
-	case <-fp.down:
+	case <-fp.done:
 		// In case of downgrade, return nil to return into a
 		// non-Arrow code path.
 		return nil, nil
@@ -66,13 +66,13 @@ func (fp *fifoPrioritizer) nextWriter(ctx context.Context) (streamWriter, error)
 	}
 }
 
-func (fp *fifoPrioritizer) sendAndWait(wri writeItem) error {
+func (fp *fifoPrioritizer) sendAndWait(ctx context.Context, wri writeItem) error {
 	select {
-	case <-wri.parent.Done():
-		return wri.parent.Err()
+	case <-ctx.Done():
+		return ctx.Err()
 	case fp.shared <- wri:
-		return wri.waitForWrite(fp.down)
-	case <-fp.down:
+		return wri.waitForWrite(ctx, fp.done)
+	case <-fp.done:
 		return ErrStreamRestarting
 	}
 }

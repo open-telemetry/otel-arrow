@@ -286,11 +286,11 @@ func (e *Exporter) SendAndWait(ctx context.Context, data any) (bool, error) {
 	}
 
 	wri := writeItem{
-		records:    data,
-		md:         md,
-		uncompSize: uncompSize,
-		errCh:      errCh,
-		parent:     ctx,
+		records:     data,
+		md:          md,
+		uncompSize:  uncompSize,
+		errCh:       errCh,
+		producerCtx: ctx,
 	}
 
 	for {
@@ -303,7 +303,7 @@ func (e *Exporter) SendAndWait(ctx context.Context, data any) (bool, error) {
 			return false, nil // a downgraded connection
 		}
 
-		err = stream.sendAndWait(wri)
+		err = stream.sendAndWait(ctx, wri)
 		if err != nil && errors.Is(err, ErrStreamRestarting) {
 			continue // an internal retry
 
@@ -321,13 +321,13 @@ func (e *Exporter) Shutdown(_ context.Context) error {
 	return nil
 }
 
-func (wri writeItem) waitForWrite(down <-chan struct{}) error {
+func (wri writeItem) waitForWrite(ctx context.Context, down <-chan struct{}) error {
 	select {
 	case <-down:
 		return ErrStreamRestarting
-	case <-wri.parent.Done():
+	case <-ctx.Done():
 		// This caller's context timed out.
-		return wri.parent.Err()
+		return ctx.Err()
 	case err := <-wri.errCh:
 		// Note: includes err == nil and err != nil cases.
 		return err

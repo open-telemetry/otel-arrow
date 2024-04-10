@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"testing"
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	arrowCollectorMock "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1/mock"
@@ -56,7 +55,7 @@ type noisyTest bool
 const Noisy noisyTest = true
 const NotNoisy noisyTest = false
 
-func newTestTelemetry(t *testing.T, noisy noisyTest) (component.TelemetrySettings, *observer.ObservedLogs) {
+func newTestTelemetry(t zaptest.TestingT, noisy noisyTest) (component.TelemetrySettings, *observer.ObservedLogs) {
 	telset := componenttest.NewNopTelemetrySettings()
 	if noisy {
 		return telset, nil
@@ -66,8 +65,19 @@ func newTestTelemetry(t *testing.T, noisy noisyTest) (component.TelemetrySetting
 	return telset, obslogs
 }
 
-func newCommonTestCase(t *testing.T, noisy noisyTest) *commonTestCase {
-	ctrl := gomock.NewController(t)
+type z2m struct {
+	zaptest.TestingT
+}
+
+var _ gomock.TestReporter = z2m{}
+
+func (t z2m) Fatalf(format string, args ...any) {
+	t.Errorf(format, args...)
+	t.Fail()
+}
+
+func newCommonTestCase(t zaptest.TestingT, noisy noisyTest) *commonTestCase {
+	ctrl := gomock.NewController(z2m{t})
 	telset, obslogs := newTestTelemetry(t, noisy)
 
 	creds := grpcmock.NewMockPerRPCCredentials(ctrl)

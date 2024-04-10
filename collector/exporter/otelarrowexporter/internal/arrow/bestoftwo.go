@@ -16,10 +16,7 @@ type bestOfTwoPrioritizer struct {
 	// channel is closed.
 	done <-chan struct{}
 
-	// down is closed to indicate a downgrade.  Note that `done` and
-	// `down` have similar effect, but that one signal is internal and
-	// one signal is external.
-	down chan struct{}
+	cancel context.CancelFunc
 
 	// input from the pipeline, as processed data with headers and
 	// a return channel for the result.  This channel is never
@@ -30,41 +27,47 @@ type bestOfTwoPrioritizer struct {
 	input chan writeItem
 
 	// state tracks the work being handled by all streams.
-	state []*streamWorkState
+	state map[*streamWorkState]struct{}
 }
 
 var _ streamPrioritizer = &bestOfTwoPrioritizer{}
 
 func newBestOfTwoPrioritizer(ctx context.Context, numStreams int) (*bestOfTwoPrioritizer, []*streamWorkState) {
-	var state []*streamWorkState
+	var sws []*streamWorkState
+	state := map[*streamWorkState]struct{}{}
 
 	for i := 0; i < numStreams; i++ {
 		ws := &streamWorkState{
 			waiters: map[int64]chan error{},
-
-			// Note: toWrite must be unbuffered.
-			toWrite: make(chan writeItem),
+			toWrite: make(chan writeItem, 1),
 		}
 
-		state = append(state, ws)
+		sws = append(sws, ws)
+		state[ws] = struct{}{}
 	}
+
+	ctx, cancel := context.WithCancel(ctx)
 
 	lp := &bestOfTwoPrioritizer{
-		done:  ctx.Done(),
-		down:  make(chan struct{}),
-		input: make(chan writeItem, runtime.NumCPU()),
-		state: state,
+		done:   ctx.Done(),
+		cancel: cancel,
+		input:  make(chan writeItem, runtime.NumCPU()),
+		state:  state,
 	}
 
-	for i := 0; i < max(1, len(lp.state)/2); i++ {
+	for i := 0; i < len(lp.state); i++ {
 		go lp.run()
 	}
 
-	return lp, state
+	return lp, sws
 }
 
 func (lp *bestOfTwoPrioritizer) downgrade() {
-	close(lp.down)
+	lp.cancel()
+
+	for ws := range lp.state {
+		go drain(ws.toWrite, lp.done)
+	}
 }
 
 func (lp *bestOfTwoPrioritizer) sendOne(item writeItem) {
@@ -74,7 +77,6 @@ func (lp *bestOfTwoPrioritizer) sendOne(item writeItem) {
 	case writeCh <- item:
 		return
 
-	case <-lp.down:
 	case <-lp.done:
 		// All other cases: signal restart.
 	}
@@ -93,22 +95,20 @@ func (lp *bestOfTwoPrioritizer) run() {
 }
 
 // sendAndWait implements streamWriter
-func (lp *bestOfTwoPrioritizer) sendAndWait(wri writeItem) error {
+func (lp *bestOfTwoPrioritizer) sendAndWait(ctx context.Context, wri writeItem) error {
 	select {
-	case <-lp.down:
-		return ErrStreamRestarting
 	case <-lp.done:
 		return ErrStreamRestarting
-	case <-wri.parent.Done():
+	case <-ctx.Done():
 		return context.Canceled
 	case lp.input <- wri:
-		return wri.waitForWrite(lp.down)
+		return wri.waitForWrite(ctx, lp.done)
 	}
 }
 
 func (lp *bestOfTwoPrioritizer) nextWriter(ctx context.Context) (streamWriter, error) {
 	select {
-	case <-lp.down:
+	case <-lp.done:
 		// In case of downgrade, return nil to return into a
 		// non-Arrow code path.
 		return nil, nil
@@ -119,16 +119,16 @@ func (lp *bestOfTwoPrioritizer) nextWriter(ctx context.Context) (streamWriter, e
 }
 
 func (lp *bestOfTwoPrioritizer) streamFor(_ writeItem) *streamWorkState {
-	if len(lp.state) == 1 {
-		return lp.state[0]
-	}
 	var pick [2]*streamWorkState
 	cnt := 0
-	for _, sws := range lp.state {
+	for sws := range lp.state {
 		pick[cnt] = sws
 		if cnt++; cnt == 2 {
 			break
 		}
+	}
+	if cnt == 1 {
+		return pick[0]
 	}
 	l0 := pick[0].pendingRequests()
 	l1 := pick[1].pendingRequests()

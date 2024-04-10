@@ -73,8 +73,8 @@ type Stream struct {
 // streamWorkState contains the state assigned to an Arrow stream.  When
 // a stream shuts down, the work state is handed to the replacement stream.
 type streamWorkState struct {
-	// toWrite is an unbuffered channel used to pass pending data
-	// between a caller, the prioritizer and a stream.
+	// toWrite is used to pass pending data between a caller, the
+	// prioritizer and a stream.
 	toWrite chan writeItem
 
 	// lock protects waiters
@@ -103,8 +103,8 @@ type writeItem struct {
 	// uncompSize is computed by the appropriate sizer (in the
 	// caller's goroutine)
 	uncompSize int
-	// parent will be used to create a span around the stream request.
-	parent context.Context
+	// producerCtx is used for tracing purposes.
+	producerCtx context.Context
 }
 
 // newStream constructs a stream
@@ -292,7 +292,7 @@ func (s *Stream) write(ctx context.Context, cancel context.CancelFunc) (retErr e
 }
 
 func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hpack.Encoder) (retErr error) {
-	ctx, span := s.tracer.Start(wri.parent, "otel_arrow_stream_send")
+	ctx, span := s.tracer.Start(wri.producerCtx, "otel_arrow_stream_send")
 	defer span.End()
 
 	defer func() {
