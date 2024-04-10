@@ -65,12 +65,12 @@ func newSingleStreamTestCase(t *testing.T, pname PrioritizerName) *exporterTestC
 	return newExporterTestCaseCommon(t, pname, NotNoisy, defaultMaxStreamLifetime, 1, false, nil)
 }
 
-func newShortLifetimeStreamTestCase(t *testing.T) *exporterTestCase {
-	return newExporterTestCaseCommon(t, DefaultPrioritizer, NotNoisy, time.Second/2, 1, false, nil)
+func newShortLifetimeStreamTestCase(t *testing.T, pname PrioritizerName) *exporterTestCase {
+	return newExporterTestCaseCommon(t, pname, NotNoisy, time.Second/2, 1, false, nil)
 }
 
-func newSingleStreamDowngradeDisabledTestCase(t *testing.T) *exporterTestCase {
-	return newExporterTestCaseCommon(t, DefaultPrioritizer, NotNoisy, defaultMaxStreamLifetime, 1, true, nil)
+func newSingleStreamDowngradeDisabledTestCase(t *testing.T, pname PrioritizerName) *exporterTestCase {
+	return newExporterTestCaseCommon(t, pname, NotNoisy, defaultMaxStreamLifetime, 1, true, nil)
 }
 
 func newSingleStreamMetadataTestCase(t *testing.T) *exporterTestCase {
@@ -343,45 +343,49 @@ func TestArrowExporterDowngrade(t *testing.T) {
 // any error downgrade still does not occur amd that the connection is
 // retried without error.
 func TestArrowExporterDisableDowngrade(t *testing.T) {
-	tc := newSingleStreamDowngradeDisabledTestCase(t)
-	badChannel := newArrowUnsupportedTestChannel()
-	goodChannel := newHealthyTestChannel()
+	for _, pname := range AllPrioritizers {
+		t.Run(string(pname), func(t *testing.T) {
+			tc := newSingleStreamDowngradeDisabledTestCase(t, pname)
+			badChannel := newArrowUnsupportedTestChannel()
+			goodChannel := newHealthyTestChannel()
 
-	fails := 0
-	tc.traceCall.AnyTimes().DoAndReturn(func(ctx context.Context, opts ...grpc.CallOption) (
-		arrowpb.ArrowTracesService_ArrowTracesClient,
-		error,
-	) {
-		defer func() { fails++ }()
+			fails := 0
+			tc.traceCall.AnyTimes().DoAndReturn(func(ctx context.Context, opts ...grpc.CallOption) (
+				arrowpb.ArrowTracesService_ArrowTracesClient,
+				error,
+			) {
+				defer func() { fails++ }()
 
-		if fails < 3 {
-			return tc.returnNewStream(badChannel)(ctx, opts...)
-		}
-		return tc.returnNewStream(goodChannel)(ctx, opts...)
-	})
+				if fails < 3 {
+					return tc.returnNewStream(badChannel)(ctx, opts...)
+				}
+				return tc.returnNewStream(goodChannel)(ctx, opts...)
+			})
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		outputData := <-goodChannel.sent
-		goodChannel.recv <- statusOKFor(outputData.BatchId)
-	}()
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				outputData := <-goodChannel.sent
+				goodChannel.recv <- statusOKFor(outputData.BatchId)
+			}()
 
-	bg := context.Background()
-	require.NoError(t, tc.exporter.Start(bg))
+			bg := context.Background()
+			require.NoError(t, tc.exporter.Start(bg))
 
-	sent, err := tc.exporter.SendAndWait(bg, twoTraces)
-	require.True(t, sent)
-	require.NoError(t, err)
+			sent, err := tc.exporter.SendAndWait(bg, twoTraces)
+			require.True(t, sent)
+			require.NoError(t, err)
 
-	wg.Wait()
+			wg.Wait()
 
-	require.NoError(t, tc.exporter.Shutdown(bg))
+			require.NoError(t, tc.exporter.Shutdown(bg))
 
-	require.Less(t, 1, len(tc.observedLogs.All()), "should have at least two logs: %v", tc.observedLogs.All())
-	require.Equal(t, tc.observedLogs.All()[0].Message, "arrow is not supported")
-	require.NotContains(t, tc.observedLogs.All()[1].Message, "downgrading")
+			require.Less(t, 1, len(tc.observedLogs.All()), "should have at least two logs: %v", tc.observedLogs.All())
+			require.Equal(t, tc.observedLogs.All()[0].Message, "arrow is not supported")
+			require.NotContains(t, tc.observedLogs.All()[1].Message, "downgrading")
+		})
+	}
 }
 
 // TestArrowExporterConnectTimeout tests that an error is returned to
@@ -705,60 +709,64 @@ func TestAddJitter(t *testing.T) {
 // stream lifetimes and then shuts down, inspects the logs for
 // legibility.
 func TestArrowExporterStreamLifetimeAndShutdown(t *testing.T) {
-	tc := newShortLifetimeStreamTestCase(t)
+	for _, pname := range AllPrioritizers {
+		t.Run(string(pname), func(t *testing.T) {
+			tc := newShortLifetimeStreamTestCase(t, pname)
 
-	var wg sync.WaitGroup
+			var wg sync.WaitGroup
 
-	var expectCount uint64
-	var actualCount uint64
+			var expectCount uint64
+			var actualCount uint64
 
-	tc.traceCall.AnyTimes().DoAndReturn(func(ctx context.Context, opts ...grpc.CallOption) (
-		arrowpb.ArrowTracesService_ArrowTracesClient,
-		error,
-	) {
-		wg.Add(1)
-		channel := newHealthyTestChannel()
+			tc.traceCall.AnyTimes().DoAndReturn(func(ctx context.Context, opts ...grpc.CallOption) (
+				arrowpb.ArrowTracesService_ArrowTracesClient,
+				error,
+			) {
+				wg.Add(1)
+				channel := newHealthyTestChannel()
 
-		go func() {
-			defer wg.Done()
-			testCon := arrowRecord.NewConsumer()
+				go func() {
+					defer wg.Done()
+					testCon := arrowRecord.NewConsumer()
 
-			for data := range channel.sent {
-				traces, err := testCon.TracesFrom(data)
+					for data := range channel.sent {
+						traces, err := testCon.TracesFrom(data)
+						require.NoError(t, err)
+						require.Equal(t, 1, len(traces))
+						atomic.AddUint64(&actualCount, 1)
+						channel.recv <- statusOKFor(data.BatchId)
+					}
+
+					// Closing the recv channel causes the exporter to see EOF.
+					close(channel.recv)
+				}()
+
+				return tc.returnNewStream(channel)(ctx, opts...)
+			})
+
+			bg := context.Background()
+			require.NoError(t, tc.exporter.Start(bg))
+
+			start := time.Now()
+			// This is 10 stream lifetimes using the "ShortLifetime" test.
+			for time.Since(start) < 5*time.Second {
+				input := testdata.GenerateTraces(2)
+				ctx := context.Background()
+
+				sent, err := tc.exporter.SendAndWait(ctx, input)
 				require.NoError(t, err)
-				require.Equal(t, 1, len(traces))
-				atomic.AddUint64(&actualCount, 1)
-				channel.recv <- statusOKFor(data.BatchId)
+				require.True(t, sent)
+
+				expectCount++
 			}
 
-			// Closing the recv channel causes the exporter to see EOF.
-			close(channel.recv)
-		}()
+			require.NoError(t, tc.exporter.Shutdown(bg))
 
-		return tc.returnNewStream(channel)(ctx, opts...)
-	})
+			require.Equal(t, expectCount, actualCount)
 
-	bg := context.Background()
-	require.NoError(t, tc.exporter.Start(bg))
+			wg.Wait()
 
-	start := time.Now()
-	// This is 10 stream lifetimes using the "ShortLifetime" test.
-	for time.Since(start) < 5*time.Second {
-		input := testdata.GenerateTraces(2)
-		ctx := context.Background()
-
-		sent, err := tc.exporter.SendAndWait(ctx, input)
-		require.NoError(t, err)
-		require.True(t, sent)
-
-		expectCount++
+			require.Empty(t, tc.observedLogs.All())
+		})
 	}
-
-	require.NoError(t, tc.exporter.Shutdown(bg))
-
-	require.Equal(t, expectCount, actualCount)
-
-	wg.Wait()
-
-	require.Empty(t, tc.observedLogs.All())
 }

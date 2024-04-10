@@ -30,10 +30,6 @@ const (
 type streamPrioritizer interface {
 	nextWriter(context.Context) (streamWriter, error)
 	downgrade()
-
-	// On every send/recv pair
-	setReady(*Stream)
-	unsetReady(*Stream)
 }
 
 // streamWriter is the caller's interface to a stream.
@@ -43,12 +39,12 @@ type streamWriter interface {
 	sendAndWait(writeItem) error
 }
 
-func newStreamPrioritizer(ctx context.Context, name PrioritizerName, state ...*streamWorkState) streamPrioritizer {
+func newStreamPrioritizer(ctx context.Context, name PrioritizerName, numStreams int) (streamPrioritizer, []*streamWorkState) {
 	switch name {
 	case BestOfTwoPrioritizer:
-		return newBestOfTwoPrioritizer(ctx, state)
+		return newBestOfTwoPrioritizer(ctx, numStreams)
 	default:
-		return newFifoPrioritizer(ctx, state)
+		return newFifoPrioritizer(ctx, numStreams)
 	}
 }
 

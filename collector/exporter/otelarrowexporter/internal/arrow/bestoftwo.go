@@ -35,7 +35,20 @@ type bestOfTwoPrioritizer struct {
 
 var _ streamPrioritizer = &bestOfTwoPrioritizer{}
 
-func newBestOfTwoPrioritizer(ctx context.Context, state []*streamWorkState) *bestOfTwoPrioritizer {
+func newBestOfTwoPrioritizer(ctx context.Context, numStreams int) (*bestOfTwoPrioritizer, []*streamWorkState) {
+	var state []*streamWorkState
+
+	for i := 0; i < numStreams; i++ {
+		ws := &streamWorkState{
+			waiters: map[int64]chan error{},
+
+			// Note: toWrite must be unbuffered.
+			toWrite: make(chan writeItem),
+		}
+
+		state = append(state, ws)
+	}
+
 	lp := &bestOfTwoPrioritizer{
 		done:  ctx.Done(),
 		down:  make(chan struct{}),
@@ -43,10 +56,11 @@ func newBestOfTwoPrioritizer(ctx context.Context, state []*streamWorkState) *bes
 		state: state,
 	}
 
-	for i := 0; i < max(1, len(state)/2); i++ {
+	for i := 0; i < max(1, len(lp.state)/2); i++ {
 		go lp.run()
 	}
-	return lp
+
+	return lp, state
 }
 
 func (lp *bestOfTwoPrioritizer) downgrade() {
@@ -54,13 +68,12 @@ func (lp *bestOfTwoPrioritizer) downgrade() {
 }
 
 func (lp *bestOfTwoPrioritizer) sendOne(item writeItem) {
-	stream, done := lp.streamFor(item)
+	stream := lp.streamFor(item)
 	writeCh := stream.toWrite
 	select {
 	case writeCh <- item:
 		return
 
-	case <-done:
 	case <-lp.down:
 	case <-lp.done:
 		// All other cases: signal restart.
@@ -89,7 +102,7 @@ func (lp *bestOfTwoPrioritizer) sendAndWait(wri writeItem) error {
 	case <-wri.parent.Done():
 		return context.Canceled
 	case lp.input <- wri:
-		return wri.waitForWrite()
+		return wri.waitForWrite(lp.down)
 	}
 }
 
@@ -105,10 +118,9 @@ func (lp *bestOfTwoPrioritizer) nextWriter(ctx context.Context) (streamWriter, e
 	}
 }
 
-func (lp *bestOfTwoPrioritizer) streamFor(_ writeItem) (*streamWorkState, <-chan struct{}) {
+func (lp *bestOfTwoPrioritizer) streamFor(_ writeItem) *streamWorkState {
 	if len(lp.state) == 1 {
-		_, done := lp.state[0].pendingRequests()
-		return lp.state[0], done
+		return lp.state[0]
 	}
 	var pick [2]*streamWorkState
 	cnt := 0
@@ -118,20 +130,12 @@ func (lp *bestOfTwoPrioritizer) streamFor(_ writeItem) (*streamWorkState, <-chan
 			break
 		}
 	}
-	l0, done0 := pick[0].pendingRequests()
-	l1, done1 := pick[1].pendingRequests()
+	l0 := pick[0].pendingRequests()
+	l1 := pick[1].pendingRequests()
 
 	// Choose two at random, then pick the one with less load.
 	if l0 < l1 {
-		return pick[0], done0
+		return pick[0]
 	}
-	return pick[1], done1
-}
-
-func (lp *bestOfTwoPrioritizer) setReady(stream *Stream) {
-	// not used -- the prioritizer considers pending request
-	// count, not readiness.
-}
-
-func (lp *bestOfTwoPrioritizer) unsetReady(stream *Stream) {
+	return pick[1]
 }

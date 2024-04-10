@@ -136,15 +136,6 @@ func NewExporter(
 	}
 }
 
-func newStreamWorkState() *streamWorkState {
-	return &streamWorkState{
-		waiters: map[int64]chan error{},
-
-		// Note: toWrite must be unbuffered.
-		toWrite: make(chan writeItem),
-	}
-}
-
 // Start creates the background context used by all streams and starts
 // a stream controller, which initializes the initial set of streams.
 func (e *Exporter) Start(ctx context.Context) error {
@@ -153,21 +144,15 @@ func (e *Exporter) Start(ctx context.Context) error {
 	// Starting N+1 goroutines
 	e.wg.Add(1)
 
-	// Start the initial number of streams
 	var sws []*streamWorkState
-	for i := 0; i < e.numStreams; i++ {
-		ws := newStreamWorkState()
-		sws = append(sws, ws)
-	}
-
-	e.ready = newStreamPrioritizer(ctx, e.prioritizerName, sws...)
+	e.ready, sws = newStreamPrioritizer(ctx, e.prioritizerName, e.numStreams)
 	e.cancel = cancel
 
 	for _, ws := range sws {
 		e.startArrowStream(ctx, ws)
 	}
 
-	go e.runStreamController(ctx, sws)
+	go e.runStreamController(ctx)
 
 	return nil
 }
@@ -177,10 +162,6 @@ func (e *Exporter) startArrowStream(ctx context.Context, ws *streamWorkState) {
 
 	e.wg.Add(1)
 
-	ws.lock.Lock()
-	ws.done = ctx.Done()
-	ws.lock.Unlock()
-
 	go e.runArrowStream(ctx, cancel, ws)
 }
 
@@ -188,7 +169,7 @@ func (e *Exporter) startArrowStream(ctx context.Context, ws *streamWorkState) {
 // terminate one at a time and restarts them.  If streams come back with a nil
 // client (meaning that OTel-Arrow was not supported by the endpoint), it will
 // not be restarted.
-func (e *Exporter) runStreamController(ctx context.Context, state []*streamWorkState) {
+func (e *Exporter) runStreamController(ctx context.Context) {
 	defer e.cancel()
 	defer e.wg.Done()
 
@@ -340,8 +321,10 @@ func (e *Exporter) Shutdown(_ context.Context) error {
 	return nil
 }
 
-func (wri writeItem) waitForWrite() error {
+func (wri writeItem) waitForWrite(down <-chan struct{}) error {
 	select {
+	case <-down:
+		return ErrStreamRestarting
 	case <-wri.parent.Done():
 		// This caller's context timed out.
 		return wri.parent.Err()

@@ -77,21 +77,18 @@ type streamWorkState struct {
 	// between a caller, the prioritizer and a stream.
 	toWrite chan writeItem
 
-	// lock protects waiters and done.
+	// lock protects waiters
 	lock sync.Mutex
 
 	// waiters is the response channel for each active batch.
 	waiters map[int64]chan error
-
-	// done is the currently-running stream's context Done() channel.
-	done <-chan struct{}
 }
 
 // pendingRequests
-func (sws *streamWorkState) pendingRequests() (cnt int, done <-chan struct{}) {
+func (sws *streamWorkState) pendingRequests() int {
 	sws.lock.Lock()
 	defer sws.lock.Unlock()
-	return len(sws.waiters) + len(sws.toWrite), sws.done
+	return len(sws.waiters) + len(sws.toWrite)
 }
 
 // writeItem is passed from the sender (a pipeline consumer) to the
@@ -204,7 +201,7 @@ func (s *Stream) run(ctx context.Context, cancel context.CancelFunc, streamClien
 	ww.Add(1)
 	go func() {
 		defer ww.Done()
-		writeErr = s.write(ctx)
+		writeErr = s.write(ctx, cancel)
 		if writeErr != nil {
 			cancel()
 		}
@@ -257,11 +254,9 @@ func (s *Stream) run(ctx context.Context, cancel context.CancelFunc, streamClien
 // write repeatedly places this stream into the next-available queue, then
 // performs a blocking send().  This returns when the data is in the write buffer,
 // the caller waiting on its error channel.
-func (s *Stream) write(ctx context.Context) (retErr error) {
+func (s *Stream) write(ctx context.Context, cancel context.CancelFunc) (retErr error) {
 	// always close send()
-	defer func() {
-		s.client.CloseSend()
-	}()
+	defer s.client.CloseSend()
 
 	// headers are encoding using hpack, reusing a buffer on each call.
 	var hdrsBuf bytes.Buffer
@@ -275,29 +270,14 @@ func (s *Stream) write(ctx context.Context) (retErr error) {
 	}
 
 	for {
-		// Note: this can't block b/c stream has capacity &
-		// individual streams shut down synchronously.
-		s.prioritizer.setReady(s)
-
 		// this can block, and if the context is canceled we
 		// wait for the reader to find this stream.
 		var wri writeItem
-		var ok bool
 		select {
 		case <-timerCh:
-			// If timerCh is nil, this will never happen.
-			s.prioritizer.unsetReady(s)
 			return nil
-		case wri, ok = <-s.workState.toWrite:
-			// channel is closed
-			if !ok {
-				return nil
-			}
+		case wri = <-s.workState.toWrite:
 		case <-ctx.Done():
-			// Because we did not <-stream.toWrite, there
-			// is a potential sender race since the stream
-			// is currently in the ready set.
-			s.prioritizer.unsetReady(s)
 			return ctx.Err()
 		}
 
@@ -473,18 +453,6 @@ func (s *Stream) processBatchStatus(ss *arrowpb.BatchStatus) error {
 	}
 	ch <- err
 	return ret
-}
-
-// sendAndWait submits a batch of records to be encoded and sent.  Meanwhile, this
-// goroutine waits on the incoming context or for the asynchronous response to be
-// received by the stream reader.
-func (s *Stream) sendAndWait(wri writeItem) error {
-	select {
-	case s.workState.toWrite <- wri:
-		return wri.waitForWrite()
-	case <-s.workState.done:
-		return ErrStreamRestarting
-	}
 }
 
 // encode produces the next batch of Arrow records.
