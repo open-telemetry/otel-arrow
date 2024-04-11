@@ -65,9 +65,9 @@ type Exporter struct {
 	// ready prioritizes streams that are ready to send
 	ready streamPrioritizer
 
-	// cancel cancels the background context of this
-	// Exporter, used for shutdown.
-	cancel context.CancelFunc
+	// doneCancel refers to and cancels the background context of
+	// this exporter.
+	doneCancel
 
 	// wg counts one per active goroutine belonging to all streams
 	// of this exporter.  The wait group has Add(1) called before
@@ -83,6 +83,13 @@ type Exporter struct {
 
 	// netReporter measures network traffic.
 	netReporter netstats.Interface
+}
+
+// doneCancel is used to store the done signal and cancelation
+// function for a context returned by context.WithCancel.
+type doneCancel struct {
+	done   <-chan struct{}
+	cancel context.CancelFunc
 }
 
 // AnyStreamClient is the interface supported by all Arrow streams.
@@ -139,37 +146,41 @@ func NewExporter(
 // Start creates the background context used by all streams and starts
 // a stream controller, which initializes the initial set of streams.
 func (e *Exporter) Start(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
+	// this is the background context
+	ctx, e.doneCancel = newDoneCancel(ctx)
 
 	// Starting N+1 goroutines
 	e.wg.Add(1)
 
+	// this is the downgradeable context
+	downCtx, downDc := newDoneCancel(ctx)
+
 	var sws []*streamWorkState
-	e.ready, sws = newStreamPrioritizer(ctx, e.prioritizerName, e.numStreams)
-	e.cancel = cancel
+	e.ready, sws = newStreamPrioritizer(downDc, e.prioritizerName, e.numStreams)
 
 	for _, ws := range sws {
 		e.startArrowStream(ctx, ws)
 	}
 
-	go e.runStreamController(ctx)
+	go e.runStreamController(ctx, downCtx, downDc)
 
 	return nil
 }
 
 func (e *Exporter) startArrowStream(ctx context.Context, ws *streamWorkState) {
-	ctx, cancel := context.WithCancel(ctx)
+	// this is the new stream context
+	ctx, dc := newDoneCancel(ctx)
 
 	e.wg.Add(1)
 
-	go e.runArrowStream(ctx, cancel, ws)
+	go e.runArrowStream(ctx, dc, ws)
 }
 
 // runStreamController starts the initial set of streams, then waits for streams to
 // terminate one at a time and restarts them.  If streams come back with a nil
 // client (meaning that OTel-Arrow was not supported by the endpoint), it will
 // not be restarted.
-func (e *Exporter) runStreamController(ctx context.Context) {
+func (e *Exporter) runStreamController(exportCtx, downCtx context.Context, downDc doneCancel) {
 	defer e.cancel()
 	defer e.wg.Done()
 
@@ -180,7 +191,7 @@ func (e *Exporter) runStreamController(ctx context.Context) {
 		case stream := <-e.returning:
 			if stream.client != nil || e.disableDowngrade {
 				// The stream closed or broken.  Restart it.
-				e.startArrowStream(ctx, stream.workState)
+				e.startArrowStream(downCtx, stream.workState)
 				continue
 			}
 			// Otherwise, the stream never got started.  It was
@@ -191,11 +202,14 @@ func (e *Exporter) runStreamController(ctx context.Context) {
 			// an Arrow endpoint.
 			if running == 0 {
 				e.telemetry.Logger.Info("could not establish arrow streams, downgrading to standard OTLP export")
-				e.ready.downgrade()
+				downDc.cancel()
+				// this call is allowed to block indefinitely,
+				// as to call drain().
+				e.ready.downgrade(exportCtx)
 				return
 			}
 
-		case <-ctx.Done():
+		case <-exportCtx.Done():
 			// We are shutting down.
 			return
 		}
@@ -217,8 +231,8 @@ func addJitter(v time.Duration) time.Duration {
 // If the stream connection is successful, this goroutine starts another goroutine
 // to call writeStream() and performs readStream() itself.  When the stream shuts
 // down this call synchronously waits for and unblocks the consumers.
-func (e *Exporter) runArrowStream(ctx context.Context, cancel context.CancelFunc, state *streamWorkState) {
-	defer cancel()
+func (e *Exporter) runArrowStream(ctx context.Context, dc doneCancel, state *streamWorkState) {
+	defer dc.cancel()
 	producer := e.newProducer()
 
 	stream := newStream(producer, e.ready, e.telemetry, e.netReporter, state)
@@ -232,7 +246,7 @@ func (e *Exporter) runArrowStream(ctx context.Context, cancel context.CancelFunc
 		e.returning <- stream
 	}()
 
-	stream.run(ctx, cancel, e.streamClient, e.grpcOptions)
+	stream.run(ctx, dc, e.streamClient, e.grpcOptions)
 }
 
 // SendAndWait tries to send using an Arrow stream.  The results are:
@@ -331,5 +345,13 @@ func (wri writeItem) waitForWrite(ctx context.Context, down <-chan struct{}) err
 	case err := <-wri.errCh:
 		// Note: includes err == nil and err != nil cases.
 		return err
+	}
+}
+
+func newDoneCancel(ctx context.Context) (context.Context, doneCancel) {
+	ctx, cancel := context.WithCancel(ctx)
+	return ctx, doneCancel{
+		done:   ctx.Done(),
+		cancel: cancel,
 	}
 }

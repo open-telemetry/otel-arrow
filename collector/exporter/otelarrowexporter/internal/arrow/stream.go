@@ -168,7 +168,7 @@ func (s *Stream) logStreamError(which string, err error) {
 
 // run blocks the calling goroutine while executing stream logic.  run
 // will return when the reader and writer are finished.  errors will be logged.
-func (s *Stream) run(ctx context.Context, cancel context.CancelFunc, streamClient StreamClientFunc, grpcOptions []grpc.CallOption) {
+func (s *Stream) run(ctx context.Context, dc doneCancel, streamClient StreamClientFunc, grpcOptions []grpc.CallOption) {
 	sc, method, err := streamClient(ctx, grpcOptions...)
 	if err != nil {
 		// Returning with stream.client == nil signals the
@@ -201,9 +201,9 @@ func (s *Stream) run(ctx context.Context, cancel context.CancelFunc, streamClien
 	ww.Add(1)
 	go func() {
 		defer ww.Done()
-		writeErr = s.write(ctx, cancel)
+		writeErr = s.write(ctx, dc.cancel)
 		if writeErr != nil {
-			cancel()
+			dc.cancel()
 		}
 	}()
 
@@ -212,7 +212,7 @@ func (s *Stream) run(ctx context.Context, cancel context.CancelFunc, streamClien
 	err = s.read(ctx)
 
 	// Wait for the writer to ensure that all waiters are known.
-	cancel()
+	dc.cancel()
 	ww.Wait()
 
 	if err != nil {

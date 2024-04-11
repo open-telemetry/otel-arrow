@@ -28,8 +28,13 @@ const (
 // streamPrioritizer is an interface for prioritizing multiple
 // streams.
 type streamPrioritizer interface {
+	// nextWriter gets the next stream writer.
 	nextWriter(context.Context) (streamWriter, error)
-	downgrade()
+
+	// downgrade is called with the root context of the exporter,
+	// and may block indefinitely.  this allows the prioritizer to
+	// drain its channel(s) until the exporter shuts down.
+	downgrade(context.Context)
 }
 
 // streamWriter is the caller's interface to a stream.
@@ -39,13 +44,13 @@ type streamWriter interface {
 	sendAndWait(context.Context, writeItem) error
 }
 
-func newStreamPrioritizer(ctx context.Context, name PrioritizerName, numStreams int) (streamPrioritizer, []*streamWorkState) {
+func newStreamPrioritizer(dc doneCancel, name PrioritizerName, numStreams int) (streamPrioritizer, []*streamWorkState) {
 
 	switch name {
 	case BestOfTwoPrioritizer:
-		return newBestOfTwoPrioritizer(ctx, numStreams)
+		return newBestOfTwoPrioritizer(dc, numStreams)
 	default:
-		return newFifoPrioritizer(ctx, numStreams)
+		return newFifoPrioritizer(dc, numStreams)
 	}
 }
 

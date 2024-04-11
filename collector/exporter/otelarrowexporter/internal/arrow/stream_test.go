@@ -28,10 +28,10 @@ type streamTestCase struct {
 	*commonTestCase
 	*commonTestStream
 
-	producer        *arrowRecordMock.MockProducerAPI
-	prioritizer     streamPrioritizer
-	bgctx           context.Context
-	bgcancel        context.CancelFunc
+	producer    *arrowRecordMock.MockProducerAPI
+	prioritizer streamPrioritizer
+	bgctx       context.Context
+	doneCancel
 	fromTracesCall  *gomock.Call
 	fromMetricsCall *gomock.Call
 	fromLogsCall    *gomock.Call
@@ -43,8 +43,8 @@ func newStreamTestCase(t *testing.T, pname PrioritizerName) *streamTestCase {
 	ctrl := gomock.NewController(t)
 	producer := arrowRecordMock.NewMockProducerAPI(ctrl)
 
-	bg, cancel := context.WithCancel(context.Background())
-	prio, state := newStreamPrioritizer(bg, pname, 1)
+	bg, dc := newDoneCancel(context.Background())
+	prio, state := newStreamPrioritizer(dc, pname, 1)
 
 	ctc := newCommonTestCase(t, NotNoisy)
 	cts := ctc.newMockStream(bg)
@@ -65,7 +65,7 @@ func newStreamTestCase(t *testing.T, pname PrioritizerName) *streamTestCase {
 		producer:         producer,
 		prioritizer:      prio,
 		bgctx:            bg,
-		bgcancel:         cancel,
+		doneCancel:       dc,
 		stream:           stream,
 		fromTracesCall:   fromTracesCall,
 		fromMetricsCall:  fromMetricsCall,
@@ -81,13 +81,13 @@ func (tc *streamTestCase) start(channel testChannel) {
 
 	go func() {
 		defer tc.wait.Done()
-		tc.stream.run(tc.bgctx, tc.bgcancel, tc.traceClient, nil)
+		tc.stream.run(tc.bgctx, tc.doneCancel, tc.traceClient, nil)
 	}()
 }
 
 // cancelAndWait cancels the context and waits for the runner to return.
 func (tc *streamTestCase) cancelAndWaitForShutdown() {
-	tc.bgcancel()
+	tc.cancel()
 	tc.wait.Wait()
 }
 
@@ -313,7 +313,7 @@ func TestStreamUnsupported(t *testing.T) {
 				// cause the request to respond or else it waits for a new
 				// stream.
 				tc.waitForShutdown()
-				tc.bgcancel()
+				tc.cancel()
 			}()
 
 			writer := tc.mustGet()

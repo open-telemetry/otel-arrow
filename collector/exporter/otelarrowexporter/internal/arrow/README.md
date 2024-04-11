@@ -10,10 +10,11 @@ The principle components of the OTel-Arrow Exporter are:
 4. Stream logic: A single gRPC OTAP stream, consisting of independent
    reader and writer subroutines.
 
-A request goes through the following steps from arrival to export.
+A request goes through the following steps following arrival inside
+this component.
 
 The sender computes per-request metadata including auth headers and
-the original uncompressed data size while still in the caller's
+the original uncompressed data size, while still in the caller's
 context.  Then, it checks with the prioritizer for the downgrade
 condition, otherwise submits the item to a stream via the prioritizer.
 
@@ -34,4 +35,12 @@ state, and writes it via gRPC.  As soon as the data is entered into
 the gRPC write buffer, the stream writer continues to the next
 request.  This repeats until the stream maximum lifetime is reached.
 
-The stream reader receives status data from the corresponding receiver 
+The stream reader receives status data from the corresponding
+OTel-Arrow receiver, translates the responses into `error` objects,
+and returns them to the awaiting sender logic.
+
+### Context hierarchy
+
+There are three levels of Context object used inside the Exporter in
+addition to the Context object that arrives from the pipeline when
+data is sent.

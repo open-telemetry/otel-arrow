@@ -10,8 +10,7 @@ import (
 // fifoPrioritizer is a prioritizer that selects the next stream to write.
 // It is the simplest prioritizer implementation.
 type fifoPrioritizer struct {
-	done   <-chan struct{}
-	cancel context.CancelFunc
+	doneCancel
 
 	// shared is shared by all streams.  will be closed to
 	// downgrade to standard OTLP, otherwise it returns the
@@ -22,12 +21,10 @@ type fifoPrioritizer struct {
 var _ streamPrioritizer = &fifoPrioritizer{}
 
 // newFifoPrioritizer constructs a channel-based first-available prioritizer.
-func newFifoPrioritizer(ctx context.Context, numStreams int) (*fifoPrioritizer, []*streamWorkState) {
+func newFifoPrioritizer(dc doneCancel, numStreams int) (*fifoPrioritizer, []*streamWorkState) {
 	var state []*streamWorkState
 
 	shared := make(chan writeItem, numStreams)
-
-	ctx, cancel := context.WithCancel(ctx)
 
 	for i := 0; i < numStreams; i++ {
 		state = append(state, &streamWorkState{
@@ -37,9 +34,8 @@ func newFifoPrioritizer(ctx context.Context, numStreams int) (*fifoPrioritizer, 
 	}
 
 	return &fifoPrioritizer{
-		done:   ctx.Done(),
-		cancel: cancel,
-		shared: shared,
+		doneCancel: dc,
+		shared:     shared,
 	}, state
 }
 
@@ -47,10 +43,8 @@ func newFifoPrioritizer(ctx context.Context, numStreams int) (*fifoPrioritizer, 
 // the caller is required to ensure that setReady() and unsetReady()
 // cannot be called concurrently; this is done by waiting for
 // Stream.writeStream() calls to return before downgrading.
-func (fp *fifoPrioritizer) downgrade() {
-	fp.cancel()
-
-	go drain(fp.shared, fp.done)
+func (fp *fifoPrioritizer) downgrade(ctx context.Context) {
+	go drain(fp.shared, ctx.Done())
 }
 
 // nextWriter returns the first-available stream.

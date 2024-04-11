@@ -11,12 +11,7 @@ import (
 // bestOfTwoPrioritizer is a prioritizer that selects a less-loaded stream to write.
 // https://smallrye.io/smallrye-stork/1.1.1/load-balancer/power-of-two-choices/
 type bestOfTwoPrioritizer struct {
-	// done corresponds with the background context Done channel.
-	// the prioritizer will stop background activity when this
-	// channel is closed.
-	done <-chan struct{}
-
-	cancel context.CancelFunc
+	doneCancel
 
 	// input from the pipeline, as processed data with headers and
 	// a return channel for the result.  This channel is never
@@ -32,7 +27,7 @@ type bestOfTwoPrioritizer struct {
 
 var _ streamPrioritizer = &bestOfTwoPrioritizer{}
 
-func newBestOfTwoPrioritizer(ctx context.Context, numStreams int) (*bestOfTwoPrioritizer, []*streamWorkState) {
+func newBestOfTwoPrioritizer(dc doneCancel, numStreams int) (*bestOfTwoPrioritizer, []*streamWorkState) {
 	var sws []*streamWorkState
 	state := map[*streamWorkState]struct{}{}
 
@@ -46,13 +41,10 @@ func newBestOfTwoPrioritizer(ctx context.Context, numStreams int) (*bestOfTwoPri
 		state[ws] = struct{}{}
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-
 	lp := &bestOfTwoPrioritizer{
-		done:   ctx.Done(),
-		cancel: cancel,
-		input:  make(chan writeItem, runtime.NumCPU()),
-		state:  state,
+		doneCancel: dc,
+		input:      make(chan writeItem, runtime.NumCPU()),
+		state:      state,
 	}
 
 	for i := 0; i < len(lp.state); i++ {
@@ -62,11 +54,9 @@ func newBestOfTwoPrioritizer(ctx context.Context, numStreams int) (*bestOfTwoPri
 	return lp, sws
 }
 
-func (lp *bestOfTwoPrioritizer) downgrade() {
-	lp.cancel()
-
+func (lp *bestOfTwoPrioritizer) downgrade(ctx context.Context) {
 	for ws := range lp.state {
-		go drain(ws.toWrite, lp.done)
+		go drain(ws.toWrite, ctx.Done())
 	}
 }
 
