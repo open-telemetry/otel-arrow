@@ -8,6 +8,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## [0.21.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.21.0) - 2024-04-10
+
+- Bump versions to latest 0.98.0 1.25.0 [#175](https://github.com/open-telemetry/otel-arrow/pull/175)
+
+- Update examples; add "shutdown", remove generator [#171](https://github.com/open-telemetry/otel-arrow/pull/171)
+
+- Improve logging at Arrow stream shutdown; avoid the explicit Canceled message at stream lifetime [#170](https://github.com/open-telemetry/otel-arrow/pull/170)
+
+- More lint from opentelemetry-collector-contrib PR 32015 [#168](https://github.com/open-telemetry/otel-arrow/pull/168)
+
+- Lint fixes for OTel-Arrow receiver in OTel-Collector-Contrib [#167](https://github.com/open-telemetry/otel-arrow/pull/167)
+
+- Enable ci/cd build and test [#166](https://github.com/open-telemetry/otel-arrow/pull/166)
+
+
 ## [0.20.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.20.0) - 2024-03-27
 
 - Lint fixes, renames, and validation update to follow conventions of otel-collector-contrib repository. [#163](https://github.com/open-telemetry/otel-arrow/pull/163)
