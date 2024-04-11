@@ -18,4 +18,20 @@ context.  Then, it checks with the prioritizer for the downgrade
 condition, otherwise submits the item to a stream via the prioritizer.
 
 The prioritizer dictates which current stream receives arriving items
-of data.  The two prioritizer 
+of data to balance load across streams.  The prioritizer
+implementations are described in a section below.
+
+The stream manager is responsible for supervising individual streams
+and outcomes.  The stream manager is responsible for the decision to
+downgrade to standard OTLP when it appears that Arrow is unsupported.
+
+The individual stream is made up of two subroutines, _reader_ and
+_writer_, executing independently and a "waiters" map.
+
+The stream writer receives work from the sender logic (via the
+prioritizer), encodes the data using the current OTel-Arrow stream
+state, and writes it via gRPC.  As soon as the data is entered into
+the gRPC write buffer, the stream writer continues to the next
+request.  This repeats until the stream maximum lifetime is reached.
+
+The stream reader receives status data from the corresponding receiver 
