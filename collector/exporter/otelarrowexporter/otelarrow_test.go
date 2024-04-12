@@ -304,7 +304,7 @@ func TestSendTraces(t *testing.T) {
 	cfg.QueueSettings.Enabled = false
 	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
-		TLSSetting: configtls.TLSClientSetting{
+		TLSSetting: configtls.ClientConfig{
 			Insecure: true,
 		},
 		Headers: map[string]configopaque.String{
@@ -436,7 +436,7 @@ func TestSendTracesWhenEndpointHasHttpScheme(t *testing.T) {
 			useTLS: false,
 			scheme: "http://",
 			gRPCClientSettings: configgrpc.ClientConfig{
-				TLSSetting: configtls.TLSClientSetting{
+				TLSSetting: configtls.ClientConfig{
 					Insecure: true,
 				},
 			},
@@ -510,7 +510,7 @@ func TestSendMetrics(t *testing.T) {
 	cfg.RetryConfig.Enabled = false
 	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
-		TLSSetting: configtls.TLSClientSetting{
+		TLSSetting: configtls.ClientConfig{
 			Insecure: true,
 		},
 		Headers: map[string]configopaque.String{
@@ -609,7 +609,7 @@ func TestSendTraceDataServerDownAndUp(t *testing.T) {
 	cfg.QueueSettings.Enabled = false
 	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
-		TLSSetting: configtls.TLSClientSetting{
+		TLSSetting: configtls.ClientConfig{
 			Insecure: true,
 		},
 		// Need to wait for every request blocking until either request timeouts or succeed.
@@ -670,7 +670,7 @@ func TestSendTraceDataServerStartWhileRequest(t *testing.T) {
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
-		TLSSetting: configtls.TLSClientSetting{
+		TLSSetting: configtls.ClientConfig{
 			Insecure: true,
 		},
 	}
@@ -724,7 +724,7 @@ func TestSendTracesOnResourceExhaustion(t *testing.T) {
 	cfg.RetryConfig.InitialInterval = 0
 	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
-		TLSSetting: configtls.TLSClientSetting{
+		TLSSetting: configtls.ClientConfig{
 			Insecure: true,
 		},
 	}
@@ -807,7 +807,7 @@ func TestSendLogData(t *testing.T) {
 	cfg.QueueSettings.Enabled = false
 	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
-		TLSSetting: configtls.TLSClientSetting{
+		TLSSetting: configtls.ClientConfig{
 			Insecure: true,
 		},
 	}
@@ -912,7 +912,7 @@ func testSendArrowTraces(t *testing.T, clientWaitForReady, streamServiceAvailabl
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
-		TLSSetting: configtls.TLSClientSetting{
+		TLSSetting: configtls.ClientConfig{
 			Insecure: true,
 		},
 		WaitForReady: clientWaitForReady,
@@ -1082,7 +1082,7 @@ func TestSendArrowFailedTraces(t *testing.T) {
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
-		TLSSetting: configtls.TLSClientSetting{
+		TLSSetting: configtls.ClientConfig{
 			Insecure: true,
 		},
 		WaitForReady: true,
@@ -1143,7 +1143,7 @@ func TestUserDialOptions(t *testing.T) {
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
-		TLSSetting: configtls.TLSClientSetting{
+		TLSSetting: configtls.ClientConfig{
 			Insecure: true,
 		},
 		WaitForReady: true,
