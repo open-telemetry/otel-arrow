@@ -1,7 +1,0 @@
-// pendingRequests
-func (sws *streamWorkState) pendingRequests() int {
-	sws.lock.Lock()
-	defer sws.lock.Unlock()
-	return len(sws.waiters) + len(sws.toWrite)
-}
-
