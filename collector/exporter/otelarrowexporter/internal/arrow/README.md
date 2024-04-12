@@ -114,4 +114,9 @@ The implementation shares one `chan writeItem` between multiple
 #### BestOfN
 
 This prioritizer randomly selects N active streams and chooses the one
-with the least number of outstanding items of data.
+with the least outstanding number of items of data.  This is
+accomplished using a number of intermediary subroutines, which
+repeatly get a next item of data, pick a stream, and place the item
+into the stream's input channel.
+
+

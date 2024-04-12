@@ -48,6 +48,8 @@ func newBestOfTwoPrioritizer(dc doneCancel, numStreams int) (*bestOfTwoPrioritiz
 	}
 
 	for i := 0; i < len(lp.state); i++ {
+		// TODO It's not clear if/when the the prioritizer can
+		// become a bottleneck.
 		go lp.run()
 	}
 
@@ -112,7 +114,9 @@ func (lp *bestOfTwoPrioritizer) streamFor(_ writeItem) *streamWorkState {
 	var pick [2]*streamWorkState
 	cnt := 0
 	for sws := range lp.state {
+		// TODO: skip channels w/ a pending item (maybe)
 		pick[cnt] = sws
+		// TODO: make this N
 		if cnt++; cnt == 2 {
 			break
 		}
