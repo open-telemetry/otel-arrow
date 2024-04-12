@@ -84,13 +84,6 @@ type streamWorkState struct {
 	waiters map[int64]chan<- error
 }
 
-// pendingRequests
-func (sws *streamWorkState) pendingRequests() int {
-	sws.lock.Lock()
-	defer sws.lock.Unlock()
-	return len(sws.waiters) + len(sws.toWrite)
-}
-
 // writeItem is passed from the sender (a pipeline consumer) to the
 // stream writer, which is not bound by the sender's context.
 type writeItem struct {

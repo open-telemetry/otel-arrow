@@ -199,7 +199,7 @@ func (tc *healthyTestChannel) doClose() {
 	}
 }
 
-func (tc *healthyTestChannel) sendChannel() <-chan *arrowpb.BatchArrowRecords {
+func (tc *healthyTestChannel) sendChannel() chan *arrowpb.BatchArrowRecords {
 	tc.lock.Lock()
 	defer tc.lock.Unlock()
 	return tc.sent
@@ -218,11 +218,8 @@ func (tc *healthyTestChannel) onCloseSend() func() error {
 
 func (tc *healthyTestChannel) onSend(ctx context.Context) func(*arrowpb.BatchArrowRecords) error {
 	return func(req *arrowpb.BatchArrowRecords) error {
-		tc.lock.Lock()
-		sent := tc.sent
-		tc.lock.Unlock()
 		select {
-		case sent <- req:
+		case tc.sendChannel() <- req:
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()

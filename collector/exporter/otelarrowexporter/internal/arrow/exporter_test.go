@@ -34,7 +34,7 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-var AllPrioritizers = []PrioritizerName{FifoPrioritizer, BestOfTwoPrioritizer}
+var AllPrioritizers = []PrioritizerName{FifoPrioritizer, LeastLoadedTwoPrioritizer}
 
 const defaultMaxStreamLifetime = 11 * time.Second
 
@@ -371,7 +371,7 @@ func TestArrowExporterDisableDowngrade(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				outputData := <-goodChannel.sent
+				outputData := <-goodChannel.sendChannel()
 				goodChannel.recv <- statusOKFor(outputData.BatchId)
 			}()
 
@@ -444,7 +444,7 @@ func TestArrowExporterStreamFailure(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				outputData = <-channel1.sent
+				outputData = <-channel1.sendChannel()
 				channel1.recv <- statusOKFor(outputData.BatchId)
 			}()
 
@@ -530,7 +530,7 @@ func TestArrowExporterStreaming(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for data := range channel.sent {
+				for data := range channel.sendChannel() {
 					traces, err := testCon.TracesFrom(data)
 					require.NoError(t, err)
 					require.Equal(t, 1, len(traces))
@@ -583,7 +583,7 @@ func TestArrowExporterHeaders(t *testing.T) {
 		hpd := hpack.NewDecoder(4096, func(f hpack.HeaderField) {
 			md[f.Name] = append(md[f.Name], f.Value)
 		})
-		for data := range channel.sent {
+		for data := range channel.sendChannel() {
 			if len(data.Headers) == 0 {
 				actualOutput = append(actualOutput, nil)
 			} else {
@@ -649,7 +649,7 @@ func TestArrowExporterIsTraced(t *testing.T) {
 				hpd := hpack.NewDecoder(4096, func(f hpack.HeaderField) {
 					md[f.Name] = append(md[f.Name], f.Value)
 				})
-				for data := range channel.sent {
+				for data := range channel.sendChannel() {
 					if len(data.Headers) == 0 {
 						actualOutput = append(actualOutput, nil)
 					} else {
@@ -736,7 +736,7 @@ func TestArrowExporterStreamLifetimeAndShutdown(t *testing.T) {
 							defer wg.Done()
 							testCon := arrowRecord.NewConsumer()
 
-							for data := range channel.sent {
+							for data := range channel.sendChannel() {
 								traces, err := testCon.TracesFrom(data)
 								require.NoError(t, err)
 								require.Equal(t, 1, len(traces))
@@ -780,52 +780,76 @@ func TestArrowExporterStreamLifetimeAndShutdown(t *testing.T) {
 	}
 }
 
-func BenchmarkBestOfTwo128(b *testing.B) {
-	benchmarkPrioritizer(b, 128, BestOfTwoPrioritizer)
-}
-
-func BenchmarkFifo128(b *testing.B) {
-	benchmarkPrioritizer(b, 128, FifoPrioritizer)
-}
-
-func BenchmarkBestOfTwo64(b *testing.B) {
-	benchmarkPrioritizer(b, 64, BestOfTwoPrioritizer)
-}
-
-func BenchmarkFifo64(b *testing.B) {
-	benchmarkPrioritizer(b, 64, FifoPrioritizer)
-}
-
-func BenchmarkBestOfTwo32(b *testing.B) {
-	benchmarkPrioritizer(b, 32, BestOfTwoPrioritizer)
-}
-
-func BenchmarkFifo32(b *testing.B) {
-	benchmarkPrioritizer(b, 32, FifoPrioritizer)
-}
-
-func BenchmarkBestOfTwo16(b *testing.B) {
-	benchmarkPrioritizer(b, 16, BestOfTwoPrioritizer)
-}
-
-func BenchmarkFifo16(b *testing.B) {
-	benchmarkPrioritizer(b, 16, FifoPrioritizer)
-}
-
-func BenchmarkBestOfTwo8(b *testing.B) {
-	benchmarkPrioritizer(b, 8, BestOfTwoPrioritizer)
+func BenchmarkFifo4(b *testing.B) {
+	benchmarkPrioritizer(b, 4, FifoPrioritizer)
 }
 
 func BenchmarkFifo8(b *testing.B) {
 	benchmarkPrioritizer(b, 8, FifoPrioritizer)
 }
 
-func BenchmarkBestOfTwo4(b *testing.B) {
-	benchmarkPrioritizer(b, 4, BestOfTwoPrioritizer)
+func BenchmarkFifo16(b *testing.B) {
+	benchmarkPrioritizer(b, 16, FifoPrioritizer)
 }
 
-func BenchmarkFifo4(b *testing.B) {
-	benchmarkPrioritizer(b, 4, FifoPrioritizer)
+func BenchmarkFifo32(b *testing.B) {
+	benchmarkPrioritizer(b, 32, FifoPrioritizer)
+}
+
+func BenchmarkFifo64(b *testing.B) {
+	benchmarkPrioritizer(b, 64, FifoPrioritizer)
+}
+
+func BenchmarkFifo128(b *testing.B) {
+	benchmarkPrioritizer(b, 128, FifoPrioritizer)
+}
+
+func BenchmarkLeastLoadedTwo4(b *testing.B) {
+	benchmarkPrioritizer(b, 4, LeastLoadedTwoPrioritizer)
+}
+
+func BenchmarkLeastLoadedTwo8(b *testing.B) {
+	benchmarkPrioritizer(b, 8, LeastLoadedTwoPrioritizer)
+}
+
+func BenchmarkLeastLoadedTwo16(b *testing.B) {
+	benchmarkPrioritizer(b, 16, LeastLoadedTwoPrioritizer)
+}
+
+func BenchmarkLeastLoadedTwo32(b *testing.B) {
+	benchmarkPrioritizer(b, 32, LeastLoadedTwoPrioritizer)
+}
+
+func BenchmarkLeastLoadedTwo64(b *testing.B) {
+	benchmarkPrioritizer(b, 64, LeastLoadedTwoPrioritizer)
+}
+
+func BenchmarkLeastLoadedTwo128(b *testing.B) {
+	benchmarkPrioritizer(b, 128, LeastLoadedTwoPrioritizer)
+}
+
+func BenchmarkLeastLoadedFour4(b *testing.B) {
+	benchmarkPrioritizer(b, 4, LeastLoadedFourPrioritizer)
+}
+
+func BenchmarkLeastLoadedFour8(b *testing.B) {
+	benchmarkPrioritizer(b, 8, LeastLoadedFourPrioritizer)
+}
+
+func BenchmarkLeastLoadedFour16(b *testing.B) {
+	benchmarkPrioritizer(b, 16, LeastLoadedFourPrioritizer)
+}
+
+func BenchmarkLeastLoadedFour32(b *testing.B) {
+	benchmarkPrioritizer(b, 32, LeastLoadedFourPrioritizer)
+}
+
+func BenchmarkLeastLoadedFour64(b *testing.B) {
+	benchmarkPrioritizer(b, 64, LeastLoadedFourPrioritizer)
+}
+
+func BenchmarkLeastLoadedFour128(b *testing.B) {
+	benchmarkPrioritizer(b, 128, LeastLoadedFourPrioritizer)
 }
 
 func benchmarkPrioritizer(b *testing.B, numStreams int, pname PrioritizerName) {
@@ -847,7 +871,7 @@ func benchmarkPrioritizer(b *testing.B, numStreams int, pname PrioritizerName) {
 		go func() {
 			defer wg.Done()
 			var mine sync.WaitGroup
-			for data := range channel.sent {
+			for data := range channel.sendChannel() {
 				mine.Add(1)
 				go func(<-chan time.Time) {
 					defer mine.Done()

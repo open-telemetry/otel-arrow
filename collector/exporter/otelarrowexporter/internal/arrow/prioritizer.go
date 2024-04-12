@@ -6,6 +6,8 @@ package arrow // import "github.com/open-telemetry/otel-arrow/collector/exporter
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"go.opentelemetry.io/collector/component"
 	"google.golang.org/grpc/codes"
@@ -19,10 +21,14 @@ type PrioritizerName string
 var _ component.ConfigValidator = PrioritizerName("")
 
 const (
-	FifoPrioritizer      PrioritizerName = "fifo"
-	BestOfTwoPrioritizer PrioritizerName = "bestoftwo"
-	DefaultPrioritizer   PrioritizerName = FifoPrioritizer
-	unsetPrioritizer     PrioritizerName = ""
+	DefaultPrioritizer         PrioritizerName = FifoPrioritizer
+	FifoPrioritizer            PrioritizerName = "fifo"
+	LeastLoadedTwoPrioritizer  PrioritizerName = llPrefix + "2"
+	LeastLoadedFourPrioritizer PrioritizerName = llPrefix + "4"
+	unsetPrioritizer           PrioritizerName = ""
+
+	llPrefix            = "leastloaded"
+	defaultLeastLoadedN = 4
 )
 
 // streamPrioritizer is an interface for prioritizing multiple
@@ -45,22 +51,41 @@ type streamWriter interface {
 }
 
 func newStreamPrioritizer(dc doneCancel, name PrioritizerName, numStreams int) (streamPrioritizer, []*streamWorkState) {
-
-	switch name {
-	case BestOfTwoPrioritizer:
-		return newBestOfTwoPrioritizer(dc, numStreams)
-	default:
-		return newFifoPrioritizer(dc, numStreams)
+	if name == unsetPrioritizer {
+		name = DefaultPrioritizer
 	}
+	if strings.HasPrefix(string(name), llPrefix) {
+		// error was checked and reported in Validate; in this function,
+		n, err := strconv.Atoi(string(name[len(llPrefix):]))
+		if err != nil {
+			n = defaultLeastLoadedN
+		}
+		return newBestOfNPrioritizer(dc, n, numStreams, pendingRequests)
+	}
+	return newFifoPrioritizer(dc, numStreams)
+}
+
+// pendingRequests is the load function used by leastloadedN.
+func pendingRequests(sws *streamWorkState) float64 {
+	sws.lock.Lock()
+	defer sws.lock.Unlock()
+	return float64(len(sws.waiters) + len(sws.toWrite))
 }
 
 // Validate implements component.ConfigValidator
 func (p PrioritizerName) Validate() error {
 	switch p {
-	case FifoPrioritizer, BestOfTwoPrioritizer, unsetPrioritizer:
+	case FifoPrioritizer, unsetPrioritizer:
 		return nil
 	}
-	return fmt.Errorf("unrecognized prioritizer: %q", string(p))
+	if !strings.HasPrefix(string(p), llPrefix) {
+		return fmt.Errorf("unrecognized prioritizer: %q", string(p))
+	}
+	_, err := strconv.Atoi(string(p[len(llPrefix):]))
+	if err != nil {
+		return fmt.Errorf("invalid prioritizer: %q", string(p))
+	}
+	return nil
 }
 
 // drain helps avoid a race condition when downgrade happens, it ensures that

@@ -13,6 +13,8 @@ The principle components of the OTel-Arrow Exporter are:
 A request goes through the following steps following arrival inside
 this component.
 
+![Block diagram of OpenTelemetry Arrow Exporter](./design.png)
+
 The sender computes per-request metadata including auth headers and
 the original uncompressed data size, while still in the caller's
 context.  Then, it checks with the prioritizer for the downgrade
@@ -99,9 +101,10 @@ in case of races between the prioritizer and sender logic.  There is a
 method named `drain()` that will reply with `ErrStreamRestarting` to
 any `writeItem` values that arrive after downgrade happens.
 
-TODO: Fix https://github.com/open-telemetry/otel-arrow/issues/87.  The
-re-use of `*streamWorkState` across restart may lead to abandoned work
-because no streams will restart when some are indicating unavaiable.
+TODO: Fix https://github.com/open-telemetry/otel-arrow/issues/87.
+Note that re-use of `*streamWorkState` across restart may lead to
+abandoned work when some streams are unavailable, because no streams
+restart following unavaiable, instead the manager waits for downgrade.
 
 ### Prioritizers
 
@@ -111,12 +114,20 @@ This prioritizer gives work to the first stream that is ready for it.
 The implementation shares one `chan writeItem` between multiple
 `streamWorkState` objects.
 
-#### BestOfN
+#### LeastLoadedN
 
 This prioritizer randomly selects N active streams and chooses the one
 with the least outstanding number of items of data.  This is
 accomplished using a number of intermediary subroutines, which
 repeatly get a next item of data, pick a stream, and place the item
-into the stream's input channel.
+into the stream's input channel.  To select a least-loaded prioritizer,
+use "leastloaded" followed by N (e.g., "leastloaded2", "leastloaded10").
 
-
+TODO: Note that this prioritizer does not consider immediate readiness
+of the corresponding stream, making it possible for intermediate
+prioritizer subroutines to block when there is more than one pending
+work item for a given stream.  With numStreams intermediate
+subroutines available, there is a chance of blocking when in fact a
+more-loaded stream is ready.  Consider a change to select from only
+the immediately ready streams, although recognize that it will take 
+a special case when no streams are immediately ready.
