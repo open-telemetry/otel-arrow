@@ -41,7 +41,7 @@ type streamPrioritizer interface {
 type streamWriter interface {
 	// sendAndWait is called to begin a write.  After completing
 	// the call, wait on writeItem.errCh for the response.
-	sendAndWait(context.Context, writeItem) error
+	sendAndWait(context.Context, <-chan error, writeItem) error
 }
 
 func newStreamPrioritizer(dc doneCancel, name PrioritizerName, numStreams int) (streamPrioritizer, []*streamWorkState) {
@@ -54,6 +54,7 @@ func newStreamPrioritizer(dc doneCancel, name PrioritizerName, numStreams int) (
 	}
 }
 
+// Validate implements component.ConfigValidator
 func (p PrioritizerName) Validate() error {
 	switch p {
 	case FifoPrioritizer, BestOfTwoPrioritizer, unsetPrioritizer:

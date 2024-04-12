@@ -308,16 +308,16 @@ func (e *Exporter) SendAndWait(ctx context.Context, data any) (bool, error) {
 	}
 
 	for {
-		stream, err := e.ready.nextWriter(ctx)
+		writer, err := e.ready.nextWriter(ctx)
 
 		if err != nil {
 			return false, err // a Context error
 		}
-		if stream == nil {
+		if writer == nil {
 			return false, nil // a downgraded connection
 		}
 
-		err = stream.sendAndWait(ctx, wri)
+		err = writer.sendAndWait(ctx, errCh, wri)
 		if err != nil && errors.Is(err, ErrStreamRestarting) {
 			continue // an internal retry
 
@@ -335,19 +335,25 @@ func (e *Exporter) Shutdown(_ context.Context) error {
 	return nil
 }
 
-func (wri writeItem) waitForWrite(ctx context.Context, down <-chan struct{}) error {
+// waitForWrite waits for the first of the following:
+// 1. This context timeout
+// 2. Completion with err == nil or err != nil
+// 3. Downgrade
+func waitForWrite(ctx context.Context, errCh <-chan error, down <-chan struct{}) error {
 	select {
-	case <-down:
-		return ErrStreamRestarting
 	case <-ctx.Done():
 		// This caller's context timed out.
 		return ctx.Err()
-	case err := <-wri.errCh:
+	case <-down:
+		return ErrStreamRestarting
+	case err := <-errCh:
 		// Note: includes err == nil and err != nil cases.
 		return err
 	}
 }
 
+// newDoneCancel returns a doneCancel, which is a new context with
+// type that carries its done and cancel function.
 func newDoneCancel(ctx context.Context) (context.Context, doneCancel) {
 	ctx, cancel := context.WithCancel(ctx)
 	return ctx, doneCancel{

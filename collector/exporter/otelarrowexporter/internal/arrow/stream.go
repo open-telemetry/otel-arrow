@@ -81,7 +81,7 @@ type streamWorkState struct {
 	lock sync.Mutex
 
 	// waiters is the response channel for each active batch.
-	waiters map[int64]chan error
+	waiters map[int64]chan<- error
 }
 
 // pendingRequests
@@ -99,7 +99,9 @@ type writeItem struct {
 	// md is the caller's metadata, derived from its context.
 	md map[string]string
 	// errCh is used by the stream reader to unblock the sender
-	errCh chan error
+	// to the stream side, this is a `chan<-`. to the send side,
+	// this is a `<-chan`.
+	errCh chan<- error
 	// uncompSize is computed by the appropriate sizer (in the
 	// caller's goroutine)
 	uncompSize int
@@ -116,10 +118,6 @@ func newStream(
 	workState *streamWorkState,
 ) *Stream {
 	tracer := telemetry.TracerProvider.Tracer("otel-arrow-exporter")
-	if workState == nil {
-		panic("IMPOS")
-	}
-
 	return &Stream{
 		producer:    producer,
 		prioritizer: prioritizer,
@@ -132,7 +130,7 @@ func newStream(
 
 // setBatchChannel places a waiting consumer's batchID into the waiters map, where
 // the stream reader may find it.
-func (s *Stream) setBatchChannel(batchID int64, errCh chan error) {
+func (s *Stream) setBatchChannel(batchID int64, errCh chan<- error) {
 	s.workState.lock.Lock()
 	defer s.workState.lock.Unlock()
 
@@ -248,7 +246,7 @@ func (s *Stream) run(ctx context.Context, dc doneCancel, streamClient StreamClie
 		ch <- ErrStreamRestarting
 	}
 
-	s.workState.waiters = map[int64]chan error{}
+	s.workState.waiters = map[int64]chan<- error{}
 }
 
 // write repeatedly places this stream into the next-available queue, then
@@ -396,7 +394,7 @@ func (s *Stream) read(_ context.Context) error {
 
 // getSenderChannel takes the stream lock and removes the corresonding
 // sender channel.
-func (sws *streamWorkState) getSenderChannel(status *arrowpb.BatchStatus) (chan error, error) {
+func (sws *streamWorkState) getSenderChannel(status *arrowpb.BatchStatus) (chan<- error, error) {
 	sws.lock.Lock()
 	defer sws.lock.Unlock()
 

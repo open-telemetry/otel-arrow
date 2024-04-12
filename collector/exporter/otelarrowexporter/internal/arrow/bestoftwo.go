@@ -33,7 +33,7 @@ func newBestOfTwoPrioritizer(dc doneCancel, numStreams int) (*bestOfTwoPrioritiz
 
 	for i := 0; i < numStreams; i++ {
 		ws := &streamWorkState{
-			waiters: map[int64]chan error{},
+			waiters: map[int64]chan<- error{},
 			toWrite: make(chan writeItem, 1),
 		}
 
@@ -85,14 +85,14 @@ func (lp *bestOfTwoPrioritizer) run() {
 }
 
 // sendAndWait implements streamWriter
-func (lp *bestOfTwoPrioritizer) sendAndWait(ctx context.Context, wri writeItem) error {
+func (lp *bestOfTwoPrioritizer) sendAndWait(ctx context.Context, errCh <-chan error, wri writeItem) error {
 	select {
 	case <-lp.done:
 		return ErrStreamRestarting
 	case <-ctx.Done():
 		return context.Canceled
 	case lp.input <- wri:
-		return wri.waitForWrite(ctx, lp.done)
+		return waitForWrite(ctx, errCh, lp.done)
 	}
 }
 

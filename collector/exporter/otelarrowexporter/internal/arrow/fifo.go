@@ -28,7 +28,7 @@ func newFifoPrioritizer(dc doneCancel, numStreams int) (*fifoPrioritizer, []*str
 
 	for i := 0; i < numStreams; i++ {
 		state = append(state, &streamWorkState{
-			waiters: map[int64]chan error{},
+			waiters: map[int64]chan<- error{},
 			toWrite: shared,
 		})
 	}
@@ -60,12 +60,12 @@ func (fp *fifoPrioritizer) nextWriter(ctx context.Context) (streamWriter, error)
 	}
 }
 
-func (fp *fifoPrioritizer) sendAndWait(ctx context.Context, wri writeItem) error {
+func (fp *fifoPrioritizer) sendAndWait(ctx context.Context, errCh <-chan error, wri writeItem) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	case fp.shared <- wri:
-		return wri.waitForWrite(ctx, fp.done)
+		return waitForWrite(ctx, errCh, fp.done)
 	case <-fp.done:
 		return ErrStreamRestarting
 	}
