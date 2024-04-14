@@ -37,6 +37,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+
+	"github.com/open-telemetry/otel-arrow/collector/admission"
 )
 
 const (
@@ -75,6 +77,7 @@ type Receiver struct {
 	recvInFlightBytes    metric.Int64UpDownCounter
 	recvInFlightItems    metric.Int64UpDownCounter
 	recvInFlightRequests metric.Int64UpDownCounter
+	boundedQueue         *admission.BoundedQueue
 }
 
 // New creates a new Receiver reference.
@@ -85,6 +88,7 @@ func New(
 	gsettings configgrpc.ServerConfig,
 	authServer auth.Server,
 	newConsumer func() arrowRecord.ConsumerAPI,
+	bq *admission.BoundedQueue,
 	netReporter netstats.Interface,
 ) (*Receiver, error) {
 	tracer := set.TelemetrySettings.TracerProvider.Tracer("otel-arrow-receiver")
@@ -98,6 +102,7 @@ func New(
 		newConsumer: newConsumer,
 		gsettings:   gsettings,
 		netReporter: netReporter,
+		boundedQueue: bq,
 	}
 
 	meter := recv.telemetry.MeterProvider.Meter(scopeName)
@@ -354,6 +359,13 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 		// Receive a batch corresponding with one ptrace.Traces, pmetric.Metrics,
 		// or plog.Logs item.
 		req, err := serverStream.Recv()
+
+		uncompSz := int64(req.GetUncompressedSize())
+		// bounded queue to memory limit based on incoming uncompressed request size and waiters.
+		// Acquire will fail immediately if there are too many waiters,
+		// or will otherwise block until timeout or enough memory becomes available.
+		r.boundedQueue.Acquire(streamCtx, uncompSz)
+
 		if err != nil {
 			// This includes the case where a client called CloseSend(), in
 			// which case we see an EOF error here.
@@ -388,6 +400,8 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 		if err := r.processAndConsume(thisCtx, method, ac, req, serverStream, authErr); err != nil {
 			return err
 		}
+
+		r.boundedQueue.Release(uncompSz)
 	}
 }
 

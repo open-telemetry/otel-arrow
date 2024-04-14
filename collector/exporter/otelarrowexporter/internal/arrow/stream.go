@@ -318,6 +318,7 @@ func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hp
 		wri.errCh <- consumererror.NewPermanent(err)
 		return err
 	}
+	batch.UncompressedSize = uint64(wri.uncompSize)
 
 	// Optionally include outgoing metadata, if present.
 	if len(wri.md) != 0 {

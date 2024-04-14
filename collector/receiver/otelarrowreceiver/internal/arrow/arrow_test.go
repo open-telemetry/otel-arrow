@@ -43,6 +43,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/open-telemetry/otel-arrow/collector/admission"
 	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/arrow/mock"
 )
 
@@ -344,6 +345,7 @@ func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opt
 		gsettings,
 		authServer,
 		newConsumer,
+		admission.NewBoundedQueue(int64(10490000), int64(10)),
 		netstats.Noop{},
 	)
 	require.NoError(ctc.T, err)
