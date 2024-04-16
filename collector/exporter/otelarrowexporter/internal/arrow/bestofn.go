@@ -5,6 +5,7 @@ package arrow // import "github.com/open-telemetry/otel-arrow/collector/exporter
 
 import (
 	"context"
+	"math/rand"
 	"runtime"
 	"sort"
 )
@@ -23,7 +24,7 @@ type bestOfNPrioritizer struct {
 	input chan writeItem
 
 	// state tracks the work being handled by all streams.
-	state map[*streamWorkState]struct{}
+	state []*streamWorkState
 
 	// N is the number of streams to consder in each decision.
 	N int
@@ -42,8 +43,10 @@ type streamSorter struct {
 var _ streamPrioritizer = &bestOfNPrioritizer{}
 
 func newBestOfNPrioritizer(dc doneCancel, N, numStreams int, lf loadFunc) (*bestOfNPrioritizer, []*streamWorkState) {
-	var sws []*streamWorkState
-	state := map[*streamWorkState]struct{}{}
+	var state []*streamWorkState
+
+	// Limit N to the number of streams.
+	N = min(numStreams, N)
 
 	for i := 0; i < numStreams; i++ {
 		ws := &streamWorkState{
@@ -51,8 +54,7 @@ func newBestOfNPrioritizer(dc doneCancel, N, numStreams int, lf loadFunc) (*best
 			toWrite: make(chan writeItem, 1),
 		}
 
-		sws = append(sws, ws)
-		state[ws] = struct{}{}
+		state = append(state, ws)
 	}
 
 	lp := &bestOfNPrioritizer{
@@ -63,23 +65,23 @@ func newBestOfNPrioritizer(dc doneCancel, N, numStreams int, lf loadFunc) (*best
 		loadFunc:   lf,
 	}
 
-	for i := 0; i < len(lp.state); i++ {
+	for i := 0; i < numStreams; i++ {
 		// TODO It's not clear if/when the the prioritizer can
 		// become a bottleneck.
 		go lp.run()
 	}
 
-	return lp, sws
+	return lp, state
 }
 
 func (lp *bestOfNPrioritizer) downgrade(ctx context.Context) {
-	for ws := range lp.state {
+	for _, ws := range lp.state {
 		go drain(ws.toWrite, ctx.Done())
 	}
 }
 
-func (lp *bestOfNPrioritizer) sendOne(item writeItem, tmp []streamSorter) {
-	stream := lp.streamFor(item, tmp)
+func (lp *bestOfNPrioritizer) sendOne(item writeItem, rnd *rand.Rand, tmp []streamSorter) {
+	stream := lp.streamFor(item, rnd, tmp)
 	writeCh := stream.toWrite
 	select {
 	case writeCh <- item:
@@ -92,13 +94,14 @@ func (lp *bestOfNPrioritizer) sendOne(item writeItem, tmp []streamSorter) {
 }
 
 func (lp *bestOfNPrioritizer) run() {
-	tmp := make([]streamSorter, lp.N)
+	tmp := make([]streamSorter, len(lp.state))
+	rnd := rand.New(rand.NewSource(rand.Int63()))
 	for {
 		select {
 		case <-lp.done:
 			return
 		case item := <-lp.input:
-			lp.sendOne(item, tmp)
+			lp.sendOne(item, rnd, tmp)
 		}
 	}
 }
@@ -127,17 +130,22 @@ func (lp *bestOfNPrioritizer) nextWriter(ctx context.Context) (streamWriter, err
 	}
 }
 
-func (lp *bestOfNPrioritizer) streamFor(_ writeItem, tmp []streamSorter) *streamWorkState {
-	cnt := 0
-	for sws := range lp.state {
-		// TODO: skip channels w/ a pending item (maybe)
-		tmp[cnt].work = sws
-		tmp[cnt].load = lp.loadFunc(sws)
-		if cnt++; cnt == lp.N {
-			break
-		}
+func (lp *bestOfNPrioritizer) streamFor(_ writeItem, rnd *rand.Rand, tmp []streamSorter) *streamWorkState {
+	// Place all streams into the temporary slice.
+	for idx, item := range lp.state {
+		tmp[idx].work = item
 	}
-	sort.Slice(tmp, func(i, j int) bool {
+	// Select N at random by shifting the selection into the start
+	// of the temporary slice.
+	for i := 0; i < lp.N; i++ {
+		pick := rand.Intn(lp.N - i)
+		tmp[i], tmp[i+pick] = tmp[i+pick], tmp[i]
+	}
+	for i := 0; i < lp.N; i++ {
+		// TODO: skip channels w/ a pending item (maybe)
+		tmp[i].load = lp.loadFunc(tmp[i].work)
+	}
+	sort.Slice(tmp[0:lp.N], func(i, j int) bool {
 		return tmp[i].load < tmp[j].load
 	})
 	return tmp[0].work
