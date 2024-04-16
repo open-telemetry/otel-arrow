@@ -8,14 +8,14 @@ require (
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.98.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.98.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.98.0
-	github.com/open-telemetry/otel-arrow/collector/connector/validationconnector v0.21.0
-	github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter v0.21.0
-	github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter v0.21.0
-	github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.21.0
-	github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor v0.21.0
-	github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.21.0
-	github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver v0.21.0
-	github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver v0.21.0
+	github.com/open-telemetry/otel-arrow/collector/connector/validationconnector v0.22.0
+	github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter v0.22.0
+	github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter v0.22.0
+	github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.22.0
+	github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor v0.22.0
+	github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.22.0
+	github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver v0.22.0
+	github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver v0.22.0
 	github.com/stretchr/testify v1.9.0
 	go.opentelemetry.io/collector/component v0.98.0
 	go.opentelemetry.io/collector/connector v0.98.0
@@ -79,8 +79,8 @@ require (
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/mostynb/go-grpc-compression v1.2.2 // indirect
-	github.com/open-telemetry/otel-arrow v0.21.0 // indirect
-	github.com/open-telemetry/otel-arrow/collector v0.21.0 // indirect
+	github.com/open-telemetry/otel-arrow v0.22.0 // indirect
+	github.com/open-telemetry/otel-arrow/collector v0.22.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.18 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
@@ -157,10 +157,21 @@ require (
 	golang.org/x/tools v0.15.0 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
 	gonum.org/v1/gonum v0.15.0 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20240227224415-6ceb2ff114de // indirect
+	google.golang.org/genproto/googleapis/api v0.0.0-20240314234333-6e1732d8331c // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240401170217-c3f982113cda // indirect
 	google.golang.org/grpc v1.63.2 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+
+
+
+
+
+
+
+
+
+
