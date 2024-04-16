@@ -112,11 +112,11 @@ The `arrow` configuration block includes a configurable prioritization
 policy.  The default policy, named "fifo", distributes work to the
 stream with the first-available writer.
 
-- `prioritizer` (default: fifo): may be set to "leastloadedN" where N <= `num_streams`.
+- `prioritizer` (default: fifo): may be set to "leastloadedN" with N a positive integer.  Values of N greater than `num_streams` are lowered to equal `num_streams`. 
 
 An alternative policy named "leastloadedN" is available, for values of
 N up to the number of configured streams (e.g., leastloaded2,
-leastloaded10).  This prioritizer makes a random selection of N
+leastloaded10).  This prioritizer makes a random selection of up to N
 streams and chooses the stream with the least number of outstanding
 work items.
 
