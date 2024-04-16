@@ -192,7 +192,7 @@ func (s *Stream) run(ctx context.Context, dc doneCancel, streamClient StreamClie
 	ww.Add(1)
 	go func() {
 		defer ww.Done()
-		writeErr = s.write(ctx, dc.cancel)
+		writeErr = s.write(ctx)
 		if writeErr != nil {
 			dc.cancel()
 		}
@@ -245,7 +245,7 @@ func (s *Stream) run(ctx context.Context, dc doneCancel, streamClient StreamClie
 // write repeatedly places this stream into the next-available queue, then
 // performs a blocking send().  This returns when the data is in the write buffer,
 // the caller waiting on its error channel.
-func (s *Stream) write(ctx context.Context, cancel context.CancelFunc) (retErr error) {
+func (s *Stream) write(ctx context.Context) (retErr error) {
 	// always close send()
 	defer s.client.CloseSend()
 
