@@ -1,52 +1,72 @@
 receivers:
-  # otelarrow/standard is an OTelArrow receiver.
-  # it uses port 4317, the standard port for OTLP/gRPC.
-  # There are no required configuration fields.
-  otelarrow/standard:
+  # otelarrow/stdin is for regular traffic on the default gRPC port
+  otelarrow/stdin:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+  # otelarrow/loopback receives OTel-Arrow traffic on port 8100
+  otelarrow/loopback:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:8100
+        max_recv_msg_size_mib: 3000
 
 processors:
-  # The batch processor will benefit pipelines with small export sizes.
   concurrentbatch:
+  # the experiment processor routes 1 in 3 requests to the Arrow
+  # loopback exporter
+  experiment:
+    table:
+    - weight: 1
+      exporters: [otelarrow/arrowout, logging/debug]
+    - weight: 2
+      exporters: [otelarrow/stdout, logging/info]
 
 exporters:
-  # otelarrow/arrow is an OTel-Arrow exporter.
-  otelarrow/arrow:
-    # For the sample configuration, the other side of the bridge
-    # runs on port 8100.
-    endpoint: 127.0.0.1:8100
-
-    # For demonstration purposes, use an insecure port.  This would
-    # also be normal for a collector behind a loadbalancer that
-    # terminates TLS.
+  # otelarrow/stdout sends OTel Arrow to an external destination
+  otelarrow/stdout:
+    endpoint: localhost:4317
+    arrow:
+      disabled: false
+      disable_downgrade: true
     tls:
       insecure: true
+    # headers:
+      # lightstep-access-token: "${LIGHTSTEP_ACCESS_TOKEN}"
 
-    # Static headers will be attached to every export.
-    headers:
-    - X-Scope-OrgID: example_tenant
-
-    # wait_for_ready lets the producer block until the connection
-    # is ready.
+  # otelarrow/arrowout sends standard OTal Arrow to an external destination
+  otelarrow/arrowout:
+    endpoint: 127.0.0.1:8100
+    # wait_for_ready ensures the exporter doesn't fallback to standard
+    # OTLP because the exporter has not started.
     wait_for_ready: true
+    tls:
+      insecure: true
+    arrow:
+      num_streams: 1
+      disable_downgrade: true
 
-  debug:
+  debug/info:
+    verbosity: normal
+  debug/debug:
+    verbosity: detailed
 
 service:
   pipelines:
-    traces:
-      receivers: [otelarrow/standard]
-      processors: [concurrentbatch]
-      exporters: [otelarrow/arrow, debug]
-    metrics:
-      receivers: [otelarrow/standard]
-      processors: [concurrentbatch]
-      exporters: [otelarrow/arrow, debug]
+    # the normal traces pipeline either routes directly to the
+    # standard output or via the loopback.  it prints an info.
+    # traces/normal:
+    #   receivers: [otelarrow/stdin]
+    #   processors: [concurrentbatch, experiment]
+    #   exporters: [debug/info, otelarrow/stdout, otelarrow/arrowout]
+
+    # experiment processes data send via Arrow through the loopback.
+    # it prints a debug log.
+    traces/experiment:
+      receivers: [otelarrow/loopback]
+      processors: []
+      exporters: [debug/info, otelarrow/stdout]
 
   telemetry:
-    resource:
-      "service.name": "example-bridge"
     metrics:
-      address: 127.0.0.1:8888
-      level: detailed
-    logs:
-      level: info
+      address: localhost:8888

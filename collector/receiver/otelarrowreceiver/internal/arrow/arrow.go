@@ -360,11 +360,6 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 		// or plog.Logs item.
 		req, err := serverStream.Recv()
 
-		uncompSz := int64(req.GetUncompressedSize())
-		// bounded queue to memory limit based on incoming uncompressed request size and waiters.
-		// Acquire will fail immediately if there are too many waiters,
-		// or will otherwise block until timeout or enough memory becomes available.
-		r.boundedQueue.Acquire(streamCtx, uncompSz)
 
 		if err != nil {
 			// This includes the case where a client called CloseSend(), in
@@ -376,6 +371,16 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 			} else if errors.Is(err, context.Canceled) {
 				return status.Error(codes.Canceled, "server stream shutdown")
 			}
+			return err
+		}
+
+		uncompSz := int64(req.GetUncompressedSize())
+		// bounded queue to memory limit based on incoming uncompressed request size and waiters.
+		// Acquire will fail immediately if there are too many waiters,
+		// or will otherwise block until timeout or enough memory becomes available.
+		err = r.boundedQueue.Acquire(streamCtx, uncompSz)
+		if err != nil {
+			r.logStreamError(err)
 			return err
 		}
 
