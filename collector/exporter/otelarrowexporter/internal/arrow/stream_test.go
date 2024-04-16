@@ -117,17 +117,14 @@ func (tc *streamTestCase) connectTestStream(h testChannel) func(context.Context,
 
 // get returns the stream via the prioritizer it is registered with.
 func (tc *streamTestCase) mustGet() streamWriter {
-	stream, err := tc.prioritizer.nextWriter(context.Background())
-	if err != nil {
-		panic(fmt.Errorf("unhandled error: %w", err))
-	}
+	stream := tc.prioritizer.nextWriter(context.Background())
 	if stream == nil {
 		panic("unexpected nil stream")
 	}
 	return stream
 }
 
-func (tc *streamTestCase) get() (streamWriter, error) {
+func (tc *streamTestCase) get() streamWriter {
 	return tc.prioritizer.nextWriter(context.Background())
 }
 

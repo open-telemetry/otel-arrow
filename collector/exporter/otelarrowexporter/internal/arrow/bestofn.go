@@ -118,15 +118,15 @@ func (lp *bestOfNPrioritizer) sendAndWait(ctx context.Context, errCh <-chan erro
 	}
 }
 
-func (lp *bestOfNPrioritizer) nextWriter(ctx context.Context) (streamWriter, error) {
+func (lp *bestOfNPrioritizer) nextWriter(ctx context.Context) streamWriter {
 	select {
 	case <-lp.done:
 		// In case of downgrade, return nil to return into a
 		// non-Arrow code path.
-		return nil, nil
+		return nil
 	default:
 		// Fall through to sendAndWait().
-		return lp, nil
+		return lp
 	}
 }
 

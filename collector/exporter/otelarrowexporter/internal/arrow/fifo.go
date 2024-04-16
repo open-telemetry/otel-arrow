@@ -48,15 +48,15 @@ func (fp *fifoPrioritizer) downgrade(ctx context.Context) {
 }
 
 // nextWriter returns the first-available stream.
-func (fp *fifoPrioritizer) nextWriter(ctx context.Context) (streamWriter, error) {
+func (fp *fifoPrioritizer) nextWriter(ctx context.Context) streamWriter {
 	select {
 	case <-fp.done:
 		// In case of downgrade, return nil to return into a
 		// non-Arrow code path.
-		return nil, nil
+		return nil
 	default:
 		// Fall through to sendAndWait().
-		return fp, nil
+		return fp
 	}
 }
 

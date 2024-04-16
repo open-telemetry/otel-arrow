@@ -308,16 +308,13 @@ func (e *Exporter) SendAndWait(ctx context.Context, data any) (bool, error) {
 	}
 
 	for {
-		writer, err := e.ready.nextWriter(ctx)
+		writer := e.ready.nextWriter(ctx)
 
-		if err != nil {
-			return false, err // a Context error
-		}
 		if writer == nil {
 			return false, nil // a downgraded connection
 		}
 
-		err = writer.sendAndWait(ctx, errCh, wri)
+		err := writer.sendAndWait(ctx, errCh, wri)
 		if err != nil && errors.Is(err, ErrStreamRestarting) {
 			continue // an internal retry
 
