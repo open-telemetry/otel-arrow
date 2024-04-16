@@ -22,7 +22,7 @@ dist:
   # Note: This should match the version of the core and contrib
   # collector components used below (e.g., the debugexporter and
   # otlphttpexporter versions below).
-  otelcol_version: 0.97.0
+  otelcol_version: 0.98.0
 
   # Project-internal use: Directory path required for the `make
   # genotelarrowcol`, which the Dockerfile also recognizes.
