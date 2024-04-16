@@ -159,7 +159,7 @@ func (e *Exporter) Start(ctx context.Context) error {
 	e.ready, sws = newStreamPrioritizer(downDc, e.prioritizerName, e.numStreams)
 
 	for _, ws := range sws {
-		e.startArrowStream(ctx, ws)
+		e.startArrowStream(downCtx, ws)
 	}
 
 	go e.runStreamController(ctx, downCtx, downDc)
