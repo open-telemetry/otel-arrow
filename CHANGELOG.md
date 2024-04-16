@@ -8,6 +8,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+- Add load prioritization mechanism and "leastloaded" policy. [#178](https://github.com/open-telemetry/otel-arrow/pull/178)
+
 ## [0.21.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.21.0) - 2024-04-10
 
 - Bump versions to latest 0.98.0 1.25.0 [#175](https://github.com/open-telemetry/otel-arrow/pull/175)

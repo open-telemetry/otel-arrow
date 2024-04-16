@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"testing"
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	arrowCollectorMock "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1/mock"
@@ -56,7 +55,7 @@ type noisyTest bool
 const Noisy noisyTest = true
 const NotNoisy noisyTest = false
 
-func newTestTelemetry(t *testing.T, noisy noisyTest) (component.TelemetrySettings, *observer.ObservedLogs) {
+func newTestTelemetry(t zaptest.TestingT, noisy noisyTest) (component.TelemetrySettings, *observer.ObservedLogs) {
 	telset := componenttest.NewNopTelemetrySettings()
 	if noisy {
 		return telset, nil
@@ -66,8 +65,19 @@ func newTestTelemetry(t *testing.T, noisy noisyTest) (component.TelemetrySetting
 	return telset, obslogs
 }
 
-func newCommonTestCase(t *testing.T, noisy noisyTest) *commonTestCase {
-	ctrl := gomock.NewController(t)
+type z2m struct {
+	zaptest.TestingT
+}
+
+var _ gomock.TestReporter = z2m{}
+
+func (t z2m) Fatalf(format string, args ...any) {
+	t.Errorf(format, args...)
+	t.Fail()
+}
+
+func newCommonTestCase(t zaptest.TestingT, noisy noisyTest) *commonTestCase {
+	ctrl := gomock.NewController(z2m{t})
 	telset, obslogs := newTestTelemetry(t, noisy)
 
 	creds := grpcmock.NewMockPerRPCCredentials(ctrl)
@@ -168,9 +178,6 @@ func (ctc *commonTestCase) repeatedNewStream(nc func() testChannel) func(context
 
 // healthyTestChannel accepts the connection and returns an OK status immediately.
 type healthyTestChannel struct {
-	// This lock is needed to avoid a race because CloseSend() now closes the sent channel,
-	// which some former tests were doing manually. Now CloseSend() is always called and
-	// the closed channel serves to assist with some tests.
 	lock sync.Mutex
 	sent chan *arrowpb.BatchArrowRecords
 	recv chan *arrowpb.BatchStatus
@@ -192,6 +199,12 @@ func (tc *healthyTestChannel) doClose() {
 	}
 }
 
+func (tc *healthyTestChannel) sendChannel() chan *arrowpb.BatchArrowRecords {
+	tc.lock.Lock()
+	defer tc.lock.Unlock()
+	return tc.sent
+}
+
 func (tc *healthyTestChannel) onConnect(_ context.Context) error {
 	return nil
 }
@@ -205,11 +218,8 @@ func (tc *healthyTestChannel) onCloseSend() func() error {
 
 func (tc *healthyTestChannel) onSend(ctx context.Context) func(*arrowpb.BatchArrowRecords) error {
 	return func(req *arrowpb.BatchArrowRecords) error {
-		tc.lock.Lock()
-		sent := tc.sent
-		tc.lock.Unlock()
 		select {
-		case sent <- req:
+		case tc.sendChannel() <- req:
 			return nil
 		case <-ctx.Done():
 			return ctx.Err()

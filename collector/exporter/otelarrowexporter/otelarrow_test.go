@@ -507,6 +507,7 @@ func TestSendMetrics(t *testing.T) {
 	// Disable queuing to ensure that we execute the request when calling ConsumeMetrics
 	// otherwise we will not see any errors.
 	cfg.QueueSettings.Enabled = false
+	cfg.RetryConfig.Enabled = false
 	cfg.ClientConfig = configgrpc.ClientConfig{
 		Endpoint: ln.Addr().String(),
 		TLSSetting: configtls.ClientConfig{
@@ -560,8 +561,8 @@ func TestSendMetrics(t *testing.T) {
 	expectedHeader := []string{"header-value"}
 
 	// Verify received metrics.
-	assert.EqualValues(t, 2, rcv.requestCount.Load())
-	assert.EqualValues(t, 4, rcv.totalItems.Load())
+	assert.EqualValues(t, uint32(2), rcv.requestCount.Load())
+	assert.EqualValues(t, uint32(4), rcv.totalItems.Load())
 	assert.EqualValues(t, md, rcv.getLastRequest())
 
 	mdata := rcv.getMetadata()
