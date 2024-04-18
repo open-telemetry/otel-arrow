@@ -19,6 +19,13 @@ func min(x, y int64) int64 {
 	return y
 }
 
+func max(x, y int64) int64 {
+	if x >= y {
+		return x
+	}
+	return y
+}
+
 func abs(x int64) int64 {
 	if x < 0 {
 		return -x
@@ -30,7 +37,6 @@ func TestAcquireSimpleNoWaiters(t *testing.T) {
 	maxLimitWaiters := 10
 	numRequests := 40
 	requestSize := 21
-
 
 	bq := NewBoundedQueue(int64(maxLimitBytes), int64(maxLimitWaiters))
 
@@ -50,6 +56,9 @@ func TestAcquireSimpleNoWaiters(t *testing.T) {
 		assert.NoError(t, bq.Release(int64(requestSize)))
 		assert.Equal(t, int64(0), bq.currentWaiters)
 	}
+
+	assert.ErrorContains(t, bq.Release(int64(1)), "released more bytes than acquired")
+	assert.NoError(t, bq.Acquire(ctx, int64(maxLimitBytes)))
 }
 
 func TestAcquireBoundedWithWaiters(t *testing.T) {
@@ -85,6 +94,7 @@ func TestAcquireBoundedWithWaiters(t *testing.T) {
 			numReqsUntilBlocked := tt.maxLimitBytes / tt.requestSize
 			requestsAboveLimit := abs(tt.numRequests - numReqsUntilBlocked)
 			tooManyWaiters := requestsAboveLimit > tt.maxLimitWaiters 
+			numRejected := max(requestsAboveLimit - tt.maxLimitWaiters, int64(0))
 
 			// There should never be more blocked requests than maxLimitWaiters.
 			blockedRequests = min(tt.maxLimitWaiters, requestsAboveLimit)
@@ -110,7 +120,7 @@ func TestAcquireBoundedWithWaiters(t *testing.T) {
 			assert.NoError(t, bq.Release(tt.requestSize))
 			assert.Equal(t, bq.waiters.Len(), int(blockedRequests)-1)
 
-			for i := 0; i < int(tt.numRequests)-1; i++ {
+			for i := 0; i < int(tt.numRequests-numRejected)-1; i++ {
 				assert.NoError(t, bq.Release(tt.requestSize))
 			}
 
@@ -162,16 +172,13 @@ func TestAcquireContextCanceled(t *testing.T) {
 	}, 3*time.Second, 10*time.Millisecond)
 
 	cancel()
-	// assert.Equal(t, len(bq.waiters.keys), int(blockedRequests))
-	// time.Sleep(10 * time.Second)
 	wg.Wait()
 	assert.ErrorContains(t, errs, "context canceled")
 
 	// Now all waiters should have returned and been removed.
-	// time.Sleep(3 * time.Second)
 	assert.Equal(t, 0, bq.waiters.Len())
 
-	for i := 0; i < int(numRequests); i++ {
+	for i := 0; i < numReqsUntilBlocked; i++ {
 		assert.NoError(t, bq.Release(int64(requestSize)))
 		assert.Equal(t, int64(0), bq.currentWaiters)
 	}

@@ -91,14 +91,15 @@ func (bq *BoundedQueue) Acquire(ctx context.Context, pendingBytes int64) error {
 		// canceled before acquired so remove waiter.
 		bq.lock.Lock()
 		defer bq.lock.Unlock()
+		err = fmt.Errorf("context canceled: %w ", ctx.Err())
 
 		_, found := bq.waiters.Delete(curWaiter.ID)
 		if !found {
-			panic("deleting key that doesn't exist")
+			return err
 		}
 
 		bq.currentWaiters -= 1
-		return fmt.Errorf("context canceled: %w ", ctx.Err())
+		return err
 	}
 }
 
@@ -107,6 +108,10 @@ func (bq *BoundedQueue) Release(pendingBytes int64) error {
 	defer bq.lock.Unlock()
 
 	bq.currentBytes -= pendingBytes
+
+	if bq.currentBytes < 0 {
+		return fmt.Errorf("released more bytes than acquired")
+	}
 
 	for {
 		if bq.waiters.Len() == 0 {
