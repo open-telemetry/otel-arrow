@@ -32,6 +32,10 @@ exporters:
     tls:
       insecure: true
     # headers:
+    #   "lightstep-org-id": "2"
+    #   "lightstep-org-name": "LightStep"
+    #   "lightstep-project-id": "768070"
+    #   "lightstep-project-name": "dev-mohosman"
       # lightstep-access-token: "${LIGHTSTEP_ACCESS_TOKEN}"
 
   # otelarrow/arrowout sends standard OTal Arrow to an external destination

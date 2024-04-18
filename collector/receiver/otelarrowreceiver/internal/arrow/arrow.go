@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"strings"
+	"sync"
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	"github.com/open-telemetry/otel-arrow/collector/netstats"
@@ -78,6 +80,8 @@ type Receiver struct {
 	recvInFlightItems    metric.Int64UpDownCounter
 	recvInFlightRequests metric.Int64UpDownCounter
 	boundedQueue         *admission.BoundedQueue
+	inFlightWG           sync.WaitGroup
+	pendingCh            chan batchResp
 }
 
 // New creates a new Receiver reference.
@@ -334,10 +338,15 @@ type anyStreamServer interface {
 	grpc.ServerStream
 }
 
+type batchResp struct {
+	id int64
+	err error
+	uncompSz int64
+}
+
 func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retErr error) {
 	streamCtx := serverStream.Context()
 	ac := r.newConsumer()
-	hrcv := newHeaderReceiver(serverStream.Context(), r.authServer, r.gsettings.IncludeMetadata)
 
 	defer func() {
 		if err := recover(); err != nil {
@@ -355,11 +364,39 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 		}
 	}()
 
+	doneCtx, doneCancel := context.WithCancel(streamCtx)
+	streamErrCh := make(chan error, 1)
+	pendingCh := make(chan batchResp, runtime.NumCPU())
+
+	go r.srvReceiveLoop(doneCtx, serverStream, streamErrCh, pendingCh, method, ac)
+
+	go r.srvSendLoop(doneCtx, serverStream, streamErrCh, pendingCh)
+
+	select {
+	case <-doneCtx.Done(): 
+		r.inFlightWG.Wait()
+		close(pendingCh)
+		return doneCtx.Err()
+	case retErr = <-streamErrCh:
+		doneCancel()
+		r.inFlightWG.Wait()
+		close(pendingCh)
+		return
+	}
+}
+
+func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamServer, streamErrCh chan<- error, pendingCh chan<- batchResp, method string, ac arrowRecord.ConsumerAPI) {
+	hrcv := newHeaderReceiver(ctx, r.authServer, r.gsettings.IncludeMetadata)
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
 		// Receive a batch corresponding with one ptrace.Traces, pmetric.Metrics,
 		// or plog.Logs item.
 		req, err := serverStream.Recv()
-
 
 		if err != nil {
 			// This includes the case where a client called CloseSend(), in
@@ -378,18 +415,20 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 		// bounded queue to memory limit based on incoming uncompressed request size and waiters.
 		// Acquire will fail immediately if there are too many waiters,
 		// or will otherwise block until timeout or enough memory becomes available.
-		err = r.boundedQueue.Acquire(streamCtx, uncompSz)
+		err = r.boundedQueue.Acquire(ctx, uncompSz)
 		if err != nil {
 			r.logStreamError(err)
-			return err
+			streamErrCh <- err
+			return
 		}
 
 		// Check for optional headers and set the incoming context.
-		thisCtx, authHdrs, err := hrcv.combineHeaders(streamCtx, req.GetHeaders())
+		thisCtx, authHdrs, err := hrcv.combineHeaders(ctx, req.GetHeaders())
 		if err != nil {
 			// Failing to parse the incoming headers breaks the stream.
 			r.telemetry.Logger.Error("arrow metadata error", zap.Error(err))
-			return err
+			streamErrCh <- err
+			return
 		}
 
 		var authErr error
@@ -402,15 +441,51 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 			}
 		}
 
-		if err := r.processAndConsume(thisCtx, method, ac, req, serverStream, authErr); err != nil {
-			return err
-		}
+		// this waitgroup will be incremented every time a request is received
+		// and decremented every time a response is sent.
+		r.inFlightWG.Add(1)
 
-		r.boundedQueue.Release(uncompSz)
+		// processAndConsume will process and send an error to the sender loop
+		go r.processAndConsume(thisCtx, method, ac, req, serverStream, authErr, pendingCh)
 	}
 }
 
-func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, req *arrowpb.BatchArrowRecords, serverStream anyStreamServer, authErr error) (retErr error) {
+func (r *Receiver) srvSendLoop(ctx context.Context, serverStream anyStreamServer, streamErrCh chan<- error, pendingCh <-chan batchResp) {
+	var err error
+	for resp := range pendingCh {
+		// Note: Statuses can be batched, but we do not take
+		// advantage of this feature.
+		status := &arrowpb.BatchStatus{
+			BatchId: resp.id,
+		}
+		if resp.err == nil {
+			status.StatusCode = arrowpb.StatusCode_OK
+		} else {
+			status.StatusMessage = resp.err.Error()
+			switch {
+			case errors.Is(resp.err, arrowRecord.ErrConsumerMemoryLimit):
+				r.telemetry.Logger.Error("arrow resource exhausted", zap.Error(resp.err))
+				status.StatusCode = arrowpb.StatusCode_RESOURCE_EXHAUSTED
+			case consumererror.IsPermanent(resp.err):
+				r.telemetry.Logger.Error("arrow data error", zap.Error(resp.err))
+				status.StatusCode = arrowpb.StatusCode_INVALID_ARGUMENT
+			default:
+				r.telemetry.Logger.Debug("arrow consumer error", zap.Error(resp.err))
+				status.StatusCode = arrowpb.StatusCode_UNAVAILABLE
+			}
+		}
+
+		err = serverStream.Send(status)
+		if err != nil {
+			r.logStreamError(err)
+			streamErrCh <- err
+		}
+		r.inFlightWG.Done()
+		r.boundedQueue.Release(resp.uncompSz)
+	}
+}
+
+func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, req *arrowpb.BatchArrowRecords, serverStream anyStreamServer, authErr error, pendingCh chan<- batchResp) {
 	var err error
 
 	ctx, span := r.tracer.Start(ctx, "otel_arrow_stream_recv")
@@ -420,9 +495,9 @@ func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowCo
 	defer func() {
 		r.recvInFlightRequests.Add(ctx, -1)
 		// Set span status if an error is returned.
-		if retErr != nil {
+		if err != nil {
 			span := trace.SpanFromContext(ctx)
-			span.SetStatus(otelcodes.Error, retErr.Error())
+			span.SetStatus(otelcodes.Error, err.Error())
 		}
 	}()
 
@@ -434,34 +509,13 @@ func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowCo
 		err = r.processRecords(ctx, method, arrowConsumer, req)
 	}
 
-	// Note: Statuses can be batched, but we do not take
-	// advantage of this feature.
-	status := &arrowpb.BatchStatus{
-		BatchId: req.GetBatchId(),
+	fmt.Println("BATCH ID")
+	fmt.Println(req.GetBatchId())
+	pendingCh <- batchResp{
+		id: req.GetBatchId(),
+		err: err,
+		uncompSz: int64(req.GetUncompressedSize()),
 	}
-	if err == nil {
-		status.StatusCode = arrowpb.StatusCode_OK
-	} else {
-		status.StatusMessage = err.Error()
-		switch {
-		case errors.Is(err, arrowRecord.ErrConsumerMemoryLimit):
-			r.telemetry.Logger.Error("arrow resource exhausted", zap.Error(err))
-			status.StatusCode = arrowpb.StatusCode_RESOURCE_EXHAUSTED
-		case consumererror.IsPermanent(err):
-			r.telemetry.Logger.Error("arrow data error", zap.Error(err))
-			status.StatusCode = arrowpb.StatusCode_INVALID_ARGUMENT
-		default:
-			r.telemetry.Logger.Debug("arrow consumer error", zap.Error(err))
-			status.StatusCode = arrowpb.StatusCode_UNAVAILABLE
-		}
-	}
-
-	err = serverStream.Send(status)
-	if err != nil {
-		r.logStreamError(err)
-		return err
-	}
-	return nil
 }
 
 // processRecords returns an error and a boolean indicating whether

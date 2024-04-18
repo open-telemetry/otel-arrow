@@ -46,6 +46,7 @@ func createDefaultConfig() component.Config {
 			},
 			Arrow: ArrowConfig{
 				MemoryLimitMiB: defaultMemoryLimitMiB,
+				// AdmissionLimitMiB: defaultMemoryLimitMiB/2,
 			},
 		},
 	}
