@@ -47,7 +47,7 @@ func TestAcquireSimpleNoWaiters(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond)
 
 	for i := 0; i < int(numRequests); i++ {
-		bq.Release(int64(requestSize))
+		assert.NoError(t, bq.Release(int64(requestSize)))
 		assert.Equal(t, int64(0), bq.currentWaiters)
 	}
 }
@@ -94,27 +94,33 @@ func TestAcquireBoundedWithWaiters(t *testing.T) {
 			for i := 0; i < int(tt.numRequests); i++ {
 				go func() {
 					err := bq.Acquire(ctx, tt.requestSize)
+					bq.lock.Lock()
+					defer bq.lock.Unlock()
 					errs = multierr.Append(errs, err)
 				}()
 			}
 
 			require.Eventually(t, func() bool {
+				bq.lock.Lock()
+				defer bq.lock.Unlock()
 				return bq.waiters.Len() == int(blockedRequests)
 			}, 3*time.Second, 10*time.Millisecond)
 
 			
-			bq.Release(tt.requestSize)
+			assert.NoError(t, bq.Release(tt.requestSize))
 			assert.Equal(t, bq.waiters.Len(), int(blockedRequests)-1)
 
 			for i := 0; i < int(tt.numRequests)-1; i++ {
-				bq.Release(tt.requestSize)
+				assert.NoError(t, bq.Release(tt.requestSize))
 			}
 
+			bq.lock.Lock()
 			if tooManyWaiters {
 				assert.ErrorContains(t, errs, "rejecting request, too many waiters")
 			} else {
 				assert.NoError(t, errs)
 			}
+			bq.lock.Unlock()
 
 			// confirm all bytes were released by acquiring maxLimitBytes.
 			assert.True(t, bq.TryAcquire(tt.maxLimitBytes))
@@ -141,6 +147,8 @@ func TestAcquireContextCanceled(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			err := bq.Acquire(ctx, int64(requestSize))
+			bq.lock.Lock()
+			defer bq.lock.Unlock()
 			errs = multierr.Append(errs, err)
 			wg.Done()
 		}()
@@ -148,6 +156,8 @@ func TestAcquireContextCanceled(t *testing.T) {
 
 	// Wait until all calls to Acquire() happen and we have the expected number of waiters.
 	require.Eventually(t, func() bool {
+		bq.lock.Lock()
+		defer bq.lock.Unlock()
 		return bq.waiters.Len() == int(blockedRequests)
 	}, 3*time.Second, 10*time.Millisecond)
 
@@ -162,7 +172,7 @@ func TestAcquireContextCanceled(t *testing.T) {
 	assert.Equal(t, 0, bq.waiters.Len())
 
 	for i := 0; i < int(numRequests); i++ {
-		bq.Release(int64(requestSize))
+		assert.NoError(t, bq.Release(int64(requestSize)))
 		assert.Equal(t, int64(0), bq.currentWaiters)
 	}
 	assert.True(t, bq.TryAcquire(int64(maxLimitBytes)))

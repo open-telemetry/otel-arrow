@@ -9,12 +9,12 @@ import (
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 )
 
-type boundedQueue struct {
+type BoundedQueue struct {
 	maxLimitBytes int64
 	maxLimitWaiters int64
 	currentBytes int64
 	currentWaiters int64
-	mtx sync.Mutex
+	lock sync.Mutex
 	// waiters waiters 
 	waiters *orderedmap.OrderedMap[uuid.UUID, waiter]
 }
@@ -25,19 +25,17 @@ type waiter struct {
 	ID uuid.UUID 
 }
 
-func NewBoundedQueue(maxLimitBytes, maxLimitWaiters int64) *boundedQueue {
-	return &boundedQueue{
+func NewBoundedQueue(maxLimitBytes, maxLimitWaiters int64) *BoundedQueue {
+	return &BoundedQueue{
 		maxLimitBytes: maxLimitBytes,
 		maxLimitWaiters: maxLimitWaiters,
-		currentBytes: int64(0),
-		currentWaiters: int64(0),
 		waiters: orderedmap.New[uuid.UUID, waiter](), 
 	}
 }
 
-func (bq *boundedQueue) admit(pendingBytes int64) (bool, error) {
-	bq.mtx.Lock()
-	defer bq.mtx.Unlock()
+func (bq *BoundedQueue) admit(pendingBytes int64) (bool, error) {
+	bq.lock.Lock()
+	defer bq.lock.Unlock()
 
 	if pendingBytes > bq.maxLimitBytes { // will never succeed
 		return false, fmt.Errorf("rejecting request, request size larger than configured limit")
@@ -58,7 +56,7 @@ func (bq *boundedQueue) admit(pendingBytes int64) (bool, error) {
 	return false, nil
 }
 
-func (bq *boundedQueue) Acquire(ctx context.Context, pendingBytes int64) error {
+func (bq *BoundedQueue) Acquire(ctx context.Context, pendingBytes int64) error {
 	success, err := bq.admit(pendingBytes)
 	if err != nil || success {
 		return err
@@ -68,24 +66,31 @@ func (bq *boundedQueue) Acquire(ctx context.Context, pendingBytes int64) error {
 	curWaiter := waiter{
 		pendingBytes: pendingBytes,
 		readyCh: make(chan struct{}),
-		ID: uuid.New(), 
 	}
 
-	bq.mtx.Lock()
-	_, dupped := bq.waiters.Set(curWaiter.ID, curWaiter)
-	if dupped {
-		panic("duplicate keys found")
+	bq.lock.Lock()
+
+	// generate unique key
+	for {
+		id := uuid.New()
+		_, keyExists := bq.waiters.Get(id)
+		if keyExists {
+			continue
+		}
+		bq.waiters.Set(id, curWaiter)
+		curWaiter.ID = id
+		break
 	}
 
-	bq.mtx.Unlock()
+	bq.lock.Unlock()
 
 	select {
 	case <-curWaiter.readyCh:
 		return nil
 	case <-ctx.Done():
 		// canceled before acquired so remove waiter.
-		bq.mtx.Lock()
-		defer bq.mtx.Unlock()
+		bq.lock.Lock()
+		defer bq.lock.Unlock()
 
 		_, found := bq.waiters.Delete(curWaiter.ID)
 		if !found {
@@ -97,15 +102,15 @@ func (bq *boundedQueue) Acquire(ctx context.Context, pendingBytes int64) error {
 	}
 }
 
-func (bq *boundedQueue) Release(pendingBytes int64) {
-	bq.mtx.Lock()
-	defer bq.mtx.Unlock()
+func (bq *BoundedQueue) Release(pendingBytes int64) error {
+	bq.lock.Lock()
+	defer bq.lock.Unlock()
 
 	bq.currentBytes -= pendingBytes
 
 	for {
 		if bq.waiters.Len() == 0 {
-			return
+			return nil
 		}
 		next := bq.waiters.Oldest()
 		nextWaiter := next.Value
@@ -116,18 +121,20 @@ func (bq *boundedQueue) Release(pendingBytes int64) {
 			close(nextWaiter.readyCh)
 			_, found := bq.waiters.Delete(nextKey)
 			if !found {
-				panic("deleting key that doesn't exist")
+				return fmt.Errorf("deleting waiter that doesn't exist")
 			}
 
 		} else {
 			break
 		}
 	}
+
+	return nil
 }
 
-func (bq *boundedQueue) TryAcquire(pendingBytes int64) bool {
-	bq.mtx.Lock()
-	defer bq.mtx.Unlock()
+func (bq *BoundedQueue) TryAcquire(pendingBytes int64) bool {
+	bq.lock.Lock()
+	defer bq.lock.Unlock()
 	if bq.currentBytes + pendingBytes <= bq.maxLimitBytes {
 		bq.currentBytes += pendingBytes
 		return true
