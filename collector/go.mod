@@ -5,8 +5,10 @@ go 1.21
 toolchain go1.21.4
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.17.8
 	github.com/stretchr/testify v1.9.0
+	github.com/wk8/go-ordered-map/v2 v2.1.8
 	go.opentelemetry.io/collector/component v0.98.0
 	go.opentelemetry.io/collector/config/configtelemetry v0.98.0
 	go.opentelemetry.io/collector/exporter v0.98.0
@@ -34,6 +36,7 @@ require (
 	github.com/knadh/koanf/maps v0.1.1 // indirect
 	github.com/knadh/koanf/providers/confmap v0.1.0 // indirect
 	github.com/knadh/koanf/v2 v2.1.1 // indirect
+	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
 	github.com/mitchellh/reflectwalk v1.0.2 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
