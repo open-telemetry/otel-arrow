@@ -370,39 +370,36 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 
 	go func() {
 		err := r.srvReceiveLoop(doneCtx, serverStream, streamErrCh, pendingCh, method, ac)
-		// if err != nil {
-		// 	// flush sender
-		// 	r.inFlightWG.Wait()
-		// }
 		streamErrCh <- err
-	}
+	}()
 
 	go func() {
 		err := r.srvSendLoop(doneCtx, serverStream, pendingCh)
 		streamErrCh <- err
-	}
+	}()
 
 
 	select {
 	case <-doneCtx.Done(): 
-		// r.inFlightWG.Wait()
-		// close(pendingCh)
 		return doneCtx.Err()
 	case retErr = <-streamErrCh:
 		doneCancel()
-		// close(pendingCh)
 		return
 	}
 }
 
-func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamServer, streamErrCh chan<- error, pendingCh chan<- batchResp, method string, ac arrowRecord.ConsumerAPI) error {
+func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamServer, streamErrCh chan<- error, pendingCh chan<- batchResp, method string, ac arrowRecord.ConsumerAPI) (retErr error) {
 	hrcv := newHeaderReceiver(ctx, r.authServer, r.gsettings.IncludeMetadata)
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		default:
 		}
+
+		// increment waitgroup before receive because if context is canceled,
+		// then there is potentially a race between r.flushSender and this in-flight request.
+		r.inFlightWG.Add(1)
 
 		// Receive a batch corresponding with one ptrace.Traces, pmetric.Metrics,
 		// or plog.Logs item.
@@ -427,9 +424,10 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 		// or will otherwise block until timeout or enough memory becomes available.
 		err = r.boundedQueue.Acquire(ctx, uncompSz)
 		if err != nil {
+			r.inFlightWG.Done() // not processed
 			r.logStreamError(err)
-			// TODO: Acquire will fail due to "too many waiters" or "context canceled"
-			// so we can log error and continue in hopes we have for the next request.
+			// Acquire will fail due to "too many waiters" or "context canceled"
+			// so we can log error and continue in hopes we can process the next request.
 			// This means this request will not be processed and will be dropped.
 			continue
 		}
@@ -437,6 +435,8 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 		// Check for optional headers and set the incoming context.
 		thisCtx, authHdrs, err := hrcv.combineHeaders(ctx, req.GetHeaders())
 		if err != nil {
+			r.inFlightWG.Done() // not processed
+
 			// Failing to parse the incoming headers breaks the stream.
 			r.telemetry.Logger.Error("arrow metadata error", zap.Error(err))
 			return err
@@ -452,18 +452,15 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 			}
 		}
 
-		// this waitgroup will be incremented every time a request is received
-		// and decremented every time a response is sent.
-		r.inFlightWG.Add(1)
-
 		// processAndConsume will process and send an error to the sender loop
-		go r.processAndConsume(thisCtx, method, ac, req, serverStream, authErr, pendingCh)
+		go func() {
+			r.processAndConsume(thisCtx, method, ac, req, serverStream, authErr, pendingCh)
+			r.inFlightWG.Done() // done processing
+		}()
 	}
 }
 
-func (r *Receiver) srvSendLoop(serverStream anyStreamServer, pendingCh <-chan batchResp) error {
-	var err error
-	for resp := range pendingCh {
+func (r *Receiver) sendOne(serverStream anyStreamServer, resp batchResp) error {
 		// Note: Statuses can be batched, but we do not take
 		// advantage of this feature.
 		status := &arrowpb.BatchStatus{
@@ -486,13 +483,49 @@ func (r *Receiver) srvSendLoop(serverStream anyStreamServer, pendingCh <-chan ba
 			}
 		}
 
-		err = serverStream.Send(status)
+		err := serverStream.Send(status)
 		if err != nil {
 			r.logStreamError(err)
 			return err
 		}
-		r.inFlightWG.Done()
 		r.boundedQueue.Release(resp.uncompSz)
+
+		return nil
+}
+
+func (r *Receiver) flushSender(serverStream anyStreamServer, pendingCh <-chan batchResp) error {
+	var err error
+	// wait for all in flight requests to successfully be processed or fail.
+	r.inFlightWG.Wait()
+	for {
+		select {
+		case resp := <-pendingCh:
+			err = r.sendOne(serverStream, resp)
+			if err != nil {
+				return err
+			}
+		default:
+			// Currently nothing left in pendingCh.
+			return nil
+		}
+	}
+
+}
+
+func (r *Receiver) srvSendLoop(ctx context.Context, serverStream anyStreamServer, pendingCh <-chan batchResp) error {
+	var err error
+	for {
+		select {
+		case <-ctx.Done():
+			err = r.flushSender(serverStream, pendingCh)
+			err := multierr.Append(err, ctx.Err())
+			return err
+		case resp := <-pendingCh:
+			err = r.sendOne(serverStream, resp)
+			if err != nil {
+				return err
+			}
+		}
 	}
 }
 
