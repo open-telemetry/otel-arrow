@@ -368,24 +368,34 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	streamErrCh := make(chan error, 1)
 	pendingCh := make(chan batchResp, runtime.NumCPU())
 
-	go r.srvReceiveLoop(doneCtx, serverStream, streamErrCh, pendingCh, method, ac)
+	go func() {
+		err := r.srvReceiveLoop(doneCtx, serverStream, streamErrCh, pendingCh, method, ac)
+		// if err != nil {
+		// 	// flush sender
+		// 	r.inFlightWG.Wait()
+		// }
+		streamErrCh <- err
+	}
 
-	go r.srvSendLoop(doneCtx, serverStream, streamErrCh, pendingCh)
+	go func() {
+		err := r.srvSendLoop(doneCtx, serverStream, pendingCh)
+		streamErrCh <- err
+	}
+
 
 	select {
 	case <-doneCtx.Done(): 
-		r.inFlightWG.Wait()
-		close(pendingCh)
+		// r.inFlightWG.Wait()
+		// close(pendingCh)
 		return doneCtx.Err()
 	case retErr = <-streamErrCh:
 		doneCancel()
-		r.inFlightWG.Wait()
-		close(pendingCh)
+		// close(pendingCh)
 		return
 	}
 }
 
-func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamServer, streamErrCh chan<- error, pendingCh chan<- batchResp, method string, ac arrowRecord.ConsumerAPI) {
+func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamServer, streamErrCh chan<- error, pendingCh chan<- batchResp, method string, ac arrowRecord.ConsumerAPI) error {
 	hrcv := newHeaderReceiver(ctx, r.authServer, r.gsettings.IncludeMetadata)
 	for {
 		select {
@@ -418,8 +428,10 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 		err = r.boundedQueue.Acquire(ctx, uncompSz)
 		if err != nil {
 			r.logStreamError(err)
-			streamErrCh <- err
-			return
+			// TODO: Acquire will fail due to "too many waiters" or "context canceled"
+			// so we can log error and continue in hopes we have for the next request.
+			// This means this request will not be processed and will be dropped.
+			continue
 		}
 
 		// Check for optional headers and set the incoming context.
@@ -427,8 +439,7 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 		if err != nil {
 			// Failing to parse the incoming headers breaks the stream.
 			r.telemetry.Logger.Error("arrow metadata error", zap.Error(err))
-			streamErrCh <- err
-			return
+			return err
 		}
 
 		var authErr error
@@ -450,7 +461,7 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 	}
 }
 
-func (r *Receiver) srvSendLoop(ctx context.Context, serverStream anyStreamServer, streamErrCh chan<- error, pendingCh <-chan batchResp) {
+func (r *Receiver) srvSendLoop(serverStream anyStreamServer, pendingCh <-chan batchResp) error {
 	var err error
 	for resp := range pendingCh {
 		// Note: Statuses can be batched, but we do not take
@@ -478,7 +489,7 @@ func (r *Receiver) srvSendLoop(ctx context.Context, serverStream anyStreamServer
 		err = serverStream.Send(status)
 		if err != nil {
 			r.logStreamError(err)
-			streamErrCh <- err
+			return err
 		}
 		r.inFlightWG.Done()
 		r.boundedQueue.Release(resp.uncompSz)
