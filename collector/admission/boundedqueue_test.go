@@ -126,7 +126,7 @@ func TestAcquireBoundedWithWaiters(t *testing.T) {
 
 			bq.lock.Lock()
 			if tooManyWaiters {
-				assert.ErrorContains(t, errs, "rejecting request, too many waiters")
+				assert.ErrorContains(t, errs, ErrTooManyWaiters.Error())
 			} else {
 				assert.NoError(t, errs)
 			}

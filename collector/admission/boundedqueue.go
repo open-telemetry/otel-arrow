@@ -9,13 +9,14 @@ import (
 	orderedmap "github.com/wk8/go-ordered-map/v2"
 )
 
+var ErrTooManyWaiters = fmt.Errorf("rejecting request, too many waiters")
+
 type BoundedQueue struct {
 	maxLimitBytes int64
 	maxLimitWaiters int64
 	currentBytes int64
 	currentWaiters int64
 	lock sync.Mutex
-	// waiters waiters 
 	waiters *orderedmap.OrderedMap[uuid.UUID, waiter]
 }
 
@@ -48,7 +49,7 @@ func (bq *BoundedQueue) admit(pendingBytes int64) (bool, error) {
 
 	// since we were unable to admit, check if we can wait.
 	if bq.currentWaiters + 1 > bq.maxLimitWaiters { // too many waiters
-		return false, fmt.Errorf("rejecting request, too many waiters")
+		return false, ErrTooManyWaiters
 	}
 
 	// if we got to this point we need to wait to acquire bytes, so update currentWaiters before releasing mutex.
@@ -128,6 +129,7 @@ func (bq *BoundedQueue) Release(pendingBytes int64) error {
 			if !found {
 				return fmt.Errorf("deleting waiter that doesn't exist")
 			}
+			continue
 
 		} else {
 			break
