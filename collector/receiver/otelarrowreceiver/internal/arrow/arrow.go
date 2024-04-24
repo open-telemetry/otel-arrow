@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	// "time
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	"github.com/open-telemetry/otel-arrow/collector/netstats"
@@ -365,25 +366,35 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	}()
 
 	doneCtx, doneCancel := context.WithCancel(streamCtx)
-	streamErrCh := make(chan error, 1)
+	streamErrCh := make(chan error, 2)
 	pendingCh := make(chan batchResp, runtime.NumCPU())
 
+	var wg sync.WaitGroup
+	// wg.Add(1)
 	go func() {
 		err := r.srvReceiveLoop(doneCtx, serverStream, streamErrCh, pendingCh, method, ac)
 		streamErrCh <- err
+		// wg.Done()
 	}()
 
+	wg.Add(1)
 	go func() {
 		err := r.srvSendLoop(doneCtx, serverStream, pendingCh)
 		streamErrCh <- err
+		wg.Done()
 	}()
 
 
+	// time.Sleep(3*time.Second)
 	select {
 	case <-doneCtx.Done(): 
+		wg.Wait()
+		// r.inFlightWG.Wait()
 		return doneCtx.Err()
 	case retErr = <-streamErrCh:
 		doneCancel()
+		// r.inFlightWG.Wait()
+		wg.Wait()
 		return
 	}
 }
@@ -397,9 +408,6 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 		default:
 		}
 
-		// increment waitgroup before receive because if context is canceled,
-		// then there is potentially a race between r.flushSender and this in-flight request.
-		r.inFlightWG.Add(1)
 
 		// Receive a batch corresponding with one ptrace.Traces, pmetric.Metrics,
 		// or plog.Logs item.
@@ -417,6 +425,8 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 			}
 			return err
 		}
+		// there is potentially a race between r.flushSender and this in-flight request.
+		r.inFlightWG.Add(1)
 
 		uncompSz := int64(req.GetUncompressedSize())
 		// bounded queue to memory limit based on incoming uncompressed request size and waiters.
@@ -466,6 +476,8 @@ func (r *Receiver) sendOne(serverStream anyStreamServer, resp batchResp) error {
 		status := &arrowpb.BatchStatus{
 			BatchId: resp.id,
 		}
+		fmt.Println("SENDONE ERR")
+		fmt.Println(resp.err)
 		if resp.err == nil {
 			status.StatusCode = arrowpb.StatusCode_OK
 		} else {
@@ -518,7 +530,7 @@ func (r *Receiver) srvSendLoop(ctx context.Context, serverStream anyStreamServer
 		select {
 		case <-ctx.Done():
 			err = r.flushSender(serverStream, pendingCh)
-			err := multierr.Append(err, ctx.Err())
+			// err := multierr.Append(err, ctx.Err())
 			return err
 		case resp := <-pendingCh:
 			err = r.sendOne(serverStream, resp)
@@ -551,10 +563,12 @@ func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowCo
 		err = authErr
 	} else {
 		err = r.processRecords(ctx, method, arrowConsumer, req)
+		fmt.Println("PROCESS ERR")
+		fmt.Println(err)
 	}
-
-	fmt.Println("BATCH ID")
-	fmt.Println(req.GetBatchId())
+// 
+	// fmt.Println("BATCH ID")
+	// fmt.Println(req.GetBatchId())
 	pendingCh <- batchResp{
 		id: req.GetBatchId(),
 		err: err,

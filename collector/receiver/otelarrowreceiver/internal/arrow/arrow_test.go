@@ -580,6 +580,8 @@ func TestReceiverMemoryLimit(t *testing.T) {
 		require.NoError(t, err)
 
 		batch = copyBatch(batch)
+		fmt.Println("BATCH IDInTest")
+		fmt.Println(batch.BatchId)
 
 		ctc.stream.EXPECT().Send(statusExhaustedFor(batch.BatchId, "Permanent error: test oom error "+arrowRecord.ErrConsumerMemoryLimit.Error())).Times(1).Return(nil)
 
@@ -1065,6 +1067,8 @@ func testReceiverAuthHeaders(t *testing.T, includeMeta bool, dataAuth bool) {
 			return ctx, nil
 		}
 
+		fmt.Println(hdrs)
+
 		ok := false
 		for _, val := range hdrs["auth"] {
 			ok = ok || (val == "true")
@@ -1172,6 +1176,8 @@ func testReceiverAuthHeaders(t *testing.T, includeMeta bool, dataAuth bool) {
 		if expectErrs[idx] {
 			require.NotEqual(t, arrowpb.StatusCode_OK, batch.StatusCode)
 		} else {
+			fmt.Println("STATUS MSG")
+			fmt.Println(batch.StatusCode)
 			require.Equal(t, arrowpb.StatusCode_OK, batch.StatusCode)
 		}
 	}
