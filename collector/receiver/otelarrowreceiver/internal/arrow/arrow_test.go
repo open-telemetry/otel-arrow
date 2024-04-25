@@ -357,9 +357,6 @@ func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opt
 func requireCanceledStatus(t *testing.T, err error) {
 	require.Error(t, err)
 	status, ok := status.FromError(err)
-	fmt.Println("STATUS OK")
-	fmt.Println(ok)
-	fmt.Println(status)
 	require.True(t, ok, "is status-wrapped %v", err)
 	require.Equal(t, codes.Canceled, status.Code())
 }

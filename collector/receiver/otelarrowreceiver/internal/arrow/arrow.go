@@ -82,7 +82,6 @@ type Receiver struct {
 	boundedQueue         *admission.BoundedQueue
 	inFlightWG           sync.WaitGroup
 	pendingCh            chan batchResp
-	closecanceled        bool
 }
 
 // New creates a new Receiver reference.
@@ -374,23 +373,23 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 		streamErrCh <- err
 	}()
 
-	// WG is used to ensure main thread only returns once sender is finished flushing all requests.
-	var wg sync.WaitGroup
-	wg.Add(1)
+	// WG is used to ensure main thread only returns once sender is finished sending responses for all requests.
+	var senderWG sync.WaitGroup
+	senderWG.Add(1)
 	go func() {
 		err := r.srvSendLoop(doneCtx, serverStream, pendingCh)
 		streamErrCh <- err
-		wg.Done()
+		senderWG.Done()
 	}()
 
 
 	select {
 	case <-doneCtx.Done(): 
-		wg.Wait()
+		senderWG.Wait()
 		return status.Error(codes.Canceled, "server stream shutdown")
 	case retErr = <-streamErrCh:
 		doneCancel()
-		wg.Wait()
+		senderWG.Wait()
 		return
 	}
 }
@@ -402,20 +401,15 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 		case <-ctx.Done():
 			return status.Error(codes.Canceled, "server stream shutdown")
 		default:
+			r.inFlightWG.Add(1)
 		}
-
 
 		// Receive a batch corresponding with one ptrace.Traces, pmetric.Metrics,
 		// or plog.Logs item.
 		req, err := serverStream.Recv()
 
 		if err != nil {
-			// client called CloseSend()
-			// if errors.Is(err, io.EOF) {
-			// 	r.closecanceled = true
-			// 	return nil
-			// }
-
+			r.inFlightWG.Done() // not processed
 			r.logStreamError(err)
 
 			if errors.Is(err, io.EOF) {
@@ -425,8 +419,6 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 			}
 			return err
 		}
-		// there is potentially a race between r.flushSender and this in-flight request.
-		r.inFlightWG.Add(1)
 
 		uncompSz := int64(req.GetUncompressedSize())
 		// bounded queue to memory limit based on incoming uncompressed request size and waiters.
@@ -516,22 +508,10 @@ func (r *Receiver) flushSender(serverStream anyStreamServer, pendingCh <-chan ba
 				return err
 			}
 		default:
-			// Currently nothing left in pendingCh. If canceled, make sure this
-			// status message is sent last.
-			if r.closecanceled {
-				status := &arrowpb.BatchStatus{}
-				status.StatusCode = arrowpb.StatusCode_CANCELED
-				err = serverStream.Send(status)
-				if err != nil {
-					r.logStreamError(err)
-					return err
-				}
-			}
+			// Currently nothing left in pendingCh.
 			return nil
 		}
-
 	}
-
 }
 
 func (r *Receiver) srvSendLoop(ctx context.Context, serverStream anyStreamServer, pendingCh <-chan batchResp) error {

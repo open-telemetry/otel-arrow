@@ -1,27 +1,60 @@
 receivers:
+  # otelarrow is an OTel Arrow receiver that will operate as the SaaS-side
+  # of the bridge.
   otelarrow:
     protocols:
       grpc:
-        endpoint: localhost:4317
-        max_recv_msg_size_mib: 3000
-      arrow:
-        admission_limit_mib: 30
-        waiter_limit: 2
+        # Port 5000 is the endpoint used in edge-collector.
+        endpoint: 127.0.0.1:8100
 
-processors:
-  concurrentbatch:
+        # Include metadata so that the exporter can copy it
+        # to the next hop.
+        include_metadata: true
+
+        keepalive:
+          server_parameters:
+            max_connection_age: 10s
+            max_connection_age_grace: 10s
 
 exporters:
-  debug:
-    verbosity: basic
-  otelarrow/ls:
-    endpoint: ingest.lightstep.com:443
+  debug:      
+
+  otlphttp:
+    # You can use an HTTP listener on port 5001 to see the headers
+    # and raw data.
+    endpoint: http://127.0.0.1:8101
+    compression: none
+
+    # Associate the headers_setter extension with this exporter
+    # so that it passes through headers set on the edge collector.
+    auth:
+      authenticator: headers_setter
+
+extensions:
+  # Configure the headers_setter extension to propagate the
+  # X-Scope-OrgID property in the outgoing context.
+  headers_setter:
     headers:
-      "lightstep-access-token": ${LS_TOKEN}
+      - key: X-Scope-OrgID
+        from_context: X-Scope-OrgID
 
 service:
+  extensions: [headers_setter]
   pipelines:
     traces:
       receivers: [otelarrow]
+
+      # Note there is no need to re-apply the batch processor on the
+      # SaaS-side of a bridge.
       processors: []
-      exporters: [debug, otelarrow/ls]
+      exporters: [debug, otlphttp]
+
+    metrics:
+      receivers: [otelarrow]
+      processors: []
+      exporters: [debug, otlphttp]
+      
+  telemetry:
+    metrics:
+      address: 127.0.0.1:8889
+      level: normal
