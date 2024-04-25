@@ -369,14 +369,13 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	streamErrCh := make(chan error, 2)
 	pendingCh := make(chan batchResp, runtime.NumCPU())
 
-	var wg sync.WaitGroup
-	// wg.Add(1)
 	go func() {
 		err := r.srvReceiveLoop(doneCtx, serverStream, streamErrCh, pendingCh, method, ac)
 		streamErrCh <- err
-		// wg.Done()
 	}()
 
+	// WG is used to ensure main thread only returns once sender is finished flushing all requests.
+	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		err := r.srvSendLoop(doneCtx, serverStream, pendingCh)
@@ -388,11 +387,9 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	select {
 	case <-doneCtx.Done(): 
 		wg.Wait()
-		// r.inFlightWG.Wait()
 		return doneCtx.Err()
 	case retErr = <-streamErrCh:
 		doneCancel()
-		// r.inFlightWG.Wait()
 		wg.Wait()
 		return
 	}
