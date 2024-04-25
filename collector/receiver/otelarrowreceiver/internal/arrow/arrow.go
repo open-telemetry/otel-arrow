@@ -11,7 +11,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	// "time
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	"github.com/open-telemetry/otel-arrow/collector/netstats"
@@ -83,6 +82,7 @@ type Receiver struct {
 	boundedQueue         *admission.BoundedQueue
 	inFlightWG           sync.WaitGroup
 	pendingCh            chan batchResp
+	closecanceled        bool
 }
 
 // New creates a new Receiver reference.
@@ -385,7 +385,6 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	}()
 
 
-	// time.Sleep(3*time.Second)
 	select {
 	case <-doneCtx.Done(): 
 		wg.Wait()
@@ -414,8 +413,17 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 		req, err := serverStream.Recv()
 
 		if err != nil {
+<<<<<<< HEAD
 			// This includes the case where a client called CloseSend(), in
 			// which case we see an EOF error here.
+=======
+			// client called CloseSend()
+			if errors.Is(err, io.EOF) {
+				r.closecanceled = true
+				return nil
+			}
+
+>>>>>>> 348bb99 (painful but fixed?)
 			r.logStreamError(err)
 
 			if errors.Is(err, io.EOF) {
@@ -473,11 +481,10 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 func (r *Receiver) sendOne(serverStream anyStreamServer, resp batchResp) error {
 		// Note: Statuses can be batched, but we do not take
 		// advantage of this feature.
+
 		status := &arrowpb.BatchStatus{
 			BatchId: resp.id,
 		}
-		fmt.Println("SENDONE ERR")
-		fmt.Println(resp.err)
 		if resp.err == nil {
 			status.StatusCode = arrowpb.StatusCode_OK
 		} else {
@@ -517,9 +524,20 @@ func (r *Receiver) flushSender(serverStream anyStreamServer, pendingCh <-chan ba
 				return err
 			}
 		default:
-			// Currently nothing left in pendingCh.
+			// Currently nothing left in pendingCh. If canceled, make sure this
+			// status message is sent last.
+			if r.closecanceled {
+				status := &arrowpb.BatchStatus{}
+				status.StatusCode = arrowpb.StatusCode_CANCELED
+				err = serverStream.Send(status)
+				if err != nil {
+					r.logStreamError(err)
+					return err
+				}
+			}
 			return nil
 		}
+
 	}
 
 }
@@ -563,12 +581,7 @@ func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowCo
 		err = authErr
 	} else {
 		err = r.processRecords(ctx, method, arrowConsumer, req)
-		fmt.Println("PROCESS ERR")
-		fmt.Println(err)
 	}
-// 
-	// fmt.Println("BATCH ID")
-	// fmt.Println(req.GetBatchId())
 	pendingCh <- batchResp{
 		id: req.GetBatchId(),
 		err: err,
