@@ -387,7 +387,7 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	select {
 	case <-doneCtx.Done(): 
 		wg.Wait()
-		return doneCtx.Err()
+		return status.Error(codes.Canceled, "server stream shutdown")
 	case retErr = <-streamErrCh:
 		doneCancel()
 		wg.Wait()
@@ -400,7 +400,7 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return status.Error(codes.Canceled, "server stream shutdown")
 		default:
 		}
 
@@ -410,17 +410,12 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 		req, err := serverStream.Recv()
 
 		if err != nil {
-<<<<<<< HEAD
-			// This includes the case where a client called CloseSend(), in
-			// which case we see an EOF error here.
-=======
 			// client called CloseSend()
-			if errors.Is(err, io.EOF) {
-				r.closecanceled = true
-				return nil
-			}
+			// if errors.Is(err, io.EOF) {
+			// 	r.closecanceled = true
+			// 	return nil
+			// }
 
->>>>>>> 348bb99 (painful but fixed?)
 			r.logStreamError(err)
 
 			if errors.Is(err, io.EOF) {

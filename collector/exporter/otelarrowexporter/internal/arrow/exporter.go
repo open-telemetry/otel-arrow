@@ -285,18 +285,16 @@ func (e *Exporter) SendAndWait(ctx context.Context, data any) (bool, error) {
 	// exporter, because of the optimization phase performed in the
 	// conversion to Arrow.
 	var uncompSize int
-	if e.telemetry.MetricsLevel > configtelemetry.LevelNormal {
-		switch data := data.(type) {
-		case ptrace.Traces:
-			var sizer ptrace.ProtoMarshaler
-			uncompSize = sizer.TracesSize(data)
-		case plog.Logs:
-			var sizer plog.ProtoMarshaler
-			uncompSize = sizer.LogsSize(data)
-		case pmetric.Metrics:
-			var sizer pmetric.ProtoMarshaler
-			uncompSize = sizer.MetricsSize(data)
-		}
+	switch data := data.(type) {
+	case ptrace.Traces:
+		var sizer ptrace.ProtoMarshaler
+		uncompSize = sizer.TracesSize(data)
+	case plog.Logs:
+		var sizer plog.ProtoMarshaler
+		uncompSize = sizer.LogsSize(data)
+	case pmetric.Metrics:
+		var sizer pmetric.ProtoMarshaler
+		uncompSize = sizer.MetricsSize(data)
 	}
 
 	wri := writeItem{
