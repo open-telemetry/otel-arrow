@@ -369,7 +369,7 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	pendingCh := make(chan batchResp, runtime.NumCPU())
 
 	go func() {
-		err := r.srvReceiveLoop(doneCtx, serverStream, streamErrCh, pendingCh, method, ac)
+		err := r.srvReceiveLoop(doneCtx, serverStream, pendingCh, method, ac)
 		streamErrCh <- err
 	}()
 
@@ -451,7 +451,7 @@ func (r *Receiver) recvOne(ctx context.Context, serverStream anyStreamServer, hr
 	return nil
 }
 
-func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamServer, streamErrCh chan<- error, pendingCh chan<- batchResp, method string, ac arrowRecord.ConsumerAPI) (retErr error) {
+func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamServer, pendingCh chan<- batchResp, method string, ac arrowRecord.ConsumerAPI) (retErr error) {
 	hrcv := newHeaderReceiver(ctx, r.authServer, r.gsettings.IncludeMetadata)
 	for {
 		select {
