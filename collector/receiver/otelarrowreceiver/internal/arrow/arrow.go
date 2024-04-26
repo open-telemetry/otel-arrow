@@ -394,6 +394,63 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	}
 }
 
+func (r *Receiver) recvOne(ctx context.Context, serverStream anyStreamServer, hrcv *headerReceiver, pendingCh chan<- batchResp, method string, ac arrowRecord.ConsumerAPI) (retErr error) {
+	r.inFlightWG.Add(1)
+	defer func() {
+		if retErr != nil {
+			r.inFlightWG.Done() // not processed
+			r.logStreamError(retErr)
+		}
+	}()
+
+	// Receive a batch corresponding with one ptrace.Traces, pmetric.Metrics,
+	// or plog.Logs item.
+	req, err := serverStream.Recv()
+
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return status.Error(codes.Canceled, "client stream shutdown")
+		} else if errors.Is(err, context.Canceled) {
+			return status.Error(codes.Canceled, "server stream shutdown")
+		}
+		return err
+	}
+
+	uncompSz := int64(req.GetUncompressedSize())
+	// bounded queue to memory limit based on incoming uncompressed request size and waiters.
+	// Acquire will fail immediately if there are too many waiters,
+	// or will otherwise block until timeout or enough memory becomes available.
+	err = r.boundedQueue.Acquire(ctx, uncompSz)
+	if err != nil {
+		return fmt.Errorf("breaking stream: %v", err)
+	}
+
+	// Check for optional headers and set the incoming context.
+	thisCtx, authHdrs, err := hrcv.combineHeaders(ctx, req.GetHeaders())
+	if err != nil {
+		// Failing to parse the incoming headers breaks the stream.
+		return fmt.Errorf("arrow metadata error: %v", err)
+	}
+
+	var authErr error
+	if r.authServer != nil {
+		var newCtx context.Context
+		if newCtx, err = r.authServer.Authenticate(thisCtx, authHdrs); err != nil {
+			authErr = err
+		} else {
+			thisCtx = newCtx
+		}
+	}
+
+	// processAndConsume will process and send an error to the sender loop
+	go func() {
+		defer r.inFlightWG.Done() // done processing
+		r.processAndConsume(thisCtx, method, ac, req, serverStream, authErr, pendingCh)
+	}()
+
+	return nil
+}
+
 func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamServer, streamErrCh chan<- error, pendingCh chan<- batchResp, method string, ac arrowRecord.ConsumerAPI) (retErr error) {
 	hrcv := newHeaderReceiver(ctx, r.authServer, r.gsettings.IncludeMetadata)
 	for {
@@ -401,64 +458,11 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 		case <-ctx.Done():
 			return status.Error(codes.Canceled, "server stream shutdown")
 		default:
-			r.inFlightWG.Add(1)
-		}
-
-		// Receive a batch corresponding with one ptrace.Traces, pmetric.Metrics,
-		// or plog.Logs item.
-		req, err := serverStream.Recv()
-
-		if err != nil {
-			r.inFlightWG.Done() // not processed
-			r.logStreamError(err)
-
-			if errors.Is(err, io.EOF) {
-				return status.Error(codes.Canceled, "client stream shutdown")
-			} else if errors.Is(err, context.Canceled) {
-				return status.Error(codes.Canceled, "server stream shutdown")
-			}
-			return err
-		}
-
-		uncompSz := int64(req.GetUncompressedSize())
-		// bounded queue to memory limit based on incoming uncompressed request size and waiters.
-		// Acquire will fail immediately if there are too many waiters,
-		// or will otherwise block until timeout or enough memory becomes available.
-		err = r.boundedQueue.Acquire(ctx, uncompSz)
-		if err != nil {
-			r.inFlightWG.Done() // not processed
-			r.logStreamError(err)
-			// Acquire will fail due to "too many waiters" or "context canceled"
-			// so we can log error and continue in hopes we can process the next request.
-			// This means this request will not be processed and will be dropped.
-			continue
-		}
-
-		// Check for optional headers and set the incoming context.
-		thisCtx, authHdrs, err := hrcv.combineHeaders(ctx, req.GetHeaders())
-		if err != nil {
-			r.inFlightWG.Done() // not processed
-
-			// Failing to parse the incoming headers breaks the stream.
-			r.telemetry.Logger.Error("arrow metadata error", zap.Error(err))
-			return err
-		}
-
-		var authErr error
-		if r.authServer != nil {
-			var newCtx context.Context
-			if newCtx, err = r.authServer.Authenticate(thisCtx, authHdrs); err != nil {
-				authErr = err
-			} else {
-				thisCtx = newCtx
+			err := r.recvOne(ctx, serverStream, hrcv, pendingCh, method, ac)
+			if err != nil {
+				return err
 			}
 		}
-
-		// processAndConsume will process and send an error to the sender loop
-		go func() {
-			r.processAndConsume(thisCtx, method, ac, req, serverStream, authErr, pendingCh)
-			r.inFlightWG.Done() // done processing
-		}()
 	}
 }
 
