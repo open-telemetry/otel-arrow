@@ -72,9 +72,6 @@ message BatchArrowRecords {
 
   // [optional] Headers associated with this batch, encoded using hpack.
   bytes headers = 3;
-
-  // [mandatory] The uncompressed size of the batch.
-  uint64 uncompressed_size = 4;
 }
 
 // Enumeration of all the OTel Arrow payload types currently supported by the
