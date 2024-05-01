@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"io"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/golang/protobuf/proto"
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
@@ -403,6 +405,7 @@ func (r *Receiver) recvOne(ctx context.Context, serverStream anyStreamServer, hr
 		}
 	}()
 
+
 	// Receive a batch corresponding with one ptrace.Traces, pmetric.Metrics,
 	// or plog.Logs item.
 	req, err := serverStream.Recv()
@@ -416,20 +419,29 @@ func (r *Receiver) recvOne(ctx context.Context, serverStream anyStreamServer, hr
 		return err
 	}
 
-	uncompSz := int64(req.GetUncompressedSize())
-	// bounded queue to memory limit based on incoming uncompressed request size and waiters.
-	// Acquire will fail immediately if there are too many waiters,
-	// or will otherwise block until timeout or enough memory becomes available.
-	err = r.boundedQueue.Acquire(ctx, uncompSz)
-	if err != nil {
-		return fmt.Errorf("breaking stream: %v", err)
-	}
-
 	// Check for optional headers and set the incoming context.
 	thisCtx, authHdrs, err := hrcv.combineHeaders(ctx, req.GetHeaders())
 	if err != nil {
 		// Failing to parse the incoming headers breaks the stream.
 		return fmt.Errorf("arrow metadata error: %v", err)
+	}
+	var sizeBytes int
+	uncompSizeStr, ok := authHdrs["otlp-pdata-size"]
+	if !ok || len(uncompSizeStr) == 0 {
+		// This is a compressed size so make sure to acquire the difference when request is decompressed.
+		sizeBytes = proto.Size(req)
+	} else {
+		sizeBytes, err = strconv.Atoi(uncompSizeStr[0])
+		if err != nil {
+			return fmt.Errorf("failed to convert string to request size: %v", err)
+		}
+	}
+	// bounded queue to memory limit based on incoming uncompressed request size and waiters.
+	// Acquire will fail immediately if there are too many waiters,
+	// or will otherwise block until timeout or enough memory becomes available.
+	err = r.boundedQueue.Acquire(ctx, int64(sizeBytes))
+	if err != nil {
+		return fmt.Errorf("breaking stream: %v", err)
 	}
 
 	var authErr error
@@ -445,7 +457,7 @@ func (r *Receiver) recvOne(ctx context.Context, serverStream anyStreamServer, hr
 	// processAndConsume will process and send an error to the sender loop
 	go func() {
 		defer r.inFlightWG.Done() // done processing
-		r.processAndConsume(thisCtx, method, ac, req, serverStream, authErr, pendingCh)
+		r.processAndConsume(thisCtx, method, ac, req, serverStream, authErr, pendingCh, int64(sizeBytes))
 	}()
 
 	return nil
@@ -469,7 +481,6 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 func (r *Receiver) sendOne(serverStream anyStreamServer, resp batchResp) error {
 		// Note: Statuses can be batched, but we do not take
 		// advantage of this feature.
-
 		status := &arrowpb.BatchStatus{
 			BatchId: resp.id,
 		}
@@ -535,7 +546,7 @@ func (r *Receiver) srvSendLoop(ctx context.Context, serverStream anyStreamServer
 	}
 }
 
-func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, req *arrowpb.BatchArrowRecords, serverStream anyStreamServer, authErr error, pendingCh chan<- batchResp) {
+func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, req *arrowpb.BatchArrowRecords, serverStream anyStreamServer, authErr error, pendingCh chan<- batchResp, sizeBytes int64) {
 	var err error
 
 	ctx, span := r.tracer.Start(ctx, "otel_arrow_stream_recv")
@@ -553,15 +564,17 @@ func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowCo
 
 	// Process records: an error in this code path does
 	// not necessarily break the stream.
+	toRelease := sizeBytes
 	if authErr != nil {
 		err = authErr
 	} else {
-		err = r.processRecords(ctx, method, arrowConsumer, req)
+		toRelease, err = r.processRecords(ctx, method, arrowConsumer, req, sizeBytes)
 	}
+
 	pendingCh <- batchResp{
 		id: req.GetBatchId(),
 		err: err,
-		uncompSz: int64(req.GetUncompressedSize()),
+		uncompSz: toRelease,
 	}
 }
 
@@ -569,10 +582,10 @@ func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowCo
 // the error (true) was from processing the data (i.e., invalid
 // argument) or (false) from the consuming pipeline.  The boolean is
 // not used when success (nil error) is returned.
-func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, records *arrowpb.BatchArrowRecords) error {
+func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, records *arrowpb.BatchArrowRecords, sizeBytes int64) (int64, error) {
 	payloads := records.GetArrowPayloads()
 	if len(payloads) == 0 {
-		return nil
+		return sizeBytes, nil
 	}
 	var uncompSize int64
 	if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
@@ -594,7 +607,7 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 	switch payloads[0].Type {
 	case arrowpb.ArrowPayloadType_UNIVARIATE_METRICS:
 		if r.Metrics() == nil {
-			return status.Error(codes.Unimplemented, "metrics service not available")
+			return sizeBytes, status.Error(codes.Unimplemented, "metrics service not available")
 		}
 		var sizer pmetric.ProtoMarshaler
 		var numPts int
@@ -618,16 +631,24 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 					r.Metrics().ConsumeMetrics(ctx, metrics),
 				)
 			}
+			// already acquired sizeBytes, but if this was compressed size we need to acquire the difference.
+			diff := uncompSize - sizeBytes
+			acquireErr := r.boundedQueue.Acquire(ctx, int64(diff))
+			if acquireErr != nil {
+				err = multierr.Append(err, acquireErr)
+				// failed to acquire so can't just return the uncompSize in case sizeBytes is a compressed size.
+				return sizeBytes, err
+			}
 			// entire request has been processed, decrement counter.
 			r.recvInFlightBytes.Add(ctx, -uncompSize)
 			r.recvInFlightItems.Add(ctx, int64(-numPts))
 		}
 		r.obsrecv.EndMetricsOp(ctx, streamFormat, numPts, err)
-		return err
+		return uncompSize, err
 
 	case arrowpb.ArrowPayloadType_LOGS:
 		if r.Logs() == nil {
-			return status.Error(codes.Unimplemented, "logs service not available")
+			return sizeBytes, status.Error(codes.Unimplemented, "logs service not available")
 		}
 		var sizer plog.ProtoMarshaler
 		var numLogs int
@@ -649,16 +670,25 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 					r.Logs().ConsumeLogs(ctx, logs),
 				)
 			}
+			// already acquired sizeBytes, but if this was compressed size we need to acquire the difference.
+			diff := uncompSize - sizeBytes
+			acquireErr := r.boundedQueue.Acquire(ctx, int64(diff))
+			if acquireErr != nil {
+				err = multierr.Append(err, acquireErr)
+				// failed to acquire so can't just return the uncompSize in case sizeBytes is a compressed size.
+				return sizeBytes, err
+			}
+
 			// entire request has been processed, decrement counter.
 			r.recvInFlightBytes.Add(ctx, -uncompSize)
 			r.recvInFlightItems.Add(ctx, int64(-numLogs))
 		}
 		r.obsrecv.EndLogsOp(ctx, streamFormat, numLogs, err)
-		return err
+		return uncompSize, err
 
 	case arrowpb.ArrowPayloadType_SPANS:
 		if r.Traces() == nil {
-			return status.Error(codes.Unimplemented, "traces service not available")
+			return sizeBytes, status.Error(codes.Unimplemented, "traces service not available")
 		}
 		var sizer ptrace.ProtoMarshaler
 		var numSpans int
@@ -681,15 +711,23 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 					r.Traces().ConsumeTraces(ctx, traces),
 				)
 			}
+			// already acquired sizeBytes, but if this was compressed size we need to acquire the difference.
+			diff := uncompSize - sizeBytes
+			acquireErr := r.boundedQueue.Acquire(ctx, int64(diff))
+			if acquireErr != nil {
+				err = multierr.Append(err, acquireErr)
+				// failed to acquire so can't just return the uncompSize in case sizeBytes is a compressed size.
+				return sizeBytes, err
+			}
 
 			// entire request has been processed, decrement counter.
 			r.recvInFlightBytes.Add(ctx, -uncompSize)
 			r.recvInFlightItems.Add(ctx, int64(-numSpans))
 		}
 		r.obsrecv.EndTracesOp(ctx, streamFormat, numSpans, err)
-		return err
+		return uncompSize, err
 
 	default:
-		return ErrUnrecognizedPayload
+		return sizeBytes, ErrUnrecognizedPayload
 	}
 }

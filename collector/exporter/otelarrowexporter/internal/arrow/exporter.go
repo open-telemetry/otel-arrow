@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"math/rand"
+	"strconv"
 	"sync"
 	"time"
 
@@ -295,6 +296,11 @@ func (e *Exporter) SendAndWait(ctx context.Context, data any) (bool, error) {
 		var sizer pmetric.ProtoMarshaler
 		uncompSize = sizer.MetricsSize(data)
 	}
+
+	if md == nil {
+		md = make(map[string]string)
+	}
+	md["otlp-pdata-size"] = strconv.Itoa(uncompSize)
 
 	wri := writeItem{
 		records:     data,

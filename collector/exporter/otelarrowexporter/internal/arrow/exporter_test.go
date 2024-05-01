@@ -604,10 +604,13 @@ func TestArrowExporterHeaders(t *testing.T) {
 			md := metadata.MD{
 				"expected1": []string{"metadata1"},
 				"expected2": []string{fmt.Sprint(times)},
+				"otlp-pdata-size": []string{"329"},
 			}
 			expectOutput = append(expectOutput, md)
 		} else {
-			expectOutput = append(expectOutput, nil)
+			expectOutput = append(expectOutput, metadata.MD{
+				"otlp-pdata-size": []string{"329"},
+			})
 		}
 
 		sent, err := tc.exporter.SendAndWait(ctx, input)
@@ -678,10 +681,13 @@ func TestArrowExporterIsTraced(t *testing.T) {
 
 					md := metadata.MD{
 						"traceparent": []string{expectMap["traceparent"]},
+						"otlp-pdata-size": []string{"329"},
 					}
 					expectOutput = append(expectOutput, md)
 				} else {
-					expectOutput = append(expectOutput, nil)
+					expectOutput = append(expectOutput, metadata.MD{
+						"otlp-pdata-size": []string{"329"},
+					})
 				}
 
 				sent, err := tc.exporter.SendAndWait(ctx, input)

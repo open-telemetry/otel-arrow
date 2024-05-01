@@ -78,6 +78,7 @@ func TestUnmarshalConfig(t *testing.T) {
 				},
 				Arrow: ArrowConfig{
 					MemoryLimitMiB: 123,
+					AdmissionLimitMiB: 80,
 				},
 			},
 		}, cfg)
@@ -102,6 +103,7 @@ func TestUnmarshalConfigUnix(t *testing.T) {
 				},
 				Arrow: ArrowConfig{
 					MemoryLimitMiB: defaultMemoryLimitMiB,
+					AdmissionLimitMiB: defaultAdmissionLimitMiB,
 				},
 			},
 		}, cfg)

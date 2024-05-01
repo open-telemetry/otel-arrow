@@ -20,6 +20,7 @@ const (
 	defaultGRPCEndpoint = "0.0.0.0:4317"
 
 	defaultMemoryLimitMiB = 128
+	defaultAdmissionLimitMiB = defaultMemoryLimitMiB / 2
 )
 
 // NewFactory creates a new OTLP receiver factory.
@@ -46,7 +47,7 @@ func createDefaultConfig() component.Config {
 			},
 			Arrow: ArrowConfig{
 				MemoryLimitMiB: defaultMemoryLimitMiB,
-				// AdmissionLimitMiB: defaultMemoryLimitMiB/2,
+				AdmissionLimitMiB: defaultAdmissionLimitMiB,
 			},
 		},
 	}
