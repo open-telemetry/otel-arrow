@@ -570,7 +570,7 @@ func TestReceiverTraces(t *testing.T) {
 	ctc.start(ctc.newRealConsumer, defaultBQ)
 	ctc.putBatch(batch, nil)
 
-	assert.EqualValues(t, td, (<-ctc.consume).Data)
+	assertEqualUnsortedSpans(t, td, (<-ctc.consume).Data.(ptrace.Traces))
 
 	err = ctc.cancelAndWait()
 	requireCanceledStatus(t, err)
@@ -856,7 +856,10 @@ func TestReceiverEOF(t *testing.T) {
 		actualData = append(actualData, (<-ctc.consume).Data.(ptrace.Traces))
 	}
 
-	assert.EqualValues(t, expectData, actualData)
+	assert.Equal(t, len(expectData), len(actualData))
+	for i := 0; i < len(expectData); i++ {
+		assertEqualUnsortedSpans(t, expectData[i], actualData[i])
+	}
 
 	wg.Wait()
 }
