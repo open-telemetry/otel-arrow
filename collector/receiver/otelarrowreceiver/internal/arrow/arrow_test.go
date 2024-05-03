@@ -366,6 +366,7 @@ func requireCanceledStatus(t *testing.T, err error) {
 
 func TestBoundedQueueWithPdataHeaders(t *testing.T) {
 	var sizer ptrace.ProtoMarshaler
+	stdTesting := otelAssert.NewStdUnitTest(t)
 	pdataSizeTenTraces := sizer.TracesSize(testdata.GenerateTraces(10))
 	defaultBoundedQueueLimit := int64(100000)
 	tests := []struct{
@@ -454,7 +455,11 @@ func TestBoundedQueueWithPdataHeaders(t *testing.T) {
 			select {
 			case data := <-ctc.consume:
 				actualTD := data.Data.(ptrace.Traces)
-				assertEqualUnsortedSpans(t, td, actualTD)
+				otelAssert.Equiv(stdTesting, []json.Marshaler{
+					compareJSONTraces{td},
+				}, []json.Marshaler{
+					compareJSONTraces{actualTD},
+				})
 				err = ctc.cancelAndWait()
 				requireCanceledStatus(t, err)
 			case err = <-ctc.streamErr:
@@ -464,100 +469,8 @@ func TestBoundedQueueWithPdataHeaders(t *testing.T) {
 	}
 }
 
-// order of spans might not be guaranteed, so sort the span objects by spanID and check equality.
-func assertEqualUnsortedSpans(t *testing.T, a, b ptrace.Traces) {
-	assert.Equal(t, a.SpanCount(), b.SpanCount())
-
-	rssA := a.ResourceSpans()
-	rssB := b.ResourceSpans()
-	assert.Equal(t, rssA.Len(), rssB.Len())
-
-	rssA.Sort(sortResourceSpans)
-	rssB.Sort(sortResourceSpans)
-	for i := 0; i < rssA.Len(); i++ {
-		rsA := rssA.At(i)
-		rsB := rssB.At(i)
-		assert.Equal(t, rsA.Resource(), rsB.Resource())
-
-		sssA := rsA.ScopeSpans()
-		sssB := rsB.ScopeSpans()
-		assert.Equal(t, sssA.Len(), sssB.Len())
-
-		sssA.Sort(sortScopeSpans)
-		sssB.Sort(sortScopeSpans)
-
-		for j := 0; j < sssA.Len(); j++ {
-			ssA := sssA.At(j)
-			ssB := sssB.At(j)
-			assert.Equal(t, ssA.Scope(), ssB.Scope())
-
-			spanSliceA := ssA.Spans()
-			spanSliceB := ssB.Spans()
-			assert.Equal(t, spanSliceA.Len(), spanSliceB.Len())
-
-			spanSliceA.Sort(sortSpans)
-			spanSliceB.Sort(sortSpans)
-
-			assert.Equal(t, spanSliceA, spanSliceB)
-		}
-	}
-}
-
-func sortResourceSpans(a, b ptrace.ResourceSpans) bool {
-	assl := a.ScopeSpans()
-	bssl := b.ScopeSpans()
-
-	if assl.Len() == 0 {
-		return true
-	}
-	if bssl.Len() == 0 {
-		return false
-	}
-
-	assl.Sort(sortScopeSpans)
-	bssl.Sort(sortScopeSpans)
-
-	if assl.At(0).Spans().Len() == 0 {
-		return true
-	}
-	if bssl.At(0).Spans().Len() == 0 {
-		return false
-	}
-
-	if assl.At(0).Spans().At(0).SpanID().String() < bssl.At(0).Spans().At(0).SpanID().String() {
-		return true
-	}
-	return false
-}
-
-func sortScopeSpans(a, b ptrace.ScopeSpans) bool {
-	asl := a.Spans()
-	bsl := a.Spans()
-
-	if asl.Len() == 0 {
-		return true
-	}
-	if bsl.Len() == 0 {
-		return false
-	}
-
-	asl.Sort(sortSpans)
-	bsl.Sort(sortSpans)
-
-	if asl.At(0).SpanID().String() < bsl.At(0).SpanID().String() {
-		return true
-	}
-	return false
-}
-
-func sortSpans(a, b ptrace.Span) bool {
-	if a.SpanID().String() < b.SpanID().String() {
-		return true
-	}
-	return false
-}
-
 func TestReceiverTraces(t *testing.T) {
+	stdTesting := otelAssert.NewStdUnitTest(t)
 	tc := healthyTestChannel{}
 	ctc := newCommonTestCase(t, tc)
 
@@ -570,7 +483,11 @@ func TestReceiverTraces(t *testing.T) {
 	ctc.start(ctc.newRealConsumer, defaultBQ)
 	ctc.putBatch(batch, nil)
 
-	assertEqualUnsortedSpans(t, td, (<-ctc.consume).Data.(ptrace.Traces))
+	otelAssert.Equiv(stdTesting, []json.Marshaler{
+		compareJSONTraces{td},
+	}, []json.Marshaler{
+		compareJSONTraces{(<-ctc.consume).Data.(ptrace.Traces)},
+	})
 
 	err = ctc.cancelAndWait()
 	requireCanceledStatus(t, err)
@@ -816,6 +733,7 @@ func copyBatch(in *arrowpb.BatchArrowRecords) *arrowpb.BatchArrowRecords {
 func TestReceiverEOF(t *testing.T) {
 	tc := healthyTestChannel{}
 	ctc := newCommonTestCase(t, tc)
+	stdTesting := otelAssert.NewStdUnitTest(t)
 
 	// send a sequence of data then simulate closing the connection.
 	const times = 10
@@ -857,8 +775,13 @@ func TestReceiverEOF(t *testing.T) {
 	}
 
 	assert.Equal(t, len(expectData), len(actualData))
+
 	for i := 0; i < len(expectData); i++ {
-		assertEqualUnsortedSpans(t, expectData[i], actualData[i])
+		otelAssert.Equiv(stdTesting, []json.Marshaler{
+			compareJSONTraces{expectData[i]},
+		}, []json.Marshaler{
+			compareJSONTraces{actualData[i]},
+		})
 	}
 
 	wg.Wait()
