@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -46,6 +47,8 @@ import (
 	"github.com/open-telemetry/otel-arrow/collector/admission"
 	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/arrow/mock"
 )
+
+var defaultBQ = admission.NewBoundedQueue(int64(100000), int64(10))
 
 type compareJSONTraces struct{ ptrace.Traces }
 type compareJSONMetrics struct{ pmetric.Metrics }
@@ -321,7 +324,7 @@ func (ctc *commonTestCase) newOOMConsumer() arrowRecord.ConsumerAPI {
 	return mock
 }
 
-func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opts ...func(*configgrpc.ServerConfig, *auth.Server)) {
+func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, bq *admission.BoundedQueue, opts ...func(*configgrpc.ServerConfig, *auth.Server)) {
 	var authServer auth.Server
 	var gsettings configgrpc.ServerConfig
 	for _, gf := range opts {
@@ -345,7 +348,7 @@ func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, opt
 		gsettings,
 		authServer,
 		newConsumer,
-		admission.NewBoundedQueue(int64(10490000), int64(10)),
+		bq,
 		netstats.Noop{},
 	)
 	require.NoError(ctc.T, err)
@@ -361,6 +364,199 @@ func requireCanceledStatus(t *testing.T, err error) {
 	require.Equal(t, codes.Canceled, status.Code())
 }
 
+func TestBoundedQueueWithPdataHeaders(t *testing.T) {
+	var sizer ptrace.ProtoMarshaler
+	pdataSizeTenTraces := sizer.TracesSize(testdata.GenerateTraces(10))
+	defaultBoundedQueueLimit := int64(100000)
+	tests := []struct{
+		name      string
+		numTraces int
+		includePdataHeader bool
+		pdataSize string
+		rejected bool
+	}{
+		{
+			name: "no header compressed greater than uncompressed",
+			numTraces: 10,
+		},
+		{
+			name: "no header compressed less than uncompressed",
+			numTraces: 100,
+		},
+		{
+			name: "pdata header less than uncompressedSize",
+			numTraces: 10,
+			pdataSize: strconv.Itoa(pdataSizeTenTraces / 2),
+			includePdataHeader: true,
+		},
+		{
+			name: "pdata header equal uncompressedSize",
+			numTraces: 10,
+			pdataSize: strconv.Itoa(pdataSizeTenTraces),
+			includePdataHeader: true,
+		},
+		{
+			name: "pdata header greater than uncompressedSize",
+			numTraces: 10,
+			pdataSize: strconv.Itoa(pdataSizeTenTraces * 2),
+			includePdataHeader: true,
+		},
+		{
+			name: "no header compressed accepted uncompressed rejected",
+			numTraces: 100,
+			rejected: true,
+		},
+		{
+			name: "pdata header accepted uncompressed rejected",
+			numTraces: 100,
+			rejected: true,
+			pdataSize: strconv.Itoa(pdataSizeTenTraces),
+			includePdataHeader: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tc := healthyTestChannel{}
+			ctc := newCommonTestCase(t, tc)
+
+			td := testdata.GenerateTraces(tt.numTraces)
+			batch, err := ctc.testProducer.BatchArrowRecordsFromTraces(td)
+			require.NoError(t, err)
+			if tt.includePdataHeader {
+				var hpb bytes.Buffer
+				hpe := hpack.NewEncoder(&hpb)
+				err := hpe.WriteField(hpack.HeaderField{
+					Name:  "otlp-pdata-size",
+					Value: tt.pdataSize,
+				})
+				assert.NoError(t, err)
+				batch.Headers = make([]byte, hpb.Len())
+				copy(batch.Headers, hpb.Bytes())
+			}
+
+			var bq *admission.BoundedQueue
+			if tt.rejected {
+				ctc.stream.EXPECT().Send(statusUnavailableFor(batch.BatchId, "rejecting request, request size larger than configured limit")).Times(1).Return(fmt.Errorf("rejecting request, request size larger than configured limit"))
+				// make the boundedqueue limit be slightly less than the uncompressed size
+				bq = admission.NewBoundedQueue(int64(sizer.TracesSize(td) - 100), int64(10))
+			} else {
+				ctc.stream.EXPECT().Send(statusOKFor(batch.BatchId)).Times(1).Return(nil)
+				bq = admission.NewBoundedQueue(defaultBoundedQueueLimit, int64(10))
+			}
+
+			ctc.start(ctc.newRealConsumer, bq)
+			ctc.putBatch(batch, nil)
+
+			if tt.rejected {
+				ctc.cancel()
+			}
+
+			select {
+			case data := <-ctc.consume:
+				actualTD := data.Data.(ptrace.Traces)
+				assertEqualUnsortedSpans(t, td, actualTD)
+				err = ctc.cancelAndWait()
+				requireCanceledStatus(t, err)
+			case err = <-ctc.streamErr:
+				requireCanceledStatus(t, err)
+			}
+		})
+	}
+}
+
+// order of spans might not be guaranteed, so sort the span objects by spanID and check equality.
+func assertEqualUnsortedSpans(t *testing.T, a, b ptrace.Traces) {
+	assert.Equal(t, a.SpanCount(), b.SpanCount())
+
+	rssA := a.ResourceSpans()
+	rssB := b.ResourceSpans()
+	assert.Equal(t, rssA.Len(), rssB.Len())
+
+	rssA.Sort(sortResourceSpans)
+	rssB.Sort(sortResourceSpans)
+	for i := 0; i < rssA.Len(); i++ {
+		rsA := rssA.At(i)
+		rsB := rssB.At(i)
+		assert.Equal(t, rsA.Resource(), rsB.Resource())
+
+		sssA := rsA.ScopeSpans()
+		sssB := rsB.ScopeSpans()
+		assert.Equal(t, sssA.Len(), sssB.Len())
+
+		sssA.Sort(sortScopeSpans)
+		sssB.Sort(sortScopeSpans)
+
+		for j := 0; j < sssA.Len(); j++ {
+			ssA := sssA.At(j)
+			ssB := sssB.At(j)
+			assert.Equal(t, ssA.Scope(), ssB.Scope())
+
+			spanSliceA := ssA.Spans()
+			spanSliceB := ssB.Spans()
+			assert.Equal(t, spanSliceA.Len(), spanSliceB.Len())
+
+			spanSliceA.Sort(sortSpans)
+			spanSliceB.Sort(sortSpans)
+
+			assert.Equal(t, spanSliceA, spanSliceB)
+		}
+	}
+}
+
+func sortResourceSpans(a, b ptrace.ResourceSpans) bool {
+	assl := a.ScopeSpans()
+	bssl := b.ScopeSpans()
+
+	if assl.Len() == 0 {
+		return true
+	}
+	if bssl.Len() == 0 {
+		return false
+	}
+
+	assl.Sort(sortScopeSpans)
+	bssl.Sort(sortScopeSpans)
+
+	if assl.At(0).Spans().Len() == 0 {
+		return true
+	}
+	if bssl.At(0).Spans().Len() == 0 {
+		return false
+	}
+
+	if assl.At(0).Spans().At(0).SpanID().String() < bssl.At(0).Spans().At(0).SpanID().String() {
+		return true
+	}
+	return false
+}
+
+func sortScopeSpans(a, b ptrace.ScopeSpans) bool {
+	asl := a.Spans()
+	bsl := a.Spans()
+
+	if asl.Len() == 0 {
+		return true
+	}
+	if bsl.Len() == 0 {
+		return false
+	}
+
+	asl.Sort(sortSpans)
+	bsl.Sort(sortSpans)
+
+	if asl.At(0).SpanID().String() < bsl.At(0).SpanID().String() {
+		return true
+	}
+	return false
+}
+
+func sortSpans(a, b ptrace.Span) bool {
+	if a.SpanID().String() < b.SpanID().String() {
+		return true
+	}
+	return false
+}
+
 func TestReceiverTraces(t *testing.T) {
 	tc := healthyTestChannel{}
 	ctc := newCommonTestCase(t, tc)
@@ -371,7 +567,7 @@ func TestReceiverTraces(t *testing.T) {
 
 	ctc.stream.EXPECT().Send(statusOKFor(batch.BatchId)).Times(1).Return(nil)
 
-	ctc.start(ctc.newRealConsumer)
+	ctc.start(ctc.newRealConsumer, defaultBQ)
 	ctc.putBatch(batch, nil)
 
 	assert.EqualValues(t, td, (<-ctc.consume).Data)
@@ -390,7 +586,7 @@ func TestReceiverLogs(t *testing.T) {
 
 	ctc.stream.EXPECT().Send(statusOKFor(batch.BatchId)).Times(1).Return(nil)
 
-	ctc.start(ctc.newRealConsumer)
+	ctc.start(ctc.newRealConsumer, defaultBQ)
 	ctc.putBatch(batch, nil)
 
 	assert.EqualValues(t, []json.Marshaler{compareJSONLogs{ld}}, []json.Marshaler{compareJSONLogs{(<-ctc.consume).Data.(plog.Logs)}})
@@ -410,7 +606,7 @@ func TestReceiverMetrics(t *testing.T) {
 
 	ctc.stream.EXPECT().Send(statusOKFor(batch.BatchId)).Times(1).Return(nil)
 
-	ctc.start(ctc.newRealConsumer)
+	ctc.start(ctc.newRealConsumer, defaultBQ)
 	ctc.putBatch(batch, nil)
 
 	otelAssert.Equiv(stdTesting, []json.Marshaler{
@@ -427,7 +623,7 @@ func TestReceiverRecvError(t *testing.T) {
 	tc := healthyTestChannel{}
 	ctc := newCommonTestCase(t, tc)
 
-	ctc.start(ctc.newRealConsumer)
+	ctc.start(ctc.newRealConsumer, defaultBQ)
 
 	ctc.putBatch(nil, fmt.Errorf("test recv error"))
 
@@ -446,7 +642,7 @@ func TestReceiverSendError(t *testing.T) {
 
 	ctc.stream.EXPECT().Send(statusOKFor(batch.BatchId)).Times(1).Return(fmt.Errorf("test send error"))
 
-	ctc.start(ctc.newRealConsumer)
+	ctc.start(ctc.newRealConsumer, defaultBQ)
 	ctc.putBatch(batch, nil)
 
 	assert.EqualValues(t, ld, (<-ctc.consume).Data)
@@ -487,7 +683,7 @@ func TestReceiverConsumeError(t *testing.T) {
 
 		ctc.stream.EXPECT().Send(statusUnavailableFor(batch.BatchId, "consumer unhealthy")).Times(1).Return(nil)
 
-		ctc.start(ctc.newRealConsumer)
+		ctc.start(ctc.newRealConsumer, defaultBQ)
 
 		ctc.putBatch(batch, nil)
 
@@ -546,7 +742,7 @@ func TestReceiverInvalidData(t *testing.T) {
 
 		ctc.stream.EXPECT().Send(statusInvalidFor(batch.BatchId, "Permanent error: test invalid error")).Times(1).Return(nil)
 
-		ctc.start(ctc.newErrorConsumer)
+		ctc.start(ctc.newErrorConsumer, defaultBQ)
 		ctc.putBatch(batch, nil)
 
 		err = ctc.cancelAndWait()
@@ -583,7 +779,7 @@ func TestReceiverMemoryLimit(t *testing.T) {
 
 		ctc.stream.EXPECT().Send(statusExhaustedFor(batch.BatchId, "Permanent error: test oom error "+arrowRecord.ErrConsumerMemoryLimit.Error())).Times(1).Return(nil)
 
-		ctc.start(ctc.newOOMConsumer)
+		ctc.start(ctc.newOOMConsumer, defaultBQ)
 		ctc.putBatch(batch, nil)
 
 		err = ctc.cancelAndWait()
@@ -629,7 +825,7 @@ func TestReceiverEOF(t *testing.T) {
 
 	ctc.stream.EXPECT().Send(gomock.Any()).Times(times).Return(nil)
 
-	ctc.start(ctc.newRealConsumer)
+	ctc.start(ctc.newRealConsumer, defaultBQ)
 
 	go func() {
 		for i := 0; i < times; i++ {
@@ -686,7 +882,7 @@ func testReceiverHeaders(t *testing.T, includeMeta bool) {
 
 	ctc.stream.EXPECT().Send(gomock.Any()).Times(len(expectData)).Return(nil)
 
-	ctc.start(ctc.newRealConsumer, func(gsettings *configgrpc.ServerConfig, _ *auth.Server) {
+	ctc.start(ctc.newRealConsumer, defaultBQ, func(gsettings *configgrpc.ServerConfig, _ *auth.Server) {
 		gsettings.IncludeMetadata = includeMeta
 	})
 
@@ -758,7 +954,7 @@ func TestReceiverCancel(t *testing.T) {
 	ctc := newCommonTestCase(t, tc)
 
 	ctc.cancel()
-	ctc.start(ctc.newRealConsumer)
+	ctc.start(ctc.newRealConsumer, defaultBQ)
 
 	err := ctc.wait()
 	requireCanceledStatus(t, err)
@@ -1048,7 +1244,7 @@ func testReceiverAuthHeaders(t *testing.T, includeMeta bool, dataAuth bool) {
 	})
 
 	var authCall *gomock.Call
-	ctc.start(ctc.newRealConsumer, func(gsettings *configgrpc.ServerConfig, authPtr *auth.Server) {
+	ctc.start(ctc.newRealConsumer, defaultBQ, func(gsettings *configgrpc.ServerConfig, authPtr *auth.Server) {
 		gsettings.IncludeMetadata = includeMeta
 
 		as := mock.NewMockServer(ctc.ctrl)
