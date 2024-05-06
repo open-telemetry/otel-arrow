@@ -19,6 +19,7 @@ import (
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
+	"google.golang.org/grpc/metadata"
 
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
@@ -363,7 +364,7 @@ func (b *shard) sendItems(trigger trigger) {
 		var err error
 
 		var parent context.Context
-		isSingleCtx := allSame(contexts)
+		isSingleCtx := allSame(contexts) || allSameMetadata(contexts)
 
 		// For SDK's we can reuse the parent context because there is
 		// only one possible parent. This is not the case
@@ -423,6 +424,41 @@ func allSame(x []context.Context) bool {
 			return false
 		}
 	}
+	return true
+}
+
+func allSameMetadata(x []context.Context) bool {
+	firstMD, _ := metadata.FromIncomingContext(x[0])
+	for idx := range x[1:] {
+		md, _ := metadata.FromIncomingContext(x[idx])
+		if !equalMaps(md, firstMD) {
+			return false
+		}
+	}
+	return true
+}
+
+func equalMaps(m1, m2 map[string][]string) bool {
+	if len(m1) != len(m2) {
+		return false
+	}
+
+	for key, val1 := range m1 {
+		if val2, ok := m2[key]; ok {
+			if len(val1) != len(val2) {
+				return false
+			}
+
+			for idx := range val1 {
+				if val1[idx] != val2[idx] {
+					return false
+				}
+			}
+		} else { // key not found
+			return false
+		}
+	}
+
 	return true
 }
 
@@ -566,6 +602,13 @@ func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
 			attrs = append(attrs, attribute.StringSlice(k, vs))
 		}
 	}
+
+	if len(md) != len(mb.metadataKeys) {
+		// Did not find all metadata keys from client.Info metadata.
+		// Check if they exist in the incoming context.
+		md, attrs = mb.getMetadataKeysFromIncomingContext(ctx)
+	}
+
 	aset := attribute.NewSet(attrs...)
 
 	b, ok := mb.batchers.Load(aset)
@@ -587,6 +630,30 @@ func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
 	}
 
 	return b.(*shard).consumeAndWait(ctx, data)
+}
+
+func (mb *multiShardBatcher) getMetadataKeysFromIncomingContext(ctx context.Context) (map[string][]string, []attribute.KeyValue) {
+	headers, ok := metadata.FromIncomingContext(ctx)
+	if !ok || len(headers) == 0 {
+		return nil, nil
+	}
+
+	md := map[string][]string{}
+	var attrs []attribute.KeyValue
+	for _, k := range mb.metadataKeys {
+		// Lookup the value in the incoming metadata, copy it
+		// into the outgoing metadata, and create a unique
+		// value for the attributeSet.
+		vs := headers[strings.ToLower(k)]
+		md[k] = vs
+		if len(vs) == 1 {
+			attrs = append(attrs, attribute.String(k, vs[0]))
+		} else {
+			attrs = append(attrs, attribute.StringSlice(k, vs))
+		}
+	}
+
+	return md, attrs
 }
 
 func recordBatchError(err error) error {
