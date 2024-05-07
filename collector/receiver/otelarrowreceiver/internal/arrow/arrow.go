@@ -343,7 +343,7 @@ type anyStreamServer interface {
 type batchResp struct {
 	id int64
 	err error
-	uncompSz int64
+	bytesToRelease int64
 }
 
 func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retErr error) {
@@ -444,6 +444,11 @@ func (r *Receiver) recvOne(ctx context.Context, serverStream anyStreamServer, hr
 		return fmt.Errorf("breaking stream: %v", err)
 	}
 
+	resp := batchResp{
+		id: req.GetBatchId(),
+		bytesToRelease: int64(prevAcquiredBytes),
+	}
+
 	var authErr error
 	if r.authServer != nil {
 		var newCtx context.Context
@@ -457,7 +462,9 @@ func (r *Receiver) recvOne(ctx context.Context, serverStream anyStreamServer, hr
 	// processAndConsume will process and send an error to the sender loop
 	go func() {
 		defer r.inFlightWG.Done() // done processing
-		r.processAndConsume(thisCtx, method, ac, req, serverStream, authErr, pendingCh, int64(prevAcquiredBytes), sizeHeaderFound)
+		err = r.processAndConsume(thisCtx, method, ac, req, serverStream, authErr, resp, sizeHeaderFound)
+		resp.err = err
+		pendingCh <- resp
 	}()
 
 	return nil
@@ -506,7 +513,7 @@ func (r *Receiver) sendOne(serverStream anyStreamServer, resp batchResp) error {
 			r.logStreamError(err)
 			return err
 		}
-		r.boundedQueue.Release(resp.uncompSz)
+		r.boundedQueue.Release(resp.bytesToRelease)
 
 		return nil
 }
@@ -546,7 +553,7 @@ func (r *Receiver) srvSendLoop(ctx context.Context, serverStream anyStreamServer
 	}
 }
 
-func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, req *arrowpb.BatchArrowRecords, serverStream anyStreamServer, authErr error, pendingCh chan<- batchResp, prevAcquiredBytes int64, sizeHeaderFound bool) {
+func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, req *arrowpb.BatchArrowRecords, serverStream anyStreamServer, authErr error, response batchResp, sizeHeaderFound bool) error {
 	var err error
 
 	ctx, span := r.tracer.Start(ctx, "otel_arrow_stream_recv")
@@ -564,28 +571,23 @@ func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowCo
 
 	// Process records: an error in this code path does
 	// not necessarily break the stream.
-	toRelease := prevAcquiredBytes
 	if authErr != nil {
 		err = authErr
 	} else {
-		toRelease, err = r.processRecords(ctx, method, arrowConsumer, req, prevAcquiredBytes, sizeHeaderFound)
+		err = r.processRecords(ctx, method, arrowConsumer, req, response, sizeHeaderFound)
 	}
 
-	pendingCh <- batchResp{
-		id: req.GetBatchId(),
-		err: err,
-		uncompSz: toRelease,
-	}
+	return err
 }
 
 // processRecords returns an error and a boolean indicating whether
 // the error (true) was from processing the data (i.e., invalid
 // argument) or (false) from the consuming pipeline.  The boolean is
 // not used when success (nil error) is returned.
-func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, records *arrowpb.BatchArrowRecords, prevAcquiredBytes int64, sizeHeaderFound bool) (int64, error) {
+func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, records *arrowpb.BatchArrowRecords, response batchResp, sizeHeaderFound bool) error {
 	payloads := records.GetArrowPayloads()
 	if len(payloads) == 0 {
-		return prevAcquiredBytes, nil
+		return nil
 	}
 	var uncompSize int64
 	if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
@@ -607,7 +609,7 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 	switch payloads[0].Type {
 	case arrowpb.ArrowPayloadType_UNIVARIATE_METRICS:
 		if r.Metrics() == nil {
-			return prevAcquiredBytes, status.Error(codes.Unimplemented, "metrics service not available")
+			return status.Error(codes.Unimplemented, "metrics service not available")
 		}
 		var sizer pmetric.ProtoMarshaler
 		var numPts int
@@ -632,12 +634,12 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 				)
 			}
 
-			acquireErr := r.acquireAdditionalBytes(ctx, uncompSize, prevAcquiredBytes, sizeHeaderFound)
+			acquireErr := r.acquireAdditionalBytes(ctx, uncompSize, response, sizeHeaderFound)
 
 			if acquireErr != nil {
 				err = multierr.Append(err, acquireErr)
 				// if acquireAdditionalBytes() failed then the previously acquired bytes were already released i.e. nothing to releaes.
-				return 0, err
+				return err
 			}
 
 			// entire request has been processed, decrement counter.
@@ -645,11 +647,11 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			r.recvInFlightItems.Add(ctx, int64(-numPts))
 		}
 		r.obsrecv.EndMetricsOp(ctx, streamFormat, numPts, err)
-		return uncompSize, err
+		return err
 
 	case arrowpb.ArrowPayloadType_LOGS:
 		if r.Logs() == nil {
-			return prevAcquiredBytes, status.Error(codes.Unimplemented, "logs service not available")
+			return status.Error(codes.Unimplemented, "logs service not available")
 		}
 		var sizer plog.ProtoMarshaler
 		var numLogs int
@@ -672,12 +674,12 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 				)
 			}
 
-			acquireErr := r.acquireAdditionalBytes(ctx, uncompSize, prevAcquiredBytes, sizeHeaderFound)
+			acquireErr := r.acquireAdditionalBytes(ctx, uncompSize, response, sizeHeaderFound)
 
 			if acquireErr != nil {
 				err = multierr.Append(err, acquireErr)
 				// if acquireAdditionalBytes() failed then the previously acquired bytes were already released i.e. nothing to releaes.
-				return 0, err
+				return err
 			}
 
 			// entire request has been processed, decrement counter.
@@ -685,11 +687,11 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			r.recvInFlightItems.Add(ctx, int64(-numLogs))
 		}
 		r.obsrecv.EndLogsOp(ctx, streamFormat, numLogs, err)
-		return uncompSize, err
+		return err
 
 	case arrowpb.ArrowPayloadType_SPANS:
 		if r.Traces() == nil {
-			return prevAcquiredBytes, status.Error(codes.Unimplemented, "traces service not available")
+			return status.Error(codes.Unimplemented, "traces service not available")
 		}
 		var sizer ptrace.ProtoMarshaler
 		var numSpans int
@@ -713,12 +715,12 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 				)
 			}
 
-			acquireErr := r.acquireAdditionalBytes(ctx, uncompSize, prevAcquiredBytes, sizeHeaderFound)
+			acquireErr := r.acquireAdditionalBytes(ctx, uncompSize, response, sizeHeaderFound)
 
 			if acquireErr != nil {
 				err = multierr.Append(err, acquireErr)
 				// if acquireAdditionalBytes() failed then the previously acquired bytes were already released i.e. nothing to releaes.
-				return 0, err
+				return err
 			}
 
 			// entire request has been processed, decrement counter.
@@ -726,32 +728,43 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			r.recvInFlightItems.Add(ctx, int64(-numSpans))
 		}
 		r.obsrecv.EndTracesOp(ctx, streamFormat, numSpans, err)
-		return uncompSize, err
+		return err
 
 	default:
-		return prevAcquiredBytes, ErrUnrecognizedPayload
+		return ErrUnrecognizedPayload
 	}
 }
 
-func (r *Receiver) acquireAdditionalBytes(ctx context.Context, uncompSize int64, prevAcquiredBytes int64, sizeHeaderFound bool) error {
-	diff := uncompSize - prevAcquiredBytes
+func (r *Receiver) acquireAdditionalBytes(ctx context.Context, uncompSize int64, response batchResp, sizeHeaderFound bool) error {
+	diff := uncompSize - response.bytesToRelease
 
 	var err error
 	if diff != 0 {
 		if sizeHeaderFound {
 			// a mismatch between header set by exporter and the uncompSize just calculated.
-			r.telemetry.Logger.Debug("mismatch between uncompressed size in receiver and otlp-pdata-size header", zap.Int("uncompsize", int(uncompSize)), zap.Int("otlp-pdata-size", int(prevAcquiredBytes)))
-		} else if diff < 0 {
+			r.telemetry.Logger.Debug("mismatch between uncompressed size in receiver and otlp-pdata-size header", zap.Int("uncompsize", int(uncompSize)), zap.Int("otlp-pdata-size", int(response.bytesToRelease)))
+		} else if diff < 0{
+
 			// proto.Size() on compressed request was greater than pdata uncompressed size.
-			r.telemetry.Logger.Debug("uncompressed size is less than compressed size", zap.Int("uncompressed", int(uncompSize)), zap.Int("compressed", int(prevAcquiredBytes)))
+			r.telemetry.Logger.Debug("uncompressed size is less than compressed size", zap.Int("uncompressed", int(uncompSize)), zap.Int("compressed", int(response.bytesToRelease)))
 		}
 
-		// regardless of the reason, if diff is not 0 then Release previously acquired bytes
-		// to prevent deadlock and reacquire the uncompressed size we just calculated.
-		r.boundedQueue.Release(prevAcquiredBytes)
-		err = r.boundedQueue.Acquire(ctx, uncompSize)
+		if diff > 0 {
+			// diff > 0 means we previously acquired too few bytes initially and we need to correct this. Release previously
+			// acquired bytes to prevent deadlock and reacquire the uncompressed size we just calculated.
+			// Note: No need to release and reacquire bytes if diff < 0 because this has less impact and no reason to potentially block
+			// a request that is in flight by reacquiring the correct size.
+			r.boundedQueue.Release(response.bytesToRelease)
+			err = r.boundedQueue.Acquire(ctx, uncompSize)
+			if err != nil {
+				response.bytesToRelease = int64(0)
+			} else {
+				response.bytesToRelease = uncompSize
+			}
+		}
+
+
 	}
 
 	return err
 }
-
