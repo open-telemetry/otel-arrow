@@ -585,13 +585,16 @@ func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
 	info := client.FromContext(ctx)
 	md := map[string][]string{}
 	var attrs []attribute.KeyValue
+
+	incomingHeaders, headersFound := metadata.FromIncomingContext(ctx)
 	for _, k := range mb.metadataKeys {
 		// Lookup the value in the incoming metadata, copy it
 		// into the outgoing metadata, and create a unique
 		// value for the attributeSet.
 		vs := info.Metadata.Get(k)
-		if len(vs) == 0 {
-			continue
+		if len(vs) == 0 && headersFound {
+			// not found in client.Info so try the metadata directly from incoming context.
+			vs = incomingHeaders[strings.ToLower(k)]
 		}
 		md[k] = vs
 		if len(vs) == 1 {
@@ -599,12 +602,6 @@ func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
 		} else {
 			attrs = append(attrs, attribute.StringSlice(k, vs))
 		}
-	}
-
-	if len(md) != len(mb.metadataKeys) {
-		// Did not find all metadata keys from client.Info metadata.
-		// Check if they exist in the incoming context.
-		md, attrs = mb.getMetadataKeysFromIncomingContext(ctx)
 	}
 
 	aset := attribute.NewSet(attrs...)
@@ -628,30 +625,6 @@ func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
 	}
 
 	return b.(*shard).consumeAndWait(ctx, data)
-}
-
-func (mb *multiShardBatcher) getMetadataKeysFromIncomingContext(ctx context.Context) (map[string][]string, []attribute.KeyValue) {
-	headers, ok := metadata.FromIncomingContext(ctx)
-	if !ok || len(headers) == 0 {
-		return nil, nil
-	}
-
-	md := map[string][]string{}
-	var attrs []attribute.KeyValue
-	for _, k := range mb.metadataKeys {
-		// Lookup the value in the incoming metadata, copy it
-		// into the outgoing metadata, and create a unique
-		// value for the attributeSet.
-		vs := headers[strings.ToLower(k)]
-		md[k] = vs
-		if len(vs) == 1 {
-			attrs = append(attrs, attribute.String(k, vs[0]))
-		} else {
-			attrs = append(attrs, attribute.StringSlice(k, vs))
-		}
-	}
-
-	return md, attrs
 }
 
 func recordBatchError(err error) error {

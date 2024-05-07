@@ -3,29 +3,12 @@ receivers:
   # it uses port 4317, the standard port for OTLP/gRPC.
   # There are no required configuration fields.
   otelarrow/standard:
-    protocols:
-      grpc:
-        endpoint: 127.0.0.1:8100
-        max_recv_msg_size_mib: 3000
 
 processors:
   # The batch processor will benefit pipelines with small export sizes.
   concurrentbatch:
 
 exporters:
-  otelarrow/stdout:
-    endpoint: localhost:4317
-    arrow:
-      disabled: false
-      disable_downgrade: true
-    tls:
-      insecure: true
-    headers:
-      "lightstep-org-id": "2"
-      "lightstep-org-name": "LightStep"
-      "lightstep-project-id": "768070"
-      "lightstep-project-name": "dev-mohosman"
-      # lightstep-access-token: "${LIGHTSTEP_ACCESS_TOKEN}"
   # otelarrow/arrow is an OTel-Arrow exporter.
   otelarrow/arrow:
     # For the sample configuration, the other side of the bridge
@@ -53,7 +36,11 @@ service:
     traces:
       receivers: [otelarrow/standard]
       processors: [concurrentbatch]
-      exporters: [otelarrow/stdout, debug]
+      exporters: [otelarrow/arrow, debug]
+    metrics:
+      receivers: [otelarrow/standard]
+      processors: [concurrentbatch]
+      exporters: [otelarrow/arrow, debug]
 
   telemetry:
     resource:
