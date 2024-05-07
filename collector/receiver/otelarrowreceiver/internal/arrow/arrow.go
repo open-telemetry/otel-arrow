@@ -742,7 +742,6 @@ func (r *Receiver) acquireAdditionalBytes(ctx context.Context, uncompSize int64,
 			// a mismatch between header set by exporter and the uncompSize just calculated.
 			r.telemetry.Logger.Debug("mismatch between uncompressed size in receiver and otlp-pdata-size header", zap.Int("uncompsize", int(uncompSize)), zap.Int("otlp-pdata-size", int(response.bytesToRelease)))
 		} else if diff < 0 {
-
 			// proto.Size() on compressed request was greater than pdata uncompressed size.
 			r.telemetry.Logger.Debug("uncompressed size is less than compressed size", zap.Int("uncompressed", int(uncompSize)), zap.Int("compressed", int(response.bytesToRelease)))
 		}
