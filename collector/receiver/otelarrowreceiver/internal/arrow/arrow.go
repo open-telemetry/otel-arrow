@@ -100,14 +100,14 @@ func New(
 	tracer := set.TelemetrySettings.TracerProvider.Tracer("otel-arrow-receiver")
 	var errors, err error
 	recv := &Receiver{
-		Consumers:   cs,
-		obsrecv:     obsrecv,
-		telemetry:   set.TelemetrySettings,
-		tracer:      tracer,
-		authServer:  authServer,
-		newConsumer: newConsumer,
-		gsettings:   gsettings,
-		netReporter: netReporter,
+		Consumers:    cs,
+		obsrecv:      obsrecv,
+		telemetry:    set.TelemetrySettings,
+		tracer:       tracer,
+		authServer:   authServer,
+		newConsumer:  newConsumer,
+		gsettings:    gsettings,
+		netReporter:  netReporter,
 		boundedQueue: bq,
 	}
 
@@ -341,8 +341,8 @@ type anyStreamServer interface {
 }
 
 type batchResp struct {
-	id int64
-	err error
+	id             int64
+	err            error
 	bytesToRelease int64
 }
 
@@ -384,9 +384,8 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 		senderWG.Done()
 	}()
 
-
 	select {
-	case <-doneCtx.Done(): 
+	case <-doneCtx.Done():
 		senderWG.Wait()
 		return status.Error(codes.Canceled, "server stream shutdown")
 	case retErr = <-streamErrCh:
@@ -404,7 +403,6 @@ func (r *Receiver) recvOne(ctx context.Context, serverStream anyStreamServer, hr
 			r.logStreamError(retErr)
 		}
 	}()
-
 
 	// Receive a batch corresponding with one ptrace.Traces, pmetric.Metrics,
 	// or plog.Logs item.
@@ -445,7 +443,7 @@ func (r *Receiver) recvOne(ctx context.Context, serverStream anyStreamServer, hr
 	}
 
 	resp := batchResp{
-		id: req.GetBatchId(),
+		id:             req.GetBatchId(),
 		bytesToRelease: int64(prevAcquiredBytes),
 	}
 
@@ -486,36 +484,36 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 }
 
 func (r *Receiver) sendOne(serverStream anyStreamServer, resp batchResp) error {
-		// Note: Statuses can be batched, but we do not take
-		// advantage of this feature.
-		status := &arrowpb.BatchStatus{
-			BatchId: resp.id,
+	// Note: Statuses can be batched, but we do not take
+	// advantage of this feature.
+	status := &arrowpb.BatchStatus{
+		BatchId: resp.id,
+	}
+	if resp.err == nil {
+		status.StatusCode = arrowpb.StatusCode_OK
+	} else {
+		status.StatusMessage = resp.err.Error()
+		switch {
+		case errors.Is(resp.err, arrowRecord.ErrConsumerMemoryLimit):
+			r.telemetry.Logger.Error("arrow resource exhausted", zap.Error(resp.err))
+			status.StatusCode = arrowpb.StatusCode_RESOURCE_EXHAUSTED
+		case consumererror.IsPermanent(resp.err):
+			r.telemetry.Logger.Error("arrow data error", zap.Error(resp.err))
+			status.StatusCode = arrowpb.StatusCode_INVALID_ARGUMENT
+		default:
+			r.telemetry.Logger.Debug("arrow consumer error", zap.Error(resp.err))
+			status.StatusCode = arrowpb.StatusCode_UNAVAILABLE
 		}
-		if resp.err == nil {
-			status.StatusCode = arrowpb.StatusCode_OK
-		} else {
-			status.StatusMessage = resp.err.Error()
-			switch {
-			case errors.Is(resp.err, arrowRecord.ErrConsumerMemoryLimit):
-				r.telemetry.Logger.Error("arrow resource exhausted", zap.Error(resp.err))
-				status.StatusCode = arrowpb.StatusCode_RESOURCE_EXHAUSTED
-			case consumererror.IsPermanent(resp.err):
-				r.telemetry.Logger.Error("arrow data error", zap.Error(resp.err))
-				status.StatusCode = arrowpb.StatusCode_INVALID_ARGUMENT
-			default:
-				r.telemetry.Logger.Debug("arrow consumer error", zap.Error(resp.err))
-				status.StatusCode = arrowpb.StatusCode_UNAVAILABLE
-			}
-		}
+	}
 
-		err := serverStream.Send(status)
-		if err != nil {
-			r.logStreamError(err)
-			return err
-		}
-		r.boundedQueue.Release(resp.bytesToRelease)
+	err := serverStream.Send(status)
+	if err != nil {
+		r.logStreamError(err)
+		return err
+	}
+	r.boundedQueue.Release(resp.bytesToRelease)
 
-		return nil
+	return nil
 }
 
 func (r *Receiver) flushSender(serverStream anyStreamServer, pendingCh <-chan batchResp) error {
@@ -743,7 +741,7 @@ func (r *Receiver) acquireAdditionalBytes(ctx context.Context, uncompSize int64,
 		if sizeHeaderFound {
 			// a mismatch between header set by exporter and the uncompSize just calculated.
 			r.telemetry.Logger.Debug("mismatch between uncompressed size in receiver and otlp-pdata-size header", zap.Int("uncompsize", int(uncompSize)), zap.Int("otlp-pdata-size", int(response.bytesToRelease)))
-		} else if diff < 0{
+		} else if diff < 0 {
 
 			// proto.Size() on compressed request was greater than pdata uncompressed size.
 			r.telemetry.Logger.Debug("uncompressed size is less than compressed size", zap.Int("uncompressed", int(uncompSize)), zap.Int("compressed", int(response.bytesToRelease)))
@@ -762,7 +760,6 @@ func (r *Receiver) acquireAdditionalBytes(ctx context.Context, uncompSize int64,
 				response.bytesToRelease = uncompSize
 			}
 		}
-
 
 	}
 

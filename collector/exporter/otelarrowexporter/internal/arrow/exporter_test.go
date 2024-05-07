@@ -602,8 +602,8 @@ func TestArrowExporterHeaders(t *testing.T) {
 
 		if times%2 == 1 {
 			md := metadata.MD{
-				"expected1": []string{"metadata1"},
-				"expected2": []string{fmt.Sprint(times)},
+				"expected1":       []string{"metadata1"},
+				"expected2":       []string{fmt.Sprint(times)},
 				"otlp-pdata-size": []string{"329"},
 			}
 			expectOutput = append(expectOutput, md)
@@ -680,7 +680,7 @@ func TestArrowExporterIsTraced(t *testing.T) {
 					propagation.TraceContext{}.Inject(ctx, propagation.MapCarrier(expectMap))
 
 					md := metadata.MD{
-						"traceparent": []string{expectMap["traceparent"]},
+						"traceparent":     []string{expectMap["traceparent"]},
 						"otlp-pdata-size": []string{"329"},
 					}
 					expectOutput = append(expectOutput, md)

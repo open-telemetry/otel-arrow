@@ -369,49 +369,49 @@ func TestBoundedQueueWithPdataHeaders(t *testing.T) {
 	stdTesting := otelAssert.NewStdUnitTest(t)
 	pdataSizeTenTraces := sizer.TracesSize(testdata.GenerateTraces(10))
 	defaultBoundedQueueLimit := int64(100000)
-	tests := []struct{
-		name      string
-		numTraces int
+	tests := []struct {
+		name               string
+		numTraces          int
 		includePdataHeader bool
-		pdataSize string
-		rejected bool
+		pdataSize          string
+		rejected           bool
 	}{
 		{
-			name: "no header compressed greater than uncompressed",
+			name:      "no header compressed greater than uncompressed",
 			numTraces: 10,
 		},
 		{
-			name: "no header compressed less than uncompressed",
+			name:      "no header compressed less than uncompressed",
 			numTraces: 100,
 		},
 		{
-			name: "pdata header less than uncompressedSize",
-			numTraces: 10,
-			pdataSize: strconv.Itoa(pdataSizeTenTraces / 2),
+			name:               "pdata header less than uncompressedSize",
+			numTraces:          10,
+			pdataSize:          strconv.Itoa(pdataSizeTenTraces / 2),
 			includePdataHeader: true,
 		},
 		{
-			name: "pdata header equal uncompressedSize",
-			numTraces: 10,
-			pdataSize: strconv.Itoa(pdataSizeTenTraces),
+			name:               "pdata header equal uncompressedSize",
+			numTraces:          10,
+			pdataSize:          strconv.Itoa(pdataSizeTenTraces),
 			includePdataHeader: true,
 		},
 		{
-			name: "pdata header greater than uncompressedSize",
-			numTraces: 10,
-			pdataSize: strconv.Itoa(pdataSizeTenTraces * 2),
+			name:               "pdata header greater than uncompressedSize",
+			numTraces:          10,
+			pdataSize:          strconv.Itoa(pdataSizeTenTraces * 2),
 			includePdataHeader: true,
 		},
 		{
-			name: "no header compressed accepted uncompressed rejected",
+			name:      "no header compressed accepted uncompressed rejected",
 			numTraces: 100,
-			rejected: true,
+			rejected:  true,
 		},
 		{
-			name: "pdata header accepted uncompressed rejected",
-			numTraces: 100,
-			rejected: true,
-			pdataSize: strconv.Itoa(pdataSizeTenTraces),
+			name:               "pdata header accepted uncompressed rejected",
+			numTraces:          100,
+			rejected:           true,
+			pdataSize:          strconv.Itoa(pdataSizeTenTraces),
 			includePdataHeader: true,
 		},
 	}
@@ -439,7 +439,7 @@ func TestBoundedQueueWithPdataHeaders(t *testing.T) {
 			if tt.rejected {
 				ctc.stream.EXPECT().Send(statusUnavailableFor(batch.BatchId, "rejecting request, request size larger than configured limit")).Times(1).Return(fmt.Errorf("rejecting request, request size larger than configured limit"))
 				// make the boundedqueue limit be slightly less than the uncompressed size
-				bq = admission.NewBoundedQueue(int64(sizer.TracesSize(td) - 100), int64(10))
+				bq = admission.NewBoundedQueue(int64(sizer.TracesSize(td)-100), int64(10))
 			} else {
 				ctc.stream.EXPECT().Send(statusOKFor(batch.BatchId)).Times(1).Return(nil)
 				bq = admission.NewBoundedQueue(defaultBoundedQueueLimit, int64(10))
