@@ -19,7 +19,6 @@ import (
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
-	"google.golang.org/grpc/metadata"
 
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
@@ -201,15 +200,9 @@ func newBatchProcessor(set processor.CreateSettings, cfg *Config, batchFunc func
 
 // newShard gets or creates a batcher corresponding with attrs.
 func (bp *batchProcessor) newShard(md map[string][]string) *shard {
-	// client.NewContext adds the metadata to client.Info object. In some cases the md
-	// keys were found in the incoming context and this incoming context may be used
-	// by downstream collector components that don't know about or use the client.Info object.
-	incoming := metadata.NewIncomingContext(context.Background(), md)
-
-	exportCtx := client.NewContext(incoming, client.Info{
+	exportCtx := client.NewContext(context.Background(), client.Info{
 		Metadata: client.NewMetadata(md),
 	})
-
 	b := &shard{
 		processor: bp,
 		newItem:   make(chan dataItem, runtime.NumCPU()),
@@ -561,17 +554,11 @@ func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
 	info := client.FromContext(ctx)
 	md := map[string][]string{}
 	var attrs []attribute.KeyValue
-
-	incomingHeaders, headersFound := metadata.FromIncomingContext(ctx)
 	for _, k := range mb.metadataKeys {
 		// Lookup the value in the incoming metadata, copy it
 		// into the outgoing metadata, and create a unique
 		// value for the attributeSet.
 		vs := info.Metadata.Get(k)
-		if len(vs) == 0 && headersFound {
-			// not found in client.Info so try the metadata directly from incoming context.
-			vs = incomingHeaders[strings.ToLower(k)]
-		}
 		md[k] = vs
 		if len(vs) == 1 {
 			attrs = append(attrs, attribute.String(k, vs[0]))
@@ -579,7 +566,6 @@ func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
 			attrs = append(attrs, attribute.StringSlice(k, vs))
 		}
 	}
-
 	aset := attribute.NewSet(attrs...)
 
 	b, ok := mb.batchers.Load(aset)

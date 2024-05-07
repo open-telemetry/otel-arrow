@@ -16,7 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 	"golang.org/x/sync/semaphore"
-	"google.golang.org/grpc/metadata"
 
 	"github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor/testdata"
 	"go.opentelemetry.io/collector/client"
@@ -1408,16 +1407,8 @@ func formatTwo(first, second []string) string {
 
 func (mts *metadataTracesSink) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
 	info := client.FromContext(ctx)
-	incomingHeaders, headersFound := metadata.FromIncomingContext(ctx)
 	token1 := info.Metadata.Get("token1")
-	if len(token1) == 0 && headersFound {
-		token1 = incomingHeaders["token1"]
-	}
 	token2 := info.Metadata.Get("token2")
-	if len(token2) == 0 && headersFound {
-		token2 = incomingHeaders["token2"]
-	}
-
 	mts.lock.Lock()
 	defer mts.lock.Unlock()
 
@@ -1443,10 +1434,6 @@ func TestBatchProcessorSpansBatchedByMetadata(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
 
-	incoming := metadata.NewIncomingContext(context.Background(), map[string][]string{
-		"token1": {"incoming1"},
-		"token2": {"incoming2"},
-	})
 	bg := context.Background()
 	callCtxs := []context.Context{
 		client.NewContext(bg, client.Info{
@@ -1475,14 +1462,6 @@ func TestBatchProcessorSpansBatchedByMetadata(t *testing.T) {
 				"token3": {"n/a"},
 				"token4": {"n/a", "d/c"},
 			}),
-		}),
-		// empty client.Info with empty metadata.FromIncomingContext.
-		client.NewContext(bg, client.Info{
-			Metadata: client.NewMetadata(map[string][]string{}),
-		}),
-		// empty client.Info with existing metadata.FromIncomingContext.
-		client.NewContext(incoming, client.Info{
-			Metadata: client.NewMetadata(map[string][]string{}),
 		}),
 	}
 	expectByContext := make([]int, len(callCtxs))
