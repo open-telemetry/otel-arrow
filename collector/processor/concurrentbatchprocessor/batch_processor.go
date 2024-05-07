@@ -201,9 +201,15 @@ func newBatchProcessor(set processor.CreateSettings, cfg *Config, batchFunc func
 
 // newShard gets or creates a batcher corresponding with attrs.
 func (bp *batchProcessor) newShard(md map[string][]string) *shard {
-	exportCtx := client.NewContext(context.Background(), client.Info{
+	// client.NewContext adds the metadata to client.Info object. In some cases the md
+	// keys were found in the incoming context and this incoming context may be used
+	// by downstream collector components that don't know about or use the client.Info object.
+	incoming := metadata.NewIncomingContext(context.Background(), md)
+
+	exportCtx := client.NewContext(incoming, client.Info{
 		Metadata: client.NewMetadata(md),
 	})
+
 	b := &shard{
 		processor: bp,
 		newItem:   make(chan dataItem, runtime.NumCPU()),
@@ -364,7 +370,7 @@ func (b *shard) sendItems(trigger trigger) {
 		var err error
 
 		var parent context.Context
-		isSingleCtx := allSame(contexts) || allSameMetadata(contexts)
+		isSingleCtx := allSame(contexts)
 
 		// For SDK's we can reuse the parent context because there is
 		// only one possible parent. This is not the case
@@ -375,8 +381,8 @@ func (b *shard) sendItems(trigger trigger) {
 		} else {
 			var sp trace.Span
 			links := buildLinks(contexts)
-			parent = context.Background()
-			parent, sp = b.tracer.Tracer("otel").Start(context.Background(), "concurrent_batch_processor/export", trace.WithLinks(links...))
+
+			parent, sp = b.tracer.Tracer("otel").Start(b.exportCtx, "concurrent_batch_processor/export", trace.WithLinks(links...))
 			sp.End()
 		}
 		err = b.batch.export(parent, req)
@@ -421,17 +427,6 @@ func buildLinks(contexts []context.Context) []trace.Link {
 func allSame(x []context.Context) bool {
 	for idx := range x[1:] {
 		if x[idx] != x[0] {
-			return false
-		}
-	}
-	return true
-}
-
-func allSameMetadata(x []context.Context) bool {
-	firstMD, _ := metadata.FromIncomingContext(x[0])
-	for idx := range x[1:] {
-		md, _ := metadata.FromIncomingContext(x[idx])
-		if !equalMaps(md, firstMD) {
 			return false
 		}
 	}
@@ -595,6 +590,9 @@ func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
 		// into the outgoing metadata, and create a unique
 		// value for the attributeSet.
 		vs := info.Metadata.Get(k)
+		if len(vs) == 0 {
+			continue
+		}
 		md[k] = vs
 		if len(vs) == 1 {
 			attrs = append(attrs, attribute.String(k, vs[0]))
