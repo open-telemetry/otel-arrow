@@ -433,30 +433,6 @@ func allSame(x []context.Context) bool {
 	return true
 }
 
-func equalMaps(m1, m2 map[string][]string) bool {
-	if len(m1) != len(m2) {
-		return false
-	}
-
-	for key, val1 := range m1 {
-		if val2, ok := m2[key]; ok {
-			if len(val1) != len(val2) {
-				return false
-			}
-
-			for idx := range val1 {
-				if val1[idx] != val2[idx] {
-					return false
-				}
-			}
-		} else { // key not found
-			return false
-		}
-	}
-
-	return true
-}
-
 func (bp *batchProcessor) countAcquire(ctx context.Context, bytes int64) error {
 	err := bp.sem.Acquire(ctx, bytes)
 	if err == nil && bp.telemetry.batchInFlightBytes != nil {
