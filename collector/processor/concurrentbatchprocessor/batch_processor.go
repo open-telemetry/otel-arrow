@@ -374,7 +374,6 @@ func (b *shard) sendItems(trigger trigger) {
 		} else {
 			var sp trace.Span
 			links := buildLinks(contexts)
-
 			parent, sp = b.tracer.Tracer("otel").Start(b.exportCtx, "concurrent_batch_processor/export", trace.WithLinks(links...))
 			sp.End()
 		}
