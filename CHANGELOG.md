@@ -11,6 +11,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Remove the OTel-Arrow exporter FIFO prioritizer.  Let "leastloaded" imply least-loaded
   over all streams and use this behavior by default. [#186](https://github.com/open-telemetry/otel-arrow/pull/186)
 
+- Fix concurrentbatchproccessor bug to correctly propagate metadataKeys for multi shard batching. [#184](https://github.com/open-telemetry/otel-arrow/pull/184)
+
 - Refactor otelarrowreceiver to do stream.Recv, request processing, and stream.Send in separate goroutines. [#181](https://github.com/open-telemetry/otel-arrow/pull/181)
 
 - Add a semaphore package to limit bytes admitted and total number of waiters. [#174](https://github.com/open-telemetry/otel-arrow/pull/174)
