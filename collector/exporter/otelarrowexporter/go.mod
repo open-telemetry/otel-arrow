@@ -6,8 +6,8 @@ toolchain go1.21.4
 
 require (
 	github.com/apache/arrow/go/v14 v14.0.2
-	github.com/open-telemetry/otel-arrow v0.22.0
-	github.com/open-telemetry/otel-arrow/collector v0.22.0
+	github.com/open-telemetry/otel-arrow v0.23.0
+	github.com/open-telemetry/otel-arrow/collector v0.23.0
 	github.com/stretchr/testify v1.9.0
 	go.opentelemetry.io/collector v0.98.0
 	go.opentelemetry.io/collector/component v0.98.0
@@ -89,3 +89,14 @@ require (
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+
+
+
+
+
+
+
+
+
+

@@ -8,14 +8,14 @@ require (
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.98.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.98.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.98.0
-	github.com/open-telemetry/otel-arrow/collector/connector/validationconnector v0.22.0
-	github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter v0.22.0
-	github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter v0.22.0
-	github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.22.0
-	github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor v0.22.0
-	github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.22.0
-	github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver v0.22.0
-	github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver v0.22.0
+	github.com/open-telemetry/otel-arrow/collector/connector/validationconnector v0.23.0
+	github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter v0.23.0
+	github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter v0.23.0
+	github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.23.0
+	github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor v0.23.0
+	github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.23.0
+	github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver v0.23.0
+	github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver v0.23.0
 	github.com/stretchr/testify v1.9.0
 	go.opentelemetry.io/collector/component v0.98.0
 	go.opentelemetry.io/collector/connector v0.98.0
@@ -35,8 +35,10 @@ require (
 	github.com/HdrHistogram/hdrhistogram-go v1.1.2 // indirect
 	github.com/apache/arrow/go/v14 v14.0.2 // indirect
 	github.com/axiomhq/hyperloglog v0.0.0-20230201085229-3ddf4bad03dc // indirect
+	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/btcsuite/btcd/btcec/v2 v2.3.2 // indirect
+	github.com/buger/jsonparser v1.1.1 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/cyrildever/feistel v1.5.5 // indirect
@@ -72,6 +74,7 @@ require (
 	github.com/knadh/koanf/providers/confmap v0.1.0 // indirect
 	github.com/knadh/koanf/v2 v2.1.1 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
+	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.19 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
@@ -79,8 +82,8 @@ require (
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/mostynb/go-grpc-compression v1.2.2 // indirect
-	github.com/open-telemetry/otel-arrow v0.22.0 // indirect
-	github.com/open-telemetry/otel-arrow/collector v0.22.0 // indirect
+	github.com/open-telemetry/otel-arrow v0.23.0 // indirect
+	github.com/open-telemetry/otel-arrow/collector v0.23.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.18 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
@@ -98,6 +101,7 @@ require (
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.3.5 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
+	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zeebo/xxh3 v1.0.2 // indirect
@@ -164,3 +168,14 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+
+
+
+
+
+
+
+
+
+

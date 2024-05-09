@@ -6,7 +6,7 @@ toolchain go1.21.4
 
 require (
 	github.com/klauspost/compress v1.17.8
-	github.com/open-telemetry/otel-arrow/collector v0.22.0
+	github.com/open-telemetry/otel-arrow/collector v0.23.0
 	github.com/stretchr/testify v1.9.0
 	go.opentelemetry.io/collector/component v0.98.0
 	go.opentelemetry.io/collector/config/configretry v0.98.0
@@ -60,3 +60,14 @@ require (
 	google.golang.org/protobuf v1.33.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+
+
+
+
+
+
+
+
+
+
