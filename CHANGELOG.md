@@ -9,7 +9,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## Unreleased
 
 - Remove the OTel-Arrow exporter FIFO prioritizer.  Let "leastloaded" imply least-loaded
-  over all streams and use this behavior by default.
+  over all streams and use this behavior by default. [#186](https://github.com/open-telemetry/otel-arrow/pull/186)
 
 - Refactor otelarrowreceiver to do stream.Recv, request processing, and stream.Send in separate goroutines. [#181](https://github.com/open-telemetry/otel-arrow/pull/181)
 
