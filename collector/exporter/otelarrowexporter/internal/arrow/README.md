@@ -108,12 +108,6 @@ restart following unavaiable, instead the manager waits for downgrade.
 
 ### Prioritizers
 
-#### FIFO
-
-This prioritizer gives work to the first stream that is ready for it.
-The implementation shares one `chan writeItem` between multiple
-`streamWorkState` objects.
-
 #### LeastLoadedN
 
 This prioritizer randomly selects N active streams and chooses the one
