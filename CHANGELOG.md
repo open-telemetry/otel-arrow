@@ -8,6 +8,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## [0.23.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.23.0) - 2024-05-09
+
 - Remove the OTel-Arrow exporter FIFO prioritizer.  Let "leastloaded" imply least-loaded
   over all streams and use this behavior by default. [#186](https://github.com/open-telemetry/otel-arrow/pull/186)
 
