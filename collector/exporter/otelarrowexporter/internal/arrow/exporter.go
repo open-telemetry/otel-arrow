@@ -311,7 +311,7 @@ func (e *Exporter) SendAndWait(ctx context.Context, data any) (bool, error) {
 	}
 
 	for {
-		writer := e.ready.nextWriter(ctx)
+		writer := e.ready.nextWriter()
 
 		if writer == nil {
 			return false, nil // a downgraded connection
