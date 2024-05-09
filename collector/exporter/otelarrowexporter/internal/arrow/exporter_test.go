@@ -167,13 +167,6 @@ func statusOKFor(id int64) *arrowpb.BatchStatus {
 	}
 }
 
-func statusCanceledFor(id int64) *arrowpb.BatchStatus {
-	return &arrowpb.BatchStatus{
-		BatchId:    id,
-		StatusCode: arrowpb.StatusCode_CANCELED,
-	}
-}
-
 func statusUnavailableFor(id int64) *arrowpb.BatchStatus {
 	return &arrowpb.BatchStatus{
 		BatchId:       id,
@@ -725,6 +718,8 @@ func TestArrowExporterStreamLifetimeAndShutdown(t *testing.T) {
 			for _, numStreams := range []int{1, 2, 8} {
 				t.Run(fmt.Sprint(numStreams), func(t *testing.T) {
 					tc := newShortLifetimeStreamTestCase(t, pname, numStreams)
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
 
 					var wg sync.WaitGroup
 
@@ -757,14 +752,12 @@ func TestArrowExporterStreamLifetimeAndShutdown(t *testing.T) {
 						return tc.returnNewStream(channel)(ctx, opts...)
 					})
 
-					bg := context.Background()
-					require.NoError(t, tc.exporter.Start(bg))
+					require.NoError(t, tc.exporter.Start(ctx))
 
 					start := time.Now()
 					// This is 10 stream lifetimes using the "ShortLifetime" test.
 					for time.Since(start) < 5*time.Second {
 						input := testdata.GenerateTraces(2)
-						ctx := context.Background()
 
 						sent, err := tc.exporter.SendAndWait(ctx, input)
 						require.NoError(t, err)
@@ -773,10 +766,11 @@ func TestArrowExporterStreamLifetimeAndShutdown(t *testing.T) {
 						expectCount++
 					}
 
-					require.NoError(t, tc.exporter.Shutdown(bg))
+					require.NoError(t, tc.exporter.Shutdown(ctx))
 
 					require.Equal(t, expectCount, actualCount)
 
+					cancel()
 					wg.Wait()
 
 					require.Empty(t, tc.observedLogs.All())
