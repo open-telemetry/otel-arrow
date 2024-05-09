@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"runtime"
 	"strconv"
 	"strings"
@@ -341,6 +342,7 @@ type anyStreamServer interface {
 }
 
 type batchResp struct {
+	addr           net.Addr
 	id             int64
 	err            error
 	bytesToRelease int64
@@ -443,6 +445,7 @@ func (r *Receiver) recvOne(ctx context.Context, serverStream anyStreamServer, hr
 	}
 
 	resp := batchResp{
+		addr:           hrcv.connInfo.Addr,
 		id:             req.GetBatchId(),
 		bytesToRelease: int64(prevAcquiredBytes),
 	}
@@ -739,8 +742,12 @@ func (r *Receiver) acquireAdditionalBytes(ctx context.Context, uncompSize int64,
 	var err error
 	if diff != 0 {
 		if sizeHeaderFound {
+			var clientAddr string
+			if response.addr != nil {
+				clientAddr = response.addr.String()
+			}
 			// a mismatch between header set by exporter and the uncompSize just calculated.
-			r.telemetry.Logger.Debug("mismatch between uncompressed size in receiver and otlp-pdata-size header", zap.Int("uncompsize", int(uncompSize)), zap.Int("otlp-pdata-size", int(response.bytesToRelease)))
+			r.telemetry.Logger.Debug("mismatch between uncompressed size in receiver and otlp-pdata-size header", zap.String("client-address", clientAddr), zap.Int("uncompsize", int(uncompSize)), zap.Int("otlp-pdata-size", int(response.bytesToRelease)))
 		} else if diff < 0 {
 			// proto.Size() on compressed request was greater than pdata uncompressed size.
 			r.telemetry.Logger.Debug("uncompressed size is less than compressed size", zap.Int("uncompressed", int(uncompSize)), zap.Int("compressed", int(response.bytesToRelease)))
