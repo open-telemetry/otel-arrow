@@ -34,7 +34,7 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-var AllPrioritizers = []PrioritizerName{FifoPrioritizer, LeastLoadedTwoPrioritizer}
+var AllPrioritizers = []PrioritizerName{LeastLoadedPrioritizer, LeastLoadedTwoPrioritizer}
 
 const defaultMaxStreamLifetime = 11 * time.Second
 
@@ -784,30 +784,6 @@ func TestArrowExporterStreamLifetimeAndShutdown(t *testing.T) {
 			}
 		})
 	}
-}
-
-func BenchmarkFifo4(b *testing.B) {
-	benchmarkPrioritizer(b, 4, FifoPrioritizer)
-}
-
-func BenchmarkFifo8(b *testing.B) {
-	benchmarkPrioritizer(b, 8, FifoPrioritizer)
-}
-
-func BenchmarkFifo16(b *testing.B) {
-	benchmarkPrioritizer(b, 16, FifoPrioritizer)
-}
-
-func BenchmarkFifo32(b *testing.B) {
-	benchmarkPrioritizer(b, 32, FifoPrioritizer)
-}
-
-func BenchmarkFifo64(b *testing.B) {
-	benchmarkPrioritizer(b, 64, FifoPrioritizer)
-}
-
-func BenchmarkFifo128(b *testing.B) {
-	benchmarkPrioritizer(b, 128, FifoPrioritizer)
 }
 
 func BenchmarkLeastLoadedTwo4(b *testing.B) {
