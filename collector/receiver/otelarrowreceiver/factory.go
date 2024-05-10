@@ -21,7 +21,7 @@ const (
 
 	defaultMemoryLimitMiB    = 128
 	defaultAdmissionLimitMiB = defaultMemoryLimitMiB / 2
-	defaultWaiterLimit = 1000
+	defaultWaiterLimit       = 1000
 )
 
 // NewFactory creates a new OTLP receiver factory.
