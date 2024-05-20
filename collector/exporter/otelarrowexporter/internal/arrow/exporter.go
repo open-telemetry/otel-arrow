@@ -34,7 +34,9 @@ type Exporter struct {
 
 	// maxStreamLifetime is a limit on duration for streams.  A
 	// slight "jitter" is applied relative to this value on a
-	// per-stream basis.
+	// per-stream basis.  TODO: move this field to workstate
+	// so it's not re-initialized on each stream. the jitter is
+	// averaged away by re-evaluating.
 	maxStreamLifetime time.Duration
 
 	// disableDowngrade prevents downgrade from occurring, supports
