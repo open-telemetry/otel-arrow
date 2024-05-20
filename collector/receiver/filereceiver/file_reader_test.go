@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/pdata/pmetric"
+	"go.uber.org/zap"
 )
 
 func TestFileReader_Readline(t *testing.T) {
@@ -23,7 +24,7 @@ func TestFileReader_Readline(t *testing.T) {
 	}
 	f, err := os.Open(filepath.Join("testdata", "metrics.json"))
 	require.NoError(t, err)
-	fr := newFileReader(cons, f, newReplayTimer(0), "json", "none")
+	fr := newFileReader(cons, f, newReplayTimer(0), "json", "none", zap.Must(zap.NewDevelopment()))
 	err = fr.readMetricLine(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 1, len(tc.consumed))
@@ -43,7 +44,7 @@ func TestFileReader_ReadChunk(t *testing.T) {
 	}
 	f, err := os.Open(filepath.Join("testdata", "metrics.pb"))
 	require.NoError(t, err)
-	fr := newFileReader(cons, f, newReplayTimer(0), "proto", "")
+	fr := newFileReader(cons, f, newReplayTimer(0), "proto", "", zap.Must(zap.NewDevelopment()))
 	err = fr.readMetricChunk(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, 1, len(tc.consumed))
@@ -84,7 +85,7 @@ func TestFileReader_ReadAll(t *testing.T) {
 		throttle:  2,
 		sleepFunc: sleeper.fakeSleep,
 	}
-	fr := newFileReader(cons, f, rt, "json", "")
+	fr := newFileReader(cons, f, rt, "json", "", zap.Must(zap.NewDevelopment()))
 	err = fr.readAllLines(context.Background())
 	require.NoError(t, err)
 	const expectedSleeps = 10
@@ -110,7 +111,7 @@ func TestFileReader_ReadAllChunks(t *testing.T) {
 		throttle:  2,
 		sleepFunc: sleeper.fakeSleep,
 	}
-	fr := newFileReader(cons, f, rt, "proto", "")
+	fr := newFileReader(cons, f, rt, "proto", "", zap.Must(zap.NewDevelopment()))
 	err = fr.readAllChunks(context.Background())
 	require.NoError(t, err)
 	const expectedSleeps = 10
