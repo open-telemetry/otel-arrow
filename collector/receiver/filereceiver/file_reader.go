@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.uber.org/zap"
 )
 
 // stringReader is the only function we use from *bufio.Reader. We define it
@@ -38,12 +39,14 @@ type fileReader struct {
 	unmarshaler  unmarshaler
 	consumer     consumerType
 	timer        *replayTimer
+	logger       *zap.Logger
 }
 
-func newFileReader(consumer consumerType, file *os.File, timer *replayTimer, format string, compression string) fileReader {
+func newFileReader(consumer consumerType, file *os.File, timer *replayTimer, format string, compression string, logger *zap.Logger) fileReader {
 	fr := fileReader{
 		consumer: consumer,
 		timer:    timer,
+		logger:   logger,
 	}
 
 	if compression == compressionTypeZSTD {
@@ -96,6 +99,7 @@ func (fr fileReader) readAllLines(ctx context.Context) error {
 
 			if err != nil {
 				if errors.Is(err, io.EOF) {
+					fr.logger.Info("reached end-of-file")
 					return nil
 				}
 				return err
