@@ -49,7 +49,7 @@ import (
 
 const otlpReceiverName = "receiver_test"
 
-var testReceiverID = component.NewIDWithName(component.MustNewType(componentMetadata.Type), otlpReceiverName)
+var testReceiverID = component.NewIDWithName(componentMetadata.Type, otlpReceiverName)
 
 func TestGRPCNewPortAlreadyUsed(t *testing.T) {
 	addr := testutil.GetAvailableLocalAddress(t)
@@ -65,13 +65,13 @@ func TestGRPCNewPortAlreadyUsed(t *testing.T) {
 	require.Error(t, r.Start(context.Background(), componenttest.NewNopHost()))
 }
 
-// TestOTLPReceiverGRPCTracesIngestTest checks that the gRPC trace receiver
+// TestOTelArrowReceiverGRPCTracesIngestTest checks that the gRPC trace receiver
 // is returning the proper response (return and metrics) when the next consumer
 // in the pipeline reports error. The test changes the responses returned by the
 // next trace consumer, checks if data was passed down the pipeline and if
 // proper metrics were recorded. It also uses all endpoints supported by the
 // trace receiver.
-func TestOTLPReceiverGRPCTracesIngestTest(t *testing.T) {
+func TestOTelArrowReceiverGRPCTracesIngestTest(t *testing.T) {
 	type ingestionStateTest struct {
 		okToIngest   bool
 		expectedCode codes.Code
@@ -236,7 +236,7 @@ func TestShutdown(t *testing.T) {
 
 	nextSink := new(consumertest.TracesSink)
 
-	// Create OTLP receiver
+	// Create OTelArrow receiver
 	factory := NewFactory()
 	cfg := factory.CreateDefaultConfig().(*Config)
 	cfg.GRPC.NetAddr.Endpoint = endpointGrpc

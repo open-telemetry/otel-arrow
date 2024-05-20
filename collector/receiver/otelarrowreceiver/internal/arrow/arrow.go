@@ -56,7 +56,7 @@ var (
 	ErrNoMetricsConsumer   = fmt.Errorf("no metrics consumer")
 	ErrNoLogsConsumer      = fmt.Errorf("no logs consumer")
 	ErrNoTracesConsumer    = fmt.Errorf("no traces consumer")
-	ErrUnrecognizedPayload = fmt.Errorf("unrecognized OTLP payload")
+	ErrUnrecognizedPayload = fmt.Errorf("unrecognized OTel-Arrow payload")
 )
 
 type Consumers interface {
