@@ -24,7 +24,6 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
-	"github.com/open-telemetry/otel-arrow/collector/admission"
 	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/arrow"
 	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/logs"
 	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver/internal/metrics"
@@ -114,7 +113,6 @@ func (r *otelArrowReceiver) startProtocolServers(host component.Host) error {
 			return err
 		}
 	}
-	bq :=  admission.NewBoundedQueue(int64(r.cfg.Arrow.AdmissionLimitMiB<<20), r.cfg.Arrow.WaiterLimit)
 
 	r.arrowReceiver, err = arrow.New(arrow.Consumers(r), r.settings, r.obsrepGRPC, r.cfg.GRPC, authServer, func() arrowRecord.ConsumerAPI {
 		var opts []arrowRecord.Option
@@ -126,7 +124,7 @@ func (r *otelArrowReceiver) startProtocolServers(host component.Host) error {
 			opts = append(opts, arrowRecord.WithMeterProvider(r.settings.TelemetrySettings.MeterProvider, r.settings.TelemetrySettings.MetricsLevel))
 		}
 		return arrowRecord.NewConsumer(opts...)
-	}, bq, r.netReporter)
+	}, r.netReporter)
 
 	if err != nil {
 		return err
