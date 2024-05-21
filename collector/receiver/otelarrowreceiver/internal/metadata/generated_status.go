@@ -6,9 +6,12 @@ import (
 	"go.opentelemetry.io/collector/component"
 )
 
+var (
+	Type = component.MustNewType("otelarrow")
+)
+
 const (
-	Type             = "otelarrow"
-	MetricsStability = component.StabilityLevelDevelopment
 	TracesStability  = component.StabilityLevelDevelopment
+	MetricsStability = component.StabilityLevelDevelopment
 	LogsStability    = component.StabilityLevelDevelopment
 )
