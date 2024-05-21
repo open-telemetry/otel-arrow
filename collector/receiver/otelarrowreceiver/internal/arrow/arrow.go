@@ -406,11 +406,25 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 }
 
 func (r *Receiver) recvOne(ctx context.Context, serverStream anyStreamServer, hrcv *headerReceiver, pendingCh chan<- batchResp, method string, ac arrowRecord.ConsumerAPI) (retErr error) {
+
+	ctx, span := r.tracer.Start(ctx, "otel_arrow_stream_recv")
+	defer span.End()
+
 	r.inFlightWG.Add(1)
+	r.recvInFlightRequests.Add(ctx, 1)
 	defer func() {
 		if retErr != nil {
-			r.inFlightWG.Done() // not processed
+			// Set span status if an error is returned.
+			span := trace.SpanFromContext(ctx)
+			span.SetStatus(otelcodes.Error, retErr.Error())
+
 			r.logStreamError(retErr)
+
+			// Release the wait-count and in-flight count
+			// because of the error.  These are kept when
+			// retErr == nil.
+			r.inFlightWG.Done() // not processed
+			r.recvInFlightRequests.Add(ctx, -1)
 		}
 	}()
 
@@ -452,28 +466,28 @@ func (r *Receiver) recvOne(ctx context.Context, serverStream anyStreamServer, hr
 		return fmt.Errorf("breaking stream: %w", err)
 	}
 
+	if r.authServer != nil {
+		var newCtx context.Context
+		if newCtx, err = r.authServer.Authenticate(thisCtx, authHdrs); err != nil {
+			return err
+		}
+		thisCtx = newCtx
+	}
+
+	err, data, numItems, uncompSize := r.consumeBatch(ctx, ac, req)
+
 	resp := batchResp{
 		addr:           hrcv.connInfo.Addr,
 		id:             req.GetBatchId(),
 		bytesToRelease: int64(prevAcquiredBytes),
 	}
 
-	var authErr error
-	if r.authServer != nil {
-		var newCtx context.Context
-		if newCtx, err = r.authServer.Authenticate(thisCtx, authHdrs); err != nil {
-			authErr = err
-		} else {
-			thisCtx = newCtx
-		}
-	}
-
-	// processAndConsume will process and send an error to the sender loop
+	// processRecords will process and send an error to the sender loop
 	go func() {
 		var err error
 		defer r.inFlightWG.Done() // done processing
 		defer r.recoverErr(&err)
-		err = r.processAndConsume(thisCtx, method, ac, req, authErr, resp, sizeHeaderFound)
+		err = r.processRecords(ctx, method, ac, req, resp, sizeHeaderFound)
 		resp.err = err
 		pendingCh <- resp
 	}()
@@ -553,54 +567,91 @@ func (r *Receiver) flushSender(serverStream anyStreamServer, pendingCh <-chan ba
 }
 
 func (r *Receiver) srvSendLoop(ctx context.Context, serverStream anyStreamServer, pendingCh <-chan batchResp) error {
-	var err error
 	for {
 		select {
 		case <-ctx.Done():
-			err = r.flushSender(serverStream, pendingCh)
-			// err := multierr.Append(err, ctx.Err())
-			return err
+			return r.flushSender(serverStream, pendingCh)
 		case resp := <-pendingCh:
-			err = r.sendOne(serverStream, resp)
-			if err != nil {
+			if err := r.sendOne(serverStream, resp); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, req *arrowpb.BatchArrowRecords, authErr error, response batchResp, sizeHeaderFound bool) error {
-	var err error
+// consumeBatch applies the batch to the Arrow Consumer, returns a
+// slice of pdata objects of the corresponding data type as `any`.
+// along with the number of items and true uncompressed size.
+func (r *Receiver) consumeBatch(ctx context.Context, arrowConsumer arrowRecord.ConsumerAPI, records *arrowpb.BatchArrowRecords) (retErr error, retData any, numItems int, uncompSize int64) {
 
-	ctx, span := r.tracer.Start(ctx, "otel_arrow_stream_recv")
-	defer span.End()
-
-	r.recvInFlightRequests.Add(ctx, 1)
-	defer func() {
-		r.recvInFlightRequests.Add(ctx, -1)
-		// Set span status if an error is returned.
-		if err != nil {
-			span := trace.SpanFromContext(ctx)
-			span.SetStatus(otelcodes.Error, err.Error())
-		}
-	}()
-
-	// Process records: an error in this code path does
-	// not necessarily break the stream.
-	if authErr != nil {
-		err = authErr
-	} else {
-		err = r.processRecords(ctx, method, arrowConsumer, req, response, sizeHeaderFound)
+	payloads := records.GetArrowPayloads()
+	if len(payloads) == 0 {
+		return nil, nil, 0, 0
 	}
 
-	return err
+	switch payloads[0].Type {
+	case arrowpb.ArrowPayloadType_UNIVARIATE_METRICS:
+		if r.Metrics() == nil {
+			return status.Error(codes.Unimplemented, "metrics service not available"), nil, 0, 0
+		}
+		var sizer pmetric.ProtoMarshaler
+
+		data, err := arrowConsumer.MetricsFrom(records)
+		if err != nil {
+			err = consumererror.NewPermanent(err)
+		} else {
+			for _, metrics := range data {
+				numItems += metrics.DataPointCount()
+				uncompSize += int64(sizer.MetricsSize(metrics))
+			}
+		}
+		retData = data
+		retErr = err
+
+	case arrowpb.ArrowPayloadType_LOGS:
+		if r.Logs() == nil {
+			return status.Error(codes.Unimplemented, "logs service not available"), nil, 0, 0
+		}
+		var sizer plog.ProtoMarshaler
+
+		data, err := arrowConsumer.LogsFrom(records)
+		if err != nil {
+			err = consumererror.NewPermanent(err)
+		} else {
+			for _, logs := range data {
+				numItems += logs.LogRecordCount()
+				uncompSize += int64(sizer.LogsSize(logs))
+			}
+		}
+		retData = data
+		retErr = err
+
+	case arrowpb.ArrowPayloadType_SPANS:
+		if r.Traces() == nil {
+			return status.Error(codes.Unimplemented, "traces service not available"), nil, 0, 0
+		}
+		var sizer ptrace.ProtoMarshaler
+
+		data, err := arrowConsumer.TracesFrom(records)
+		if err != nil {
+			err = consumererror.NewPermanent(err)
+		} else {
+			for _, traces := range data {
+				numItems += traces.SpanCount()
+				uncompSize += int64(sizer.TracesSize(traces))
+			}
+		}
+		retData = data
+		retErr = err
+
+	default:
+		retErr = ErrUnrecognizedPayload
+	}
+
+	return retErr, retData, numItems, uncompSize
 }
 
-// processRecords returns an error and a boolean indicating whether
-// the error (true) was from processing the data (i.e., invalid
-// argument) or (false) from the consuming pipeline.  The boolean is
-// not used when success (nil error) is returned.
-func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, records *arrowpb.BatchArrowRecords, response batchResp, sizeHeaderFound bool) error {
+func (r *Receiver) consumeData(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, records *arrowpb.BatchArrowRecords, response batchResp, sizeHeaderFound bool) error {
 	payloads := records.GetArrowPayloads()
 	if len(payloads) == 0 {
 		return nil
