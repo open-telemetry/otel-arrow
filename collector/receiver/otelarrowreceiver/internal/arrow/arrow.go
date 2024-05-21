@@ -347,25 +347,29 @@ type batchResp struct {
 	bytesToRelease int64
 }
 
+func (r *Receiver) recoverErr(retErr *error) {
+	if err := recover(); err != nil {
+		// When this happens, the stacktrace is
+		// important and lost if we don't capture it
+		// here.
+		r.telemetry.Logger.Error("panic detail in otel-arrow-adapter",
+			zap.Reflect("recovered", err),
+			zap.Stack("stacktrace"),
+		)
+		*retErr = fmt.Errorf("panic in otel-arrow-adapter: %v", err)
+	}
+}
+
 func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retErr error) {
 	streamCtx := serverStream.Context()
 	ac := r.newConsumer()
 
 	defer func() {
-		if err := recover(); err != nil {
-			// When this happens, the stacktrace is
-			// important and lost if we don't capture it
-			// here.
-			r.telemetry.Logger.Debug("panic detail in otel-arrow-adapter",
-				zap.Reflect("recovered", err),
-				zap.Stack("stacktrace"),
-			)
-			retErr = fmt.Errorf("panic in otel-arrow-adapter: %v", err)
-		}
 		if err := ac.Close(); err != nil {
 			r.telemetry.Logger.Error("arrow stream close", zap.Error(err))
 		}
 	}()
+	defer r.recoverErr(&retErr)
 
 	doneCtx, doneCancel := context.WithCancel(streamCtx)
 	defer doneCancel()
@@ -373,7 +377,9 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	pendingCh := make(chan batchResp, runtime.NumCPU())
 
 	go func() {
-		err := r.srvReceiveLoop(doneCtx, serverStream, pendingCh, method, ac)
+		var err error
+		defer r.recoverErr(&err)
+		err = r.srvReceiveLoop(doneCtx, serverStream, pendingCh, method, ac)
 		streamErrCh <- err
 	}()
 
@@ -381,7 +387,9 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	var senderWG sync.WaitGroup
 	senderWG.Add(1)
 	go func() {
-		err := r.srvSendLoop(doneCtx, serverStream, pendingCh)
+		var err error
+		defer r.recoverErr(&err)
+		err = r.srvSendLoop(doneCtx, serverStream, pendingCh)
 		streamErrCh <- err
 		senderWG.Done()
 	}()
@@ -462,7 +470,9 @@ func (r *Receiver) recvOne(ctx context.Context, serverStream anyStreamServer, hr
 
 	// processAndConsume will process and send an error to the sender loop
 	go func() {
+		var err error
 		defer r.inFlightWG.Done() // done processing
+		defer r.recoverErr(&err)
 		err = r.processAndConsume(thisCtx, method, ac, req, authErr, resp, sizeHeaderFound)
 		resp.err = err
 		pendingCh <- resp
