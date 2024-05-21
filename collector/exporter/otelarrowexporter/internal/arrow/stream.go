@@ -77,6 +77,11 @@ type streamWorkState struct {
 	// prioritizer and a stream.
 	toWrite chan writeItem
 
+	// maxStreamLifetime is a limit on duration for streams.  A
+	// slight "jitter" is applied relative to this value on a
+	// per-stream basis.
+	maxStreamLifetime time.Duration
+
 	// lock protects waiters
 	lock sync.Mutex
 
