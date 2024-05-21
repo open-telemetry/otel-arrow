@@ -38,7 +38,7 @@ func (r *fileReceiver) Start(ctx context.Context, _ component.Host) error {
 		return fmt.Errorf("failed to open file %q: %w", r.path, err)
 	}
 
-	fr := newFileReader(r.consumer, file, newReplayTimer(r.throttle), r.format, r.compression)
+	fr := newFileReader(r.consumer, file, newReplayTimer(r.throttle), r.format, r.compression, r.logger)
 	go func() {
 		var err error
 		if r.format == formatTypeProto {
