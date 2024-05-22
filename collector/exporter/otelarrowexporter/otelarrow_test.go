@@ -935,10 +935,6 @@ func testSendArrowTraces(t *testing.T, clientWaitForReady, streamServiceAvailabl
 	require.NoError(t, err)
 	require.NotNil(t, exp)
 
-	defer func() {
-		assert.NoError(t, exp.Shutdown(context.Background()))
-	}()
-
 	type isUserCall struct{}
 
 	host := newHostWithExtensions(
@@ -956,6 +952,15 @@ func testSendArrowTraces(t *testing.T, clientWaitForReady, streamServiceAvailabl
 	assert.NoError(t, exp.Start(context.Background(), host))
 
 	rcv, _ := otelArrowTracesReceiverOnGRPCServer(ln, false)
+
+	defer func() {
+		// Shutdown before GracefulStop, because otherwise we
+		// wait for a full stream lifetime instead of closing
+		// after requests are served.
+		assert.NoError(t, exp.Shutdown(context.Background()))
+		rcv.srv.GracefulStop()
+	}()
+
 	if streamServiceAvailable {
 		rcv.startStreamMockArrowTraces(t, okStatusFor)
 	}
@@ -988,8 +993,6 @@ func testSendArrowTraces(t *testing.T, clientWaitForReady, streamServiceAvailabl
 	md := rcv.getMetadata()
 	require.EqualValues(t, []string{"arrow"}, md.Get("callerid"))
 	require.EqualValues(t, expectedHeader, md.Get("header"))
-
-	rcv.srv.GracefulStop()
 }
 
 func okStatusFor(id int64) *arrowpb.BatchStatus {
