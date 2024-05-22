@@ -1105,15 +1105,16 @@ func TestSendArrowFailedTraces(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, exp)
 
-	defer func() {
-		assert.NoError(t, exp.Shutdown(context.Background()))
-	}()
-
 	host := componenttest.NewNopHost()
 	assert.NoError(t, exp.Start(context.Background(), host))
 
 	rcv, _ := otelArrowTracesReceiverOnGRPCServer(ln, false)
 	rcv.startStreamMockArrowTraces(t, failedStatusFor)
+
+	defer func() {
+		assert.NoError(t, exp.Shutdown(context.Background()))
+		rcv.srv.GracefulStop()
+	}()
 
 	// Delay the server start, slightly.
 	go func() {
@@ -1136,8 +1137,6 @@ func TestSendArrowFailedTraces(t *testing.T) {
 	assert.EqualValues(t, int32(2), rcv.totalItems.Load())
 	assert.EqualValues(t, int32(1), rcv.requestCount.Load())
 	assert.EqualValues(t, td, rcv.getLastRequest())
-
-	rcv.srv.GracefulStop()
 }
 
 func TestUserDialOptions(t *testing.T) {

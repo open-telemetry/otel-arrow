@@ -44,7 +44,7 @@ func newStreamTestCase(t *testing.T, pname PrioritizerName) *streamTestCase {
 	producer := arrowRecordMock.NewMockProducerAPI(ctrl)
 
 	bg, dc := newDoneCancel(context.Background())
-	prio, state := newStreamPrioritizer(dc, pname, 1)
+	prio, state := newStreamPrioritizer(dc, pname, 1, 10*time.Second)
 
 	ctc := newCommonTestCase(t, NotNoisy)
 	cts := ctc.newMockStream(bg)
