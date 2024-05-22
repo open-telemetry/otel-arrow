@@ -32,9 +32,7 @@ type Exporter struct {
 	// prioritizerName the name of a balancer policy.
 	prioritizerName PrioritizerName
 
-	// maxStreamLifetime is a limit on duration for streams.  A
-	// slight "jitter" is applied relative to this value on a
-	// per-stream basis.
+	// maxStreamLifetime is a limit on duration for streams.
 	maxStreamLifetime time.Duration
 
 	// disableDowngrade prevents downgrade from occurring, supports
@@ -156,7 +154,7 @@ func (e *Exporter) Start(ctx context.Context) error {
 	downCtx, downDc := newDoneCancel(ctx)
 
 	var sws []*streamWorkState
-	e.ready, sws = newStreamPrioritizer(downDc, e.prioritizerName, e.numStreams)
+	e.ready, sws = newStreamPrioritizer(downDc, e.prioritizerName, e.numStreams, e.maxStreamLifetime)
 
 	for _, ws := range sws {
 		e.startArrowStream(downCtx, ws)
@@ -236,7 +234,6 @@ func (e *Exporter) runArrowStream(ctx context.Context, dc doneCancel, state *str
 	producer := e.newProducer()
 
 	stream := newStream(producer, e.ready, e.telemetry, e.netReporter, state)
-	stream.maxStreamLifetime = addJitter(e.maxStreamLifetime)
 
 	defer func() {
 		if err := producer.Close(); err != nil {
