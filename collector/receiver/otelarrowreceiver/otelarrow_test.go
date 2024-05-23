@@ -565,8 +565,8 @@ func TestGRPCArrowReceiverAuth(t *testing.T) {
 		// The stream has to be successful to get this far.  The
 		// authenticator fails every data item:
 		require.Equal(t, batch.BatchId, resp.BatchId)
-		require.Equal(t, arrowpb.StatusCode_UNAVAILABLE, resp.StatusCode)
-		require.Equal(t, errorString, resp.StatusMessage)
+		require.Equal(t, arrowpb.StatusCode_UNAUTHENTICATED, resp.StatusCode)
+		require.Contains(t, resp.StatusMessage, errorString)
 	}
 
 	assert.NoError(t, cc.Close())
