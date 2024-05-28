@@ -143,7 +143,7 @@ message BatchStatus {
 }
 
 // StatusCode carries certain known meanings in Arrow.  Values match
-// the gRPC code space 
+// the gRPC code space, see https://grpc.io/docs/guides/status-codes/.
 enum StatusCode {
   OK = 0;
   CANCELED = 1;
