@@ -369,23 +369,31 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	}()
 	defer r.recoverErr(&retErr)
 
+	// doneCancel allows an error in the sender/receiver to
+	// interrupt the corresponding thread.
 	doneCtx, doneCancel := context.WithCancel(streamCtx)
 	defer doneCancel()
+
+	// streamErrCh returns up to two errors from the sender and
+	// recevier threads started below.
 	streamErrCh := make(chan error, 2)
 	pendingCh := make(chan batchResp, runtime.NumCPU())
 
-	// WG is used to ensure main thread only returns once sender is finished sending responses for all requests.
+	// wg is used to ensure this thread returns after both
+	// sender and recevier threads return.
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// This count is removed in flushSender(), having this ensures
-	// that concurrent calls to Add() do not race with Wait().
+	// The inflightWG is used to wait for all data to send.  The
+	// 1-count here is removed after srvReceiveLoop() returns,
+	// having this ensures that concurrent calls to Add() in the
+	// receiver do not race with Wait() in the sender.
 	r.inFlightWG.Add(1)
 
 	go func() {
 		var err error
-		defer r.recoverErr(&err)
 		defer wg.Done()
+		defer r.recoverErr(&err)
 		defer r.inFlightWG.Done()
 		err = r.srvReceiveLoop(doneCtx, serverStream, pendingCh, method, ac)
 		streamErrCh <- err
@@ -393,12 +401,13 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 
 	go func() {
 		var err error
-		defer r.recoverErr(&err)
 		defer wg.Done()
+		defer r.recoverErr(&err)
 		err = r.srvSendLoop(doneCtx, serverStream, pendingCh)
 		streamErrCh <- err
 	}()
 
+	// Wait for sender/receiver threads to return before returning.
 	defer wg.Wait()
 
 	select {
@@ -513,6 +522,23 @@ func (id *inFlightData) anyDone(ctx context.Context) {
 	id.inFlightWG.Done()
 }
 
+// recvOne begins processing a single Arrow batch.
+//
+// If an error is encountered before Arrow data is successfully consumed,
+// the stream will break and the error will be returned immediately.
+//
+// If the error is due to authorization, the stream remains unbroken
+// and the request fails.
+//
+// If not enough resources are available, the stream will block (if
+// waiting permitted) or break (insufficient waiters).
+//
+// Assuming success, a new goroutine is created to handle consuming the
+// data.
+//
+// This handles constructing an inFlightData object, which itself
+// tracks everything that needs to be used by instrumention when the
+// batch finishes.
 func (r *Receiver) recvOne(streamCtx context.Context, serverStream anyStreamServer, hrcv *headerReceiver, pendingCh chan<- batchResp, method string, ac arrowRecord.ConsumerAPI) (retErr error) {
 
 	// Receive a batch corresponding with one ptrace.Traces, pmetric.Metrics,
@@ -607,10 +633,9 @@ func (r *Receiver) recvOne(streamCtx context.Context, serverStream anyStreamServ
 	return nil
 }
 
+// consumeAndRespond finishes the span started in recvOne and logs the
+// result after invoking the pipeline to consume the data.
 func (r *Receiver) consumeAndRespond(ctx context.Context, data any, flight *inFlightData) {
-	ctx, span := r.tracer.Start(ctx, "otel_arrow_stream_consume")
-	defer span.End()
-
 	var err error
 	defer flight.consumeDone(ctx, &err)
 
@@ -622,6 +647,7 @@ func (r *Receiver) consumeAndRespond(ctx context.Context, data any, flight *inFl
 	err = r.consumeData(ctx, data, flight)
 }
 
+// srvReceiveLoop repeatedly receives one batch of data.
 func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamServer, pendingCh chan<- batchResp, method string, ac arrowRecord.ConsumerAPI) (retErr error) {
 	hrcv := newHeaderReceiver(ctx, r.authServer, r.gsettings.IncludeMetadata)
 	for {
@@ -636,6 +662,7 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 	}
 }
 
+// srvReceiveLoop repeatedly sends one batch data response.
 func (r *Receiver) sendOne(serverStream anyStreamServer, resp batchResp) error {
 	// Note: Statuses can be batched, but we do not take
 	// advantage of this feature.
@@ -655,7 +682,7 @@ func (r *Receiver) sendOne(serverStream anyStreamServer, resp batchResp) error {
 			// Ideally, we don't take this branch because all code uses
 			// gRPC status constructors and we've taken the branch above.
 			//
-			// This is fallback for several broad categories of error.
+			// This is a fallback for several broad categories of error.
 			bs.StatusMessage = resp.err.Error()
 
 			switch {
@@ -682,10 +709,10 @@ func (r *Receiver) sendOne(serverStream anyStreamServer, resp batchResp) error {
 
 func (r *Receiver) flushSender(serverStream anyStreamServer, pendingCh <-chan batchResp) error {
 	var err error
-	// wait for all in flight requests to successfully be
+	// wait for all in flight requests to be successfully
 	// processed or fail.  this implies waiting for the receiver
-	// loop to exit as well, as it holds one additional wait
-	// count.
+	// loop to exit, as it holds one additional wait count to
+	// avoid a race with Add() here.
 	r.inFlightWG.Wait()
 
 	for {
@@ -781,6 +808,10 @@ func (r *Receiver) consumeBatch(arrowConsumer arrowRecord.ConsumerAPI, records *
 	return retErr, retData, numItems, uncompSize
 }
 
+// consumeData invokes the next pipeline consumer for a received batch of data.
+// it uses the standard OTel collector instrumentation (receiverhelper.ObsReport).
+//
+// if any errors are permanent, returns a permanent error.
 func (r *Receiver) consumeData(ctx context.Context, data any, flight *inFlightData) error {
 	var anyPermanent bool
 	var wholeErr error
