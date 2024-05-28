@@ -20,7 +20,6 @@ import (
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
-	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/extension/auth"
@@ -606,18 +605,16 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 		return nil
 	}
 	var uncompSize int64
-	if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
-		defer func() {
-			// The netstats code knows that uncompressed size is
-			// unreliable for arrow transport, so we instrument it
-			// directly here.  Only the primary direction of transport
-			// is instrumented this way.
-			var sized netstats.SizesStruct
-			sized.Method = method
-			sized.Length = uncompSize
-			r.netReporter.CountReceive(ctx, sized)
-		}()
-	}
+	defer func() {
+		// The netstats code knows that uncompressed size is
+		// unreliable for arrow transport, so we instrument it
+		// directly here.  Only the primary direction of transport
+		// is instrumented this way.
+		var sized netstats.SizesStruct
+		sized.Method = method
+		sized.Length = uncompSize
+		r.netReporter.CountReceive(ctx, sized)
+	}()
 
 	switch payloads[0].Type {
 	case arrowpb.ArrowPayloadType_UNIVARIATE_METRICS:
