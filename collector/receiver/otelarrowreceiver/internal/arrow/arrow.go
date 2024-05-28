@@ -614,11 +614,8 @@ func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsu
 			// is instrumented this way.
 			var sized netstats.SizesStruct
 			sized.Method = method
-			if r.telemetry.MetricsLevel > configtelemetry.LevelNormal {
-				sized.Length = uncompSize
-			}
+			sized.Length = uncompSize
 			r.netReporter.CountReceive(ctx, sized)
-			r.netReporter.SetSpanSizeAttributes(ctx, sized)
 		}()
 	}
 
