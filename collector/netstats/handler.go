@@ -60,7 +60,6 @@ func (h statsHandler) HandleRPC(ctx context.Context, rs stats.RPCStats) {
 		}
 		ss.WireLength = int64(s.WireLength)
 		h.rep.CountReceive(ctx, ss)
-		h.rep.SetSpanSizeAttributes(ctx, ss)
 
 	case *stats.OutPayload:
 		var ss SizesStruct
@@ -70,7 +69,6 @@ func (h statsHandler) HandleRPC(ctx context.Context, rs stats.RPCStats) {
 		}
 		ss.WireLength = int64(s.WireLength)
 		h.rep.CountSend(ctx, ss)
-		h.rep.SetSpanSizeAttributes(ctx, ss)
 	}
 }
 
