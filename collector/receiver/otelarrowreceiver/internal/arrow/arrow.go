@@ -111,8 +111,6 @@ func New(
 		netReporter:  netReporter,
 		boundedQueue: bq,
 	}
-	// this count will be dropped in flushSender(), avoids a race.
-	recv.inFlightWG.Add(1)
 
 	meter := recv.telemetry.MeterProvider.Meter(scopeName)
 	recv.recvInFlightBytes, err = meter.Int64UpDownCounter(
@@ -379,11 +377,19 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 
 	// WG is used to ensure main thread only returns once sender is finished sending responses for all requests.
 	var senderWG sync.WaitGroup
-	senderWG.Add(2)
+	var receiverWG sync.WaitGroup
+	senderWG.Add(1)
+	receiverWG.Add(1)
+
+	// This count is removed in flushSender(), having this ensures
+	// that concurrent calls to Add() do not race with Wait().
+	r.inFlightWG.Add(1)
+
 	go func() {
 		var err error
 		defer r.recoverErr(&err)
-		defer senderWG.Done()
+		defer receiverWG.Done()
+		defer r.inFlightWG.Done()
 		err = r.srvReceiveLoop(doneCtx, serverStream, pendingCh, method, ac)
 		streamErrCh <- err
 	}()
@@ -396,13 +402,14 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 		streamErrCh <- err
 	}()
 
+	defer senderWG.Wait()
+	defer receiverWG.Wait()
+
 	select {
 	case <-doneCtx.Done():
-		senderWG.Wait()
 		return status.Error(codes.Canceled, "server stream shutdown")
 	case retErr = <-streamErrCh:
 		doneCancel()
-		senderWG.Wait()
 		return
 	}
 }
@@ -683,9 +690,12 @@ func (r *Receiver) sendOne(serverStream anyStreamServer, resp batchResp) error {
 
 func (r *Receiver) flushSender(serverStream anyStreamServer, pendingCh <-chan batchResp) error {
 	var err error
-	// wait for all in flight requests to successfully be processed or fail.
-	r.inFlightWG.Done()
+	// wait for all in flight requests to successfully be
+	// processed or fail.  this implies waiting for the receiver
+	// loop to exit as well, as it holds one additional wait
+	// count.
 	r.inFlightWG.Wait()
+
 	for {
 		select {
 		case resp := <-pendingCh:
