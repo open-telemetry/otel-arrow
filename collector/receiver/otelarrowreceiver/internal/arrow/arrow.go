@@ -21,7 +21,6 @@ import (
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configgrpc"
-	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/extension/auth"
@@ -376,10 +375,8 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	pendingCh := make(chan batchResp, runtime.NumCPU())
 
 	// WG is used to ensure main thread only returns once sender is finished sending responses for all requests.
-	var senderWG sync.WaitGroup
-	var receiverWG sync.WaitGroup
-	senderWG.Add(1)
-	receiverWG.Add(1)
+	var wg sync.WaitGroup
+	wg.Add(2)
 
 	// This count is removed in flushSender(), having this ensures
 	// that concurrent calls to Add() do not race with Wait().
@@ -388,7 +385,7 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	go func() {
 		var err error
 		defer r.recoverErr(&err)
-		defer receiverWG.Done()
+		defer wg.Done()
 		defer r.inFlightWG.Done()
 		err = r.srvReceiveLoop(doneCtx, serverStream, pendingCh, method, ac)
 		streamErrCh <- err
@@ -397,13 +394,12 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	go func() {
 		var err error
 		defer r.recoverErr(&err)
-		defer senderWG.Done()
+		defer wg.Done()
 		err = r.srvSendLoop(doneCtx, serverStream, pendingCh)
 		streamErrCh <- err
 	}()
 
-	defer senderWG.Wait()
-	defer receiverWG.Wait()
+	defer wg.Wait()
 
 	select {
 	case <-doneCtx.Done():
@@ -488,7 +484,6 @@ func (id *inFlightData) anyDone(ctx context.Context) {
 		return
 	}
 
-	// @@@ more spans
 	id.span.End()
 
 	if id.numAcquired != 0 {
@@ -504,19 +499,14 @@ func (id *inFlightData) anyDone(ctx context.Context) {
 		id.recvInFlightItems.Add(ctx, int64(-id.numItems))
 	}
 
-	if id.telemetry.MetricsLevel > configtelemetry.LevelNormal {
-		// The netstats code knows that uncompressed size is
-		// unreliable for arrow transport, so we instrument it
-		// directly here.  Only the primary direction of transport
-		// is instrumented this way.
-		var sized netstats.SizesStruct
-		sized.Method = id.method
-		sized.Length = id.uncompSize
-		id.netReporter.CountReceive(ctx, sized)
-
-		// @@@@ what is this really doing w/ sized only partially filled?
-		id.netReporter.SetSpanSizeAttributes(ctx, sized)
-	}
+	// The netstats code knows that uncompressed size is
+	// unreliable for arrow transport, so we instrument it
+	// directly here.  Only the primary direction of transport
+	// is instrumented this way.
+	var sized netstats.SizesStruct
+	sized.Method = id.method
+	sized.Length = id.uncompSize
+	id.netReporter.CountReceive(ctx, sized)
 
 	id.recvInFlightRequests.Add(ctx, -1)
 	id.inFlightWG.Done()
@@ -864,13 +854,20 @@ func (r *Receiver) acquireAdditionalBytes(ctx context.Context, prevAcquired, unc
 		)
 	}
 
-	// Release previously acquired bytes to prevent deadlock and
-	// reacquire the uncompressed size we just calculated.
-	if err := r.boundedQueue.Release(prevAcquired); err != nil {
-		return 0, err
-	}
-	if err := r.boundedQueue.Acquire(ctx, uncompSize); err != nil {
-		return 0, err
+	if diff < 0 {
+		// If the difference is negative, release the overage.
+		if err := r.boundedQueue.Release(-diff); err != nil {
+			return 0, err
+		}
+	} else {
+		// Release previously acquired bytes to prevent deadlock and
+		// reacquire the uncompressed size we just calculated.
+		if err := r.boundedQueue.Release(prevAcquired); err != nil {
+			return 0, err
+		}
+		if err := r.boundedQueue.Acquire(ctx, uncompSize); err != nil {
+			return 0, err
+		}
 	}
 	return uncompSize, nil
 }

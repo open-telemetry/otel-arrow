@@ -351,13 +351,10 @@ func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hp
 	// unreliable for arrow transport, so we instrument it
 	// directly here.  Only the primary direction of transport
 	// is instrumented this way.
-	if wri.uncompSize != 0 {
-		var sized netstats.SizesStruct
-		sized.Method = s.method
-		sized.Length = int64(wri.uncompSize)
-		s.netReporter.CountSend(ctx, sized)
-		s.netReporter.SetSpanSizeAttributes(ctx, sized)
-	}
+	var sized netstats.SizesStruct
+	sized.Method = s.method
+	sized.Length = int64(wri.uncompSize)
+	s.netReporter.CountSend(ctx, sized)
 
 	if err := s.client.Send(batch); err != nil {
 		// The error will be sent to errCh during cleanup for this stream.
