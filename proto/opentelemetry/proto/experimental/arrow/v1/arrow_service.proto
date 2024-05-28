@@ -159,6 +159,16 @@ enum StatusCode {
   // or decoded somehow (details in status message).  This is not retryable.
   INVALID_ARGUMENT = 3;  // a.k.a. codes.InvalidArgument
 
+  // PERMISSION_DENIED indicates the caller does not have
+  // permission to execute the specified operation.
+  PERMISSION_DENIED = 7; // a.k.a. codes.PermissionDenied
+
+  // UNAUTHENTICATED indicates the caller is unrecognized.
+  UNAUTHENTICATED = 16; // a.k.a. codes.Unauthenticated
+
+  // Internal is a general category for unknown errors.
+  INTERNAL = 13; // a.k.a. codes.Internal
+
   // RESOURCE_EXHAUSTED indicates (for example) that the request was too large
   // after decompression for the receiver to process.  This may be retryable,
   // depending on retry settings.
