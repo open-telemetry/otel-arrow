@@ -142,25 +142,17 @@ message BatchStatus {
   string status_message = 3;
 }
 
-// StatusCode carries certain known meanings in Arrow.  Values in the 
+// StatusCode carries certain known meanings in Arrow.  Values match
+// the gRPC code space, see https://grpc.io/docs/guides/status-codes/.
 enum StatusCode {
-  // OK indicates successful delivery
   OK = 0;
-
-  // CANCELED indicates the server has received the first half of the stream
-  // close sequence and is closing itself, considered not an error.
-  CANCELED = 1;  // a.k.a. codes.Canceled
-
-  // UNAVAILABLE indicates the consumer had a retryable error, e.g., a
-  // downstream timeout.
-  UNAVAILABLE = 14;  // a.k.a. codes.Unavailable
-
-  // INVALID_ARGUMENT indicates the data could not be properly encoded
-  // or decoded somehow (details in status message).  This is not retryable.
-  INVALID_ARGUMENT = 3;  // a.k.a. codes.InvalidArgument
-
-  // RESOURCE_EXHAUSTED indicates (for example) that the request was too large
-  // after decompression for the receiver to process.  This may be retryable,
-  // depending on retry settings.
-  RESOURCE_EXHAUSTED = 8;  // a.k.a. codes.ResourceExhausted
+  CANCELED = 1;
+  INVALID_ARGUMENT = 3;
+  DEADLINE_EXCEEDED = 4;
+  PERMISSION_DENIED = 7;
+  RESOURCE_EXHAUSTED = 8;
+  ABORTED = 10;
+  INTERNAL = 13;
+  UNAVAILABLE = 14;
+  UNAUTHENTICATED = 16;
 }
