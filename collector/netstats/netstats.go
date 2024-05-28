@@ -60,6 +60,8 @@ type NetworkReporter struct {
 	compSizeHisto metric.Int64Histogram
 }
 
+var _ Interface = &NetworkReporter{}
+
 // SizesStruct is used to pass uncompressed on-wire message lengths to
 // the CountSend() and CountReceive() methods.
 type SizesStruct struct {
@@ -79,7 +81,10 @@ type Interface interface {
 	// CountSend reports inbound bytes.
 	CountReceive(ctx context.Context, ss SizesStruct)
 
-	// SetSpanAttributes takes a context and adds attributes to the associated span.
+	// SetSpanAttributes is a No-Op. Deprecated.  Remove uses of
+	// this function as the same functionality is included in
+	// CountSend/CountReceive.  Remove this after the collector-contrib
+	// components have been updated to not reference this method.
 	SetSpanSizeAttributes(ctx context.Context, ss SizesStruct)
 }
 
@@ -208,16 +213,27 @@ func (rep *NetworkReporter) CountSend(ctx context.Context, ss SizesStruct) {
 		return
 	}
 
+	span := trace.SpanFromContext(ctx)
 	attrs := metric.WithAttributes(rep.staticAttr, attribute.String("method", ss.Method))
 
-	if rep.isExporter && ss.WireLength > 0 {
-		rep.compSizeHisto.Record(ctx, ss.WireLength, attrs)
+	if ss.Length > 0 {
+		if rep.sentBytes != nil {
+			rep.sentBytes.Add(ctx, ss.Length, attrs)
+		}
+		if span.IsRecording() {
+			span.SetAttributes(attribute.Int64("sent_uncompressed", ss.Length))
+		}
 	}
-	if rep.sentBytes != nil && ss.Length > 0 {
-		rep.sentBytes.Add(ctx, ss.Length, attrs)
-	}
-	if rep.sentWireBytes != nil && ss.WireLength > 0 {
-		rep.sentWireBytes.Add(ctx, ss.WireLength, attrs)
+	if ss.WireLength > 0 {
+		if rep.isExporter && rep.compSizeHisto != nil {
+			rep.compSizeHisto.Record(ctx, ss.WireLength, attrs)
+		}
+		if rep.sentWireBytes != nil {
+			rep.sentWireBytes.Add(ctx, ss.WireLength, attrs)
+		}
+		if span.IsRecording() {
+			span.SetAttributes(attribute.Int64("sent_compressed", ss.WireLength))
+		}
 	}
 }
 
@@ -230,41 +246,29 @@ func (rep *NetworkReporter) CountReceive(ctx context.Context, ss SizesStruct) {
 		return
 	}
 
-	attrs := metric.WithAttributes(rep.staticAttr, attribute.String("method", ss.Method))
-	if !rep.isExporter && ss.WireLength > 0 {
-		rep.compSizeHisto.Record(ctx, ss.WireLength, attrs)
-	}
-	if rep.recvBytes != nil && ss.Length > 0 {
-		rep.recvBytes.Add(ctx, ss.Length, attrs)
-	}
-	if rep.recvWireBytes != nil && ss.WireLength > 0 {
-		rep.recvWireBytes.Add(ctx, ss.WireLength, attrs)
-	}
-}
-
-func (rep *NetworkReporter) SetSpanSizeAttributes(ctx context.Context, ss SizesStruct) {
-	if rep == nil {
-		return
-	}
-
 	span := trace.SpanFromContext(ctx)
-
-	var compressedName string
-	var uncompressedName string
-	// set attribute name based on exporter vs receiver
-	if rep.isExporter {
-		compressedName = "stream_client_compressed_bytes_sent"
-		uncompressedName = "stream_client_uncompressed_bytes_sent"
-	} else { // receiver attributes
-		compressedName = "stream_server_compressed_bytes_recv"
-		uncompressedName = "stream_server_uncompressed_bytes_recv"
-	}
+	attrs := metric.WithAttributes(rep.staticAttr, attribute.String("method", ss.Method))
 
 	if ss.Length > 0 {
-		span.SetAttributes(attribute.Int(uncompressedName, int(ss.Length)))
+		if rep.recvBytes != nil {
+			rep.recvBytes.Add(ctx, ss.Length, attrs)
+		}
+		if span.IsRecording() {
+			span.SetAttributes(attribute.Int64("received_uncompressed", ss.Length))
+		}
 	}
-
 	if ss.WireLength > 0 {
-		span.SetAttributes(attribute.Int(compressedName, int(ss.WireLength)))
+		if !rep.isExporter && rep.compSizeHisto != nil {
+			rep.compSizeHisto.Record(ctx, ss.WireLength, attrs)
+		}
+		if rep.recvWireBytes != nil {
+			rep.recvWireBytes.Add(ctx, ss.WireLength, attrs)
+		}
+		if span.IsRecording() {
+			span.SetAttributes(attribute.Int64("received_compressed", ss.WireLength))
+		}
 	}
 }
+
+// SetSpanSizeAttributes is a no-op.
+func (*NetworkReporter) SetSpanSizeAttributes(ctx context.Context, ss SizesStruct) {}
