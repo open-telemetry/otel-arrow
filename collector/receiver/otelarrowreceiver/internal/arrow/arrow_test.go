@@ -302,6 +302,14 @@ func statusExhaustedFor(batchID int64, msg string) *arrowpb.BatchStatus {
 	}
 }
 
+func statusUnauthenticatedFor(batchID int64, msg string) *arrowpb.BatchStatus {
+	return &arrowpb.BatchStatus{
+		BatchId:       batchID,
+		StatusCode:    arrowpb.StatusCode_INVALID_ARGUMENT,
+		StatusMessage: msg,
+	}
+}
+
 func (ctc *commonTestCase) newRealConsumer() arrowRecord.ConsumerAPI {
 	mock := arrowRecordMock.NewMockConsumerAPI(ctc.ctrl)
 	cons := arrowRecord.NewConsumer()
@@ -373,8 +381,16 @@ func requireCanceledStatus(t *testing.T, err error) {
 	requireStatus(t, codes.Canceled, err)
 }
 
+func requireUnavailableStatus(t *testing.T, err error) {
+	requireStatus(t, codes.Unavailable, err)
+}
+
 func requireInternalStatus(t *testing.T, err error) {
 	requireStatus(t, codes.Internal, err)
+}
+
+func requireExhaustedStatus(t *testing.T, err error) {
+	requireStatus(t, codes.ResourceExhausted, err)
 }
 
 func requireStatus(t *testing.T, code codes.Code, err error) {
@@ -457,24 +473,21 @@ func TestBoundedQueueWithPdataHeaders(t *testing.T) {
 
 			var bq *admission.BoundedQueue
 			if tt.rejected {
-				// @@@ is now an auth error
-				ctc.stream.EXPECT().Send(statusExhaustedFor(batch.BatchId, "rejecting request, request size larger than configured limit")).Times(1).Return(fmt.Errorf("rejecting request, request size larger than configured limit"))
-				// make the boundedqueue limit be slightly less than the uncompressed size
-				bq = admission.NewBoundedQueue(int64(sizer.TracesSize(td)-100), int64(10))
+				ctc.stream.EXPECT().Send(statusOKFor(batch.BatchId)).Times(0)
+				bq = admission.NewBoundedQueue(int64(sizer.TracesSize(td)-100), 10)
 			} else {
 				ctc.stream.EXPECT().Send(statusOKFor(batch.BatchId)).Times(1).Return(nil)
-				bq = admission.NewBoundedQueue(defaultBoundedQueueLimit, int64(10))
+				bq = admission.NewBoundedQueue(defaultBoundedQueueLimit, 10)
 			}
 
 			ctc.start(ctc.newRealConsumer, bq)
 			ctc.putBatch(batch, nil)
 
 			if tt.rejected {
-				ctc.cancel()
-			}
-
-			select {
-			case data := <-ctc.consume:
+				err := ctc.wait()
+				requireExhaustedStatus(t, err)
+			} else {
+				data := <-ctc.consume
 				actualTD := data.Data.(ptrace.Traces)
 				otelAssert.Equiv(stdTesting, []json.Marshaler{
 					compareJSONTraces{td},
@@ -482,8 +495,6 @@ func TestBoundedQueueWithPdataHeaders(t *testing.T) {
 					compareJSONTraces{actualTD},
 				})
 				err = ctc.cancelAndWait()
-				requireCanceledStatus(t, err)
-			case err = <-ctc.streamErr:
 				requireCanceledStatus(t, err)
 			}
 		})
@@ -593,8 +604,12 @@ func TestReceiverSendError(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 
+	// Release the receiver -- the sender has seen an error by
+	// now and should return the stream.  (Oddly, gRPC has no way
+	// to signal the receive call to fail using context.)
+	close(ctc.receive)
 	err = ctc.wait()
-	requireCanceledStatus(t, err)
+	requireUnavailableStatus(t, err)
 }
 
 func TestReceiverConsumeError(t *testing.T) {
@@ -721,13 +736,13 @@ func TestReceiverMemoryLimit(t *testing.T) {
 
 		batch = copyBatch(batch)
 
-		ctc.stream.EXPECT().Send(statusExhaustedFor(batch.BatchId, "Permanent error: test oom error "+arrowRecord.ErrConsumerMemoryLimit.Error())).Times(1).Return(nil)
+		// The Recv() returns an error, there are no Send() calls.
 
 		ctc.start(ctc.newOOMConsumer, defaultBQ())
 		ctc.putBatch(batch, nil)
 
-		err = ctc.cancelAndWait()
-		requireCanceledStatus(t, err)
+		err = ctc.wait()
+		requireExhaustedStatus(t, err)
 	}
 }
 

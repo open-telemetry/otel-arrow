@@ -111,6 +111,8 @@ func New(
 		netReporter:  netReporter,
 		boundedQueue: bq,
 	}
+	// this count will be dropped in flushSender(), avoids a race.
+	recv.inFlightWG.Add(1)
 
 	meter := recv.telemetry.MeterProvider.Meter(scopeName)
 	recv.recvInFlightBytes, err = meter.Int64UpDownCounter(
@@ -383,7 +385,6 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 		defer r.recoverErr(&err)
 		defer senderWG.Done()
 		err = r.srvReceiveLoop(doneCtx, serverStream, pendingCh, method, ac)
-		fmt.Println("RECV GOT", err)
 		streamErrCh <- err
 	}()
 
@@ -392,20 +393,16 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 		defer r.recoverErr(&err)
 		defer senderWG.Done()
 		err = r.srvSendLoop(doneCtx, serverStream, pendingCh)
-		fmt.Println("SEND GOT", err)
 		streamErrCh <- err
 	}()
 
 	select {
 	case <-doneCtx.Done():
-		fmt.Println("EXIT CANCEL PATH")
-		senderWG.Wait() // @@@ @@@
+		senderWG.Wait()
 		return status.Error(codes.Canceled, "server stream shutdown")
 	case retErr = <-streamErrCh:
-		fmt.Println("EXIT ERROR PATH")
 		doneCancel()
 		senderWG.Wait()
-		fmt.Println("ACTUALLY LEAVING NOW")
 		return
 	}
 }
@@ -583,8 +580,7 @@ func (r *Receiver) recvOne(streamCtx context.Context, serverStream anyStreamServ
 	err, data, numItems, uncompSize := r.consumeBatch(ac, req)
 
 	if err != nil {
-		fmt.Println("DISAPPOINTING!", err)
-		if err == arrowRecord.ErrConsumerMemoryLimit {
+		if errors.Is(err, arrowRecord.ErrConsumerMemoryLimit) {
 			return status.Errorf(codes.ResourceExhausted, "otel-arrow decode: %v", err)
 		} else {
 			return status.Errorf(codes.Internal, "otel-arrow decode: %v", err)
@@ -598,6 +594,7 @@ func (r *Receiver) recvOne(streamCtx context.Context, serverStream anyStreamServ
 	r.recvInFlightItems.Add(inflightCtx, int64(numItems))
 
 	numAcquired, err := r.acquireAdditionalBytes(inflightCtx, prevAcquiredBytes, uncompSize, hrcv.connInfo.Addr, uncompSizeHeaderFound)
+
 	flight.numAcquired = numAcquired
 	if err != nil {
 		return status.Errorf(codes.ResourceExhausted, "otel-arrow bounded queue re-acquire: %v", err)
@@ -605,7 +602,6 @@ func (r *Receiver) recvOne(streamCtx context.Context, serverStream anyStreamServ
 
 	// Recognize that the request is still in-flight via consumeAndRespond()
 	flight.refs.Add(1)
-	fmt.Println("SENDING DATA TO CONSUMER")
 
 	// consumeAndRespond consumes the data and returns control to the sender loop.
 	go r.consumeAndRespond(inflightCtx, data, flight)
@@ -688,6 +684,7 @@ func (r *Receiver) sendOne(serverStream anyStreamServer, resp batchResp) error {
 func (r *Receiver) flushSender(serverStream anyStreamServer, pendingCh <-chan batchResp) error {
 	var err error
 	// wait for all in flight requests to successfully be processed or fail.
+	r.inFlightWG.Done()
 	r.inFlightWG.Wait()
 	for {
 		select {
@@ -849,22 +846,16 @@ func (r *Receiver) acquireAdditionalBytes(ctx context.Context, prevAcquired, unc
 			zap.Int("uncompsize", int(uncompSize)),
 			zap.Int("otlp-pdata-size", int(prevAcquired)),
 		)
-		return prevAcquired, nil
-	}
-
-	if diff < 0 {
+	} else if diff < 0 {
 		// proto.Size() on compressed request was greater than pdata uncompressed size.
 		r.telemetry.Logger.Debug("uncompressed size is less than compressed size",
 			zap.Int("uncompressed", int(uncompSize)),
 			zap.Int("compressed", int(prevAcquired)),
 		)
-		return prevAcquired, nil
 	}
 
-	// diff > 0 means we previously acquired too few bytes initially and we need to correct this. Release previously
-	// acquired bytes to prevent deadlock and reacquire the uncompressed size we just calculated.
-	// Note: No need to release and reacquire bytes if diff < 0 because this has less impact and no reason to potentially block
-	// a request that is in flight by reacquiring the correct size.
+	// Release previously acquired bytes to prevent deadlock and
+	// reacquire the uncompressed size we just calculated.
 	if err := r.boundedQueue.Release(prevAcquired); err != nil {
 		return 0, err
 	}
