@@ -149,8 +149,10 @@ func TestNetStatsSetSpanAttrs(t *testing.T) {
 			length:     1234567,
 			wireLength: 123,
 			attrs: []attribute.KeyValue{
-				attribute.Int("stream_client_uncompressed_bytes_sent", 1234567),
-				attribute.Int("stream_client_compressed_bytes_sent", 123),
+				attribute.Int("sent_uncompressed", 1234567),
+				attribute.Int("sent_compressed", 123),
+				attribute.Int("received_uncompressed", 1234567*2),
+				attribute.Int("received_compressed", 123*2),
 			},
 		},
 		{
@@ -159,8 +161,10 @@ func TestNetStatsSetSpanAttrs(t *testing.T) {
 			length:     8901234,
 			wireLength: 890,
 			attrs: []attribute.KeyValue{
-				attribute.Int("stream_server_uncompressed_bytes_recv", 8901234),
-				attribute.Int("stream_server_compressed_bytes_recv", 890),
+				attribute.Int("sent_uncompressed", 8901234),
+				attribute.Int("sent_compressed", 890),
+				attribute.Int("received_uncompressed", 8901234*2),
+				attribute.Int("received_compressed", 890*2),
 			},
 		},
 	}
@@ -177,11 +181,14 @@ func TestNetStatsSetSpanAttrs(t *testing.T) {
 			sized.Method = "test"
 			sized.Length = int64(tc.length)
 			sized.WireLength = int64(tc.wireLength)
-			enr.SetSpanSizeAttributes(ctx, sized)
+			enr.CountSend(ctx, sized)
+			sized.Length *= 2
+			sized.WireLength *= 2
+			enr.CountReceive(ctx, sized)
 
 			actualAttrs := sp.(sdktrace.ReadOnlySpan).Attributes()
 
-			require.Equal(t, tc.attrs, actualAttrs)
+			require.Equal(t, attribute.NewSet(tc.attrs...), attribute.NewSet(actualAttrs...))
 		})
 	}
 }
