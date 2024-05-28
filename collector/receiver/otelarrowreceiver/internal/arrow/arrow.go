@@ -449,13 +449,25 @@ type inFlightData struct {
 func (id *inFlightData) recvDone(ctx context.Context, recvErrPtr *error) {
 	retErr := *recvErrPtr
 
-	// Log and set span status if an error is returned, since
-	// non-nil always breaks the stream.
 	if retErr != nil {
+		// logStreamError because this response will break the stream.
 		id.logStreamError(retErr, "recv")
 		id.span.SetStatus(otelcodes.Error, retErr.Error())
 	}
 
+	id.anyDone(ctx)
+}
+
+func (id *inFlightData) consumeDone(ctx context.Context, consumeErrPtr *error) {
+	retErr := *consumeErrPtr
+
+	if retErr != nil {
+		// debug-level because the error was external from the pipeline.
+		id.telemetry.Logger.Debug("otel-arrow consume", zap.Error(retErr))
+		id.span.SetStatus(otelcodes.Error, retErr.Error())
+	}
+
+	id.replyToCaller(retErr)
 	id.anyDone(ctx)
 }
 
@@ -464,17 +476,6 @@ func (id *inFlightData) replyToCaller(callerErr error) {
 		id:  id.batchID,
 		err: callerErr,
 	}
-}
-
-func (id *inFlightData) consumeDone(ctx context.Context, consumeErrPtr *error) {
-	retErr := *consumeErrPtr
-
-	if retErr != nil {
-		id.telemetry.Logger.Error("otel-arrow consume", zap.Error(retErr))
-	}
-
-	id.replyToCaller(retErr)
-	id.anyDone(ctx)
 }
 
 func (id *inFlightData) anyDone(ctx context.Context) {
@@ -671,6 +672,7 @@ func (r *Receiver) sendOne(serverStream anyStreamServer, resp batchResp) error {
 	}
 
 	if err := serverStream.Send(bs); err != nil {
+		// logStreamError because this response will break the stream.
 		r.logStreamError(err, "send")
 		return err
 	}
