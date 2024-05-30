@@ -56,7 +56,7 @@ var (
 	ErrNoMetricsConsumer   = fmt.Errorf("no metrics consumer")
 	ErrNoLogsConsumer      = fmt.Errorf("no logs consumer")
 	ErrNoTracesConsumer    = fmt.Errorf("no traces consumer")
-	ErrUnrecognizedPayload = fmt.Errorf("unrecognized OTel-Arrow payload")
+	ErrUnrecognizedPayload = consumererror.NewPermanent(fmt.Errorf("unrecognized OTel-Arrow payload"))
 )
 
 type Consumers interface {
@@ -375,7 +375,7 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	defer doneCancel()
 
 	// streamErrCh returns up to two errors from the sender and
-	// recevier threads started below.
+	// receiver threads started below.
 	streamErrCh := make(chan error, 2)
 	pendingCh := make(chan batchResp, runtime.NumCPU())
 
@@ -812,17 +812,9 @@ func (r *Receiver) consumeBatch(arrowConsumer arrowRecord.ConsumerAPI, records *
 // it uses the standard OTel collector instrumentation (receiverhelper.ObsReport).
 //
 // if any errors are permanent, returns a permanent error.
-func (r *Receiver) consumeData(ctx context.Context, data any, flight *inFlightData) error {
-	var anyPermanent bool
-	var wholeErr error
-	type unwrapper interface{ Unwrap() error }
-
+func (r *Receiver) consumeData(ctx context.Context, data any, flight *inFlightData) (retErr error) {
 	oneOp := func(err error) {
-		if consumererror.IsPermanent(err) {
-			anyPermanent = true
-			err = err.(unwrapper).Unwrap()
-		}
-		wholeErr = multierr.Append(wholeErr, err)
+		retErr = multierr.Append(retErr, err)
 	}
 	var final func(context.Context, string, int, error)
 
@@ -849,16 +841,12 @@ func (r *Receiver) consumeData(ctx context.Context, data any, flight *inFlightDa
 		final = r.obsrecv.EndTracesOp
 
 	default:
-		anyPermanent = true
-		wholeErr = ErrUnrecognizedPayload
-	}
-	if anyPermanent {
-		wholeErr = consumererror.NewPermanent(wholeErr)
+		retErr = ErrUnrecognizedPayload
 	}
 	if final != nil {
-		final(ctx, streamFormat, flight.numItems, wholeErr)
+		final(ctx, streamFormat, flight.numItems, retErr)
 	}
-	return wholeErr
+	return retErr
 }
 
 func (r *Receiver) acquireAdditionalBytes(ctx context.Context, prevAcquired, uncompSize int64, addr net.Addr, uncompSizeHeaderFound bool) (int64, error) {
