@@ -143,7 +143,6 @@ func (ctc *commonTestCase) putBatch(payload *arrowpb.BatchArrowRecords, err erro
 func (ctc *commonTestCase) doAndReturnGetBatch(ctx context.Context) func() (*arrowpb.BatchArrowRecords, error) {
 	return func() (*arrowpb.BatchArrowRecords, error) {
 		select {
-		// @@@ WHY IS THIS NOT DONE
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case r, ok := <-ctc.receive:
