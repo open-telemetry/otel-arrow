@@ -5,6 +5,7 @@ package test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter"
 	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver"
 	"github.com/open-telemetry/otel-arrow/collector/testutil"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
@@ -22,6 +24,7 @@ import (
 	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+	"go.opentelemetry.io/collector/pdata/ptrace/ptraceotlp"
 	"go.opentelemetry.io/collector/receiver"
 	"go.uber.org/zap"
 )
@@ -44,7 +47,7 @@ func (tc *testConsumer) ConsumeTraces(ctx context.Context, td ptrace.Traces) err
 func TestIntegrationSimpleTraces(t *testing.T) {
 	const (
 		threadCount  = 10
-		requestCount = 1000
+		requestCount = 100
 	)
 
 	efact := otelarrowexporter.NewFactory()
@@ -116,6 +119,8 @@ func TestIntegrationSimpleTraces(t *testing.T) {
 	var cwg sync.WaitGroup
 	swg.Wait()
 
+	var expect [threadCount][]ptrace.Traces
+
 	for num := 0; num < threadCount; num++ {
 		cwg.Add(1)
 		go func() {
@@ -149,6 +154,7 @@ func TestIntegrationSimpleTraces(t *testing.T) {
 				status.SetMessage("status-cancelled")
 
 				require.NoError(t, exporter.ConsumeTraces(ctx, td))
+				expect[num] = append(expect[num], td)
 			}
 		}()
 	}
@@ -162,5 +168,20 @@ func TestIntegrationSimpleTraces(t *testing.T) {
 	// wait for receiver to shut down
 	rwg.Wait()
 
+	// Check for matching request count and data
 	require.Equal(t, requestCount*threadCount, testCon.sink.SpanCount())
+
+	var expectJSON []json.Marshaler
+	for _, tdn := range expect {
+		for _, td := range tdn {
+			expectJSON = append(expectJSON, ptraceotlp.NewExportRequestFromTraces(td))
+		}
+	}
+	var receivedJSON []json.Marshaler
+
+	for _, td := range testCon.sink.AllTraces() {
+		receivedJSON = append(receivedJSON, ptraceotlp.NewExportRequestFromTraces(td))
+	}
+	asserter := assert.NewStdUnitTest(t)
+	assert.Equiv(asserter, expectJSON, receivedJSON)
 }
