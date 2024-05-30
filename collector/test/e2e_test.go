@@ -92,39 +92,43 @@ func TestIntegrationSimpleTraces(t *testing.T) {
 	}, exporterCfg)
 	require.NoError(t, err)
 
-	var rwg sync.WaitGroup
-	var ewg sync.WaitGroup
-	var swg sync.WaitGroup
+	var startWG sync.WaitGroup
+	var exporterShutdownWG sync.WaitGroup
+	var startExporterShutdownWG sync.WaitGroup
+	var receiverShutdownWG sync.WaitGroup // wait for receiver shutdown
 
-	rwg.Add(1)
-	ewg.Add(1)
-	swg.Add(1)
+	receiverShutdownWG.Add(1)
+	exporterShutdownWG.Add(1)
+	startExporterShutdownWG.Add(1)
+	startWG.Add(1)
 
+	// Run the receiver, shutdown after exporter does.
 	go func() {
-		defer rwg.Done()
+		defer receiverShutdownWG.Done()
 		require.NoError(t, receiver.Start(ctx, host))
-		ewg.Wait()
+		exporterShutdownWG.Wait()
 		require.NoError(t, receiver.Shutdown(ctx))
 	}()
 
+	// Run the exporter and wait for clients to finish
 	go func() {
-		defer ewg.Done()
+		defer exporterShutdownWG.Done()
 		require.NoError(t, exporter.Start(ctx, host))
-		swg.Done()
-		<-ctx.Done()
+		startWG.Done()
+		startExporterShutdownWG.Wait()
 		require.NoError(t, exporter.Shutdown(ctx))
 	}()
 
 	// wait for the exporter to start
-	var cwg sync.WaitGroup
-	swg.Wait()
+	startWG.Wait()
+	var clientDoneWG sync.WaitGroup // wait for client to finish
 
 	var expect [threadCount][]ptrace.Traces
 
 	for num := 0; num < threadCount; num++ {
-		cwg.Add(1)
+		clientDoneWG.Add(1)
 		go func() {
-			defer cwg.Done()
+			defer clientDoneWG.Done()
 			for i := 0; i < requestCount; i++ {
 				td := ptrace.NewTraces()
 				td.ResourceSpans().AppendEmpty().Resource().Attributes().PutStr("resource-attr", fmt.Sprint("resource-attr-val-", i))
@@ -160,13 +164,13 @@ func TestIntegrationSimpleTraces(t *testing.T) {
 	}
 
 	// wait til senders finish
-	cwg.Wait()
+	clientDoneWG.Wait()
 
 	// shut down exporter; it triggers receiver to shut down
-	cancel()
+	startExporterShutdownWG.Done()
 
 	// wait for receiver to shut down
-	rwg.Wait()
+	receiverShutdownWG.Wait()
 
 	// Check for matching request count and data
 	require.Equal(t, requestCount*threadCount, testCon.sink.SpanCount())
