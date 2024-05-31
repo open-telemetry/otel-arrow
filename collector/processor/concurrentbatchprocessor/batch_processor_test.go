@@ -134,7 +134,7 @@ func TestBatchProcessorSpansPanicRecover(t *testing.T) {
 		// until batch size reached to unblock.
 		wg.Add(1)
 		go func() {
-			err = bp.ConsumeTraces(context.Background(), td)
+			err := bp.ConsumeTraces(context.Background(), td)
 			assert.Contains(t, err.Error(), "testing panic")
 			wg.Done()
 		}()
@@ -168,7 +168,7 @@ func TestBatchProcessorMetricsPanicRecover(t *testing.T) {
 		md.ResourceMetrics().At(0).CopyTo(sentResourceMetrics.AppendEmpty())
 		wg.Add(1)
 		go func() {
-			err = bp.ConsumeMetrics(context.Background(), md)
+			err := bp.ConsumeMetrics(context.Background(), md)
 			assert.Contains(t, err.Error(), "testing panic")
 			wg.Done()
 		}()
@@ -202,7 +202,7 @@ func TestBatchProcessorLogsPanicRecover(t *testing.T) {
 		ld.ResourceLogs().At(0).CopyTo(sentResourceLogs.AppendEmpty())
 		wg.Add(1)
 		go func() {
-			err = bp.ConsumeLogs(context.Background(), ld)
+			err := bp.ConsumeLogs(context.Background(), ld)
 			assert.Contains(t, err.Error(), "testing panic")
 			wg.Done()
 		}()
@@ -307,7 +307,7 @@ func TestBatchProcessorCancelContext(t *testing.T) {
 		// until batch size reached to unblock.
 		wg.Add(1)
 		go func() {
-			err = bp.ConsumeTraces(ctx, td)
+			err := bp.ConsumeTraces(ctx, td)
 			assert.Contains(t, err.Error(), "context canceled")
 			wg.Done()
 		}()
