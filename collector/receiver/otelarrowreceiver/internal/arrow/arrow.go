@@ -569,6 +569,17 @@ func (r *Receiver) recvOne(streamCtx context.Context, serverStream anyStreamServ
 		// Failing to parse the incoming headers breaks the stream.
 		return status.Errorf(codes.Internal, "arrow metadata error: %v", err)
 	}
+
+	// Authorize the request, if configured, prior to acquiring resources.
+	if r.authServer != nil {
+		var authErr error
+		inflightCtx, authErr = r.authServer.Authenticate(inflightCtx, authHdrs)
+		if authErr != nil {
+			flight.replyToCaller(status.Error(codes.Unauthenticated, authErr.Error()))
+			return nil
+		}
+	}
+
 	var prevAcquiredBytes int64
 	uncompSizeHeaderStr, uncompSizeHeaderFound := authHdrs["otlp-pdata-size"]
 	if !uncompSizeHeaderFound || len(uncompSizeHeaderStr) == 0 {
@@ -578,15 +589,6 @@ func (r *Receiver) recvOne(streamCtx context.Context, serverStream anyStreamServ
 		prevAcquiredBytes, err = strconv.ParseInt(uncompSizeHeaderStr[0], 10, 64)
 		if err != nil {
 			return status.Errorf(codes.Internal, "failed to convert string to request size: %v", err)
-		}
-	}
-	// Authorize the request, if configured, prior to acquiring resources.
-	if r.authServer != nil {
-		var authErr error
-		inflightCtx, authErr = r.authServer.Authenticate(inflightCtx, authHdrs)
-		if authErr != nil {
-			flight.replyToCaller(status.Error(codes.Unauthenticated, authErr.Error()))
-			return nil
 		}
 	}
 
