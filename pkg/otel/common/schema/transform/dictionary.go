@@ -203,12 +203,12 @@ func (t *DictionaryField) updateIndexType(stats *stats.RecordBuilderStats) {
 			t.currentIndex = 0
 			t.schemaUpdateRequest.Inc(&update.DictionaryOverflowEvent{FieldName: t.path, PrevIndexType: prevIndexType, NewIndexType: t.IndexType(), Cardinality: t.cardinality, Total: t.cumulativeTotal})
 			t.events.DictionariesWithOverflow[t.path] = true
-			stats.DictionaryOverflowDetected++
+			stats.DictionaryOverflowDetected.Add(1)
 		}
 	} else if t.currentIndex != currentIndex {
 		t.schemaUpdateRequest.Inc(&update.DictionaryUpgradeEvent{FieldName: t.path, PrevIndexType: prevIndexType, NewIndexType: t.IndexType(), Cardinality: t.cardinality, Total: t.cumulativeTotal})
 		t.events.DictionariesIndexTypeChanged[t.path] = t.indexTypes[t.currentIndex].Name()
-		stats.DictionaryIndexTypeChanged++
+		stats.DictionaryIndexTypeChanged.Add(1)
 	}
 	return
 }

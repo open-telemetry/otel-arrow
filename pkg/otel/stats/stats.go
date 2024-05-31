@@ -22,6 +22,8 @@ package stats
 import (
 	"fmt"
 	"sort"
+	"sync"
+	"sync/atomic"
 
 	"github.com/HdrHistogram/hdrhistogram-go"
 )
@@ -29,11 +31,11 @@ import (
 type (
 	// ProducerStats is a struct that contains stats about the OTLP Arrow Producer.
 	ProducerStats struct {
-		MetricsBatchesProduced uint64
-		LogsBatchesProduced    uint64
-		TracesBatchesProduced  uint64
-		StreamProducersCreated uint64
-		StreamProducersClosed  uint64
+		MetricsBatchesProduced atomic.Uint64
+		LogsBatchesProduced    atomic.Uint64
+		TracesBatchesProduced  atomic.Uint64
+		StreamProducersCreated atomic.Uint64
+		StreamProducersClosed  atomic.Uint64
 		RecordBuilderStats     RecordBuilderStats
 
 		// SchemaStats is a flag that indicates whether to display schema stats.
@@ -52,31 +54,25 @@ type (
 	}
 
 	RecordSizeStats struct {
-		TotalSize int64
-		Dist      *hdrhistogram.Histogram
+		totalSize int64
+		dist      *hdrhistogram.Histogram
 	}
 
 	RecordBuilderStats struct {
-		SchemaUpdatesPerformed     uint64
-		DictionaryIndexTypeChanged uint64
-		DictionaryOverflowDetected uint64
-		RecordSizeDistribution     map[string]*RecordSizeStats
+		SchemaUpdatesPerformed     atomic.Uint64
+		DictionaryIndexTypeChanged atomic.Uint64
+		DictionaryOverflowDetected atomic.Uint64
+
+		recordSizeDistributionLock sync.Mutex
+		recordSizeDistribution     map[string]*RecordSizeStats
 	}
 )
 
 // NewProducerStats creates a new ProducerStats struct.
 func NewProducerStats() *ProducerStats {
 	return &ProducerStats{
-		MetricsBatchesProduced: 0,
-		LogsBatchesProduced:    0,
-		TracesBatchesProduced:  0,
-		StreamProducersCreated: 0,
-		StreamProducersClosed:  0,
 		RecordBuilderStats: RecordBuilderStats{
-			SchemaUpdatesPerformed:     0,
-			DictionaryIndexTypeChanged: 0,
-			DictionaryOverflowDetected: 0,
-			RecordSizeDistribution:     make(map[string]*RecordSizeStats),
+			recordSizeDistribution: make(map[string]*RecordSizeStats),
 		},
 		SchemaStats:   false,
 		SchemaUpdates: false,
@@ -92,19 +88,19 @@ func (s *ProducerStats) GetAndReset() ProducerStats {
 
 // Reset sets all stats to zero.
 func (s *ProducerStats) Reset() {
-	s.MetricsBatchesProduced = 0
-	s.LogsBatchesProduced = 0
-	s.TracesBatchesProduced = 0
-	s.StreamProducersCreated = 0
-	s.StreamProducersClosed = 0
+	s.MetricsBatchesProduced.Store(0)
+	s.LogsBatchesProduced.Store(0)
+	s.TracesBatchesProduced.Store(0)
+	s.StreamProducersCreated.Store(0)
+	s.StreamProducersClosed.Store(0)
 	s.RecordBuilderStats.Reset()
 }
 
 // Reset sets all stats to zero.
 func (s *RecordBuilderStats) Reset() {
-	s.SchemaUpdatesPerformed = 0
-	s.DictionaryIndexTypeChanged = 0
-	s.DictionaryOverflowDetected = 0
+	s.SchemaUpdatesPerformed.Store(0)
+	s.DictionaryIndexTypeChanged.Store(0)
+	s.DictionaryOverflowDetected.Store(0)
 }
 
 // Show prints the stats to the console.
@@ -123,31 +119,50 @@ func (s *ProducerStats) RecordSizeStats() map[string]*RecordSizeStats {
 	return s.RecordBuilderStats.RecordSizeStats()
 }
 
+func (s *RecordBuilderStats) Observe(payloadType string, recordSize int64) {
+	s.recordSizeDistributionLock.Lock()
+	defer s.recordSizeDistributionLock.Unlock()
+
+	recordSizeDist, ok := s.recordSizeDistribution[payloadType]
+	if !ok {
+		recordSizeDist = &RecordSizeStats{
+			totalSize: 0,
+			dist:      hdrhistogram.New(0, 1<<32, 2),
+		}
+		s.recordSizeDistribution[payloadType] = recordSizeDist
+	}
+
+	recordSizeDist.totalSize += recordSize
+	_ = recordSizeDist.dist.RecordValue(recordSize)
+}
+
 // Show prints the RecordBuilder stats to the console.
 func (s *RecordBuilderStats) Show(indent string) {
 	fmt.Printf("%s- Schema updates performed: %d\n", indent, s.SchemaUpdatesPerformed)
 	fmt.Printf("%s- Dictionary index type changed: %d\n", indent, s.DictionaryIndexTypeChanged)
 	fmt.Printf("%s- Dictionary overflow detected: %d\n", indent, s.DictionaryOverflowDetected)
 
-	if len(s.RecordSizeDistribution) > 0 {
+	s.recordSizeDistributionLock.Lock()
+	defer s.recordSizeDistributionLock.Unlock()
+	if len(s.recordSizeDistribution) > 0 {
 		type RecordSizeStats struct {
 			PayloadType string
 			TotalSize   int64
-			Dist        *hdrhistogram.Histogram
+			Dist        *hdrhistogram.Snapshot
 			Percent     float64
 		}
 
 		var recordSizeStats []RecordSizeStats
 		totalSize := int64(0)
 
-		for k, v := range s.RecordSizeDistribution {
+		for k, v := range s.recordSizeDistribution {
 			recordSizeStats = append(recordSizeStats, RecordSizeStats{
 				PayloadType: k,
-				TotalSize:   v.TotalSize,
-				Dist:        v.Dist,
+				TotalSize:   v.totalSize,
+				Dist:        v.dist.Export(),
 				Percent:     0,
 			})
-			totalSize += v.TotalSize
+			totalSize += v.totalSize
 		}
 
 		// Compute the percentage of each record size
@@ -162,11 +177,12 @@ func (s *RecordBuilderStats) Show(indent string) {
 
 		fmt.Printf("%s- Record size distribution:\n", indent)
 		for _, v := range recordSizeStats {
+			dist := hdrhistogram.Import(v.Dist)
 			fmt.Printf("%s  - %-18s: %8d bytes (%04.1f%%) (min: %7d, max: %7d, mean: %7.1f, stdev: %7.1f, p50: %7d, p99: %7d)\n", indent,
 				v.PayloadType, v.TotalSize, v.Percent,
-				v.Dist.Min(), v.Dist.Max(), v.Dist.Mean(),
-				v.Dist.StdDev(),
-				v.Dist.ValueAtQuantile(50), v.Dist.ValueAtQuantile(99),
+				dist.Min(), dist.Max(), dist.Mean(),
+				dist.StdDev(),
+				dist.ValueAtQuantile(50), dist.ValueAtQuantile(99),
 			)
 		}
 	}
@@ -174,7 +190,22 @@ func (s *RecordBuilderStats) Show(indent string) {
 
 // RecordSizeStats returns statistics per record payload type.
 func (s *RecordBuilderStats) RecordSizeStats() map[string]*RecordSizeStats {
-	return s.RecordSizeDistribution
+	s.recordSizeDistributionLock.Lock()
+	defer s.recordSizeDistributionLock.Lock()
+
+	m := map[string]*RecordSizeStats{}
+
+	for k, v := range s.recordSizeDistribution {
+		rss := &RecordSizeStats{
+			totalSize: v.totalSize,
+			dist:      hdrhistogram.Import(v.dist.Export()),
+		}
+		rss.dist.Merge(v.dist)
+		m[k] = rss
+
+	}
+
+	return s.recordSizeDistribution
 }
 
 // CompareRecordSizeStats compares the record size stats with and without compression
@@ -194,15 +225,15 @@ func CompareRecordSizeStats(withCompression map[string]*RecordSizeStats, withNoC
 		statsWithNoCompression, ok := withNoCompression[payloadType]
 		totalSizeWithNoCompression := int64(0)
 		if ok {
-			totalSizeWithNoCompression = statsWithNoCompression.TotalSize
+			totalSizeWithNoCompression = statsWithNoCompression.totalSize
 		}
 		recordSizeStats = append(recordSizeStats, RecordSizeStats{
 			PayloadType:                payloadType,
-			TotalSizeWithCompression:   stats.TotalSize,
+			TotalSizeWithCompression:   stats.totalSize,
 			TotalSizeWithNoCompression: totalSizeWithNoCompression,
 			Percent:                    0,
 		})
-		totalSize += stats.TotalSize
+		totalSize += stats.totalSize
 	}
 
 	// Compute the percentage of each record size (with compression)

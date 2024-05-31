@@ -21,7 +21,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/HdrHistogram/hdrhistogram-go"
 	"github.com/apache/arrow/go/v14/arrow"
 	"github.com/apache/arrow/go/v14/arrow/ipc"
 	"github.com/apache/arrow/go/v14/arrow/memory"
@@ -240,7 +239,7 @@ func (p *Producer) BatchArrowRecordsFromMetrics(metrics pmetric.Metrics) (*colar
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
-	p.stats.MetricsBatchesProduced++
+	p.stats.MetricsBatchesProduced.Add(1)
 	return bar, nil
 }
 
@@ -271,7 +270,7 @@ func (p *Producer) BatchArrowRecordsFromLogs(ls plog.Logs) (*colarspb.BatchArrow
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
-	p.stats.LogsBatchesProduced++
+	p.stats.LogsBatchesProduced.Add(1)
 	return bar, nil
 }
 
@@ -302,7 +301,7 @@ func (p *Producer) BatchArrowRecordsFromTraces(ts ptrace.Traces) (*colarspb.Batc
 	if err != nil {
 		return nil, werror.Wrap(err)
 	}
-	p.stats.TracesBatchesProduced++
+	p.stats.TracesBatchesProduced.Add(1)
 	return bar, nil
 }
 
@@ -347,7 +346,7 @@ func (p *Producer) Close() error {
 		if err := sp.ipcWriter.Close(); err != nil {
 			return werror.Wrap(err)
 		}
-		p.stats.StreamProducersClosed++
+		p.stats.StreamProducersClosed.Add(1)
 	}
 	return nil
 }
@@ -386,7 +385,7 @@ func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.Batch
 						if err := sp.ipcWriter.Close(); err != nil {
 							return werror.Wrap(err)
 						}
-						p.stats.StreamProducersClosed++
+						p.stats.StreamProducersClosed.Add(1)
 						delete(p.streamProducers, ssID)
 					}
 				}
@@ -399,7 +398,7 @@ func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.Batch
 				}
 				p.streamProducers[rm.SchemaID()] = sp
 				p.nextSchemaId++
-				p.stats.StreamProducersCreated++
+				p.stats.StreamProducersCreated.Add(1)
 			}
 
 			sp.lastProduction = time.Now()
@@ -433,19 +432,7 @@ func (p *Producer) Produce(rms []*record_message.RecordMessage) (*colarspb.Batch
 				payloadType := rm.PayloadType().String()
 				recordSize := int64(len(buf))
 
-				recordSizeDist, ok := p.stats.RecordBuilderStats.RecordSizeDistribution[payloadType]
-				if !ok {
-					recordSizeDist = &pstats.RecordSizeStats{
-						TotalSize: 0,
-						Dist:      hdrhistogram.New(0, 1<<32, 2),
-					}
-					p.stats.RecordBuilderStats.RecordSizeDistribution[payloadType] = recordSizeDist
-				}
-
-				recordSizeDist.TotalSize += recordSize
-				if err := recordSizeDist.Dist.RecordValue(recordSize); err != nil {
-					return werror.Wrap(err)
-				}
+				p.stats.RecordBuilderStats.Observe(payloadType, recordSize)
 
 				if p.stats.RecordStats {
 					fmt.Printf("Record %q -> %d bytes\n", payloadType, len(buf))
