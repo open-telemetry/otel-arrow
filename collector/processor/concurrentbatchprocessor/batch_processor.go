@@ -441,26 +441,28 @@ func (bp *batchProcessor) countRelease(bytes int64) {
 }
 
 func (b *shard) consumeAndWait(ctx context.Context, data any) error {
+
+	var itemCount int
+	switch telem := data.(type) {
+	case ptrace.Traces:
+		itemCount = telem.SpanCount()
+	case pmetric.Metrics:
+		itemCount = telem.DataPointCount()
+	case plog.Logs:
+		itemCount = telem.LogRecordCount()
+	}
+
+	if itemCount == 0 {
+		return nil
+	}
+
 	respCh := make(chan error, 1)
 	item := dataItem{
 		parentCtx:  ctx,
 		data:       data,
 		responseCh: respCh,
+		count:      itemCount,
 	}
-
-	switch telem := data.(type) {
-	case ptrace.Traces:
-		item.count = telem.SpanCount()
-	case pmetric.Metrics:
-		item.count = telem.DataPointCount()
-	case plog.Logs:
-		item.count = telem.LogRecordCount()
-	}
-
-	if item.count == 0 {
-		return nil
-	}
-
 	bytes := int64(b.batch.sizeBytes(data))
 
 	if bytes > b.processor.limitBytes {
