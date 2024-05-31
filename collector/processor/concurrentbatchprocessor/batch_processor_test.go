@@ -1668,3 +1668,32 @@ func TestBatchTooLarge(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "request size exceeds max-in-flight bytes")
 }
+
+func TestBatchProcessorEmptyBatch(t *testing.T) {
+	sink := new(consumertest.TracesSink)
+	cfg := createDefaultConfig().(*Config)
+	sendBatchSize := 100
+	cfg.SendBatchSize = uint32(sendBatchSize)
+	cfg.Timeout = 100 * time.Millisecond
+
+	requestCount := 5
+
+	creationSet := processortest.NewNopCreateSettings()
+	creationSet.MetricsLevel = configtelemetry.LevelDetailed
+	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg)
+	require.NoError(t, err)
+	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
+
+	var wg sync.WaitGroup
+	for requestNum := 0; requestNum < requestCount; requestNum++ {
+		td := ptrace.NewTraces()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			assert.NoError(t, batcher.ConsumeTraces(context.Background(), td))
+		}()
+	}
+
+	wg.Wait()
+	require.NoError(t, batcher.Shutdown(context.Background()))
+}
