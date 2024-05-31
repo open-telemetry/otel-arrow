@@ -134,9 +134,9 @@ func TestBatchProcessorSpansPanicRecover(t *testing.T) {
 		// until batch size reached to unblock.
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			err := bp.ConsumeTraces(context.Background(), td)
 			assert.Contains(t, err.Error(), "testing panic")
-			wg.Done()
 		}()
 	}
 
@@ -168,9 +168,9 @@ func TestBatchProcessorMetricsPanicRecover(t *testing.T) {
 		md.ResourceMetrics().At(0).CopyTo(sentResourceMetrics.AppendEmpty())
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			err := bp.ConsumeMetrics(context.Background(), md)
 			assert.Contains(t, err.Error(), "testing panic")
-			wg.Done()
 		}()
 	}
 
@@ -202,9 +202,9 @@ func TestBatchProcessorLogsPanicRecover(t *testing.T) {
 		ld.ResourceLogs().At(0).CopyTo(sentResourceLogs.AppendEmpty())
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			err := bp.ConsumeLogs(context.Background(), ld)
 			assert.Contains(t, err.Error(), "testing panic")
-			wg.Done()
 		}()
 	}
 
@@ -307,9 +307,9 @@ func TestBatchProcessorCancelContext(t *testing.T) {
 		// until batch size reached to unblock.
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			err := bp.ConsumeTraces(ctx, td)
 			assert.Contains(t, err.Error(), "context canceled")
-			wg.Done()
 		}()
 	}
 
@@ -389,8 +389,8 @@ func TestBatchProcessorUnbrokenParentContext(t *testing.T) {
 		// until batch size reached to unblock.
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, bp.ConsumeTraces(bg, td))
-			wg.Done()
 		}()
 	}
 	wg.Wait()
@@ -481,8 +481,8 @@ func TestBatchProcessorUnbrokenParentContextMultiple(t *testing.T) {
 		// until batch size reached to unblock.
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, bp.ConsumeTraces(callCtxs[num], td))
-			wg.Done()
 		}()
 	}
 	wg.Wait()
@@ -528,8 +528,8 @@ func TestBatchProcessorSpansDelivered(t *testing.T) {
 		// until batch size reached to unblock.
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, batcher.ConsumeTraces(context.Background(), td))
-			wg.Done()
 		}()
 	}
 
@@ -537,8 +537,8 @@ func TestBatchProcessorSpansDelivered(t *testing.T) {
 	td := ptrace.NewTraces()
 	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		assert.NoError(t, batcher.ConsumeTraces(context.Background(), td))
-		wg.Done()
 	}()
 
 	wg.Wait()
@@ -580,8 +580,8 @@ func TestBatchProcessorSpansDeliveredEnforceBatchSize(t *testing.T) {
 		}
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, batcher.ConsumeTraces(context.Background(), td))
-			wg.Done()
 		}()
 	}
 
@@ -589,8 +589,8 @@ func TestBatchProcessorSpansDeliveredEnforceBatchSize(t *testing.T) {
 	td := ptrace.NewTraces()
 	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		require.NoError(t, batcher.ConsumeTraces(context.Background(), td))
-		wg.Done()
 	}()
 
 	// shutdown will flush any remaining spans
@@ -633,8 +633,8 @@ func testBatchProcessorSentBySize(t *testing.T, tel testTelemetry) {
 		sizeSum += sizer.TracesSize(td)
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, batcher.ConsumeTraces(context.Background(), td))
-			wg.Done()
 		}()
 	}
 
@@ -694,8 +694,8 @@ func testBatchProcessorSentBySizeWithMaxSize(t *testing.T, tel testTelemetry) {
 		// this should be a noerr but need to separate triggerTimeout from triggerShutdown
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, batcher.ConsumeTraces(context.Background(), td))
-			wg.Done()
 		}()
 	}
 
@@ -738,8 +738,8 @@ func TestBatchProcessorSentByTimeout(t *testing.T) {
 		td := testdata.GenerateTraces(spansPerRequest)
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, batcher.ConsumeTraces(context.Background(), td))
-			wg.Done()
 		}()
 	}
 
@@ -784,8 +784,8 @@ func TestBatchProcessorTraceSendWhenClosing(t *testing.T) {
 		td := testdata.GenerateTraces(spansPerRequest)
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, batcher.ConsumeTraces(context.Background(), td))
-			wg.Done()
 		}()
 	}
 
@@ -827,8 +827,8 @@ func TestBatchMetricProcessor_ReceivingData(t *testing.T) {
 		md.ResourceMetrics().At(0).CopyTo(sentResourceMetrics.AppendEmpty())
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, batcher.ConsumeMetrics(context.Background(), md))
-			wg.Done()
 		}()
 	}
 
@@ -836,8 +836,8 @@ func TestBatchMetricProcessor_ReceivingData(t *testing.T) {
 	md := pmetric.NewMetrics()
 	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		assert.NoError(t, batcher.ConsumeMetrics(context.Background(), md))
-		wg.Done()
 	}()
 
 	wg.Wait()
@@ -890,8 +890,8 @@ func testBatchMetricProcessorBatchSize(t *testing.T, tel testTelemetry) {
 		size += sizer.MetricsSize(md)
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, batcher.ConsumeMetrics(context.Background(), md))
-			wg.Done()
 		}()
 	}
 	wg.Wait()
@@ -960,8 +960,8 @@ func TestBatchMetricsProcessor_Timeout(t *testing.T) {
 		md := testdata.GenerateMetrics(metricsPerRequest)
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, batcher.ConsumeMetrics(context.Background(), md))
-			wg.Done()
 		}()
 	}
 
@@ -1005,8 +1005,8 @@ func TestBatchMetricProcessor_Shutdown(t *testing.T) {
 		md := testdata.GenerateMetrics(metricsPerRequest)
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, batcher.ConsumeMetrics(context.Background(), md))
-			wg.Done()
 		}()
 	}
 
@@ -1167,8 +1167,8 @@ func TestBatchLogProcessor_ReceivingData(t *testing.T) {
 		ld.ResourceLogs().At(0).CopyTo(sentResourceLogs.AppendEmpty())
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, batcher.ConsumeLogs(context.Background(), ld))
-			wg.Done()
 		}()
 	}
 
@@ -1176,8 +1176,8 @@ func TestBatchLogProcessor_ReceivingData(t *testing.T) {
 	ld := plog.NewLogs()
 	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		assert.NoError(t, batcher.ConsumeLogs(context.Background(), ld))
-		wg.Done()
 	}()
 
 	wg.Wait()
@@ -1228,8 +1228,8 @@ func testBatchLogProcessorBatchSize(t *testing.T, tel testTelemetry) {
 		size += sizer.LogsSize(ld)
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, batcher.ConsumeLogs(context.Background(), ld))
-			wg.Done()
 		}()
 	}
 	wg.Wait()
@@ -1278,8 +1278,8 @@ func TestBatchLogsProcessor_Timeout(t *testing.T) {
 		ld := testdata.GenerateLogs(logsPerRequest)
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, batcher.ConsumeLogs(context.Background(), ld))
-			wg.Done()
 		}()
 	}
 
@@ -1323,8 +1323,8 @@ func TestBatchLogProcessor_Shutdown(t *testing.T) {
 		ld := testdata.GenerateLogs(logsPerRequest)
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, batcher.ConsumeLogs(context.Background(), ld))
-			wg.Done()
 		}()
 	}
 
@@ -1380,8 +1380,8 @@ func verifyTracesDoesNotProduceAfterShutdown(t *testing.T, factory processor.Fac
 	for i := 0; i < generatedCount; i++ {
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, proc.ConsumeTraces(context.Background(), testdata.GenerateTraces(1)))
-			wg.Done()
 		}()
 	}
 
@@ -1482,8 +1482,8 @@ func TestBatchProcessorSpansBatchedByMetadata(t *testing.T) {
 		expectByContext[num] += spansPerRequest
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, batcher.ConsumeTraces(callCtxs[num], td))
-			wg.Done()
 		}()
 	}
 
@@ -1546,8 +1546,8 @@ func TestBatchProcessorMetadataCardinalityLimit(t *testing.T) {
 
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			assert.NoError(t, batcher.ConsumeTraces(ctx, td))
-			wg.Done()
 		}()
 	}
 
@@ -1561,9 +1561,9 @@ func TestBatchProcessorMetadataCardinalityLimit(t *testing.T) {
 
 	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		err := batcher.ConsumeTraces(ctx, td)
 		assert.ErrorIs(t, err, errTooManyBatchers)
-		wg.Done()
 	}()
 
 	wg.Wait()
