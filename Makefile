@@ -20,7 +20,7 @@ BUILD_INFO_IMPORT_PATH=go.opentelemetry.io/collector/internal/version
 all: gotidy test build
 
 test:
-	for dir in $(GODIRS); do (cd $${dir}; $(GOCMD) test -race --tags=assert ./...) || exit 1; done
+	for dir in $(GODIRS); do (cd $${dir}; $(GOCMD) test -parallel=4 -race --tags=assert ./...) || exit 1; done
 
 fmt:
 	for dir in $(GODIRS); do (cd $${dir}; $(GOCMD) fmt ./...) || exit 1; done
