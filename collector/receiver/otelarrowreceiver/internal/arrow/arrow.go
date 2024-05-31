@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	arrowpb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	"github.com/open-telemetry/otel-arrow/collector/netstats"
@@ -55,7 +56,7 @@ var (
 	ErrNoMetricsConsumer   = fmt.Errorf("no metrics consumer")
 	ErrNoLogsConsumer      = fmt.Errorf("no logs consumer")
 	ErrNoTracesConsumer    = fmt.Errorf("no traces consumer")
-	ErrUnrecognizedPayload = fmt.Errorf("unrecognized OTel-Arrow payload")
+	ErrUnrecognizedPayload = consumererror.NewPermanent(fmt.Errorf("unrecognized OTel-Arrow payload"))
 )
 
 type Consumers interface {
@@ -285,7 +286,7 @@ func (h *headerReceiver) newContext(ctx context.Context, hdrs map[string][]strin
 }
 
 // logStreamError decides how to log an error.
-func (r *Receiver) logStreamError(err error) {
+func (r *Receiver) logStreamError(err error, where string) {
 	var code codes.Code
 	var msg string
 	// gRPC tends to supply status-wrapped errors, so we always
@@ -307,7 +308,7 @@ func (r *Receiver) logStreamError(err error) {
 	if code == codes.Canceled {
 		r.telemetry.Logger.Debug("arrow stream shutdown", zap.String("message", msg))
 	} else {
-		r.telemetry.Logger.Error("arrow stream error", zap.String("message", msg), zap.Int("code", int(code)))
+		r.telemetry.Logger.Error("arrow stream error", zap.String("message", msg), zap.Int("code", int(code)), zap.String("where", where))
 	}
 }
 
@@ -340,10 +341,8 @@ type anyStreamServer interface {
 }
 
 type batchResp struct {
-	addr           net.Addr
-	id             int64
-	err            error
-	bytesToRelease int64
+	id  int64
+	err error
 }
 
 func (r *Receiver) recoverErr(retErr *error) {
@@ -355,7 +354,7 @@ func (r *Receiver) recoverErr(retErr *error) {
 			zap.Reflect("recovered", err),
 			zap.Stack("stacktrace"),
 		)
-		*retErr = fmt.Errorf("panic in otel-arrow-adapter: %v", err)
+		*retErr = status.Errorf(codes.Internal, "panic in otel-arrow-adapter: %v", err)
 	}
 }
 
@@ -370,52 +369,189 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	}()
 	defer r.recoverErr(&retErr)
 
+	// doneCancel allows an error in the sender/receiver to
+	// interrupt the corresponding thread.
 	doneCtx, doneCancel := context.WithCancel(streamCtx)
 	defer doneCancel()
+
+	// streamErrCh returns up to two errors from the sender and
+	// receiver threads started below.
 	streamErrCh := make(chan error, 2)
 	pendingCh := make(chan batchResp, runtime.NumCPU())
 
+	// wg is used to ensure this thread returns after both
+	// sender and recevier threads return.
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// The inflightWG is used to wait for all data to send.  The
+	// 1-count here is removed after srvReceiveLoop() returns,
+	// having this ensures that concurrent calls to Add() in the
+	// receiver do not race with Wait() in the sender.
+	r.inFlightWG.Add(1)
+
 	go func() {
 		var err error
+		defer wg.Done()
 		defer r.recoverErr(&err)
+		defer r.inFlightWG.Done()
 		err = r.srvReceiveLoop(doneCtx, serverStream, pendingCh, method, ac)
 		streamErrCh <- err
 	}()
 
-	// WG is used to ensure main thread only returns once sender is finished sending responses for all requests.
-	var senderWG sync.WaitGroup
-	senderWG.Add(1)
 	go func() {
 		var err error
+		defer wg.Done()
 		defer r.recoverErr(&err)
 		err = r.srvSendLoop(doneCtx, serverStream, pendingCh)
 		streamErrCh <- err
-		senderWG.Done()
 	}()
+
+	// Wait for sender/receiver threads to return before returning.
+	defer wg.Wait()
 
 	select {
 	case <-doneCtx.Done():
-		senderWG.Wait()
 		return status.Error(codes.Canceled, "server stream shutdown")
 	case retErr = <-streamErrCh:
 		doneCancel()
-		senderWG.Wait()
 		return
 	}
 }
 
-func (r *Receiver) recvOne(ctx context.Context, serverStream anyStreamServer, hrcv *headerReceiver, pendingCh chan<- batchResp, method string, ac arrowRecord.ConsumerAPI) (retErr error) {
+func (r *Receiver) newInFlightData(ctx context.Context, method string, batchID int64, pendingCh chan<- batchResp) (context.Context, *inFlightData) {
+	ctx, span := r.tracer.Start(ctx, "otel_arrow_stream_inflight")
+
 	r.inFlightWG.Add(1)
-	defer func() {
-		if retErr != nil {
-			r.inFlightWG.Done() // not processed
-			r.logStreamError(retErr)
+	r.recvInFlightRequests.Add(ctx, 1)
+	id := &inFlightData{
+		Receiver:  r,
+		method:    method,
+		batchID:   batchID,
+		pendingCh: pendingCh,
+		span:      span,
+	}
+	id.refs.Add(1)
+	return ctx, id
+}
+
+// inFlightData is responsible for storing the resources held by one request.
+type inFlightData struct {
+	// Receiver is the owner of the resources held by this object.
+	*Receiver
+
+	method    string
+	batchID   int64
+	pendingCh chan<- batchResp
+	span      trace.Span
+
+	// refs counts the number of goroutines holding this object.
+	// initially the recvOne() body, on success the
+	// consumeAndRespond() function.
+	refs atomic.Int32
+
+	numAcquired int64 // how many bytes held in the semaphore
+	numItems    int   // how many items
+	uncompSize  int64 // uncompressed data size
+}
+
+func (id *inFlightData) recvDone(ctx context.Context, recvErrPtr *error) {
+	retErr := *recvErrPtr
+
+	if retErr != nil {
+		// logStreamError because this response will break the stream.
+		id.logStreamError(retErr, "recv")
+		id.span.SetStatus(otelcodes.Error, retErr.Error())
+	}
+
+	id.anyDone(ctx)
+}
+
+func (id *inFlightData) consumeDone(ctx context.Context, consumeErrPtr *error) {
+	retErr := *consumeErrPtr
+
+	if retErr != nil {
+		// debug-level because the error was external from the pipeline.
+		id.telemetry.Logger.Debug("otel-arrow consume", zap.Error(retErr))
+		id.span.SetStatus(otelcodes.Error, retErr.Error())
+	}
+
+	id.replyToCaller(retErr)
+	id.anyDone(ctx)
+}
+
+func (id *inFlightData) replyToCaller(callerErr error) {
+	id.pendingCh <- batchResp{
+		id:  id.batchID,
+		err: callerErr,
+	}
+}
+
+func (id *inFlightData) anyDone(ctx context.Context) {
+	// check if there are still refs, in which case leave the in-flight
+	// counts where they are.
+	if id.refs.Add(-1) != 0 {
+		return
+	}
+
+	id.span.End()
+
+	if id.numAcquired != 0 {
+		if err := id.boundedQueue.Release(id.numAcquired); err != nil {
+			id.telemetry.Logger.Error("release error", zap.Error(err))
 		}
-	}()
+	}
+
+	if id.uncompSize != 0 {
+		id.recvInFlightBytes.Add(ctx, -id.uncompSize)
+	}
+	if id.numItems != 0 {
+		id.recvInFlightItems.Add(ctx, int64(-id.numItems))
+	}
+
+	// The netstats code knows that uncompressed size is
+	// unreliable for arrow transport, so we instrument it
+	// directly here.  Only the primary direction of transport
+	// is instrumented this way.
+	var sized netstats.SizesStruct
+	sized.Method = id.method
+	sized.Length = id.uncompSize
+	id.netReporter.CountReceive(ctx, sized)
+
+	id.recvInFlightRequests.Add(ctx, -1)
+	id.inFlightWG.Done()
+}
+
+// recvOne begins processing a single Arrow batch.
+//
+// If an error is encountered before Arrow data is successfully consumed,
+// the stream will break and the error will be returned immediately.
+//
+// If the error is due to authorization, the stream remains unbroken
+// and the request fails.
+//
+// If not enough resources are available, the stream will block (if
+// waiting permitted) or break (insufficient waiters).
+//
+// Assuming success, a new goroutine is created to handle consuming the
+// data.
+//
+// This handles constructing an inFlightData object, which itself
+// tracks everything that needs to be used by instrumention when the
+// batch finishes.
+func (r *Receiver) recvOne(streamCtx context.Context, serverStream anyStreamServer, hrcv *headerReceiver, pendingCh chan<- batchResp, method string, ac arrowRecord.ConsumerAPI) (retErr error) {
 
 	// Receive a batch corresponding with one ptrace.Traces, pmetric.Metrics,
 	// or plog.Logs item.
 	req, err := serverStream.Recv()
+
+	// inflightCtx is carried through into consumeAndProcess on the success path.
+	inflightCtx, flight := r.newInFlightData(streamCtx, method, req.GetBatchId(), pendingCh)
+	defer flight.recvDone(inflightCtx, &retErr)
+
+	// this span is a child of the inflight, covering the Arrow decode, Auth, etc.
+	_, span := r.tracer.Start(inflightCtx, "otel_arrow_stream_recv")
+	defer span.End()
 
 	if err != nil {
 		if errors.Is(err, io.EOF) {
@@ -423,63 +559,97 @@ func (r *Receiver) recvOne(ctx context.Context, serverStream anyStreamServer, hr
 		} else if errors.Is(err, context.Canceled) {
 			return status.Error(codes.Canceled, "server stream shutdown")
 		}
+		// Note: err is directly from gRPC, should already have status.
 		return err
 	}
 
 	// Check for optional headers and set the incoming context.
-	thisCtx, authHdrs, err := hrcv.combineHeaders(ctx, req.GetHeaders())
+	inflightCtx, authHdrs, err := hrcv.combineHeaders(inflightCtx, req.GetHeaders())
 	if err != nil {
 		// Failing to parse the incoming headers breaks the stream.
-		return fmt.Errorf("arrow metadata error: %w", err)
-	}
-	var prevAcquiredBytes int
-	uncompSizeStr, sizeHeaderFound := authHdrs["otlp-pdata-size"]
-	if !sizeHeaderFound || len(uncompSizeStr) == 0 {
-		// This is a compressed size so make sure to acquire the difference when request is decompressed.
-		prevAcquiredBytes = proto.Size(req)
-	} else {
-		prevAcquiredBytes, err = strconv.Atoi(uncompSizeStr[0])
-		if err != nil {
-			return fmt.Errorf("failed to convert string to request size: %w", err)
-		}
-	}
-	// bounded queue to memory limit based on incoming uncompressed request size and waiters.
-	// Acquire will fail immediately if there are too many waiters,
-	// or will otherwise block until timeout or enough memory becomes available.
-	err = r.boundedQueue.Acquire(ctx, int64(prevAcquiredBytes))
-	if err != nil {
-		return fmt.Errorf("breaking stream: %w", err)
+		return status.Errorf(codes.Internal, "arrow metadata error: %v", err)
 	}
 
-	resp := batchResp{
-		addr:           hrcv.connInfo.Addr,
-		id:             req.GetBatchId(),
-		bytesToRelease: int64(prevAcquiredBytes),
-	}
-
-	var authErr error
+	// Authorize the request, if configured, prior to acquiring resources.
 	if r.authServer != nil {
-		var newCtx context.Context
-		if newCtx, err = r.authServer.Authenticate(thisCtx, authHdrs); err != nil {
-			authErr = err
-		} else {
-			thisCtx = newCtx
+		var authErr error
+		inflightCtx, authErr = r.authServer.Authenticate(inflightCtx, authHdrs)
+		if authErr != nil {
+			flight.replyToCaller(status.Error(codes.Unauthenticated, authErr.Error()))
+			return nil
 		}
 	}
 
-	// processAndConsume will process and send an error to the sender loop
-	go func() {
-		var err error
-		defer r.inFlightWG.Done() // done processing
-		defer r.recoverErr(&err)
-		err = r.processAndConsume(thisCtx, method, ac, req, authErr, resp, sizeHeaderFound)
-		resp.err = err
-		pendingCh <- resp
-	}()
+	var prevAcquiredBytes int64
+	uncompSizeHeaderStr, uncompSizeHeaderFound := authHdrs["otlp-pdata-size"]
+	if !uncompSizeHeaderFound || len(uncompSizeHeaderStr) == 0 {
+		// This is a compressed size so make sure to acquire the difference when request is decompressed.
+		prevAcquiredBytes = int64(proto.Size(req))
+	} else {
+		prevAcquiredBytes, err = strconv.ParseInt(uncompSizeHeaderStr[0], 10, 64)
+		if err != nil {
+			return status.Errorf(codes.Internal, "failed to convert string to request size: %v", err)
+		}
+	}
+
+	// Use the bounded queue to memory limit based on incoming
+	// uncompressed request size and waiters.  Acquire will fail
+	// immediately if there are too many waiters, or will
+	// otherwise block until timeout or enough memory becomes
+	// available.
+	err = r.boundedQueue.Acquire(inflightCtx, prevAcquiredBytes)
+	if err != nil {
+		return status.Errorf(codes.ResourceExhausted, "otel-arrow bounded queue: %v", err)
+	}
+	flight.numAcquired = prevAcquiredBytes
+
+	err, data, numItems, uncompSize := r.consumeBatch(ac, req)
+
+	if err != nil {
+		if errors.Is(err, arrowRecord.ErrConsumerMemoryLimit) {
+			return status.Errorf(codes.ResourceExhausted, "otel-arrow decode: %v", err)
+		} else {
+			return status.Errorf(codes.Internal, "otel-arrow decode: %v", err)
+		}
+	}
+
+	flight.uncompSize = uncompSize
+	flight.numItems = numItems
+
+	r.recvInFlightBytes.Add(inflightCtx, uncompSize)
+	r.recvInFlightItems.Add(inflightCtx, int64(numItems))
+
+	numAcquired, err := r.acquireAdditionalBytes(inflightCtx, prevAcquiredBytes, uncompSize, hrcv.connInfo.Addr, uncompSizeHeaderFound)
+
+	flight.numAcquired = numAcquired
+	if err != nil {
+		return status.Errorf(codes.ResourceExhausted, "otel-arrow bounded queue re-acquire: %v", err)
+	}
+
+	// Recognize that the request is still in-flight via consumeAndRespond()
+	flight.refs.Add(1)
+
+	// consumeAndRespond consumes the data and returns control to the sender loop.
+	go r.consumeAndRespond(inflightCtx, data, flight)
 
 	return nil
 }
 
+// consumeAndRespond finishes the span started in recvOne and logs the
+// result after invoking the pipeline to consume the data.
+func (r *Receiver) consumeAndRespond(ctx context.Context, data any, flight *inFlightData) {
+	var err error
+	defer flight.consumeDone(ctx, &err)
+
+	// recoverErr is a special function because it recovers panics, so we
+	// keep it in a separate defer than the processing above, which will
+	// run after the panic is recovered into an ordinary error.
+	defer r.recoverErr(&err)
+
+	err = r.consumeData(ctx, data, flight)
+}
+
+// srvReceiveLoop repeatedly receives one batch of data.
 func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamServer, pendingCh chan<- batchResp, method string, ac arrowRecord.ConsumerAPI) (retErr error) {
 	hrcv := newHeaderReceiver(ctx, r.authServer, r.gsettings.IncludeMetadata)
 	for {
@@ -487,46 +657,52 @@ func (r *Receiver) srvReceiveLoop(ctx context.Context, serverStream anyStreamSer
 		case <-ctx.Done():
 			return status.Error(codes.Canceled, "server stream shutdown")
 		default:
-			err := r.recvOne(ctx, serverStream, hrcv, pendingCh, method, ac)
-			if err != nil {
+			if err := r.recvOne(ctx, serverStream, hrcv, pendingCh, method, ac); err != nil {
 				return err
 			}
 		}
 	}
 }
 
+// srvReceiveLoop repeatedly sends one batch data response.
 func (r *Receiver) sendOne(serverStream anyStreamServer, resp batchResp) error {
 	// Note: Statuses can be batched, but we do not take
 	// advantage of this feature.
-	status := &arrowpb.BatchStatus{
+	bs := &arrowpb.BatchStatus{
 		BatchId: resp.id,
 	}
 	if resp.err == nil {
-		status.StatusCode = arrowpb.StatusCode_OK
+		bs.StatusCode = arrowpb.StatusCode_OK
 	} else {
-		status.StatusMessage = resp.err.Error()
-		switch {
-		case errors.Is(resp.err, arrowRecord.ErrConsumerMemoryLimit):
-			r.telemetry.Logger.Error("arrow resource exhausted", zap.Error(resp.err))
-			status.StatusCode = arrowpb.StatusCode_RESOURCE_EXHAUSTED
-		case consumererror.IsPermanent(resp.err):
-			r.telemetry.Logger.Error("arrow data error", zap.Error(resp.err))
-			status.StatusCode = arrowpb.StatusCode_INVALID_ARGUMENT
-		default:
-			r.telemetry.Logger.Debug("arrow consumer error", zap.Error(resp.err))
-			status.StatusCode = arrowpb.StatusCode_UNAVAILABLE
+		// Generally, code in the receiver should use
+		// status.Errorf(codes.XXX, ...)  so that we take the
+		// first branch.
+		if gsc, ok := status.FromError(resp.err); ok {
+			bs.StatusCode = arrowpb.StatusCode(gsc.Code())
+			bs.StatusMessage = gsc.Message()
+		} else {
+			// Ideally, we don't take this branch because all code uses
+			// gRPC status constructors and we've taken the branch above.
+			//
+			// This is a fallback for several broad categories of error.
+			bs.StatusMessage = resp.err.Error()
+
+			switch {
+			case consumererror.IsPermanent(resp.err):
+				// Some kind of pipeline error, somewhere downstream.
+				r.telemetry.Logger.Error("arrow data error", zap.Error(resp.err))
+				bs.StatusCode = arrowpb.StatusCode_INVALID_ARGUMENT
+			default:
+				// Probably a pipeline error, retryable.
+				r.telemetry.Logger.Debug("arrow consumer error", zap.Error(resp.err))
+				bs.StatusCode = arrowpb.StatusCode_UNAVAILABLE
+			}
 		}
 	}
 
-	err := serverStream.Send(status)
-	if err != nil {
-		r.logStreamError(err)
-		return err
-	}
-
-	err = r.boundedQueue.Release(resp.bytesToRelease)
-	if err != nil {
-		r.logStreamError(err)
+	if err := serverStream.Send(bs); err != nil {
+		// logStreamError because this response will break the stream.
+		r.logStreamError(err, "send")
 		return err
 	}
 
@@ -535,8 +711,12 @@ func (r *Receiver) sendOne(serverStream anyStreamServer, resp batchResp) error {
 
 func (r *Receiver) flushSender(serverStream anyStreamServer, pendingCh <-chan batchResp) error {
 	var err error
-	// wait for all in flight requests to successfully be processed or fail.
+	// wait for all in flight requests to be successfully
+	// processed or fail.  this implies waiting for the receiver
+	// loop to exit, as it holds one additional wait count to
+	// avoid a race with Add() here.
 	r.inFlightWG.Wait()
+
 	for {
 		select {
 		case resp := <-pendingCh:
@@ -552,235 +732,165 @@ func (r *Receiver) flushSender(serverStream anyStreamServer, pendingCh <-chan ba
 }
 
 func (r *Receiver) srvSendLoop(ctx context.Context, serverStream anyStreamServer, pendingCh <-chan batchResp) error {
-	var err error
 	for {
 		select {
 		case <-ctx.Done():
-			err = r.flushSender(serverStream, pendingCh)
-			// err := multierr.Append(err, ctx.Err())
-			return err
+			return r.flushSender(serverStream, pendingCh)
 		case resp := <-pendingCh:
-			err = r.sendOne(serverStream, resp)
-			if err != nil {
+			if err := r.sendOne(serverStream, resp); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func (r *Receiver) processAndConsume(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, req *arrowpb.BatchArrowRecords, authErr error, response batchResp, sizeHeaderFound bool) error {
-	var err error
+// consumeBatch applies the batch to the Arrow Consumer, returns a
+// slice of pdata objects of the corresponding data type as `any`.
+// along with the number of items and true uncompressed size.
+func (r *Receiver) consumeBatch(arrowConsumer arrowRecord.ConsumerAPI, records *arrowpb.BatchArrowRecords) (retErr error, retData any, numItems int, uncompSize int64) {
 
-	ctx, span := r.tracer.Start(ctx, "otel_arrow_stream_recv")
-	defer span.End()
-
-	r.recvInFlightRequests.Add(ctx, 1)
-	defer func() {
-		r.recvInFlightRequests.Add(ctx, -1)
-		// Set span status if an error is returned.
-		if err != nil {
-			span := trace.SpanFromContext(ctx)
-			span.SetStatus(otelcodes.Error, err.Error())
-		}
-	}()
-
-	// Process records: an error in this code path does
-	// not necessarily break the stream.
-	if authErr != nil {
-		err = authErr
-	} else {
-		err = r.processRecords(ctx, method, arrowConsumer, req, response, sizeHeaderFound)
-	}
-
-	return err
-}
-
-// processRecords returns an error and a boolean indicating whether
-// the error (true) was from processing the data (i.e., invalid
-// argument) or (false) from the consuming pipeline.  The boolean is
-// not used when success (nil error) is returned.
-func (r *Receiver) processRecords(ctx context.Context, method string, arrowConsumer arrowRecord.ConsumerAPI, records *arrowpb.BatchArrowRecords, response batchResp, sizeHeaderFound bool) error {
 	payloads := records.GetArrowPayloads()
 	if len(payloads) == 0 {
-		return nil
+		return nil, nil, 0, 0
 	}
-	var uncompSize int64
-	defer func() {
-		// The netstats code knows that uncompressed size is
-		// unreliable for arrow transport, so we instrument it
-		// directly here.  Only the primary direction of transport
-		// is instrumented this way.
-		var sized netstats.SizesStruct
-		sized.Method = method
-		sized.Length = uncompSize
-		r.netReporter.CountReceive(ctx, sized)
-	}()
 
 	switch payloads[0].Type {
 	case arrowpb.ArrowPayloadType_UNIVARIATE_METRICS:
 		if r.Metrics() == nil {
-			return status.Error(codes.Unimplemented, "metrics service not available")
+			return status.Error(codes.Unimplemented, "metrics service not available"), nil, 0, 0
 		}
 		var sizer pmetric.ProtoMarshaler
-		var numPts int
-
-		ctx = r.obsrecv.StartMetricsOp(ctx)
 
 		data, err := arrowConsumer.MetricsFrom(records)
-		if err != nil {
-			err = consumererror.NewPermanent(err)
-		} else {
+		if err == nil {
 			for _, metrics := range data {
-				items := metrics.DataPointCount()
-				sz := int64(sizer.MetricsSize(metrics))
-
-				r.recvInFlightBytes.Add(ctx, sz)
-				r.recvInFlightItems.Add(ctx, int64(items))
-
-				numPts += items
-				uncompSize += sz
-				err = multierr.Append(err,
-					r.Metrics().ConsumeMetrics(ctx, metrics),
-				)
+				numItems += metrics.DataPointCount()
+				uncompSize += int64(sizer.MetricsSize(metrics))
 			}
-
-			acquireErr := r.acquireAdditionalBytes(ctx, uncompSize, response, sizeHeaderFound)
-
-			if acquireErr != nil {
-				err = multierr.Append(err, acquireErr)
-				// if acquireAdditionalBytes() failed then the previously acquired bytes were already released i.e. nothing to releaes.
-				return err
-			}
-
-			// entire request has been processed, decrement counter.
-			r.recvInFlightBytes.Add(ctx, -uncompSize)
-			r.recvInFlightItems.Add(ctx, int64(-numPts))
 		}
-		r.obsrecv.EndMetricsOp(ctx, streamFormat, numPts, err)
-		return err
+		retData = data
+		retErr = err
 
 	case arrowpb.ArrowPayloadType_LOGS:
 		if r.Logs() == nil {
-			return status.Error(codes.Unimplemented, "logs service not available")
+			return status.Error(codes.Unimplemented, "logs service not available"), nil, 0, 0
 		}
 		var sizer plog.ProtoMarshaler
-		var numLogs int
-		ctx = r.obsrecv.StartLogsOp(ctx)
 
 		data, err := arrowConsumer.LogsFrom(records)
-		if err != nil {
-			err = consumererror.NewPermanent(err)
-		} else {
+		if err == nil {
 			for _, logs := range data {
-				items := logs.LogRecordCount()
-				sz := int64(sizer.LogsSize(logs))
-
-				r.recvInFlightBytes.Add(ctx, sz)
-				r.recvInFlightItems.Add(ctx, int64(items))
-				numLogs += items
-				uncompSize += sz
-				err = multierr.Append(err,
-					r.Logs().ConsumeLogs(ctx, logs),
-				)
+				numItems += logs.LogRecordCount()
+				uncompSize += int64(sizer.LogsSize(logs))
 			}
-
-			acquireErr := r.acquireAdditionalBytes(ctx, uncompSize, response, sizeHeaderFound)
-
-			if acquireErr != nil {
-				err = multierr.Append(err, acquireErr)
-				// if acquireAdditionalBytes() failed then the previously acquired bytes were already released i.e. nothing to releaes.
-				return err
-			}
-
-			// entire request has been processed, decrement counter.
-			r.recvInFlightBytes.Add(ctx, -uncompSize)
-			r.recvInFlightItems.Add(ctx, int64(-numLogs))
 		}
-		r.obsrecv.EndLogsOp(ctx, streamFormat, numLogs, err)
-		return err
+		retData = data
+		retErr = err
 
 	case arrowpb.ArrowPayloadType_SPANS:
 		if r.Traces() == nil {
-			return status.Error(codes.Unimplemented, "traces service not available")
+			return status.Error(codes.Unimplemented, "traces service not available"), nil, 0, 0
 		}
 		var sizer ptrace.ProtoMarshaler
-		var numSpans int
-		ctx = r.obsrecv.StartTracesOp(ctx)
 
 		data, err := arrowConsumer.TracesFrom(records)
-		if err != nil {
-			err = consumererror.NewPermanent(err)
-		} else {
+		if err == nil {
 			for _, traces := range data {
-				items := traces.SpanCount()
-				sz := int64(sizer.TracesSize(traces))
-
-				r.recvInFlightBytes.Add(ctx, sz)
-				r.recvInFlightItems.Add(ctx, int64(items))
-
-				numSpans += items
-				uncompSize += sz
-				err = multierr.Append(err,
-					r.Traces().ConsumeTraces(ctx, traces),
-				)
+				numItems += traces.SpanCount()
+				uncompSize += int64(sizer.TracesSize(traces))
 			}
-
-			acquireErr := r.acquireAdditionalBytes(ctx, uncompSize, response, sizeHeaderFound)
-
-			if acquireErr != nil {
-				err = multierr.Append(err, acquireErr)
-				// if acquireAdditionalBytes() failed then the previously acquired bytes were already released i.e. nothing to releaes.
-				return err
-			}
-
-			// entire request has been processed, decrement counter.
-			r.recvInFlightBytes.Add(ctx, -uncompSize)
-			r.recvInFlightItems.Add(ctx, int64(-numSpans))
 		}
-		r.obsrecv.EndTracesOp(ctx, streamFormat, numSpans, err)
-		return err
+		retData = data
+		retErr = err
 
 	default:
-		return ErrUnrecognizedPayload
+		retErr = ErrUnrecognizedPayload
 	}
+
+	return retErr, retData, numItems, uncompSize
 }
 
-func (r *Receiver) acquireAdditionalBytes(ctx context.Context, uncompSize int64, response batchResp, sizeHeaderFound bool) error {
-	diff := uncompSize - response.bytesToRelease
+// consumeData invokes the next pipeline consumer for a received batch of data.
+// it uses the standard OTel collector instrumentation (receiverhelper.ObsReport).
+//
+// if any errors are permanent, returns a permanent error.
+func (r *Receiver) consumeData(ctx context.Context, data any, flight *inFlightData) (retErr error) {
+	oneOp := func(err error) {
+		retErr = multierr.Append(retErr, err)
+	}
+	var final func(context.Context, string, int, error)
 
-	var err error
-	if diff != 0 {
-		if sizeHeaderFound {
-			var clientAddr string
-			if response.addr != nil {
-				clientAddr = response.addr.String()
-			}
-			// a mismatch between header set by exporter and the uncompSize just calculated.
-			r.telemetry.Logger.Debug("mismatch between uncompressed size in receiver and otlp-pdata-size header", zap.String("client-address", clientAddr), zap.Int("uncompsize", int(uncompSize)), zap.Int("otlp-pdata-size", int(response.bytesToRelease)))
-		} else if diff < 0 {
-			// proto.Size() on compressed request was greater than pdata uncompressed size.
-			r.telemetry.Logger.Debug("uncompressed size is less than compressed size", zap.Int("uncompressed", int(uncompSize)), zap.Int("compressed", int(response.bytesToRelease)))
+	switch items := data.(type) {
+	case []pmetric.Metrics:
+		ctx = r.obsrecv.StartMetricsOp(ctx)
+		for _, metrics := range items {
+			oneOp(r.Metrics().ConsumeMetrics(ctx, metrics))
 		}
+		final = r.obsrecv.EndMetricsOp
 
-		if diff > 0 {
-			// diff > 0 means we previously acquired too few bytes initially and we need to correct this. Release previously
-			// acquired bytes to prevent deadlock and reacquire the uncompressed size we just calculated.
-			// Note: No need to release and reacquire bytes if diff < 0 because this has less impact and no reason to potentially block
-			// a request that is in flight by reacquiring the correct size.
-			err = r.boundedQueue.Release(response.bytesToRelease)
-			if err != nil {
-				return err
-			}
-
-			err = r.boundedQueue.Acquire(ctx, uncompSize)
-			if err != nil {
-				response.bytesToRelease = int64(0)
-			} else {
-				response.bytesToRelease = uncompSize
-			}
+	case []plog.Logs:
+		ctx = r.obsrecv.StartLogsOp(ctx)
+		for _, logs := range items {
+			oneOp(r.Logs().ConsumeLogs(ctx, logs))
 		}
+		final = r.obsrecv.EndLogsOp
 
+	case []ptrace.Traces:
+		ctx = r.obsrecv.StartTracesOp(ctx)
+		for _, traces := range items {
+			oneOp(r.Traces().ConsumeTraces(ctx, traces))
+		}
+		final = r.obsrecv.EndTracesOp
+
+	default:
+		retErr = ErrUnrecognizedPayload
+	}
+	if final != nil {
+		final(ctx, streamFormat, flight.numItems, retErr)
+	}
+	return retErr
+}
+
+func (r *Receiver) acquireAdditionalBytes(ctx context.Context, prevAcquired, uncompSize int64, addr net.Addr, uncompSizeHeaderFound bool) (int64, error) {
+	diff := uncompSize - prevAcquired
+
+	if diff == 0 {
+		return uncompSize, nil
 	}
 
-	return err
+	if uncompSizeHeaderFound {
+		var clientAddr string
+		if addr != nil {
+			clientAddr = addr.String()
+		}
+		// a mismatch between header set by exporter and the uncompSize just calculated.
+		r.telemetry.Logger.Debug("mismatch between uncompressed size in receiver and otlp-pdata-size header",
+			zap.String("client-address", clientAddr),
+			zap.Int("uncompsize", int(uncompSize)),
+			zap.Int("otlp-pdata-size", int(prevAcquired)),
+		)
+	} else if diff < 0 {
+		// proto.Size() on compressed request was greater than pdata uncompressed size.
+		r.telemetry.Logger.Debug("uncompressed size is less than compressed size",
+			zap.Int("uncompressed", int(uncompSize)),
+			zap.Int("compressed", int(prevAcquired)),
+		)
+	}
+
+	if diff < 0 {
+		// If the difference is negative, release the overage.
+		if err := r.boundedQueue.Release(-diff); err != nil {
+			return 0, err
+		}
+	} else {
+		// Release previously acquired bytes to prevent deadlock and
+		// reacquire the uncompressed size we just calculated.
+		if err := r.boundedQueue.Release(prevAcquired); err != nil {
+			return 0, err
+		}
+		if err := r.boundedQueue.Acquire(ctx, uncompSize); err != nil {
+			return 0, err
+		}
+	}
+	return uncompSize, nil
 }

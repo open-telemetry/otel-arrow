@@ -4,6 +4,7 @@
 package testutil // import "github.com/open-telemetry/otel-arrow/collector/testutil"
 
 import (
+	"encoding/binary"
 	"net"
 	"os/exec"
 	"runtime"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/pdata/pcommon"
 )
 
 type portpair struct {
@@ -97,4 +99,19 @@ func createExclusionsList(exclusionsText string, t testing.TB) []portpair {
 		}
 	}
 	return exclusions
+}
+
+// UInt64ToTraceID is from collector-contrib/internal/idutils
+func UInt64ToTraceID(high, low uint64) pcommon.TraceID {
+	traceID := [16]byte{}
+	binary.BigEndian.PutUint64(traceID[:8], high)
+	binary.BigEndian.PutUint64(traceID[8:], low)
+	return traceID
+}
+
+// UInt64ToSpanID is from collector-contrib/internal/idutils
+func UInt64ToSpanID(id uint64) pcommon.SpanID {
+	spanID := [8]byte{}
+	binary.BigEndian.PutUint64(spanID[:8], id)
+	return spanID
 }
