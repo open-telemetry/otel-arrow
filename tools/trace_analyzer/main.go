@@ -243,7 +243,7 @@ func runTrial(
 
 	totalSize := int64(0)
 	for _, s := range withCompressionStats {
-		totalSize += s.TotalSize
+		totalSize += s.TotalSize()
 	}
 
 	return totalSize

@@ -136,6 +136,10 @@ func (s *RecordBuilderStats) Observe(payloadType string, recordSize int64) {
 	_ = recordSizeDist.dist.RecordValue(recordSize)
 }
 
+func (s *RecordSizeStats) TotalSize() int64 {
+	return s.totalSize
+}
+
 // Show prints the RecordBuilder stats to the console.
 func (s *RecordBuilderStats) Show(indent string) {
 	fmt.Printf("%s- Schema updates performed: %d\n", indent, s.SchemaUpdatesPerformed)
