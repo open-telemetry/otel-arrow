@@ -106,7 +106,9 @@ type shard struct {
 
 	pending []pendingItem
 
-	totalSent int
+	// totalSent is a monotonic count of items used to match
+	// request and response.
+	totalSent int64
 
 	tracer trace.TracerProvider
 }
@@ -323,28 +325,29 @@ func (b *shard) resetTimer() {
 }
 
 func (b *shard) sendItems(trigger trigger) {
-	sent, req := b.batch.splitBatch(b.exportCtx, b.processor.sendBatchMaxSize, b.processor.telemetry.detailed)
+	split, req := b.batch.splitBatch(b.exportCtx, b.processor.sendBatchMaxSize, b.processor.telemetry.detailed)
 	bytes := int64(b.batch.sizeBytes(req))
+	toSend := int64(split)
 
 	var waiters []chan error
 	var countItems []int
 	var contexts []context.Context
 
 	numItemsBefore := b.totalSent
-	numItemsAfter := b.totalSent + sent
+	numItemsAfter := b.totalSent + toSend
 
 	// The current batch can contain items from several different producers. Ensure each producer gets a response back.
 	for len(b.pending) > 0 && numItemsBefore < numItemsAfter {
 		// Waiter only had some items in the current batch
-		if numItemsBefore+b.pending[0].numItems > numItemsAfter {
-			partialSent := numItemsAfter - numItemsBefore
+		if numItemsBefore+int64(b.pending[0].numItems) > numItemsAfter {
+			partialSent := int(numItemsAfter - numItemsBefore)
 			b.pending[0].numItems -= partialSent
-			numItemsBefore += partialSent
+			numItemsBefore += int64(partialSent)
 			waiters = append(waiters, b.pending[0].respCh)
 			contexts = append(contexts, b.pending[0].parentCtx)
 			countItems = append(countItems, partialSent)
 		} else { // waiter gets a complete response.
-			numItemsBefore += b.pending[0].numItems
+			numItemsBefore += int64(b.pending[0].numItems)
 			waiters = append(waiters, b.pending[0].respCh)
 			contexts = append(contexts, b.pending[0].parentCtx)
 			countItems = append(countItems, b.pending[0].numItems)
@@ -389,7 +392,7 @@ func (b *shard) sendItems(trigger trigger) {
 		if err != nil {
 			b.processor.logger.Warn("Sender failed", zap.Error(err))
 		} else {
-			b.processor.telemetry.record(latency, trigger, int64(sent), bytes)
+			b.processor.telemetry.record(latency, trigger, toSend, bytes)
 		}
 	}()
 
@@ -455,6 +458,10 @@ func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 		item.count = telem.DataPointCount()
 	case plog.Logs:
 		item.count = telem.LogRecordCount()
+	}
+
+	if item.count == 0 {
+		return nil
 	}
 
 	bytes := int64(b.batch.sizeBytes(data))
