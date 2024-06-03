@@ -33,6 +33,9 @@ type testConsumer struct {
 	sink consumertest.TracesSink
 }
 
+type ExpConfig = otelarrowexporter.Config
+type RecvConfig = otelarrowreceiver.Config
+
 var _ consumer.Traces = &testConsumer{}
 
 func (*testConsumer) Capabilities() consumer.Capabilities {
@@ -44,7 +47,7 @@ func (tc *testConsumer) ConsumeTraces(ctx context.Context, td ptrace.Traces) err
 	return tc.sink.ConsumeTraces(ctx, td)
 }
 
-func basicTestConfig(t *testing.T, cfgF func(*otelarrowexporter.Config, *otelarrowreceiver.Config)) (*testConsumer, exporter.Traces, receiver.Traces) {
+func basicTestConfig(t *testing.T, cfgF func(*ExpConfig, *RecvConfig)) (*testConsumer, exporter.Traces, receiver.Traces) {
 	ctx := context.Background()
 
 	efact := otelarrowexporter.NewFactory()
@@ -53,8 +56,8 @@ func basicTestConfig(t *testing.T, cfgF func(*otelarrowexporter.Config, *otelarr
 	ecfg := efact.CreateDefaultConfig()
 	rcfg := rfact.CreateDefaultConfig()
 
-	receiverCfg := rcfg.(*otelarrowreceiver.Config)
-	exporterCfg := ecfg.(*otelarrowexporter.Config)
+	receiverCfg := rcfg.(*RecvConfig)
+	exporterCfg := ecfg.(*ExpConfig)
 
 	addr := testutil.GetAvailableLocalAddress(t)
 
@@ -124,12 +127,22 @@ func makeTestTraces(i int) ptrace.Traces {
 }
 
 func TestIntegrationSimpleTraces(t *testing.T) {
+	for _, n := range []int{1, 2, 4, 8} {
+		t.Run(fmt.Sprint(n), func(t *testing.T) {
+			testIntegrationSimpleTraces(t, n)
+		})
+	}
+}
+
+func testIntegrationSimpleTraces(t *testing.T, n int) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	host := componenttest.NewNopHost()
 
-	testCon, exporter, receiver := basicTestConfig(t, nil)
+	testCon, exporter, receiver := basicTestConfig(t, func(ecfg *ExpConfig, rcfg *RecvConfig) {
+		ecfg.Arrow.NumStreams = n
+	})
 
 	const (
 		threadCount  = 10
