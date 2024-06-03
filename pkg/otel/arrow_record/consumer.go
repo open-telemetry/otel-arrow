@@ -21,8 +21,8 @@ import (
 	"log"
 	"math/rand"
 
-	"github.com/apache/arrow/go/v14/arrow/ipc"
-	"github.com/apache/arrow/go/v14/arrow/memory"
+	"github.com/apache/arrow/go/v16/arrow/ipc"
+	"github.com/apache/arrow/go/v16/arrow/memory"
 	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -372,6 +372,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.R
 		}
 
 		if err := sc.ipcReader.Err(); err != nil {
+			releaseRecords(ibes)
 			return nil, werror.Wrap(err)
 		}
 	}
