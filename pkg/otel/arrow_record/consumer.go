@@ -370,6 +370,10 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.R
 			rec.Retain()
 			ibes = append(ibes, record_message.NewRecordMessage(bar.BatchId, payload.GetType(), rec))
 		}
+
+		if err := sc.ipcReader.Err(); err != nil {
+			return nil, werror.Wrap(err)
+		}
 	}
 
 	if len(ibes) < len(bar.ArrowPayloads) {
