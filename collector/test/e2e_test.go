@@ -15,6 +15,7 @@ import (
 	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter"
 	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver"
 	"github.com/open-telemetry/otel-arrow/collector/testutil"
+	"github.com/open-telemetry/otel-arrow/pkg/datagen"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
@@ -35,6 +36,9 @@ type testConsumer struct {
 
 type ExpConfig = otelarrowexporter.Config
 type RecvConfig = otelarrowreceiver.Config
+type CfgFunc func(*ExpConfig, *RecvConfig)
+type GenFunc func(int) ptrace.Traces
+type MkGen func() GenFunc
 
 var _ consumer.Traces = &testConsumer{}
 
@@ -47,7 +51,7 @@ func (tc *testConsumer) ConsumeTraces(ctx context.Context, td ptrace.Traces) err
 	return tc.sink.ConsumeTraces(ctx, td)
 }
 
-func basicTestConfig(t *testing.T, cfgF func(*ExpConfig, *RecvConfig)) (*testConsumer, exporter.Traces, receiver.Traces) {
+func basicTestConfig(t *testing.T, cfgF CfgFunc) (*testConsumer, exporter.Traces, receiver.Traces) {
 	ctx := context.Background()
 
 	efact := otelarrowexporter.NewFactory()
@@ -126,23 +130,23 @@ func makeTestTraces(i int) ptrace.Traces {
 	return td
 }
 
-func TestIntegrationSimpleTraces(t *testing.T) {
+func TestIntegrationTracesSimple(t *testing.T) {
 	for _, n := range []int{1, 2, 4, 8} {
 		t.Run(fmt.Sprint(n), func(t *testing.T) {
-			testIntegrationSimpleTraces(t, n)
+			testIntegrationTraces(t, func(ecfg *ExpConfig, rcfg *RecvConfig) {
+				ecfg.Arrow.NumStreams = n
+			}, func() GenFunc { return makeTestTraces })
 		})
 	}
 }
 
-func testIntegrationSimpleTraces(t *testing.T, n int) {
+func testIntegrationTraces(t *testing.T, cfgf CfgFunc, mkgen MkGen) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	host := componenttest.NewNopHost()
 
-	testCon, exporter, receiver := basicTestConfig(t, func(ecfg *ExpConfig, rcfg *RecvConfig) {
-		ecfg.Arrow.NumStreams = n
-	})
+	testCon, exporter, receiver := basicTestConfig(t, cfgf)
 
 	const (
 		threadCount  = 10
@@ -186,8 +190,9 @@ func testIntegrationSimpleTraces(t *testing.T, n int) {
 		clientDoneWG.Add(1)
 		go func() {
 			defer clientDoneWG.Done()
+			generator := mkgen()
 			for i := 0; i < requestCount; i++ {
-				td := makeTestTraces(i)
+				td := generator(i)
 
 				require.NoError(t, exporter.ConsumeTraces(ctx, td))
 				expect[num] = append(expect[num], td)
@@ -220,4 +225,26 @@ func testIntegrationSimpleTraces(t *testing.T, n int) {
 	}
 	asserter := assert.NewStdUnitTest(t)
 	assert.Equiv(asserter, expectJSON, receivedJSON)
+}
+
+func bulkyGenFunc() MkGen {
+	return func() GenFunc {
+		entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+
+		tracesGen := datagen.NewTracesGenerator(
+			entropy,
+			entropy.NewStandardResourceAttributes(),
+			entropy.NewStandardInstrumentationScopes(),
+		)
+		return func(_ int) ptrace.Traces {
+			return tracesGen.Generate(1000, time.Minute)
+		}
+	}
+
+}
+
+func TestIntegrationTracesLimited(t *testing.T) {
+	testIntegrationTraces(t, func(ecfg *ExpConfig, rcfg *RecvConfig) {
+		rcfg.Arrow.MemoryLimitMiB = 1
+	}, bulkyGenFunc())
 }
