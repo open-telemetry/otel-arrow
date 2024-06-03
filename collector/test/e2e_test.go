@@ -44,11 +44,8 @@ func (tc *testConsumer) ConsumeTraces(ctx context.Context, td ptrace.Traces) err
 	return tc.sink.ConsumeTraces(ctx, td)
 }
 
-func TestIntegrationSimpleTraces(t *testing.T) {
-	const (
-		threadCount  = 10
-		requestCount = 100
-	)
+func basicTestConfig(t *testing.T, cfgF func(*otelarrowexporter.Config, *otelarrowreceiver.Config)) (*testConsumer, exporter.Traces, receiver.Traces) {
+	ctx := context.Background()
 
 	efact := otelarrowexporter.NewFactory()
 	rfact := otelarrowreceiver.NewFactory()
@@ -70,13 +67,12 @@ func TestIntegrationSimpleTraces(t *testing.T) {
 	exporterCfg.RetryConfig.Enabled = false
 	exporterCfg.Arrow.NumStreams = 1
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	if cfgF != nil {
+		cfgF(exporterCfg, receiverCfg)
+	}
 
 	tset := componenttest.NewNopTelemetrySettings()
 	tset.Logger, _ = zap.NewDevelopment()
-
-	host := componenttest.NewNopHost()
 
 	testCon := &testConsumer{}
 
@@ -91,6 +87,54 @@ func TestIntegrationSimpleTraces(t *testing.T) {
 		TelemetrySettings: tset,
 	}, exporterCfg)
 	require.NoError(t, err)
+
+	return testCon, exporter, receiver
+
+}
+
+func makeTestTraces(i int) ptrace.Traces {
+	td := ptrace.NewTraces()
+	td.ResourceSpans().AppendEmpty().Resource().Attributes().PutStr("resource-attr", fmt.Sprint("resource-attr-val-", i))
+
+	ss := td.ResourceSpans().At(0).ScopeSpans().AppendEmpty().Spans()
+	span := ss.AppendEmpty()
+
+	span.SetName("operationA")
+	span.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Now()))
+	span.SetEndTimestamp(pcommon.NewTimestampFromTime(time.Now()))
+
+	span.SetTraceID(testutil.UInt64ToTraceID(rand.Uint64(), rand.Uint64()))
+	span.SetSpanID(testutil.UInt64ToSpanID(rand.Uint64()))
+	evs := span.Events()
+	ev0 := evs.AppendEmpty()
+	ev0.SetTimestamp(pcommon.NewTimestampFromTime(time.Now()))
+	ev0.SetName("event-with-attr")
+	ev0.Attributes().PutStr("span-event-attr", "span-event-attr-val")
+	ev0.SetDroppedAttributesCount(2)
+	ev1 := evs.AppendEmpty()
+	ev1.SetTimestamp(pcommon.NewTimestampFromTime(time.Now()))
+	ev1.SetName("event")
+	ev1.SetDroppedAttributesCount(2)
+	span.SetDroppedEventsCount(1)
+	status := span.Status()
+	status.SetCode(ptrace.StatusCodeError)
+	status.SetMessage("status-cancelled")
+
+	return td
+}
+
+func TestIntegrationSimpleTraces(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	host := componenttest.NewNopHost()
+
+	testCon, exporter, receiver := basicTestConfig(t, nil)
+
+	const (
+		threadCount  = 10
+		requestCount = 100
+	)
 
 	var startWG sync.WaitGroup
 	var exporterShutdownWG sync.WaitGroup
@@ -130,32 +174,7 @@ func TestIntegrationSimpleTraces(t *testing.T) {
 		go func() {
 			defer clientDoneWG.Done()
 			for i := 0; i < requestCount; i++ {
-				td := ptrace.NewTraces()
-				td.ResourceSpans().AppendEmpty().Resource().Attributes().PutStr("resource-attr", fmt.Sprint("resource-attr-val-", i))
-
-				ss := td.ResourceSpans().At(0).ScopeSpans().AppendEmpty().Spans()
-				span := ss.AppendEmpty()
-
-				span.SetName("operationA")
-				span.SetStartTimestamp(pcommon.NewTimestampFromTime(time.Now()))
-				span.SetEndTimestamp(pcommon.NewTimestampFromTime(time.Now()))
-
-				span.SetTraceID(testutil.UInt64ToTraceID(rand.Uint64(), rand.Uint64()))
-				span.SetSpanID(testutil.UInt64ToSpanID(rand.Uint64()))
-				evs := span.Events()
-				ev0 := evs.AppendEmpty()
-				ev0.SetTimestamp(pcommon.NewTimestampFromTime(time.Now()))
-				ev0.SetName("event-with-attr")
-				ev0.Attributes().PutStr("span-event-attr", "span-event-attr-val")
-				ev0.SetDroppedAttributesCount(2)
-				ev1 := evs.AppendEmpty()
-				ev1.SetTimestamp(pcommon.NewTimestampFromTime(time.Now()))
-				ev1.SetName("event")
-				ev1.SetDroppedAttributesCount(2)
-				span.SetDroppedEventsCount(1)
-				status := span.Status()
-				status.SetCode(ptrace.StatusCodeError)
-				status.SetMessage("status-cancelled")
+				td := makeTestTraces(i)
 
 				require.NoError(t, exporter.ConsumeTraces(ctx, td))
 				expect[num] = append(expect[num], td)
