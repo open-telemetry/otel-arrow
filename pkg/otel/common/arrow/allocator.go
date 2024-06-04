@@ -16,7 +16,8 @@ package arrow
 
 import (
 	"fmt"
-	"os"
+	"regexp"
+	"strconv"
 
 	"github.com/apache/arrow/go/v14/arrow/memory"
 )
@@ -44,8 +45,34 @@ type LimitError struct {
 
 var _ error = LimitError{}
 
+var limitRegexp = regexp.MustCompile(`allocation size exceeds limit: requested (\d+) out of (\d+) \(in-use=(\d+)\)`)
+
+// NewLimitErrorFromError extracts a formatted limit error.
+//
+// Note: the arrow/go package (as of v16) has a panic recovery
+// mechanism which formats the error object raised through panic in
+// the code below.  The formatting uses a "%v" which means we lose the
+// error wrapping facility that would let us easily extract the
+// object.  Therefore, we use a regexp to unpack memory limit errors.
+func NewLimitErrorFromError(err error) (error, bool) {
+	matches := limitRegexp.FindStringSubmatch(err.Error())
+	if len(matches) != 4 {
+		return err, false
+	}
+
+	req, _ := strconv.ParseUint(matches[1], 10, 64)
+	lim, _ := strconv.ParseUint(matches[2], 10, 64)
+	inuse, _ := strconv.ParseUint(matches[3], 10, 64)
+
+	return LimitError{
+		Request: req,
+		Inuse:   inuse,
+		Limit:   lim,
+	}, true
+}
+
 func (le LimitError) Error() string {
-	return fmt.Sprintf("allocation size %d exceeds limit %d (in-use=%d)", le.Request, le.Limit, le.Inuse)
+	return fmt.Sprintf("allocation size exceeds limit: requested %d out of %d (in-use=%d)", le.Request, le.Limit, le.Inuse)
 }
 
 func (_ LimitError) Is(tgt error) bool {
@@ -65,9 +92,6 @@ func (l *LimitedAllocator) Allocate(size int) []byte {
 			Inuse:   l.inuse,
 			Limit:   l.limit,
 		}
-		// Write the error to stderr so that it is visible even if the
-		// panic is caught.
-		os.Stderr.WriteString(err.Error() + "\n")
 		panic(err)
 	}
 
@@ -86,9 +110,6 @@ func (l *LimitedAllocator) Reallocate(size int, b []byte) []byte {
 			Inuse:   l.inuse,
 			Limit:   l.limit,
 		}
-		// Write the error to stderr so that it is visible even if the
-		// panic is caught.
-		os.Stderr.WriteString(err.Error() + "\n")
 		panic(err)
 	}
 

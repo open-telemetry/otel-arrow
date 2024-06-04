@@ -16,13 +16,14 @@ package arrow
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/apache/arrow/go/v14/arrow/memory"
 	"github.com/stretchr/testify/require"
 )
 
-func TestLimitedAllocator(t *testing.T) {
+func TestLimitedAllocatorUnformatted(t *testing.T) {
 	const boundary = 1000000
 	check := memory.NewCheckedAllocator(memory.NewGoAllocator())
 	limit := NewLimitedAllocator(check, boundary)
@@ -47,9 +48,26 @@ func TestLimitedAllocator(t *testing.T) {
 	}()
 	require.NotNil(t, capture)
 	require.True(t, errors.Is(capture.(error), LimitError{}))
-	require.Equal(t, "allocation size 1 exceeds limit 1000000 (in-use=1000000)", capture.(error).Error())
+	require.Equal(t, "allocation size exceeds limit: requested 1 out of 1000000 (in-use=1000000)", capture.(error).Error())
 
 	limit.Free(b)
 
 	check.AssertSize(t, 0)
+}
+
+func TestLimitedAllocatorFormatted(t *testing.T) {
+	// Arrow does not wrap the error, so the consumer sees its
+	// formatted version.
+	expect := LimitError{
+		Request: 1000,
+		Inuse:   9900,
+		Limit:   10000,
+	}
+
+	unwrap, ok := NewLimitErrorFromError(fmt.Errorf("some sort of prefix %v some sort of suffix", expect))
+	require.Error(t, unwrap)
+	require.True(t, ok)
+	require.Equal(t, expect, unwrap)
+
+	require.True(t, errors.Is(unwrap, LimitError{}))
 }
