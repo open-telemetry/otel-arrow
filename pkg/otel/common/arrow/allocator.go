@@ -17,9 +17,21 @@ package arrow
 import (
 	"fmt"
 	"os"
+	"regexp"
+	"strconv"
+	"strings"
 
 	"github.com/apache/arrow/go/v16/arrow/memory"
 )
+
+// MemoryErrorStringPrefix is a prefix used to recognize memory limit errors.
+//
+// Note: the arrow/go package (as of v16) has a panic recovery
+// mechanism which formats the error object raised through panic in
+// the code below.  The formatting uses a "%v" which means we lose the
+// error wrapping facility that would let us easily extract the
+// object.  Therefore, we use a regexp to unpack memory limit errors.
+const MemoryErrorStringPrefix = "allocation size exceeds limit"
 
 type LimitedAllocator struct {
 	Allocator memory.Allocator
@@ -44,13 +56,53 @@ type LimitError struct {
 
 var _ error = LimitError{}
 
+var limitRegexp = regexp.MustCompile(`requested (\d+) out of (\d+) \(in-use=(\d+)\)`)
+
+// NewLimitErrorFromError extracts a formatted limit error.  See
+// MemoryErrorStringPrefix for an explanation.
+func NewLimitErrorFromError(err error) (error, bool) {
+	msg := err.Error()
+	if !strings.Contains(msg, MemoryErrorStringPrefix) {
+		fmt.Println("CASE A", err)
+		return err, false
+	}
+	matches := limitRegexp.FindStringSubmatch(msg)
+	if len(matches) != 4 {
+		fmt.Println("CASE B", err)
+		return err, false
+	}
+
+	req, _ := strconv.ParseUint(matches[1], 10, 64)
+	lim, _ := strconv.ParseUint(matches[2], 10, 64)
+	inuse, _ := strconv.ParseUint(matches[3], 10, 64)
+
+	fmt.Println("CASE C")
+	return LimitError{
+		Request: req,
+		Inuse:   inuse,
+		Limit:   lim,
+	}, true
+}
+
 func (le LimitError) Error() string {
-	return fmt.Sprintf("allocation size %d exceeds limit %d (in-use=%d)", le.Request, le.Limit, le.Inuse)
+	return fmt.Sprintf("%s: requested %d out of %d (in-use=%d)", MemoryErrorStringPrefix, le.Request, le.Limit, le.Inuse)
 }
 
 func (_ LimitError) Is(tgt error) bool {
-	_, ok := tgt.(LimitError)
+	if _, ok := tgt.(LimitError); ok {
+		return true
+	}
+	_, ok := tgt.(MemoryLimitClassifier)
 	return ok
+}
+
+type MemoryLimitClassifier struct {
+}
+
+var _ error = MemoryLimitClassifier{}
+
+func (MemoryLimitClassifier) Error() string {
+	return "error class: memory limit exceeded"
 }
 
 func (l *LimitedAllocator) Inuse() uint64 {

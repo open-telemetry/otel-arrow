@@ -17,6 +17,7 @@ package arrow_record
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -60,9 +61,14 @@ type ConsumerAPI interface {
 
 var _ ConsumerAPI = &Consumer{}
 
-var ErrConsumerMemoryLimit = fmt.Errorf(
-	"The number of decoded records is smaller than the number of received payloads. " +
-		"Please increase the memory limit of the consumer.")
+// ErrConsumerMemoryLimit is used by calling code to check
+// errors.Is(err, ErrConsumerMemoryLimit).  It is never returned,
+// however when memory limit errors are seen, they are replaced
+// to match this via Is().
+var ErrConsumerMemoryLimit error = common.MemoryLimitClassifier{}
+
+var errConsumerInternalError = errors.New(
+	"internal error: number of decoded records is smaller than the number of received payloads")
 
 // Consumer is a BatchArrowRecords consumer.
 type Consumer struct {
@@ -311,12 +317,15 @@ func (c *Consumer) TracesFrom(bar *colarspb.BatchArrowRecords) ([]ptrace.Traces,
 
 // Consume takes a BatchArrowRecords protobuf message and returns an array of RecordMessage.
 // Note: the records wrapped in the RecordMessage must be released after use by the caller.
-func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.RecordMessage, error) {
+func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) (ibes []*record_message.RecordMessage, retErr error) {
 	ctx := context.Background()
 
-	var ibes []*record_message.RecordMessage
 	defer func() {
 		c.recordsCounter.Add(ctx, int64(len(ibes)), c.metricOpts()...)
+		if retErr != nil {
+			releaseRecords(ibes)
+			ibes = nil
+		}
 	}()
 
 	// Transform each individual OtlpArrowPayload into RecordMessage
@@ -356,8 +365,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.R
 				ipc.WithZstd(),
 			)
 			if err != nil {
-				releaseRecords(ibes)
-				return nil, werror.Wrap(err)
+				return ibes, werror.Wrap(distinguishMemoryError(err))
 			}
 			sc.ipcReader = ipcReader
 		}
@@ -372,17 +380,25 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) ([]*record_message.R
 		}
 
 		if err := sc.ipcReader.Err(); err != nil {
-			releaseRecords(ibes)
-			return nil, werror.Wrap(err)
+			return ibes, werror.Wrap(distinguishMemoryError(err))
 		}
 	}
 
 	if len(ibes) < len(bar.ArrowPayloads) {
-		releaseRecords(ibes)
-		return nil, ErrConsumerMemoryLimit
+		return ibes, werror.Wrap(errConsumerInternalError)
 	}
 
 	return ibes, nil
+}
+
+func distinguishMemoryError(err error) error {
+	limErr, ok := common.NewLimitErrorFromError(err)
+	fmt.Println("ERRCHECK", ok, err, limErr)
+	if ok {
+		fmt.Printf("We return: %T %v\n", limErr, limErr)
+		return limErr
+	}
+	return err
 }
 
 type runtimeChecker struct{}
