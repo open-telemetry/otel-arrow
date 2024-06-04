@@ -134,8 +134,8 @@ func TestBatchProcessorSpansPanicRecover(t *testing.T) {
 		// until batch size reached to unblock.
 		wg.Add(1)
 		go func() {
-			err = bp.ConsumeTraces(context.Background(), td)
-			assert.Contains(t, err.Error(), "testing panic")
+			consumeErr := bp.ConsumeTraces(context.Background(), td)
+			assert.Contains(t, consumeErr.Error(), "testing panic")
 			wg.Done()
 		}()
 	}
@@ -168,8 +168,8 @@ func TestBatchProcessorMetricsPanicRecover(t *testing.T) {
 		md.ResourceMetrics().At(0).CopyTo(sentResourceMetrics.AppendEmpty())
 		wg.Add(1)
 		go func() {
-			err = bp.ConsumeMetrics(context.Background(), md)
-			assert.Contains(t, err.Error(), "testing panic")
+			consumeErr := bp.ConsumeMetrics(context.Background(), md)
+			assert.Contains(t, consumeErr.Error(), "testing panic")
 			wg.Done()
 		}()
 	}
@@ -202,8 +202,8 @@ func TestBatchProcessorLogsPanicRecover(t *testing.T) {
 		ld.ResourceLogs().At(0).CopyTo(sentResourceLogs.AppendEmpty())
 		wg.Add(1)
 		go func() {
-			err = bp.ConsumeLogs(context.Background(), ld)
-			assert.Contains(t, err.Error(), "testing panic")
+			consumeErr := bp.ConsumeLogs(context.Background(), ld)
+			assert.Contains(t, consumeErr.Error(), "testing panic")
 			wg.Done()
 		}()
 	}
@@ -307,8 +307,8 @@ func TestBatchProcessorCancelContext(t *testing.T) {
 		// until batch size reached to unblock.
 		wg.Add(1)
 		go func() {
-			err = bp.ConsumeTraces(ctx, td)
-			assert.Contains(t, err.Error(), "context canceled")
+			consumeErr := bp.ConsumeTraces(ctx, td)
+			assert.Contains(t, consumeErr.Error(), "context canceled")
 			wg.Done()
 		}()
 	}
@@ -1667,4 +1667,33 @@ func TestBatchTooLarge(t *testing.T) {
 	err = batcher.ConsumeLogs(context.Background(), ld)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "request size exceeds max-in-flight bytes")
+}
+
+func TestBatchProcessorEmptyBatch(t *testing.T) {
+	sink := new(consumertest.TracesSink)
+	cfg := createDefaultConfig().(*Config)
+	sendBatchSize := 100
+	cfg.SendBatchSize = uint32(sendBatchSize)
+	cfg.Timeout = 100 * time.Millisecond
+
+	requestCount := 5
+
+	creationSet := processortest.NewNopCreateSettings()
+	creationSet.MetricsLevel = configtelemetry.LevelDetailed
+	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg)
+	require.NoError(t, err)
+	require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
+
+	var wg sync.WaitGroup
+	for requestNum := 0; requestNum < requestCount; requestNum++ {
+		td := ptrace.NewTraces()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			assert.NoError(t, batcher.ConsumeTraces(context.Background(), td))
+		}()
+	}
+
+	wg.Wait()
+	require.NoError(t, batcher.Shutdown(context.Background()))
 }
