@@ -15,7 +15,7 @@
 package otlp
 
 import (
-	"github.com/apache/arrow/go/v16/arrow"
+	"github.com/apache/arrow/go/v14/arrow"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/open-telemetry/otel-arrow/pkg/arrow"

@@ -3,6 +3,7 @@ module github.com/open-telemetry/otel-arrow/collector/test
 go 1.22.2
 
 require (
+	github.com/gogo/status v1.1.1
 	github.com/open-telemetry/otel-arrow v0.23.0
 	github.com/open-telemetry/otel-arrow/collector v0.23.0
 	github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter v0.23.0
@@ -14,6 +15,7 @@ require (
 	go.opentelemetry.io/collector/pdata v1.5.0
 	go.opentelemetry.io/collector/receiver v0.98.0
 	go.uber.org/zap v1.27.0
+	google.golang.org/grpc v1.63.2
 )
 
 require (
@@ -34,7 +36,9 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-viper/mapstructure/v2 v2.0.0-alpha.1 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
+	github.com/gogo/googleapis v0.0.0-20180223154316-0cd9801be74a // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
+	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/golang/snappy v0.0.5-0.20220116011046-fa5810519dcb // indirect
 	github.com/google/flatbuffers v23.5.26+incompatible // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -89,7 +93,6 @@ require (
 	golang.org/x/tools v0.15.0 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240401170217-c3f982113cda // indirect
-	google.golang.org/grpc v1.63.2 // indirect
 	google.golang.org/protobuf v1.33.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

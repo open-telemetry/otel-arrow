@@ -18,7 +18,7 @@
 package update
 
 import (
-	"github.com/apache/arrow/go/v16/arrow"
+	"github.com/apache/arrow/go/v14/arrow"
 
 	"github.com/open-telemetry/otel-arrow/pkg/otel/observer"
 )

@@ -6,7 +6,7 @@ toolchain go1.21.4
 
 require (
 	github.com/HdrHistogram/hdrhistogram-go v1.1.2
-	github.com/apache/arrow/go/v16 v16.1.0
+	github.com/apache/arrow/go/v14 v14.0.2
 	github.com/axiomhq/hyperloglog v0.0.0-20230201085229-3ddf4bad03dc
 	github.com/brianvoe/gofakeit/v6 v6.17.0
 	github.com/dustin/go-humanize v1.0.1
@@ -52,6 +52,7 @@ require (
 	golang.org/x/text v0.14.0 // indirect
 	golang.org/x/tools v0.19.0 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
+	gonum.org/v1/gonum v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240401170217-c3f982113cda // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

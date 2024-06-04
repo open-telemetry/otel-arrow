@@ -18,7 +18,7 @@
 package arrow
 
 import (
-	"github.com/apache/arrow/go/v16/arrow"
+	"github.com/apache/arrow/go/v14/arrow"
 )
 
 func StructFromSparseUnion(dt *arrow.SparseUnionType, code int8) *arrow.StructType {

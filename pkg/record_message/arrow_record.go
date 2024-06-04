@@ -20,8 +20,8 @@ package record_message
 import (
 	"fmt"
 
-	"github.com/apache/arrow/go/v16/arrow"
-	"github.com/apache/arrow/go/v16/arrow/array"
+	"github.com/apache/arrow/go/v14/arrow"
+	"github.com/apache/arrow/go/v14/arrow/array"
 
 	v1 "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 )

@@ -20,7 +20,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/apache/arrow/go/v16/arrow/memory"
+	"github.com/apache/arrow/go/v14/arrow/memory"
 )
 
 // MemoryErrorStringPrefix is a prefix used to recognize memory limit errors.

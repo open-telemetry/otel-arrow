@@ -22,8 +22,8 @@ import (
 	"math"
 	"runtime"
 
-	"github.com/apache/arrow/go/v16/arrow"
-	"github.com/apache/arrow/go/v16/arrow/memory"
+	"github.com/apache/arrow/go/v14/arrow"
+	"github.com/apache/arrow/go/v14/arrow/memory"
 	"github.com/dustin/go-humanize"
 
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/builder"
