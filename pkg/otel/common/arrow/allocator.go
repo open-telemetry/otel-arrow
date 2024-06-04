@@ -45,7 +45,7 @@ type LimitError struct {
 
 var _ error = LimitError{}
 
-var limitRegexp = regexp.MustCompile(`allocation size exceeds limit: requested (\d+) out of (\d+) \(in-use=(\d+)\)`)
+var limitRegexp = regexp.MustCompile(`memory limit exceeded: requested (\d+) out of (\d+) \(in-use=(\d+)\)`)
 
 // NewLimitErrorFromError extracts a formatted limit error.
 //
@@ -72,7 +72,7 @@ func NewLimitErrorFromError(err error) (error, bool) {
 }
 
 func (le LimitError) Error() string {
-	return fmt.Sprintf("allocation size exceeds limit: requested %d out of %d (in-use=%d)", le.Request, le.Limit, le.Inuse)
+	return fmt.Sprintf("memory limit exceeded: requested %d out of %d (in-use=%d)", le.Request, le.Limit, le.Inuse)
 }
 
 func (_ LimitError) Is(tgt error) bool {

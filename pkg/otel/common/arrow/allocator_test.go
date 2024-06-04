@@ -48,7 +48,7 @@ func TestLimitedAllocatorUnformatted(t *testing.T) {
 	}()
 	require.NotNil(t, capture)
 	require.True(t, errors.Is(capture.(error), LimitError{}))
-	require.Equal(t, "allocation size exceeds limit: requested 1 out of 1000000 (in-use=1000000)", capture.(error).Error())
+	require.Equal(t, "memory limit exceeded: requested 1 out of 1000000 (in-use=1000000)", capture.(error).Error())
 
 	limit.Free(b)
 
