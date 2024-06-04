@@ -62,10 +62,8 @@ type ConsumerAPI interface {
 var _ ConsumerAPI = &Consumer{}
 
 // ErrConsumerMemoryLimit is used by calling code to check
-// errors.Is(err, ErrConsumerMemoryLimit).  It is never returned,
-// however when memory limit errors are seen, they are replaced
-// to match this via Is().
-var ErrConsumerMemoryLimit error = common.MemoryLimitClassifier{}
+// errors.Is(err, ErrConsumerMemoryLimit).  It is never returned.
+var ErrConsumerMemoryLimit error = common.LimitError{}
 
 var errConsumerInternalError = errors.New(
 	"internal error: number of decoded records is smaller than the number of received payloads")
@@ -393,9 +391,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) (ibes []*record_mess
 
 func distinguishMemoryError(err error) error {
 	limErr, ok := common.NewLimitErrorFromError(err)
-	fmt.Println("ERRCHECK", ok, err, limErr)
 	if ok {
-		fmt.Printf("We return: %T %v\n", limErr, limErr)
 		return limErr
 	}
 	return err

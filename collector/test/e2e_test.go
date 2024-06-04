@@ -14,12 +14,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gogo/status"
 	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter"
 	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver"
 	"github.com/open-telemetry/otel-arrow/collector/testutil"
 	"github.com/open-telemetry/otel-arrow/pkg/datagen"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/assert"
-	common "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
@@ -33,8 +34,8 @@ import (
 	"go.opentelemetry.io/collector/receiver"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"go.uber.org/zap/zaptest"
 	"go.uber.org/zap/zaptest/observer"
+	"google.golang.org/grpc/codes"
 )
 
 type testParams struct {
@@ -83,8 +84,8 @@ func testLoggerSettings(t *testing.T) (component.TelemetrySettings, *observer.Ob
 	core, obslogs := observer.New(zapcore.InfoLevel)
 
 	// Note: if you want to see these logs, use:
-	tset.Logger = zap.New(zapcore.NewTee(core, zaptest.NewLogger(t).Core()))
-	//tset.Logger = zap.New(core)
+	//tset.Logger = zap.New(zapcore.NewTee(core, zaptest.NewLogger(t).Core()))
+	tset.Logger = zap.New(core)
 
 	return tset, obslogs
 }
@@ -270,28 +271,47 @@ func standardEnding(t *testing.T, tp testParams, testCon *testConsumer, expect [
 	assert.Equiv(asserter, expectJSON, receivedJSON)
 }
 
+func logSigs(obs *observer.ObservedLogs) (map[string]int, []string) {
+	counts := map[string]int{}
+	var msgs []string
+	for _, rl := range obs.All() {
+		var attrs []string
+		for _, f := range rl.Context {
+			attrs = append(attrs, f.Key)
+
+			if rl.Message == "arrow stream error" && f.Key == "message" {
+				msgs = append(msgs, f.String)
+			}
+		}
+		var sig strings.Builder
+		sig.WriteString(rl.Message)
+		sig.WriteString("|||")
+		sig.WriteString(strings.Join(attrs, "///"))
+		counts[sig.String()]++
+	}
+	return counts, msgs
+}
+
+func countMemoryLimitErrors(msgs []string) (cnt int) {
+	for _, msg := range msgs {
+		if _, ok := arrow.NewLimitErrorFromError(errors.New(msg)); ok {
+			cnt++
+		}
+	}
+	return
+}
+
 func failureMemoryLimitEnding(t *testing.T, _ testParams, testCon *testConsumer, _ [][]ptrace.Traces) {
 	require.Equal(t, 0, testCon.sink.SpanCount())
 
-	var memErrs int
+	eSigs, eMsgs := logSigs(testCon.expLogs)
+	rSigs, rMsgs := logSigs(testCon.recvLogs)
 
-	// Make sure we've exercised the memory limit.
-	for _, rl := range testCon.expLogs.All() {
-		for _, f := range rl.Context {
-			fmt.Println("EXP", rl.Message, f.String)
-			if strings.Contains(f.String, common.MemoryErrorStringPrefix) {
-				memErrs++
-			}
-		}
-	}
+	require.Less(t, 0, eSigs["arrow stream error|||code///message///where"], "should have exporter arrow stream errors: %v", eSigs)
+	require.Less(t, 0, rSigs["arrow stream error|||code///message///where"], "should have receiver arrow stream errors: %v", rSigs)
 
-	for _, rl := range testCon.recvLogs.All() {
-		for _, f := range rl.Context {
-			fmt.Println("RECV", rl.Message, f.String)
-		}
-	}
-
-	require.Less(t, 0, memErrs, "should have seen memory limit errors")
+	require.Less(t, 0, countMemoryLimitErrors(rMsgs), "should have memory limit errors: %v", rMsgs)
+	require.Less(t, 0, countMemoryLimitErrors(eMsgs), "should have memory limit errors: %v", eMsgs)
 }
 
 func consumerSuccess(t *testing.T, err error) {
@@ -302,10 +322,19 @@ func consumerFailure(t *testing.T, err error) {
 	require.Error(t, err)
 
 	// there should be no permanent errors anywhere in this test.
-	require.True(t, !consumererror.IsPermanent(err), "should not be permanent: %v", err)
-	require.True(t,
-		errors.Is(err, context.DeadlineExceeded) ||
-			errors.Is(err, context.Canceled))
+	require.True(t, !consumererror.IsPermanent(err),
+		"should not be permanent: %v", err)
+
+	stat, ok := status.FromError(err)
+	require.True(t, ok, "should be a status error: %v", err)
+
+	switch stat.Code() {
+	case codes.ResourceExhausted, codes.Canceled:
+		// Cool
+	default:
+		// Not cool
+		t.Fatalf("unexpected status code %v", stat)
+	}
 }
 
 func TestIntegrationTracesSimple(t *testing.T) {

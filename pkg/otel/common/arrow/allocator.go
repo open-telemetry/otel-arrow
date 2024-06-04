@@ -16,7 +16,6 @@ package arrow
 
 import (
 	"fmt"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -63,12 +62,10 @@ var limitRegexp = regexp.MustCompile(`requested (\d+) out of (\d+) \(in-use=(\d+
 func NewLimitErrorFromError(err error) (error, bool) {
 	msg := err.Error()
 	if !strings.Contains(msg, MemoryErrorStringPrefix) {
-		fmt.Println("CASE A", err)
 		return err, false
 	}
 	matches := limitRegexp.FindStringSubmatch(msg)
 	if len(matches) != 4 {
-		fmt.Println("CASE B", err)
 		return err, false
 	}
 
@@ -76,7 +73,6 @@ func NewLimitErrorFromError(err error) (error, bool) {
 	lim, _ := strconv.ParseUint(matches[2], 10, 64)
 	inuse, _ := strconv.ParseUint(matches[3], 10, 64)
 
-	fmt.Println("CASE C")
 	return LimitError{
 		Request: req,
 		Inuse:   inuse,
@@ -89,20 +85,8 @@ func (le LimitError) Error() string {
 }
 
 func (_ LimitError) Is(tgt error) bool {
-	if _, ok := tgt.(LimitError); ok {
-		return true
-	}
-	_, ok := tgt.(MemoryLimitClassifier)
+	_, ok := tgt.(LimitError)
 	return ok
-}
-
-type MemoryLimitClassifier struct {
-}
-
-var _ error = MemoryLimitClassifier{}
-
-func (MemoryLimitClassifier) Error() string {
-	return "error class: memory limit exceeded"
 }
 
 func (l *LimitedAllocator) Inuse() uint64 {
@@ -117,9 +101,6 @@ func (l *LimitedAllocator) Allocate(size int) []byte {
 			Inuse:   l.inuse,
 			Limit:   l.limit,
 		}
-		// Write the error to stderr so that it is visible even if the
-		// panic is caught.
-		os.Stderr.WriteString(err.Error() + "\n")
 		panic(err)
 	}
 
@@ -138,9 +119,6 @@ func (l *LimitedAllocator) Reallocate(size int, b []byte) []byte {
 			Inuse:   l.inuse,
 			Limit:   l.limit,
 		}
-		// Write the error to stderr so that it is visible even if the
-		// panic is caught.
-		os.Stderr.WriteString(err.Error() + "\n")
 		panic(err)
 	}
 

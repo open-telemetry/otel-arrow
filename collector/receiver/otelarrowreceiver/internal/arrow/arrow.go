@@ -310,9 +310,9 @@ func (r *Receiver) logStreamError(err error, where string) {
 	}
 
 	if code == codes.Canceled {
-		r.telemetry.Logger.Debug("arrow stream shutdown", zap.String("message", msg))
+		r.telemetry.Logger.Debug("arrow stream shutdown", zap.String("message", msg), zap.String("where", where))
 	} else {
-		r.telemetry.Logger.Error("arrow stream error", zap.String("message", msg), zap.Int("code", int(code)), zap.String("where", where))
+		r.telemetry.Logger.Error("arrow stream error", zap.Int("code", int(code)), zap.String("message", msg), zap.String("where", where))
 	}
 }
 

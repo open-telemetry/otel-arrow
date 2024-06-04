@@ -133,9 +133,9 @@ func (s *Stream) setBatchChannel(batchID int64, errCh chan<- error) {
 	s.workState.waiters[batchID] = errCh
 }
 
-// logStreamError decides how to log an error.  `which` indicates the
-// stream direction, will be "reader" or "writer".
-func (s *Stream) logStreamError(which string, err error) {
+// logStreamError decides how to log an error.  `where` indicates the
+// error location, will be "reader" or "writer".
+func (s *Stream) logStreamError(where string, err error) {
 	var code codes.Code
 	var msg string
 	// gRPC tends to supply status-wrapped errors, so we always
@@ -154,9 +154,9 @@ func (s *Stream) logStreamError(which string, err error) {
 		msg = err.Error()
 	}
 	if code == codes.Canceled {
-		s.telemetry.Logger.Debug("arrow stream shutdown", zap.String("which", which), zap.String("message", msg))
+		s.telemetry.Logger.Debug("arrow stream shutdown", zap.String("message", msg), zap.String("where", where))
 	} else {
-		s.telemetry.Logger.Error("arrow stream error", zap.String("which", which), zap.String("message", msg), zap.Int("code", int(code)))
+		s.telemetry.Logger.Error("arrow stream error", zap.Int("code", int(code)), zap.String("message", msg), zap.String("where", where))
 	}
 }
 
@@ -334,7 +334,7 @@ func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hp
 				// This case is like the encode-failure case
 				// above, we will restart the stream but consider
 				// this a permenent error.
-				err = status.Errorf(codes.Internal, "hpack: %w", err)
+				err = status.Errorf(codes.Internal, "hpack: %v", err)
 				wri.errCh <- err
 				return err
 			}
