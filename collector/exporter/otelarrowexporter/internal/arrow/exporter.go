@@ -257,12 +257,6 @@ func (e *Exporter) runArrowStream(ctx context.Context, dc doneCancel, state *str
 //
 // consumer should fall back to standard OTLP, (true, nil)
 func (e *Exporter) SendAndWait(ctx context.Context, data any) (bool, error) {
-	select {
-	case <-ctx.Done():
-		return false, status.Errorf(codes.Canceled, "incoming context: %v", ctx.Err())
-	default:
-	}
-
 	errCh := make(chan error, 1)
 
 	// Note that if the OTLP exporter's gRPC Headers field was
