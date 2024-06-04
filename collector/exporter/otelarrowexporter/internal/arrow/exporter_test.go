@@ -31,7 +31,9 @@ import (
 	"go.uber.org/zap/zaptest"
 	"golang.org/x/net/http2/hpack"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 var AllPrioritizers = []PrioritizerName{LeastLoadedPrioritizer, LeastLoadedTwoPrioritizer}
@@ -279,6 +281,13 @@ func TestArrowExporterTimeout(t *testing.T) {
 			require.True(t, sent)
 			require.Error(t, err)
 			require.True(t, errors.Is(err, context.Canceled))
+
+			// Repeat the request, will get immediate timeout.
+			sent, err = tc.exporter.SendAndWait(ctx, twoTraces)
+			stat, is := status.FromError(err)
+			require.True(t, is, "is a gRPC status error: %v", err)
+			require.Equal(t, "context done before send: context canceled", stat.Message())
+			require.Equal(t, codes.Canceled, stat.Code())
 
 			require.NoError(t, tc.exporter.Shutdown(ctx))
 		})
