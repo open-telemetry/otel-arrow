@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -16,7 +15,6 @@ import (
 	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -274,7 +272,7 @@ func (s *Stream) write(ctx context.Context) (retErr error) {
 			return nil
 		case wri = <-s.workState.toWrite:
 		case <-ctx.Done():
-			return ctx.Err()
+			return status.Errorf(codes.Canceled, ctx.Err().Error())
 		}
 
 		err := s.encodeAndSend(wri, &hdrsBuf, hdrsEnc)
@@ -319,8 +317,8 @@ func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hp
 	if err != nil {
 		// This is some kind of internal error.  We will restart the
 		// stream and mark this record as a permanent one.
-		err = fmt.Errorf("encode: %w", err)
-		wri.errCh <- consumererror.NewPermanent(err)
+		err = status.Errorf(codes.Internal, "encode: %v", err)
+		wri.errCh <- err
 		return err
 	}
 
@@ -336,8 +334,8 @@ func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hp
 				// This case is like the encode-failure case
 				// above, we will restart the stream but consider
 				// this a permenent error.
-				err = fmt.Errorf("hpack: %w", err)
-				wri.errCh <- consumererror.NewPermanent(err)
+				err = status.Errorf(codes.Internal, "hpack: %w", err)
+				wri.errCh <- err
 				return err
 			}
 		}
@@ -372,9 +370,12 @@ func (s *Stream) read(_ context.Context) error {
 	// cancel a call to Recv() but the call to processBatchStatus
 	// is non-blocking.
 	for {
-		// Note: if the client has called CloseSend() and is waiting for a response from the server.
-		// And if the server fails for some reason, we will wait until some other condition, such as a context
-		// timeout.  TODO: possibly, improve to wait for no outstanding requests and then stop reading.
+		// Note: if the client has called CloseSend() and is
+		// waiting for a response from the server.  And if the
+		// server fails for some reason, we will wait until
+		// some other condition, such as a context timeout.
+		// TODO: possibly, improve to wait for no outstanding
+		// requests and then stop reading.
 		resp, err := s.client.Recv()
 		if err != nil {
 			// Note: do not wrap, contains a Status.
@@ -382,24 +383,24 @@ func (s *Stream) read(_ context.Context) error {
 		}
 
 		if err = s.processBatchStatus(resp); err != nil {
-			return fmt.Errorf("process: %w", err)
+			return err
 		}
 	}
 }
 
 // getSenderChannel takes the stream lock and removes the corresonding
 // sender channel.
-func (sws *streamWorkState) getSenderChannel(status *arrowpb.BatchStatus) (chan<- error, error) {
+func (sws *streamWorkState) getSenderChannel(bstat *arrowpb.BatchStatus) (chan<- error, error) {
 	sws.lock.Lock()
 	defer sws.lock.Unlock()
 
-	ch, ok := sws.waiters[status.BatchId]
+	ch, ok := sws.waiters[bstat.BatchId]
 	if !ok {
 		// Will break the stream.
-		return nil, fmt.Errorf("unrecognized batch ID: %d", status.BatchId)
+		return nil, status.Errorf(codes.Internal, "unrecognized batch ID: %d", bstat.BatchId)
 	}
 
-	delete(sws.waiters, status.BatchId)
+	delete(sws.waiters, bstat.BatchId)
 	return ch, nil
 }
 
@@ -460,7 +461,7 @@ func (s *Stream) encode(records any) (_ *arrowpb.BatchArrowRecords, retErr error
 				zap.Reflect("recovered", err),
 				zap.Stack("stacktrace"),
 			)
-			retErr = fmt.Errorf("panic in otel-arrow-adapter: %v", err)
+			retErr = status.Errorf(codes.Internal, "panic in otel-arrow-adapter: %v", err)
 		}
 	}()
 	var batch *arrowpb.BatchArrowRecords
@@ -473,7 +474,7 @@ func (s *Stream) encode(records any) (_ *arrowpb.BatchArrowRecords, retErr error
 	case pmetric.Metrics:
 		batch, err = s.producer.BatchArrowRecordsFromMetrics(data)
 	default:
-		return nil, fmt.Errorf("unsupported OTLP type: %T", records)
+		return nil, status.Errorf(codes.Unimplemented, "unsupported OTel-Arrow signal type: %T", records)
 	}
 	return batch, err
 }

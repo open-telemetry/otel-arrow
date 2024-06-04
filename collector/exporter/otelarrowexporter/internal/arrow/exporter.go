@@ -20,7 +20,9 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 )
 
 // Exporter is 1:1 with exporter, isolates arrow-specific
@@ -255,6 +257,12 @@ func (e *Exporter) runArrowStream(ctx context.Context, dc doneCancel, state *str
 //
 // consumer should fall back to standard OTLP, (true, nil)
 func (e *Exporter) SendAndWait(ctx context.Context, data any) (bool, error) {
+	select {
+	case <-ctx.Done():
+		return false, status.Errorf(codes.Canceled, "incoming request already canceled")
+	default:
+	}
+
 	errCh := make(chan error, 1)
 
 	// Note that if the OTLP exporter's gRPC Headers field was
@@ -340,7 +348,7 @@ func waitForWrite(ctx context.Context, errCh <-chan error, down <-chan struct{})
 	select {
 	case <-ctx.Done():
 		// This caller's context timed out.
-		return ctx.Err()
+		return status.Errorf(codes.Canceled, ctx.Err().Error())
 	case <-down:
 		return ErrStreamRestarting
 	case err := <-errCh:
