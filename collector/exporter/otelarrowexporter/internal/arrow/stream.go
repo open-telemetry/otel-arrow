@@ -370,12 +370,9 @@ func (s *Stream) read(_ context.Context) error {
 	// cancel a call to Recv() but the call to processBatchStatus
 	// is non-blocking.
 	for {
-		// Note: if the client has called CloseSend() and is
-		// waiting for a response from the server.  And if the
-		// server fails for some reason, we will wait until
-		// some other condition, such as a context timeout.
-		// TODO: possibly, improve to wait for no outstanding
-		// requests and then stop reading.
+		// Note: if the client has called CloseSend() and is waiting for a response from the server.
+		// And if the server fails for some reason, we will wait until some other condition, such as a context
+		// timeout.  TODO: possibly, improve to wait for no outstanding requests and then stop reading.
 		resp, err := s.client.Recv()
 		if err != nil {
 			// Note: do not wrap, contains a Status.
