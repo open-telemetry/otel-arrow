@@ -15,9 +15,10 @@ import (
 	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	arrowRecordMock "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record/mock"
 	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.uber.org/mock/gomock"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var oneBatch = &arrowpb.BatchArrowRecords{
@@ -182,8 +183,12 @@ func TestStreamEncodeError(t *testing.T) {
 			// sender should get a permanent testErr
 			err := tc.mustSendAndWait()
 			require.Error(t, err)
-			require.True(t, errors.Is(err, testErr))
-			require.True(t, consumererror.IsPermanent(err))
+
+			stat, is := status.FromError(err)
+			require.True(t, is, "is a gRPC status error: %v", err)
+			require.Equal(t, codes.Internal, stat.Code())
+
+			require.Contains(t, stat.Message(), testErr.Error())
 		})
 	}
 }
