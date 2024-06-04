@@ -69,6 +69,5 @@ func TestLimitedAllocatorFormatted(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, expect, unwrap)
 
-	// @@@ HERE CHECK THE CLASSIFIER
-	require.True(t, 
+	require.True(t, errors.Is(unwrap, LimitError{}))
 }
