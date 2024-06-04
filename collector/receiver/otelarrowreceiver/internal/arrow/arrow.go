@@ -85,6 +85,7 @@ type Receiver struct {
 	boundedQueue         *admission.BoundedQueue
 }
 
+// receiverStream holds the inFlightWG for a single stream.
 type receiverStream struct {
 	*Receiver
 	inFlightWG sync.WaitGroup
@@ -362,14 +363,6 @@ func (r *Receiver) recoverErr(retErr *error) {
 	}
 }
 
-func (r *Receiver) newReceiverStream() *receiverStream {
-	rs := &receiverStream{
-		Receiver: r,
-	}
-	//@@@rs.inFlightWG.Add(1)
-	return rs
-}
-
 func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retErr error) {
 	streamCtx := serverStream.Context()
 	ac := r.newConsumer()
@@ -398,7 +391,9 @@ func (r *Receiver) anyStream(serverStream anyStreamServer, method string) (retEr
 	sendWG.Add(1)
 	recvWG.Add(1)
 
-	rstream := r.newReceiverStream()
+	rstream := &receiverStream{
+		Receiver: r,
+	}
 
 	go func() {
 		var err error
