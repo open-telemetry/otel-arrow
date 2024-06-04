@@ -3,7 +3,6 @@ module github.com/open-telemetry/otel-arrow/collector/test
 go 1.22.2
 
 require (
-	github.com/gogo/status v1.1.1
 	github.com/open-telemetry/otel-arrow v0.23.0
 	github.com/open-telemetry/otel-arrow/collector v0.23.0
 	github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter v0.23.0
@@ -36,9 +35,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-viper/mapstructure/v2 v2.0.0-alpha.1 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
-	github.com/gogo/googleapis v0.0.0-20180223154316-0cd9801be74a // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
-	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/golang/snappy v0.0.5-0.20220116011046-fa5810519dcb // indirect
 	github.com/google/flatbuffers v23.5.26+incompatible // indirect
 	github.com/google/uuid v1.6.0 // indirect

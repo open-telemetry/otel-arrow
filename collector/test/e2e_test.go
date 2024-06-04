@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gogo/status"
 	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter"
 	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver"
 	"github.com/open-telemetry/otel-arrow/collector/testutil"
@@ -36,6 +35,7 @@ import (
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type testParams struct {
