@@ -259,7 +259,7 @@ func (e *Exporter) runArrowStream(ctx context.Context, dc doneCancel, state *str
 func (e *Exporter) SendAndWait(ctx context.Context, data any) (bool, error) {
 	select {
 	case <-ctx.Done():
-		return false, status.Errorf(codes.Canceled, "incoming request already canceled")
+		return false, status.Error(codes.Canceled, "incoming request already canceled")
 	default:
 	}
 
@@ -348,7 +348,7 @@ func waitForWrite(ctx context.Context, errCh <-chan error, down <-chan struct{})
 	select {
 	case <-ctx.Done():
 		// This caller's context timed out.
-		return status.Errorf(codes.Canceled, ctx.Err().Error())
+		return status.Error(codes.Canceled, ctx.Err().Error())
 	case <-down:
 		return ErrStreamRestarting
 	case err := <-errCh:

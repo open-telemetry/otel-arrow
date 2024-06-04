@@ -272,7 +272,7 @@ func (s *Stream) write(ctx context.Context) (retErr error) {
 			return nil
 		case wri = <-s.workState.toWrite:
 		case <-ctx.Done():
-			return status.Errorf(codes.Canceled, ctx.Err().Error())
+			return status.Error(codes.Canceled, ctx.Err().Error())
 		}
 
 		err := s.encodeAndSend(wri, &hdrsBuf, hdrsEnc)

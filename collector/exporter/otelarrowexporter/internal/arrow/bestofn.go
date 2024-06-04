@@ -117,7 +117,7 @@ func (lp *bestOfNPrioritizer) sendAndWait(ctx context.Context, errCh <-chan erro
 	case <-lp.done:
 		return ErrStreamRestarting
 	case <-ctx.Done():
-		return status.Errorf(codes.Canceled, "stream canceled")
+		return status.Error(codes.Canceled, ctx.Err().Error())
 	case lp.input <- wri:
 		return waitForWrite(ctx, errCh, lp.done)
 	}
