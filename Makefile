@@ -51,9 +51,6 @@ MODSET?=beta
 .PHONY: multimod-prerelease
 multimod-prerelease: $(MULTIMOD)
 	$(MULTIMOD) prerelease -s=true -b=false -v ./versions.yaml -m ${MODSET}
-# this is a hack to sync the otelarrowreceiver during this process
-# to avoid gomod ambigious imports.
-	$(MAKE) gotidy
 
 COMMIT?=HEAD
 REMOTE?=git@github.com:open-telemetry/otel-arrow.git
@@ -93,18 +90,12 @@ endif
 	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' collector/otelarrowcol-build.yaml
 	sed -i.bak 's/$(PREVIOUS_VERSION)/$(RELEASE_CANDIDATE)/g' collector/cmd/otelarrowcol/main.go
 	find . -name "*.bak" -type f -delete
-	$(GOCMD) run ./tools/replacer fix
 	# commit changes before running multimod
 	git add .
 	git commit -m "prepare release $(RELEASE_CANDIDATE)"
 	$(MAKE) multimod-prerelease
 	git add .
 	git commit -m "multimode changes $(RELEASE_CANDIDATE)"
-	# regenerate files
-	$(MAKE) gotidy
-	$(GOCMD) run ./tools/replacer unfix
-	git add .
-	git commit -m "go mod tidy $(RELEASE_CANDIDATE)"
 	# ensure a clean branch (that was a test--gotidy should be idempotent and should not change the working dir again)
 	git diff -s --exit-code || (echo "local repository not clean"; exit 1)
 	git add .
@@ -119,11 +110,7 @@ builder:
 .PHONY: genotelarrowcol
 genotelarrowcol: builder
 	rm -f collector/cmd/otelarrowcol/*
-	GOWORK="off" $(GOCMD) run ./tools/replacer fix
 	GOWORK="off" $(BUILDER) --skip-compilation --config collector/otelarrowcol-build.yaml
-	GOWORK="off" $(GOCMD) run ./tools/replacer fix
-	$(MAKE) gotidy
-	GOWORK="off" $(GOCMD) run ./tools/replacer unfix
 	$(MAKE) gotidy
 
 .PHONY: otelarrowcol

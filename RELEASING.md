@@ -14,20 +14,9 @@ git checkout -b release_xx_yy_zz
    describing the changes in the new release.  If collector
    dependencies have changed during this release cycle, `make
    genotelarrowcol` should have been run to synchronize dependencies.
-   
-   Disable the CI/CD pipeline temporarily. This is required by the
-   release process.  Add `|| true` to this stanza in `.github/workflows/ci.yml`.
-
-```
-    - name: Build all modules
-      run: make build || true
-
-    - name: Test all modules
-      run: make test || true
-```
 
 3. Using Make, prepare the release means updating Go modules and
-   checking in the changes, for example.  Edit 
+   checking in the changes, for example.
 
 ```
 make prepare-release
