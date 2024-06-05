@@ -5,8 +5,8 @@ go 1.21.0
 toolchain go1.22.2
 
 require (
-	github.com/open-telemetry/otel-arrow v0.23.0
-	github.com/open-telemetry/otel-arrow/collector v0.23.0
+	github.com/open-telemetry/otel-arrow v0.24.0
+	github.com/open-telemetry/otel-arrow/collector v0.24.0
 	github.com/stretchr/testify v1.9.0
 	go.opentelemetry.io/collector v0.102.1
 	go.opentelemetry.io/collector/component v0.102.1
