@@ -98,8 +98,6 @@ endif
 	git commit -m "multimode changes $(RELEASE_CANDIDATE)"
 	# ensure a clean branch (that was a test--gotidy should be idempotent and should not change the working dir again)
 	git diff -s --exit-code || (echo "local repository not clean"; exit 1)
-	git add .
-	git commit -m "remove replace statements $(RELEASE_CANDIDATE)" || (echo "no multimod changes to commit")
 
 # Install OTC's builder at the version WHICH MUST MATCH collector/otelarrowcol-build.yaml
 BUILDER = builder
