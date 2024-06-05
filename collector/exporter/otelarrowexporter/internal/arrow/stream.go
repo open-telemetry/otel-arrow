@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -16,7 +15,6 @@ import (
 	"github.com/open-telemetry/otel-arrow/collector/netstats"
 	arrowRecord "github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -135,9 +133,9 @@ func (s *Stream) setBatchChannel(batchID int64, errCh chan<- error) {
 	s.workState.waiters[batchID] = errCh
 }
 
-// logStreamError decides how to log an error.  `which` indicates the
-// stream direction, will be "reader" or "writer".
-func (s *Stream) logStreamError(which string, err error) {
+// logStreamError decides how to log an error.  `where` indicates the
+// error location, will be "reader" or "writer".
+func (s *Stream) logStreamError(where string, err error) {
 	var code codes.Code
 	var msg string
 	// gRPC tends to supply status-wrapped errors, so we always
@@ -156,9 +154,9 @@ func (s *Stream) logStreamError(which string, err error) {
 		msg = err.Error()
 	}
 	if code == codes.Canceled {
-		s.telemetry.Logger.Debug("arrow stream shutdown", zap.String("which", which), zap.String("message", msg))
+		s.telemetry.Logger.Debug("arrow stream shutdown", zap.String("message", msg), zap.String("where", where))
 	} else {
-		s.telemetry.Logger.Error("arrow stream error", zap.String("which", which), zap.String("message", msg), zap.Int("code", int(code)))
+		s.telemetry.Logger.Error("arrow stream error", zap.Int("code", int(code)), zap.String("message", msg), zap.String("where", where))
 	}
 }
 
@@ -274,7 +272,7 @@ func (s *Stream) write(ctx context.Context) (retErr error) {
 			return nil
 		case wri = <-s.workState.toWrite:
 		case <-ctx.Done():
-			return ctx.Err()
+			return status.Errorf(codes.Canceled, "stream input: %v", ctx.Err())
 		}
 
 		err := s.encodeAndSend(wri, &hdrsBuf, hdrsEnc)
@@ -319,8 +317,8 @@ func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hp
 	if err != nil {
 		// This is some kind of internal error.  We will restart the
 		// stream and mark this record as a permanent one.
-		err = fmt.Errorf("encode: %w", err)
-		wri.errCh <- consumererror.NewPermanent(err)
+		err = status.Errorf(codes.Internal, "encode: %v", err)
+		wri.errCh <- err
 		return err
 	}
 
@@ -336,8 +334,8 @@ func (s *Stream) encodeAndSend(wri writeItem, hdrsBuf *bytes.Buffer, hdrsEnc *hp
 				// This case is like the encode-failure case
 				// above, we will restart the stream but consider
 				// this a permenent error.
-				err = fmt.Errorf("hpack: %w", err)
-				wri.errCh <- consumererror.NewPermanent(err)
+				err = status.Errorf(codes.Internal, "hpack: %v", err)
+				wri.errCh <- err
 				return err
 			}
 		}
@@ -382,24 +380,24 @@ func (s *Stream) read(_ context.Context) error {
 		}
 
 		if err = s.processBatchStatus(resp); err != nil {
-			return fmt.Errorf("process: %w", err)
+			return err
 		}
 	}
 }
 
 // getSenderChannel takes the stream lock and removes the corresonding
 // sender channel.
-func (sws *streamWorkState) getSenderChannel(status *arrowpb.BatchStatus) (chan<- error, error) {
+func (sws *streamWorkState) getSenderChannel(bstat *arrowpb.BatchStatus) (chan<- error, error) {
 	sws.lock.Lock()
 	defer sws.lock.Unlock()
 
-	ch, ok := sws.waiters[status.BatchId]
+	ch, ok := sws.waiters[bstat.BatchId]
 	if !ok {
 		// Will break the stream.
-		return nil, fmt.Errorf("unrecognized batch ID: %d", status.BatchId)
+		return nil, status.Errorf(codes.Internal, "unrecognized batch ID: %d", bstat.BatchId)
 	}
 
-	delete(sws.waiters, status.BatchId)
+	delete(sws.waiters, bstat.BatchId)
 	return ch, nil
 }
 
@@ -460,7 +458,7 @@ func (s *Stream) encode(records any) (_ *arrowpb.BatchArrowRecords, retErr error
 				zap.Reflect("recovered", err),
 				zap.Stack("stacktrace"),
 			)
-			retErr = fmt.Errorf("panic in otel-arrow-adapter: %v", err)
+			retErr = status.Errorf(codes.Internal, "panic in otel-arrow-adapter: %v", err)
 		}
 	}()
 	var batch *arrowpb.BatchArrowRecords
@@ -473,7 +471,7 @@ func (s *Stream) encode(records any) (_ *arrowpb.BatchArrowRecords, retErr error
 	case pmetric.Metrics:
 		batch, err = s.producer.BatchArrowRecordsFromMetrics(data)
 	default:
-		return nil, fmt.Errorf("unsupported OTLP type: %T", records)
+		return nil, status.Errorf(codes.Unimplemented, "unsupported OTel-Arrow signal type: %T", records)
 	}
 	return batch, err
 }
