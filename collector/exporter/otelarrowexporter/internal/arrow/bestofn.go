@@ -9,6 +9,9 @@ import (
 	"runtime"
 	"sort"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // bestOfNPrioritizer is a prioritizer that selects a less-loaded stream to write.
@@ -114,7 +117,7 @@ func (lp *bestOfNPrioritizer) sendAndWait(ctx context.Context, errCh <-chan erro
 	case <-lp.done:
 		return ErrStreamRestarting
 	case <-ctx.Done():
-		return context.Canceled
+		return status.Errorf(codes.Canceled, "stream wait: %v", ctx.Err())
 	case lp.input <- wri:
 		return waitForWrite(ctx, errCh, lp.done)
 	}
