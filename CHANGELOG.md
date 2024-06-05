@@ -13,6 +13,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Protocol includes use of more gRPC codes. [#202](https://github.com/open-telemetry/otel-arrow/pull/202)
 - Receiver concurrency bugfix. [#205](https://github.com/open-telemetry/otel-arrow/pull/205)
 - Concurrent batch processor size==0 bugfix. [#208](https://github.com/open-telemetry/otel-arrow/pull/208)
+- New integration testing. [#210](https://github.com/open-telemetry/otel-arrow/pull/210)
+- Use gRPC Status codes in the Arrow exporter. [#211](https://github.com/open-telemetry/otel-arrow/pull/211)
+- Fix stream-shutdown race in Arrow receiver. [#212](https://github.com/open-telemetry/otel-arrow/pull/212)
+- Avoid work for already-canceled requests. [#213](https://github.com/open-telemetry/otel-arrow/pull/213)
+- Call IPCReader.Err() after reader loop. [#215](https://github.com/open-telemetry/otel-arrow/pull/215)
 
 ## [0.23.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.23.0) - 2024-05-09
 
