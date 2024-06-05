@@ -25,7 +25,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/apache/arrow/go/v14/arrow"
+	"github.com/apache/arrow/go/v16/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	"github.com/open-telemetry/otel-arrow/pkg/config"

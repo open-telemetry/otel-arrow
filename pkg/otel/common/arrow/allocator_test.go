@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/apache/arrow/go/v14/arrow/memory"
+	"github.com/apache/arrow/go/v16/arrow/memory"
 	"github.com/stretchr/testify/require"
 )
 
