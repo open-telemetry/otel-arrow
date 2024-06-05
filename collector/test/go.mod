@@ -96,3 +96,11 @@ require (
 	google.golang.org/protobuf v1.34.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver => ../receiver/otelarrowreceiver
+
+replace github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter => ../exporter/otelarrowexporter
+
+replace github.com/open-telemetry/otel-arrow/collector => ../
+
+replace github.com/open-telemetry/otel-arrow => ../..
