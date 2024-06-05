@@ -257,7 +257,7 @@ func (e *Exporter) runArrowStream(ctx context.Context, dc doneCancel, state *str
 //
 // consumer should fall back to standard OTLP, (true, nil)
 func (e *Exporter) SendAndWait(ctx context.Context, data any) (bool, error) {
-	// If the incoming context is already cancaled, return the
+	// If the incoming context is already canceled, return the
 	// same error condition a unary gRPC or HTTP exporter would do.
 	select {
 	case <-ctx.Done():
