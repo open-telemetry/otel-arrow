@@ -22,8 +22,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/apache/arrow/go/v14/arrow"
-	"github.com/apache/arrow/go/v14/arrow/memory"
+	"github.com/apache/arrow/go/v16/arrow"
+	"github.com/apache/arrow/go/v16/arrow/memory"
 	"github.com/stretchr/testify/assert"
 
 	acommon "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
@@ -110,7 +110,7 @@ func TestTimestampOnly(t *testing.T) {
 	rootData := RootData{
 		timestamp: arrow.Timestamp(10),
 	}
-	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001\"}}\n]")
+	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001Z\"}}\n]")
 }
 
 func TestU8Only(t *testing.T) {
@@ -377,7 +377,7 @@ func TestFullSchema(t *testing.T) {
 			"key1": StringValueData{"string"},
 		},
 	}
-	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"binary\":\"YmluYXJ5\",\"i32\":6,\"map\":[{\"key\":\"key1\",\"value\":[4,\"string\"]}],\"timestamp\":\"1970-01-01 00:00:00.00000001\",\"u64\":3,\"u8\":2,\"values\":[[1,2],[4,\"string\"],[4,\"string\"]]}}\n]")
+	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"binary\":\"YmluYXJ5\",\"i32\":6,\"map\":[{\"key\":\"key1\",\"value\":[4,\"string\"]}],\"timestamp\":\"1970-01-01 00:00:00.00000001Z\",\"u64\":3,\"u8\":2,\"values\":[[1,2],[4,\"string\"],[4,\"string\"]]}}\n]")
 }
 
 func TestSchemaEvolution(t *testing.T) {
@@ -391,20 +391,20 @@ func TestSchemaEvolution(t *testing.T) {
 	rootData := RootData{
 		timestamp: arrow.Timestamp(10),
 	}
-	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001\"}}\n]")
+	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001Z\"}}\n]")
 
 	rootData = RootData{
 		timestamp: arrow.Timestamp(10),
 		u8:        1,
 	}
-	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001\",\"u8\":1}}\n]")
+	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001Z\",\"u8\":1}}\n]")
 
 	rootData = RootData{
 		timestamp: arrow.Timestamp(10),
 		u8:        1,
 		u64:       2,
 	}
-	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001\",\"u8\":1,\"u64\":2}}\n]")
+	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001Z\",\"u8\":1,\"u64\":2}}\n]")
 
 	rootData = RootData{
 		timestamp: arrow.Timestamp(10),
@@ -412,7 +412,7 @@ func TestSchemaEvolution(t *testing.T) {
 		u64:       2,
 		i64:       3,
 	}
-	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001\",\"u8\":1,\"u64\":2,\"i64\":3}}\n]")
+	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001Z\",\"u8\":1,\"u64\":2,\"i64\":3}}\n]")
 
 	rootData = RootData{
 		timestamp: arrow.Timestamp(10),
@@ -421,7 +421,7 @@ func TestSchemaEvolution(t *testing.T) {
 		i64:       3,
 		bool:      true,
 	}
-	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001\",\"u8\":1,\"u64\":2,\"i64\":3,\"bool\":true}}\n]")
+	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001Z\",\"u8\":1,\"u64\":2,\"i64\":3,\"bool\":true}}\n]")
 
 	rootData = RootData{
 		timestamp: arrow.Timestamp(10),
@@ -431,7 +431,7 @@ func TestSchemaEvolution(t *testing.T) {
 		bool:      true,
 		binary:    []byte("binary"),
 	}
-	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001\",\"u8\":1,\"u64\":2,\"i64\":3,\"bool\":true,\"binary\":\"YmluYXJ5\"}}\n]")
+	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001Z\",\"u8\":1,\"u64\":2,\"i64\":3,\"bool\":true,\"binary\":\"YmluYXJ5\"}}\n]")
 
 	rootData = RootData{
 		timestamp: arrow.Timestamp(10),
@@ -442,7 +442,7 @@ func TestSchemaEvolution(t *testing.T) {
 		binary:    []byte("binary"),
 		u32:       4,
 	}
-	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001\",\"u8\":1,\"u64\":2,\"i64\":3,\"bool\":true,\"binary\":\"YmluYXJ5\",\"u32\":4}}\n]")
+	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001Z\",\"u8\":1,\"u64\":2,\"i64\":3,\"bool\":true,\"binary\":\"YmluYXJ5\",\"u32\":4}}\n]")
 
 	rootData = RootData{
 		timestamp: arrow.Timestamp(10),
@@ -454,7 +454,7 @@ func TestSchemaEvolution(t *testing.T) {
 		u32:       4,
 		i32:       5,
 	}
-	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001\",\"u8\":1,\"u64\":2,\"i64\":3,\"bool\":true,\"binary\":\"YmluYXJ5\",\"u32\":4,\"i32\":5}}\n]")
+	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001Z\",\"u8\":1,\"u64\":2,\"i64\":3,\"bool\":true,\"binary\":\"YmluYXJ5\",\"u32\":4,\"i32\":5}}\n]")
 
 	rootData = RootData{
 		timestamp: arrow.Timestamp(10),
@@ -467,7 +467,7 @@ func TestSchemaEvolution(t *testing.T) {
 		i32:       5,
 		string:    "string",
 	}
-	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001\",\"u8\":1,\"u64\":2,\"i64\":3,\"bool\":true,\"binary\":\"YmluYXJ5\",\"u32\":4,\"i32\":5,\"string\":\"string\"}}\n]")
+	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"timestamp\":\"1970-01-01 00:00:00.00000001Z\",\"u8\":1,\"u64\":2,\"i64\":3,\"bool\":true,\"binary\":\"YmluYXJ5\",\"u32\":4,\"i32\":5,\"string\":\"string\"}}\n]")
 
 	rootData = RootData{
 		timestamp: arrow.Timestamp(10),
@@ -484,7 +484,7 @@ func TestSchemaEvolution(t *testing.T) {
 			F64ValueData{2.0},
 		},
 	}
-	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"binary\":\"YmluYXJ5\",\"bool\":true,\"i32\":5,\"i64\":3,\"string\":\"string\",\"timestamp\":\"1970-01-01 00:00:00.00000001\",\"u32\":4,\"u64\":2,\"u8\":1,\"values\":[[0,1],[1,2]]}}\n]")
+	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"binary\":\"YmluYXJ5\",\"bool\":true,\"i32\":5,\"i64\":3,\"string\":\"string\",\"timestamp\":\"1970-01-01 00:00:00.00000001Z\",\"u32\":4,\"u64\":2,\"u8\":1,\"values\":[[0,1],[1,2]]}}\n]")
 
 	rootData = RootData{
 		timestamp: arrow.Timestamp(10),
@@ -502,7 +502,7 @@ func TestSchemaEvolution(t *testing.T) {
 		},
 		fixedSize8: []byte{1, 2, 3, 4, 5, 6, 7, 8},
 	}
-	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"binary\":\"YmluYXJ5\",\"bool\":true,\"fixed_size_8_binary\":\"AQIDBAUGBwg=\",\"i32\":5,\"i64\":3,\"string\":\"string\",\"timestamp\":\"1970-01-01 00:00:00.00000001\",\"u32\":4,\"u64\":2,\"u8\":1,\"values\":[[0,1],[1,2]]}}\n]")
+	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"binary\":\"YmluYXJ5\",\"bool\":true,\"fixed_size_8_binary\":\"AQIDBAUGBwg=\",\"i32\":5,\"i64\":3,\"string\":\"string\",\"timestamp\":\"1970-01-01 00:00:00.00000001Z\",\"u32\":4,\"u64\":2,\"u8\":1,\"values\":[[0,1],[1,2]]}}\n]")
 
 	rootData = RootData{
 		timestamp: arrow.Timestamp(10),
@@ -521,7 +521,7 @@ func TestSchemaEvolution(t *testing.T) {
 		fixedSize8:  []byte{1, 2, 3, 4, 5, 6, 7, 8},
 		fixedSize16: []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
 	}
-	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"binary\":\"YmluYXJ5\",\"bool\":true,\"fixed_size_16_binary\":\"AQIDBAUGBwgJCgsMDQ4PEA==\",\"fixed_size_8_binary\":\"AQIDBAUGBwg=\",\"i32\":5,\"i64\":3,\"string\":\"string\",\"timestamp\":\"1970-01-01 00:00:00.00000001\",\"u32\":4,\"u64\":2,\"u8\":1,\"values\":[[0,1],[1,2]]}}\n]")
+	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"binary\":\"YmluYXJ5\",\"bool\":true,\"fixed_size_16_binary\":\"AQIDBAUGBwgJCgsMDQ4PEA==\",\"fixed_size_8_binary\":\"AQIDBAUGBwg=\",\"i32\":5,\"i64\":3,\"string\":\"string\",\"timestamp\":\"1970-01-01 00:00:00.00000001Z\",\"u32\":4,\"u64\":2,\"u8\":1,\"values\":[[0,1],[1,2]]}}\n]")
 
 	rootData = RootData{
 		timestamp: arrow.Timestamp(10),
@@ -543,7 +543,7 @@ func TestSchemaEvolution(t *testing.T) {
 			"key1": I64ValueData{1},
 		},
 	}
-	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"binary\":\"YmluYXJ5\",\"bool\":true,\"fixed_size_16_binary\":\"AQIDBAUGBwgJCgsMDQ4PEA==\",\"fixed_size_8_binary\":\"AQIDBAUGBwg=\",\"i32\":5,\"i64\":3,\"map\":[{\"key\":\"key1\",\"value\":[0,1]}],\"string\":\"string\",\"timestamp\":\"1970-01-01 00:00:00.00000001\",\"u32\":4,\"u64\":2,\"u8\":1,\"values\":[[0,1],[1,2]]}}\n]")
+	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"binary\":\"YmluYXJ5\",\"bool\":true,\"fixed_size_16_binary\":\"AQIDBAUGBwgJCgsMDQ4PEA==\",\"fixed_size_8_binary\":\"AQIDBAUGBwg=\",\"i32\":5,\"i64\":3,\"map\":[{\"key\":\"key1\",\"value\":[0,1]}],\"string\":\"string\",\"timestamp\":\"1970-01-01 00:00:00.00000001Z\",\"u32\":4,\"u64\":2,\"u8\":1,\"values\":[[0,1],[1,2]]}}\n]")
 
 	rootData = RootData{
 		timestamp: arrow.Timestamp(10),
@@ -565,7 +565,7 @@ func TestSchemaEvolution(t *testing.T) {
 			"key2": F64ValueData{2.0},
 		},
 	}
-	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"binary\":\"YmluYXJ5\",\"bool\":true,\"fixed_size_16_binary\":\"AQIDBAUGBwgJCgsMDQ4PEA==\",\"fixed_size_8_binary\":\"AQIDBAUGBwg=\",\"i32\":5,\"i64\":3,\"map\":[{\"key\":\"key2\",\"value\":[1,2]}],\"string\":\"string\",\"timestamp\":\"1970-01-01 00:00:00.00000001\",\"u32\":4,\"u64\":2,\"u8\":1,\"values\":[[0,1],[1,2]]}}\n]")
+	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"binary\":\"YmluYXJ5\",\"bool\":true,\"fixed_size_16_binary\":\"AQIDBAUGBwgJCgsMDQ4PEA==\",\"fixed_size_8_binary\":\"AQIDBAUGBwg=\",\"i32\":5,\"i64\":3,\"map\":[{\"key\":\"key2\",\"value\":[1,2]}],\"string\":\"string\",\"timestamp\":\"1970-01-01 00:00:00.00000001Z\",\"u32\":4,\"u64\":2,\"u8\":1,\"values\":[[0,1],[1,2]]}}\n]")
 
 	rootData = RootData{
 		timestamp: arrow.Timestamp(10),
@@ -585,7 +585,7 @@ func TestSchemaEvolution(t *testing.T) {
 			"key1": StringValueData{"string"},
 		},
 	}
-	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"binary\":\"YmluYXJ5\",\"bool\":null,\"fixed_size_16_binary\":null,\"fixed_size_8_binary\":null,\"i32\":6,\"i64\":null,\"map\":[{\"key\":\"key1\",\"value\":[4,\"string\"]}],\"string\":null,\"timestamp\":\"1970-01-01 00:00:00.00000001\",\"u32\":null,\"u64\":3,\"u8\":2,\"values\":[[1,2],[4,\"string\"]]}}\n]")
+	AppendAndJsonAssert(t, &rootData, rootBuilder, "[{\"root\":{\"binary\":\"YmluYXJ5\",\"bool\":null,\"fixed_size_16_binary\":null,\"fixed_size_8_binary\":null,\"i32\":6,\"i64\":null,\"map\":[{\"key\":\"key1\",\"value\":[4,\"string\"]}],\"string\":null,\"timestamp\":\"1970-01-01 00:00:00.00000001Z\",\"u32\":null,\"u64\":3,\"u8\":2,\"values\":[[1,2],[4,\"string\"]]}}\n]")
 }
 
 func TestDictionaryOverflow(t *testing.T) {

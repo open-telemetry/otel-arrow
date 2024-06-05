@@ -20,8 +20,8 @@ package arrow
 // Utility functions to extract values from Arrow Records.
 
 import (
-	"github.com/apache/arrow/go/v14/arrow"
-	"github.com/apache/arrow/go/v14/arrow/array"
+	"github.com/apache/arrow/go/v16/arrow"
+	"github.com/apache/arrow/go/v16/arrow/array"
 
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
 	"github.com/open-telemetry/otel-arrow/pkg/werror"

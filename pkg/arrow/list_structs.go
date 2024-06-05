@@ -20,8 +20,8 @@ package arrow
 // Wrapper around an Arrow list of structs used to expose utility functions.
 
 import (
-	"github.com/apache/arrow/go/v14/arrow"
-	"github.com/apache/arrow/go/v14/arrow/array"
+	"github.com/apache/arrow/go/v16/arrow"
+	"github.com/apache/arrow/go/v16/arrow/array"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	"github.com/open-telemetry/otel-arrow/pkg/werror"

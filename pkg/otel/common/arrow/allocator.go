@@ -19,7 +19,7 @@ import (
 	"regexp"
 	"strconv"
 
-	"github.com/apache/arrow/go/v14/arrow/memory"
+	"github.com/apache/arrow/go/v16/arrow/memory"
 )
 
 type LimitedAllocator struct {

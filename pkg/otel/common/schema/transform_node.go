@@ -21,7 +21,7 @@ import (
 	"math"
 	"strconv"
 
-	"github.com/apache/arrow/go/v14/arrow"
+	"github.com/apache/arrow/go/v16/arrow"
 
 	cfg "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/events"
