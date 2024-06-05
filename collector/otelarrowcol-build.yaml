@@ -52,8 +52,6 @@ receivers:
 processors:
   - import: github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor
     gomod: github.com/open-telemetry/otel-arrow/collector v0.23.0
-  - import: github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor
-    gomod: github.com/open-telemetry/otel-arrow/collector v0.23.0
   - import: github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor
     gomod: github.com/open-telemetry/otel-arrow/collector v0.23.0
 
