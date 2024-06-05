@@ -9,7 +9,6 @@ use (
 	./collector/exporter/fileexporter
 	./collector/exporter/otelarrowexporter
 	./collector/processor/concurrentbatchprocessor
-	./collector/processor/experimentprocessor
 	./collector/processor/obfuscationprocessor
 	./collector/receiver/filereceiver
 	./collector/receiver/otelarrowreceiver

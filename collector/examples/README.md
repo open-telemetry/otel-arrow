@@ -11,8 +11,6 @@ one of the methods document in [BUILDING](../BUILDING.md).
 - [`metadata-bridge`](./metadata-bridge/README.md): A compression
   bridge between "edge" (gateway) and "saas" (reverse gateway)
   collectors with metadata support, allowing request headers through.
-- [`loopback`](./loopback/README.md): A collector that writes Arrow to
-  and from itself.
 - [`recorder`](./recorder/README.md): A collector with support for
   recording data files for diagnostic and benchmark purposes.
   
