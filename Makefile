@@ -53,7 +53,6 @@ multimod-prerelease: $(MULTIMOD)
 	$(MULTIMOD) prerelease -s=true -b=false -v ./versions.yaml -m ${MODSET}
 # this is a hack to sync the otelarrowreceiver during this process
 # to avoid gomod ambigious imports.
-	(cd collector/receiver/otelarrowreceiver/ && $(GOCMD) work sync)
 	$(MAKE) gotidy
 
 COMMIT?=HEAD
@@ -115,7 +114,7 @@ endif
 BUILDER = builder
 .PHONY: $(BUILDER)
 builder:
-	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@v0.98.0
+	$(GOCMD) install go.opentelemetry.io/collector/cmd/builder@v0.102.1
 
 .PHONY: genotelarrowcol
 genotelarrowcol: builder
@@ -123,7 +122,6 @@ genotelarrowcol: builder
 	GOWORK="off" $(GOCMD) run ./tools/replacer fix
 	GOWORK="off" $(BUILDER) --skip-compilation --config collector/otelarrowcol-build.yaml
 	GOWORK="off" $(GOCMD) run ./tools/replacer fix
-	$(GOCMD) work sync
 	$(MAKE) gotidy
 	GOWORK="off" $(GOCMD) run ./tools/replacer unfix
 	$(MAKE) gotidy

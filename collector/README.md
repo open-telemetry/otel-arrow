@@ -53,9 +53,6 @@ maintainers.  These components are:
 - [`processor/obfuscationprocessor`][OBFUSCATIONPROCESSOR]: Supports
   obfuscation of OpenTelemetry data using a [Feistel
   cipher](https://en.wikipedia.org/wiki/Feistel_cipher).
-- [`processor/experimentprocessor`][EXPERIMENTPROCESSOR]: A
-  probabilistic routing component for conducting experiments between
-  exporters.
 - [`connector/validationconnector`][VALIDATIONCONNECTOR]: A component
   for on-the-fly validation of a local pipeline.
 
@@ -90,7 +87,6 @@ Also, the build includes a synthetic telemetry data generator:
 [UPSTREAMFILEEXPORTER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/fileexporter/README.md
 [UPSTREAMFILERECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/filereceiver/README.md
 [OBFUSCATIONPROCESSOR]: ./processor/obfuscationprocessor/README.md
-[EXPERIMENTPROCESSOR]: ./processor/experimentprocessor/README.md
 [VALIDATIONCONNECTOR]: ./connector/validationconnector/README.md
 [BASICAUTHEXT]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/basicauthextension/README.md
 [HEADERSETTEREXT]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/headerssetterextension/README.md

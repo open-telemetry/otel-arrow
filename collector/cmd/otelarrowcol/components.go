@@ -18,7 +18,6 @@ import (
 	basicauthextension "github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension"
 	pprofextension "github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension"
 	concurrentbatchprocessor "github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor"
-	experimentprocessor "github.com/open-telemetry/otel-arrow/collector/processor/experimentprocessor"
 	obfuscationprocessor "github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor"
 	otelarrowreceiver "github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver"
 	filereceiver "github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver"
@@ -59,7 +58,6 @@ func components() (otelcol.Factories, error) {
 
 	factories.Processors, err = processor.MakeFactoryMap(
 		concurrentbatchprocessor.NewFactory(),
-		experimentprocessor.NewFactory(),
 		obfuscationprocessor.NewFactory(),
 	)
 	if err != nil {
