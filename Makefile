@@ -99,10 +99,6 @@ endif
 	$(MAKE) multimod-prerelease
 	git add .
 	git commit -m "multimode changes $(RELEASE_CANDIDATE)"
-	# regenerate files
-	$(MAKE) gotidy
-	git add .
-	git commit -m "go mod tidy $(RELEASE_CANDIDATE)"
 	# ensure a clean branch (that was a test--gotidy should be idempotent and should not change the working dir again)
 	git diff -s --exit-code || (echo "local repository not clean"; exit 1)
 	git add .
