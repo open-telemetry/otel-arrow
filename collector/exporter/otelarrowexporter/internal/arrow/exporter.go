@@ -350,7 +350,7 @@ func waitForWrite(ctx context.Context, errCh <-chan error, down <-chan struct{})
 	select {
 	case <-ctx.Done():
 		// This caller's context timed out.
-		return ctx.Err()
+		return status.Errorf(codes.Canceled, "send wait: %v", ctx.Err())
 	case <-down:
 		return ErrStreamRestarting
 	case err := <-errCh:

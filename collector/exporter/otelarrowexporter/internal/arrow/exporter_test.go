@@ -6,7 +6,6 @@ package arrow
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -280,7 +279,10 @@ func TestArrowExporterTimeout(t *testing.T) {
 			sent, err := tc.exporter.SendAndWait(ctx, twoTraces)
 			require.True(t, sent)
 			require.Error(t, err)
-			require.True(t, errors.Is(err, context.Canceled))
+
+			stat, is := status.FromError(err)
+			require.True(t, is, "is a gRPC status")
+			require.Equal(t, codes.Canceled, stat.Code())
 
 			// Repeat the request, will get immediate timeout.
 			sent, err = tc.exporter.SendAndWait(ctx, twoTraces)
@@ -415,7 +417,10 @@ func TestArrowExporterConnectTimeout(t *testing.T) {
 			}()
 			_, err := tc.exporter.SendAndWait(ctx, twoTraces)
 			require.Error(t, err)
-			require.True(t, errors.Is(err, context.Canceled))
+
+			stat, is := status.FromError(err)
+			require.True(t, is, "is a gRPC status error: %v", err)
+			require.Equal(t, codes.Canceled, stat.Code())
 
 			require.NoError(t, tc.exporter.Shutdown(bg))
 		})
@@ -498,7 +503,10 @@ func TestArrowExporterStreamRace(t *testing.T) {
 			// This blocks until the cancelation.
 			_, err := tc.exporter.SendAndWait(callctx, twoTraces)
 			require.Error(t, err)
-			require.True(t, errors.Is(err, context.Canceled))
+
+			stat, is := status.FromError(err)
+			require.True(t, is, "is a gRPC status error: %v", err)
+			require.Equal(t, codes.Canceled, stat.Code())
 		}()
 	}
 
