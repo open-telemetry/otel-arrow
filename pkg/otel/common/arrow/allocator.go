@@ -54,6 +54,10 @@ var limitRegexp = regexp.MustCompile(`memory limit exceeded: requested (\d+) out
 // the code below.  The formatting uses a "%v" which means we lose the
 // error wrapping facility that would let us easily extract the
 // object.  Therefore, we use a regexp to unpack memory limit errors.
+//
+// TODO: https://github.com/apache/arrow/pull/41989 has fixed the
+// upstream Arrow library, when Arrow v17 is released we can simplify
+// this function to unwrap an error vs parse the message.
 func NewLimitErrorFromError(err error) (error, bool) {
 	matches := limitRegexp.FindStringSubmatch(err.Error())
 	if len(matches) != 4 {

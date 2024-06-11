@@ -16,3 +16,4 @@ module-sets:
       - github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor
       - github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor
       - github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver
+      - github.com/open-telemetry/otel-arrow/collector/test
