@@ -608,14 +608,13 @@ func (r *receiverStream) recvOne(streamCtx context.Context, serverStream anyStre
 	}
 	flight.numAcquired = prevAcquiredBytes
 
-	err, data, numItems, uncompSize := r.consumeBatch(ac, req)
+	data, numItems, uncompSize, err := r.consumeBatch(ac, req)
 
 	if err != nil {
 		if errors.Is(err, arrowRecord.ErrConsumerMemoryLimit) {
 			return status.Errorf(codes.ResourceExhausted, "otel-arrow decode: %v", err)
-		} else {
-			return status.Errorf(codes.Internal, "otel-arrow decode: %v", err)
 		}
+		return status.Errorf(codes.Internal, "otel-arrow decode: %v", err)
 	}
 
 	flight.uncompSize = uncompSize
@@ -750,17 +749,17 @@ func (r *receiverStream) srvSendLoop(ctx context.Context, serverStream anyStream
 // consumeBatch applies the batch to the Arrow Consumer, returns a
 // slice of pdata objects of the corresponding data type as `any`.
 // along with the number of items and true uncompressed size.
-func (r *Receiver) consumeBatch(arrowConsumer arrowRecord.ConsumerAPI, records *arrowpb.BatchArrowRecords) (retErr error, retData any, numItems int, uncompSize int64) {
+func (r *Receiver) consumeBatch(arrowConsumer arrowRecord.ConsumerAPI, records *arrowpb.BatchArrowRecords) (retData any, numItems int, uncompSize int64, retErr error) {
 
 	payloads := records.GetArrowPayloads()
 	if len(payloads) == 0 {
-		return nil, nil, 0, 0
+		return nil, 0, 0, nil
 	}
 
 	switch payloads[0].Type {
 	case arrowpb.ArrowPayloadType_UNIVARIATE_METRICS:
 		if r.Metrics() == nil {
-			return status.Error(codes.Unimplemented, "metrics service not available"), nil, 0, 0
+			return nil, 0, 0, status.Error(codes.Unimplemented, "metrics service not available")
 		}
 		var sizer pmetric.ProtoMarshaler
 
@@ -776,7 +775,7 @@ func (r *Receiver) consumeBatch(arrowConsumer arrowRecord.ConsumerAPI, records *
 
 	case arrowpb.ArrowPayloadType_LOGS:
 		if r.Logs() == nil {
-			return status.Error(codes.Unimplemented, "logs service not available"), nil, 0, 0
+			return nil, 0, 0, status.Error(codes.Unimplemented, "logs service not available")
 		}
 		var sizer plog.ProtoMarshaler
 
@@ -792,7 +791,7 @@ func (r *Receiver) consumeBatch(arrowConsumer arrowRecord.ConsumerAPI, records *
 
 	case arrowpb.ArrowPayloadType_SPANS:
 		if r.Traces() == nil {
-			return status.Error(codes.Unimplemented, "traces service not available"), nil, 0, 0
+			return nil, 0, 0, status.Error(codes.Unimplemented, "traces service not available")
 		}
 		var sizer ptrace.ProtoMarshaler
 
@@ -810,7 +809,7 @@ func (r *Receiver) consumeBatch(arrowConsumer arrowRecord.ConsumerAPI, records *
 		retErr = ErrUnrecognizedPayload
 	}
 
-	return retErr, retData, numItems, uncompSize
+	return retData, numItems, uncompSize, retErr
 }
 
 // consumeData invokes the next pipeline consumer for a received batch of data.

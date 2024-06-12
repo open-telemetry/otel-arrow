@@ -95,21 +95,21 @@ func (r *otelArrowReceiver) startGRPCServer(cfg configgrpc.ServerConfig, _ compo
 	return nil
 }
 
-func (r *otelArrowReceiver) startProtocolServers(host component.Host) error {
+func (r *otelArrowReceiver) startProtocolServers(ctx context.Context, host component.Host) error {
 	var err error
 	var serverOpts []grpc.ServerOption
 
 	if r.netReporter != nil {
 		serverOpts = append(serverOpts, grpc.StatsHandler(r.netReporter.Handler()))
 	}
-	r.serverGRPC, err = r.cfg.GRPC.ToServer(context.Background(), host, r.settings.TelemetrySettings, serverOpts...)
+	r.serverGRPC, err = r.cfg.GRPC.ToServer(ctx, host, r.settings.TelemetrySettings, serverOpts...)
 	if err != nil {
 		return err
 	}
 
 	var authServer auth.Server
 	if r.cfg.GRPC.Auth != nil {
-		authServer, err = r.cfg.GRPC.Auth.GetServerAuthenticator(host.GetExtensions())
+		authServer, err = r.cfg.GRPC.Auth.GetServerAuthenticatorContext(ctx, host.GetExtensions())
 		if err != nil {
 			return err
 		}
@@ -160,8 +160,8 @@ func (r *otelArrowReceiver) startProtocolServers(host component.Host) error {
 
 // Start runs the trace receiver on the gRPC server. Currently
 // it also enables the metrics receiver too.
-func (r *otelArrowReceiver) Start(_ context.Context, host component.Host) error {
-	return r.startProtocolServers(host)
+func (r *otelArrowReceiver) Start(ctx context.Context, host component.Host) error {
+	return r.startProtocolServers(ctx, host)
 }
 
 // Shutdown is a method to turn off receiving.
