@@ -135,7 +135,7 @@ func makeRecvMetrics(prefix string, meter metric.Meter, major bool) (recv, recvW
 }
 
 // NewExporterNetworkReporter creates a new NetworkReporter configured for an exporter.
-func NewExporterNetworkReporter(settings exporter.CreateSettings) (*NetworkReporter, error) {
+func NewExporterNetworkReporter(settings exporter.Settings) (*NetworkReporter, error) {
 	level := settings.TelemetrySettings.MetricsLevel
 
 	if level <= configtelemetry.LevelBasic {
@@ -170,7 +170,7 @@ func NewExporterNetworkReporter(settings exporter.CreateSettings) (*NetworkRepor
 }
 
 // NewReceiverNetworkReporter creates a new NetworkReporter configured for an exporter.
-func NewReceiverNetworkReporter(settings receiver.CreateSettings) (*NetworkReporter, error) {
+func NewReceiverNetworkReporter(settings receiver.Settings) (*NetworkReporter, error) {
 	level := settings.TelemetrySettings.MetricsLevel
 
 	if level <= configtelemetry.LevelBasic {

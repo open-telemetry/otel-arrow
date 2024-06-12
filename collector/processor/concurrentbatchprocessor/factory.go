@@ -49,7 +49,7 @@ func createDefaultConfig() component.Config {
 
 func createTraces(
 	_ context.Context,
-	set processor.CreateSettings,
+	set processor.Settings,
 	cfg component.Config,
 	nextConsumer consumer.Traces,
 ) (processor.Traces, error) {
@@ -58,7 +58,7 @@ func createTraces(
 
 func createMetrics(
 	_ context.Context,
-	set processor.CreateSettings,
+	set processor.Settings,
 	cfg component.Config,
 	nextConsumer consumer.Metrics,
 ) (processor.Metrics, error) {
@@ -67,7 +67,7 @@ func createMetrics(
 
 func createLogs(
 	_ context.Context,
-	set processor.CreateSettings,
+	set processor.Settings,
 	cfg component.Config,
 	nextConsumer consumer.Logs,
 ) (processor.Logs, error) {

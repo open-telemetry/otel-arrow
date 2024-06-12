@@ -277,38 +277,6 @@ func statusUnavailableFor(batchID int64, msg string) *arrowpb.BatchStatus {
 	}
 }
 
-func statusInvalidFor(batchID int64, msg string) *arrowpb.BatchStatus {
-	return &arrowpb.BatchStatus{
-		BatchId:       batchID,
-		StatusCode:    arrowpb.StatusCode_INVALID_ARGUMENT,
-		StatusMessage: msg,
-	}
-}
-
-func statusInternalFor(batchID int64, msg string) *arrowpb.BatchStatus {
-	return &arrowpb.BatchStatus{
-		BatchId:       batchID,
-		StatusCode:    arrowpb.StatusCode_INTERNAL,
-		StatusMessage: msg,
-	}
-}
-
-func statusExhaustedFor(batchID int64, msg string) *arrowpb.BatchStatus {
-	return &arrowpb.BatchStatus{
-		BatchId:       batchID,
-		StatusCode:    arrowpb.StatusCode_RESOURCE_EXHAUSTED,
-		StatusMessage: msg,
-	}
-}
-
-func statusUnauthenticatedFor(batchID int64, msg string) *arrowpb.BatchStatus {
-	return &arrowpb.BatchStatus{
-		BatchId:       batchID,
-		StatusCode:    arrowpb.StatusCode_INVALID_ARGUMENT,
-		StatusMessage: msg,
-	}
-}
-
 func (ctc *commonTestCase) newRealConsumer() arrowRecord.ConsumerAPI {
 	mock := arrowRecordMock.NewMockConsumerAPI(ctc.ctrl)
 	cons := arrowRecord.NewConsumer()
@@ -349,7 +317,7 @@ func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, bq 
 	for _, gf := range opts {
 		gf(&gsettings, &authServer)
 	}
-	rc := receiver.CreateSettings{
+	rc := receiver.Settings{
 		TelemetrySettings: ctc.telset,
 		BuildInfo:         component.NewDefaultBuildInfo(),
 	}
@@ -483,8 +451,7 @@ func TestBoundedQueueWithPdataHeaders(t *testing.T) {
 			ctc.putBatch(batch, nil)
 
 			if tt.rejected {
-				err := ctc.wait()
-				requireExhaustedStatus(t, err)
+				requireExhaustedStatus(t, ctc.wait())
 			} else {
 				data := <-ctc.consume
 				actualTD := data.Data.(ptrace.Traces)
@@ -493,8 +460,7 @@ func TestBoundedQueueWithPdataHeaders(t *testing.T) {
 				}, []json.Marshaler{
 					compareJSONTraces{actualTD},
 				})
-				err = ctc.cancelAndWait()
-				requireCanceledStatus(t, err)
+				requireCanceledStatus(t, ctc.cancelAndWait())
 			}
 		})
 	}

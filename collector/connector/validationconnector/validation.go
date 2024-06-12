@@ -168,7 +168,7 @@ func newValidation(cfg *Config, logger *zap.Logger) *validation {
 
 func createTracesToTraces(
 	ctx context.Context,
-	set connector.CreateSettings,
+	set connector.Settings,
 	cfg component.Config,
 	nextConsumer consumer.Traces,
 ) (connector.Traces, error) {
@@ -192,7 +192,7 @@ func createTracesToTraces(
 
 func createMetricsToMetrics(
 	ctx context.Context,
-	set connector.CreateSettings,
+	set connector.Settings,
 	cfg component.Config,
 	nextConsumer consumer.Metrics,
 ) (connector.Metrics, error) {
@@ -216,7 +216,7 @@ func createMetricsToMetrics(
 
 func createLogsToLogs(
 	ctx context.Context,
-	set connector.CreateSettings,
+	set connector.Settings,
 	cfg component.Config,
 	nextConsumer consumer.Logs,
 ) (connector.Logs, error) {

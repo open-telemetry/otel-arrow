@@ -21,7 +21,7 @@ const (
 )
 
 var (
-	processorTagKey          = ctxKey("processor")
+	processorTagKey = ctxKey("processor")
 )
 
 type trigger int
@@ -59,7 +59,7 @@ type batchProcessorTelemetry struct {
 	batchInFlightBytes metric.Int64UpDownCounter
 }
 
-func newBatchProcessorTelemetry(set processor.CreateSettings, currentMetadataCardinality func() int) (*batchProcessorTelemetry, error) {
+func newBatchProcessorTelemetry(set processor.Settings, currentMetadataCardinality func() int) (*batchProcessorTelemetry, error) {
 	exportCtx := context.WithValue(context.Background(), processorTagKey, set.ID.String())
 
 	bpt := &batchProcessorTelemetry{
