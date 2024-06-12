@@ -54,7 +54,6 @@ func newStreamTestCase(t *testing.T, pname PrioritizerName) *streamTestCase {
 	ctc.requestMetadataCall.AnyTimes().Return(nil, nil)
 
 	stream := newStream(producer, prio, ctc.telset, netstats.Noop{}, state[0])
-	stream.maxStreamLifetime = 10 * time.Second
 
 	fromTracesCall := producer.EXPECT().BatchArrowRecordsFromTraces(gomock.Any()).Times(0)
 	fromMetricsCall := producer.EXPECT().BatchArrowRecordsFromMetrics(gomock.Any()).Times(0)
@@ -144,7 +143,6 @@ func TestStreamNoMaxLifetime(t *testing.T) {
 		t.Run(string(pname), func(t *testing.T) {
 
 			tc := newStreamTestCase(t, pname)
-			tc.stream.maxStreamLifetime = 0
 
 			tc.fromTracesCall.Times(1).Return(oneBatch, nil)
 			tc.closeSendCall.Times(0)
