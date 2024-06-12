@@ -51,7 +51,7 @@ func createDefaultConfig() component.Config {
 
 func createMetricsProcessor(
 	ctx context.Context,
-	set processor.CreateSettings,
+	set processor.Settings,
 	cfg component.Config,
 	next consumer.Metrics,
 ) (processor.Metrics, error) {
@@ -77,7 +77,7 @@ func createMetricsProcessor(
 // createTracesProcessor creates an instance of obfuscation for processing traces
 func createTracesProcessor(
 	ctx context.Context,
-	set processor.CreateSettings,
+	set processor.Settings,
 	cfg component.Config,
 	next consumer.Traces,
 ) (processor.Traces, error) {
@@ -103,7 +103,7 @@ func createTracesProcessor(
 // createLogsProcessor creates an instance of obfuscation for processing logs.
 func createLogsProcessor(
 	ctx context.Context,
-	set processor.CreateSettings,
+	set processor.Settings,
 	cfg component.Config,
 	next consumer.Logs,
 ) (processor.Logs, error) {

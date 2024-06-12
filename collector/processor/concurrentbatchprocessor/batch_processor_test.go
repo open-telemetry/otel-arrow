@@ -358,7 +358,7 @@ func TestBatchProcessorUnbrokenParentContext(t *testing.T) {
 	bg, rootSp := tracer.Start(context.Background(), "test_start_parent")
 	rootSp.End()
 
-	createSet := exporter.CreateSettings{
+	createSet := exporter.Settings{
 		TelemetrySettings: component.TelemetrySettings{
 			TracerProvider: tp,
 			MeterProvider:  noopmetric.MeterProvider{},
@@ -433,7 +433,7 @@ func TestBatchProcessorUnbrokenParentContextMultiple(t *testing.T) {
 	bg, rootSp := tracer.Start(context.Background(), "test_start_parent")
 	rootSp.End()
 
-	createSet := exporter.CreateSettings{
+	createSet := exporter.Settings{
 		TelemetrySettings: component.TelemetrySettings{
 			TracerProvider: tp,
 			MeterProvider:  noopmetric.MeterProvider{},
@@ -616,7 +616,7 @@ func testBatchProcessorSentBySize(t *testing.T, tel testTelemetry) {
 	sendBatchSize := 20
 	cfg.SendBatchSize = uint32(sendBatchSize)
 	cfg.Timeout = 5 * time.Second
-	creationSet := tel.NewProcessorCreateSettings()
+	creationSet := tel.NewProcessorSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
 	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg)
 	require.NoError(t, err)
@@ -678,7 +678,7 @@ func testBatchProcessorSentBySizeWithMaxSize(t *testing.T, tel testTelemetry) {
 	cfg.SendBatchSize = uint32(sendBatchSize)
 	cfg.SendBatchMaxSize = uint32(sendBatchMaxSize)
 	cfg.Timeout = 5 * time.Second
-	creationSet := tel.NewProcessorCreateSettings()
+	creationSet := tel.NewProcessorSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
 	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg)
 	require.NoError(t, err)
@@ -877,7 +877,7 @@ func testBatchMetricProcessorBatchSize(t *testing.T, tel testTelemetry) {
 	dataPointsPerRequest := metricsPerRequest * dataPointsPerMetric
 	sink := new(consumertest.MetricsSink)
 
-	creationSet := tel.NewProcessorCreateSettings()
+	creationSet := tel.NewProcessorSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
 	batcher, err := newBatchMetricsProcessor(creationSet, sink, &cfg)
 	require.NoError(t, err)
@@ -1215,7 +1215,7 @@ func testBatchLogProcessorBatchSize(t *testing.T, tel testTelemetry) {
 	logsPerRequest := 5
 	sink := new(consumertest.LogsSink)
 
-	creationSet := tel.NewProcessorCreateSettings()
+	creationSet := tel.NewProcessorSettings()
 	creationSet.MetricsLevel = configtelemetry.LevelDetailed
 	batcher, err := newBatchLogsProcessor(creationSet, sink, &cfg)
 	require.NoError(t, err)

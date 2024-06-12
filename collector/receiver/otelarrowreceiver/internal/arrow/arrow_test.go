@@ -349,7 +349,7 @@ func (ctc *commonTestCase) start(newConsumer func() arrowRecord.ConsumerAPI, bq 
 	for _, gf := range opts {
 		gf(&gsettings, &authServer)
 	}
-	rc := receiver.CreateSettings{
+	rc := receiver.Settings{
 		TelemetrySettings: ctc.telset,
 		BuildInfo:         component.NewDefaultBuildInfo(),
 	}

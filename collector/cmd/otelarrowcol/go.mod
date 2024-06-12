@@ -25,16 +25,16 @@ require (
 	go.opentelemetry.io/collector/confmap/provider/httpprovider v0.102.1
 	go.opentelemetry.io/collector/confmap/provider/httpsprovider v0.102.1
 	go.opentelemetry.io/collector/confmap/provider/yamlprovider v0.102.1
-	go.opentelemetry.io/collector/connector v0.102.1
-	go.opentelemetry.io/collector/exporter v0.102.1
+	go.opentelemetry.io/collector/connector v0.102.2-0.20240612162315-964e3a95872e
+	go.opentelemetry.io/collector/exporter v0.102.2-0.20240612162315-964e3a95872e
 	go.opentelemetry.io/collector/exporter/debugexporter v0.102.1
 	go.opentelemetry.io/collector/exporter/otlphttpexporter v0.102.1
 	go.opentelemetry.io/collector/extension v0.102.1
 	go.opentelemetry.io/collector/otelcol v0.102.1
-	go.opentelemetry.io/collector/processor v0.102.1
-	go.opentelemetry.io/collector/receiver v0.102.1
+	go.opentelemetry.io/collector/processor v0.102.2-0.20240612162315-964e3a95872e
+	go.opentelemetry.io/collector/receiver v0.102.2-0.20240612162315-964e3a95872e
 	go.opentelemetry.io/collector/receiver/otlpreceiver v0.102.1
-	golang.org/x/sys v0.20.0
+	golang.org/x/sys v0.21.0
 )
 
 require (
@@ -96,7 +96,7 @@ require (
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
 	github.com/prometheus/client_golang v1.19.1 // indirect
 	github.com/prometheus/client_model v0.6.1 // indirect
-	github.com/prometheus/common v0.53.0 // indirect
+	github.com/prometheus/common v0.54.0 // indirect
 	github.com/prometheus/procfs v0.15.0 // indirect
 	github.com/rs/cors v1.10.1 // indirect
 	github.com/shirou/gopsutil/v3 v3.24.4 // indirect
@@ -165,7 +165,7 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20240520151616-dc85e6b867a5 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240520151616-dc85e6b867a5 // indirect
 	google.golang.org/grpc v1.64.0 // indirect
-	google.golang.org/protobuf v1.34.1 // indirect
+	google.golang.org/protobuf v1.34.2 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

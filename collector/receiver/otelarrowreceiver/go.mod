@@ -19,7 +19,7 @@ require (
 	go.opentelemetry.io/collector/consumer v0.102.1
 	go.opentelemetry.io/collector/extension/auth v0.102.1
 	go.opentelemetry.io/collector/pdata v1.9.0
-	go.opentelemetry.io/collector/receiver v0.102.1
+	go.opentelemetry.io/collector/receiver v0.102.2-0.20240612162315-964e3a95872e
 	go.opentelemetry.io/otel v1.27.0
 	go.opentelemetry.io/otel/metric v1.27.0
 	go.opentelemetry.io/otel/trace v1.27.0
@@ -29,7 +29,7 @@ require (
 	go.uber.org/zap v1.27.0
 	golang.org/x/net v0.25.0
 	google.golang.org/grpc v1.64.0
-	google.golang.org/protobuf v1.34.1
+	google.golang.org/protobuf v1.34.2
 )
 
 require (
@@ -69,7 +69,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/client_golang v1.19.1 // indirect
 	github.com/prometheus/client_model v0.6.1 // indirect
-	github.com/prometheus/common v0.53.0 // indirect
+	github.com/prometheus/common v0.54.0 // indirect
 	github.com/prometheus/procfs v0.15.0 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
@@ -77,7 +77,7 @@ require (
 	go.opentelemetry.io/collector/config/configcompression v1.9.0 // indirect
 	go.opentelemetry.io/collector/config/configopaque v1.9.0 // indirect
 	go.opentelemetry.io/collector/config/internal v0.102.1 // indirect
-	go.opentelemetry.io/collector/exporter v0.102.1 // indirect
+	go.opentelemetry.io/collector/exporter v0.102.2-0.20240612162315-964e3a95872e // indirect
 	go.opentelemetry.io/collector/extension v0.102.1 // indirect
 	go.opentelemetry.io/collector/featuregate v1.9.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.52.0 // indirect
@@ -87,7 +87,7 @@ require (
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
 	golang.org/x/mod v0.17.0 // indirect
 	golang.org/x/sync v0.7.0 // indirect
-	golang.org/x/sys v0.20.0 // indirect
+	golang.org/x/sys v0.21.0 // indirect
 	golang.org/x/text v0.15.0 // indirect
 	golang.org/x/tools v0.21.0 // indirect
 	golang.org/x/xerrors v0.0.0-20231012003039-104605ab7028 // indirect
