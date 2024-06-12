@@ -555,7 +555,7 @@ func (r *receiverStream) recvOne(streamCtx context.Context, serverStream anyStre
 	defer flight.recvDone(inflightCtx, &retErr)
 
 	// this span is a child of the inflight, covering the Arrow decode, Auth, etc.
-	_, span := r.tracer.Start(inflightCtx, "otel_arrow_stream_recv")
+	inflightCtx, span := r.tracer.Start(inflightCtx, "otel_arrow_stream_recv")
 	defer span.End()
 
 	if err != nil {

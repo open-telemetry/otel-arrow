@@ -32,12 +32,6 @@ import (
 
 // Stream is 1:1 with gRPC stream.
 type Stream struct {
-	// maxStreamLifetime is the max timeout before stream
-	// should be closed on the client side. This ensures a
-	// graceful shutdown before max_connection_age is reached
-	// on the server side.
-	maxStreamLifetime time.Duration
-
 	// producer is exclusive to the holder of the stream.
 	producer arrowRecord.ProducerAPI
 
@@ -257,8 +251,8 @@ func (s *Stream) write(ctx context.Context) (retErr error) {
 	hdrsEnc := hpack.NewEncoder(&hdrsBuf)
 
 	var timerCh <-chan time.Time
-	if s.maxStreamLifetime != 0 {
-		timer := time.NewTimer(s.maxStreamLifetime)
+	if s.workState.maxStreamLifetime != 0 {
+		timer := time.NewTimer(s.workState.maxStreamLifetime)
 		timerCh = timer.C
 		defer timer.Stop()
 	}
