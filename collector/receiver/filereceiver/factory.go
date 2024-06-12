@@ -25,7 +25,7 @@ func NewFactory() receiver.Factory {
 
 func createMetricsReceiver(
 	_ context.Context,
-	settings receiver.CreateSettings,
+	settings receiver.Settings,
 	cc component.Config,
 	consumer consumer.Metrics,
 ) (receiver.Metrics, error) {
@@ -44,7 +44,7 @@ func createMetricsReceiver(
 
 func createTracesReceiver(
 	_ context.Context,
-	settings receiver.CreateSettings,
+	settings receiver.Settings,
 	cc component.Config,
 	consumer consumer.Traces,
 ) (receiver.Traces, error) {
@@ -63,7 +63,7 @@ func createTracesReceiver(
 
 func createLogsReceiver(
 	_ context.Context,
-	settings receiver.CreateSettings,
+	settings receiver.Settings,
 	cc component.Config,
 	consumer consumer.Logs,
 ) (receiver.Logs, error) {

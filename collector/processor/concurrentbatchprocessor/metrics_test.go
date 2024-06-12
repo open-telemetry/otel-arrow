@@ -72,8 +72,8 @@ func setupTelemetry(t *testing.T) testTelemetry {
 	return telemetry
 }
 
-func (tt *testTelemetry) NewProcessorCreateSettings() processor.CreateSettings {
-	settings := processortest.NewNopCreateSettings()
+func (tt *testTelemetry) NewProcessorSettings() processor.Settings {
+	settings := processortest.NewNopSettings()
 	settings.MeterProvider = tt.meterProvider
 	settings.ID = component.NewID(component.MustNewType(metricTypeStr))
 

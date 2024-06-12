@@ -286,6 +286,7 @@ func TestArrowExporterTimeout(t *testing.T) {
 
 			// Repeat the request, will get immediate timeout.
 			sent, err = tc.exporter.SendAndWait(ctx, twoTraces)
+			require.False(t, sent)
 			stat, is = status.FromError(err)
 			require.True(t, is, "is a gRPC status error: %v", err)
 			require.Equal(t, "context done before send: context canceled", stat.Message())

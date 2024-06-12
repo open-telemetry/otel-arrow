@@ -16,7 +16,7 @@ func TestNewFactory(t *testing.T) {
 	f := NewFactory()
 	_, err := f.CreateMetricsReceiver(
 		context.Background(),
-		receivertest.NewNopCreateSettings(),
+		receivertest.NewNopSettings(),
 		f.CreateDefaultConfig(),
 		consumertest.NewNop(),
 	)
