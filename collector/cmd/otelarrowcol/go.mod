@@ -169,3 +169,21 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/open-telemetry/otel-arrow/collector/connector/validationconnector => ../../connector/validationconnector
+
+replace github.com/open-telemetry/otel-arrow => ../../..
+
+replace github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver => ../../receiver/filereceiver
+
+replace github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter => ../../exporter/otelarrowexporter
+
+replace github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor => ../../processor/concurrentbatchprocessor
+
+replace github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter => ../../exporter/fileexporter
+
+replace github.com/open-telemetry/otel-arrow/collector => ../..
+
+replace github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver => ../../receiver/otelarrowreceiver
+
+replace github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor => ../../processor/obfuscationprocessor
