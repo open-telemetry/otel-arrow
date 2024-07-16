@@ -22,7 +22,7 @@ dist:
   # Note: This should match the version of the core and contrib
   # collector components used below (e.g., the debugexporter and
   # otlphttpexporter versions below).
-  otelcol_version: 0.102.1
+  otelcol_version: 0.105.0
 
   # Project-internal use: Directory path required for the `make
   # genotelarrowcol`, which the Dockerfile also recognizes.
@@ -32,18 +32,20 @@ dist:
 
 exporters:
   # This is the core OpenTelemetry Protocol with Apache Arrow exporter
-  - gomod: github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter v0.24.0
-  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.102.1
-  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.102.1
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/otelarrowexporter v0.104.0
+
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.105.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.105.0
   - gomod: github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter v0.24.0
 
 receivers:
   # This is the core OpenTelemetry Protocol with Apache Arrow receiver
-  - gomod: github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver v0.24.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.104.0
+
   - gomod: github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver v0.24.0
   # Users wanting the OTLP/HTTP Receiver will use the otlp receiver.
   # Users wanting OTLP/gRPC may use the otelarrowreceiver.
-  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.102.1
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.105.0
 
 processors:
   - gomod: github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.24.0
@@ -53,6 +55,6 @@ connectors:
   - gomod: github.com/open-telemetry/otel-arrow/collector/connector/validationconnector v0.24.0
 
 extensions:
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.102.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.102.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.102.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.104.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.104.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.104.0
