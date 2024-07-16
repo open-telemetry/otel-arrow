@@ -20,7 +20,7 @@ package common
 import (
 	"math/rand"
 
-	"github.com/apache/arrow/go/v16/arrow"
+	"github.com/apache/arrow/go/v17/arrow"
 
 	"github.com/open-telemetry/otel-arrow/pkg/record_message"
 )

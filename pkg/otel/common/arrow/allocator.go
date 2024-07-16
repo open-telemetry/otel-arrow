@@ -15,11 +15,10 @@
 package arrow
 
 import (
+	"errors"
 	"fmt"
-	"regexp"
-	"strconv"
 
-	"github.com/apache/arrow/go/v16/arrow/memory"
+	"github.com/apache/arrow/go/v17/arrow/memory"
 )
 
 type LimitedAllocator struct {
@@ -45,34 +44,13 @@ type LimitError struct {
 
 var _ error = LimitError{}
 
-var limitRegexp = regexp.MustCompile(`memory limit exceeded: requested (\d+) out of (\d+) \(in-use=(\d+)\)`)
-
 // NewLimitErrorFromError extracts a formatted limit error.
-//
-// Note: the arrow/go package (as of v16) has a panic recovery
-// mechanism which formats the error object raised through panic in
-// the code below.  The formatting uses a "%v" which means we lose the
-// error wrapping facility that would let us easily extract the
-// object.  Therefore, we use a regexp to unpack memory limit errors.
-//
-// TODO: https://github.com/apache/arrow/pull/41989 has fixed the
-// upstream Arrow library, when Arrow v17 is released we can simplify
-// this function to unwrap an error vs parse the message.
 func NewLimitErrorFromError(err error) (error, bool) {
-	matches := limitRegexp.FindStringSubmatch(err.Error())
-	if len(matches) != 4 {
-		return err, false
+	var lerr LimitError
+	if errors.As(err, &lerr) {
+		return lerr, true
 	}
-
-	req, _ := strconv.ParseUint(matches[1], 10, 64)
-	lim, _ := strconv.ParseUint(matches[2], 10, 64)
-	inuse, _ := strconv.ParseUint(matches[3], 10, 64)
-
-	return LimitError{
-		Request: req,
-		Inuse:   inuse,
-		Limit:   lim,
-	}, true
+	return err, false
 }
 
 func (le LimitError) Error() string {
