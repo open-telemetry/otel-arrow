@@ -363,7 +363,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) (ibes []*record_mess
 				ipc.WithZstd(),
 			)
 			if err != nil {
-				return ibes, werror.Wrap(distinguishMemoryError(err))
+				return ibes, werror.Wrap(err)
 			}
 			sc.ipcReader = ipcReader
 		}
@@ -378,7 +378,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) (ibes []*record_mess
 		}
 
 		if err := sc.ipcReader.Err(); err != nil {
-			return ibes, werror.Wrap(distinguishMemoryError(err))
+			return ibes, werror.Wrap(err)
 		}
 	}
 
@@ -387,14 +387,6 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) (ibes []*record_mess
 	}
 
 	return ibes, nil
-}
-
-func distinguishMemoryError(err error) error {
-	limErr, ok := common.NewLimitErrorFromError(err)
-	if ok {
-		return limErr
-	}
-	return err
 }
 
 type runtimeChecker struct{}
