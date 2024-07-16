@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+- Update to OTel-Collector v0.105.0, which includes the OTel-Arrow components.
+- Remove the primary exporter/receiver components, update references and documentation. [#230](https://github.com/open-telemetry/otel-arrow/pull/230)
+- Update to Arrow v17. [#231](https://github.com/open-telemetry/otel-arrow/pull/231)
+
 ## [0.24.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.24.0) - 2024-06-05
 
 - Jitter is applied to once per process, not once per stream. [#199](https://github.com/open-telemetry/otel-arrow/pull/199)
