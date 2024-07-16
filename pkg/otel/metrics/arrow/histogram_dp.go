@@ -28,7 +28,7 @@ package arrow
 import (
 	"sort"
 
-	"github.com/apache/arrow/go/v16/arrow"
+	"github.com/apache/arrow/go/v17/arrow"
 
 	"errors"
 	"math"

@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/apache/arrow/go/v16/arrow/memory"
+	"github.com/apache/arrow/go/v17/arrow/memory"
 	"github.com/stretchr/testify/require"
 )
 
@@ -64,7 +64,7 @@ func TestLimitedAllocatorFormatted(t *testing.T) {
 		Limit:   10000,
 	}
 
-	unwrap, ok := NewLimitErrorFromError(fmt.Errorf("some sort of prefix %v some sort of suffix", expect))
+	unwrap, ok := NewLimitErrorFromError(fmt.Errorf("some sort of prefix %w some sort of suffix", expect))
 	require.Error(t, unwrap)
 	require.True(t, ok)
 	require.Equal(t, expect, unwrap)

@@ -22,8 +22,8 @@ import (
 	"log"
 	"math/rand"
 
-	"github.com/apache/arrow/go/v16/arrow/ipc"
-	"github.com/apache/arrow/go/v16/arrow/memory"
+	"github.com/apache/arrow/go/v17/arrow/ipc"
+	"github.com/apache/arrow/go/v17/arrow/memory"
 	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -363,7 +363,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) (ibes []*record_mess
 				ipc.WithZstd(),
 			)
 			if err != nil {
-				return ibes, werror.Wrap(distinguishMemoryError(err))
+				return ibes, werror.Wrap(err)
 			}
 			sc.ipcReader = ipcReader
 		}
@@ -378,7 +378,7 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) (ibes []*record_mess
 		}
 
 		if err := sc.ipcReader.Err(); err != nil {
-			return ibes, werror.Wrap(distinguishMemoryError(err))
+			return ibes, werror.Wrap(err)
 		}
 	}
 
@@ -387,14 +387,6 @@ func (c *Consumer) Consume(bar *colarspb.BatchArrowRecords) (ibes []*record_mess
 	}
 
 	return ibes, nil
-}
-
-func distinguishMemoryError(err error) error {
-	limErr, ok := common.NewLimitErrorFromError(err)
-	if ok {
-		return limErr
-	}
-	return err
 }
 
 type runtimeChecker struct{}
