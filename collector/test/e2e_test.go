@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter"
-	"github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/exporter/otelarrowexporter"
+	"github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver"
 	"github.com/open-telemetry/otel-arrow/collector/testutil"
 	"github.com/open-telemetry/otel-arrow/pkg/datagen"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/assert"
