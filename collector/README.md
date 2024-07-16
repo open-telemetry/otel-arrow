@@ -11,20 +11,8 @@ The primary components are:
 
 ## Building and distributing these components
 
-We are aware that building and distributing OpenTelemetry collectors
-is not a simple task and have prepared dedicated instructions for
-building and testing the components in this repository.
-
-[Instructions for building an OpenTelemetry Collector with support for
-OpenTelemetry Protocol with Apache Arrow.][BUILDING]
-
-After you have built a collector using one of the documented methods,
-see the [examples][EXAMPLES].
-
-[We would prefer to include these components in the OpenTelemetry
-Contrib Collector, because it is an officially maintained artifact.
-At this time, however, these components are new and the migration
-process will take some time to complete.][CONTRIBUTION]
+The exporter and receiver components are included in the official
+OpenTelemetry Collector-Contrib release images since v0.105.0.
 
 ## Components included in this repository
 
@@ -71,11 +59,6 @@ From the core collector repository:
 - [otelhttpexporter][UPSTREAMHTTPOTLP]:  Useful for debugging, sends standard OTLP over HTTP
 - [debugexporter][UPSTREAMDEBUG]:   Useful for debugging, prints OTLP data to the console
 
-Also, the build includes a synthetic telemetry data generator:
-
-- [generator][GENERATOR]: Produces synthetic telemetry data.
-
-
 [BUILDING]: ./BUILDING.md
 [EXPORTER]: ./exporter/otelarrowexporter/README.md
 [RECEIVER]: ./receiver/otelarrowreceiver/README.md
@@ -93,5 +76,4 @@ Also, the build includes a synthetic telemetry data generator:
 [PPROFEXT]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/pprofextension/README.md
 [UPSTREAMHTTPOTLP]: https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/otlphttpexporter/README.md
 [UPSTREAMDEBUG]: https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/debugexporter/README.md
-[GENERATOR]: https://github.com/lightstep/telemetry-generator/blob/main/README.md
 [EXAMPLES]: ./examples/README.md

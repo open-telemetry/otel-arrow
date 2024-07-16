@@ -9,8 +9,6 @@ module-sets:
       - github.com/open-telemetry/otel-arrow/collector
       - github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol
       - github.com/open-telemetry/otel-arrow/collector/examples/printer
-      - github.com/open-telemetry/otel-arrow/collector/exporter/otelarrowexporter
-      - github.com/open-telemetry/otel-arrow/collector/receiver/otelarrowreceiver
       - github.com/open-telemetry/otel-arrow/collector/connector/validationconnector
       - github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter
       - github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor

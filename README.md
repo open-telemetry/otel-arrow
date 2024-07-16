@@ -107,8 +107,8 @@ workloads.
 We are pleased to release two new collector components, presently
 housed in this this repository.
 
-- [OpenTelemetry Protocol with Apache Arrow Receiver](./collector/receiver/otelarrowreceiver/README.md)
-- [OpenTelemetry Protocol with Apache Arrow Exporter](./collector/exporter/otelarrowexporter/README.md)
+- [OpenTelemetry Protocol with Apache Arrow Receiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md)
+- [OpenTelemetry Protocol with Apache Arrow Exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md)
 
 We are working with the maintainers of the [OpenTelemetry
 Collector-Contrib](https://github.com/open-telemetry/opentelemetry-collector-contrib)

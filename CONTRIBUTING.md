@@ -25,8 +25,9 @@ definition and Golang libraries for producing and consuming streams of
 data in this format.
 
 Exporter and receiver components for the [OpenTelemetry
-Collector][OTCDOCS] were developed in parallel and are currently
-maintained in this repository.
+Collector][OTCDOCS] were developed in parallel, maintained in this
+repository through release v0.24.0, and now they are included in 
+release of the OpenTelemetry Collector-Contrib repository.
 
 - [Exporter][EXPORTER]: Send telemetry data using OpenTelemetry Protocol with Apache Arrow
 - [Receiver][RECEIVER]: Receive telemetry data using OpenTelemetry Protocol with Apache Arrow.
@@ -79,8 +80,8 @@ the easiest way to upgrade this repository is:
 [OTCDOCS]: https://opentelemetry.io/docs/collector/
 [OTCGH]: https://github.com/open-telemetry/opentelemetry-collector
 [OACGH]: https://github.com/open-telemetry/otel-arrow-collector
-[EXPORTER]: ./collector/exporter/otelarrowexporter/README.md
-[RECEIVER]: ./collector/receiver/otelarrowreceiver/README.md
+[EXPORTER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md
+[RECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md
 [DONATION]: https://github.com/open-telemetry/community/issues/1332
 [DEVPROCESS]: https://github.com/open-telemetry/otel-arrow-collector/issues/48
 [OTLPRECEIVER]: https://github.com/open-telemetry/opentelemetry-collector/receiver/otlpreceiver
