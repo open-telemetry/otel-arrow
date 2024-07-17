@@ -58,3 +58,13 @@ extensions:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.105.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.105.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.105.0
+
+
+replaces:
+  - github.com/open-telemetry/otel-arrow => ../../../
+  - github.com/open-telemetry/otel-arrow/collector => ../../
+  - github.com/open-telemetry/otel-arrow/collector/connector/validationconnector => ../../connector/validationconnector
+  - github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter => ../../exporter/fileexporter
+  - github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver => ../../receiver/filereceiver
+  - github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor => ../../processor/concurrentbatchprocessor
+  - github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor => ../../processor/obfuscationprocessor
