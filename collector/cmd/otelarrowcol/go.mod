@@ -7,11 +7,11 @@ go 1.21.0
 toolchain go1.22.5
 
 require (
-	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/otelarrowexporter v0.104.0
-	github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.104.0
-	github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.104.0
-	github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.104.0
-	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.104.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/otelarrowexporter v0.105.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.105.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.105.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.105.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.105.0
 	github.com/open-telemetry/otel-arrow/collector/connector/validationconnector v0.24.0
 	github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter v0.24.0
 	github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.24.0
