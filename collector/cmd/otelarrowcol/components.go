@@ -52,7 +52,7 @@ func components() (otelcol.Factories, error) {
 	}
 	factories.ReceiverModules = make(map[component.Type]string, len(factories.Receivers))
 	factories.ReceiverModules[otelarrowreceiver.NewFactory().Type()] = "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.105.0"
-	factories.ReceiverModules[filereceiver.NewFactory().Type()] = "github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver v0.24.0"
+	factories.ReceiverModules[filereceiver.NewFactory().Type()] = "github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver v0.25.0"
 	factories.ReceiverModules[otlpreceiver.NewFactory().Type()] = "go.opentelemetry.io/collector/receiver/otlpreceiver v0.105.0"
 
 	factories.Exporters, err = exporter.MakeFactoryMap(
@@ -68,7 +68,7 @@ func components() (otelcol.Factories, error) {
 	factories.ExporterModules[otelarrowexporter.NewFactory().Type()] = "github.com/open-telemetry/opentelemetry-collector-contrib/exporter/otelarrowexporter v0.105.0"
 	factories.ExporterModules[debugexporter.NewFactory().Type()] = "go.opentelemetry.io/collector/exporter/debugexporter v0.105.0"
 	factories.ExporterModules[otlphttpexporter.NewFactory().Type()] = "go.opentelemetry.io/collector/exporter/otlphttpexporter v0.105.0"
-	factories.ExporterModules[fileexporter.NewFactory().Type()] = "github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter v0.24.0"
+	factories.ExporterModules[fileexporter.NewFactory().Type()] = "github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter v0.25.0"
 
 	factories.Processors, err = processor.MakeFactoryMap(
 		concurrentbatchprocessor.NewFactory(),
@@ -78,8 +78,8 @@ func components() (otelcol.Factories, error) {
 		return otelcol.Factories{}, err
 	}
 	factories.ProcessorModules = make(map[component.Type]string, len(factories.Processors))
-	factories.ProcessorModules[concurrentbatchprocessor.NewFactory().Type()] = "github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.24.0"
-	factories.ProcessorModules[obfuscationprocessor.NewFactory().Type()] = "github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.24.0"
+	factories.ProcessorModules[concurrentbatchprocessor.NewFactory().Type()] = "github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.25.0"
+	factories.ProcessorModules[obfuscationprocessor.NewFactory().Type()] = "github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.25.0"
 
 	factories.Connectors, err = connector.MakeFactoryMap(
 		validationconnector.NewFactory(),
@@ -88,7 +88,7 @@ func components() (otelcol.Factories, error) {
 		return otelcol.Factories{}, err
 	}
 	factories.ConnectorModules = make(map[component.Type]string, len(factories.Connectors))
-	factories.ConnectorModules[validationconnector.NewFactory().Type()] = "github.com/open-telemetry/otel-arrow/collector/connector/validationconnector v0.24.0"
+	factories.ConnectorModules[validationconnector.NewFactory().Type()] = "github.com/open-telemetry/otel-arrow/collector/connector/validationconnector v0.25.0"
 
 	return factories, nil
 }
