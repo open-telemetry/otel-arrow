@@ -154,6 +154,10 @@ func (ce countedError) Error() string {
 	return fmt.Sprintf("batch error: %s", ce.err.Error())
 }
 
+func (ce countedError) Unwrap() error {
+	return ce.err
+}
+
 var _ consumer.Traces = (*batchProcessor)(nil)
 var _ consumer.Metrics = (*batchProcessor)(nil)
 var _ consumer.Logs = (*batchProcessor)(nil)

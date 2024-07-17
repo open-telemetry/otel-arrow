@@ -37,6 +37,21 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
+type testError struct{}
+
+func (testError) Error() string {
+	return "test"
+}
+
+func TestErrorWrapping(t *testing.T) {
+	e := countedError{
+		err: fmt.Errorf("oops: %w", testError{}),
+	}
+	require.Error(t, e)
+	require.Contains(t, e.Error(), "oops: test")
+	require.ErrorIs(t, e, testError{})
+}
+
 func TestProcessorShutdown(t *testing.T) {
 	factory := NewFactory()
 
@@ -1696,4 +1711,41 @@ func TestBatchProcessorEmptyBatch(t *testing.T) {
 
 	wg.Wait()
 	require.NoError(t, batcher.Shutdown(context.Background()))
+}
+
+type errorSink struct {
+	err error
+}
+
+var _ consumer.Logs = errorSink{}
+
+func (es errorSink) Capabilities() consumer.Capabilities {
+	return consumer.Capabilities{}
+}
+
+func (es errorSink) ConsumeLogs(ctx context.Context, ld plog.Logs) error {
+	return es.err
+}
+
+func TestErrorPropagation(t *testing.T) {
+	for _, proto := range []error{
+		testError{},
+		fmt.Errorf("womp"),
+	} {
+		sink := errorSink{err: proto}
+
+		creationSet := processortest.NewNopSettings()
+		creationSet.MetricsLevel = configtelemetry.LevelDetailed
+		cfg := createDefaultConfig().(*Config)
+		batcher, err := newBatchLogsProcessor(creationSet, sink, cfg)
+
+		require.NoError(t, err)
+		require.NoError(t, batcher.Start(context.Background(), componenttest.NewNopHost()))
+
+		ld := testdata.GenerateLogs(1)
+		err = batcher.ConsumeLogs(context.Background(), ld)
+		assert.Error(t, err)
+		assert.ErrorIs(t, err, proto)
+		assert.Contains(t, err.Error(), proto.Error())
+	}
 }
