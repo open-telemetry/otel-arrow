@@ -8,6 +8,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## [0.25.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.24.0) - 2024-07-17
+
 - Wrap concurrentbatchprocessor errors [#235](https://github.com/open-telemetry/otel-arrow/pull/235)
 - Update to OTel-Collector v0.105.0, which includes the OTel-Arrow components. [#233](https://github.com/open-telemetry/otel-arrow/pull/233)
 - Remove the primary exporter/receiver components, update references and documentation. [#230](https://github.com/open-telemetry/otel-arrow/pull/230)
