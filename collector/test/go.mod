@@ -5,8 +5,8 @@ go 1.22.2
 require (
 	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/otelarrowexporter v0.105.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.105.0
-	github.com/open-telemetry/otel-arrow v0.24.0
-	github.com/open-telemetry/otel-arrow/collector v0.24.0
+	github.com/open-telemetry/otel-arrow v0.25.0
+	github.com/open-telemetry/otel-arrow/collector v0.25.0
 	github.com/stretchr/testify v1.9.0
 	go.opentelemetry.io/collector/component v0.105.0
 	go.opentelemetry.io/collector/consumer v0.105.0
