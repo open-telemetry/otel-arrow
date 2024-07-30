@@ -170,7 +170,14 @@ func newBatchProcessor(set processor.Settings, cfg *Config, batchFunc func() bat
 		mks[i] = strings.ToLower(k)
 	}
 	sort.Strings(mks)
+
 	limitBytes := int64(cfg.MaxInFlightSizeMiB) << 20
+
+	tp := set.TelemetrySettings.TracerProvider
+	if tp == nil {
+	    tp = otel.GetTracerProvider()
+	}
+
 	bp := &batchProcessor{
 		logger: set.Logger,
 
@@ -183,7 +190,7 @@ func newBatchProcessor(set processor.Settings, cfg *Config, batchFunc func() bat
 		metadataLimit:    int(cfg.MetadataCardinalityLimit),
 		limitBytes:       limitBytes,
 		sem:              semaphore.NewWeighted(limitBytes),
-		tracer:           otel.GetTracerProvider(),
+		tracer:           tp,
 	}
 	if len(bp.metadataKeys) == 0 {
 		bp.batcher = &singleShardBatcher{batcher: bp.newShard(nil)}
