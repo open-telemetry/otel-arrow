@@ -9,7 +9,8 @@ The differences in this component, relative to that component are:
    until the request returns with success or an error status code.
 2. Maximim in-flight-bytes setting.  This component measures the
    in-memory size of each request it admits to the pipeline and
-   otherwise stalls requests until they timeout.
+   otherwise stalls requests until they timeout.  This function is
+   disabled by `max_in_flight_size_mib: 0`.
 3. Unlimited concurrency: this component will start as many goroutines
    as needed to send batches through the pipeline.
    

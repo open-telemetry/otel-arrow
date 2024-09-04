@@ -74,8 +74,3 @@ func TestValidateConfig_InvalidTimeout(t *testing.T) {
 	}
 	assert.Error(t, cfg.Validate())
 }
-
-func TestValidateConfig_InvalidZero(t *testing.T) {
-	cfg := &Config{}
-	assert.Error(t, cfg.Validate())
-}

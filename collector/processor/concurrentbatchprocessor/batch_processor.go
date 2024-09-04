@@ -175,7 +175,7 @@ func newBatchProcessor(set processor.Settings, cfg *Config, batchFunc func() bat
 
 	tp := set.TelemetrySettings.TracerProvider
 	if tp == nil {
-	    tp = otel.GetTracerProvider()
+		tp = otel.GetTracerProvider()
 	}
 
 	bp := &batchProcessor{
@@ -189,9 +189,13 @@ func newBatchProcessor(set processor.Settings, cfg *Config, batchFunc func() bat
 		metadataKeys:     mks,
 		metadataLimit:    int(cfg.MetadataCardinalityLimit),
 		limitBytes:       limitBytes,
-		sem:              semaphore.NewWeighted(limitBytes),
 		tracer:           tp,
 	}
+
+	if limitBytes != 0 {
+		bp.sem = semaphore.NewWeighted(limitBytes)
+	}
+
 	if len(bp.metadataKeys) == 0 {
 		bp.batcher = &singleShardBatcher{batcher: bp.newShard(nil)}
 	} else {
@@ -385,7 +389,7 @@ func (b *shard) sendItems(trigger trigger) {
 			parent = contexts[0]
 			parent, parentSpan = b.tracer.Tracer("otel").Start(parent, "concurrent_batch_processor/export")
 		} else {
-		        spans := parentSpans(contexts)
+			spans := parentSpans(contexts)
 
 			links := make([]trace.Link, len(spans))
 			for i, span := range spans {
@@ -454,7 +458,10 @@ func allSame(x []context.Context) bool {
 }
 
 func (bp *batchProcessor) countAcquire(ctx context.Context, bytes int64) error {
-	err := bp.sem.Acquire(ctx, bytes)
+	var err error
+	if bp.sem != nil {
+		err = bp.sem.Acquire(ctx, bytes)
+	}
 	if err == nil && bp.telemetry.batchInFlightBytes != nil {
 		bp.telemetry.batchInFlightBytes.Add(ctx, bytes, bp.telemetry.processorAttrOption)
 	}
@@ -465,7 +472,9 @@ func (bp *batchProcessor) countRelease(bytes int64) {
 	if bp.telemetry.batchInFlightBytes != nil {
 		bp.telemetry.batchInFlightBytes.Add(context.Background(), -bytes, bp.telemetry.processorAttrOption)
 	}
-	bp.sem.Release(bytes)
+	if bp.sem != nil {
+		bp.sem.Release(bytes)
+	}
 }
 
 func (b *shard) consumeAndWait(ctx context.Context, data any) error {
