@@ -373,6 +373,7 @@ func (b *shard) sendItems(trigger trigger) {
 		before := time.Now()
 		var err error
 
+		var parentSpan trace.Span
 		var parent context.Context
 		isSingleCtx := allSame(contexts)
 
@@ -382,13 +383,30 @@ func (b *shard) sendItems(trigger trigger) {
 		// because batch items can be incoming from multiple receivers.
 		if isSingleCtx {
 			parent = contexts[0]
+			parent, parentSpan = b.tracer.Tracer("otel").Start(parent, "concurrent_batch_processor/export")
 		} else {
-			var sp trace.Span
-			links := buildLinks(contexts)
-			parent, sp = b.tracer.Tracer("otel").Start(b.exportCtx, "concurrent_batch_processor/export", trace.WithLinks(links...))
-			sp.End()
+		        spans := parentSpans(contexts)
+
+			links := make([]trace.Link, len(spans))
+			for i, span := range spans {
+				links[i] = trace.Link{SpanContext: span.SpanContext()}
+			}
+			parent, parentSpan = b.tracer.Tracer("otel").Start(b.exportCtx, "concurrent_batch_processor/export", trace.WithLinks(links...))
+
+			// Note: linking in the opposite direction.
+			// This could be inferred by the trace
+			// backend, but this adds helpful information
+			// in cases where sampling may break links.
+			// See https://github.com/open-telemetry/opentelemetry-specification/issues/1877
+			for _, span := range spans {
+				span.AddLink(trace.Link{SpanContext: parentSpan.SpanContext()})
+			}
 		}
 		err = b.batch.export(parent, req)
+		// Note: call End() before returning to caller contexts, otherwise
+		// trace-based tests will not recognize unfinished spans when the test
+		// terminates.
+		parentSpan.End()
 
 		latency := time.Since(before)
 		for i := range waiters {
@@ -407,8 +425,8 @@ func (b *shard) sendItems(trigger trigger) {
 	b.totalSent = numItemsAfter
 }
 
-func buildLinks(contexts []context.Context) []trace.Link {
-	var links []trace.Link
+func parentSpans(contexts []context.Context) []trace.Span {
+	var spans []trace.Span
 	unique := make(map[context.Context]bool)
 	for i := range contexts {
 		_, ok := unique[contexts[i]]
@@ -418,11 +436,10 @@ func buildLinks(contexts []context.Context) []trace.Link {
 
 		unique[contexts[i]] = true
 
-		link := trace.Link{SpanContext: trace.SpanContextFromContext(contexts[i])}
-		links = append(links, link)
+		spans = append(spans, trace.SpanFromContext(contexts[i]))
 	}
 
-	return links
+	return spans
 }
 
 // helper function to check if a slice of contexts contains more than one unique context.
