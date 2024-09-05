@@ -9,7 +9,7 @@ import (
 	"os"
 
 	"github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter/internal/metadata"
-	"github.com/open-telemetry/otel-arrow/collector/sharedcomponent"
+	"github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter/sharedcomponent"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/config/configretry"
 	"go.opentelemetry.io/collector/consumer"
