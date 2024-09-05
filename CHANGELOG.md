@@ -10,7 +10,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - Concurrent batch processor: tracing improvements. [#238](https://github.com/open-telemetry/otel-arrow/pull/238), [#241](https://github.com/open-telemetry/otel-arrow/pull/241)
 - Concurrent batch processor: support disabling in-flight limits. [#243](https://github.com/open-telemetry/otel-arrow/pull/243)
-- Remove collector packages now included in collector-contrib/internal/otelarrow. [#245](https://github.com/open-telemetry/otel-arrow/pull/245)
+- Update to latest OTel-Collector & OTel-Go dependencies.  Remove collector packages now included in collector-contrib/internal/otelarrow. [#245](https://github.com/open-telemetry/otel-arrow/pull/245)
 
 ## [0.25.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.24.0) - 2024-07-17
 
