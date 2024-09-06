@@ -17,7 +17,7 @@ dist:
 
   # Note: this version number is replaced to match the current release using `sed`
   # during the release process, see ../../../RELEASING.md.
-  version: 0.26.0
+  version: 0.25.0
 
   # Note: This should match the version of the core and contrib
   # collector components used below (e.g., the debugexporter and
@@ -36,23 +36,23 @@ exporters:
 
   - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.108.1
   - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.108.1
-  - gomod: github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter v0.26.0
+  - gomod: github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter v0.25.0
 
 receivers:
   # This is the core OpenTelemetry Protocol with Apache Arrow receiver
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.108.0
 
-  - gomod: github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver v0.26.0
+  - gomod: github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver v0.25.0
   # Users wanting the OTLP/HTTP Receiver will use the otlp receiver.
   # Users wanting OTLP/gRPC may use the otelarrowreceiver.
   - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.108.1
 
 processors:
-  - gomod: github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.26.0
-  - gomod: github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.26.0
+  - gomod: github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.25.0
+  - gomod: github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.25.0
 
 connectors:
-  - gomod: github.com/open-telemetry/otel-arrow/collector/connector/validationconnector v0.26.0
+  - gomod: github.com/open-telemetry/otel-arrow/collector/connector/validationconnector v0.25.0
 
 extensions:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.108.0
