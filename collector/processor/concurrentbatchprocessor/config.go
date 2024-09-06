@@ -45,9 +45,10 @@ type Config struct {
 	// combination of MetadataKeys.
 	MetadataCardinalityLimit uint32 `mapstructure:"metadata_cardinality_limit"`
 
-	// MaxInFlightSizeMiB limits the number of bytes in queue waiting to be
-	// processed by the senders.  If zero, this functionality is disabled.
-	MaxInFlightSizeMiB uint32 `mapstructure:"max_in_flight_size_mib"`
+	// deprecatedMaxInFlightSizeMiB is deprecated.  This functionality has
+	// been eliminated, the OTel-Arrow receiver admission control
+	// is recommended.
+	deprecatedMaxInFlightSizeMiB uint32 `mapstructure:"max_in_flight_size_mib"`
 }
 
 var _ component.Config = (*Config)(nil)

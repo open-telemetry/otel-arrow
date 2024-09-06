@@ -18,7 +18,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
-	"golang.org/x/sync/semaphore"
 
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
@@ -69,10 +68,6 @@ type batchProcessor struct {
 
 	//  batcher will be either *singletonBatcher or *multiBatcher
 	batcher batcher
-
-	// in-flight bytes limit mechanism
-	limitBytes int64
-	sem        *semaphore.Weighted
 
 	tracer trace.TracerProvider
 }
@@ -171,8 +166,6 @@ func newBatchProcessor(set processor.Settings, cfg *Config, batchFunc func() bat
 	}
 	sort.Strings(mks)
 
-	limitBytes := int64(cfg.MaxInFlightSizeMiB) << 20
-
 	tp := set.TelemetrySettings.TracerProvider
 	if tp == nil {
 		tp = otel.GetTracerProvider()
@@ -188,12 +181,7 @@ func newBatchProcessor(set processor.Settings, cfg *Config, batchFunc func() bat
 		shutdownC:        make(chan struct{}, 1),
 		metadataKeys:     mks,
 		metadataLimit:    int(cfg.MetadataCardinalityLimit),
-		limitBytes:       limitBytes,
 		tracer:           tp,
-	}
-
-	if limitBytes != 0 {
-		bp.sem = semaphore.NewWeighted(limitBytes)
 	}
 
 	if len(bp.metadataKeys) == 0 {
@@ -459,9 +447,6 @@ func allSame(x []context.Context) bool {
 
 func (bp *batchProcessor) countAcquire(ctx context.Context, bytes int64) error {
 	var err error
-	if bp.sem != nil {
-		err = bp.sem.Acquire(ctx, bytes)
-	}
 	if err == nil && bp.telemetry.batchInFlightBytes != nil {
 		bp.telemetry.batchInFlightBytes.Add(ctx, bytes, bp.telemetry.processorAttrOption)
 	}
@@ -471,9 +456,6 @@ func (bp *batchProcessor) countAcquire(ctx context.Context, bytes int64) error {
 func (bp *batchProcessor) countRelease(bytes int64) {
 	if bp.telemetry.batchInFlightBytes != nil {
 		bp.telemetry.batchInFlightBytes.Add(context.Background(), -bytes, bp.telemetry.processorAttrOption)
-	}
-	if bp.sem != nil {
-		bp.sem.Release(bytes)
 	}
 }
 
@@ -501,10 +483,6 @@ func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 		count:      itemCount,
 	}
 	bytes := int64(b.batch.sizeBytes(data))
-
-	if bytes > b.processor.limitBytes {
-		return fmt.Errorf("request size exceeds max-in-flight bytes: %d", bytes)
-	}
 
 	err := b.processor.countAcquire(ctx, bytes)
 	if err != nil {

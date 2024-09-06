@@ -19,9 +19,6 @@ const (
 	defaultSendBatchSize = uint32(8192)
 	defaultTimeout       = 200 * time.Millisecond
 
-	// default inflight bytes is 32 MiB
-	defaultMaxInFlightSizeMiB = 32
-
 	// defaultMetadataCardinalityLimit should be set to the number
 	// of metadata configurations the user expects to submit to
 	// the collector.
@@ -42,7 +39,6 @@ func createDefaultConfig() component.Config {
 	return &Config{
 		SendBatchSize:            defaultSendBatchSize,
 		Timeout:                  defaultTimeout,
-		MaxInFlightSizeMiB:       defaultMaxInFlightSizeMiB,
 		MetadataCardinalityLimit: defaultMetadataCardinalityLimit,
 	}
 }
