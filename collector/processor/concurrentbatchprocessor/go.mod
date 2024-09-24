@@ -16,7 +16,6 @@ require (
 	go.opentelemetry.io/collector/pdata v1.16.0
 	go.opentelemetry.io/collector/pdata/testdata v0.110.0
 	go.opentelemetry.io/collector/processor v0.110.0
-	go.opentelemetry.io/collector/processor/batchprocessor v0.110.0
 	go.opentelemetry.io/otel v1.30.0
 	go.opentelemetry.io/otel/metric v1.30.0
 	go.opentelemetry.io/otel/sdk v1.30.0
