@@ -49,12 +49,7 @@ type Config struct {
 	// return success as soon as the data item has been accepted
 	// into a pending batch.  When set, the return will be
 	// unconditional success, not determined by the actual outcome.
-	EarlyReturn bool
-
-	// MaxRequests limits the number of simultaneous exports,
-	// computed across shards in case MetadataKeys are configured.
-	// The 0 value implies unlimited concurrency.
-	MaxConcurrency uint32
+	EarlyReturn bool `mapstructure:"early_return"`
 }
 
 var _ component.Config = (*Config)(nil)
