@@ -13,12 +13,11 @@ import (
 	"sync"
 	"time"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
-	"go.uber.org/multierr"
 	"go.uber.org/zap"
 
+	"github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor/internal/metadata"
 	"go.opentelemetry.io/collector/client"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
@@ -29,10 +28,8 @@ import (
 	"go.opentelemetry.io/collector/processor"
 )
 
-var (
-	// errTooManyBatchers is returned when the MetadataCardinalityLimit has been reached.
-	errTooManyBatchers = consumererror.NewPermanent(errors.New("too many batcher metadata-value combinations"))
-)
+// errTooManyBatchers is returned when the MetadataCardinalityLimit has been reached.
+var errTooManyBatchers = consumererror.NewPermanent(errors.New("too many batcher metadata-value combinations"))
 
 // batch_processor is a component that accepts spans and metrics, places them
 // into batches and sends downstream.
@@ -66,13 +63,16 @@ type batchProcessor struct {
 
 	telemetry *batchProcessorTelemetry
 
-	//  batcher will be either *singletonBatcher or *multiBatcher
+	// batcher will be either *singletonBatcher or *multiBatcher
 	batcher batcher
 
-	tracer trace.TracerProvider
+	// tracer is the configured tracer
+	tracer trace.Tracer
 }
 
+// batcher represents a single-shard or multi-shard batching process.
 type batcher interface {
+	start(ctx context.Context) error
 	consume(ctx context.Context, data any) error
 	currentMetadataCardinality() int
 }
@@ -99,31 +99,37 @@ type shard struct {
 	// underlying data types.
 	batch batch
 
+	// pending describes the contributors to the current batch.
 	pending []pendingItem
 
-	totalSent int
-
-	tracer trace.TracerProvider
+	// totalSent counts the number of items processed by the
+	// shard in its lifetime.
+	totalSent uint64
 }
 
+// pendingItem is stored parallel to a pending batch and records
+// how many items the waiter submitted, used to ensure the correct
+// response count is returned to each waiter.
 type pendingItem struct {
 	parentCtx context.Context
 	numItems  int
-	respCh    chan error
+	respCh    chan countedError
 }
 
+// dataItem is exchanged between the waiter and the batching process
+// includes the pendingItem and its data.
 type dataItem struct {
-	parentCtx  context.Context
-	data       any
-	responseCh chan error
-	count      int
+	data any
+	pendingItem
 }
 
 // batch is an interface generalizing the individual signal types.
 type batch interface {
 	// export the current batch
 	export(ctx context.Context, req any) error
-	splitBatch(ctx context.Context, sendBatchMaxSize int, returnBytes bool) (sentBatchSize int, req any)
+
+	// splitBatch returns a full request built from pending items.
+	splitBatch(ctx context.Context, sendBatchMaxSize int) (sentBatchSize int, req any)
 
 	// itemCount returns the size of the current batch
 	itemCount() int
@@ -131,7 +137,8 @@ type batch interface {
 	// add item to the current batch
 	add(item any)
 
-	sizeBytes(data any) int
+	// sizeBytes counts the OTLP encoding size of the batch
+	sizeBytes(item any) int
 }
 
 // countedError is useful when a producer adds items that are split
@@ -165,12 +172,6 @@ func newBatchProcessor(set processor.Settings, cfg *Config, batchFunc func() bat
 		mks[i] = strings.ToLower(k)
 	}
 	sort.Strings(mks)
-
-	tp := set.TelemetrySettings.TracerProvider
-	if tp == nil {
-		tp = otel.GetTracerProvider()
-	}
-
 	bp := &batchProcessor{
 		logger: set.Logger,
 
@@ -181,15 +182,14 @@ func newBatchProcessor(set processor.Settings, cfg *Config, batchFunc func() bat
 		shutdownC:        make(chan struct{}, 1),
 		metadataKeys:     mks,
 		metadataLimit:    int(cfg.MetadataCardinalityLimit),
-		tracer:           tp,
+		tracer:           set.TelemetrySettings.TracerProvider.Tracer(metadata.ScopeName),
 	}
 
+	asb := anyShardBatcher{processor: bp}
 	if len(bp.metadataKeys) == 0 {
-		bp.batcher = &singleShardBatcher{batcher: bp.newShard(nil)}
+		bp.batcher = &singleShardBatcher{anyShardBatcher: asb}
 	} else {
-		bp.batcher = &multiShardBatcher{
-			batchProcessor: bp,
-		}
+		bp.batcher = &multiShardBatcher{anyShardBatcher: asb}
 	}
 
 	bpt, err := newBatchProcessorTelemetry(set, bp.batcher.currentMetadataCardinality)
@@ -199,6 +199,11 @@ func newBatchProcessor(set processor.Settings, cfg *Config, batchFunc func() bat
 	bp.telemetry = bpt
 
 	return bp, nil
+}
+
+// anyShardBatcher contains common code for single and multi-shard batchers.
+type anyShardBatcher struct {
+	processor *batchProcessor
 }
 
 // newShard gets or creates a batcher corresponding with attrs.
@@ -211,11 +216,7 @@ func (bp *batchProcessor) newShard(md map[string][]string) *shard {
 		newItem:   make(chan dataItem, runtime.NumCPU()),
 		exportCtx: exportCtx,
 		batch:     bp.batchFunc(),
-		tracer:    bp.tracer,
 	}
-
-	b.processor.goroutines.Add(1)
-	go b.start()
 	return b
 }
 
@@ -224,8 +225,8 @@ func (bp *batchProcessor) Capabilities() consumer.Capabilities {
 }
 
 // Start is invoked during service startup.
-func (bp *batchProcessor) Start(context.Context, component.Host) error {
-	return nil
+func (bp *batchProcessor) Start(ctx context.Context, _ component.Host) error {
+	return bp.batcher.start(ctx)
 }
 
 // Shutdown is invoked during service shutdown.
@@ -238,6 +239,11 @@ func (bp *batchProcessor) Shutdown(context.Context) error {
 }
 
 func (b *shard) start() {
+	b.processor.goroutines.Add(1)
+	go b.startLoop()
+}
+
+func (b *shard) startLoop() {
 	defer b.processor.goroutines.Done()
 
 	// timerCh ensures we only block when there is a
@@ -263,7 +269,7 @@ func (b *shard) start() {
 			if b.batch.itemCount() > 0 {
 				// TODO: Set a timeout on sendTraces or
 				// make it cancellable using the context that Shutdown gets as a parameter
-				b.sendItems(triggerShutdown)
+				b.sendItems(triggerTimeout)
 			}
 			return
 		case item := <-b.newItem:
@@ -289,7 +295,7 @@ func (b *shard) processItem(item dataItem) {
 	b.pending = append(b.pending, pendingItem{
 		parentCtx: item.parentCtx,
 		numItems:  totalItems,
-		respCh:    item.responseCh,
+		respCh:    item.respCh,
 	})
 
 	b.flushItems()
@@ -297,7 +303,6 @@ func (b *shard) processItem(item dataItem) {
 
 func (b *shard) flushItems() {
 	sent := false
-
 	for b.batch.itemCount() > 0 && (!b.hasTimer() || b.batch.itemCount() >= b.processor.sendBatchSize) {
 		b.sendItems(triggerBatchSize)
 		sent = true
@@ -326,31 +331,33 @@ func (b *shard) resetTimer() {
 }
 
 func (b *shard) sendItems(trigger trigger) {
-	sent, req := b.batch.splitBatch(b.exportCtx, b.processor.sendBatchMaxSize, b.processor.telemetry.detailed)
-	bytes := int64(b.batch.sizeBytes(req))
+	sent, req := b.batch.splitBatch(b.exportCtx, b.processor.sendBatchMaxSize)
 
-	var waiters []chan error
-	var countItems []int
-	var contexts []context.Context
+	var thisBatch []pendingTuple
 
 	numItemsBefore := b.totalSent
-	numItemsAfter := b.totalSent + sent
+	numItemsAfter := b.totalSent + uint64(sent)
 
 	// The current batch can contain items from several different producers. Ensure each producer gets a response back.
 	for len(b.pending) > 0 && numItemsBefore < numItemsAfter {
-		// Waiter only had some items in the current batch
-		if numItemsBefore+b.pending[0].numItems > numItemsAfter {
-			partialSent := numItemsAfter - numItemsBefore
+		if numItemsBefore+uint64(b.pending[0].numItems) > numItemsAfter {
+			// Waiter only had some items in the current batch
+			partialSent := int(numItemsAfter - numItemsBefore)
+			numItemsBefore = numItemsAfter
 			b.pending[0].numItems -= partialSent
-			numItemsBefore += partialSent
-			waiters = append(waiters, b.pending[0].respCh)
-			contexts = append(contexts, b.pending[0].parentCtx)
-			countItems = append(countItems, partialSent)
-		} else { // waiter gets a complete response.
-			numItemsBefore += b.pending[0].numItems
-			waiters = append(waiters, b.pending[0].respCh)
-			contexts = append(contexts, b.pending[0].parentCtx)
-			countItems = append(countItems, b.pending[0].numItems)
+			thisBatch = append(thisBatch, pendingTuple{
+				waiter: b.pending[0].respCh,
+				count:  partialSent,
+				ctx:    b.pending[0].parentCtx,
+			})
+		} else {
+			// waiter gets a complete response.
+			numItemsBefore += uint64(b.pending[0].numItems)
+			thisBatch = append(thisBatch, pendingTuple{
+				waiter: b.pending[0].respCh,
+				count:  b.pending[0].numItems,
+				ctx:    b.pending[0].parentCtx,
+			})
 
 			// complete response sent so b.pending[0] can be popped from queue.
 			if len(b.pending) > 1 {
@@ -361,29 +368,29 @@ func (b *shard) sendItems(trigger trigger) {
 		}
 	}
 
+	b.totalSent = numItemsAfter
+
 	go func() {
-		before := time.Now()
 		var err error
 
 		var parentSpan trace.Span
 		var parent context.Context
-		isSingleCtx := allSame(contexts)
+		isSingleCtx := allSameContext(thisBatch)
 
-		// For SDK's we can reuse the parent context because there is
-		// only one possible parent. This is not the case
-		// for collector batchprocessors which must break the parent context
-		// because batch items can be incoming from multiple receivers.
+		// If incoming requests are sufficiently large, there
+		// will be one context, in which case no need to create a new
+		// root span.
 		if isSingleCtx {
-			parent = contexts[0]
-			parent, parentSpan = b.tracer.Tracer("otel").Start(parent, "concurrent_batch_processor/export")
+			parent = thisBatch[0].ctx
+			parent, parentSpan = b.processor.tracer.Start(parent, "batch_processor/export")
 		} else {
-			spans := parentSpans(contexts)
+			spans := parentSpans(thisBatch)
 
 			links := make([]trace.Link, len(spans))
 			for i, span := range spans {
 				links[i] = trace.Link{SpanContext: span.SpanContext()}
 			}
-			parent, parentSpan = b.tracer.Tracer("otel").Start(b.exportCtx, "concurrent_batch_processor/export", trace.WithLinks(links...))
+			parent, parentSpan = b.processor.tracer.Start(b.exportCtx, "batch_processor/export", trace.WithLinks(links...))
 
 			// Note: linking in the opposite direction.
 			// This could be inferred by the trace
@@ -400,67 +407,58 @@ func (b *shard) sendItems(trigger trigger) {
 		// terminates.
 		parentSpan.End()
 
-		latency := time.Since(before)
-		for i := range waiters {
-			count := countItems[i]
-			waiter := waiters[i]
-			waiter <- countedError{err: err, count: count}
+		for _, pending := range thisBatch {
+			pending.waiter <- countedError{err: err, count: pending.count}
 		}
 
 		if err != nil {
 			b.processor.logger.Warn("Sender failed", zap.Error(err))
 		} else {
-			b.processor.telemetry.record(latency, trigger, int64(sent), bytes)
+			// Note that bytes is only used by record() when level is detailed.
+			var bytes int64
+			if b.processor.telemetry.detailed {
+				bytes = int64(b.batch.sizeBytes(req))
+			}
+			b.processor.telemetry.record(trigger, int64(sent), bytes)
 		}
 	}()
-
-	b.totalSent = numItemsAfter
 }
 
-func parentSpans(contexts []context.Context) []trace.Span {
+func parentSpans(x []pendingTuple) []trace.Span {
 	var spans []trace.Span
 	unique := make(map[context.Context]bool)
-	for i := range contexts {
-		_, ok := unique[contexts[i]]
+	for i := range x {
+		_, ok := unique[x[i].ctx]
 		if ok {
 			continue
 		}
 
-		unique[contexts[i]] = true
+		unique[x[i].ctx] = true
 
-		spans = append(spans, trace.SpanFromContext(contexts[i]))
+		spans = append(spans, trace.SpanFromContext(x[i].ctx))
 	}
 
 	return spans
 }
 
-// helper function to check if a slice of contexts contains more than one unique context.
-// If the contexts are all the same then we can
-func allSame(x []context.Context) bool {
+type pendingTuple struct {
+	waiter chan countedError
+	count  int
+	ctx    context.Context
+}
+
+// allSameContext is a helper function to check if a slice of contexts
+// contains more than one unique context.
+func allSameContext(x []pendingTuple) bool {
 	for idx := range x[1:] {
-		if x[idx] != x[0] {
+		if x[idx].ctx != x[0].ctx {
 			return false
 		}
 	}
 	return true
 }
 
-func (bp *batchProcessor) countAcquire(ctx context.Context, bytes int64) error {
-	var err error
-	if err == nil && bp.telemetry.batchInFlightBytes != nil {
-		bp.telemetry.batchInFlightBytes.Add(ctx, bytes, bp.telemetry.processorAttrOption)
-	}
-	return err
-}
-
-func (bp *batchProcessor) countRelease(bytes int64) {
-	if bp.telemetry.batchInFlightBytes != nil {
-		bp.telemetry.batchInFlightBytes.Add(context.Background(), -bytes, bp.telemetry.processorAttrOption)
-	}
-}
-
 func (b *shard) consumeAndWait(ctx context.Context, data any) error {
-
 	var itemCount int
 	switch telem := data.(type) {
 	case ptrace.Traces:
@@ -475,43 +473,15 @@ func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 		return nil
 	}
 
-	respCh := make(chan error, 1)
+	respCh := make(chan countedError, 1)
 	item := dataItem{
-		parentCtx:  ctx,
-		data:       data,
-		responseCh: respCh,
-		count:      itemCount,
+		data: data,
+		pendingItem: pendingItem{
+			parentCtx: ctx,
+			respCh:    respCh,
+			numItems:  itemCount,
+		},
 	}
-	bytes := int64(b.batch.sizeBytes(data))
-
-	err := b.processor.countAcquire(ctx, bytes)
-	if err != nil {
-		return err
-	}
-
-	// The purpose of this function is to ensure semaphore
-	// releases all previously acquired bytes
-	defer func() {
-		if item.count == 0 {
-			b.processor.countRelease(bytes)
-			return
-		}
-		// context may have timed out before we received all
-		// responses. Start goroutine to wait and release
-		// all acquired bytes after the parent thread returns.
-		go func() {
-			for newErr := range respCh {
-				unwrap := newErr.(countedError)
-
-				item.count -= unwrap.count
-				if item.count != 0 {
-					continue
-				}
-				break
-			}
-			b.processor.countRelease(bytes)
-		}()
-	}()
 
 	select {
 	case <-ctx.Done():
@@ -519,24 +489,23 @@ func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 	case b.newItem <- item:
 	}
 
+	var err error
 	for {
 		select {
-		case newErr := <-respCh:
+		case cntErr := <-respCh:
 			// nil response might be wrapped as an error.
-			unwrap := newErr.(countedError)
-			if unwrap.err != nil {
-				err = multierr.Append(err, newErr)
+			if cntErr.err != nil {
+				err = errors.Join(err, cntErr)
 			}
 
-			item.count -= unwrap.count
-			if item.count != 0 {
+			item.numItems -= cntErr.count
+			if item.numItems != 0 {
 				continue
 			}
 
 			return err
 		case <-ctx.Done():
-			err = multierr.Append(err, ctx.Err())
-			return err
+			return errors.Join(err, ctx.Err())
 		}
 	}
 }
@@ -544,6 +513,7 @@ func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 // singleShardBatcher is used when metadataKeys is empty, to avoid the
 // additional lock and map operations used in multiBatcher.
 type singleShardBatcher struct {
+	anyShardBatcher
 	batcher *shard
 }
 
@@ -555,9 +525,15 @@ func (sb *singleShardBatcher) currentMetadataCardinality() int {
 	return 1
 }
 
+func (sb *singleShardBatcher) start(context.Context) error {
+	sb.batcher = sb.processor.newShard(nil)
+	sb.batcher.start()
+	return nil
+}
+
 // multiBatcher is used when metadataKeys is not empty.
 type multiShardBatcher struct {
-	*batchProcessor
+	anyShardBatcher
 	batchers sync.Map
 
 	// Guards the size and the storing logic to ensure no more than limit items are stored.
@@ -566,13 +542,17 @@ type multiShardBatcher struct {
 	size int
 }
 
-func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
+func (sb *multiShardBatcher) start(context.Context) error {
+	return nil
+}
+
+func (sb *multiShardBatcher) consume(ctx context.Context, data any) error {
 	// Get each metadata key value, form the corresponding
 	// attribute set for use as a map lookup key.
 	info := client.FromContext(ctx)
 	md := map[string][]string{}
 	var attrs []attribute.KeyValue
-	for _, k := range mb.metadataKeys {
+	for _, k := range sb.processor.metadataKeys {
 		// Lookup the value in the incoming metadata, copy it
 		// into the outgoing metadata, and create a unique
 		// value for the attributeSet.
@@ -586,35 +566,35 @@ func (mb *multiShardBatcher) consume(ctx context.Context, data any) error {
 	}
 	aset := attribute.NewSet(attrs...)
 
-	b, ok := mb.batchers.Load(aset)
+	b, ok := sb.batchers.Load(aset)
 	if !ok {
-		mb.lock.Lock()
-		if mb.metadataLimit != 0 && mb.size >= mb.metadataLimit {
-			mb.lock.Unlock()
+		sb.lock.Lock()
+		if sb.processor.metadataLimit != 0 && sb.size >= sb.processor.metadataLimit {
+			sb.lock.Unlock()
 			return errTooManyBatchers
 		}
 
 		// aset.ToSlice() returns the sorted, deduplicated,
 		// and name-downcased list of attributes.
 		var loaded bool
-		b, loaded = mb.batchers.LoadOrStore(aset, mb.newShard(md))
+		b, loaded = sb.batchers.LoadOrStore(aset, sb.processor.newShard(md))
+
 		if !loaded {
-			mb.size++
+			// This is a new shard
+			sb.size++
+			b.(*shard).start()
+
 		}
-		mb.lock.Unlock()
+		sb.lock.Unlock()
 	}
 
 	return b.(*shard).consumeAndWait(ctx, data)
 }
 
-func recordBatchError(err error) error {
-	return fmt.Errorf("Batch contained errors: %w", err)
-}
-
-func (mb *multiShardBatcher) currentMetadataCardinality() int {
-	mb.lock.Lock()
-	defer mb.lock.Unlock()
-	return mb.size
+func (sb *multiShardBatcher) currentMetadataCardinality() int {
+	sb.lock.Lock()
+	defer sb.lock.Unlock()
+	return sb.size
 }
 
 // ConsumeTraces implements TracesProcessor
@@ -647,12 +627,6 @@ func newBatchLogsProcessor(set processor.Settings, next consumer.Logs, cfg *Conf
 	return newBatchProcessor(set, cfg, func() batch { return newBatchLogs(next) })
 }
 
-func recoverError(retErr *error) {
-	if r := recover(); r != nil {
-		*retErr = fmt.Errorf("%v", r)
-	}
-}
-
 type batchTraces struct {
 	nextConsumer consumer.Traces
 	traceData    ptrace.Traces
@@ -681,13 +655,12 @@ func (bt *batchTraces) sizeBytes(data any) int {
 	return bt.sizer.TracesSize(data.(ptrace.Traces))
 }
 
-func (bt *batchTraces) export(ctx context.Context, req any) (retErr error) {
-	defer recoverError(&retErr)
+func (bt *batchTraces) export(ctx context.Context, req any) error {
 	td := req.(ptrace.Traces)
 	return bt.nextConsumer.ConsumeTraces(ctx, td)
 }
 
-func (bt *batchTraces) splitBatch(ctx context.Context, sendBatchMaxSize int, returnBytes bool) (int, any) {
+func (bt *batchTraces) splitBatch(_ context.Context, sendBatchMaxSize int) (int, any) {
 	var req ptrace.Traces
 	var sent int
 	if sendBatchMaxSize > 0 && bt.itemCount() > sendBatchMaxSize {
@@ -722,13 +695,12 @@ func (bm *batchMetrics) sizeBytes(data any) int {
 	return bm.sizer.MetricsSize(data.(pmetric.Metrics))
 }
 
-func (bm *batchMetrics) export(ctx context.Context, req any) (retErr error) {
-	defer recoverError(&retErr)
+func (bm *batchMetrics) export(ctx context.Context, req any) error {
 	md := req.(pmetric.Metrics)
 	return bm.nextConsumer.ConsumeMetrics(ctx, md)
 }
 
-func (bm *batchMetrics) splitBatch(ctx context.Context, sendBatchMaxSize int, returnBytes bool) (int, any) {
+func (bm *batchMetrics) splitBatch(_ context.Context, sendBatchMaxSize int) (int, any) {
 	var req pmetric.Metrics
 	var sent int
 	if sendBatchMaxSize > 0 && bm.dataPointCount > sendBatchMaxSize {
@@ -775,13 +747,12 @@ func (bl *batchLogs) sizeBytes(data any) int {
 	return bl.sizer.LogsSize(data.(plog.Logs))
 }
 
-func (bl *batchLogs) export(ctx context.Context, req any) (retErr error) {
-	defer recoverError(&retErr)
+func (bl *batchLogs) export(ctx context.Context, req any) error {
 	ld := req.(plog.Logs)
 	return bl.nextConsumer.ConsumeLogs(ctx, ld)
 }
 
-func (bl *batchLogs) splitBatch(ctx context.Context, sendBatchMaxSize int, returnBytes bool) (int, any) {
+func (bl *batchLogs) splitBatch(_ context.Context, sendBatchMaxSize int) (int, any) {
 	var req plog.Logs
 	var sent int
 
