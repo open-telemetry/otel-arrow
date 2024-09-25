@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -1752,6 +1753,97 @@ func TestErrorPropagation(t *testing.T) {
 		assert.Contains(t, err.Error(), proto.Error())
 
 		require.NoError(t, batcher.Shutdown(context.Background()))
+	}
+}
+
+// concurrencyTracesSink orchestrates a test in which the concurrency
+// limit is is repeatedly reached but never exceeded.  The consumers
+// are released when the limit is reached exactly.
+type concurrencyTracesSink struct {
+	*testing.T
+	context.CancelFunc
+	consumertest.TracesSink
+
+	lock sync.Mutex
+	conc int
+	cnt  int
+	grp  *sync.WaitGroup
+}
+
+func newConcurrencyTracesSink(ctx context.Context, cancel context.CancelFunc, t *testing.T, conc int) *concurrencyTracesSink {
+	cts := &concurrencyTracesSink{
+		T:          t,
+		CancelFunc: cancel,
+		conc:       conc,
+		grp:        &sync.WaitGroup{},
+	}
+	cts.grp.Add(1)
+	go func() {
+		for {
+			runtime.Gosched()
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			cts.lock.Lock()
+			if cts.cnt == cts.conc {
+				cts.grp.Done()
+				cts.grp = &sync.WaitGroup{}
+				cts.grp.Add(1)
+				cts.cnt = 0
+			}
+			cts.lock.Unlock()
+		}
+	}()
+	return cts
+}
+
+func (cts *concurrencyTracesSink) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
+	cts.lock.Lock()
+	cts.cnt++
+	grp := cts.grp
+	if cts.cnt > cts.conc {
+		cts.Fatal("unexpected concurrency -- already at limit")
+		cts.CancelFunc()
+	}
+	cts.lock.Unlock()
+	grp.Wait()
+	return cts.TracesSink.ConsumeTraces(ctx, td)
+}
+
+func TestBatchProcessorConcurrency(t *testing.T) {
+	for _, conc := range []int{1, 2, 4, 10} {
+		t.Run(fmt.Sprint(conc), func(t *testing.T) {
+			bg, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			sink := newConcurrencyTracesSink(bg, cancel, t, conc)
+			cfg := createDefaultConfig().(*Config)
+			cfg.MaxConcurrency = uint32(conc)
+			cfg.SendBatchSize = 100
+			cfg.Timeout = time.Minute
+			creationSet := processortest.NewNopSettings()
+			batcher, err := newBatchTracesProcessor(creationSet, sink, cfg)
+			require.NoError(t, err)
+			require.NoError(t, batcher.Start(bg, componenttest.NewNopHost()))
+
+			// requestCount has to be a multiple of concurrency for the
+			// concurrencyTracesSink mechanism, which releases requests when
+			// the maximum concurrent number is reached.
+			requestCount := 100 * conc
+			spansPerRequest := 100
+			var wg sync.WaitGroup
+			for requestNum := 0; requestNum < requestCount; requestNum++ {
+				td := testdata.GenerateTraces(spansPerRequest)
+				sendTraces(bg, t, batcher, &wg, td)
+			}
+
+			wg.Wait()
+			require.NoError(t, batcher.Shutdown(context.Background()))
+
+			require.Equal(t, requestCount*spansPerRequest, sink.SpanCount())
+		})
 	}
 }
 
