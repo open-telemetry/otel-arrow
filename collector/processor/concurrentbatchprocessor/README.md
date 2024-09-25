@@ -45,6 +45,9 @@ ignored as data will be sent immediately, subject to only `send_batch_max_size`.
   not empty, this setting limits the number of unique combinations of 
   metadata key values that will be processed over the lifetime of the
   process.
+- `early_return` (default = false): When enabled, this pipeline component
+  will return immediate success to the caller after enqueuing the item 
+  for eventual delivery.
 - `max_concurrency` (default = unlimited): Controls the maximum number
   of concurrent export calls made by this component.  This is enforced
   per batcher instance, as determined by `metadata_keys`.  When the value
