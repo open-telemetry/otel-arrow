@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+- Concurrent batch processor: synchronize with upstream; removes in-flight bytes metric, 
+  removes panic recovery as unnecessary divergence. [#251](https://github.com/open-telemetry/otel-arrow/pull/251)
+- Update collector dependencies to v0.110.0/v1.16.0; remove validation connector
+
 ## [0.26.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.26.0) - 2024-09-06
 
 - Concurrent batch processor: tracing improvements. [#238](https://github.com/open-telemetry/otel-arrow/pull/238), [#241](https://github.com/open-telemetry/otel-arrow/pull/241)
