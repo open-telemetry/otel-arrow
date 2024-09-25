@@ -8,6 +8,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+- Concurrent batch processor: concurrency limit for legacy behavior or otherwise. [#254](https://github.com/open-telemetry/otel-arrow/pull/254)
+
 ## [0.26.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.26.0) - 2024-09-06
 
 - Concurrent batch processor: tracing improvements. [#238](https://github.com/open-telemetry/otel-arrow/pull/238), [#241](https://github.com/open-telemetry/otel-arrow/pull/241)
