@@ -8,6 +8,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## [0.27.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.27.0) - 2024-09-25
+
 - Concurrent batch processor: concurrency limit for legacy behavior or otherwise. [#254](https://github.com/open-telemetry/otel-arrow/pull/254)
 - Concurrent batch processor: EarlyReturn legacy compat feature. [#253](https://github.com/open-telemetry/otel-arrow/pull/253)
 - Concurrent batch processor: Synchronize with upstream; removes in-flight bytes metric, 
