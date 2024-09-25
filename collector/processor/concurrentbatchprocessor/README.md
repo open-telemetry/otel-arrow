@@ -45,6 +45,10 @@ ignored as data will be sent immediately, subject to only `send_batch_max_size`.
   not empty, this setting limits the number of unique combinations of 
   metadata key values that will be processed over the lifetime of the
   process.
+- `max_concurrency` (default = unlimited): Controls the maximum number
+  of concurrent export calls made by this component.  This is enforced
+  per batcher instance, as determined by `metadata_keys`.  When the value
+  0 is configured, unlimited concurrency is allowed.
 
 See notes about metadata batching below.
 
@@ -114,3 +118,25 @@ metadata-key values.
 
 The number of batch processors currently in use is exported as the
 `otelcol_processor_batch_metadata_cardinality` metric.
+
+## Batching with error transmission
+
+The use of unlimited concurrency is recommended for this component.
+
+This component's legacy configuration had `max_concurrency` of 1 and
+`early_return` set true.  The use of `early_return` in the legacy
+configuration prevented error transmission through this component.
+
+When the exporterhelper `queue_sender` is disabled, which is also
+necessary for error transmission, the result combined with
+`max_concurrency` of 1 would be synchronous export behavior, meaning
+that a new batch could not be formed until the preceding batch
+completed its export.  Setting `max_concurrency` to 0 for unlimited
+concurrency is recommended because it works with all configurations of
+the exporterhelper.
+
+The use of unlimited concurrency should not be considered a risk,
+because the actions of this processor take place after the associated
+memory has been allocated.  Users are expected to implement memory
+limits using other means, possibly via the `memorylimiter` extension
+or another form of admission control.

@@ -44,6 +44,12 @@ type Config struct {
 	// batcher instances that will be created through a distinct
 	// combination of MetadataKeys.
 	MetadataCardinalityLimit uint32 `mapstructure:"metadata_cardinality_limit"`
+
+	// MaxConcurrency limits the number of concurrent export
+	// calls.  The default value, 0, indicates unlimited
+	// concurrency.  The value 1 (a legacy default), results in
+	// synchronous export behavior.
+	MaxConcurrency uint32 `mapstructure:"max_concurrency"`
 }
 
 var _ component.Config = (*Config)(nil)
