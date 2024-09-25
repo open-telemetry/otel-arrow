@@ -1754,3 +1754,58 @@ func TestErrorPropagation(t *testing.T) {
 		require.NoError(t, batcher.Shutdown(context.Background()))
 	}
 }
+
+func TestBatchProcessorEarlyReturn(t *testing.T) {
+	bg := context.Background()
+	sink := new(consumertest.TracesSink)
+	cfg := createDefaultConfig().(*Config)
+	cfg.EarlyReturn = true
+	cfg.Timeout = time.Minute
+	creationSet := processortest.NewNopSettings()
+	creationSet.MetricsLevel = configtelemetry.LevelDetailed
+	batcher, err := newBatchTracesProcessor(creationSet, sink, cfg)
+	require.NoError(t, err)
+
+	start := time.Now()
+	require.NoError(t, batcher.Start(bg, componenttest.NewNopHost()))
+
+	requestCount := 1000
+	spansPerRequest := 100
+	sentResourceSpans := ptrace.NewTraces().ResourceSpans()
+	var wg sync.WaitGroup
+	for requestNum := 0; requestNum < requestCount; requestNum++ {
+		td := testdata.GenerateTraces(spansPerRequest)
+		spans := td.ResourceSpans().At(0).ScopeSpans().At(0).Spans()
+		for spanIndex := 0; spanIndex < spansPerRequest; spanIndex++ {
+			spans.At(spanIndex).SetName(getTestSpanName(requestNum, spanIndex))
+		}
+		td.ResourceSpans().At(0).CopyTo(sentResourceSpans.AppendEmpty())
+		// Note: not using sendTraces()-- this test is synchronous.
+		require.NoError(t, batcher.ConsumeTraces(bg, td))
+	}
+
+	// This should take very little time.
+	require.Less(t, time.Since(start), cfg.Timeout/2)
+
+	// Shutdown, then wait for callers.  Note that Shutdown is not
+	// properly synchronized when EarlyReturn is true, so up to
+	// the capacity of the channel times spansPerRequest may go
+	// missing.
+	require.NoError(t, batcher.Shutdown(context.Background()))
+
+	wg.Wait()
+
+	// Despite the early return, we expect 100% completion because
+	// Shutdown flushes the nextItem channel and waits for pending exports.
+	require.LessOrEqual(t, requestCount*spansPerRequest, sink.SpanCount())
+	receivedTraces := sink.AllTraces()
+	spansReceivedByName := spansReceivedByName(receivedTraces)
+	for requestNum := 0; requestNum < requestCount; requestNum++ {
+		spans := sentResourceSpans.At(requestNum).ScopeSpans().At(0).Spans()
+		for spanIndex := 0; spanIndex < spansPerRequest; spanIndex++ {
+			require.EqualValues(t,
+				spans.At(spanIndex),
+				spansReceivedByName[getTestSpanName(requestNum, spanIndex)])
+		}
+	}
+}

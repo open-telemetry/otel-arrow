@@ -58,6 +58,9 @@ type batchProcessor struct {
 	// metadataLimit is the limiting size of the batchers map.
 	metadataLimit int
 
+	// earlyReturn is the value of Config.EarlyReturn.
+	earlyReturn bool
+
 	shutdownC  chan struct{}
 	goroutines sync.WaitGroup
 
@@ -182,6 +185,7 @@ func newBatchProcessor(set processor.Settings, cfg *Config, batchFunc func() bat
 		shutdownC:        make(chan struct{}, 1),
 		metadataKeys:     mks,
 		metadataLimit:    int(cfg.MetadataCardinalityLimit),
+		earlyReturn:      cfg.EarlyReturn,
 		tracer:           set.TelemetrySettings.TracerProvider.Tracer(metadata.ScopeName),
 	}
 
@@ -370,7 +374,10 @@ func (b *shard) sendItems(trigger trigger) {
 
 	b.totalSent = numItemsAfter
 
+	b.processor.goroutines.Add(1)
+
 	go func() {
+		defer b.processor.goroutines.Done()
 		var err error
 
 		var parentSpan trace.Span
@@ -487,6 +494,9 @@ func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	case b.newItem <- item:
+		if b.processor.earlyReturn {
+			return nil
+		}
 	}
 
 	var err error
