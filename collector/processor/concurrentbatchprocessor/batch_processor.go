@@ -372,12 +372,9 @@ func (b *shard) sendItems(trigger trigger) {
 				ctx:    b.pending[0].parentCtx,
 			})
 
-			// complete response sent so b.pending[0] can be popped from queue.
-			if len(b.pending) > 1 {
-				b.pending = b.pending[1:]
-			} else {
-				b.pending = []pendingItem{}
-			}
+			// Shift the pending array, to allow it to be re-used.
+			copy(b.pending[0:len(b.pending)-1], b.pending[1:])
+			b.pending = b.pending[:len(b.pending)-1]
 		}
 	}
 
