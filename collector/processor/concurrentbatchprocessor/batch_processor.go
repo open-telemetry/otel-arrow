@@ -116,12 +116,15 @@ type shard struct {
 }
 
 // pendingItem is stored parallel to a pending batch and records
-// how many items the waiter submitted, used to ensure the correct
-// response count is returned to each waiter.
+// how many items the waiter submitted, which is used to link
+// the incoming and outgoing traces.
 type pendingItem struct {
 	parentCtx context.Context
 	numItems  int
-	respCh    chan countedError
+
+	// respCh is non-nil when the caller is waiting for error
+	// transmission.
+	respCh chan countedError
 }
 
 // dataItem is exchanged between the waiter and the batching process
@@ -428,8 +431,15 @@ func (b *shard) sendItems(trigger trigger) {
 		// terminates.
 		parentSpan.End()
 
-		for _, pending := range thisBatch {
-			pending.waiter <- countedError{err: err, count: pending.count}
+		if !b.processor.earlyReturn {
+			for _, pending := range thisBatch {
+				select {
+				case pending.waiter <- countedError{err: err, count: pending.count}:
+					// OK! Caller received error and count.
+				case <-pending.ctx.Done():
+					// OK! Caller context was canceled.
+				}
+			}
 		}
 
 		if err != nil {
@@ -479,7 +489,7 @@ func allSameContext(x []pendingTuple) bool {
 	return true
 }
 
-func (b *shard) consumeAndWait(ctx context.Context, data any) error {
+func (b *shard) consumeBatch(ctx context.Context, data any) error {
 	var itemCount int
 	switch telem := data.(type) {
 	case ptrace.Traces:
@@ -494,7 +504,11 @@ func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 		return nil
 	}
 
-	respCh := make(chan countedError, 1)
+	var respCh chan countedError
+	if !b.processor.earlyReturn {
+		respCh = make(chan countedError, 1)
+	}
+
 	item := dataItem{
 		data: data,
 		pendingItem: pendingItem{
@@ -513,6 +527,10 @@ func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 		}
 	}
 
+	return b.waitForItems(ctx, item.numItems, respCh)
+}
+
+func (b *shard) waitForItems(ctx context.Context, numItems int, respCh chan countedError) error {
 	var err error
 	for {
 		select {
@@ -522,8 +540,8 @@ func (b *shard) consumeAndWait(ctx context.Context, data any) error {
 				err = errors.Join(err, cntErr)
 			}
 
-			item.numItems -= cntErr.count
-			if item.numItems != 0 {
+			numItems -= cntErr.count
+			if numItems != 0 {
 				continue
 			}
 
@@ -542,7 +560,7 @@ type singleShardBatcher struct {
 }
 
 func (sb *singleShardBatcher) consume(ctx context.Context, data any) error {
-	return sb.batcher.consumeAndWait(ctx, data)
+	return sb.batcher.consumeBatch(ctx, data)
 }
 
 func (sb *singleShardBatcher) currentMetadataCardinality() int {
@@ -612,7 +630,7 @@ func (sb *multiShardBatcher) consume(ctx context.Context, data any) error {
 		sb.lock.Unlock()
 	}
 
-	return b.(*shard).consumeAndWait(ctx, data)
+	return b.(*shard).consumeBatch(ctx, data)
 }
 
 func (sb *multiShardBatcher) currentMetadataCardinality() int {
