@@ -105,15 +105,11 @@ workloads.
 ### Project deliverables 
 
 We are pleased to release two new collector components, presently
-housed in this this repository.
+housed in [OpenTelemetry
+Collector-Contrib](https://github.com/open-telemetry/opentelemetry-collector-contrib):
 
 - [OpenTelemetry Protocol with Apache Arrow Receiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md)
 - [OpenTelemetry Protocol with Apache Arrow Exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md)
-
-We are working with the maintainers of the [OpenTelemetry
-Collector-Contrib](https://github.com/open-telemetry/opentelemetry-collector-contrib)
-to merge these components into that repository.  [See our tracking
-issue](https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/26491).
 
 The OpenTelemetry Protocol with Apache Arrow exporter and receiver components are drop-in compatible
 with the core collector's OTLP exporter and receiver components.
@@ -125,8 +121,8 @@ to standard OTLP in case either side does not recognize the protocol,
 so the upgrade should be painless.  The OpenTelemetry Protocol with Apache Arrow receiver serves
 both OpenTelemetry Protocol with Apache Arrow and OTLP on the standard port for OTLP gRPC (4317).
 
-See the [Exporter](collector/exporter/otelarrowexporter/README.md) and
-[Receiver](collector/receiver/otelarrowreceiver/README.md)
+See the [Exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md) and
+[Receiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md)
 documentation for details and sample configurations.
 
 ### Project documentation
