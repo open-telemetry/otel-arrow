@@ -3,7 +3,7 @@
 
 module-sets:
   beta:
-    version: v0.27.0
+    version: v0.28.0
     modules:
       - github.com/open-telemetry/otel-arrow
       - github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol
