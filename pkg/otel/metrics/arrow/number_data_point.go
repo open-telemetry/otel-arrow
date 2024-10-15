@@ -39,10 +39,10 @@ var (
 		{Name: constants.ID, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.DeltaEncoding)},
 		// The ID of the parent scope metric.
 		{Name: constants.ParentID, Type: arrow.PrimitiveTypes.Uint16},
-		{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
+		{Name: constants.StartTimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns, Nullable: true},
 		{Name: constants.TimeUnixNano, Type: arrow.FixedWidthTypes.Timestamp_ns},
-		{Name: constants.IntValue, Type: arrow.PrimitiveTypes.Int64},
-		{Name: constants.DoubleValue, Type: arrow.PrimitiveTypes.Float64},
+		{Name: constants.IntValue, Type: arrow.PrimitiveTypes.Int64, Nullable: true},
+		{Name: constants.DoubleValue, Type: arrow.PrimitiveTypes.Float64, Nullable: true},
 		{Name: constants.Flags, Type: arrow.PrimitiveTypes.Uint32, Metadata: schema.Metadata(schema.Optional)},
 	}, nil)
 )
