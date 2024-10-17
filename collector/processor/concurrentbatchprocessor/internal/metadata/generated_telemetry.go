@@ -15,15 +15,15 @@ import (
 
 // Deprecated: [v0.108.0] use LeveledMeter instead.
 func Meter(settings component.TelemetrySettings) metric.Meter {
-	return settings.MeterProvider.Meter("github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor")
+	return settings.MeterProvider.Meter("go.opentelemetry.io/collector/processor/batchprocessor")
 }
 
 func LeveledMeter(settings component.TelemetrySettings, level configtelemetry.Level) metric.Meter {
-	return settings.LeveledMeterProvider(level).Meter("github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor")
+	return settings.LeveledMeterProvider(level).Meter("go.opentelemetry.io/collector/processor/batchprocessor")
 }
 
 func Tracer(settings component.TelemetrySettings) trace.Tracer {
-	return settings.TracerProvider.Tracer("github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor")
+	return settings.TracerProvider.Tracer("go.opentelemetry.io/collector/processor/batchprocessor")
 }
 
 // TelemetryBuilder provides an interface for components to report telemetry
@@ -73,15 +73,13 @@ func NewTelemetryBuilder(settings component.TelemetrySettings, options ...Teleme
 	builder.ProcessorBatchBatchSendSize, err = builder.meters[configtelemetry.LevelBasic].Int64Histogram(
 		"otelcol_processor_batch_batch_send_size",
 		metric.WithDescription("Number of units in the batch"),
-		metric.WithUnit("{units}"),
-		metric.WithExplicitBucketBoundaries([]float64{10, 25, 50, 75, 100, 250, 500, 750, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000, 30000, 50000, 100000}...),
+		metric.WithUnit("{units}"), metric.WithExplicitBucketBoundaries([]float64{10, 25, 50, 75, 100, 250, 500, 750, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000, 30000, 50000, 100000}...),
 	)
 	errs = errors.Join(errs, err)
 	builder.ProcessorBatchBatchSendSizeBytes, err = builder.meters[configtelemetry.LevelDetailed].Int64Histogram(
 		"otelcol_processor_batch_batch_send_size_bytes",
 		metric.WithDescription("Number of bytes in batch that was sent"),
-		metric.WithUnit("By"),
-		metric.WithExplicitBucketBoundaries([]float64{10, 25, 50, 75, 100, 250, 500, 750, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000, 30000, 50000, 100000, 200000, 300000, 400000, 500000, 600000, 700000, 800000, 900000, 1e+06, 2e+06, 3e+06, 4e+06, 5e+06, 6e+06, 7e+06, 8e+06, 9e+06}...),
+		metric.WithUnit("By"), metric.WithExplicitBucketBoundaries([]float64{10, 25, 50, 75, 100, 250, 500, 750, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000, 30000, 50000, 100000, 200000, 300000, 400000, 500000, 600000, 700000, 800000, 900000, 1e+06, 2e+06, 3e+06, 4e+06, 5e+06, 6e+06, 7e+06, 8e+06, 9e+06}...),
 	)
 	errs = errors.Join(errs, err)
 	builder.ProcessorBatchBatchSizeTriggerSend, err = builder.meters[configtelemetry.LevelBasic].Int64Counter(
