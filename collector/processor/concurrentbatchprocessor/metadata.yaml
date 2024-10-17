@@ -1,4 +1,4 @@
-type: batch
+type: concurrentbatch
 github_project: open-telemetry/opentelemetry-collector
 
 status:

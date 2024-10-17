@@ -22,7 +22,7 @@ import (
 )
 
 func TestComponentFactoryType(t *testing.T) {
-	require.Equal(t, "batch", NewFactory().Type().String())
+	require.Equal(t, "concurrentbatch", NewFactory().Type().String())
 }
 
 func TestComponentConfigStruct(t *testing.T) {

@@ -76,7 +76,7 @@ func createTracesExporter(
 		exporterhelper.WithRetry(configretry.BackOffConfig{
 			Enabled: false,
 		}),
-		exporterhelper.WithQueue(exporterhelper.QueueSettings{
+		exporterhelper.WithQueue(exporterhelper.QueueConfig{
 			Enabled: false,
 		}),
 	)
@@ -109,7 +109,7 @@ func createMetricsExporter(
 		exporterhelper.WithRetry(configretry.BackOffConfig{
 			Enabled: false,
 		}),
-		exporterhelper.WithQueue(exporterhelper.QueueSettings{
+		exporterhelper.WithQueue(exporterhelper.QueueConfig{
 			Enabled: false,
 		}),
 	)
@@ -142,7 +142,7 @@ func createLogsExporter(
 		exporterhelper.WithRetry(configretry.BackOffConfig{
 			Enabled: false,
 		}),
-		exporterhelper.WithQueue(exporterhelper.QueueSettings{
+		exporterhelper.WithQueue(exporterhelper.QueueConfig{
 			Enabled: false,
 		}),
 	)

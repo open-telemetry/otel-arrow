@@ -7,8 +7,8 @@ import (
 )
 
 var (
-	Type      = component.MustNewType("batch")
-	ScopeName = "go.opentelemetry.io/collector/processor/batchprocessor"
+	Type      = component.MustNewType("concurrentbatch")
+	ScopeName = "github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor"
 )
 
 const (

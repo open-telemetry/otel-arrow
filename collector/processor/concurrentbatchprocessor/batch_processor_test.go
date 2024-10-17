@@ -152,7 +152,7 @@ func TestBatchProcessorUnbrokenParentContextSingle(t *testing.T) {
 
 	createSet.TelemetrySettings.TracerProvider = tp
 
-	opt := exporterhelper.WithQueue(exporterhelper.QueueSettings{
+	opt := exporterhelper.WithQueue(exporterhelper.QueueConfig{
 		Enabled: false,
 	})
 	next, err := exporterhelper.NewTracesExporter(bg, createSet, Config{}, func(context.Context, ptrace.Traces) error { return nil }, opt)
@@ -224,7 +224,7 @@ func TestBatchProcessorUnbrokenParentContextMultiple(t *testing.T) {
 		TelemetrySettings: componenttest.NewNopTelemetrySettings(),
 	}
 	createSet.TelemetrySettings.TracerProvider = tp
-	opt := exporterhelper.WithQueue(exporterhelper.QueueSettings{
+	opt := exporterhelper.WithQueue(exporterhelper.QueueConfig{
 		Enabled: false,
 	})
 	next, err := exporterhelper.NewTracesExporter(bg, createSet, Config{}, func(context.Context, ptrace.Traces) error { return nil }, opt)
