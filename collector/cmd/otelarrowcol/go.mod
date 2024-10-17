@@ -12,10 +12,10 @@ require (
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.111.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.111.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.111.0
-	github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter v0.28.0
-	github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.28.0
-	github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.28.0
-	github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver v0.28.0
+	github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter v0.29.0
+	github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.29.0
+	github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.29.0
+	github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver v0.29.0
 	go.opentelemetry.io/collector/component v0.111.0
 	go.opentelemetry.io/collector/confmap v1.17.0
 	go.opentelemetry.io/collector/confmap/provider/envprovider v0.111.0
@@ -92,7 +92,7 @@ require (
 	github.com/open-telemetry/opentelemetry-collector-contrib/internal/grpcutil v0.111.0 // indirect
 	github.com/open-telemetry/opentelemetry-collector-contrib/internal/otelarrow v0.111.0 // indirect
 	github.com/open-telemetry/opentelemetry-collector-contrib/internal/sharedcomponent v0.111.0 // indirect
-	github.com/open-telemetry/otel-arrow v0.27.0 // indirect
+	github.com/open-telemetry/otel-arrow v0.29.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
