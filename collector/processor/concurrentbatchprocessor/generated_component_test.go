@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/confmap/confmaptest"
@@ -22,7 +21,7 @@ import (
 )
 
 func TestComponentFactoryType(t *testing.T) {
-	require.Equal(t, "batch", NewFactory().Type().String())
+	require.Equal(t, "concurrentbatch", NewFactory().Type().String())
 }
 
 func TestComponentConfigStruct(t *testing.T) {
@@ -40,21 +39,21 @@ func TestComponentLifecycle(t *testing.T) {
 		{
 			name: "logs",
 			createFn: func(ctx context.Context, set processor.Settings, cfg component.Config) (component.Component, error) {
-				return factory.CreateLogsProcessor(ctx, set, cfg, consumertest.NewNop())
+				return factory.CreateLogs(ctx, set, cfg, consumertest.NewNop())
 			},
 		},
 
 		{
 			name: "metrics",
 			createFn: func(ctx context.Context, set processor.Settings, cfg component.Config) (component.Component, error) {
-				return factory.CreateMetricsProcessor(ctx, set, cfg, consumertest.NewNop())
+				return factory.CreateMetrics(ctx, set, cfg, consumertest.NewNop())
 			},
 		},
 
 		{
 			name: "traces",
 			createFn: func(ctx context.Context, set processor.Settings, cfg component.Config) (component.Component, error) {
-				return factory.CreateTracesProcessor(ctx, set, cfg, consumertest.NewNop())
+				return factory.CreateTraces(ctx, set, cfg, consumertest.NewNop())
 			},
 		},
 	}
