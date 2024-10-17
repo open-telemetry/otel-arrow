@@ -8,6 +8,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## [0.29.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.29.0) - 2024-10-17
+
+- Fix nullable setting in Arrow schema. [#264](https://github.com/open-telemetry/otel-arrow/pull/264)
+- Fix bucket count used in test histogram data. [#265](https://github.com/open-telemetry/otel-arrow/pull/265)
+- Update to v0.111.0 collector dependencies; concurrent batch processor component name fix. [#266](https://github.com/open-telemetry/otel-arrow/pull/266)
+
 ## [0.28.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.28.0) - 2024-10-09
 
 - Concurrent batch processor: deadlock introduced in #247 fixed. [#257](https://github.com/open-telemetry/otel-arrow/pull/257)
