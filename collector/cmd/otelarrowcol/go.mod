@@ -7,11 +7,11 @@ go 1.22.0
 toolchain go1.23.2
 
 require (
-	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/otelarrowexporter v0.112.0
-	github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.112.0
-	github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.112.0
-	github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.112.0
-	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.112.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/otelarrowexporter v0.113.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.113.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.113.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.113.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.113.0
 	github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter v0.29.0
 	github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.29.0
 	github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.29.0
@@ -89,10 +89,10 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/mostynb/go-grpc-compression v1.2.3 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/open-telemetry/opentelemetry-collector-contrib/internal/grpcutil v0.112.0 // indirect
-	github.com/open-telemetry/opentelemetry-collector-contrib/internal/otelarrow v0.112.0 // indirect
-	github.com/open-telemetry/opentelemetry-collector-contrib/internal/sharedcomponent v0.112.0 // indirect
-	github.com/open-telemetry/otel-arrow v0.28.0 // indirect
+	github.com/open-telemetry/opentelemetry-collector-contrib/internal/grpcutil v0.113.0 // indirect
+	github.com/open-telemetry/opentelemetry-collector-contrib/internal/otelarrow v0.113.0 // indirect
+	github.com/open-telemetry/opentelemetry-collector-contrib/internal/sharedcomponent v0.113.0 // indirect
+	github.com/open-telemetry/otel-arrow v0.29.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.21 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/power-devops/perfstat v0.0.0-20210106213030-5aafc221ea8c // indirect
@@ -105,7 +105,7 @@ require (
 	github.com/spf13/cobra v1.8.1 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/stretchr/testify v1.9.0 // indirect
-	github.com/tg123/go-htpasswd v1.2.2 // indirect
+	github.com/tg123/go-htpasswd v1.2.3 // indirect
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.3.5 // indirect

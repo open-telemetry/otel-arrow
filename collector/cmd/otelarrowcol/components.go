@@ -37,9 +37,9 @@ func components() (otelcol.Factories, error) {
 		return otelcol.Factories{}, err
 	}
 	factories.ExtensionModules = make(map[component.Type]string, len(factories.Extensions))
-	factories.ExtensionModules[headerssetterextension.NewFactory().Type()] = "github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.112.0"
-	factories.ExtensionModules[basicauthextension.NewFactory().Type()] = "github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.112.0"
-	factories.ExtensionModules[pprofextension.NewFactory().Type()] = "github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.112.0"
+	factories.ExtensionModules[headerssetterextension.NewFactory().Type()] = "github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.113.0"
+	factories.ExtensionModules[basicauthextension.NewFactory().Type()] = "github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.113.0"
+	factories.ExtensionModules[pprofextension.NewFactory().Type()] = "github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.113.0"
 
 	factories.Receivers, err = receiver.MakeFactoryMap(
 		otelarrowreceiver.NewFactory(),
@@ -50,7 +50,7 @@ func components() (otelcol.Factories, error) {
 		return otelcol.Factories{}, err
 	}
 	factories.ReceiverModules = make(map[component.Type]string, len(factories.Receivers))
-	factories.ReceiverModules[otelarrowreceiver.NewFactory().Type()] = "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.112.0"
+	factories.ReceiverModules[otelarrowreceiver.NewFactory().Type()] = "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.113.0"
 	factories.ReceiverModules[filereceiver.NewFactory().Type()] = "github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver v0.29.0"
 	factories.ReceiverModules[otlpreceiver.NewFactory().Type()] = "go.opentelemetry.io/collector/receiver/otlpreceiver v0.113.0"
 
@@ -64,7 +64,7 @@ func components() (otelcol.Factories, error) {
 		return otelcol.Factories{}, err
 	}
 	factories.ExporterModules = make(map[component.Type]string, len(factories.Exporters))
-	factories.ExporterModules[otelarrowexporter.NewFactory().Type()] = "github.com/open-telemetry/opentelemetry-collector-contrib/exporter/otelarrowexporter v0.112.0"
+	factories.ExporterModules[otelarrowexporter.NewFactory().Type()] = "github.com/open-telemetry/opentelemetry-collector-contrib/exporter/otelarrowexporter v0.113.0"
 	factories.ExporterModules[debugexporter.NewFactory().Type()] = "go.opentelemetry.io/collector/exporter/debugexporter v0.113.0"
 	factories.ExporterModules[otlphttpexporter.NewFactory().Type()] = "go.opentelemetry.io/collector/exporter/otlphttpexporter v0.113.0"
 	factories.ExporterModules[fileexporter.NewFactory().Type()] = "github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter v0.29.0"
