@@ -63,7 +63,7 @@ func createMetricsProcessor(
 		encryptAttributes: makeEncryptList(oCfg),
 		encryptAll:        oCfg.EncryptAll,
 	}
-	return processorhelper.NewMetricsProcessor(
+	return processorhelper.NewMetrics(
 		ctx,
 		set,
 		cfg,
@@ -89,7 +89,7 @@ func createTracesProcessor(
 		encryptAttributes: makeEncryptList(oCfg),
 		encryptAll:        oCfg.EncryptAll,
 	}
-	return processorhelper.NewTracesProcessor(
+	return processorhelper.NewTraces(
 		ctx,
 		set,
 		cfg,
@@ -115,7 +115,7 @@ func createLogsProcessor(
 		encryptAttributes: makeEncryptList(oCfg),
 		encryptAll:        oCfg.EncryptAll,
 	}
-	return processorhelper.NewLogsProcessor(
+	return processorhelper.NewLogs(
 		ctx,
 		set,
 		cfg,
