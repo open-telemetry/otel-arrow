@@ -8,6 +8,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## [0.30.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.29.0) - 2024-11-06
+
+- Update to v0.113.0 collector dependencies. [#269](https://github.com/open-telemetry/otel-arrow/pull/269)
+
 ## [0.29.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.29.0) - 2024-10-17
 
 - Fix nullable setting in Arrow schema. [#264](https://github.com/open-telemetry/otel-arrow/pull/264)
