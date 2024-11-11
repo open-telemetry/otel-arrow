@@ -14,6 +14,7 @@ import (
 	nooptrace "go.opentelemetry.io/otel/trace/noop"
 
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/config/configtelemetry"
 )
 
@@ -53,27 +54,21 @@ func TestProviders(t *testing.T) {
 
 	meter := Meter(set)
 	if m, ok := meter.(mockMeter); ok {
-		require.Equal(t, "go.opentelemetry.io/collector/processor/batchprocessor", m.name)
+		require.Equal(t, "github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor", m.name)
 	} else {
 		require.Fail(t, "returned Meter not mockMeter")
 	}
 
 	tracer := Tracer(set)
 	if m, ok := tracer.(mockTracer); ok {
-		require.Equal(t, "go.opentelemetry.io/collector/processor/batchprocessor", m.name)
+		require.Equal(t, "github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor", m.name)
 	} else {
 		require.Fail(t, "returned Meter not mockTracer")
 	}
 }
 
 func TestNewTelemetryBuilder(t *testing.T) {
-	set := component.TelemetrySettings{
-		LeveledMeterProvider: func(_ configtelemetry.Level) metric.MeterProvider {
-			return mockMeterProvider{}
-		},
-		MeterProvider:  mockMeterProvider{},
-		TracerProvider: mockTracerProvider{},
-	}
+	set := componenttest.NewNopTelemetrySettings()
 	applied := false
 	_, err := NewTelemetryBuilder(set, telemetryBuilderOptionFunc(func(b *TelemetryBuilder) {
 		applied = true

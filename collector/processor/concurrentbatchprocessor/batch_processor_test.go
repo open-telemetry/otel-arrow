@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor/internal/metadata"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -87,19 +88,19 @@ func TestProcessorShutdown(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		require.NotPanics(t, func() {
-			tProc, err := factory.CreateTracesProcessor(ctx, processorCreationSet, factory.CreateDefaultConfig(), consumertest.NewNop())
+			tProc, err := factory.CreateTraces(ctx, processorCreationSet, factory.CreateDefaultConfig(), consumertest.NewNop())
 			require.NoError(t, err)
 			_ = tProc.Shutdown(ctx)
 		})
 
 		require.NotPanics(t, func() {
-			mProc, err := factory.CreateMetricsProcessor(ctx, processorCreationSet, factory.CreateDefaultConfig(), consumertest.NewNop())
+			mProc, err := factory.CreateMetrics(ctx, processorCreationSet, factory.CreateDefaultConfig(), consumertest.NewNop())
 			require.NoError(t, err)
 			_ = mProc.Shutdown(ctx)
 		})
 
 		require.NotPanics(t, func() {
-			lProc, err := factory.CreateLogsProcessor(ctx, processorCreationSet, factory.CreateDefaultConfig(), consumertest.NewNop())
+			lProc, err := factory.CreateLogs(ctx, processorCreationSet, factory.CreateDefaultConfig(), consumertest.NewNop())
 			require.NoError(t, err)
 			_ = lProc.Shutdown(ctx)
 		})
@@ -113,17 +114,17 @@ func TestProcessorLifecycle(t *testing.T) {
 	processorCreationSet := processortest.NewNopSettings()
 
 	for i := 0; i < 5; i++ {
-		tProc, err := factory.CreateTracesProcessor(ctx, processorCreationSet, factory.CreateDefaultConfig(), consumertest.NewNop())
+		tProc, err := factory.CreateTraces(ctx, processorCreationSet, factory.CreateDefaultConfig(), consumertest.NewNop())
 		require.NoError(t, err)
 		require.NoError(t, tProc.Start(ctx, componenttest.NewNopHost()))
 		require.NoError(t, tProc.Shutdown(ctx))
 
-		mProc, err := factory.CreateMetricsProcessor(ctx, processorCreationSet, factory.CreateDefaultConfig(), consumertest.NewNop())
+		mProc, err := factory.CreateMetrics(ctx, processorCreationSet, factory.CreateDefaultConfig(), consumertest.NewNop())
 		require.NoError(t, err)
 		require.NoError(t, mProc.Start(ctx, componenttest.NewNopHost()))
 		require.NoError(t, mProc.Shutdown(ctx))
 
-		lProc, err := factory.CreateLogsProcessor(ctx, processorCreationSet, factory.CreateDefaultConfig(), consumertest.NewNop())
+		lProc, err := factory.CreateLogs(ctx, processorCreationSet, factory.CreateDefaultConfig(), consumertest.NewNop())
 		require.NoError(t, err)
 		require.NoError(t, lProc.Start(ctx, componenttest.NewNopHost()))
 		require.NoError(t, lProc.Shutdown(ctx))
@@ -152,7 +153,7 @@ func TestBatchProcessorUnbrokenParentContextSingle(t *testing.T) {
 
 	createSet.TelemetrySettings.TracerProvider = tp
 
-	opt := exporterhelper.WithQueue(exporterhelper.QueueSettings{
+	opt := exporterhelper.WithQueue(exporterhelper.QueueConfig{
 		Enabled: false,
 	})
 	next, err := exporterhelper.NewTracesExporter(bg, createSet, Config{}, func(context.Context, ptrace.Traces) error { return nil }, opt)
@@ -224,7 +225,7 @@ func TestBatchProcessorUnbrokenParentContextMultiple(t *testing.T) {
 		TelemetrySettings: componenttest.NewNopTelemetrySettings(),
 	}
 	createSet.TelemetrySettings.TracerProvider = tp
-	opt := exporterhelper.WithQueue(exporterhelper.QueueSettings{
+	opt := exporterhelper.WithQueue(exporterhelper.QueueConfig{
 		Enabled: false,
 	})
 	next, err := exporterhelper.NewTracesExporter(bg, createSet, Config{}, func(context.Context, ptrace.Traces) error { return nil }, opt)
@@ -470,7 +471,7 @@ func testBatchProcessorTracesSentBySize(t *testing.T, early bool) {
 				Temporality: metricdata.CumulativeTemporality,
 				DataPoints: []metricdata.HistogramDataPoint[int64]{
 					{
-						Attributes: attribute.NewSet(attribute.String("processor", "batch")),
+						Attributes: attribute.NewSet(attribute.String("processor", metadata.Type.String())),
 						Count:      uint64(expectedBatchesNum),
 						Bounds: []float64{10, 25, 50, 75, 100, 250, 500, 750, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000, 30000, 50000,
 							100_000, 200_000, 300_000, 400_000, 500_000, 600_000, 700_000, 800_000, 900_000,
@@ -491,7 +492,7 @@ func testBatchProcessorTracesSentBySize(t *testing.T, early bool) {
 				Temporality: metricdata.CumulativeTemporality,
 				DataPoints: []metricdata.HistogramDataPoint[int64]{
 					{
-						Attributes:   attribute.NewSet(attribute.String("processor", "batch")),
+						Attributes:   attribute.NewSet(attribute.String("processor", metadata.Type.String())),
 						Count:        uint64(expectedBatchesNum),
 						Bounds:       []float64{10, 25, 50, 75, 100, 250, 500, 750, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000, 30000, 50000, 100000},
 						BucketCounts: []uint64{0, uint64(expectedBatchesNum), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
@@ -512,7 +513,7 @@ func testBatchProcessorTracesSentBySize(t *testing.T, early bool) {
 				DataPoints: []metricdata.DataPoint[int64]{
 					{
 						Value:      int64(expectedBatchesNum),
-						Attributes: attribute.NewSet(attribute.String("processor", "batch")),
+						Attributes: attribute.NewSet(attribute.String("processor", metadata.Type.String())),
 					},
 				},
 			},
@@ -527,7 +528,7 @@ func testBatchProcessorTracesSentBySize(t *testing.T, early bool) {
 				DataPoints: []metricdata.DataPoint[int64]{
 					{
 						Value:      1,
-						Attributes: attribute.NewSet(attribute.String("processor", "batch")),
+						Attributes: attribute.NewSet(attribute.String("processor", metadata.Type.String())),
 					},
 				},
 			},
@@ -615,7 +616,7 @@ func testBatchProcessorTracesSentByMaxSize(t *testing.T, early bool) {
 				Temporality: metricdata.CumulativeTemporality,
 				DataPoints: []metricdata.HistogramDataPoint[int64]{
 					{
-						Attributes: attribute.NewSet(attribute.String("processor", "batch")),
+						Attributes: attribute.NewSet(attribute.String("processor", metadata.Type.String())),
 						Count:      uint64(expectedBatchesNum),
 						Bounds: []float64{10, 25, 50, 75, 100, 250, 500, 750, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000, 30000, 50000,
 							100_000, 200_000, 300_000, 400_000, 500_000, 600_000, 700_000, 800_000, 900_000,
@@ -636,7 +637,7 @@ func testBatchProcessorTracesSentByMaxSize(t *testing.T, early bool) {
 				Temporality: metricdata.CumulativeTemporality,
 				DataPoints: []metricdata.HistogramDataPoint[int64]{
 					{
-						Attributes:   attribute.NewSet(attribute.String("processor", "batch")),
+						Attributes:   attribute.NewSet(attribute.String("processor", metadata.Type.String())),
 						Count:        uint64(expectedBatchesNum),
 						Bounds:       []float64{10, 25, 50, 75, 100, 250, 500, 750, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000, 30000, 50000, 100000},
 						BucketCounts: []uint64{0, 1, uint64(expectedBatchesNum - 1), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
@@ -657,7 +658,7 @@ func testBatchProcessorTracesSentByMaxSize(t *testing.T, early bool) {
 				DataPoints: []metricdata.DataPoint[int64]{
 					{
 						Value:      int64(expectedBatchesNum - 1),
-						Attributes: attribute.NewSet(attribute.String("processor", "batch")),
+						Attributes: attribute.NewSet(attribute.String("processor", metadata.Type.String())),
 					},
 				},
 			},
@@ -672,7 +673,7 @@ func testBatchProcessorTracesSentByMaxSize(t *testing.T, early bool) {
 				DataPoints: []metricdata.DataPoint[int64]{
 					{
 						Value:      1,
-						Attributes: attribute.NewSet(attribute.String("processor", "batch")),
+						Attributes: attribute.NewSet(attribute.String("processor", metadata.Type.String())),
 					},
 				},
 			},
@@ -687,7 +688,7 @@ func testBatchProcessorTracesSentByMaxSize(t *testing.T, early bool) {
 				DataPoints: []metricdata.DataPoint[int64]{
 					{
 						Value:      1,
-						Attributes: attribute.NewSet(attribute.String("processor", "batch")),
+						Attributes: attribute.NewSet(attribute.String("processor", metadata.Type.String())),
 					},
 				},
 			},
@@ -898,7 +899,7 @@ func TestBatchMetricProcessorBatchSize(t *testing.T) {
 				Temporality: metricdata.CumulativeTemporality,
 				DataPoints: []metricdata.HistogramDataPoint[int64]{
 					{
-						Attributes: attribute.NewSet(attribute.String("processor", "batch")),
+						Attributes: attribute.NewSet(attribute.String("processor", metadata.Type.String())),
 						Count:      uint64(expectedBatchesNum),
 						Bounds: []float64{10, 25, 50, 75, 100, 250, 500, 750, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000, 30000, 50000,
 							100_000, 200_000, 300_000, 400_000, 500_000, 600_000, 700_000, 800_000, 900_000,
@@ -919,7 +920,7 @@ func TestBatchMetricProcessorBatchSize(t *testing.T) {
 				Temporality: metricdata.CumulativeTemporality,
 				DataPoints: []metricdata.HistogramDataPoint[int64]{
 					{
-						Attributes:   attribute.NewSet(attribute.String("processor", "batch")),
+						Attributes:   attribute.NewSet(attribute.String("processor", metadata.Type.String())),
 						Count:        uint64(expectedBatchesNum),
 						Bounds:       []float64{10, 25, 50, 75, 100, 250, 500, 750, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000, 30000, 50000, 100000},
 						BucketCounts: []uint64{0, 0, uint64(expectedBatchesNum), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
@@ -940,7 +941,7 @@ func TestBatchMetricProcessorBatchSize(t *testing.T) {
 				DataPoints: []metricdata.DataPoint[int64]{
 					{
 						Value:      int64(expectedBatchesNum),
-						Attributes: attribute.NewSet(attribute.String("processor", "batch")),
+						Attributes: attribute.NewSet(attribute.String("processor", metadata.Type.String())),
 					},
 				},
 			},
@@ -955,7 +956,7 @@ func TestBatchMetricProcessorBatchSize(t *testing.T) {
 				DataPoints: []metricdata.DataPoint[int64]{
 					{
 						Value:      1,
-						Attributes: attribute.NewSet(attribute.String("processor", "batch")),
+						Attributes: attribute.NewSet(attribute.String("processor", metadata.Type.String())),
 					},
 				},
 			},
@@ -1298,7 +1299,7 @@ func TestBatchLogProcessor_BatchSize(t *testing.T) {
 				Temporality: metricdata.CumulativeTemporality,
 				DataPoints: []metricdata.HistogramDataPoint[int64]{
 					{
-						Attributes: attribute.NewSet(attribute.String("processor", "batch")),
+						Attributes: attribute.NewSet(attribute.String("processor", metadata.Type.String())),
 						Count:      uint64(expectedBatchesNum),
 						Bounds: []float64{10, 25, 50, 75, 100, 250, 500, 750, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000, 30000, 50000,
 							100_000, 200_000, 300_000, 400_000, 500_000, 600_000, 700_000, 800_000, 900_000,
@@ -1319,7 +1320,7 @@ func TestBatchLogProcessor_BatchSize(t *testing.T) {
 				Temporality: metricdata.CumulativeTemporality,
 				DataPoints: []metricdata.HistogramDataPoint[int64]{
 					{
-						Attributes:   attribute.NewSet(attribute.String("processor", "batch")),
+						Attributes:   attribute.NewSet(attribute.String("processor", metadata.Type.String())),
 						Count:        uint64(expectedBatchesNum),
 						Bounds:       []float64{10, 25, 50, 75, 100, 250, 500, 750, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 20000, 30000, 50000, 100000},
 						BucketCounts: []uint64{0, 0, uint64(expectedBatchesNum), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
@@ -1340,7 +1341,7 @@ func TestBatchLogProcessor_BatchSize(t *testing.T) {
 				DataPoints: []metricdata.DataPoint[int64]{
 					{
 						Value:      int64(expectedBatchesNum),
-						Attributes: attribute.NewSet(attribute.String("processor", "batch")),
+						Attributes: attribute.NewSet(attribute.String("processor", metadata.Type.String())),
 					},
 				},
 			},
@@ -1355,7 +1356,7 @@ func TestBatchLogProcessor_BatchSize(t *testing.T) {
 				DataPoints: []metricdata.DataPoint[int64]{
 					{
 						Value:      1,
-						Attributes: attribute.NewSet(attribute.String("processor", "batch")),
+						Attributes: attribute.NewSet(attribute.String("processor", metadata.Type.String())),
 					},
 				},
 			},
@@ -1480,7 +1481,7 @@ func verifyTracesDoesNotProduceAfterShutdown(t *testing.T, factory processor.Fac
 	// Create a proc and output its produce to a sink.
 	nextSink := new(consumertest.TracesSink)
 	bg := context.Background()
-	proc, err := factory.CreateTracesProcessor(bg, processortest.NewNopSettings(), cfg, nextSink)
+	proc, err := factory.CreateTraces(bg, processortest.NewNopSettings(), cfg, nextSink)
 	if err != nil {
 		if errors.Is(err, pipeline.ErrSignalNotSupported) {
 			return

@@ -1,5 +1,5 @@
-type: batch
-github_project: open-telemetry/opentelemetry-collector
+type: concurrentbatch
+github_project: open-telemetry/otel-arrow
 
 status:
   class: processor

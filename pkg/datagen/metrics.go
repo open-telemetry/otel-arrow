@@ -730,9 +730,12 @@ func (dg *DataGenerator) FakeHistogram(metric pmetric.Metric) {
 			dp.SetSum(dg.GenF64Range(0, 100))
 		}
 
+		// The number of elements in bucket_counts array must be by one greater than
+  		// the number of elements in explicit_bounds array.
+		// See https://github.com/open-telemetry/opentelemetry-proto/blob/a76fe9dea26871e8a6c494024bc9927fe73b8142/opentelemetry/proto/metrics/v1/metrics.proto#L461
 		bcs := dp.BucketCounts()
-		bcs.EnsureCapacity(10)
-		for j := 0; j < 10; j++ {
+		bcs.EnsureCapacity(10+1)
+		for j := 0; j < 10+1; j++ {
 			bcs.Append(uint64(dg.GenI64Range(0, 100)))
 		}
 
