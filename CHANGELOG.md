@@ -8,7 +8,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
-## [0.30.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.29.0) - 2024-11-06
+## [0.31.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.31.0) - 2024-11-19
+
+- Update to v0.114.0 collector dependencies. [#274](https://github.com/open-telemetry/otel-arrow/pull/274)
+- Empty SpanID bug-fix. [#273](https://github.com/open-telemetry/otel-arrow/pull/273)
+
+## [0.30.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.3029.0) - 2024-11-06
 
 - Update to v0.113.0 collector dependencies. [#269](https://github.com/open-telemetry/otel-arrow/pull/269)
 

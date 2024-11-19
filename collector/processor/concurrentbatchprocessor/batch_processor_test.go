@@ -156,7 +156,7 @@ func TestBatchProcessorUnbrokenParentContextSingle(t *testing.T) {
 	opt := exporterhelper.WithQueue(exporterhelper.QueueConfig{
 		Enabled: false,
 	})
-	next, err := exporterhelper.NewTracesExporter(bg, createSet, Config{}, func(context.Context, ptrace.Traces) error { return nil }, opt)
+	next, err := exporterhelper.NewTraces(bg, createSet, Config{}, func(context.Context, ptrace.Traces) error { return nil }, opt)
 	require.NoError(t, err)
 
 	processorSet := processortest.NewNopSettings()
@@ -228,7 +228,7 @@ func TestBatchProcessorUnbrokenParentContextMultiple(t *testing.T) {
 	opt := exporterhelper.WithQueue(exporterhelper.QueueConfig{
 		Enabled: false,
 	})
-	next, err := exporterhelper.NewTracesExporter(bg, createSet, Config{}, func(context.Context, ptrace.Traces) error { return nil }, opt)
+	next, err := exporterhelper.NewTraces(bg, createSet, Config{}, func(context.Context, ptrace.Traces) error { return nil }, opt)
 	require.NoError(t, err)
 
 	processorSet := processortest.NewNopSettings()

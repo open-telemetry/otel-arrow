@@ -1,4 +1,4 @@
-To make a release of one or more Golang modules in the OTel Arrow
+	To make a release of one or more Golang modules in the OTel Arrow
 repository, follow these steps.
 
 1. Using Git, checkout the version of the repo that will be released
@@ -9,6 +9,24 @@ git checkout main
 git pull upstream main
 git checkout -b release_xx_yy_zz
 ```
+
+2. Update OTel-Collector dependencies.  It will frequently be necessary
+   to update all v0.x OTel-Collector dependencies.  The steps are:
+   
+   a. For each go.mod in the repository, run a command like
+```
+for x in `grep OLDVERSION go.mod | awk '{print $1}'`; do go get $x@NEWVERSION; done
+```
+
+   b. Run `make test`; fix any build breakage.  If there have been refactorings
+      in the Collector APIs, there are likely to be small changes required.
+
+   c. Edit `Makefile`, replace the string `go.opentelemetry.io/collector/cmd/builder@OLDVERSION`
+      with `go.opentelemetry.io/collector/cmd/builder@NEWVERSION`.
+	  
+   d. Run `make genotelarrowcol`
+   
+   e. Run `make otelarrowcol`
 
 2. Make sure the CHANGELOG.md file is up to date, add entries
    describing the changes in the new release.  If collector
