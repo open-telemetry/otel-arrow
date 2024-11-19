@@ -162,6 +162,10 @@ func TracesFrom(record arrow.Record, relatedData *RelatedData) (ptrace.Traces, e
 		if parentSpanID != nil && len(parentSpanID) != 8 {
 			return traces, werror.WrapWithContext(common.ErrInvalidSpanIDLength, map[string]interface{}{"parentSpanID": parentSpanID})
 		}
+		if parentSpanID == nil {
+			// parentSpanID can be null
+			parentSpanID = []byte{}
+		}
 		name, err := arrowutils.StringFromRecord(record, traceIDs.Name, row)
 		if err != nil {
 			return traces, werror.Wrap(err)

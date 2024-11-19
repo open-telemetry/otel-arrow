@@ -278,7 +278,11 @@ func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 		b.sib.Append(sib[:])
 		b.tsb.AppendNonEmpty(span.Span.TraceState().AsRaw())
 		psib := span.Span.ParentSpanID()
-		b.psib.Append(psib[:])
+		if psib.IsEmpty() {
+			b.psib.AppendNull()
+		} else {
+			b.psib.Append(psib[:])
+		}
 		b.nb.AppendNonEmpty(span.Span.Name())
 		b.kb.AppendNonZero(int32(span.Span.Kind()))
 
