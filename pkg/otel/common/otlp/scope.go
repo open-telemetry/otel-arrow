@@ -55,7 +55,7 @@ func UpdateScopeFromRecord(
 	record arrow.Record,
 	row int,
 	ids *ScopeIds,
-	attrsStore *Attributes16Store,
+	attrsStore *AttributesStore[uint16],
 ) error {
 	scopeArray, err := arrowutils.StructFromRecord(record, ids.Scope, row)
 	if err != nil {

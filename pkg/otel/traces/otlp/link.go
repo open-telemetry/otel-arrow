@@ -23,7 +23,7 @@ import (
 
 	arrowutils "github.com/open-telemetry/otel-arrow/pkg/arrow"
 	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
-	otlp "github.com/open-telemetry/otel-arrow/pkg/otel/common/otlp"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/otlp"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
 	tarrow "github.com/open-telemetry/otel-arrow/pkg/otel/traces/arrow"
 	"github.com/open-telemetry/otel-arrow/pkg/werror"
@@ -77,7 +77,7 @@ func (s *SpanLinksStore) LinksByID(ID uint16) []*ptrace.SpanLink {
 // caller is responsible for releasing it.
 func SpanLinksStoreFrom(
 	record arrow.Record,
-	attrsStore *otlp.Attributes32Store,
+	attrsStore *otlp.AttributesStore[uint32],
 	conf *tarrow.LinkConfig,
 ) (*SpanLinksStore, error) {
 	store := &SpanLinksStore{
