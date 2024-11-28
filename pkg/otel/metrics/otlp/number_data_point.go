@@ -20,7 +20,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 
 	arrowutils "github.com/open-telemetry/otel-arrow/pkg/arrow"
-	otlp "github.com/open-telemetry/otel-arrow/pkg/otel/common/otlp"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/common/otlp"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
 	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
@@ -107,7 +107,7 @@ func SchemaToNDPIDs(schema *arrow.Schema) (*NumberDataPointIDs, error) {
 //
 // Important Note: This function doesn't take ownership of the record. The
 // caller is responsible for releasing it.
-func NumberDataPointsStoreFrom(record arrow.Record, exemplarsStore *ExemplarsStore, attrsStore *otlp.Attributes32Store) (*NumberDataPointsStore, error) {
+func NumberDataPointsStoreFrom(record arrow.Record, exemplarsStore *ExemplarsStore, attrsStore *otlp.AttributesStore[uint32]) (*NumberDataPointsStore, error) {
 	store := &NumberDataPointsStore{
 		dataPointsByID: make(map[uint16]pmetric.NumberDataPointSlice),
 	}

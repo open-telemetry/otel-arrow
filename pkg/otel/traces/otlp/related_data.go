@@ -31,11 +31,11 @@ import (
 type (
 	RelatedData struct {
 		SpanID                uint16
-		ResAttrMapStore       *otlp.Attributes16Store
-		ScopeAttrMapStore     *otlp.Attributes16Store
-		SpanAttrMapStore      *otlp.Attributes16Store
-		SpanEventAttrMapStore *otlp.Attributes32Store
-		SpanLinkAttrMapStore  *otlp.Attributes32Store
+		ResAttrMapStore       *otlp.AttributesStore[uint16]
+		ScopeAttrMapStore     *otlp.AttributesStore[uint16]
+		SpanAttrMapStore      *otlp.AttributesStore[uint16]
+		SpanEventAttrMapStore *otlp.AttributesStore[uint32]
+		SpanLinkAttrMapStore  *otlp.AttributesStore[uint32]
 		SpanEventsStore       *SpanEventsStore
 		SpanLinksStore        *SpanLinksStore
 	}
@@ -43,11 +43,11 @@ type (
 
 func NewRelatedData(conf *arrow.Config) *RelatedData {
 	return &RelatedData{
-		ResAttrMapStore:       otlp.NewAttributes16Store(),
-		ScopeAttrMapStore:     otlp.NewAttributes16Store(),
-		SpanAttrMapStore:      otlp.NewAttributes16Store(),
-		SpanEventAttrMapStore: otlp.NewAttributes32Store(),
-		SpanLinkAttrMapStore:  otlp.NewAttributes32Store(),
+		ResAttrMapStore:       otlp.NewAttributesStore[uint16](),
+		ScopeAttrMapStore:     otlp.NewAttributesStore[uint16](),
+		SpanAttrMapStore:      otlp.NewAttributesStore[uint16](),
+		SpanEventAttrMapStore: otlp.NewAttributesStore[uint32](),
+		SpanLinkAttrMapStore:  otlp.NewAttributesStore[uint32](),
 		SpanEventsStore:       NewSpanEventsStore(conf.Event),
 		SpanLinksStore:        NewSpanLinksStore(),
 	}
@@ -75,7 +75,7 @@ func RelatedDataFrom(records []*record_message.RecordMessage, conf *arrow.Config
 	for _, record := range records {
 		switch record.PayloadType() {
 		case colarspb.ArrowPayloadType_RESOURCE_ATTRS:
-			err = otlp.Attributes16StoreFrom(
+			err = otlp.AttributesStoreFrom[uint16](
 				record.Record(),
 				relatedData.ResAttrMapStore,
 			)
@@ -83,12 +83,12 @@ func RelatedDataFrom(records []*record_message.RecordMessage, conf *arrow.Config
 				return nil, nil, werror.Wrap(err)
 			}
 		case colarspb.ArrowPayloadType_SCOPE_ATTRS:
-			err = otlp.Attributes16StoreFrom(record.Record(), relatedData.ScopeAttrMapStore)
+			err = otlp.AttributesStoreFrom[uint16](record.Record(), relatedData.ScopeAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
 		case colarspb.ArrowPayloadType_SPAN_ATTRS:
-			err = otlp.Attributes16StoreFrom(record.Record(), relatedData.SpanAttrMapStore)
+			err = otlp.AttributesStoreFrom[uint16](record.Record(), relatedData.SpanAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
@@ -98,7 +98,7 @@ func RelatedDataFrom(records []*record_message.RecordMessage, conf *arrow.Config
 			}
 			spanEventRecord = record
 		case colarspb.ArrowPayloadType_SPAN_EVENT_ATTRS:
-			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.SpanEventAttrMapStore)
+			err = otlp.AttributesStoreFrom[uint32](record.Record(), relatedData.SpanEventAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
@@ -108,7 +108,7 @@ func RelatedDataFrom(records []*record_message.RecordMessage, conf *arrow.Config
 			}
 			spanLinkRecord = record
 		case colarspb.ArrowPayloadType_SPAN_LINK_ATTRS:
-			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.SpanLinkAttrMapStore)
+			err = otlp.AttributesStoreFrom[uint32](record.Record(), relatedData.SpanLinkAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}

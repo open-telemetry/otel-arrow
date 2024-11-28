@@ -30,15 +30,15 @@ type (
 		MetricID uint16
 
 		// Attributes stores
-		ResAttrMapStore                *otlp.Attributes16Store
-		ScopeAttrMapStore              *otlp.Attributes16Store
-		NumberDPAttrsStore             *otlp.Attributes32Store
-		SummaryAttrsStore              *otlp.Attributes32Store
-		HistogramAttrsStore            *otlp.Attributes32Store
-		ExpHistogramAttrsStore         *otlp.Attributes32Store
-		NumberDPExemplarAttrsStore     *otlp.Attributes32Store
-		HistogramExemplarAttrsStore    *otlp.Attributes32Store
-		ExpHistogramExemplarAttrsStore *otlp.Attributes32Store
+		ResAttrMapStore                *otlp.AttributesStore[uint16]
+		ScopeAttrMapStore              *otlp.AttributesStore[uint16]
+		NumberDPAttrsStore             *otlp.AttributesStore[uint32]
+		SummaryAttrsStore              *otlp.AttributesStore[uint32]
+		HistogramAttrsStore            *otlp.AttributesStore[uint32]
+		ExpHistogramAttrsStore         *otlp.AttributesStore[uint32]
+		NumberDPExemplarAttrsStore     *otlp.AttributesStore[uint32]
+		HistogramExemplarAttrsStore    *otlp.AttributesStore[uint32]
+		ExpHistogramExemplarAttrsStore *otlp.AttributesStore[uint32]
 
 		// Metric stores
 		NumberDataPointsStore     *NumberDataPointsStore
@@ -55,15 +55,15 @@ type (
 
 func NewRelatedData() *RelatedData {
 	return &RelatedData{
-		ResAttrMapStore:                otlp.NewAttributes16Store(),
-		ScopeAttrMapStore:              otlp.NewAttributes16Store(),
-		NumberDPAttrsStore:             otlp.NewAttributes32Store(),
-		SummaryAttrsStore:              otlp.NewAttributes32Store(),
-		HistogramAttrsStore:            otlp.NewAttributes32Store(),
-		ExpHistogramAttrsStore:         otlp.NewAttributes32Store(),
-		NumberDPExemplarAttrsStore:     otlp.NewAttributes32Store(),
-		HistogramExemplarAttrsStore:    otlp.NewAttributes32Store(),
-		ExpHistogramExemplarAttrsStore: otlp.NewAttributes32Store(),
+		ResAttrMapStore:                otlp.NewAttributesStore[uint16](),
+		ScopeAttrMapStore:              otlp.NewAttributesStore[uint16](),
+		NumberDPAttrsStore:             otlp.NewAttributesStore[uint32](),
+		SummaryAttrsStore:              otlp.NewAttributesStore[uint32](),
+		HistogramAttrsStore:            otlp.NewAttributesStore[uint32](),
+		ExpHistogramAttrsStore:         otlp.NewAttributesStore[uint32](),
+		NumberDPExemplarAttrsStore:     otlp.NewAttributesStore[uint32](),
+		HistogramExemplarAttrsStore:    otlp.NewAttributesStore[uint32](),
+		ExpHistogramExemplarAttrsStore: otlp.NewAttributesStore[uint32](),
 
 		NumberDataPointsStore:     NewNumberDataPointsStore(),
 		SummaryDataPointsStore:    NewSummaryDataPointsStore(),
@@ -101,32 +101,32 @@ func RelatedDataFrom(records []*record_message.RecordMessage) (relatedData *Rela
 	for _, record := range records {
 		switch record.PayloadType() {
 		case colarspb.ArrowPayloadType_RESOURCE_ATTRS:
-			err = otlp.Attributes16StoreFrom(record.Record(), relatedData.ResAttrMapStore)
+			err = otlp.AttributesStoreFrom(record.Record(), relatedData.ResAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
 		case colarspb.ArrowPayloadType_SCOPE_ATTRS:
-			err = otlp.Attributes16StoreFrom(record.Record(), relatedData.ScopeAttrMapStore)
+			err = otlp.AttributesStoreFrom(record.Record(), relatedData.ScopeAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
 		case colarspb.ArrowPayloadType_NUMBER_DP_ATTRS:
-			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.NumberDPAttrsStore)
+			err = otlp.AttributesStoreFrom(record.Record(), relatedData.NumberDPAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
 		case colarspb.ArrowPayloadType_SUMMARY_DP_ATTRS:
-			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.SummaryAttrsStore)
+			err = otlp.AttributesStoreFrom(record.Record(), relatedData.SummaryAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
 		case colarspb.ArrowPayloadType_HISTOGRAM_DP_ATTRS:
-			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.HistogramAttrsStore)
+			err = otlp.AttributesStoreFrom(record.Record(), relatedData.HistogramAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
 		case colarspb.ArrowPayloadType_EXP_HISTOGRAM_DP_ATTRS:
-			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.ExpHistogramAttrsStore)
+			err = otlp.AttributesStoreFrom(record.Record(), relatedData.ExpHistogramAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
@@ -171,17 +171,17 @@ func RelatedDataFrom(records []*record_message.RecordMessage) (relatedData *Rela
 			}
 			expHistogramDBExRec = record
 		case colarspb.ArrowPayloadType_NUMBER_DP_EXEMPLAR_ATTRS:
-			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.NumberDPExemplarAttrsStore)
+			err = otlp.AttributesStoreFrom[uint32](record.Record(), relatedData.NumberDPExemplarAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
 		case colarspb.ArrowPayloadType_HISTOGRAM_DP_EXEMPLAR_ATTRS:
-			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.HistogramExemplarAttrsStore)
+			err = otlp.AttributesStoreFrom[uint32](record.Record(), relatedData.HistogramExemplarAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
 		case colarspb.ArrowPayloadType_EXP_HISTOGRAM_DP_EXEMPLAR_ATTRS:
-			err = otlp.Attributes32StoreFrom(record.Record(), relatedData.ExpHistogramExemplarAttrsStore)
+			err = otlp.AttributesStoreFrom[uint32](record.Record(), relatedData.ExpHistogramExemplarAttrsStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}

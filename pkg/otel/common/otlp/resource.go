@@ -48,7 +48,7 @@ func NewResourceIdsFromSchema(schema *arrow.Schema) (*ResourceIds, error) {
 	}, nil
 }
 
-func UpdateResourceFromRecord(r pcommon.Resource, record arrow.Record, row int, resIds *ResourceIds, attrsStore *Attributes16Store) (schemaUrl string, err error) {
+func UpdateResourceFromRecord(r pcommon.Resource, record arrow.Record, row int, resIds *ResourceIds, attrsStore *AttributesStore[uint16]) (schemaUrl string, err error) {
 	resArr, err := arrowutils.StructFromRecord(record, resIds.Resource, row)
 	if err != nil {
 		return "", werror.WrapWithContext(err, map[string]interface{}{"row": row})

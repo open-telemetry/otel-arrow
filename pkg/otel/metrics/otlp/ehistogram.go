@@ -149,7 +149,7 @@ func SchemaToEHistogramIDs(schema *arrow.Schema) (*EHistogramDataPointIDs, error
 //
 // Important Note: This function doesn't take ownership of the record. The
 // caller is responsible for releasing it.
-func EHistogramDataPointsStoreFrom(record arrow.Record, exemplarsStore *ExemplarsStore, attrsStore *otlp.Attributes32Store) (*EHistogramDataPointsStore, error) {
+func EHistogramDataPointsStoreFrom(record arrow.Record, exemplarsStore *ExemplarsStore, attrsStore *otlp.AttributesStore[uint32]) (*EHistogramDataPointsStore, error) {
 	store := &EHistogramDataPointsStore{
 		dataPointsByID: make(map[uint16]pmetric.ExponentialHistogramDataPointSlice),
 	}
