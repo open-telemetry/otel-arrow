@@ -20,6 +20,7 @@ package otlp
 import (
 	"github.com/apache/arrow/go/v17/arrow"
 	"go.opentelemetry.io/collector/pdata/pcommon"
+	"golang.org/x/exp/constraints"
 
 	arrowutils "github.com/open-telemetry/otel-arrow/pkg/arrow"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
@@ -45,57 +46,33 @@ type (
 		Ser                  int
 	}
 
-	// Attributes16Store is a store for attributes.
+	// AttributesStore is a store for attributes.
 	// The attributes are stored in a map by ID. This ID represents the
 	// identifier of the main entity (span, event, link, etc.) to which the
 	// attributes are attached. So the maximum number of attributes per entity
 	// is not limited.
-	Attributes16Store struct {
-		lastID         uint16
-		attributesByID map[uint16]*pcommon.Map
+	AttributesStore[u constraints.Unsigned] struct {
+		lastID         u
+		attributesByID map[u]*pcommon.Map
 	}
 
-	// Attributes32Store is a store for attributes.
-	// The attributes are stored in a map by ID. This ID represents the
-	// identifier of the main entity (span, event, link, etc.) to which the
-	// attributes are attached. So the maximum number of attributes per entity
-	// is not limited.
-	Attributes32Store struct {
-		lastID         uint32
-		attributesByID map[uint32]*pcommon.Map
-	}
-
-	Attrs16ParentIdDecoder struct {
-		prevParentID uint16
-		prevKey      string
-		prevValue    *pcommon.Value
-		encodingType int
-	}
-
-	Attrs32ParentIdDecoder struct {
-		prevParentID uint32
+	AttrsParentIDDecoder[u constraints.Unsigned] struct {
+		prevParentID u
 		prevKey      string
 		prevValue    *pcommon.Value
 		encodingType int
 	}
 )
 
-// NewAttributes16Store creates a new Attributes16Store.
-func NewAttributes16Store() *Attributes16Store {
-	return &Attributes16Store{
-		attributesByID: make(map[uint16]*pcommon.Map),
-	}
-}
-
-// NewAttributes32Store creates a new Attributes32Store.
-func NewAttributes32Store() *Attributes32Store {
-	return &Attributes32Store{
-		attributesByID: make(map[uint32]*pcommon.Map),
+// NewAttributesStore creates a new AttributesStore.
+func NewAttributesStore[u constraints.Unsigned]() *AttributesStore[u] {
+	return &AttributesStore[u]{
+		attributesByID: make(map[u]*pcommon.Map),
 	}
 }
 
 // AttributesByDeltaID returns the attributes for the given Delta ID.
-func (s *Attributes16Store) AttributesByDeltaID(ID uint16) *pcommon.Map {
+func (s *AttributesStore[u]) AttributesByDeltaID(ID u) *pcommon.Map {
 	s.lastID += ID
 	if m, ok := s.attributesByID[s.lastID]; ok {
 		return m
@@ -104,34 +81,17 @@ func (s *Attributes16Store) AttributesByDeltaID(ID uint16) *pcommon.Map {
 }
 
 // AttributesByID returns the attributes for the given ID.
-func (s *Attributes16Store) AttributesByID(ID uint16) *pcommon.Map {
+func (s *AttributesStore[u]) AttributesByID(ID u) *pcommon.Map {
 	if m, ok := s.attributesByID[ID]; ok {
 		return m
 	}
 	return nil
 }
 
-// AttributesByID returns the attributes for the given ID.
-func (s *Attributes32Store) AttributesByID(ID uint32) *pcommon.Map {
-	if m, ok := s.attributesByID[ID]; ok {
-		return m
-	}
-	return nil
-}
-
-// AttributesByDeltaID returns the attributes for the given Delta ID.
-func (s *Attributes32Store) AttributesByDeltaID(ID uint32) *pcommon.Map {
-	s.lastID += ID
-	if m, ok := s.attributesByID[s.lastID]; ok {
-		return m
-	}
-	return nil
-}
-
-// Attributes16StoreFrom creates an Attribute16Store from an arrow.Record.
+// AttributesStoreFrom creates an Attribute16Store from an arrow.Record.
 // Note: This function doesn't release the record passed as argument. This is
 // the responsibility of the caller
-func Attributes16StoreFrom(record arrow.Record, store *Attributes16Store) error {
+func AttributesStoreFrom[unsigned constraints.Unsigned](record arrow.Record, store *AttributesStore[unsigned]) error {
 	attrIDS, err := SchemaToAttributeIDs(record.Schema())
 	if err != nil {
 		return werror.Wrap(err)
@@ -139,103 +99,7 @@ func Attributes16StoreFrom(record arrow.Record, store *Attributes16Store) error 
 
 	attrsCount := int(record.NumRows())
 
-	parentIdDecoder := NewAttrs16ParentIdDecoder()
-
-	// Read all key/value tuples from the record and reconstruct the attributes
-	// map by ID.
-	for i := 0; i < attrsCount; i++ {
-		key, err := arrowutils.StringFromRecord(record, attrIDS.Key, i)
-		if err != nil {
-			return werror.Wrap(err)
-		}
-
-		vType, err := arrowutils.U8FromRecord(record, attrIDS.Type, i)
-		if err != nil {
-			return werror.Wrap(err)
-		}
-
-		value := pcommon.NewValueEmpty()
-		switch pcommon.ValueType(vType) {
-		case pcommon.ValueTypeStr:
-			v, err := arrowutils.StringFromRecord(record, attrIDS.Str, i)
-			if err != nil {
-				return werror.Wrap(err)
-			}
-			value.SetStr(v)
-		case pcommon.ValueTypeInt:
-			v, err := arrowutils.I64FromRecord(record, attrIDS.Int, i)
-			if err != nil {
-				return werror.Wrap(err)
-			}
-			value.SetInt(v)
-		case pcommon.ValueTypeDouble:
-			v, err := arrowutils.F64FromRecord(record, attrIDS.Double, i)
-			if err != nil {
-				return werror.Wrap(err)
-			}
-			value.SetDouble(v)
-		case pcommon.ValueTypeBool:
-			v, err := arrowutils.BoolFromRecord(record, attrIDS.Bool, i)
-			if err != nil {
-				return werror.Wrap(err)
-			}
-			value.SetBool(v)
-		case pcommon.ValueTypeBytes:
-			v, err := arrowutils.BinaryFromRecord(record, attrIDS.Bytes, i)
-			if err != nil {
-				return werror.Wrap(err)
-			}
-			value.SetEmptyBytes().FromRaw(v)
-		case pcommon.ValueTypeSlice:
-			v, err := arrowutils.BinaryFromRecord(record, attrIDS.Ser, i)
-			if err != nil {
-				return werror.Wrap(err)
-			}
-			if err = common.Deserialize(v, value); err != nil {
-				return werror.Wrap(err)
-			}
-		case pcommon.ValueTypeMap:
-			v, err := arrowutils.BinaryFromRecord(record, attrIDS.Ser, i)
-			if err != nil {
-				return werror.Wrap(err)
-			}
-			if err = common.Deserialize(v, value); err != nil {
-				return werror.Wrap(err)
-			}
-		default:
-			// silently ignore unknown types to avoid DOS attacks
-		}
-
-		deltaOrParentID, err := arrowutils.U16FromRecord(record, attrIDS.ParentID, i)
-		if err != nil {
-			return werror.Wrap(err)
-		}
-		parentID := parentIdDecoder.Decode(deltaOrParentID, key, &value)
-
-		m, ok := store.attributesByID[parentID]
-		if !ok {
-			newMap := pcommon.NewMap()
-			m = &newMap
-			store.attributesByID[parentID] = m
-		}
-		value.CopyTo(m.PutEmpty(key))
-	}
-
-	return nil
-}
-
-// Attributes32StoreFrom creates an Attributes32Store from an arrow.Record.
-// Note: This function doesn't release the record passed as argument. This is
-// the responsibility of the caller
-func Attributes32StoreFrom(record arrow.Record, store *Attributes32Store) error {
-	attrIDS, err := SchemaToAttributeIDs(record.Schema())
-	if err != nil {
-		return werror.Wrap(err)
-	}
-
-	attrsCount := int(record.NumRows())
-
-	parentIdDecoder := NewAttrs32ParentIdDecoder()
+	parentIDDecoder := NewAttrsParentIDDecoder[unsigned]()
 
 	// Read all key/value tuples from the record and reconstruct the attributes
 	// map by ID.
@@ -301,11 +165,12 @@ func Attributes32StoreFrom(record arrow.Record, store *Attributes32Store) error 
 			// silently ignore unknown types to avoid DOS attacks
 		}
 
-		deltaOrParentID, err := arrowutils.U32FromRecord(record, attrIDS.ParentID, i)
+		deltaOrParentID, err := arrowutils.UnsignedFromRecord[unsigned](record, attrIDS.ParentID, i)
 		if err != nil {
 			return werror.Wrap(err)
 		}
-		parentID := parentIdDecoder.Decode(deltaOrParentID, key, &value)
+
+		parentID := parentIDDecoder.Decode(deltaOrParentID, key, &value)
 
 		m, ok := store.attributesByID[parentID]
 		if !ok {
@@ -380,13 +245,13 @@ func SchemaToAttributeIDs(schema *arrow.Schema) (*AttributeIDs, error) {
 	}, nil
 }
 
-func NewAttrs16ParentIdDecoder() *Attrs16ParentIdDecoder {
-	return &Attrs16ParentIdDecoder{
+func NewAttrsParentIDDecoder[u constraints.Unsigned]() *AttrsParentIDDecoder[u] {
+	return &AttrsParentIDDecoder[u]{
 		encodingType: carrow.ParentIdDeltaGroupEncoding,
 	}
 }
 
-func (d *Attrs16ParentIdDecoder) Decode(deltaOrParentID uint16, key string, value *pcommon.Value) uint16 {
+func (d *AttrsParentIDDecoder[unsigned]) Decode(deltaOrParentID unsigned, key string, value *pcommon.Value) unsigned {
 	switch d.encodingType {
 	case carrow.ParentIdNoEncoding:
 		return deltaOrParentID
@@ -406,36 +271,6 @@ func (d *Attrs16ParentIdDecoder) Decode(deltaOrParentID uint16, key string, valu
 			return deltaOrParentID
 		}
 	default:
-		panic("unknown attrs16 parent ID encoding type")
-	}
-}
-
-func NewAttrs32ParentIdDecoder() *Attrs32ParentIdDecoder {
-	return &Attrs32ParentIdDecoder{
-		encodingType: carrow.ParentIdDeltaGroupEncoding,
-	}
-}
-
-func (d *Attrs32ParentIdDecoder) Decode(deltaOrParentID uint32, key string, value *pcommon.Value) uint32 {
-	switch d.encodingType {
-	case carrow.ParentIdNoEncoding:
-		return deltaOrParentID
-	case carrow.ParentIdDeltaEncoding:
-		decodedParentID := d.prevParentID + deltaOrParentID
-		d.prevParentID = decodedParentID
-		return decodedParentID
-	case carrow.ParentIdDeltaGroupEncoding:
-		if d.prevKey == key && carrow.Equal(d.prevValue, value) {
-			parentID := d.prevParentID + deltaOrParentID
-			d.prevParentID = parentID
-			return parentID
-		} else {
-			d.prevKey = key
-			d.prevValue = value
-			d.prevParentID = deltaOrParentID
-			return deltaOrParentID
-		}
-	default:
-		panic("unknown attrs32 parent ID encoding type")
+		panic("unknown parent ID encoding type")
 	}
 }

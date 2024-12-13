@@ -114,7 +114,7 @@ func SchemaToSummaryIDs(schema *arrow.Schema) (*SummaryDataPointIDs, error) {
 //
 // Important Note: This function doesn't take ownership of the record. The
 // caller is responsible for releasing it.
-func SummaryDataPointsStoreFrom(record arrow.Record, attrsStore *otlp.Attributes32Store) (*SummaryDataPointsStore, error) {
+func SummaryDataPointsStoreFrom(record arrow.Record, attrsStore *otlp.AttributesStore[uint32]) (*SummaryDataPointsStore, error) {
 	store := &SummaryDataPointsStore{
 		dataPointsByID: make(map[uint16]pmetric.SummaryDataPointSlice),
 	}

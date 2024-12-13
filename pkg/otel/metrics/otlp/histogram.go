@@ -136,7 +136,7 @@ func SchemaToHistogramIDs(schema *arrow.Schema) (*HistogramDataPointIDs, error) 
 //
 // Important Note: This function doesn't take ownership of the record. The
 // caller is responsible for releasing it.
-func HistogramDataPointsStoreFrom(record arrow.Record, exemplarsStore *ExemplarsStore, attrsStore *otlp.Attributes32Store) (*HistogramDataPointsStore, error) {
+func HistogramDataPointsStoreFrom(record arrow.Record, exemplarsStore *ExemplarsStore, attrsStore *otlp.AttributesStore[uint32]) (*HistogramDataPointsStore, error) {
 	store := &HistogramDataPointsStore{
 		dataPointsByID: make(map[uint16]pmetric.HistogramDataPointSlice),
 	}

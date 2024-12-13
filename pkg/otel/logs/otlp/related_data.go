@@ -30,17 +30,17 @@ import (
 type (
 	RelatedData struct {
 		LogRecordID           uint16
-		ResAttrMapStore       *otlp.Attributes16Store
-		ScopeAttrMapStore     *otlp.Attributes16Store
-		LogRecordAttrMapStore *otlp.Attributes16Store
+		ResAttrMapStore       *otlp.AttributesStore[uint16]
+		ScopeAttrMapStore     *otlp.AttributesStore[uint16]
+		LogRecordAttrMapStore *otlp.AttributesStore[uint16]
 	}
 )
 
 func NewRelatedData() *RelatedData {
 	return &RelatedData{
-		ResAttrMapStore:       otlp.NewAttributes16Store(),
-		ScopeAttrMapStore:     otlp.NewAttributes16Store(),
-		LogRecordAttrMapStore: otlp.NewAttributes16Store(),
+		ResAttrMapStore:       otlp.NewAttributesStore[uint16](),
+		ScopeAttrMapStore:     otlp.NewAttributesStore[uint16](),
+		LogRecordAttrMapStore: otlp.NewAttributesStore[uint16](),
 	}
 }
 
@@ -62,17 +62,17 @@ func RelatedDataFrom(records []*record_message.RecordMessage) (relatedData *Rela
 	for _, record := range records {
 		switch record.PayloadType() {
 		case colarspb.ArrowPayloadType_RESOURCE_ATTRS:
-			err = otlp.Attributes16StoreFrom(record.Record(), relatedData.ResAttrMapStore)
+			err = otlp.AttributesStoreFrom[uint16](record.Record(), relatedData.ResAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
 		case colarspb.ArrowPayloadType_SCOPE_ATTRS:
-			err = otlp.Attributes16StoreFrom(record.Record(), relatedData.ScopeAttrMapStore)
+			err = otlp.AttributesStoreFrom[uint16](record.Record(), relatedData.ScopeAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}
 		case colarspb.ArrowPayloadType_LOG_ATTRS:
-			err = otlp.Attributes16StoreFrom(record.Record(), relatedData.LogRecordAttrMapStore)
+			err = otlp.AttributesStoreFrom[uint16](record.Record(), relatedData.LogRecordAttrMapStore)
 			if err != nil {
 				return nil, nil, werror.Wrap(err)
 			}

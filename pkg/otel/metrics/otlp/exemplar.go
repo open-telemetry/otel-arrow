@@ -107,7 +107,7 @@ func (s *ExemplarsStore) ExemplarsByID(ID uint32) pmetric.ExemplarSlice {
 // caller is responsible for releasing it.
 func ExemplarsStoreFrom(
 	record arrow.Record,
-	attrsStore *otlp.Attributes32Store,
+	attrsStore *otlp.AttributesStore[uint32],
 ) (*ExemplarsStore, error) {
 	store := &ExemplarsStore{
 		exemplarsByIDs: make(map[uint32]pmetric.ExemplarSlice),

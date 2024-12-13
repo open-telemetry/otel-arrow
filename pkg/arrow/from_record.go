@@ -20,12 +20,68 @@ package arrow
 // Utility functions to extract values from Arrow Records.
 
 import (
+	"fmt"
+
 	"github.com/apache/arrow/go/v17/arrow"
 	"github.com/apache/arrow/go/v17/arrow/array"
+	"golang.org/x/exp/constraints"
 
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
 	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
+
+// UnsignedFromRecord returns the unsigned value for a specific row and column in an
+// Arrow record. If the value is null, it returns 0.
+func UnsignedFromRecord[unsigned constraints.Unsigned](record arrow.Record, fieldID int, row int) (unsigned, error) {
+	if fieldID == AbsentFieldID {
+		return 0, nil
+	}
+
+	arr := record.Column(fieldID)
+	if arr == nil {
+		return 0, nil
+	}
+
+	switch arr := arr.(type) {
+	case *array.Dictionary:
+		switch dict := arr.Dictionary().(type) {
+		case *array.Uint32:
+			if arr.IsNull(row) {
+				return 0, nil
+			} else {
+				return unsigned(dict.Value(arr.GetValueIndex(row))), nil
+			}
+		default:
+			return 0, werror.WrapWithMsg(ErrInvalidArrayType, fmt.Sprintf("dictionary of type %T is unsupported", dict))
+		}
+	case *array.Uint8:
+		if arr.IsNull(row) {
+			return 0, nil
+		} else {
+			return unsigned(arr.Value(row)), nil
+		}
+	case *array.Uint16:
+		if arr.IsNull(row) {
+			return 0, nil
+		} else {
+			return unsigned(arr.Value(row)), nil
+		}
+	case *array.Uint32:
+		if arr.IsNull(row) {
+			return 0, nil
+		} else {
+			return unsigned(arr.Value(row)), nil
+		}
+	case *array.Uint64:
+		if arr.IsNull(row) {
+			return 0, nil
+		} else {
+			return unsigned(arr.Value(row)), nil
+		}
+	default:
+		return 0, werror.WrapWithMsg(ErrInvalidArrayType, fmt.Sprintf("array of type %T is unsupported", arr))
+	}
+}
 
 // U8FromRecord returns the uint8 value for a specific row and column in an
 // Arrow record. If the value is null, it returns 0.

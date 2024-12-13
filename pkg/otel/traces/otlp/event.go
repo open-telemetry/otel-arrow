@@ -76,7 +76,7 @@ func (s *SpanEventsStore) EventsByID(ID uint16) []*ptrace.SpanEvent {
 // caller is responsible for releasing it.
 func SpanEventsStoreFrom(
 	record arrow.Record,
-	attrsStore *otlp.Attributes32Store,
+	attrsStore *otlp.AttributesStore[uint32],
 	conf *tarrow.EventConfig,
 ) (*SpanEventsStore, error) {
 	store := &SpanEventsStore{
