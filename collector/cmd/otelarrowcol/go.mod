@@ -12,10 +12,10 @@ require (
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.117.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.117.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.117.0
-	github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter v0.33.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.117.0
 	github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.33.0
 	github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.33.0
-	github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver v0.33.0
+	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver v0.117.0
 	go.opentelemetry.io/collector/component v0.117.0
 	go.opentelemetry.io/collector/confmap v1.23.0
 	go.opentelemetry.io/collector/confmap/provider/envprovider v1.23.0
@@ -196,10 +196,6 @@ require (
 )
 
 replace github.com/open-telemetry/otel-arrow => ../../../
-
-replace github.com/open-telemetry/otel-arrow/collector/exporter/fileexporter => ../../exporter/fileexporter
-
-replace github.com/open-telemetry/otel-arrow/collector/receiver/filereceiver => ../../receiver/filereceiver
 
 replace github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor => ../../processor/concurrentbatchprocessor
 
