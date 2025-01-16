@@ -8,6 +8,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+- Update to v0.117.0 collector dependencies. [#277](https://github.com/open-telemetry/otel-arrow/pull/277),
+
 ## [0.31.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.31.0) - 2024-11-19
 
 - Update to v0.114.0 collector dependencies. [#274](https://github.com/open-telemetry/otel-arrow/pull/274)
@@ -31,7 +33,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - Concurrent batch processor: concurrency limit for legacy behavior or otherwise. [#254](https://github.com/open-telemetry/otel-arrow/pull/254)
 - Concurrent batch processor: EarlyReturn legacy compat feature. [#253](https://github.com/open-telemetry/otel-arrow/pull/253)
-- Concurrent batch processor: Synchronize with upstream; removes in-flight bytes metric, 
+- Concurrent batch processor: Synchronize with upstream; removes in-flight bytes metric,
   removes panic recovery as unnecessary divergence. [#251](https://github.com/open-telemetry/otel-arrow/pull/251)
 - Update collector dependencies to v0.110.0/v1.16.0; remove validation connector [#252](https://github.com/open-telemetry/otel-arrow/pull/252)
 
@@ -182,7 +184,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [0.6.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.6.0) - 2023-10-17
 
-- Collector v0.87.0 dependency updates, CI/minor memory optimization (#65). 
+- Collector v0.87.0 dependency updates, CI/minor memory optimization (#65).
 
 ## [0.5.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.5.0)
 
