@@ -4,15 +4,17 @@ This directory contains the primary collector components for using
 OpenTelemetry Protocol with Apache Arrow as well as a number of useful
 accessory components that were developed to assist the project.
 
-The primary components are:
+The primary components (now included in the upstream [Collector-Contrib repository][COLLECTORCONTRIB]) are:
 
-- [Exporter][EXPORTER]: for sending OpenTelemetry Protocol with Apache Arrow data
-- [Receiver][RECEIVER]: for receiving OpenTelemetry Protocol with Apache Arrow data
+- [OTel Arrow Exporter][ARROWEXPORTER]: for sending OpenTelemetry Protocol with Apache Arrow data
+- [OTel Arrow Receiver][ARROWRECEIVER]: for receiving OpenTelemetry Protocol with Apache Arrow data
+
+Note that the exporter and receiver components have been included in the official
+OpenTelemetry Collector-Contrib release images since v0.105.0.
 
 ## Building and distributing these components
 
-The exporter and receiver components are included in the official
-OpenTelemetry Collector-Contrib release images since v0.105.0.
+See [Building][BUILDING].
 
 ## Components included in this repository
 
@@ -30,14 +32,6 @@ maintainers.  These components are:
 
 ### For research and validation
 
-- [`exporter/fileexporter`][ARROWFILEEXPORTER]: Derived from the
-  upstream [fileexporter][UPSTREAMFILEEXPORTER], this component
-  supports writing files that can be read by the corresponding
-  `filereceiver` in this package (which the upstream cannot do).
-- [`receiver/filereceiver`][ARROWFILERECEIVER]: Derived from the
-  upstream [filereceiver][UPSTREAMFILERECEIVER], this component
-  supports reading files written by the corresponding `fileexporter`
-  in this package (unlike the upstream).
 - [`processor/obfuscationprocessor`][OBFUSCATIONPROCESSOR]: Supports
   obfuscation of OpenTelemetry data using a [Feistel
   cipher](https://en.wikipedia.org/wiki/Feistel_cipher).
@@ -51,6 +45,10 @@ Several Collector-Contrib extensions are included in the build:
 - [headersetter][HEADERSETTEREXT]: Allows propagating headers through
   a pipeline
 - [pprof][PPROFEXT]: Allows use of Golang profiling tools.
+- [fileexporter][FILEEXPORTER]: Writes telemetry data to files on disk.
+- [otlpjsonfilereceiver][FILERECEIVER]: Reads telemetry data from JSON files.
+
+Note that while previously this repository had its own local versions of a basic fileexporter and filereceiver derived from upstream, it is now recommended to use the upstream [fileexporter][FILEEXPORTER] and [otlpjsonfilereceiver][FILERECEIVER] instead.
 
 From the core collector repository:
 
@@ -58,16 +56,14 @@ From the core collector repository:
 - [debugexporter][UPSTREAMDEBUG]:   Useful for debugging, prints OTLP data to the console
 
 [BUILDING]: ./BUILDING.md
-[EXPORTER]: ./exporter/otelarrowexporter/README.md
-[RECEIVER]: ./receiver/otelarrowreceiver/README.md
-[CONTRIBUTION]: https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/26491
+[COLLECTORCONTRIB]: https://github.com/open-telemetry/opentelemetry-collector-contrib
+[ARROWEXPORTER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md
+[ARROWRECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md
 [UPSTREAMBATCHPROCESSOR]: https://github.com/open-telemetry/opentelemetry-collector/blob/main/processor/batchprocessor/README.md
 [CONCURRENTBATCHPROCESSOR]: ./processor/concurrentbatchprocessor/README.md
-[ARROWFILEEXPORTER]: ./exporter/fileexporter/README.md
-[ARROWFILERECEIVER]: ./receiver/filereceiver/README.md
-[UPSTREAMFILEEXPORTER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/fileexporter/README.md
-[UPSTREAMFILERECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/filereceiver/README.md
 [OBFUSCATIONPROCESSOR]: ./processor/obfuscationprocessor/README.md
+[FILEEXPORTER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/fileexporter/README.md
+[FILERECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otlpjsonfilereceiver/README.md
 [BASICAUTHEXT]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/basicauthextension/README.md
 [HEADERSETTEREXT]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/headerssetterextension/README.md
 [PPROFEXT]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/pprofextension/README.md
