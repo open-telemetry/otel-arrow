@@ -4,7 +4,7 @@ module github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol
 
 go 1.22.0
 
-toolchain go1.22.7
+toolchain go1.22.2
 
 require (
 	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.117.0
@@ -14,8 +14,8 @@ require (
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.117.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.117.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver v0.117.0
-	github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.33.0
-	github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.33.0
+	github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.31.0
+	github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.31.0
 	go.opentelemetry.io/collector/component v0.117.0
 	go.opentelemetry.io/collector/confmap v1.23.0
 	go.opentelemetry.io/collector/confmap/provider/envprovider v1.23.0
