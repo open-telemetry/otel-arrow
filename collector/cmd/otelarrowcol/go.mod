@@ -4,7 +4,7 @@ module github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol
 
 go 1.22.0
 
-toolchain go1.22.2
+toolchain go1.23.4
 
 require (
 	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.117.0
