@@ -9,6 +9,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## Unreleased
 
 - Update to v0.117.0 collector dependencies. [#277](https://github.com/open-telemetry/otel-arrow/pull/277), [#279](https://github.com/open-telemetry/otel-arrow/pull/279)
+- Deprecate local versions of `fileexporter` and `filereceiver` in favor of upstream components with related README changes. [#232](https://github.com/open-telemetry/otel-arrow/issues/232)
 
 ## [0.31.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.31.0) - 2024-11-19
 
