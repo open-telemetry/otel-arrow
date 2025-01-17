@@ -37,7 +37,7 @@ receivers:
   # This is the core OpenTelemetry Protocol with Apache Arrow receiver
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.117.0
 
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver v0.113.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver v0.117.0
   # Users wanting the OTLP/HTTP Receiver will use the otlp receiver.
   # Users wanting OTLP/gRPC may use the otelarrowreceiver.
   - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.117.0
