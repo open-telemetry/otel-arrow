@@ -18,24 +18,11 @@ To work with this repository, you'll need:
   ```shell
   go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28
 
-## Local Run/Build
+## How to set up and run a local OTel-Arrow collector
 
-### How to set up and run the project locally
-TBD
-
-### Commands for building the project and starting the application.
-TBD
-
-## Testing
--How to run the test suite for the repository. (TBD)
-
--Explanation of different types of tests (e.g., unit, integration, or functional). (TBD)
-
--Tools and frameworks used for testing (TBD)
-
--How to interpret test results and resolve common test failures. (TBD)
-
--Mention code coverage expectations or reporting tools if applicable. (TBD)
+See [collector/README.md](./collector/README.md) for instructions on running the examples.
+See [collector/BUILDING.md](./collector/BUILDING.md) for instructions on building a collector
+from local sources.
 
 ## Contribution Guidelines
 This guide outlines best practices and requirements to ensure a smooth and effective contribution process.
