@@ -160,13 +160,11 @@ func NewConsumer(opts ...Option) *Consumer {
 		schemaResetCounter: noop.Int64Counter{},
 		memoryCounter:      noop.Int64UpDownCounter{},
 	}
-	if cfg.metricsLevel >= configtelemetry.LevelNormal {
-		meter := cfg.meterProvider.Meter("otel-arrow/pkg/otel/arrow_record")
+	meter := cfg.meterProvider.Meter("otel-arrow/pkg/otel/arrow_record")
 
-		c.recordsCounter = mustWarn(meter.Int64Counter("arrow_batch_records"))
-		c.schemaResetCounter = mustWarn(meter.Int64Counter("arrow_schema_resets"))
-		c.memoryCounter = mustWarn(meter.Int64UpDownCounter("arrow_memory_inuse"))
-	}
+	c.recordsCounter = mustWarn(meter.Int64Counter("arrow_batch_records"))
+	c.schemaResetCounter = mustWarn(meter.Int64Counter("arrow_schema_resets"))
+	c.memoryCounter = mustWarn(meter.Int64UpDownCounter("arrow_memory_inuse"))
 	return c
 }
 
@@ -185,9 +183,6 @@ func mustWarn[T any](t T, err error) T {
 }
 
 func (c *Consumer) metricOpts(kvs ...attribute.KeyValue) []metric.AddOption {
-	if c.metricsLevel < configtelemetry.LevelNormal {
-		return nil
-	}
 	return []metric.AddOption{
 		metric.WithAttributes(kvs...),
 	}
