@@ -10,7 +10,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor/internal/metadata"
-	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/processor"
 )
 
@@ -22,8 +21,6 @@ const (
 )
 
 type batchProcessorTelemetry struct {
-	detailed bool
-
 	exportCtx context.Context
 
 	processorAttr    attribute.Set
@@ -45,7 +42,6 @@ func newBatchProcessorTelemetry(set processor.Settings, currentMetadataCardinali
 
 	return &batchProcessorTelemetry{
 		exportCtx:        context.Background(),
-		detailed:         set.MetricsLevel == configtelemetry.LevelDetailed,
 		telemetryBuilder: telemetryBuilder,
 		processorAttr:    attrs,
 	}, nil
