@@ -18,9 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"log"
-	"math/rand"
 
 	"github.com/apache/arrow/go/v17/arrow/ipc"
 	"github.com/apache/arrow/go/v17/arrow/memory"
@@ -93,11 +91,6 @@ type Consumer struct {
 	schemaResetCounter metric.Int64Counter
 	// tracks allocator.Inuse()
 	memoryCounter metric.Int64UpDownCounter
-
-	// uniqueAttr is set to an 8-byte hex digit string with
-	// 32-bits of randomness, applied to all metric events
-	// when MetricsLevel is > Detailed (i.e., above detailed).
-	uniqueAttr attribute.KeyValue
 }
 
 type Config struct {
@@ -133,6 +126,16 @@ func WithMeterProvider(p metric.MeterProvider, l configtelemetry.Level) Option {
 	}
 }
 
+// WithMeterProviderAlt configures an OTel metrics provider.  If none is
+// configured, the global meter provider will be used.
+// This is an alternative to WithMeterProvider, and will eventually be
+// the only option to remove dependency on configtelemetry.Level.
+func WithMeterProviderAlt(p metric.MeterProvider) Option {
+	return func(cfg *Config) {
+		cfg.meterProvider = p
+	}
+}
+
 type streamConsumer struct {
 	bufReader   *bytes.Reader
 	ipcReader   *ipc.Reader
@@ -148,7 +151,6 @@ func NewConsumer(opts ...Option) *Consumer {
 		memLimit:      defaultMemoryLimit,
 		tracesConfig:  arrow.DefaultConfig(),
 		meterProvider: otel.GetMeterProvider(),
-		metricsLevel:  configtelemetry.LevelNormal,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -162,19 +164,16 @@ func NewConsumer(opts ...Option) *Consumer {
 	c := &Consumer{
 		Config:             cfg,
 		allocator:          allocator,
-		uniqueAttr:         attribute.String("stream_unique", fmt.Sprintf("%08x", rand.Uint32())),
 		streamConsumers:    make(map[string]*streamConsumer),
 		recordsCounter:     noop.Int64Counter{},
 		schemaResetCounter: noop.Int64Counter{},
 		memoryCounter:      noop.Int64UpDownCounter{},
 	}
-	if cfg.metricsLevel >= configtelemetry.LevelNormal {
-		meter := cfg.meterProvider.Meter("otel-arrow/pkg/otel/arrow_record")
+	meter := cfg.meterProvider.Meter("otel-arrow/pkg/otel/arrow_record")
 
-		c.recordsCounter = mustWarn(meter.Int64Counter("arrow_batch_records"))
-		c.schemaResetCounter = mustWarn(meter.Int64Counter("arrow_schema_resets"))
-		c.memoryCounter = mustWarn(meter.Int64UpDownCounter("arrow_memory_inuse"))
-	}
+	c.recordsCounter = mustWarn(meter.Int64Counter("arrow_batch_records"))
+	c.schemaResetCounter = mustWarn(meter.Int64Counter("arrow_schema_resets"))
+	c.memoryCounter = mustWarn(meter.Int64UpDownCounter("arrow_memory_inuse"))
 	return c
 }
 
@@ -193,12 +192,6 @@ func mustWarn[T any](t T, err error) T {
 }
 
 func (c *Consumer) metricOpts(kvs ...attribute.KeyValue) []metric.AddOption {
-	if c.metricsLevel < configtelemetry.LevelNormal {
-		return nil
-	}
-	if c.metricsLevel > configtelemetry.LevelDetailed {
-		kvs = append(kvs, c.uniqueAttr)
-	}
 	return []metric.AddOption{
 		metric.WithAttributes(kvs...),
 	}
