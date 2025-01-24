@@ -44,7 +44,6 @@ This guide outlines best practices and requirements to ensure a smooth and effec
 
 All contributions must align with the project's coding standards and guidelines. These standards ensure consistency, readability, and maintainability of the codebase. Please review the following:
 
-- Follow the coding standards outlined in [CONTRIBUTING.md](./CONTRIBUTING.md).
 - Use clear and concise naming conventions for variables, functions, and files.
 - Run linters or formatters where applicable to maintain consistent code style.
 
