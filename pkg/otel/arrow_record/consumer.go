@@ -151,7 +151,6 @@ func NewConsumer(opts ...Option) *Consumer {
 		memLimit:      defaultMemoryLimit,
 		tracesConfig:  arrow.DefaultConfig(),
 		meterProvider: otel.GetMeterProvider(),
-		metricsLevel:  configtelemetry.LevelNormal,
 	}
 	for _, opt := range opts {
 		opt(&cfg)
