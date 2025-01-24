@@ -445,12 +445,18 @@ func (b *shard) sendItems(trigger trigger) {
 		if err != nil {
 			b.processor.logger.Warn("Sender failed", zap.Error(err))
 		} else {
-			// Note that bytes is only used by record() when level is detailed.
-			var bytes int64
-			if b.processor.telemetry.detailed {
-				bytes = int64(b.batch.sizeBytes(req))
+			var bytes int
+			bpt := b.processor.telemetry
+
+			// Check if the instrument is enabled to calculate the size of the batch in bytes.
+			// See https://pkg.go.dev/go.opentelemetry.io/otel/sdk/metric/internal/x#readme-instrument-enabled
+			batchSendSizeBytes := bpt.telemetryBuilder.ProcessorBatchBatchSendSizeBytes
+			instr, ok := batchSendSizeBytes.(interface{ Enabled(context.Context) bool })
+			if !ok || instr.Enabled(bpt.exportCtx) {
+				bytes = b.batch.sizeBytes(req)
 			}
-			b.processor.telemetry.record(trigger, int64(sent), bytes)
+
+			bpt.record(trigger, int64(sent), int64(bytes))
 		}
 	}()
 }
