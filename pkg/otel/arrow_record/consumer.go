@@ -18,9 +18,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"log"
-	"math/rand"
 
 	"github.com/apache/arrow/go/v17/arrow/ipc"
 	"github.com/apache/arrow/go/v17/arrow/memory"
@@ -93,11 +91,6 @@ type Consumer struct {
 	schemaResetCounter metric.Int64Counter
 	// tracks allocator.Inuse()
 	memoryCounter metric.Int64UpDownCounter
-
-	// uniqueAttr is set to an 8-byte hex digit string with
-	// 32-bits of randomness, applied to all metric events
-	// when MetricsLevel is > Detailed (i.e., above detailed).
-	uniqueAttr attribute.KeyValue
 }
 
 type Config struct {
@@ -162,7 +155,6 @@ func NewConsumer(opts ...Option) *Consumer {
 	c := &Consumer{
 		Config:             cfg,
 		allocator:          allocator,
-		uniqueAttr:         attribute.String("stream_unique", fmt.Sprintf("%08x", rand.Uint32())),
 		streamConsumers:    make(map[string]*streamConsumer),
 		recordsCounter:     noop.Int64Counter{},
 		schemaResetCounter: noop.Int64Counter{},
@@ -195,9 +187,6 @@ func mustWarn[T any](t T, err error) T {
 func (c *Consumer) metricOpts(kvs ...attribute.KeyValue) []metric.AddOption {
 	if c.metricsLevel < configtelemetry.LevelNormal {
 		return nil
-	}
-	if c.metricsLevel > configtelemetry.LevelDetailed {
-		kvs = append(kvs, c.uniqueAttr)
 	}
 	return []metric.AddOption{
 		metric.WithAttributes(kvs...),
