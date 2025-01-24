@@ -8,15 +8,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## [0.32.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.32.0) - 2025-01-24
+
+- Make a generic `AttributesStore` in pkg/arrow. [#276](https://github.com/open-telemetry/otel-arrow/pull/276)
 - Update to v0.117.0 collector dependencies. [#277](https://github.com/open-telemetry/otel-arrow/pull/277), [#279](https://github.com/open-telemetry/otel-arrow/pull/279)
-- Deprecate local versions of `fileexporter` and `filereceiver` in favor of upstream components with related README changes. [#232](https://github.com/open-telemetry/otel-arrow/issues/232)
+- Deprecate local versions of `fileexporter` and `filereceiver` in favor of upstream components with related README changes. [#278](https://github.com/open-telemetry/otel-arrow/pull/278)
+- Made an incremental step towards deprecating `MetricsLevel` usage in the project. [#283](https://github.com/open-telemetry/otel-arrow/pull/283)
 
 ## [0.31.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.31.0) - 2024-11-19
 
 - Update to v0.114.0 collector dependencies. [#274](https://github.com/open-telemetry/otel-arrow/pull/274)
 - Empty SpanID bug-fix. [#273](https://github.com/open-telemetry/otel-arrow/pull/273)
 
-## [0.30.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.3029.0) - 2024-11-06
+## [0.30.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.30.0) - 2024-11-06
 
 - Update to v0.113.0 collector dependencies. [#269](https://github.com/open-telemetry/otel-arrow/pull/269)
 
