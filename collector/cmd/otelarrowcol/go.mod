@@ -18,11 +18,11 @@ require (
 	github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.32.0
 	go.opentelemetry.io/collector/component v0.119.0
 	go.opentelemetry.io/collector/confmap v1.25.0
-	go.opentelemetry.io/collector/confmap/provider/envprovider v1.23.0
-	go.opentelemetry.io/collector/confmap/provider/fileprovider v1.23.0
-	go.opentelemetry.io/collector/confmap/provider/httpprovider v1.23.0
-	go.opentelemetry.io/collector/confmap/provider/httpsprovider v1.23.0
-	go.opentelemetry.io/collector/confmap/provider/yamlprovider v1.23.0
+	go.opentelemetry.io/collector/confmap/provider/envprovider v1.25.0
+	go.opentelemetry.io/collector/confmap/provider/fileprovider v1.25.0
+	go.opentelemetry.io/collector/confmap/provider/httpprovider v1.25.0
+	go.opentelemetry.io/collector/confmap/provider/httpsprovider v1.25.0
+	go.opentelemetry.io/collector/confmap/provider/yamlprovider v1.25.0
 	go.opentelemetry.io/collector/connector v0.119.0
 	go.opentelemetry.io/collector/exporter v0.119.0
 	go.opentelemetry.io/collector/exporter/debugexporter v0.119.0
