@@ -16,7 +16,7 @@ require (
 	github.com/pierrec/lz4 v2.0.5+incompatible
 	github.com/stretchr/testify v1.10.0
 	github.com/zeebo/assert v1.3.0
-	go.opentelemetry.io/collector/config/configtelemetry v0.117.0
+	go.opentelemetry.io/collector/config/configtelemetry v0.119.0
 	go.opentelemetry.io/collector/pdata v1.23.0
 	go.opentelemetry.io/otel v1.33.0
 	go.opentelemetry.io/otel/metric v1.33.0
