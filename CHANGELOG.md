@@ -8,6 +8,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+## [0.33.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.33.0) - 2025-02-06
+
 - Upgrade to v0.119.0 of collector dependencies. [#285](https://github.com/open-telemetry/otel-arrow/pull/285), [#286](https://github.com/open-telemetry/otel-arrow/pull/286)
 - Perform additional updates in otel-arrow for upstream `MetricsLevel` deprecation. [#287](https://github.com/open-telemetry/otel-arrow/pull/287)
 
