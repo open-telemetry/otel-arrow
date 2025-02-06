@@ -14,8 +14,8 @@ require (
 	github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.119.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.119.0
 	github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver v0.119.0
-	github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.32.0
-	github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.32.0
+	github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.33.0
+	github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.33.0
 	go.opentelemetry.io/collector/component v0.119.0
 	go.opentelemetry.io/collector/confmap v1.25.0
 	go.opentelemetry.io/collector/confmap/provider/envprovider v1.25.0
