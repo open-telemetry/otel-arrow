@@ -22,7 +22,6 @@ import (
 
 	"github.com/apache/arrow/go/v17/arrow/ipc"
 	"github.com/apache/arrow/go/v17/arrow/memory"
-	"go.opentelemetry.io/collector/config/configtelemetry"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -100,7 +99,6 @@ type Config struct {
 
 	// from component.TelemetrySettings
 	meterProvider metric.MeterProvider
-	metricsLevel  configtelemetry.Level
 }
 
 // WithMemoryLimit configures the Arrow limited memory allocator.
@@ -119,9 +117,8 @@ func WithTracesConfig(tcfg *arrow.Config) Option {
 
 // WithMeterProvider configures an OTel metrics provider.  If none is
 // configured, the global meter provider will be used.
-func WithMeterProvider(p metric.MeterProvider, l configtelemetry.Level) Option {
+func WithMeterProvider(p metric.MeterProvider) Option {
 	return func(cfg *Config) {
-		cfg.metricsLevel = l
 		cfg.meterProvider = p
 	}
 }
