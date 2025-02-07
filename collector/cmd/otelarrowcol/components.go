@@ -77,8 +77,8 @@ func components() (otelcol.Factories, error) {
 		return otelcol.Factories{}, err
 	}
 	factories.ProcessorModules = make(map[component.Type]string, len(factories.Processors))
-	factories.ProcessorModules[concurrentbatchprocessor.NewFactory().Type()] = "github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.32.0"
-	factories.ProcessorModules[obfuscationprocessor.NewFactory().Type()] = "github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.32.0"
+	factories.ProcessorModules[concurrentbatchprocessor.NewFactory().Type()] = "github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.33.0"
+	factories.ProcessorModules[obfuscationprocessor.NewFactory().Type()] = "github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.33.0"
 
 	factories.Connectors, err = connector.MakeFactoryMap(
 	)
