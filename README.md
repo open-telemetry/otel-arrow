@@ -1,5 +1,9 @@
 # OpenTelemetry Protocol with Apache Arrow
 
+[![Slack](https://img.shields.io/badge/slack-@cncf/otel/arrow-brightgreen.svg?logo=slack)](https://cloud-native.slack.com/archives/C07S4Q67LTF)
+[![Build](https://github.com/open-telemetry/otel-arrow/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/open-telemetry/otel-arrow/actions/workflows/ci.yml)
+[![OpenSSF Scorecard for otel-arrow](https://api.scorecard.dev/projects/github.com/open-telemetry/otel-arrow/badge)](https://scorecard.dev/viewer/?uri=github.com/open-telemetry/otel-arrow)
+
 The [OpenTelemetry Protocol with Apache
 Arrow](https://github.com/open-telemetry/otel-arrow) project is an
 effort within [OpenTelemetry](https://opentelemetry.io/) to use
