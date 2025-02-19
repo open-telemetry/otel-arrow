@@ -9,10 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
-
-	// Had to add these two lines manually for some reason - mdatagen didn't import them properly
-	"go.opentelemetry.io/otel/metric"
-	"github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor/internal/metadata"
 )
 
 func TestSetupTelemetry(t *testing.T) {
