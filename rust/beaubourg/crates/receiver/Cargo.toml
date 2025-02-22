@@ -1,0 +1,25 @@
+[package]
+name = "receiver"
+version = "0.3.0"
+authors = ["Laurent Querel <l.querel@f5.com>"]
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+task = { path = "../task" }
+context = { path = "../context" }
+
+serde = { version = "1.0.136", features = ["derive"] }
+serde_yaml = "0.8.23"
+thiserror = "1.0.30"
+tokio = { version = "1.16.1", features = ["rt-multi-thread", "macros", "net"] }
+async-trait = "0.1.52"
+tracing = "0.1.30"
+futures = "0.3.21"
+tokio-stream = "0.1.8"
+socket2 = { version="0.4.4", features = ["all"]}
+maplit = "1.0.2"
+flume = "0.10.11"
+
+[build-dependencies]
+tonic-build = "0.6.2"

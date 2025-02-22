@@ -1,0 +1,24 @@
+[profile.ci]
+failure-output = "immediate-final"
+# Do not cancel the test run on the first failure.
+fail-fast = false
+
+[profile.ci.junit]
+path = "junit.xml"
+
+[build]
+rustflags = ["-W", "missing_docs"]
+
+[target.'cfg(all())']
+rustflags = [
+    "-Dunsafe_code",
+    "-Wmissing_docs",
+    "-Wclippy::all",
+    "-Wclippy::await_holding_lock",
+    "-Wclippy::char_lit_as_u8",
+]
+
+[target.'cfg(feature = "cargo-clippy")']
+rustflags = [
+    "-Wmissing_docs",
+]
