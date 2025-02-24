@@ -60,7 +60,7 @@ diagram.
 
 The OpenTelemetry Collector-Contrib distribution includes the
 OTel-Arrow Receiver and Exporter. The following diagram is an overview
-of this integration, which supports seamless fallback from OTAP . In
+of this integration, which supports seamless fallback from OTAP to OTLP. In
 this first phase, the internal representation of the telemetry data is
 still fundamentally row-oriented.
 
