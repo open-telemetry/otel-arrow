@@ -123,16 +123,6 @@ func WithMeterProvider(p metric.MeterProvider) Option {
 	}
 }
 
-// WithMeterProviderAlt configures an OTel metrics provider.  If none is
-// configured, the global meter provider will be used.
-// This is an alternative to WithMeterProvider, and will eventually be
-// the only option to remove dependency on configtelemetry.Level.
-func WithMeterProviderAlt(p metric.MeterProvider) Option {
-	return func(cfg *Config) {
-		cfg.meterProvider = p
-	}
-}
-
 type streamConsumer struct {
 	bufReader   *bytes.Reader
 	ipcReader   *ipc.Reader
