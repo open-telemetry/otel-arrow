@@ -1,0 +1,47 @@
+{
+  "timestamps":[0,1,2],
+  "attributes": {
+    "attribute_2": {
+      "string": {
+        "required": false,
+        "values": [
+          "val1",
+          "val2",
+          null
+        ]
+      }
+    },
+    "attribute_1": {
+      "string": {
+        "required": true,
+        "values": [
+          "val1",
+          "val2",
+          "val3"
+        ]
+      }
+    }
+  },
+  "metrics": {
+    "metric_1": {
+      "int64": {
+        "required": true,
+        "values": [
+          1,
+          2,
+          3
+        ]
+      }
+    },
+    "metric_2": {
+      "double": {
+        "required": false,
+        "values": [
+          1.0,
+          2.0,
+          null
+        ]
+      }
+    }
+  }
+}
