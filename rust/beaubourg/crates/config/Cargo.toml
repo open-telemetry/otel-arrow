@@ -1,0 +1,22 @@
+[package]
+name = "config"
+version = "0.3.0"
+authors = ["Laurent Querel <l.querel@f5.com>"]
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+receiver = { path = "../receiver" }
+exporter = { path = "../exporter" }
+processor = { path = "../processor" }
+signal = { path = "../signal" }
+
+serde = { version = "1.0.136", features = ["derive"] }
+serde_yaml = "0.8.23"
+thiserror = "1.0.30"
+tracing = "0.1.30"
+validator = { version = "0.14.0", features = ["derive"] }
+
+[dev-dependencies]
+async-trait = "0.1.52"
+tokio = { version = "1.16.1", features = ["rt-multi-thread"] }

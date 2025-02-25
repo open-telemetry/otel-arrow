@@ -1,0 +1,70 @@
+[workspace]
+members = [
+	"crates/*",
+]
+
+
+[package]
+name = "beaubourg"
+version = "0.3.0"
+description = "Lightweight Rust library for building generic pipelines consisting of a collection of receivers, processors, and exporters."
+authors = ["Laurent Querel <l.querel@f5.com>"]
+edition = "2021"
+license = "Apache-2.0"
+exclude = [
+	"/.github",
+	"/.githooks",
+	"/.config",
+]
+
+
+[dependencies]
+receiver = { path = "crates/receiver" }
+exporter = { path = "crates/exporter" }
+processor = { path = "crates/processor" }
+task = { path = "crates/task" }
+config = { path = "crates/config" }
+engine = { path = "crates/engine" }
+signal = { path = "crates/signal" }
+context = { path = "crates/context" }
+tracing = "0.1.30"
+
+
+[dev-dependencies]
+tokio = { version = "1.16.1", features = ["rt-multi-thread", "macros", "io-util"] }
+futures = "0.3.21"
+async-trait = "0.1.52"
+serde = { version = "1.0.136", features = ["derive"] }
+serde_yaml = "0.8.23"
+color-eyre = "0.6.0"
+tracing = "0.1.30"
+tracing-subscriber = "0.3.8"
+mimalloc-rust = "0.1.5"
+socket2 = { version="0.4.4", features = ["all"]}
+tokio-stream = { version = "0.1.8", features = ["net"] }
+once_cell = "1.9.0"
+num_cpus = "1.13.1"
+
+[[example]]
+name = "multithread_engine_example"
+path = "examples/multithread_engine_example.rs"
+
+[[example]]
+name = "thread_per_core_engine_example"
+path = "examples/thread_per_core_engine_example.rs"
+
+[profile.release]
+debug = 1
+incremental = true	# disable incremental when sscache is involved via CARGO_INCREMENTAL=0
+lto = "thin"
+
+#lto = "fat"
+#codegen-units = 1
+#opt-level = 3
+#debug = false
+# debug = true
+
+# To compile with the production profile `cargo --profile production ...`
+#[profile.production]
+#inherits = "release"
+#lto = true

@@ -27,30 +27,29 @@ dist:
 
 exporters:
   # This is the core OpenTelemetry Protocol with Apache Arrow exporter
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/otelarrowexporter v0.119.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/otelarrowexporter v0.120.0
 
-  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.119.0
-  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.119.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.119.0
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.120.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.120.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.120.0
 
 receivers:
   # This is the core OpenTelemetry Protocol with Apache Arrow receiver
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.119.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otelarrowreceiver v0.120.0
 
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver v0.119.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/otlpjsonfilereceiver v0.120.0
   # Users wanting the OTLP/HTTP Receiver will use the otlp receiver.
   # Users wanting OTLP/gRPC may use the otelarrowreceiver.
-  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.119.0
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.120.0
 
 processors:
   - gomod: github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.33.0
   - gomod: github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.33.0
 
 extensions:
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.119.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.119.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.119.0
-
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.120.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.120.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.120.0
 
 replaces:
   - github.com/open-telemetry/otel-arrow => ../../../
