@@ -108,8 +108,8 @@ into column-oriented data, which also makes the data more compressible.
 
 ## Project status
 
-The first phase of the project has entered the [Beta stability level,
-as defined by the OpenTelemetry collector
+The Phase-1 project deliverables, located in the Collector-Contrib repository, 
+are in the [Beta stability level, as defined by the OpenTelemetry collector
 guidelines](https://github.com/open-telemetry/opentelemetry-collector#beta).
 We do not plan to make breaking changes in this protocol without first
 engineering an approach that ensures forwards and
@@ -117,7 +117,7 @@ backwards-compatibility for existing and new users.  We believe it is
 safe to begin using these components for production data, non-critical
 workloads.
 
-### Project deliverables 
+### Phase-1 project deliverables 
 
 We are pleased to release two new collector components, presently
 housed in [OpenTelemetry
