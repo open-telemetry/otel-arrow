@@ -181,7 +181,7 @@ using limits prescribed in configuration.
 
 We envision using a new section, `service::memory`, used to configure memory
 assignments for each pipeline. We anticipate the need to configure both broad memory
-limits (e.g., per component, per pipeline) and fine-grian ones (e.g., per tenant).
+limits (e.g., per component, per pipeline) and fine-grain ones (e.g., per tenant).
 We see the admission controller also as typical location for other sorts of throttling
 (e.g., rate limits) and prioritization (e.g., by signal, by tenant).
 
@@ -203,7 +203,7 @@ Following the reasoning given above, because the OTel-Arrow pipeline
 is focused exclusively on OTAP support, we find there are few reasons
 to bundle batching and queuing support into an `exporterhelper`
 module. Instead, we will provide queuing and batching support using
-dedicated processors. Likewise, retry, failover, and timeout support
+dedicated channels and processors. Likewise, retry, failover, and timeout support
 will be provided as primitive features.
 
 ### Self-observability
