@@ -17,7 +17,7 @@ dist:
 
   # Note: this version number is replaced to match the current release using `sed`
   # during the release process, see ../../../RELEASING.md.
-  version: 0.33.0
+  version: 0.34.0
 
   # Project-internal use: Directory path required for the `make
   # genotelarrowcol`, which the Dockerfile also recognizes.
@@ -43,8 +43,8 @@ receivers:
   - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.120.0
 
 processors:
-  - gomod: github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.33.0
-  - gomod: github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.33.0
+  - gomod: github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.34.0
+  - gomod: github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.34.0
 
 extensions:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.120.0
