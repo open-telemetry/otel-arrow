@@ -1,2 +1,122 @@
-# Dataflow Mechanics
+# OTEL Dataflow Mechanics
 
+## Introduction
+
+This document describes the various components and operational mechanics of the dataflow runtime used in Phase 2 of this
+project. We aim to unify the pipeline and connector concepts into a single dataflow concept consisting exclusively of
+receivers, processors, and exporters. This design will:
+
+1. Support a standard pipeline configuration with or without connectors.
+2. Support more complex scenarios in a simpler and more uniform manner.
+
+## Telemetry Signal Types and Streams
+
+The telemetry signals supported by this dataflow runtime adheres to OpenTelemetry’s defined data model, encompassing:
+
+- Metrics Stream (denoted as M in this document).
+- Logs Stream (L)
+- Traces Stream (T)
+- Events Stream (E - typically embedded within Logs or Traces)
+
+Throughout this document, the following notation will be used consistently:
+
+- **A**: Represents a stream containing any combination of telemetry signal types (Metrics, Logs, Traces, Events).
+  Example: A = {M, L, T, E} or any subset of this set.
+- **M | L**: Denotes a single stream containing a mixture of Metrics and Logs.
+- **M & L**: Represents two separate, parallel streams: one for Metrics and one for Logs.
+
+> Note: Internal dataflow components may attach an attributes envelope to telemetry signals (e.g., deadline attributes).
+Such envelopes carry metadata utilized by downstream components for processing decisions.
+
+## Control Signal Types and Propagation
+
+This dataflow runtime utilizes internal control signals to manage system operations and enforce delivery, latency, or
+resource constraints. The following signals are defined:
+
+- Acknowledgement Signal (ACK): Indicates external systems have reliably received telemetry data.
+- Health Check Signal (HCS): Indicates the operational status (Up/Down) of external dependencies (e.g., exporter
+  backends).
+- Deadline Signal (DDL): Emitted when a configured time limit for task completion (e.g., data storage) is exceeded.
+- Resource Budget Signal (REB): Indicates the system’s capacity to accept additional telemetry data. A REB value of zero
+  signifies no further acceptance, while a non-zero REB defines permissible data acceptance conditions (e.g., message
+  size, rate limits).
+- Timer Signal (TMR): Emitted upon timer expiration, used to trigger scheduled tasks (e.g., batch emissions).
+- Error Signal (ERR): Represents errors encountered by the dataflow components.
+- Configuration Update Signal (CUS): Indicates a change in the configuration of a component.
+- Shutdown Signal (SDN): Indicates the system is shutting down.
+
+Components within the dataflow may subscribe to these signals to trigger specific behaviors or policies. When multiple
+components subscribe to a single control signal, the dataflow runtime employs a reverse propagation mechanism. This
+mechanism propagates signals starting from components nearest to the signal’s origin in the dataflow graph, moving
+backward toward the receivers. Each triggered component may decide whether to propagate the signal further upstream or
+terminate propagation at its level.
+
+> Important Note: All receivers must support handling of REB signals, though explicit subscription is not required. 
+Receivers are expected to reduce or halt acceptance of telemetry data when REB indicates insufficient resources.
+
+## Dataflow Components
+
+Dataflows are represented as Directed Acyclic Graphs (DAGs) composed of interconnected nodes. Each node accepts 0 to n
+input streams and produces 0 to m output streams. Dataflows are free from cycles.
+
+Nodes are categorized into three types:
+
+- Receivers (sources): Nodes interfacing dataflow runtime with external telemetry sources. Example signatures:
+  - Any signal type: [Receiver-ID] → A (e.g., OTLP receiver)
+  - Metrics only: [Receiver-ID] → M (e.g., Prometheus receiver)
+- Processors: Nodes performing intermediate transformations, routing, filtering, or enrichment. Example signatures:
+  - General-purpose processor: A → [Processor-ID] → A
+  - Metrics-filtering processor: A → [Processor-ID] → M
+  - Type-based router: A → [Processor-ID] → M & L
+- Exporters (sinks): Nodes interfacing the dataflow runtime with external data consumers or storage systems. Example
+  signatures:
+  - Any signal type: A → [Exporter-ID]
+  - Metrics only: M → [Exporter-ID]
+
+Pruning Rules:
+Receivers or exporters without at least one active connected path are considered inactive. During the compilation of the
+dataflow, inactive nodes are automatically removed from the DAG.
+
+### Processors
+
+Three categories of processors have been identified so far.
+
+#### Routing Processors
+
+- Type Router (TR): Routes telemetry data based on signal type (Metrics, Logs, Traces).
+  - Statefulness: Stateless
+  - Default destination: Optional, handles signals not matching explicit routing rules.
+- Content Router (CR): Routes telemetry data based on defined content conditions (e.g., attribute matching).
+  - Statefulness: Stateless
+  - Default destination: Optional.
+- Failover Router (FR): Routes telemetry data to alternative destinations when primary paths fail or exceed deadlines.
+  - Statefulness: Stateful; retains unacknowledged data until acknowledged or timeout.
+  - Subscribed Signals: ACK, HCS, DDL
+  - Propagated Signals: TBD.
+
+#### Control Processors
+
+- Admission Controller (AC): Determines acceptance of telemetry data based on resource availability or other conditions
+  at receiver points. Propagates REB signals upstream to receivers, affecting data acceptance decisions.
+- Deadline Controller (DC): Assigns deadlines to telemetry messages using defined policies. Deadlines are added as
+  attributes ("deadline attribute envelope") within the telemetry data.
+  - Subscribed Signals: REB
+  - Propagated Signals: REB
+- Ack Controller (AK): Determines the point of acknowledgment in dataflows:
+  - Ingress: Immediate acknowledgment upon reception.
+  - Pre-export: Acknowledgment just before exporting.
+  - Downstream: Acknowledgment only after confirmed reception by the external system.
+- Batch Processor (BP): Manages batching of telemetry signals, defining maximum batch size and timeout intervals for
+  emission.
+
+#### Data Processors
+
+These processors directly modify the content of telemetry data. They can filter, aggregate, enrich, convert, ... The 
+four main data processors are:
+- Filter Processor (FP): A processor that allows only telemetry data meeting specific conditions to pass through. It is
+  important to distinguish between a Content Router (CR) and a Filter Processor (FP):
+  - A CR directs data to different destinations.
+  - An FP discards data that does not meet the specified conditions.
+- Aggregation Processor (AP): A processor that aggregates metrics data based on certain criteria.
+- Sampling Processor (SP): A processor that preserves a subset of input data based on a sampling strategy.
+- Converter Processor (CP): A processor that transforms telemetry data from one type to another.
