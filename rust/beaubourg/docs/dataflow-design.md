@@ -52,14 +52,13 @@ resource constraints. The following signals are defined:
 - **Configuration** Update Signal (`CFG`): Indicates a change in the configuration of a component.
 - **Shutdown Signal** (`KIL`): Indicates the system is shutting down.
 
+### Reverse Propagation Mechanism
+
 Components within the dataflow may subscribe to these signals to trigger specific behaviors or policies. When multiple
-components subscribe to a single control signal, the dataflow runtime employs a reverse propagation mechanism. This
+components subscribe to a single control signal, the dataflow runtime employs a **reverse propagation mechanism**. This
 mechanism propagates signals starting from components nearest to the signal’s origin in the dataflow graph, moving
 backward toward the receivers. Each triggered component may decide whether to propagate the signal further upstream or
 terminate propagation at its level.
-
-> Important Note: All receivers must support handling of REB signals, though explicit subscription is not required. 
-Receivers are expected to reduce or halt acceptance of telemetry data when REB indicates insufficient resources.
 
 ## Dataflow Components
 
@@ -68,7 +67,9 @@ input streams and produces 0 to m output streams. Dataflows are free from cycles
 
 Nodes are categorized into three types:
 
-- Receivers (sources): Nodes interfacing dataflow runtime with external telemetry sources. Example signatures:
+- Receivers (sources): Nodes interfacing dataflow runtime with external telemetry sources. All receivers must support
+  handling of `REB` signals. Receivers are expected to reduce or halt acceptance of telemetry data when `REB` indicates
+  insufficient resources. Example signatures:
   - Any signal type: `[Receiver-ID] → A` (e.g., OTLP receiver)
   - Metrics only: `[Receiver-ID] → M` (e.g., Prometheus receiver)
 - Processors: Nodes performing intermediate transformations, routing, filtering, or enrichment. Example signatures:
