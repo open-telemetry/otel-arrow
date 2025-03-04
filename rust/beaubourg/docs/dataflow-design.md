@@ -52,6 +52,8 @@ resource constraints. The following signals are defined:
 - **Configuration** Update Signal (`CFG`): Indicates a change in the configuration of a component.
 - **Shutdown Signal** (`KIL`): Indicates the system is shutting down.
 
+The control signals are summarized with the abbreviation `CTRL`. `CRTL` can be any of the control signals listed above.
+
 ### Reverse Propagation Mechanism
 
 Components within the dataflow may subscribe to these signals to trigger specific behaviors or policies. When multiple
@@ -62,24 +64,24 @@ terminate propagation at its level.
 
 ## Dataflow Components
 
-Dataflows are represented as Directed Acyclic Graphs (DAGs) composed of interconnected nodes. Each node accepts 0 to n
+Dataflows are represented as **Directed Acyclic Graphs** (DAGs) composed of interconnected nodes. Each node accepts 0 to n
 input streams and produces 0 to m output streams. Dataflows are free from cycles.
 
 Nodes are categorized into three types:
 
 - Receivers (sources): Nodes interfacing dataflow runtime with external telemetry sources. All receivers must support
   handling of `REB` signals. Receivers are expected to reduce or halt acceptance of telemetry data when `REB` indicates
-  insufficient resources. Example signatures:
-  - Any signal type: `[Receiver-ID] → A` (e.g., OTLP receiver)
-  - Metrics only: `[Receiver-ID] → M` (e.g., Prometheus receiver)
+  insufficient resources. Example of receiver signatures:
+  - Receiver producing any signal type: `CTRL → [Receiver-ID] → A` (e.g., OTLP receiver)
+  - Receiver producing only metrics: `CTRL → [Receiver-ID] → M` (e.g., Prometheus receiver)
 - Processors: Nodes performing intermediate transformations, routing, filtering, or enrichment. Example signatures:
-  - General-purpose processor: `A → [Processor-ID] → A`
-  - Metrics-filtering processor: `A → [Processor-ID] → M`
-  - Type-based router: `A → [Processor-ID] → M & L`
+  - General-purpose processor: `A | CTRL → [Processor-ID] → A`
+  - Metrics-filtering processor: `A | CTRL → [Processor-ID] → M`
+  - Type-based router: `A | CTRL → [Processor-ID] → M & L`
 - Exporters (sinks): Nodes interfacing the dataflow runtime with external data consumers or storage systems. Example
   signatures:
-  - Any signal type: `A → [Exporter-ID]`
-  - Metrics only: `M → [Exporter-ID]`
+  - Any signal type: `A | CTRL → [Exporter-ID]`
+  - Metrics only: `M | CTRL → [Exporter-ID]`
 
 Pruning Rules:
 Receivers or exporters without at least one active connected path are considered inactive. During the compilation of the
