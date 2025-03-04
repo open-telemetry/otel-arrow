@@ -13,7 +13,7 @@ receivers, processors, and exporters. This design will:
 
 The telemetry signals supported by this dataflow runtime adheres to OpenTelemetry’s defined data model, encompassing:
 
-- Metrics Stream (denoted as M in this document).
+- Metrics Stream (denoted as `M` in this document).
 - Logs Stream `L`
 - Traces Stream `T`
 - Events Stream (`E` - typically embedded within Logs or Traces)
@@ -33,7 +33,7 @@ header). The headers may carry metadata utilized by downstream components for pr
 An unique ID is assigned to each incoming message, allowing the dataflow runtime to track the message throughout the
 dataflow. This ID is used to correlate messages across different telemetry streams and to manage acknowledgments.
 
-`Msg = {ID, Envelope, Data}`
+`Msg = {ID, Envelope, OTAP Data}`
 
 ## Control Signal Types and Propagation
 
@@ -44,9 +44,9 @@ resource constraints. The following signals are defined:
 - **Health Check Signal** (`HCS`): Indicates the operational status (Up/Down) of external dependencies (e.g., exporter
   backends).
 - **Deadline Signal** (`DDL`): Emitted when a configured time limit for task completion (e.g., data storage) is exceeded.
-- **Resource Budget Signal** (`REB`): Indicates the system’s capacity to accept additional telemetry data. A REB value of zero
-  signifies no further acceptance, while a non-zero REB defines permissible data acceptance conditions (e.g., message
-  size, rate limits).
+- **Resource Budget Signal** (`REB`): Indicates the system’s capacity to accept additional telemetry data. A `REB` value
+  of zero signifies no further acceptance, while a non-zero `REB` defines permissible data acceptance conditions (e.g.,
+  message size, rate limits).
 - **Timer Signal** (`TMR`): Emitted upon timer expiration, used to trigger scheduled tasks (e.g., batch emissions).
 - **Error Signal** (`ERR`): Represents errors encountered by the dataflow components.
 - **Configuration** Update Signal (`CFG`): Indicates a change in the configuration of a component.
