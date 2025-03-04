@@ -69,17 +69,19 @@ input streams and produces 0 to m output streams. Dataflows are free from cycles
 
 Nodes are categorized into three types:
 
-- **Receivers** (sources): Nodes interfacing dataflow runtime with external telemetry sources. All receivers must support
-  handling of `REB` signals. Receivers are expected to reduce or halt acceptance of telemetry data when `REB` indicates
-  insufficient resources. Example of receiver signatures:
+- **Receivers** (sources): Nodes interfacing the dataflow runtime with external telemetry sources. Receivers have 0 input
+  streams. All receivers must support handling of `REB` signals. Receivers are expected to reduce or halt acceptance of
+  telemetry data when `REB` indicates insufficient resources. Examples of receiver signatures:
   - Receiver producing any signal type: `[Receiver-ID] → A` (e.g., OTLP receiver). 
   - Receiver producing only metrics: `[Receiver-ID] → M` (e.g., Prometheus receiver).
-- **Processors**: Nodes performing intermediate transformations, routing, filtering, or enrichment. Example signatures:
+- **Processors**: Nodes performing intermediate transformations, such as routing, filtering, enrichment, and similar
+  operations. Example signatures:
   - General-purpose processor: `A → [Processor-ID] → A`.
   - Metrics-filtering processor: `A → [Processor-ID] → M`.
   - Type-based router: `A → [Processor-ID] → M & L`.
-- **Exporters** (sinks): Nodes interfacing the dataflow runtime with external data consumers or storage systems. Example
-  signatures:
+- **Exporters** (sinks): Nodes that interface the dataflow runtime with external data consumers or storage systems.
+  An exporter doesn't produce any output stream for the dataflow itself, so its signature is empty on the producer side.
+  Example signatures:
   - Any signal type: `A → [Exporter-ID]`.
   - Metrics only: `M → [Exporter-ID]`.
 
