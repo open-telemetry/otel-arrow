@@ -69,23 +69,23 @@ input streams and produces 0 to m output streams. Dataflows are free from cycles
 
 Nodes are categorized into three types:
 
-- Receivers (sources): Nodes interfacing dataflow runtime with external telemetry sources. All receivers must support
+- **Receivers** (sources): Nodes interfacing dataflow runtime with external telemetry sources. All receivers must support
   handling of `REB` signals. Receivers are expected to reduce or halt acceptance of telemetry data when `REB` indicates
   insufficient resources. Example of receiver signatures:
-  - Receiver producing any signal type: `CTRL → [Receiver-ID] → A` (e.g., OTLP receiver)
-  - Receiver producing only metrics: `CTRL → [Receiver-ID] → M` (e.g., Prometheus receiver)
-- Processors: Nodes performing intermediate transformations, routing, filtering, or enrichment. Example signatures:
-  - General-purpose processor: `A | CTRL → [Processor-ID] → A`
-  - Metrics-filtering processor: `A | CTRL → [Processor-ID] → M`
-  - Type-based router: `A | CTRL → [Processor-ID] → M & L`
-- Exporters (sinks): Nodes interfacing the dataflow runtime with external data consumers or storage systems. Example
+  - Receiver producing any signal type: `[Receiver-ID] → A` (e.g., OTLP receiver). 
+  - Receiver producing only metrics: `[Receiver-ID] → M` (e.g., Prometheus receiver).
+- **Processors**: Nodes performing intermediate transformations, routing, filtering, or enrichment. Example signatures:
+  - General-purpose processor: `A → [Processor-ID] → A`.
+  - Metrics-filtering processor: `A → [Processor-ID] → M`.
+  - Type-based router: `A → [Processor-ID] → M & L`.
+- **Exporters** (sinks): Nodes interfacing the dataflow runtime with external data consumers or storage systems. Example
   signatures:
-  - Any signal type: `A | CTRL → [Exporter-ID]`
-  - Metrics only: `M | CTRL → [Exporter-ID]`
+  - Any signal type: `A → [Exporter-ID]`.
+  - Metrics only: `M → [Exporter-ID]`.
 
-Pruning Rules:
-Receivers or exporters without at least one active connected path are considered inactive. During the compilation of the
-dataflow, inactive nodes are automatically removed from the DAG.
+The component signatures provide a quick overview of the regular component’s input and output streams. However, all
+dataflow components (receiver, processor, exporter) can receive, produce, or propagate control signals. Those control
+signals are not part of the component signature to keep the notation simple.
 
 ### Processors
 
@@ -130,3 +130,17 @@ four main data processors are:
 - **Aggregation Processor** (`AP`): A processor that aggregates metrics data based on certain criteria.
 - **Sampling Processor** (`SP`): A processor that preserves a subset of input data based on a sampling strategy.
 - **Converter Processor** (`CP`): A processor that transforms telemetry data from one type to another.
+
+## Dataflow Optimizations
+
+### Pruning Rules
+
+Receivers or exporters without at least one active connected path are considered inactive. During the compilation of the
+dataflow, inactive nodes are automatically removed from the DAG.
+
+### Processor Chain
+
+Processors forming a chain without intermediate branches can be logically grouped together to form an aggregated
+processor. The dataflow runtime is free to optimize such chains, for example, by removing intermediate channels.
+
+> More optimization to come.
