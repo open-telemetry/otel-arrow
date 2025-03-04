@@ -7,7 +7,7 @@ project. We aim to unify the pipeline and connector concepts into a single dataf
 receivers, processors, and exporters. This design will:
 
 1. Support a standard OpenTelemetry pipeline configuration with or without connectors (via an adaption layer).
-2. Support more complex scenarios in a simpler and more uniform manner.
+2. Support more complex scenarios in a simpler, more composable, and more uniform manner.
 
 ## Telemetry Signal Types and Streams
 
@@ -35,6 +35,8 @@ dataflow. This ID is used to correlate messages across different telemetry strea
 
 `Msg = {ID, Envelope, OTAP Data}`
 
+> Note: OTAP Data is a batch of telemetry data in OpenTelemetry with Apache Arrow Protocol format.
+
 ## Control Signal Types and Propagation
 
 A dataflow runtime utilizes internal control signals to enforce delivery guarantees, latency requirements, and resource
@@ -51,10 +53,12 @@ constraints, as well as to manage general system operations. The following signa
   message size, rate limits).
 - **Timer Signal** (`TMR`): Emitted upon timer expiration, used to trigger scheduled tasks (e.g., batch emissions).
 - **Error Signal** (`ERR`): Represents errors encountered by the dataflow components.
-- **Configuration Request Signal** (`CFG`): Indicates a change in the configuration of a component.
+- **Configuration Request Signal** (`CFG`): Indicates a change in the configuration of a component. For example, a `CFG`
+  signal can instruct a Filter Processor to include or exclude certain attributes, or notify a Retry Processor to adjust
+  backoff settings.
 - **Shutdown Signal** (`KIL`): Indicates the system is shutting down.
 
-The control signals are summarized with the abbreviation `CTRL`. `CRTL` can be any of the control signals listed above.
+The control signals are summarized with the abbreviation `CTRL`. `CTRL` can be any of the control signals listed above.
 
 All components participating in a dataflow must take into account the deadline header and emit a `DLE` signal if it is
 exceeded.
@@ -76,21 +80,21 @@ input streams and produces 0 to m output streams. Dataflows are free from cycles
 
 Nodes are categorized into three types:
 
-- **Receivers** (sources): Nodes interfacing the dataflow runtime with external telemetry sources. Receivers have 0 input
+- **Receivers** a.k.a. sources (`RC`): Nodes interfacing the dataflow runtime with external telemetry sources. Receivers have 0 input
   streams. All receivers must support handling of `REB` signals. Receivers are expected to reduce or halt acceptance of
   telemetry data when `REB` indicates insufficient resources. Examples of receiver signatures:
-  - Receiver producing any signal type: `[Receiver-ID] → A` (e.g., OTLP receiver). 
-  - Receiver producing only metrics: `[Receiver-ID] → M` (e.g., Prometheus receiver).
-- **Processors**: Nodes performing intermediate transformations, such as routing, filtering, enrichment, and similar
+  - Receiver producing any signal type: `(RC:ID)-[A]->` (e.g., OTLP receiver). 
+  - Receiver producing only metrics: `(RC:ID)-[M]->` (e.g., Prometheus receiver).
+- **Processors** (`PR`): Nodes performing intermediate transformations, such as routing, filtering, enrichment, and similar
   operations. Example signatures:
-  - General-purpose processor: `A → [Processor-ID] → A`.
-  - Metrics-filtering processor: `A → [Processor-ID] → M`.
-  - Type-based router: `A → [Processor-ID] → M & L`.
-- **Exporters** (sinks): Nodes that interface the dataflow runtime with external data consumers or storage systems.
+  - General-purpose processor: `-[A]->(PR:ID)-[A]->`.
+  - Metrics-filtering processor: `-[A]->(PR:ID)-[M]->`.
+  - Type-based router: `-[A]->(PR:ID)-[M & L]->`.
+- **Exporters** a.k.a. sinks (`EX`): Nodes that interface the dataflow runtime with external data consumers or storage systems.
   An exporter doesn't produce any output stream for the dataflow itself, so its signature is empty on the producer side.
   Example signatures:
-  - Any signal type: `A → [Exporter-ID]`.
-  - Metrics only: `M → [Exporter-ID]`.
+  - Any signal type: `-[A]->(EX:ID)`.
+  - Metrics only: `-[M]->(EX:ID)`.
 
 The component signatures provide a quick overview of the regular component’s input and output streams. However, all
 dataflow components (receiver, processor, exporter) can receive, produce, or propagate control signals. Those control
@@ -119,7 +123,7 @@ is used only if a delivery condition isn't met within the defined constraints fo
 - **Admission Controller** (`AC`): Determines acceptance of telemetry data based on resource availability or other conditions
   at receiver points. Propagates REB signals upstream to receivers, affecting data acceptance decisions.
 - **Deadline Controller** (`DC`): Assigns deadlines to telemetry messages using defined policies. Deadlines are added as
-  attributes ("deadline attribute envelope") within the telemetry data.
+  attributes ("dealine attribute envelope") within the telemetry data.
 - **Ack Controller** (`AK`): Determines the point of acknowledgment in dataflows:
   - Ingress: Immediate acknowledgment upon reception.
   - Pre-export: Acknowledgment just before exporting.
@@ -144,12 +148,12 @@ four main data processors are:
 
 ## Dataflow Optimizations
 
-### Pruning Rules
+### Partial Dataflow Path Elimination
 
 Receivers or exporters without at least one active connected path are considered inactive. During the compilation of the
 dataflow, inactive nodes are automatically removed from the DAG.
 
-### Processor Chain
+### Channel Elimination
 
 Processors forming a chain without intermediate branches can be logically grouped together to form an aggregated
 processor. The dataflow runtime is free to optimize such chains, for example, by removing intermediate channels.
@@ -162,18 +166,31 @@ processor. The dataflow runtime is free to optimize such chains, for example, by
 components provided by the dataflow runtime. These are not features that depend on specific exporter implementations
 or their individual capabilities.**
 
-## Immediate Acknowledgment
+## Acknowledgment on Ingress
 
-For certain telemetry producers unable to retain unacknowledged telemetry data for long periods (e.g. small device), it
-may be beneficial to acknowledge data immediately upon receipt, sending it quickly into a persistent queue for later
-processing. This pattern can be expressed as follows:
+For telemetry producers unable to retain unacknowledged telemetry data for long periods (e.g., small devices), it may be
+beneficial to immediately acknowledge data upon receipt. A common pattern is to quickly forward the data into a
+persistent queue for later processing. This scenario can be represented as follows:
 
 ```
-[OTLP Receiver]→ A →[ACK]→ A →[RP]→ A →[QE]
-[QR]→ A →[ACK]→ A →[RP]→ A →[OTAP Exporter]
+(RC:OTLP )-[A]->(AK)-[A]->(RP)-[A]->(EX:Kafka)
+(RC:Kafka)-[A]->(AK)-[A]->(RP)-[A]->(EX:OTAP)
+                                  ->(EX:Elastic)
 ```
 
-Where `QE` is a queue exporter and `QR` is a queue receiver (e.g. Kafka, RedPanda, Google Pub/Sub, ...).
+Where: 
+
+- `(RC:Kafka)` and `(RC:OTLP)` represent a Kafka receiver and an OTLP receiver, respectively.
+- `(EX:Kafka)`, `(EX:OTAP)`, and `EX:Elastic` represent a Kafka exporter, an OTAP exporter, and an Elastic exporter,
+  respectively.
+
+> Note: Kafka can be replaced by any other reliable, fast, and persistent queue system such as RedPanda, Google Pub/Sub,
+> etc.
+
+In this dataflow, OTLP messages sent by a telemetry producer are acknowledged immediately upon their reception into
+Kafka. Thus, the ingestion speed and availability of downstream systems (OTAP and Elastic exporters) no longer affect
+the acceptance rate of the OTLP receiver. End-to-end delivery guarantees can still be ensured with this model by
+propagating the acknowledgment mechanism to the persistent queue level.
 
 ## At-Least-One Acknowledgment
 
@@ -182,8 +199,8 @@ acknowledged receipt of the corresponding data. This scenario is particularly us
 multiple destinations simultaneously.
 
 ```
-[OTLP Receiver]→ A →[BP]→ A →[ACK]→ A →[RP]→ [OTLP Exporter 1]
-                                  → A →[RP]→ [OTLP Exporter 2]
+(OTLP Receiver)-[A]->(BP)-[A]->(AK)-[A]->(RP)-[A]->(OTLP Exporter 1)
+                                   -[A]->(RP)-[A]->(OTLP Exporter 2)
 ```
 
 ## Best-Effort Acknowledgment for Non-Critical Signals
@@ -193,7 +210,7 @@ is a failure, capacity overload, or slow processing. In this case, these signals
 the source, even if they have not been effectively handled downstream.
 
 ```
-[OTLP Receiver]→ A →[ACK]→ A →...→ [OTLP Exporter]
+(OTLP Receiver)-[A]->(AK)-[A]-...->(OTLP Exporter)
 ```
 
 ## Queuing When Destination is Slow or Unavailable
@@ -202,6 +219,6 @@ In some cases, it is desirable to fallback to a persistent queue if a telemetry 
 or is temporarily unavailable.
 
 ```
-[OTLP Receiver]→ A →[BP]→ A →[ACK]→ A →[FP]→ A →[RP]→ [OTLP Exporter 1]
-                                           → A →[RP]→ [OTLP Exporter 2]
+(OTLP Receiver)-[A]->(BP)-[A]->(AK)-[A]->(FP)-[A]->(RP)-[A]->(OTLP Exporter 1)
+                                             -[A]->(RP)-[A]->(OTLP Exporter 2)
 ```
