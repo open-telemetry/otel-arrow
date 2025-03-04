@@ -1,4 +1,4 @@
-# OTEL Dataflow Mechanics
+# Dataflow Mechanics
 
 ## Introduction
 
@@ -6,7 +6,7 @@ This document describes the various components and operational mechanics of the 
 project. We aim to unify the pipeline and connector concepts into a single dataflow concept consisting exclusively of
 receivers, processors, and exporters. This design will:
 
-1. Support a standard pipeline configuration with or without connectors.
+1. Support a standard OpenTelemetry pipeline configuration with or without connectors (via an adaption layer).
 2. Support more complex scenarios in a simpler and more uniform manner.
 
 ## Telemetry Signal Types and Streams
@@ -25,12 +25,17 @@ Throughout this document, the following notation will be used consistently:
 - **M | L**: Denotes a single stream containing a mixture of Metrics and Logs.
 - **M & L**: Represents two separate, parallel streams: one for Metrics and one for Logs.
 
-> Note: Internal dataflow components may attach an attributes envelope to telemetry signals (e.g., deadline attributes).
-Such envelopes carry metadata utilized by downstream components for processing decisions.
+These streams are composed of messages containing two parts: an envelope part and a data batch part. The envelope part
+includes headers that characterize the message without interpreting the data batches themselves. These headers can
+either be received externally (e.g., authorization tokens) or injected by components within the dataflow. The headers
+may carry metadata utilized by downstream components for processing decisions (e.g., deadline header).
+
+An unique ID is assigned to each incoming message, allowing the dataflow runtime to track the message throughout the
+dataflow. This ID is used to correlate messages across different telemetry streams and to manage acknowledgments.
 
 ## Control Signal Types and Propagation
 
-This dataflow runtime utilizes internal control signals to manage system operations and enforce delivery, latency, or
+A dataflow runtime utilizes internal control signals to manage system operations and enforce delivery, latency, or
 resource constraints. The following signals are defined:
 
 - Acknowledgement Signal (ACK): Indicates external systems have reliably received telemetry data.
@@ -42,8 +47,8 @@ resource constraints. The following signals are defined:
   size, rate limits).
 - Timer Signal (TMR): Emitted upon timer expiration, used to trigger scheduled tasks (e.g., batch emissions).
 - Error Signal (ERR): Represents errors encountered by the dataflow components.
-- Configuration Update Signal (CUS): Indicates a change in the configuration of a component.
-- Shutdown Signal (SDN): Indicates the system is shutting down.
+- Configuration Update Signal (CFG): Indicates a change in the configuration of a component.
+- Shutdown Signal (KIL): Indicates the system is shutting down.
 
 Components within the dataflow may subscribe to these signals to trigger specific behaviors or policies. When multiple
 components subscribe to a single control signal, the dataflow runtime employs a reverse propagation mechanism. This
