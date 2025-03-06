@@ -213,12 +213,30 @@ the source, even if they have not been effectively handled downstream.
 (OTLP Receiver)-[A]->(AK)-[A]-...->(OTLP Exporter)
 ```
 
-## Queuing When Destination is Slow or Unavailable
+## Failover to Persistent Queue When Destination Fails or Slows
 
-In some cases, it is desirable to fallback to a persistent queue if a telemetry backend becomes unresponsive, too slow,
-or is temporarily unavailable.
+This diagram illustrates a failover and retry mechanism within a telemetry dataflow, demonstrating how messages are
+handled when a primary destination (Prometheus Exporter) becomes slow or unavailable. Messages are initially sent via a
+retry processor to the exporter. If the exporter fails repeatedly, messages are automatically rerouted to a persistent
+queue, ensuring no data loss. The acknowledgment and error signals propagate back through the system, allowing
+components to maintain clear, consistent states.
 
 ```
-(OTLP Receiver)-[A]->(BP)-[A]->(AK)-[A]->(FP)-[A]->(RP)-[A]->(OTLP Exporter 1)
-                                             -[A]->(RP)-[A]->(OTLP Exporter 2)
+(RC:OTLP)-[M]->(AK)-->(FO)-->(RY)-->(EX:Prometheus)
+                          -->(RY)-->(EX:Kafka)
 ```
+
+![Failover to Persistent Queue When Destination Fails or Slows](./images/failover-scenario.svg)
+
+Failover and retry processors operate within the dataflow. They observe messages passing through and can store them in
+local state (or at least hold references to the messages), enabling the implementation of complex logic. Being part of
+the dataflow also allows precise definition of their position within it. This positioning logic becomes especially
+important, for example, when determining acknowledgment strategies. Placing an acknowledgment processor at the start of
+the flow results in a best-effort message delivery approach, whereas positioning it immediately before an exporter
+allows the processor to provide end-to-end delivery guarantees.
+
+By decomposing this telemetry dataflow into small components, each with a specific function, and by implementing a
+dataflow optimizer that merges linear (branchless) chains of nodes, we achieve the best of both worlds: reusability, 
+modularity, composability, and performance. Control signal propagation is clear, following the reverse path of messages
+processed through the dataflow. Intermediate nodes that have no interest in some or all control signals are just be 
+skipped.
