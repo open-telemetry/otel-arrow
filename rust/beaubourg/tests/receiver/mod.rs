@@ -136,7 +136,7 @@ impl ReceiverFactory<Message> for TestReceiverFactory {
             }
             _ => Err(beaubourg::receiver::Error::UnknownReceiver {
                 receiver: receiver_name.into(),
-                r#type: receiver_type.into(),
+                receiver_type: receiver_type.into(),
             }),
         }
     }

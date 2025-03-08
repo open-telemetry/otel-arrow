@@ -5,9 +5,9 @@ edition = "2021"
 license = "Apache-2.0"
 
 [dependencies]
-thiserror = "1.0.30"
-tracing = "0.1.30"
-futures = "0.3.21"
-tokio = { version = "1.16.1", features = ["rt-multi-thread"] }
-tokio-stream = "0.1.8"
-async-trait = "0.1.52"
+thiserror = "2.0.12"
+tracing = "0.1.41"
+futures = "0.3.31"
+tokio = { version = "1.44.0", features = ["rt-multi-thread"] }
+tokio-stream = "0.1.17"
+async-trait = "0.1.87"

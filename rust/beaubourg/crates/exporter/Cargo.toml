@@ -10,10 +10,10 @@ signal = { path = "../signal" }
 task = { path = "../task" }
 context = { path = "../context" }
 
-serde = { version = "1.0.136", features = ["derive"] }
-serde_yaml = "0.8.23"
-thiserror = "1.0.30"
-async-trait = "0.1.52"
-tokio = { version = "1.16.1", features = ["rt-multi-thread", "macros"] }
-futures = "0.3.21"
-tracing = "0.1.30"
+serde = { version = "1.0.218", features = ["derive"] }
+serde_yaml = "0.8.26"
+thiserror = "2.0.12"
+async-trait = "0.1.87"
+tokio = { version = "1.44.0", features = ["rt-multi-thread", "macros"] }
+futures = "0.3.31"
+tracing = "0.1.41"

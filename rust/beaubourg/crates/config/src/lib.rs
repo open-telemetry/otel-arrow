@@ -570,7 +570,7 @@ mod test {
                 }
                 _ => Err(receiver::Error::UnknownReceiver {
                     receiver: receiver_name.into(),
-                    r#type: receiver_type.into(),
+                    receiver_type: receiver_type.into(),
                 }),
             }
         }
@@ -621,7 +621,7 @@ mod test {
                 }
                 _ => Err(processor::Error::UnknownProcessor {
                     processor: processor_name.into(),
-                    r#type: processor_type.into(),
+                    processor_type: processor_type.into(),
                 }),
             }
         }
