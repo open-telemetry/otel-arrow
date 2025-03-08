@@ -23,8 +23,18 @@ jobs:
       with:
         go-version: "1.23"
 
+    # Initializes the CodeQL tools for scanning.
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: go
+
     - name: Build all modules
       run: make build
 
     - name: Test all modules
       run: make test
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+      timeout-minutes: 60
