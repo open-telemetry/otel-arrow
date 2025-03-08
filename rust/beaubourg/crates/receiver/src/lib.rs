@@ -34,12 +34,12 @@ use crate::{
 #[non_exhaustive]
 pub enum Error {
     /// The `Receiver` was not found in the receiver factory.
-    #[error("unknown receiver (receiver: {receiver}, type: {r#type})")]
+    #[error("unknown receiver (receiver: {receiver}, type: {receiver_type})")]
     UnknownReceiver {
         /// The name of the receiver.
         receiver: String,
         /// The type of the receiver.
-        r#type: String,
+        receiver_type: String,
     },
 
     /// The receiver configuration is invalid.
