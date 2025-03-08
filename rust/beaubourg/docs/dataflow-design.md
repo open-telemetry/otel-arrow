@@ -42,11 +42,11 @@ dataflow. This ID is used to correlate messages across different telemetry strea
 A dataflow runtime utilizes internal control signals to enforce delivery guarantees, latency requirements, and resource
 constraints, as well as to manage general system operations. The following signals are defined:
 
-- **Acknowledgement Signal** (`ACK`): Indicates external systems have reliably received telemetry data.
-- **Health Check Signal** (`HCS`): Indicates the operational status (Up/Down) of external dependencies (e.g., exporter
-  backends).
-- **Deadline Exceeded Signal** (`DLE`): Emitted when a task exceeds the configured time limit for its execution (e.g.
-  a slow telemetry backend system).
+- **Acknowledgement Signal** (ACK): Indicates that a downstream component (either internal or external) has reliably
+  received and processed telemetry data.
+- **Negative Acknowledgement Signal** (NACK): Indicates that a downstream component (either internal or external) failed
+  to process or deliver telemetry data. The NACK signal includes a reason, such as exceeding a deadline, downstream
+  system unavailability, or other conditions preventing successful processing.
 - **Cancellation Request Signal** (`CAN`): Indicates the cancellation of a telemetry message.
 - **Resource Budget Signal** (`REB`): Indicates the system’s capacity to accept additional telemetry data. A `REB` value
   of zero signifies no further acceptance, while a non-zero `REB` defines permissible data acceptance conditions (e.g.,
@@ -60,8 +60,7 @@ constraints, as well as to manage general system operations. The following signa
 
 The control signals are summarized with the abbreviation `CTRL`. `CTRL` can be any of the control signals listed above.
 
-All components participating in a dataflow must take into account the deadline header and emit a `DLE` signal if it is
-exceeded.
+All components participating in a dataflow must take into account the deadline header.
 
 > Question: Do we really need to support cancellation requests?
 
@@ -110,13 +109,13 @@ Three categories of processors have been identified so far.
   - Statefulness: Stateless
 - **Content Router** (`CR`): Routes telemetry data based on defined content conditions (e.g., attribute matching).
   - Statefulness: Stateless
-- **Failover Router** (`FR`): Routes telemetry data to an alternative destination when the primary path fail or exceed
+- **Failover Router** (`FO`): Routes telemetry data to an alternative destination when the primary path fail or exceed
   deadline.
   - Statefulness: Stateful; retains unacknowledged data until acknowledged or timed out.
 
 An optional **fallback destination** can be configured for each routing processor type when the primary routing
 condition is not satisfied. This allows defining routes such as "everything except Metrics," or specifying a route that
-is used only if a delivery condition isn't met within the defined constraints for a `FR` router.
+is used only if a delivery condition isn't met within the defined constraints for a `FO` router.
 
 #### Control Processors
 
@@ -130,7 +129,7 @@ is used only if a delivery condition isn't met within the defined constraints fo
   - Downstream: Acknowledgment only after confirmed reception by the external system.
 - **Batch Processor** (`BP`): Manages batching of telemetry signals, defining maximum batch size and timeout intervals for
   emission.
-- **Retry Processor** (`RP`): Retry sending a message that failed to be delivered (due to deadline exceeded or
+- **Retry Processor** (`RY`): Retry sending a message that failed to be delivered (due to deadline exceeded or
   destination unavailable) for a configurable number n of attempts, using a specific back-off strategy.
   - Statefulness: Stateful; retains unacknowledged data until acknowledged or timed out.
 
@@ -166,6 +165,17 @@ processor. The dataflow runtime is free to optimize such chains, for example, by
 components provided by the dataflow runtime. These are not features that depend on specific exporter implementations
 or their individual capabilities.**
 
+## Admission Control
+
+Key metrics:
+- Memory usage (via custom allocator, e.g. jemalloc or mimalloc)
+- Message queue depths
+- Processing latency on each node
+- Throughput at each node (message in/out)
+- Message size/Memory footprint
+
+Idea of having a backpressure signal
+
 ## Acknowledgment on Ingress
 
 For telemetry producers unable to retain unacknowledged telemetry data for long periods (e.g., small devices), it may be
@@ -173,8 +183,8 @@ beneficial to immediately acknowledge data upon receipt. A common pattern is to 
 persistent queue for later processing. This scenario can be represented as follows:
 
 ```
-(RC:OTLP )-[A]->(AK)-[A]->(RP)-[A]->(EX:Kafka)
-(RC:Kafka)-[A]->(AK)-[A]->(RP)-[A]->(EX:OTAP)
+(RC:OTLP )-[A]->(AK)-[A]->(RY)-[A]->(EX:Kafka)
+(RC:Kafka)-[A]->(AK)-[A]->(RY)-[A]->(EX:OTAP)
                                   ->(EX:Elastic)
 ```
 
@@ -199,8 +209,8 @@ acknowledged receipt of the corresponding data. This scenario is particularly us
 multiple destinations simultaneously.
 
 ```
-(OTLP Receiver)-[A]->(BP)-[A]->(AK)-[A]->(RP)-[A]->(OTLP Exporter 1)
-                                   -[A]->(RP)-[A]->(OTLP Exporter 2)
+(OTLP Receiver)-[A]->(BP)-[A]->(AK)-[A]->(RY)-[A]->(OTLP Exporter 1)
+                                   -[A]->(RY)-[A]->(OTLP Exporter 2)
 ```
 
 ## Best-Effort Acknowledgment for Non-Critical Signals
