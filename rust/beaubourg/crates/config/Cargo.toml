@@ -11,12 +11,12 @@ exporter = { path = "../exporter" }
 processor = { path = "../processor" }
 signal = { path = "../signal" }
 
-serde = { version = "1.0.136", features = ["derive"] }
-serde_yaml = "0.8.23"
-thiserror = "1.0.30"
-tracing = "0.1.30"
-validator = { version = "0.14.0", features = ["derive"] }
+serde = { version = "1.0.218", features = ["derive"] }
+serde_yaml = "0.8.26"
+thiserror = "2.0.12"
+tracing = "0.1.41"
+validator = { version = "0.20.0", features = ["derive"] }
 
 [dev-dependencies]
-async-trait = "0.1.52"
-tokio = { version = "1.16.1", features = ["rt-multi-thread"] }
+async-trait = "0.1.87"
+tokio = { version = "1.44.0", features = ["rt-multi-thread"] }
