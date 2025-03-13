@@ -3,7 +3,6 @@
     missing_docs,
     unsafe_code,
     unstable_features,
-    unstable_features,
     unused_import_braces,
     unused_qualifications,
     unused_extern_crates,
