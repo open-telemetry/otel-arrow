@@ -1,0 +1,25 @@
+name: Rust-Audit
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'rust/beaubourg/Cargo.toml'
+  schedule:
+    - cron: '0 2 * * 1' # run at 2 AM UTC every Monday
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - name: cargo install cargo-audit
+        run: cargo install cargo-audit
+      - name: cargo audit
+        run: cargo audit
