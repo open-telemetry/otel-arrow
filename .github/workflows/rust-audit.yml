@@ -21,5 +21,7 @@ jobs:
           override: true
       - name: cargo install cargo-audit
         run: cargo install cargo-audit
+        working-directory: ./rust/beaubourg
       - name: cargo audit
         run: cargo audit
+        working-directory: ./rust/beaubourg
