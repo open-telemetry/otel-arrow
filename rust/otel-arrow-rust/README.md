@@ -18,3 +18,4 @@ git clone https://github.com/open-telemetry/otel-arrow.git
 cd rust/otel-arrow-rust && git submodule update --init --recursive
 cargo build --release
 ```
+
