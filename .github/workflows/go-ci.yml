@@ -1,0 +1,24 @@
+name: Go-CI
+permissions:
+  contents: read
+
+on: [push, pull_request]
+
+jobs:
+
+  build_test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version: "1.23"
+    - uses: github/codeql-action/init@v3
+      with:
+        languages: go
+    - name: make build
+      run: make build
+    - name: make test
+      run: make test
+    - uses: github/codeql-action/analyze@v3
+      timeout-minutes: 60
