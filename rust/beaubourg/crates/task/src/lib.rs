@@ -9,6 +9,9 @@
     unused_results
 )]
 #![warn(rust_2021_compatibility, unreachable_pub)]
+// TODO fix this clippy warning
+// https://rust-lang.github.io/rust-clippy/master/index.html#await_holding_lock
+#![allow(clippy::await_holding_lock)]
 
 //! A library for working with tasks.
 
