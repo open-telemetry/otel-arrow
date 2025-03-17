@@ -1,6 +1,8 @@
 name: Go-CI
 permissions:
   contents: read
+  # needed for codeql 
+  security-events: write
 
 on: [push, pull_request]
 
