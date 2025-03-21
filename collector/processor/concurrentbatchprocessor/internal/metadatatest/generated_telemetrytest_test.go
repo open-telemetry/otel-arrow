@@ -7,13 +7,12 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata/metricdatatest"
-
 	"go.opentelemetry.io/collector/component/componenttest"
 
-	// Had to add these two lines manually for some reason - mdatagen didn't import them properly
-	"go.opentelemetry.io/otel/metric"
+	// Had to add these this line manually for some reason - mdatagen didn't import them properly
 	"github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor/internal/metadata"
 )
 

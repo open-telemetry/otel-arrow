@@ -7,6 +7,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor/internal/metadata"
 	"github.com/stretchr/testify/assert"
 
 	"go.opentelemetry.io/collector/component/componenttest"
@@ -25,7 +26,7 @@ func TestCreateProcessor(t *testing.T) {
 	factory := NewFactory()
 
 	cfg := factory.CreateDefaultConfig()
-	creationSet := processortest.NewNopSettings()
+	creationSet := processortest.NewNopSettings(metadata.Type)
 	tp, err := factory.CreateTraces(context.Background(), creationSet, cfg, nil)
 	assert.NotNil(t, tp)
 	assert.NoError(t, err, "cannot create trace processor")
