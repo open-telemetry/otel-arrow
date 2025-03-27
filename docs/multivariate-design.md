@@ -55,3 +55,34 @@ This approach to multivariate metrics provides:
 ## Example
 
 When a callback produces multiple measurements (e.g., CPU usage percentage and memory usage), OTel-Arrow ensures these measurements share a single timestamp in the resulting Arrow record batch, correctly representing that these observations occurred simultaneously.
+
+## Phased exploration
+
+### Phase 1
+
+In Phase 1 of the project, we defined a translation into OTAP for
+multivariate metrics.
+
+This concept is not explicitly defined at the OpenTelemetry API level,
+but our definition is grounded in a statement requiring the use of a
+single timestamp for multiple observations in a single callback.  With
+callbacks already supporting multiple instruments, our definition of
+multi-variate metrics is provided for us.
+
+The Golang reference implementation provides a configuration object
+which controls which metrics will be conjoined into a multivariate
+representation, which was sufficient for us to define and benchmark
+the protocol.
+
+### Phase 2
+
+In phase 2, as we implement an end-to-end OTAP pipeline, we will
+examine the use of multivariate metrics APIs.
+
+We will explore synthesizing well-defined multivariate metrics APIs
+using OTel-Weaver. As an example relevant for self-observability in a
+pipeline scenario, consider the recording of `success`, `failed`,
+`dropped`, `compressed_bytes`, and `uncompressed_bytes` counts
+associated with a single request in the pipeline.  This is a natural
+case for multivariate metrics, and we will explor recording these
+attributes in the correct types in the "OTAP-direct" SDK.
