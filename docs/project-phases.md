@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document outlines a phased implementation approach for the OTel-Arrow project. For a complete project overview, please refer to the [top-level README.md](../README.md).
+This document outlines a phased implementation approach for the OTel-Arrow project. For a complete project overview, please refer to the top-level [README](../README.md).
 
 OTel-Arrow aims to integrate OpenTelemetry with Apache Arrow to enable high-performance telemetry data processing. The project will evolve through multiple phases, each delivering specific functionality while incrementally expanding the project's capabilities and scope.
 
@@ -29,14 +29,14 @@ OTel-Arrow aims to integrate OpenTelemetry with Apache Arrow to enable high-perf
 
 **Key Deliverables:**
 
-- Arrow schema definitions for OpenTelemetry spans, metrics, and logs
-- Core library for serializing/deserializing between OTel and Arrow formats in Golang
+- Arrow schema definitions for OpenTelemetry spans, metrics, and logs ([OTAP protocol](../proto/opentelemetry/proto/experimental/arrow/v1/arrow_service.proto), [data model](./data_model.md))
+- Reference implementation for serializing/deserializing between OpenTelemetry Collector format (`pdata`) and OTel-Arrow format in Golang (this repository)
 - Define multi-variate OTel-Arrow metrics representation compatible with OpenTelemetry metrics data model
-- Benchmark suite comparing CPU/memory/compression performance against OTLP
-- Unit tests and validation tools
+- Benchmark suite comparing CPU/memory/compression performance against OTLP ([results](./benchmarks.md))
+- Unit tests and validation tools (this repository)
 - OpenTelemetry Collector-contrib [exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md) and [receiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md) components
 - [Project kick-off blog post](https://opentelemetry.io/blog/2023/otel-arrow/)
-- [Phase 1 completed blog post](https://opentelemetry.io/blog/2024/otel-arrow-production).
+- [Production readiness blog post, including compression study results](https://opentelemetry.io/blog/2024/otel-arrow-production).
 
 **Success Criteria:**
 
@@ -77,7 +77,7 @@ OTel-Arrow aims to integrate OpenTelemetry with Apache Arrow to enable high-perf
 - We are not building a Rust Collector; we are evaluating an end-to-end OTAP pipeline, including an experimental "OTAP-direct" SDK in Rust
 - We will not publish software in source or binary form that acts like a stand-alone Collector
 - We will (intentionally) not support parsing YAML configuration files to configure pipeline graphs
-- We will not interfere with OpenTelemetry Collector or OpenTelemetry Rust during this phase by asking those teams to review or accept our work.
+- We will not interfere with OpenTelemetry Collector or OpenTelemetry Rust during this phase by asking those teams to review/approve our work.
 
 ## Future Phases
 
