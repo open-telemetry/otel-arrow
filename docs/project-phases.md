@@ -31,7 +31,7 @@ OTel-Arrow aims to integrate OpenTelemetry with Apache Arrow to enable high-perf
 
 - Arrow schema definitions for OpenTelemetry spans, metrics, and logs ([OTAP protocol](../proto/opentelemetry/proto/experimental/arrow/v1/arrow_service.proto), [data model](./data_model.md))
 - Reference implementation for serializing/deserializing between OpenTelemetry Collector format (`pdata`) and OTel-Arrow format in Golang (this repository)
-- Define multi-variate OTel-Arrow metrics representation compatible with OpenTelemetry metrics data model
+- Define multi-variate OTel-Arrow metrics representation compatible with OpenTelemetry metrics data model ([design](./multivariate-design.md))
 - Benchmark suite comparing CPU/memory/compression performance against OTLP ([results](./benchmarks.md))
 - Unit tests and validation tools (this repository)
 - OpenTelemetry Collector-contrib [exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md) and [receiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md) components
@@ -59,7 +59,7 @@ OTel-Arrow aims to integrate OpenTelemetry with Apache Arrow to enable high-perf
 **Key Deliverables:**
 
 - In-process OTAP pipeline implemented as Rust libraries
-- Explore API design for column-oriented pipeline data using OTAP data frames (i.e., `pdata`)
+- Explore API design for column-oriented pipeline data object based on OTAP data frames
 - Prototype for DataFusion integration with OpenTelemetry data, OTTL-transform feasibility study
 - Benchmarks measuring OTAP and OTLP pipelines in Rust and Golang.
 

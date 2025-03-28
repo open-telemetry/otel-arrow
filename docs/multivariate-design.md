@@ -15,64 +15,30 @@ observations from a single callback MUST be reported with identical
 timestamps.
 ```
 
-This requirement ensures temporal consistency between related measurements and forms the foundation of OTel-Arrow's multivariate implementation.
+This requirement ensures temporal consistency between related measurements and forms the foundation of OTel-Arrow's multivariate design.
 
-## OTel-Arrow Protocol Implementation
+## OTel-Arrow Protocol Design
 
-OTel-Arrow implements multivariate metrics through:
-
-1. **Arrow Record Batch Structure**: The protocol leverages Arrow's columnar format to efficiently store related metrics with identical timestamps.
-
-2. **Batch-oriented Processing**: Multiple metrics from a single callback are processed together, preserving their relationship.
-
-3. **Shared Timestamp Column**: Metrics observed in the same callback share a single timestamp column in the Arrow record batch, guaranteeing timestamp consistency.
-
-## Golang Reference Implementation
-
-The reference implementation in this repository handles multivariate metrics by:
-
-### Producer Side
-
-- The metrics producer captures all observations from a single callback.
-- A single timestamp is generated and applied to all metrics within the callback.
-- When encoding to Arrow format, the implementation ensures these observations share identical timestamp fields.
-- The record batch structure preserves this temporal relationship during serialization.
-
-### Consumer Side
-
-- When processing Arrow record batches, the consumer respects the shared timestamps.
-- Metrics with identical timestamps are recognized as having occurred simultaneously.
-- The implementation maintains these relationships throughout the processing pipeline.
-
-## Benefits
-
-This approach to multivariate metrics provides:
-
-- **Correctness**: Ensures OpenTelemetry's requirement for identical timestamps is met.
-- **Efficiency**: Reduces storage overhead by sharing timestamp information across related metrics.
-- **Analytical Integrity**: Preserves critical temporal relationships for accurate system analysis.
-
-## Example
-
-When a callback produces multiple measurements (e.g., CPU usage percentage and memory usage), OTel-Arrow ensures these measurements share a single timestamp in the resulting Arrow record batch, correctly representing that these observations occurred simultaneously.
+OTel-Arrow implements multivariate metrics by definition. When
+multiple metric data points have identical resource, instrumentation
+scope, and timestamp, they are by definition multivariate.
 
 ## Phased exploration
 
 ### Phase 1
 
-In Phase 1 of the project, we defined a translation into OTAP for
-multivariate metrics.
+During Phase 1, we explored potential cost savings from the use of
+multivariate metrics, because there is a natural compression benefit
+from grouping related data.
+The implementation used explicit configuration, instead of a natural
+multivarate metric API.
 
-This concept is not explicitly defined at the OpenTelemetry API level,
-but our definition is grounded in a statement requiring the use of a
-single timestamp for multiple observations in a single callback.  With
-callbacks already supporting multiple instruments, our definition of
-multi-variate metrics is provided for us.
-
-The Golang reference implementation provides a configuration object
-which controls which metrics will be conjoined into a multivariate
-representation, which was sufficient for us to define and benchmark
-the protocol.
+For example, a configuration stating that `memory.usage` and
+`memory.limit` (in some scope) should be multivariate, then any
+observations of those sharing resource and timestamp would become
+multivariate in the representation.  However, we removed this feature
+from the reference implementation prior to stabilizing the Phase 1
+protocol.
 
 ### Phase 2
 
