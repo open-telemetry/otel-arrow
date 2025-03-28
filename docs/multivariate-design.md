@@ -50,5 +50,5 @@ using OTel-Weaver. As an example relevant for self-observability in a
 pipeline scenario, consider the recording of `success`, `failed`,
 `dropped`, `compressed_bytes`, and `uncompressed_bytes` counts
 associated with a single request in the pipeline.  This is a natural
-case for multivariate metrics, and we will explor recording these
+case for multivariate metrics, and we will explore recording these
 attributes in the correct types in the "OTAP-direct" SDK.
