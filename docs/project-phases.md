@@ -21,7 +21,7 @@ OTel-Arrow aims to integrate OpenTelemetry with Apache Arrow to enable high-perf
 - Demonstration of feasibility and potential performance benefits
 - OpenTelemetry spec-approvers accepted the OTEP, June 2023.
 
-## Phase 1: Streaming compression capability
+## Phase 1: Arrow as a wire protocol - improving compression between collectors
 
 **Objective:** Establish the mapping between OpenTelemetry data types and Apache Arrow columnar format, with emphasis on streaming compression results.
 
@@ -50,9 +50,9 @@ OTel-Arrow aims to integrate OpenTelemetry with Apache Arrow to enable high-perf
 - Although the prototype and original demo was given in Rust, the project commits to working in the Golang ecosystem
 - Compatibility commitment: the project aims at making OTLP and OTAP as compatible as possible and will support all signals through Golang components in Collector-Contrib.
 
-## Phase 2: End-to-end pipeline with Arrow in Rust
+## Phase 2: Arrow as an in-memory data representation - improving data processing speed inside the Collector
 
-**Objective:** Establish a foundation for working with OTel-Arrow data in Rust, for access to the Arrow-Rust ecosystem.
+**Objective:** Establish a foundation for working with OTel-Arrow data in the Collector, for access to the Arrow ecosystem.
 
 **Timeline:** 2025
 
