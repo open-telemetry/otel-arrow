@@ -41,11 +41,14 @@ yanked = "warn"
 # output a note when they are encountered.
 ignore = [
     #"RUSTSEC-0000-0000",
-    # To not block initial checkin of CI, excluding unmaintained advisory on yaml-rust from serde_yaml
-    # serde_yaml itself is archived and needs a replacement, but its dependency yaml-rust is the crate that is flagged
-    # See https://rustsec.org/advisories/RUSTSEC-2024-0320
+    # To not block initial checkin of CI, excluding unmaintained advisory on paste crate
+    # See https://rustsec.org/advisories/RUSTSEC-2024-0436
     # TODO: remove this advisory once an alternative is identified
-    "RUSTSEC-2024-0320"
+    "RUSTSEC-2024-0436",
+    # To not block initial checkin of CI, excluding vulnerability advisory on hashbrown crate
+    # See https://rustsec.org/advisories/RUSTSEC-2024-0402
+    # TODO: upgrade dependencies using hashbrown crate
+    "RUSTSEC-2024-0402"
 ]
 # Threshold for security vulnerabilities, any vulnerability with a CVSS score
 # lower than the range specified will be ignored. Note that ignored advisories
