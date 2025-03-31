@@ -2,7 +2,8 @@
 
 One of the mentioned key deliverables in Phase 2 of otel-arrow is:
 
-- **Prototype for DataFusion integration with OpenTelemetry data, OTTL-transform feasibility study**
+- **Prototype for DataFusion integration with OpenTelemetry data, OTTL-transform
+  feasibility study**
 
 As part of the Transform effort, we want to understand how standard telemetry
 data manipulations translate into DataFusion operations. While DataFusion
@@ -38,11 +39,16 @@ belong in an `otel-arrow-contrib` repository as this project develops.
 
 | Language | DataFusion built-in Support | Abstraction Plugin Status |
 |----------|-----------------------------|---------------------------|
-| SQL      | :white_check_mark:          | n/a*                      |
+| SQL      | :white_check_mark:          | not immediately in scope* |
 | OTTL     | :x:                         | :construction:            |
 | KQL      | :x:                         | :construction:            |
 
-\* could re-use the native DataFusion parser and query planner
+\* It is not clear if the scope of work should include translation of SQL into
+an IL. It is highly possible we can re-use the native
+[datafusion-sql-parser-rs](https://github.com/apache/datafusion-sqlparser-rs)
+Parser and/or the [datafusion sql
+module](https://github.com/apache/datafusion/tree/main/datafusion/sql) instead
+to avoid re-implementing existing work.
 
 To illustrate how these 3 languages may intersect in their data shaping,
 consider the following examples of data filtering:
