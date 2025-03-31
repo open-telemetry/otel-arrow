@@ -14,6 +14,7 @@ on:
 jobs:
   audit:
     strategy:
+      fail-fast: false
       matrix:
         folder: [beaubourg, otel-arrow-rust]
     runs-on: ubuntu-latest
