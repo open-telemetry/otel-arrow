@@ -7,21 +7,22 @@ on:
     branches: [main]
     paths:
       - 'rust/beaubourg/Cargo.toml'
+      - 'rust/otel-arrow-rust/Cargo.toml'
   schedule:
     - cron: '0 2 * * 1' # run at 2 AM UTC every Monday
 
 jobs:
   audit:
+    strategy:
+      matrix:
+        folder: [beaubourg, otel-arrow-rust]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
+      - uses: dtolnay/rust-toolchain@stable
       - name: cargo install cargo-audit
         run: cargo install cargo-audit
         working-directory: ./rust/beaubourg
-      - name: cargo audit
+      - name: cargo audit ${{ matrix.folder }}
         run: cargo audit
-        working-directory: ./rust/beaubourg
+        working-directory: ./rust/${{ matrix.folder }}

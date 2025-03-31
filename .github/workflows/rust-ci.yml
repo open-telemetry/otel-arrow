@@ -8,50 +8,56 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-
   test:
+    strategy:
+      matrix:
+        folder: [beaubourg, otel-arrow-rust]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses: arduino/setup-protoc@v3
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
-      - uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --manifest-path ./rust/beaubourg/Cargo.toml --all
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo test ${{ matrix.folder }}
+        run: cargo test
+        working-directory: ./rust/${{ matrix.folder }}
 
   fmt:
+    strategy:
+      matrix:
+        folder: [beaubourg, otel-arrow-rust]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses: arduino/setup-protoc@v3
         with:
-          toolchain: nightly
-          override: true
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
           components: rustfmt
-      - uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --manifest-path ./rust/beaubourg/Cargo.toml --all -- --check 
+      - name: cargo fmt ${{ matrix.folder }}
+        run: cargo fmt --all -- --check 
+        working-directory: ./rust/${{ matrix.folder }}
 
   clippy:
+    strategy:
+      matrix:
+        folder: [beaubourg, otel-arrow-rust]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses: arduino/setup-protoc@v3
         with:
-          toolchain: stable
-          override: true
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
           components: clippy
-      - uses: actions-rs/clippy-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          # To not block initial checkin of CI, removing build break on warnings for now
-          # TODO: re-enable '-D warnings' when we have fixed all clippy warnings
-          args: --manifest-path ./rust/beaubourg/Cargo.toml
+      - name: cargo clippy ${{ matrix.folder }}
+        # To not block initial checkin of CI, removing build break on warnings for now
+        # TODO: re-enable '-- -D warnings' when we have fixed all clippy warnings
+        run: cargo clippy --all-targets --all-features
+        working-directory: ./rust/${{ matrix.folder }}
 
 #  coverage:
 #    name: Code coverage
@@ -72,33 +78,46 @@ jobs:
 #          args: '--exclude-files vendor/ -- --test-threads 1'
   
   cargo_deny:
+    strategy:
+      matrix:
+        folder: [beaubourg, otel-arrow-rust]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          manifest-path: ./rust/beaubourg/Cargo.toml
+          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
 
   bench:
+    strategy:
+      matrix:
+        folder: [beaubourg, otel-arrow-rust]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses: arduino/setup-protoc@v3
         with:
-          toolchain: stable
-          override: true
-      - name: cargo bench
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo bench ${{ matrix.folder }}
         run: cargo bench
-        working-directory: ./rust/beaubourg
+        working-directory: ./rust/${{ matrix.folder }}
 
   docs:
+    strategy:
+      matrix:
+        folder: [beaubourg, otel-arrow-rust]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - uses: arduino/setup-protoc@v3
         with:
-          toolchain: stable
-          override: true
-      - name: cargo doc
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo doc ${{ matrix.folder }}
         run: cargo doc --no-deps
-        working-directory: ./rust/beaubourg
+        working-directory: ./rust/${{ matrix.folder }}
