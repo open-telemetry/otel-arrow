@@ -23,7 +23,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/apache/arrow/go/v17/arrow"
+	"github.com/apache/arrow-go/v18/arrow"
 
 	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
