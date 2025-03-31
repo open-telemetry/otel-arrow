@@ -215,10 +215,10 @@ pub mod arrow_traces_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value,
+        clippy::let_unit_value
     )]
-    use tonic::codegen::*;
     use tonic::codegen::http::Uri;
+    use tonic::codegen::*;
     /// ArrowTracesService is a traces-only Arrow stream.
     #[derive(Debug, Clone)]
     pub struct ArrowTracesServiceClient<T> {
@@ -263,9 +263,8 @@ pub mod arrow_traces_service_client {
                     <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<http::Request<tonic::body::Body>>>::Error:
+                Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             ArrowTracesServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -307,26 +306,18 @@ pub mod arrow_traces_service_client {
             tonic::Response<tonic::codec::Streaming<super::BatchStatus>>,
             tonic::Status,
         > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/opentelemetry.proto.experimental.arrow.v1.ArrowTracesService/ArrowTraces",
             );
             let mut req = request.into_streaming_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "opentelemetry.proto.experimental.arrow.v1.ArrowTracesService",
-                        "ArrowTraces",
-                    ),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "opentelemetry.proto.experimental.arrow.v1.ArrowTracesService",
+                "ArrowTraces",
+            ));
             self.inner.streaming(req, path, codec).await
         }
     }
@@ -339,10 +330,10 @@ pub mod arrow_logs_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value,
+        clippy::let_unit_value
     )]
-    use tonic::codegen::*;
     use tonic::codegen::http::Uri;
+    use tonic::codegen::*;
     /// ArrowTracesService is a logs-only Arrow stream.
     #[derive(Debug, Clone)]
     pub struct ArrowLogsServiceClient<T> {
@@ -387,9 +378,8 @@ pub mod arrow_logs_service_client {
                     <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<http::Request<tonic::body::Body>>>::Error:
+                Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             ArrowLogsServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -431,26 +421,18 @@ pub mod arrow_logs_service_client {
             tonic::Response<tonic::codec::Streaming<super::BatchStatus>>,
             tonic::Status,
         > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/opentelemetry.proto.experimental.arrow.v1.ArrowLogsService/ArrowLogs",
             );
             let mut req = request.into_streaming_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "opentelemetry.proto.experimental.arrow.v1.ArrowLogsService",
-                        "ArrowLogs",
-                    ),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "opentelemetry.proto.experimental.arrow.v1.ArrowLogsService",
+                "ArrowLogs",
+            ));
             self.inner.streaming(req, path, codec).await
         }
     }
@@ -463,10 +445,10 @@ pub mod arrow_metrics_service_client {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value,
+        clippy::let_unit_value
     )]
-    use tonic::codegen::*;
     use tonic::codegen::http::Uri;
+    use tonic::codegen::*;
     /// ArrowTracesService is a metrics-only Arrow stream.
     #[derive(Debug, Clone)]
     pub struct ArrowMetricsServiceClient<T> {
@@ -511,9 +493,8 @@ pub mod arrow_metrics_service_client {
                     <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
                 >,
             >,
-            <T as tonic::codegen::Service<
-                http::Request<tonic::body::Body>,
-            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+            <T as tonic::codegen::Service<http::Request<tonic::body::Body>>>::Error:
+                Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             ArrowMetricsServiceClient::new(InterceptedService::new(inner, interceptor))
         }
@@ -555,26 +536,18 @@ pub mod arrow_metrics_service_client {
             tonic::Response<tonic::codec::Streaming<super::BatchStatus>>,
             tonic::Status,
         > {
-            self.inner
-                .ready()
-                .await
-                .map_err(|e| {
-                    tonic::Status::unknown(
-                        format!("Service was not ready: {}", e.into()),
-                    )
-                })?;
+            self.inner.ready().await.map_err(|e| {
+                tonic::Status::unknown(format!("Service was not ready: {}", e.into()))
+            })?;
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/opentelemetry.proto.experimental.arrow.v1.ArrowMetricsService/ArrowMetrics",
             );
             let mut req = request.into_streaming_request();
-            req.extensions_mut()
-                .insert(
-                    GrpcMethod::new(
-                        "opentelemetry.proto.experimental.arrow.v1.ArrowMetricsService",
-                        "ArrowMetrics",
-                    ),
-                );
+            req.extensions_mut().insert(GrpcMethod::new(
+                "opentelemetry.proto.experimental.arrow.v1.ArrowMetricsService",
+                "ArrowMetrics",
+            ));
             self.inner.streaming(req, path, codec).await
         }
     }
@@ -587,7 +560,7 @@ pub mod arrow_traces_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value,
+        clippy::let_unit_value
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with ArrowTracesServiceServer.
@@ -596,16 +569,12 @@ pub mod arrow_traces_service_server {
         /// Server streaming response type for the ArrowTraces method.
         type ArrowTracesStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::BatchStatus, tonic::Status>,
-            >
-            + std::marker::Send
+            > + std::marker::Send
             + 'static;
         async fn arrow_traces(
             &self,
             request: tonic::Request<tonic::Streaming<super::BatchArrowRecords>>,
-        ) -> std::result::Result<
-            tonic::Response<Self::ArrowTracesStream>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<Self::ArrowTracesStream>, tonic::Status>;
     }
     /// ArrowTracesService is a traces-only Arrow stream.
     #[derive(Debug)]
@@ -629,10 +598,7 @@ pub mod arrow_traces_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -687,26 +653,21 @@ pub mod arrow_traces_service_server {
                 "/opentelemetry.proto.experimental.arrow.v1.ArrowTracesService/ArrowTraces" => {
                     #[allow(non_camel_case_types)]
                     struct ArrowTracesSvc<T: ArrowTracesService>(pub Arc<T>);
-                    impl<
-                        T: ArrowTracesService,
-                    > tonic::server::StreamingService<super::BatchArrowRecords>
-                    for ArrowTracesSvc<T> {
+                    impl<T: ArrowTracesService>
+                        tonic::server::StreamingService<super::BatchArrowRecords>
+                        for ArrowTracesSvc<T>
+                    {
                         type Response = super::BatchStatus;
                         type ResponseStream = T::ArrowTracesStream;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::ResponseStream>,
-                            tonic::Status,
-                        >;
+                        type Future =
+                            BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
                         fn call(
                             &mut self,
-                            request: tonic::Request<
-                                tonic::Streaming<super::BatchArrowRecords>,
-                            >,
+                            request: tonic::Request<tonic::Streaming<super::BatchArrowRecords>>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ArrowTracesService>::arrow_traces(&inner, request)
-                                    .await
+                                <T as ArrowTracesService>::arrow_traces(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -733,25 +694,19 @@ pub mod arrow_traces_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => {
-                    Box::pin(async move {
-                        let mut response = http::Response::new(
-                            tonic::body::Body::default(),
-                        );
-                        let headers = response.headers_mut();
-                        headers
-                            .insert(
-                                tonic::Status::GRPC_STATUS,
-                                (tonic::Code::Unimplemented as i32).into(),
-                            );
-                        headers
-                            .insert(
-                                http::header::CONTENT_TYPE,
-                                tonic::metadata::GRPC_CONTENT_TYPE,
-                            );
-                        Ok(response)
-                    })
-                }
+                _ => Box::pin(async move {
+                    let mut response = http::Response::new(tonic::body::Body::default());
+                    let headers = response.headers_mut();
+                    headers.insert(
+                        tonic::Status::GRPC_STATUS,
+                        (tonic::Code::Unimplemented as i32).into(),
+                    );
+                    headers.insert(
+                        http::header::CONTENT_TYPE,
+                        tonic::metadata::GRPC_CONTENT_TYPE,
+                    );
+                    Ok(response)
+                }),
             }
         }
     }
@@ -781,7 +736,7 @@ pub mod arrow_logs_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value,
+        clippy::let_unit_value
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with ArrowLogsServiceServer.
@@ -790,8 +745,7 @@ pub mod arrow_logs_service_server {
         /// Server streaming response type for the ArrowLogs method.
         type ArrowLogsStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::BatchStatus, tonic::Status>,
-            >
-            + std::marker::Send
+            > + std::marker::Send
             + 'static;
         async fn arrow_logs(
             &self,
@@ -820,10 +774,7 @@ pub mod arrow_logs_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -878,21 +829,17 @@ pub mod arrow_logs_service_server {
                 "/opentelemetry.proto.experimental.arrow.v1.ArrowLogsService/ArrowLogs" => {
                     #[allow(non_camel_case_types)]
                     struct ArrowLogsSvc<T: ArrowLogsService>(pub Arc<T>);
-                    impl<
-                        T: ArrowLogsService,
-                    > tonic::server::StreamingService<super::BatchArrowRecords>
-                    for ArrowLogsSvc<T> {
+                    impl<T: ArrowLogsService>
+                        tonic::server::StreamingService<super::BatchArrowRecords>
+                        for ArrowLogsSvc<T>
+                    {
                         type Response = super::BatchStatus;
                         type ResponseStream = T::ArrowLogsStream;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::ResponseStream>,
-                            tonic::Status,
-                        >;
+                        type Future =
+                            BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
                         fn call(
                             &mut self,
-                            request: tonic::Request<
-                                tonic::Streaming<super::BatchArrowRecords>,
-                            >,
+                            request: tonic::Request<tonic::Streaming<super::BatchArrowRecords>>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
@@ -923,25 +870,19 @@ pub mod arrow_logs_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => {
-                    Box::pin(async move {
-                        let mut response = http::Response::new(
-                            tonic::body::Body::default(),
-                        );
-                        let headers = response.headers_mut();
-                        headers
-                            .insert(
-                                tonic::Status::GRPC_STATUS,
-                                (tonic::Code::Unimplemented as i32).into(),
-                            );
-                        headers
-                            .insert(
-                                http::header::CONTENT_TYPE,
-                                tonic::metadata::GRPC_CONTENT_TYPE,
-                            );
-                        Ok(response)
-                    })
-                }
+                _ => Box::pin(async move {
+                    let mut response = http::Response::new(tonic::body::Body::default());
+                    let headers = response.headers_mut();
+                    headers.insert(
+                        tonic::Status::GRPC_STATUS,
+                        (tonic::Code::Unimplemented as i32).into(),
+                    );
+                    headers.insert(
+                        http::header::CONTENT_TYPE,
+                        tonic::metadata::GRPC_CONTENT_TYPE,
+                    );
+                    Ok(response)
+                }),
             }
         }
     }
@@ -971,7 +912,7 @@ pub mod arrow_metrics_service_server {
         dead_code,
         missing_docs,
         clippy::wildcard_imports,
-        clippy::let_unit_value,
+        clippy::let_unit_value
     )]
     use tonic::codegen::*;
     /// Generated trait containing gRPC methods that should be implemented for use with ArrowMetricsServiceServer.
@@ -980,16 +921,12 @@ pub mod arrow_metrics_service_server {
         /// Server streaming response type for the ArrowMetrics method.
         type ArrowMetricsStream: tonic::codegen::tokio_stream::Stream<
                 Item = std::result::Result<super::BatchStatus, tonic::Status>,
-            >
-            + std::marker::Send
+            > + std::marker::Send
             + 'static;
         async fn arrow_metrics(
             &self,
             request: tonic::Request<tonic::Streaming<super::BatchArrowRecords>>,
-        ) -> std::result::Result<
-            tonic::Response<Self::ArrowMetricsStream>,
-            tonic::Status,
-        >;
+        ) -> std::result::Result<tonic::Response<Self::ArrowMetricsStream>, tonic::Status>;
     }
     /// ArrowTracesService is a metrics-only Arrow stream.
     #[derive(Debug)]
@@ -1013,10 +950,7 @@ pub mod arrow_metrics_service_server {
                 max_encoding_message_size: None,
             }
         }
-        pub fn with_interceptor<F>(
-            inner: T,
-            interceptor: F,
-        ) -> InterceptedService<Self, F>
+        pub fn with_interceptor<F>(inner: T, interceptor: F) -> InterceptedService<Self, F>
         where
             F: tonic::service::Interceptor,
         {
@@ -1071,26 +1005,21 @@ pub mod arrow_metrics_service_server {
                 "/opentelemetry.proto.experimental.arrow.v1.ArrowMetricsService/ArrowMetrics" => {
                     #[allow(non_camel_case_types)]
                     struct ArrowMetricsSvc<T: ArrowMetricsService>(pub Arc<T>);
-                    impl<
-                        T: ArrowMetricsService,
-                    > tonic::server::StreamingService<super::BatchArrowRecords>
-                    for ArrowMetricsSvc<T> {
+                    impl<T: ArrowMetricsService>
+                        tonic::server::StreamingService<super::BatchArrowRecords>
+                        for ArrowMetricsSvc<T>
+                    {
                         type Response = super::BatchStatus;
                         type ResponseStream = T::ArrowMetricsStream;
-                        type Future = BoxFuture<
-                            tonic::Response<Self::ResponseStream>,
-                            tonic::Status,
-                        >;
+                        type Future =
+                            BoxFuture<tonic::Response<Self::ResponseStream>, tonic::Status>;
                         fn call(
                             &mut self,
-                            request: tonic::Request<
-                                tonic::Streaming<super::BatchArrowRecords>,
-                            >,
+                            request: tonic::Request<tonic::Streaming<super::BatchArrowRecords>>,
                         ) -> Self::Future {
                             let inner = Arc::clone(&self.0);
                             let fut = async move {
-                                <T as ArrowMetricsService>::arrow_metrics(&inner, request)
-                                    .await
+                                <T as ArrowMetricsService>::arrow_metrics(&inner, request).await
                             };
                             Box::pin(fut)
                         }
@@ -1117,25 +1046,19 @@ pub mod arrow_metrics_service_server {
                     };
                     Box::pin(fut)
                 }
-                _ => {
-                    Box::pin(async move {
-                        let mut response = http::Response::new(
-                            tonic::body::Body::default(),
-                        );
-                        let headers = response.headers_mut();
-                        headers
-                            .insert(
-                                tonic::Status::GRPC_STATUS,
-                                (tonic::Code::Unimplemented as i32).into(),
-                            );
-                        headers
-                            .insert(
-                                http::header::CONTENT_TYPE,
-                                tonic::metadata::GRPC_CONTENT_TYPE,
-                            );
-                        Ok(response)
-                    })
-                }
+                _ => Box::pin(async move {
+                    let mut response = http::Response::new(tonic::body::Body::default());
+                    let headers = response.headers_mut();
+                    headers.insert(
+                        tonic::Status::GRPC_STATUS,
+                        (tonic::Code::Unimplemented as i32).into(),
+                    );
+                    headers.insert(
+                        http::header::CONTENT_TYPE,
+                        tonic::metadata::GRPC_CONTENT_TYPE,
+                    );
+                    Ok(response)
+                }),
             }
         }
     }
