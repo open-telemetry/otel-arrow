@@ -83,10 +83,11 @@ df.filter(col("Foo").eq("bar"))?;
 ```
 
 A potential IL representation for this concept may be something like the
-following (in Rust objects, using DataFusion
+following (in Rust objects, loosely using DataFusion
 [logical_expr](https://docs.rs/datafusion/latest/datafusion/logical_expr/index.html)
 and
-[expr](https://docs.rs/datafusion/latest/datafusion/logical_expr/expr/index.html).
+[expr](https://docs.rs/datafusion/latest/datafusion/logical_expr/expr/index.html)
+concepts to suggest object/enum names).
 
 ```rust
 LogicalExpression::Filter(
