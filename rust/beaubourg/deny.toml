@@ -45,7 +45,7 @@ ignore = [
     # serde_yaml itself is archived and needs a replacement, but its dependency yaml-rust is the crate that is flagged
     # See https://rustsec.org/advisories/RUSTSEC-2024-0320
     # TODO: remove this advisory once an alternative is identified
-    "RUSTSEC-2024-0320"
+    # "RUSTSEC-2024-0320"
 ]
 # Threshold for security vulnerabilities, any vulnerability with a CVSS score
 # lower than the range specified will be ignored. Note that ignored advisories
