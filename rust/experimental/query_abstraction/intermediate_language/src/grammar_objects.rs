@@ -24,16 +24,13 @@ pub enum LogicalExpression {
     /// Reduce data volume by filtering out data via a [`ConditionalExpression`].
     /// * ConditionalExpression: The condition that determines which data to keep.
     Filter(ConditionalExpression),
-
     /// Add or alter data by default or based on an optional [`ConditionalExpression`].
     /// * Identifier: The name of the field to be added or altered.
     /// * Expression: The expression to be evaluated and assigned to the field.
     /// * ConditionalExpression: An optional condition that determines when the field should be added or altered.
     Extend(Identifier, Expression, Option<ConditionalExpression>),
-
     // Apply an aggregation function like sum, count, etc by grouping data.
     // Aggregate(...)
-    
     // Transform data by applying more complex functions like replace, truncate, etc.
     // Transform(...)
 }
