@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        folder: [beaubourg, otel-arrow-rust]
+        folder: [beaubourg, otel-arrow-rust, experimental]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        folder: [beaubourg, otel-arrow-rust]
+        folder: [beaubourg, otel-arrow-rust, experimental]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,7 +46,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        folder: [beaubourg, otel-arrow-rust]
+        folder: [beaubourg, otel-arrow-rust, experimental]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -84,7 +84,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        folder: [beaubourg, otel-arrow-rust]
+        folder: [beaubourg, otel-arrow-rust, experimental]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -100,7 +100,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        folder: [beaubourg, otel-arrow-rust]
+        folder: [beaubourg, otel-arrow-rust, experimental]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -116,7 +116,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        folder: [beaubourg, otel-arrow-rust]
+        folder: [beaubourg, otel-arrow-rust, experimental]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
