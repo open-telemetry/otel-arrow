@@ -11,8 +11,8 @@
 // limitations under the License.
 
 use crate::arrays::{
-    get_f64_array_opt, get_timestamp_nanosecond_array, get_u16_array, get_u32_array,
-    get_u32_array_opt, get_u64_array, NullableArrayAccessor,
+    get_f64_array_opt, get_timestamp_nanosecond_array, get_timestamp_nanosecond_array_opt,
+    get_u16_array, get_u32_array, get_u32_array_opt, get_u64_array, NullableArrayAccessor,
 };
 use crate::error;
 use crate::otlp::attributes::store::Attribute32Store;
@@ -38,7 +38,7 @@ impl HistogramDataPointsStore {
         let id_array_opt = get_u32_array_opt(rb, consts::ID)?;
         let delta_id = get_u16_array(rb, consts::PARENT_ID)?;
         let start_time_unix_nano =
-            get_timestamp_nanosecond_array(rb, consts::START_TIME_UNIX_NANO)?;
+            get_timestamp_nanosecond_array_opt(rb, consts::START_TIME_UNIX_NANO)?;
         let time_unix_nano = get_timestamp_nanosecond_array(rb, consts::TIME_UNIX_NANO)?;
         let histogram_count = get_u64_array(rb, consts::HISTOGRAM_COUNT)?;
         let sum = get_f64_array_opt(rb, consts::HISTOGRAM_SUM)?;
