@@ -2,7 +2,15 @@ name: Rust-CI
 permissions:
   contents: read
 
-on: [push, pull_request]
+on:
+  # run this job on every push and pull request
+  # only for changes in the rust directory
+  push:
+    paths:
+      - 'rust/**'
+  pull_request:
+    paths:
+      - 'rust/**'
 
 env:
   CARGO_TERM_COLOR: always
