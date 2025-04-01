@@ -11,8 +11,9 @@
 // limitations under the License.
 
 use crate::arrays::{
-    get_f64_array_opt, get_i64_array_opt, get_timestamp_nanosecond_array, get_u16_array,
-    get_u32_array, get_u32_array_opt, NullableArrayAccessor,
+    get_f64_array_opt, get_i64_array_opt, get_timestamp_nanosecond_array,
+    get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array, get_u32_array_opt,
+    NullableArrayAccessor,
 };
 use crate::error::Result;
 use crate::otlp::attributes::store::Attribute32Store;
@@ -35,7 +36,7 @@ impl NumberDataPointsStore {
         let id_array = get_u32_array(rb, consts::ID)?;
         let parent_id_array = get_u16_array(rb, consts::PARENT_ID)?;
         let start_time_unix_nano_array =
-            get_timestamp_nanosecond_array(rb, consts::START_TIME_UNIX_NANO)?;
+            get_timestamp_nanosecond_array_opt(rb, consts::START_TIME_UNIX_NANO)?;
         let time_unix_nano_array = get_timestamp_nanosecond_array(rb, consts::TIME_UNIX_NANO)?;
 
         // todo(hl): The receiver code of otelarrow also handles dictionary arrays for int_value field
