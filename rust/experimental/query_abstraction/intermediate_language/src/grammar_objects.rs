@@ -30,6 +30,12 @@ pub enum LogicalExpression {
     /// * Expression: The expression to be evaluated and assigned to the field.
     /// * ConditionalExpression: An optional condition that determines when the field should be added or altered.
     Extend(Identifier, Expression, Option<ConditionalExpression>),
+
+    // Apply an aggregation function like sum, count, etc by grouping data.
+    // Aggregate(...)
+    
+    // Transform data by applying more complex functions like replace, truncate, etc.
+    // Transform(...)
 }
 
 #[derive(Debug, Clone, PartialEq)]
