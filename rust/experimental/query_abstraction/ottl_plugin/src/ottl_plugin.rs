@@ -3,7 +3,7 @@ use intermediate_language::{grammar_objects::Query, query_processor::QueryProces
 pub struct OttlPlugin;
 
 impl QueryProcessor for OttlPlugin {
-    fn process_query(input: &str) -> Query {
+    fn process_query(_input: &str) -> Query {
         todo!()
     }
 }

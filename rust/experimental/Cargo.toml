@@ -1,6 +1,0 @@
-# Using a shared workspace Cargo.toml for ease of adding everything here into CI
-[workspace]
-members = [
-    "query_abstraction"
-]
-resolver = "2"
