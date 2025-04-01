@@ -18,11 +18,11 @@ use crate::error;
 use crate::otlp::related_data::RelatedData;
 use crate::schema::consts;
 use arrow::array::{
-    Array, ArrayAccessor, ArrayRef, BooleanArray, DictionaryArray, Int32Array, RecordBatch,
-    StringArray, StructArray, UInt16Array, UInt32Array, UInt8Array,
+    Array, ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray, StructArray, UInt16Array,
+    UInt32Array, UInt8Array,
 };
 use arrow::datatypes::DataType::UInt32;
-use arrow::datatypes::{DataType, Field, Fields, UInt8Type};
+use arrow::datatypes::{DataType, Field, Fields};
 use num_enum::TryFromPrimitive;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
@@ -223,7 +223,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
 struct MetricsArrays<'a> {
     id: &'a UInt16Array,
     metric_type: &'a UInt8Array,
-    schema_url: Option<&'a DictionaryArray<UInt8Type>>,
+    schema_url: Option<StringArrayAccessor<'a>>,
     name: StringArrayAccessor<'a>,
     description: Option<StringArrayAccessor<'a>>,
     unit: Option<&'a StringArray>,
@@ -246,11 +246,10 @@ impl<'a> TryFrom<&'a RecordBatch> for MetricsArrays<'a> {
             .column_by_name(consts::DESCRIPTION)
             .map(StringArrayAccessor::new)
             .transpose()?;
-        let schema_url = rb.column_by_name(consts::SCHEMA_URL).map(|a| {
-            a.as_any()
-                .downcast_ref::<DictionaryArray<UInt8Type>>()
-                .unwrap()
-        });
+        let schema_url = rb
+            .column_by_name(consts::SCHEMA_URL)
+            .map(StringArrayAccessor::new)
+            .transpose()?;
 
         let unit = rb
             .column_by_name(consts::UNIT)
@@ -353,14 +352,7 @@ pub fn metrics_from(
             }
             scope_metrics.scope = Some(scope);
             // ScopeMetrics uses the schema_url from metrics arrays.
-
-            scope_metrics.schema_url = metrics_arrays
-                .schema_url
-                .map(|v| {
-                    let typed_dictionary_array = v.downcast_dict::<StringArray>().unwrap();
-                    typed_dictionary_array.value(idx).to_string()
-                })
-                .unwrap_or_default();
+            scope_metrics.schema_url = metrics_arrays.schema_url.value_at(idx).unwrap_or_default();
         }
 
         // Creates a metric at the end of current scope metrics slice.
