@@ -31,7 +31,7 @@ language-agnostic.
 ## Intermediate Language Abstraction
 
 The immediate exploration of a possible IL examines 3 different languages and a
-possible plugin model to support other languages in the future.
+plugin model to support other languages in the future.
 
 While SQL is the native language of choice for DataFusion and OTTL is the
 standard for OpenTelemetry, KQL is more vendor-specific and could eventually
