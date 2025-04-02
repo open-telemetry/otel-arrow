@@ -61,19 +61,25 @@ mod tests {
     }
 
     #[test]
-    fn test_boolean_expression() {
-        assert!(OttlParser::parse(Rule::boolean_expression, "a and b").is_ok());
-        assert!(OttlParser::parse(Rule::boolean_expression, "a and").is_err());
-        assert!(OttlParser::parse(Rule::boolean_expression, "a or b").is_ok());
-        assert!(OttlParser::parse(Rule::boolean_expression, "or b").is_err());
-        assert!(OttlParser::parse(Rule::boolean_expression, "not(a)").is_ok());
-        assert!(OttlParser::parse(Rule::boolean_expression, "not a").is_err());
-        assert!(OttlParser::parse(Rule::boolean_expression, "!a").is_err());
+    fn test_binary_logical_expression() {
+        assert!(OttlParser::parse(Rule::binary_logical_expression, "a and b").is_ok());
+        assert!(OttlParser::parse(Rule::binary_logical_expression, "a and").is_err());
+        assert!(OttlParser::parse(Rule::binary_logical_expression, "a or b").is_ok());
+        assert!(OttlParser::parse(Rule::binary_logical_expression, "or b").is_err());
 
-        assert!(OttlParser::parse(Rule::boolean_expression, "not(a and b)").is_ok());
-        assert!(OttlParser::parse(Rule::boolean_expression, "(a and b) or (c and d)").is_ok());
-        assert!(OttlParser::parse(Rule::boolean_expression, "a or (b and c)").is_ok());
-        assert!(OttlParser::parse(Rule::boolean_expression, "a and b and c").is_ok());
+        assert!(
+            OttlParser::parse(Rule::binary_logical_expression, "(a and b) or (c and d)").is_ok()
+        );
+        assert!(OttlParser::parse(Rule::binary_logical_expression, "a or (b and c)").is_ok());
+        assert!(OttlParser::parse(Rule::binary_logical_expression, "a and b and c").is_ok());
+    }
+
+    #[test]
+    fn test_negated_expression() {
+        assert!(OttlParser::parse(Rule::negated_expression, "not(a)").is_ok());
+        assert!(OttlParser::parse(Rule::negated_expression, "not(a and b)").is_ok());
+        assert!(OttlParser::parse(Rule::negated_expression, "not a").is_err());
+        assert!(OttlParser::parse(Rule::negated_expression, "!a").is_err());
     }
 
     #[test]
@@ -87,37 +93,36 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_expression() {
-        assert!(OttlParser::parse(Rule::filter_expression, "- 'x == 42'").is_ok());
-        assert!(OttlParser::parse(Rule::filter_expression, r#"- 'x != "hello"'"#).is_ok());
-        assert!(OttlParser::parse(Rule::filter_expression, "- 'x == 42 and y > 24'").is_ok());
-        assert!(OttlParser::parse(Rule::filter_expression, "- 'x == 42 or not(y > 24)'").is_ok());
-        assert!(OttlParser::parse(Rule::filter_expression, "- 'x = 42").is_err());
-        assert!(OttlParser::parse(Rule::filter_expression, "- x = 42").is_err());
-        assert!(OttlParser::parse(Rule::filter_expression, "'x == 42'").is_err());
+    fn test_filter_statement() {
+        assert!(OttlParser::parse(Rule::filter_statement, "- 'x == 42'").is_ok());
+        assert!(OttlParser::parse(Rule::filter_statement, r#"- 'x != "hello"'"#).is_ok());
+        assert!(OttlParser::parse(Rule::filter_statement, "- 'x == 42 and y > 24'").is_ok());
+        assert!(OttlParser::parse(Rule::filter_statement, "- 'x == 42 or not(y > 24)'").is_ok());
+        assert!(OttlParser::parse(Rule::filter_statement, "- 'x = 42").is_err());
+        assert!(OttlParser::parse(Rule::filter_statement, "x = 42").is_err());
     }
 
     #[test]
-    fn test_extend_expression() {
-        assert!(OttlParser::parse(Rule::extend_expression, "- set(x, 42)").is_ok());
-        assert!(OttlParser::parse(Rule::extend_expression, "- set(x,42)").is_ok());
-        assert!(OttlParser::parse(Rule::extend_expression, r#"- set(y, "hello")"#).is_ok());
-        assert!(OttlParser::parse(Rule::extend_expression, "- set (x, y > 24)").is_ok());
-        assert!(OttlParser::parse(Rule::extend_expression, "- set (x, (y > 24))").is_ok());
-        assert!(OttlParser::parse(Rule::extend_expression, "- set(x, 42) where y > 24").is_ok());
-        assert!(OttlParser::parse(Rule::extend_expression, "- set(x, 42) where (y > 24)").is_ok());
+    fn test_extend_statement() {
+        assert!(OttlParser::parse(Rule::extend_statement, "- set(x, 42)").is_ok());
+        assert!(OttlParser::parse(Rule::extend_statement, "- set(x,42)").is_ok());
+        assert!(OttlParser::parse(Rule::extend_statement, r#"- set(y, "hello")"#).is_ok());
+        assert!(OttlParser::parse(Rule::extend_statement, "- set (x, y > 24)").is_ok());
+        assert!(OttlParser::parse(Rule::extend_statement, "- set (x, (y > 24))").is_ok());
+        assert!(OttlParser::parse(Rule::extend_statement, "- set(x, 42) where y > 24").is_ok());
+        assert!(OttlParser::parse(Rule::extend_statement, "- set(x, 42) where (y > 24)").is_ok());
         assert!(
-            OttlParser::parse(Rule::extend_expression, "- set(x, y > 24) where z == 10").is_ok()
+            OttlParser::parse(Rule::extend_statement, "- set(x, y > 24) where z == 10").is_ok()
         );
         assert!(
-            OttlParser::parse(Rule::extend_expression, "- set(x, y > 24 and (z == 10))").is_ok()
+            OttlParser::parse(Rule::extend_statement, "- set(x, y > 24 and (z == 10))").is_ok()
         );
         assert!(
-            OttlParser::parse(Rule::extend_expression, "- set(x, (y > 24) and z == 10)").is_ok()
+            OttlParser::parse(Rule::extend_statement, "- set(x, (y > 24) and z == 10)").is_ok()
         );
-        assert!(OttlParser::parse(Rule::extend_expression, "set(x, 42").is_err());
-        assert!(OttlParser::parse(Rule::extend_expression, "- set(x = 42").is_err());
-        assert!(OttlParser::parse(Rule::extend_expression, "- (x, 42").is_err());
+        assert!(OttlParser::parse(Rule::extend_statement, "- set(x, 42").is_err());
+        assert!(OttlParser::parse(Rule::extend_statement, "- set(x = 42").is_err());
+        assert!(OttlParser::parse(Rule::extend_statement, "(x, 42").is_err());
     }
 
     #[test]

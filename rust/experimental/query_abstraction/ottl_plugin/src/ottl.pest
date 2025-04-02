@@ -39,7 +39,6 @@ expression_base = { identifier | literal | enclosed_expression }
 
 enclosed_expression = { open_paren_token ~ expression ~ close_paren_token }
 
-not_expression = { not_token ~ enclosed_expression }
 and_expression = { expression_base ~ (and_token ~ expression)+ }
 or_expression = { expression_base ~  (or_token ~ expression)+ }
 
@@ -50,12 +49,10 @@ less_than_expression = { expression_base ~ less_than_token ~ expression }
 greater_than_or_equal_to_expression = { expression_base ~ greater_than_or_equal_to_token ~ expression }
 less_than_or_equal_to_expression = { expression_base ~ less_than_or_equal_to_token ~ expression }
 
-boolean_expression = {
-    not_expression
-    | and_expression
+binary_logical_expression = {
+    and_expression
     | or_expression
 }
-
 comparison_expression = {
     equals_expression
     | not_equals_expression
@@ -64,14 +61,16 @@ comparison_expression = {
     | greater_than_or_equal_to_expression
     | less_than_or_equal_to_expression
 }
+negated_expression = { not_token ~ enclosed_expression }
 
-conditional_expression = {
-    boolean_expression
+predicate = {
+    binary_logical_expression
     | comparison_expression
+    | negated_expression
 }
 
 expression = { 
-    conditional_expression
+    predicate
     | enclosed_expression
     | literal
     | identifier 
@@ -95,20 +94,20 @@ set_token = @{ "set" }
 set_tuple = { identifier ~ comma_token ~ expression }
 set_with_paren = { set_token ~ open_paren_token ~ set_tuple ~ close_paren_token }
 
-filter_expression = { dash_token ~ single_quote_token ~ conditional_expression ~ single_quote_token }
-extend_expression = { dash_token ~ set_with_paren ~ (where_token ~ conditional_expression)? }
+filter_statement = { dash_token ~ single_quote_token ~ predicate ~ single_quote_token }
+extend_statement = { dash_token ~ set_with_paren ~ (where_token ~ predicate)? }
 
 filter_query = {
     filter_token ~ NEWLINE? 
     ~ logs_token ~ NEWLINE? 
     ~ log_record_token ~ NEWLINE? 
-    ~ (NEWLINE* ~filter_expression)+
+    ~ (NEWLINE* ~ filter_statement)+
 }
 
 transform_query = {
     transform_token ~ NEWLINE?
     ~ log_statements_token ~ NEWLINE?
-    ~ (NEWLINE* ~ extend_expression)+
+    ~ (NEWLINE* ~ extend_statement)+
 }
 
 query = { 
