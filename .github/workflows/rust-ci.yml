@@ -95,22 +95,36 @@ jobs:
       fail-fast: false
       matrix:
         folder: [beaubourg, otel-arrow-rust]
-        checks: 
-          - advisories
-          - bans licenses sources
     runs-on: ubuntu-latest
-    # Prevent sudden announcement of a new advisory from failing ci:
-    continue-on-error: ${{ matrix.checks == 'advisories' }}
     steps:
       - uses: actions/checkout@v4
       - uses: arduino/setup-protoc@v3
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
-      - name: cargo deny check ${{ matrix.checks}}
+      - name: advisories
+        if: '!cancelled()'
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check ${{ matrix.checks }}
+          command: check advisories
+          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
+      - name: licenses
+        if: '!cancelled()'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
+      - name: bans
+        if: '!cancelled()'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans
+          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
+      - name: sources
+        if: '!cancelled()'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check sources
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
 
   bench:
