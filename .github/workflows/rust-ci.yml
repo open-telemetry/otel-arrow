@@ -8,9 +8,11 @@ on:
   push:
     paths:
       - 'rust/**'
+      - .github/workflows/rust-ci.yml
   pull_request:
     paths:
       - 'rust/**'
+      - .github/workflows/rust-ci.yml
 
 env:
   CARGO_TERM_COLOR: always
@@ -100,8 +102,29 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      - name: advisories
+        if: '!cancelled()'
+        uses: EmbarkStudios/cargo-deny-action@v2
         with:
+          command: check advisories
+          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
+      - name: licenses
+        if: '!cancelled()'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
+      - name: bans
+        if: '!cancelled()'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans
+          manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
+      - name: sources
+        if: '!cancelled()'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check sources
           manifest-path: ./rust/${{ matrix.folder }}/Cargo.toml
 
   bench:
