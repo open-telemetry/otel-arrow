@@ -10,9 +10,11 @@ on:
   push:
     paths-ignore:
       - 'rust/**'
+      - .github/workflows/rust-ci.yml
   pull_request:
     paths-ignore:
       - 'rust/**'
+      - .github/workflows/rust-ci.yml
 
 jobs:
 
