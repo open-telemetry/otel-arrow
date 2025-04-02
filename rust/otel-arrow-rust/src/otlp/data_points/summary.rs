@@ -11,8 +11,8 @@
 // limitations under the License.
 
 use crate::arrays::{
-    get_f64_array, get_timestamp_nanosecond_array, get_u16_array, get_u32_array, get_u32_array_opt,
-    get_u64_array, NullableArrayAccessor,
+    get_f64_array, get_timestamp_nanosecond_array, get_timestamp_nanosecond_array_opt,
+    get_u16_array, get_u32_array, get_u32_array_opt, get_u64_array, NullableArrayAccessor,
 };
 use crate::error;
 use crate::otlp::attributes::store::Attribute32Store;
@@ -35,7 +35,7 @@ impl SummaryDataPointsStore {
         let id_arr_opt = get_u32_array_opt(rb, consts::ID)?;
         let delta_id_arr = get_u16_array(rb, consts::PARENT_ID)?;
         let start_time_unix_nano_arr =
-            get_timestamp_nanosecond_array(rb, consts::START_TIME_UNIX_NANO)?;
+            get_timestamp_nanosecond_array_opt(rb, consts::START_TIME_UNIX_NANO)?;
         let time_unix_nano_arr = get_timestamp_nanosecond_array(rb, consts::TIME_UNIX_NANO)?;
         let summary_count_arr = get_u64_array(rb, consts::SUMMARY_COUNT)?;
         let sum_arr = get_f64_array(rb, consts::SUMMARY_SUM)?;

@@ -11,8 +11,8 @@
 // limitations under the License.
 
 use crate::arrays::{
-    get_bool_array_opt, get_i32_array_opt, get_string_array_opt, get_u16_array, get_u8_array,
-    NullableArrayAccessor, StringArrayAccessor,
+    get_bool_array_opt, get_i32_array_opt, get_u16_array, get_u8_array, NullableArrayAccessor,
+    StringArrayAccessor,
 };
 use crate::error;
 use crate::otlp::related_data::RelatedData;
@@ -43,7 +43,7 @@ pub enum MetricType {
 struct ResourceArrays<'a> {
     id: &'a UInt16Array,
     dropped_attributes_count: Option<&'a UInt32Array>,
-    schema_url: Option<&'a StringArray>,
+    schema_url: Option<StringArrayAccessor<'a>>,
 }
 
 impl<'a> ResourceArrays<'a> {
@@ -51,7 +51,11 @@ impl<'a> ResourceArrays<'a> {
         DataType::Struct(Fields::from(vec![
             Field::new(consts::ID, DataType::UInt16, true),
             Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
-            Field::new(consts::SCHEMA_URL, DataType::Utf8, true),
+            Field::new(
+                consts::SCHEMA_URL,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                true,
+            ),
         ]))
     }
 }
@@ -91,15 +95,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
 
         let schema_url = struct_array
             .column_by_name(consts::SCHEMA_URL)
-            .map(|a| {
-                a.as_any().downcast_ref::<StringArray>().context(
-                    error::ColumnDataTypeMismatchSnafu {
-                        name: consts::SCHEMA_URL,
-                        expect: DataType::Utf8,
-                        actual: a.data_type().clone(),
-                    },
-                )
-            })
+            .map(StringArrayAccessor::new)
             .transpose()?;
 
         Ok(Self {
@@ -111,7 +107,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
 }
 
 struct ScopeArrays<'a> {
-    name: StringArrayAccessor<'a>,
+    name: Option<StringArrayAccessor<'a>>,
     version: Option<&'a StringArray>,
     dropped_attributes_count: Option<&'a UInt32Array>,
     id: Option<&'a UInt16Array>,
@@ -120,7 +116,11 @@ struct ScopeArrays<'a> {
 impl<'a> ScopeArrays<'a> {
     fn data_type() -> DataType {
         DataType::Struct(Fields::from(vec![
-            Field::new(consts::NAME, DataType::Utf8, true),
+            Field::new(
+                consts::NAME,
+                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                true,
+            ),
             Field::new(consts::VERSION, DataType::Utf8, true),
             Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
             Field::new(consts::ID, DataType::UInt16, true),
@@ -167,11 +167,10 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
         }
         .downcast::<StructArray>()?;
 
-        let name = StringArrayAccessor::new(
-            scope_array
-                .column_by_name(consts::NAME)
-                .context(error::ColumnNotFoundSnafu { name: consts::NAME })?,
-        )?;
+        let name = scope_array
+            .column_by_name(consts::NAME)
+            .map(StringArrayAccessor::new)
+            .transpose()?;
 
         let version = scope_array
             .column_by_name(consts::VERSION)
@@ -224,9 +223,9 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
 struct MetricsArrays<'a> {
     id: &'a UInt16Array,
     metric_type: &'a UInt8Array,
-    schema_url: Option<&'a StringArray>,
+    schema_url: Option<StringArrayAccessor<'a>>,
     name: StringArrayAccessor<'a>,
-    description: StringArrayAccessor<'a>,
+    description: Option<StringArrayAccessor<'a>>,
     unit: Option<&'a StringArray>,
     aggregation_temporality: Option<&'a Int32Array>,
     is_monotonic: Option<&'a BooleanArray>,
@@ -243,13 +242,15 @@ impl<'a> TryFrom<&'a RecordBatch> for MetricsArrays<'a> {
                 .context(error::ColumnNotFoundSnafu { name: consts::NAME })?,
         )?;
 
-        let description = StringArrayAccessor::new(
-            rb.column_by_name(consts::DESCRIPTION)
-                .context(error::ColumnNotFoundSnafu {
-                    name: consts::DESCRIPTION,
-                })?,
-        )?;
-        let schema_url = get_string_array_opt(rb, consts::SCHEMA_URL)?;
+        let description = rb
+            .column_by_name(consts::DESCRIPTION)
+            .map(StringArrayAccessor::new)
+            .transpose()?;
+        let schema_url = rb
+            .column_by_name(consts::SCHEMA_URL)
+            .map(StringArrayAccessor::new)
+            .transpose()?;
+
         let unit = rb
             .column_by_name(consts::UNIT)
             .map(|a| {
@@ -319,6 +320,7 @@ pub fn metrics_from(
             {
                 resource.attributes = attrs.to_vec();
             }
+
             res_metrics.schema_url = resource_arrays.schema_url.value_at(idx).unwrap_or_default();
         }
 

@@ -4,7 +4,15 @@ permissions:
   # needed for codeql 
   security-events: write
 
-on: [push, pull_request]
+on: 
+  # run this job on every push and pull request
+  # ignore changes only in the rust directory
+  push:
+    paths-ignore:
+      - 'rust/**'
+  pull_request:
+    paths-ignore:
+      - 'rust/**'
 
 jobs:
 
