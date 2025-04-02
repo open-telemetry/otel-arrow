@@ -10,5 +10,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub(crate) mod test_util;
-pub(crate) use test_util::*;
+mod create_array;
+
+pub(crate) use create_array::{create_array, create_record_batch, create_test_schema};
