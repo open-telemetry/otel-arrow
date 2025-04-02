@@ -39,36 +39,56 @@ pub enum LogicalExpression {
 pub enum Expression {
     Identifier(Identifier),
     Literal(Literal),
-    ConditionalExpression(ConditionalExpression),
+    ConditionalExpression(ConditionalExpression)
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ConditionalExpression {
-    pub left: Box<Expression>,
-    pub operator: ConditionalOperator,
-    pub right: Box<Expression>,
+pub enum ConditionalExpression {
+    BooleanExpression(BooleanExpression),
+    ComparisonExpression(ComparisonExpression)
+}
+
+/// Note that `boolean_operator` and `right` are optional.
+/// This is because the expression can be a single boolean expression or a chain of boolean expressions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BooleanExpression {
+    negated: bool,
+    left: Box<Expression>,
+    boolean_operator: Option<BooleanOperator>,
+    right: Option<Box<Expression>>
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ComparisonExpression {
+    left: Box<Expression>,
+    comparison_operator: ComparisonOperator,
+    right: Box<Expression>
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Identifier {
-    pub name: String,
+    pub name: String
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Bool(bool),
     Int(i32),
-    String(String),
+    String(String)
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ConditionalOperator {
+pub enum BooleanOperator {
     And,
-    Or,
+    Or
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ComparisonOperator {
     Equal,
     NotEqual,
     GreaterThan,
     LessThan,
     GreaterThanOrEqual,
-    LessThanOrEqual,
+    LessThanOrEqual
 }
