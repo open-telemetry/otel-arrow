@@ -3,15 +3,15 @@ use std::fmt::Debug;
 #[derive(Clone, PartialEq)]
 pub struct Query {
     pub source: String,
-    pub expressions: Vec<LogicalExpression>,
+    pub statements: Vec<Statement>,
 }
 
 impl Debug for Query {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Query {{")?;
         writeln!(f, "  source: {:?},", self.source)?;
-        writeln!(f, "  logical_expressions: [")?;
-        for expression in &self.expressions {
+        writeln!(f, "  statements: [")?;
+        for expression in &self.statements {
             writeln!(f, "    {:?},", expression)?;
         }
         writeln!(f, "  ]")?;
@@ -20,15 +20,15 @@ impl Debug for Query {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum LogicalExpression {
-    /// Reduce data volume by filtering out data via a [`ConditionalExpression`].
-    /// * ConditionalExpression: The condition that determines which data to keep.
-    Filter(ConditionalExpression),
-    /// Add or alter data by default or based on an optional [`ConditionalExpression`].
+pub enum Statement {
+    /// Reduce data volume by filtering out data via a [`Predicate`].
+    /// * Predicate: The condition that determines which data to keep.
+    Filter(Predicate),
+    /// Add or alter data by default or based on an optional [`Predicate`].
     /// * Identifier: The name of the field to be added or altered.
     /// * Expression: The expression to be evaluated and assigned to the field.
-    /// * ConditionalExpression: An optional condition that determines when the field should be added or altered.
-    Extend(Identifier, Expression, Option<ConditionalExpression>),
+    /// * Predicate: An optional condition that determines when the field should be added or altered.
+    Extend(Identifier, Expression, Option<Predicate>),
     // Apply an aggregation function like sum, count, etc by grouping data.
     // Aggregate(...)
     // Transform data by applying more complex functions like replace, truncate, etc.
@@ -39,23 +39,26 @@ pub enum LogicalExpression {
 pub enum Expression {
     Identifier(Identifier),
     Literal(Literal),
-    ConditionalExpression(ConditionalExpression),
+    Predicate(Predicate),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ConditionalExpression {
-    BooleanExpression(BooleanExpression),
+pub enum Predicate {
+    BinaryLogicalExpression(BinaryLogicalExpression),
     ComparisonExpression(ComparisonExpression),
+    NegatedExpression(NegatedExpression),
 }
 
-/// Note that `boolean_operator` and `right` are optional.
-/// This is because the expression can be a single boolean expression or a chain of boolean expressions.
 #[derive(Debug, Clone, PartialEq)]
-pub struct BooleanExpression {
-    negated: bool,
+pub struct NegatedExpression {
+    expression: Box<Predicate>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BinaryLogicalExpression {
     left: Box<Expression>,
-    boolean_operator: Option<BooleanOperator>,
-    right: Option<Box<Expression>>,
+    boolean_operator: BooleanOperator,
+    right: Box<Expression>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
