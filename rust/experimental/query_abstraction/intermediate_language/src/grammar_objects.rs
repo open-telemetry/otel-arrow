@@ -39,13 +39,13 @@ pub enum LogicalExpression {
 pub enum Expression {
     Identifier(Identifier),
     Literal(Literal),
-    ConditionalExpression(ConditionalExpression)
+    ConditionalExpression(ConditionalExpression),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConditionalExpression {
     BooleanExpression(BooleanExpression),
-    ComparisonExpression(ComparisonExpression)
+    ComparisonExpression(ComparisonExpression),
 }
 
 /// Note that `boolean_operator` and `right` are optional.
@@ -55,32 +55,32 @@ pub struct BooleanExpression {
     negated: bool,
     left: Box<Expression>,
     boolean_operator: Option<BooleanOperator>,
-    right: Option<Box<Expression>>
+    right: Option<Box<Expression>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComparisonExpression {
     left: Box<Expression>,
     comparison_operator: ComparisonOperator,
-    right: Box<Expression>
+    right: Box<Expression>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Identifier {
-    pub name: String
+    pub name: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Bool(bool),
     Int(i32),
-    String(String)
+    String(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum BooleanOperator {
     And,
-    Or
+    Or,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -90,5 +90,5 @@ pub enum ComparisonOperator {
     GreaterThan,
     LessThan,
     GreaterThanOrEqual,
-    LessThanOrEqual
+    LessThanOrEqual,
 }
