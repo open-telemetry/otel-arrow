@@ -12,4 +12,7 @@
 
 mod create_array;
 
-pub(crate) use create_array::{create_array, create_record_batch, create_test_schema};
+pub(crate) use create_array::{
+    create_record_batch,
+    create_test_schema
+};
