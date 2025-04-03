@@ -119,7 +119,7 @@ impl KqlPlugin {
 
     /// Process a predicate, returning a Predicate object
     fn process_predicate(predicate: Pair<Rule>) -> QueryResult<Predicate> {
-        for predicate_piece in predicate.into_inner() {
+        if let Some(predicate_piece) = predicate.into_inner().next() {
             match predicate_piece.as_rule() {
                 Rule::binary_logical_expression => {
                     return Ok(Predicate::BinaryLogicalExpression(
@@ -182,7 +182,7 @@ impl KqlPlugin {
     fn process_binary_logical_expression(
         binary_logical_expression: Pair<Rule>,
     ) -> QueryResult<BinaryLogicalExpression> {
-        for expression_piece in binary_logical_expression.into_inner() {
+        if let Some(expression_piece) = binary_logical_expression.into_inner().next() {
             match expression_piece.as_rule() {
                 Rule::and_expression | Rule::or_expression => {
                     let mut left = Expression::Literal(Literal::Int(0)); // Placeholder for actual value
@@ -225,7 +225,7 @@ impl KqlPlugin {
     fn process_comparison_expression(
         comparison_expression: Pair<Rule>,
     ) -> QueryResult<ComparisonExpression> {
-        for expression_piece in comparison_expression.into_inner() {
+        if let Some(expression_piece) = comparison_expression.into_inner().next() {
             match expression_piece.as_rule() {
                 Rule::equals_expression
                 | Rule::not_equals_expression
@@ -287,7 +287,7 @@ impl KqlPlugin {
             match negated_piece.as_rule() {
                 Rule::not_token => continue,
                 Rule::enclosed_expression => {
-                    return Ok(Self::process_enclosed_expression(negated_piece)?)
+                    return Self::process_enclosed_expression(negated_piece)
                 }
                 _ => {
                     return Err(QueryError::ProcessingError(format!(
@@ -307,7 +307,7 @@ impl KqlPlugin {
             match enclosed_piece.as_rule() {
                 Rule::open_paren_token | Rule::close_paren_token => continue,
                 Rule::expression => {
-                    return Ok(Self::process_expression(enclosed_piece)?);
+                    return Self::process_expression(enclosed_piece);
                 }
                 _ => {
                     return Err(QueryError::ProcessingError(format!(
@@ -323,7 +323,7 @@ impl KqlPlugin {
     }
 
     fn process_expression(expression: Pair<Rule>) -> QueryResult<Expression> {
-        for expression_piece in expression.into_inner() {
+        if let Some(expression_piece) = expression.into_inner().next() {
             match expression_piece.as_rule() {
                 Rule::predicate => {
                     return Ok(Expression::Predicate(Self::process_predicate(
@@ -364,13 +364,13 @@ impl KqlPlugin {
 
     fn process_literal(literal: Pair<Rule>) -> Literal {
         if let Ok(value) = literal.as_str().parse::<i32>() {
-            return Literal::Int(value);
+            Literal::Int(value)
         } else if literal.as_str() == "true" {
-            return Literal::Bool(true);
+            Literal::Bool(true)
         } else if literal.as_str() == "false" {
-            return Literal::Bool(false);
+            Literal::Bool(false)
         } else {
-            return Literal::String(literal.as_str().trim_matches('"').to_string());
+            Literal::String(literal.as_str().trim_matches('"').to_string())
         }
     }
 }
