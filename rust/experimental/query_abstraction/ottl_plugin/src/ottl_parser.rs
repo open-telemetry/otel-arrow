@@ -13,6 +13,9 @@ mod tests {
     #[test]
     fn test_true_token() {
         assert!(OttlParser::parse(Rule::true_token, "true").is_ok());
+        assert!(OttlParser::parse(Rule::true_token, "True").is_err());
+        assert!(OttlParser::parse(Rule::true_token, "TRUE").is_err());
+        assert!(OttlParser::parse(Rule::true_token, "tRuE").is_err());
         assert!(OttlParser::parse(Rule::true_token, "false").is_err());
         assert!(OttlParser::parse(Rule::true_token, "tru").is_err());
     }
@@ -20,6 +23,9 @@ mod tests {
     #[test]
     fn test_false_token() {
         assert!(OttlParser::parse(Rule::false_token, "false").is_ok());
+        assert!(OttlParser::parse(Rule::false_token, "False").is_err());
+        assert!(OttlParser::parse(Rule::false_token, "FALSE").is_err());
+        assert!(OttlParser::parse(Rule::false_token, "fAlSe").is_err());
         assert!(OttlParser::parse(Rule::false_token, "true").is_err());
         assert!(OttlParser::parse(Rule::false_token, "fals").is_err());
     }

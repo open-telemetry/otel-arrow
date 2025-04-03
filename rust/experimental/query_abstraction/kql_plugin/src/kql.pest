@@ -1,3 +1,7 @@
+// KQL Grammar is heavily influenced by the following sources:
+// https://github.com/microsoft/Kusto-Query-Language/blob/master/grammar/KqlTokens.g4
+// https://github.com/microsoft/Kusto-Query-Language/blob/master/grammar/Kql.g4
+
 // These two special rules, when defined, are implicitly allowed at:
 // - at every sequence (split by ~)
 // - between every repetition (+ or *)
@@ -8,8 +12,8 @@ COMMENT = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
 
 // Basic tokens
 // ----------------------------------------------
-true_token = @{ "true" }
-false_token = @{ "false" }
+true_token = @{ "true" | "True" | "TRUE" }
+false_token = @{ "false" | "False" | "FALSE" }
 integer_token = @{ 
     "-"?
     ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
