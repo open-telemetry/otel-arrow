@@ -5,3 +5,5 @@ edition = "2021"
 
 [dependencies]
 intermediate_language = { verison = "0.1.0", path = "../intermediate_language" }
+pest = "2.8"
+pest_derive = "2.8"
