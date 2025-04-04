@@ -17,7 +17,7 @@
 
 package transform
 
-import "github.com/apache/arrow/go/v17/arrow"
+import "github.com/apache/arrow-go/v18/arrow"
 
 // NoField is a FieldTransform that returns nil, so in practice it removes the
 // field.

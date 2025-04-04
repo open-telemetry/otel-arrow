@@ -20,7 +20,7 @@ package schema
 import (
 	"errors"
 
-	"github.com/apache/arrow/go/v17/arrow"
+	"github.com/apache/arrow-go/v18/arrow"
 )
 
 // Metadata constants used to mark fields as optional or dictionary.

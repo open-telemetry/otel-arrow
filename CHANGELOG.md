@@ -8,6 +8,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+- Upgrade to Arrow v18. [#321](https://github.com/open-telemetry/otel-arrow/pull/321)
+- Upgrade to v0.122.x of collector dependencies. [#307](https://github.com/open-telemetry/otel-arrow/pull/307)
+
 ## [0.34.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.34.0) - 2025-02-25
 
 - Upgrade to v0.120.0 of collector dependencies. [#292](https://github.com/open-telemetry/otel-arrow/pull/292)
