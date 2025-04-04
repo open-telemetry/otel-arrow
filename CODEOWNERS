@@ -12,6 +12,6 @@
 #  https://help.github.com/en/articles/about-code-owners
 #
 
-* @lquerel @jmacd @moh-osman3 @codeboten @drewrelmas
+*  @open-telemetry/arrow-approvers
 
 CODEOWNERS @lquerel @jmacd
