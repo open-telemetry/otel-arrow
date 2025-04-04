@@ -64,9 +64,10 @@ ignore = [
 allow = [
     "MIT",
     "Apache-2.0",
-    #"Apache-2.0 WITH LLVM-exception",
-    "BSD-3-Clause",
-    "Zlib"
+    "Zlib",
+    # TODO: Confirm legal use of Unicode-3.0
+    # See https://github.com/open-telemetry/otel-arrow/issues/313
+    "Unicode-3.0"
 ]
 # The confidence threshold for detecting a license from license text.
 # The higher the value, the more closely the license text must be to the
