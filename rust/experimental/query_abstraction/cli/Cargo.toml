@@ -1,0 +1,9 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kql_plugin = { version = "0.1.0", path = "../kql_plugin" }
+ottl_plugin = { version = "0.1.0", path = "../ottl_plugin" }
+intermediate_language = { version = "0.1.0", path = "../intermediate_language" }
