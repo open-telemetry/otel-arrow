@@ -1114,6 +1114,7 @@ dependencies = [
  "lazy_static",
  "num_enum",
  "otap-derive",
+ "otlp-derive",
  "paste",
  "prost",
  "rand 0.9.0",
@@ -1121,6 +1122,15 @@ dependencies = [
  "snafu",
  "tonic",
  "tonic-build",
+]
+
+[[package]]
+name = "otlp-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

@@ -22,6 +22,7 @@ arrow-ipc = { version = "53", features = ["zstd"] }
 lazy_static = "1.5"
 num_enum = "0.7"
 otap-derive = { path = "./src/proto/pdata/otap/derive" }
+otlp-derive = { path = "./src/proto/pdata/otlp/derive" }
 paste = "1.0"
 prost = "0.13"
 serde = { version = "1.0", features = ["derive"] }

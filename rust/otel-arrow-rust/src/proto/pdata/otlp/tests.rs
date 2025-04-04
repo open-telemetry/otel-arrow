@@ -10,7 +10,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! This module contains data structures for OTLP and OTAP protocol data
+#[cfg(test)]
+mod tests {
+    use crate::proto::pdata::otlp::Message;
+    use crate::proto::opentelemetry::logs::v1::{
+	LogRecord,
+    };
 
-pub mod otap;
-pub mod otlp;
+    #[test]
+    fn test_message_placeholder_method() {
+        LogRecord::placeholder();
+    }
+}

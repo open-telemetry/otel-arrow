@@ -9,6 +9,7 @@
 ///
 /// When new fields are added into this message, the OTLP request MUST be updated
 /// as well.
+#[derive(crate::proto::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TracesData {
     /// An array of ResourceSpans.
@@ -20,6 +21,7 @@ pub struct TracesData {
     pub resource_spans: ::prost::alloc::vec::Vec<ResourceSpans>,
 }
 /// A collection of ScopeSpans from a Resource.
+#[derive(crate::proto::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResourceSpans {
     /// The resource for the spans in this message.
@@ -39,6 +41,7 @@ pub struct ResourceSpans {
     pub schema_url: ::prost::alloc::string::String,
 }
 /// A collection of Spans produced by an InstrumentationScope.
+#[derive(crate::proto::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ScopeSpans {
     /// The instrumentation scope information for the spans in this message.
@@ -60,6 +63,7 @@ pub struct ScopeSpans {
 /// A Span represents a single operation performed by a single component of the system.
 ///
 /// The next available field id is 17.
+#[derive(crate::proto::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Span {
     /// A unique identifier for a trace. All spans from the same trace share
@@ -187,6 +191,7 @@ pub struct Span {
 pub mod span {
     /// Event is a time-stamped annotation of the span, consisting of user-supplied
     /// text description and key-value pairs.
+    #[derive(crate::proto::pdata::otlp::Message)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Event {
         /// time_unix_nano is the time the event occurred.
@@ -212,6 +217,7 @@ pub mod span {
     /// different trace. For example, this can be used in batching operations,
     /// where a single batch handler processes multiple requests from different
     /// traces or when the handler receives a request from a different project.
+    #[derive(crate::proto::pdata::otlp::Message)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Link {
         /// A unique identifier of a trace that this linked span is part of. The ID is a
@@ -257,6 +263,7 @@ pub mod span {
     }
     /// SpanKind is the type of span. Can be used to specify additional relationships between spans
     /// in addition to a parent/child relationship.
+    #[derive(crate::proto::pdata::otlp::Message)]
     #[derive(
         Clone,
         Copy,
@@ -322,6 +329,7 @@ pub mod span {
 }
 /// The Status type defines a logical error model that is suitable for different
 /// programming environments, including REST APIs and RPC APIs.
+#[derive(crate::proto::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Status {
     /// A developer-facing human readable error message.
@@ -335,6 +343,7 @@ pub struct Status {
 pub mod status {
     /// For the semantics of status codes see
     /// <https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/api.md#set-status>
+    #[derive(crate::proto::pdata::otlp::Message)]
     #[derive(
         Clone,
         Copy,
@@ -393,6 +402,7 @@ pub mod status {
 /// OpenTelemetry protocol.  Older Span producers do not set this
 /// field, consequently consumers should not rely on the absence of a
 /// particular flag bit to indicate the presence of a particular feature.
+#[derive(crate::proto::pdata::otlp::Message)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum SpanFlags {

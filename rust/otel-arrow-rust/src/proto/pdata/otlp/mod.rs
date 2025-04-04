@@ -10,7 +10,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! This module contains data structures for OTLP and OTAP protocol data
+//! This module contains traits and utilities for OTLP (OpenTelemetry Protocol) message types.
 
-pub mod otap;
-pub mod otlp;
+// Re-export the derive macros from otlp-derive
+pub use otlp_derive::Message;
+
+// Include tests
+#[cfg(test)]
+mod tests;
+
+/// Message is a trait for OTLP protocol buffer message types.
+pub trait Message {
+    fn placeholder();
+}
