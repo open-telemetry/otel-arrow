@@ -10,7 +10,7 @@ impl Debug for Query {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "Query")?;
         writeln!(f, "├── Source: {:?}", self.source)?;
-        
+
         if self.statements.is_empty() {
             writeln!(f, "└── Statements: []")
         } else {
@@ -184,12 +184,8 @@ impl Debug for Predicate {
 impl Predicate {
     fn fmt_with_indent(&self, f: &mut std::fmt::Formatter<'_>, indent: &str) -> std::fmt::Result {
         match self {
-            Predicate::BinaryLogicalExpression(ble) => {
-                ble.fmt_with_indent(f, indent)
-            }
-            Predicate::ComparisonExpression(ce) => {
-                ce.fmt_with_indent(f, indent)
-            }
+            Predicate::BinaryLogicalExpression(ble) => ble.fmt_with_indent(f, indent),
+            Predicate::ComparisonExpression(ce) => ce.fmt_with_indent(f, indent),
             Predicate::NegatedExpression(expr) => {
                 writeln!(f, "NegatedExpression")?;
                 write!(f, "{}└── ", indent)?;
