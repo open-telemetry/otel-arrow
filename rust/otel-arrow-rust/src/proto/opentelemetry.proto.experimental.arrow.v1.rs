@@ -49,6 +49,7 @@ pub struct BatchStatus {
 }
 /// Enumeration of all the OTel Arrow payload types currently supported by the
 /// OTel Arrow protocol.
+#[derive(crate::proto::pdata::otap::Message)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ArrowPayloadType {
@@ -160,6 +161,7 @@ impl ArrowPayloadType {
 }
 /// StatusCode carries certain known meanings in Arrow.  Values match
 /// the gRPC code space, see <https://grpc.io/docs/guides/status-codes/.>
+#[derive(crate::proto::pdata::otap::Message)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum StatusCode {

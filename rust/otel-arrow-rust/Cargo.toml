@@ -3,6 +3,11 @@ name = "otel-arrow-rust"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+# Temporary! The OTLP protos contain comment fragments that read like
+# rust doctests.
+doctest = false
+
 [features]
 default = ["full"]
 full = ["client", "server", "trace"]

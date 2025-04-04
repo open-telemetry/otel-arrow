@@ -10,23 +10,44 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Protocol buffer definitions for OpenTelemetry Arrow Protocol
+pub mod pdata;
 
+#[path = "."]
 pub mod opentelemetry {
+    #[path = "."]
     pub mod proto {
+	#[path = "."]
+	pub mod trace {
+	    #[path = "opentelemetry.proto.trace.v1.rs"]
+	    pub mod v1;
+	}
+	#[path = "."]
+	pub mod logs {
+	    #[path = "opentelemetry.proto.logs.v1.rs"]
+	    pub mod v1;
+	}
+	#[path = "."]
+	pub mod metrics {
+	    #[path = "opentelemetry.proto.metrics.v1.rs"]
+	    pub mod v1;
+	}
+	#[path = "."]
+	pub mod common {
+	    #[path = "opentelemetry.proto.common.v1.rs"]
+	    pub mod v1;
+	}
+	#[path = "."]
+	pub mod resource {
+	    #[path = "opentelemetry.proto.resource.v1.rs"]
+	    pub mod v1;
+	}
+	#[path = "."]
         pub mod experimental {
+	    #[path = "."]
             pub mod arrow {
-                pub mod v1 {
-                    pub use crate::proto::opentelemetry_proto_experimental_arrow_v1::*;
-                }
+		#[path = "opentelemetry.proto.experimental.arrow.v1.rs"]
+                pub mod v1;
             }
         }
     }
 }
-
-/// Generated protocol buffer code for OpenTelemetry Arrow v1
-#[path = "opentelemetry.proto.experimental.arrow.v1.rs"]
-pub mod opentelemetry_proto_experimental_arrow_v1;
-
-/// OTAP data model modules
-pub mod pdata;
