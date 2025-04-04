@@ -15,22 +15,14 @@ use std::path::Path;
 fn main() {
     let out_dir = Path::new("src/proto");
     let base = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    
-    // Create a tonic-build configuration with our custom settings
     let builder = tonic_build::configure()
         .build_server(true)
-        .build_client(true)
+        .build_client(true);
+
+    let builder = builder
         .server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
         .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#);
 
-    // Apply conditional derive attributes directly using type_attribute
-    // This avoids the need for post-processing
-    let builder = builder
-        .type_attribute("BatchArrowRecords", r#"#[cfg_attr(feature = "derive", derive(crate::proto::pdata::otap::Message))]"#)
-        .type_attribute("ArrowPayload", r#"#[cfg_attr(feature = "derive", derive(crate::proto::pdata::otap::Message))]"#)
-        .type_attribute("BatchStatus", r#"#[cfg_attr(feature = "derive", derive(crate::proto::pdata::otap::Message))]"#);
-
-    // Compile the protobuf definitions
     builder
         .out_dir(out_dir)
         .compile_protos(
@@ -38,5 +30,4 @@ fn main() {
             &[format!("{}/../../proto/opentelemetry/proto/", base)],
         )
         .expect("Failed to compile protos.");
-    
 }

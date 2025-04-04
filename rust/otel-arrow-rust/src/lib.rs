@@ -22,9 +22,6 @@ mod schema;
 #[cfg(test)]
 mod test_util;
 
-// Add the proto module which exposes the generated code and our custom types
-pub mod proto;
-
 #[path = ""]
 pub mod opentelemetry {
     pub use proto::*;
