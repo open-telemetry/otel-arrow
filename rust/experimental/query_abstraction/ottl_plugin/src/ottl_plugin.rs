@@ -109,10 +109,12 @@ impl OttlPlugin {
                 Rule::predicate => {
                     statements.push(Statement::Filter(Self::process_predicate(filter_piece)?));
                 }
-                _ => return Err(QueryError::ProcessingError(format!(
+                _ => {
+                    return Err(QueryError::ProcessingError(format!(
                     "Unexpected rule: '{:?}' found processing parent object: 'filter_statement'",
                     filter_piece.as_rule()
-                ))),
+                )))
+                }
             }
         }
         Ok(())
@@ -141,10 +143,12 @@ impl OttlPlugin {
                 Rule::predicate => {
                     predicate = Some(Self::process_predicate(extend_piece)?);
                 }
-                _ => return Err(QueryError::ProcessingError(format!(
+                _ => {
+                    return Err(QueryError::ProcessingError(format!(
                     "Unexpected rule: '{:?}' found processing parent object: 'extend_statement'",
                     extend_piece.as_rule()
-                ))),
+                )))
+                }
             }
         }
 
