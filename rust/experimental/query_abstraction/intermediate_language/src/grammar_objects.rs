@@ -40,32 +40,28 @@ pub enum Expression {
     Identifier(Identifier),
     Literal(Literal),
     Predicate(Predicate),
+    EnclosedExpression(Box<Expression>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Predicate {
     BinaryLogicalExpression(BinaryLogicalExpression),
     ComparisonExpression(ComparisonExpression),
-    NegatedExpression(NegatedExpression),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct NegatedExpression {
-    expression: Box<Predicate>,
+    NegatedExpression(Box<Expression>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BinaryLogicalExpression {
-    left: Box<Expression>,
-    boolean_operator: BooleanOperator,
-    right: Box<Expression>,
+    pub left: Box<Expression>,
+    pub boolean_operator: BooleanOperator,
+    pub right: Box<Expression>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComparisonExpression {
-    left: Box<Expression>,
-    comparison_operator: ComparisonOperator,
-    right: Box<Expression>,
+    pub left: Box<Expression>,
+    pub comparison_operator: ComparisonOperator,
+    pub right: Box<Expression>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
