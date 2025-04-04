@@ -14,8 +14,6 @@ pub mod pdata;
 
 #[path = "."]
 pub mod opentelemetry {
-    #[path = "."]
-    pub mod proto {
 	#[path = "."]
 	pub mod trace {
 	    #[path = "opentelemetry.proto.trace.v1.rs"]
@@ -42,6 +40,25 @@ pub mod opentelemetry {
 	    pub mod v1;
 	}
 	#[path = "."]
+        pub mod collector {
+	    #[path = "."]
+    	    pub mod trace {
+		#[path = "opentelemetry.proto.collector.trace.v1.rs"]
+		pub mod v1;
+	    }
+	    #[path = "."]
+	    pub mod logs {
+		#[path = "opentelemetry.proto.collector.logs.v1.rs"]
+		pub mod v1;
+	    }
+	    #[path = "."]
+	    pub mod metrics {
+		#[path = "opentelemetry.proto.collector.metrics.v1.rs"]
+		pub mod v1;
+	    }	
+        }
+    
+	#[path = "."]
         pub mod experimental {
 	    #[path = "."]
             pub mod arrow {
@@ -49,5 +66,4 @@ pub mod opentelemetry {
                 pub mod v1;
             }
         }
-    }
 }

@@ -18,7 +18,7 @@ use crate::otlp::related_data::RelatedData;
 use arrow::array::RecordBatch;
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
-use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
+use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
 use snafu::{ensure, OptionExt, ResultExt};
 use std::collections::HashMap;
 use std::io::Cursor;

@@ -24,7 +24,7 @@ use crate::otlp::metric::AppendAndGet;
 use crate::schema::consts;
 use arrow::array::{Array, Int32Array, ListArray, RecordBatch, StructArray};
 use arrow::datatypes::{DataType, Field, FieldRef, Fields, UInt64Type};
-use opentelemetry_proto::tonic::metrics::v1::exponential_histogram_data_point::Buckets;
+use crate::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
 use snafu::OptionExt;
 
 impl EHistogramDataPointsStore {
