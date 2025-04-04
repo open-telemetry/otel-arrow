@@ -1035,4 +1035,22 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn test_process_query_expect_parsing_error() {
+        let invalid_inputs = vec![
+            "my_table | where my_variable == 5 |",
+            "| where my_variable == 5",
+            "my_table | where == 5",
+            "my_table | where my_variable = 5",
+            "my_table | extend x = 42, y =",
+            "my_table | extend x = 42, y = 24,",
+        ];
+
+        for input in invalid_inputs {
+            let result = KqlPlugin::process_query(input);
+            assert!(result.is_err(), "Expected error for input: {}", input);
+            assert!(matches!(result, Err(QueryError::ParseError(_))));
+        }
+    }
 }
