@@ -30,7 +30,7 @@ fn generate_otap_protos(out_dir: &Path, base: &str) {
         .build_client(true)
         .server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
         .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#)
-        .type_attribute(".", r#"#[derive(crate::proto::pdata::otap::Message)]"#);
+        .type_attribute(".", r#"#[derive(crate::pdata::otap::Message)]"#);
 
     // Compile the protobuf definitions
     builder
@@ -49,7 +49,7 @@ fn generate_otlp_protos(out_dir: &Path, base: &str) {
         .build_client(true)
         .server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
         .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#)
-        .type_attribute(".", r#"#[derive(crate::proto::pdata::otlp::Message)]"#);
+        .type_attribute(".", r#"#[derive(crate::pdata::otlp::Message)]"#);
 
     builder
         .out_dir(out_dir)

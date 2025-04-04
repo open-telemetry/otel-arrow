@@ -24,7 +24,7 @@ pub fn derive_otap_message(input: TokenStream) -> TokenStream {
     
     // Generate the trait implementation
     let expanded = quote! {
-        impl crate::proto::pdata::otap::Message for #name {
+        impl crate::pdata::otap::Message for #name {
             fn placeholder() {
                 eprintln!(stringify!(#name));
             }

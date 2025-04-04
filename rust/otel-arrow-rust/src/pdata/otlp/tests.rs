@@ -12,7 +12,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::proto::pdata::otlp::Message;
+    use crate::pdata::otlp::Message;
     use crate::proto::opentelemetry::logs::v1::{
 	LogRecord,
     };

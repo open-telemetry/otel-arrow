@@ -12,7 +12,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::proto::pdata::otap::Message;
+    use crate::pdata::otap::Message;
     use crate::proto::opentelemetry::experimental::arrow::v1::{
         BatchArrowRecords, ArrowPayload, BatchStatus
     };
