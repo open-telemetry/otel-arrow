@@ -191,6 +191,7 @@ pub mod metric {
     /// Data determines the aggregation type (if any) of the metric, what is the
     /// reported value type for the data points, as well as the relatationship to
     /// the time interval over which they are reported.
+    #[derive(crate::pdata::otlp::Oneof)]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Data {
         #[prost(message, tag = "5")]

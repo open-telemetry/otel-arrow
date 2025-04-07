@@ -46,3 +46,8 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
 
     TokenStream::from(expanded)
 }
+
+#[proc_macro_derive(Oneof)]
+pub fn derive_otlp_oneof(_: TokenStream) -> TokenStream {
+    TokenStream::new()
+}
