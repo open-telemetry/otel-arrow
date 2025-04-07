@@ -18,7 +18,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/apache/arrow/go/v17/arrow/memory"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 )
 
 type LimitedAllocator struct {
