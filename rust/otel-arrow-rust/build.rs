@@ -48,8 +48,9 @@ fn generate_otlp_protos(out_dir: &Path, base: &str) {
         .build_server(true)
         .build_client(true)
         .server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
-        .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#)
-        .type_attribute(".", r#"#[derive(crate::pdata::otlp::Message)]"#);
+        .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#);
+
+    let builder = otlp_model::add_type_attributes(builder);
 
     builder
         .out_dir(out_dir)

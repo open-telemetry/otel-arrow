@@ -13,15 +13,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput};
-use std::sync::LazyLock;
-use std::collections::HashSet;
-
-static IGNORE_TYPES: LazyLock<HashSet<String>> = LazyLock::new(|| {
-    HashSet::from([
-	"Data".to_string(),
-	"Value".to_string(),
-    ])
-});
 
 /// Derives the OTLP Message trait implementation for protocol buffer
 /// message types. This enables additional OTLP-specific functionality
@@ -30,15 +21,6 @@ static IGNORE_TYPES: LazyLock<HashSet<String>> = LazyLock::new(|| {
 pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
-
-    // Only derive for specific supported types
-    let name_str = name.to_string();
-    
-    if let Some(_) = IGNORE_TYPES.get(&name_str) {
-        // Skip derivation for unsupported types
-        return TokenStream::new();
-    }
-
     let builder_name = syn::Ident::new(&format!("{}Builder", name), name.span());
 
     let expanded = quote! {
