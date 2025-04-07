@@ -14,6 +14,8 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput};
 
+const IGNORE_TYPES: [&str; 1] = ["test"];
+
 /// Derives the OTLP Message trait implementation for protocol buffer
 /// message types. This enables additional OTLP-specific functionality
 /// beyond what prost::Message provides.
@@ -21,12 +23,34 @@ use syn::{parse_macro_input, DeriveInput};
 pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
+
+    // Only derive for specific supported types
+    let name_str = name.to_string();
     
-    // Generate the trait implementation
+    if IGNORE_TYPES.contains(name_str.as_str()) {
+        // Skip derivation for unsupported types
+        return TokenStream::new();
+    }
+
+    let builder_name = syn::Ident::new(&format!("{}Builder", name), name_str);
+
     let expanded = quote! {
-        impl crate::pdata::otlp::Message for #name {
-            fn placeholder() {
-                eprintln!(stringify!(#name));
+        pub struct #builder_name {
+            inner: #name,
+        }
+
+        impl #builder_name {
+            /// Creates a new builder for #name
+            pub fn new() -> Self {
+                Self {
+                    inner: #name::default(),
+                }
+            }
+        }
+
+        impl std::convert::Into<#name> for #builder_name {
+            fn into(self) -> #name {
+                self.inner
             }
         }
     };

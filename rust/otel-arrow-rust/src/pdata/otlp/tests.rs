@@ -12,13 +12,4 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::pdata::otlp::Message;
-    use crate::proto::opentelemetry::logs::v1::{
-	LogRecord,
-    };
-
-    #[test]
-    fn test_message_placeholder_method() {
-        LogRecord::placeholder();
-    }
 }
