@@ -29,7 +29,8 @@ pub trait Message {
     fn builder() -> Self::Builder;
 }
 
-// Shared traits for message builders
+// Shared traits for message builders TODO?
+
 /// Trait for OTLP types that have a name field
 pub trait HasName {
     /// Sets the name field
@@ -40,12 +41,6 @@ pub trait HasName {
 pub trait HasDescription {
     /// Sets the description field
     fn with_description<S: AsRef<str>>(self, description: S) -> Self;
-}
-
-/// Trait for OTLP types that have attributes
-pub trait HasAttributes {
-    /// Sets the attributes field
-    fn with_attributes(self, attributes: Vec<crate::proto::opentelemetry::common::v1::KeyValue>) -> Self;
 }
 
 /// Trait for OTLP types that have a start time field
