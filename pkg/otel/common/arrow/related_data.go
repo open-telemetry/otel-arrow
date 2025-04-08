@@ -21,7 +21,7 @@ package arrow
 // For example, `attributes` are related to `resource`, `span`, ...
 
 import (
-	"github.com/apache/arrow/go/v17/arrow"
+	"github.com/apache/arrow-go/v18/arrow"
 
 	colarspb "github.com/open-telemetry/otel-arrow/api/experimental/arrow/v1"
 	cfg "github.com/open-telemetry/otel-arrow/pkg/config"
