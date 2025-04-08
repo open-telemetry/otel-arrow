@@ -15,6 +15,9 @@ mod tests {
     #[test]
     fn test_any_value() {
 	use crate::proto::opentelemetry::common::v1::AnyValue;
+	use crate::proto::opentelemetry::common::v1::KeyValue;
+	use crate::proto::opentelemetry::common::v1::KeyValueList;
+	use crate::proto::opentelemetry::common::v1::ArrayValue;
 	use crate::proto::opentelemetry::common::v1::any_value::Value;
 
 	// Primitives
@@ -47,10 +50,42 @@ mod tests {
 	};
 	assert_eq!(AnyValue::new_bytes(hello.as_slice()), hello_value);
 	assert_eq!(AnyValue::new_bytes(&hello), hello_value);
+	assert_eq!(AnyValue::new_bytes(hello), hello_value);
 
-	// Kvlist @@@
+	// Kvlist
+	let kvs = vec![
+	    KeyValue::new("k1", AnyValue::new_string("s1")),
+	    KeyValue::new("k2", AnyValue::new_double(2.0)),
+	];
+	let kvs_value = AnyValue{
+	    value: Some(Value::KvlistValue(KeyValueList{
+		values: kvs.clone(),
+	    })),
+	};
+
+	assert_eq!(AnyValue::new_kvlist(&kvs), kvs_value);
+	assert_eq!(AnyValue::new_kvlist(&[
+	    KeyValue::new("k1", AnyValue::new_string("s1")),
+	    KeyValue::new("k2", AnyValue::new_double(2.0)),
+	]), kvs_value);
 	
-	// Map @@@
+	// Array
+	let vals = vec![
+	    AnyValue::new_string("s1"),
+	    AnyValue::new_double(2.0),
+	];
+	let vals_value = AnyValue{
+	    value: Some(Value::ArrayValue(ArrayValue{
+		values: vals.clone(),
+	    })),
+	};
+
+	assert_eq!(AnyValue::new_array(&vals), vals_value);
+	assert_eq!(AnyValue::new_array(vals), vals_value);
+	assert_eq!(AnyValue::new_array(vec![
+	    AnyValue::new_string("s1"),
+	    AnyValue::new_double(2.0),
+	]), vals_value);
     }
 
     #[test]
@@ -59,13 +94,23 @@ mod tests {
 	use crate::proto::opentelemetry::common::v1::KeyValue;	
 
 	let k1 = "k1".to_string();
+	let k2 = "k2".to_string();
 	let v1 = AnyValue::new_string("v1");
-	let kv_value = KeyValue{
+	let v2 = AnyValue::new_double(1.23);
+
+	let kv1_value = KeyValue{
 	    key: k1.clone(),
 	    value: Some(v1.clone()),
 	};
+	let kv2_value = KeyValue{
+	    key: k2.clone(),
+	    value: Some(v2.clone()),
+	};
 
-	assert_eq!(KeyValue::new("k1", v1.clone()), kv_value);
-	assert_eq!(KeyValue::new(k1, v1), kv_value);
+	assert_eq!(KeyValue::new("k1", v1.clone()), kv1_value);
+	assert_eq!(KeyValue::new(k1.clone(), v1), kv1_value);
+
+	assert_eq!(KeyValue::new("k2", v2.clone()), kv2_value);
+	assert_eq!(KeyValue::new(k2, v2), kv2_value);
     }
 }

@@ -99,7 +99,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
                     pub fn new<#(#param_bounds),*>(#(#param_decls),*) -> #outer_name {
 			let mut inner = #outer_name::default();
 			#(#param_assignments)*
-                    inner
+			inner
                     }
 		}
 	    }
@@ -181,23 +181,25 @@ pub fn derive_otlp_value(_: TokenStream) -> TokenStream {
                 }
             }
 
-            pub fn new_array(arr: ArrayValue) -> Self {
+            pub fn new_array<T: AsRef<[AnyValue]>>(arr: T) -> Self {
                 Self{
-                    value: Some(any_value::Value::ArrayValue(arr.into())),
-                }
-            }
-
-            pub fn new_kvlist(kvlist: &[KeyValue]) -> Self {
-                Self{
-                    value: Some(any_value::Value::KvlistValue(KeyValueList{
-			values: kvlist.to_vec(),
+                    value: Some(any_value::Value::ArrayValue(ArrayValue{
+			values: arr.as_ref().to_vec(),
 		    })),
                 }
             }
 
-            pub fn new_bytes(b: &[u8]) -> Self {
+            pub fn new_kvlist<T: AsRef<[KeyValue]>>(kvlist: T) -> Self {
                 Self{
-                    value: Some(any_value::Value::BytesValue(b.to_vec())),
+                    value: Some(any_value::Value::KvlistValue(KeyValueList{
+			values: kvlist.as_ref().to_vec(),
+		    })),
+                }
+            }
+
+            pub fn new_bytes<T: AsRef<[u8]>>(b: T) -> Self {
+                Self{
+                    value: Some(any_value::Value::BytesValue(b.as_ref().to_vec())),
                 }
             }
         }
