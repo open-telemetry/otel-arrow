@@ -17,7 +17,7 @@
 
 package transform
 
-import "github.com/apache/arrow/go/v17/arrow"
+import "github.com/apache/arrow-go/v18/arrow"
 
 // IdentityField is a FieldTransform that returns a copy of the field.
 type IdentityField struct {

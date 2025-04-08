@@ -1,0 +1,104 @@
+// KQL Grammar is heavily influenced by the following sources:
+// https://github.com/microsoft/Kusto-Query-Language/blob/master/grammar/KqlTokens.g4
+// https://github.com/microsoft/Kusto-Query-Language/blob/master/grammar/Kql.g4
+
+// These two special rules, when defined, are implicitly allowed at:
+// - at every sequence (split by ~)
+// - between every repetition (+ or *)
+// Atomics (marked with @) are excluded
+// See https://pest.rs/book/grammars/syntax.html#implicit-whitespace
+WHITESPACE = _{ " " }
+COMMENT = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+
+// Basic tokens
+// ----------------------------------------------
+true_token = @{ "true" | "True" | "TRUE" }
+false_token = @{ "false" | "False" | "FALSE" }
+integer_token = @{ 
+    "-"?
+    ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
+}
+string_token = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+equals_token = @{ "==" }
+not_equals_token = @{ "!=" }
+comma_token = @{ "," }
+and_token = @{ "and" }
+or_token = @{ "or" }
+greater_than_token = @{ ">" ~ !"=" }
+less_than_token = @{ "<" ~ !"=" }
+greater_than_or_equal_to_token = @{ ">=" }
+less_than_or_equal_to_token = @{ "<=" }
+open_paren_token = @{ "(" }
+close_paren_token = @{ ")" }
+not_token = @{ "not" }
+where_token = @{ "where" }
+// ----------------------------------------------
+
+// Basic Grammar
+// ----------------------------------------------
+literal = { true_token | false_token | integer_token | string_token }
+identifier = @{ ("_" | ASCII_ALPHANUMERIC)+ }
+
+expression_base = { identifier | literal | enclosed_expression }
+
+enclosed_expression = { open_paren_token ~ expression ~ close_paren_token }
+
+and_expression = { expression_base ~ (and_token ~ expression)+ }
+or_expression = { expression_base ~  (or_token ~ expression)+ }
+
+equals_expression = { expression_base ~ equals_token ~ expression }
+not_equals_expression = { expression_base ~ not_equals_token ~ expression }
+greater_than_expression = { expression_base ~ greater_than_token ~ expression }
+less_than_expression = { expression_base ~ less_than_token ~ expression }
+greater_than_or_equal_to_expression = { expression_base ~ greater_than_or_equal_to_token ~ expression }
+less_than_or_equal_to_expression = { expression_base ~ less_than_or_equal_to_token ~ expression }
+
+binary_logical_expression = {
+    and_expression
+    | or_expression
+}
+comparison_expression = {
+    equals_expression
+    | not_equals_expression
+    | greater_than_expression
+    | less_than_expression
+    | greater_than_or_equal_to_expression
+    | less_than_or_equal_to_expression
+}
+negated_expression = { not_token ~ enclosed_expression }
+
+predicate = {
+    binary_logical_expression
+    | comparison_expression
+    | negated_expression
+}
+
+expression = { 
+    predicate
+    | enclosed_expression
+    | literal
+    | identifier 
+}
+// ----------------------------------------------
+
+// KQL-specific Tokens
+// ----------------------------------------------
+assignment_token = @{ "=" ~ !"=" }
+extend_token = @{ "extend" }
+pipe_token = @{ "|" ~ !"|" }
+// ----------------------------------------------
+
+// KQL-specific Grammar
+// ----------------------------------------------
+assignment_expression = { identifier ~ assignment_token ~ expression }
+
+filter_statement = { where_token ~ predicate }
+extend_statement = { extend_token ~ assignment_expression ~ (comma_token ~ assignment_expression)* }
+
+statement = { pipe_token ~ (filter_statement | extend_statement) }
+
+query = { 
+    SOI ~ identifier ~ EOI
+    | SOI ~ identifier ~ (NEWLINE* ~ statement)+ ~ NEWLINE* ~ EOI
+}
+// ----------------------------------------------

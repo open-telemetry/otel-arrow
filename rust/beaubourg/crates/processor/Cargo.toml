@@ -1,0 +1,19 @@
+[package]
+name = "processor"
+version = "0.3.0"
+authors = ["Laurent Querel <l.querel@f5.com>"]
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+task = { path = "../task" }
+signal = { path = "../signal" }
+context = { path = "../context" }
+
+serde = { version = "1.0.218", features = ["derive"] }
+serde_yaml = "0.8.26"
+thiserror = "2.0.12"
+tracing = "0.1.41"
+async-trait = "0.1.87"
+tokio = { version = "1.44.0", features = ["rt-multi-thread"] }
+flume = "0.11.1"

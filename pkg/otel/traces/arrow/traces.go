@@ -20,7 +20,7 @@ package arrow
 import (
 	"math"
 
-	"github.com/apache/arrow/go/v17/arrow"
+	"github.com/apache/arrow-go/v18/arrow"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	acommon "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"

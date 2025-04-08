@@ -20,8 +20,8 @@ import (
 	"errors"
 	"log"
 
-	"github.com/apache/arrow/go/v17/arrow/ipc"
-	"github.com/apache/arrow/go/v17/arrow/memory"
+	"github.com/apache/arrow-go/v18/arrow/ipc"
+	"github.com/apache/arrow-go/v18/arrow/memory"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
@@ -118,16 +118,6 @@ func WithTracesConfig(tcfg *arrow.Config) Option {
 // WithMeterProvider configures an OTel metrics provider.  If none is
 // configured, the global meter provider will be used.
 func WithMeterProvider(p metric.MeterProvider) Option {
-	return func(cfg *Config) {
-		cfg.meterProvider = p
-	}
-}
-
-// WithMeterProviderAlt configures an OTel metrics provider.  If none is
-// configured, the global meter provider will be used.
-// This is an alternative to WithMeterProvider, and will eventually be
-// the only option to remove dependency on configtelemetry.Level.
-func WithMeterProviderAlt(p metric.MeterProvider) Option {
 	return func(cfg *Config) {
 		cfg.meterProvider = p
 	}

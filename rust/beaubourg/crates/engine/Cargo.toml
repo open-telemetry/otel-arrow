@@ -1,0 +1,23 @@
+[package]
+name = "engine"
+version = "0.3.0"
+authors = ["Laurent Querel <l.querel@f5.com>"]
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+config = { path = "../config" }
+receiver = { path = "../receiver" }
+processor = { path = "../processor" }
+exporter = { path = "../exporter" }
+task = { path = "../task" }
+signal = { path = "../signal" }
+context = { path = "../context" }
+
+thiserror = "2.0.12"
+tracing = "0.1.41"
+num_cpus = "1.16.0"
+tokio = { version = "1.44.0", features = ["rt-multi-thread"] }
+async-trait = "0.1.87"
+futures = "0.3.31"
+flume = "0.11.1"

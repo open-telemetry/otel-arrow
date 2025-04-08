@@ -1,0 +1,24 @@
+receivers:
+  test:
+    concurrency: 2
+processors:
+  noop:
+    concurrency: 2
+exporters:
+  test/0:
+    concurrency_model: singleton
+  test/1:
+    concurrency_model:
+      task_per_core: 2
+extensions: {}
+service:
+  extensions: []
+  pipelines:
+    test:
+      receivers:
+        - test
+      processors:
+        - noop
+      exporters:
+        - test/0
+        - test/1

@@ -1,0 +1,25 @@
+receivers:
+  test:
+  test/1:
+  test/2:
+processors:
+  noop:
+exporters:
+  test:
+  test/1:
+  test/2:
+extensions: {}
+service:
+  extensions: []
+  pipelines:
+    test:
+      receivers:
+        - test
+        - test/1
+        - test/2
+      processors:
+        - noop
+      exporters:
+        - test
+        - test/1
+        - test/2

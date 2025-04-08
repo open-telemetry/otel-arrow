@@ -1,25 +1,29 @@
 # OpenTelemetry Protocol with Apache Arrow
 
 [![Slack](https://img.shields.io/badge/slack-@cncf/otel/arrow-brightgreen.svg?logo=slack)](https://cloud-native.slack.com/archives/C07S4Q67LTF)
-[![Build](https://github.com/open-telemetry/otel-arrow/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/open-telemetry/otel-arrow/actions/workflows/ci.yml)
+[![Go-CI](https://github.com/drewrelmas/otel-arrow/actions/workflows/go-ci.yml/badge.svg)](https://github.com/drewrelmas/otel-arrow/actions/workflows/go-ci.yml)
+[![Rust-CI](https://github.com/drewrelmas/otel-arrow/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/drewrelmas/otel-arrow/actions/workflows/rust-ci.yml)
 [![OpenSSF Scorecard for otel-arrow](https://api.scorecard.dev/projects/github.com/open-telemetry/otel-arrow/badge)](https://scorecard.dev/viewer/?uri=github.com/open-telemetry/otel-arrow)
 
 The [OpenTelemetry Protocol with Apache
 Arrow](https://github.com/open-telemetry/otel-arrow) project is an
 effort within [OpenTelemetry](https://opentelemetry.io/) to use
 [Apache Arrow](https://arrow.apache.org/) libraries for bulk data
-transport in OpenTelemetry collection pipelines.  This repository is
-the home of the OpenTelemetry Protocol with Apache Arrow protocol and
-reference implementation.
+transport in OpenTelemetry pipelines.  This repository is
+the home of the OpenTelemetry Protocol with Apache Arrow protocol, 
+which we refer to as "OTAP", and reference implementations.
 
 ## Quick start
 
-Instructions for building an OpenTelemetry Collector with the modules
-in this repository are provided in [BUILDING.md](./collector/BUILDING.md).
+OTel-Arrow components are included in the OpenTelemetry Collector-Contrib
+repository.  See the [Exporter][EXPORTER] and [Receiver][RECEIVER] documentation
+for details.
 
-Examples for running the OpenTelemetry Collector with the modules in
-this repository are documented in
-[collector/examples](./collector/examples/README.md).
+The [examples](./collector/examples/README.md) in this repository use
+a test collector named `otelarrowcol`, see [collector/BUILDING.md](./collector/BUILDING.md).
+
+[RECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md
+[EXPORTER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md
 
 ## Overview
 
@@ -38,32 +42,40 @@ OTLP is defined in terms of Google protocol buffer definitions.
 
 OTLP is a stateless protocol, where export requests map directly into
 the data model, nothing is omitted, and little is shared.  OTLP export
-requests to not contain external or internal references, making the
+requests do not contain external or internal references, making the
 data relatively simple and easy to interpret.  Because of this design,
 users of OTLP will typically configure network compression.  In
 environments where telemetry data will be shipped to a service
 provider across a wide-area network, users would like more compression
 than can be achieved using a row-based data model and a stateless protocol.
 
-## Project goals
+## Project phases
 
-This is organized in phases. Our initial aim is to facilitate traffic reduction
-between a pair of OpenTelemetry collectors as illustrated in the following
+### Phase 1
+
+Phase 1 of the project is complete. Our initial aim was to facilitate traffic reduction
+between a pair of OpenTelemetry Collectors, as illustrated in the following
 diagram.
 
 ![Traffic reduction use case](docs/img/traffic_reduction_use_case.png)
 
-The collector provided in this repository implements a new Arrow Receiver and
-Exporter able to fallback on standard OTLP when needed. The following diagram is
-an overview of this integration. In this first phase, the internal
-representation of the telemetry data is still fundamentally row-oriented.
+The OpenTelemetry Collector-Contrib distribution includes the
+OTel-Arrow Receiver and Exporter. The following diagram is an overview
+of this integration, which supports seamless fallback from OTAP to OTLP. In
+this first phase, the internal representation of the telemetry data is
+still fundamentally row-oriented.
 
 ![collector internal overview](docs/img/collector_internal_overview.png)
 
-Ultimately, we believe that an end-to-end OpenTelemetry Protocol with Apache
-Arrow pipeline will enable telemetry pipelines with substantially lower
-overhead to be built. These are our future milestones for OpenTelemetry and
-Apache Arrow integration:
+### Phase 2
+
+We are building an end-to-end OpenTelemetry Protocol with Apache Arrow
+(OTAP) pipeline and we believe this form of pipeline will have substantially
+lower overhead than a row-oriented architecture.  [See our Phase 2 design
+document](./docs/phase2-design.md).
+
+These are our future milestones for OpenTelemetry and Apache Arrow
+integration:
 
 1. Extend OpenTelemetry client SDKs to natively support the OpenTelemetry  
    Protocol with Apache Arrow Protocol
@@ -97,8 +109,8 @@ into column-oriented data, which also makes the data more compressible.
 
 ## Project status
 
-The first phase of the project has entered the [Beta stability level,
-as defined by the OpenTelemetry collector
+The Phase-1 project deliverables, located in the Collector-Contrib repository, 
+are in the [Beta stability level, as defined by the OpenTelemetry collector
 guidelines](https://github.com/open-telemetry/opentelemetry-collector#beta).
 We do not plan to make breaking changes in this protocol without first
 engineering an approach that ensures forwards and
@@ -106,14 +118,14 @@ backwards-compatibility for existing and new users.  We believe it is
 safe to begin using these components for production data, non-critical
 workloads.
 
-### Project deliverables
+### Phase-1 project deliverables
 
 We are pleased to release two new collector components, presently
 housed in [OpenTelemetry
 Collector-Contrib](https://github.com/open-telemetry/opentelemetry-collector-contrib):
 
-- [OpenTelemetry Protocol with Apache Arrow Receiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md)
-- [OpenTelemetry Protocol with Apache Arrow Exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md)
+- [OpenTelemetry Protocol with Apache Arrow Receiver][RECEIVER]
+- [OpenTelemetry Protocol with Apache Arrow Exporter][EXPORTER]
 
 The OpenTelemetry Protocol with Apache Arrow exporter and receiver components are drop-in compatible
 with the core collector's OTLP exporter and receiver components.
@@ -125,9 +137,8 @@ to standard OTLP in case either side does not recognize the protocol,
 so the upgrade should be painless.  The OpenTelemetry Protocol with Apache Arrow receiver serves
 both OpenTelemetry Protocol with Apache Arrow and OTLP on the standard port for OTLP gRPC (4317).
 
-See the [Exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md) and
-[Receiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md)
-documentation for details and sample configurations.
+See the [Exporter][EXPORTER] and [Receiver][RECEIVER] documentation
+for details and sample configurations.
 
 ### Project documentation
 
