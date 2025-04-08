@@ -9,6 +9,8 @@
 ///
 /// When new fields are added into this message, the OTLP request MUST be updated
 /// as well.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.trace.v1.TracesData")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TracesData {
     /// An array of ResourceSpans.
@@ -20,6 +22,8 @@ pub struct TracesData {
     pub resource_spans: ::prost::alloc::vec::Vec<ResourceSpans>,
 }
 /// A collection of ScopeSpans from a Resource.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.trace.v1.ResourceSpans")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResourceSpans {
     /// The resource for the spans in this message.
@@ -39,6 +43,8 @@ pub struct ResourceSpans {
     pub schema_url: ::prost::alloc::string::String,
 }
 /// A collection of Spans produced by an InstrumentationScope.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.trace.v1.ScopeSpans")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ScopeSpans {
     /// The instrumentation scope information for the spans in this message.
@@ -60,6 +66,7 @@ pub struct ScopeSpans {
 /// A Span represents a single operation performed by a single component of the system.
 ///
 /// The next available field id is 17.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.trace.v1.Span")]
 #[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Span {
@@ -323,6 +330,8 @@ pub mod span {
 }
 /// The Status type defines a logical error model that is suitable for different
 /// programming environments, including REST APIs and RPC APIs.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.trace.v1.Status")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Status {
     /// A developer-facing human readable error message.
@@ -336,6 +345,8 @@ pub struct Status {
 pub mod status {
     /// For the semantics of status codes see
     /// <https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/api.md#set-status>
+    #[crate::pdata::otlp::qualified("opentelemetry.proto.trace.v1.Status.StatusCode")]
+    #[derive(crate::pdata::otlp::Message)]
     #[derive(
         Clone,
         Copy,

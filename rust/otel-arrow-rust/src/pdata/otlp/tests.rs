@@ -92,7 +92,6 @@ mod tests {
     fn test_key_value() {
 	use crate::proto::opentelemetry::common::v1::AnyValue;
 	use crate::proto::opentelemetry::common::v1::KeyValue;	
-
 	let k1 = "k1".to_string();
 	let k2 = "k2".to_string();
 	let v1 = AnyValue::new_string("v1");
@@ -112,5 +111,59 @@ mod tests {
 
 	assert_eq!(KeyValue::new("k2", v2.clone()), kv2_value);
 	assert_eq!(KeyValue::new(k2, v2), kv2_value);
+    }
+    
+    #[test]
+    fn test_log_record_required() {
+	use crate::proto::opentelemetry::logs::v1::LogRecord;
+	use crate::proto::opentelemetry::logs::v1::SeverityNumber;
+
+	let name = "my_log";
+	let ts = 1_000_000_000_000u64;
+	let sev = SeverityNumber::Info;
+	let lr1_value = {
+	    let mut value = LogRecord::default();
+	    value.time_unix_nano = ts;
+	    value.severity_number = sev as i32;
+	    value.event_name = name.into();
+	    value
+	};
+	let lr1 = LogRecord::new(ts, sev, name)
+	    .build();
+
+	assert_eq!(lr1, lr1_value);
+    }
+
+    #[test]
+    fn test_log_record_required_all() {
+	use crate::proto::opentelemetry::common::v1::AnyValue;
+	use crate::proto::opentelemetry::logs::v1::LogRecord;
+	use crate::proto::opentelemetry::logs::v1::LogRecordFlags;
+	use crate::proto::opentelemetry::logs::v1::SeverityNumber;
+
+	let name = "my_log";
+	let sevtxt = "not on fire";
+	let msg = "message in a bottle";
+	let ts = 1_000_000_000_000u64;
+	let sev = SeverityNumber::Info;
+	let flags = LogRecordFlags::TraceFlagsMask;
+
+	let lr1_value = {
+	    let mut value = LogRecord::default();
+	    value.time_unix_nano = ts;
+	    value.severity_number = sev as i32;
+	    value.event_name = name.into();
+	    value.body = Some(AnyValue::new_string(msg));
+	    value.severity_text = sevtxt.into();
+	    value.flags = flags as u32;
+	    value
+	};
+	let lr1 = LogRecord::new(ts, sev, name)
+	    .body(AnyValue::new_string(msg))
+	    .severity_text(sevtxt)
+	    .flags(flags)
+	    .build();
+
+	assert_eq!(lr1, lr1_value);
     }
 }

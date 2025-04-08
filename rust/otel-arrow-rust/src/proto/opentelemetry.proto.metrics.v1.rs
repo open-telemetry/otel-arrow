@@ -27,6 +27,8 @@
 ///
 /// When new fields are added into this message, the OTLP request MUST be updated
 /// as well.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.MetricsData")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct MetricsData {
     /// An array of ResourceMetrics.
@@ -38,6 +40,8 @@ pub struct MetricsData {
     pub resource_metrics: ::prost::alloc::vec::Vec<ResourceMetrics>,
 }
 /// A collection of ScopeMetrics from a Resource.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.ResourceMetrics")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResourceMetrics {
     /// The resource for the metrics in this message.
@@ -57,6 +61,8 @@ pub struct ResourceMetrics {
     pub schema_url: ::prost::alloc::string::String,
 }
 /// A collection of Metrics produced by an Scope.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.ScopeMetrics")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ScopeMetrics {
     /// The instrumentation scope information for the metrics in this message.
@@ -159,6 +165,8 @@ pub struct ScopeMetrics {
 /// to support correct rate calculation.  Although it may be omitted
 /// when the start time is truly unknown, setting StartTimeUnixNano is
 /// strongly encouraged.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.Metric")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Metric {
     /// name of the metric.
@@ -214,6 +222,8 @@ pub mod metric {
 /// aggregation, regardless of aggregation temporalities. Therefore,
 /// AggregationTemporality is not included. Consequently, this also means
 /// "StartTimeUnixNano" is ignored for all data points.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.Gauge")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Gauge {
     #[prost(message, repeated, tag = "1")]
@@ -221,6 +231,8 @@ pub struct Gauge {
 }
 /// Sum represents the type of a scalar metric that is calculated as a sum of all
 /// reported measurements over a time interval.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.Sum")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Sum {
     #[prost(message, repeated, tag = "1")]
@@ -235,6 +247,8 @@ pub struct Sum {
 }
 /// Histogram represents the type of a metric that is calculated by aggregating
 /// as a Histogram of all reported measurements over a time interval.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.Histogram")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Histogram {
     #[prost(message, repeated, tag = "1")]
@@ -246,6 +260,8 @@ pub struct Histogram {
 }
 /// ExponentialHistogram represents the type of a metric that is calculated by aggregating
 /// as a ExponentialHistogram of all reported double measurements over a time interval.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.ExponentialHistogram")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExponentialHistogram {
     #[prost(message, repeated, tag = "1")]
@@ -264,6 +280,8 @@ pub struct ExponentialHistogram {
 /// Summary metrics do not have an aggregation temporality field. This is
 /// because the count and sum fields of a SummaryDataPoint are assumed to be
 /// cumulative values.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.Summary")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Summary {
     #[prost(message, repeated, tag = "1")]
@@ -271,6 +289,8 @@ pub struct Summary {
 }
 /// NumberDataPoint is a single data point in a timeseries that describes the
 /// time-varying scalar value of a metric.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.NumberDataPoint")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct NumberDataPoint {
     /// The set of key/value pairs that uniquely identify the timeseries from
@@ -327,6 +347,8 @@ pub mod number_data_point {
 /// If the histogram does not contain the distribution of values, then both
 /// "explicit_bounds" and "bucket_counts" must be omitted and only "count" and
 /// "sum" are known.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.HistogramDataPoint")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HistogramDataPoint {
     /// The set of key/value pairs that uniquely identify the timeseries from
@@ -412,6 +434,10 @@ pub struct HistogramDataPoint {
 /// summary statistics for a population of values, it may optionally contain the
 /// distribution of those values across a set of buckets.
 ///
+#[crate::pdata::otlp::qualified(
+    "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint"
+)]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExponentialHistogramDataPoint {
     /// The set of key/value pairs that uniquely identify the timeseries from
@@ -531,6 +557,8 @@ pub mod exponential_histogram_data_point {
 /// SummaryDataPoint is a single data point in a timeseries that describes the
 /// time-varying values of a Summary metric. The count and sum fields represent
 /// cumulative values.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.SummaryDataPoint")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct SummaryDataPoint {
     /// The set of key/value pairs that uniquely identify the timeseries from
@@ -648,6 +676,8 @@ pub mod exemplar {
 /// AggregationTemporality defines how a metric aggregator reports aggregated
 /// values. It describes how those values relate to the time interval over
 /// which they are aggregated.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.AggregationTemporality")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum AggregationTemporality {
