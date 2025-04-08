@@ -12,4 +12,14 @@
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_any_value() {
+	use crate::proto::opentelemetry::common::v1::AnyValue;
+	use crate::proto::opentelemetry::common::v1::any_value::Value;
+
+	assert_eq!(AnyValue::new_string("xyz"),
+		   AnyValue{
+		       value: Some(Value::StringValue("xyz".to_string())),
+		   });
+    }
 }

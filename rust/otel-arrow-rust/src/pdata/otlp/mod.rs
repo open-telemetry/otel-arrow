@@ -15,12 +15,12 @@
 // Re-export derive macros (required for generated code)
 pub use otlp_derive::Message;
 pub use otlp_derive::Oneof;
+pub use otlp_derive::Value;
 
 // Include tests
 #[cfg(test)]
 mod tests;
 
-// Message trait to be implemented by future OTLP message types
 /// Message is a trait for OTLP protocol buffer message types.
 pub trait Message {
     /// The associated builder type for this message
@@ -29,35 +29,3 @@ pub trait Message {
     /// Creates a new builder for this message type
     fn builder() -> Self::Builder;
 }
-
-// Shared traits for message builders TODO?
-
-// /// Trait for OTLP types that have a name field
-// pub trait HasName {
-//     /// Sets the name field
-//     fn with_name<S: AsRef<str>>(self, name: S) -> Self;
-// }
-
-// /// Trait for OTLP types that have a description field
-// pub trait HasDescription {
-//     /// Sets the description field
-//     fn with_description<S: AsRef<str>>(self, description: S) -> Self;
-// }
-
-// /// Trait for OTLP types that have a start time field
-// pub trait HasStartTime {
-//     /// Sets the start time field (nanoseconds since Unix epoch)
-//     fn with_start_time_unix_nano(self, start_time: u64) -> Self;
-// }
-
-// /// Trait for OTLP types that have an end time field
-// pub trait HasEndTime {
-//     /// Sets the end time field (nanoseconds since Unix epoch)
-//     fn with_end_time_unix_nano(self, end_time: u64) -> Self;
-// }
-
-// /// Trait for OTLP types that have a timestamp field
-// pub trait HasTimeUnixNano {
-//     /// Sets the timestamp field (nanoseconds since Unix epoch)
-//     fn with_time_unix_nano(self, time: u64) -> Self;
-// }
