@@ -14,7 +14,6 @@
 
 // Re-export derive macros (required for generated code)
 pub use otlp_derive::Message;
-pub use otlp_derive::Oneof;
 pub use otlp_derive::Value;
 
 // Include tests

@@ -12,52 +12,103 @@
 
 use std::sync::LazyLock;
 
-enum Kind {
-    Normal,
-    Oneof,
-    Value,
+pub enum Kind {
+    Message, // ordinary message
+    Value,   // special case for AnyValue
+    Ignore,  // special case for oneof fields
 }
 
-struct Detail {
-    name: &'static str,
-    kind: Kind,
+pub struct Field {
+    pub name: &'static str,
+    pub ty: &'static str,
+    pub bound: &'static str,
+    pub get: &'static str,
 }
 
-static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
+pub struct Detail {
+    pub name: &'static str,
+    pub kind: Kind,
+    pub direct: bool,
+    pub derive: Option<&'static str>,
+    pub params: Option<Vec<Field>>,
+}
+
+pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
     vec![
         Detail {
             name: "opentelemetry.proto.trace.v1.Span",
-            kind: Kind::Normal,
+            kind: Kind::Message,
+	    direct: false,
+	    derive: None,
+            params: None,
         },
         Detail {
             name: "opentelemetry.proto.common.v1.AnyValue",
             kind: Kind::Value,
+	    direct: true,
+	    derive: None, // Some("Eq"),
+            params: None,
         },
         Detail {
-            name: "opentelemetry.proto.metrics.v1.Metric.data",
-            kind: Kind::Oneof,
+            name: "opentelemetry.proto.common.v1.AnyValue.value",
+            kind: Kind::Ignore,
+	    direct: false,
+	    derive: None, // Some("Eq"),
+            params: None,
         },
-        // Detail {
-        //     name: "opentelemetry.proto.common.v1.AnyValue.value",
-        //     kind: Kind::Oneof,
-        // },
+        Detail {
+            name: "opentelemetry.proto.common.v1.ArrayValue",
+            kind: Kind::Message,
+	    direct: false,
+	    derive: None, // Some("Eq"),
+            params: None,
+        },
+        Detail {
+            name: "opentelemetry.proto.common.v1.KeyValue",
+            kind: Kind::Message,
+	    direct: true,
+	    derive: None, // Some("Eq"),
+            params: Some(vec![
+                Field{
+		    name: "key",
+		    ty: "S",
+		    bound: "AsRef<str>",
+		    get: "as_ref().to_string()",
+		},
+                Field{
+                    name: "value",
+		    ty:"AnyValue",
+		    bound: "",
+		    get: "",
+		},
+            ]),
+        },
     ]
 });
 
 pub fn add_type_attributes(mut builder: tonic_build::Builder) -> tonic_build::Builder {
     for det in DETAILS.iter() {
         match det.kind {
+            Kind::Ignore => {
+                builder =
+                    builder.type_attribute(det.name,
+					   format!(r#"#[derive({})]"#,
+						   det.derive.unwrap_or(""),
+					   ));
+	    }
             Kind::Value => {
                 builder =
-                    builder.type_attribute(det.name, r#"#[derive(crate::pdata::otlp::Value)]"#);
+                    builder.type_attribute(det.name,
+					   format!(r#"#[derive(crate::pdata::otlp::Value,{})]"#,
+						   det.derive.unwrap_or(""),
+					   ));
             }
-            Kind::Normal => {
+            Kind::Message => {
                 builder =
-                    builder.type_attribute(det.name, r#"#[derive(crate::pdata::otlp::Message)]"#);
-            }
-            Kind::Oneof => {
-                builder =
-                    builder.type_attribute(det.name, r#"#[derive(crate::pdata::otlp::Oneof)]"#);
+                    builder.type_attribute(det.name,
+					   format!(r#"#[derive(crate::pdata::otlp::Message,{})]"#,
+						   det.derive.unwrap_or(""),
+					   ));
             }
         }
     }

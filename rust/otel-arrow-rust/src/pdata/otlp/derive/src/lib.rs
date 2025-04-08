@@ -11,8 +11,9 @@
 // limitations under the License.
 
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{quote, ToTokens};
 use syn::{parse_macro_input, DeriveInput};
+use otlp_model::DETAILS;
 
 /// Derives the OTLP Message trait implementation for protocol buffer
 /// message types. This enables additional OTLP-specific functionality
@@ -20,26 +21,131 @@ use syn::{parse_macro_input, DeriveInput};
 #[proc_macro_derive(Message)]
 pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-    let builder_name = syn::Ident::new(&format!("{}Builder", name), name.span());
+    let outer_name = &input.ident;
+    let builder_name = syn::Ident::new(&format!("{}Builder", outer_name), outer_name.span());
+    
+    // Find if this type has any builder params in DETAILS
+    let type_name = outer_name.to_string();
+    let details = DETAILS.iter()
+        .find(|detail| detail.name.ends_with(&format!(".{}", type_name)));
+    let params = details.and_then(|detail| detail.params.as_ref());
 
-    let expanded = quote! {
-        pub struct #builder_name {
-            inner: #name,
-        }
+    let expanded = if let Some(params) = params {
+        // Generate parameters for new() function
+        let param_decls: Vec<_> = params.iter()
+            .map(|field| {
+                let param_name = syn::Ident::new(field.name, outer_name.span());
+                let param_type = syn::parse_str::<syn::Type>(field.ty).unwrap();
+                quote! { #param_name: #param_type }
+            })
+            .collect();
 
-        impl #builder_name {
-            /// Creates a new builder for #name
-            pub fn new() -> Self {
-                Self {
-                    inner: #name::default(),
+        let param_bounds: Vec<_> = params.iter()
+            .filter(|field| !field.bound.is_empty())
+            .map(|field| {
+                let param_type = syn::parse_str::<syn::Type>(field.ty).unwrap();
+                let param_bound = syn::parse_str::<syn::Type>(field.bound).unwrap();
+                quote! { #param_type: #param_bound }
+            })
+            .collect();
+        
+        // Generate assignments in the new() function
+        let param_assignments: Vec<_> = params.iter().map(|field| {
+            let param_name = syn::Ident::new(field.name, outer_name.span());
+            
+            // Find corresponding field in struct definition to check if it's optional
+            let is_optional = match &input.data {
+                syn::Data::Struct(data) => {
+                    if let syn::Fields::Named(fields) = &data.fields {
+                        fields.named.iter()
+                            .find(|f| f.ident.as_ref().map_or(false, |id| id == field.name))
+                            .map_or(false, |f| {
+                                f.attrs.iter().any(|attr| {
+                                    attr.path().is_ident("prost") && 
+                                    attr.to_token_stream().to_string().contains("optional")
+                                })
+                            })
+                    } else {
+                        false
+                    }
+                },
+                _ => false,
+            };
+
+            if field.get.is_empty() {
+                if is_optional {
+                    quote! { inner.#param_name = Some(#param_name); }
+                } else {
+                    quote! { inner.#param_name = #param_name; }
+                }
+            } else {
+                // Parse the string directly as a token stream instead of as an expression
+                let get_tokens = field.get.parse::<proc_macro2::TokenStream>().unwrap();
+                if is_optional {
+                    quote! { inner.#param_name = Some(#param_name.#get_tokens); }
+                } else {
+                    quote! { inner.#param_name = #param_name.#get_tokens; }
                 }
             }
-        }
+        })
+            .collect();
 
-        impl std::convert::Into<#name> for #builder_name {
-            fn into(self) -> #name {
-                self.inner
+	let direct = details.unwrap().direct;
+
+	if direct {
+            quote! {
+		impl #outer_name {
+                    /// Creates a new builder for #name
+                    pub fn new<#(#param_bounds),*>(#(#param_decls),*) -> #outer_name {
+			let mut inner = #outer_name::default();
+			#(#param_assignments)*
+                    inner
+                    }
+		}
+	    }
+	} else {
+            quote! {
+		pub struct #builder_name {
+                    inner: #outer_name,
+		}
+
+		impl #outer_name {
+                    /// Creates a new builder for #name
+                    pub fn new<#(#param_bounds),*>(#(#param_decls),*) -> #builder_name {
+			let mut inner = #outer_name::default();
+			#(#param_assignments)*
+			#builder_name {
+                            inner
+			}
+                    }
+		}
+
+		impl std::convert::Into<#outer_name> for #builder_name {
+                    fn into(self) -> #outer_name {
+			self.inner
+                    }
+		}
+            }
+	}
+    } else {
+        quote! {
+            pub struct #builder_name {
+                inner: #outer_name,
+            }
+
+            impl #outer_name {
+                /// Creates a new builder for #name
+                pub fn new() -> #builder_name {
+                    #builder_name {
+                        inner: #outer_name::default(),
+                    }
+                }
+            }
+
+            impl std::convert::Into<#outer_name> for #builder_name {
+                fn into(self) -> #outer_name {
+                    self.inner
+                }
             }
         }
     };
@@ -81,9 +187,11 @@ pub fn derive_otlp_value(_: TokenStream) -> TokenStream {
                 }
             }
 
-            pub fn new_kvlist(kvlist: KeyValueList) -> Self {
+            pub fn new_kvlist(kvlist: &[KeyValue]) -> Self {
                 Self{
-                    value: Some(any_value::Value::KvlistValue(kvlist.into())),
+                    value: Some(any_value::Value::KvlistValue(KeyValueList{
+			values: kvlist.to_vec(),
+		    })),
                 }
             }
 
@@ -92,79 +200,6 @@ pub fn derive_otlp_value(_: TokenStream) -> TokenStream {
                     value: Some(any_value::Value::BytesValue(b.to_vec())),
                 }
             }
-        }
-    };
-    
-    TokenStream::from(expanded)
-}
-
-#[proc_macro_derive(Oneof)]
-pub fn derive_otlp_oneof(input: TokenStream) -> TokenStream {
-    // Parse the input tokens into a syntax tree
-    let input = parse_macro_input!(input as DeriveInput);
-    let name = &input.ident;
-    
-    // Extract enum variants - ensure this is applied to an enum
-    let variants = match &input.data {
-        syn::Data::Enum(data_enum) => &data_enum.variants,
-        _ => {
-            return syn::Error::new(
-                name.span(),
-                "Oneof can only be derived for enums",
-            )
-            .to_compile_error()
-            .into();
-        }
-    };
-    
-    // Collect results for each variant
-    let mut methods = Vec::new();
-    
-    for variant in variants {
-        let variant_name = &variant.ident;
-        let name_for_method = variant_name.to_string();
-        
-        // Convert to snake_case (e.g., StringValue -> string_value or String -> string)
-        let snake_name = convert_case::Casing::to_case(
-            &name_for_method,
-            convert_case::Case::Snake
-        );
-        let method_name = syn::Ident::new(&format!("new_{}", snake_name), variant_name.span());
-        
-        // Extract the field type from the variant
-        if let syn::Fields::Unnamed(fields) = &variant.fields {
-            if fields.unnamed.len() == 1 {
-                let field = fields.unnamed.first().unwrap();
-                let ty = &field.ty;
-                
-                // Generate the constructor method
-                methods.push(quote! {
-                    pub fn #method_name(value: #ty) -> Self {
-                        Self::#variant_name(value)
-                    }
-                });
-            } else {
-                return syn::Error::new(
-                    variant_name.span(),
-                    "Oneof variants must have exactly one unnamed field"
-                )
-                .to_compile_error()
-                .into();
-            }
-        } else {
-            return syn::Error::new(
-                variant_name.span(),
-                "Oneof variants must have exactly one unnamed field"
-            )
-            .to_compile_error()
-            .into();
-        }
-    }
-    
-    // Generate the impl block with all methods
-    let expanded: proc_macro2::TokenStream = quote! {
-        impl #name {
-            #(#methods)*
         }
     };
     

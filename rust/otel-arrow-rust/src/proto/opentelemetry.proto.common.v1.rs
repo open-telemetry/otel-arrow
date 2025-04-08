@@ -14,6 +14,7 @@ pub struct AnyValue {
 pub mod any_value {
     /// The value is one of the listed fields. It is valid for all values to be unspecified
     /// in which case this AnyValue is considered to be "empty".
+    #[derive()]
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Value {
         #[prost(string, tag = "1")]
@@ -34,6 +35,7 @@ pub mod any_value {
 }
 /// ArrayValue is a list of AnyValue messages. We need ArrayValue as a message
 /// since oneof in AnyValue does not allow repeated fields.
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ArrayValue {
     /// Array of values. The array may be empty (contain 0 elements).
@@ -56,6 +58,7 @@ pub struct KeyValueList {
 }
 /// KeyValue is a key-value pair that is used to store Span attributes, Link
 /// attributes, etc.
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct KeyValue {
     #[prost(string, tag = "1")]

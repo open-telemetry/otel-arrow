@@ -1139,6 +1139,7 @@ name = "otlp-derive"
 version = "0.1.0"
 dependencies = [
  "convert_case",
+ "otlp-model",
  "proc-macro2",
  "quote",
  "syn",

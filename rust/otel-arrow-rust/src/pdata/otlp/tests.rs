@@ -49,6 +49,23 @@ mod tests {
 	assert_eq!(AnyValue::new_bytes(&hello), hello_value);
 
 	// Kvlist @@@
+	
 	// Map @@@
+    }
+
+    #[test]
+    fn test_key_value() {
+	use crate::proto::opentelemetry::common::v1::AnyValue;
+	use crate::proto::opentelemetry::common::v1::KeyValue;	
+
+	let k1 = "k1".to_string();
+	let v1 = AnyValue::new_string("v1");
+	let kv_value = KeyValue{
+	    key: k1.clone(),
+	    value: Some(v1.clone()),
+	};
+
+	assert_eq!(KeyValue::new("k1", v1.clone()), kv_value);
+	assert_eq!(KeyValue::new(k1, v1), kv_value);
     }
 }
