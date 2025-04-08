@@ -56,6 +56,42 @@ pub fn derive_otlp_value(_: TokenStream) -> TokenStream {
                     value: Some(any_value::Value::StringValue(s.as_ref().to_string())),
                 }
             }
+
+            pub fn new_bool(b: bool) -> Self {
+                Self{
+                    value: Some(any_value::Value::BoolValue(b)),
+                }
+            }
+
+            pub fn new_int(i: i64) -> Self {
+                Self{
+                    value: Some(any_value::Value::IntValue(i)),
+                }
+            }
+
+            pub fn new_double(d: f64) -> Self {
+                Self{
+                    value: Some(any_value::Value::DoubleValue(d)),
+                }
+            }
+
+            pub fn new_array(arr: ArrayValue) -> Self {
+                Self{
+                    value: Some(any_value::Value::ArrayValue(arr.into())),
+                }
+            }
+
+            pub fn new_kvlist(kvlist: KeyValueList) -> Self {
+                Self{
+                    value: Some(any_value::Value::KvlistValue(kvlist.into())),
+                }
+            }
+
+            pub fn new_bytes(b: &[u8]) -> Self {
+                Self{
+                    value: Some(any_value::Value::BytesValue(b.to_vec())),
+                }
+            }
         }
     };
     
