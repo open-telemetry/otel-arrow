@@ -187,9 +187,27 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         })
         .collect();
 
-    // Partition fields into parameters and builder fields in one pass
-    let (param_fields, builder_fields): (Vec<&FieldInfo>, Vec<&FieldInfo>) = field_infos.iter()
-        .partition(|info| info.is_param);
+    // Partition fields into parameters and builder fields
+    let mut param_fields: Vec<&FieldInfo> = Vec::new();
+    let mut builder_fields: Vec<&FieldInfo> = Vec::new();
+    
+    // First, add parameters in the order they appear in param_names
+    for param_name in &param_names {
+        if let Some(field) = field_infos.iter()
+            .find(|info| info.is_param && info.ident.to_string() == *param_name) {
+            param_fields.push(field);
+        }
+    }
+    
+    // Then add any remaining parameter fields not explicitly listed in param_names
+    for field in field_infos.iter().filter(|info| info.is_param) {
+        if !param_names.contains(&field.ident.to_string().as_str()) {
+            param_fields.push(field);
+        }
+    }
+    
+    // Finally add all non-parameter fields as builder fields
+    builder_fields.extend(field_infos.iter().filter(|info| !info.is_param));
 
     // Generate generic type parameters for parameters using functional patterns
     let type_params: Vec<syn::Ident> = param_fields.iter().enumerate()
