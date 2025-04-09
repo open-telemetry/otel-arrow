@@ -41,7 +41,9 @@ pub static ALL_KNOWN_TYPES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         "opentelemetry.proto.trace.v1.TracesData",
         "opentelemetry.proto.trace.v1.ResourceSpans",
         "opentelemetry.proto.trace.v1.ScopeSpans",
-        "opentelemetry.proto.trace.v1.SpanKind",
+        "opentelemetry.proto.trace.v1.Span.Kind",
+        "opentelemetry.proto.trace.v1.Span.Link",
+        "opentelemetry.proto.trace.v1.Span.Event",
         "opentelemetry.proto.trace.v1.Status",
 
         // Metric types
@@ -76,25 +78,32 @@ pub static FIELD_TYPE_OVERRIDES: LazyLock<HashMap<&'static str, Override>> =
 		fieldtype: "u32",
 	    },
         );
+        m.insert(
+            "opentelemetry.proto.trace.v1.Span.flags",
+            Override{
+		datatype: "SpanFlags",
+		fieldtype: "u32",
+	    },
+        );
+        m.insert(
+            "opentelemetry.proto.trace.v1.Span.kind",
+            Override{
+		datatype: "span::SpanKind",
+		fieldtype: "i32",
+	    },
+        );
+        m.insert(
+            "opentelemetry.proto.trace.v1.Status.code",
+            Override{
+		datatype: "status::StatusCode",
+		fieldtype: "i32",
+	    },
+        );
         m
     });
 
 pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
     vec![
-        // Logs
-        Detail {
-            name: "opentelemetry.proto.logs.v1.LogRecord",
-            params: Some(vec!["time_unix_nano", "severity_number", "event_name"]),
-        },
-        Detail {
-            name: "opentelemetry.proto.logs.v1.ScopeLogs",
-            params: Some(vec!["scope"]),
-        },
-        Detail {
-            name: "opentelemetry.proto.logs.v1.ResourceLogs",
-            params: Some(vec!["resource"]),
-        },
-
 	// Common: Note: AnyValue is a special case.
         Detail {
             name: "opentelemetry.proto.common.v1.KeyValue",
@@ -114,6 +123,55 @@ pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
             name: "opentelemetry.proto.resource.v1.Resource",
             params: Some(vec!["attributes"]),
         },
+
+        // Logs
+        Detail {
+            name: "opentelemetry.proto.logs.v1.LogRecord",
+            params: Some(vec!["time_unix_nano", "severity_number", "event_name"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.logs.v1.ScopeLogs",
+            params: Some(vec!["scope"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.logs.v1.ResourceLogs",
+            params: Some(vec!["resource"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.logs.v1.LogsData",
+            params: Some(vec!["resource_logs"]),
+        },
+
+        // Traces
+        Detail {
+            name: "opentelemetry.proto.trace.v1.Span",
+            params: Some(vec!["trace_id", "span_id", "name", "start_time_unix_nano"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.trace.v1.ScopeSpans",
+            params: Some(vec!["scope"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.trace.v1.ResourceSpans",
+            params: Some(vec!["resource"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.trace.v1.TracesData",
+            params: Some(vec!["resource_spans"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.trace.v1.Status",
+            params: Some(vec!["message", "code"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.trace.v1.Span.Link",
+            params: Some(vec!["trace_id", "span_id"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.trace.v1.Span.Event",
+            params: Some(vec!["name", "time_unix_nano"]),
+        },
+	
     ]
 });
 

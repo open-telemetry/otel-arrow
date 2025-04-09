@@ -195,6 +195,8 @@ pub struct Span {
 pub mod span {
     /// Event is a time-stamped annotation of the span, consisting of user-supplied
     /// text description and key-value pairs.
+    #[crate::pdata::otlp::qualified("opentelemetry.proto.trace.v1.Span.Event")]
+    #[derive(crate::pdata::otlp::Message)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Event {
         /// time_unix_nano is the time the event occurred.
@@ -220,6 +222,8 @@ pub mod span {
     /// different trace. For example, this can be used in batching operations,
     /// where a single batch handler processes multiple requests from different
     /// traces or when the handler receives a request from a different project.
+    #[crate::pdata::otlp::qualified("opentelemetry.proto.trace.v1.Span.Link")]
+    #[derive(crate::pdata::otlp::Message)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Link {
         /// A unique identifier of a trace that this linked span is part of. The ID is a

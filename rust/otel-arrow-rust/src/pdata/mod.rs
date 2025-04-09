@@ -14,3 +14,27 @@
 
 pub mod otap;
 pub mod otlp;
+
+// TODO use the OTel-Rust API definitions, if such a dependency.
+
+// TODO: otherwise, specialize TraceID and SpanID for [u8; 8 or 16].
+
+// TODO: also, define From<> instead of Into<> in ../proto/mod.rs
+
+#[derive(Clone, Copy, Debug)]
+pub struct TraceID([u8; 16]);
+
+impl Into<Vec<u8>> for TraceID {
+    fn into(self) -> Vec<u8> {
+	self.0.to_vec()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SpanID([u8; 8]);
+
+impl Into<Vec<u8>> for SpanID {
+    fn into(self) -> Vec<u8> {
+	self.0.to_vec()
+    }
+}
