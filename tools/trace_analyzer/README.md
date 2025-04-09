@@ -36,7 +36,8 @@ Use the `-format` option to specify the format of your input file.
 
 ## Dump data per record type
 
-Use these options to dump `<n>` rows per Arrow record type (e.g. spans, span-attrs, ...).
+Use these options to dump `<n>` rows per Arrow record type (e.g. spans,
+span-attrs, ...).
 
 > Note: These options require the `-record-stats` flag to be enabled.
 
@@ -79,7 +80,8 @@ per scope span, events per span, links per span, attributes per span, ...
 
 ![schema-stats](./imgs/schema_stats_1.png)
 
-At the end a detailed view of the Arrow schema for each record type is displayed.
+At the end a detailed view of the Arrow schema for each record type is
+displayed.
 
 ![schema-stats](./imgs/schema_stats_2.png)
 

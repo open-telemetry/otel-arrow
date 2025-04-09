@@ -55,8 +55,8 @@ Mitigation:
    unpacking these types of bombs (if we can detect them), having a max
    decompression time or resource allocation size limit (configurable), and
    probably some others I can't think of. ZSTD seems immune to "zip bomb" issue
-   (need to be double checked, see
-   https://github.com/klauspost/compress/discussions/727#discussioncomment-4590889)
+   (need to be double checked, see [this
+   discussion](https://github.com/klauspost/compress/discussions/727#discussioncomment-4590889))
 2) Fuzz testing can help discover these types of bugs sooner rather than later.
 
 ### STRIDE: Denial of Service (cardinality)
@@ -104,8 +104,9 @@ Threat: [ToDo] flawed error responses.
 * high cardinality data causing dictionary overflow (over multiple messages).
 * ... TBD
 
-Check this issue for complementary information:
-https://github.com/open-telemetry/opentelemetry-specification/issues/1891
+Check [this
+issue](https://github.com/open-telemetry/opentelemetry-specification/issues/1891)
+for complementary information:
 
 ## Acknowledgements
 

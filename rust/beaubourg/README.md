@@ -1,6 +1,6 @@
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](https://github.com/clap-rs/clap/blob/v3.1.0/LICENSE-APACHE)
-
 # Beaubourg
+
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](https://github.com/clap-rs/clap/blob/v3.1.0/LICENSE-APACHE)
 
 <table style="border-collapse: collapse; border: none!important;">
 <tr style="border-collapse: collapse; border: none!important; padding: 0;">
