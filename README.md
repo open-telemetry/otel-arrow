@@ -99,7 +99,7 @@ to compactly encode and transmit telemetry using Apache Arrow.
    Metrics, Logs, Spans, Span Events, and Span Links, then encode and
    transmit each distinct entity once per stream lifetime.
 3. Use Apache Arrow's built-in support for encoding dictionaries and leverage
-   other purpose-built low-level facilities, such as delta-dictionaries and 
+   other purpose-built low-level facilities, such as delta-dictionaries and
    sorting, to encode structures compactly.
 
 Here is a diagram showing how the protocol transforms OTLP Log Records
@@ -118,7 +118,7 @@ backwards-compatibility for existing and new users.  We believe it is
 safe to begin using these components for production data, non-critical
 workloads.
 
-### Phase-1 project deliverables 
+### Phase-1 project deliverables
 
 We are pleased to release two new collector components, presently
 housed in [OpenTelemetry
@@ -154,7 +154,7 @@ Here are several more resources that are available to learn more about OpenTelem
 
 - [Arrow Data Model](docs/data_model.md) - Mapping OTLP entities to Arrow Schemas.
 - [Benchmark results](docs/benchmarks.md) - Based on synthetic and production data.
-- [Validation process](docs/validation_process.md) - Encoding/Decoding validation process. 
+- [Validation process](docs/validation_process.md) - Encoding/Decoding validation process.
 - Articles describing some of the Arrow techniques used behind the scenes to optimize compression ratio and memory usage:
   - [Data types, encoding, hierarchical data, denormalization](https://arrow.apache.org/blog/2023/04/11/our-journey-at-f5-with-apache-arrow-part-1/)
   - [Adaptive Schemas and Sorting to Optimize Arrow Usage](https://arrow.apache.org/blog/2023/06/26/our-journey-at-f5-with-apache-arrow-part-2/)
@@ -196,7 +196,7 @@ be higher for traffic predominantly containing multivariate metrics.
 
 For more details, see the following [benchmark results](docs/benchmarks.md) page.
 
-### Developers
+### Contributing
 
 Pull requests are welcome. For major changes, please open an issue
 first to discuss what you would like to change.  For more information, please
@@ -207,5 +207,3 @@ read [CONTRIBUTING.md][].
 OpenTelemetry Protocol with Apache Arrow Protocol Adapter is licensed under Apache 2.0.
 
 [CONTRIBUTING.md]: ./CONTRIBUTING.md
-[BUILDING.md]: ./BUILDING.md
-
