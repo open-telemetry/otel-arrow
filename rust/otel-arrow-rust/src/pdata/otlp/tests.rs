@@ -186,19 +186,132 @@ mod tests {
 
 	let kv1 = KeyValue::new("k1", AnyValue::new_string("v1"));
 	let kv2 = KeyValue::new("k2", AnyValue::new_int(2));
+	let kvs = vec![kv1, kv2];
 	let is1 = InstrumentationScope::new("library")
 	    .version("v1.0")
-	    .attributes(&[kv1.clone(), kv2.clone()])
+	    .attributes(kvs.clone())
 	    .dropped_attributes_count(1u32)
 	    .build();
 	let mut is1_value = InstrumentationScope::default();
 	is1_value.name = "library".into();
-	is1_value.attributes = vec![
-	    kv1, kv2,
-	];
 	is1_value.version = "v1.0".into();
+	is1_value.attributes = kvs;
 	is1_value.dropped_attributes_count = 1u32;
 	
 	assert_eq!(is1, is1_value);
     }    
+
+    #[test]
+    fn test_scope_logs() {
+	use crate::proto::opentelemetry::common::v1::InstrumentationScope;
+	use crate::proto::opentelemetry::common::v1::AnyValue;
+	use crate::proto::opentelemetry::common::v1::KeyValue;
+	use crate::proto::opentelemetry::logs::v1::ScopeLogs;
+	use crate::proto::opentelemetry::logs::v1::LogRecord;
+	use crate::proto::opentelemetry::logs::v1::SeverityNumber;
+
+	let kv1 = KeyValue::new("k1", AnyValue::new_string("v1"));
+	let kv2 = KeyValue::new("k2", AnyValue::new_int(2));
+	let kvs1 = vec![kv1, kv2];
+	let body2 = AnyValue::new_string("message text");
+	
+	let is1 = InstrumentationScope::new("library").build();
+
+	let lr1 = LogRecord::new(2_000_000_000u64, SeverityNumber::Info, "event1")
+	    .attributes(kvs1.clone())
+	    .build();
+	let lr2 = LogRecord::new(3_000_000_000u64, SeverityNumber::Info2, "event2")
+	    .body(body2)
+	    .build();
+	let lrs = vec![lr1, lr2];
+
+	let sl = ScopeLogs::new(is1.clone())
+	    .log_records(lrs.clone())
+	    .schema_url("http://schema.opentelemetry.io")
+	    .build();
+
+	let sl_value = ScopeLogs{
+	    scope: Some(is1),
+	    log_records: lrs,
+	    schema_url: "http://schema.opentelemetry.io".into(),
+	};
+
+	assert_eq!(sl, sl_value);
+    }
+
+    #[test]
+    fn test_entity() {
+	//todo!("vec of string, how does that look");
+    }
+    
+    #[test]
+    fn test_resource() {
+	use crate::proto::opentelemetry::common::v1::AnyValue;
+	use crate::proto::opentelemetry::common::v1::KeyValue;
+	use crate::proto::opentelemetry::common::v1::EntityRef;
+	use crate::proto::opentelemetry::resource::v1::Resource;
+
+	let eref1 = EntityRef::new("etype1")
+	    .build();
+	let eref2 = EntityRef::new("etype2")
+	    .build();
+
+	let erefs = vec![eref1, eref2];
+	
+	let res1 = Resource::new(&[KeyValue::new("k1", AnyValue::new_double(1.23))])
+	    .entity_refs(erefs.clone())
+	    .build();
+	let res1_value = Resource{
+	    attributes: vec![KeyValue::new("k1", AnyValue::new_double(1.23))],
+	    entity_refs: erefs,
+	    dropped_attributes_count: 0,
+	};
+
+	assert_eq!(res1, res1_value);
+    }
+    
+    #[test]
+    fn test_resource_logs() {
+	use crate::proto::opentelemetry::common::v1::InstrumentationScope;
+	use crate::proto::opentelemetry::common::v1::AnyValue;
+	use crate::proto::opentelemetry::common::v1::KeyValue;
+	use crate::proto::opentelemetry::resource::v1::Resource;
+	use crate::proto::opentelemetry::logs::v1::ResourceLogs;
+	use crate::proto::opentelemetry::logs::v1::ScopeLogs;
+	use crate::proto::opentelemetry::logs::v1::LogRecord;
+	use crate::proto::opentelemetry::logs::v1::SeverityNumber;
+
+	let kv1 = KeyValue::new("k1", AnyValue::new_string("v1"));
+	let kv2 = KeyValue::new("k2", AnyValue::new_int(2));
+	let kvs = vec![kv1, kv2];
+	
+	let is1 = InstrumentationScope::new("library").build();
+
+	let lr1 = LogRecord::new(2_000_000_000u64, SeverityNumber::Info, "event1")
+	    .build();
+	let lr2 = LogRecord::new(3_000_000_000u64, SeverityNumber::Info2, "event2")
+	    .build();
+	let lrs = vec![lr1, lr2];
+
+	let sl1 = ScopeLogs::new(is1.clone())
+	    .log_records(lrs.clone())
+	    .build();
+	let sl2 = sl1.clone();
+	let sls = vec![sl1, sl2];
+
+	let res = Resource::new(kvs).build();
+
+	let rl = ResourceLogs::new(res.clone())
+	    .scope_logs(sls.clone())
+	    .build();
+
+	let rl_value = ResourceLogs{
+	    resource: Some(res),
+	    scope_logs: sls,
+	    schema_url: "".into(),
+	};
+
+	assert_eq!(rl, rl_value);
+    }
+    
 }

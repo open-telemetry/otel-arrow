@@ -25,6 +25,7 @@ pub static ALL_KNOWN_TYPES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         "opentelemetry.proto.common.v1.AnyValue",
         "opentelemetry.proto.common.v1.KeyValue",
         "opentelemetry.proto.common.v1.InstrumentationScope",
+        "opentelemetry.proto.common.v1.EntityRef",
 
         // Resource types
         "opentelemetry.proto.resource.v1.Resource",
@@ -85,7 +86,16 @@ pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
             name: "opentelemetry.proto.logs.v1.LogRecord",
             params: Some(vec!["time_unix_nano", "severity_number", "event_name"]),
         },
-	// Common
+        Detail {
+            name: "opentelemetry.proto.logs.v1.ScopeLogs",
+            params: Some(vec!["scope"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.logs.v1.ResourceLogs",
+            params: Some(vec!["resource"]),
+        },
+
+	// Common: Note: AnyValue is a special case.
         Detail {
             name: "opentelemetry.proto.common.v1.KeyValue",
             params: Some(vec!["key", "value"]),
@@ -93,6 +103,16 @@ pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
         Detail {
             name: "opentelemetry.proto.common.v1.InstrumentationScope",
             params: Some(vec!["name"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.common.v1.EntityRef",
+            params: Some(vec!["r#type"]),
+        },
+
+	// Resource
+        Detail {
+            name: "opentelemetry.proto.resource.v1.Resource",
+            params: Some(vec!["attributes"]),
         },
     ]
 });

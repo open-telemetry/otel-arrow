@@ -89,6 +89,8 @@ pub struct InstrumentationScope {
 /// Entity represents an object of interest associated with produced telemetry: e.g spans, metrics, profiles, or logs.
 ///
 /// Status: \[Development\]
+#[crate::pdata::otlp::qualified("opentelemetry.proto.common.v1.EntityRef")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct EntityRef {
     /// The Schema URL, if known. This is the identifier of the Schema that the entity data
