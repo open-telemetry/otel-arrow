@@ -345,8 +345,6 @@ pub struct Status {
 pub mod status {
     /// For the semantics of status codes see
     /// <https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/api.md#set-status>
-    #[crate::pdata::otlp::qualified("opentelemetry.proto.trace.v1.Status.StatusCode")]
-    #[derive(crate::pdata::otlp::Message)]
     #[derive(
         Clone,
         Copy,

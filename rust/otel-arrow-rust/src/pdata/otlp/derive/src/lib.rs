@@ -20,15 +20,15 @@ use syn::{parse_macro_input, DeriveInput};
 pub fn qualified(args: TokenStream, input: TokenStream) -> TokenStream {
     let args_str: String = args.to_string().trim_matches('"').into();
     let mut input_ast = syn::parse_macro_input!(input as syn::DeriveInput);
-    
+
     // Create a special doc comment that will store the qualified name
     let qualified_attr = syn::parse_quote! {
         #[doc(hidden, otlp_qualified_name = #args_str)]
     };
-    
+
     // Add the attribute to the struct
     input_ast.attrs.push(qualified_attr);
-    
+
     // Return the modified struct definition
     quote::quote!(#input_ast).into()
 }
@@ -42,9 +42,10 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     let outer_name = &input.ident;
     let builder_name = syn::Ident::new(&format!("{}Builder", outer_name), outer_name.span());
 
-    // Get the fully qualified type name from attribute, or fall back to the struct name
-    let struct_name = outer_name.to_string();
-    let type_name = input.attrs.iter()
+    // Get the fully qualified type name from attribute
+    let type_name = input
+        .attrs
+        .iter()
         .find_map(|attr| {
             if attr.path().is_ident("doc") {
                 // Use parse_nested_meta to extract the qualified name
@@ -66,8 +67,9 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
                 None
             }
         })
-        .unwrap_or_else(|| struct_name.clone());
+        .unwrap();
 
+    // Get optional details for the model.
     let detail = otlp_model::DETAILS
         .iter()
         .find(|detail| detail.name == type_name)
@@ -89,6 +91,12 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         _ => Vec::new(),
     };
 
+    // If there are no fields, it's either an empty message or an enum,
+    // either way should not be listed, no builder is needed.
+    if struct_fields.len() == 0 {
+	panic!("invalid Message derivation: {}", type_name);
+    }
+
     // Function to check if a field is marked as optional
     let is_optional = |field: &syn::Field| {
         field.attrs.iter().any(|attr| {
@@ -100,19 +108,21 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     let param_fields = struct_fields
         .iter()
         .filter(|field| {
-            field.ident.as_ref().map_or(false, |id| {
-                param_names.contains(&id.to_string().as_str())
-            })
+            field
+                .ident
+                .as_ref()
+                .map_or(false, |id| param_names.contains(&id.to_string().as_str()))
         })
         .collect::<Vec<_>>();
-        
+
     // Find fields that are not explicitly initialized via params
     let remaining_fields = struct_fields
         .iter()
         .filter(|field| {
-            field.ident.as_ref().map_or(false, |id| {
-                !param_names.contains(&id.to_string().as_str())
-            })
+            field
+                .ident
+                .as_ref()
+                .map_or(false, |id| !param_names.contains(&id.to_string().as_str()))
         })
         .collect::<Vec<_>>();
 
@@ -120,9 +130,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     let type_params: Vec<syn::Ident> = param_fields
         .iter()
         .enumerate()
-        .map(|(idx, _)| {
-            syn::Ident::new(&format!("T{}", idx + 1), proc_macro2::Span::call_site())
-        })
+        .map(|(idx, _)| syn::Ident::new(&format!("T{}", idx + 1), proc_macro2::Span::call_site()))
         .collect();
 
     // Generate parameters for new() function with generic type parameters
@@ -132,7 +140,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         .map(|(idx, field)| {
             let param_name = field.ident.as_ref().unwrap();
             let type_param = &type_params[idx];
-            
+
             quote! { #param_name: #type_param }
         })
         .collect();
@@ -142,7 +150,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         .iter()
         .map(|field| {
             let field_type = &field.ty;
-            
+
             // For optional fields, we want the inner type
             if is_optional(field) {
                 // Extract inner type from Option<T> using a functional approach
@@ -150,18 +158,18 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
                     syn::Type::Path(type_path) => Some(type_path),
                     _ => None,
                 }
-                    .and_then(|type_path| type_path.path.segments.last())
-                    .filter(|segment| segment.ident == "Option")
-                    .and_then(|segment| match &segment.arguments {
-                        syn::PathArguments::AngleBracketed(args) => Some(args),
-                        _ => None,
-                    })
-                    .and_then(|args| args.args.first())
-                    .and_then(|arg| match arg {
-                        syn::GenericArgument::Type(inner_type) => Some(inner_type.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| field_type.clone())
+                .and_then(|type_path| type_path.path.segments.last())
+                .filter(|segment| segment.ident == "Option")
+                .and_then(|segment| match &segment.arguments {
+                    syn::PathArguments::AngleBracketed(args) => Some(args),
+                    _ => None,
+                })
+                .and_then(|args| args.args.first())
+                .and_then(|arg| match arg {
+                    syn::GenericArgument::Type(inner_type) => Some(inner_type.clone()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| field_type.clone())
             } else {
                 field_type.clone()
             }
@@ -187,7 +195,8 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
             // Check if we need to convert the value using Into
             // Get field path to check for overrides
             let field_path = format!("{}.{}", type_name, param_name);
-            let as_type = otlp_model::FIELD_TYPE_OVERRIDES.get(field_path.as_str())
+            let as_type = otlp_model::FIELD_TYPE_OVERRIDES
+                .get(field_path.as_str())
                 .map(|over| syn::parse_str::<syn::Type>(over.fieldtype).unwrap());
 
             if is_opt {
@@ -213,17 +222,23 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
             let field_ident = field.ident.as_ref().unwrap();
             let field_type = &field.ty;
             let field_path = format!("{}.{}", type_name, field_ident);
-            
+
             // Determine if the field is optional and extract inner type
             let (is_opt, type_to_use) = if is_optional(field) {
                 // For optional fields, extract inner type from Option<T>
                 // This will panic if extraction fails, which is desired
                 let inner_type = match field_type {
                     syn::Type::Path(type_path) => {
-                        let segment = type_path.path.segments.last()
+                        let segment = type_path
+                            .path
+                            .segments
+                            .last()
                             .expect("Expected path to have at least one segment");
-                        assert!(segment.ident == "Option", "Field is marked optional but type is not Option<T>");
-                        
+                        assert!(
+                            segment.ident == "Option",
+                            "Field is marked optional but type is not Option<T>"
+                        );
+
                         if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                             match args.args.first() {
                                 Some(syn::GenericArgument::Type(inner)) => inner.clone(),
@@ -232,7 +247,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
                         } else {
                             panic!("Expected Option<T> to have angle-bracketed arguments");
                         }
-                    },
+                    }
                     _ => panic!("Expected optional field to have path type"),
                 };
 
@@ -241,15 +256,18 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
                 // Non-optional field
                 (false, field_type.clone())
             };
-            
+
             // Check if we have a type override for this field
-            let (param_type, as_type) = if let Some(over) = otlp_model::FIELD_TYPE_OVERRIDES.get(field_path.as_str()) {
-                (syn::parse_str::<syn::Type>(over.datatype).unwrap(),
-                 Some(syn::parse_str::<syn::Type>(over.fieldtype).unwrap()))
-            } else {
-                (type_to_use, None)
-            };
-            
+            let (param_type, as_type) =
+                if let Some(over) = otlp_model::FIELD_TYPE_OVERRIDES.get(field_path.as_str()) {
+                    (
+                        syn::parse_str::<syn::Type>(over.datatype).unwrap(),
+                        Some(syn::parse_str::<syn::Type>(over.fieldtype).unwrap()),
+                    )
+                } else {
+                    (type_to_use, None)
+                };
+
             // Generate the builder method with appropriate value assignment
             let value_assignment = if is_opt {
                 if let Some(ref as_type) = as_type {
@@ -264,7 +282,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
                     quote! { self.inner.#field_ident = value.into(); }
                 }
             };
-            
+
             // Generate a single builder method with conditional logic
             quote! {
                 pub fn #field_ident<T>(mut self, value: T) -> Self

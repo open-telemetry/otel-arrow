@@ -14,18 +14,8 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 #[derive(Clone, Debug, Default)]
-pub enum Kind {
-    Message, // ordinary message
-    Value,   // special case for AnyValue
-
-    #[default]
-    Ignore, // special case for oneof fields
-}
-
-#[derive(Clone, Debug, Default)]
 pub struct Detail {
     pub name: &'static str,
-    pub kind: Kind,
     pub params: Option<Vec<&'static str>>,
 }
 
@@ -40,10 +30,10 @@ pub static ALL_KNOWN_TYPES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         "opentelemetry.proto.resource.v1.Resource",
 
         // Log types
-        "opentelemetry.proto.logs.v1.LogRecord",
         "opentelemetry.proto.logs.v1.LogsData",
         "opentelemetry.proto.logs.v1.ResourceLogs",
         "opentelemetry.proto.logs.v1.ScopeLogs",
+        "opentelemetry.proto.logs.v1.LogRecord",
 
         // Trace types
         "opentelemetry.proto.trace.v1.Span",
@@ -52,7 +42,6 @@ pub static ALL_KNOWN_TYPES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         "opentelemetry.proto.trace.v1.ScopeSpans",
         "opentelemetry.proto.trace.v1.SpanKind",
         "opentelemetry.proto.trace.v1.Status",
-        "opentelemetry.proto.trace.v1.Status.StatusCode",
 
         // Metric types
         "opentelemetry.proto.metrics.v1.Metric",
@@ -68,7 +57,6 @@ pub static ALL_KNOWN_TYPES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         "opentelemetry.proto.metrics.v1.HistogramDataPoint",
         "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint",
         "opentelemetry.proto.metrics.v1.SummaryDataPoint",
-        "opentelemetry.proto.metrics.v1.AggregationTemporality",
     ]
 });
 
@@ -95,13 +83,11 @@ pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
         // Logs
         Detail {
             name: "opentelemetry.proto.logs.v1.LogRecord",
-            kind: Kind::Message,
             params: Some(vec!["time_unix_nano", "severity_number", "event_name"]),
         },
 	// Common
         Detail {
             name: "opentelemetry.proto.common.v1.KeyValue",
-            kind: Kind::Message,
             params: Some(vec!["key", "value"]),
         },
     ]

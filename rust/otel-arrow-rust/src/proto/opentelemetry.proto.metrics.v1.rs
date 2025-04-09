@@ -676,8 +676,6 @@ pub mod exemplar {
 /// AggregationTemporality defines how a metric aggregator reports aggregated
 /// values. It describes how those values relate to the time interval over
 /// which they are aggregated.
-#[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.AggregationTemporality")]
-#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum AggregationTemporality {
