@@ -23,18 +23,10 @@ pub enum Kind {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct Field {
-    pub name: &'static str,
-    pub ty: &'static str,
-    pub bound: &'static str,
-    pub get: &'static str,
-}
-
-#[derive(Clone, Debug, Default)]
 pub struct Detail {
     pub name: &'static str,
     pub kind: Kind,
-    pub params: Option<Vec<Field>>,
+    pub params: Option<Vec<&'static str>>,
 }
 
 pub static ALL_KNOWN_TYPES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
@@ -43,9 +35,6 @@ pub static ALL_KNOWN_TYPES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         "opentelemetry.proto.common.v1.AnyValue",
         "opentelemetry.proto.common.v1.KeyValue",
         "opentelemetry.proto.common.v1.InstrumentationScope",
-        // types unused b/c these are just vectors
-        // "opentelemetry.proto.common.v1.ArrayValue",
-        // "opentelemetry.proto.common.v1.KeyValueList",
 
         // Resource types
         "opentelemetry.proto.resource.v1.Resource",
@@ -55,7 +44,6 @@ pub static ALL_KNOWN_TYPES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         "opentelemetry.proto.logs.v1.LogsData",
         "opentelemetry.proto.logs.v1.ResourceLogs",
         "opentelemetry.proto.logs.v1.ScopeLogs",
-        "opentelemetry.proto.logs.v1.SeverityNumber",
 
         // Trace types
         "opentelemetry.proto.trace.v1.Span",
@@ -84,12 +72,20 @@ pub static ALL_KNOWN_TYPES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     ]
 });
 
-pub static FIELD_TYPE_OVERRIDES: LazyLock<HashMap<&'static str, &'static str>> =
+pub struct Override {
+    pub datatype: &'static str,
+    pub fieldtype: &'static str,
+}
+
+pub static FIELD_TYPE_OVERRIDES: LazyLock<HashMap<&'static str, Override>> =
     LazyLock::new(|| {
         let mut m = HashMap::new();
         m.insert(
             "opentelemetry.proto.logs.v1.LogRecord.flags",
-            "LogRecordFlags",
+            Override{
+		datatype: "LogRecordFlags",
+		fieldtype: "u32",
+	    },
         );
         m
     });
@@ -100,71 +96,13 @@ pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
         Detail {
             name: "opentelemetry.proto.logs.v1.LogRecord",
             kind: Kind::Message,
-            params: Some(vec![
-                Field {
-                    name: "time_unix_nano",
-                    ty: "u64",
-                    bound: "",
-                    get: "",
-                },
-                Field {
-                    name: "severity_number",
-                    ty: "SeverityNumber",
-                    bound: "",
-                    get: "into()",
-                },
-                Field {
-                    name: "event_name",
-                    ty: "S",
-                    bound: "AsRef<str>",
-                    get: "as_ref().to_string()",
-                },
-            ]),
+            params: Some(vec!["time_unix_nano", "severity_number", "event_name"]),
         },
-        // Trace
-        Detail {
-            name: "opentelemetry.proto.trace.v1.Span",
-            kind: Kind::Message,
-            params: None,
-        },
-        // Common
-        Detail {
-            name: "opentelemetry.proto.common.v1.AnyValue",
-            kind: Kind::Value,
-            params: None,
-        },
-        Detail {
-            name: "opentelemetry.proto.common.v1.AnyValue.value",
-            kind: Kind::Ignore,
-            params: None,
-        },
-        Detail {
-            name: "opentelemetry.proto.common.v1.ArrayValue",
-            kind: Kind::Ignore,
-            params: None,
-        },
-        Detail {
-            name: "opentelemetry.proto.common.v1.KeyValueList",
-            kind: Kind::Ignore,
-            params: None,
-        },
+	// Common
         Detail {
             name: "opentelemetry.proto.common.v1.KeyValue",
             kind: Kind::Message,
-            params: Some(vec![
-                Field {
-                    name: "key",
-                    ty: "S",
-                    bound: "AsRef<str>",
-                    get: "as_ref().to_string()",
-                },
-                Field {
-                    name: "value",
-                    ty: "AnyValue",
-                    bound: "",
-                    get: "",
-                },
-            ]),
+            params: Some(vec!["key", "value"]),
         },
     ]
 });

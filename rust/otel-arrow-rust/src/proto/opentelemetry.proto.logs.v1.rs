@@ -161,8 +161,6 @@ pub struct LogRecord {
     pub event_name: ::prost::alloc::string::String,
 }
 /// Possible values for LogRecord.SeverityNumber.
-#[crate::pdata::otlp::qualified("opentelemetry.proto.logs.v1.SeverityNumber")]
-#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum SeverityNumber {

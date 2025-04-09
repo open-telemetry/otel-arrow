@@ -21,10 +21,9 @@ pub fn qualified(args: TokenStream, input: TokenStream) -> TokenStream {
     let args_str: String = args.to_string().trim_matches('"').into();
     let mut input_ast = syn::parse_macro_input!(input as syn::DeriveInput);
     
-    // Create a special attribute that will store the qualified name
-    // Use parentheses format instead of equals sign to match how parse_args works
+    // Create a special doc comment that will store the qualified name
     let qualified_attr = syn::parse_quote! {
-        #[otlp_qualified_name(#args_str)]
+        #[doc(hidden, otlp_qualified_name = #args_str)]
     };
     
     // Add the attribute to the struct
@@ -47,8 +46,22 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     let struct_name = outer_name.to_string();
     let type_name = input.attrs.iter()
         .find_map(|attr| {
-            if attr.path().is_ident("otlp_qualified_name") {
-                attr.parse_args::<syn::LitStr>().ok().map(|lit| lit.value())
+            if attr.path().is_ident("doc") {
+                // Use parse_nested_meta to extract the qualified name
+                let mut qualified_name = None;
+                let _ = attr.parse_nested_meta(|meta| {
+                    if meta.path.is_ident("hidden") {
+                        Ok(())
+                    } else if meta.path.is_ident("otlp_qualified_name") {
+                        let value = meta.value()?;
+                        let lit: syn::LitStr = value.parse()?;
+                        qualified_name = Some(lit.value());
+                        Ok(())
+                    } else {
+                        Ok(())
+                    }
+                });
+                qualified_name
             } else {
                 None
             }
@@ -57,12 +70,12 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
 
     let detail = otlp_model::DETAILS
         .iter()
-        .find(|detail| detail.name.ends_with(&format!(".{}", type_name)))
+        .find(|detail| detail.name == type_name)
         .cloned()
         .unwrap_or(otlp_model::Detail::default());
 
-    // Extract params or get an empty Vec if none exists
-    let params = detail.params.map_or_else(Vec::new, |p| p.to_vec());
+    // Extract param names only from params or get an empty Vec if none exists
+    let param_names = detail.params.unwrap_or_else(Vec::new);
 
     // Extract all fields from the struct definition
     let struct_fields = match &input.data {
@@ -83,76 +96,111 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         })
     };
 
+    // Find fields from struct definition that match the parameter names
+    let param_fields = struct_fields
+        .iter()
+        .filter(|field| {
+            field.ident.as_ref().map_or(false, |id| {
+                param_names.contains(&id.to_string().as_str())
+            })
+        })
+        .collect::<Vec<_>>();
+        
     // Find fields that are not explicitly initialized via params
     let remaining_fields = struct_fields
         .iter()
         .filter(|field| {
             field.ident.as_ref().map_or(false, |id| {
-                !params.iter().any(|param| param.name == id.to_string())
+                !param_names.contains(&id.to_string().as_str())
             })
         })
         .collect::<Vec<_>>();
 
-    // Generate parameters for new() function
-    let param_decls: Vec<_> = params
+    // Generate generic type parameters for each parameter
+    let type_params: Vec<syn::Ident> = param_fields
         .iter()
-        .map(|field| {
-            let param_name = syn::Ident::new(field.name, outer_name.span());
-            let param_type = syn::parse_str::<syn::Type>(field.ty).unwrap();
-            quote! { #param_name: #param_type }
+        .enumerate()
+        .map(|(idx, _)| {
+            syn::Ident::new(&format!("T{}", idx + 1), proc_macro2::Span::call_site())
         })
         .collect();
 
-    let param_bounds: Vec<_> = params
+    // Generate parameters for new() function with generic type parameters
+    let param_decls: Vec<_> = param_fields
         .iter()
-        .filter(|field| !field.bound.is_empty())
-        .map(|field| {
-            let param_type = syn::parse_str::<syn::Type>(field.ty).unwrap();
-            let param_bound = syn::parse_str::<syn::Type>(field.bound).unwrap();
-            quote! { #param_type: #param_bound }
+        .enumerate()
+        .map(|(idx, field)| {
+            let param_name = field.ident.as_ref().unwrap();
+            let type_param = &type_params[idx];
+            
+            quote! { #param_name: #type_param }
         })
         .collect();
 
-    // Generate assignments in the new() function
-    let param_assignments: Vec<_> = params
+    // Extract the target types for each parameter for the where bounds
+    let param_target_types: Vec<_> = param_fields
         .iter()
         .map(|field| {
-            let param_name = syn::Ident::new(field.name, outer_name.span());
-
-            // Find corresponding field in struct definition to check if it's optional
-            let is_optional = match &input.data {
-                syn::Data::Struct(data) => {
-                    if let syn::Fields::Named(fields) = &data.fields {
-                        fields
-                            .named
-                            .iter()
-                            .find(|f| f.ident.as_ref().map_or(false, |id| id == field.name))
-                            .map_or(false, |f| {
-                                f.attrs.iter().any(|attr| {
-                                    attr.path().is_ident("prost")
-                                        && attr.to_token_stream().to_string().contains("optional")
-                                })
-                            })
-                    } else {
-                        false
-                    }
+            let field_type = &field.ty;
+            
+            // For optional fields, we want the inner type
+            if is_optional(field) {
+                // Extract inner type from Option<T> using a functional approach
+                match field_type {
+                    syn::Type::Path(type_path) => Some(type_path),
+                    _ => None,
                 }
-                _ => false,
-            };
+                    .and_then(|type_path| type_path.path.segments.last())
+                    .filter(|segment| segment.ident == "Option")
+                    .and_then(|segment| match &segment.arguments {
+                        syn::PathArguments::AngleBracketed(args) => Some(args),
+                        _ => None,
+                    })
+                    .and_then(|args| args.args.first())
+                    .and_then(|arg| match arg {
+                        syn::GenericArgument::Type(inner_type) => Some(inner_type.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| field_type.clone())
+            } else {
+                field_type.clone()
+            }
+        })
+        .collect();
 
-            if field.get.is_empty() {
-                if is_optional {
-                    quote! { inner.#param_name = Some(#param_name); }
+    // Generate the where bounds for the generic parameters
+    let param_bounds: Vec<proc_macro2::TokenStream> = type_params
+        .iter()
+        .zip(param_target_types.iter())
+        .map(|(type_param, target_type)| {
+            quote! { #type_param: Into<#target_type> }
+        })
+        .collect();
+
+    // Generate assignments in the new() function, using Into trait
+    let param_assignments: Vec<_> = param_fields
+        .iter()
+        .map(|field| {
+            let param_name = field.ident.as_ref().unwrap();
+            let is_opt = is_optional(field);
+
+            // Check if we need to convert the value using Into
+            // Get field path to check for overrides
+            let field_path = format!("{}.{}", type_name, param_name);
+            let as_type = otlp_model::FIELD_TYPE_OVERRIDES.get(field_path.as_str())
+                .map(|over| syn::parse_str::<syn::Type>(over.fieldtype).unwrap());
+
+            if is_opt {
+                if let Some(as_type) = as_type {
+                    quote! { inner.#param_name = Some(#param_name.into() as #as_type); }
                 } else {
-                    quote! { inner.#param_name = #param_name; }
+                    quote! { inner.#param_name = Some(#param_name.into()); }
                 }
             } else {
-                // Parse the string directly as a token stream instead of as an expression
-                let get_tokens = field.get.parse::<proc_macro2::TokenStream>().unwrap();
-                if is_optional {
-                    quote! { inner.#param_name = Some(#param_name.#get_tokens); }
+                if let Some(as_type) = as_type {
+                    quote! { inner.#param_name = #param_name.into() as #as_type; }
                 } else {
-                    quote! { inner.#param_name = #param_name.#get_tokens; }
+                    quote! { inner.#param_name = #param_name.into(); }
                 }
             }
         })
@@ -164,59 +212,66 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         .map(|field| {
             let field_ident = field.ident.as_ref().unwrap();
             let field_type = &field.ty;
-
-            if is_optional(field) {
-                // For optional fields, extract inner type from Option<T> if possible
-                if let syn::Type::Path(type_path) = field_type {
-                    if let Some(segment) = type_path.path.segments.last() {
-                        if segment.ident == "Option" {
-                            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                                if let Some(syn::GenericArgument::Type(inner_type)) =
-                                    args.args.first()
-                                {
-                                    // Check if we have a type override for this field
-                                    let field_path = format!("{}.{}", type_name, field_ident);
-
-                                    // Determine which type to use (override or inner)
-                                    let type_to_use = if let Some(override_type) =
-                                        otlp_model::FIELD_TYPE_OVERRIDES.get(field_path.as_str())
-                                    {
-                                        syn::parse_str::<syn::Type>(override_type).unwrap()
-                                    } else {
-                                        inner_type.clone()
-                                    };
-
-                                    return quote! {
-                                        pub fn #field_ident<T>(mut self, value: T) -> Self
-                                        where T: Into<#type_to_use>
-                                        {
-                                            self.inner.#field_ident = Some(value.into());
-                                            self
-                                        }
-                                    };
-                                }
+            let field_path = format!("{}.{}", type_name, field_ident);
+            
+            // Determine if the field is optional and extract inner type
+            let (is_opt, type_to_use) = if is_optional(field) {
+                // For optional fields, extract inner type from Option<T>
+                // This will panic if extraction fails, which is desired
+                let inner_type = match field_type {
+                    syn::Type::Path(type_path) => {
+                        let segment = type_path.path.segments.last()
+                            .expect("Expected path to have at least one segment");
+                        assert!(segment.ident == "Option", "Field is marked optional but type is not Option<T>");
+                        
+                        if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                            match args.args.first() {
+                                Some(syn::GenericArgument::Type(inner)) => inner.clone(),
+                                _ => panic!("Expected Option<T> to have a type parameter"),
                             }
+                        } else {
+                            panic!("Expected Option<T> to have angle-bracketed arguments");
                         }
-                    }
-                }
+                    },
+                    _ => panic!("Expected optional field to have path type"),
+                };
 
-                // Fallback
-                quote! {
-                    pub fn #field_ident<T>(mut self, value: T) -> Self
-                    where T: Into<_>
-                    {
-                        self.inner.#field_ident = Some(value.into());
-                        self
-                    }
+                (true, inner_type)
+            } else {
+                // Non-optional field
+                (false, field_type.clone())
+            };
+            
+            // Check if we have a type override for this field
+            let (param_type, as_type) = if let Some(over) = otlp_model::FIELD_TYPE_OVERRIDES.get(field_path.as_str()) {
+                (syn::parse_str::<syn::Type>(over.datatype).unwrap(),
+                 Some(syn::parse_str::<syn::Type>(over.fieldtype).unwrap()))
+            } else {
+                (type_to_use, None)
+            };
+            
+            // Generate the builder method with appropriate value assignment
+            let value_assignment = if is_opt {
+                if let Some(ref as_type) = as_type {
+                    quote! { self.inner.#field_ident = Some(value.into() as #as_type); }
+                } else {
+                    quote! { self.inner.#field_ident = Some(value.into()); }
                 }
             } else {
-                quote! {
-                    pub fn #field_ident<T>(mut self, value: T) -> Self
-                    where T: Into<#field_type>
-                    {
-                        self.inner.#field_ident = value.into();
-                        self
-                    }
+                if let Some(ref as_type) = as_type {
+                    quote! { self.inner.#field_ident = value.into() as #as_type; }
+                } else {
+                    quote! { self.inner.#field_ident = value.into(); }
+                }
+            };
+            
+            // Generate a single builder method with conditional logic
+            quote! {
+                pub fn #field_ident<T>(mut self, value: T) -> Self
+                where T: Into<#param_type>
+                {
+                    #value_assignment
+                    self
                 }
             }
         })
