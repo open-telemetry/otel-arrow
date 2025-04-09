@@ -14,29 +14,29 @@
 mod tests {
     use crate::pdata::SpanID;
     use crate::pdata::TraceID;
-    use crate::proto::opentelemetry::common::v1::any_value::Value;
     use crate::proto::opentelemetry::common::v1::AnyValue;
     use crate::proto::opentelemetry::common::v1::ArrayValue;
     use crate::proto::opentelemetry::common::v1::EntityRef;
     use crate::proto::opentelemetry::common::v1::InstrumentationScope;
     use crate::proto::opentelemetry::common::v1::KeyValue;
     use crate::proto::opentelemetry::common::v1::KeyValueList;
+    use crate::proto::opentelemetry::common::v1::any_value::Value;
+    use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::proto::opentelemetry::logs::v1::LogRecord;
     use crate::proto::opentelemetry::logs::v1::LogRecordFlags;
     use crate::proto::opentelemetry::logs::v1::ResourceLogs;
     use crate::proto::opentelemetry::logs::v1::ScopeLogs;
     use crate::proto::opentelemetry::logs::v1::SeverityNumber;
-    use crate::proto::opentelemetry::resource::v1::Resource;
-    use crate::proto::opentelemetry::trace::v1::span::Event;
-    use crate::proto::opentelemetry::trace::v1::span::Link;
-    use crate::proto::opentelemetry::trace::v1::span::SpanKind;
-    use crate::proto::opentelemetry::trace::v1::status::StatusCode;
     use crate::proto::opentelemetry::trace::v1::ResourceSpans;
     use crate::proto::opentelemetry::trace::v1::ScopeSpans;
     use crate::proto::opentelemetry::trace::v1::Span;
     use crate::proto::opentelemetry::trace::v1::SpanFlags;
     use crate::proto::opentelemetry::trace::v1::Status;
     use crate::proto::opentelemetry::trace::v1::TracesData;
+    use crate::proto::opentelemetry::trace::v1::span::Event;
+    use crate::proto::opentelemetry::trace::v1::span::Link;
+    use crate::proto::opentelemetry::trace::v1::span::SpanKind;
+    use crate::proto::opentelemetry::trace::v1::status::StatusCode;
 
     #[test]
     fn test_any_value() {
@@ -358,4 +358,15 @@ mod tests {
 
         assert_eq!(rds, rds_value);
     }
+
+    // #[test]
+    // fn test_metric_sum() {
+    //use crate::proto::opentelemetry::metrics::v1::Metric;
+    // 	let m1 = Metric::new_sum("counter", Sum::new()).build();
+    // 	let m2 = m1.clone();
+
+    // 	assert_eq!(m1, m2);
+
+
+    // }
 }
