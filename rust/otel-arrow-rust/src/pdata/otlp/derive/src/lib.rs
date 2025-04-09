@@ -19,18 +19,23 @@ use syn::{parse_macro_input, DeriveInput};
 #[proc_macro_attribute]
 pub fn qualified(args: TokenStream, input: TokenStream) -> TokenStream {
     let args_str: String = args.to_string().trim_matches('"').into();
-    let mut input_ast = syn::parse_macro_input!(input as syn::DeriveInput);
-
+    
+    // Parse input and add the qualified attribute in a more functional way
+    let input_ast = syn::parse_macro_input!(input as syn::DeriveInput)
+        .into_token_stream()
+        .to_string();
+    
     // Create a special doc comment that will store the qualified name
     let qualified_attr = syn::parse_quote! {
         #[doc(hidden, otlp_qualified_name = #args_str)]
     };
-
-    // Add the attribute to the struct
-    input_ast.attrs.push(qualified_attr);
+    
+    // Parse again and add the attribute
+    let mut final_ast = syn::parse_str::<DeriveInput>(&input_ast).unwrap();
+    final_ast.attrs.push(qualified_attr);
 
     // Return the modified struct definition
-    quote::quote!(#input_ast).into()
+    quote::quote!(#final_ast).into()
 }
 
 /// Derives the OTLP Message trait implementation for protocol buffer
@@ -104,188 +109,141 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         })
     };
 
-    // Find fields from struct definition that match the parameter names
-    let param_fields = struct_fields
-        .iter()
-        .filter(|field| {
-            field
-                .ident
-                .as_ref()
-                .map_or(false, |id| param_names.contains(&id.to_string().as_str()))
-        })
-        .collect::<Vec<_>>();
+    // Process all fields once with common logic
+    struct FieldInfo {
+        ident: syn::Ident,
+        is_param: bool,
+        is_optional: bool,
+        param_type: syn::Type,
+        as_type: Option<syn::Type>,
+    }
 
-    // Find fields that are not explicitly initialized via params
-    let remaining_fields = struct_fields
-        .iter()
-        .filter(|field| {
-            field
-                .ident
-                .as_ref()
-                .map_or(false, |id| !param_names.contains(&id.to_string().as_str()))
-        })
-        .collect::<Vec<_>>();
-
-    // Generate generic type parameters for each parameter
-    let type_params: Vec<syn::Ident> = param_fields
-        .iter()
-        .enumerate()
-        .map(|(idx, _)| syn::Ident::new(&format!("T{}", idx + 1), proc_macro2::Span::call_site()))
-        .collect();
-
-    // Generate parameters for new() function with generic type parameters
-    let param_decls: Vec<_> = param_fields
-        .iter()
-        .enumerate()
-        .map(|(idx, field)| {
-            let param_name = field.ident.as_ref().unwrap();
-            let type_param = &type_params[idx];
-
-            quote! { #param_name: #type_param }
-        })
-        .collect();
-
-    // Extract the target types for each parameter for the where bounds
-    let param_target_types: Vec<_> = param_fields
-        .iter()
-        .map(|field| {
-            let field_type = &field.ty;
-
-            // For optional fields, we want the inner type
-            if is_optional(field) {
-                // Extract inner type from Option<T> using a functional approach
-                match field_type {
-                    syn::Type::Path(type_path) => Some(type_path),
-                    _ => None,
-                }
-                .and_then(|type_path| type_path.path.segments.last())
-                .filter(|segment| segment.ident == "Option")
-                .and_then(|segment| match &segment.arguments {
-                    syn::PathArguments::AngleBracketed(args) => Some(args),
-                    _ => None,
+    // Extract option inner type as a standalone function for better reuse
+    let extract_option_inner_type = |ty: &syn::Type| -> Option<(syn::Type, bool)> {
+        if let syn::Type::Path(type_path) = ty {
+            type_path.path.segments.last()
+                .and_then(|segment| {
+                    (segment.ident == "Option").then_some(segment)
                 })
-                .and_then(|args| args.args.first())
-                .and_then(|arg| match arg {
-                    syn::GenericArgument::Type(inner_type) => Some(inner_type.clone()),
-                    _ => None,
-                })
-                .unwrap_or_else(|| field_type.clone())
-            } else {
-                field_type.clone()
-            }
-        })
-        .collect();
-
-    // Generate the where bounds for the generic parameters
-    let param_bounds: Vec<proc_macro2::TokenStream> = type_params
-        .iter()
-        .zip(param_target_types.iter())
-        .map(|(type_param, target_type)| {
-            quote! { #type_param: Into<#target_type> }
-        })
-        .collect();
-
-    // Generate assignments in the new() function, using Into trait
-    let param_assignments: Vec<_> = param_fields
-        .iter()
-        .map(|field| {
-            let param_name = field.ident.as_ref().unwrap();
-            let is_opt = is_optional(field);
-
-            // Check if we need to convert the value using Into
-            // Get field path to check for overrides
-            let field_path = format!("{}.{}", type_name, param_name);
-            let as_type = otlp_model::FIELD_TYPE_OVERRIDES
-                .get(field_path.as_str())
-                .map(|over| syn::parse_str::<syn::Type>(over.fieldtype).unwrap());
-
-            if is_opt {
-                if let Some(as_type) = as_type {
-                    quote! { inner.#param_name = Some(#param_name.into() as #as_type); }
-                } else {
-                    quote! { inner.#param_name = Some(#param_name.into()); }
-                }
-            } else {
-                if let Some(as_type) = as_type {
-                    quote! { inner.#param_name = #param_name.into() as #as_type; }
-                } else {
-                    quote! { inner.#param_name = #param_name.into(); }
-                }
-            }
-        })
-        .collect();
-
-    // Generate builder methods for remaining fields
-    let builder_methods: Vec<_> = remaining_fields
-        .iter()
-        .map(|field| {
-            let field_ident = field.ident.as_ref().unwrap();
-            let field_type = &field.ty;
-            let field_path = format!("{}.{}", type_name, field_ident);
-
-            // Determine if the field is optional and extract inner type
-            let (is_opt, type_to_use) = if is_optional(field) {
-                // For optional fields, extract inner type from Option<T>
-                // This will panic if extraction fails, which is desired
-                let inner_type = match field_type {
-                    syn::Type::Path(type_path) => {
-                        let segment = type_path
-                            .path
-                            .segments
-                            .last()
-                            .expect("Expected path to have at least one segment");
-                        assert!(
-                            segment.ident == "Option",
-                            "Field is marked optional but type is not Option<T>"
-                        );
-
-                        if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                            match args.args.first() {
-                                Some(syn::GenericArgument::Type(inner)) => inner.clone(),
-                                _ => panic!("Expected Option<T> to have a type parameter"),
-                            }
-                        } else {
-                            panic!("Expected Option<T> to have angle-bracketed arguments");
-                        }
+                .and_then(|segment| {
+                    if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                        args.args.first()
+                    } else {
+                        None
                     }
-                    _ => panic!("Expected optional field to have path type"),
+                })
+                .and_then(|arg| {
+                    if let syn::GenericArgument::Type(inner_type) = arg {
+                        Some((inner_type.clone(), true))
+                    } else {
+                        None
+                    }
+                })
+        } else {
+            None
+        }
+    };
+    
+    let field_infos: Vec<FieldInfo> = struct_fields
+        .iter()
+        .filter_map(|field| {
+            // Early return if no identifier
+            field.ident.as_ref().map(|ident| {
+                let ident_str = ident.to_string();
+                let is_param = param_names.contains(&ident_str.as_str());
+                let is_optional = is_optional(field);
+                let field_path = format!("{}.{}", type_name, ident_str);
+                
+                // Process type information
+                let (inner_type, is_optional_extraction_ok) = if is_optional {
+                    extract_option_inner_type(&field.ty)
+                        .unwrap_or_else(|| (field.ty.clone(), false))
+                } else {
+                    (field.ty.clone(), true)
                 };
 
-                (true, inner_type)
-            } else {
-                // Non-optional field
-                (false, field_type.clone())
-            };
+                // Validate optional field extraction
+                if is_optional && !is_optional_extraction_ok {
+                    panic!("Field '{}' is marked optional but does not have a valid Option<T> type", ident);
+                }
 
-            // Check if we have a type override for this field
-            let (param_type, as_type) =
-                if let Some(over) = otlp_model::FIELD_TYPE_OVERRIDES.get(field_path.as_str()) {
-                    (
+                // Get type overrides if present
+                let (param_type, as_type) = otlp_model::FIELD_TYPE_OVERRIDES
+                    .get(field_path.as_str())
+                    .map(|over| (
                         syn::parse_str::<syn::Type>(over.datatype).unwrap(),
-                        Some(syn::parse_str::<syn::Type>(over.fieldtype).unwrap()),
-                    )
-                } else {
-                    (type_to_use, None)
-                };
+                        Some(syn::parse_str::<syn::Type>(over.fieldtype).unwrap())
+                    ))
+                    .unwrap_or_else(|| (inner_type, None));
 
-            // Generate the builder method with appropriate value assignment
-            let value_assignment = if is_opt {
-                if let Some(ref as_type) = as_type {
-                    quote! { self.inner.#field_ident = Some(value.into() as #as_type); }
-                } else {
-                    quote! { self.inner.#field_ident = Some(value.into()); }
+                FieldInfo {
+                    ident: ident.clone(),
+                    is_param,
+                    is_optional,
+                    param_type,
+                    as_type,
                 }
-            } else {
-                if let Some(ref as_type) = as_type {
-                    quote! { self.inner.#field_ident = value.into() as #as_type; }
-                } else {
-                    quote! { self.inner.#field_ident = value.into(); }
-                }
+            })
+        })
+        .collect();
+
+    // Partition fields into parameters and builder fields in one pass
+    let (param_fields, builder_fields): (Vec<&FieldInfo>, Vec<&FieldInfo>) = field_infos.iter()
+        .partition(|info| info.is_param);
+
+    // Generate generic type parameters for parameters using functional patterns
+    let type_params: Vec<syn::Ident> = param_fields.iter().enumerate()
+        .map(|(idx, _)| {
+            let type_name = format!("T{}", idx + 1);
+            syn::Ident::new(&type_name, proc_macro2::Span::call_site())
+        })
+        .collect();
+
+    // Generate parameter declarations and where bounds together with zipped iterators
+    let (param_decls, param_bounds): (Vec<proc_macro2::TokenStream>, Vec<proc_macro2::TokenStream>) = 
+        param_fields.iter().enumerate().map(|(idx, info)| {
+            let param_name = &info.ident;
+            let type_param = &type_params[idx];
+            let target_type = &info.param_type;
+            
+            let decl = quote! { #param_name: #type_param };
+            let bound = quote! { #type_param: Into<#target_type> };
+            
+            (decl, bound)
+        })
+        .unzip();
+
+    // Generate assignments for parameters in new() function with cleaner functional approach
+    let param_assignments: Vec<proc_macro2::TokenStream> = param_fields
+        .iter()
+        .map(|info| {
+            let field_name = &info.ident;
+            
+            match (info.is_optional, &info.as_type) {
+                (true, Some(as_type)) => quote! { inner.#field_name = Some(#field_name.into() as #as_type); },
+                (true, None) => quote! { inner.#field_name = Some(#field_name.into()); },
+                (false, Some(as_type)) => quote! { inner.#field_name = #field_name.into() as #as_type; },
+                (false, None) => quote! { inner.#field_name = #field_name.into(); },
+            }
+        })
+        .collect();
+
+    // Generate builder methods
+    let builder_methods: Vec<proc_macro2::TokenStream> = builder_fields
+        .iter()
+        .map(|info| {
+            let field_name = &info.ident;
+            let param_type = &info.param_type;
+            
+            let value_assignment = match (info.is_optional, &info.as_type) {
+                (true, Some(ref as_type)) => quote! { self.inner.#field_name = Some(value.into() as #as_type); },
+                (true, None) => quote! { self.inner.#field_name = Some(value.into()); },
+                (false, Some(ref as_type)) => quote! { self.inner.#field_name = value.into() as #as_type; },
+                (false, None) => quote! { self.inner.#field_name = value.into(); },
             };
 
-            // Generate a single builder method with conditional logic
             quote! {
-                pub fn #field_ident<T>(mut self, value: T) -> Self
+                pub fn #field_name<T>(mut self, value: T) -> Self
                 where T: Into<#param_type>
                 {
                     #value_assignment
@@ -295,7 +253,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         })
         .collect();
 
-    let expanded = if remaining_fields.is_empty() {
+    let expanded = if builder_fields.is_empty() {
         // If there are no remaining fields, directly return the constructed object
         quote! {
             impl #outer_name {
