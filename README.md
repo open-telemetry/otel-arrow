@@ -208,7 +208,7 @@ calendar](https://github.com/open-telemetry/community?tab=readme-ov-file#calenda
 for specific dates and for Zoom meeting links.
 
 Meeting notes are available as a public [Google
-doc](TBD).
+doc](https://docs.google.com/document/d/1X-RPSOSDUUTD2-zrPRQ6YJ54i4JkHIgvAm5EoVhTzPs/edit?usp=sharing).
 If you have trouble accessing the doc, please get in touch on
 [Slack](https://cloud-native.slack.com/archives/C07S4Q67LTF).
 
