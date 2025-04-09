@@ -90,6 +90,10 @@ pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
             name: "opentelemetry.proto.common.v1.KeyValue",
             params: Some(vec!["key", "value"]),
         },
+        Detail {
+            name: "opentelemetry.proto.common.v1.InstrumentationScope",
+            params: Some(vec!["name"]),
+        },
     ]
 });
 

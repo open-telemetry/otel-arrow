@@ -166,4 +166,39 @@ mod tests {
 
 	assert_eq!(lr1, lr1_value);
     }
+
+    #[test]
+    fn test_instrumentation_scope_default() {
+	use crate::proto::opentelemetry::common::v1::InstrumentationScope;
+
+	let is1 = InstrumentationScope::new("library").build();
+	let mut is1_value = InstrumentationScope::default();
+	is1_value.name = "library".into();
+
+	assert_eq!(is1, is1_value);
+    }    
+
+    #[test]
+    fn test_instrumentation_scope_options() {
+	use crate::proto::opentelemetry::common::v1::InstrumentationScope;
+	use crate::proto::opentelemetry::common::v1::AnyValue;
+	use crate::proto::opentelemetry::common::v1::KeyValue;
+
+	let kv1 = KeyValue::new("k1", AnyValue::new_string("v1"));
+	let kv2 = KeyValue::new("k2", AnyValue::new_int(2));
+	let is1 = InstrumentationScope::new("library")
+	    .version("v1.0")
+	    .attributes(&[kv1.clone(), kv2.clone()])
+	    .dropped_attributes_count(1u32)
+	    .build();
+	let mut is1_value = InstrumentationScope::default();
+	is1_value.name = "library".into();
+	is1_value.attributes = vec![
+	    kv1, kv2,
+	];
+	is1_value.version = "v1.0".into();
+	is1_value.dropped_attributes_count = 1u32;
+	
+	assert_eq!(is1, is1_value);
+    }    
 }
