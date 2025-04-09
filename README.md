@@ -228,7 +228,7 @@ you're more than welcome to participate!
 
 - [Alex Boten](https://github.com/codeboten), Honeycomb
 - [Drew Relmas](https://github.com/drewrelmas), Microsoft
-- [Moh Osman](https://github.com/Kielek)
+- [Moh Osman](https://github.com/moh-osman3), ServiceNow
 
 ### Thanks to all the people who have contributed
 
