@@ -241,7 +241,21 @@ mod tests {
 
     #[test]
     fn test_entity() {
-	//todo!("vec of string, how does that look");
+	use crate::proto::opentelemetry::common::v1::EntityRef;
+
+	let er1 = EntityRef::new("entity")
+	    .id_keys(&["a".to_string(), "b".to_string(), "c".to_string()])
+	    .description_keys(&["d".to_string(), "e".to_string(), "f".to_string()])
+	    .build();
+
+	let er1_value = EntityRef{
+	    r#type: "entity".into(),
+	    id_keys: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+	    description_keys: vec!["d".to_string(), "e".to_string(), "f".to_string()],
+	    schema_url: "".to_string(),
+	};
+
+	assert_eq!(er1, er1_value);
     }
     
     #[test]
