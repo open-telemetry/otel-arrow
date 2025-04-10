@@ -292,12 +292,23 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
             
             let method_name = syn::Ident::new(&format!("new_{}", case.name), proc_macro2::Span::call_site());
             
-            // Generate the method implementation
-            quote! {
-                pub fn #method_name<T: Into<#case_type>>(value: T) -> Self {
-                    let mut instance = Self::default();
-                    instance.#oneof_field_name = Some(#variant_path(value.into()));
-                    instance
+            // Generate the method implementation with extra_call support
+            if let Some(extra_call) = &case.extra_call {
+                let extra_call_path = syn::parse_str::<syn::Expr>(extra_call).unwrap();
+                quote! {
+                    pub fn #method_name<T: Into<#case_type>>(value: T) -> Self {
+                        let mut instance = Self::default();
+                        instance.#oneof_field_name = Some(#variant_path(#extra_call_path(value.into())));
+                        instance
+                    }
+                }
+            } else {
+                quote! {
+                    pub fn #method_name<T: Into<#case_type>>(value: T) -> Self {
+                        let mut instance = Self::default();
+                        instance.#oneof_field_name = Some(#variant_path(value.into()));
+                        instance
+                    }
                 }
             }
         }).collect::<Vec<proc_macro2::TokenStream>>()

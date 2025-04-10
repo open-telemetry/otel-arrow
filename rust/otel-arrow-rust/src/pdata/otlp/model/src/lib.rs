@@ -24,6 +24,7 @@ pub struct OneofCase {
     pub name: &'static str,
     pub type_param: &'static str,
     pub value_variant: &'static str,
+    pub extra_call: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -32,8 +33,8 @@ pub struct OneofMapping {
     pub cases: Vec<OneofCase>,
 }
 
-fn oneof(name: &'static str, type_param: &'static str, value_variant: &'static str) -> OneofCase {
-    OneofCase{name, type_param, value_variant}
+fn oneof(name: &'static str, type_param: &'static str, value_variant: &'static str, extra_call: Option<&'static str>) -> OneofCase {
+    OneofCase{name, type_param, value_variant, extra_call}
 }
 
 pub static ONEOF_MAPPINGS: LazyLock<Vec<OneofMapping>> = LazyLock::new(|| {
@@ -41,13 +42,13 @@ pub static ONEOF_MAPPINGS: LazyLock<Vec<OneofMapping>> = LazyLock::new(|| {
 	OneofMapping{
 	    field: "opentelemetry.proto.common.v1.AnyValue.value",
 	    cases: vec![
-		oneof("string", "::prost::alloc::string::String", "any_value::Value::StringValue"),
-		oneof("bool", "bool", "any_value::Value::BoolValue"),
-		oneof("int", "i64", "any_value::Value::IntValue"),
-		oneof("double", "f64", "any_value::Value::DoubleValue"),
-		oneof("kvlist", "Vec<KeyValue>", "any_value::Value::KvlistValue"),
-		oneof("array", "Vec<AnyValue>", "any_value::Value::ArrayValue"),
-		oneof("bytes", "Vec<u8>", "any_value::Value::BytesValue"),
+		oneof("string", "::prost::alloc::string::String", "any_value::Value::StringValue", None ),
+		oneof("bool", "bool", "any_value::Value::BoolValue", None),
+		oneof("int", "i64", "any_value::Value::IntValue", None),
+		oneof("double", "f64", "any_value::Value::DoubleValue", None),
+		oneof("kvlist", "Vec<KeyValue>", "any_value::Value::KvlistValue", Some("KeyValueList::new")),
+		oneof("array", "Vec<AnyValue>", "any_value::Value::ArrayValue", Some("ArrayValue::new")),
+		oneof("bytes", "Vec<u8>", "any_value::Value::BytesValue", None),
 	    ],
 	},
     ]
@@ -60,6 +61,8 @@ pub static ALL_KNOWN_TYPES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         "opentelemetry.proto.common.v1.EntityRef",
         "opentelemetry.proto.common.v1.InstrumentationScope",
         "opentelemetry.proto.common.v1.KeyValue",
+        "opentelemetry.proto.common.v1.KeyValueList",
+        "opentelemetry.proto.common.v1.ArrayValue",
         // Resource types
         "opentelemetry.proto.resource.v1.Resource",
         // Log types
@@ -154,6 +157,7 @@ pub static FIELD_TYPE_OVERRIDES: LazyLock<HashMap<&'static str, Override>> = Laz
 
 pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
     vec![
+	// Common
         Detail {
             name: "opentelemetry.proto.common.v1.AnyValue",
             params: Some(vec!["value"]),
@@ -161,6 +165,14 @@ pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
         Detail {
             name: "opentelemetry.proto.common.v1.KeyValue",
             params: Some(vec!["key", "value"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.common.v1.KeyValueList",
+            params: Some(vec!["values"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.common.v1.ArrayValue",
+            params: Some(vec!["values"]),
         },
         Detail {
             name: "opentelemetry.proto.common.v1.InstrumentationScope",

@@ -75,7 +75,6 @@ mod tests {
             value: Some(Value::BytesValue(b"hello".to_vec())),
         };
         assert_eq!(AnyValue::new_bytes(hello.as_slice()), hello_value);
-        assert_eq!(AnyValue::new_bytes(&hello), hello_value);
         assert_eq!(AnyValue::new_bytes(hello), hello_value);
 
         // Kvlist
@@ -89,7 +88,7 @@ mod tests {
             })),
         };
 
-        assert_eq!(AnyValue::new_kvlist(&kvs), kvs_value);
+        assert_eq!(AnyValue::new_kvlist(kvs), kvs_value);
         assert_eq!(
             AnyValue::new_kvlist(&[
                 KeyValue::new("k1", AnyValue::new_string("s1")),
@@ -106,7 +105,6 @@ mod tests {
             })),
         };
 
-        assert_eq!(AnyValue::new_array(&vals), vals_value);
         assert_eq!(AnyValue::new_array(vals), vals_value);
         assert_eq!(
             AnyValue::new_array(vec![AnyValue::new_string("s1"), AnyValue::new_double(2.0),]),
