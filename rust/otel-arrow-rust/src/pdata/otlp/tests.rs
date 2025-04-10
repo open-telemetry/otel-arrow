@@ -370,7 +370,10 @@ mod tests {
 	    "counter",
 	    Sum::new(AggregationTemporality::Delta,
 		     true,
-		     vec![NumberDataPoint::new_int(125_000_000_000u64, 123i64).build()],
+		     vec![
+			 NumberDataPoint::new_int(125_000_000_000u64, 123i64).build(),
+			 NumberDataPoint::new_double(125_000_000_000u64, 123f64).build(),
+		     ],
 	    ),
 	).build();
 
@@ -390,6 +393,14 @@ mod tests {
 			start_time_unix_nano: 0,
 			time_unix_nano: 125_000_000_000u64,
 			value: Some(NumberValue::AsInt(123i64)),
+		    },
+		    NumberDataPoint{
+			attributes: vec![],
+			exemplars: vec![],
+			flags: 0,
+			start_time_unix_nano: 0,
+			time_unix_nano: 125_000_000_000u64,
+			value: Some(NumberValue::AsDouble(123f64)),
 		    },
 		],
 	    })),

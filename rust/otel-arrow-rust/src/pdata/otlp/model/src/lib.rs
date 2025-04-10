@@ -55,18 +55,24 @@ pub static ONEOF_MAPPINGS: LazyLock<Vec<OneofMapping>> = LazyLock::new(|| {
 	    field: "opentelemetry.proto.metrics.v1.Metric.data",
 	    cases: vec![
 		oneof("sum", "Sum", "metric::Data::Sum", None),
+		oneof("gauge", "Gauge", "metric::Data::Gauge", None),
+		oneof("histogram", "Histogram", "metric::Data::Histogram", None),
+		oneof("exponential_histogram", "ExponentialHistogram", "metric::Data::ExponentialHistogram", None),
+		oneof("summary", "Summary", "metric::Data::Summary", None),
 	    ],
 	},
 	OneofMapping{
 	    field: "opentelemetry.proto.metrics.v1.NumberDataPoint.value",
 	    cases: vec![
 		oneof("int", "i64", "number_data_point::Value::AsInt", None),
+		oneof("double", "f64", "number_data_point::Value::AsDouble", None),
 	    ],
 	},
 	OneofMapping{
 	    field: "opentelemetry.proto.metrics.v1.Exemplar.value",
 	    cases: vec![
 		oneof("int", "i64", "exemplar::Value::AsInt", None),
+		oneof("double", "f64", "exemplar::Value::AsDouble", None),
 	    ],
 	},
     ]
@@ -112,6 +118,7 @@ pub static ALL_KNOWN_TYPES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         "opentelemetry.proto.metrics.v1.NumberDataPoint",
         "opentelemetry.proto.metrics.v1.SummaryDataPoint",
         "opentelemetry.proto.metrics.v1.Exemplar",
+	// TODO: A few remaining types: explicit/expohisto buckets, percentiles, etc
     ]
 });
 
