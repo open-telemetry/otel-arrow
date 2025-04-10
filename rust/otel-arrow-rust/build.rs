@@ -49,6 +49,7 @@ fn generate_otlp_protos(out_dir: &Path, base: &str) {
         .server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
         .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#);
 
+    // Note: this adds derive expressions for each OTLP message type.
     let builder = otlp_model::add_type_attributes(builder);
 
     builder
