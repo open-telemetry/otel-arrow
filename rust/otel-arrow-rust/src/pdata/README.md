@@ -13,7 +13,7 @@ For OTAP data frames, the underlying object is a set of Arrow arrays
 corresponding with OpenTelemetry concepts such as Resource, Scope,
 LogRecord, Span, etc.
 
-For OTAP streams, the associated protobuf messages are [defined in
-this repository](../../../../proto/README.md).
+For OTAP streams, the associated protobuf messages are defined in
+this repository, see ../../../../proto/README.md.
 
-- **[OTAP pipeline data interface](./otap/README.md)**
+- **OTAP pipeline data interface: TODO**

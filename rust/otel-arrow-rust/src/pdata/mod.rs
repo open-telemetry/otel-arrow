@@ -10,9 +10,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! This module contains data structures for OTLP and OTAP protocol data
+//! This module contains data structures for OTLP and OTAP pipeline data
 
-pub mod otap;
 pub mod otlp;
 
 // TODO use the OTel-Rust API definitions, if such a dependency.

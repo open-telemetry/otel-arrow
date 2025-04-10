@@ -29,8 +29,7 @@ fn generate_otap_protos(out_dir: &Path, base: &str) {
         .build_server(true)
         .build_client(true)
         .server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
-        .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#)
-        .type_attribute(".", r#"#[derive(crate::pdata::otap::Message)]"#);
+        .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#);
 
     // Compile the protobuf definitions
     builder
