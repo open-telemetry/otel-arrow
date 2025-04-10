@@ -20,7 +20,7 @@ By default, there is no flag enabled. All these flags are cumulative.
 |--------------------|--------------------------------------------------------------------------------------|
 | -schema-stats      | Display Arrow schema statistics (see [details](#schema-stats-output))                |
 | -record-stats      | Display Arrow record statistics (see [details](#record-stats-output))                |
-| -schema-updates    | Display Arrow schema updates (see [details](#schema-updates-output))                 | 
+| -schema-updates    | Display Arrow schema updates (see [details](#schema-updates-output))                 |
 | -producer-stats    | Display OTel Arrow producer statistics (see [details](#producer-stats-output))       |
 | -compression-ratio | Display compression ratio per record type (see [details](#compression-ratio-output)) |  
 | -all               | Display all statistics and updates                                                   |
@@ -36,7 +36,8 @@ Use the `-format` option to specify the format of your input file.
 
 ## Dump data per record type
 
-Use these options to dump <n> rows per Arrow record type (e.g. spans, span-attrs, ...).
+Use these options to dump `<n>` rows per Arrow record type (e.g. spans,
+span-attrs, ...).
 
 > Note: These options require the `-record-stats` flag to be enabled.
 
@@ -61,7 +62,7 @@ arrow records. This option is useful to ensure that the default sorting is
 working correctly.
 
 > Note: This option should not be combined with any other option.
- 
+
 The following screenshot is an example of the output. At the end, the best
 combination is displayed.
 
@@ -79,14 +80,15 @@ per scope span, events per span, links per span, attributes per span, ...
 
 ![schema-stats](./imgs/schema_stats_1.png)
 
-At the end a detailed view of the Arrow schema for each record type is displayed.
+At the end a detailed view of the Arrow schema for each record type is
+displayed.
 
 ![schema-stats](./imgs/schema_stats_2.png)
 
 ## Record stats output
 
 This option displays the number of bytes (after compression) per record type for
-each batch. 
+each batch.
 
 ![Record stats](./imgs/record_stats.png)
 

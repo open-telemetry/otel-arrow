@@ -99,7 +99,7 @@ to compactly encode and transmit telemetry using Apache Arrow.
    Metrics, Logs, Spans, Span Events, and Span Links, then encode and
    transmit each distinct entity once per stream lifetime.
 3. Use Apache Arrow's built-in support for encoding dictionaries and leverage
-   other purpose-built low-level facilities, such as delta-dictionaries and 
+   other purpose-built low-level facilities, such as delta-dictionaries and
    sorting, to encode structures compactly.
 
 Here is a diagram showing how the protocol transforms OTLP Log Records
@@ -118,7 +118,7 @@ backwards-compatibility for existing and new users.  We believe it is
 safe to begin using these components for production data, non-critical
 workloads.
 
-### Phase-1 project deliverables 
+### Phase-1 project deliverables
 
 We are pleased to release two new collector components, presently
 housed in [OpenTelemetry
@@ -154,7 +154,7 @@ Here are several more resources that are available to learn more about OpenTelem
 
 - [Arrow Data Model](docs/data_model.md) - Mapping OTLP entities to Arrow Schemas.
 - [Benchmark results](docs/benchmarks.md) - Based on synthetic and production data.
-- [Validation process](docs/validation_process.md) - Encoding/Decoding validation process. 
+- [Validation process](docs/validation_process.md) - Encoding/Decoding validation process.
 - Articles describing some of the Arrow techniques used behind the scenes to optimize compression ratio and memory usage:
   - [Data types, encoding, hierarchical data, denormalization](https://arrow.apache.org/blog/2023/04/11/our-journey-at-f5-with-apache-arrow-part-1/)
   - [Adaptive Schemas and Sorting to Optimize Arrow Usage](https://arrow.apache.org/blog/2023/06/26/our-journey-at-f5-with-apache-arrow-part-2/)
@@ -196,16 +196,45 @@ be higher for traffic predominantly containing multivariate metrics.
 
 For more details, see the following [benchmark results](docs/benchmarks.md) page.
 
-### Developers
+## Contributing
 
-Pull requests are welcome. For major changes, please open an issue
-first to discuss what you would like to change.  For more information, please
-read [CONTRIBUTING.md][].
+For information about contributing to the project see:
+[CONTRIBUTING.md](./CONTRIBUTING.md).
 
-## License
+We meet every other Thursday at 8AM PT. The meeting is subject to change 
+depending on contributors'
+availability. Check the [OpenTelemetry community
+calendar](https://github.com/open-telemetry/community?tab=readme-ov-file#calendar)
+for specific dates and for Zoom meeting links.
 
-OpenTelemetry Protocol with Apache Arrow Protocol Adapter is licensed under Apache 2.0.
+Meeting notes are available as a public [Google
+doc](https://docs.google.com/document/d/1X-RPSOSDUUTD2-zrPRQ6YJ54i4JkHIgvAm5EoVhTzPs/edit?usp=sharing).
+If you have trouble accessing the doc, please get in touch on
+[Slack](https://cloud-native.slack.com/archives/C07S4Q67LTF).
 
-[CONTRIBUTING.md]: ./CONTRIBUTING.md
-[BUILDING.md]: ./BUILDING.md
+The meeting is open for all to join. We invite everyone to join our meeting,
+regardless of your experience level. Whether you're a seasoned OpenTelemetry
+developer, just starting your journey, or simply curious about the work we do,
+you're more than welcome to participate!
 
+[Maintainers](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer)
+([@open-telemetry/arrow-maintainers](https://github.com/orgs/open-telemetry/teams/arrow-maintainers)):
+
+- [Joshua MacDonald](https://github.com/jmacd), Microsoft
+- [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
+
+[Approvers](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver)
+([@open-telemetry/arrow-approvers](https://github.com/orgs/open-telemetry/teams/arrow-approvers)):
+
+- [Alex Boten](https://github.com/codeboten), Honeycomb
+- [Drew Relmas](https://github.com/drewrelmas), Microsoft
+- [Moh Osman](https://github.com/moh-osman3), ServiceNow
+
+### Thanks to all the people who have contributed
+
+[![contributors](https://contributors-img.web.app/image?repo=open-telemetry/otel-arrow)](https://github.com/open-telemetry/otel-arrow/graphs/contributors)
+
+## References
+
+- [OpenTelemetry Project](https://opentelemetry.io/)
+- [OpenTelemetry Specification](https://github.com/open-telemetry/opentelemetry-specification)

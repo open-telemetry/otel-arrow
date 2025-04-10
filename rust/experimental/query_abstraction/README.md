@@ -35,7 +35,8 @@ plugin model to support other languages in the future.
 
 While SQL is the native language of choice for DataFusion and OTTL is the
 standard for OpenTelemetry, KQL is more vendor-specific and could eventually
-belong in a currently non-existant `otel-arrow-contrib` repository as this project develops.
+belong in a currently non-existant `otel-arrow-contrib` repository as this
+project develops.
 
 | Language | DataFusion built-in Support | Abstraction Plugin Status |
 |----------|-----------------------------|---------------------------|
