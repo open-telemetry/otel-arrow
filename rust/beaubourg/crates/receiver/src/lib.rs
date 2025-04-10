@@ -3,7 +3,6 @@
     missing_docs,
     unsafe_code,
     unstable_features,
-    unstable_features,
     unused_import_braces,
     unused_qualifications,
     unused_extern_crates,
@@ -34,12 +33,12 @@ use crate::{
 #[non_exhaustive]
 pub enum Error {
     /// The `Receiver` was not found in the receiver factory.
-    #[error("unknown receiver (receiver: {receiver}, type: {r#type})")]
+    #[error("unknown receiver (receiver: {receiver}, type: {receiver_type})")]
     UnknownReceiver {
         /// The name of the receiver.
         receiver: String,
         /// The type of the receiver.
-        r#type: String,
+        receiver_type: String,
     },
 
     /// The receiver configuration is invalid.

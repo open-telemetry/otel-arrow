@@ -3,7 +3,6 @@
     missing_docs,
     unsafe_code,
     unstable_features,
-    unstable_features,
     unused_import_braces,
     unused_qualifications,
     unused_extern_crates,
@@ -29,12 +28,12 @@ pub mod effect;
 #[non_exhaustive]
 pub enum Error {
     /// The exporter is not found in the exporter factory.
-    #[error("unknown exporter (name: {name}, type: {r#type})")]
+    #[error("unknown exporter (name: {name}, type: {exporter_type})")]
     UnknownExporter {
         /// The name of the exporter.
         name: String,
         /// The type of the exporter.
-        r#type: String,
+        exporter_type: String,
     },
 
     /// The exporter has an invalid configuration.

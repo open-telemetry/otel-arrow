@@ -1,0 +1,30 @@
+name: Rust-Audit
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'rust/beaubourg/Cargo.toml'
+      - 'rust/otel-arrow-rust/Cargo.toml'
+  schedule:
+    - cron: '0 2 * * 1' # run at 2 AM UTC every Monday
+
+jobs:
+  audit:
+    strategy:
+      fail-fast: false
+      matrix:
+        folder: [beaubourg, otel-arrow-rust]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # latest on /master branch as of 2025-04-02
+        with:
+          toolchain: stable
+      - name: cargo install cargo-audit
+        run: cargo install cargo-audit
+      - name: cargo audit ${{ matrix.folder }}
+        run: cargo audit
+        working-directory: ./rust/${{ matrix.folder }}

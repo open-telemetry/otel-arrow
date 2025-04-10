@@ -1,30 +1,34 @@
 # Benchmark results
 
-3 Protocols + data encoding: 
+3 Protocols + data encoding:
+
 - OTLP ZSTD: Standard OTLP protocol with ZSTD compression
-- OTLP DICT ZSTD: OTLP protocol with dictionary compression, and ZSTD compression
+- OTLP DICT ZSTD: OTLP protocol with dictionary compression, and ZSTD
+  compression
 - OTel ARROW ZSTD: OTel Arrow protocol with ZSTD compression
 
 2 modes (used by OTLP DICT and OTel ARROW):
+
 - STREAM: gRPC streaming mode
 - UNARY RPC: gRPC unary RPC mode
 
-> Note: OTLP DICT was implemented by Tigran Najaryan as part of the donation 
-> process review. This implementation was created to compare the compression 
-> ratio of the OTel Arrow with a protobuf-based protocol that uses dictionary 
-> compression and streaming mode. More details can be found on this [branch](https://github.com/f5/otel-arrow-adapter/compare/main...tigrannajaryan:otel-arrow-adapter:feature/tigran/otlpdict)).
+> Note: OTLP DICT was implemented by Tigran Najaryan as part of the donation
+> process review. This implementation was created to compare the compression
+> ratio of the OTel Arrow with a protobuf-based protocol that uses dictionary
+> compression and streaming mode. More details can be found on this
+> [branch](https://github.com/f5/otel-arrow-adapter/compare/main...tigrannajaryan:otel-arrow-adapter:feature/tigran/otlpdict)).
 
 ## Benchmark summary
 
-The following chart shows the compressed message size (in bytes) as a function 
+The following chart shows the compressed message size (in bytes) as a function
 of the batch size for metrics (univariate), logs, and traces. The bottom of the
-chart shows the reduction factor for both the standard OTLP protocol and the 
+chart shows the reduction factor for both the standard OTLP protocol and the
 OTel Arrow protocol.
 
 ![compression_ratio](./img/compression_ratio_summary_std_metrics.png)
 
-The next chart follows the same logic but shows the results for multivariate 
-metrics (left column). 
+The next chart follows the same logic but shows the results for multivariate
+metrics (left column).
 
 ![compression_ratio](./img/compression_ratio_summary_multivariate_metrics.png)
 
@@ -102,21 +106,21 @@ Note: OTLP Dict doesn't exist for logs.
 | PROTO MSG SIZE           | OTLP ZSTD - MEAN          | OTLP DICT ZSTD+STREAM MODE - MEAN | OTel ARROW ZSTD+STREAM MODE - MEAN | OTLP DICT ZSTD+UNARY RPC - MEAN  | OTel ARROW ZSTD+UNARY RPC MODE - MEAN |
 |--------------------------|---------------------------|-----------------------------------|------------------------------------|----------------------------------|---------------------------------------|
 | **Uncompressed (bytes)** |                           |                                   |                                    |                                  |                                       |
-| batch_size: 10           |     5559  (total: 48 MB)  | 1784 (x  3.12) (total: 15 MB)     | 3133 (x  1.77) (total: 27 MB)      | 3584 (x  1.55) (total: 31 MB)    | 8394 (x  0.66) (total: 73 MB)         |         
-| batch_size: 100          |    30812  (total: 27 MB)  | 12163 (x  2.53) (total: 10 MB)    | 12176 (x  2.53) (total: 10 MB)     | 15359 (x  2.01) (total: 13 MB)   | 19660 (x  1.57) (total: 17 MB)        |       
-| batch_size: 500          |   134629  (total: 23 MB)  | 56243 (x  2.39) (total: 9.7 MB)   | 50872 (x  2.65) (total: 8.8 MB)    | 60467 (x  2.23) (total: 10 MB)   | 61539 (x  2.19) (total: 11 MB)        |      
-| batch_size: 1000         |   263839  (total: 22 MB)  | 111286 (x  2.37) (total: 9.5 MB)  | 99360 (x  2.66) (total: 8.4 MB)    | 116134 (x  2.27) (total: 9.9 MB) | 112537 (x  2.34) (total: 9.6 MB)      |     
-| batch_size: 2000         |   516272  (total: 22 MB)  | 218875 (x  2.36) (total: 9.2 MB)  | 194423 (x  2.66) (total: 8.2 MB)   | 224179 (x  2.30) (total: 9.4 MB) | 210977 (x  2.45) (total: 8.9 MB)      |    
-| batch_size: 4000         |  1027779  (total: 21 MB)  | 436749 (x  2.35) (total: 8.7 MB)  | 388840 (x  2.64) (total: 7.8 MB)   | 442652 (x  2.32) (total: 8.9 MB) | 409314 (x  2.51) (total: 8.2 MB)      |   
+| batch_size: 10           |     5559  (total: 48 MB)  | 1784 (x  3.12) (total: 15 MB)     | 3133 (x  1.77) (total: 27 MB)      | 3584 (x  1.55) (total: 31 MB)    | 8394 (x  0.66) (total: 73 MB)         |
+| batch_size: 100          |    30812  (total: 27 MB)  | 12163 (x  2.53) (total: 10 MB)    | 12176 (x  2.53) (total: 10 MB)     | 15359 (x  2.01) (total: 13 MB)   | 19660 (x  1.57) (total: 17 MB)        |
+| batch_size: 500          |   134629  (total: 23 MB)  | 56243 (x  2.39) (total: 9.7 MB)   | 50872 (x  2.65) (total: 8.8 MB)    | 60467 (x  2.23) (total: 10 MB)   | 61539 (x  2.19) (total: 11 MB)        |
+| batch_size: 1000         |   263839  (total: 22 MB)  | 111286 (x  2.37) (total: 9.5 MB)  | 99360 (x  2.66) (total: 8.4 MB)    | 116134 (x  2.27) (total: 9.9 MB) | 112537 (x  2.34) (total: 9.6 MB)      |
+| batch_size: 2000         |   516272  (total: 22 MB)  | 218875 (x  2.36) (total: 9.2 MB)  | 194423 (x  2.66) (total: 8.2 MB)   | 224179 (x  2.30) (total: 9.4 MB) | 210977 (x  2.45) (total: 8.9 MB)      |
+| batch_size: 4000         |  1027779  (total: 21 MB)  | 436749 (x  2.35) (total: 8.7 MB)  | 388840 (x  2.64) (total: 7.8 MB)   | 442652 (x  2.32) (total: 8.9 MB) | 409314 (x  2.51) (total: 8.2 MB)      |
 | batch_size: 5000         |  1252139  (total: 20 MB)  | 532425 (x  2.35) (total: 8.5 MB)  | 473748 (x  2.64) (total: 7.6 MB)   | 538216 (x  2.33) (total: 8.6 MB) | 495640 (x  2.53) (total: 7.9 MB)      |  
 | **Compressed (bytes)**   |                           |                                   |                                    |                                  |                                       |
-| batch_size: 10           |     1782  (total: 15 MB)  | 774 (x  2.30) (total: 6.7 MB)     | 924 (x  1.93) (total: 8.0 MB)      | 1784 (x  1.00) (total: 15 MB)    | 2855 (x  0.62) (total: 25 MB)         |         
-| batch_size: 100          |     6106  (total: 5.3 MB) | 4013 (x  1.52) (total: 3.5 MB)    | 3297 (x  1.85) (total: 2.8 MB)     | 5694 (x  1.07) (total: 4.9 MB)   | 6238 (x  0.98) (total: 5.4 MB)        |        
-| batch_size: 500          |    21662  (total: 3.7 MB) | 17331 (x  1.25) (total: 3.0 MB)   | 12291 (x  1.76) (total: 2.1 MB)    | 20088 (x  1.08) (total: 3.5 MB)  | 17042 (x  1.27) (total: 2.9 MB)       |       
-| batch_size: 1000         |    40271  (total: 3.4 MB) | 33890 (x  1.19) (total: 2.9 MB)   | 23634 (x  1.70) (total: 2.0 MB)    | 37207 (x  1.08) (total: 3.2 MB)  | 30475 (x  1.32) (total: 2.6 MB)       |      
-| batch_size: 2000         |    75810  (total: 3.2 MB) | 65789 (x  1.15) (total: 2.8 MB)   | 46272 (x  1.64) (total: 1.9 MB)    | 69021 (x  1.10) (total: 2.9 MB)  | 54854 (x  1.38) (total: 2.3 MB)       |     
-| batch_size: 4000         |   147406  (total: 2.9 MB) | 130875 (x  1.13) (total: 2.6 MB)  | 91913 (x  1.60) (total: 1.8 MB)    | 134771 (x  1.09) (total: 2.7 MB) | 100075 (x  1.47) (total: 2.0 MB)      |    
-| batch_size: 5000         |   178704  (total: 2.9 MB) | 159338 (x  1.12) (total: 2.5 MB)  | 108570 (x  1.65) (total: 1.7 MB)   | 163787 (x  1.09) (total: 2.6 MB) | 115699 (x  1.54) (total: 1.9 MB)      |   
+| batch_size: 10           |     1782  (total: 15 MB)  | 774 (x  2.30) (total: 6.7 MB)     | 924 (x  1.93) (total: 8.0 MB)      | 1784 (x  1.00) (total: 15 MB)    | 2855 (x  0.62) (total: 25 MB)         |
+| batch_size: 100          |     6106  (total: 5.3 MB) | 4013 (x  1.52) (total: 3.5 MB)    | 3297 (x  1.85) (total: 2.8 MB)     | 5694 (x  1.07) (total: 4.9 MB)   | 6238 (x  0.98) (total: 5.4 MB)        |
+| batch_size: 500          |    21662  (total: 3.7 MB) | 17331 (x  1.25) (total: 3.0 MB)   | 12291 (x  1.76) (total: 2.1 MB)    | 20088 (x  1.08) (total: 3.5 MB)  | 17042 (x  1.27) (total: 2.9 MB)       |
+| batch_size: 1000         |    40271  (total: 3.4 MB) | 33890 (x  1.19) (total: 2.9 MB)   | 23634 (x  1.70) (total: 2.0 MB)    | 37207 (x  1.08) (total: 3.2 MB)  | 30475 (x  1.32) (total: 2.6 MB)       |
+| batch_size: 2000         |    75810  (total: 3.2 MB) | 65789 (x  1.15) (total: 2.8 MB)   | 46272 (x  1.64) (total: 1.9 MB)    | 69021 (x  1.10) (total: 2.9 MB)  | 54854 (x  1.38) (total: 2.3 MB)       |
+| batch_size: 4000         |   147406  (total: 2.9 MB) | 130875 (x  1.13) (total: 2.6 MB)  | 91913 (x  1.60) (total: 1.8 MB)    | 134771 (x  1.09) (total: 2.7 MB) | 100075 (x  1.47) (total: 2.0 MB)      |
+| batch_size: 5000         |   178704  (total: 2.9 MB) | 159338 (x  1.12) (total: 2.5 MB)  | 108570 (x  1.65) (total: 1.7 MB)   | 163787 (x  1.09) (total: 2.6 MB) | 115699 (x  1.54) (total: 1.9 MB)      |
 
 ### Prod Traces (anonymized)
 

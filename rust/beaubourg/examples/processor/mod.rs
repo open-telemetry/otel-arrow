@@ -60,7 +60,7 @@ impl ProcessorFactory<Message> for TestProcessorFactory {
             }
             _ => Err(beaubourg::processor::Error::UnknownProcessor {
                 processor: processor_name.into(),
-                r#type: processor_type.into(),
+                processor_type: processor_type.into(),
             }),
         }
     }

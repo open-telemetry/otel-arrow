@@ -3,7 +3,6 @@
     missing_docs,
     unsafe_code,
     unstable_features,
-    unstable_features,
     unused_import_braces,
     unused_qualifications,
     unused_extern_crates,
@@ -30,12 +29,12 @@ pub mod noop;
 #[non_exhaustive]
 pub enum Error {
     /// The processor is not defined by the processor factory.
-    #[error("unknown processor (processor: {processor}, type:{r#type})")]
+    #[error("unknown processor (processor: {processor}, type:{processor_type})")]
     UnknownProcessor {
         /// The name of the processor.
         processor: String,
         /// The type of the processor.
-        r#type: String,
+        processor_type: String,
     },
 
     /// The processor has an invalid configuration.

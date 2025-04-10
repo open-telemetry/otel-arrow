@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "intermediate_language",
+    "kql_plugin",
+    "ottl_plugin",
+    "cli"
+]
+resolver = "2"
