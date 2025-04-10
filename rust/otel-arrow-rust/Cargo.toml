@@ -3,23 +3,29 @@ name = "otel-arrow-rust"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+# Temporary! The OTLP protos contain comment fragments that read like
+# rust doctests.
+doctest = false
+
 [features]
 default = ["full"]
 full = ["client", "server", "trace"]
 client = []
 server = []
 trace = []
+derive = []
 
 [dependencies]
 arrow = "53"
 arrow-ipc = { version = "53", features = ["zstd"] }
 lazy_static = "1.5"
 num_enum = "0.7"
-opentelemetry-proto = "0.27"
+otlp-derive = { path = "./src/pdata/otlp/derive" }
 paste = "1.0"
-prost = "0.13"
 serde = { version = "1.0", features = ["derive"] }
 snafu = { version = "0.8" }
+prost = "0.13"
 tonic = "0.12"
 
 [dev-dependencies]
@@ -27,3 +33,4 @@ rand = "0.9"
 
 [build-dependencies]
 tonic-build = "0.12"
+otlp-model = { path = "./src/pdata/otlp/model" }

@@ -22,6 +22,9 @@ mod schema;
 #[cfg(test)]
 mod test_util;
 
+pub mod proto;
+pub mod pdata;
+
 #[path = ""]
 pub mod opentelemetry {
     pub use proto::*;

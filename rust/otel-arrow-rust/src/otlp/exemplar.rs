@@ -20,8 +20,8 @@ use crate::otlp::metric::AppendAndGet;
 use crate::schema::consts;
 use arrow::array::RecordBatch;
 use num_enum::TryFromPrimitive;
-use opentelemetry_proto::tonic::metrics::v1::exemplar::Value;
-use opentelemetry_proto::tonic::metrics::v1::Exemplar;
+use crate::proto::opentelemetry::metrics::v1::exemplar::Value;
+use crate::proto::opentelemetry::metrics::v1::Exemplar;
 use snafu::ensure;
 use std::collections::HashMap;
 

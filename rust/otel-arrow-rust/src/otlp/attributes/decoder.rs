@@ -13,7 +13,7 @@
 // https://github.com/open-telemetry/otel-arrow/blob/985aa1500a012859cec44855e187eacf46eda7c8/pkg/otel/common/arrow/attributes.go#L40
 
 use crate::otlp::attributes::parent_id::{ParentId, ParentIdEncoding};
-use opentelemetry_proto::tonic::common::v1::any_value;
+use crate::proto::opentelemetry::common::v1::any_value;
 
 pub type Attrs16ParentIdDecoder = AttrsParentIdDecoder<u16>;
 pub type Attrs32ParentIdDecoder = AttrsParentIdDecoder<u32>;
