@@ -19,6 +19,40 @@ pub struct Detail {
     pub params: Option<Vec<&'static str>>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct OneofCase {
+    pub name: &'static str,
+    pub type_param: &'static str,
+    pub value_variant: &'static str,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct OneofMapping {
+    pub field: &'static str,
+    pub cases: Vec<OneofCase>,
+}
+
+fn oneof(name: &'static str, type_param: &'static str, value_variant: &'static str) -> OneofCase {
+    OneofCase{name, type_param, value_variant}
+}
+
+pub static ONEOF_MAPPINGS: LazyLock<Vec<OneofMapping>> = LazyLock::new(|| {
+    vec![
+	OneofMapping{
+	    field: "opentelemetry.proto.common.v1.AnyValue.value",
+	    cases: vec![
+		oneof("string", "::prost::alloc::string::String", "any_value::Value::StringValue"),
+		oneof("bool", "bool", "any_value::Value::BoolValue"),
+		oneof("int", "i64", "any_value::Value::IntValue"),
+		oneof("double", "f64", "any_value::Value::DoubleValue"),
+		oneof("kvlist", "Vec<KeyValue>", "any_value::Value::KvlistValue"),
+		oneof("array", "Vec<AnyValue>", "any_value::Value::ArrayValue"),
+		oneof("bytes", "Vec<u8>", "any_value::Value::BytesValue"),
+	    ],
+	},
+    ]
+});
+
 pub static ALL_KNOWN_TYPES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     vec![
         // Common types
@@ -120,7 +154,10 @@ pub static FIELD_TYPE_OVERRIDES: LazyLock<HashMap<&'static str, Override>> = Laz
 
 pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
     vec![
-        // Common: Note: AnyValue is a special case.
+        Detail {
+            name: "opentelemetry.proto.common.v1.AnyValue",
+            params: Some(vec!["value"]),
+        },
         Detail {
             name: "opentelemetry.proto.common.v1.KeyValue",
             params: Some(vec!["key", "value"]),
@@ -207,16 +244,11 @@ pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
 /// This is the entry point from build.rs where we configure prost/tonic.
 pub fn add_type_attributes(mut builder: tonic_build::Builder) -> tonic_build::Builder {
     for name in ALL_KNOWN_TYPES.iter() {
-        // Add the fully qualified protobuf type name as an attribute
         builder = builder.type_attribute(
             name,
             &format!(r#"#[crate::pdata::otlp::qualified("{}")]"#, name),
         );
-        if *name == "opentelemetry.proto.common.v1.AnyValue" {
-            builder = builder.type_attribute(name, r#"#[derive(crate::pdata::otlp::Value)]"#)
-        } else {
-            builder = builder.type_attribute(name, r#"#[derive(crate::pdata::otlp::Message)]"#)
-        }
+        builder = builder.type_attribute(name, r#"#[derive(crate::pdata::otlp::Message)]"#);
     }
     builder
 }
