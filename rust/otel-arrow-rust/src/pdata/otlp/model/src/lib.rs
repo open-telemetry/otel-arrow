@@ -51,6 +51,12 @@ pub static ONEOF_MAPPINGS: LazyLock<Vec<OneofMapping>> = LazyLock::new(|| {
 		oneof("bytes", "Vec<u8>", "any_value::Value::BytesValue", None),
 	    ],
 	},
+	OneofMapping{
+	    field: "opentelemetry.proto.metrics.v1.Metric.data",
+	    cases: vec![
+		oneof("sum", "Sum", "metric::Data::Sum", None),
+	    ],
+	},
     ]
 });
 

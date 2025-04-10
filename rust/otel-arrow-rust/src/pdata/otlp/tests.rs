@@ -357,14 +357,16 @@ mod tests {
         assert_eq!(rds, rds_value);
     }
 
-    // #[test]
-    // fn test_metric_sum() {
-    //use crate::proto::opentelemetry::metrics::v1::Metric;
-    // 	let m1 = Metric::new_sum("counter", Sum::new()).build();
-    // 	let m2 = m1.clone();
+    #[test]
+    fn test_metric_sum() {
+	use crate::proto::opentelemetry::metrics::v1::Metric;
+	use crate::proto::opentelemetry::metrics::v1::Sum;
 
-    // 	assert_eq!(m1, m2);
+	let m1 = Metric::new_sum("counter", Sum::new().build()).build();
+	let m2 = m1.clone();
+
+	assert_eq!(m1, m2);
 
 
-    // }
+    }
 }

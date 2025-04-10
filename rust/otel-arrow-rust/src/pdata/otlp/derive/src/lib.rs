@@ -198,17 +198,10 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     
     // First, add parameters in the order they appear in param_names
     for param_name in &param_names {
-        if let Some(field) = field_infos.iter()
-            .find(|info| info.is_param && info.ident.to_string() == *param_name) {
-            param_fields.push(field);
-        }
-    }
-    
-    // Then add any remaining parameter fields not explicitly listed in param_names
-    for field in field_infos.iter().filter(|info| info.is_param) {
-        if !param_names.contains(&field.ident.to_string().as_str()) {
-            param_fields.push(field);
-        }
+        let field = field_infos.iter()
+            .find(|info| info.is_param && info.ident.to_string() == *param_name)
+	    .unwrap();
+        param_fields.push(field);
     }
     
     // Finally add all non-parameter fields as builder fields
@@ -236,7 +229,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         })
         .unzip();
 
-    // Generate assignments for parameters in new() function with cleaner functional approach
+    // Generate assignments for parameters in new() function
     let param_assignments: Vec<proc_macro2::TokenStream> = param_fields
         .iter()
         .map(|info| {
@@ -266,8 +259,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
             };
 
             quote! {
-                pub fn #field_name<T>(mut self, value: T) -> Self
-                where T: Into<#param_type>
+                pub fn #field_name<T: Into<#param_type>>(mut self, value: T) -> Self
                 {
                     #value_assignment
                     self
@@ -292,20 +284,89 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
             
             let method_name = syn::Ident::new(&format!("new_{}", case.name), proc_macro2::Span::call_site());
             
-            // Generate the method implementation with extra_call support
+            // Generate the method implementation for oneof cases, supporting params
+            // Get the params from the parent struct, these are the required params
+            // For oneofs, we need to be careful not to duplicate the field that corresponds to the oneof
+            // value parameter which will be added separately
+            let oneof_field_str = oneof_field_parts.last().unwrap().to_string();
+            let oneof_param_fields: Vec<&FieldInfo> = if !param_fields.is_empty() {
+                // Filter out any parameter that would be the oneof field itself to avoid duplication
+                param_fields.iter()
+                    .filter(|field| field.ident.to_string() != oneof_field_str)
+                    .cloned()
+                    .collect()
+            } else {
+                vec![]
+            };
+            
+            // Generate type parameters and where bounds for params
+            let oneof_type_params: Vec<syn::Ident> = oneof_param_fields.iter().enumerate()
+                .map(|(idx, _)| {
+                    let type_name = format!("T{}", idx + 1);
+                    syn::Ident::new(&type_name, proc_macro2::Span::call_site())
+                })
+                .collect();
+
+            // Generate parameter declarations and bounds
+            let (oneof_param_decls, oneof_param_bounds): (Vec<proc_macro2::TokenStream>, Vec<proc_macro2::TokenStream>) = 
+                oneof_param_fields.iter().enumerate().map(|(idx, info)| {
+                    let param_name = &info.ident;
+                    let type_param = &oneof_type_params[idx];
+                    let target_type = &info.param_type;
+                    
+                    let decl = quote! { #param_name: #type_param };
+                    let bound = quote! { #type_param: Into<#target_type> };
+                    
+                    (decl, bound)
+                })
+                .unzip();
+                
+            // Generate assignments for parameters
+            let oneof_param_assignments: Vec<proc_macro2::TokenStream> = oneof_param_fields
+                .iter()
+                .map(|info| {
+                    let field_name = &info.ident;
+                    
+                    match (info.is_optional, &info.as_type) {
+                        (true, Some(as_type)) => quote! { instance.#field_name = Some(#field_name.into() as #as_type); },
+                        (true, None) => quote! { instance.#field_name = Some(#field_name.into()); },
+                        (false, Some(as_type)) => quote! { instance.#field_name = #field_name.into() as #as_type; },
+                        (false, None) => quote! { instance.#field_name = #field_name.into(); },
+                    }
+                })
+                .collect();
+
+            // Additional type parameter and bound for the oneof value
+            let oneof_value_type_param = syn::Ident::new("V", proc_macro2::Span::call_site());
+            let oneof_value_bound = quote! { #oneof_value_type_param: Into<#case_type> };
+            
+            // Add oneof value parameter to declarations
+            let oneof_value_decl = quote! { value: #oneof_value_type_param };
+                
+            // Generate the method implementation with all parameters and extra_call support
             if let Some(extra_call) = &case.extra_call {
                 let extra_call_path = syn::parse_str::<syn::Expr>(extra_call).unwrap();
                 quote! {
-                    pub fn #method_name<T: Into<#case_type>>(value: T) -> Self {
+                    pub fn #method_name<#(#oneof_type_params),*, #oneof_value_type_param>(#(#oneof_param_decls),*, #oneof_value_decl) -> Self 
+                    where 
+                        #(#oneof_param_bounds),*,
+                        #oneof_value_bound
+                    {
                         let mut instance = Self::default();
+                        #(#oneof_param_assignments)*
                         instance.#oneof_field_name = Some(#variant_path(#extra_call_path(value.into())));
                         instance
                     }
                 }
             } else {
                 quote! {
-                    pub fn #method_name<T: Into<#case_type>>(value: T) -> Self {
+                    pub fn #method_name<#(#oneof_type_params),*, #oneof_value_type_param>(#(#oneof_param_decls),*, #oneof_value_decl) -> Self 
+                    where 
+                        #(#oneof_param_bounds),*,
+                        #oneof_value_bound
+                    {
                         let mut instance = Self::default();
+                        #(#oneof_param_assignments)*
                         instance.#oneof_field_name = Some(#variant_path(value.into()));
                         instance
                     }
@@ -397,61 +458,6 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
                     fn from(value: #builder_name) -> Self {
                         value.build()
                     }
-                }
-            }
-        }
-    };
-
-    TokenStream::from(expanded)
-}
-
-#[proc_macro_derive(Value)]
-pub fn derive_otlp_value(_: TokenStream) -> TokenStream {
-    let expanded = quote! {
-        impl AnyValue {
-            pub fn new_string<T: AsRef<str>>(s: T) -> Self {
-                Self{
-                    value: Some(any_value::Value::StringValue(s.as_ref().to_string())),
-                }
-            }
-
-            pub fn new_bool(b: bool) -> Self {
-                Self{
-                    value: Some(any_value::Value::BoolValue(b)),
-                }
-            }
-
-            pub fn new_int(i: i64) -> Self {
-                Self{
-                    value: Some(any_value::Value::IntValue(i)),
-                }
-            }
-
-            pub fn new_double(d: f64) -> Self {
-                Self{
-                    value: Some(any_value::Value::DoubleValue(d)),
-                }
-            }
-
-            pub fn new_array<T: AsRef<[AnyValue]>>(arr: T) -> Self {
-                Self{
-                    value: Some(any_value::Value::ArrayValue(ArrayValue{
-            values: arr.as_ref().to_vec(),
-            })),
-                }
-            }
-
-            pub fn new_kvlist<T: AsRef<[KeyValue]>>(kvlist: T) -> Self {
-                Self{
-                    value: Some(any_value::Value::KvlistValue(KeyValueList{
-            values: kvlist.as_ref().to_vec(),
-            })),
-                }
-            }
-
-            pub fn new_bytes<T: AsRef<[u8]>>(b: T) -> Self {
-                Self{
-                    value: Some(any_value::Value::BytesValue(b.as_ref().to_vec())),
                 }
             }
         }
