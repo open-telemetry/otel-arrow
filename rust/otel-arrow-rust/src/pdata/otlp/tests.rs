@@ -39,7 +39,9 @@ mod tests {
     use crate::proto::opentelemetry::trace::v1::status::StatusCode;
 	use crate::proto::opentelemetry::metrics::v1::AggregationTemporality;
 	use crate::proto::opentelemetry::metrics::v1::Metric;
+	use crate::proto::opentelemetry::metrics::v1::metric::Data as MetricData;
 	use crate::proto::opentelemetry::metrics::v1::NumberDataPoint;
+	use crate::proto::opentelemetry::metrics::v1::number_data_point::Value as NumberValue;
 	use crate::proto::opentelemetry::metrics::v1::Sum;
 
     #[test]
@@ -371,11 +373,28 @@ mod tests {
 		     vec![NumberDataPoint::new_int(125_000_000_000u64, 123i64).build()],
 	    ),
 	).build();
+
 	let m1_value = Metric{
+	    name: "counter".to_string(),
+	    description: "".to_string(),
+	    unit: "".to_string(),
+	    metadata: vec![],
+	    data: Some(MetricData::Sum(Sum{
+		aggregation_temporality: AggregationTemporality::Delta as i32,
+		is_monotonic: true,
+		data_points: vec![
+		    NumberDataPoint{
+			attributes: vec![],
+			exemplars: vec![],
+			flags: 0,
+			start_time_unix_nano: 0,
+			time_unix_nano: 125_000_000_000u64,
+			value: Some(NumberValue::AsInt(123i64)),
+		    },
+		],
+	    })),
 	};
 
 	assert_eq!(m1, m1_value);
-
-
     }
 }
