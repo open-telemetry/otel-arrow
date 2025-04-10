@@ -270,76 +270,86 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         })
         .collect();
 
+    // When there are no builder fields, we can skip the builder struct.
+    // This determines the return type from the new methods.
+    let derive_builder = !builder_fields.is_empty();
+
+    // Create a reusable constructor template
+    let create_constructor = |method_name: syn::Ident, cur_param_bounds: &[proc_macro2::TokenStream], cur_param_decls: &[proc_macro2::TokenStream], cur_param_assignments: &[proc_macro2::TokenStream]| {
+	if derive_builder {
+            quote! {
+		pub fn #method_name<#(#cur_param_bounds),*>(#(#cur_param_decls),*) -> #builder_name
+		{
+                    let mut inner = Self::default();
+                    #(#cur_param_assignments)*
+                    #builder_name{inner}
+		}
+            }
+	} else {
+	    quote! {
+		pub fn #method_name<#(#cur_param_bounds),*>(#(#cur_param_decls),*) -> Self
+		{
+                    let mut inner = Self::default();
+                    #(#cur_param_assignments)*
+                    inner
+		}
+	    }
+	}
+    };
+
     // A unified approach to handle both regular and oneof cases
     let all_constructors: Vec<proc_macro2::TokenStream> = match oneof_mapping {
-	None => {
-	    let method_name = syn::Ident::new("new", proc_macro2::Span::call_site());
-        
-	    let constructor = quote! {
-		pub fn #method_name<#(#param_bounds),*>(#(#param_decls),*) -> Self 
-		{
-		    let mut inner = Self::default();
-		    #(#param_assignments)*
-		    inner
-		}
-	    };
-        
-	    vec![constructor]
-	},
-	Some(oneof_mapping) => {
+        None => {
+            let method_name = syn::Ident::new("new", proc_macro2::Span::call_site());
+            vec![create_constructor(method_name, &param_bounds, &param_decls, &param_assignments)]
+        },
+        Some(oneof_mapping) => {
             // Extract the field name from the mapped path
             let oneof_name = oneof_mapping.field.split('.').last().unwrap();
             let oneof_ident = syn::Ident::new(
-		oneof_name, 
-		proc_macro2::Span::call_site()
+                oneof_name, 
+                proc_macro2::Span::call_site()
             );
 
-		let idx = param_names
-		    .iter()
-		    .position(|&name| name == oneof_name)
-		    .unwrap();
+            let idx = param_names
+                .iter()
+                .position(|&name| name == oneof_name)
+                .unwrap();
             
             // Generate a constructor for each oneof case
             oneof_mapping.cases.iter().map(|case| {
-		let case_type = syn::parse_str::<syn::Type>(&case.type_param).unwrap();
-		let variant_path = syn::parse_str::<syn::Expr>(&case.value_variant).unwrap();
-		let method_name = syn::Ident::new(&format!("new_{}", case.name), proc_macro2::Span::call_site());
+                let case_type = syn::parse_str::<syn::Type>(&case.type_param).unwrap();
+                let variant_path = syn::parse_str::<syn::Expr>(&case.value_variant).unwrap();
+                let method_name = syn::Ident::new(&format!("new_{}", case.name), proc_macro2::Span::call_site());
 
-		// Duplicate the param bounds, assignments; param decls unchanged.
-		let mut param_bounds = param_bounds.clone();
-		let mut param_assignments = param_assignments.clone();
-		let type_param = type_params[idx].clone();
+                // Duplicate the param bounds, assignments; param decls unchanged.
+                let mut cur_param_bounds = param_bounds.clone();
+                let mut cur_param_assignments = param_assignments.clone();
+                let type_param = type_params[idx].clone();
 
-		let value_bound = quote! { #type_param: Into<#case_type> };
-		let value_assignment = if let Some(extra_call) = &case.extra_call {
+                let value_bound = quote! { #type_param: Into<#case_type> };
+                let value_assignment = if let Some(extra_call) = &case.extra_call {
                     let extra_call_path = syn::parse_str::<syn::Expr>(extra_call).unwrap();
                     quote! {
-			inner.#oneof_ident = Some(#variant_path(#extra_call_path(#oneof_ident.into())));
-		    }
-		} else {
-                    quote! {
-			inner.#oneof_ident = Some(#variant_path(#oneof_ident.into()));
-		    }
-		};
-
-		// Replace the parameter w/ oneof-specific expansion
-		param_bounds[idx] = value_bound;
-		param_assignments[idx] = value_assignment;
-
-		quote! {
-                    pub fn #method_name<#(#param_bounds),*>(#(#param_decls),*) -> Self 
-                    {
-			let mut inner = Self::default();
-			#(#param_assignments)*
-			inner
+                        inner.#oneof_ident = Some(#variant_path(#extra_call_path(#oneof_ident.into())));
                     }
-		}
-	    }).collect()
+                } else {
+                    quote! {
+                        inner.#oneof_ident = Some(#variant_path(#oneof_ident.into()));
+                    }
+                };
+
+                // Replace the parameter w/ oneof-specific expansion
+                cur_param_bounds[idx] = value_bound;
+                cur_param_assignments[idx] = value_assignment;
+
+                create_constructor(method_name, &cur_param_bounds, &param_decls, &cur_param_assignments)
+            }).collect()
         }
     };
 
-    // Produce expanded implementation with a simplified approach
-    let expanded = if builder_fields.is_empty() {
+    // Produce expanded implementation
+    let expanded = if !derive_builder {
         // If there are no remaining fields, directly return the constructed object
         quote! {
             impl #outer_name {

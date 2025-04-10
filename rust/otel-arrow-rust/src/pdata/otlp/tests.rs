@@ -37,6 +37,10 @@ mod tests {
     use crate::proto::opentelemetry::trace::v1::span::Link;
     use crate::proto::opentelemetry::trace::v1::span::SpanKind;
     use crate::proto::opentelemetry::trace::v1::status::StatusCode;
+	use crate::proto::opentelemetry::metrics::v1::AggregationTemporality;
+	use crate::proto::opentelemetry::metrics::v1::Metric;
+	use crate::proto::opentelemetry::metrics::v1::NumberDataPoint;
+	use crate::proto::opentelemetry::metrics::v1::Sum;
 
     #[test]
     fn test_any_value() {
@@ -359,13 +363,18 @@ mod tests {
 
     #[test]
     fn test_metric_sum() {
-	use crate::proto::opentelemetry::metrics::v1::Metric;
-	use crate::proto::opentelemetry::metrics::v1::Sum;
 
-	let m1 = Metric::new_sum("counter", Sum::new(0, true, vec![])).build();
-	let m2 = m1.clone();
+	let m1 = Metric::new_sum(
+	    "counter",
+	    Sum::new(AggregationTemporality::Delta,
+		     true,
+		     vec![NumberDataPoint::new_int(125_000_000_000u64, 123i64).build()],
+	    ),
+	).build();
+	let m1_value = Metric{
+	};
 
-	assert_eq!(m1, m2);
+	assert_eq!(m1, m1_value);
 
 
     }
