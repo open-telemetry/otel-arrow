@@ -629,6 +629,8 @@ pub mod summary_data_point {
 /// Exemplars also hold information about the environment when the measurement
 /// was recorded, for example the span and trace ID of the active span when the
 /// exemplar was recorded.
+#[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.Exemplar")]
+#[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Exemplar {
     /// The set of key/value pairs that were filtered out by the aggregator, but

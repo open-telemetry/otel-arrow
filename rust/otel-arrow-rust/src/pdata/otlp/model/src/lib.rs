@@ -57,6 +57,18 @@ pub static ONEOF_MAPPINGS: LazyLock<Vec<OneofMapping>> = LazyLock::new(|| {
 		oneof("sum", "Sum", "metric::Data::Sum", None),
 	    ],
 	},
+	OneofMapping{
+	    field: "opentelemetry.proto.metrics.v1.NumberDataPoint.value",
+	    cases: vec![
+		oneof("int", "i64", "number_data_point::Value::AsInt", None),
+	    ],
+	},
+	OneofMapping{
+	    field: "opentelemetry.proto.metrics.v1.Exemplar.value",
+	    cases: vec![
+		oneof("int", "i64", "exemplar::Value::AsInt", None),
+	    ],
+	},
     ]
 });
 
@@ -99,6 +111,7 @@ pub static ALL_KNOWN_TYPES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         "opentelemetry.proto.metrics.v1.HistogramDataPoint",
         "opentelemetry.proto.metrics.v1.NumberDataPoint",
         "opentelemetry.proto.metrics.v1.SummaryDataPoint",
+        "opentelemetry.proto.metrics.v1.Exemplar",
     ]
 });
 
@@ -255,6 +268,18 @@ pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
         Detail {
             name: "opentelemetry.proto.metrics.v1.Metric",
             params: Some(vec!["name", "data"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.metrics.v1.Sum",
+            params: Some(vec!["aggregation_temporality", "is_monotonic", "data_points"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.metrics.v1.NumberDataPoint",
+            params: Some(vec!["time_unix_nano", "value"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.metrics.v1.Exemplar",
+            params: Some(vec!["time_unix_nano", "value"]),
         },
     ]
 });

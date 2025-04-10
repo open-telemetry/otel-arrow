@@ -207,7 +207,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     // Finally add all non-parameter fields as builder fields
     builder_fields.extend(field_infos.iter().filter(|info| !info.is_param));
 
-    // Generate generic type parameters for parameters using functional patterns
+    // Generate generic type parameters w/ ordinals
     let type_params: Vec<syn::Ident> = param_fields.iter().enumerate()
         .map(|(idx, _)| {
             let type_name = format!("T{}", idx + 1);
@@ -234,7 +234,9 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         .iter()
         .map(|info| {
             let field_name = &info.ident;
-            
+
+            // Note: for simplicity we use "inner" as the variable name
+	    // in both builder and no-builder cases.
             match (info.is_optional, &info.as_type) {
                 (true, Some(as_type)) => quote! { inner.#field_name = Some(#field_name.into() as #as_type); },
                 (true, None) => quote! { inner.#field_name = Some(#field_name.into()); },
@@ -268,196 +270,104 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         })
         .collect();
 
-    // Generate oneof-specific methods for structs with oneof fields
-    let oneof_methods = if let Some(oneof_mapping) = oneof_mapping {
-        // Generate one method for each case in the oneof mapping
-        oneof_mapping.cases.iter().map(|case| {
-            let case_type = syn::parse_str::<syn::Type>(&case.type_param).unwrap();
-            let variant_path = syn::parse_str::<syn::Expr>(&case.value_variant).unwrap();
-
+    // A unified approach to handle both regular and oneof cases
+    let all_constructors: Vec<proc_macro2::TokenStream> = match oneof_mapping {
+	None => {
+	    let method_name = syn::Ident::new("new", proc_macro2::Span::call_site());
+        
+	    let constructor = quote! {
+		pub fn #method_name<#(#param_bounds),*>(#(#param_decls),*) -> Self 
+		{
+		    let mut inner = Self::default();
+		    #(#param_assignments)*
+		    inner
+		}
+	    };
+        
+	    vec![constructor]
+	},
+	Some(oneof_mapping) => {
             // Extract the field name from the mapped path
-            let oneof_field_parts: Vec<&str> = oneof_mapping.field.split('.').collect();
-            let oneof_field_name = syn::Ident::new(
-                oneof_field_parts.last().unwrap(), 
-                proc_macro2::Span::call_site()
+            let oneof_name = oneof_mapping.field.split('.').last().unwrap();
+            let oneof_ident = syn::Ident::new(
+		oneof_name, 
+		proc_macro2::Span::call_site()
             );
-            
-            let method_name = syn::Ident::new(&format!("new_{}", case.name), proc_macro2::Span::call_site());
-            
-            // Generate the method implementation for oneof cases, supporting params
-            // Get the params from the parent struct, these are the required params
-            // For oneofs, we need to be careful not to duplicate the field that corresponds to the oneof
-            // value parameter which will be added separately
-            let oneof_field_str = oneof_field_parts.last().unwrap().to_string();
-            let oneof_param_fields: Vec<&FieldInfo> = if !param_fields.is_empty() {
-                // Filter out any parameter that would be the oneof field itself to avoid duplication
-                param_fields.iter()
-                    .filter(|field| field.ident.to_string() != oneof_field_str)
-                    .cloned()
-                    .collect()
-            } else {
-                vec![]
-            };
-            
-            // Generate type parameters and where bounds for params
-            let oneof_type_params: Vec<syn::Ident> = oneof_param_fields.iter().enumerate()
-                .map(|(idx, _)| {
-                    let type_name = format!("T{}", idx + 1);
-                    syn::Ident::new(&type_name, proc_macro2::Span::call_site())
-                })
-                .collect();
 
-            // Generate parameter declarations and bounds
-            let (oneof_param_decls, oneof_param_bounds): (Vec<proc_macro2::TokenStream>, Vec<proc_macro2::TokenStream>) = 
-                oneof_param_fields.iter().enumerate().map(|(idx, info)| {
-                    let param_name = &info.ident;
-                    let type_param = &oneof_type_params[idx];
-                    let target_type = &info.param_type;
-                    
-                    let decl = quote! { #param_name: #type_param };
-                    let bound = quote! { #type_param: Into<#target_type> };
-                    
-                    (decl, bound)
-                })
-                .unzip();
-                
-            // Generate assignments for parameters
-            let oneof_param_assignments: Vec<proc_macro2::TokenStream> = oneof_param_fields
-                .iter()
-                .map(|info| {
-                    let field_name = &info.ident;
-                    
-                    match (info.is_optional, &info.as_type) {
-                        (true, Some(as_type)) => quote! { instance.#field_name = Some(#field_name.into() as #as_type); },
-                        (true, None) => quote! { instance.#field_name = Some(#field_name.into()); },
-                        (false, Some(as_type)) => quote! { instance.#field_name = #field_name.into() as #as_type; },
-                        (false, None) => quote! { instance.#field_name = #field_name.into(); },
-                    }
-                })
-                .collect();
-
-            // Additional type parameter and bound for the oneof value
-            let oneof_value_type_param = syn::Ident::new("V", proc_macro2::Span::call_site());
-            let oneof_value_bound = quote! { #oneof_value_type_param: Into<#case_type> };
+		let idx = param_names
+		    .iter()
+		    .position(|&name| name == oneof_name)
+		    .unwrap();
             
-            // Add oneof value parameter to declarations
-            let oneof_value_decl = quote! { value: #oneof_value_type_param };
-                
-            // Generate the method implementation with all parameters and extra_call support
-            if let Some(extra_call) = &case.extra_call {
-                let extra_call_path = syn::parse_str::<syn::Expr>(extra_call).unwrap();
-                quote! {
-                    pub fn #method_name<#(#oneof_type_params),*, #oneof_value_type_param>(#(#oneof_param_decls),*, #oneof_value_decl) -> Self 
-                    where 
-                        #(#oneof_param_bounds),*,
-                        #oneof_value_bound
+            // Generate a constructor for each oneof case
+            oneof_mapping.cases.iter().map(|case| {
+		let case_type = syn::parse_str::<syn::Type>(&case.type_param).unwrap();
+		let variant_path = syn::parse_str::<syn::Expr>(&case.value_variant).unwrap();
+		let method_name = syn::Ident::new(&format!("new_{}", case.name), proc_macro2::Span::call_site());
+
+		// Duplicate the param bounds, assignments; param decls unchanged.
+		let mut param_bounds = param_bounds.clone();
+		let mut param_assignments = param_assignments.clone();
+		let type_param = type_params[idx].clone();
+
+		let value_bound = quote! { #type_param: Into<#case_type> };
+		let value_assignment = if let Some(extra_call) = &case.extra_call {
+                    let extra_call_path = syn::parse_str::<syn::Expr>(extra_call).unwrap();
+                    quote! {
+			inner.#oneof_ident = Some(#variant_path(#extra_call_path(#oneof_ident.into())));
+		    }
+		} else {
+                    quote! {
+			inner.#oneof_ident = Some(#variant_path(#oneof_ident.into()));
+		    }
+		};
+
+		// Replace the parameter w/ oneof-specific expansion
+		param_bounds[idx] = value_bound;
+		param_assignments[idx] = value_assignment;
+
+		quote! {
+                    pub fn #method_name<#(#param_bounds),*>(#(#param_decls),*) -> Self 
                     {
-                        let mut instance = Self::default();
-                        #(#oneof_param_assignments)*
-                        instance.#oneof_field_name = Some(#variant_path(#extra_call_path(value.into())));
-                        instance
+			let mut inner = Self::default();
+			#(#param_assignments)*
+			inner
                     }
-                }
-            } else {
-                quote! {
-                    pub fn #method_name<#(#oneof_type_params),*, #oneof_value_type_param>(#(#oneof_param_decls),*, #oneof_value_decl) -> Self 
-                    where 
-                        #(#oneof_param_bounds),*,
-                        #oneof_value_bound
-                    {
-                        let mut instance = Self::default();
-                        #(#oneof_param_assignments)*
-                        instance.#oneof_field_name = Some(#variant_path(value.into()));
-                        instance
-                    }
-                }
-            }
-        }).collect::<Vec<proc_macro2::TokenStream>>()
-    } else {
-        // No oneof fields, return empty vector
-        Vec::new()
+		}
+	    }).collect()
+        }
     };
 
-    // Produce expanded implementation
+    // Produce expanded implementation with a simplified approach
     let expanded = if builder_fields.is_empty() {
         // If there are no remaining fields, directly return the constructed object
-        if oneof_mapping.is_none() {
-            // Standard case - no oneof field
-            quote! {
-                impl #outer_name {
-                    /// Creates a new instance of #name
-                    pub fn new<#(#param_bounds),*>(#(#param_decls),*) -> #outer_name {
-                        let mut inner = #outer_name::default();
-                        #(#param_assignments)*
-                        inner
-                    }
-                }
-            }
-        } else {
-            // Case with oneof field but no builder needed
-            quote! {
-                impl #outer_name {
-                    #(#oneof_methods)*
-                }
+        quote! {
+            impl #outer_name {
+                #(#all_constructors)*
             }
         }
     } else {
-        // If there are remaining fields, generate builder methods for them
-        if oneof_mapping.is_none() {
-            // Standard builder without oneof
-            quote! {
-                pub struct #builder_name {
-                    inner: #outer_name,
-                }
+        // We need a builder pattern for the additional fields
+        quote! {
+            pub struct #builder_name {
+                inner: #outer_name,
+            }
 
-                impl #outer_name {
-                    /// Creates a new builder for #name
-                    pub fn new<#(#param_bounds),*>(#(#param_decls),*) -> #builder_name {
-                        let mut inner = #outer_name::default();
-                        #(#param_assignments)*
-                        #builder_name {
-                            inner
-                        }
-                    }
-                }
+            impl #outer_name {
+                #(#all_constructors)*
+            }
 
-                impl #builder_name {
-                    #(#builder_methods)*
+            impl #builder_name {
+                #(#builder_methods)*
 
-                    pub fn build(self) -> #outer_name {
-                        self.inner
-                    }
-                }
-
-                impl std::convert::From<#builder_name> for #outer_name {
-                    fn from(value: #builder_name) -> Self {
-                        value.build()
-                    }
+                pub fn build(self) -> #outer_name {
+                    self.inner
                 }
             }
-        } else {
-            // Builder with oneof field
-            quote! {
-                pub struct #builder_name {
-                    inner: #outer_name,
-                }
 
-                impl #outer_name {
-                    #(#oneof_methods)*
-                }
-
-                impl #builder_name {
-                    #(#builder_methods)*
-
-                    pub fn build(self) -> #outer_name {
-                        self.inner
-                    }
-                }
-
-                impl std::convert::From<#builder_name> for #outer_name {
-                    fn from(value: #builder_name) -> Self {
-                        value.build()
-                    }
+            impl std::convert::From<#builder_name> for #outer_name {
+                fn from(builder: #builder_name) -> Self {
+                    builder.build()
                 }
             }
         }

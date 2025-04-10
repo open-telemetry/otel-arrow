@@ -362,7 +362,7 @@ mod tests {
 	use crate::proto::opentelemetry::metrics::v1::Metric;
 	use crate::proto::opentelemetry::metrics::v1::Sum;
 
-	let m1 = Metric::new_sum("counter", Sum::new().build()).build();
+	let m1 = Metric::new_sum("counter", Sum::new(0, true, vec![])).build();
 	let m2 = m1.clone();
 
 	assert_eq!(m1, m2);
