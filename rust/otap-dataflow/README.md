@@ -17,9 +17,13 @@ TBD
 .
 ├── Cargo.toml
 ├── crates
+│   ├── channel        # Async Channel Implementations
 │   ├── config         # OTAP Dataflow Configuration Model
-│   ├── crate-two      # Purpose of crate-two
 │   └── crate-n        # Purpose of crate-n
+├── docs               # Documentation
+├── examples           # Rust Examples
+├── src                # Main library source code
+├── xtask              # Xtask for project management
 └── examples           # Examples or demo applications
 ```
 
@@ -67,7 +71,7 @@ cargo run --example <example_name>
 
 ## 🧩 Contributing
 
-- Contribution Guidelines (TBD)
+- [Contribution Guidelines](CONTRIBUTING.md)
 - Code of Conduct (TBD)
 
 Before submitting a PR, please run the following commands:
