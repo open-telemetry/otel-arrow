@@ -424,7 +424,7 @@ mod tests {
             NodeKind::Processor,
             SignalType::Traces,
             SignalType::Traces,
-        serde_json::from_str(r#"{"name": "batch_traces"}"#).unwrap_or_default(),
+            serde_json::from_str(r#"{"name": "batch_traces"}"#).unwrap_or_default(),
         )
         .expect("Should be able to add node");
         dag.add_node(
@@ -432,7 +432,7 @@ mod tests {
             NodeKind::Processor,
             SignalType::Traces,
             SignalType::Traces,
-        serde_json::from_str(r#"{"name": "resource_traces"}"#).unwrap_or_default(),
+            serde_json::from_str(r#"{"name": "resource_traces"}"#).unwrap_or_default(),
         )
         .expect("Should be able to add node");
         // This was previously a "connector", now it's just a Processor that changes input->output
@@ -441,7 +441,7 @@ mod tests {
             NodeKind::Processor,
             SignalType::Traces,
             SignalType::Metrics,
-        serde_json::from_str(r#"{"desc": "convert traces to metrics"}"#).unwrap_or_default(),
+            serde_json::from_str(r#"{"desc": "convert traces to metrics"}"#).unwrap_or_default(),
         )
         .expect("Should be able to add node");
         dag.add_node(
@@ -449,7 +449,7 @@ mod tests {
             NodeKind::Exporter,
             SignalType::Traces,
             SignalType::Traces,
-        serde_json::from_str(r#"{"desc": "OTLP trace exporter"}"#).unwrap_or_default(),
+            serde_json::from_str(r#"{"desc": "OTLP trace exporter"}"#).unwrap_or_default(),
         )
         .expect("Should be able to add node");
         // Traces edges
@@ -466,7 +466,7 @@ mod tests {
             NodeKind::Receiver,
             SignalType::Metrics,
             SignalType::Metrics,
-        serde_json::from_str(r#"{"desc": "OTLP metric receiver"}"#).unwrap_or_default(),
+            serde_json::from_str(r#"{"desc": "OTLP metric receiver"}"#).unwrap_or_default(),
         )
         .expect("Should be able to add node");
         dag.add_node(
@@ -474,7 +474,7 @@ mod tests {
             NodeKind::Processor,
             SignalType::Metrics,
             SignalType::Metrics,
-        serde_json::from_str(r#"{"name": "batch_metrics"}"#).unwrap_or_default(),
+            serde_json::from_str(r#"{"name": "batch_metrics"}"#).unwrap_or_default(),
         )
         .expect("Should be able to add node");
         // This was previously a "connector_metrics_to_events"
@@ -483,7 +483,7 @@ mod tests {
             NodeKind::Processor,
             SignalType::Metrics,
             SignalType::Logs,
-        serde_json::from_str(r#"{"desc": "convert metrics to events"}"#).unwrap_or_default(),
+            serde_json::from_str(r#"{"desc": "convert metrics to events"}"#).unwrap_or_default(),
         )
         .expect("Should be able to add node");
         dag.add_node(
@@ -491,7 +491,7 @@ mod tests {
             NodeKind::Exporter,
             SignalType::Metrics,
             SignalType::Metrics,
-        serde_json::from_str(r#"{"desc": "Prometheus exporter"}"#).unwrap_or_default(),
+            serde_json::from_str(r#"{"desc": "Prometheus exporter"}"#).unwrap_or_default(),
         )
         .expect("Should be able to add node");
         dag.add_node(
@@ -499,7 +499,7 @@ mod tests {
             NodeKind::Exporter,
             SignalType::Metrics,
             SignalType::Metrics,
-        serde_json::from_str(r#"{"desc": "OTLP metric exporter"}"#).unwrap_or_default(),
+            serde_json::from_str(r#"{"desc": "OTLP metric exporter"}"#).unwrap_or_default(),
         )
         .expect("Should be able to add node");
         // Edges
@@ -518,7 +518,7 @@ mod tests {
             NodeKind::Receiver,
             SignalType::Logs,
             SignalType::Logs,
-        serde_json::from_str(r#"{"desc": "file log receiver"}"#).unwrap_or_default(),
+            serde_json::from_str(r#"{"desc": "file log receiver"}"#).unwrap_or_default(),
         )
         .expect("Should be able to add node");
         dag.add_node(
@@ -526,7 +526,7 @@ mod tests {
             NodeKind::Receiver,
             SignalType::Logs,
             SignalType::Logs,
-        serde_json::from_str(r#"{"desc": "syslog receiver"}"#).unwrap_or_default(),
+            serde_json::from_str(r#"{"desc": "syslog receiver"}"#).unwrap_or_default(),
         )
         .expect("Should be able to add node");
         dag.add_node(
@@ -534,7 +534,7 @@ mod tests {
             NodeKind::Processor,
             SignalType::Logs,
             SignalType::Logs,
-        serde_json::from_str(r#"{"name": "filter_logs"}"#).unwrap_or_default(),
+            serde_json::from_str(r#"{"name": "filter_logs"}"#).unwrap_or_default(),
         )
         .expect("Should be able to add node");
         // formerly "connector_logs_to_events"
@@ -543,7 +543,7 @@ mod tests {
             NodeKind::Processor,
             SignalType::Logs,
             SignalType::Logs,
-        serde_json::from_str(r#"{"desc": "convert logs to events"}"#).unwrap_or_default(),
+            serde_json::from_str(r#"{"desc": "convert logs to events"}"#).unwrap_or_default(),
         )
         .expect("Should be able to add node");
         dag.add_node(
@@ -551,7 +551,7 @@ mod tests {
             NodeKind::Exporter,
             SignalType::Logs,
             SignalType::Logs,
-        serde_json::from_str(r#"{"desc": "OTLP log exporter"}"#).unwrap_or_default(),
+            serde_json::from_str(r#"{"desc": "OTLP log exporter"}"#).unwrap_or_default(),
         )
         .expect("Should be able to add node");
         // Edges
@@ -568,7 +568,7 @@ mod tests {
             NodeKind::Receiver,
             SignalType::Logs,
             SignalType::Logs,
-        serde_json::from_str(r#"{"desc": "custom event receiver"}"#).unwrap_or_default(),
+            serde_json::from_str(r#"{"desc": "custom event receiver"}"#).unwrap_or_default(),
         )
         .expect("Should be able to add node");
         dag.add_node(
@@ -576,7 +576,7 @@ mod tests {
             NodeKind::Processor,
             SignalType::Logs,
             SignalType::Logs,
-        serde_json::from_str(r#"{"name": "enrich_events"}"#).unwrap_or_default(),
+            serde_json::from_str(r#"{"name": "enrich_events"}"#).unwrap_or_default(),
         )
         .expect("Should be able to add node");
         dag.add_node(
@@ -584,7 +584,7 @@ mod tests {
             NodeKind::Exporter,
             SignalType::Logs,
             SignalType::Logs,
-        serde_json::from_str(r#"{"desc": "push events to queue"}"#).unwrap_or_default(),
+            serde_json::from_str(r#"{"desc": "push events to queue"}"#).unwrap_or_default(),
         )
         .expect("Should be able to add node");
         // Edges

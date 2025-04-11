@@ -87,7 +87,7 @@ CNCF Slack channel: [#otel-arrow](https://slack.cncf.io/)
 
 ## 🌟 Roadmap
 
-TBD
+See our detailed [Roadmap](ROADMAP.md) for upcoming features and improvements.
 
 ## ✅ Changelog
 
