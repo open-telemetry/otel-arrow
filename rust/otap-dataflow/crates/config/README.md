@@ -1,3 +1,3 @@
 # OTAP Dataflow Configuration Model
 
-TBD
+Status: **WIP**
