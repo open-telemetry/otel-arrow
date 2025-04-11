@@ -1,9 +1,11 @@
 # OTAP Dataflow Library
 
-> Note: This Rust library will be the main deliverable of phase 2 of the otel-arrow project, as defined in this
+> Note: This Rust library will be the main deliverable of phase 2 of the
+> otel-arrow project, as defined in this
 > [PR](https://github.com/open-telemetry/community/pull/2634).
 >
-> The other Rust projects located in the same root directory as this project will gradually be integrated into it.
+> The other Rust projects located in the same root directory as this project
+> will gradually be integrated into it.
 
 ## Overview
 
