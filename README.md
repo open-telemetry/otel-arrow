@@ -10,7 +10,7 @@ Arrow](https://github.com/open-telemetry/otel-arrow) project is an
 effort within [OpenTelemetry](https://opentelemetry.io/) to use
 [Apache Arrow](https://arrow.apache.org/) libraries for bulk data
 transport in OpenTelemetry pipelines.  This repository is
-the home of the OpenTelemetry Protocol with Apache Arrow protocol, 
+the home of the OpenTelemetry Protocol with Apache Arrow protocol,
 which we refer to as "OTAP", and reference implementations.
 
 ## Quick start
@@ -109,7 +109,7 @@ into column-oriented data, which also makes the data more compressible.
 
 ## Project status
 
-The Phase-1 project deliverables, located in the Collector-Contrib repository, 
+The Phase-1 project deliverables, located in the Collector-Contrib repository,
 are in the [Beta stability level, as defined by the OpenTelemetry collector
 guidelines](https://github.com/open-telemetry/opentelemetry-collector#beta).
 We do not plan to make breaking changes in this protocol without first
@@ -201,7 +201,7 @@ For more details, see the following [benchmark results](docs/benchmarks.md) page
 For information about contributing to the project see:
 [CONTRIBUTING.md](./CONTRIBUTING.md).
 
-We meet every other Thursday at 8AM PT. The meeting is subject to change 
+We meet every other Thursday at 8AM PT. The meeting is subject to change
 depending on contributors'
 availability. Check the [OpenTelemetry community
 calendar](https://github.com/open-telemetry/community?tab=readme-ov-file#calendar)
