@@ -1,4 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! OTAP Dataflow Configuration Model.
+
+mod error;
 
 /// A simple function that adds two numbers.
 #[must_use]

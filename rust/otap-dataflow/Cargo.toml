@@ -1,5 +1,8 @@
 [workspace]
-members = ["crates/*"]
+members = [
+    "crates/*",
+    "xtask"
+]
 resolver = "2"
 
 [workspace.package]
@@ -41,12 +44,9 @@ unused_macro_rules = "warn"
 
 [workspace.lints.clippy]
 # Strong defaults: deny problematic patterns
-all = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
 correctness = { level = "deny", priority = -1 }
 perf = { level = "deny", priority = -1 }
-
-# Improve readability and maintainability
 complexity = { level = "warn", priority = -1 }
 style = { level = "warn", priority = -1 }
 suspicious = { level = "warn", priority = -1 }
@@ -69,7 +69,27 @@ type_complexity = "allow"
 wrong_self_convention = "allow"
 module_name_repetitions = "allow"
 
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+missing_crate_level_docs = "deny"
+missing_docs = "warn"
+
 [profile.release]
-lto = true
+lto = "thin"    # Evaluate the performance gain of lto=true
 strip = true
-panic = "abort"
+#panic = "abort"
+
+[profile.bench]
+inherits = "release"
+# Potentially override lto for faster builds:
+# lto = "thin"
+# Potentially override debug/strip for easier debugging:
+# debug = true
+# strip = "none"
+
+# cargo build --profile release-debug
+[profile.release-debug]
+inherits = "release"
+debug = true  # Or 2 for full debug info
+strip = "none" # Keep symbols and debug info
+panic = "unwind"

@@ -1,5 +1,5 @@
 [package]
-name = "otap-dataflow-config"
+name = "otap-df-config"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -10,3 +10,6 @@ rust-version.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+thiserror.workspace = true

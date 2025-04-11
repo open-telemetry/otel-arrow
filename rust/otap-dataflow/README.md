@@ -1,6 +1,7 @@
 # OTAP Dataflow Library
 
-> Note: This Rust library will be the main deliverable of phase 2 of the otel-arrow project, as defined in this PR.
+> Note: This Rust library will be the main deliverable of phase 2 of the otel-arrow project, as defined in this
+> [PR](https://github.com/open-telemetry/community/pull/2634).
 >
 > The other Rust projects located in the same root directory as this project will gradually be integrated into it.
 
@@ -70,12 +71,8 @@ cargo run --example <example_name>
 Before submitting a PR, please run the following commands:
 
 ```bash
-# Check formatting and lints
-cargo fmt -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-
-# Run tests
-cargo test --workspace
+# Prepare and check the entire project before submitting a PR or a commit
+cargo xtask check
 ```
 
 ## 📝 License
