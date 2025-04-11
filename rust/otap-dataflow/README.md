@@ -19,7 +19,7 @@ TBD
 ├── crates
 │   ├── channel        # Async Channel Implementations
 │   ├── config         # OTAP Dataflow Configuration Model
-│   └── crate-n        # Purpose of crate-n
+│   └── engine         # Async Dataflow Engine
 ├── docs               # Documentation
 ├── examples           # Rust Examples
 ├── src                # Main library source code
