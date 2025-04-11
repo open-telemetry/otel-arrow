@@ -3,6 +3,7 @@
 //! Multiple-producer, multiple-consumer channel implementation optimized for single-threaded async
 //! runtime.
 
+use crate::error::Error;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -10,7 +11,6 @@ use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
-use crate::error::Error;
 
 struct ChannelState<T> {
     buffer: VecDeque<T>,
@@ -123,7 +123,7 @@ impl<T> Sender<T> {
             sender: self.clone(),
             value: Some(value),
         }
-            .await
+        .await
     }
 
     #[allow(dead_code)]
@@ -231,7 +231,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     // Helper function to create a test runtime
     fn create_test_runtime() -> tokio::runtime::Runtime {

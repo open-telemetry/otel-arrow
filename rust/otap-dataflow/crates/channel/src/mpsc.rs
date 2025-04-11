@@ -2,13 +2,13 @@
 
 //! Multiple-producer, single-consumer channel implementation optimized for single-threaded async.
 
+use crate::error::Error;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
-use crate::error::Error;
 
 struct ChannelState<T> {
     buffer: VecDeque<T>,
@@ -28,6 +28,7 @@ pub struct Channel<T> {
 impl<T> Channel<T> {
     /// Creates a new channel with the given capacity.
     #[allow(clippy::new_ret_no_self)]
+    #[must_use]
     pub fn new(capacity: usize) -> (Sender<T>, Receiver<T>) {
         let channel = Rc::new(Channel {
             state: RefCell::new(ChannelState {
@@ -126,7 +127,7 @@ impl<T> Sender<T> {
             sender: self.clone(),
             value: Some(value),
         }
-            .await
+        .await
     }
 
     /// Closes the channel.
@@ -224,7 +225,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     // Helper function to create a test runtime
     fn create_test_runtime() -> tokio::runtime::Runtime {

@@ -16,6 +16,8 @@ rust-version = "1.86.0"
 
 [workspace.dependencies]
 thiserror = "2.0.12"
+serde = { version = "1.0.217", features = ["derive"] }
+serde_yaml = "0.9.34+deprecated"
 tokio = { version = "1.43.0", features = ["rt", "time", "macros", "rt-multi-thread"] }
 
 [workspace.lints.rust]
@@ -73,7 +75,6 @@ module_name_repetitions = "allow"
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
 missing_crate_level_docs = "deny"
-missing_docs = "warn"
 
 [profile.release]
 lto = "thin"    # Evaluate the performance gain of lto=true
