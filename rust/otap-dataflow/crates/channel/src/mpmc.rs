@@ -10,7 +10,7 @@ use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll, Waker};
-use crate::error::{RecvError, SendError, TryRecvError};
+use crate::error::Error;
 
 struct ChannelState<T> {
     buffer: VecDeque<T>,
@@ -96,15 +96,15 @@ impl<T> Drop for Receiver<T> {
 }
 
 impl<T> Sender<T> {
-    pub fn send(&self, value: T) -> Result<(), SendError<T>> {
+    pub fn send(&self, value: T) -> Result<(), Error<T>> {
         let mut state = self.channel.state.borrow_mut();
 
         if state.is_closed {
-            return Err(SendError::Closed(value));
+            return Err(Error::SendClosed(value));
         }
 
         if state.buffer.len() >= state.capacity.get() {
-            return Err(SendError::Full(value));
+            return Err(Error::SendFull(value));
         }
 
         state.buffer.push_back(value);
@@ -118,7 +118,7 @@ impl<T> Sender<T> {
     }
 
     #[allow(dead_code)]
-    pub async fn send_async(&self, value: T) -> Result<(), SendError<T>> {
+    pub async fn send_async(&self, value: T) -> Result<(), Error<T>> {
         SendFuture {
             sender: self.clone(),
             value: Some(value),
@@ -147,7 +147,7 @@ impl<T> Sender<T> {
 }
 
 impl<T> Receiver<T> {
-    pub fn try_recv(&self) -> Result<T, TryRecvError> {
+    pub fn try_recv(&self) -> Result<T, Error<T>> {
         let mut state = self.channel.state.borrow_mut();
 
         if let Some(value) = state.buffer.pop_front() {
@@ -159,14 +159,14 @@ impl<T> Receiver<T> {
             }
             Ok(value)
         } else if state.is_closed {
-            Err(TryRecvError::Closed)
+            Err(Error::RecvClosed)
         } else {
-            Err(TryRecvError::Empty)
+            Err(Error::RecvEmpty)
         }
     }
 
     #[allow(dead_code)]
-    pub async fn recv(&self) -> Result<T, RecvError> {
+    pub async fn recv(&self) -> Result<T, Error<T>> {
         RecvFuture { receiver: self }.await
     }
 }
@@ -179,7 +179,7 @@ struct SendFuture<T> {
 impl<T> Unpin for SendFuture<T> {}
 
 impl<T> Future for SendFuture<T> {
-    type Output = Result<(), SendError<T>>;
+    type Output = Result<(), Error<T>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let value = self
@@ -189,7 +189,7 @@ impl<T> Future for SendFuture<T> {
 
         match self.sender.send(value) {
             Ok(()) => Poll::Ready(Ok(())),
-            Err(SendError::Full(value)) => {
+            Err(Error::SendFull(value)) => {
                 self.value = Some(value);
                 let mut state = self.sender.channel.state.borrow_mut();
                 let order = state.sender_counter;
@@ -197,7 +197,7 @@ impl<T> Future for SendFuture<T> {
                 state.sender_wakers.push_back((order, cx.waker().clone()));
                 Poll::Pending
             }
-            Err(SendError::Closed(value)) => Poll::Ready(Err(SendError::Closed(value))),
+            Err(e) => Poll::Ready(Err(e)),
         }
     }
 }
@@ -207,12 +207,12 @@ struct RecvFuture<'a, T> {
 }
 
 impl<T> Future for RecvFuture<'_, T> {
-    type Output = Result<T, RecvError>;
+    type Output = Result<T, Error<T>>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<T, Error<T>>> {
         match self.receiver.try_recv() {
             Ok(value) => Poll::Ready(Ok(value)),
-            Err(TryRecvError::Empty) => {
+            Err(Error::RecvEmpty) => {
                 let mut state = self.receiver.channel.state.borrow_mut();
                 // Get a monotonically increasing order number
                 let order = state.receiver_counter;
@@ -221,7 +221,7 @@ impl<T> Future for RecvFuture<'_, T> {
                 state.receiver_wakers.push_back((order, cx.waker().clone()));
                 Poll::Pending
             }
-            Err(TryRecvError::Closed) => Poll::Ready(Err(RecvError::Closed)),
+            Err(e) => Poll::Ready(Err(e)),
         }
     }
 }
@@ -258,7 +258,7 @@ mod tests {
             assert_eq!(rx.try_recv().unwrap(), 2);
 
             // Test empty channel
-            assert!(matches!(rx.try_recv(), Err(TryRecvError::Empty)));
+            assert!(matches!(rx.try_recv(), Err(Error::RecvEmpty)));
         });
 
         rt.block_on(local);
@@ -278,7 +278,7 @@ mod tests {
 
             // Second send should fail with Full error
             match tx.send(2) {
-                Err(SendError::Full(2)) => (),
+                Err(Error::SendFull(2)) => (),
                 _ => panic!("Expected Full error"),
             }
         });
@@ -550,7 +550,7 @@ mod tests {
             drop(rx3);
 
             // Sending should now fail with SendError::Closed
-            assert!(matches!(tx.send(4), Err(SendError::Closed(4))));
+            assert!(matches!(tx.send(4), Err(Error::SendClosed(4))));
         });
 
         rt.block_on(local);
@@ -608,11 +608,11 @@ mod tests {
             assert_eq!(rx.try_recv().unwrap(), 1);
 
             // Further receives should indicate closed channel
-            assert!(matches!(rx.try_recv(), Err(TryRecvError::Closed)));
+            assert!(matches!(rx.try_recv(), Err(Error::RecvClosed)));
 
             // Sends should fail with Closed error
             match tx.send(2) {
-                Err(SendError::Closed(2)) => (),
+                Err(Error::SendClosed(2)) => (),
                 _ => panic!("Expected Closed error"),
             }
         });
@@ -636,7 +636,7 @@ mod tests {
             assert_eq!(rx.recv().await.unwrap(), 1);
 
             // Next receive should indicate closed
-            assert!(matches!(rx.recv().await, Err(RecvError::Closed)));
+            assert!(matches!(rx.recv().await, Err(Error::RecvClosed)));
         });
 
         rt.block_on(local);
@@ -658,7 +658,7 @@ mod tests {
 
                 // Verify sync send fails with Full
                 match tx.send(2) {
-                    Err(SendError::Full(2)) => (),
+                    Err(Error::SendFull(2)) => (),
                     other => panic!("Expected SendError::Full, got {other:?}"),
                 }
 
@@ -677,13 +677,13 @@ mod tests {
 
                 // Verify sync send fails with Closed
                 match tx.send(1) {
-                    Err(SendError::Closed(1)) => (),
+                    Err(Error::SendClosed(1)) => (),
                     other => panic!("Expected SendError::Closed, got {other:?}"),
                 }
 
                 // Verify async send fails immediately with Closed
                 match tx.send_async(2).await {
-                    Err(SendError::Closed(2)) => (),
+                    Err(Error::SendClosed(2)) => (),
                     other => panic!("Expected SendError::Closed, got {other:?}"),
                 }
             }
@@ -694,7 +694,7 @@ mod tests {
 
                 // Verify TryRecvError::Empty
                 match rx.try_recv() {
-                    Err(TryRecvError::Empty) => (),
+                    Err(Error::RecvEmpty) => (),
                     other => panic!("Expected TryRecvError::Empty, got {other:?}"),
                 }
 
@@ -703,13 +703,13 @@ mod tests {
 
                 // Verify TryRecvError::Closed
                 match rx.try_recv() {
-                    Err(TryRecvError::Closed) => (),
+                    Err(Error::RecvClosed) => (),
                     other => panic!("Expected TryRecvError::Closed, got {other:?}"),
                 }
 
                 // Verify async receive fails with Closed
                 match rx.recv().await {
-                    Err(RecvError::Closed) => (),
+                    Err(Error::RecvClosed) => (),
                     other => panic!("Expected RecvError::Closed, got {other:?}"),
                 }
             }
@@ -726,7 +726,7 @@ mod tests {
 
                 // Verify pending receive gets Closed error
                 match recv_fut.await {
-                    Err(RecvError::Closed) => (),
+                    Err(Error::RecvClosed) => (),
                     other => panic!("Expected RecvError::Closed, got {other:?}"),
                 }
             }

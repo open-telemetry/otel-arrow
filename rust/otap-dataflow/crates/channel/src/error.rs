@@ -2,32 +2,22 @@
 
 //! Errors for the channels.
 
-/// Errors that can occur when sending on a channel.
+/// Errors that can occur when using the channels.
 #[derive(thiserror::Error, Debug)]
-pub enum SendError<T> {
-    /// The channel is full.
-    #[error("Channel is full")]
-    Full(T),
-    /// The channel is closed.
-    #[error("Channel is closed")]
-    Closed(T),
-}
+pub enum Error<T> {
+    /// The channel is full and the message could not be sent.
+    #[error("Channel is full and the message could not be sent")]
+    SendFull(T),
 
-/// Errors that can occur when receiving from a channel.
-#[derive(thiserror::Error, Debug)]
-pub enum RecvError {
-    /// The channel is closed.
-    #[error("Channel is closed")]
-    Closed,
-}
+    /// The channel is closed and the message could not be sent.
+    #[error("Channel is closed and the message could not be sent")]
+    SendClosed(T),
 
-/// Errors that can occur when trying to receive from a channel.
-#[derive(thiserror::Error, Debug)]
-pub enum TryRecvError {
-    /// The channel is empty.
-    #[error("Channel is empty")]
-    Empty,
-    /// The channel is closed.
-    #[error("Channel is closed")]
-    Closed,
+    /// The channel associated with the receiver is closed.
+    #[error("The channel associated with the receiver is closed")]
+    RecvClosed,
+
+    /// The channel associated with the receiver is empty.
+    #[error("The channel associated with the receiver is empty")]
+    RecvEmpty,
 }
