@@ -3,7 +3,7 @@
 //! Multiple-producer, multiple-consumer channel implementation optimized for single-threaded async
 //! runtime.
 
-use crate::error::{SendError, RecvError};
+use crate::error::{RecvError, SendError};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::future::Future;

@@ -17,11 +17,11 @@ pub enum Error<T> {
 
     /// A wrapper for the IO errors.
     #[error("An IO error occurred in node {node}: {error}")]
-    IoError { 
+    IoError {
         /// The name of the node that encountered the error.
         node: NodeName,
 
         /// The error that occurred.
-        error: std::io::Error 
+        error: std::io::Error,
     },
 }

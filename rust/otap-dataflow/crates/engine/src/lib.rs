@@ -3,8 +3,8 @@
 //! Async Dataflow Engine
 
 pub mod error;
-pub mod receiver;
 pub mod message;
+pub mod receiver;
 
 use std::rc::Rc;
 

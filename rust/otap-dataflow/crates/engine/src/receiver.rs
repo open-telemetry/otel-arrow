@@ -12,30 +12,10 @@
 //! 2. Being notified of changes in a local directory (e.g. log file monitoring),
 //! 3. Actively scraping an endpoint to retrieve the latest metrics from a system,
 //! 4. Or using any other method to receive or extract telemetry data from external sources.
-//!
-//! # Example
-//!
-//! ```no_run
-//! struct MyReceiver;
-//!
-//! #[async_trait(?Send)]
-//! impl Receiver for MyReceiver {
-//!     type Msg = MyMessageType;
-//!
-//!     async fn start(
-//!         self: Box<Self>,
-//!         ctrl_msg_recv: ControlMsgChannel,
-//!         effect_handler: EffectHandler<Self::Msg>,
-//!     ) -> Result<(), Error<Self::Msg>> {
-//!         // ...
-//!         Ok(())
-//!     }
-//! }
-//!
 
+use crate::NodeName;
 use crate::error::Error;
 use crate::message::ControlMsg;
-use crate::NodeName;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_channel::mpsc;
@@ -135,10 +115,7 @@ impl<Msg> Clone for EffectHandler<Msg> {
 
 impl<Msg> EffectHandler<Msg> {
     /// Creates a new `EffectHandler` with the given receiver name.
-    pub fn new<S: AsRef<str>>(
-        receiver_name: S,
-        msg_sender: mpsc::Sender<Msg>,
-    ) -> Self {
+    pub fn new<S: AsRef<str>>(receiver_name: S, msg_sender: mpsc::Sender<Msg>) -> Self {
         EffectHandler {
             receiver_name: Rc::from(receiver_name.as_ref()),
             msg_sender,
@@ -146,6 +123,7 @@ impl<Msg> EffectHandler<Msg> {
     }
 
     /// Returns the name of the receiver associated with this handler.
+    #[must_use]
     pub fn receiver_name(&self) -> &str {
         &self.receiver_name
     }
@@ -171,7 +149,7 @@ impl<Msg> EffectHandler<Msg> {
             socket2::Type::STREAM,
             None,
         )
-            .map_err(err)?;
+        .map_err(err)?;
 
         // Allows multiple sockets to bind to an address/port combination even if a socket in the
         // TIME_WAIT state currently occupies that combination.
@@ -195,9 +173,7 @@ impl<Msg> EffectHandler<Msg> {
     ///
     /// Returns an [`Error::ReceiverError`] if the message could not be sent.
     pub async fn send_message(&self, data: Msg) -> Result<(), Error<Msg>> {
-        self.msg_sender
-            .send_async(data)
-            .await?;
+        self.msg_sender.send_async(data).await?;
         Ok(())
     }
 }
@@ -214,7 +190,7 @@ mod tests {
     use tokio::runtime::Builder;
     use tokio::sync::oneshot;
     use tokio::task::LocalSet;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{Duration, sleep};
 
     use super::ControlMsgChannel;
 
@@ -386,7 +362,11 @@ mod tests {
             }
 
             // Finally, send a Shutdown event to terminate the receiver.
-            let result = event_tx.send_async(ControlMsg::Shutdown { reason: "Test".to_string() }).await;
+            let result = event_tx
+                .send_async(ControlMsg::Shutdown {
+                    reason: "Test".to_string(),
+                })
+                .await;
             assert!(result.is_ok(), "Failed to send Shutdown event");
 
             // Close the TCP connection.
@@ -402,8 +382,6 @@ mod tests {
             .expect("No message received");
 
         // Assert that the message received is what the test client sent.
-        assert!(
-            matches!(received, TestMsg(msg) if msg == "Hello from test client")
-        );
+        assert!(matches!(received, TestMsg(msg) if msg == "Hello from test client"));
     }
 }

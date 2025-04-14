@@ -18,8 +18,10 @@ TBD
 ├── Cargo.toml
 ├── crates
 │   ├── channel        # Async Channel Implementations
-│   ├── config         # OTAP Dataflow Configuration Model
-│   └── engine         # Async Dataflow Engine
+│   ├── config         # Dataflow Configuration Model
+│   ├── engine         # Async Dataflow Engine
+│   ├── otap           # OTAP Nodes
+│   └── otlp           # OTLP Nodes
 ├── docs               # Documentation
 ├── examples           # Rust Examples
 ├── src                # Main library source code

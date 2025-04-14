@@ -3,20 +3,20 @@
 //! Message definitions for the dataflow engine.
 
 /// A message that can be sent to a node (i.e. receiver, processor, exporter, or connector).
-/// 
+///
 /// A message is either a `Data` message, which contains a payload of type `Data`, or a `Control`
 /// message, which contains a `ControlMsg`.
 pub enum Message<Data> {
     /// A data message.
     Data {
         /// The data traversing the dataflow.
-        data: Data
+        data: Data,
     },
 
     /// A control message.
     Control {
         /// The control message.
-        control: ControlMsg
+        control: ControlMsg,
     },
 }
 
