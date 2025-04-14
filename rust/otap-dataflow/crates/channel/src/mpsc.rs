@@ -2,7 +2,7 @@
 
 //! Multiple-producer, single-consumer channel implementation optimized for single-threaded async.
 
-use crate::error::Error;
+use crate::error::{SendError, RecvError};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -101,15 +101,15 @@ impl<T> Drop for Receiver<T> {
 
 impl<T> Sender<T> {
     /// Sends a value to the channel.
-    pub fn send(&self, value: T) -> Result<(), Error<T>> {
+    pub fn send(&self, value: T) -> Result<(), SendError<T>> {
         let mut state = self.channel.state.borrow_mut();
 
         if state.is_closed || !state.has_receiver {
-            return Err(Error::SendClosed(value));
+            return Err(SendError::Closed(value));
         }
 
         if state.buffer.len() >= state.capacity {
-            return Err(Error::SendFull(value));
+            return Err(SendError::Full(value));
         }
 
         state.buffer.push_back(value);
@@ -122,7 +122,7 @@ impl<T> Sender<T> {
     }
 
     /// Sends a value to the channel asynchronously.
-    pub async fn send_async(&self, value: T) -> Result<(), Error<T>> {
+    pub async fn send_async(&self, value: T) -> Result<(), SendError<T>> {
         SendFuture {
             sender: self.clone(),
             value: Some(value),
@@ -147,7 +147,7 @@ impl<T> Sender<T> {
 
 impl<T> Receiver<T> {
     /// Tries to receive a value from the channel.
-    pub fn try_recv(&self) -> Result<T, Error<T>> {
+    pub fn try_recv(&self) -> Result<T, RecvError> {
         let mut state = self.channel.state.borrow_mut();
 
         if let Some(value) = state.buffer.pop_front() {
@@ -159,14 +159,14 @@ impl<T> Receiver<T> {
             }
             Ok(value)
         } else if state.is_closed {
-            Err(Error::RecvClosed)
+            Err(RecvError::Closed)
         } else {
-            Err(Error::RecvEmpty)
+            Err(RecvError::Empty)
         }
     }
 
     /// Receives a value from the channel asynchronously.
-    pub async fn recv(&self) -> Result<T, Error<T>> {
+    pub async fn recv(&self) -> Result<T, RecvError> {
         RecvFuture { receiver: self }.await
     }
 }
@@ -179,7 +179,7 @@ struct SendFuture<T> {
 impl<T> Unpin for SendFuture<T> {}
 
 impl<T> Future for SendFuture<T> {
-    type Output = Result<(), Error<T>>;
+    type Output = Result<(), SendError<T>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let value = self
@@ -189,7 +189,7 @@ impl<T> Future for SendFuture<T> {
 
         match self.sender.send(value) {
             Ok(()) => Poll::Ready(Ok(())),
-            Err(Error::SendFull(value)) => {
+            Err(SendError::Full(value)) => {
                 self.value = Some(value);
                 let mut state = self.sender.channel.state.borrow_mut();
                 state.sender_wakers.push(cx.waker().clone());
@@ -205,12 +205,12 @@ struct RecvFuture<'a, T> {
 }
 
 impl<T> Future for RecvFuture<'_, T> {
-    type Output = Result<T, Error<T>>;
+    type Output = Result<T, RecvError>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<T, Error<T>>> {
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<T, RecvError>> {
         match self.receiver.try_recv() {
             Ok(value) => Poll::Ready(Ok(value)),
-            Err(Error::RecvEmpty) => {
+            Err(RecvError::Empty) => {
                 let mut state = self.receiver.channel.state.borrow_mut();
                 state.receiver_waker = Some(cx.waker().clone());
                 Poll::Pending
@@ -252,7 +252,7 @@ mod tests {
             assert_eq!(rx.try_recv().unwrap(), 2);
 
             // Test empty channel
-            assert!(matches!(rx.try_recv(), Err(Error::RecvEmpty)));
+            assert!(matches!(rx.try_recv(), Err(RecvError::Empty)));
         });
 
         rt.block_on(local);
@@ -272,7 +272,7 @@ mod tests {
 
             // Second send should fail with Full error
             match tx.send(2) {
-                Err(Error::SendFull(2)) => (),
+                Err(SendError::Full(2)) => (),
                 _ => panic!("Expected Full error"),
             }
         });
@@ -355,11 +355,11 @@ mod tests {
             assert_eq!(rx.try_recv().unwrap(), 1);
 
             // Further receives should indicate closed channel
-            assert!(matches!(rx.try_recv(), Err(Error::RecvClosed)));
+            assert!(matches!(rx.try_recv(), Err(RecvError::Closed)));
 
             // Sends should fail with Closed error
             match tx.send(2) {
-                Err(Error::SendClosed(2)) => (),
+                Err(SendError::Closed(2)) => (),
                 _ => panic!("Expected Closed error"),
             }
         });
@@ -383,7 +383,7 @@ mod tests {
             assert_eq!(rx.recv().await.unwrap(), 1);
 
             // Next receive should indicate closed
-            assert!(matches!(rx.recv().await, Err(Error::RecvClosed)));
+            assert!(matches!(rx.recv().await, Err(RecvError::Closed)));
         });
 
         rt.block_on(local);

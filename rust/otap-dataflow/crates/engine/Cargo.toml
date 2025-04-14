@@ -13,5 +13,11 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+otap-df-channel = { path = "../channel" }
+
 thiserror.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
+async-trait.workspace = true
+
+socket2 = "0.5.8"
