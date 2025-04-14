@@ -41,8 +41,10 @@ TBD
 
 ## 📚 Documentation
 
-- Developer/Contributing Guide (TBD)
-- Architecture/Design Docs (TBD)
+- [Developer/Contributing Guide](CONTRIBUTING.md)
+- [Design Principles](docs/design-principles.md)
+- [Architecture](docs/architecture.md)
+- [Glossary](docs/glossary.md)
 
 ## 🛠️ Development Setup
 

@@ -6,6 +6,7 @@
 ///
 /// A message is either a `Data` message, which contains a payload of type `Data`, or a `Control`
 /// message, which contains a `ControlMsg`.
+#[derive(Debug, Clone)]
 pub enum Message<Data> {
     /// A data message.
     Data {
@@ -21,6 +22,7 @@ pub enum Message<Data> {
 }
 
 /// Control messages for the dataflow engine.
+#[derive(Debug, Clone)]
 pub enum ControlMsg {
     /// Indicates that a downstream component (either internal or external) has reliably received
     /// and processed telemetry data.
@@ -58,4 +60,57 @@ pub enum ControlMsg {
         /// The reason for the shutdown.
         reason: String,
     },
+}
+
+impl<Data> Message<Data> {
+    /// Create a data message with the given payload.
+    #[must_use]
+    pub fn data_msg(data: Data) -> Self {
+        Message::Data { data }
+    }
+
+    /// Create a ACK control message with the given ID.
+    #[must_use]
+    pub fn ack_ctrl_msg(id: u64) -> Self {
+        Message::Control {
+            control: ControlMsg::Ack { id },
+        }
+    }
+
+    /// Create a NACK control message with the given ID and reason.
+    #[must_use]
+    pub fn nack_ctrl_msg(id: u64, reason: &str) -> Self {
+        Message::Control {
+            control: ControlMsg::Nack {
+                id,
+                reason: reason.to_owned(),
+            },
+        }
+    }
+
+    /// Creates a config control message with the given configuration.
+    #[must_use]
+    pub fn config_ctrl_msg(config: serde_json::Value) -> Self {
+        Message::Control {
+            control: ControlMsg::Config { config },
+        }
+    }
+
+    /// Creates a timer tick control message.
+    #[must_use]
+    pub fn timer_tick_ctrl_msg() -> Self {
+        Message::Control {
+            control: ControlMsg::TimerTick {},
+        }
+    }
+
+    /// Creates a shutdown control message with the given reason.
+    #[must_use]
+    pub fn shutdown_ctrl_msg(reason: &str) -> Self {
+        Message::Control {
+            control: ControlMsg::Shutdown {
+                reason: reason.to_owned(),
+            },
+        }
+    }
 }

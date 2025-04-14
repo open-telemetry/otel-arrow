@@ -4,6 +4,7 @@
 
 pub mod error;
 pub mod message;
+pub mod processor;
 pub mod receiver;
 
 use std::rc::Rc;
