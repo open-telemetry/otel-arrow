@@ -5,3 +5,8 @@ default: true
 MD013:
   code_blocks: false
   tables: false
+
+# MD041/first-line-heading : First line in file should be a top-level heading : https://github.com/DavidAnson/markdownlint/blob/v0.32.1/doc/md041.md
+MD041:
+  exclude:
+    - collector/processor/concurrentbatchprocessor/documentation.md
