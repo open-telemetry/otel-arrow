@@ -29,7 +29,9 @@ significant changes.
   
 ### Dataflow Engine Foundations
 
-- [ ] Receiver, Processor, and Exporter traits
+- [x] Receiver trait
+- [WIP] Processor trait
+- [ ] Exporter trait
 - [ ] Dataflow Engine
 - [ ] Initial benchmarks and documentation
 
