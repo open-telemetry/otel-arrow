@@ -43,6 +43,7 @@ mod tests {
 	use crate::proto::opentelemetry::metrics::v1::NumberDataPoint;
 	use crate::proto::opentelemetry::metrics::v1::number_data_point::Value as NumberValue;
 	use crate::proto::opentelemetry::metrics::v1::Sum;
+	use crate::proto::opentelemetry::metrics::v1::Gauge;
 
     #[test]
     fn test_any_value() {
@@ -385,6 +386,49 @@ mod tests {
 	    data: Some(MetricData::Sum(Sum{
 		aggregation_temporality: AggregationTemporality::Delta as i32,
 		is_monotonic: true,
+		data_points: vec![
+		    NumberDataPoint{
+			attributes: vec![],
+			exemplars: vec![],
+			flags: 0,
+			start_time_unix_nano: 0,
+			time_unix_nano: 125_000_000_000u64,
+			value: Some(NumberValue::AsInt(123i64)),
+		    },
+		    NumberDataPoint{
+			attributes: vec![],
+			exemplars: vec![],
+			flags: 0,
+			start_time_unix_nano: 0,
+			time_unix_nano: 125_000_000_000u64,
+			value: Some(NumberValue::AsDouble(123f64)),
+		    },
+		],
+	    })),
+	};
+
+	assert_eq!(m1, m1_value);
+    }
+
+    #[test]
+    fn test_metric_gauge() {
+
+	let m1 = Metric::new_gauge(
+	    "gauge",
+	    Gauge::new(
+		     vec![
+			 NumberDataPoint::new_int(125_000_000_000u64, 123i64).build(),
+			 NumberDataPoint::new_double(125_000_000_000u64, 123f64).build(),
+		     ],
+	    ),
+	).build();
+
+	let m1_value = Metric{
+	    name: "gauge".to_string(),
+	    description: "".to_string(),
+	    unit: "".to_string(),
+	    metadata: vec![],
+	    data: Some(MetricData::Gauge(Gauge{
 		data_points: vec![
 		    NumberDataPoint{
 			attributes: vec![],

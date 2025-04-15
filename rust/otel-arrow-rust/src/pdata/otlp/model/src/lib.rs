@@ -281,6 +281,10 @@ pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
             params: Some(vec!["aggregation_temporality", "is_monotonic", "data_points"]),
         },
         Detail {
+            name: "opentelemetry.proto.metrics.v1.Gauge",
+            params: Some(vec!["data_points"]),
+        },
+        Detail {
             name: "opentelemetry.proto.metrics.v1.NumberDataPoint",
             params: Some(vec!["time_unix_nano", "value"]),
         },
