@@ -285,8 +285,16 @@ pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
             params: Some(vec!["data_points"]),
         },
         Detail {
+            name: "opentelemetry.proto.metrics.v1.Histogram",
+            params: Some(vec!["aggregation_temporality", "data_points"]),
+        },
+        Detail {
             name: "opentelemetry.proto.metrics.v1.NumberDataPoint",
             params: Some(vec!["time_unix_nano", "value"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.metrics.v1.HistogramDataPoint",
+            params: Some(vec!["time_unix_nano", "bucket_counts", "explicit_bounds"]),
         },
         Detail {
             name: "opentelemetry.proto.metrics.v1.Exemplar",

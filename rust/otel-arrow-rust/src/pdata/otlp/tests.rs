@@ -37,13 +37,17 @@ mod tests {
     use crate::proto::opentelemetry::trace::v1::span::Link;
     use crate::proto::opentelemetry::trace::v1::span::SpanKind;
     use crate::proto::opentelemetry::trace::v1::status::StatusCode;
-	use crate::proto::opentelemetry::metrics::v1::AggregationTemporality;
-	use crate::proto::opentelemetry::metrics::v1::Metric;
-	use crate::proto::opentelemetry::metrics::v1::metric::Data as MetricData;
-	use crate::proto::opentelemetry::metrics::v1::NumberDataPoint;
-	use crate::proto::opentelemetry::metrics::v1::number_data_point::Value as NumberValue;
-	use crate::proto::opentelemetry::metrics::v1::Sum;
-	use crate::proto::opentelemetry::metrics::v1::Gauge;
+    use crate::proto::opentelemetry::metrics::v1::AggregationTemporality;
+    use crate::proto::opentelemetry::metrics::v1::Exemplar;
+    use crate::proto::opentelemetry::metrics::v1::Metric;
+    use crate::proto::opentelemetry::metrics::v1::metric::Data as MetricData;
+    use crate::proto::opentelemetry::metrics::v1::NumberDataPoint;
+    use crate::proto::opentelemetry::metrics::v1::number_data_point::Value as NumberValue;
+    use crate::proto::opentelemetry::metrics::v1::Sum;
+    use crate::proto::opentelemetry::metrics::v1::Gauge;
+    use crate::proto::opentelemetry::metrics::v1::Histogram;
+    use crate::proto::opentelemetry::metrics::v1::HistogramDataPoint;
+    use crate::proto::opentelemetry::metrics::v1::exemplar::Value as ExemplarValue;
 
     #[test]
     fn test_any_value() {
@@ -366,7 +370,6 @@ mod tests {
 
     #[test]
     fn test_metric_sum() {
-
 	let m1 = Metric::new_sum(
 	    "counter",
 	    Sum::new(AggregationTemporality::Delta,
@@ -412,7 +415,6 @@ mod tests {
 
     #[test]
     fn test_metric_gauge() {
-
 	let m1 = Metric::new_gauge(
 	    "gauge",
 	    Gauge::new(
@@ -445,6 +447,105 @@ mod tests {
 			start_time_unix_nano: 0,
 			time_unix_nano: 125_000_000_000u64,
 			value: Some(NumberValue::AsDouble(123f64)),
+		    },
+		],
+	    })),
+	};
+
+	assert_eq!(m1, m1_value);
+    }
+
+    #[test]
+    fn test_exemplar() {
+        let tid = TraceID([1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2]);
+        let sid = SpanID([1, 2, 1, 2, 1, 2, 1, 2]);
+
+	let e1 = Exemplar::new_double(124_500_000_000u64, 10.1)
+	    .trace_id(tid)
+	    .span_id(sid)
+	    .build();
+	let e1_value = Exemplar{
+	    filtered_attributes: vec![],
+	    trace_id: tid.0.to_vec(),
+	    span_id: sid.0.to_vec(),
+	    time_unix_nano: 124_500_000_000u64,
+	    value: Some(ExemplarValue::AsDouble(10.1)),
+	};
+
+	assert_eq!(e1, e1_value);
+    }
+
+    #[test]
+    fn test_metric_histogram() {
+        let tid = TraceID([1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2]);
+        let sid = SpanID([1, 2, 1, 2, 1, 2, 1, 2]);
+
+	let m1 = Metric::new_histogram(
+	    "histogram",
+	    Histogram::new(
+		AggregationTemporality::Delta,
+		vec![
+		    HistogramDataPoint::new(125_000_000_000u64, &[1u64, 2u64, 3u64], &[1.0, 10.0])
+			.start_time_unix_nano(124_000_000_000u64)
+			.exemplars(vec![
+			    Exemplar::new_double(124_500_000_000u64, 10.1)
+				.span_id(sid)
+				.trace_id(tid)
+				.build(),
+			])
+			.build(),
+		    HistogramDataPoint::new(126_000_000_000u64, &[3u64, 2u64, 1u64], &[1.0, 10.0])
+			.start_time_unix_nano(125_000_000_000u64)
+			.count(100u64)
+			.sum(1000.0)
+			.min(0.1)
+			.max(10.1)
+			.build(),
+		],
+	    ),
+	).build();
+
+	let m1_value = Metric{
+	    name: "histogram".to_string(),
+	    description: "".to_string(),
+	    unit: "".to_string(),
+	    metadata: vec![],
+	    data: Some(MetricData::Histogram(Histogram{
+		aggregation_temporality: AggregationTemporality::Delta as i32,
+		data_points: vec![
+		    HistogramDataPoint{
+			attributes: vec![],
+			exemplars: vec![
+			    Exemplar{
+				filtered_attributes: vec![],
+				span_id: sid.0.to_vec(),
+				trace_id: tid.0.to_vec(),
+				time_unix_nano: 124_500_000_000u64,
+				value: Some(ExemplarValue::AsDouble(10.1)),
+			    },
+			],
+			flags: 0,
+			start_time_unix_nano: 124_000_000_000u64,
+			time_unix_nano: 125_000_000_000u64,
+			bucket_counts: vec![1u64, 2u64, 3u64],
+			explicit_bounds: vec![1.0, 10.0],
+			count: 0,
+			sum: None,
+			min: None,
+			max: None,
+		    },
+		    HistogramDataPoint{
+			attributes: vec![],
+			exemplars: vec![],
+			flags: 0,
+			start_time_unix_nano: 125_000_000_000u64,
+			time_unix_nano: 126_000_000_000u64,
+			bucket_counts: vec![3u64, 2u64, 1u64],
+			explicit_bounds: vec![1.0, 10.0],
+			count: 100,
+			sum: Some(1000.0),
+			min: Some(0.1),
+			max: Some(10.1),
 		    },
 		],
 	    })),
