@@ -612,6 +612,10 @@ pub mod summary_data_point {
     ///
     /// See the following issue for more context:
     /// <https://github.com/open-telemetry/opentelemetry-proto/issues/125>
+    #[crate::pdata::otlp::qualified(
+        "opentelemetry.proto.metrics.v1.SummaryDataPoint.ValueAtQuantile"
+    )]
+    #[derive(crate::pdata::otlp::Message)]
     #[derive(Clone, Copy, PartialEq, ::prost::Message)]
     pub struct ValueAtQuantile {
         /// The quantile of a distribution. Must be in the interval

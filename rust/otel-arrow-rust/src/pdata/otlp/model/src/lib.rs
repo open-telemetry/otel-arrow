@@ -117,8 +117,9 @@ pub static ALL_KNOWN_TYPES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         "opentelemetry.proto.metrics.v1.HistogramDataPoint",
         "opentelemetry.proto.metrics.v1.NumberDataPoint",
         "opentelemetry.proto.metrics.v1.SummaryDataPoint",
+        "opentelemetry.proto.metrics.v1.SummaryDataPoint.ValueAtQuantile",
         "opentelemetry.proto.metrics.v1.Exemplar",
-	// TODO: A few remaining types: explicit/expohisto buckets, percentiles, etc
+	// TODO: A few remaining types: expohisto buckets
     ]
 });
 
@@ -289,12 +290,24 @@ pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
             params: Some(vec!["aggregation_temporality", "data_points"]),
         },
         Detail {
+            name: "opentelemetry.proto.metrics.v1.Summary",
+            params: Some(vec!["data_points"]),
+        },
+        Detail {
             name: "opentelemetry.proto.metrics.v1.NumberDataPoint",
             params: Some(vec!["time_unix_nano", "value"]),
         },
         Detail {
             name: "opentelemetry.proto.metrics.v1.HistogramDataPoint",
             params: Some(vec!["time_unix_nano", "bucket_counts", "explicit_bounds"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.metrics.v1.SummaryDataPoint",
+            params: Some(vec!["time_unix_nano", "quantile_values"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.metrics.v1.SummaryDataPoint.ValueAtQuantile",
+            params: Some(vec!["quantile", "value"]),
         },
         Detail {
             name: "opentelemetry.proto.metrics.v1.Exemplar",

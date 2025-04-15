@@ -21,12 +21,26 @@ mod tests {
     use crate::proto::opentelemetry::common::v1::KeyValue;
     use crate::proto::opentelemetry::common::v1::KeyValueList;
     use crate::proto::opentelemetry::common::v1::any_value::Value;
-    use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::proto::opentelemetry::logs::v1::LogRecord;
     use crate::proto::opentelemetry::logs::v1::LogRecordFlags;
     use crate::proto::opentelemetry::logs::v1::ResourceLogs;
     use crate::proto::opentelemetry::logs::v1::ScopeLogs;
     use crate::proto::opentelemetry::logs::v1::SeverityNumber;
+    use crate::proto::opentelemetry::metrics::v1::AggregationTemporality;
+    use crate::proto::opentelemetry::metrics::v1::Exemplar;
+    use crate::proto::opentelemetry::metrics::v1::Gauge;
+    use crate::proto::opentelemetry::metrics::v1::Histogram;
+    use crate::proto::opentelemetry::metrics::v1::HistogramDataPoint;
+    use crate::proto::opentelemetry::metrics::v1::Metric;
+    use crate::proto::opentelemetry::metrics::v1::NumberDataPoint;
+    use crate::proto::opentelemetry::metrics::v1::Sum;
+    use crate::proto::opentelemetry::metrics::v1::Summary;
+    use crate::proto::opentelemetry::metrics::v1::SummaryDataPoint;
+    use crate::proto::opentelemetry::metrics::v1::exemplar::Value as ExemplarValue;
+    use crate::proto::opentelemetry::metrics::v1::metric::Data as MetricData;
+    use crate::proto::opentelemetry::metrics::v1::number_data_point::Value as NumberValue;
+    use crate::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
+    use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::proto::opentelemetry::trace::v1::ResourceSpans;
     use crate::proto::opentelemetry::trace::v1::ScopeSpans;
     use crate::proto::opentelemetry::trace::v1::Span;
@@ -37,17 +51,6 @@ mod tests {
     use crate::proto::opentelemetry::trace::v1::span::Link;
     use crate::proto::opentelemetry::trace::v1::span::SpanKind;
     use crate::proto::opentelemetry::trace::v1::status::StatusCode;
-    use crate::proto::opentelemetry::metrics::v1::AggregationTemporality;
-    use crate::proto::opentelemetry::metrics::v1::Exemplar;
-    use crate::proto::opentelemetry::metrics::v1::Metric;
-    use crate::proto::opentelemetry::metrics::v1::metric::Data as MetricData;
-    use crate::proto::opentelemetry::metrics::v1::NumberDataPoint;
-    use crate::proto::opentelemetry::metrics::v1::number_data_point::Value as NumberValue;
-    use crate::proto::opentelemetry::metrics::v1::Sum;
-    use crate::proto::opentelemetry::metrics::v1::Gauge;
-    use crate::proto::opentelemetry::metrics::v1::Histogram;
-    use crate::proto::opentelemetry::metrics::v1::HistogramDataPoint;
-    use crate::proto::opentelemetry::metrics::v1::exemplar::Value as ExemplarValue;
 
     #[test]
     fn test_any_value() {
@@ -553,4 +556,91 @@ mod tests {
 
 	assert_eq!(m1, m1_value);
     }
+
+    #[test]
+    fn test_metric_summary() {
+	let m1 = Metric::new_summary(
+	    "summary",
+	    Summary::new(
+		vec![
+		    SummaryDataPoint::new(125_000_000_000u64, vec![
+			    ValueAtQuantile::new(0.1, 0.1),
+			    ValueAtQuantile::new(0.5, 2.1),
+			    ValueAtQuantile::new(1.0, 10.1),
+		    ])
+			.start_time_unix_nano(124_000_000_000u64)
+			.count(100u64)
+			.sum(1000.0)
+			.build(),
+		    SummaryDataPoint::new(126_000_000_000u64, vec![
+			    ValueAtQuantile::new(0.1, 0.5),
+			    ValueAtQuantile::new(0.5, 2.5),
+			    ValueAtQuantile::new(1.0, 10.5),
+		    ])
+			.start_time_unix_nano(124_000_000_000u64)
+			.count(200u64)
+			.sum(2000.0)
+			.build(),
+		],
+	    ),
+	).build();
+
+	let m1_value = Metric{
+	    name: "summary".to_string(),
+	    description: "".to_string(),
+	    unit: "".to_string(),
+	    metadata: vec![],
+	    data: Some(MetricData::Summary(Summary{
+		data_points: vec![
+		    SummaryDataPoint{
+			attributes: vec![],
+			flags: 0,
+			start_time_unix_nano: 124_000_000_000u64,
+			time_unix_nano: 125_000_000_000u64,
+			quantile_values: vec![
+			    ValueAtQuantile{
+				quantile: 0.1,
+				value: 0.1,
+			    },
+			    ValueAtQuantile{
+				quantile: 0.5,
+				value: 2.1,
+			    },
+			    ValueAtQuantile{
+				quantile: 1.0,
+				value: 10.1,
+			    },
+			],
+			count: 100,
+			sum: 1000.0,
+		    },
+		    SummaryDataPoint{
+			attributes: vec![],
+			flags: 0,
+			start_time_unix_nano: 124_000_000_000u64,
+			time_unix_nano: 126_000_000_000u64,
+			quantile_values: vec![
+			    ValueAtQuantile{
+				quantile: 0.1,
+				value: 0.5,
+			    },
+			    ValueAtQuantile{
+				quantile: 0.5,
+				value: 2.5,
+			    },
+			    ValueAtQuantile{
+				quantile: 1.0,
+				value: 10.5,
+			    },
+			],
+			count: 200,
+			sum: 2000.0,
+		    },
+		],
+	    })),
+	};
+
+	assert_eq!(m1, m1_value);
+    }
+    
 }
