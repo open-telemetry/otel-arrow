@@ -71,15 +71,14 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
             } else {
                 None
             }
-        })
-        .unwrap();
+        }).unwrap();
 
     // Get optional details for the model.
     let detail = otlp_model::DETAILS
         .iter()
         .find(|detail| detail.name == type_name)
         .cloned()
-        .unwrap_or(otlp_model::Detail::default());
+        .unwrap();
 
     // Check if this struct has a oneof field
     let oneof_mapping = otlp_model::ONEOF_MAPPINGS
@@ -87,7 +86,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         .find(|mapping| mapping.field.starts_with(&type_name));
 
     // Extract param names only from params or get an empty Vec if none exists
-    let param_names = detail.params.unwrap_or_else(Vec::new);
+    let param_names = detail.params.unwrap();
 
     // Extract all fields from the struct definition
     let struct_fields = match &input.data {
@@ -104,7 +103,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     // If there are no fields, it's either an empty message or an enum,
     // either way should not be listed, no builder is needed.
     if struct_fields.len() == 0 {
-	panic!("invalid Message derivation: {}", type_name);
+	panic!("message with empty fields")
     }
 
     // Function to check if a field is marked as optional
