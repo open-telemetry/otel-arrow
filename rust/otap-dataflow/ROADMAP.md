@@ -15,10 +15,18 @@ This document outlines the planned features and milestones for this project.
 For the moment, these milestones are very high-level and are subject to
 significant changes.
 
-### Continuous Benchmark
+### CI/CD
 
+- [ ] Github action setup
+- [ ] Linting (Clippy)
+- [ ] Formatting
+- [ ] Unit tests
+- [ ] Integration tests
+- [ ] Code coverage (target: 80%)
+- [ ] Documentation generation
 - [ ] Continuous benchmarking and performance tracking
-
+  - [ ] Comparison with Go Collector
+  
 ### Dataflow Engine Foundations
 
 - [ ] Receiver, Processor, and Exporter traits

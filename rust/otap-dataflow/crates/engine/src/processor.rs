@@ -14,9 +14,11 @@
 //! # Lifecycle
 //!
 //! 1. The processor is instantiated and configured
-//! 2. The `process` method is called for each incoming message
-//! 3. The processor processes both internal control messages and data messages
-//! 4. The processor shuts down when it receives a `Shutdown` control message or encounters a fatal error
+//! 2. The processor receives and processes both data messages and control messages
+//! 3. For each message, the processor can transform it, filter it, or split it into multiple messages
+//! 4. The processor can maintain state between processing calls if needed
+//! 5. The processor responds to control messages such as Config, TimerTick, or Shutdown
+//! 6. The processor shuts down when it receives a `Shutdown` control message or encounters a fatal error
 //!
 //! # Thread Safety
 //!
@@ -108,7 +110,7 @@ impl<Msg> EffectHandler<Msg> {
     ///
     /// # Errors
     ///
-    /// Returns an [`Error::ProcessorError`] if the message could not be sent.
+    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
     pub async fn send_message(&self, data: Msg) -> Result<(), Error<Msg>> {
         self.msg_sender.send_async(data).await?;
         Ok(())
@@ -185,7 +187,7 @@ mod tests {
         let config_count = Rc::new(RefCell::new(0));
         let shutdown_count = Rc::new(RefCell::new(0));
 
-        // Create the exporter instance.
+        // Create the processor instance.
         let mut processor = Box::new(TestProcessor {
             timer_tick_count: timer_tick_count.clone(),
             message_count: message_count.clone(),
@@ -196,7 +198,7 @@ mod tests {
         // Create a channel for the effect handler
         let (tx, _rx) = mpsc::Channel::new(10);
 
-        // Spawn the exporter's event loop.
+        // Spawn the processor's event loop.
         _ = local_tasks.spawn_local(async move {
             let mut effect_handler = EffectHandler::new("test_processor", tx);
 
