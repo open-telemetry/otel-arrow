@@ -534,6 +534,10 @@ pub struct ExponentialHistogramDataPoint {
 pub mod exponential_histogram_data_point {
     /// Buckets are a set of bucket counts, encoded in a contiguous array
     /// of counts.
+    #[crate::pdata::otlp::qualified(
+        "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint.Buckets"
+    )]
+    #[derive(crate::pdata::otlp::Message)]
     #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Buckets {
         /// Offset is the bucket index of the first entry in the bucket_counts array.

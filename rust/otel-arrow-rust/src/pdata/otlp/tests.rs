@@ -28,6 +28,8 @@ mod tests {
     use crate::proto::opentelemetry::logs::v1::SeverityNumber;
     use crate::proto::opentelemetry::metrics::v1::AggregationTemporality;
     use crate::proto::opentelemetry::metrics::v1::Exemplar;
+    use crate::proto::opentelemetry::metrics::v1::ExponentialHistogram;
+    use crate::proto::opentelemetry::metrics::v1::ExponentialHistogramDataPoint;
     use crate::proto::opentelemetry::metrics::v1::Gauge;
     use crate::proto::opentelemetry::metrics::v1::Histogram;
     use crate::proto::opentelemetry::metrics::v1::HistogramDataPoint;
@@ -37,6 +39,7 @@ mod tests {
     use crate::proto::opentelemetry::metrics::v1::Summary;
     use crate::proto::opentelemetry::metrics::v1::SummaryDataPoint;
     use crate::proto::opentelemetry::metrics::v1::exemplar::Value as ExemplarValue;
+    use crate::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
     use crate::proto::opentelemetry::metrics::v1::metric::Data as MetricData;
     use crate::proto::opentelemetry::metrics::v1::number_data_point::Value as NumberValue;
     use crate::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
@@ -642,5 +645,60 @@ mod tests {
 
 	assert_eq!(m1, m1_value);
     }
-    
+
+    #[test]
+    fn test_metric_exponential_histogram() {
+        let m1 = Metric::new_exponential_histogram(
+            "exp_histogram",
+            ExponentialHistogram::new(
+                AggregationTemporality::Delta,
+                vec![
+		    ExponentialHistogramDataPoint::new(
+			125_000_000_000u64, 7,
+			Buckets::new(1, vec![3, 4, 5]))
+                        .start_time_unix_nano(124_000_000_000u64)
+                        .count(17u64)
+                        .zero_count(2u64)
+			.negative(Buckets::new(0, vec![1, 2]))
+			.build()
+		]
+            ),
+        ).build();
+
+        let m1_value = Metric{
+            name: "exp_histogram".to_string(),
+            description: "".to_string(),
+            unit: "".to_string(),
+            metadata: vec![],
+            data: Some(MetricData::ExponentialHistogram(ExponentialHistogram{
+                aggregation_temporality: AggregationTemporality::Delta as i32,
+                data_points: vec![
+                    ExponentialHistogramDataPoint{
+                        attributes: vec![],
+                        exemplars: vec![],
+                        flags: 0,
+                        start_time_unix_nano: 124_000_000_000u64,
+                        time_unix_nano: 125_000_000_000u64,
+                        count: 17,
+                        sum: None,
+                        min: None,
+                        max: None,
+                        scale: 7,
+                        positive: Some(Buckets {
+                            offset: 1,
+                            bucket_counts: vec![3, 4, 5],
+                        }),
+                        negative: Some(Buckets {
+                            offset: 0,
+                            bucket_counts: vec![1, 2],
+                        }),
+                        zero_count: 2,
+                        zero_threshold: 0.0,
+                    },
+                ],
+            })),
+        };
+
+        assert_eq!(m1, m1_value);
+    }
 }

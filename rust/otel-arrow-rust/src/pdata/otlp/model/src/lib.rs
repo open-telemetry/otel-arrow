@@ -78,51 +78,6 @@ pub static ONEOF_MAPPINGS: LazyLock<Vec<OneofMapping>> = LazyLock::new(|| {
     ]
 });
 
-pub static ALL_KNOWN_TYPES: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
-    vec![
-        // Common types
-        "opentelemetry.proto.common.v1.AnyValue",
-        "opentelemetry.proto.common.v1.EntityRef",
-        "opentelemetry.proto.common.v1.InstrumentationScope",
-        "opentelemetry.proto.common.v1.KeyValue",
-        "opentelemetry.proto.common.v1.KeyValueList",
-        "opentelemetry.proto.common.v1.ArrayValue",
-        // Resource types
-        "opentelemetry.proto.resource.v1.Resource",
-        // Log types
-        "opentelemetry.proto.logs.v1.LogsData",
-        "opentelemetry.proto.logs.v1.ResourceLogs",
-        "opentelemetry.proto.logs.v1.ScopeLogs",
-        "opentelemetry.proto.logs.v1.LogRecord",
-        // Trace types
-        "opentelemetry.proto.trace.v1.TracesData",
-        "opentelemetry.proto.trace.v1.ResourceSpans",
-        "opentelemetry.proto.trace.v1.ScopeSpans",
-        "opentelemetry.proto.trace.v1.Span",
-        "opentelemetry.proto.trace.v1.Span.Kind",
-        "opentelemetry.proto.trace.v1.Span.Link",
-        "opentelemetry.proto.trace.v1.Span.Event",
-        "opentelemetry.proto.trace.v1.Status",
-        // Metric types
-        "opentelemetry.proto.metrics.v1.MetricsData",
-        "opentelemetry.proto.metrics.v1.ResourceMetrics",
-        "opentelemetry.proto.metrics.v1.ScopeMetrics",
-        "opentelemetry.proto.metrics.v1.Metric",
-        "opentelemetry.proto.metrics.v1.Sum",
-        "opentelemetry.proto.metrics.v1.Gauge",
-        "opentelemetry.proto.metrics.v1.Histogram",
-        "opentelemetry.proto.metrics.v1.ExponentialHistogram",
-        "opentelemetry.proto.metrics.v1.Summary",
-        "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint",
-        "opentelemetry.proto.metrics.v1.HistogramDataPoint",
-        "opentelemetry.proto.metrics.v1.NumberDataPoint",
-        "opentelemetry.proto.metrics.v1.SummaryDataPoint",
-        "opentelemetry.proto.metrics.v1.SummaryDataPoint.ValueAtQuantile",
-        "opentelemetry.proto.metrics.v1.Exemplar",
-	// TODO: A few remaining types: expohisto buckets
-    ]
-});
-
 pub struct Override {
     pub datatype: &'static str,
     pub fieldtype: &'static str,
@@ -290,6 +245,10 @@ pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
             params: Some(vec!["aggregation_temporality", "data_points"]),
         },
         Detail {
+            name: "opentelemetry.proto.metrics.v1.ExponentialHistogram",
+            params: Some(vec!["aggregation_temporality", "data_points"]),
+        },
+        Detail {
             name: "opentelemetry.proto.metrics.v1.Summary",
             params: Some(vec!["data_points"]),
         },
@@ -300,6 +259,14 @@ pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
         Detail {
             name: "opentelemetry.proto.metrics.v1.HistogramDataPoint",
             params: Some(vec!["time_unix_nano", "bucket_counts", "explicit_bounds"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint",
+            params: Some(vec!["time_unix_nano", "scale", "positive"]),
+        },
+        Detail {
+            name: "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint.Buckets",
+            params: Some(vec!["offset", "bucket_counts"]),
         },
         Detail {
             name: "opentelemetry.proto.metrics.v1.SummaryDataPoint",
@@ -318,7 +285,8 @@ pub static DETAILS: LazyLock<Vec<Detail>> = LazyLock::new(|| {
 
 /// This is the entry point from build.rs where we configure prost/tonic.
 pub fn add_type_attributes(mut builder: tonic_build::Builder) -> tonic_build::Builder {
-    for name in ALL_KNOWN_TYPES.iter() {
+    for detail in DETAILS.iter() {
+	let name = detail.name;
         builder = builder.type_attribute(
             name,
             &format!(r#"#[crate::pdata::otlp::qualified("{}")]"#, name),
