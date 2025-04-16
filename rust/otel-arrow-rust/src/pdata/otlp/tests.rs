@@ -164,7 +164,7 @@ mod tests {
             value.event_name = name.into();
             value
         };
-        let lr1 = LogRecord::new(ts, sev, name).build();
+        let lr1 = LogRecord::new(ts, sev, name);
 
         assert_eq!(lr1, lr1_value);
     }
@@ -188,18 +188,18 @@ mod tests {
             value.flags = flags as u32;
             value
         };
-        let lr1 = LogRecord::new(ts, sev, name)
+        let lr1 = LogRecord::build(ts, sev, name)
             .body(AnyValue::new_string(msg))
             .severity_text(sevtxt)
             .flags(flags)
-            .build();
+            .finish();
 
         assert_eq!(lr1, lr1_value);
     }
 
     #[test]
     fn test_instrumentation_scope_default() {
-        let is1 = InstrumentationScope::new("library").build();
+        let is1 = InstrumentationScope::new("library");
         let mut is1_value = InstrumentationScope::default();
         is1_value.name = "library".into();
 
@@ -211,11 +211,11 @@ mod tests {
         let kv1 = KeyValue::new("k1", AnyValue::new_string("v1"));
         let kv2 = KeyValue::new("k2", AnyValue::new_int(2));
         let kvs = vec![kv1, kv2];
-        let is1 = InstrumentationScope::new("library")
+        let is1 = InstrumentationScope::build("library")
             .version("v1.0")
             .attributes(kvs.clone())
             .dropped_attributes_count(1u32)
-            .build();
+            .finish();
         let mut is1_value = InstrumentationScope::default();
         is1_value.name = "library".into();
         is1_value.version = "v1.0".into();
@@ -232,20 +232,20 @@ mod tests {
         let kvs1 = vec![kv1, kv2];
         let body2 = AnyValue::new_string("message text");
 
-        let is1 = InstrumentationScope::new("library").build();
+        let is1 = InstrumentationScope::new("library");
 
-        let lr1 = LogRecord::new(2_000_000_000u64, SeverityNumber::Info, "event1")
+        let lr1 = LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
             .attributes(kvs1.clone())
-            .build();
-        let lr2 = LogRecord::new(3_000_000_000u64, SeverityNumber::Info2, "event2")
+            .finish();
+        let lr2 = LogRecord::build(3_000_000_000u64, SeverityNumber::Info2, "event2")
             .body(body2)
-            .build();
+            .finish();
         let lrs = vec![lr1, lr2];
 
-        let sl = ScopeLogs::new(is1.clone())
+        let sl = ScopeLogs::build(is1.clone())
             .log_records(lrs.clone())
             .schema_url("http://schema.opentelemetry.io")
-            .build();
+            .finish();
 
         let sl_value = ScopeLogs {
             scope: Some(is1),
@@ -258,10 +258,10 @@ mod tests {
 
     #[test]
     fn test_entity() {
-        let er1 = EntityRef::new("entity")
+        let er1 = EntityRef::build("entity")
             .id_keys(&["a".to_string(), "b".to_string(), "c".to_string()])
             .description_keys(&["d".to_string(), "e".to_string(), "f".to_string()])
-            .build();
+            .finish();
 
         let er1_value = EntityRef {
             r#type: "entity".into(),
@@ -275,14 +275,14 @@ mod tests {
 
     #[test]
     fn test_resource() {
-        let eref1 = EntityRef::new("etype1").build();
-        let eref2 = EntityRef::new("etype2").build();
+        let eref1 = EntityRef::new("etype1");
+        let eref2 = EntityRef::new("etype2");
 
         let erefs = vec![eref1, eref2];
 
-        let res1 = Resource::new(&[KeyValue::new("k1", AnyValue::new_double(1.23))])
+        let res1 = Resource::build(&[KeyValue::new("k1", AnyValue::new_double(1.23))])
             .entity_refs(erefs.clone())
-            .build();
+            .finish();
         let res1_value = Resource {
             attributes: vec![KeyValue::new("k1", AnyValue::new_double(1.23))],
             entity_refs: erefs,
@@ -298,21 +298,21 @@ mod tests {
         let kv2 = KeyValue::new("k2", AnyValue::new_int(2));
         let kvs = vec![kv1, kv2];
 
-        let is1 = InstrumentationScope::new("library").build();
+        let is1 = InstrumentationScope::new("library");
 
-        let lr1 = LogRecord::new(2_000_000_000u64, SeverityNumber::Info, "event1").build();
-        let lr2 = LogRecord::new(3_000_000_000u64, SeverityNumber::Info2, "event2").build();
+        let lr1 = LogRecord::new(2_000_000_000u64, SeverityNumber::Info, "event1");
+        let lr2 = LogRecord::new(3_000_000_000u64, SeverityNumber::Info2, "event2");
         let lrs = vec![lr1, lr2];
 
-        let sl1 = ScopeLogs::new(is1.clone()).log_records(lrs.clone()).build();
+        let sl1 = ScopeLogs::build(is1.clone()).log_records(lrs.clone()).finish();
         let sl2 = sl1.clone();
         let sls = vec![sl1, sl2];
 
-        let res = Resource::new(kvs).build();
+        let res = Resource::new(kvs);
 
-        let rl = ResourceLogs::new(res.clone())
+        let rl = ResourceLogs::build(res.clone())
             .scope_logs(sls.clone())
-            .build();
+            .finish();
 
         let rl_value = ResourceLogs {
             resource: Some(res),
@@ -329,39 +329,39 @@ mod tests {
         let kv2 = KeyValue::new("k2", AnyValue::new_int(2));
         let kvs = vec![kv1, kv2];
 
-        let is1 = InstrumentationScope::new("library").build();
+        let is1 = InstrumentationScope::new("library");
 
         let tid = TraceID([1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2]);
         let sid = SpanID([1, 2, 1, 2, 1, 2, 1, 2]);
         let psid = SpanID([2, 1, 2, 1, 2, 1, 2, 1]);
 
-        let s1 = Span::new(tid, sid, "myop", 123_000_000_000u64)
+        let s1 = Span::build(tid, sid, "myop", 123_000_000_000u64)
             .parent_span_id(psid)
             .attributes(kvs.clone())
             .flags(SpanFlags::ContextHasIsRemoteMask)
             .kind(SpanKind::Server)
             .trace_state("ot=th:0")
-            .links(vec![Link::new(tid, sid).build()])
-            .events(vec![Event::new("oops", 123_500_000_000u64).build()])
+            .links(vec![Link::new(tid, sid)])
+            .events(vec![Event::new("oops", 123_500_000_000u64)])
             .end_time_unix_nano(124_000_000_000u64)
             .status(Status::new("oh my!", StatusCode::Error))
             .dropped_attributes_count(1u32)
             .dropped_events_count(1u32)
             .dropped_links_count(1u32)
-            .build();
+            .finish();
 
         let s2 = s1.clone();
         let sps = vec![s1, s2];
 
-        let ss1 = ScopeSpans::new(is1.clone()).spans(sps.clone()).build();
+        let ss1 = ScopeSpans::build(is1.clone()).spans(sps.clone()).finish();
         let ss2 = ss1.clone();
         let sss = vec![ss1, ss2];
 
-        let res = Resource::new(vec![]).build();
+        let res = Resource::new(vec![]);
 
-        let rs1 = ResourceSpans::new(res.clone())
+        let rs1 = ResourceSpans::build(res.clone())
             .scope_spans(sss.clone())
-            .build();
+            .finish();
         let rs2 = rs1.clone();
         let rss = vec![rs1, rs2];
 
@@ -381,11 +381,11 @@ mod tests {
 	    Sum::new(AggregationTemporality::Delta,
 		     true,
 		     vec![
-			 NumberDataPoint::new_int(125_000_000_000u64, 123i64).build(),
-			 NumberDataPoint::new_double(125_000_000_000u64, 123f64).build(),
+			 NumberDataPoint::new_int(125_000_000_000u64, 123i64),
+			 NumberDataPoint::new_double(125_000_000_000u64, 123f64),
 		     ],
 	    ),
-	).build();
+	);
 
 	let m1_value = Metric{
 	    name: "counter".to_string(),
@@ -425,11 +425,11 @@ mod tests {
 	    "gauge",
 	    Gauge::new(
 		     vec![
-			 NumberDataPoint::new_int(125_000_000_000u64, 123i64).build(),
-			 NumberDataPoint::new_double(125_000_000_000u64, 123f64).build(),
+			 NumberDataPoint::new_int(125_000_000_000u64, 123i64),
+			 NumberDataPoint::new_double(125_000_000_000u64, 123f64),
 		     ],
 	    ),
-	).build();
+	);
 
 	let m1_value = Metric{
 	    name: "gauge".to_string(),
@@ -466,10 +466,10 @@ mod tests {
         let tid = TraceID([1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2]);
         let sid = SpanID([1, 2, 1, 2, 1, 2, 1, 2]);
 
-	let e1 = Exemplar::new_double(124_500_000_000u64, 10.1)
+	let e1 = Exemplar::build_double(124_500_000_000u64, 10.1)
 	    .trace_id(tid)
 	    .span_id(sid)
-	    .build();
+	    .finish();
 	let e1_value = Exemplar{
 	    filtered_attributes: vec![],
 	    trace_id: tid.0.to_vec(),
@@ -491,25 +491,25 @@ mod tests {
 	    Histogram::new(
 		AggregationTemporality::Delta,
 		vec![
-		    HistogramDataPoint::new(125_000_000_000u64, &[1u64, 2u64, 3u64], &[1.0, 10.0])
+		    HistogramDataPoint::build(125_000_000_000u64, &[1u64, 2u64, 3u64], &[1.0, 10.0])
 			.start_time_unix_nano(124_000_000_000u64)
 			.exemplars(vec![
-			    Exemplar::new_double(124_500_000_000u64, 10.1)
+			    Exemplar::build_double(124_500_000_000u64, 10.1)
 				.span_id(sid)
 				.trace_id(tid)
-				.build(),
+				.finish(),
 			])
-			.build(),
-		    HistogramDataPoint::new(126_000_000_000u64, &[3u64, 2u64, 1u64], &[1.0, 10.0])
+			.finish(),
+		    HistogramDataPoint::build(126_000_000_000u64, &[3u64, 2u64, 1u64], &[1.0, 10.0])
 			.start_time_unix_nano(125_000_000_000u64)
 			.count(100u64)
 			.sum(1000.0)
 			.min(0.1)
 			.max(10.1)
-			.build(),
+			.finish(),
 		],
 	    ),
-	).build();
+	);
 
 	let m1_value = Metric{
 	    name: "histogram".to_string(),
@@ -566,7 +566,7 @@ mod tests {
 	    "summary",
 	    Summary::new(
 		vec![
-		    SummaryDataPoint::new(125_000_000_000u64, vec![
+		    SummaryDataPoint::build(125_000_000_000u64, vec![
 			    ValueAtQuantile::new(0.1, 0.1),
 			    ValueAtQuantile::new(0.5, 2.1),
 			    ValueAtQuantile::new(1.0, 10.1),
@@ -574,8 +574,8 @@ mod tests {
 			.start_time_unix_nano(124_000_000_000u64)
 			.count(100u64)
 			.sum(1000.0)
-			.build(),
-		    SummaryDataPoint::new(126_000_000_000u64, vec![
+			.finish(),
+		    SummaryDataPoint::build(126_000_000_000u64, vec![
 			    ValueAtQuantile::new(0.1, 0.5),
 			    ValueAtQuantile::new(0.5, 2.5),
 			    ValueAtQuantile::new(1.0, 10.5),
@@ -583,10 +583,10 @@ mod tests {
 			.start_time_unix_nano(124_000_000_000u64)
 			.count(200u64)
 			.sum(2000.0)
-			.build(),
+			.finish(),
 		],
 	    ),
-	).build();
+	);
 
 	let m1_value = Metric{
 	    name: "summary".to_string(),
@@ -653,17 +653,17 @@ mod tests {
             ExponentialHistogram::new(
                 AggregationTemporality::Delta,
                 vec![
-		    ExponentialHistogramDataPoint::new(
+		    ExponentialHistogramDataPoint::build(
 			125_000_000_000u64, 7,
 			Buckets::new(1, vec![3, 4, 5]))
                         .start_time_unix_nano(124_000_000_000u64)
                         .count(17u64)
                         .zero_count(2u64)
 			.negative(Buckets::new(0, vec![1, 2]))
-			.build()
+			.finish()
 		]
             ),
-        ).build();
+        );
 
         let m1_value = Metric{
             name: "exp_histogram".to_string(),
