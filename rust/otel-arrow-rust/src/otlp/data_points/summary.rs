@@ -18,9 +18,9 @@ use crate::error;
 use crate::otlp::attributes::store::Attribute32Store;
 use crate::otlp::data_points::data_point_store::SummaryDataPointsStore;
 use crate::otlp::metric::AppendAndGet;
+use crate::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
 use crate::schema::consts;
 use arrow::array::{Array, ArrayRef, Float64Array, ListArray, RecordBatch, StructArray};
-use crate::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
 use snafu::OptionExt;
 
 impl SummaryDataPointsStore {

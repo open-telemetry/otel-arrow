@@ -15,10 +15,10 @@ use std::path::Path;
 fn main() {
     let out_dir = Path::new("src/proto");
     let base = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    
+
     // Generate OTAP (Arrow) protos
     generate_otap_protos(out_dir, &base);
-    
+
     // Generate OTLP protos
     generate_otlp_protos(out_dir, &base);
 }

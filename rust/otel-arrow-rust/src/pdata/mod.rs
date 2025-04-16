@@ -25,7 +25,7 @@ pub struct TraceID([u8; 16]);
 
 impl Into<Vec<u8>> for TraceID {
     fn into(self) -> Vec<u8> {
-	self.0.to_vec()
+        self.0.to_vec()
     }
 }
 
@@ -34,6 +34,6 @@ pub struct SpanID([u8; 8]);
 
 impl Into<Vec<u8>> for SpanID {
     fn into(self) -> Vec<u8> {
-	self.0.to_vec()
+        self.0.to_vec()
     }
 }

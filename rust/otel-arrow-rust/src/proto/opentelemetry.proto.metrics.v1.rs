@@ -28,8 +28,7 @@
 /// When new fields are added into this message, the OTLP request MUST be updated
 /// as well.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.MetricsData")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct MetricsData {
     /// An array of ResourceMetrics.
     /// For data coming from a single resource this array will typically contain
@@ -41,8 +40,7 @@ pub struct MetricsData {
 }
 /// A collection of ScopeMetrics from a Resource.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.ResourceMetrics")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct ResourceMetrics {
     /// The resource for the metrics in this message.
     /// If this field is not set then no resource info is known.
@@ -62,8 +60,7 @@ pub struct ResourceMetrics {
 }
 /// A collection of Metrics produced by an Scope.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.ScopeMetrics")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct ScopeMetrics {
     /// The instrumentation scope information for the metrics in this message.
     /// Semantically when InstrumentationScope isn't set, it is equivalent with
@@ -166,8 +163,7 @@ pub struct ScopeMetrics {
 /// when the start time is truly unknown, setting StartTimeUnixNano is
 /// strongly encouraged.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.Metric")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct Metric {
     /// name of the metric.
     #[prost(string, tag = "1")]
@@ -223,8 +219,7 @@ pub mod metric {
 /// AggregationTemporality is not included. Consequently, this also means
 /// "StartTimeUnixNano" is ignored for all data points.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.Gauge")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct Gauge {
     #[prost(message, repeated, tag = "1")]
     pub data_points: ::prost::alloc::vec::Vec<NumberDataPoint>,
@@ -232,8 +227,7 @@ pub struct Gauge {
 /// Sum represents the type of a scalar metric that is calculated as a sum of all
 /// reported measurements over a time interval.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.Sum")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct Sum {
     #[prost(message, repeated, tag = "1")]
     pub data_points: ::prost::alloc::vec::Vec<NumberDataPoint>,
@@ -248,8 +242,7 @@ pub struct Sum {
 /// Histogram represents the type of a metric that is calculated by aggregating
 /// as a Histogram of all reported measurements over a time interval.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.Histogram")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct Histogram {
     #[prost(message, repeated, tag = "1")]
     pub data_points: ::prost::alloc::vec::Vec<HistogramDataPoint>,
@@ -261,8 +254,7 @@ pub struct Histogram {
 /// ExponentialHistogram represents the type of a metric that is calculated by aggregating
 /// as a ExponentialHistogram of all reported double measurements over a time interval.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.ExponentialHistogram")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct ExponentialHistogram {
     #[prost(message, repeated, tag = "1")]
     pub data_points: ::prost::alloc::vec::Vec<ExponentialHistogramDataPoint>,
@@ -281,8 +273,7 @@ pub struct ExponentialHistogram {
 /// because the count and sum fields of a SummaryDataPoint are assumed to be
 /// cumulative values.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.Summary")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct Summary {
     #[prost(message, repeated, tag = "1")]
     pub data_points: ::prost::alloc::vec::Vec<SummaryDataPoint>,
@@ -290,8 +281,7 @@ pub struct Summary {
 /// NumberDataPoint is a single data point in a timeseries that describes the
 /// time-varying scalar value of a metric.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.NumberDataPoint")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct NumberDataPoint {
     /// The set of key/value pairs that uniquely identify the timeseries from
     /// where this point belongs. The list may be empty (may contain 0 elements).
@@ -348,8 +338,7 @@ pub mod number_data_point {
 /// "explicit_bounds" and "bucket_counts" must be omitted and only "count" and
 /// "sum" are known.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.HistogramDataPoint")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct HistogramDataPoint {
     /// The set of key/value pairs that uniquely identify the timeseries from
     /// where this point belongs. The list may be empty (may contain 0 elements).
@@ -434,11 +423,8 @@ pub struct HistogramDataPoint {
 /// summary statistics for a population of values, it may optionally contain the
 /// distribution of those values across a set of buckets.
 ///
-#[crate::pdata::otlp::qualified(
-    "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint"
-)]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint")]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct ExponentialHistogramDataPoint {
     /// The set of key/value pairs that uniquely identify the timeseries from
     /// where this point belongs. The list may be empty (may contain 0 elements).
@@ -537,8 +523,7 @@ pub mod exponential_histogram_data_point {
     #[crate::pdata::otlp::qualified(
         "opentelemetry.proto.metrics.v1.ExponentialHistogramDataPoint.Buckets"
     )]
-    #[derive(crate::pdata::otlp::Message)]
-    #[derive(Clone, PartialEq, ::prost::Message)]
+    #[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
     pub struct Buckets {
         /// Offset is the bucket index of the first entry in the bucket_counts array.
         ///
@@ -562,8 +547,7 @@ pub mod exponential_histogram_data_point {
 /// time-varying values of a Summary metric. The count and sum fields represent
 /// cumulative values.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.SummaryDataPoint")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct SummaryDataPoint {
     /// The set of key/value pairs that uniquely identify the timeseries from
     /// where this point belongs. The list may be empty (may contain 0 elements).
@@ -619,8 +603,7 @@ pub mod summary_data_point {
     #[crate::pdata::otlp::qualified(
         "opentelemetry.proto.metrics.v1.SummaryDataPoint.ValueAtQuantile"
     )]
-    #[derive(crate::pdata::otlp::Message)]
-    #[derive(Clone, Copy, PartialEq, ::prost::Message)]
+    #[derive(crate::pdata::otlp::Message, Clone, Copy, PartialEq, ::prost::Message)]
     pub struct ValueAtQuantile {
         /// The quantile of a distribution. Must be in the interval
         /// \[0.0, 1.0\].
@@ -638,16 +621,13 @@ pub mod summary_data_point {
 /// was recorded, for example the span and trace ID of the active span when the
 /// exemplar was recorded.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.metrics.v1.Exemplar")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct Exemplar {
     /// The set of key/value pairs that were filtered out by the aggregator, but
     /// recorded alongside the original measurement. Only key/value pairs that were
     /// filtered out by the aggregator should be included
     #[prost(message, repeated, tag = "7")]
-    pub filtered_attributes: ::prost::alloc::vec::Vec<
-        super::super::common::v1::KeyValue,
-    >,
+    pub filtered_attributes: ::prost::alloc::vec::Vec<super::super::common::v1::KeyValue>,
     /// time_unix_nano is the exact time when this exemplar was recorded
     ///
     /// Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January

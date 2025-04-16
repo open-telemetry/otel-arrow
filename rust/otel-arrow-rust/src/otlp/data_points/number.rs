@@ -19,10 +19,10 @@ use crate::error::Result;
 use crate::otlp::attributes::store::Attribute32Store;
 use crate::otlp::data_points::data_point_store::NumberDataPointsStore;
 use crate::otlp::exemplar::ExemplarsStore;
-use crate::schema::consts;
-use arrow::array::RecordBatch;
 use crate::proto::opentelemetry::metrics::v1::number_data_point::Value;
 use crate::proto::opentelemetry::metrics::v1::NumberDataPoint;
+use crate::schema::consts;
+use arrow::array::RecordBatch;
 
 impl NumberDataPointsStore {
     /// Ref: https://github.com/open-telemetry/otel-arrow/blob/985aa1500a012859cec44855e187eacf46eda7c8/pkg/otel/metrics/otlp/number_data_point.go#L110

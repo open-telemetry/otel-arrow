@@ -17,11 +17,11 @@ use crate::arrays::{
 use crate::error;
 use crate::otlp::attributes::store::Attribute32Store;
 use crate::otlp::metric::AppendAndGet;
+use crate::proto::opentelemetry::metrics::v1::exemplar::Value;
+use crate::proto::opentelemetry::metrics::v1::Exemplar;
 use crate::schema::consts;
 use arrow::array::RecordBatch;
 use num_enum::TryFromPrimitive;
-use crate::proto::opentelemetry::metrics::v1::exemplar::Value;
-use crate::proto::opentelemetry::metrics::v1::Exemplar;
 use snafu::ensure;
 use std::collections::HashMap;
 

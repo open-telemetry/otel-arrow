@@ -16,6 +16,9 @@ use crate::arrays::{
 };
 use crate::error;
 use crate::otlp::related_data::RelatedData;
+use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+use crate::proto::opentelemetry::common::v1::InstrumentationScope;
+use crate::proto::opentelemetry::metrics::v1::metric;
 use crate::schema::consts;
 use arrow::array::{
     Array, ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray, StructArray, UInt16Array,
@@ -24,9 +27,6 @@ use arrow::array::{
 use arrow::datatypes::DataType::UInt32;
 use arrow::datatypes::{DataType, Field, Fields};
 use num_enum::TryFromPrimitive;
-use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-use crate::proto::opentelemetry::common::v1::InstrumentationScope;
-use crate::proto::opentelemetry::metrics::v1::metric;
 use snafu::{OptionExt, ResultExt};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]

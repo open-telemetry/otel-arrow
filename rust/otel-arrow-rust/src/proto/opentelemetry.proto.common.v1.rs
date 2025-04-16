@@ -3,8 +3,7 @@
 /// primitive value such as a string or integer or it may contain an arbitrary nested
 /// object containing arrays, key-value lists and primitives.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.common.v1.AnyValue")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct AnyValue {
     /// The value is one of the listed fields. It is valid for all values to be unspecified
     /// in which case this AnyValue is considered to be "empty".
@@ -36,8 +35,7 @@ pub mod any_value {
 /// ArrayValue is a list of AnyValue messages. We need ArrayValue as a message
 /// since oneof in AnyValue does not allow repeated fields.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.common.v1.ArrayValue")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct ArrayValue {
     /// Array of values. The array may be empty (contain 0 elements).
     #[prost(message, repeated, tag = "1")]
@@ -49,8 +47,7 @@ pub struct ArrayValue {
 /// avoid unnecessary extra wrapping (which slows down the protocol). The 2 approaches
 /// are semantically equivalent.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.common.v1.KeyValueList")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct KeyValueList {
     /// A collection of key/value pairs of key-value pairs. The list may be empty (may
     /// contain 0 elements).
@@ -62,8 +59,7 @@ pub struct KeyValueList {
 /// KeyValue is a key-value pair that is used to store Span attributes, Link
 /// attributes, etc.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.common.v1.KeyValue")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct KeyValue {
     #[prost(string, tag = "1")]
     pub key: ::prost::alloc::string::String,
@@ -73,8 +69,7 @@ pub struct KeyValue {
 /// InstrumentationScope is a message representing the instrumentation scope information
 /// such as the fully qualified name and version.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.common.v1.InstrumentationScope")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct InstrumentationScope {
     /// An empty instrumentation scope name means the name is unknown.
     #[prost(string, tag = "1")]
@@ -94,8 +89,7 @@ pub struct InstrumentationScope {
 ///
 /// Status: \[Development\]
 #[crate::pdata::otlp::qualified("opentelemetry.proto.common.v1.EntityRef")]
-#[derive(crate::pdata::otlp::Message)]
-#[derive(Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
 pub struct EntityRef {
     /// The Schema URL, if known. This is the identifier of the Schema that the entity data
     /// is recorded in. To learn more about Schema URL see
