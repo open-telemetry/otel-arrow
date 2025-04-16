@@ -24,6 +24,7 @@ mod test_util;
 
 pub mod pdata;
 pub mod proto;
+mod validation;
 
 #[path = ""]
 pub mod opentelemetry {
