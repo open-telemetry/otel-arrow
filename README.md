@@ -10,7 +10,7 @@ Arrow](https://github.com/open-telemetry/otel-arrow) project is an
 effort within [OpenTelemetry](https://opentelemetry.io/) to use
 [Apache Arrow](https://arrow.apache.org/) libraries for bulk data
 transport in OpenTelemetry pipelines.  This repository is
-the home of the OpenTelemetry Protocol with Apache Arrow protocol, 
+the home of the OpenTelemetry Protocol with Apache Arrow protocol,
 which we refer to as "OTAP", and reference implementations.
 
 ## Quick start
@@ -109,7 +109,7 @@ into column-oriented data, which also makes the data more compressible.
 
 ## Project status
 
-The Phase-1 project deliverables, located in the Collector-Contrib repository, 
+The Phase-1 project deliverables, located in the Collector-Contrib repository,
 are in the [Beta stability level, as defined by the OpenTelemetry collector
 guidelines](https://github.com/open-telemetry/opentelemetry-collector#beta).
 We do not plan to make breaking changes in this protocol without first
@@ -120,52 +120,59 @@ workloads.
 
 ### Phase-1 project deliverables
 
-We are pleased to release two new collector components, presently
-housed in [OpenTelemetry
+We are pleased to release two new collector components, presently housed in
+[OpenTelemetry
 Collector-Contrib](https://github.com/open-telemetry/opentelemetry-collector-contrib):
 
 - [OpenTelemetry Protocol with Apache Arrow Receiver][RECEIVER]
 - [OpenTelemetry Protocol with Apache Arrow Exporter][EXPORTER]
 
-The OpenTelemetry Protocol with Apache Arrow exporter and receiver components are drop-in compatible
-with the core collector's OTLP exporter and receiver components.
-Users with an established OTLP collection pipeline between two
-OpenTelemetry Collectors can re-build their collectors with
-`otelarrow` components, then simply replace the component name `otlp`
-with `otelarrow`.  The exporter and receiver both support falling back
-to standard OTLP in case either side does not recognize the protocol,
-so the upgrade should be painless.  The OpenTelemetry Protocol with Apache Arrow receiver serves
-both OpenTelemetry Protocol with Apache Arrow and OTLP on the standard port for OTLP gRPC (4317).
+The OpenTelemetry Protocol with Apache Arrow exporter and receiver components
+are drop-in compatible with the core collector's OTLP exporter and receiver
+components. Users with an established OTLP collection pipeline between two
+OpenTelemetry Collectors can re-build their collectors with `otelarrow`
+components, then simply replace the component name `otlp` with `otelarrow`.  The
+exporter and receiver both support falling back to standard OTLP in case either
+side does not recognize the protocol, so the upgrade should be painless.  The
+OpenTelemetry Protocol with Apache Arrow receiver serves both OpenTelemetry
+Protocol with Apache Arrow and OTLP on the standard port for OTLP gRPC (4317).
 
-See the [Exporter][EXPORTER] and [Receiver][RECEIVER] documentation
-for details and sample configurations.
+See the [Exporter][EXPORTER] and [Receiver][RECEIVER] documentation for details
+and sample configurations.
 
 ### Project documentation
 
-This package is a reference implementation of the OpenTelemetry Protocol with Apache Arrow protocol
-specified in this
+This package is a reference implementation of the OpenTelemetry Protocol with
+Apache Arrow protocol specified in this
 [OTEP](https://github.com/open-telemetry/oteps/blob/main/text/0156-columnar-encoding.md),
-which is currently the best source of information about OpenTelemetry Protocol with Apache Arrow.
-The [Donation
-request](https://github.com/open-telemetry/community/issues/1332)
-describes how the project began.
+which is currently the best source of information about OpenTelemetry Protocol
+with Apache Arrow. The [Donation
+request](https://github.com/open-telemetry/community/issues/1332) describes how
+the project began.
 
-Here are several more resources that are available to learn more about OpenTelemetry Protocol with Apache Arrow.
+Here are several more resources that are available to learn more about
+OpenTelemetry Protocol with Apache Arrow.
 
-- [Arrow Data Model](docs/data_model.md) - Mapping OTLP entities to Arrow Schemas.
-- [Benchmark results](docs/benchmarks.md) - Based on synthetic and production data.
-- [Validation process](docs/validation_process.md) - Encoding/Decoding validation process.
-- Articles describing some of the Arrow techniques used behind the scenes to optimize compression ratio and memory usage:
-  - [Data types, encoding, hierarchical data, denormalization](https://arrow.apache.org/blog/2023/04/11/our-journey-at-f5-with-apache-arrow-part-1/)
-  - [Adaptive Schemas and Sorting to Optimize Arrow Usage](https://arrow.apache.org/blog/2023/06/26/our-journey-at-f5-with-apache-arrow-part-2/)
+- [Arrow Data Model](docs/data_model.md) - Mapping OTLP entities to Arrow
+  Schemas.
+- [Benchmark results](docs/benchmarks.md) - Based on synthetic and production
+  data.
+- [Validation process](docs/validation_process.md) - Encoding/Decoding
+  validation process.
+- Articles describing some of the Arrow techniques used behind the scenes to
+  optimize compression ratio and memory usage:
+  - [Data types, encoding, hierarchical data,
+    denormalization](https://arrow.apache.org/blog/2023/04/11/our-journey-at-f5-with-apache-arrow-part-1/)
+  - [Adaptive Schemas and Sorting to Optimize Arrow
+    Usage](https://arrow.apache.org/blog/2023/06/26/our-journey-at-f5-with-apache-arrow-part-2/)
 
 ## Benchmark summary
 
 The following chart shows the compressed message size (in bytes) as a function
 of the batch size for metrics (univariate), logs, and traces. The bottom of the
 chart shows the reduction factor for both the standard OTLP protocol (with ZSTD
-compression) and the OpenTelemetry Protocol with Apache Arrow protocol (ZSTD) in comparison with an
-uncompressed OTLP protocol.
+compression) and the OpenTelemetry Protocol with Apache Arrow protocol (ZSTD) in
+comparison with an uncompressed OTLP protocol.
 
 ![compression_ratio](./docs/img/compression_ratio_summary_std_metrics.png)
 
@@ -201,7 +208,7 @@ For more details, see the following [benchmark results](docs/benchmarks.md) page
 For information about contributing to the project see:
 [CONTRIBUTING.md](./CONTRIBUTING.md).
 
-We meet every other Thursday at 8AM PT. The meeting is subject to change 
+We meet every other Thursday at 8AM PT. The meeting is subject to change
 depending on contributors'
 availability. Check the [OpenTelemetry community
 calendar](https://github.com/open-telemetry/community?tab=readme-ov-file#calendar)
