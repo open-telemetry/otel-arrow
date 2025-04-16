@@ -8,7 +8,7 @@
 
 ----
 
-[Quickstart Guide](#-quickstart-guide) 
+[Quickstart Guide](#-quickstart-guide)
 | [Design Principles](docs/design-principles.md)
 | [Architecture](docs/architecture.md) | [Change log](CHANGELOG.md)
 | [Contributing](CONTRIBUTING.md) |

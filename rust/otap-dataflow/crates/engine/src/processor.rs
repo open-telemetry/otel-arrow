@@ -33,7 +33,7 @@ use async_trait::async_trait;
 use otap_df_channel::mpsc;
 use std::rc::Rc;
 
-/// A trait for processors in the pipeline pipeline.
+/// A trait for processors in the pipeline.
 #[async_trait(?Send)]
 pub trait Processor {
     /// The type of messages handled by the processor.
