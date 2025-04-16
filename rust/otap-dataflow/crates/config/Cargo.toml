@@ -1,6 +1,6 @@
 [package]
 name = "otap-df-config"
-description = "Configuration model for OTAP dataflow"
+description = "Configuration model for OTAP pipeline"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

@@ -15,38 +15,41 @@ This document outlines the planned features and milestones for this project.
 For the moment, these milestones are very high-level and are subject to
 significant changes.
 
-### CI/CD
+### CI/CD Setup
 
 - [ ] Github action setup
 - [ ] Linting (Clippy)
 - [ ] Formatting
-- [ ] Unit tests
+- [ ] Unit tests (Nextest)
 - [ ] Integration tests
 - [ ] Code coverage (target: 80%)
 - [ ] Documentation generation
 - [ ] Continuous benchmarking and performance tracking
   - [ ] Comparison with Go Collector
   
-### Dataflow Engine Foundations
+### Pipeline Engine Foundations
 
+- Channels
+  - [x] MPMC Channel
+  - [x] MPSC Channel
 - [x] Receiver trait
 - [WIP] Processor trait
 - [ ] Exporter trait
-- [ ] Dataflow Engine
+- [ ] Pipeline Engine
 - [ ] Initial benchmarks and documentation
 
-### OTLP Dataflow
+### OTLP Pipeline
 
 - [ ] OTLP Receiver, Batch Processor, and OTLP Exporter
 - [ ] Comparison with Go OTLP Pipeline
 
-### OTAP Dataflow
+### OTAP Pipeline
 
 - [ ] OTAP Message
 - [ ] OTAP Receiver, Batch Processor, and OTLP Exporter
 - [ ] Comparison with Go OTLP Pipeline
 
-### Dataflow Engine Advanced Features
+### Pipeline Engine Advanced Features
 
 - [ ] Admission control
 - [ ] Failover and Retry
@@ -68,11 +71,7 @@ significant changes.
 
 ## Completed Milestones
 
-- ✅ Basic project structure setup
-- ✅ Creation of xtask to check project conformity against the controls we want
-  to systematically apply.
-- ✅ MPMC Channel implementation
-- ✅ MPSC Channel implementation
+- ✅ Project structure setup and xtask to check project conformity
 
 ---
 

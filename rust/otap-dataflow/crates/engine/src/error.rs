@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Errors for the dataflow engine.
+//! Errors for the pipeline engine.
 
 use crate::NodeName;
 
-/// All errors that can occur in the dataflow engine infrastructure.
+/// All errors that can occur in the pipeline engine infrastructure.
 #[derive(thiserror::Error, Debug)]
 pub enum Error<T> {
     /// A wrapper for the channel errors.

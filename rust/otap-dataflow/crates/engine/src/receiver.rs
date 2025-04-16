@@ -2,7 +2,7 @@
 
 //! Set of traits and structures used to implement receivers.
 //!
-//! A receiver is an ingress node that feeds a dataflow with data from external sources while
+//! A receiver is an ingress node that feeds a pipeline with data from external sources while
 //! performing the necessary conversions to produce messages in an OTEL compatible format (OTLP or
 //! OTAP).
 //!
@@ -26,7 +26,7 @@ use tokio::net::TcpListener;
 /// A trait for ingress receivers.
 ///
 /// Receivers are responsible for accepting data from external sources and converting
-/// it into messages that can be processed by the dataflow pipeline.
+/// it into messages that can be processed by the pipeline.
 ///
 /// # Lifecycle
 ///
@@ -38,8 +38,8 @@ use tokio::net::TcpListener;
 /// # Thread Safety
 ///
 /// Note that this trait uses `#[async_trait(?Send)]`, meaning implementations
-/// are not required to be thread-safe. To ensure scalability, the dataflow engine will start
-/// multiple instances of the same dataflow in parallel, each with its own receiver instance.
+/// are not required to be thread-safe. To ensure scalability, the pipeline engine will start
+/// multiple instances of the same pipeline in parallel, each with its own receiver instance.
 #[async_trait( ? Send)]
 pub trait Receiver {
     /// The type of messages processed by the receiver.
@@ -47,9 +47,19 @@ pub trait Receiver {
 
     /// Starts the receiver and begins processing incoming data and control messages.
     ///
-    /// The dataflow engine will call this function to start the receiver in a separate task.
+    /// The pipeline engine will call this function to start the receiver in a separate task.
+    /// Receivers are assigned their own dedicated task at pipeline initialization because their
+    /// primary function involves interacting with the external world, and the pipeline has no
+    /// prior knowledge of when these interactions will occur.
+    ///
+    /// The `Box<Self>` signature indicates that when this method is called, the receiver takes
+    /// exclusive ownership of its instance. This approach is necessary because a receiver cannot
+    /// yield control back to the pipeline engine - it must independently manage its inputs and
+    /// processing timing. The only way the pipeline engine can interact with the receiver after
+    /// starting it is through the control message channel.
+    ///
     /// Receivers are expected to process both internal control messages and external sources and
-    /// use the EffectHandler to send messages to the next node(s) in the dataflow.
+    /// use the EffectHandler to send messages to the next node(s) in the pipeline.
     ///
     /// # Parameters
     ///
@@ -167,7 +177,7 @@ impl<Msg> EffectHandler<Msg> {
         TcpListener::from_std(sock.into()).map_err(err)
     }
 
-    /// Sends a message to the next node(s) in the dataflow.
+    /// Sends a message to the next node(s) in the pipeline.
     ///
     /// # Errors
     ///
@@ -318,7 +328,7 @@ mod tests {
             port_notifier: port_tx,
         });
 
-        // Spawn the receiver’s event loop.
+        // Spawn the receiver's event loop.
         _ = local_tasks.spawn_local(async move {
             receiver
                 .start(event_receiver, EffectHandler::new("receiver", msg_tx))
@@ -332,7 +342,7 @@ mod tests {
             let addr: SocketAddr = port_rx.await.expect("Failed to receive listening address");
             println!("Test received listening address: {addr}");
 
-            // Connect to the receiver’s socket.
+            // Connect to the receiver's socket.
             let mut stream = TcpStream::connect(addr)
                 .await
                 .expect("Failed to connect to receiver");

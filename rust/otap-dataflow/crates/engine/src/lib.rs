@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Async Dataflow Engine
+//! Async Pipeline Engine
 
 pub mod error;
 pub mod message;
@@ -9,5 +9,5 @@ pub mod receiver;
 
 use std::rc::Rc;
 
-/// A type representing the name of a node in the dataflow.
+/// A type representing the name of a node in the pipeline.
 pub type NodeName = Rc<str>;

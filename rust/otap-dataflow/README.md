@@ -1,6 +1,17 @@
-# OTAP Dataflow Library
+# OTAP Pipeline Library
 
-> Note: This Rust library will be the main deliverable of phase 2 of the
+[![build](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml)
+[![codecov](https://codecov.io/gh/open-telemetry/otel-arrow/graph/badge.svg?token=tmWKFoMT2G)](https://codecov.io/gh/open-telemetry/otel-arrow)
+[![build](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-audit.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-audit.yml)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Slack](https://img.shields.io/badge/Slack-OTEL_Arrow-purple)](https://cloud-native.slack.com/archives/C07S4Q67LTF)
+
+----
+
+[Quickstart Guide](#-quickstart-guide) | [Design Principles](docs/design-principles.md) | [Architecture](docs/architecture.md) | [Change log](CHANGELOG.md) | [Contributing](CONTRIBUTING.md) | 
+
+> [!NOTE] 
+> This Rust library will be the main deliverable of phase 2 of the
 > otel-arrow project, as defined in this
 > [PR](https://github.com/open-telemetry/community/pull/2634).
 >
@@ -11,6 +22,21 @@
 
 TBD
 
+## Features
+
+TBD
+
+## Use Cases
+
+Some examples of use cases include:
+
+- End-to-end OTAP pipeline
+- ...
+
+## Why <Project Name>
+
+TBD
+
 ## 🚧 Workspace Structure
 
 ```text
@@ -18,8 +44,8 @@ TBD
 ├── Cargo.toml
 ├── crates
 │   ├── channel        # Async Channel Implementations
-│   ├── config         # Dataflow Configuration Model
-│   ├── engine         # Async Dataflow Engine
+│   ├── config         # Pipeline Configuration Model
+│   ├── engine         # Async Pipeline Engine
 │   ├── otap           # OTAP Nodes
 │   └── otlp           # OTLP Nodes
 ├── docs               # Documentation
@@ -99,4 +125,4 @@ See our detailed [Roadmap](ROADMAP.md) for upcoming features and improvements.
 
 ## ✅ Changelog
 
-- CHANGELOG.md (TBD)
+- [CHANGELOG.md](CHANGELOG.md)

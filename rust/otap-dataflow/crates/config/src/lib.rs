@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! OTAP Dataflow Configuration Model.
+//! OTAP Pipeline Configuration Model.
 //!
-//! A dataflow is a directed acyclic graph (DAG) of nodes, where each node represents a component
-//! in the dataflow.
+//! A pipeline is a directed acyclic graph (DAG) of nodes, where each node represents a component
+//! in the pipeline.
 
 use crate::error::Error;
 use serde::{Deserialize, Serialize};
@@ -36,7 +36,7 @@ pub enum NodeKind {
     ProcessorChain,
 }
 
-/// A node in the dataflow
+/// A node in the pipeline
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     id: String,
@@ -70,21 +70,21 @@ impl Node {
     }
 }
 
-/// An edge in the dataflow DAG
+/// An edge in the pipeline DAG
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Edge {
     from: String,
     to: String,
 }
 
-/// The main dataflow DAG structure
+/// The main pipeline DAG structure
 #[derive(Debug, Default)]
-pub struct DataflowDag {
+pub struct PipelineDag {
     nodes: HashMap<String, Node>,
     edges: Vec<Edge>,
 }
 
-impl DataflowDag {
+impl PipelineDag {
     /// Create an empty DAG
     #[must_use]
     pub fn new() -> Self {
@@ -164,7 +164,7 @@ impl DataflowDag {
 
         fn dfs(
             node_id: &str,
-            dag: &DataflowDag,
+            dag: &PipelineDag,
             visited: &mut HashSet<String>,
             stack: &mut Vec<String>,
             in_stack: &mut HashSet<String>,
@@ -391,22 +391,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_dataflow_config() {
-        let mut dataflow_dag = create_dataflow_dag();
+    fn test_pipeline_config() {
+        let mut pipeline_dag = create_pipeline_dag();
         // Validate before optimization
-        let res_before = dataflow_dag.validate();
+        let res_before = pipeline_dag.validate();
         assert!(res_before.is_ok(), "Should be valid before optimization");
 
         // Optimize - merges consecutive Processor nodes only
-        dataflow_dag.optimize_chains();
+        pipeline_dag.optimize_chains();
 
         // Validate after optimization
-        let res_after = dataflow_dag.validate();
+        let res_after = pipeline_dag.validate();
         assert!(res_after.is_ok(), "Should be valid after optimization");
     }
 
-    fn create_dataflow_dag() -> DataflowDag {
-        let mut dag = DataflowDag::new();
+    fn create_pipeline_dag() -> PipelineDag {
+        let mut dag = PipelineDag::new();
 
         // --------------------------------------------------
         // TRACES pipeline

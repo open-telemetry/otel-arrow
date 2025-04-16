@@ -1,27 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Message definitions for the dataflow engine.
+//! Message definitions for the pipeline engine.
 
 /// A message that can be sent to a node (i.e. receiver, processor, exporter, or connector).
 ///
 /// A message is either a `Data` message, which contains a payload of type `Data`, or a `Control`
 /// message, which contains a `ControlMsg`.
 #[derive(Debug, Clone)]
-pub enum Message<Data> {
-    /// A data message.
-    Data {
-        /// The data traversing the dataflow.
-        data: Data,
-    },
+pub enum Message<PData> {
+    /// A pipeline data message traversing the pipeline.
+    PData(PData),
 
     /// A control message.
-    Control {
-        /// The control message.
-        control: ControlMsg,
-    },
+    Control(ControlMsg),
 }
 
-/// Control messages for the dataflow engine.
+/// Control messages for the pipeline engine.
 #[derive(Debug, Clone)]
 pub enum ControlMsg {
     /// Indicates that a downstream component (either internal or external) has reliably received
@@ -66,74 +60,59 @@ impl<Data> Message<Data> {
     /// Create a data message with the given payload.
     #[must_use]
     pub fn data_msg(data: Data) -> Self {
-        Message::Data { data }
+        Message::PData(data)
     }
 
     /// Create a ACK control message with the given ID.
     #[must_use]
     pub fn ack_ctrl_msg(id: u64) -> Self {
-        Message::Control {
-            control: ControlMsg::Ack { id },
-        }
+        Message::Control(ControlMsg::Ack { id })
     }
 
     /// Create a NACK control message with the given ID and reason.
     #[must_use]
     pub fn nack_ctrl_msg(id: u64, reason: &str) -> Self {
-        Message::Control {
-            control: ControlMsg::Nack {
-                id,
-                reason: reason.to_owned(),
-            },
-        }
+        Message::Control(ControlMsg::Nack {
+            id,
+            reason: reason.to_owned(),
+        })
     }
 
     /// Creates a config control message with the given configuration.
     #[must_use]
     pub fn config_ctrl_msg(config: serde_json::Value) -> Self {
-        Message::Control {
-            control: ControlMsg::Config { config },
-        }
+        Message::Control(ControlMsg::Config { config })
     }
 
     /// Creates a timer tick control message.
     #[must_use]
     pub fn timer_tick_ctrl_msg() -> Self {
-        Message::Control {
-            control: ControlMsg::TimerTick {},
-        }
+        Message::Control(ControlMsg::TimerTick {})
     }
 
     /// Creates a shutdown control message with the given reason.
     #[must_use]
     pub fn shutdown_ctrl_msg(reason: &str) -> Self {
-        Message::Control {
-            control: ControlMsg::Shutdown {
-                reason: reason.to_owned(),
-            },
-        }
+        Message::Control(ControlMsg::Shutdown {
+            reason: reason.to_owned(),
+        })
     }
 
     /// Checks if this message is a data message.
     #[must_use]
     pub fn is_data(&self) -> bool {
-        matches!(self, Message::Data { .. })
+        matches!(self, Message::PData(..))
     }
 
     /// Checks if this message is a control message.
     #[must_use]
     pub fn is_control(&self) -> bool {
-        matches!(self, Message::Control { .. })
+        matches!(self, Message::Control(..))
     }
 
     /// Checks if this message is a shutdown control message.
     #[must_use]
     pub fn is_shutdown(&self) -> bool {
-        matches!(
-            self,
-            Message::Control {
-                control: ControlMsg::Shutdown { .. }
-            }
-        )
+        matches!(self, Message::Control(ControlMsg::Shutdown { .. }))
     }
 }

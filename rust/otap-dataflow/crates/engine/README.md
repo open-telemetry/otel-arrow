@@ -1,17 +1,17 @@
-# Dataflow Engine
+# Pipeline Engine
 
 Status: **WIP**
 
 ## Nodes
 
-The Dataflow Engine consists of three main node types:
+The Pipeline Engine consists of three main node types:
 
 - Receiver: A node that receives or scrapes telemetry data from a telemetry
   source.
 - Processor: A node that processes telemetry data.
 - Exporter: A node that exports telemetry data to a telemetry sink.
 
-Each node can receive control messages from the Dataflow Engine to manage its
+Each node can receive control messages from the Pipeline Engine to manage its
 operation.
 
 ```mermaid

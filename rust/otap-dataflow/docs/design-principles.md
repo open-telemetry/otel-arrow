@@ -61,9 +61,9 @@
   performance and memory safety guaranties.
 - **OpenTelemetry Compatibility**: Design the system to seamlessly integrate
   with the existing Go-based OTEL Collector.
-- **Data Processing Pipelines**: Design the dataflow engine to natively and
-  efficiently support OTLP and OTAP dataflows.
+- **Data Processing Pipelines**: Design the pipeline engine to natively and
+  efficiently support OTLP and OTAP pipelines.
 - **Configurable Quality of Service**: Handle telemetry data streams with
-  optional loss tolerance, ensuring consistent data quality. The dataflow engine
+  optional loss tolerance, ensuring consistent data quality. The pipeline engine
   must be able to support deployments where all incoming requests are processed
   without discarding or dropping data.

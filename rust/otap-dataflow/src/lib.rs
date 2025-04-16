@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! OTAP Dataflow Engine Library
+//! OTAP Pipeline Engine Library
 
 pub mod error;

@@ -17,10 +17,8 @@ struct ChannelState<T> {
     capacity: NonZeroUsize,
     is_closed: bool,
     senders: usize,
-    receiver_wakers: VecDeque<(u64, Waker)>,
-    sender_wakers: VecDeque<(u64, Waker)>,
-    receiver_counter: u64,
-    sender_counter: u64,
+    receiver_wakers: VecDeque<Waker>,
+    sender_wakers: VecDeque<Waker>,
 }
 
 struct Channel<T> {
@@ -39,8 +37,6 @@ impl<T> Channel<T> {
                 senders: 1,
                 receiver_wakers: VecDeque::new(),
                 sender_wakers: VecDeque::new(),
-                receiver_counter: 0,
-                sender_counter: 0,
             }),
         });
 
@@ -72,7 +68,7 @@ impl<T> Drop for Sender<T> {
         if state.senders == 0 {
             state.is_closed = true;
             // Drain all wakers in FIFO order
-            while let Some((_, waker)) = state.receiver_wakers.pop_front() {
+            while let Some(waker) = state.receiver_wakers.pop_front() {
                 waker.wake();
             }
         }
@@ -88,7 +84,7 @@ impl<T> Drop for Receiver<T> {
         if Rc::strong_count(&self.channel) == state.senders + 1 {
             state.is_closed = true;
             // Wake all blocked senders in FIFO order
-            while let Some((_, waker)) = state.sender_wakers.pop_front() {
+            while let Some(waker) = state.sender_wakers.pop_front() {
                 waker.wake();
             }
         }
@@ -110,7 +106,7 @@ impl<T> Sender<T> {
         state.buffer.push_back(value);
 
         // Wake the receiver that has been waiting the longest
-        if let Some((_, waker)) = state.receiver_wakers.pop_front() {
+        if let Some(waker) = state.receiver_wakers.pop_front() {
             waker.wake();
         }
 
@@ -131,7 +127,7 @@ impl<T> Sender<T> {
         let mut state = self.channel.state.borrow_mut();
         state.is_closed = true;
         // Wake all receivers in FIFO order
-        while let Some((_, waker)) = state.receiver_wakers.pop_front() {
+        while let Some(waker) = state.receiver_wakers.pop_front() {
             waker.wake();
         }
     }
@@ -153,7 +149,7 @@ impl<T> Receiver<T> {
         if let Some(value) = state.buffer.pop_front() {
             // Wake one sender if channel was full
             if state.buffer.len() == state.capacity.get() - 1 {
-                if let Some((_, waker)) = state.sender_wakers.pop_front() {
+                if let Some(waker) = state.sender_wakers.pop_front() {
                     waker.wake();
                 }
             }
@@ -192,9 +188,7 @@ impl<T> Future for SendFuture<T> {
             Err(SendError::Full(value)) => {
                 self.value = Some(value);
                 let mut state = self.sender.channel.state.borrow_mut();
-                let order = state.sender_counter;
-                state.sender_counter = state.sender_counter.wrapping_add(1);
-                state.sender_wakers.push_back((order, cx.waker().clone()));
+                state.sender_wakers.push_back(cx.waker().clone());
                 Poll::Pending
             }
             Err(e) => Poll::Ready(Err(e)),
@@ -214,11 +208,8 @@ impl<T> Future for RecvFuture<'_, T> {
             Ok(value) => Poll::Ready(Ok(value)),
             Err(RecvError::Empty) => {
                 let mut state = self.receiver.channel.state.borrow_mut();
-                // Get a monotonically increasing order number
-                let order = state.receiver_counter;
-                state.receiver_counter = state.receiver_counter.wrapping_add(1);
                 // Store both the order and the waker
-                state.receiver_wakers.push_back((order, cx.waker().clone()));
+                state.receiver_wakers.push_back(cx.waker().clone());
                 Poll::Pending
             }
             Err(e) => Poll::Ready(Err(e)),

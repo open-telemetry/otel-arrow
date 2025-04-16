@@ -2,7 +2,7 @@
 
 //! Set of traits and structures used to implement processors.
 //!
-//! A processor is a node in the dataflow that transforms, filters, or otherwise processes messages
+//! A processor is a node in the pipeline that transforms, filters, or otherwise processes messages
 //! as they flow through the pipeline. Processors can perform operations such as:
 //!
 //! 1. Filtering messages based on certain criteria
@@ -23,8 +23,8 @@
 //! # Thread Safety
 //!
 //! Note that this trait uses `#[async_trait(?Send)]`, meaning implementations
-//! are not required to be thread-safe. To ensure scalability, the dataflow engine will start
-//! multiple instances of the same dataflow in parallel, each with its own processor instance.
+//! are not required to be thread-safe. To ensure scalability, the pipeline engine will start
+//! multiple instances of the same pipeline in parallel, each with its own processor instance.
 
 use crate::NodeName;
 use crate::error::Error;
@@ -33,7 +33,7 @@ use async_trait::async_trait;
 use otap_df_channel::mpsc;
 use std::rc::Rc;
 
-/// A trait for processors in the dataflow pipeline.
+/// A trait for processors in the pipeline pipeline.
 #[async_trait(?Send)]
 pub trait Processor {
     /// The type of messages handled by the processor.
@@ -41,7 +41,16 @@ pub trait Processor {
 
     /// Processes a message and optionally produces new messages.
     ///
-    /// This method is called for each message that arrives at the processor. The processor can:
+    /// This method is called by the pipeline engine for each message that arrives at the processor.
+    /// Unlike receivers, processors have known inputs (messages from previous stages), so the pipeline
+    /// engine can control when to call this method and when the processor executes.
+    ///
+    /// This approach allows for greater flexibility and optimization, giving the pipeline engine
+    /// the ability to decide whether to spawn one task per processor or one task for a group of processors.
+    /// The method signature uses `&mut self` rather than `Box<Self>` because the engine only wants to
+    /// temporarily allow mutation of the processor instance, not transfer ownership.
+    ///
+    /// The processor can:
     /// - Transform the message and return a new message
     /// - Filter the message by returning None
     /// - Split the message into multiple messages by returning a vector
@@ -106,7 +115,7 @@ impl<Msg> EffectHandler<Msg> {
         &self.processor_name
     }
 
-    /// Sends a message to the next node(s) in the dataflow.
+    /// Sends a message to the next node(s) in the pipeline.
     ///
     /// # Errors
     ///
@@ -151,7 +160,7 @@ mod tests {
             _effect_handler: &mut EffectHandler<Self::Msg>,
         ) -> Result<Option<Vec<Self::Msg>>, Error<Self::Msg>> {
             match msg {
-                Message::Control { control } => match control {
+                Message::Control(control) => match control {
                     TimerTick {} => {
                         *self.timer_tick_count.borrow_mut() += 1;
                         Ok(None)
@@ -166,7 +175,7 @@ mod tests {
                     }
                     _ => Ok(None),
                 },
-                Message::Data { data } => {
+                Message::PData(data) => {
                     *self.message_count.borrow_mut() += 1;
                     // Append " RECEIVED" to the message content.
                     let processed_message = TestMsg(format!("{} RECEIVED", data.0));

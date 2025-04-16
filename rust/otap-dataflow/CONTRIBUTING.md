@@ -1,6 +1,6 @@
-# Contributing to the OTAP Dataflow project
+# Contributing to the OTAP Pipeline project
 
-The OTAP Dataflow project is a part of
+The OTAP Pipeline project is a part of
 the [OTEL Arrow Project](https://github.com/open-telemetry/otel-arrow).
 
 Additionally, OTEL Arrow has its own CNCF slack channel
