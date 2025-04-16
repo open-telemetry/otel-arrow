@@ -114,7 +114,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         ident: syn::Ident,
         is_param: bool,
         is_optional: bool,
-	is_oneof: bool,
+        is_oneof: bool,
         field_type: syn::Type,
         as_type: Option<syn::Type>,
     }
@@ -155,7 +155,9 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
                 let field_path = format!("{}.{}", type_name, ident_str);
                 let is_param = param_names.contains(&ident_str.as_str());
                 let is_optional = is_optional(field);
-		let is_oneof = oneof_mapping.map(|x| x.0.to_string() == field_path).unwrap_or(false);
+                let is_oneof = oneof_mapping
+                    .map(|x| x.0.to_string() == field_path)
+                    .unwrap_or(false);
 
                 // Process type information
                 let (inner_type, is_optional_extraction_ok) = if is_optional {
@@ -188,7 +190,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
                     ident: ident.clone(),
                     is_param,
                     is_optional,
-		    is_oneof,
+                    is_oneof,
                     field_type,
                     as_type,
                 }
@@ -222,12 +224,12 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
 
     // Generate a list of arguments to pass from build() to new().
     let param_args: TokenVec = param_fields
-	.iter()
-	.map(|info| {
-	    let field_name = &info.ident;
-	    quote! { #field_name }
-	})
-	.collect();
+        .iter()
+        .map(|info| {
+            let field_name = &info.ident;
+            quote! { #field_name }
+        })
+        .collect();
 
     // Generate parameter declarations and where bounds
     let (param_decls, param_bounds): (TokenVec, TokenVec) = param_fields
@@ -277,32 +279,36 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         .map(|info| {
             let field_name = &info.ident;
             let type_str = info.field_type.to_token_stream().to_string();
-	    if info.is_optional {
-		quote! { #field_name: None, }
-	    } else {
-		match type_str.as_str() {
+            if info.is_optional {
+                quote! { #field_name: None, }
+            } else {
+                match type_str.as_str() {
                     "u8" | "u16" | "u32" | "u64" => quote! {#field_name: 0,},
                     "i8" | "i16" | "i32" | "i64" => quote! {#field_name: 0,},
                     "f32" | "f64" => quote! {#field_name: 0.0,},
                     "bool" => quote! {#field_name: false,},
                     _ => quote! {#field_name: ::core::default::Default::default(),},
-		}
-	    }
+                }
+            }
         })
         .collect();
 
     // All field initializers includes parameters and defaults
-    let all_field_initializers: Vec<_> = (0..all_fields.len()).map(|idx| if idx < param_names.len() {
-	field_initializers[idx].clone()
-    } else {
-	default_initializers[idx].clone()
-    }).collect();
+    let all_field_initializers: Vec<_> = (0..all_fields.len())
+        .map(|idx| {
+            if idx < param_names.len() {
+                field_initializers[idx].clone()
+            } else {
+                default_initializers[idx].clone()
+            }
+        })
+        .collect();
 
     // Generate builder methods
     let builder_methods: TokenVec = all_fields
         .iter()
         .enumerate()
-	.filter(|(_, info)| !info.is_oneof)
+        .filter(|(_, info)| !info.is_oneof)
         .map(|(idx, info)| {
             let field_name = &info.ident;
             let field_type = &info.field_type;
@@ -320,44 +326,47 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
 
     // When there are no builder fields, we can skip the builder struct.
     let derive_builder = !builder_fields.is_empty();
-    
-    // Function to build constructors used in oneof and normal cases.
-    let create_constructor = |suffix: String,
-    cur_param_bounds: &[proc_macro2::TokenStream],
-    cur_param_decls: &[proc_macro2::TokenStream],
-    cur_param_args: &[proc_macro2::TokenStream],
-    cur_field_initializers: &[proc_macro2::TokenStream]| {
-	let build_name = syn::Ident::new(&format!("build{}", suffix), proc_macro2::Span::call_site());
-	let new_name = syn::Ident::new(&format!("new{}", suffix), proc_macro2::Span::call_site());
 
-        let mut cons = quote! {
-		pub fn #new_name<#(#cur_param_bounds),*>(#(#cur_param_decls),*) -> Self {
-                    Self{
-			#(#cur_field_initializers)*
-		    }
-		}
+    // Function to build constructors used in oneof and normal cases.
+    let create_constructor =
+        |suffix: String,
+         cur_param_bounds: &[proc_macro2::TokenStream],
+         cur_param_decls: &[proc_macro2::TokenStream],
+         cur_param_args: &[proc_macro2::TokenStream],
+         cur_field_initializers: &[proc_macro2::TokenStream]| {
+            let build_name =
+                syn::Ident::new(&format!("build{}", suffix), proc_macro2::Span::call_site());
+            let new_name =
+                syn::Ident::new(&format!("new{}", suffix), proc_macro2::Span::call_site());
+
+            let mut cons = quote! {
+            pub fn #new_name<#(#cur_param_bounds),*>(#(#cur_param_decls),*) -> Self {
+                        Self{
+                #(#cur_field_initializers)*
+                }
+            }
+            };
+            if derive_builder {
+                cons.extend(quote! {
+                pub fn #build_name<#(#cur_param_bounds),*>(#(#cur_param_decls),*) -> #builder_name {
+                            #builder_name{
+                    inner: #outer_name::#new_name(#(#cur_param_args),*),
+                            }
+                }
+                });
+            }
+            cons
         };
-	if derive_builder {
-	    cons.extend(quote! {
-		pub fn #build_name<#(#cur_param_bounds),*>(#(#cur_param_decls),*) -> #builder_name {
-                    #builder_name{
-			inner: #outer_name::#new_name(#(#cur_param_args),*),
-                    }
-		}
-	    });
-	}
-	cons
-    };
 
     // Build constructors for both regular and oneof cases.
     let all_constructors: TokenVec = match oneof_mapping {
         None => {
             vec![create_constructor(
-		"".to_string(),
+                "".to_string(),
                 &param_bounds,
                 &param_decls,
                 &param_args,
-		&all_field_initializers,
+                &all_field_initializers,
             )]
         }
         Some(oneof_mapping) => {
@@ -405,30 +414,30 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     // Produce expanded implementation
     let mut expanded = quote! {
             impl #outer_name {
-		#(#all_constructors)*
-	    }
+        #(#all_constructors)*
+        }
     };
 
     if derive_builder {
-	expanded.extend(quote! {
-            pub struct #builder_name {
-                inner: #outer_name,
-            }
-
-            impl #builder_name {
-                #(#builder_methods)*
-
-                pub fn finish(self) -> #outer_name {
-                    self.inner
+        expanded.extend(quote! {
+                pub struct #builder_name {
+                    inner: #outer_name,
                 }
-            }
 
-            impl std::convert::From<#builder_name> for #outer_name {
-                fn from(builder: #builder_name) -> Self {
-                    builder.finish()
+                impl #builder_name {
+                    #(#builder_methods)*
+
+                    pub fn finish(self) -> #outer_name {
+                        self.inner
+                    }
                 }
-            }
-	});
+
+                impl std::convert::From<#builder_name> for #outer_name {
+                    fn from(builder: #builder_name) -> Self {
+                        builder.finish()
+                    }
+                }
+        });
     }
 
     TokenStream::from(expanded)
