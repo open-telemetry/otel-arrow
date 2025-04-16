@@ -73,20 +73,15 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
             }
         }).unwrap();
 
-    // Get optional details for the model.
-    let detail = otlp_model::DETAILS
-        .iter()
-        .find(|detail| detail.name == type_name)
-        .cloned()
+    // Get required parameters for this type.
+    let param_names = otlp_model::REQUIRED_PARAMS
+        .get(type_name.as_str())
         .unwrap();
 
     // Check if this struct has a oneof field
     let oneof_mapping = otlp_model::ONEOF_MAPPINGS
-        .iter()
-        .find(|mapping| mapping.field.starts_with(&type_name));
-
-    // Extract param names only from params or get an empty Vec if none exists
-    let param_names = detail.params.unwrap();
+	.iter()
+        .find(|(field, _)| field.starts_with(&type_name));
 
     // Extract all fields from the struct definition
     let struct_fields = match &input.data {
@@ -196,7 +191,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     let mut builder_fields: Vec<&FieldInfo> = Vec::new();
     
     // First, add parameters in the order they appear in param_names
-    for param_name in &param_names {
+    for param_name in param_names {
         let field = field_infos.iter()
             .find(|info| info.is_param && info.ident.to_string() == *param_name)
 	    .unwrap();
@@ -304,7 +299,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         },
         Some(oneof_mapping) => {
             // Extract the field name from the mapped path
-            let oneof_name = oneof_mapping.field.split('.').last().unwrap();
+            let oneof_name = oneof_mapping.0.split('.').last().unwrap();
             let oneof_ident = syn::Ident::new(
                 oneof_name, 
                 proc_macro2::Span::call_site()
@@ -316,7 +311,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
                 .unwrap();
             
             // Generate a constructor for each oneof case
-            oneof_mapping.cases.iter().map(|case| {
+            oneof_mapping.1.iter().map(|case| {
                 let case_type = syn::parse_str::<syn::Type>(&case.type_param).unwrap();
                 let variant_path = syn::parse_str::<syn::Expr>(&case.value_variant).unwrap();
                 let method_name = syn::Ident::new(&format!("new_{}", case.name), proc_macro2::Span::call_site());
