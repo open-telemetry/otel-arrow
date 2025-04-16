@@ -1,6 +1,7 @@
 use std::env;
 use std::process::{Child, Command};
 use std::time::Duration;
+use std::path::Path;
 use std::path::PathBuf;
 use tokio::time::sleep;
 use std::fs;
@@ -104,7 +105,7 @@ pub struct CollectorProcess {
 
 impl CollectorProcess {
     /// Start a collector with the given configuration
-    pub async fn start(config_content: &str) -> Result<Self, String> {
+    pub async fn start<T: AsRef<Path>>(collector_path: T, config_content: &str) -> Result<Self, String> {
         // Create a temporary config file for the collector
         let config_path = PathBuf::from(env::temp_dir()).join("otel_collector_config.yaml");
         
@@ -115,12 +116,8 @@ impl CollectorProcess {
         file.write_all(config_content.as_bytes())
             .map_err(|e| format!("Failed to write config content: {}", e))?;
         
-        // Get collector executable path from env variable or default
-        let collector_path = env::var("OTEL_COLLECTOR_PATH")
-            .unwrap_or_else(|_| "bin/otelarrowcol".to_string());
-        
         // Start the collector process
-        let process = Command::new(collector_path)
+        let process = Command::new(collector_path.as_ref())
             .arg("--config")
             .arg(&config_path)
             .spawn()
@@ -182,10 +179,6 @@ receivers:
       grpc:
         endpoint: 127.0.0.1:{receiver_port}
 
-processors:
-  batch:
-    timeout: 1s
-
 exporters:
   otlp:
     endpoint: 127.0.0.1:{exporter_port}
@@ -196,15 +189,12 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [batch]
       exporters: [otlp]
     metrics:
       receivers: [otlp]
-      processors: [batch]
       exporters: [otlp]
     logs:
       receivers: [otlp]
-      processors: [batch]
       exporters: [otlp]
-"#, receiver_port = receiver_port, exporter_port = exporter_port)
+"#)
 }

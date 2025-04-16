@@ -17,12 +17,9 @@ mod tests {
     #[tokio::test]
     async fn test_otlp_fidelity() {
         // Only run this test if the collector path is set
-        if std::env::var("OTEL_COLLECTOR_PATH").is_ok() {
-            if let Err(e) = test_otlp_round_trip().await {
-                panic!("Round-trip test failed: {}", e);
-            }
-        } else {
-            println!("Skipping round-trip test: OTEL_COLLECTOR_PATH not set");
-        }
+        let env = std::env::var("OTEL_COLLECTOR_PATH")
+	    .unwrap_or("../../bin/otelarrowcol".to_string());
+	
+        test_otlp_round_trip(env).await.unwrap()
     }
 }

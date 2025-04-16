@@ -1,4 +1,5 @@
 use std::time::Duration;
+use std::path::Path;
 
 use tokio::time::timeout;
 
@@ -25,14 +26,7 @@ use super::collector_test::{
     CollectorProcess, generate_otlp_to_otlp_config, start_test_receiver,
 };
 
-/// OTLP round-trip validation test
-/// 
-/// This function:
-/// 1. Starts a test receiver server to receive exported data
-/// 2. Starts an OTel collector process with OTLP->OTLP pipeline
-/// 3. Creates an OTLP client and sends test data to the collector
-/// 4. Verifies the received data matches what was sent
-pub async fn test_otlp_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn test_otlp_round_trip<T: AsRef<Path>>(collector: T) -> Result<(), Box<dyn std::error::Error>> {
     // Port for the receiver (where the test sends data to the collector)
     const RECEIVER_PORT: u16 = 4317;
     // Port for the exporter (where the collector sends data back)
@@ -44,7 +38,7 @@ pub async fn test_otlp_round_trip() -> Result<(), Box<dyn std::error::Error>> {
     
     // Generate and start the collector with OTLP->OTLP config
     let collector_config = generate_otlp_to_otlp_config(RECEIVER_PORT, EXPORTER_PORT);
-    let _collector = CollectorProcess::start(&collector_config).await
+    let _collector = CollectorProcess::start(collector.as_ref(), &collector_config).await
         .map_err(|e| format!("Failed to start collector: {}", e))?;
     
     // Allow collector time to initialize
@@ -111,43 +105,7 @@ fn create_test_trace_request() -> ExportTraceServiceRequest {
 /// Compare two trace requests to ensure they are equivalent
 fn assert_requests_equal(expected: ExportTraceServiceRequest, actual: ExportTraceServiceRequest) {
     assert_eq!(
-        expected.resource_spans.len(),
-        actual.resource_spans.len(),
-        "Different number of resource spans"
+        expected,
+        actual,
     );
-    
-    for (i, (expected_rs, actual_rs)) in expected.resource_spans.iter().zip(actual.resource_spans.iter()).enumerate() {
-        assert_eq!(
-            expected_rs.scope_spans.len(),
-            actual_rs.scope_spans.len(),
-            "Different number of scope spans in resource span {}", i
-        );
-        
-        for (j, (expected_ss, actual_ss)) in expected_rs.scope_spans.iter().zip(actual_rs.scope_spans.iter()).enumerate() {
-            assert_eq!(
-                expected_ss.spans.len(),
-                actual_ss.spans.len(),
-                "Different number of spans in scope span {}.{}", i, j
-            );
-            
-            for (k, (expected_span, actual_span)) in expected_ss.spans.iter().zip(actual_ss.spans.iter()).enumerate() {
-                assert_eq!(
-                    expected_span.trace_id,
-                    actual_span.trace_id,
-                    "Different trace ID in span {}.{}.{}", i, j, k
-                );
-                assert_eq!(
-                    expected_span.span_id,
-                    actual_span.span_id,
-                    "Different span ID in span {}.{}.{}", i, j, k
-                );
-                assert_eq!(
-                    expected_span.name,
-                    actual_span.name,
-                    "Different name in span {}.{}.{}", i, j, k
-                );
-                // Add more detailed comparisons as needed
-            }
-        }
-    }
 }
