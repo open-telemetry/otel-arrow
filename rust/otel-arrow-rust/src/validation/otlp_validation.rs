@@ -7,12 +7,18 @@ use crate::proto::opentelemetry::collector::trace::v1::{
     ExportTraceServiceRequest,
 };
 
+use crate::pdata::{TraceID, SpanID};
+
 use crate::proto::opentelemetry::trace::v1::{
     ResourceSpans, ScopeSpans, Span, Status, status::StatusCode,
 };
 
 use crate::proto::opentelemetry::common::v1::{
-    AnyValue, KeyValue,
+    AnyValue, KeyValue, InstrumentationScope,
+};
+
+use crate::proto::opentelemetry::resource::v1::{
+    Resource,
 };
 
 use super::collector_test::{
@@ -76,10 +82,10 @@ pub async fn test_otlp_round_trip() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Creates a test trace request with a simple span
 fn create_test_trace_request() -> ExportTraceServiceRequest {
-    let start_time = 1619712000000000000;
-    let end_time = 1619712001000000000;
-    let trace_id = TraceID(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
-    let span_id = SpanID(&[1, 2, 3, 4, 5, 6, 7, 8]);
+    let start_time = 1619712000000000000u64;
+    let end_time = 1619712001000000000u64;
+    let trace_id = TraceID::try_new(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]).unwrap();
+    let span_id = SpanID::try_new(&[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
 
     // Create a simple span with some attributes
     let span = Span::build(trace_id, span_id, "test_span", start_time)
@@ -87,18 +93,18 @@ fn create_test_trace_request() -> ExportTraceServiceRequest {
         .attributes(vec![
             KeyValue::new("test.attribute", AnyValue::new_string("test value")),
         ])
-        .status(Status::new(StatusCode::Ok, "success"))
+        .status(Status::new("success", StatusCode::Ok))
 	.finish();
 
     // Create a request with the span
     ExportTraceServiceRequest::new(
-	vec![ResourceSpans::new(
-	    Resource::default(),
-            vec![ScopeSpans::new(
-		Scope::default(),
-		vec![span],
-            )],
-        )],
+	vec![ResourceSpans::build(Resource::default())
+	     .scope_spans(
+		 vec![ScopeSpans::build(InstrumentationScope::default())
+		      .spans(vec![span])
+		      .finish()],
+	     )
+	     .finish()],
     )
 }
 

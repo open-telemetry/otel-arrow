@@ -181,13 +181,13 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
 	    ("opentelemetry.proto.collector.metrics.v1.ExportMetricsPartialSuccess", vec![
 		"rejected_data_points",
 	    ]),
-	    ("opentelemetry.proto.collector.traces.v1.ExportTracesServiceRequest", vec![
-		"resource_traces",
+	    ("opentelemetry.proto.collector.trace.v1.ExportTraceServiceRequest", vec![
+		"resource_spans",
 	    ]),
-	    ("opentelemetry.proto.collector.traces.v1.ExportTracesServiceResponse", vec![
+	    ("opentelemetry.proto.collector.trace.v1.ExportTraceServiceResponse", vec![
 		"partial_success",
 	    ]),
-	    ("opentelemetry.proto.collector.traces.v1.ExportTracesPartialSuccess", vec![
+	    ("opentelemetry.proto.collector.trace.v1.ExportTracePartialSuccess", vec![
 		"rejected_spans",
 	    ]),
         ])
