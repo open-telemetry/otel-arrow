@@ -19,12 +19,3 @@ pub use otlp_derive::qualified;
 // Include tests
 #[cfg(test)]
 mod tests;
-
-/// Message is a trait for OTLP protocol buffer message types.
-pub trait Message {
-    /// The associated builder type for this message
-    type Builder;
-
-    /// Creates a new builder for this message type
-    fn builder() -> Self::Builder;
-}
