@@ -15,4 +15,4 @@ workspace = true
 [dependencies]
 otap-df-engine = { path = "../engine" }
 
-thiserror.workspace = true
+thiserror = { workspace = true }

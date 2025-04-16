@@ -3,6 +3,7 @@
 //! Async Pipeline Engine
 
 pub mod error;
+pub mod exporter;
 pub mod message;
 pub mod processor;
 pub mod receiver;

@@ -61,9 +61,12 @@ pub trait Receiver {
     /// Receivers are expected to process both internal control messages and external sources and
     /// use the EffectHandler to send messages to the next node(s) in the pipeline.
     ///
+    /// Important note: Receivers are expected to process internal control messages in priority over
+    /// external data.
+    ///
     /// # Parameters
     ///
-    /// - `ctrl_msg_recv`: A channel to receive control messages.
+    /// - `ctrl_msg_chan`: A channel to receive control messages.
     /// - `effect_handler`: A handler to perform side effects such as opening a listener.
     ///
     /// # Errors
@@ -75,7 +78,7 @@ pub trait Receiver {
     /// This method should be cancellation safe and clean up any resources when dropped.
     async fn start(
         self: Box<Self>,
-        ctrl_msg_recv: ControlMsgChannel,
+        ctrl_msg_chan: ControlMsgChannel,
         effect_handler: EffectHandler<Self::Msg>,
     ) -> Result<(), Error<Self::Msg>>;
 }
