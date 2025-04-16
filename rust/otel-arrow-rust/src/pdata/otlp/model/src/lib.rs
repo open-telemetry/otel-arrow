@@ -162,6 +162,34 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
                 "time_unix_nano",
                 "value",
             ]),
+	    // Service
+	    ("opentelemetry.proto.collector.logs.v1.ExportLogsServiceRequest", vec![
+		"resource_logs",
+	    ]),
+	    ("opentelemetry.proto.collector.logs.v1.ExportLogsServiceResponse", vec![
+		"partial_success",
+	    ]),
+	    ("opentelemetry.proto.collector.logs.v1.ExportLogsPartialSuccess", vec![
+		"rejected_log_records",
+	    ]),
+	    ("opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceRequest", vec![
+		"resource_metrics",
+	    ]),
+	    ("opentelemetry.proto.collector.metrics.v1.ExportMetricsServiceResponse", vec![
+		"partial_success",
+	    ]),
+	    ("opentelemetry.proto.collector.metrics.v1.ExportMetricsPartialSuccess", vec![
+		"rejected_data_points",
+	    ]),
+	    ("opentelemetry.proto.collector.traces.v1.ExportTracesServiceRequest", vec![
+		"resource_traces",
+	    ]),
+	    ("opentelemetry.proto.collector.traces.v1.ExportTracesServiceResponse", vec![
+		"partial_success",
+	    ]),
+	    ("opentelemetry.proto.collector.traces.v1.ExportTracesPartialSuccess", vec![
+		"rejected_spans",
+	    ]),
         ])
     });
 
