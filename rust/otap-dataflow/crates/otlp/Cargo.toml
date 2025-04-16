@@ -14,5 +14,20 @@ workspace = true
 
 [dependencies]
 otap-df-engine = { path = "../engine" }
-
+otap-df-channel = { path = "../channel" }
+prost = "0.13.4"
+tonic = { version = "0.12.3", default-features = false, features = [
+    "server",
+    "codegen",
+    "prost",
+    "tls",
+    "tls-roots",
+] }
 thiserror.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+
+[build-dependencies]
+tonic-build = { version = "0.13.0", features = ["cleanup-markdown"] }
+
