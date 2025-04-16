@@ -16,12 +16,12 @@ use crate::arrays::{
 };
 use crate::error;
 use crate::otlp::attributes::parent_id::ParentId;
+use crate::proto::opentelemetry::common::v1::any_value::Value;
+use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use crate::schema::consts;
 use arrow::array::{Array, RecordBatch};
 use arrow::datatypes::Schema;
 use num_enum::TryFromPrimitive;
-use opentelemetry_proto::tonic::common::v1::any_value::Value;
-use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
 use snafu::{OptionExt, ResultExt};
 use std::collections::HashMap;
 

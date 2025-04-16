@@ -15,19 +15,57 @@ use std::path::Path;
 fn main() {
     let out_dir = Path::new("src/proto");
     let base = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+
+    // Generate OTAP (Arrow) protos
+    generate_otap_protos(out_dir, &base);
+
+    // Generate OTLP protos
+    generate_otlp_protos(out_dir, &base);
+}
+
+fn generate_otap_protos(out_dir: &Path, base: &str) {
+    // Create a tonic-build configuration with our custom settings
     let builder = tonic_build::configure()
         .build_server(true)
-        .build_client(true);
-
-    let builder = builder
+        .build_client(true)
         .server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
         .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#);
 
+    // Compile the protobuf definitions
     builder
         .out_dir(out_dir)
         .compile_protos(
             &["experimental/arrow/v1/arrow_service.proto"],
             &[format!("{}/../../proto/opentelemetry/proto/", base)],
         )
-        .expect("Failed to compile protos.");
+        .expect("Failed to compile OTAP protos.");
+}
+
+fn generate_otlp_protos(out_dir: &Path, base: &str) {
+    // Configure the builder for OTLP protos
+    let builder = tonic_build::configure()
+        .build_server(true)
+        .build_client(true)
+        .server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
+        .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#);
+
+    // Note: this adds derive expressions for each OTLP message type.
+    let builder = otlp_model::add_type_attributes(builder);
+
+    builder
+        .out_dir(out_dir)
+        .compile_protos(
+            &[
+                "opentelemetry/proto/common/v1/common.proto",
+                "opentelemetry/proto/resource/v1/resource.proto",
+                "opentelemetry/proto/trace/v1/trace.proto",
+                "opentelemetry/proto/metrics/v1/metrics.proto",
+                "opentelemetry/proto/logs/v1/logs.proto",
+                "opentelemetry/proto/collector/logs/v1/logs_service.proto",
+                "opentelemetry/proto/collector/trace/v1/trace_service.proto",
+                "opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
+            ],
+            &[format!("{}/../../proto/opentelemetry-proto", base)],
+        )
+        .expect("Failed to compile OTLP protos.");
 }
