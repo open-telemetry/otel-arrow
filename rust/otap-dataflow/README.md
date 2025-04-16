@@ -8,9 +8,9 @@
 
 ----
 
-[Quickstart Guide](#-quickstart-guide) | [Design Principles](docs/design-principles.md) | [Architecture](docs/architecture.md) | [Change log](CHANGELOG.md) | [Contributing](CONTRIBUTING.md) | 
+[Quickstart Guide](#-quickstart-guide) | [Design Principles](docs/design-principles.md) | [Architecture](docs/architecture.md) | [Change log](CHANGELOG.md) | [Contributing](CONTRIBUTING.md) |
 
-> [!NOTE] 
+> [!NOTE]
 > This Rust library will be the main deliverable of phase 2 of the
 > otel-arrow project, as defined in this
 > [PR](https://github.com/open-telemetry/community/pull/2634).
@@ -33,9 +33,9 @@ Some examples of use cases include:
 - End-to-end OTAP pipeline
 - ...
 
-## Why <Project Name>
+## Why
 
-TBD
+TBD (Explain why Rust, why Arrow, ...)
 
 ## 🚧 Workspace Structure
 

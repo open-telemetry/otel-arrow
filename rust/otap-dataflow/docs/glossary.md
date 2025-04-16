@@ -26,5 +26,3 @@ TBD
 
 **Telemetry Data**
 TBD
-
-
