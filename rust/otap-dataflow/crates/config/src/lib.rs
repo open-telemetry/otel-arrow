@@ -169,6 +169,7 @@ impl PipelineDag {
             stack: &mut Vec<String>,
             in_stack: &mut HashSet<String>,
         ) -> Option<Vec<String>> {
+            // Caller always checks !visited.contains()
             _ = visited.insert(node_id.to_string());
             stack.push(node_id.to_string());
             _ = in_stack.insert(node_id.to_string());
