@@ -2,9 +2,6 @@
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](https://github.com/clap-rs/clap/blob/v3.1.0/LICENSE-APACHE)
 
-<table style="border-collapse: collapse; border: none!important;">
-<tr style="border-collapse: collapse; border: none!important; padding: 0;">
-<td style="border-collapse: collapse; border: none!important; padding: 0; vertical-align: top;">
 Beaubourg is a lightweight Rust library for building generic pipelines
 consisting of a collection of receivers, processors, and
 exporters. This library was initially implemented in the context of
@@ -12,10 +9,6 @@ the Otel Arrow Project but can be used in many other
 contexts.</br></br>Note: Beaubourg is an iconic French architectural
 building whose characteristic features are an assembly of pipes
 connected to each other.
-</td>
-<td style="border-collapse: collapse; border: none!important;"><img src="images/beaubourg_building.png"></td>
-</tr>
-</table>
 
 ## Getting started
 
