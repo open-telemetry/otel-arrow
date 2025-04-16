@@ -8,7 +8,10 @@
 
 ----
 
-[Quickstart Guide](#-quickstart-guide) | [Design Principles](docs/design-principles.md) | [Architecture](docs/architecture.md) | [Change log](CHANGELOG.md) | [Contributing](CONTRIBUTING.md) |
+[Quickstart Guide](#-quickstart-guide) 
+| [Design Principles](docs/design-principles.md)
+| [Architecture](docs/architecture.md) | [Change log](CHANGELOG.md)
+| [Contributing](CONTRIBUTING.md) |
 
 > [!NOTE]
 > This Rust library will be the main deliverable of phase 2 of the
