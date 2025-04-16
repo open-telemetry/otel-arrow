@@ -1,0 +1,16 @@
+[package]
+name = "xtask"
+publish = false               # xtask is not meant to be published
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1.0.97"
+toml = "0.8.20"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
