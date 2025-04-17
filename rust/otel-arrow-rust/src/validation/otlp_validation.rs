@@ -24,7 +24,15 @@ where
     T: AsRef<Path>,
 {
     // Generate random ports in the high u16 range to avoid conflicts
-    let receiver_port = 40000 + (rand::random::<u16>() % 25000);
+    // Use test_name in hash calculation to ensure different tests get different ports
+    let name_hash = test_name.chars().fold(0u16, |acc, c| acc.wrapping_add(c as u16));
+    let random_value = rand::random::<u16>();
+    let combined_value = random_value.wrapping_add(name_hash);
+    let receiver_port = 40000 + (combined_value % 25000);
+    
+    // Print to stdout to ensure we see the debug info in test output
+    println!("PORT DEBUG: test_name='{}', name_hash={}, random_value={}, combined_value={}, receiver_port={}", 
+              test_name, name_hash, random_value, combined_value, receiver_port);
 
     // Start the test receiver server with a 10-second timeout to avoid tests getting stuck
     let (server_handle, mut request_rx, exporter_port) = start_test_receiver::<S>(Some(10))

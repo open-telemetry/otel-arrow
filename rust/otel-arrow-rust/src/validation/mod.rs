@@ -22,6 +22,8 @@ mod tests {
     where
         S::Request: std::fmt::Debug + PartialEq,
     {
+        println!("===== Starting test with name: {} =====", test_name);
+        
         // Only run this test if the collector path is set
         let env = std::env::var("OTEL_COLLECTOR_PATH").unwrap_or("../../bin/otelarrowcol".to_string());
 

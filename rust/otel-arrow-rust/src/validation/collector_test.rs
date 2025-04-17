@@ -122,8 +122,10 @@ impl CollectorProcess {
         collector_path: T,
         config_content: &str,
     ) -> Result<Self, String> {
-        // Create a temporary config file for the collector
-        let config_path = PathBuf::from(env::temp_dir()).join("otel_collector_config.yaml");
+        // Create a unique temporary config file for the collector with a random identifier
+        // to prevent collision with other tests
+        let random_id = format!("{:016x}", rand::random::<u64>());
+        let config_path = PathBuf::from(env::temp_dir()).join(format!("otel_collector_config_{}.yaml", random_id));
 
         // Write the config to the file
         let mut file = fs::File::create(&config_path)
