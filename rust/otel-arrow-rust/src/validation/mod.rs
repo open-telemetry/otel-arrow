@@ -17,8 +17,7 @@ mod tests {
     #[tokio::test]
     async fn test_otlp_fidelity() {
         // Only run this test if the collector path is set
-        let env =
-            std::env::var("OTEL_COLLECTOR_PATH").unwrap_or("../../bin/otelarrowcol".to_string());
+        let env = std::env::var("OTEL_COLLECTOR_PATH").unwrap_or("../../bin/otelarrowcol".to_string());
 
         match tokio::time::timeout(
             std::time::Duration::from_secs(10),
