@@ -104,12 +104,8 @@ impl LogsService for LogsServiceImpl {
         &self,
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
-        // Update last activity time
-        self.activity_tx
-            .send(Instant::now())
-            .map_err(|_| Status::internal("Failed to update activity timestamp"))?;
 
-        effect_handler.send_message(OTLPRequest::Logs(request.into_inner())).await?;
+        self.effect_handler.send_message(OTLPRequest::Logs(request.into_inner())).await?;
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,
         }))
@@ -122,11 +118,8 @@ impl MetricsService for MetricsServiceImpl {
         &self,
         request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
-        // Update last activity time
-        self.activity_tx
-            .send(Instant::now())
-            .map_err(|_| Status::internal("Failed to update activity timestamp"))?;
-        effect_handler.send_message(OTLPRequest::Metrics(request.into_inner())).await?;
+
+        self.effect_handler.send_message(OTLPRequest::Metrics(request.into_inner())).await?;
         Ok(Response::new(ExportMetricsServiceResponse {
             partial_success: None,
         }))
@@ -139,11 +132,8 @@ impl TraceService for TraceServiceImpl {
         &self,
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        // Update last activity time
-        self.activity_tx
-            .send(Instant::now())
-            .map_err(|_| Status::internal("Failed to update activity timestamp"))?;
-        effect_handler.send_message(OTLPRequest::Traces(request.into_inner())).await?;
+  
+        self.effect_handler.send_message(OTLPRequest::Traces(request.into_inner())).await?;
         Ok(Response::new(ExportTraceServiceResponse {
             partial_success: None,
         }))

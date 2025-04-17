@@ -11,10 +11,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // - Run `cargo build` to regenerate the API.
     // - Comment the following lines.
     // - Commit the changes.
-
     tonic_build::configure()
         // .build_client(false)
-        .out_dir("grpc_stubs")
+        .out_dir("src/grpc_stubs")
         .compile_protos(
             &[
                 "proto/opentelemetry/proto/collector/logs/v1/logs_service.proto",
@@ -23,6 +22,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ],
             &["proto"],
         )?;
-
     Ok(())
 }

@@ -2,16 +2,19 @@
 
 //! Implementation of the OTLP nodes (receiver, exporter, processor).
 
-use crate::grpc::{LogsServiceImpl, MetricsServiceImpl, TraceServiceImpl, OTLPReceiver};
+pub mod grpc;
+use crate::grpc::{LogsServiceImpl, MetricsServiceImpl, TraceServiceImpl, OTLPRequest};
+use grpc_stubs::proto::collector::logs::v1::logs_service_server::LogsServiceServer;
+use grpc_stubs::proto::collector::metrics::v1::metrics_service_server::MetricsServiceServer;
+use grpc_stubs::proto::collector::trace::v1::trace_service_server::TraceServiceServer;
 use otap_df_engine::receiver::{EffectHandler, Receiver, ControlMsgChannel};
 use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
 use async_trait::async_trait;
-use otap_df_channel::mpsc;
 use std::net::SocketAddr;
 use tokio::time::{Duration, sleep};
 use tonic::codec::CompressionEncoding;
-
+use tonic::transport::Server;
 
 struct OTLPReceiver {
     listening_addr: SocketAddr,
@@ -25,10 +28,9 @@ impl Receiver for OTLPReceiver {
         ctrl_msg_recv: ControlMsgChannel,
         effect_handler: EffectHandler<Self::Msg>,
     ) -> Result<(), Error<Self::Msg>> {
-        // Bind to an ephemeral port.
 
+        // create listener on addr provided from config
         let listener = effect_handler.tcp_listener(self.listening_addr)?;
-        // receiver listening on provided addr
 
         //create services for the grpc server and clone the effect handler to pass message
         let logs_service = LogsServiceImpl {
@@ -40,7 +42,7 @@ impl Receiver for OTLPReceiver {
         let trace_service = TraceServiceImpl {
             effect_handler: effect_handler.clone(),
         };
-    
+
         //start event loop
         loop {
             tokio::select! {
@@ -60,17 +62,17 @@ impl Receiver for OTLPReceiver {
                         }
                     }
                 }
-
-                let server_future = Server::builder()
+                // handle grpc server events
+                grpc_server = Server::builder()
                 .add_service(LogsServiceServer::new(logs_service).send_compressed(CompressionEncoding::Zstd).accept_compressed(CompressionEncoding::Zstd))
                 .add_service(MetricsServiceServer::new(metrics_service).send_compressed(CompressionEncoding::Zstd).accept_compressed(CompressionEncoding::Zstd))
                 .add_service(TraceServiceServer::new(trace_service).send_compressed(CompressionEncoding::Zstd).accept_compressed(CompressionEncoding::Zstd))
-                .serve_with_incoming(inbound);
-
-                let result = server_future.await;
+                .serve(listener) => {
+                    grpc_server.await?;
+                }
                 // A timeout branch in case no events occur.
                 () = sleep(Duration::from_secs(1)) => {
-                    // You could do periodic tasks here.
+                    // wait for next event
                 }
             }
         }
