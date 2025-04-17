@@ -21,10 +21,12 @@ mod otlp;
 mod schema;
 #[cfg(test)]
 mod test_util;
+#[cfg(test)]
+mod validation;
 
 pub mod pdata;
 pub mod proto;
-mod validation;
+
 
 #[path = ""]
 pub mod opentelemetry {

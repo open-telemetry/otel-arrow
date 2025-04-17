@@ -10,24 +10,17 @@ use std::time::Duration;
 use tokio::time::timeout;
 
 use tokio::sync::mpsc;
-use tonic::{transport::Server, Request, Response, Status};
+use tonic::{transport::Server};
+use tokio_stream::wrappers::TcpListenerStream;
 
-use crate::proto::opentelemetry::collector::trace::v1::{
-    trace_service_server::{TraceService, TraceServiceServer},
-    ExportTraceServiceRequest, ExportTraceServiceResponse,
-};
+use crate::proto::opentelemetry::collector::trace::v1::trace_service_server::TraceServiceServer;
+use crate::proto::opentelemetry::collector::metrics::v1::metrics_service_server::MetricsServiceServer;
+use crate::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsServiceServer;
 
-use crate::proto::opentelemetry::collector::metrics::v1::{
-    metrics_service_server::MetricsService, ExportMetricsServiceRequest,
-    ExportMetricsServiceResponse,
-};
+use crate::validation::service_type::{ServiceType, TestReceiver};
 
 const READY_TIMEOUT_SECONDS: u64 = 10;
 const READY_MESSAGE: &str = "Everything is ready.";
-
-use crate::proto::opentelemetry::collector::logs::v1::{
-    logs_service_server::LogsService, ExportLogsServiceRequest, ExportLogsServiceResponse,
-};
 
 /// TimeoutError represents an error when a receiver operation times out
 #[derive(Debug)]
@@ -62,86 +55,7 @@ impl<T> TimeoutReceiver<T> {
     }
 }
 
-/// A test receiver that implements the OTLP trace service
-#[derive(Debug)]
-pub struct TestTraceReceiver {
-    pub request_rx: mpsc::Sender<ExportTraceServiceRequest>,
-}
-
-#[tonic::async_trait]
-impl TraceService for TestTraceReceiver {
-    async fn export(
-        &self,
-        request: Request<ExportTraceServiceRequest>,
-    ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        let request_inner = request.into_inner();
-
-        // Forward the received request to the test channel
-        if let Err(err) = self.request_rx.send(request_inner).await {
-            return Err(Status::internal(format!(
-                "Failed to send trace data to test channel: {}",
-                err
-            )));
-        }
-
-        // Return success response
-        Ok(Response::new(ExportTraceServiceResponse::default()))
-    }
-}
-
-/// A test receiver that implements the OTLP metrics service
-#[derive(Debug)]
-pub struct TestMetricsReceiver {
-    pub request_rx: mpsc::Sender<ExportMetricsServiceRequest>,
-}
-
-#[tonic::async_trait]
-impl MetricsService for TestMetricsReceiver {
-    async fn export(
-        &self,
-        request: Request<ExportMetricsServiceRequest>,
-    ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
-        let request_inner = request.into_inner();
-
-        // Forward the received request to the test channel
-        if let Err(err) = self.request_rx.send(request_inner).await {
-            return Err(Status::internal(format!(
-                "Failed to send metrics data to test channel: {}",
-                err
-            )));
-        }
-
-        // Return success response
-        Ok(Response::new(ExportMetricsServiceResponse::default()))
-    }
-}
-
-/// A test receiver that implements the OTLP logs service
-#[derive(Debug)]
-pub struct TestLogsReceiver {
-    pub request_rx: mpsc::Sender<ExportLogsServiceRequest>,
-}
-
-#[tonic::async_trait]
-impl LogsService for TestLogsReceiver {
-    async fn export(
-        &self,
-        request: Request<ExportLogsServiceRequest>,
-    ) -> Result<Response<ExportLogsServiceResponse>, Status> {
-        let request_inner = request.into_inner();
-
-        // Forward the received request to the test channel
-        if let Err(err) = self.request_rx.send(request_inner).await {
-            return Err(Status::internal(format!(
-                "Failed to send logs data to test channel: {}",
-                err
-            )));
-        }
-
-        // Return success response
-        Ok(Response::new(ExportLogsServiceResponse::default()))
-    }
-}
+// The TestReceiver implementation has been moved to service_type.rs
 
 /// Helper function to spawn a thread that reads lines from a buffer and logs them with a prefix.
 /// Optionally checks for a message substring and sends a signal when it matches.
@@ -295,49 +209,41 @@ impl Drop for CollectorProcess {
     }
 }
 
-/// Start a test receiver server on any available port, with a configurable timeout
-pub async fn start_test_receiver(
+// Special implementation for starting a traces service test receiver
+pub async fn start_traces_receiver(
     timeout_secs: Option<u64>,
 ) -> Result<
     (
         tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-        TimeoutReceiver<ExportTraceServiceRequest>,
+        TimeoutReceiver<crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest>,
         u16, // actual port number that was assigned
     ),
     String,
 > {
+    use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+    
     // Bind to a specific address with port 0 for dynamic port allocation
-    // We use the address string directly, no need to parse it
     let addr = "127.0.0.1:0";
-
-    // Create a TCP listener with port 0 to get an available port
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| format!("Failed to bind listener: {}", e))?;
-
+    
     // Get the assigned port
     let port = listener
         .local_addr()
         .map_err(|e| format!("Failed to get local address: {}", e))?
         .port();
-
-    // Create a channel for receiving the exported data in tests
-    let (request_tx, request_rx) = mpsc::channel(100);
-
-    // Create a timeout-wrapped version of the receiver
-    let timeout_duration = Duration::from_secs(timeout_secs.unwrap_or(10));
-    let request_rx = TimeoutReceiver {
-        inner: request_rx,
-        timeout: timeout_duration,
-    };
-
-    let server = TraceServiceServer::new(TestTraceReceiver {
-        request_rx: request_tx,
-    });
-
+    
+    // Create a channel for receiving trace data
+    let (request_tx, request_rx) = mpsc::channel::<ExportTraceServiceRequest>(100);
+    
+    // Create a test receiver for the trace service
+    let receiver = TestReceiver { request_tx };
+    let server = TraceServiceServer::new(receiver);
+    
     // Convert the listener to a stream of connections
-    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-
+    let incoming = TcpListenerStream::new(listener);
+    
     // Create our server
     let handle = tokio::spawn(async move {
         Server::builder()
@@ -345,8 +251,155 @@ pub async fn start_test_receiver(
             .serve_with_incoming(incoming)
             .await
     });
-
+    
+    // Create a timeout-wrapped version of the receiver
+    let timeout_duration = Duration::from_secs(timeout_secs.unwrap_or(10));
+    let request_rx = TimeoutReceiver {
+        inner: request_rx,
+        timeout: timeout_duration,
+    };
+    
     Ok((handle, request_rx, port))
+}
+
+// Special implementation for starting a metrics service test receiver
+pub async fn start_metrics_receiver(
+    timeout_secs: Option<u64>,
+) -> Result<
+    (
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        TimeoutReceiver<crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest>,
+        u16, // actual port number that was assigned
+    ),
+    String,
+> {
+    use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+    
+    // Bind to a specific address with port 0 for dynamic port allocation
+    let addr = "127.0.0.1:0";
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| format!("Failed to bind listener: {}", e))?;
+    
+    // Get the assigned port
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("Failed to get local address: {}", e))?
+        .port();
+    
+    // Create a channel for receiving metrics data
+    let (request_tx, request_rx) = mpsc::channel::<ExportMetricsServiceRequest>(100);
+    
+    // Create a test receiver for the metrics service
+    let receiver = TestReceiver { request_tx };
+    let server = MetricsServiceServer::new(receiver);
+    
+    // Convert the listener to a stream of connections
+    let incoming = TcpListenerStream::new(listener);
+    
+    // Create our server
+    let handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(server)
+            .serve_with_incoming(incoming)
+            .await
+    });
+    
+    // Create a timeout-wrapped version of the receiver
+    let timeout_duration = Duration::from_secs(timeout_secs.unwrap_or(10));
+    let request_rx = TimeoutReceiver {
+        inner: request_rx,
+        timeout: timeout_duration,
+    };
+    
+    Ok((handle, request_rx, port))
+}
+
+// Special implementation for starting a logs service test receiver
+pub async fn start_logs_receiver(
+    timeout_secs: Option<u64>,
+) -> Result<
+    (
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        TimeoutReceiver<crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest>,
+        u16, // actual port number that was assigned
+    ),
+    String,
+> {
+    use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+    
+    // Bind to a specific address with port 0 for dynamic port allocation
+    let addr = "127.0.0.1:0";
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| format!("Failed to bind listener: {}", e))?;
+    
+    // Get the assigned port
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("Failed to get local address: {}", e))?
+        .port();
+    
+    // Create a channel for receiving logs data
+    let (request_tx, request_rx) = mpsc::channel::<ExportLogsServiceRequest>(100);
+    
+    // Create a test receiver for the logs service
+    let receiver = TestReceiver { request_tx };
+    let server = LogsServiceServer::new(receiver);
+    
+    // Convert the listener to a stream of connections
+    let incoming = TcpListenerStream::new(listener);
+    
+    // Create our server
+    let handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(server)
+            .serve_with_incoming(incoming)
+            .await
+    });
+    
+    // Create a timeout-wrapped version of the receiver
+    let timeout_duration = Duration::from_secs(timeout_secs.unwrap_or(10));
+    let request_rx = TimeoutReceiver {
+        inner: request_rx,
+        timeout: timeout_duration,
+    };
+    
+    Ok((handle, request_rx, port))
+}
+
+/// Start a test receiver server on any available port, with a configurable timeout
+/// 
+/// This is a generic function that can work with any service type that implements the `ServiceType` trait.
+pub async fn start_test_receiver<S: ServiceType>(
+    timeout_secs: Option<u64>,
+) -> Result<
+    (
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        TimeoutReceiver<S::Request>,
+        u16, // actual port number that was assigned
+    ),
+    String,
+> {
+    // Dispatch to the appropriate specialized receiver based on the service type name
+    match S::name() {
+        "traces" => {
+            let (handle, receiver, port) = start_traces_receiver(timeout_secs).await?;
+            // Safe to transmute here because we're ensuring the types match correctly in each function
+            Ok(unsafe { std::mem::transmute((handle, receiver, port)) })
+        },
+        "metrics" => {
+            let (handle, receiver, port) = start_metrics_receiver(timeout_secs).await?;
+            // Safe to transmute here because we're ensuring the types match correctly in each function
+            Ok(unsafe { std::mem::transmute((handle, receiver, port)) })
+        },
+        "logs" => {
+            let (handle, receiver, port) = start_logs_receiver(timeout_secs).await?;
+            // Safe to transmute here because we're ensuring the types match correctly in each function
+            Ok(unsafe { std::mem::transmute((handle, receiver, port)) })
+        },
+        _ => Err(format!("Unknown service type: {}", S::name())),
+    }
 }
 
 /// Configuration generator for OTLP to OTLP test case
