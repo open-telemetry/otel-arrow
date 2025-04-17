@@ -3,10 +3,11 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use std::path::Path;
 use std::path::PathBuf;
-use tokio::time::sleep;
+use tokio::time::timeout;
 use std::fs;
 use std::io::{Write, BufRead, BufReader};
 use std::thread::{self, JoinHandle};
+use std::fmt;
 
 use tonic::{transport::Server, Request, Response, Status};
 use tokio::sync::mpsc;
@@ -25,6 +26,39 @@ use crate::proto::opentelemetry::collector::logs::v1::{
     logs_service_server::LogsService,
     ExportLogsServiceRequest, ExportLogsServiceResponse,
 };
+
+/// TimeoutError represents an error when a receiver operation times out
+#[derive(Debug)]
+pub struct TimeoutError {
+    pub duration: Duration,
+}
+
+impl fmt::Display for TimeoutError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Receiver operation timed out after {:?}", self.duration)
+    }
+}
+
+impl std::error::Error for TimeoutError {}
+
+/// A wrapper around mpsc::Receiver that adds timeout functionality
+pub struct TimeoutReceiver<T> {
+    pub inner: mpsc::Receiver<T>,
+    pub timeout: Duration,
+}
+
+impl<T> TimeoutReceiver<T> {
+    /// Receive a value with timeout
+    pub async fn recv(&mut self) -> Result<T, Box<dyn std::error::Error + Send + Sync>> {
+        match timeout(self.timeout, self.inner.recv()).await {
+            Ok(Some(value)) => Ok(value),
+            Ok(None) => Err("Channel closed".into()),
+            Err(_) => Err(Box::new(TimeoutError { 
+                duration: self.timeout 
+            })),
+        }
+    }
+}
 
 /// A test receiver that implements the OTLP trace service
 #[derive(Debug)]
@@ -136,6 +170,9 @@ impl CollectorProcess {
         let stderr = process.stderr.take()
             .ok_or_else(|| "Failed to capture process stderr".to_string())?;
         
+        // Create a channel to signal when the collector is ready
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        
         // Create threads to read from stdout and stderr and write to test stderr
         let stdout_handle = thread::spawn(move || {
             let reader = BufReader::new(stdout);
@@ -151,12 +188,34 @@ impl CollectorProcess {
             for line in reader.lines() {
                 if let Ok(line) = line {
                     eprintln!("[Collector stderr] {}", line);
+                    // Check if this line contains the "ready" message
+                    if line.contains("Everything is ready.") {
+                        let _ = ready_tx.send(());
+                    }
                 }
             }
         });
         
-        // Wait for collector to start up
-        sleep(Duration::from_secs(2)).await;
+        // Wait for the "Everything is ready." message or timeout
+        let timeout_duration = Duration::from_secs(30);
+        match timeout(timeout_duration, async {
+            // Convert std channel receive to future
+            let ready_fut = tokio::task::spawn_blocking(move || ready_rx.recv());
+            ready_fut.await.map_err(|_| "Join error")?
+                .map_err(|_| "Channel closed")?;
+            Ok::<_, String>(())
+        }).await {
+            Ok(Ok(())) => {
+                // Collector is ready
+                eprintln!("Collector is ready to use.");
+            },
+            Ok(Err(e)) => {
+                return Err(format!("Error waiting for collector to be ready: {}", e));
+            },
+            Err(_) => {
+                return Err(format!("Timed out after {:?} waiting for collector to be ready", timeout_duration));
+            }
+        };
         
         Ok(Self { 
             process, 
@@ -186,11 +245,11 @@ impl Drop for CollectorProcess {
     }
 }
 
-/// Start a test receiver server on any available port
-pub async fn start_test_receiver() -> Result<
+/// Start a test receiver server on any available port, with a configurable timeout
+pub async fn start_test_receiver(timeout_secs: Option<u64>) -> Result<
     (
         tokio::task::JoinHandle<Result<(), tonic::transport::Error>>, 
-        mpsc::Receiver<ExportTraceServiceRequest>,
+        TimeoutReceiver<ExportTraceServiceRequest>,
         u16 // Return the actual port number that was assigned
     ), 
     String
@@ -211,6 +270,13 @@ pub async fn start_test_receiver() -> Result<
     // Create a channel for receiving the exported data in tests
     let (request_tx, request_rx) = mpsc::channel(100);
     
+    // Create a timeout-wrapped version of the receiver
+    let timeout_duration = Duration::from_secs(timeout_secs.unwrap_or(10));
+    let request_rx = TimeoutReceiver { 
+        inner: request_rx,
+        timeout: timeout_duration,
+    };
+    
     let server = TraceServiceServer::new(TestTraceReceiver { 
         request_rx: request_tx,
     });
@@ -225,9 +291,6 @@ pub async fn start_test_receiver() -> Result<
             .serve_with_incoming(incoming)
             .await
     });
-    
-    // Allow a little time for the server to be fully ready
-    sleep(Duration::from_millis(100)).await;
     
     Ok((handle, request_rx, port))
 }
@@ -247,6 +310,7 @@ exporters:
     compression: none
     tls:
       insecure: true
+    timeout: 2s
 
 service:
   pipelines:
@@ -259,5 +323,8 @@ service:
     logs:
       receivers: [otlp]
       exporters: [otlp]
+  telemetry:
+    logs:
+      level: info
 "#)
 }

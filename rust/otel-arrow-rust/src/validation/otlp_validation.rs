@@ -1,7 +1,4 @@
-use std::time::Duration;
 use std::path::Path;
-
-use tokio::time::timeout;
 
 use crate::proto::opentelemetry::collector::trace::v1::{
     trace_service_client::TraceServiceClient,
@@ -27,26 +24,26 @@ use super::collector_test::{
 };
 
 pub async fn test_otlp_round_trip<T: AsRef<Path>>(collector: T) -> Result<(), Box<dyn std::error::Error>> {
-    // Port for the receiver (where the test sends data to the collector)
-    const RECEIVER_PORT: u16 = 4317;
+    // Generate a random port in the high u16 range for the receiver
+    let receiver_port = 40000 + (rand::random::<u16>() % 25000);
     
     // Start the test receiver server on a dynamically allocated port to receive the exported data
-    let (server_handle, mut request_rx, exporter_port) = start_test_receiver().await
+    // Start the test receiver server with a 10-second timeout to avoid tests getting stuck
+    let (server_handle, mut request_rx, exporter_port) = start_test_receiver(Some(10)).await
         .map_err(|e| format!("Failed to start test receiver: {}", e))?;
     
     // Generate and start the collector with OTLP->OTLP config using the dynamic port
-    let collector_config = generate_otlp_to_otlp_config(RECEIVER_PORT, exporter_port);
-    eprintln!("Config:\n{}", &collector_config);
+    let collector_config = generate_otlp_to_otlp_config(receiver_port, exporter_port);
+
     let _collector = CollectorProcess::start(collector.as_ref(), &collector_config).await
         .map_err(|e| format!("Failed to start collector: {}", e))?;
     
-    // Allow collector time to initialize
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    
     // Create OTLP client to send test data
-    let client_endpoint = format!("http://127.0.0.1:{}", RECEIVER_PORT);
+    let client_endpoint = format!("http://127.0.0.1:{}", receiver_port);
+    eprintln!("connecting to {}", client_endpoint);
     let mut client = TraceServiceClient::connect(client_endpoint).await?;
-    
+    eprintln!("connected!");
+
     // Create test span data
     let request = create_test_trace_request();
     
@@ -57,15 +54,18 @@ pub async fn test_otlp_round_trip<T: AsRef<Path>>(collector: T) -> Result<(), Bo
     client.export(request).await?;
     
     // Wait for the data to be received by our test receiver
-    let received_request = match timeout(Duration::from_secs(5), request_rx.recv()).await {
-        Ok(Some(req)) => req,
-        Ok(None) => return Err("Channel closed".into()),
-        Err(_) => return Err("Timeout waiting for exported data".into()),
+    let received_request = match request_rx.recv().await {
+        Ok(req) => req,
+        Err(e) => return Err(format!("Error receiving data: {}", e).into()),
     };
+
+    eprintln!("received one");
     
     // Compare the received data with what was sent
     assert_requests_equal(expected_request, received_request);
-    
+
+    eprintln!("shutting down");
+
     // Gracefully shut down the server
     drop(request_rx);
     let _ = server_handle.await;
