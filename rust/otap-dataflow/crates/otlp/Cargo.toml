@@ -17,6 +17,7 @@ otap-df-engine = { path = "../engine" }
 async-trait = "0.1"
 thiserror = { workspace = true }
 otap-df-channel = { path = "../channel" }
+log = "0.4"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
