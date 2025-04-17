@@ -403,7 +403,7 @@ pub async fn start_test_receiver<S: ServiceType>(
 }
 
 /// Configuration generator for OTLP to OTLP test case
-pub fn generate_otlp_to_otlp_config(receiver_port: u16, exporter_port: u16) -> String {
+pub fn generate_otlp_to_otlp_config(signal: &str, receiver_port: u16, exporter_port: u16) -> String {
     format!(
         r#"
 receivers:
@@ -425,16 +425,13 @@ exporters:
 
 service:
   pipelines:
-    traces:
-      receivers: [otlp]
-      exporters: [otlp]
-    metrics:
-      receivers: [otlp]
-      exporters: [otlp]
-    logs:
+    {signal}:
       receivers: [otlp]
       exporters: [otlp]
   telemetry:
+    metrics:
+      address: ""
+      level: none
     logs:
       level: info
 "#

@@ -10,7 +10,7 @@ mod otlp_validation;
 mod service_type;
 
 // Re-export the validation test functions for use in tests
-pub use otlp_validation::{test_otlp_round_trip, test_signal_round_trip};
+pub use otlp_validation::test_signal_round_trip;
 pub use service_type::{LogsServiceType, MetricsServiceType, ServiceType, TracesServiceType};
 
 #[cfg(test)]
@@ -52,22 +52,5 @@ mod tests {
     #[tokio::test]
     async fn test_logs_fidelity() {
         run_test_with_service::<LogsServiceType>("test_logs").await;
-    }
-
-    // Backward compatibility test using the old function
-    #[tokio::test]
-    async fn test_otlp_fidelity() {
-        // Only run this test if the collector path is set
-        let env = std::env::var("OTEL_COLLECTOR_PATH").unwrap_or("../../bin/otelarrowcol".to_string());
-
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            test_otlp_round_trip(env),
-        )
-        .await
-        {
-            Ok(result) => result.unwrap(),
-            Err(_) => panic!("Test timed out after 10 seconds"),
-        }
     }
 }

@@ -23,7 +23,7 @@ where
     S::Request: Debug + PartialEq,
     T: AsRef<Path>,
 {
-    // Generate a random port in the high u16 range for the receiver
+    // Generate random ports in the high u16 range to avoid conflicts
     let receiver_port = 40000 + (rand::random::<u16>() % 25000);
 
     // Start the test receiver server with a 10-second timeout to avoid tests getting stuck
@@ -31,8 +31,8 @@ where
         .await
         .map_err(|e| format!("Failed to start test receiver: {}", e))?;
 
-    // Generate and start the collector with OTLP->OTLP config using the dynamic port
-    let collector_config = generate_otlp_to_otlp_config(receiver_port, exporter_port);
+    // Generate and start the collector with OTLP->OTLP config using the dynamic ports
+    let collector_config = generate_otlp_to_otlp_config(S::name(), receiver_port, exporter_port);
 
     let mut collector = CollectorProcess::start(collector.as_ref(), &collector_config)
         .await
@@ -60,31 +60,42 @@ where
     // Compare the received data with what was sent
     assert_eq!(expected_request, received_request);
 
-    // Drop the client connection first
+    // Proper cleanup sequence to avoid port conflicts in subsequent tests:
+    
+    // 1. Drop the client connection first
     drop(client);
-
-    // Now drop the request receiver and gracefully shut down the server
+    
+    // 2. Send SIGTERM to the collector process to initiate graceful shutdown
+    // This ensures the collector stops sending to our exporter
+    match collector.shutdown().await {
+        Ok(status) => {
+            if let Some(s) = status {
+                eprintln!("Collector exited with status: {}", s);
+            } else {
+                eprintln!("Collector shutdown initiated");
+            }
+        },
+        Err(e) => eprintln!("Error shutting down collector: {}", e),
+    }
+    
+    // 3. Give the collector a moment to cleanly disconnect
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    
+    // 4. Now drop the request receiver 
     drop(request_rx);
-
-    // Send SIGTERM to the collector process to initiate graceful shutdown
-    collector.shutdown().await?;
-
+    
+    // 5. Wait for the server to shut down with timeout
     match tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await {
         Ok(Ok(_)) => eprintln!("{} server shut down successfully", S::name()),
         Ok(Err(e)) => eprintln!("Error shutting down {} server: {}", S::name(), e),
-        Err(_) => eprintln!("Timed out waiting for {} server to shut down", S::name()),
+        Err(_) => {
+            eprintln!("Timed out waiting for {} server to shut down", S::name());
+            // We could force-abort the server here if needed
+        }
     }
+    
+    // 6. Wait a moment before returning to ensure all sockets are properly closed
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     Ok(())
-}
-
-/// Test round-trip fidelity of trace data through the collector
-/// 
-/// This is a convenience wrapper around test_signal_round_trip for traces only.
-pub async fn test_otlp_round_trip<T: AsRef<Path>>(
-    collector: T,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::validation::service_type::TracesServiceType;
-    
-    test_signal_round_trip::<TracesServiceType, _>(collector, "test1").await
 }

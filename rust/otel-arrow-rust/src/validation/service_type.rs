@@ -6,17 +6,17 @@ use tonic::transport::Channel;
 
 use crate::proto::opentelemetry::collector::logs::v1::{
     logs_service_client::LogsServiceClient,
-    logs_service_server::{LogsService, LogsServiceServer},
+    logs_service_server::{LogsService, },
     ExportLogsServiceRequest, ExportLogsServiceResponse,
 };
 use crate::proto::opentelemetry::collector::metrics::v1::{
     metrics_service_client::MetricsServiceClient,
-    metrics_service_server::{MetricsService, MetricsServiceServer},
+    metrics_service_server::{MetricsService, },
     ExportMetricsServiceRequest, ExportMetricsServiceResponse,
 };
 use crate::proto::opentelemetry::collector::trace::v1::{
     trace_service_client::TraceServiceClient,
-    trace_service_server::{TraceService, TraceServiceServer},
+    trace_service_server::{TraceService, },
     ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
 
@@ -39,12 +39,6 @@ pub trait ServiceType: Debug + Send + Sync + 'static {
     
     /// Create a new client for this service
     async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error>;
-    
-    /// Create a new test receiver
-    fn create_receiver(tx: mpsc::Sender<Self::Request>) -> Self::Server;
-    
-    /// Create a new server for this service
-    fn create_server(receiver: Self::Server) -> impl tonic::server::NamedService;
     
     /// Create test data for this service
     fn create_test_data(name: &str) -> Self::Request;
@@ -75,14 +69,6 @@ impl ServiceType for TracesServiceType {
     
     async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
         TraceServiceClient::connect(endpoint).await
-    }
-    
-    fn create_receiver(tx: mpsc::Sender<Self::Request>) -> Self::Server {
-        TestReceiver { request_tx: tx }
-    }
-    
-    fn create_server(receiver: Self::Server) -> impl tonic::server::NamedService {
-        TraceServiceServer::new(receiver)
     }
     
     fn create_test_data(name: &str) -> Self::Request {
@@ -140,14 +126,6 @@ impl ServiceType for MetricsServiceType {
         MetricsServiceClient::connect(endpoint).await
     }
     
-    fn create_receiver(tx: mpsc::Sender<Self::Request>) -> Self::Server {
-        TestReceiver { request_tx: tx }
-    }
-    
-    fn create_server(receiver: Self::Server) -> impl tonic::server::NamedService {
-        MetricsServiceServer::new(receiver)
-    }
-    
     fn create_test_data(name: &str) -> Self::Request {
         use crate::proto::opentelemetry::metrics::v1::{
             Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics,
@@ -200,14 +178,6 @@ impl ServiceType for LogsServiceType {
     
     async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
         LogsServiceClient::connect(endpoint).await
-    }
-    
-    fn create_receiver(tx: mpsc::Sender<Self::Request>) -> Self::Server {
-        TestReceiver { request_tx: tx }
-    }
-    
-    fn create_server(receiver: Self::Server) -> impl tonic::server::NamedService {
-        LogsServiceServer::new(receiver)
     }
     
     fn create_test_data(name: &str) -> Self::Request {
@@ -305,8 +275,3 @@ impl LogsService for TestReceiver<ExportLogsServiceRequest> {
         Ok(Response::new(ExportLogsServiceResponse::default()))
     }
 }
-
-// Generic type aliases for convenience
-pub type TestTraceReceiver = TestReceiver<ExportTraceServiceRequest>;
-pub type TestMetricsReceiver = TestReceiver<ExportMetricsServiceRequest>;
-pub type TestLogsReceiver = TestReceiver<ExportLogsServiceRequest>;
