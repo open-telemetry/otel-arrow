@@ -383,25 +383,8 @@ pub async fn start_test_receiver<S: ServiceType>(
     ),
     String,
 > {
-    // Dispatch to the appropriate specialized receiver based on the service type name
-    match S::name() {
-        "traces" => {
-            let (handle, receiver, port) = start_traces_receiver(timeout_secs).await?;
-            // Safe to transmute here because we're ensuring the types match correctly in each function
-            Ok(unsafe { std::mem::transmute((handle, receiver, port)) })
-        },
-        "metrics" => {
-            let (handle, receiver, port) = start_metrics_receiver(timeout_secs).await?;
-            // Safe to transmute here because we're ensuring the types match correctly in each function
-            Ok(unsafe { std::mem::transmute((handle, receiver, port)) })
-        },
-        "logs" => {
-            let (handle, receiver, port) = start_logs_receiver(timeout_secs).await?;
-            // Safe to transmute here because we're ensuring the types match correctly in each function
-            Ok(unsafe { std::mem::transmute((handle, receiver, port)) })
-        },
-        _ => Err(format!("Unknown service type: {}", S::name())),
-    }
+    // Use the type-safe create_service method from the ServiceType trait
+    S::create_service(timeout_secs).await
 }
 
 /// Configuration generator for OTLP to OTLP test case
