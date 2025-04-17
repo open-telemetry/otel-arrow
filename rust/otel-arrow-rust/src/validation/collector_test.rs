@@ -22,6 +22,9 @@ use crate::proto::opentelemetry::collector::metrics::v1::{
     ExportMetricsServiceResponse,
 };
 
+const READY_TIMEOUT_SECONDS: u64 = 10;
+const READY_MESSAGE: &str = "Everything is ready.";
+
 use crate::proto::opentelemetry::collector::logs::v1::{
     logs_service_server::LogsService, ExportLogsServiceRequest, ExportLogsServiceResponse,
 };
@@ -140,6 +143,35 @@ impl LogsService for TestLogsReceiver {
     }
 }
 
+/// Helper function to spawn a thread that reads lines from a buffer and logs them with a prefix.
+/// Optionally checks for a message substring and sends a signal when it matches.
+fn spawn_line_reader<R>(
+    reader: R,
+    prefix: &'static str,
+    mut probe: Option<(std::sync::mpsc::Sender<()>, &'static str)>,
+) -> JoinHandle<()>
+where
+    R: std::io::Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let buf_reader = BufReader::new(reader);
+        for line in buf_reader.lines() {
+            if let Ok(line) = line {
+                eprintln!("[{}] {}", prefix, line);
+                
+                // If we need to check for a ready message
+                if let Some((ref tx, message)) = probe {
+                    if line.contains(message) {
+                        // Send using standard sync channel
+                        let _ = tx.send(());
+                        probe = None;
+                    }
+                }
+            }
+        }
+    })
+}
+
 /// A helper struct to manage the collector process
 pub struct CollectorProcess {
     process: Child,
@@ -206,65 +238,41 @@ impl CollectorProcess {
             .take()
             .ok_or_else(|| "Failed to capture process stderr".to_string())?;
 
-        // Create a channel to signal when the collector is ready
+        // Create a standard sync channel to signal when the collector is ready
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
 
-        // Create threads to read from stdout and stderr and write to test stderr
-        let stdout_handle = thread::spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    eprintln!("[Collector stdout] {}", line);
-                }
+        // Create threads to read from stdout and stderr
+        let (stdout_handle, stderr_handle) = (
+            spawn_line_reader(stdout, "Collector stdout", None),
+            spawn_line_reader(stderr, "Collector stderr", Some((ready_tx, READY_MESSAGE))),
+        );
+
+        // Now create a oneshot channel for the async side
+        let (tokio_tx, tokio_rx) = tokio::sync::oneshot::channel();
+        
+        // Spawn a thread to bridge between the sync and async worlds
+        thread::spawn(move || {
+            // Wait for the ready signal from the sync channel
+            if ready_rx.recv().is_ok() {
+                // Forward it to the async world
+                let _ = tokio_tx.send(());
             }
         });
 
-        let stderr_handle = thread::spawn(move || {
-            let reader = BufReader::new(stderr);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    eprintln!("[Collector stderr] {}", line);
-                    // Check if this line contains the "ready" message
-                    if line.contains("Everything is ready.") {
-                        let _ = ready_tx.send(());
-                    }
-                }
-            }
-        });
+        // Create timeout for the async receiver
+        let timeout_duration = Duration::from_secs(READY_TIMEOUT_SECONDS);
 
-        // Wait for the "Everything is ready." message or timeout
-        let timeout_duration = Duration::from_secs(30);
-        match timeout(timeout_duration, async {
-            // Convert std channel receive to future
-            let ready_fut = tokio::task::spawn_blocking(move || ready_rx.recv());
-            ready_fut
-                .await
-                .map_err(|_| "Join error")?
-                .map_err(|_| "Channel closed")?;
-            Ok::<_, String>(())
-        })
-        .await
-        {
-            Ok(Ok(())) => {
-                // Collector is ready
-            }
-            Ok(Err(e)) => {
-                return Err(format!("Error waiting for collector to be ready: {}", e));
-            }
-            Err(_) => {
-                return Err(format!(
-                    "Timed out after {:?} waiting for collector to be ready",
-                    timeout_duration
-                ));
-            }
-        };
-
-        Ok(Self {
-            process,
-            config_path,
-            stdout_handle: Some(stdout_handle),
-            stderr_handle: Some(stderr_handle),
-        })
+        // Wait for the ready message with timeout and return the collector process when ready
+        match tokio::time::timeout(timeout_duration, tokio_rx).await {
+            Ok(Ok(())) => Ok(Self {
+                process,
+                config_path,
+                stdout_handle: Some(stdout_handle),
+                stderr_handle: Some(stderr_handle),
+            }),
+            Ok(Err(_)) => Err("Channel closed before receiving ready message".to_string()),
+            Err(_) => Err(format!("Timed out after waiting {:?} for collector to be ready", timeout_duration))
+        }
     }
 }
 
