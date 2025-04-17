@@ -37,7 +37,7 @@ use std::rc::Rc;
 #[async_trait(?Send)]
 pub trait Processor {
     /// The type of messages handled by the processor.
-    type Msg;
+    type PData;
 
     /// Processes a message and optionally produces new messages.
     ///
@@ -72,9 +72,9 @@ pub trait Processor {
     /// Returns an [`Error`] if the processor encounters an unrecoverable error.
     async fn process(
         &mut self,
-        msg: Message<Self::Msg>,
-        effect_handler: &mut EffectHandler<Self::Msg>,
-    ) -> Result<Option<Vec<Self::Msg>>, Error<Self::Msg>>;
+        msg: Message<Self::PData>,
+        effect_handler: &mut EffectHandler<Self::PData>,
+    ) -> Result<Option<Vec<Self::PData>>, Error<Self::PData>>;
 }
 
 /// Handles side effects such as sending messages to the next node.
@@ -111,8 +111,8 @@ impl<Msg> EffectHandler<Msg> {
 
     /// Returns the name of the processor associated with this handler.
     #[must_use]
-    pub fn processor_name(&self) -> &str {
-        &self.processor_name
+    pub fn processor_name(&self) -> NodeName {
+        self.processor_name.clone()
     }
 
     /// Sends a message to the next node(s) in the pipeline.
@@ -131,52 +131,42 @@ mod tests {
     use crate::message::ControlMsg::{Config, Shutdown, TimerTick};
     use crate::message::Message;
     use crate::processor::{EffectHandler, Error, Processor};
+    use crate::testing::{MessageCounter, TestMsg, setup_test_runtime};
     use async_trait::async_trait;
     use otap_df_channel::mpsc;
     use serde_json::Value;
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    use tokio::runtime::Builder;
-    use tokio::task::LocalSet;
-
-    /// A test message.
-    #[derive(Debug, PartialEq)]
-    struct TestMsg(String);
 
     struct TestProcessor {
-        timer_tick_count: Rc<RefCell<usize>>,
-        message_count: Rc<RefCell<usize>>,
-        config_count: Rc<RefCell<usize>>,
-        shutdown_count: Rc<RefCell<usize>>,
+        counters: MessageCounter,
     }
 
     #[async_trait(?Send)]
     impl Processor for TestProcessor {
-        type Msg = TestMsg;
+        type PData = TestMsg;
 
         async fn process(
             &mut self,
-            msg: Message<Self::Msg>,
-            _effect_handler: &mut EffectHandler<Self::Msg>,
-        ) -> Result<Option<Vec<Self::Msg>>, Error<Self::Msg>> {
+            msg: Message<Self::PData>,
+            _effect_handler: &mut EffectHandler<Self::PData>,
+        ) -> Result<Option<Vec<Self::PData>>, Error<Self::PData>> {
             match msg {
                 Message::Control(control) => match control {
                     TimerTick {} => {
-                        *self.timer_tick_count.borrow_mut() += 1;
+                        self.counters.increment_timer_tick();
                         Ok(None)
                     }
                     Config { .. } => {
-                        *self.config_count.borrow_mut() += 1;
+                        self.counters.increment_config();
                         Ok(None)
                     }
                     Shutdown { .. } => {
-                        *self.shutdown_count.borrow_mut() += 1;
+                        self.counters.increment_shutdown();
                         Ok(None)
                     }
                     _ => Ok(None),
                 },
                 Message::PData(data) => {
-                    *self.message_count.borrow_mut() += 1;
+                    self.counters.increment_message();
                     // Append " RECEIVED" to the message content.
                     let processed_message = TestMsg(format!("{} RECEIVED", data.0));
                     Ok(Some(vec![processed_message]))
@@ -187,21 +177,10 @@ mod tests {
 
     #[test]
     fn test_processor() {
-        let rt = Builder::new_current_thread().enable_all().build().unwrap();
-        let local_tasks = LocalSet::new();
-
-        // Create shared counters to keep track of events.
-        let timer_tick_count = Rc::new(RefCell::new(0));
-        let message_count = Rc::new(RefCell::new(0));
-        let config_count = Rc::new(RefCell::new(0));
-        let shutdown_count = Rc::new(RefCell::new(0));
-
-        // Create the processor instance.
+        let (rt, local_tasks) = setup_test_runtime();
+        let counters = MessageCounter::new();
         let mut processor = Box::new(TestProcessor {
-            timer_tick_count: timer_tick_count.clone(),
-            message_count: message_count.clone(),
-            config_count: config_count.clone(),
-            shutdown_count: shutdown_count.clone(),
+            counters: counters.clone(),
         });
 
         // Create a channel for the effect handler
@@ -249,9 +228,13 @@ mod tests {
         rt.block_on(local_tasks);
 
         // Finally, verify that each counter was updated exactly once.
-        assert_eq!(*timer_tick_count.borrow(), 1, "TimerTick count mismatch");
-        assert_eq!(*message_count.borrow(), 1, "Message count mismatch");
-        assert_eq!(*config_count.borrow(), 1, "Config count mismatch");
-        assert_eq!(*shutdown_count.borrow(), 1, "Shutdown count mismatch");
+        assert_eq!(
+            counters.get_timer_tick_count(),
+            1,
+            "TimerTick count mismatch"
+        );
+        assert_eq!(counters.get_message_count(), 1, "Message count mismatch");
+        assert_eq!(counters.get_config_count(), 1, "Config count mismatch");
+        assert_eq!(counters.get_shutdown_count(), 1, "Shutdown count mismatch");
     }
 }

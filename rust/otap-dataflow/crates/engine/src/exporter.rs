@@ -37,7 +37,7 @@ use std::rc::Rc;
 #[async_trait(?Send)]
 pub trait Exporter {
     /// The type of messages handled by the exporter.
-    type Msg;
+    type PData;
 
     /// Starts the exporter and begins exporting incoming data.
     ///
@@ -69,9 +69,9 @@ pub trait Exporter {
     /// This method should be cancellation safe and clean up any resources when dropped.
     async fn start(
         self: Box<Self>,
-        msg_chan: MessageChannel<Self::Msg>,
-        effect_handler: EffectHandler<Self::Msg>,
-    ) -> Result<(), Error<Self::Msg>>;
+        msg_chan: MessageChannel<Self::PData>,
+        effect_handler: EffectHandler<Self::PData>,
+    ) -> Result<(), Error<Self::PData>>;
 }
 
 /// A channel for receiving control and pdata messages.
@@ -148,8 +148,8 @@ impl<Msg> EffectHandler<Msg> {
 
     /// Returns the name of the exporter associated with this handler.
     #[must_use]
-    pub fn exporter_name(&self) -> &str {
-        &self.exporter_name
+    pub fn exporter_name(&self) -> NodeName {
+        self.exporter_name.clone()
     }
 
     // Note for reviewers: More methods will be added in future PRs.
@@ -159,132 +159,105 @@ impl<Msg> EffectHandler<Msg> {
 mod tests {
     use crate::exporter::{EffectHandler, Error, Exporter, MessageChannel};
     use crate::message::{ControlMsg, Message};
+    use crate::testing::{ExporterTestRuntime, MessageCounter, TestMsg};
     use async_trait::async_trait;
-    use otap_df_channel::mpsc;
     use serde_json::Value;
-    use std::cell::RefCell;
-    use std::rc::Rc;
     use std::time::Duration;
-    use tokio::runtime::Builder;
-    use tokio::task::LocalSet;
-    use tokio::time::sleep;
-
-    /// A test message.
-    #[derive(Debug, PartialEq)]
-    struct TestMsg(String);
 
     /// A test exporter that counts how many `TimerTick` and Message events it processes.
     struct TestExporter {
-        timer_tick_count: Rc<RefCell<usize>>,
-        message_count: Rc<RefCell<usize>>,
-        config_count: Rc<RefCell<usize>>,
+        /// Counter for different message types
+        counter: MessageCounter,
+    }
+
+    impl TestExporter {
+        /// Creates a new test exporter with the given counter.
+        pub fn new(counter: MessageCounter) -> Self {
+            TestExporter { counter }
+        }
     }
 
     #[async_trait(?Send)]
     impl Exporter for TestExporter {
-        type Msg = TestMsg;
+        type PData = TestMsg;
 
         async fn start(
             self: Box<Self>,
-            mut msg_chan: MessageChannel<Self::Msg>,
-            _effect_handler: EffectHandler<Self::Msg>,
-        ) -> Result<(), Error<Self::Msg>> {
+            mut msg_chan: MessageChannel<Self::PData>,
+            effect_handler: EffectHandler<Self::PData>,
+        ) -> Result<(), Error<Self::PData>> {
             // Loop until a Shutdown event is received.
             loop {
                 match msg_chan.recv().await? {
                     Message::Control(ControlMsg::TimerTick { .. }) => {
-                        println!("Exporter received TimerTick event.");
-                        *self.timer_tick_count.borrow_mut() += 1;
+                        self.counter.increment_timer_tick();
                     }
                     Message::Control(ControlMsg::Config { .. }) => {
-                        println!("Exporter received Config event.");
-                        *self.config_count.borrow_mut() += 1;
-                    }
-                    Message::PData(message) => {
-                        println!("Exporter received Message event: {message:?}");
-                        *self.message_count.borrow_mut() += 1;
+                        self.counter.increment_config();
                     }
                     Message::Control(ControlMsg::Shutdown { .. }) => {
-                        println!("Exporter received Shutdown event.");
+                        self.counter.increment_shutdown();
                         break;
                     }
+                    Message::PData(_message) => {
+                        self.counter.increment_message();
+                    }
                     _ => {
-                        println!("Exporter received unknown message.");
+                        return Err(Error::ExporterError {
+                            exporter: effect_handler.exporter_name(),
+                            error: "Unknown control message".to_owned(),
+                        });
                     }
                 }
             }
-            println!("Exporter event loop terminated.");
             Ok(())
         }
     }
 
     #[test]
     fn test_exporter() {
-        let rt = Builder::new_current_thread().enable_all().build().unwrap();
-        let local_tasks = LocalSet::new();
+        let mut test_runtime = ExporterTestRuntime::new(10);
+        let exporter = TestExporter::new(test_runtime.counters());
 
-        // Create shared counters to keep track of events.
-        let timer_tick_count = Rc::new(RefCell::new(0));
-        let message_count = Rc::new(RefCell::new(0));
-        let config_count = Rc::new(RefCell::new(0));
-
-        // Create an MPSC channel for events.
-        let (control_tx, control_rx) = mpsc::Channel::new(10);
-        let (pdata_tx, pdata_rx) = mpsc::Channel::new(10);
-        let msg_chan = MessageChannel::new(control_rx, pdata_rx);
-
-        // Create the exporter instance.
-        let exporter = Box::new(TestExporter {
-            timer_tick_count: timer_tick_count.clone(),
-            message_count: message_count.clone(),
-            config_count: config_count.clone(),
-        });
-
-        // Spawn the exporter's event loop.
-        _ = local_tasks.spawn_local(async move {
-            exporter
-                .start(msg_chan, EffectHandler::new("test_exporter"))
-                .await
-                .expect("Exporter event loop failed");
-        });
-
-        // Spawn a task to simulate sending events to the exporter.
-        _ = local_tasks.spawn_local(async move {
+        test_runtime.start_exporter(exporter);
+        test_runtime.spawn(|ctx| async move {
             // Send 3 TimerTick events.
             for _ in 0..3 {
-                let result = control_tx.send_async(ControlMsg::TimerTick {}).await;
-                assert!(result.is_ok(), "Failed to send TimerTick event");
-                sleep(Duration::from_millis(50)).await;
+                ctx.send_timer_tick()
+                    .await
+                    .expect("Failed to send TimerTick");
+                ctx.sleep(Duration::from_millis(50)).await;
             }
 
             // Send a Config event.
-            let result = control_tx
-                .send_async(ControlMsg::Config {
-                    config: Value::Null,
-                })
-                .await;
-            assert!(result.is_ok(), "Failed to send Config event");
+            ctx.send_config(Value::Null)
+                .await
+                .expect("Failed to send Config");
 
-            // Send a Message event.
-            let test_msg = TestMsg("Hello exporter".to_string());
-            let result = pdata_tx.send_async(test_msg).await;
-            assert!(result.is_ok(), "Failed to send Message event");
-            sleep(Duration::from_millis(50)).await;
-            // Finally, send a Shutdown event to terminate the event loop.
-            let result = control_tx
-                .send_async(ControlMsg::Shutdown {
-                    reason: "end of test".to_owned(),
-                })
-                .await;
-            assert!(result.is_ok(), "Failed to send Shutdown event");
+            // Send a data message
+            ctx.send_data("Hello Exporter")
+                .await
+                .expect("Failed to send data message");
+
+            // Allow some time for processing
+            ctx.sleep(Duration::from_millis(100)).await;
+
+            // Send shutdown
+            ctx.send_shutdown("test complete")
+                .await
+                .expect("Failed to send Shutdown");
         });
 
-        // Run all tasks.
-        rt.block_on(local_tasks);
+        let counters = test_runtime.run();
 
         // After the event loop completes, assert that the expected number of events was processed.
-        assert_eq!(*timer_tick_count.borrow(), 3, "Expected 3 TimerTick events");
-        assert_eq!(*config_count.borrow(), 1, "Expected 1 Config event");
-        assert_eq!(*message_count.borrow(), 1, "Expected 1 Message event");
+        assert_eq!(counters.get_timer_tick_count(), 3, "Expected 3 timer ticks");
+        assert_eq!(counters.get_config_count(), 1, "Expected 1 config message");
+        assert_eq!(counters.get_message_count(), 1, "Expected 1 data message");
+        assert_eq!(
+            counters.get_shutdown_count(),
+            1,
+            "Expected 1 shutdown message"
+        );
     }
 }

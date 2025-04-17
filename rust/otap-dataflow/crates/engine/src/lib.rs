@@ -8,6 +8,9 @@ pub mod message;
 pub mod processor;
 pub mod receiver;
 
+#[cfg(test)]
+pub(crate) mod testing;
+
 use std::rc::Rc;
 
 /// A type representing the name of a node in the pipeline.

@@ -43,7 +43,7 @@ use tokio::net::TcpListener;
 #[async_trait( ? Send)]
 pub trait Receiver {
     /// The type of messages processed by the receiver.
-    type Msg;
+    type PData;
 
     /// Starts the receiver and begins processing incoming data and control messages.
     ///
@@ -79,8 +79,8 @@ pub trait Receiver {
     async fn start(
         self: Box<Self>,
         ctrl_msg_chan: ControlMsgChannel,
-        effect_handler: EffectHandler<Self::Msg>,
-    ) -> Result<(), Error<Self::Msg>>;
+        effect_handler: EffectHandler<Self::PData>,
+    ) -> Result<(), Error<Self::PData>>;
 }
 
 /// A channel for receiving control messages.
@@ -92,6 +92,12 @@ pub struct ControlMsgChannel {
 }
 
 impl ControlMsgChannel {
+    /// Creates a new `ControlMsgChannel` with the given receiver.
+    #[must_use]
+    pub fn new(rx: mpsc::Receiver<ControlMsg>) -> Self {
+        ControlMsgChannel { rx }
+    }
+
     /// Asynchronously receives the next control message.
     ///
     /// # Errors
@@ -137,8 +143,8 @@ impl<Msg> EffectHandler<Msg> {
 
     /// Returns the name of the receiver associated with this handler.
     #[must_use]
-    pub fn receiver_name(&self) -> &str {
-        &self.receiver_name
+    pub fn receiver_name(&self) -> NodeName {
+        self.receiver_name.clone()
     }
 
     /// Creates a non-blocking TCP listener on the given address with `SO_REUSE` settings.
@@ -193,23 +199,16 @@ impl<Msg> EffectHandler<Msg> {
 
 #[cfg(test)]
 mod tests {
+    use super::ControlMsgChannel;
     use crate::message::ControlMsg;
     use crate::receiver::{EffectHandler, Error, Receiver};
+    use crate::testing::{ReceiverTestRuntime, TestMsg};
     use async_trait::async_trait;
-    use otap_df_channel::mpsc;
     use std::net::SocketAddr;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
-    use tokio::runtime::Builder;
     use tokio::sync::oneshot;
-    use tokio::task::LocalSet;
     use tokio::time::{Duration, sleep};
-
-    use super::ControlMsgChannel;
-
-    /// A test message.
-    #[derive(Debug, PartialEq)]
-    struct TestMsg(String);
 
     struct TestReceiver {
         port_notifier: oneshot::Sender<SocketAddr>,
@@ -217,12 +216,13 @@ mod tests {
 
     #[async_trait(?Send)]
     impl Receiver for TestReceiver {
-        type Msg = TestMsg;
+        type PData = TestMsg;
+
         async fn start(
             self: Box<Self>,
             ctrl_msg_recv: ControlMsgChannel,
-            effect_handler: EffectHandler<Self::Msg>,
-        ) -> Result<(), Error<Self::Msg>> {
+            effect_handler: EffectHandler<Self::PData>,
+        ) -> Result<(), Error<Self::PData>> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
             let listener = effect_handler.tcp_listener(addr)?;
@@ -315,32 +315,16 @@ mod tests {
 
     #[test]
     fn test_receiver() {
-        let rt = Builder::new_current_thread().enable_all().build().unwrap();
-        let local_tasks = LocalSet::new();
+        let mut test_runtime = ReceiverTestRuntime::new(10);
+
         // Create a oneshot channel to receive the listening address from MyReceiver.
         let (port_tx, port_rx) = oneshot::channel();
-
-        // Create an MPSC channel for internal events.
-        let (event_tx, event_rx) = mpsc::Channel::new(10);
-        let event_receiver = ControlMsgChannel { rx: event_rx };
-
-        // Create an MPSC channel for messages from the effect handler.
-        let (msg_tx, msg_rx) = mpsc::Channel::new(10);
-
-        let receiver = Box::new(TestReceiver {
+        let receiver = TestReceiver {
             port_notifier: port_tx,
-        });
+        };
 
-        // Spawn the receiver's event loop.
-        _ = local_tasks.spawn_local(async move {
-            receiver
-                .start(event_receiver, EffectHandler::new("receiver", msg_tx))
-                .await
-                .expect("Should not happen");
-        });
-
-        // Spawn a task to simulate client activity and send events.
-        _ = local_tasks.spawn_local(async move {
+        test_runtime.start_receiver(receiver);
+        test_runtime.spawn_with_context(|ctx| async move {
             // Wait for the receiver to send the listening address.
             let addr: SocketAddr = port_rx.await.expect("Failed to receive listening address");
             println!("Test received listening address: {addr}");
@@ -369,30 +353,29 @@ mod tests {
 
             // Send a few TimerTick events from the test.
             for _ in 0..3 {
-                let result = event_tx.send_async(ControlMsg::TimerTick {}).await;
-                assert!(result.is_ok(), "Failed to send TimerTick event");
-                sleep(Duration::from_millis(100)).await;
+                ctx.send_timer_tick()
+                    .await
+                    .expect("Failed to send TimerTick");
+                ctx.sleep(Duration::from_millis(100)).await;
             }
 
             // Finally, send a Shutdown event to terminate the receiver.
-            let result = event_tx
-                .send_async(ControlMsg::Shutdown {
-                    reason: "Test".to_string(),
-                })
-                .await;
-            assert!(result.is_ok(), "Failed to send Shutdown event");
+            ctx.send_shutdown("Test")
+                .await
+                .expect("Failed to send Shutdown");
 
             // Close the TCP connection.
             let _ = stream.shutdown().await;
         });
 
-        rt.block_on(local_tasks);
-
-        // After the tasks complete, check that a message was sent by the receiver.
-        let received = rt
-            .block_on(async { tokio::time::timeout(Duration::from_secs(3), msg_rx.recv()).await })
-            .expect("Timed out waiting for message")
-            .expect("No message received");
+        // Use the run_until method to run the test and validate the received message
+        let received = test_runtime.run_until(|mut ctx| async move {
+            let pdata_rx = ctx.pdata_rx().expect("No pdata_rx");
+            tokio::time::timeout(Duration::from_secs(3), pdata_rx.recv())
+                .await
+                .expect("Timed out waiting for message")
+                .expect("No message received")
+        });
 
         // Assert that the message received is what the test client sent.
         assert!(matches!(received, TestMsg(msg) if msg == "Hello from test client"));
