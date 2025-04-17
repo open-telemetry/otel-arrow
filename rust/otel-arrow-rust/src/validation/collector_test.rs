@@ -1,16 +1,16 @@
 use std::env;
-use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::fmt;
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::path::PathBuf;
-use tokio::time::timeout;
-use std::fs;
-use std::io::{Write, BufRead, BufReader};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread::{self, JoinHandle};
-use std::fmt;
+use std::time::Duration;
+use tokio::time::timeout;
 
-use tonic::{transport::Server, Request, Response, Status};
 use tokio::sync::mpsc;
+use tonic::{transport::Server, Request, Response, Status};
 
 use crate::proto::opentelemetry::collector::trace::v1::{
     trace_service_server::{TraceService, TraceServiceServer},
@@ -18,13 +18,12 @@ use crate::proto::opentelemetry::collector::trace::v1::{
 };
 
 use crate::proto::opentelemetry::collector::metrics::v1::{
-    metrics_service_server::MetricsService,
-    ExportMetricsServiceRequest, ExportMetricsServiceResponse,
+    metrics_service_server::MetricsService, ExportMetricsServiceRequest,
+    ExportMetricsServiceResponse,
 };
 
 use crate::proto::opentelemetry::collector::logs::v1::{
-    logs_service_server::LogsService,
-    ExportLogsServiceRequest, ExportLogsServiceResponse,
+    logs_service_server::LogsService, ExportLogsServiceRequest, ExportLogsServiceResponse,
 };
 
 /// TimeoutError represents an error when a receiver operation times out
@@ -53,8 +52,8 @@ impl<T> TimeoutReceiver<T> {
         match timeout(self.timeout, self.inner.recv()).await {
             Ok(Some(value)) => Ok(value),
             Ok(None) => Err("Channel closed".into()),
-            Err(_) => Err(Box::new(TimeoutError { 
-                duration: self.timeout 
+            Err(_) => Err(Box::new(TimeoutError {
+                duration: self.timeout,
             })),
         }
     }
@@ -73,12 +72,15 @@ impl TraceService for TestTraceReceiver {
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
         let request_inner = request.into_inner();
-        
+
         // Forward the received request to the test channel
         if let Err(err) = self.request_rx.send(request_inner).await {
-            return Err(Status::internal(format!("Failed to send trace data to test channel: {}", err)));
+            return Err(Status::internal(format!(
+                "Failed to send trace data to test channel: {}",
+                err
+            )));
         }
-        
+
         // Return success response
         Ok(Response::new(ExportTraceServiceResponse::default()))
     }
@@ -97,12 +99,15 @@ impl MetricsService for TestMetricsReceiver {
         request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
         let request_inner = request.into_inner();
-        
+
         // Forward the received request to the test channel
         if let Err(err) = self.request_rx.send(request_inner).await {
-            return Err(Status::internal(format!("Failed to send metrics data to test channel: {}", err)));
+            return Err(Status::internal(format!(
+                "Failed to send metrics data to test channel: {}",
+                err
+            )));
         }
-        
+
         // Return success response
         Ok(Response::new(ExportMetricsServiceResponse::default()))
     }
@@ -121,12 +126,15 @@ impl LogsService for TestLogsReceiver {
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
         let request_inner = request.into_inner();
-        
+
         // Forward the received request to the test channel
         if let Err(err) = self.request_rx.send(request_inner).await {
-            return Err(Status::internal(format!("Failed to send logs data to test channel: {}", err)));
+            return Err(Status::internal(format!(
+                "Failed to send logs data to test channel: {}",
+                err
+            )));
         }
-        
+
         // Return success response
         Ok(Response::new(ExportLogsServiceResponse::default()))
     }
@@ -136,24 +144,48 @@ impl LogsService for TestLogsReceiver {
 pub struct CollectorProcess {
     process: Child,
     config_path: PathBuf,
-    // Add fields to store stdout and stderr thread handles
     stdout_handle: Option<JoinHandle<()>>,
     stderr_handle: Option<JoinHandle<()>>,
 }
 
 impl CollectorProcess {
+    pub async fn shutdown(&mut self) -> Result<Option<ExitStatus>, std::io::Error> {
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::{kill, Signal};
+            use nix::unistd::Pid;
+            let pid = self.process.id();
+            eprintln!("Sending SIGTERM to collector process {}", pid);
+
+            if let Err(e) = kill(Pid::from_raw(pid as i32), Signal::SIGTERM) {
+                panic!("Failed to send SIGTERM: {}", e);
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            panic!("SIGTERM not supported on this platform");
+        }
+
+        // Wait for the collector to exit
+        self.process.try_wait()
+    }
+
     /// Start a collector with the given configuration
-    pub async fn start<T: AsRef<Path>>(collector_path: T, config_content: &str) -> Result<Self, String> {
+    pub async fn start<T: AsRef<Path>>(
+        collector_path: T,
+        config_content: &str,
+    ) -> Result<Self, String> {
         // Create a temporary config file for the collector
         let config_path = PathBuf::from(env::temp_dir()).join("otel_collector_config.yaml");
-        
+
         // Write the config to the file
         let mut file = fs::File::create(&config_path)
             .map_err(|e| format!("Failed to create config file: {}", e))?;
-        
+
         file.write_all(config_content.as_bytes())
             .map_err(|e| format!("Failed to write config content: {}", e))?;
-        
+
         // Start the collector process with piped stdout and stderr
         let mut process = Command::new(collector_path.as_ref())
             .arg("--config")
@@ -162,17 +194,21 @@ impl CollectorProcess {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("Failed to start collector process: {}", e))?;
-        
+
         // Get handles to stdout and stderr
-        let stdout = process.stdout.take()
+        let stdout = process
+            .stdout
+            .take()
             .ok_or_else(|| "Failed to capture process stdout".to_string())?;
-        
-        let stderr = process.stderr.take()
+
+        let stderr = process
+            .stderr
+            .take()
             .ok_or_else(|| "Failed to capture process stderr".to_string())?;
-        
+
         // Create a channel to signal when the collector is ready
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-        
+
         // Create threads to read from stdout and stderr and write to test stderr
         let stdout_handle = thread::spawn(move || {
             let reader = BufReader::new(stdout);
@@ -182,7 +218,7 @@ impl CollectorProcess {
                 }
             }
         });
-        
+
         let stderr_handle = thread::spawn(move || {
             let reader = BufReader::new(stderr);
             for line in reader.lines() {
@@ -195,30 +231,36 @@ impl CollectorProcess {
                 }
             }
         });
-        
+
         // Wait for the "Everything is ready." message or timeout
         let timeout_duration = Duration::from_secs(30);
         match timeout(timeout_duration, async {
             // Convert std channel receive to future
             let ready_fut = tokio::task::spawn_blocking(move || ready_rx.recv());
-            ready_fut.await.map_err(|_| "Join error")?
+            ready_fut
+                .await
+                .map_err(|_| "Join error")?
                 .map_err(|_| "Channel closed")?;
             Ok::<_, String>(())
-        }).await {
+        })
+        .await
+        {
             Ok(Ok(())) => {
                 // Collector is ready
-                eprintln!("Collector is ready to use.");
-            },
+            }
             Ok(Err(e)) => {
                 return Err(format!("Error waiting for collector to be ready: {}", e));
-            },
+            }
             Err(_) => {
-                return Err(format!("Timed out after {:?} waiting for collector to be ready", timeout_duration));
+                return Err(format!(
+                    "Timed out after {:?} waiting for collector to be ready",
+                    timeout_duration
+                ));
             }
         };
-        
-        Ok(Self { 
-            process, 
+
+        Ok(Self {
+            process,
             config_path,
             stdout_handle: Some(stdout_handle),
             stderr_handle: Some(stderr_handle),
@@ -230,60 +272,64 @@ impl Drop for CollectorProcess {
     fn drop(&mut self) {
         // Clean up the collector process when done
         let _ = self.process.kill();
-        
+
         // Wait for the stdout and stderr threads to complete
         if let Some(handle) = self.stdout_handle.take() {
             let _ = handle.join();
         }
-        
+
         if let Some(handle) = self.stderr_handle.take() {
             let _ = handle.join();
         }
-        
+
         // Clean up temp config file
         let _ = fs::remove_file(&self.config_path);
     }
 }
 
 /// Start a test receiver server on any available port, with a configurable timeout
-pub async fn start_test_receiver(timeout_secs: Option<u64>) -> Result<
+pub async fn start_test_receiver(
+    timeout_secs: Option<u64>,
+) -> Result<
     (
-        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>, 
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
         TimeoutReceiver<ExportTraceServiceRequest>,
-        u16 // Return the actual port number that was assigned
-    ), 
-    String
+        u16, // actual port number that was assigned
+    ),
+    String,
 > {
     // Bind to a specific address with port 0 for dynamic port allocation
     // We use the address string directly, no need to parse it
     let addr = "127.0.0.1:0";
-    
+
     // Create a TCP listener with port 0 to get an available port
-    let listener = tokio::net::TcpListener::bind(addr).await
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
         .map_err(|e| format!("Failed to bind listener: {}", e))?;
-    
+
     // Get the assigned port
-    let port = listener.local_addr()
+    let port = listener
+        .local_addr()
         .map_err(|e| format!("Failed to get local address: {}", e))?
         .port();
-    
+
     // Create a channel for receiving the exported data in tests
     let (request_tx, request_rx) = mpsc::channel(100);
-    
+
     // Create a timeout-wrapped version of the receiver
     let timeout_duration = Duration::from_secs(timeout_secs.unwrap_or(10));
-    let request_rx = TimeoutReceiver { 
+    let request_rx = TimeoutReceiver {
         inner: request_rx,
         timeout: timeout_duration,
     };
-    
-    let server = TraceServiceServer::new(TestTraceReceiver { 
+
+    let server = TraceServiceServer::new(TestTraceReceiver {
         request_rx: request_tx,
     });
-    
+
     // Convert the listener to a stream of connections
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-    
+
     // Create our server
     let handle = tokio::spawn(async move {
         Server::builder()
@@ -291,13 +337,14 @@ pub async fn start_test_receiver(timeout_secs: Option<u64>) -> Result<
             .serve_with_incoming(incoming)
             .await
     });
-    
+
     Ok((handle, request_rx, port))
 }
 
 /// Configuration generator for OTLP to OTLP test case
 pub fn generate_otlp_to_otlp_config(receiver_port: u16, exporter_port: u16) -> String {
-    format!(r#"
+    format!(
+        r#"
 receivers:
   otlp:
     protocols:
@@ -310,7 +357,10 @@ exporters:
     compression: none
     tls:
       insecure: true
+    wait_for_ready: true
     timeout: 2s
+    retry_on_failure:
+      enabled: false
 
 service:
   pipelines:
@@ -326,5 +376,6 @@ service:
   telemetry:
     logs:
       level: info
-"#)
+"#
+    )
 }

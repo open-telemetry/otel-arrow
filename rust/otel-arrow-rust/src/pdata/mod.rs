@@ -27,11 +27,11 @@ type Error = &'static str;
 
 impl<'a> TraceID {
     pub fn try_new(value: &[u8]) -> Result<TraceID, Error> {
-	if value.len() == 16 {
-	    Ok(TraceID(value.try_into().unwrap()))
-	} else {
-	    Err("wrong size [u8] for TraceID")
-	}
+        if value.len() == 16 {
+            Ok(TraceID(value.try_into().unwrap()))
+        } else {
+            Err("wrong size [u8] for TraceID")
+        }
     }
 }
 
@@ -52,11 +52,10 @@ impl Into<Vec<u8>> for SpanID {
 
 impl<'a> SpanID {
     pub fn try_new(value: &[u8]) -> Result<SpanID, Error> {
-	if value.len() == 8 {
-	    Ok(SpanID(value.try_into().unwrap()))
-	} else {
-	    Err("wrong size [u8] for SpanID")
-	}
+        if value.len() == 8 {
+            Ok(SpanID(value.try_into().unwrap()))
+        } else {
+            Err("wrong size [u8] for SpanID")
+        }
     }
 }
-
