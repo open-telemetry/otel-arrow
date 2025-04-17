@@ -1,11 +1,12 @@
 use std::env;
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 use std::path::Path;
 use std::path::PathBuf;
 use tokio::time::sleep;
 use std::fs;
-use std::io::Write;
+use std::io::{Write, BufRead, BufReader};
+use std::thread::{self, JoinHandle};
 
 use tonic::{transport::Server, Request, Response, Status};
 use tokio::sync::mpsc;
@@ -101,6 +102,9 @@ impl LogsService for TestLogsReceiver {
 pub struct CollectorProcess {
     process: Child,
     config_path: PathBuf,
+    // Add fields to store stdout and stderr thread handles
+    stdout_handle: Option<JoinHandle<()>>,
+    stderr_handle: Option<JoinHandle<()>>,
 }
 
 impl CollectorProcess {
@@ -116,17 +120,50 @@ impl CollectorProcess {
         file.write_all(config_content.as_bytes())
             .map_err(|e| format!("Failed to write config content: {}", e))?;
         
-        // Start the collector process
-        let process = Command::new(collector_path.as_ref())
+        // Start the collector process with piped stdout and stderr
+        let mut process = Command::new(collector_path.as_ref())
             .arg("--config")
             .arg(&config_path)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("Failed to start collector process: {}", e))?;
+        
+        // Get handles to stdout and stderr
+        let stdout = process.stdout.take()
+            .ok_or_else(|| "Failed to capture process stdout".to_string())?;
+        
+        let stderr = process.stderr.take()
+            .ok_or_else(|| "Failed to capture process stderr".to_string())?;
+        
+        // Create threads to read from stdout and stderr and write to test stderr
+        let stdout_handle = thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                if let Ok(line) = line {
+                    eprintln!("[Collector stdout] {}", line);
+                }
+            }
+        });
+        
+        let stderr_handle = thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                if let Ok(line) = line {
+                    eprintln!("[Collector stderr] {}", line);
+                }
+            }
+        });
         
         // Wait for collector to start up
         sleep(Duration::from_secs(2)).await;
         
-        Ok(Self { process, config_path })
+        Ok(Self { 
+            process, 
+            config_path,
+            stdout_handle: Some(stdout_handle),
+            stderr_handle: Some(stderr_handle),
+        })
     }
 }
 
@@ -134,21 +171,42 @@ impl Drop for CollectorProcess {
     fn drop(&mut self) {
         // Clean up the collector process when done
         let _ = self.process.kill();
+        
+        // Wait for the stdout and stderr threads to complete
+        if let Some(handle) = self.stdout_handle.take() {
+            let _ = handle.join();
+        }
+        
+        if let Some(handle) = self.stderr_handle.take() {
+            let _ = handle.join();
+        }
+        
         // Clean up temp config file
         let _ = fs::remove_file(&self.config_path);
     }
 }
 
-/// Start a test receiver server on the specified port
-pub async fn start_test_receiver(port: u16) -> Result<
+/// Start a test receiver server on any available port
+pub async fn start_test_receiver() -> Result<
     (
         tokio::task::JoinHandle<Result<(), tonic::transport::Error>>, 
-        mpsc::Receiver<ExportTraceServiceRequest>
+        mpsc::Receiver<ExportTraceServiceRequest>,
+        u16 // Return the actual port number that was assigned
     ), 
     String
 > {
-    let addr = format!("127.0.0.1:{}", port).parse()
-        .map_err(|e| format!("Failed to parse address: {}", e))?;
+    // Bind to a specific address with port 0 for dynamic port allocation
+    // We use the address string directly, no need to parse it
+    let addr = "127.0.0.1:0";
+    
+    // Create a TCP listener with port 0 to get an available port
+    let listener = tokio::net::TcpListener::bind(addr).await
+        .map_err(|e| format!("Failed to bind listener: {}", e))?;
+    
+    // Get the assigned port
+    let port = listener.local_addr()
+        .map_err(|e| format!("Failed to get local address: {}", e))?
+        .port();
     
     // Create a channel for receiving the exported data in tests
     let (request_tx, request_rx) = mpsc::channel(100);
@@ -157,17 +215,21 @@ pub async fn start_test_receiver(port: u16) -> Result<
         request_rx: request_tx,
     });
     
+    // Convert the listener to a stream of connections
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+    
+    // Create our server
     let handle = tokio::spawn(async move {
         Server::builder()
             .add_service(server)
-            .serve(addr)
+            .serve_with_incoming(incoming)
             .await
     });
     
-    // Allow some time for the server to start
-    sleep(Duration::from_millis(500)).await;
+    // Allow a little time for the server to be fully ready
+    sleep(Duration::from_millis(100)).await;
     
-    Ok((handle, request_rx))
+    Ok((handle, request_rx, port))
 }
 
 /// Configuration generator for OTLP to OTLP test case
@@ -182,6 +244,7 @@ receivers:
 exporters:
   otlp:
     endpoint: 127.0.0.1:{exporter_port}
+    compression: none
     tls:
       insecure: true
 

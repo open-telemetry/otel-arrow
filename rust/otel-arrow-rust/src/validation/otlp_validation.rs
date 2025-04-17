@@ -29,15 +29,14 @@ use super::collector_test::{
 pub async fn test_otlp_round_trip<T: AsRef<Path>>(collector: T) -> Result<(), Box<dyn std::error::Error>> {
     // Port for the receiver (where the test sends data to the collector)
     const RECEIVER_PORT: u16 = 4317;
-    // Port for the exporter (where the collector sends data back)
-    const EXPORTER_PORT: u16 = 5317;
     
-    // Start the test receiver server on the exporter port to receive the exported data
-    let (server_handle, mut request_rx) = start_test_receiver(EXPORTER_PORT).await
+    // Start the test receiver server on a dynamically allocated port to receive the exported data
+    let (server_handle, mut request_rx, exporter_port) = start_test_receiver().await
         .map_err(|e| format!("Failed to start test receiver: {}", e))?;
     
-    // Generate and start the collector with OTLP->OTLP config
-    let collector_config = generate_otlp_to_otlp_config(RECEIVER_PORT, EXPORTER_PORT);
+    // Generate and start the collector with OTLP->OTLP config using the dynamic port
+    let collector_config = generate_otlp_to_otlp_config(RECEIVER_PORT, exporter_port);
+    eprintln!("Config:\n{}", &collector_config);
     let _collector = CollectorProcess::start(collector.as_ref(), &collector_config).await
         .map_err(|e| format!("Failed to start collector: {}", e))?;
     
