@@ -432,7 +432,6 @@ service:
       exporters: [otlp]
   telemetry:
     metrics:
-      address: ""
       level: none
     logs:
       level: info
