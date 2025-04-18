@@ -146,7 +146,7 @@ impl ServiceType for LogsServiceType {
     }
 }
 
-// Implementations for the TestReceiver for each service type
+// Implementations for the TestReceiver for each OTLP service type
 
 #[tonic::async_trait]
 impl TraceService for TestReceiver<ExportTraceServiceRequest> {
