@@ -52,9 +52,6 @@ pub trait ServiceType: Debug + Send + Sync + 'static {
     /// Send data through the client
     async fn send_data(client: &mut Self::Client, request: Self::Request) -> Result<Self::Response, tonic::Status>;
     
-    /// Create a tonic server from a TestReceiver
-    fn create_server(receiver: TestReceiver<Self::Request>) -> Self::TonicServer;
-    
     /// Start a service-specific receiver
     async fn start_receiver(
         timeout_secs: Option<u64>,
@@ -86,6 +83,162 @@ pub trait ServiceType: Debug + Send + Sync + 'static {
 #[derive(Debug)]
 pub struct TestReceiver<T> {
     pub request_tx: mpsc::Sender<T>,
+}
+
+/// Helper function to create a TCP server with dynamically allocated port for traces service
+async fn create_trace_server(
+    timeout_secs: Option<u64>,
+) -> Result<
+    (
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        super::collector_test::TimeoutReceiver<ExportTraceServiceRequest>,
+        u16, // actual port number that was assigned
+    ),
+    String,
+> {
+    use super::collector_test::TimeoutReceiver;
+    
+    // Bind to a specific address with port 0 for dynamic port allocation
+    let addr = "127.0.0.1:0";
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| format!("Failed to bind listener: {}", e))?;
+    
+    // Get the assigned port
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("Failed to get local address: {}", e))?
+        .port();
+    
+    // Create a channel for receiving data
+    let (request_tx, request_rx) = mpsc::channel::<ExportTraceServiceRequest>(100);
+    
+    // Create a test receiver
+    let receiver = TestReceiver { request_tx };
+    
+    // Convert the listener to a stream of connections
+    let incoming = TcpListenerStream::new(listener);
+    
+    // Create our server
+    let handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(TraceServiceServer::new(receiver))
+            .serve_with_incoming(incoming)
+            .await
+    });
+    
+    // Create a timeout-wrapped version of the receiver
+    let timeout_duration = std::time::Duration::from_secs(timeout_secs.unwrap_or(10));
+    let request_rx = TimeoutReceiver {
+        inner: request_rx,
+        timeout: timeout_duration,
+    };
+    
+    Ok((handle, request_rx, port))
+}
+
+/// Helper function to create a TCP server with dynamically allocated port for metrics service
+async fn create_metrics_server(
+    timeout_secs: Option<u64>,
+) -> Result<
+    (
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        super::collector_test::TimeoutReceiver<ExportMetricsServiceRequest>,
+        u16, // actual port number that was assigned
+    ),
+    String,
+> {
+    use super::collector_test::TimeoutReceiver;
+    
+    // Bind to a specific address with port 0 for dynamic port allocation
+    let addr = "127.0.0.1:0";
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| format!("Failed to bind listener: {}", e))?;
+    
+    // Get the assigned port
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("Failed to get local address: {}", e))?
+        .port();
+    
+    // Create a channel for receiving data
+    let (request_tx, request_rx) = mpsc::channel::<ExportMetricsServiceRequest>(100);
+    
+    // Create a test receiver
+    let receiver = TestReceiver { request_tx };
+    
+    // Convert the listener to a stream of connections
+    let incoming = TcpListenerStream::new(listener);
+    
+    // Create our server
+    let handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(MetricsServiceServer::new(receiver))
+            .serve_with_incoming(incoming)
+            .await
+    });
+    
+    // Create a timeout-wrapped version of the receiver
+    let timeout_duration = std::time::Duration::from_secs(timeout_secs.unwrap_or(10));
+    let request_rx = TimeoutReceiver {
+        inner: request_rx,
+        timeout: timeout_duration,
+    };
+    
+    Ok((handle, request_rx, port))
+}
+
+/// Helper function to create a TCP server with dynamically allocated port for logs service
+async fn create_logs_server(
+    timeout_secs: Option<u64>,
+) -> Result<
+    (
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        super::collector_test::TimeoutReceiver<ExportLogsServiceRequest>,
+        u16, // actual port number that was assigned
+    ),
+    String,
+> {
+    use super::collector_test::TimeoutReceiver;
+    
+    // Bind to a specific address with port 0 for dynamic port allocation
+    let addr = "127.0.0.1:0";
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| format!("Failed to bind listener: {}", e))?;
+    
+    // Get the assigned port
+    let port = listener
+        .local_addr()
+        .map_err(|e| format!("Failed to get local address: {}", e))?
+        .port();
+    
+    // Create a channel for receiving data
+    let (request_tx, request_rx) = mpsc::channel::<ExportLogsServiceRequest>(100);
+    
+    // Create a test receiver
+    let receiver = TestReceiver { request_tx };
+    
+    // Convert the listener to a stream of connections
+    let incoming = TcpListenerStream::new(listener);
+    
+    // Create our server
+    let handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(LogsServiceServer::new(receiver))
+            .serve_with_incoming(incoming)
+            .await
+    });
+    
+    // Create a timeout-wrapped version of the receiver
+    let timeout_duration = std::time::Duration::from_secs(timeout_secs.unwrap_or(10));
+    let request_rx = TimeoutReceiver {
+        inner: request_rx,
+        timeout: timeout_duration,
+    };
+    
+    Ok((handle, request_rx, port))
 }
 
 /// Implementation of the Traces service type
@@ -144,10 +297,6 @@ impl ServiceType for TracesServiceType {
         client.export(request).await.map(|response| response.into_inner())
     }
     
-    fn create_server(receiver: TestReceiver<Self::Request>) -> Self::TonicServer {
-        TraceServiceServer::new(receiver)
-    }
-    
     async fn start_receiver(
         timeout_secs: Option<u64>,
     ) -> Result<
@@ -158,46 +307,7 @@ impl ServiceType for TracesServiceType {
         ),
         String,
     > {
-        use super::collector_test::TimeoutReceiver;
-        
-        // Bind to a specific address with port 0 for dynamic port allocation
-        let addr = "127.0.0.1:0";
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .map_err(|e| format!("Failed to bind listener: {}", e))?;
-        
-        // Get the assigned port
-        let port = listener
-            .local_addr()
-            .map_err(|e| format!("Failed to get local address: {}", e))?
-            .port();
-        
-        // Create a channel for receiving trace data
-        let (request_tx, request_rx) = mpsc::channel::<Self::Request>(100);
-        
-        // Create a test receiver for the trace service
-        let receiver = TestReceiver { request_tx };
-        let server = TraceServiceServer::new(receiver);
-        
-        // Convert the listener to a stream of connections
-        let incoming = TcpListenerStream::new(listener);
-        
-        // Create our server
-        let handle = tokio::spawn(async move {
-            Server::builder()
-                .add_service(server)
-                .serve_with_incoming(incoming)
-                .await
-        });
-        
-        // Create a timeout-wrapped version of the receiver
-        let timeout_duration = std::time::Duration::from_secs(timeout_secs.unwrap_or(10));
-        let request_rx = TimeoutReceiver {
-            inner: request_rx,
-            timeout: timeout_duration,
-        };
-        
-        Ok((handle, request_rx, port))
+        create_trace_server(timeout_secs).await
     }
 }
 
@@ -256,10 +366,6 @@ impl ServiceType for MetricsServiceType {
         client.export(request).await.map(|response| response.into_inner())
     }
     
-    fn create_server(receiver: TestReceiver<Self::Request>) -> Self::TonicServer {
-        MetricsServiceServer::new(receiver)
-    }
-    
     async fn start_receiver(
         timeout_secs: Option<u64>,
     ) -> Result<
@@ -270,46 +376,7 @@ impl ServiceType for MetricsServiceType {
         ),
         String,
     > {
-        use super::collector_test::TimeoutReceiver;
-        
-        // Bind to a specific address with port 0 for dynamic port allocation
-        let addr = "127.0.0.1:0";
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .map_err(|e| format!("Failed to bind listener: {}", e))?;
-        
-        // Get the assigned port
-        let port = listener
-            .local_addr()
-            .map_err(|e| format!("Failed to get local address: {}", e))?
-            .port();
-        
-        // Create a channel for receiving metrics data
-        let (request_tx, request_rx) = mpsc::channel::<Self::Request>(100);
-        
-        // Create a test receiver for the metrics service
-        let receiver = TestReceiver { request_tx };
-        let server = MetricsServiceServer::new(receiver);
-        
-        // Convert the listener to a stream of connections
-        let incoming = TcpListenerStream::new(listener);
-        
-        // Create our server
-        let handle = tokio::spawn(async move {
-            Server::builder()
-                .add_service(server)
-                .serve_with_incoming(incoming)
-                .await
-        });
-        
-        // Create a timeout-wrapped version of the receiver
-        let timeout_duration = std::time::Duration::from_secs(timeout_secs.unwrap_or(10));
-        let request_rx = TimeoutReceiver {
-            inner: request_rx,
-            timeout: timeout_duration,
-        };
-        
-        Ok((handle, request_rx, port))
+        create_metrics_server(timeout_secs).await
     }
 }
 
@@ -364,10 +431,6 @@ impl ServiceType for LogsServiceType {
         client.export(request).await.map(|response| response.into_inner())
     }
     
-    fn create_server(receiver: TestReceiver<Self::Request>) -> Self::TonicServer {
-        LogsServiceServer::new(receiver)
-    }
-    
     async fn start_receiver(
         timeout_secs: Option<u64>,
     ) -> Result<
@@ -378,46 +441,7 @@ impl ServiceType for LogsServiceType {
         ),
         String,
     > {
-        use super::collector_test::TimeoutReceiver;
-        
-        // Bind to a specific address with port 0 for dynamic port allocation
-        let addr = "127.0.0.1:0";
-        let listener = tokio::net::TcpListener::bind(addr)
-            .await
-            .map_err(|e| format!("Failed to bind listener: {}", e))?;
-        
-        // Get the assigned port
-        let port = listener
-            .local_addr()
-            .map_err(|e| format!("Failed to get local address: {}", e))?
-            .port();
-        
-        // Create a channel for receiving logs data
-        let (request_tx, request_rx) = mpsc::channel::<Self::Request>(100);
-        
-        // Create a test receiver for the logs service
-        let receiver = TestReceiver { request_tx };
-        let server = LogsServiceServer::new(receiver);
-        
-        // Convert the listener to a stream of connections
-        let incoming = TcpListenerStream::new(listener);
-        
-        // Create our server
-        let handle = tokio::spawn(async move {
-            Server::builder()
-                .add_service(server)
-                .serve_with_incoming(incoming)
-                .await
-        });
-        
-        // Create a timeout-wrapped version of the receiver
-        let timeout_duration = std::time::Duration::from_secs(timeout_secs.unwrap_or(10));
-        let request_rx = TimeoutReceiver {
-            inner: request_rx,
-            timeout: timeout_duration,
-        };
-        
-        Ok((handle, request_rx, port))
+        create_logs_server(timeout_secs).await
     }
 }
 
