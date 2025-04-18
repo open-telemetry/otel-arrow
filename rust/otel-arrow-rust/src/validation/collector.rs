@@ -15,7 +15,7 @@ use tokio::time::timeout;
 
 use tokio::sync::mpsc;
 
-use super::service_type::{start_test_receiver, ServiceType};
+use super::service_type::{start_test_receiver, ServiceInputType, ServiceOutputType};
 
 const READY_TIMEOUT_SECONDS: u64 = 10;
 const READY_MESSAGE: &str = "Everything is ready.";
@@ -233,22 +233,23 @@ impl Drop for CollectorProcess {
 
 /// Configuration generator
 pub fn generate_config(
-    exporter_name: &str,
-    receiver_name: &str,
-    signal: &str,
+    receiver_protocol: &str,
+    receiver_signal: &str,
     receiver_port: u16,
+    exporter_protocol: &str,
+    _exporter_signal: &str,
     exporter_port: u16,
 ) -> String {
     format!(
         r#"
 receivers:
-  {receiver_name}:
+  {receiver_protocol}:
     protocols:
       grpc:
         endpoint: 127.0.0.1:{receiver_port}
 
 exporters:
-  {exporter_name}:
+  {exporter_protocol}:
     endpoint: 127.0.0.1:{exporter_port}
     compression: none
     tls:
@@ -260,9 +261,9 @@ exporters:
 
 service:
   pipelines:
-    {signal}:
-      receivers: [{receiver_name}]
-      exporters: [{exporter_name}]
+    {receiver_signal}:
+      receivers: [{receiver_protocol}]
+      exporters: [{exporter_protocol}]
   telemetry:
     metrics:
       level: none
@@ -273,10 +274,10 @@ service:
 }
 
 /// TestContext contains all the necessary components for running a test
-pub struct TestContext<S: ServiceType> {
-    pub client: S::Client,
+pub struct TestContext<I: ServiceInputType, O: ServiceOutputType> {
+    pub client: I::Client,
     pub collector: CollectorProcess,
-    pub request_rx: TimeoutReceiver<S::Request>,
+    pub request_rx: TimeoutReceiver<O::Request>,
     pub server_handle: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
 }
 
@@ -289,20 +290,22 @@ pub struct TestContext<S: ServiceType> {
 /// 4. Run the supplied test logic
 /// 5. Perform cleanup
 ///
-/// The service type parameter S determines which signal type to test (traces, metrics, or logs)
-pub async fn run_test<S, T, F>(test_logic: F) -> Result<(), Box<dyn std::error::Error>>
+/// The service type parameters I and O determine the input and output signal types to test
+pub async fn run_test<I, O, T, F>(test_logic: F) -> Result<(), Box<dyn std::error::Error>>
 where
-    S: ServiceType,
-    S::Request: std::fmt::Debug + PartialEq,
-    F: FnOnce(TestContext<S>) -> T,
-    T: std::future::Future<Output = (TestContext<S>, Result<(), Box<dyn std::error::Error>>)>,
+    I: ServiceInputType,
+    O: ServiceOutputType,
+    I::Request: std::fmt::Debug + PartialEq,
+    O::Request: std::fmt::Debug + PartialEq,
+    F: FnOnce(TestContext<I, O>) -> T,
+    T: std::future::Future<Output = (TestContext<I, O>, Result<(), Box<dyn std::error::Error>>)>,
 {
     // Generate random ports in the high u16 range to avoid conflicts
     let random_value = rand::random::<u16>();
     let receiver_port = 40000 + (random_value % 25000);
 
     // Start the test receiver server and wrap it with a timeout to avoid tests getting stuck
-    let (server_handle, request_rx_raw, exporter_port) = start_test_receiver::<S>()
+    let (server_handle, request_rx_raw, exporter_port) = start_test_receiver::<O>()
         .await
         .map_err(|e| format!("Failed to start test receiver: {}", e))?;
 
@@ -313,16 +316,19 @@ where
         timeout: timeout_duration,
     };
 
-    // Generate and start the collector with OTLP->OTLP config using the dynamic ports
-    let collector_config = generate_config("otlp", "otlp", S::signal(), receiver_port, exporter_port);
+    // Generate and start the collector with the input and output protocols using the dynamic ports
+    let collector_config = generate_config(
+        I::protocol(), I::signal(), receiver_port, 
+        O::protocol(), O::signal(), exporter_port,
+    );
 
     let collector = CollectorProcess::start(COLLECTOR_PATH.clone(), &collector_config)
         .await
         .map_err(|e| format!("Failed to start collector: {}", e))?;
 
-    // Create OTLP client to send test data
+    // Create client to send test data
     let client_endpoint = format!("http://127.0.0.1:{}", receiver_port);
-    let client = S::connect_client(client_endpoint).await?;
+    let client = I::connect_client(client_endpoint).await?;
 
     // Create the test context
     let context = TestContext {
@@ -360,10 +366,10 @@ where
     )
     .await
     {
-        Ok(Ok(_)) => eprintln!("{} server shut down successfully", S::signal()),
-        Ok(Err(e)) => eprintln!("Error shutting down {} server: {}", S::signal(), e),
+        Ok(Ok(_)) => eprintln!("{} server shut down successfully", O::signal()),
+        Ok(Err(e)) => eprintln!("Error shutting down {} server: {}", O::signal(), e),
         Err(_) => {
-            eprintln!("Timed out waiting for {} server to shut down", S::signal());
+            eprintln!("Timed out waiting for {} server to shut down", O::signal());
         }
     }
 

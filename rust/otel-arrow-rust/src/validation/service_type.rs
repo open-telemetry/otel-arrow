@@ -6,8 +6,8 @@ use std::fmt::Debug;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::TcpListenerStream;
 
-/// A trait that abstracts over the different OTLP service types
-pub trait ServiceType: Debug + Send + Sync + 'static {
+/// A trait that abstracts over the input side of service types (client operations)
+pub trait ServiceInputType: Debug + Send + Sync + 'static {
     /// The request type for this service
     type Request: Clone + PartialEq + Send + Sync + 'static;
 
@@ -17,11 +17,11 @@ pub trait ServiceType: Debug + Send + Sync + 'static {
     /// The client type for this service
     type Client;
 
-    /// Server type to add to the tonic server
-    type Server;
-
     /// The name of this service type (for logging and identification)
     fn signal() -> &'static str;
+
+    /// The protocol used by this service type (e.g., "otlp")
+    fn protocol() -> &'static str;
 
     /// Create a new client for this service
     async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error>;
@@ -31,6 +31,21 @@ pub trait ServiceType: Debug + Send + Sync + 'static {
         client: &mut Self::Client,
         request: Self::Request,
     ) -> Result<Self::Response, tonic::Status>;
+}
+
+/// A trait that abstracts over the output side of service types (server operations)
+pub trait ServiceOutputType: Debug + Send + Sync + 'static {
+    /// The request type for this service
+    type Request: Clone + PartialEq + Send + Sync + 'static;
+
+    /// Server type to add to the tonic server
+    type Server;
+
+    /// The name of this service type (for logging and identification)
+    fn signal() -> &'static str;
+
+    /// The protocol used by this service type (e.g., "otlp")
+    fn protocol() -> &'static str;
 
     /// Create a server with the given receiver and listener stream
     fn create_server(
@@ -103,8 +118,8 @@ async fn create_listener_with_port() -> Result<(tokio::net::TcpListener, u16), S
     Ok((listener, port))
 }
 
-/// Helper function to start a test receiver for any service type
-pub async fn start_test_receiver<T: ServiceType>() -> Result<
+/// Helper function to start a test receiver for any service output type
+pub async fn start_test_receiver<T: ServiceOutputType>() -> Result<
     (
         tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
         mpsc::Receiver<T::Request>,
@@ -121,8 +136,8 @@ pub async fn start_test_receiver<T: ServiceType>() -> Result<
     Ok((handle, request_rx, port))
 }
 
-/// Generic helper function to create a TCP server for any OTLP service type
-async fn create_service_server<T: ServiceType + ?Sized>(
+/// Generic helper function to create a TCP server for any service output type
+async fn create_service_server<T: ServiceOutputType + ?Sized>(
     listener: tokio::net::TcpListener,
 ) -> Result<
     (

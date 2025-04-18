@@ -17,7 +17,7 @@ use crate::proto::opentelemetry::collector::trace::v1::{
     ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
 
-use super::service_type::{ServiceType, TestReceiver};
+use super::service_type::{ServiceInputType, ServiceOutputType, TestReceiver};
 
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::{Channel, Server};
@@ -25,20 +25,49 @@ use tonic::{Request, Response, Status};
 
 /// OTLP traces service type for testing
 #[derive(Debug)]
-pub struct TracesServiceType;
+pub struct OTLPTracesInputType;
 
-impl ServiceType for TracesServiceType {
+impl ServiceInputType for OTLPTracesInputType {
     type Request = ExportTraceServiceRequest;
     type Response = ExportTraceServiceResponse;
     type Client = TraceServiceClient<Channel>;
+
+    fn signal() -> &'static str {
+        "traces"
+    }
+
+    fn protocol() -> &'static str {
+        "otlp"
+    }
+
+    async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
+        TraceServiceClient::connect(endpoint).await
+    }
+
+    async fn send_data(
+        client: &mut Self::Client,
+        request: Self::Request,
+    ) -> Result<Self::Response, tonic::Status> {
+        client
+            .export(Request::new(request))
+            .await
+            .map(|response| response.into_inner())
+    }
+}
+
+#[derive(Debug)]
+pub struct OTLPTracesOutputType;
+
+impl ServiceOutputType for OTLPTracesOutputType {
+    type Request = ExportTraceServiceRequest;
     type Server = TraceServiceServer<TestReceiver<ExportTraceServiceRequest>>;
 
     fn signal() -> &'static str {
         "traces"
     }
 
-    async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
-        TraceServiceClient::connect(endpoint).await
+    fn protocol() -> &'static str {
+        "otlp"
     }
 
     fn create_server(
@@ -52,6 +81,77 @@ impl ServiceType for TracesServiceType {
                 .await
         })
     }
+}
+
+/// Legacy type for backwards compatibility
+#[derive(Debug)]
+pub struct TracesServiceType;
+
+impl ServiceInputType for TracesServiceType {
+    type Request = ExportTraceServiceRequest;
+    type Response = ExportTraceServiceResponse;
+    type Client = TraceServiceClient<Channel>;
+
+    fn signal() -> &'static str {
+        "traces"
+    }
+
+    fn protocol() -> &'static str {
+        "otlp"
+    }
+
+    async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
+        OTLPTracesInputType::connect_client(endpoint).await
+    }
+
+    async fn send_data(
+        client: &mut Self::Client,
+        request: Self::Request,
+    ) -> Result<Self::Response, tonic::Status> {
+        OTLPTracesInputType::send_data(client, request).await
+    }
+}
+
+impl ServiceOutputType for TracesServiceType {
+    type Request = ExportTraceServiceRequest;
+    type Server = TraceServiceServer<TestReceiver<ExportTraceServiceRequest>>;
+
+    fn signal() -> &'static str {
+        "traces"
+    }
+
+    fn protocol() -> &'static str {
+        "otlp"
+    }
+
+    fn create_server(
+        receiver: TestReceiver<Self::Request>,
+        incoming: TcpListenerStream,
+    ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
+        OTLPTracesOutputType::create_server(receiver, incoming)
+    }
+}
+
+/// OTLP metrics service type for testing
+#[derive(Debug)]
+pub struct OTLPMetricsInputType;
+
+impl ServiceInputType for OTLPMetricsInputType {
+    type Request = ExportMetricsServiceRequest;
+    type Response = ExportMetricsServiceResponse;
+    type Client = MetricsServiceClient<Channel>;
+
+    fn signal() -> &'static str {
+        "metrics"
+    }
+
+    fn protocol() -> &'static str {
+        "otlp"
+    }
+
+    async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
+        MetricsServiceClient::connect(endpoint).await
+    }
 
     async fn send_data(
         client: &mut Self::Client,
@@ -64,22 +164,19 @@ impl ServiceType for TracesServiceType {
     }
 }
 
-/// OTLP metrics service type for testing
 #[derive(Debug)]
-pub struct MetricsServiceType;
+pub struct OTLPMetricsOutputType;
 
-impl ServiceType for MetricsServiceType {
+impl ServiceOutputType for OTLPMetricsOutputType {
     type Request = ExportMetricsServiceRequest;
-    type Response = ExportMetricsServiceResponse;
-    type Client = MetricsServiceClient<Channel>;
     type Server = MetricsServiceServer<TestReceiver<ExportMetricsServiceRequest>>;
 
     fn signal() -> &'static str {
         "metrics"
     }
 
-    async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
-        MetricsServiceClient::connect(endpoint).await
+    fn protocol() -> &'static str {
+        "otlp"
     }
 
     fn create_server(
@@ -93,6 +190,77 @@ impl ServiceType for MetricsServiceType {
                 .await
         })
     }
+}
+
+/// Legacy type for backwards compatibility
+#[derive(Debug)]
+pub struct MetricsServiceType;
+
+impl ServiceInputType for MetricsServiceType {
+    type Request = ExportMetricsServiceRequest;
+    type Response = ExportMetricsServiceResponse;
+    type Client = MetricsServiceClient<Channel>;
+
+    fn signal() -> &'static str {
+        "metrics"
+    }
+
+    fn protocol() -> &'static str {
+        "otlp"
+    }
+
+    async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
+        OTLPMetricsInputType::connect_client(endpoint).await
+    }
+
+    async fn send_data(
+        client: &mut Self::Client,
+        request: Self::Request,
+    ) -> Result<Self::Response, tonic::Status> {
+        OTLPMetricsInputType::send_data(client, request).await
+    }
+}
+
+impl ServiceOutputType for MetricsServiceType {
+    type Request = ExportMetricsServiceRequest;
+    type Server = MetricsServiceServer<TestReceiver<ExportMetricsServiceRequest>>;
+
+    fn signal() -> &'static str {
+        "metrics"
+    }
+
+    fn protocol() -> &'static str {
+        "otlp"
+    }
+
+    fn create_server(
+        receiver: TestReceiver<Self::Request>,
+        incoming: TcpListenerStream,
+    ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
+        OTLPMetricsOutputType::create_server(receiver, incoming)
+    }
+}
+
+/// OTLP logs service type for testing
+#[derive(Debug)]
+pub struct OTLPLogsInputType;
+
+impl ServiceInputType for OTLPLogsInputType {
+    type Request = ExportLogsServiceRequest;
+    type Response = ExportLogsServiceResponse;
+    type Client = LogsServiceClient<Channel>;
+
+    fn signal() -> &'static str {
+        "logs"
+    }
+
+    fn protocol() -> &'static str {
+        "otlp"
+    }
+
+    async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
+        LogsServiceClient::connect(endpoint).await
+    }
 
     async fn send_data(
         client: &mut Self::Client,
@@ -105,22 +273,19 @@ impl ServiceType for MetricsServiceType {
     }
 }
 
-/// OTLP logs service type for testing
 #[derive(Debug)]
-pub struct LogsServiceType;
+pub struct OTLPLogsOutputType;
 
-impl ServiceType for LogsServiceType {
+impl ServiceOutputType for OTLPLogsOutputType {
     type Request = ExportLogsServiceRequest;
-    type Response = ExportLogsServiceResponse;
-    type Client = LogsServiceClient<Channel>;
     type Server = LogsServiceServer<TestReceiver<ExportLogsServiceRequest>>;
 
     fn signal() -> &'static str {
         "logs"
     }
 
-    async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
-        LogsServiceClient::connect(endpoint).await
+    fn protocol() -> &'static str {
+        "otlp"
     }
 
     fn create_server(
@@ -134,15 +299,54 @@ impl ServiceType for LogsServiceType {
                 .await
         })
     }
+}
+
+/// Legacy type for backwards compatibility
+#[derive(Debug)]
+pub struct LogsServiceType;
+
+impl ServiceInputType for LogsServiceType {
+    type Request = ExportLogsServiceRequest;
+    type Response = ExportLogsServiceResponse;
+    type Client = LogsServiceClient<Channel>;
+
+    fn signal() -> &'static str {
+        "logs"
+    }
+
+    fn protocol() -> &'static str {
+        "otlp"
+    }
+
+    async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
+        OTLPLogsInputType::connect_client(endpoint).await
+    }
 
     async fn send_data(
         client: &mut Self::Client,
         request: Self::Request,
     ) -> Result<Self::Response, tonic::Status> {
-        client
-            .export(Request::new(request))
-            .await
-            .map(|response| response.into_inner())
+        OTLPLogsInputType::send_data(client, request).await
+    }
+}
+
+impl ServiceOutputType for LogsServiceType {
+    type Request = ExportLogsServiceRequest;
+    type Server = LogsServiceServer<TestReceiver<ExportLogsServiceRequest>>;
+
+    fn signal() -> &'static str {
+        "logs"
+    }
+
+    fn protocol() -> &'static str {
+        "otlp"
+    }
+
+    fn create_server(
+        receiver: TestReceiver<Self::Request>,
+        incoming: TcpListenerStream,
+    ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
+        OTLPLogsOutputType::create_server(receiver, incoming)
     }
 }
 
@@ -186,21 +390,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_traces_single_request() {
-        run_single_round_trip_test::<TracesServiceType, _>(testdata::traces::create_single_request)
-            .await;
+        run_single_round_trip_test::<OTLPTracesInputType, OTLPTracesOutputType, _>(
+            testdata::traces::create_single_request
+        ).await;
     }
 
     #[tokio::test]
     async fn test_metrics_single_request() {
-        run_single_round_trip_test::<MetricsServiceType, _>(
-            testdata::metrics::create_single_request,
-        )
-        .await;
+        run_single_round_trip_test::<OTLPMetricsInputType, OTLPMetricsOutputType, _>(
+            testdata::metrics::create_single_request
+        ).await;
     }
 
     #[tokio::test]
     async fn test_logs_single_request() {
-        run_single_round_trip_test::<LogsServiceType, _>(testdata::logs::create_single_request)
-            .await;
+        run_single_round_trip_test::<OTLPLogsInputType, OTLPLogsOutputType, _>(
+            testdata::logs::create_single_request
+        ).await;
     }
 }
