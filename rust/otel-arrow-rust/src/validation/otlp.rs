@@ -154,18 +154,7 @@ impl TraceService for TestReceiver<ExportTraceServiceRequest> {
         &self,
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        let request_inner = request.into_inner();
-
-        // Forward the received request to the test channel
-        if let Err(err) = self.request_tx.send(request_inner).await {
-            return Err(Status::internal(format!(
-                "Failed to send trace data to test channel: {}",
-                err
-            )));
-        }
-
-        // Return success response
-        Ok(Response::new(ExportTraceServiceResponse::default()))
+        self.process_export_request(request, "trace").await
     }
 }
 
@@ -175,18 +164,7 @@ impl MetricsService for TestReceiver<ExportMetricsServiceRequest> {
         &self,
         request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
-        let request_inner = request.into_inner();
-
-        // Forward the received request to the test channel
-        if let Err(err) = self.request_tx.send(request_inner).await {
-            return Err(Status::internal(format!(
-                "Failed to send metrics data to test channel: {}",
-                err
-            )));
-        }
-
-        // Return success response
-        Ok(Response::new(ExportMetricsServiceResponse::default()))
+        self.process_export_request(request, "metrics").await
     }
 }
 
@@ -196,18 +174,7 @@ impl LogsService for TestReceiver<ExportLogsServiceRequest> {
         &self,
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
-        let request_inner = request.into_inner();
-
-        // Forward the received request to the test channel
-        if let Err(err) = self.request_tx.send(request_inner).await {
-            return Err(Status::internal(format!(
-                "Failed to send logs data to test channel: {}",
-                err
-            )));
-        }
-
-        // Return success response
-        Ok(Response::new(ExportLogsServiceResponse::default()))
+        self.process_export_request(request, "logs").await
     }
 }
 

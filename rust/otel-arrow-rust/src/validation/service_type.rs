@@ -61,6 +61,31 @@ pub struct TestReceiver<T> {
     pub request_tx: mpsc::Sender<T>,
 }
 
+impl<T: Send + 'static> TestReceiver<T> {
+    /// Generic method to process export requests for any OTLP service type
+    pub async fn process_export_request<R>(
+        &self,
+        request: tonic::Request<T>,
+        service_name: &str,
+    ) -> Result<tonic::Response<R>, tonic::Status>
+    where
+        R: Default,
+    {
+        let request_inner = request.into_inner();
+
+        // Forward the received request to the test channel
+        if let Err(err) = self.request_tx.send(request_inner).await {
+            return Err(tonic::Status::internal(format!(
+                "Failed to send {} data to test channel: {}",
+                service_name, err
+            )));
+        }
+
+        // Return success response
+        Ok(tonic::Response::new(R::default()))
+    }
+}
+
 /// Helper function to create a TCP listener with a dynamically allocated port
 async fn create_listener_with_port() -> Result<(tokio::net::TcpListener, u16), String> {
     // Bind to a specific address with port 0 for dynamic port allocation
