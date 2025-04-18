@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::env;
 use std::fmt;
 use std::fs;
@@ -47,8 +50,6 @@ impl<T> TimeoutReceiver<T> {
     }
 }
 
-// The TestReceiver implementation has been moved to service_type.rs
-
 /// Helper function to spawn a thread that reads lines from a buffer and logs them with a prefix.
 /// Optionally checks for a message substring and sends a signal when it matches.
 fn spawn_line_reader<R>(
@@ -87,6 +88,7 @@ pub struct CollectorProcess {
 }
 
 impl CollectorProcess {
+    /// Sends a SIGTERM signal to initiate graceful shutdown.
     pub async fn shutdown(&mut self) -> Result<Option<ExitStatus>, std::io::Error> {
         #[cfg(unix)]
         {
@@ -203,18 +205,18 @@ impl Drop for CollectorProcess {
     }
 }
 
-/// Configuration generator for OTLP to OTLP test case
-pub fn generate_otlp_to_otlp_config(signal: &str, receiver_port: u16, exporter_port: u16) -> String {
+/// Configuration generator
+pub fn generate_config(exporter_name: &str, receiver_name: &str, signal: &str, receiver_port: u16, exporter_port: u16) -> String {
     format!(
         r#"
 receivers:
-  otlp:
+  {receiver_name}:
     protocols:
       grpc:
         endpoint: 127.0.0.1:{receiver_port}
 
 exporters:
-  otlp:
+  {exporter_name}:
     endpoint: 127.0.0.1:{exporter_port}
     compression: none
     tls:
@@ -227,8 +229,8 @@ exporters:
 service:
   pipelines:
     {signal}:
-      receivers: [otlp]
-      exporters: [otlp]
+      receivers: [{receiver_name}]
+      exporters: [{exporter_name}]
   telemetry:
     metrics:
       level: none

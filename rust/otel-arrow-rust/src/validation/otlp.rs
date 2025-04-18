@@ -1,7 +1,10 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 use std::fmt::Debug;
 use std::path::Path;
 
-use super::collector::{generate_otlp_to_otlp_config, CollectorProcess};
+use super::collector::{generate_config, CollectorProcess};
 use super::service_type::{
     start_test_receiver, LogsServiceType, MetricsServiceType, ServiceType, TracesServiceType,
 };
@@ -40,7 +43,7 @@ where
             .map_err(|e| format!("Failed to start test receiver: {}", e))?;
 
     // Generate and start the collector with OTLP->OTLP config using the dynamic ports
-    let collector_config = generate_otlp_to_otlp_config(S::name(), receiver_port, exporter_port);
+    let collector_config = generate_config("otlp", "otlp", S::name(), receiver_port, exporter_port);
 
     let mut collector = CollectorProcess::start(collector.as_ref(), &collector_config)
         .await

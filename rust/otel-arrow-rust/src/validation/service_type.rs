@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Service type abstractions for validation testing
 use std::fmt::Debug;
 use tokio::sync::mpsc;
@@ -20,8 +23,6 @@ use crate::proto::opentelemetry::collector::trace::v1::{
     trace_service_server::{TraceService, TraceServiceServer},
     ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
-
-
 
 /// A trait that abstracts over the different OTLP service types
 pub trait ServiceType: Debug + Send + Sync + 'static {
