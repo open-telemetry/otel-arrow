@@ -188,14 +188,14 @@ mod tests {
                 .process(Message::timer_tick_ctrl_msg())
                 .await
                 .expect("Processor failed on TimerTick");
-            assert!(context.emitted_pdata().await.is_empty());
+            assert!(context.drain_pdata().await.is_empty());
 
             // Process a Message event.
             context
                 .process(Message::data_msg(TestMsg("Hello".to_owned())))
                 .await
                 .expect("Processor failed on Message");
-            let msgs = context.emitted_pdata().await;
+            let msgs = context.drain_pdata().await;
             assert_eq!(msgs.len(), 1);
             assert_eq!(msgs[0], TestMsg("Hello RECEIVED".to_string()));
 
@@ -204,14 +204,14 @@ mod tests {
                 .process(Message::config_ctrl_msg(Value::Null))
                 .await
                 .expect("Processor failed on Config");
-            assert!(context.emitted_pdata().await.is_empty());
+            assert!(context.drain_pdata().await.is_empty());
 
             // Process a Shutdown event.
             context
                 .process(Message::shutdown_ctrl_msg("no reason"))
                 .await
                 .expect("Processor failed on Shutdown");
-            assert!(context.emitted_pdata().await.is_empty());
+            assert!(context.drain_pdata().await.is_empty());
         });
         test_runtime.validate(|| async move {
             counters.assert(

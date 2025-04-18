@@ -48,8 +48,8 @@ where
         self.processor.process(msg, &mut self.effect_handler).await
     }
 
-    /// Returns the last emitted message from the processor.
-    pub async fn emitted_pdata(&mut self) -> Vec<P::PData> {
+    /// Drains and returns all pdata messages emitted by the processor via the effect handler.
+    pub async fn drain_pdata(&mut self) -> Vec<P::PData> {
         let mut emitted = Vec::new();
         while let Ok(msg) = self.pdata_rx.try_recv() {
             emitted.push(msg);

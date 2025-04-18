@@ -48,9 +48,25 @@ stopping a pipeline, and more.
 
 ## Testability
 
-The different types of nodes, as well as the pipeline engine itself, are
-designed to be testable in isolation. In practical terms, this means it should
-be possible to test the implementation of an OTLP Receiver without having to
-build an entire pipeline. The goal is to enable quick and precise identification
-of issues, such as memory overconsumption, bottlenecks, or logic errors within a
-node.
+All node types, as well as the pipeline engine itself, are designed for isolated
+testing. Practically, this means it's possible to test components like an OTLP
+Receiver independently, without needing to construct an entire pipeline. This
+approach facilitates rapid and precise identification of issues such as memory
+overconsumption, bottlenecks, or logical errors within individual nodes.
+
+The engine provides an extensive `testing` module containing utilities tailored
+to each pipeline component:
+
+- Defined test message types and control message counters for monitoring
+  component behavior.
+- Dedicated test contexts and runtimes specifically built for receivers,
+  processors, and exporters.
+- Single-threaded asynchronous runtime utilities aligned with the engine's
+  non-Send design philosophy.
+- Convenient helper functions for establishing and managing communication
+  channels between components.
+
+These utilities streamline the process of validating individual component
+behaviors, significantly reducing setup effort while enabling comprehensive
+testing.
+
