@@ -35,9 +35,6 @@ pub trait ServiceType: Debug + Send + Sync + 'static {
     /// The client type for this service
     type Client;
 
-    /// The server implementation type
-    type Server;
-
     /// Server type to add to the tonic server
     type TonicServer;
 
@@ -76,7 +73,7 @@ pub trait ServiceType: Debug + Send + Sync + 'static {
     }
 }
 
-/// Generic test receiver that can be used for any OTLP service
+/// Generic test receiver that can be used for any service
 #[derive(Debug)]
 pub struct TestReceiver<T> {
     pub request_tx: mpsc::Sender<T>,
@@ -151,7 +148,6 @@ impl ServiceType for TracesServiceType {
     type Request = ExportTraceServiceRequest;
     type Response = ExportTraceServiceResponse;
     type Client = TraceServiceClient<Channel>;
-    type Server = TestReceiver<ExportTraceServiceRequest>;
     type TonicServer = TraceServiceServer<TestReceiver<ExportTraceServiceRequest>>;
 
     fn name() -> &'static str {
@@ -192,7 +188,6 @@ impl ServiceType for MetricsServiceType {
     type Request = ExportMetricsServiceRequest;
     type Response = ExportMetricsServiceResponse;
     type Client = MetricsServiceClient<Channel>;
-    type Server = TestReceiver<ExportMetricsServiceRequest>;
     type TonicServer = MetricsServiceServer<TestReceiver<ExportMetricsServiceRequest>>;
 
     fn name() -> &'static str {
@@ -233,7 +228,6 @@ impl ServiceType for LogsServiceType {
     type Request = ExportLogsServiceRequest;
     type Response = ExportLogsServiceResponse;
     type Client = LogsServiceClient<Channel>;
-    type Server = TestReceiver<ExportLogsServiceRequest>;
     type TonicServer = LogsServiceServer<TestReceiver<ExportLogsServiceRequest>>;
 
     fn name() -> &'static str {
