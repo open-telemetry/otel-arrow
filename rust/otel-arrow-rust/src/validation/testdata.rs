@@ -8,11 +8,11 @@ use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest
 pub mod traces {
     use super::*;
     use crate::pdata::{SpanID, TraceID};
+    use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
+    use crate::proto::opentelemetry::resource::v1::Resource;
     use crate::proto::opentelemetry::trace::v1::{
         status::StatusCode, ResourceSpans, ScopeSpans, Span, Status,
     };
-    use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
-    use crate::proto::opentelemetry::resource::v1::Resource;
 
     pub fn create_single_request() -> ExportTraceServiceRequest {
         let start_time = 1619712000000000000u64;
@@ -40,10 +40,10 @@ pub mod traces {
 
 pub mod metrics {
     use super::*;
+    use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
     use crate::proto::opentelemetry::metrics::v1::{
         Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics,
     };
-    use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
     use crate::proto::opentelemetry::resource::v1::Resource;
 
     pub fn create_single_request() -> ExportMetricsServiceRequest {
@@ -56,12 +56,12 @@ pub mod metrics {
                 AnyValue::new_string("test value"),
             )])
             .finish();
-            
+
         let metric = Metric::build_gauge("test_gauge", Gauge::new(vec![data_point]))
             .description(format!("Test metric"))
             .unit("count")
             .finish();
-            
+
         ExportMetricsServiceRequest::new(vec![ResourceMetrics::build(Resource::default())
             .scope_metrics(vec![ScopeMetrics::build(InstrumentationScope::default())
                 .metrics(vec![metric])
@@ -72,15 +72,15 @@ pub mod metrics {
 
 pub mod logs {
     use super::*;
+    use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
     use crate::proto::opentelemetry::logs::v1::{
         LogRecord, ResourceLogs, ScopeLogs, SeverityNumber,
     };
-    use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
     use crate::proto::opentelemetry::resource::v1::Resource;
 
     pub fn create_single_request() -> ExportLogsServiceRequest {
         let timestamp = 1619712000000000000u64;
-        
+
         let log_record = LogRecord::build(timestamp, SeverityNumber::Info, "test_log")
             .severity_text("INFO")
             .body(AnyValue::new_string(format!("Test log message")))
@@ -89,7 +89,7 @@ pub mod logs {
                 AnyValue::new_string("test value"),
             )])
             .finish();
-            
+
         ExportLogsServiceRequest::new(vec![ResourceLogs::build(Resource::default())
             .scope_logs(vec![ScopeLogs::build(InstrumentationScope::default())
                 .log_records(vec![log_record])

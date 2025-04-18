@@ -4,9 +4,9 @@
 // Service type abstractions for validation testing
 use std::fmt::Debug;
 use tokio::sync::mpsc;
-use tonic::{Request, Response, Status};
-use tonic::transport::{Channel, Server};
 use tokio_stream::wrappers::TcpListenerStream;
+use tonic::transport::{Channel, Server};
+use tonic::{Request, Response, Status};
 
 use crate::proto::opentelemetry::collector::logs::v1::{
     logs_service_client::LogsServiceClient,
@@ -28,34 +28,37 @@ use crate::proto::opentelemetry::collector::trace::v1::{
 pub trait ServiceType: Debug + Send + Sync + 'static {
     /// The request type for this service
     type Request: Clone + PartialEq + Send + Sync + 'static;
-    
+
     /// The response type for this service
     type Response: Default + Send + 'static;
-    
+
     /// The client type for this service
     type Client;
-    
+
     /// The server implementation type
     type Server;
-    
+
     /// Server type to add to the tonic server
     type TonicServer;
-    
+
     /// The name of this service type (for logging and identification)
     fn name() -> &'static str;
-    
+
     /// Create a new client for this service
     async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error>;
-    
+
     /// Send data through the client
-    async fn send_data(client: &mut Self::Client, request: Self::Request) -> Result<Self::Response, tonic::Status>;
-    
+    async fn send_data(
+        client: &mut Self::Client,
+        request: Self::Request,
+    ) -> Result<Self::Response, tonic::Status>;
+
     /// Create a server with the given receiver and listener stream
     fn create_server(
         receiver: TestReceiver<Self::Request>,
         incoming: TcpListenerStream,
     ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>>;
-    
+
     /// Start a service-specific receiver
     async fn start_receiver(
         listener: tokio::net::TcpListener,
@@ -65,9 +68,9 @@ pub trait ServiceType: Debug + Send + Sync + 'static {
             mpsc::Receiver<Self::Request>,
         ),
         String,
-    > 
-    where 
-        Self: Sized
+    >
+    where
+        Self: Sized,
     {
         create_service_server::<Self>(listener).await
     }
@@ -86,13 +89,13 @@ async fn create_listener_with_port() -> Result<(tokio::net::TcpListener, u16), S
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| format!("Failed to bind listener: {}", e))?;
-    
+
     // Get the assigned port
     let port = listener
         .local_addr()
         .map_err(|e| format!("Failed to get local address: {}", e))?
         .port();
-    
+
     Ok((listener, port))
 }
 
@@ -107,10 +110,10 @@ pub async fn start_test_receiver<T: ServiceType>() -> Result<
 > {
     // Create listener with dynamically allocated port
     let (listener, port) = create_listener_with_port().await?;
-    
+
     // Start the service-specific receiver
     let (handle, request_rx) = T::start_receiver(listener).await?;
-    
+
     Ok((handle, request_rx, port))
 }
 
@@ -126,17 +129,17 @@ async fn create_service_server<T: ServiceType + ?Sized>(
 > {
     // Create a channel for receiving data
     let (request_tx, request_rx) = mpsc::channel::<T::Request>(100);
-    
+
     // Create a test receiver
     let receiver = TestReceiver { request_tx };
-    
+
     // Convert the listener to a stream of connections
     let incoming = TcpListenerStream::new(listener);
-    
+
     // Create our server - we need to delegate to the service-specific functions
     // since we can't construct the server generically
     let handle = T::create_server(receiver, incoming);
-    
+
     Ok((handle, request_rx))
 }
 
@@ -150,15 +153,15 @@ impl ServiceType for TracesServiceType {
     type Client = TraceServiceClient<Channel>;
     type Server = TestReceiver<ExportTraceServiceRequest>;
     type TonicServer = TraceServiceServer<TestReceiver<ExportTraceServiceRequest>>;
-    
+
     fn name() -> &'static str {
         "traces"
     }
-    
+
     async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
         TraceServiceClient::connect(endpoint).await
     }
-    
+
     fn create_server(
         receiver: TestReceiver<Self::Request>,
         incoming: TcpListenerStream,
@@ -170,9 +173,15 @@ impl ServiceType for TracesServiceType {
                 .await
         })
     }
-    
-    async fn send_data(client: &mut Self::Client, request: Self::Request) -> Result<Self::Response, tonic::Status> {
-        client.export(Request::new(request)).await.map(|response| response.into_inner())
+
+    async fn send_data(
+        client: &mut Self::Client,
+        request: Self::Request,
+    ) -> Result<Self::Response, tonic::Status> {
+        client
+            .export(Request::new(request))
+            .await
+            .map(|response| response.into_inner())
     }
 }
 
@@ -185,15 +194,15 @@ impl ServiceType for MetricsServiceType {
     type Client = MetricsServiceClient<Channel>;
     type Server = TestReceiver<ExportMetricsServiceRequest>;
     type TonicServer = MetricsServiceServer<TestReceiver<ExportMetricsServiceRequest>>;
-    
+
     fn name() -> &'static str {
         "metrics"
     }
-    
+
     async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
         MetricsServiceClient::connect(endpoint).await
     }
-    
+
     fn create_server(
         receiver: TestReceiver<Self::Request>,
         incoming: TcpListenerStream,
@@ -205,9 +214,15 @@ impl ServiceType for MetricsServiceType {
                 .await
         })
     }
-    
-    async fn send_data(client: &mut Self::Client, request: Self::Request) -> Result<Self::Response, tonic::Status> {
-        client.export(Request::new(request)).await.map(|response| response.into_inner())
+
+    async fn send_data(
+        client: &mut Self::Client,
+        request: Self::Request,
+    ) -> Result<Self::Response, tonic::Status> {
+        client
+            .export(Request::new(request))
+            .await
+            .map(|response| response.into_inner())
     }
 }
 
@@ -220,15 +235,15 @@ impl ServiceType for LogsServiceType {
     type Client = LogsServiceClient<Channel>;
     type Server = TestReceiver<ExportLogsServiceRequest>;
     type TonicServer = LogsServiceServer<TestReceiver<ExportLogsServiceRequest>>;
-    
+
     fn name() -> &'static str {
         "logs"
     }
-    
+
     async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
         LogsServiceClient::connect(endpoint).await
     }
-    
+
     fn create_server(
         receiver: TestReceiver<Self::Request>,
         incoming: TcpListenerStream,
@@ -240,9 +255,15 @@ impl ServiceType for LogsServiceType {
                 .await
         })
     }
-    
-    async fn send_data(client: &mut Self::Client, request: Self::Request) -> Result<Self::Response, tonic::Status> {
-        client.export(Request::new(request)).await.map(|response| response.into_inner())
+
+    async fn send_data(
+        client: &mut Self::Client,
+        request: Self::Request,
+    ) -> Result<Self::Response, tonic::Status> {
+        client
+            .export(Request::new(request))
+            .await
+            .map(|response| response.into_inner())
     }
 }
 
