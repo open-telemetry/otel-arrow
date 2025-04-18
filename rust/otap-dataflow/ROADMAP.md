@@ -27,16 +27,31 @@ significant changes.
 - [ ] Continuous benchmarking and performance tracking
   - [ ] Comparison with Go Collector
   
-### Pipeline Engine Foundations
+### Pipeline Engine Foundations (phase 1)
 
 - Channels
   - [x] MPMC Channel
   - [x] MPSC Channel
 - [x] Receiver trait
-- [WIP] Processor trait
-- [ ] Exporter trait
+- [x] Processor trait
+- [x] Exporter trait
 - [ ] Pipeline Engine
-- [ ] Initial benchmarks and documentation
+- [ ] CPU & Memory Benchmarks
+- [ ] Documentation
+
+### Pipeline Engine Foundations (phase 2)
+
+- Channels
+  - [ ] SPSC Channel
+  - [ ] Broadcast Channel
+- [ ] Connector trait
+- [ ] Instrumentation
+- [ ] Thread pinning
+- Benchmarks
+  - [ ] CPU benchmarks
+  - [ ] Memory benchmarks
+- [ ] CPU & Memory Benchmarks
+- [ ] Documentation
 
 ### OTLP Pipeline
 
