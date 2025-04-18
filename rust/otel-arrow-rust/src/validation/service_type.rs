@@ -52,6 +52,12 @@ pub trait ServiceType: Debug + Send + Sync + 'static {
     /// Send data through the client
     async fn send_data(client: &mut Self::Client, request: Self::Request) -> Result<Self::Response, tonic::Status>;
     
+    /// Create a server with the given receiver and listener stream
+    fn create_server(
+        receiver: TestReceiver<Self::Request>,
+        incoming: TcpListenerStream,
+    ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>>;
+    
     /// Start a service-specific receiver
     async fn start_receiver(
         listener: tokio::net::TcpListener,
@@ -108,6 +114,42 @@ pub async fn start_test_receiver<T: ServiceType>(
     Ok((handle, request_rx, port))
 }
 
+/// Generic helper function to create a TCP server for any OTLP service type
+async fn create_service_server<T: ServiceType>(
+    listener: tokio::net::TcpListener,
+    timeout_secs: Option<u64>,
+) -> Result<
+    (
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        super::collector_test::TimeoutReceiver<T::Request>,
+    ),
+    String,
+> {
+    use super::collector_test::TimeoutReceiver;
+    
+    // Create a channel for receiving data
+    let (request_tx, request_rx) = mpsc::channel::<T::Request>(100);
+    
+    // Create a test receiver
+    let receiver = TestReceiver { request_tx };
+    
+    // Convert the listener to a stream of connections
+    let incoming = TcpListenerStream::new(listener);
+    
+    // Create our server - we need to delegate to the service-specific functions
+    // since we can't construct the server generically
+    let handle = T::create_server(receiver, incoming);
+    
+    // Create a timeout-wrapped version of the receiver
+    let timeout_duration = std::time::Duration::from_secs(timeout_secs.unwrap_or(10));
+    let request_rx = TimeoutReceiver {
+        inner: request_rx,
+        timeout: timeout_duration,
+    };
+    
+    Ok((handle, request_rx))
+}
+
 /// Helper function to create a TCP server for traces service
 async fn create_trace_server(
     listener: tokio::net::TcpListener,
@@ -119,33 +161,7 @@ async fn create_trace_server(
     ),
     String,
 > {
-    use super::collector_test::TimeoutReceiver;
-    
-    // Create a channel for receiving data
-    let (request_tx, request_rx) = mpsc::channel::<ExportTraceServiceRequest>(100);
-    
-    // Create a test receiver
-    let receiver = TestReceiver { request_tx };
-    
-    // Convert the listener to a stream of connections
-    let incoming = TcpListenerStream::new(listener);
-    
-    // Create our server
-    let handle = tokio::spawn(async move {
-        Server::builder()
-            .add_service(TraceServiceServer::new(receiver))
-            .serve_with_incoming(incoming)
-            .await
-    });
-    
-    // Create a timeout-wrapped version of the receiver
-    let timeout_duration = std::time::Duration::from_secs(timeout_secs.unwrap_or(10));
-    let request_rx = TimeoutReceiver {
-        inner: request_rx,
-        timeout: timeout_duration,
-    };
-    
-    Ok((handle, request_rx))
+    create_service_server::<TracesServiceType>(listener, timeout_secs).await
 }
 
 /// Helper function to create a TCP server for metrics service
@@ -159,34 +175,7 @@ async fn create_metrics_server(
     ),
     String,
 > {
-    use super::collector_test::TimeoutReceiver;
-    
-    // Create a channel for receiving data
-    let (request_tx, request_rx) = mpsc::channel::<ExportMetricsServiceRequest>(100);
-    
-    // Create a test receiver
-    let receiver = TestReceiver { request_tx };
-    
-    // Convert the listener to a stream of connections
-    let incoming = TcpListenerStream::new(listener);
-    
-
-    // Create our server
-    let handle = tokio::spawn(async move {
-        Server::builder()
-            .add_service(MetricsServiceServer::new(receiver))
-            .serve_with_incoming(incoming)
-            .await
-    });
-    
-    // Create a timeout-wrapped version of the receiver
-    let timeout_duration = std::time::Duration::from_secs(timeout_secs.unwrap_or(10));
-    let request_rx = TimeoutReceiver {
-        inner: request_rx,
-        timeout: timeout_duration,
-    };
-    
-    Ok((handle, request_rx))
+    create_service_server::<MetricsServiceType>(listener, timeout_secs).await
 }
 
 /// Helper function to create a TCP server for logs service
@@ -200,33 +189,7 @@ async fn create_logs_server(
     ),
     String,
 > {
-    use super::collector_test::TimeoutReceiver;
-    
-    // Create a channel for receiving data
-    let (request_tx, request_rx) = mpsc::channel::<ExportLogsServiceRequest>(100);
-    
-    // Create a test receiver
-    let receiver = TestReceiver { request_tx };
-    
-    // Convert the listener to a stream of connections
-    let incoming = TcpListenerStream::new(listener);
-    
-    // Create our server
-    let handle = tokio::spawn(async move {
-        Server::builder()
-            .add_service(LogsServiceServer::new(receiver))
-            .serve_with_incoming(incoming)
-            .await
-    });
-    
-    // Create a timeout-wrapped version of the receiver
-    let timeout_duration = std::time::Duration::from_secs(timeout_secs.unwrap_or(10));
-    let request_rx = TimeoutReceiver {
-        inner: request_rx,
-        timeout: timeout_duration,
-    };
-    
-    Ok((handle, request_rx))
+    create_service_server::<LogsServiceType>(listener, timeout_secs).await
 }
 
 /// Implementation of the Traces service type
@@ -246,6 +209,18 @@ impl ServiceType for TracesServiceType {
     
     async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
         TraceServiceClient::connect(endpoint).await
+    }
+    
+    fn create_server(
+        receiver: TestReceiver<Self::Request>,
+        incoming: TcpListenerStream,
+    ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
+        tokio::spawn(async move {
+            Server::builder()
+                .add_service(TraceServiceServer::new(receiver))
+                .serve_with_incoming(incoming)
+                .await
+        })
     }
     
     fn create_test_data(name: &str) -> Self::Request {
@@ -318,6 +293,18 @@ impl ServiceType for MetricsServiceType {
         MetricsServiceClient::connect(endpoint).await
     }
     
+    fn create_server(
+        receiver: TestReceiver<Self::Request>,
+        incoming: TcpListenerStream,
+    ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
+        tokio::spawn(async move {
+            Server::builder()
+                .add_service(MetricsServiceServer::new(receiver))
+                .serve_with_incoming(incoming)
+                .await
+        })
+    }
+    
     fn create_test_data(name: &str) -> Self::Request {
         use crate::proto::opentelemetry::metrics::v1::{
             Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics,
@@ -385,6 +372,18 @@ impl ServiceType for LogsServiceType {
     
     async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
         LogsServiceClient::connect(endpoint).await
+    }
+    
+    fn create_server(
+        receiver: TestReceiver<Self::Request>,
+        incoming: TcpListenerStream,
+    ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
+        tokio::spawn(async move {
+            Server::builder()
+                .add_service(LogsServiceServer::new(receiver))
+                .serve_with_incoming(incoming)
+                .await
+        })
     }
     
     fn create_test_data(name: &str) -> Self::Request {
