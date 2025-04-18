@@ -2,46 +2,83 @@
 
 Status: **WIP**
 
-## Nodes
+## Introduction
 
-The Pipeline Engine consists of three main node types:
+The term pipeline is used here to represent an interconnection of nodes forming
+a Directed Acyclic Graph (DAG). The inputs of a pipeline are called receivers,
+the intermediate processing nodes are called processors, and the output nodes
+are referred to as exporters.
 
-- Receiver: A node that receives or scrapes telemetry data from a telemetry
-  source.
-- Processor: A node that processes telemetry data.
-- Exporter: A node that exports telemetry data to a telemetry sink.
+Messages flowing through a pipeline are generically referred to as pdata (i.e.
+Pipeline Data). An OTLP message or an OTAP message are examples of pdata types.
+This pipeline framework is generic over pdata, which means:
 
-Each node can receive control messages from the Pipeline Engine to manage its
-operation.
+- It is possible to instantiate an OTLP pipeline, an OTAP pipeline, or even a
+  pipeline designed to support another type of pdata.
+- It is not possible to support multiple pdata types within a single pipeline.
+  However, a fourth type of component, called a connector, can be used to bridge
+  two pipelines and enable interoperability between different pdata types.
 
-```mermaid
-graph LR
-    RecvControlIn[Control Channel] --> Receiver
-    Receiver((Receiver))
-    Receiver --> RecvControlOut[Control Channel]
-    Receiver --> RecvDataOut[Data Channel]
-    class Receiver node
-    class RecvControlIn,RecvControlOut controlQueue
-    class RecvDataOut dataQueue
-    
-    ProcControlIn[Control Channel] --> Processor
-    ProcDataIn[Data Channel] --> Processor
-    Processor((Processor))
-    Processor --> ProcControlOut[Control Channel]
-    Processor --> ProcDataOut[Data Channel]
-    class Processor node
-    class ProcControlIn,ProcControlOut controlQueue
-    class ProcDataIn,ProcDataOut dataQueue
+This terminology aligns well with the concepts introduced in the OTEL Go
+Collector.
 
-    ExControlIn[Control Channel] --> Exporter
-    ExDataIn[Data Channel] --> Exporter
-    Exporter((Exporter))
-    Exporter --> ExControlOut[Control Channel]
-    class Exporter node
-    class ExControlIn,ExControlOut controlQueue
-    class ExDataIn,ExDataOut dataQueue
+## Architecture
 
-    classDef controlQueue fill:#ffdddd,stroke:#cc0000,color:#000,stroke-width:0px,font-size:10px,padding:0px
-    classDef dataQueue fill:#ddffdd,stroke:#009900,color:#000,stroke-width:0px,font-size:10px,padding:0px
-    classDef node fill:#4a90e2,color:#ffffff,stroke-width:0px,font-size:12px
-```
+A list of the design principles followed by this project can be found
+[here](../../docs/design-principles.md). More specifically, the pipeline engine
+implemented in this crate follows a share-nothing, thread-per-core approach.
+In particular, one instance of the pipeline engine is created per core. This
+engine:
+
+- Is based on a single-threaded async runtime
+- Avoids synchronization mechanisms whenever possible
+- Declares async traits as `?Send`, providing `!Send` implementations and
+  futures whenever practical
+- Relies on listening sockets configured with the `SO_REUSEPORT` option,
+  allowing the OS to handle connection load balancing
+- May share immutable data between cores, but ideally only within a single NUMA
+  node
+
+These design principles focus on achieving high performance, predictability, and
+maintainability in an observability gateway implemented in Rust. Targeting a
+single-threaded async runtime reduces complexity, enhances cache locality, and
+lowers overhead. Favoring `!Send` futures and declaring async traits as `?Send`
+maximizes flexibility and allows performance gains by avoiding unnecessary
+synchronization. Minimizing synchronization primitives prevents contention and
+overhead, thus ensuring consistently low latency. Avoiding unbounded channels
+and data structures protects against unpredictable resource consumption,
+maintaining stable performance. Finally, limiting external dependencies reduces
+complexity, security risks, and maintenance effort, further streamlining the
+gateway’s operation and reliability.
+
+## Control Messages
+
+Each node in a pipeline can receive control messages, which must be handled with
+priority. These control messages are issued by a control entity (e.g. a pipeline
+engine) and are used to orchestrate the behavior of pipeline nodes. For example,
+configuring or reconfiguring nodes, coordinating acknowledgment mechanisms,
+stopping a pipeline, and more.
+
+## Testability
+
+All node types, as well as the pipeline engine itself, are designed for isolated
+testing. Practically, this means it's possible to test components like an OTLP
+Receiver independently, without needing to construct an entire pipeline. This
+approach facilitates rapid and precise identification of issues such as memory
+overconsumption, bottlenecks, or logical errors within individual nodes.
+
+The engine provides an extensive `testing` module containing utilities tailored
+to each pipeline component:
+
+- Defined test message types and control message counters for monitoring
+  component behavior.
+- Dedicated test contexts and runtimes specifically built for receivers,
+  processors, and exporters.
+- Single-threaded asynchronous runtime utilities aligned with the engine's
+  non-Send design philosophy.
+- Convenient helper functions for establishing and managing communication
+  channels between components.
+
+These utilities streamline the process of validating individual component
+behaviors, significantly reducing setup effort while enabling comprehensive
+testing.

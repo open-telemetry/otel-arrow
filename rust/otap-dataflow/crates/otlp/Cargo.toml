@@ -29,3 +29,5 @@ async-trait.workspace = true
 [build-dependencies]
 tonic-build = { version = "0.12.3", features = ["cleanup-markdown"] }
 
+
+thiserror = { workspace = true }

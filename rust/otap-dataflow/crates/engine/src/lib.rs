@@ -3,9 +3,13 @@
 //! Async Pipeline Engine
 
 pub mod error;
+pub mod exporter;
 pub mod message;
 pub mod processor;
 pub mod receiver;
+
+#[cfg(test)]
+pub mod testing;
 
 use std::rc::Rc;
 

@@ -43,7 +43,7 @@ use tokio::net::TcpListener;
 #[async_trait( ? Send)]
 pub trait Receiver {
     /// The type of messages processed by the receiver.
-    type Msg;
+    type PData;
 
     /// Starts the receiver and begins processing incoming data and control messages.
     ///
@@ -61,9 +61,12 @@ pub trait Receiver {
     /// Receivers are expected to process both internal control messages and external sources and
     /// use the EffectHandler to send messages to the next node(s) in the pipeline.
     ///
+    /// Important note: Receivers are expected to process internal control messages in priority over
+    /// external data.
+    ///
     /// # Parameters
     ///
-    /// - `ctrl_msg_recv`: A channel to receive control messages.
+    /// - `ctrl_msg_chan`: A channel to receive control messages.
     /// - `effect_handler`: A handler to perform side effects such as opening a listener.
     ///
     /// # Errors
@@ -75,9 +78,9 @@ pub trait Receiver {
     /// This method should be cancellation safe and clean up any resources when dropped.
     async fn start(
         self: Box<Self>,
-        ctrl_msg_recv: ControlMsgChannel,
-        effect_handler: EffectHandler<Self::Msg>,
-    ) -> Result<(), Error<Self::Msg>>;
+        ctrl_msg_chan: ControlMsgChannel,
+        effect_handler: EffectHandler<Self::PData>,
+    ) -> Result<(), Error<Self::PData>>;
 }
 
 /// A channel for receiving control messages.
@@ -89,6 +92,12 @@ pub struct ControlMsgChannel {
 }
 
 impl ControlMsgChannel {
+    /// Creates a new `ControlMsgChannel` with the given receiver.
+    #[must_use]
+    pub fn new(rx: mpsc::Receiver<ControlMsg>) -> Self {
+        ControlMsgChannel { rx }
+    }
+
     /// Asynchronously receives the next control message.
     ///
     /// # Errors
@@ -134,8 +143,8 @@ impl<Msg> EffectHandler<Msg> {
 
     /// Returns the name of the receiver associated with this handler.
     #[must_use]
-    pub fn receiver_name(&self) -> &str {
-        &self.receiver_name
+    pub fn receiver_name(&self) -> NodeName {
+        self.receiver_name.clone()
     }
 
     /// Creates a non-blocking TCP listener on the given address with `SO_REUSE` settings.
@@ -190,72 +199,55 @@ impl<Msg> EffectHandler<Msg> {
 
 #[cfg(test)]
 mod tests {
-    use crate::message::ControlMsg;
+    use super::ControlMsgChannel;
     use crate::receiver::{EffectHandler, Error, Receiver};
+    use crate::testing::receiver::ReceiverTestRuntime;
+    use crate::testing::{CtrMsgCounters, TestMsg};
     use async_trait::async_trait;
-    use otap_df_channel::mpsc;
+    use serde_json::Value;
     use std::net::SocketAddr;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
-    use tokio::runtime::Builder;
     use tokio::sync::oneshot;
-    use tokio::task::LocalSet;
     use tokio::time::{Duration, sleep};
 
-    use super::ControlMsgChannel;
-
-    /// A test message.
-    #[derive(Debug, PartialEq)]
-    struct TestMsg(String);
-
     struct TestReceiver {
+        ctrl_msg_counters: CtrMsgCounters,
         port_notifier: oneshot::Sender<SocketAddr>,
     }
 
     #[async_trait(?Send)]
     impl Receiver for TestReceiver {
-        type Msg = TestMsg;
+        type PData = TestMsg;
+
         async fn start(
             self: Box<Self>,
             ctrl_msg_recv: ControlMsgChannel,
-            effect_handler: EffectHandler<Self::Msg>,
-        ) -> Result<(), Error<Self::Msg>> {
+            effect_handler: EffectHandler<Self::PData>,
+        ) -> Result<(), Error<Self::PData>> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
             let listener = effect_handler.tcp_listener(addr)?;
             let local_addr = listener.local_addr().unwrap();
-            println!("Receiver is listening on {}", local_addr);
 
             // Notify the test of the actual bound address.
             let _ = self.port_notifier.send(local_addr);
 
-            let mut tick_count = 0;
             loop {
                 tokio::select! {
-                    // Process an internal event.
+                    // Process incoming control messages.
                     ctrl_msg = ctrl_msg_recv.recv() => {
-                        match ctrl_msg {
-                            Ok(ControlMsg::Shutdown {reason}) => {
-                                println!("Received Shutdown event: {reason}");
-                                break;
-                            },
-                            Ok(ControlMsg::TimerTick {}) => {
-                                println!("Received TimerTick event.");
-                                tick_count += 1;
-                            },
-                            Err(e) => {
-                                return Err(Error::ChannelRecvError(e));
-                            }
-                            _ => {
-                                eprintln!("Unknown control message received");
-                            }
+                        let ctrl_msg = ctrl_msg?;
+                        self.ctrl_msg_counters.update_with(&ctrl_msg);
+                        if ctrl_msg.is_shutdown() {
+                            break;
                         }
                     }
-                    // Accept incoming TCP connections.
+
+                    // Process incoming TCP connections.
                     accept_result = listener.accept() => {
                         match accept_result {
                             Ok((mut socket, peer_addr)) => {
-                                println!("Accepted connection from {peer_addr}");
                                 // Clone the effect handler so the spawned task can send messages.
                                 let effect_handler = effect_handler.clone();
                                 // Spawn a task to handle the connection.
@@ -265,30 +257,27 @@ mod tests {
                                     loop {
                                         match socket.read(&mut buf).await {
                                             Ok(0) => {
-                                                println!("Connection from {peer_addr} closed.");
                                                 break;
                                             },
                                             Ok(n) => {
                                                 let received = String::from_utf8_lossy(&buf[..n]).to_string();
-                                                println!("Received from {peer_addr}: {received}");
                                                 // Create a TestMsg from the received data and send it.
                                                 let msg = TestMsg(received);
                                                 if let Err(e) = effect_handler.send_message(msg).await {
-                                                    eprintln!("Error sending message via effect handler: {e}");
+                                                    panic!("Error sending message via effect handler: {e}");
                                                 }
                                                 // Echo back an acknowledgment.
                                                 let _ = socket.write_all(b"ack").await;
                                             },
                                             Err(e) => {
-                                                eprintln!("Error reading from {peer_addr}: {e}");
-                                                break;
+                                                panic!("Error reading from {peer_addr}: {e}");
                                             }
                                         }
                                     }
                                 });
                             },
                             Err(e) => {
-                                eprintln!("Error accepting connection: {e}");
+                                panic!("Error accepting connection: {e}");
                             }
                         }
                     }
@@ -299,48 +288,30 @@ mod tests {
                 }
 
                 // For this test, exit the loop after 5 timer ticks.
-                if tick_count >= 5 {
-                    println!("Timer tick count reached threshold; shutting down event loop.");
+                if self.ctrl_msg_counters.get_timer_tick_count() >= 5 {
                     break;
                 }
             }
 
-            println!("Event loop terminated gracefully.");
             Ok(())
         }
     }
 
     #[test]
     fn test_receiver() {
-        let rt = Builder::new_current_thread().enable_all().build().unwrap();
-        let local_tasks = LocalSet::new();
+        let mut test_runtime = ReceiverTestRuntime::new(10);
+
         // Create a oneshot channel to receive the listening address from MyReceiver.
         let (port_tx, port_rx) = oneshot::channel();
-
-        // Create an MPSC channel for internal events.
-        let (event_tx, event_rx) = mpsc::Channel::new(10);
-        let event_receiver = ControlMsgChannel { rx: event_rx };
-
-        // Create an MPSC channel for messages from the effect handler.
-        let (msg_tx, msg_rx) = mpsc::Channel::new(10);
-
-        let receiver = Box::new(TestReceiver {
+        let receiver = TestReceiver {
             port_notifier: port_tx,
-        });
+            ctrl_msg_counters: test_runtime.counters(),
+        };
 
-        // Spawn the receiver's event loop.
-        _ = local_tasks.spawn_local(async move {
-            receiver
-                .start(event_receiver, EffectHandler::new("receiver", msg_tx))
-                .await
-                .expect("Should not happen");
-        });
-
-        // Spawn a task to simulate client activity and send events.
-        _ = local_tasks.spawn_local(async move {
+        test_runtime.start_receiver(receiver);
+        test_runtime.start_test(|ctx| async move {
             // Wait for the receiver to send the listening address.
             let addr: SocketAddr = port_rx.await.expect("Failed to receive listening address");
-            println!("Test received listening address: {addr}");
 
             // Connect to the receiver's socket.
             let mut stream = TcpStream::connect(addr)
@@ -355,43 +326,43 @@ mod tests {
 
             // Optionally, read an echo (acknowledgment) from the receiver.
             let mut buf = [0u8; 1024];
-            let n = stream
+            _ = stream
                 .read(&mut buf)
                 .await
                 .expect("Failed to read response");
-            println!(
-                "Test client received response: {}",
-                String::from_utf8_lossy(&buf[..n])
-            );
 
             // Send a few TimerTick events from the test.
             for _ in 0..3 {
-                let result = event_tx.send_async(ControlMsg::TimerTick {}).await;
-                assert!(result.is_ok(), "Failed to send TimerTick event");
-                sleep(Duration::from_millis(100)).await;
+                ctx.send_timer_tick()
+                    .await
+                    .expect("Failed to send TimerTick");
+                ctx.sleep(Duration::from_millis(100)).await;
             }
 
+            ctx.send_config(Value::Null)
+                .await
+                .expect("Failed to send config");
+
             // Finally, send a Shutdown event to terminate the receiver.
-            let result = event_tx
-                .send_async(ControlMsg::Shutdown {
-                    reason: "Test".to_string(),
-                })
-                .await;
-            assert!(result.is_ok(), "Failed to send Shutdown event");
+            ctx.send_shutdown("Test")
+                .await
+                .expect("Failed to send Shutdown");
 
             // Close the TCP connection.
             let _ = stream.shutdown().await;
         });
 
-        rt.block_on(local_tasks);
+        let counters = test_runtime.counters();
+        test_runtime.validate(|mut ctx| async move {
+            let pdata_rx = ctx.pdata_rx().expect("No pdata_rx");
+            let received = tokio::time::timeout(Duration::from_secs(3), pdata_rx.recv())
+                .await
+                .expect("Timed out waiting for message")
+                .expect("No message received");
 
-        // After the tasks complete, check that a message was sent by the receiver.
-        let received = rt
-            .block_on(async { tokio::time::timeout(Duration::from_secs(3), msg_rx.recv()).await })
-            .expect("Timed out waiting for message")
-            .expect("No message received");
-
-        // Assert that the message received is what the test client sent.
-        assert!(matches!(received, TestMsg(msg) if msg == "Hello from test client"));
+            // Assert that the message received is what the test client sent.
+            assert!(matches!(received, TestMsg(msg) if msg == "Hello from test client"));
+            counters.assert(3, 0, 1, 1);
+        });
     }
 }
