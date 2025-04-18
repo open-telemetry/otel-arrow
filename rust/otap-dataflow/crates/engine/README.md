@@ -39,6 +39,18 @@ engine:
 - May share immutable data between cores, but ideally only within a single NUMA
   node
 
+These design principles focus on achieving high performance, predictability, and
+maintainability in an observability gateway implemented in Rust. Targeting a
+single-threaded async runtime reduces complexity, enhances cache locality, and
+lowers overhead. Favoring `!Send` futures and declaring async traits as `?Send`
+maximizes flexibility and allows performance gains by avoiding unnecessary
+synchronization. Minimizing synchronization primitives prevents contention and
+overhead, thus ensuring consistently low latency. Avoiding unbounded channels
+and data structures protects against unpredictable resource consumption,
+maintaining stable performance. Finally, limiting external dependencies reduces
+complexity, security risks, and maintenance effort, further streamlining the
+gateway’s operation and reliability.
+
 ## Control Messages
 
 Each node in a pipeline can receive control messages, which must be handled with
