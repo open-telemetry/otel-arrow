@@ -68,7 +68,12 @@ pub trait ServiceType: Debug + Send + Sync + 'static {
             super::collector_test::TimeoutReceiver<Self::Request>,
         ),
         String,
-    >;
+    > 
+    where 
+        Self: Sized
+    {
+        create_service_server::<Self>(listener, timeout_secs).await
+    }
 }
 
 /// Generic test receiver that can be used for any OTLP service
@@ -115,7 +120,7 @@ pub async fn start_test_receiver<T: ServiceType>(
 }
 
 /// Generic helper function to create a TCP server for any OTLP service type
-async fn create_service_server<T: ServiceType>(
+async fn create_service_server<T: ServiceType + ?Sized>(
     listener: tokio::net::TcpListener,
     timeout_secs: Option<u64>,
 ) -> Result<
@@ -217,24 +222,10 @@ impl ServiceType for TracesServiceType {
     }
     
     async fn send_data(client: &mut Self::Client, request: Self::Request) -> Result<Self::Response, tonic::Status> {
-        client.export(request).await.map(|response| response.into_inner())
-    }
-    
-    async fn start_receiver(
-        listener: tokio::net::TcpListener,
-        timeout_secs: Option<u64>,
-    ) -> Result<
-        (
-            tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-            super::collector_test::TimeoutReceiver<Self::Request>,
-        ),
-        String,
-    > {
-        create_service_server::<TracesServiceType>(listener, timeout_secs).await
+        client.export(Request::new(request)).await.map(|response| response.into_inner())
     }
 }
 
-/// Implementation of the Metrics service type
 #[derive(Debug)]
 pub struct MetricsServiceType;
 
@@ -298,24 +289,10 @@ impl ServiceType for MetricsServiceType {
     }
     
     async fn send_data(client: &mut Self::Client, request: Self::Request) -> Result<Self::Response, tonic::Status> {
-        client.export(request).await.map(|response| response.into_inner())
-    }
-    
-    async fn start_receiver(
-        listener: tokio::net::TcpListener,
-        timeout_secs: Option<u64>,
-    ) -> Result<
-        (
-            tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-            super::collector_test::TimeoutReceiver<Self::Request>,
-        ),
-        String,
-    > {
-        create_service_server::<MetricsServiceType>(listener, timeout_secs).await
+        client.export(Request::new(request)).await.map(|response| response.into_inner())
     }
 }
 
-/// Implementation of the Logs service type
 #[derive(Debug)]
 pub struct LogsServiceType;
 
@@ -353,7 +330,6 @@ impl ServiceType for LogsServiceType {
         use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
         use crate::proto::opentelemetry::resource::v1::Resource;
         
-        // ... existing code ...
         let timestamp = 1619712000000000000u64;
         
         // Create a simple log record
@@ -375,20 +351,7 @@ impl ServiceType for LogsServiceType {
     }
     
     async fn send_data(client: &mut Self::Client, request: Self::Request) -> Result<Self::Response, tonic::Status> {
-        client.export(request).await.map(|response| response.into_inner())
-    }
-    
-    async fn start_receiver(
-        listener: tokio::net::TcpListener,
-        timeout_secs: Option<u64>,
-    ) -> Result<
-        (
-            tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-            super::collector_test::TimeoutReceiver<Self::Request>,
-        ),
-        String,
-    > {
-        create_service_server::<LogsServiceType>(listener, timeout_secs).await
+        client.export(Request::new(request)).await.map(|response| response.into_inner())
     }
 }
 
