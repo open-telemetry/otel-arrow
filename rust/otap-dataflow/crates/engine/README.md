@@ -32,7 +32,8 @@ engine:
 
 - Is based on a single-threaded async runtime
 - Avoids synchronization mechanisms whenever possible
-- Uses futures that are `?Send`
+- Declares async traits as `?Send`, providing `!Send` implementations and
+  futures whenever practical
 - Relies on listening sockets configured with the `SO_REUSEPORT` option,
   allowing the OS to handle connection load balancing
 - May share immutable data between cores, but ideally only within a single NUMA
