@@ -62,18 +62,17 @@ pub trait ServiceType: Debug + Send + Sync + 'static {
     /// Start a service-specific receiver
     async fn start_receiver(
         listener: tokio::net::TcpListener,
-        timeout_secs: Option<u64>,
     ) -> Result<
         (
             tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-            super::collector::TimeoutReceiver<Self::Request>,
+            mpsc::Receiver<Self::Request>,
         ),
         String,
     > 
     where 
         Self: Sized
     {
-        create_service_server::<Self>(listener, timeout_secs).await
+        create_service_server::<Self>(listener).await
     }
 }
 
@@ -101,12 +100,10 @@ async fn create_listener_with_port() -> Result<(tokio::net::TcpListener, u16), S
 }
 
 /// Helper function to start a test receiver for any service type
-pub async fn start_test_receiver<T: ServiceType>(
-    timeout_secs: Option<u64>,
-) -> Result<
+pub async fn start_test_receiver<T: ServiceType>() -> Result<
     (
         tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-        super::collector::TimeoutReceiver<T::Request>,
+        mpsc::Receiver<T::Request>,
         u16, // actual port number that was assigned
     ),
     String,
@@ -115,7 +112,7 @@ pub async fn start_test_receiver<T: ServiceType>(
     let (listener, port) = create_listener_with_port().await?;
     
     // Start the service-specific receiver
-    let (handle, request_rx) = T::start_receiver(listener, timeout_secs).await?;
+    let (handle, request_rx) = T::start_receiver(listener).await?;
     
     Ok((handle, request_rx, port))
 }
@@ -123,16 +120,13 @@ pub async fn start_test_receiver<T: ServiceType>(
 /// Generic helper function to create a TCP server for any OTLP service type
 async fn create_service_server<T: ServiceType + ?Sized>(
     listener: tokio::net::TcpListener,
-    timeout_secs: Option<u64>,
 ) -> Result<
     (
         tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-        super::collector::TimeoutReceiver<T::Request>,
+        mpsc::Receiver<T::Request>,
     ),
     String,
 > {
-    use super::collector::TimeoutReceiver;
-    
     // Create a channel for receiving data
     let (request_tx, request_rx) = mpsc::channel::<T::Request>(100);
     
@@ -146,17 +140,8 @@ async fn create_service_server<T: ServiceType + ?Sized>(
     // since we can't construct the server generically
     let handle = T::create_server(receiver, incoming);
     
-    // Create a timeout-wrapped version of the receiver
-    let timeout_duration = std::time::Duration::from_secs(timeout_secs.unwrap_or(10));
-    let request_rx = TimeoutReceiver {
-        inner: request_rx,
-        timeout: timeout_duration,
-    };
-    
     Ok((handle, request_rx))
 }
-
-
 
 /// Implementation of the Traces service type
 #[derive(Debug)]

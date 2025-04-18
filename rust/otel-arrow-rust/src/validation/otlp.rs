@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::fmt::Debug;
-use std::path::Path;
 
-use super::collector::{generate_config, CollectorProcess};
+use super::collector::{generate_config, CollectorProcess, COLLECTOR_PATH};
 use super::service_type::{
-    start_test_receiver, LogsServiceType, MetricsServiceType, ServiceType, TracesServiceType,
+    start_test_receiver, LogsServiceType, MetricsServiceType,
+    ServiceType, TracesServiceType,
 };
+
+pub const SHUTDOWN_TIMEOUT_SECONDS: u64 = 5;
+pub const RECEIVER_TIMEOUT_SECONDS: u64 = 10;
+pub const TEST_TIMEOUT_SECONDS: u64 = 20;
 
 /// Generic function for testing round-trip fidelity of any telemetry signal type
 ///
@@ -18,14 +22,12 @@ use super::service_type::{
 /// 4. Verify that the exported data matches what was sent
 ///
 /// The service type parameter S determines which signal type to test (traces, metrics, or logs)
-pub async fn test_signal_round_trip<S, T>(
-    collector: T,
+pub async fn test_signal_round_trip<S>(
     test_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     S: ServiceType,
     S::Request: Debug + PartialEq,
-    T: AsRef<Path>,
 {
     // Generate random ports in the high u16 range to avoid conflicts
     // Use test_name in hash calculation to ensure different tests get different ports
@@ -36,16 +38,23 @@ where
     let combined_value = random_value.wrapping_add(name_hash);
     let receiver_port = 40000 + (combined_value % 25000);
 
-    // Start the test receiver server with a 10-second timeout to avoid tests getting stuck
-    let (server_handle, mut request_rx, exporter_port) =
-        start_test_receiver::<S>(Some(10))
+    // Start the test receiver server and wrap it with a timeout to avoid tests getting stuck
+    let (server_handle, request_rx_raw, exporter_port) =
+        start_test_receiver::<S>()
             .await
             .map_err(|e| format!("Failed to start test receiver: {}", e))?;
+            
+    // Create a timeout-wrapped version of the receiver
+    let timeout_duration = std::time::Duration::from_secs(RECEIVER_TIMEOUT_SECONDS);
+    let mut request_rx = super::collector::TimeoutReceiver {
+        inner: request_rx_raw,
+        timeout: timeout_duration,
+    };
 
     // Generate and start the collector with OTLP->OTLP config using the dynamic ports
     let collector_config = generate_config("otlp", "otlp", S::name(), receiver_port, exporter_port);
 
-    let mut collector = CollectorProcess::start(collector.as_ref(), &collector_config)
+    let mut collector = CollectorProcess::start(COLLECTOR_PATH.clone(), &collector_config)
         .await
         .map_err(|e| format!("Failed to start collector: {}", e))?;
 
@@ -89,7 +98,7 @@ where
     drop(request_rx);
 
     // Wait for the server to shut down with timeout
-    match tokio::time::timeout(std::time::Duration::from_secs(5), server_handle).await {
+    match tokio::time::timeout(std::time::Duration::from_secs(SHUTDOWN_TIMEOUT_SECONDS), server_handle).await {
         Ok(Ok(_)) => eprintln!("{} server shut down successfully", S::name()),
         Ok(Err(e)) => eprintln!("Error shutting down {} server: {}", S::name(), e),
         Err(_) => {
@@ -109,12 +118,9 @@ mod tests {
     where
         S::Request: std::fmt::Debug + PartialEq,
     {
-        let env =
-            std::env::var("OTEL_COLLECTOR_PATH").unwrap_or("../../bin/otelarrowcol".to_string());
-
         match tokio::time::timeout(
-            std::time::Duration::from_secs(20),
-            test_signal_round_trip::<S, _>(env, test_name),
+            std::time::Duration::from_secs(TEST_TIMEOUT_SECONDS),
+            test_signal_round_trip::<S>(test_name),
         )
         .await
         {

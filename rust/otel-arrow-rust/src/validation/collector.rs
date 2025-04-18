@@ -8,6 +8,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::LazyLock;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use tokio::time::timeout;
@@ -16,6 +17,11 @@ use tokio::sync::mpsc;
 
 const READY_TIMEOUT_SECONDS: u64 = 10;
 const READY_MESSAGE: &str = "Everything is ready.";
+
+pub static COLLECTOR_PATH: LazyLock<String> =
+    LazyLock::new(|| {
+	std::env::var("OTEL_COLLECTOR_PATH").unwrap_or("../../bin/otelarrowcol".to_string())
+    });
 
 /// TimeoutError represents an error when a receiver operation times out
 #[derive(Debug)]
