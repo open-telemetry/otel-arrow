@@ -63,8 +63,7 @@ pub trait Processor {
     ///
     /// # Returns
     ///
-    /// - `Ok(Some(Vec<Msg>))`: The processor produced new messages to send to the next node
-    /// - `Ok(None)`: The processor consumed the message without producing new messages
+    /// - `Ok(())`: The processor successfully processed the message
     /// - `Err(Error)`: The processor encountered an error and could not process the message
     ///
     /// # Errors
@@ -74,7 +73,7 @@ pub trait Processor {
         &mut self,
         msg: Message<Self::PData>,
         effect_handler: &mut EffectHandler<Self::PData>,
-    ) -> Result<Option<Vec<Self::PData>>, Error<Self::PData>>;
+    ) -> Result<(), Error<Self::PData>>;
 }
 
 /// Handles side effects such as sending messages to the next node.
@@ -147,31 +146,29 @@ mod tests {
         async fn process(
             &mut self,
             msg: Message<Self::PData>,
-            _effect_handler: &mut EffectHandler<Self::PData>,
-        ) -> Result<Option<Vec<Self::PData>>, Error<Self::PData>> {
+            effect_handler: &mut EffectHandler<Self::PData>,
+        ) -> Result<(), Error<Self::PData>> {
             match msg {
                 Message::Control(control) => match control {
                     TimerTick {} => {
                         self.counters.increment_timer_tick();
-                        Ok(None)
                     }
                     Config { .. } => {
                         self.counters.increment_config();
-                        Ok(None)
                     }
                     Shutdown { .. } => {
                         self.counters.increment_shutdown();
-                        Ok(None)
                     }
-                    _ => Ok(None),
+                    _ => {}
                 },
                 Message::PData(data) => {
                     self.counters.increment_message();
-                    // Append " RECEIVED" to the message content.
-                    let processed_message = TestMsg(format!("{} RECEIVED", data.0));
-                    Ok(Some(vec![processed_message]))
+                    effect_handler
+                        .send_message(TestMsg(format!("{} RECEIVED", data.0)))
+                        .await?;
                 }
             }
+            Ok(())
         }
     }
 
@@ -185,39 +182,36 @@ mod tests {
             10,
         );
 
-        test_runtime.start_test(|mut processor, mut effect_handler| async move {
+        test_runtime.start_test(|mut context| async move {
             // Process a TimerTick event.
-            let result = processor
-                .process(Message::timer_tick_ctrl_msg(), &mut effect_handler)
+            context
+                .process(Message::timer_tick_ctrl_msg())
                 .await
                 .expect("Processor failed on TimerTick");
-            assert!(result.is_none());
+            assert!(context.emitted_pdata().await.is_empty());
 
             // Process a Message event.
-            let result = processor
-                .process(
-                    Message::data_msg(TestMsg("Hello".to_owned())),
-                    &mut effect_handler,
-                )
+            context
+                .process(Message::data_msg(TestMsg("Hello".to_owned())))
                 .await
                 .expect("Processor failed on Message");
-            let msgs = result.expect("Expected a message vector for Event::Message");
+            let msgs = context.emitted_pdata().await;
             assert_eq!(msgs.len(), 1);
             assert_eq!(msgs[0], TestMsg("Hello RECEIVED".to_string()));
 
             // Process a Config event.
-            let result = processor
-                .process(Message::config_ctrl_msg(Value::Null), &mut effect_handler)
+            context
+                .process(Message::config_ctrl_msg(Value::Null))
                 .await
                 .expect("Processor failed on Config");
-            assert!(result.is_none());
+            assert!(context.emitted_pdata().await.is_empty());
 
             // Process a Shutdown event.
-            let result = processor
-                .process(Message::shutdown_ctrl_msg("no reason"), &mut effect_handler)
+            context
+                .process(Message::shutdown_ctrl_msg("no reason"))
                 .await
                 .expect("Processor failed on Shutdown");
-            assert!(result.is_none());
+            assert!(context.emitted_pdata().await.is_empty());
         });
         test_runtime.validate(|| async move {
             counters.assert(
