@@ -36,7 +36,7 @@ pub trait ServiceType: Debug + Send + Sync + 'static {
     type Client;
 
     /// Server type to add to the tonic server
-    type TonicServer;
+    type Server;
 
     /// The name of this service type (for logging and identification)
     fn name() -> &'static str;
@@ -148,7 +148,7 @@ impl ServiceType for TracesServiceType {
     type Request = ExportTraceServiceRequest;
     type Response = ExportTraceServiceResponse;
     type Client = TraceServiceClient<Channel>;
-    type TonicServer = TraceServiceServer<TestReceiver<ExportTraceServiceRequest>>;
+    type Server = TraceServiceServer<TestReceiver<ExportTraceServiceRequest>>;
 
     fn name() -> &'static str {
         "traces"
@@ -188,7 +188,7 @@ impl ServiceType for MetricsServiceType {
     type Request = ExportMetricsServiceRequest;
     type Response = ExportMetricsServiceResponse;
     type Client = MetricsServiceClient<Channel>;
-    type TonicServer = MetricsServiceServer<TestReceiver<ExportMetricsServiceRequest>>;
+    type Server = MetricsServiceServer<TestReceiver<ExportMetricsServiceRequest>>;
 
     fn name() -> &'static str {
         "metrics"
@@ -228,7 +228,7 @@ impl ServiceType for LogsServiceType {
     type Request = ExportLogsServiceRequest;
     type Response = ExportLogsServiceResponse;
     type Client = LogsServiceClient<Channel>;
-    type TonicServer = LogsServiceServer<TestReceiver<ExportLogsServiceRequest>>;
+    type Server = LogsServiceServer<TestReceiver<ExportLogsServiceRequest>>;
 
     fn name() -> &'static str {
         "logs"

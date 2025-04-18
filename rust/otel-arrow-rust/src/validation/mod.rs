@@ -3,5 +3,8 @@
 
 mod collector;
 mod otlp;
+mod scenarios;
 mod service_type;
+
+#[cfg(test)]
 mod testdata;
