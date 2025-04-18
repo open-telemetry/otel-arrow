@@ -65,7 +65,7 @@ pub trait ServiceType: Debug + Send + Sync + 'static {
     ) -> Result<
         (
             tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-            super::collector_test::TimeoutReceiver<Self::Request>,
+            super::collector::TimeoutReceiver<Self::Request>,
         ),
         String,
     > 
@@ -105,7 +105,7 @@ pub async fn start_test_receiver<T: ServiceType>(
 ) -> Result<
     (
         tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-        super::collector_test::TimeoutReceiver<T::Request>,
+        super::collector::TimeoutReceiver<T::Request>,
         u16, // actual port number that was assigned
     ),
     String,
@@ -126,11 +126,11 @@ async fn create_service_server<T: ServiceType + ?Sized>(
 ) -> Result<
     (
         tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-        super::collector_test::TimeoutReceiver<T::Request>,
+        super::collector::TimeoutReceiver<T::Request>,
     ),
     String,
 > {
-    use super::collector_test::TimeoutReceiver;
+    use super::collector::TimeoutReceiver;
     
     // Create a channel for receiving data
     let (request_tx, request_rx) = mpsc::channel::<T::Request>(100);
