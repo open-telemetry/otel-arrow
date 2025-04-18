@@ -54,12 +54,12 @@ pub trait ServiceType: Debug + Send + Sync + 'static {
     
     /// Start a service-specific receiver
     async fn start_receiver(
+        listener: tokio::net::TcpListener,
         timeout_secs: Option<u64>,
     ) -> Result<
         (
             tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
             super::collector_test::TimeoutReceiver<Self::Request>,
-            u16, // actual port number that was assigned
         ),
         String,
     >;
@@ -71,19 +71,8 @@ pub struct TestReceiver<T> {
     pub request_tx: mpsc::Sender<T>,
 }
 
-/// Helper function to create a TCP server with dynamically allocated port for traces service
-async fn create_trace_server(
-    timeout_secs: Option<u64>,
-) -> Result<
-    (
-        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-        super::collector_test::TimeoutReceiver<ExportTraceServiceRequest>,
-        u16, // actual port number that was assigned
-    ),
-    String,
-> {
-    use super::collector_test::TimeoutReceiver;
-    
+/// Helper function to create a TCP listener with a dynamically allocated port
+async fn create_listener_with_port() -> Result<(tokio::net::TcpListener, u16), String> {
     // Bind to a specific address with port 0 for dynamic port allocation
     let addr = "127.0.0.1:0";
     let listener = tokio::net::TcpListener::bind(addr)
@@ -95,6 +84,42 @@ async fn create_trace_server(
         .local_addr()
         .map_err(|e| format!("Failed to get local address: {}", e))?
         .port();
+    
+    Ok((listener, port))
+}
+
+/// Helper function to start a test receiver for any service type
+pub async fn start_test_receiver<T: ServiceType>(
+    timeout_secs: Option<u64>,
+) -> Result<
+    (
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        super::collector_test::TimeoutReceiver<T::Request>,
+        u16, // actual port number that was assigned
+    ),
+    String,
+> {
+    // Create listener with dynamically allocated port
+    let (listener, port) = create_listener_with_port().await?;
+    
+    // Start the service-specific receiver
+    let (handle, request_rx) = T::start_receiver(listener, timeout_secs).await?;
+    
+    Ok((handle, request_rx, port))
+}
+
+/// Helper function to create a TCP server for traces service
+async fn create_trace_server(
+    listener: tokio::net::TcpListener,
+    timeout_secs: Option<u64>,
+) -> Result<
+    (
+        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        super::collector_test::TimeoutReceiver<ExportTraceServiceRequest>,
+    ),
+    String,
+> {
+    use super::collector_test::TimeoutReceiver;
     
     // Create a channel for receiving data
     let (request_tx, request_rx) = mpsc::channel::<ExportTraceServiceRequest>(100);
@@ -120,33 +145,21 @@ async fn create_trace_server(
         timeout: timeout_duration,
     };
     
-    Ok((handle, request_rx, port))
+    Ok((handle, request_rx))
 }
 
-/// Helper function to create a TCP server with dynamically allocated port for metrics service
+/// Helper function to create a TCP server for metrics service
 async fn create_metrics_server(
+    listener: tokio::net::TcpListener,
     timeout_secs: Option<u64>,
 ) -> Result<
     (
         tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
         super::collector_test::TimeoutReceiver<ExportMetricsServiceRequest>,
-        u16, // actual port number that was assigned
     ),
     String,
 > {
     use super::collector_test::TimeoutReceiver;
-    
-    // Bind to a specific address with port 0 for dynamic port allocation
-    let addr = "127.0.0.1:0";
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .map_err(|e| format!("Failed to bind listener: {}", e))?;
-    
-    // Get the assigned port
-    let port = listener
-        .local_addr()
-        .map_err(|e| format!("Failed to get local address: {}", e))?
-        .port();
     
     // Create a channel for receiving data
     let (request_tx, request_rx) = mpsc::channel::<ExportMetricsServiceRequest>(100);
@@ -173,33 +186,21 @@ async fn create_metrics_server(
         timeout: timeout_duration,
     };
     
-    Ok((handle, request_rx, port))
+    Ok((handle, request_rx))
 }
 
-/// Helper function to create a TCP server with dynamically allocated port for logs service
+/// Helper function to create a TCP server for logs service
 async fn create_logs_server(
+    listener: tokio::net::TcpListener,
     timeout_secs: Option<u64>,
 ) -> Result<
     (
         tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
         super::collector_test::TimeoutReceiver<ExportLogsServiceRequest>,
-        u16, // actual port number that was assigned
     ),
     String,
 > {
     use super::collector_test::TimeoutReceiver;
-    
-    // Bind to a specific address with port 0 for dynamic port allocation
-    let addr = "127.0.0.1:0";
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .map_err(|e| format!("Failed to bind listener: {}", e))?;
-    
-    // Get the assigned port
-    let port = listener
-        .local_addr()
-        .map_err(|e| format!("Failed to get local address: {}", e))?
-        .port();
     
     // Create a channel for receiving data
     let (request_tx, request_rx) = mpsc::channel::<ExportLogsServiceRequest>(100);
@@ -225,7 +226,7 @@ async fn create_logs_server(
         timeout: timeout_duration,
     };
     
-    Ok((handle, request_rx, port))
+    Ok((handle, request_rx))
 }
 
 /// Implementation of the Traces service type
@@ -285,16 +286,16 @@ impl ServiceType for TracesServiceType {
     }
     
     async fn start_receiver(
+        listener: tokio::net::TcpListener,
         timeout_secs: Option<u64>,
     ) -> Result<
         (
             tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
             super::collector_test::TimeoutReceiver<Self::Request>,
-            u16, // actual port number that was assigned
         ),
         String,
     > {
-        create_trace_server(timeout_secs).await
+        create_trace_server(listener, timeout_secs).await
     }
 }
 
@@ -354,16 +355,16 @@ impl ServiceType for MetricsServiceType {
     }
     
     async fn start_receiver(
+        listener: tokio::net::TcpListener,
         timeout_secs: Option<u64>,
     ) -> Result<
         (
             tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
             super::collector_test::TimeoutReceiver<Self::Request>,
-            u16, // actual port number that was assigned
         ),
         String,
     > {
-        create_metrics_server(timeout_secs).await
+        create_metrics_server(listener, timeout_secs).await
     }
 }
 
@@ -419,16 +420,16 @@ impl ServiceType for LogsServiceType {
     }
     
     async fn start_receiver(
+        listener: tokio::net::TcpListener,
         timeout_secs: Option<u64>,
     ) -> Result<
         (
             tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
             super::collector_test::TimeoutReceiver<Self::Request>,
-            u16, // actual port number that was assigned
         ),
         String,
     > {
-        create_logs_server(timeout_secs).await
+        create_logs_server(listener, timeout_secs).await
     }
 }
 

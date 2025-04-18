@@ -11,8 +11,6 @@ use tokio::time::timeout;
 
 use tokio::sync::mpsc;
 
-use crate::validation::service_type::ServiceType;
-
 const READY_TIMEOUT_SECONDS: u64 = 10;
 const READY_MESSAGE: &str = "Everything is ready.";
 
@@ -203,23 +201,6 @@ impl Drop for CollectorProcess {
         // Clean up temp config file
         let _ = fs::remove_file(&self.config_path);
     }
-}
-
-/// Start a test receiver server on any available port, with a configurable timeout
-/// 
-/// This is a generic function that can work with any service type that implements the `ServiceType` trait.
-pub async fn start_test_receiver<S: ServiceType>(
-    timeout_secs: Option<u64>,
-) -> Result<
-    (
-        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-        TimeoutReceiver<S::Request>,
-        u16, // actual port number that was assigned
-    ),
-    String,
-> {
-    // Use the type-safe create_service method from the ServiceType trait
-    S::start_receiver(timeout_secs).await
 }
 
 /// Configuration generator for OTLP to OTLP test case

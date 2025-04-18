@@ -1,9 +1,8 @@
 use std::path::Path;
 use std::fmt::Debug;
 
-use crate::validation::service_type::ServiceType;
-
-use super::collector_test::{generate_otlp_to_otlp_config, start_test_receiver, CollectorProcess};
+use super::service_type::{ServiceType, start_test_receiver};
+use super::collector_test::{generate_otlp_to_otlp_config, CollectorProcess};
 
 /// Generic function for testing round-trip fidelity of any telemetry signal type
 /// 
