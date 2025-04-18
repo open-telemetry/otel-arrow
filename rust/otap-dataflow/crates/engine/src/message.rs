@@ -56,6 +56,14 @@ pub enum ControlMsg {
     },
 }
 
+impl ControlMsg {
+    /// Checks if this control message is a shutdown message.
+    #[must_use]
+    pub fn is_shutdown(&self) -> bool {
+        matches!(self, ControlMsg::Shutdown { .. })
+    }
+}
+
 impl<Data> Message<Data> {
     /// Create a data message with the given payload.
     #[must_use]

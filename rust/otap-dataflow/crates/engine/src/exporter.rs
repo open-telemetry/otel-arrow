@@ -159,7 +159,8 @@ impl<Msg> EffectHandler<Msg> {
 mod tests {
     use crate::exporter::{EffectHandler, Error, Exporter, MessageChannel};
     use crate::message::{ControlMsg, Message};
-    use crate::testing::{ExporterTestRuntime, MessageCounter, TestMsg};
+    use crate::testing::exporter::ExporterTestRuntime;
+    use crate::testing::{CtrMsgCounters, TestMsg};
     use async_trait::async_trait;
     use serde_json::Value;
     use std::time::Duration;
@@ -167,12 +168,12 @@ mod tests {
     /// A test exporter that counts how many `TimerTick` and Message events it processes.
     struct TestExporter {
         /// Counter for different message types
-        counter: MessageCounter,
+        counter: CtrMsgCounters,
     }
 
     impl TestExporter {
         /// Creates a new test exporter with the given counter.
-        pub fn new(counter: MessageCounter) -> Self {
+        pub fn new(counter: CtrMsgCounters) -> Self {
             TestExporter { counter }
         }
     }
@@ -220,7 +221,7 @@ mod tests {
         let exporter = TestExporter::new(test_runtime.counters());
 
         test_runtime.start_exporter(exporter);
-        test_runtime.spawn(|ctx| async move {
+        test_runtime.start_test(|ctx| async move {
             // Send 3 TimerTick events.
             for _ in 0..3 {
                 ctx.send_timer_tick()
@@ -248,16 +249,16 @@ mod tests {
                 .expect("Failed to send Shutdown");
         });
 
-        let counters = test_runtime.run();
+        // Get a clone of the counters before moving test_runtime into validate
+        let counters = test_runtime.counters();
 
-        // After the event loop completes, assert that the expected number of events was processed.
-        assert_eq!(counters.get_timer_tick_count(), 3, "Expected 3 timer ticks");
-        assert_eq!(counters.get_config_count(), 1, "Expected 1 config message");
-        assert_eq!(counters.get_message_count(), 1, "Expected 1 data message");
-        assert_eq!(
-            counters.get_shutdown_count(),
-            1,
-            "Expected 1 shutdown message"
-        );
+        test_runtime.validate(|_ctx| async move {
+            counters.assert(
+                3, // timer tick
+                1, // message
+                1, // config
+                1, // shutdown
+            );
+        });
     }
 }

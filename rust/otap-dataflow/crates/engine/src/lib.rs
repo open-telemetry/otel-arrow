@@ -9,7 +9,7 @@ pub mod processor;
 pub mod receiver;
 
 #[cfg(test)]
-pub(crate) mod testing;
+pub mod testing;
 
 use std::rc::Rc;
 

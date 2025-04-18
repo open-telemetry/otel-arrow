@@ -131,13 +131,13 @@ mod tests {
     use crate::message::ControlMsg::{Config, Shutdown, TimerTick};
     use crate::message::Message;
     use crate::processor::{EffectHandler, Error, Processor};
-    use crate::testing::{MessageCounter, TestMsg, setup_test_runtime};
+    use crate::testing::{CtrMsgCounters, TestMsg, setup_test_runtime};
     use async_trait::async_trait;
     use otap_df_channel::mpsc;
     use serde_json::Value;
 
     struct TestProcessor {
-        counters: MessageCounter,
+        counters: CtrMsgCounters,
     }
 
     #[async_trait(?Send)]
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn test_processor() {
         let (rt, local_tasks) = setup_test_runtime();
-        let counters = MessageCounter::new();
+        let counters = CtrMsgCounters::new();
         let mut processor = Box::new(TestProcessor {
             counters: counters.clone(),
         });
