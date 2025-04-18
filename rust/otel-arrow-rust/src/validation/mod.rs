@@ -4,3 +4,4 @@
 mod collector;
 mod otlp;
 mod service_type;
+mod testdata;

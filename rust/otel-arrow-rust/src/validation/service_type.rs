@@ -47,9 +47,6 @@ pub trait ServiceType: Debug + Send + Sync + 'static {
     /// Create a new client for this service
     async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error>;
     
-    /// Create test data for this service
-    fn create_test_data(name: &str) -> Self::Request;
-    
     /// Send data through the client
     async fn send_data(client: &mut Self::Client, request: Self::Request) -> Result<Self::Response, tonic::Status>;
     
@@ -174,39 +171,6 @@ impl ServiceType for TracesServiceType {
         })
     }
     
-    fn create_test_data(name: &str) -> Self::Request {
-        use crate::pdata::{SpanID, TraceID};
-        use crate::proto::opentelemetry::trace::v1::{
-            status::StatusCode, ResourceSpans, ScopeSpans, Span, Status,
-        };
-        use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
-        use crate::proto::opentelemetry::resource::v1::Resource;
-        
-        // ... existing code ...
-        let start_time = 1619712000000000000u64;
-        let end_time = 1619712001000000000u64;
-        let trace_id =
-            TraceID::try_new(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]).unwrap();
-        let span_id = SpanID::try_new(&[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
-
-        // Create a simple span with some attributes
-        let span = Span::build(trace_id, span_id, name, start_time)
-            .end_time_unix_nano(end_time)
-            .attributes(vec![KeyValue::new(
-                "test.attribute",
-                AnyValue::new_string("test value"),
-            )])
-            .status(Status::new("success", StatusCode::Ok))
-            .finish();
-
-        // Create a request with the span
-        ExportTraceServiceRequest::new(vec![ResourceSpans::build(Resource::default())
-            .scope_spans(vec![ScopeSpans::build(InstrumentationScope::default())
-                .spans(vec![span])
-                .finish()])
-            .finish()])
-    }
-    
     async fn send_data(client: &mut Self::Client, request: Self::Request) -> Result<Self::Response, tonic::Status> {
         client.export(Request::new(request)).await.map(|response| response.into_inner())
     }
@@ -242,38 +206,6 @@ impl ServiceType for MetricsServiceType {
         })
     }
     
-    fn create_test_data(name: &str) -> Self::Request {
-        use crate::proto::opentelemetry::metrics::v1::{
-            Gauge, Metric, NumberDataPoint, ResourceMetrics, ScopeMetrics,
-        };
-        use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
-        use crate::proto::opentelemetry::resource::v1::Resource;
-        
-        // ... existing code ...
-        let timestamp = 1619712000000000000u64;
-        
-        // Create a simple gauge metric with a single data point
-        let data_point = NumberDataPoint::build_double(timestamp + 1000000000, 42.0)
-            .start_time_unix_nano(timestamp)
-            .attributes(vec![KeyValue::new(
-                "test.attribute",
-                AnyValue::new_string("test value"),
-            )])
-            .finish();
-            
-        let metric = Metric::build_gauge(name, Gauge::new(vec![data_point]))
-            .description(format!("Test metric {}", name))
-            .unit("count")
-            .finish();
-            
-        // Create a metrics request
-        ExportMetricsServiceRequest::new(vec![ResourceMetrics::build(Resource::default())
-            .scope_metrics(vec![ScopeMetrics::build(InstrumentationScope::default())
-                .metrics(vec![metric])
-                .finish()])
-            .finish()])
-    }
-    
     async fn send_data(client: &mut Self::Client, request: Self::Request) -> Result<Self::Response, tonic::Status> {
         client.export(Request::new(request)).await.map(|response| response.into_inner())
     }
@@ -307,33 +239,6 @@ impl ServiceType for LogsServiceType {
                 .serve_with_incoming(incoming)
                 .await
         })
-    }
-    
-    fn create_test_data(name: &str) -> Self::Request {
-        use crate::proto::opentelemetry::logs::v1::{
-            LogRecord, ResourceLogs, ScopeLogs, SeverityNumber,
-        };
-        use crate::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
-        use crate::proto::opentelemetry::resource::v1::Resource;
-        
-        let timestamp = 1619712000000000000u64;
-        
-        // Create a simple log record
-        let log_record = LogRecord::build(timestamp, SeverityNumber::Info, "important")
-            .severity_text("INFO")
-            .body(AnyValue::new_string(format!("Test log message: {}", name)))
-            .attributes(vec![KeyValue::new(
-                "test.attribute",
-                AnyValue::new_string("test value"),
-            )])
-            .finish();
-            
-        // Create a logs request
-        ExportLogsServiceRequest::new(vec![ResourceLogs::build(Resource::default())
-            .scope_logs(vec![ScopeLogs::build(InstrumentationScope::default())
-                .log_records(vec![log_record])
-                .finish()])
-            .finish()])
     }
     
     async fn send_data(client: &mut Self::Client, request: Self::Request) -> Result<Self::Response, tonic::Status> {

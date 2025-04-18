@@ -20,7 +20,16 @@ const READY_MESSAGE: &str = "Everything is ready.";
 
 pub static COLLECTOR_PATH: LazyLock<String> =
     LazyLock::new(|| {
-	std::env::var("OTEL_COLLECTOR_PATH").unwrap_or("../../bin/otelarrowcol".to_string())
+        let default_path = "../../bin/otelarrowcol";
+        let path = std::env::var("OTEL_COLLECTOR_PATH").unwrap_or(default_path.to_string());
+        
+        // Check if the collector exists at the specified path
+        if !std::path::Path::new(&path).exists() {
+            eprintln!("Warning: OpenTelemetry collector not found at '{}'. Tests may fail.", path);
+            eprintln!("Set OTEL_COLLECTOR_PATH environment variable to the correct path or ensure the collector is built.");
+        }
+        
+        path
     });
 
 /// TimeoutError represents an error when a receiver operation times out
