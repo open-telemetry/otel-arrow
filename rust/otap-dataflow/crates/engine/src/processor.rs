@@ -131,11 +131,10 @@ mod tests {
     use crate::message::ControlMsg::{Config, Shutdown, TimerTick};
     use crate::message::Message;
     use crate::processor::{EffectHandler, Error, Processor};
-    use crate::testing::{CtrMsgCounters, TestMsg, setup_test_runtime};
-    use async_trait::async_trait;
-    use otap_df_channel::mpsc;
-    use serde_json::Value;
     use crate::testing::processor::ProcessorTestRuntime;
+    use crate::testing::{CtrMsgCounters, TestMsg};
+    use async_trait::async_trait;
+    use serde_json::Value;
 
     struct TestProcessor {
         counters: CtrMsgCounters,
@@ -179,9 +178,12 @@ mod tests {
     #[test]
     fn test_processor() {
         let counters = CtrMsgCounters::new();
-        let mut test_runtime = ProcessorTestRuntime::new(TestProcessor {
-            counters: counters.clone(),
-        }, 10);
+        let mut test_runtime = ProcessorTestRuntime::new(
+            TestProcessor {
+                counters: counters.clone(),
+            },
+            10,
+        );
 
         test_runtime.start_test(|mut processor, mut effect_handler| async move {
             // Process a TimerTick event.

@@ -10,12 +10,10 @@
 //! These utilities are designed to make testing processors simpler by abstracting away common
 //! setup and lifecycle management.
 
-use tokio::task::LocalSet;
-use otap_df_channel::mpsc;
-use crate::message::ControlMsg;
-use crate::message::Message::PData;
 use crate::processor::{EffectHandler, Processor};
-use crate::testing::{create_test_channel, setup_test_runtime, CtrMsgCounters, TestMsg};
+use crate::testing::{TestMsg, create_test_channel, setup_test_runtime};
+use otap_df_channel::mpsc;
+use tokio::task::LocalSet;
 
 /// A test runtime for simplifying processor tests.
 ///
@@ -29,31 +27,25 @@ pub struct ProcessorTestRuntime<P> {
     /// Local task set for non-Send futures
     local_tasks: LocalSet,
 
-    /// Sender for control messages
-    control_tx: mpsc::Sender<ControlMsg>,
-    /// Receiver for control messages
-    control_rx: Option<mpsc::Receiver<ControlMsg>>,
-
     /// Sender for pipeline data
     pdata_tx: mpsc::Sender<TestMsg>,
     /// Receiver for pipeline data
     pdata_rx: Option<mpsc::Receiver<TestMsg>>,
 }
 
-impl<P> ProcessorTestRuntime<P> where P: Processor<PData = TestMsg> + 'static {
+impl<P> ProcessorTestRuntime<P>
+where
+    P: Processor<PData = TestMsg> + 'static,
+{
     /// Creates a new test runtime with channels of the specified capacity.
     pub fn new(processor: P, channel_capacity: usize) -> Self {
         let (rt, local_tasks) = setup_test_runtime();
-        let counter = CtrMsgCounters::new();
-        let (control_tx, control_rx) = create_test_channel(channel_capacity);
         let (pdata_tx, pdata_rx) = create_test_channel(channel_capacity);
 
         Self {
             processor: Some(processor),
             rt,
             local_tasks,
-            control_tx,
-            control_rx: Some(control_rx),
             pdata_tx,
             pdata_rx: Some(pdata_rx),
         }
