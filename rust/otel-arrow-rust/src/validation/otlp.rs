@@ -23,9 +23,8 @@ use crate::proto::opentelemetry::experimental::arrow::v1::{
 
 use super::service_type::{ServiceInputType, ServiceOutputType, TestReceiver};
 
-use futures::Stream;
 use std::pin::Pin;
-use tokio_stream::wrappers::TcpListenerStream;
+use tokio_stream::{Stream, wrappers::TcpListenerStream};
 use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status};
 
