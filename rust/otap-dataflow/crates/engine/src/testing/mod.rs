@@ -21,9 +21,8 @@ use tokio::runtime::Builder;
 use tokio::task::LocalSet;
 
 pub mod exporter;
+pub mod processor;
 pub mod receiver;
-// Add processor module reference comment for future implementation
-// pub mod processor;
 
 /// A test message type used in component tests.
 #[derive(Debug, PartialEq, Clone)]

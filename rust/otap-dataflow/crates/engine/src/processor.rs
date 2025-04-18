@@ -135,6 +135,7 @@ mod tests {
     use async_trait::async_trait;
     use otap_df_channel::mpsc;
     use serde_json::Value;
+    use crate::testing::processor::ProcessorTestRuntime;
 
     struct TestProcessor {
         counters: CtrMsgCounters,
@@ -177,19 +178,12 @@ mod tests {
 
     #[test]
     fn test_processor() {
-        let (rt, local_tasks) = setup_test_runtime();
         let counters = CtrMsgCounters::new();
-        let mut processor = Box::new(TestProcessor {
+        let mut test_runtime = ProcessorTestRuntime::new(TestProcessor {
             counters: counters.clone(),
-        });
+        }, 10);
 
-        // Create a channel for the effect handler
-        let (tx, _rx) = mpsc::Channel::new(10);
-
-        // Spawn the processor's event loop.
-        _ = local_tasks.spawn_local(async move {
-            let mut effect_handler = EffectHandler::new("test_processor", tx);
-
+        test_runtime.start_test(|mut processor, mut effect_handler| async move {
             // Process a TimerTick event.
             let result = processor
                 .process(Message::timer_tick_ctrl_msg(), &mut effect_handler)
@@ -223,18 +217,13 @@ mod tests {
                 .expect("Processor failed on Shutdown");
             assert!(result.is_none());
         });
-
-        // Run all tasks.
-        rt.block_on(local_tasks);
-
-        // Finally, verify that each counter was updated exactly once.
-        assert_eq!(
-            counters.get_timer_tick_count(),
-            1,
-            "TimerTick count mismatch"
-        );
-        assert_eq!(counters.get_message_count(), 1, "Message count mismatch");
-        assert_eq!(counters.get_config_count(), 1, "Config count mismatch");
-        assert_eq!(counters.get_shutdown_count(), 1, "Shutdown count mismatch");
+        test_runtime.validate(|| async move {
+            counters.assert(
+                1, // timer tick
+                1, // message
+                1, // config
+                1, // shutdown
+            );
+        });
     }
 }
