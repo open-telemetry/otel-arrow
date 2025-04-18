@@ -21,7 +21,7 @@ pub trait ServiceType: Debug + Send + Sync + 'static {
     type Server;
 
     /// The name of this service type (for logging and identification)
-    fn name() -> &'static str;
+    fn signal() -> &'static str;
 
     /// Create a new client for this service
     async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error>;

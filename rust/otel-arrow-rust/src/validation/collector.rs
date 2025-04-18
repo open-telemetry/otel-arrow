@@ -314,7 +314,7 @@ where
     };
 
     // Generate and start the collector with OTLP->OTLP config using the dynamic ports
-    let collector_config = generate_config("otlp", "otlp", S::name(), receiver_port, exporter_port);
+    let collector_config = generate_config("otlp", "otlp", S::signal(), receiver_port, exporter_port);
 
     let collector = CollectorProcess::start(COLLECTOR_PATH.clone(), &collector_config)
         .await
@@ -360,10 +360,10 @@ where
     )
     .await
     {
-        Ok(Ok(_)) => eprintln!("{} server shut down successfully", S::name()),
-        Ok(Err(e)) => eprintln!("Error shutting down {} server: {}", S::name(), e),
+        Ok(Ok(_)) => eprintln!("{} server shut down successfully", S::signal()),
+        Ok(Err(e)) => eprintln!("Error shutting down {} server: {}", S::signal(), e),
         Err(_) => {
-            eprintln!("Timed out waiting for {} server to shut down", S::name());
+            eprintln!("Timed out waiting for {} server to shut down", S::signal());
         }
     }
 

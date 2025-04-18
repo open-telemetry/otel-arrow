@@ -33,7 +33,7 @@ impl ServiceType for TracesServiceType {
     type Client = TraceServiceClient<Channel>;
     type Server = TraceServiceServer<TestReceiver<ExportTraceServiceRequest>>;
 
-    fn name() -> &'static str {
+    fn signal() -> &'static str {
         "traces"
     }
 
@@ -74,7 +74,7 @@ impl ServiceType for MetricsServiceType {
     type Client = MetricsServiceClient<Channel>;
     type Server = MetricsServiceServer<TestReceiver<ExportMetricsServiceRequest>>;
 
-    fn name() -> &'static str {
+    fn signal() -> &'static str {
         "metrics"
     }
 
@@ -115,7 +115,7 @@ impl ServiceType for LogsServiceType {
     type Client = LogsServiceClient<Channel>;
     type Server = LogsServiceServer<TestReceiver<ExportLogsServiceRequest>>;
 
-    fn name() -> &'static str {
+    fn signal() -> &'static str {
         "logs"
     }
 
