@@ -16,6 +16,9 @@ use crate::arrays::{
 };
 use crate::error;
 use crate::otlp::related_data::RelatedData;
+use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+use crate::proto::opentelemetry::common::v1::InstrumentationScope;
+use crate::proto::opentelemetry::metrics::v1::metric;
 use crate::schema::consts;
 use arrow::array::{
     Array, ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray, StructArray, UInt16Array,
@@ -24,9 +27,6 @@ use arrow::array::{
 use arrow::datatypes::DataType::UInt32;
 use arrow::datatypes::{DataType, Field, Fields};
 use num_enum::TryFromPrimitive;
-use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
-use opentelemetry_proto::tonic::common::v1::InstrumentationScope;
-use opentelemetry_proto::tonic::metrics::v1::metric;
 use snafu::{OptionExt, ResultExt};
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
@@ -387,7 +387,7 @@ pub fn metrics_from(
                     .number_data_points_store
                     .get_or_default(metric_id);
                 current_metric.data = Some(metric::Data::Gauge(
-                    opentelemetry_proto::tonic::metrics::v1::Gauge {
+                    crate::proto::opentelemetry::metrics::v1::Gauge {
                         data_points: std::mem::take(dps),
                     },
                 ));
@@ -396,7 +396,7 @@ pub fn metrics_from(
                 let dps = related_data
                     .number_data_points_store
                     .get_or_default(metric_id);
-                let sum = opentelemetry_proto::tonic::metrics::v1::Sum {
+                let sum = crate::proto::opentelemetry::metrics::v1::Sum {
                     data_points: std::mem::take(dps),
                     aggregation_temporality,
                     is_monotonic,
@@ -407,7 +407,7 @@ pub fn metrics_from(
                 let dps = related_data
                     .histogram_data_points_store
                     .get_or_default(metric_id);
-                let histogram = opentelemetry_proto::tonic::metrics::v1::Histogram {
+                let histogram = crate::proto::opentelemetry::metrics::v1::Histogram {
                     data_points: std::mem::take(dps),
                     aggregation_temporality,
                 };
@@ -417,7 +417,7 @@ pub fn metrics_from(
                 let dps = related_data
                     .e_histogram_data_points_store
                     .get_or_default(metric_id);
-                let e_histogram = opentelemetry_proto::tonic::metrics::v1::ExponentialHistogram {
+                let e_histogram = crate::proto::opentelemetry::metrics::v1::ExponentialHistogram {
                     data_points: std::mem::take(dps),
                     aggregation_temporality,
                 };
@@ -427,7 +427,7 @@ pub fn metrics_from(
                 let dps = related_data
                     .summary_data_points_store
                     .get_or_default(metric_id);
-                let summary = opentelemetry_proto::tonic::metrics::v1::Summary {
+                let summary = crate::proto::opentelemetry::metrics::v1::Summary {
                     data_points: std::mem::take(dps),
                 };
                 current_metric.data = Some(metric::Data::Summary(summary));
