@@ -71,13 +71,13 @@ pub trait ServiceOutputType: Debug + Send + Sync + 'static {
 }
 
 /// Generic test receiver that can be used for any service
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TestReceiver<T> {
     pub request_tx: mpsc::Sender<T>,
 }
 
 impl<T: Send + 'static> TestReceiver<T> {
-    /// Generic method to process export requests for any OTLP service type
+    /// Generic method to process export requests for any service type
     pub async fn process_export_request<R>(
         &self,
         request: tonic::Request<T>,

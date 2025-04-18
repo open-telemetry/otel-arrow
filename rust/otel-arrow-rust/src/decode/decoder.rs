@@ -103,7 +103,7 @@ impl Consumer {
         Ok(records)
     }
 
-    pub fn consume_batches(
+    pub fn consume_metrics_batches(
         &mut self,
         records: &mut BatchArrowRecords,
     ) -> error::Result<ExportMetricsServiceRequest> {
