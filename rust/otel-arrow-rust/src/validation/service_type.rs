@@ -63,20 +63,6 @@ pub trait ServiceType: Debug + Send + Sync + 'static {
         ),
         String,
     >;
-    
-    /// Create a test receiver service and start it on a randomly assigned port
-    async fn create_service(timeout_secs: Option<u64>) -> Result<
-        (
-            tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-            super::collector_test::TimeoutReceiver<Self::Request>,
-            u16, // actual port number that was assigned
-        ),
-        String,
-    > where
-        Self: Sized
-    {
-        Self::start_receiver(timeout_secs).await
-    }
 }
 
 /// Generic test receiver that can be used for any OTLP service
@@ -171,6 +157,7 @@ async fn create_metrics_server(
     // Convert the listener to a stream of connections
     let incoming = TcpListenerStream::new(listener);
     
+
     // Create our server
     let handle = tokio::spawn(async move {
         Server::builder()

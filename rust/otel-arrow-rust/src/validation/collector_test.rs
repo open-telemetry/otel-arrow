@@ -219,7 +219,7 @@ pub async fn start_test_receiver<S: ServiceType>(
     String,
 > {
     // Use the type-safe create_service method from the ServiceType trait
-    S::create_service(timeout_secs).await
+    S::start_receiver(timeout_secs).await
 }
 
 /// Configuration generator for OTLP to OTLP test case
