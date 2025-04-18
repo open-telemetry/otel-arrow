@@ -132,7 +132,10 @@ where
             let expected_request = request.clone();
 
             // Send data to the collector using the service type's send_data function
-            S::send_data(&mut context.client, request).await?;
+            match S::send_data(&mut context.client, request).await {
+                Ok(_) => {},
+                Err(e) => return (context, Err(format!("Error sending data: {}", e).into())),
+            };
 
             // Wait for the data to be received by our test receiver
             let received_request = match context.request_rx.recv().await {
