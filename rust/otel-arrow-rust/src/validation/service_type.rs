@@ -150,47 +150,7 @@ async fn create_service_server<T: ServiceType>(
     Ok((handle, request_rx))
 }
 
-/// Helper function to create a TCP server for traces service
-async fn create_trace_server(
-    listener: tokio::net::TcpListener,
-    timeout_secs: Option<u64>,
-) -> Result<
-    (
-        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-        super::collector_test::TimeoutReceiver<ExportTraceServiceRequest>,
-    ),
-    String,
-> {
-    create_service_server::<TracesServiceType>(listener, timeout_secs).await
-}
 
-/// Helper function to create a TCP server for metrics service
-async fn create_metrics_server(
-    listener: tokio::net::TcpListener,
-    timeout_secs: Option<u64>,
-) -> Result<
-    (
-        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-        super::collector_test::TimeoutReceiver<ExportMetricsServiceRequest>,
-    ),
-    String,
-> {
-    create_service_server::<MetricsServiceType>(listener, timeout_secs).await
-}
-
-/// Helper function to create a TCP server for logs service
-async fn create_logs_server(
-    listener: tokio::net::TcpListener,
-    timeout_secs: Option<u64>,
-) -> Result<
-    (
-        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-        super::collector_test::TimeoutReceiver<ExportLogsServiceRequest>,
-    ),
-    String,
-> {
-    create_service_server::<LogsServiceType>(listener, timeout_secs).await
-}
 
 /// Implementation of the Traces service type
 #[derive(Debug)]
@@ -270,7 +230,7 @@ impl ServiceType for TracesServiceType {
         ),
         String,
     > {
-        create_trace_server(listener, timeout_secs).await
+        create_service_server::<TracesServiceType>(listener, timeout_secs).await
     }
 }
 
@@ -351,7 +311,7 @@ impl ServiceType for MetricsServiceType {
         ),
         String,
     > {
-        create_metrics_server(listener, timeout_secs).await
+        create_service_server::<MetricsServiceType>(listener, timeout_secs).await
     }
 }
 
@@ -428,7 +388,7 @@ impl ServiceType for LogsServiceType {
         ),
         String,
     > {
-        create_logs_server(listener, timeout_secs).await
+        create_service_server::<LogsServiceType>(listener, timeout_secs).await
     }
 }
 
