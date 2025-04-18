@@ -101,10 +101,9 @@ impl LogsService for LogsServiceImpl {
         &self,
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
-        tokio_spawn local
-        tokio::task::spawn_local(async move {
-            self.effect_handler.send_message(OTLPRequest::Logs(request.into_inner())).await;
-        }).await;
+
+        self.effect_handler.send_message(OTLPRequest::Logs(request.into_inner())).await;
+
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,
         }))
@@ -117,9 +116,7 @@ impl MetricsService for MetricsServiceImpl {
         &self,
         request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
-        tokio::task::spawn_local(async move {
-            self.effect_handler.send_message(OTLPRequest::Metrics(request.into_inner())).await;
-        }).await;
+        self.effect_handler.send_message(OTLPRequest::Metrics(request.into_inner())).await;
         Ok(Response::new(ExportMetricsServiceResponse {
             partial_success: None,
         }))
@@ -132,9 +129,7 @@ impl TraceService for TraceServiceImpl {
         &self,
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        tokio::task::spawn_local(async move {
-            self.effect_handler.send_message(OTLPRequest::Traces(request.into_inner())).await;
-        }).await;
+        self.effect_handler.send_message(OTLPRequest::Traces(request.into_inner())).await;
         Ok(Response::new(ExportTraceServiceResponse {
             partial_success: None,
         }))
