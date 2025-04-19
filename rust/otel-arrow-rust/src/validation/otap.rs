@@ -55,45 +55,19 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
                         let batch_id = batch.batch_id;
 
                         // Process each arrow payload in the batch
-                        match process_arrow_batch(&batch, &mut related_data) {
-                            Ok(metrics_request) => {
-                                // Send the converted OTLP data to the test receiver
-                                match receiver
-                                    .process_export_request::<ExportMetricsServiceRequest>(
-                                        Request::new(metrics_request),
-                                        "metrics",
-                                    )
+                        match process_arrow_batch(&batch, &mut related_data, &receiver).await {
+                            Ok(_) => {
+                                // Send success status back to client
+                                if tx
+                                    .send(Ok(BatchStatus {
+                                        batch_id,
+                                        status_code: StatusCode::Ok as i32,
+                                        status_message: "Successfully processed".to_string(),
+                                    }))
                                     .await
+                                    .is_err()
                                 {
-                                    Ok(_) => {
-                                        // Send success status back to client
-                                        if tx
-                                            .send(Ok(BatchStatus {
-                                                batch_id,
-                                                status_code: StatusCode::Ok as i32,
-                                                status_message: "Successfully processed"
-                                                    .to_string(),
-                                            }))
-                                            .await
-                                            .is_err()
-                                        {
-                                            break; // Client disconnected
-                                        }
-                                    }
-                                    Err(e) => {
-                                        // Send error status back to client
-                                        if tx
-                                            .send(Ok(BatchStatus {
-                                                batch_id,
-                                                status_code: StatusCode::Internal as i32,
-                                                status_message: format!("Failed to process: {}", e),
-                                            }))
-                                            .await
-                                            .is_err()
-                                        {
-                                            break; // Client disconnected
-                                        }
-                                    }
+                                    break; // Client disconnected
                                 }
                             }
                             Err(e) => {
@@ -102,7 +76,7 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
                                     .send(Ok(BatchStatus {
                                         batch_id,
                                         status_code: StatusCode::InvalidArgument as i32,
-                                        status_message: format!("Failed to convert: {}", e),
+                                        status_message: format!("Failed to process: {}", e),
                                     }))
                                     .await
                                     .is_err()
@@ -164,16 +138,15 @@ impl ServiceOutputType for OTAPMetricsOutputType {
     }
 }
 
-// Process an Arrow batch and convert it to OTLP metrics
-fn process_arrow_batch(
+// Process an Arrow batch and convert it to OTLP metrics, sending each metrics item individually
+async fn process_arrow_batch(
     batch: &BatchArrowRecords,
     related_data: &mut crate::otlp::related_data::RelatedData,
-) -> Result<ExportMetricsServiceRequest, String> {
+    receiver: &TestReceiver<ExportMetricsServiceRequest>,
+) -> Result<(), String> {
     use crate::decode::record_message::RecordMessage;
     use arrow::ipc::reader::StreamReader;
     use std::io::Cursor;
-
-    let mut metrics_request = ExportMetricsServiceRequest::default();
 
     // Process each arrow payload
     for payload in &batch.arrow_payloads {
@@ -201,9 +174,15 @@ fn process_arrow_batch(
         let otlp_metrics = crate::otlp::metric::metrics_from(&record_message.record, related_data)
             .map_err(|e| format!("Failed to convert to OTLP: {:?}", e))?;
 
-        // Merge with existing metrics
-        merge_metrics(&mut metrics_request, otlp_metrics);
+        // Send this individual metrics item to the receiver
+        receiver
+            .process_export_request::<ExportMetricsServiceRequest>(
+                Request::new(otlp_metrics),
+                "metrics",
+            )
+            .await
+            .map_err(|e| format!("Failed to process metrics: {}", e))?;
     }
 
-    Ok(metrics_request)
+    Ok(())
 }
