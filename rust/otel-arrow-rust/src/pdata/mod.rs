@@ -23,15 +23,9 @@ pub mod otlp;
 #[derive(Clone, Copy, Debug)]
 pub struct TraceID([u8; 16]);
 
-type Error = &'static str;
-
-impl<'a> TraceID {
-    pub fn try_new(value: &[u8]) -> Result<TraceID, Error> {
-        if value.len() == 16 {
-            Ok(TraceID(value.try_into().unwrap()))
-        } else {
-            Err("wrong size [u8] for TraceID")
-        }
+impl TraceID {
+    pub fn new(value: &[u8; 16]) -> TraceID {
+        TraceID(*value)
     }
 }
 
@@ -50,12 +44,8 @@ impl Into<Vec<u8>> for SpanID {
     }
 }
 
-impl<'a> SpanID {
-    pub fn try_new(value: &[u8]) -> Result<SpanID, Error> {
-        if value.len() == 8 {
-            Ok(SpanID(value.try_into().unwrap()))
-        } else {
-            Err("wrong size [u8] for SpanID")
-        }
+impl SpanID {
+    pub fn new(value: &[u8; 8]) -> SpanID{
+        SpanID(*value)
     }
 }
