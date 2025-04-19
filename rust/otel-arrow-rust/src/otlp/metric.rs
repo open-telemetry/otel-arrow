@@ -226,7 +226,7 @@ struct MetricsArrays<'a> {
     schema_url: Option<StringArrayAccessor<'a>>,
     name: StringArrayAccessor<'a>,
     description: Option<StringArrayAccessor<'a>>,
-    unit: Option<&'a StringArray>,
+    unit: Option<StringArrayAccessor<'a>>,
     aggregation_temporality: Option<&'a Int32Array>,
     is_monotonic: Option<&'a BooleanArray>,
 }
@@ -253,15 +253,7 @@ impl<'a> TryFrom<&'a RecordBatch> for MetricsArrays<'a> {
 
         let unit = rb
             .column_by_name(consts::UNIT)
-            .map(|a| {
-                a.as_any().downcast_ref::<StringArray>().with_context(|| {
-                    error::ColumnDataTypeMismatchSnafu {
-                        name: consts::UNIT,
-                        expect: DataType::Utf8,
-                        actual: a.data_type().clone(),
-                    }
-                })
-            })
+            .map(StringArrayAccessor::new)
             .transpose()?;
         let aggregation_temporality = get_i32_array_opt(rb, consts::AGGREGATION_TEMPORALITY)?;
         let is_monotonic = get_bool_array_opt(rb, consts::IS_MONOTONIC)?;
