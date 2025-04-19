@@ -11,7 +11,7 @@
 //! setup and lifecycle management.
 
 use crate::message::ControlMsg;
-use crate::receiver::{ControlMsgChannel, Receiver};
+use crate::receiver::{ControlMsgChannel, LocalMode, Receiver};
 use crate::testing::{CtrMsgCounters, TestMsg, create_test_channel, setup_test_runtime};
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
@@ -123,7 +123,7 @@ impl ReceiverTestRuntime {
     /// Starts a receiver with the configured channels.
     pub fn start_receiver<R>(&mut self, receiver: R)
     where
-        R: Receiver<PData = TestMsg> + 'static,
+        R: Receiver<PData = TestMsg, Mode = LocalMode> + 'static,
     {
         let control_rx = self
             .control_rx

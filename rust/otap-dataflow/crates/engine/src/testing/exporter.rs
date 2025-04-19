@@ -12,6 +12,7 @@
 
 use crate::exporter::{EffectHandler, Exporter, MessageChannel};
 use crate::message::ControlMsg;
+use crate::receiver::LocalMode;
 use crate::testing::{CtrMsgCounters, TestMsg, create_test_channel, setup_test_runtime};
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
@@ -136,7 +137,7 @@ impl ExporterTestRuntime {
     /// Starts an exporter with the configured channels.
     pub fn start_exporter<E>(&mut self, exporter: E)
     where
-        E: Exporter<PData = TestMsg> + 'static,
+        E: Exporter<PData = TestMsg, Mode = LocalMode> + 'static,
     {
         let msg_chan = MessageChannel::new(
             self.control_rx

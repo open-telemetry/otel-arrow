@@ -82,3 +82,73 @@ to each pipeline component:
 These utilities streamline the process of validating individual component
 behaviors, significantly reducing setup effort while enabling comprehensive
 testing.
+
+## ThreadMode
+
+### Concept and Purpose
+
+The `ThreadMode` trait is a core abstraction that defines the thread-safety
+behavior for pipeline components (receivers, processors, and exporters). It
+allows components to specify whether they can be safely sent across thread
+boundaries by implementing one of two modes:
+
+1. **LocalMode (!Send)**: Thread-local components that are restricted to the
+   thread they were created on. These components use `Rc` internally for
+   reference counting and can leverage non-`Send` dependencies.
+
+2. **SendableMode (Send)**: Thread-safe components that can be sent across
+   thread boundaries. These components use `Arc` internally and require all
+   state to be `Send + Sync`.
+
+### Why ThreadMode Was Introduced
+
+The ThreadMode abstraction was introduced to address several challenges:
+
+1. **Balancing Performance and Flexibility**: The engine is designed to be
+   high-performance using a share-nothing, thread-per-core approach with a
+   single-threaded async runtime. This works best with `!Send` components that
+   don't require synchronization overhead. However, some components (like those
+   based on Tonic GRPC services) require `Send` traits.
+
+2. **Library Integration**: Some external libraries (e.g. Tonic) don't yet
+   support `?Send` trait declarations (
+   see [Tonic issue #2171](https://github.com/hyperium/tonic/issues/2171)).
+   ThreadMode provides a pathway to integrate such libraries.
+
+3. **Unified Interface**: By parameterizing components with their threading
+   behavior, we maintain a consistent API across all components while allowing
+   them to declare their thread-safety requirements.
+
+### Preferred Implementation Approach
+
+For this project, **`LocalMode` is the preferred and recommended approach** for
+most components:
+
+- **Receivers**: Implement using `LocalMode` unless integrating with libraries
+  that require `Send` traits.
+- **Processors**: Use `LocalMode` for optimal performance with the
+  single-threaded runtime.
+- **Exporters**: Similarly, prefer `LocalMode` unless specific external
+  integration requires `Send`.
+
+`SendableMode` exists primarily as an escape hatch for specific implementations
+that cannot use `LocalMode`, such as OTLP Receivers based on Tonic GRPC
+services.
+
+### Running Both !Send and Send Nodes in a Single Runtime
+
+One of the key benefits of the ThreadMode abstraction is that it allows a
+single-threaded async runtime to seamlessly run both `!Send` and `Send` nodes:
+
+- **Uniform API**: All components implement the same traits and interfaces
+  regardless of their thread-safety characteristics.
+- **Dynamic Dispatch**: The pipeline engine can treat all nodes uniformly at
+  runtime, dispatching messages to them via their effect handlers.
+- **Zero-Cost Abstraction**: For `LocalMode` components, there's no
+  synchronization overhead.
+- **Future Compatibility**: As libraries evolve to support `?Send`, components
+  can be migrated to `LocalMode` without changing the API.
+
+This flexibility enables the pipeline to maintain high performance for most
+components while accommodating special cases that require thread-safety
+guarantees, all within a single cohesive architecture.
