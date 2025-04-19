@@ -10,7 +10,8 @@
 /// When new fields are added into this message, the OTLP request MUST be updated
 /// as well.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.trace.v1.TracesData")]
-#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct TracesData {
     /// An array of ResourceSpans.
     /// For data coming from a single resource this array will typically contain
@@ -22,7 +23,8 @@ pub struct TracesData {
 }
 /// A collection of ScopeSpans from a Resource.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.trace.v1.ResourceSpans")]
-#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResourceSpans {
     /// The resource for the spans in this message.
     /// If this field is not set then no resource info is known.
@@ -42,7 +44,8 @@ pub struct ResourceSpans {
 }
 /// A collection of Spans produced by an InstrumentationScope.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.trace.v1.ScopeSpans")]
-#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ScopeSpans {
     /// The instrumentation scope information for the spans in this message.
     /// Semantically when InstrumentationScope isn't set, it is equivalent with
@@ -64,7 +67,8 @@ pub struct ScopeSpans {
 ///
 /// The next available field id is 17.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.trace.v1.Span")]
-#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Span {
     /// A unique identifier for a trace. All spans from the same trace share
     /// the same `trace_id`. The ID is a 16-byte array. An ID with all zeroes OR
@@ -192,7 +196,8 @@ pub mod span {
     /// Event is a time-stamped annotation of the span, consisting of user-supplied
     /// text description and key-value pairs.
     #[crate::pdata::otlp::qualified("opentelemetry.proto.trace.v1.Span.Event")]
-    #[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
+    #[derive(crate::pdata::otlp::Message)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Event {
         /// time_unix_nano is the time the event occurred.
         #[prost(fixed64, tag = "1")]
@@ -205,7 +210,9 @@ pub mod span {
         /// Attribute keys MUST be unique (it is not allowed to have more than one
         /// attribute with the same key).
         #[prost(message, repeated, tag = "3")]
-        pub attributes: ::prost::alloc::vec::Vec<super::super::super::common::v1::KeyValue>,
+        pub attributes: ::prost::alloc::vec::Vec<
+            super::super::super::common::v1::KeyValue,
+        >,
         /// dropped_attributes_count is the number of dropped attributes. If the value is 0,
         /// then no attributes were dropped.
         #[prost(uint32, tag = "4")]
@@ -216,7 +223,8 @@ pub mod span {
     /// where a single batch handler processes multiple requests from different
     /// traces or when the handler receives a request from a different project.
     #[crate::pdata::otlp::qualified("opentelemetry.proto.trace.v1.Span.Link")]
-    #[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
+    #[derive(crate::pdata::otlp::Message)]
+    #[derive(Clone, PartialEq, ::prost::Message)]
     pub struct Link {
         /// A unique identifier of a trace that this linked span is part of. The ID is a
         /// 16-byte array.
@@ -232,7 +240,9 @@ pub mod span {
         /// Attribute keys MUST be unique (it is not allowed to have more than one
         /// attribute with the same key).
         #[prost(message, repeated, tag = "4")]
-        pub attributes: ::prost::alloc::vec::Vec<super::super::super::common::v1::KeyValue>,
+        pub attributes: ::prost::alloc::vec::Vec<
+            super::super::super::common::v1::KeyValue,
+        >,
         /// dropped_attributes_count is the number of dropped attributes. If the value is 0,
         /// then no attributes were dropped.
         #[prost(uint32, tag = "5")]
@@ -259,7 +269,17 @@ pub mod span {
     }
     /// SpanKind is the type of span. Can be used to specify additional relationships between spans
     /// in addition to a parent/child relationship.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+        PartialOrd,
+        Ord,
+        ::prost::Enumeration
+    )]
     #[repr(i32)]
     pub enum SpanKind {
         /// Unspecified. Do NOT use as default.
@@ -315,7 +335,8 @@ pub mod span {
 /// The Status type defines a logical error model that is suitable for different
 /// programming environments, including REST APIs and RPC APIs.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.trace.v1.Status")]
-#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Status {
     /// A developer-facing human readable error message.
     #[prost(string, tag = "2")]
@@ -328,7 +349,17 @@ pub struct Status {
 pub mod status {
     /// For the semantics of status codes see
     /// <https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/trace/api.md#set-status>
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+    #[derive(
+        Clone,
+        Copy,
+        Debug,
+        PartialEq,
+        Eq,
+        Hash,
+        PartialOrd,
+        Ord,
+        ::prost::Enumeration
+    )]
     #[repr(i32)]
     pub enum StatusCode {
         /// The default status.

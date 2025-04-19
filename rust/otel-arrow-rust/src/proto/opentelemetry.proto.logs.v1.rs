@@ -10,7 +10,8 @@
 /// When new fields are added into this message, the OTLP request MUST be updated
 /// as well.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.logs.v1.LogsData")]
-#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LogsData {
     /// An array of ResourceLogs.
     /// For data coming from a single resource this array will typically contain
@@ -22,7 +23,8 @@ pub struct LogsData {
 }
 /// A collection of ScopeLogs from a Resource.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.logs.v1.ResourceLogs")]
-#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ResourceLogs {
     /// The resource for the logs in this message.
     /// If this field is not set then resource info is unknown.
@@ -42,7 +44,8 @@ pub struct ResourceLogs {
 }
 /// A collection of Logs produced by a Scope.
 #[crate::pdata::otlp::qualified("opentelemetry.proto.logs.v1.ScopeLogs")]
-#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ScopeLogs {
     /// The instrumentation scope information for the logs in this message.
     /// Semantically when InstrumentationScope isn't set, it is equivalent with
@@ -63,7 +66,8 @@ pub struct ScopeLogs {
 /// A log record according to OpenTelemetry Log Data Model:
 /// <https://github.com/open-telemetry/oteps/blob/main/text/logs/0097-log-data-model.md>
 #[crate::pdata::otlp::qualified("opentelemetry.proto.logs.v1.LogRecord")]
-#[derive(crate::pdata::otlp::Message, Clone, PartialEq, ::prost::Message)]
+#[derive(crate::pdata::otlp::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LogRecord {
     /// time_unix_nano is the time when the event occurred.
     /// Value is UNIX Epoch time in nanoseconds since 00:00:00 UTC on 1 January 1970.
