@@ -42,6 +42,10 @@ use tokio::net::TcpListener;
 /// Note that this trait uses `#[async_trait(?Send)]`, meaning implementations
 /// are not required to be thread-safe. To ensure scalability, the pipeline engine will start
 /// multiple instances of the same pipeline in parallel, each with its own receiver instance.
+///
+/// Through the `Mode` type parameter, receivers can be configured to be either thread-local (`LocalMode`)
+/// or thread-safe (`SendableMode`). This allows you to choose the appropriate threading model based on
+/// your receiver's requirements and performance considerations.
 #[async_trait( ? Send)]
 pub trait Receiver {
     /// The type of messages processed by the receiver.
@@ -114,16 +118,37 @@ impl ControlMsgChannel {
     }
 }
 
-/// Defines the thread-safety behavior for an effect handler.
+/// Defines the thread-safety behavior for a pipeline component.
+///
+/// The `ThreadMode` trait is a crucial abstraction that allows components (receivers, processors, exporters)
+/// to specify their threading behavior. By implementing either `LocalMode` (!Send) or `SendableMode` (Send),
+/// components can declare whether they can be safely sent across thread boundaries.
+///
+/// For this project, `LocalMode` is the preferred and recommended mode for most components.
+/// `SendableMode` exists primarily to support specific implementations that cannot use `LocalMode`,
+/// such as OTLP Receivers based on Tonic GRPC services (which don't yet support ?Send trait declarations,
+/// see <https://github.com/hyperium/tonic/issues/2171>).
+///
+/// General guidelines for choosing a mode:
+/// - Use `LocalMode` for most components (preferred for this project)
+/// - Use `SendableMode` only when integrating with libraries that require Send traits
 pub trait ThreadMode: Clone + 'static {
     /// The reference type used for the node name.
     type NameRef: AsRef<str> + Clone;
 }
 
 /// Marker trait for Send-supporting handlers.
+///
+/// Components that implement this trait can safely be sent across thread boundaries.
+/// This enables greater parallelism in pipeline execution at the potential cost of
+/// synchronization overhead.
 pub trait SendMode: ThreadMode {}
 
 /// A thread-local (non-Send) mode for effect handlers.
+///
+/// Components using `LocalMode` are restricted to the thread they were created on,
+/// but can use non-Send dependencies like `Rc` and avoid synchronization overhead.
+/// This is the default and preferred mode for this project.
 #[derive(Clone, Debug)]
 pub struct LocalMode;
 
@@ -132,6 +157,10 @@ impl ThreadMode for LocalMode {
 }
 
 /// A thread-safe (Send) mode for effect handlers.
+///
+/// Components using `SendableMode` can be sent across thread boundaries,
+/// enabling greater parallelism. They use thread-safe dependencies like `Arc`
+/// instead of `Rc` and must ensure all their state is `Send + Sync`.
 #[derive(Clone, Debug)]
 pub struct SendableMode;
 
@@ -144,10 +173,18 @@ impl SendMode for SendableMode {}
 /// Handles side effects such as opening network listeners or sending messages.
 ///
 /// The `Msg` type parameter represents the type of message the receiver
-/// will eventually produce.
+/// will eventually produce, while the `Mode` type parameter determines the threading behavior.
 ///
-/// The `Mode` type parameter determines whether the handler is `Send` or not.
-/// Use `LocalMode` for non-Send receivers (default) and `SendableMode` for `Send` receivers.
+/// # Thread Safety Options
+///
+/// - `EffectHandler<Msg, LocalMode>`: For thread-local (!Send) receivers. Uses `Rc` internally and is
+///   the default for backward compatibility. Created with `EffectHandler::new()`.
+/// - `EffectHandler<Msg, SendableMode>`: For thread-safe (Send) receivers. Uses `Arc` internally and
+///   supports sending across thread boundaries. Created with `EffectHandler::new_sendable()`.
+///
+/// Choose the appropriate mode based on your component's requirements. Use `LocalMode` when thread safety
+/// isn't needed or when using !Send dependencies, and `SendableMode` when the component must be shared
+/// across threads.
 ///
 /// Note for implementers: The `EffectHandler` is designed to be cloned and shared across tasks
 /// so the cost of cloning should be minimal.
@@ -178,9 +215,8 @@ impl<Msg, Mode: ThreadMode> EffectHandler<Msg, Mode> {
     #[must_use]
     pub fn receiver_name(&self) -> NodeName {
         // Convert to NodeName (Rc<str>) to maintain compatibility with existing API
-        match self.receiver_name.as_ref() {
-            s => Rc::from(s),
-        }
+        let s = self.receiver_name.as_ref();
+        Rc::from(s)
     }
 
     /// Sends a message to the next node(s) in the pipeline.

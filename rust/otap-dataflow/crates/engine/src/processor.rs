@@ -25,6 +25,10 @@
 //! Note that this trait uses `#[async_trait(?Send)]`, meaning implementations
 //! are not required to be thread-safe. To ensure scalability, the pipeline engine will start
 //! multiple instances of the same pipeline in parallel, each with its own processor instance.
+//!
+//! Through the `Mode` type parameter, processors can be configured to be either thread-local (`LocalMode`)
+//! or thread-safe (`SendableMode`). This allows you to choose the appropriate threading model based on
+//! your processor's requirements and performance considerations.
 
 use crate::NodeName;
 use crate::error::Error;
@@ -86,7 +90,18 @@ pub trait Processor {
 /// Handles side effects such as sending messages to the next node.
 ///
 /// The `Msg` type parameter represents the type of message the processor
-/// will eventually produce.
+/// will eventually produce, while the `Mode` type parameter determines the threading behavior.
+///
+/// # Thread Safety Options
+///
+/// - `EffectHandler<Msg, LocalMode>`: For thread-local (!Send) processors. Uses `Rc` internally and is
+///   the default for backward compatibility. Created with `EffectHandler::new()`.
+/// - `EffectHandler<Msg, SendableMode>`: For thread-safe (Send) processors. Uses `Arc` internally and
+///   supports sending across thread boundaries. Created with `EffectHandler::new_sendable()`.
+///
+/// Choose the appropriate mode based on your component's requirements. Use `LocalMode` when thread safety
+/// isn't needed or when using !Send dependencies, and `SendableMode` when the component must be shared
+/// across threads.
 ///
 /// Note for implementers: The `EffectHandler` is designed to be cloned and shared across tasks
 /// so the cost of cloning should be minimal.
@@ -132,7 +147,10 @@ impl<Msg, Mode: ThreadMode> EffectHandler<Msg, Mode> {
 // Implementation specific to LocalMode (default, non-Send)
 impl<Msg> EffectHandler<Msg, LocalMode> {
     /// Creates a new local (non-Send) `EffectHandler` with the given processor name.
-    /// This is the default mode that maintains backward compatibility.
+    /// This is the default and preferred mode for this project.
+    ///
+    /// Use this constructor when your processor doesn't need to be sent across threads or
+    /// when it uses components that aren't `Send`.
     pub fn new<S: AsRef<str>>(processor_name: S, msg_sender: mpsc::Sender<Msg>) -> Self {
         EffectHandler {
             processor_name: Rc::from(processor_name.as_ref()),
@@ -145,7 +163,14 @@ impl<Msg> EffectHandler<Msg, LocalMode> {
 // Implementation for SendableMode (Send)
 impl<Msg: Send + 'static> EffectHandler<Msg, SendableMode> {
     /// Creates a new thread-safe (Send) `EffectHandler` with the given processor name.
-    /// Use this when you need an EffectHandler that can be sent across thread boundaries.
+    /// Use this only when you need an EffectHandler that can be sent across thread boundaries,
+    /// typically when integrating with libraries that require Send traits (e.g., Tonic GRPC services).
+    ///
+    /// Note: For this project, `LocalMode` is the preferred mode. Only use `SendableMode`
+    /// when you have a specific requirement that prevents using `LocalMode`.
+    ///
+    /// This enables greater parallelism but requires that all state maintained by the
+    /// processor implements `Send + Sync`.
     pub fn new_sendable<S: AsRef<str>>(processor_name: S, msg_sender: mpsc::Sender<Msg>) -> Self {
         EffectHandler {
             processor_name: Arc::from(processor_name.as_ref()),
