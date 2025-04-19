@@ -19,8 +19,10 @@ use crate::message::ControlMsg;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_channel::mpsc;
+use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 
 /// A trait for ingress receivers.
@@ -45,6 +47,9 @@ pub trait Receiver {
     /// The type of messages processed by the receiver.
     type PData;
 
+    /// The threading mode used by this receiver
+    type Mode: ThreadMode;
+
     /// Starts the receiver and begins processing incoming data and control messages.
     ///
     /// The pipeline engine will call this function to start the receiver in a separate task.
@@ -68,6 +73,7 @@ pub trait Receiver {
     ///
     /// - `ctrl_msg_chan`: A channel to receive control messages.
     /// - `effect_handler`: A handler to perform side effects such as opening a listener.
+    ///    This can be either Send or !Send depending on the receiver's Mode type.
     ///
     /// # Errors
     ///
@@ -79,7 +85,7 @@ pub trait Receiver {
     async fn start(
         self: Box<Self>,
         ctrl_msg_chan: ControlMsgChannel,
-        effect_handler: EffectHandler<Self::PData>,
+        effect_handler: EffectHandler<Self::PData, Self::Mode>,
     ) -> Result<(), Error<Self::PData>>;
 }
 
@@ -108,43 +114,96 @@ impl ControlMsgChannel {
     }
 }
 
+/// Defines the thread-safety behavior for an effect handler.
+pub trait ThreadMode: Clone + 'static {
+    /// The reference type used for the node name.
+    type NameRef: AsRef<str> + Clone;
+}
+
+/// Marker trait for Send-supporting handlers.
+pub trait SendMode: ThreadMode {}
+
+/// A thread-local (non-Send) mode for effect handlers.
+#[derive(Clone, Debug)]
+pub struct LocalMode;
+
+impl ThreadMode for LocalMode {
+    type NameRef = Rc<str>;
+}
+
+/// A thread-safe (Send) mode for effect handlers.
+#[derive(Clone, Debug)]
+pub struct SendableMode;
+
+impl ThreadMode for SendableMode {
+    type NameRef = Arc<str>;
+}
+
+impl SendMode for SendableMode {}
+
 /// Handles side effects such as opening network listeners or sending messages.
 ///
 /// The `Msg` type parameter represents the type of message the receiver
 /// will eventually produce.
 ///
+/// The `Mode` type parameter determines whether the handler is `Send` or not.
+/// Use `LocalMode` for non-Send receivers (default) and `SendableMode` for `Send` receivers.
+///
 /// Note for implementers: The `EffectHandler` is designed to be cloned and shared across tasks
 /// so the cost of cloning should be minimal.
-pub struct EffectHandler<Msg> {
+pub struct EffectHandler<Msg, Mode: ThreadMode = LocalMode> {
     /// The name of the receiver.
-    receiver_name: NodeName,
+    receiver_name: Mode::NameRef,
 
     /// A sender used to forward messages from the receiver.
     msg_sender: mpsc::Sender<Msg>,
+
+    /// Marker for the thread mode.
+    _mode: PhantomData<Mode>,
 }
 
-impl<Msg> Clone for EffectHandler<Msg> {
+impl<Msg, Mode: ThreadMode> Clone for EffectHandler<Msg, Mode> {
     fn clone(&self) -> Self {
         EffectHandler {
             receiver_name: self.receiver_name.clone(),
             msg_sender: self.msg_sender.clone(),
+            _mode: PhantomData,
         }
     }
 }
 
-impl<Msg> EffectHandler<Msg> {
-    /// Creates a new `EffectHandler` with the given receiver name.
+// Implementation for any mode
+impl<Msg, Mode: ThreadMode> EffectHandler<Msg, Mode> {
+    /// Returns the name of the receiver associated with this handler.
+    #[must_use]
+    pub fn receiver_name(&self) -> NodeName {
+        // Convert to NodeName (Rc<str>) to maintain compatibility with existing API
+        match self.receiver_name.as_ref() {
+            s => Rc::from(s),
+        }
+    }
+
+    /// Sends a message to the next node(s) in the pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::ReceiverError`] if the message could not be sent.
+    pub async fn send_message(&self, data: Msg) -> Result<(), Error<Msg>> {
+        self.msg_sender.send_async(data).await?;
+        Ok(())
+    }
+}
+
+// Implementation specific to LocalMode (default, non-Send)
+impl<Msg> EffectHandler<Msg, LocalMode> {
+    /// Creates a new local (non-Send) `EffectHandler` with the given receiver name.
+    /// This is the default mode that maintains backward compatibility.
     pub fn new<S: AsRef<str>>(receiver_name: S, msg_sender: mpsc::Sender<Msg>) -> Self {
         EffectHandler {
             receiver_name: Rc::from(receiver_name.as_ref()),
             msg_sender,
+            _mode: PhantomData,
         }
-    }
-
-    /// Returns the name of the receiver associated with this handler.
-    #[must_use]
-    pub fn receiver_name(&self) -> NodeName {
-        self.receiver_name.clone()
     }
 
     /// Creates a non-blocking TCP listener on the given address with `SO_REUSE` settings.
@@ -185,22 +244,84 @@ impl<Msg> EffectHandler<Msg> {
 
         TcpListener::from_std(sock.into()).map_err(err)
     }
+}
 
-    /// Sends a message to the next node(s) in the pipeline.
+// Implementation for SendableMode (Send)
+impl<Msg: Send + 'static> EffectHandler<Msg, SendableMode> {
+    /// Creates a new thread-safe (Send) `EffectHandler` with the given receiver name.
+    /// Use this when you need an EffectHandler that can be sent across thread boundaries.
+    pub fn new_sendable<S: AsRef<str>>(receiver_name: S, msg_sender: mpsc::Sender<Msg>) -> Self {
+        EffectHandler {
+            receiver_name: Arc::from(receiver_name.as_ref()),
+            msg_sender,
+            _mode: PhantomData,
+        }
+    }
+
+    /// Creates a non-blocking TCP listener on the given address with `SO_REUSE` settings.
     ///
     /// # Errors
     ///
-    /// Returns an [`Error::ReceiverError`] if the message could not be sent.
-    pub async fn send_message(&self, data: Msg) -> Result<(), Error<Msg>> {
-        self.msg_sender.send_async(data).await?;
-        Ok(())
+    /// Returns an [`Error::IoError`] if any step in the process fails.
+    pub fn tcp_listener(&self, addr: SocketAddr) -> Result<TcpListener, Error<Msg>> {
+        // Helper function to convert errors - not using a closure to avoid move issues
+        let name = self.receiver_name.to_string(); // Convert to owned String for thread safety
+        let make_err = |error: std::io::Error| Error::IoError {
+            node: Rc::from(name.as_str()),
+            error,
+        };
+
+        // Create a SO_REUSEADDR + SO_REUSEPORT listener.
+        let sock = match socket2::Socket::new(
+            match addr {
+                SocketAddr::V4(_) => socket2::Domain::IPV4,
+                SocketAddr::V6(_) => socket2::Domain::IPV6,
+            },
+            socket2::Type::STREAM,
+            None,
+        ) {
+            Ok(s) => s,
+            Err(e) => return Err(make_err(e)),
+        };
+
+        // Allows multiple sockets to bind to an address/port combination even if a socket in the
+        // TIME_WAIT state currently occupies that combination.
+        // Goal: Restarting the server quickly without waiting for the OS to release a port.
+        if let Err(e) = sock.set_reuse_address(true) {
+            return Err(make_err(e));
+        }
+
+        // Explicitly allows multiple sockets to simultaneously bind and listen to the exact same
+        // IP and port. Incoming connections or packets are distributed between the sockets
+        // (load balancing).
+        // Goal: Load balancing incoming connections.
+        if let Err(e) = sock.set_reuse_port(true) {
+            return Err(make_err(e));
+        }
+
+        if let Err(e) = sock.set_nonblocking(true) {
+            return Err(make_err(e));
+        }
+
+        if let Err(e) = sock.bind(&addr.into()) {
+            return Err(make_err(e));
+        }
+
+        if let Err(e) = sock.listen(8192) {
+            return Err(make_err(e));
+        }
+
+        match TcpListener::from_std(sock.into()) {
+            Ok(listener) => Ok(listener),
+            Err(e) => Err(make_err(e)),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::ControlMsgChannel;
-    use crate::receiver::{EffectHandler, Error, Receiver};
+    use crate::receiver::{EffectHandler, Error, LocalMode, Receiver};
     use crate::testing::receiver::ReceiverTestRuntime;
     use crate::testing::{CtrMsgCounters, TestMsg};
     use async_trait::async_trait;
@@ -219,11 +340,12 @@ mod tests {
     #[async_trait(?Send)]
     impl Receiver for TestReceiver {
         type PData = TestMsg;
+        type Mode = LocalMode;
 
         async fn start(
             self: Box<Self>,
             ctrl_msg_recv: ControlMsgChannel,
-            effect_handler: EffectHandler<Self::PData>,
+            effect_handler: EffectHandler<Self::PData, Self::Mode>,
         ) -> Result<(), Error<Self::PData>> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();

@@ -28,16 +28,22 @@
 use crate::NodeName;
 use crate::error::Error;
 use crate::message::{ControlMsg, Message};
+use crate::receiver::{LocalMode, SendableMode, ThreadMode};
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_channel::mpsc;
+use std::marker::PhantomData;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// A trait for egress exporters.
 #[async_trait(?Send)]
 pub trait Exporter {
     /// The type of messages handled by the exporter.
     type PData;
+
+    /// The threading mode used by this exporter
+    type Mode: ThreadMode;
 
     /// Starts the exporter and begins exporting incoming data.
     ///
@@ -70,7 +76,7 @@ pub trait Exporter {
     async fn start(
         self: Box<Self>,
         msg_chan: MessageChannel<Self::PData>,
-        effect_handler: EffectHandler<Self::PData>,
+        effect_handler: EffectHandler<Self::PData, Self::Mode>,
     ) -> Result<(), Error<Self::PData>>;
 }
 
@@ -119,46 +125,71 @@ impl<PData> MessageChannel<PData> {
 ///
 /// Note for implementers: The `EffectHandler` is designed to be cloned and shared across tasks
 /// so the cost of cloning should be minimal.
-pub struct EffectHandler<Msg> {
+pub struct EffectHandler<Msg, Mode: ThreadMode = LocalMode> {
     /// The name of the exporter.
-    exporter_name: NodeName,
+    exporter_name: Mode::NameRef,
 
     /// A 0 size type used to parameterize the `EffectHandler` with the type of message the exporter
     /// will consume.
-    pd: std::marker::PhantomData<Msg>,
+    pd: PhantomData<Msg>,
+
+    /// Marker for the thread mode.
+    _mode: PhantomData<Mode>,
 }
 
-impl<Msg> Clone for EffectHandler<Msg> {
+impl<Msg, Mode: ThreadMode> Clone for EffectHandler<Msg, Mode> {
     fn clone(&self) -> Self {
         EffectHandler {
             exporter_name: self.exporter_name.clone(),
             pd: self.pd,
+            _mode: PhantomData,
         }
     }
 }
 
-impl<Msg> EffectHandler<Msg> {
-    /// Creates a new `EffectHandler` with the given exporter name.
-    pub fn new<S: AsRef<str>>(exporter_name: S) -> Self {
-        EffectHandler {
-            exporter_name: Rc::from(exporter_name.as_ref()),
-            pd: std::marker::PhantomData,
-        }
-    }
-
+// Implementation for any mode
+impl<Msg, Mode: ThreadMode> EffectHandler<Msg, Mode> {
     /// Returns the name of the exporter associated with this handler.
     #[must_use]
     pub fn exporter_name(&self) -> NodeName {
-        self.exporter_name.clone()
+        // Convert to NodeName (Rc<str>) to maintain compatibility with existing API
+        Rc::from(self.exporter_name.as_ref())
     }
-
-    // Note for reviewers: More methods will be added in future PRs.
 }
+
+// Implementation specific to LocalMode (default, non-Send)
+impl<Msg> EffectHandler<Msg, LocalMode> {
+    /// Creates a new local (non-Send) `EffectHandler` with the given exporter name.
+    /// This is the default mode that maintains backward compatibility.
+    pub fn new<S: AsRef<str>>(exporter_name: S) -> Self {
+        EffectHandler {
+            exporter_name: Rc::from(exporter_name.as_ref()),
+            pd: PhantomData,
+            _mode: PhantomData,
+        }
+    }
+}
+
+// Implementation for SendableMode (Send)
+impl<Msg: Send + 'static> EffectHandler<Msg, SendableMode> {
+    /// Creates a new thread-safe (Send) `EffectHandler` with the given exporter name.
+    /// Use this when you need an EffectHandler that can be sent across thread boundaries.
+    pub fn new_sendable<S: AsRef<str>>(exporter_name: S) -> Self {
+        EffectHandler {
+            exporter_name: Arc::from(exporter_name.as_ref()),
+            pd: PhantomData,
+            _mode: PhantomData,
+        }
+    }
+}
+
+// Note for reviewers: More methods will be added in future PRs.
 
 #[cfg(test)]
 mod tests {
     use crate::exporter::{EffectHandler, Error, Exporter, MessageChannel};
     use crate::message::{ControlMsg, Message};
+    use crate::receiver::LocalMode;
     use crate::testing::exporter::ExporterTestRuntime;
     use crate::testing::{CtrMsgCounters, TestMsg};
     use async_trait::async_trait;
@@ -181,11 +212,12 @@ mod tests {
     #[async_trait(?Send)]
     impl Exporter for TestExporter {
         type PData = TestMsg;
+        type Mode = LocalMode;
 
         async fn start(
             self: Box<Self>,
             mut msg_chan: MessageChannel<Self::PData>,
-            effect_handler: EffectHandler<Self::PData>,
+            effect_handler: EffectHandler<Self::PData, Self::Mode>,
         ) -> Result<(), Error<Self::PData>> {
             // Loop until a Shutdown event is received.
             loop {
