@@ -6,7 +6,7 @@ alwaysApply: true
 # Design Principles
 
 - Target a single-threaded async runtime
-- Favor ?Send futures whenever possible
+- Declare async traits as `?Send`, providing `!Send` implementations and futures whenever practical
 - Avoid synchronization primitives as much as possible
 - Optimize for performance
 - Avoid unbounded channels and data structures
