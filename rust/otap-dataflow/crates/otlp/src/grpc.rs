@@ -13,7 +13,6 @@ use otap_df_engine::receiver::EffectHandler;
 
 /// Expose the OTLP gRPC services.
 /// See the build.rs file for more information.
-// #[path = "../../grpc_stubs"]
 pub mod grpc_stubs {
     #[path = ""]
     pub mod proto {
@@ -88,11 +87,29 @@ pub mod grpc_stubs {
 pub struct LogsServiceImpl {
     effect_handler: EffectHandler<OTLPRequest>,
 }
+
+impl LogsServiceImpl {
+    pub fn new(effect_handler: EffectHandler<OTLPRequest>) -> Self {
+        Self { effect_handler }
+    }
+}
 pub struct MetricsServiceImpl {
     effect_handler: EffectHandler<OTLPRequest>,
 }
+
+impl MetricsServiceImpl {
+    pub fn new(effect_handler: EffectHandler<OTLPRequest>) -> Self {
+        Self { effect_handler }
+    }
+}
 pub struct TraceServiceImpl {
     effect_handler: EffectHandler<OTLPRequest>,
+}
+
+impl TraceServiceImpl {
+    pub fn new(effect_handler: EffectHandler<OTLPRequest>) -> Self {
+        Self { effect_handler }
+    }
 }
 
 #[tonic::async_trait]
