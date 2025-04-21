@@ -6,7 +6,7 @@ use crate::grpc::{LogsServiceImpl, MetricsServiceImpl, TraceServiceImpl, OTLPReq
 use crate::grpc::grpc_stubs::proto::{collector::{logs::v1::logs_service_server::LogsServiceServer,
     metrics::v1::metrics_service_server::MetricsServiceServer,
     trace::v1::trace_service_server::TraceServiceServer}};
-use otap_df_engine::receiver::{EffectHandler, Receiver, ControlMsgChannel};
+use otap_df_engine::receiver::{EffectHandler, Receiver, ControlMsgChannel, SendableMode};
 use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
 use async_trait::async_trait;
@@ -20,25 +20,20 @@ struct OTLPReceiver {
     listening_addr: SocketAddr,
 }
 
-#[async_trait(?Send)]
+#[async_trait( ? Send)]
 impl Receiver for OTLPReceiver {
     type PData = OTLPRequest;
+    type Mode = SendableMode;
     async fn start(
         self: Box<Self>,
         ctrl_msg_recv: ControlMsgChannel,
-        effect_handler: EffectHandler<Self::PData>,
+        effect_handler: EffectHandler<Self::PData, Self::Mode>,
     ) -> Result<(), Error<Self::PData>> {
 
         // create listener on addr provided from config
         let listener = effect_handler.tcp_listener(self.listening_addr)?;
         let listener_stream = TcpListenerStream::new(listener);
 
-        let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let listener = effect_handler.tcp_listener(addr)?;
-        let local_addr = listener.local_addr().unwrap();
-
-        // Notify the test of the actual bound address.
-        let _ = self.port_notifier.send(local_addr);
 
         //create services for the grpc server and clone the effect handler to pass message
         let logs_service = LogsServiceImpl::new(effect_handler.clone());

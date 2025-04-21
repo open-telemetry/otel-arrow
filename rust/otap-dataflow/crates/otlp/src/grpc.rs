@@ -9,7 +9,8 @@ use grpc_stubs::proto::collector::trace::v1::{
     ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
 use tonic::{Request, Response, Status};
-use otap_df_engine::receiver::EffectHandler;
+use otap_df_engine::receiver::{EffectHandler, SendableMode};
+
 
 /// Expose the OTLP gRPC services.
 /// See the build.rs file for more information.
@@ -85,29 +86,29 @@ pub mod grpc_stubs {
 
 
 pub struct LogsServiceImpl {
-    effect_handler: EffectHandler<OTLPRequest>,
+    effect_handler: EffectHandler<OTLPRequest, SendableMode>,
 }
 
 impl LogsServiceImpl {
-    pub fn new(effect_handler: EffectHandler<OTLPRequest>) -> Self {
+    pub fn new(effect_handler: EffectHandler<OTLPRequest, SendableMode>) -> Self {
         Self { effect_handler }
     }
 }
 pub struct MetricsServiceImpl {
-    effect_handler: EffectHandler<OTLPRequest>,
+    effect_handler: EffectHandler<OTLPRequest, SendableMode>,
 }
 
 impl MetricsServiceImpl {
-    pub fn new(effect_handler: EffectHandler<OTLPRequest>) -> Self {
+    pub fn new(effect_handler: EffectHandler<OTLPRequest, SendableMode>) -> Self {
         Self { effect_handler }
     }
 }
 pub struct TraceServiceImpl {
-    effect_handler: EffectHandler<OTLPRequest>,
+    effect_handler: EffectHandler<OTLPRequest, SendableMode>,
 }
 
 impl TraceServiceImpl {
-    pub fn new(effect_handler: EffectHandler<OTLPRequest>) -> Self {
+    pub fn new(effect_handler: EffectHandler<OTLPRequest, SendableMode>) -> Self {
         Self { effect_handler }
     }
 }
@@ -118,8 +119,8 @@ impl LogsService for LogsServiceImpl {
         &self,
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
-
-        self.effect_handler.send_message(OTLPRequest::Logs(request.into_inner())).await;
+        let effect_handler_clone = self.effect_handler.clone();
+        effect_handler_clone.send_message(OTLPRequest::Logs(request.into_inner())).await;
 
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,
@@ -133,7 +134,8 @@ impl MetricsService for MetricsServiceImpl {
         &self,
         request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
-        self.effect_handler.send_message(OTLPRequest::Metrics(request.into_inner())).await;
+        let effect_handler_clone = self.effect_handler.clone();
+        effect_handler_clone.send_message(OTLPRequest::Metrics(request.into_inner())).await;
         Ok(Response::new(ExportMetricsServiceResponse {
             partial_success: None,
         }))
@@ -146,7 +148,8 @@ impl TraceService for TraceServiceImpl {
         &self,
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        self.effect_handler.send_message(OTLPRequest::Traces(request.into_inner())).await;
+        let effect_handler_clone = self.effect_handler.clone();
+        effect_handler_clone.send_message(OTLPRequest::Traces(request.into_inner())).await;
         Ok(Response::new(ExportTraceServiceResponse {
             partial_success: None,
         }))
