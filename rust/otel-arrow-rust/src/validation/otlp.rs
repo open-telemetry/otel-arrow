@@ -237,8 +237,8 @@ impl LogsService for TestReceiver<ExportLogsServiceRequest> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::otap::*;
     use super::*;
+    use super::super::otap::*;
     use crate::validation::scenarios::run_single_round_trip_test;
     use crate::validation::testdata;
 
@@ -266,6 +266,8 @@ mod tests {
         .await;
     }
 
+    // The test below fails because of disagreements between the Rust
+    // and Golang implementations about OTAP metrics encoding.
     #[tokio::test]
     async fn test_otap_metrics_single_request() {
         run_single_round_trip_test::<OTLPMetricsInputType, OTAPMetricsOutputType, _>(
