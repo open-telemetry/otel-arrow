@@ -226,7 +226,7 @@ struct MetricsArrays<'a> {
     schema_url: Option<StringArrayAccessor<'a>>,
     name: StringArrayAccessor<'a>,
     description: Option<StringArrayAccessor<'a>>,
-    unit: Option<StringArrayAccessor<'a>>,
+    unit: Option<&'a StringArray>,
     aggregation_temporality: Option<&'a Int32Array>,
     is_monotonic: Option<&'a BooleanArray>,
 }
@@ -253,7 +253,15 @@ impl<'a> TryFrom<&'a RecordBatch> for MetricsArrays<'a> {
 
         let unit = rb
             .column_by_name(consts::UNIT)
-            .map(StringArrayAccessor::new)
+            .map(|a| {
+                a.as_any().downcast_ref::<StringArray>().with_context(|| {
+                    error::ColumnDataTypeMismatchSnafu {
+                        name: consts::UNIT,
+                        expect: DataType::Utf8,
+                        actual: a.data_type().clone(),
+                    }
+                })
+            })
             .transpose()?;
         let aggregation_temporality = get_i32_array_opt(rb, consts::AGGREGATION_TEMPORALITY)?;
         let is_monotonic = get_bool_array_opt(rb, consts::IS_MONOTONIC)?;
@@ -283,90 +291,68 @@ pub fn metrics_from(
     let mut res_id = 0;
     let mut scope_id = 0;
 
-    println!("There are {:?} RB rows", &rb);
-
-    let resource_arrays = match ResourceArrays::try_from(rb) {
-	Ok(ras) => Some(ras),
-	Err(error::Error::ColumnNotFound{ .. }) => None,
-	Err(err) => return Err(err),
-    };
-    let scope_arrays = match ScopeArrays::try_from(rb) {
-	Ok(sas) => Some(sas),
-	Err(error::Error::ColumnNotFound{ .. }) => None,
-	Err(err) => return Err(err),
-    };
+    let resource_arrays = ResourceArrays::try_from(rb)?;
+    let scope_arrays = ScopeArrays::try_from(rb)?;
     let metrics_arrays = MetricsArrays::try_from(rb)?;
 
     for idx in 0..rb.num_rows() {
-	println!("RB row {}", idx);
-        let res_delta_id = resource_arrays.as_ref().and_then(|ra| ra.id.value_at(idx)).unwrap_or_default();
+        let res_delta_id = resource_arrays.id.value_at(idx).unwrap_or_default();
         res_id += res_delta_id;
 
         if prev_res_id != Some(res_id) {
             // new resource id
             prev_res_id = Some(res_id);
+            let res_metrics = metrics.resource_metrics.append_and_get();
             prev_scope_id = None;
 
-            let res_metrics = metrics.resource_metrics.append_and_get();
-	    
             // Update the resource field of current resource metrics.
-	    // If there is no resource_arrays, the resource is empty
-	    // (instead of None).
-	    if let Some(ra) = resource_arrays.as_ref()
-	    {
-		let resource = res_metrics.resource.get_or_insert_default();
+            let resource = res_metrics.resource.get_or_insert_default();
+            if let Some(dropped_attributes_count) =
+                resource_arrays.dropped_attributes_count.value_at(idx)
+            {
+                resource.dropped_attributes_count = dropped_attributes_count;
+            }
 
-		if let Some(dropped_attributes_count) = ra.dropped_attributes_count.value_at(idx)
-		{
-                    resource.dropped_attributes_count = dropped_attributes_count;
-		}
-
-		if let Some(res_id) = ra.id.value_at(idx)
-                    && let Some(attrs) = related_data
+            if let Some(res_id) = resource_arrays.id.value_at(idx)
+                && let Some(attrs) = related_data
                     .res_attr_map_store
                     .attribute_by_delta_id(res_id)
-		{
-                    resource.attributes = attrs.to_vec();
-		}
-		
-		res_metrics.schema_url = ra.schema_url.value_at(idx).unwrap_or_default();
+            {
+                resource.attributes = attrs.to_vec();
             }
-	}
 
-        let scope_delta_id_opt = scope_arrays.as_ref().and_then(|sa| sa.id.value_at(idx));
+            res_metrics.schema_url = resource_arrays.schema_url.value_at(idx).unwrap_or_default();
+        }
 
+        let scope_delta_id_opt = scope_arrays.id.value_at(idx);
         scope_id += scope_delta_id_opt.unwrap_or_default();
 
         if prev_scope_id != Some(scope_id) {
             prev_scope_id = Some(scope_id);
-
             // safety: We must have appended at least one resource metrics when reach here
             let current_scope_metrics_slice =
                 &mut metrics.resource_metrics.last_mut().unwrap().scope_metrics;
             let scope_metrics = current_scope_metrics_slice.append_and_get();
 
-	    if let Some(sa) = scope_arrays.as_ref() {
-		let mut scope = InstrumentationScope {
-                    name: sa.name.value_at(idx).unwrap_or_default(),
-                    version: sa.version.value_at_or_default(idx),
-                    dropped_attributes_count: sa
-			.dropped_attributes_count
-			.value_at_or_default(idx),
-                    attributes: vec![],
-		};
+            let mut scope = InstrumentationScope {
+                name: scope_arrays.name.value_at(idx).unwrap_or_default(),
+                version: scope_arrays.version.value_at_or_default(idx),
+                dropped_attributes_count: scope_arrays
+                    .dropped_attributes_count
+                    .value_at_or_default(idx),
+                attributes: vec![],
+            };
 
-		if let Some(scope_id) = scope_delta_id_opt
-                    && let Some(attrs) = related_data
+            if let Some(scope_id) = scope_delta_id_opt
+                && let Some(attrs) = related_data
                     .scope_attr_map_store
                     .attribute_by_delta_id(scope_id)
-		{
-                    scope.attributes = attrs.to_vec();
-		}
-		scope_metrics.scope = Some(scope);
-
-		// ScopeMetrics uses the schema_url from metrics arrays.
-		scope_metrics.schema_url = metrics_arrays.schema_url.value_at(idx).unwrap_or_default();
-	    }
+            {
+                scope.attributes = attrs.to_vec();
+            }
+            scope_metrics.scope = Some(scope);
+            // ScopeMetrics uses the schema_url from metrics arrays.
+            scope_metrics.schema_url = metrics_arrays.schema_url.value_at(idx).unwrap_or_default();
         }
 
         // Creates a metric at the end of current scope metrics slice.
@@ -379,39 +365,27 @@ pub fn metrics_from(
             .last_mut()
             .unwrap();
         let current_metric = current_scope_metrics.metrics.append_and_get();
-	println!("CASE A");
         let delta_id = metrics_arrays.id.value_at_or_default(idx);
-	println!("CASE B");
         let metric_id = related_data.metric_id_from_delta(delta_id);
-	println!("CASE C");
         let metric_type_val = metrics_arrays.metric_type.value_at_or_default(idx);
-	println!("CASE D");
         let metric_type =
             MetricType::try_from(metric_type_val).context(error::UnrecognizedMetricTypeSnafu {
                 metric_type: metric_type_val,
             })?;
-	println!("CASE E");
 
         let aggregation_temporality = metrics_arrays
             .aggregation_temporality
             .value_at_or_default(idx);
-	println!("CASE F");
         let is_monotonic = metrics_arrays.is_monotonic.value_at_or_default(idx);
-	println!("CASE G");
         current_metric.name = metrics_arrays.name.value_at(idx).unwrap_or_default();
-	println!("CASE H");
         current_metric.description = metrics_arrays.description.value_at(idx).unwrap_or_default();
-	println!("CASE I");
         current_metric.unit = metrics_arrays.unit.value_at_or_default(idx);
-
-	println!("metric type {:?} ID {:?}", metric_type, metric_id);
 
         match metric_type {
             MetricType::Gauge => {
                 let dps = related_data
                     .number_data_points_store
                     .get_or_default(metric_id);
-		println!("dps {:?}", dps);
                 current_metric.data = Some(metric::Data::Gauge(
                     crate::proto::opentelemetry::metrics::v1::Gauge {
                         data_points: std::mem::take(dps),
@@ -461,7 +435,7 @@ pub fn metrics_from(
             MetricType::Empty => return error::EmptyMetricTypeSnafu.fail(),
         }
     }
-    println!("LOOK {:?}", metrics);
+
     Ok(metrics)
 }
 
