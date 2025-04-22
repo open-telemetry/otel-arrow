@@ -373,11 +373,9 @@ where
     )
     .await
     {
-        Ok(Ok(_)) => eprintln!("{} server shut down successfully", O::signal()),
-        Ok(Err(e)) => eprintln!("Error shutting down {} server: {}", O::signal(), e),
-        Err(e) => {
-            eprintln!("Timed out waiting for {} server to shut down: {}", O::signal(), e);
-        }
+        Ok(Ok(_)) => eprintln!("Server shut down successfully"),
+        Ok(Err(e)) => eprintln!("Error shutting down server: {}", e),
+        Err(e) => eprintln!("Timed out waiting for server to shut down: {}", e),
     }
 
     // Return the result from the test logic

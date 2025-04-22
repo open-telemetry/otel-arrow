@@ -283,15 +283,19 @@ pub fn metrics_from(
     let mut res_id = 0;
     let mut scope_id = 0;
 
+    println!("There are {:?} RB rows", &rb);
+
     let resource_arrays = match ResourceArrays::try_from(rb) {
 	Ok(ras) => Some(ras),
 	Err(error::Error::ColumnNotFound{ .. }) => None,
 	Err(err) => return Err(err),
     };
-    let scope_arrays = ScopeArrays::try_from(rb)?;
+    let scope_arrays = match ScopeArrays::try_from(rb) {
+	Ok(sas) => Some(sas),
+	Err(error::Error::ColumnNotFound{ .. }) => None,
+	Err(err) => return Err(err),
+    };
     let metrics_arrays = MetricsArrays::try_from(rb)?;
-
-    println!("There are {} RB rows", rb.num_rows());
 
     for idx in 0..rb.num_rows() {
 	println!("RB row {}", idx);
@@ -301,10 +305,13 @@ pub fn metrics_from(
         if prev_res_id != Some(res_id) {
             // new resource id
             prev_res_id = Some(res_id);
-            let res_metrics = metrics.resource_metrics.append_and_get();
             prev_scope_id = None;
 
+            let res_metrics = metrics.resource_metrics.append_and_get();
+	    
             // Update the resource field of current resource metrics.
+	    // If there is no resource_arrays, the resource is empty
+	    // (instead of None).
 	    if let Some(ra) = resource_arrays.as_ref()
 	    {
 		let resource = res_metrics.resource.get_or_insert_default();
@@ -326,35 +333,40 @@ pub fn metrics_from(
             }
 	}
 
-        let scope_delta_id_opt = scope_arrays.id.value_at(idx);
+        let scope_delta_id_opt = scope_arrays.as_ref().and_then(|sa| sa.id.value_at(idx));
+
         scope_id += scope_delta_id_opt.unwrap_or_default();
 
         if prev_scope_id != Some(scope_id) {
             prev_scope_id = Some(scope_id);
+
             // safety: We must have appended at least one resource metrics when reach here
             let current_scope_metrics_slice =
                 &mut metrics.resource_metrics.last_mut().unwrap().scope_metrics;
             let scope_metrics = current_scope_metrics_slice.append_and_get();
 
-            let mut scope = InstrumentationScope {
-                name: scope_arrays.name.value_at(idx).unwrap_or_default(),
-                version: scope_arrays.version.value_at_or_default(idx),
-                dropped_attributes_count: scope_arrays
-                    .dropped_attributes_count
-                    .value_at_or_default(idx),
-                attributes: vec![],
-            };
+	    if let Some(sa) = scope_arrays.as_ref() {
+		let mut scope = InstrumentationScope {
+                    name: sa.name.value_at(idx).unwrap_or_default(),
+                    version: sa.version.value_at_or_default(idx),
+                    dropped_attributes_count: sa
+			.dropped_attributes_count
+			.value_at_or_default(idx),
+                    attributes: vec![],
+		};
 
-            if let Some(scope_id) = scope_delta_id_opt
-                && let Some(attrs) = related_data
+		if let Some(scope_id) = scope_delta_id_opt
+                    && let Some(attrs) = related_data
                     .scope_attr_map_store
                     .attribute_by_delta_id(scope_id)
-            {
-                scope.attributes = attrs.to_vec();
-            }
-            scope_metrics.scope = Some(scope);
-            // ScopeMetrics uses the schema_url from metrics arrays.
-            scope_metrics.schema_url = metrics_arrays.schema_url.value_at(idx).unwrap_or_default();
+		{
+                    scope.attributes = attrs.to_vec();
+		}
+		scope_metrics.scope = Some(scope);
+
+		// ScopeMetrics uses the schema_url from metrics arrays.
+		scope_metrics.schema_url = metrics_arrays.schema_url.value_at(idx).unwrap_or_default();
+	    }
         }
 
         // Creates a metric at the end of current scope metrics slice.
@@ -367,20 +379,29 @@ pub fn metrics_from(
             .last_mut()
             .unwrap();
         let current_metric = current_scope_metrics.metrics.append_and_get();
+	println!("CASE A");
         let delta_id = metrics_arrays.id.value_at_or_default(idx);
+	println!("CASE B");
         let metric_id = related_data.metric_id_from_delta(delta_id);
+	println!("CASE C");
         let metric_type_val = metrics_arrays.metric_type.value_at_or_default(idx);
+	println!("CASE D");
         let metric_type =
             MetricType::try_from(metric_type_val).context(error::UnrecognizedMetricTypeSnafu {
                 metric_type: metric_type_val,
             })?;
+	println!("CASE E");
 
         let aggregation_temporality = metrics_arrays
             .aggregation_temporality
             .value_at_or_default(idx);
+	println!("CASE F");
         let is_monotonic = metrics_arrays.is_monotonic.value_at_or_default(idx);
+	println!("CASE G");
         current_metric.name = metrics_arrays.name.value_at(idx).unwrap_or_default();
+	println!("CASE H");
         current_metric.description = metrics_arrays.description.value_at(idx).unwrap_or_default();
+	println!("CASE I");
         current_metric.unit = metrics_arrays.unit.value_at_or_default(idx);
 
 	println!("metric type {:?} ID {:?}", metric_type, metric_id);
