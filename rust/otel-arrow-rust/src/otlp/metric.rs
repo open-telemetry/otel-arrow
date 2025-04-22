@@ -283,12 +283,19 @@ pub fn metrics_from(
     let mut res_id = 0;
     let mut scope_id = 0;
 
-    let resource_arrays = ResourceArrays::try_from(rb)?;
+    let resource_arrays = match ResourceArrays::try_from(rb) {
+	Ok(ras) => Some(ras),
+	Err(error::Error::ColumnNotFound{ .. }) => None,
+	Err(err) => return Err(err),
+    };
     let scope_arrays = ScopeArrays::try_from(rb)?;
     let metrics_arrays = MetricsArrays::try_from(rb)?;
 
+    println!("There are {} RB rows", rb.num_rows());
+
     for idx in 0..rb.num_rows() {
-        let res_delta_id = resource_arrays.id.value_at(idx).unwrap_or_default();
+	println!("RB row {}", idx);
+        let res_delta_id = resource_arrays.as_ref().and_then(|ra| ra.id.value_at(idx)).unwrap_or_default();
         res_id += res_delta_id;
 
         if prev_res_id != Some(res_id) {
@@ -298,23 +305,26 @@ pub fn metrics_from(
             prev_scope_id = None;
 
             // Update the resource field of current resource metrics.
-            let resource = res_metrics.resource.get_or_insert_default();
-            if let Some(dropped_attributes_count) =
-                resource_arrays.dropped_attributes_count.value_at(idx)
-            {
-                resource.dropped_attributes_count = dropped_attributes_count;
-            }
+	    if let Some(ra) = resource_arrays.as_ref()
+	    {
+		let resource = res_metrics.resource.get_or_insert_default();
 
-            if let Some(res_id) = resource_arrays.id.value_at(idx)
-                && let Some(attrs) = related_data
+		if let Some(dropped_attributes_count) = ra.dropped_attributes_count.value_at(idx)
+		{
+                    resource.dropped_attributes_count = dropped_attributes_count;
+		}
+
+		if let Some(res_id) = ra.id.value_at(idx)
+                    && let Some(attrs) = related_data
                     .res_attr_map_store
                     .attribute_by_delta_id(res_id)
-            {
-                resource.attributes = attrs.to_vec();
+		{
+                    resource.attributes = attrs.to_vec();
+		}
+		
+		res_metrics.schema_url = ra.schema_url.value_at(idx).unwrap_or_default();
             }
-
-            res_metrics.schema_url = resource_arrays.schema_url.value_at(idx).unwrap_or_default();
-        }
+	}
 
         let scope_delta_id_opt = scope_arrays.id.value_at(idx);
         scope_id += scope_delta_id_opt.unwrap_or_default();
@@ -373,11 +383,14 @@ pub fn metrics_from(
         current_metric.description = metrics_arrays.description.value_at(idx).unwrap_or_default();
         current_metric.unit = metrics_arrays.unit.value_at_or_default(idx);
 
+	println!("metric type {:?} ID {:?}", metric_type, metric_id);
+
         match metric_type {
             MetricType::Gauge => {
                 let dps = related_data
                     .number_data_points_store
                     .get_or_default(metric_id);
+		println!("dps {:?}", dps);
                 current_metric.data = Some(metric::Data::Gauge(
                     crate::proto::opentelemetry::metrics::v1::Gauge {
                         data_points: std::mem::take(dps),
@@ -427,7 +440,7 @@ pub fn metrics_from(
             MetricType::Empty => return error::EmptyMetricTypeSnafu.fail(),
         }
     }
-
+    println!("LOOK {:?}", metrics);
     Ok(metrics)
 }
 

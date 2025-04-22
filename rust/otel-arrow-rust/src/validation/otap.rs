@@ -6,9 +6,10 @@ use crate::proto::opentelemetry::experimental::arrow::v1::{
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
 
 use super::service_type::{ServiceOutputType, TestReceiver};
+use super::tcp_stream::ShutdownableTcpListenerStream;
 
 use std::pin::Pin;
-use tokio_stream::{Stream, wrappers::TcpListenerStream};
+use tokio_stream::Stream;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
@@ -82,7 +83,7 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
                                     .is_err()
                                 {
                                     break; // Client disconnected
-                                }
+				}
                             }
                         }
                     }
@@ -126,7 +127,7 @@ impl ServiceOutputType for OTAPMetricsOutputType {
 
     fn create_server(
         receiver: TestReceiver<Self::Request>,
-        incoming: TcpListenerStream,
+        incoming: ShutdownableTcpListenerStream,
     ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
         tokio::spawn(async move {
             let adapter = OTAPMetricsAdapter::new(receiver);

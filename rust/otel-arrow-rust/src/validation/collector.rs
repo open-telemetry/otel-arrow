@@ -19,7 +19,7 @@ use super::service_type::{start_test_receiver, ServiceInputType, ServiceOutputTy
 
 const READY_TIMEOUT_SECONDS: u64 = 10;
 const READY_MESSAGE: &str = "Everything is ready.";
-pub const SHUTDOWN_TIMEOUT_SECONDS: u64 = 5;
+pub const SHUTDOWN_TIMEOUT_SECONDS: u64 = 15;
 pub const RECEIVER_TIMEOUT_SECONDS: u64 = 10;
 pub const TEST_TIMEOUT_SECONDS: u64 = 20;
 
@@ -130,7 +130,7 @@ impl CollectorProcess {
         }
 
         // Wait for the collector to exit
-        self.process.try_wait()
+        Ok(Some(self.process.wait()?))
     }
 
     /// Start a collector with the given configuration
@@ -256,6 +256,8 @@ exporters:
       insecure: true
     wait_for_ready: true
     timeout: 2s
+    sending_queue:
+      enabled: false
     retry_on_failure:
       enabled: false
 
@@ -279,6 +281,7 @@ pub struct TestContext<I: ServiceInputType, O: ServiceOutputType> {
     pub collector: CollectorProcess,
     pub request_rx: TimeoutReceiver<O::Request>,
     pub server_handle: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    pub server_shutdown_tx: tokio::sync::oneshot::Sender<()>,
 }
 
 /// Generic test runner for telemetry signal tests
@@ -305,7 +308,7 @@ where
     let receiver_port = 40000 + (random_value % 25000);
 
     // Start the test receiver server and wrap it with a timeout to avoid tests getting stuck
-    let (server_handle, request_rx_raw, exporter_port) = start_test_receiver::<O>()
+    let (server_handle, request_rx_raw, exporter_port, server_shutdown_tx) = start_test_receiver::<O>()
         .await
         .map_err(|e| format!("Failed to start test receiver: {}", e))?;
 
@@ -336,6 +339,7 @@ where
         collector,
         request_rx,
         server_handle,
+        server_shutdown_tx,
     };
 
     // Run the provided test logic, transferring ownership of the context
@@ -351,7 +355,7 @@ where
             if let Some(s) = status {
                 eprintln!("Collector exited with status: {}", s);
             } else {
-                eprintln!("Collector shutdown initiated");
+                eprintln!("Collector shut down");
             }
         }
         Err(e) => eprintln!("Error shutting down collector: {}", e),
@@ -359,6 +363,9 @@ where
 
     drop(context.request_rx);
 
+    // Gracefully shut down the server by sending a signal through the shutdown channel
+    let _ = context.server_shutdown_tx.send(());
+    
     // Wait for the server to shut down with timeout
     match tokio::time::timeout(
         std::time::Duration::from_secs(SHUTDOWN_TIMEOUT_SECONDS),
@@ -368,8 +375,8 @@ where
     {
         Ok(Ok(_)) => eprintln!("{} server shut down successfully", O::signal()),
         Ok(Err(e)) => eprintln!("Error shutting down {} server: {}", O::signal(), e),
-        Err(_) => {
-            eprintln!("Timed out waiting for {} server to shut down", O::signal());
+        Err(e) => {
+            eprintln!("Timed out waiting for {} server to shut down: {}", O::signal(), e);
         }
     }
 

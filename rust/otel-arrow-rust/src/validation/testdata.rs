@@ -62,11 +62,12 @@ pub mod metrics {
             .unit("count")
             .finish();
 
-        ExportMetricsServiceRequest::new(vec![ResourceMetrics::build(Resource::default())
-            .scope_metrics(vec![ScopeMetrics::build(InstrumentationScope::default())
-                .metrics(vec![metric])
-                .finish()])
-            .finish()])
+        ExportMetricsServiceRequest::new(
+	    vec![ResourceMetrics::build(Resource::default())
+		 .scope_metrics(vec![ScopeMetrics::build(InstrumentationScope::default())
+				     .metrics(vec![metric])
+				     .finish()])
+		 .finish()])
     }
 }
 

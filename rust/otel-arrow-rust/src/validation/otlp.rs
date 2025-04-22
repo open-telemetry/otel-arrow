@@ -18,8 +18,8 @@ use crate::proto::opentelemetry::collector::trace::v1::{
 };
 
 use super::service_type::{ServiceInputType, ServiceOutputType, TestReceiver};
+use super::tcp_stream::ShutdownableTcpListenerStream;
 
-use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status};
 
@@ -72,7 +72,7 @@ impl ServiceOutputType for OTLPTracesOutputType {
 
     fn create_server(
         receiver: TestReceiver<Self::Request>,
-        incoming: TcpListenerStream,
+        incoming: ShutdownableTcpListenerStream,
     ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
         tokio::spawn(async move {
             Server::builder()
@@ -132,7 +132,7 @@ impl ServiceOutputType for OTLPMetricsOutputType {
 
     fn create_server(
         receiver: TestReceiver<Self::Request>,
-        incoming: TcpListenerStream,
+        incoming: ShutdownableTcpListenerStream,
     ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
         tokio::spawn(async move {
             Server::builder()
@@ -192,7 +192,7 @@ impl ServiceOutputType for OTLPLogsOutputType {
 
     fn create_server(
         receiver: TestReceiver<Self::Request>,
-        incoming: TcpListenerStream,
+        incoming: ShutdownableTcpListenerStream,
     ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
         tokio::spawn(async move {
             Server::builder()
