@@ -17,8 +17,7 @@ pub mod traces {
     pub fn create_single_request() -> ExportTraceServiceRequest {
         let start_time = 1619712000000000000u64;
         let end_time = 1619712001000000000u64;
-        let trace_id =
-            TraceID::new(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+        let trace_id = TraceID::new(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
         let span_id = SpanID::new(&[1, 2, 3, 4, 5, 6, 7, 8]);
 
         let span = Span::build(trace_id, span_id, "test_span", start_time)
@@ -62,12 +61,11 @@ pub mod metrics {
             .unit("count")
             .finish();
 
-        ExportMetricsServiceRequest::new(
-	    vec![ResourceMetrics::build(Resource::default())
-		 .scope_metrics(vec![ScopeMetrics::build(InstrumentationScope::default())
-				     .metrics(vec![metric])
-				     .finish()])
-		 .finish()])
+        ExportMetricsServiceRequest::new(vec![ResourceMetrics::build(Resource::default())
+            .scope_metrics(vec![ScopeMetrics::build(InstrumentationScope::default())
+                .metrics(vec![metric])
+                .finish()])
+            .finish()])
     }
 }
 

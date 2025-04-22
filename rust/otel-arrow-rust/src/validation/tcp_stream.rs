@@ -1,13 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::pin::Pin;
-use std::task::{Context, Poll};
 use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
-use tokio_stream::{Stream, wrappers::TcpListenerStream};
-use std::sync::{Arc, Mutex};
+use tokio_stream::{wrappers::TcpListenerStream, Stream};
 
 /// A wrapper around TcpListenerStream that can be shut down
 pub struct ShutdownableTcpListenerStream {
@@ -27,33 +27,33 @@ impl Stream for ShutdownableTcpListenerStream {
 
         // Poll the shutdown channel
         let shutdown_poll = Pin::new(&mut self.shutdown_rx).poll(cx);
-        
+
         // If shutdown has been signaled, mark as shutdown and end the stream
         if let Poll::Ready(_) = shutdown_poll {
             eprintln!("Shutdown signal received, closing TCP listener stream");
             *self.shutdown_triggered.lock().unwrap() = true;
             return Poll::Ready(None);
         }
-        
+
         // Otherwise, poll the underlying stream
         Pin::new(&mut self.stream).poll_next(cx)
     }
 }
 
 pub fn create_shutdownable_tcp_listener(
-    listener: TcpListener
+    listener: TcpListener,
 ) -> (ShutdownableTcpListenerStream, oneshot::Sender<()>) {
     // Create a shutdown channel
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    
+
     // Create the standard TcpListenerStream
     let stream = TcpListenerStream::new(listener);
-    
+
     let shutdownable_stream = ShutdownableTcpListenerStream {
         stream,
         shutdown_rx,
         shutdown_triggered: Arc::new(Mutex::new(false)),
     };
-    
+
     (shutdownable_stream, shutdown_tx)
 }

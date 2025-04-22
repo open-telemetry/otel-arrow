@@ -83,7 +83,7 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
                                     .is_err()
                                 {
                                     break; // Client disconnected
-				}
+                                }
                             }
                         }
                     }

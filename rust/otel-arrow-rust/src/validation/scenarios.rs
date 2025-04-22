@@ -51,9 +51,11 @@ where
     )
     .await
     {
-        Ok(Ok(_)) => {},
+        Ok(Ok(_)) => {}
         Ok(Err(err)) => panic!("Test error {}", err),
-        Err(err) => panic!("Test timed out after {} seconds: {}", TEST_TIMEOUT_SECONDS, err),
+        Err(err) => panic!(
+            "Test timed out after {} seconds: {}",
+            TEST_TIMEOUT_SECONDS, err
+        ),
     }
 }
-

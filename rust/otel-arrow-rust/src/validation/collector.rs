@@ -308,9 +308,10 @@ where
     let receiver_port = 40000 + (random_value % 25000);
 
     // Start the test receiver server and wrap it with a timeout to avoid tests getting stuck
-    let (server_handle, request_rx_raw, exporter_port, server_shutdown_tx) = start_test_receiver::<O>()
-        .await
-        .map_err(|e| format!("Failed to start test receiver: {}", e))?;
+    let (server_handle, request_rx_raw, exporter_port, server_shutdown_tx) =
+        start_test_receiver::<O>()
+            .await
+            .map_err(|e| format!("Failed to start test receiver: {}", e))?;
 
     // Create a timeout-wrapped version of the receiver
     let timeout_duration = std::time::Duration::from_secs(RECEIVER_TIMEOUT_SECONDS);
@@ -321,8 +322,12 @@ where
 
     // Generate and start the collector with the input and output protocols using the dynamic ports
     let collector_config = generate_config(
-        I::protocol(), I::signal(), receiver_port, 
-        O::protocol(), O::signal(), exporter_port,
+        I::protocol(),
+        I::signal(),
+        receiver_port,
+        O::protocol(),
+        O::signal(),
+        exporter_port,
     );
 
     let collector = CollectorProcess::start(COLLECTOR_PATH.clone(), &collector_config)
@@ -365,7 +370,7 @@ where
 
     // Gracefully shut down the server by sending a signal through the shutdown channel
     let _ = context.server_shutdown_tx.send(());
-    
+
     // Wait for the server to shut down with timeout
     match tokio::time::timeout(
         std::time::Duration::from_secs(SHUTDOWN_TIMEOUT_SECONDS),

@@ -45,7 +45,7 @@ impl Into<Vec<u8>> for SpanID {
 }
 
 impl SpanID {
-    pub fn new(value: &[u8; 8]) -> SpanID{
+    pub fn new(value: &[u8; 8]) -> SpanID {
         SpanID(*value)
     }
 }

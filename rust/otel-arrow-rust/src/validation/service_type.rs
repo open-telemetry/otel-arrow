@@ -126,7 +126,7 @@ pub async fn start_test_receiver<T: ServiceOutputType>() -> Result<
     (
         tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
         mpsc::Receiver<T::Request>,
-        u16, // actual port number that was assigned
+        u16,                              // actual port number that was assigned
         tokio::sync::oneshot::Sender<()>, // shutdown channel
     ),
     String,
