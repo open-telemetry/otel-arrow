@@ -10,7 +10,6 @@ use grpc_stubs::proto::collector::trace::v1::{
 };
 use tonic::{Request, Response, Status};
 use otap_df_engine::receiver::{EffectHandler, SendableMode};
-use std::sync::Arc;
 
 
 /// Expose the OTLP gRPC services.
@@ -87,29 +86,29 @@ pub mod grpc_stubs {
 
 
 pub struct LogsServiceImpl {
-    effect_handler: Arc<EffectHandler<OTLPRequest, SendableMode>>,
+    effect_handler: EffectHandler<OTLPRequest, SendableMode>,
 }
 
 impl LogsServiceImpl {
-    pub fn new(effect_handler: Arc<EffectHandler<OTLPRequest, SendableMode>>) -> Self {
+    pub fn new(effect_handler: EffectHandler<OTLPRequest, SendableMode>) -> Self {
         Self { effect_handler }
     }
 }
 pub struct MetricsServiceImpl {
-    effect_handler: Arc<EffectHandler<OTLPRequest, SendableMode>>,
+    effect_handler: EffectHandler<OTLPRequest, SendableMode>,
 }
 
 impl MetricsServiceImpl {
-    pub fn new(effect_handler: Arc<EffectHandler<OTLPRequest, SendableMode>>) -> Self {
+    pub fn new(effect_handler: EffectHandler<OTLPRequest, SendableMode>) -> Self {
         Self { effect_handler }
     }
 }
 pub struct TraceServiceImpl {
-    effect_handler: Arc<EffectHandler<OTLPRequest, SendableMode>>,
+    effect_handler: EffectHandler<OTLPRequest, SendableMode>,
 }
 
 impl TraceServiceImpl {
-    pub fn new(effect_handler: Arc<EffectHandler<OTLPRequest, SendableMode>>) -> Self {
+    pub fn new(effect_handler: EffectHandler<OTLPRequest, SendableMode>) -> Self {
         Self { effect_handler }
     }
 }

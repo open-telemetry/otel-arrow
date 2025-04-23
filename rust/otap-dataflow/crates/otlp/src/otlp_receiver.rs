@@ -12,24 +12,20 @@ use crate::grpc::grpc_stubs::proto::collector::{logs::v1::logs_service_server::L
 use otap_df_engine::receiver::{EffectHandler, Receiver, ControlMsgChannel, SendableMode};
 use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
-use otap_df_channel::mpsc;
 use async_trait::async_trait;
 use std::net::SocketAddr;
 use tokio::time::{Duration, sleep};
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server;
-use std::sync::Arc;
 
 // Enum to represent received OTLP requests.
 #[derive(Debug)]
 pub enum CompressionMethod {
-    Zztd,
+    Zstd,
     Gzip,
     Deflate,
 }
-
-
 
 struct OTLPReceiver {
     listening_addr: SocketAddr,
@@ -71,15 +67,15 @@ impl Receiver for OTLPReceiver {
                     CompressionMethod::Deflate => CompressionEncoding::Deflate
                 };
                 // define services with compression
-                logs_service_server = LogsServiceServer::new(logs_service).send_compressed(encoding).accept_compressed(encoding)
-                metrics_service_server = MetricsServiceServer::new(metrics_service).send_compressed(encoding).accept_compressed(encoding)
-                trace_service_server = TraceServiceServer::new(logs_service).send_compressed(encoding).accept_compressed(encoding)
+                logs_service_server = LogsServiceServer::new(logs_service).send_compressed(encoding).accept_compressed(encoding);
+                metrics_service_server = MetricsServiceServer::new(metrics_service).send_compressed(encoding).accept_compressed(encoding);
+                trace_service_server = TraceServiceServer::new(trace_service).send_compressed(encoding).accept_compressed(encoding);
 
             } else {
                 // define servicees without compression
                 logs_service_server = LogsServiceServer::new(logs_service);
                 metrics_service_server = MetricsServiceServer::new(metrics_service);
-                trace_service_server = TraceServiceServer::new(logs_service);
+                trace_service_server = TraceServiceServer::new(trace_service);
             }
             
             tokio::select! {
@@ -139,7 +135,6 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::sync::oneshot;
-    use tokio::time::{Duration, sleep};
 
     #[test]
     fn test_receiver() {
@@ -150,15 +145,11 @@ mod tests {
         let grpc_addr = "127.0.0.1";
         let grpc_port = portpicker::pick_unused_port().expect("No free ports");
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
-        let addr: SocketAddr =
-        format!("{grpc_addr}:{grpc_port}")
-            .parse()
-            .map_err(|e: AddrParseError| Error::OtlpError {
-                error: e.to_string(),
-            })?;
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
         let receiver = OTLPReceiver {
-            listening_addr: addr 
+            listening_addr: addr,
+            compression: None
         };
 
 
