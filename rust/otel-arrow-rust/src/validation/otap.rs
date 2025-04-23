@@ -12,6 +12,9 @@ use tokio_stream::Stream;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
+use super::error;
+use snafu::{OptionExt, ResultExt};
+
 /// OTAP metrics service type for testing
 #[derive(Debug)]
 pub struct OTAPMetricsOutputType;
@@ -29,7 +32,7 @@ impl OTAPMetricsAdapter {
 
 /// Stream type for ArrowMetricsService implementation
 type BatchStatusStream =
-    Pin<Box<dyn Stream<Item = std::result::Result<BatchStatus, Status>> + Send + 'static>>;
+    Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>;
 
 #[tonic::async_trait]
 impl ArrowMetricsService for OTAPMetricsAdapter {
@@ -127,13 +130,14 @@ impl ServiceOutputType for OTAPMetricsOutputType {
     fn create_server(
         receiver: TestReceiver<Self::Request>,
         incoming: ShutdownableTcpListenerStream,
-    ) -> tokio::task::JoinHandle<super::error::Result<()>> {
+    ) -> tokio::task::JoinHandle<error::Result<()>> {
         tokio::spawn(async move {
             let adapter = OTAPMetricsAdapter::new(receiver);
             Server::builder()
                 .add_service(ArrowMetricsServiceServer::new(adapter))
                 .serve_with_incoming(incoming)
                 .await
+		.context(error::TonicTransportSnafu)
         })
     }
 }
@@ -143,7 +147,7 @@ async fn process_arrow_batch(
     batch: &BatchArrowRecords,
     related_data: &mut crate::otlp::related_data::RelatedData,
     receiver: &TestReceiver<ExportMetricsServiceRequest>,
-) -> Result<(), String> {
+) -> error::Result<()> {
     use crate::decode::record_message::RecordMessage;
     use arrow::ipc::reader::StreamReader;
     use std::io::Cursor;
@@ -152,27 +156,27 @@ async fn process_arrow_batch(
     for payload in &batch.arrow_payloads {
         // Create a reader for the Arrow record
         let reader = StreamReader::try_new(Cursor::new(&payload.record), None)
-            .map_err(|e| format!("Failed to create Arrow reader: {}", e))?;
+	    .context(error::ArrowSnafu)?;
 
         // Get the first (and only) batch
         let arrow_batch = reader
             .into_iter()
             .next()
-            .ok_or_else(|| "Empty Arrow batch".to_string())?
-            .map_err(|e| format!("Failed to read Arrow batch: {}", e))?;
+	    .context(error::EmptyBatchSnafu)?
+	    .context(error::ArrowSnafu)?;
 
         // Create a record message
         let record_message = RecordMessage {
             batch_id: batch.batch_id,
             schema_id: payload.schema_id.clone(),
             payload_type: crate::opentelemetry::ArrowPayloadType::try_from(payload.r#type)
-                .map_err(|_| format!("Invalid payload type: {}", payload.r#type))?,
+		.context(error::InvalidPayloadSnafu)?,
             record: arrow_batch,
         };
 
         // Convert Arrow payload to OTLP metrics
         let otlp_metrics = crate::otlp::metric::metrics_from(&record_message.record, related_data)
-            .map_err(|e| format!("Failed to convert to OTLP: {:?}", e))?;
+            .context(error::OTelArrowSnafu)?;
 
         // Send this individual metrics item to the receiver
         receiver
@@ -181,7 +185,7 @@ async fn process_arrow_batch(
                 "metrics",
             )
             .await
-            .map_err(|e| format!("Failed to process metrics: {}", e))?;
+	    .context(error::TonicStatusSnafu)?;
     }
 
     Ok(())

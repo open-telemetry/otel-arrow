@@ -16,9 +16,10 @@ use tokio::time::timeout;
 
 use snafu::{OptionExt, ResultExt};
 
-use super::error::{Result, BadExitStatusSnafu, FileNotAvailableSnafu, ReceiverTimeoutSnafu, NoResponseSnafu, SignalNotDeliveredSnafu, InputOutputSnafu, ReadyTimeoutSnafu,
-	    ChannelClosedSnafu,
-
+use super::error::{
+    BadExitStatusSnafu, FileNotAvailableSnafu, InputOutputSnafu, NoResponseSnafu,
+    ReceiverTimeoutSnafu, Result, SignalNotDeliveredSnafu,
+    ReadyTimeoutSnafu, ChannelClosedSnafu,
 };
 use super::service_type::{start_test_receiver, ServiceInputType, ServiceOutputType};
 
@@ -55,15 +56,15 @@ impl<T> TimeoutReceiver<T> {
     /// Receive a value with timeout
     pub async fn recv(&mut self) -> Result<T> {
         timeout(self.timeout, self.inner.recv())
-	    .await
-	    .context(ReceiverTimeoutSnafu)?
+            .await
+            .context(ReceiverTimeoutSnafu)?
             .context(NoResponseSnafu)
 
-	// {
+        // {
         //     Ok(Some(value)) => Ok(value),
         //     Ok(None) => Err(ChannelClosedSnafu{}.build()),
         //     Err(_) => Err(ReceiverTimeoutSnafu {
-	// 	duration: self.timeout,
+        // 	duration: self.timeout,
         //     }.build()),
         // }
     }
@@ -125,18 +126,18 @@ impl CollectorProcess {
         }
 
         // Wait for the collector to exit
-	let status = self.process.wait().context(InputOutputSnafu{desc: "wait"})?;
+        let status = self
+            .process
+            .wait()
+            .context(InputOutputSnafu { desc: "wait" })?;
 
-	status.success()
-	    .then(|| ())
-	    .context(BadExitStatusSnafu{ code: status.code() })
+        status.success().then(|| ()).context(BadExitStatusSnafu {
+            code: status.code(),
+        })
     }
 
     /// Start a collector with the given configuration
-    pub async fn start<T: AsRef<Path>>(
-        collector_path: T,
-        config_content: &str,
-    ) -> Result<Self> {
+    pub async fn start<T: AsRef<Path>>(collector_path: T, config_content: &str) -> Result<Self> {
         // Create a unique temporary config file for the collector with a random identifier
         // to prevent collision with other tests
         let random_id = format!("{:016x}", rand::random::<u64>());
@@ -144,9 +145,11 @@ impl CollectorProcess {
             .join(format!("otel_collector_config_{}.yaml", random_id));
 
         // Write the config to the file
-        let mut file = fs::File::create(&config_path).context(InputOutputSnafu{desc: "create"})?;
+        let mut file =
+            fs::File::create(&config_path).context(InputOutputSnafu { desc: "create" })?;
 
-        file.write_all(config_content.as_bytes()).context(InputOutputSnafu{desc: "write"})?;
+        file.write_all(config_content.as_bytes())
+            .context(InputOutputSnafu { desc: "write" })?;
 
         // Start the collector process with piped stdout and stderr
         let mut process = Command::new(collector_path.as_ref())
@@ -155,18 +158,18 @@ impl CollectorProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-	    .context(InputOutputSnafu{desc: "command"})?;
+            .context(InputOutputSnafu { desc: "command" })?;
 
         // Get handles to stdout and stderr
         let stdout = process
             .stdout
             .take()
-            .context(FileNotAvailableSnafu{desc: "stderr"})?;
+            .context(FileNotAvailableSnafu { desc: "stderr" })?;
 
         let stderr = process
             .stderr
             .take()
-            .context(FileNotAvailableSnafu{desc: "stderr"})?;
+            .context(FileNotAvailableSnafu { desc: "stderr" })?;
 
         // Create a standard sync channel to signal when the collector is ready
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -193,12 +196,12 @@ impl CollectorProcess {
         let timeout_duration = Duration::from_secs(READY_TIMEOUT_SECONDS);
 
         // Wait for the ready message with timeout and return the collector process when ready
-	_ = tokio::time::timeout(timeout_duration, tokio_rx)
-	    .await
-	    .context(ReadyTimeoutSnafu)?
-	    .context(ChannelClosedSnafu)?;
+        _ = tokio::time::timeout(timeout_duration, tokio_rx)
+            .await
+            .context(ReadyTimeoutSnafu)?
+            .context(ChannelClosedSnafu)?;
 
-	Ok(Self {
+        Ok(Self {
             process,
             config_path,
             stdout_handle: Some(stdout_handle),
@@ -304,8 +307,7 @@ where
 
     // Start the test receiver server and wrap it with a timeout to avoid tests getting stuck
     let (server_handle, request_rx_raw, exporter_port, server_shutdown_tx) =
-        start_test_receiver::<O>()
-        .await?;
+        start_test_receiver::<O>().await?;
 
     // Create a timeout-wrapped version of the receiver
     let timeout_duration = std::time::Duration::from_secs(RECEIVER_TIMEOUT_SECONDS);
@@ -324,8 +326,7 @@ where
         exporter_port,
     );
 
-    let collector = CollectorProcess::start(COLLECTOR_PATH.clone(), &collector_config)
-        .await?;
+    let collector = CollectorProcess::start(COLLECTOR_PATH.clone(), &collector_config).await?;
 
     // Create client to send test data
     let client_endpoint = format!("http://127.0.0.1:{}", receiver_port);
