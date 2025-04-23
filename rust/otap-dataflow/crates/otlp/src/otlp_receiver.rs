@@ -1,23 +1,39 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Implementation of the OTLP nodes (receiver, exporter, processor).
+//! 
+//! TODO: implement Ack control message, wait for receiver node to receive a Ack control message then the service can send a response back 
+//! TODO: implement config control message to handle live changing configuration
 
 use crate::grpc::{LogsServiceImpl, MetricsServiceImpl, TraceServiceImpl, OTLPRequest};
-use crate::grpc::grpc_stubs::proto::{collector::{logs::v1::logs_service_server::LogsServiceServer,
+use crate::grpc::grpc_stubs::proto::collector::{logs::v1::logs_service_server::LogsServiceServer,
     metrics::v1::metrics_service_server::MetricsServiceServer,
-    trace::v1::trace_service_server::TraceServiceServer}};
+    trace::v1::trace_service_server::TraceServiceServer};
 use otap_df_engine::receiver::{EffectHandler, Receiver, ControlMsgChannel, SendableMode};
 use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
+use otap_df_channel::mpsc;
 use async_trait::async_trait;
 use std::net::SocketAddr;
 use tokio::time::{Duration, sleep};
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server;
+use std::sync::Arc;
+
+// Enum to represent received OTLP requests.
+#[derive(Debug)]
+pub enum CompressionMethod {
+    Zztd,
+    Gzip,
+    Deflate,
+}
+
+
 
 struct OTLPReceiver {
     listening_addr: SocketAddr,
+    compression: Option<CompressionMethod>
 }
 
 #[async_trait( ? Send)]
@@ -34,22 +50,45 @@ impl Receiver for OTLPReceiver {
         let listener = effect_handler.tcp_listener(self.listening_addr)?;
         let listener_stream = TcpListenerStream::new(listener);
 
-
-        //create services for the grpc server and clone the effect handler to pass message
-        let logs_service = LogsServiceImpl::new(effect_handler.clone());
-        let metrics_service = MetricsServiceImpl::new(effect_handler.clone());
-        let trace_service = TraceServiceImpl::new(effect_handler.clone());
-
-   
-
         //start event loop
         loop {
+            //create services for the grpc server and clone the effect handler to pass message
+            let logs_service = LogsServiceImpl::new(effect_handler.clone());
+            let metrics_service = MetricsServiceImpl::new(effect_handler.clone());
+            let trace_service = TraceServiceImpl::new(effect_handler.clone());
+
+            let logs_service_server;
+            let metrics_service_server;
+            let trace_service_server;
+
+            // check if a compression method was set
+            if let Some(compression_method) = self.compression {
+
+                // map compression method to the tonic compression encoding type
+                let encoding = match compression_method {
+                    CompressionMethod::Gzip => CompressionEncoding::Gzip,
+                    CompressionMethod::Zstd => CompressionEncoding::Zstd,
+                    CompressionMethod::Deflate => CompressionEncoding::Deflate
+                };
+                // define services with compression
+                logs_service_server = LogsServiceServer::new(logs_service).send_compressed(encoding).accept_compressed(encoding)
+                metrics_service_server = MetricsServiceServer::new(metrics_service).send_compressed(encoding).accept_compressed(encoding)
+                trace_service_server = TraceServiceServer::new(logs_service).send_compressed(encoding).accept_compressed(encoding)
+
+            } else {
+                // define servicees without compression
+                logs_service_server = LogsServiceServer::new(logs_service);
+                metrics_service_server = MetricsServiceServer::new(metrics_service);
+                trace_service_server = TraceServiceServer::new(logs_service);
+            }
+            
             tokio::select! {
-                // Process an internal event.
+                biased; //prioritize ctrl_msg over all other blocks
+
+                // Process internal event
                 mut ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
                         Ok(ControlMsg::Shutdown {reason}) => {
-                            // break event loop
                             break;
                         },
                         Err(e) => {
@@ -61,11 +100,11 @@ impl Receiver for OTLPReceiver {
                         }
                     }
                 }
-                // poll the server
+                // Poll the grpc server
                 result = Server::builder()
-                .add_service(LogsServiceServer::new(logs_service).send_compressed(CompressionEncoding::Zstd).accept_compressed(CompressionEncoding::Zstd))
-                .add_service(MetricsServiceServer::new(metrics_service).send_compressed(CompressionEncoding::Zstd).accept_compressed(CompressionEncoding::Zstd))
-                .add_service(TraceServiceServer::new(trace_service).send_compressed(CompressionEncoding::Zstd).accept_compressed(CompressionEncoding::Zstd))
+                .add_service(logs_service_server)
+                .add_service(metrics_service_server)
+                .add_service(trace_service_server)
                 .serve_with_incoming(listener_stream)=> {
                     if let Err(e) = result {
                         break;
@@ -86,14 +125,13 @@ impl Receiver for OTLPReceiver {
 
 #[cfg(test)]
 mod tests {
-    use otap_df_engine::receiver::{EffectHandler, Receiver, ControlMsgChannel};
     use otap_df_engine::error::Error;
     use otap_df_engine::message::ControlMsg;
     use otap_df_engine::testing::receiver::ReceiverTestRuntime;
     use otap_df_engine::testing::{CtrMsgCounters, TestMsg};
-    use crate::grpc::grpc_stubs::proto::{collector::{logs::v1::logs_service_client::LogsServiceClient,
+    use crate::grpc::grpc_stubs::proto::collector::{logs::v1::logs_service_client::LogsServiceClient,
         metrics::v1::metrics_service_client::MetricsServiceClient,
-        trace::v1::trace_service_client::TraceServiceClient}};
+        trace::v1::trace_service_client::TraceServiceClient};
     use std::net::SocketAddr;
     use tokio::time::{Duration, sleep};
     use crate::otlp_receiver::OTLPReceiver;
