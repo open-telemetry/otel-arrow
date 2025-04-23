@@ -246,6 +246,7 @@ mod tests {
     async fn test_otlp_traces_single_request() {
         run_single_round_trip_test::<OTLPTracesInputType, OTLPTracesOutputType, _>(
             testdata::traces::create_single_request,
+            None, // Expect success
         )
         .await;
     }
@@ -254,6 +255,7 @@ mod tests {
     async fn test_otlp_metrics_single_request() {
         run_single_round_trip_test::<OTLPMetricsInputType, OTLPMetricsOutputType, _>(
             testdata::metrics::create_single_request,
+            None, // Expect success
         )
         .await;
     }
@@ -262,16 +264,19 @@ mod tests {
     async fn test_otlp_logs_single_request() {
         run_single_round_trip_test::<OTLPLogsInputType, OTLPLogsOutputType, _>(
             testdata::logs::create_single_request,
+            None, // Expect success
         )
         .await;
     }
 
-    // The test below fails because of disagreements between the Rust
-    // and Golang implementations about OTAP metrics encoding.
     #[tokio::test]
     async fn test_otap_metrics_single_request() {
         run_single_round_trip_test::<OTLPMetricsInputType, OTAPMetricsOutputType, _>(
             testdata::metrics::create_single_request,
+	    // This test expects a specific error due to disagreements
+	    // between the Rust and Golang implementations about OTAP
+	    // metrics encoding.
+            Some("ColumnDataTypeMismatch"),
         )
         .await;
     }
