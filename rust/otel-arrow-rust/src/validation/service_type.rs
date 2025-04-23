@@ -4,6 +4,9 @@
 // Service type abstractions for validation testing
 use std::fmt::Debug;
 use tokio::sync::mpsc;
+use super::error::{Result, InputOutputSnafu};
+use std::result::Result as StdResult;
+use snafu::ResultExt;
 
 use crate::validation::tcp_stream::create_shutdownable_tcp_listener;
 
@@ -25,13 +28,13 @@ pub trait ServiceInputType: Debug + Send + Sync + 'static {
     fn protocol() -> &'static str;
 
     /// Create a new client for this service
-    async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error>;
+    async fn connect_client(endpoint: String) -> Result<Self::Client>;
 
     /// Send data through the client
     async fn send_data(
         client: &mut Self::Client,
         request: Self::Request,
-    ) -> Result<Self::Response, tonic::Status>;
+    ) -> Result<Self::Response>;
 }
 
 /// A trait that abstracts over the output side of service types (server operations)
@@ -53,18 +56,17 @@ pub trait ServiceOutputType: Debug + Send + Sync + 'static {
     fn create_server(
         receiver: TestReceiver<Self::Request>,
         incoming: crate::validation::tcp_stream::ShutdownableTcpListenerStream,
-    ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>>;
+    ) -> tokio::task::JoinHandle<Result<()>>;
 
     /// Start a service-specific receiver
     async fn start_receiver(
         listener: tokio::net::TcpListener,
     ) -> Result<
         (
-            tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+            tokio::task::JoinHandle<Result<()>>,
             mpsc::Receiver<Self::Request>,
             tokio::sync::oneshot::Sender<()>,
         ),
-        String,
     >
     where
         Self: Sized,
@@ -85,7 +87,7 @@ impl<T: Send + 'static> TestReceiver<T> {
         &self,
         request: tonic::Request<T>,
         service_name: &str,
-    ) -> Result<tonic::Response<R>, tonic::Status>
+    ) -> StdResult<tonic::Response<R>, tonic::Status>
     where
         R: Default,
     {
@@ -93,7 +95,7 @@ impl<T: Send + 'static> TestReceiver<T> {
 
         // Forward the received request to the test channel
         if let Err(err) = self.request_tx.send(request_inner).await {
-            return Err(tonic::Status::internal(format!(
+                return Err(tonic::Status::internal(format!(
                 "Failed to send {} data to test channel: {}",
                 service_name, err
             )));
@@ -105,17 +107,17 @@ impl<T: Send + 'static> TestReceiver<T> {
 }
 
 /// Helper function to create a TCP listener with a dynamically allocated port
-async fn create_listener_with_port() -> Result<(tokio::net::TcpListener, u16), String> {
+async fn create_listener_with_port() -> Result<(tokio::net::TcpListener, u16)> {
     // Bind to a specific address with port 0 for dynamic port allocation
     let addr = "127.0.0.1:0";
     let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .map_err(|e| format!("Failed to bind listener: {}", e))?;
+        .context(InputOutputSnafu{desc: "bind"})?;
 
     // Get the assigned port
     let port = listener
         .local_addr()
-        .map_err(|e| format!("Failed to get local address: {}", e))?
+	.context(InputOutputSnafu{desc: "local_address"})?
         .port();
 
     Ok((listener, port))
@@ -124,13 +126,11 @@ async fn create_listener_with_port() -> Result<(tokio::net::TcpListener, u16), S
 /// Helper function to start a test receiver for any service output type
 pub async fn start_test_receiver<T: ServiceOutputType>() -> Result<
     (
-        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        tokio::task::JoinHandle<Result<()>>,
         mpsc::Receiver<T::Request>,
         u16,                              // actual port number that was assigned
         tokio::sync::oneshot::Sender<()>, // shutdown channel
-    ),
-    String,
-> {
+    )> {
     // Create listener with dynamically allocated port
     let (listener, port) = create_listener_with_port().await?;
 
@@ -145,11 +145,10 @@ async fn create_service_server<T: ServiceOutputType + ?Sized>(
     listener: tokio::net::TcpListener,
 ) -> Result<
     (
-        tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        tokio::task::JoinHandle<Result<()>>,
         mpsc::Receiver<T::Request>,
         tokio::sync::oneshot::Sender<()>,
     ),
-    String,
 > {
     // Create a channel for receiving data
     let (request_tx, request_rx) = mpsc::channel::<T::Request>(100);

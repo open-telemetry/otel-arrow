@@ -20,6 +20,10 @@ use crate::proto::opentelemetry::collector::trace::v1::{
 use super::service_type::{ServiceInputType, ServiceOutputType, TestReceiver};
 use super::tcp_stream::ShutdownableTcpListenerStream;
 
+use super::error::{Result, TonicStatusSnafu, TonicTransportSnafu};
+use std::result::Result as StdResult;
+use snafu::ResultExt;
+
 use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status};
 
@@ -40,18 +44,21 @@ impl ServiceInputType for OTLPTracesInputType {
         "otlp"
     }
 
-    async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
-        TraceServiceClient::connect(endpoint).await
+    async fn connect_client(endpoint: String) -> Result<Self::Client> {
+        TraceServiceClient::connect(endpoint)
+	    .await
+	    .context(TonicTransportSnafu)
     }
 
     async fn send_data(
         client: &mut Self::Client,
         request: Self::Request,
-    ) -> Result<Self::Response, tonic::Status> {
+    ) -> Result<Self::Response> {
         client
             .export(Request::new(request))
             .await
             .map(|response| response.into_inner())
+	    .context(TonicStatusSnafu)
     }
 }
 
@@ -100,18 +107,21 @@ impl ServiceInputType for OTLPMetricsInputType {
         "otlp"
     }
 
-    async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
-        MetricsServiceClient::connect(endpoint).await
+    async fn connect_client(endpoint: String) -> Result<Self::Client> {
+        MetricsServiceClient::connect(endpoint)
+	    .await
+	    .context(TonicTransportSnafu)
     }
 
     async fn send_data(
         client: &mut Self::Client,
         request: Self::Request,
-    ) -> Result<Self::Response, tonic::Status> {
+    ) -> Result<Self::Response> {
         client
             .export(Request::new(request))
             .await
             .map(|response| response.into_inner())
+	    .context(TonicStatusSnafu)
     }
 }
 
@@ -160,18 +170,21 @@ impl ServiceInputType for OTLPLogsInputType {
         "otlp"
     }
 
-    async fn connect_client(endpoint: String) -> Result<Self::Client, tonic::transport::Error> {
-        LogsServiceClient::connect(endpoint).await
+    async fn connect_client(endpoint: String) -> Result<Self::Client> {
+        LogsServiceClient::connect(endpoint)
+	    .await
+	    .context(TonicTransportSnafu)
     }
 
     async fn send_data(
         client: &mut Self::Client,
         request: Self::Request,
-    ) -> Result<Self::Response, tonic::Status> {
+    ) -> Result<Self::Response> {
         client
             .export(Request::new(request))
             .await
             .map(|response| response.into_inner())
+	    .context(TonicStatusSnafu)
     }
 }
 
@@ -210,7 +223,7 @@ impl TraceService for TestReceiver<ExportTraceServiceRequest> {
     async fn export(
         &self,
         request: Request<ExportTraceServiceRequest>,
-    ) -> Result<Response<ExportTraceServiceResponse>, Status> {
+    ) -> StdResult<Response<ExportTraceServiceResponse>, Status> {
         self.process_export_request(request, "trace").await
     }
 }
@@ -220,7 +233,7 @@ impl MetricsService for TestReceiver<ExportMetricsServiceRequest> {
     async fn export(
         &self,
         request: Request<ExportMetricsServiceRequest>,
-    ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
+    ) -> StdResult<Response<ExportMetricsServiceResponse>, Status> {
         self.process_export_request(request, "metrics").await
     }
 }
@@ -230,7 +243,7 @@ impl LogsService for TestReceiver<ExportLogsServiceRequest> {
     async fn export(
         &self,
         request: Request<ExportLogsServiceRequest>,
-    ) -> Result<Response<ExportLogsServiceResponse>, Status> {
+    ) -> StdResult<Response<ExportLogsServiceResponse>, Status> {
         self.process_export_request(request, "logs").await
     }
 }

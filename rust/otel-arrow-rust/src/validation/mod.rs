@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod collector;
+mod error;
 mod otap;
 mod otlp;
 mod scenarios;

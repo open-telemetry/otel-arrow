@@ -7,7 +7,6 @@ use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceReq
 
 use super::service_type::{ServiceOutputType, TestReceiver};
 use super::tcp_stream::ShutdownableTcpListenerStream;
-
 use std::pin::Pin;
 use tokio_stream::Stream;
 use tonic::transport::Server;
@@ -128,7 +127,7 @@ impl ServiceOutputType for OTAPMetricsOutputType {
     fn create_server(
         receiver: TestReceiver<Self::Request>,
         incoming: ShutdownableTcpListenerStream,
-    ) -> tokio::task::JoinHandle<Result<(), tonic::transport::Error>> {
+    ) -> tokio::task::JoinHandle<super::error::Result<()>> {
         tokio::spawn(async move {
             let adapter = OTAPMetricsAdapter::new(receiver);
             Server::builder()

@@ -4,6 +4,9 @@
 use super::collector::{run_test, TEST_TIMEOUT_SECONDS};
 use super::service_type::{ServiceInputType, ServiceOutputType};
 
+use super::error::TestTimeoutSnafu;
+use snafu::ResultExt;
+
 /// Test a single round-trip of data through the collector
 ///
 /// This function will:
@@ -19,7 +22,7 @@ where
     O::Request: std::fmt::Debug + PartialEq + From<I::Request>,
     F: FnOnce() -> I::Request,
 {
-    match tokio::time::timeout(
+    tokio::time::timeout(
         std::time::Duration::from_secs(TEST_TIMEOUT_SECONDS),
         run_test::<I, O, _, _>(|mut context| async move {
             // Create test data using the provided function
@@ -67,13 +70,15 @@ where
             (context, Ok(()))
         }),
     )
-    .await
-    {
-        Ok(Ok(_)) => {}
-        Ok(Err(err)) => panic!("Test error {}", err),
-        Err(err) => panic!(
-            "Test timed out after {} seconds: {}",
-            TEST_TIMEOUT_SECONDS, err
-        ),
-    }
+	.await
+	.context(TestTimeoutSnafu)
+	
+    // {
+    //     Ok(Ok(_)) => {}
+    //     Ok(Err(err)) => panic!("Test error {}", err),
+    //     Err(err) => panic!(
+    //         "Test timed out after {} seconds: {}",
+    //         TEST_TIMEOUT_SECONDS, err
+    //     ),
+    // }
 }
