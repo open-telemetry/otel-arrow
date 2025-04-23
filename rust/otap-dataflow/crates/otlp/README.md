@@ -2,9 +2,12 @@
 
 ## BatchProcessor
 
-A generic, async batch processor for the OpenTelemetry Arrow pipeline engine. Buffers incoming data messages and emits them in batches based on batch size, timer ticks, or shutdown signals.
+A generic, async batch processor for the OpenTelemetry Arrow pipeline engine. 
+
+Buffers incoming data messages and emits them in batches based on batch size, timer ticks, or shutdown signals.
 
 ### Features
+
 - Buffers messages of any type (`PData`).
 - Emits batches when the buffer is full, on timer ticks, or on shutdown.
 - Handles pipeline control messages (`TimerTick`, `Shutdown`).
@@ -29,9 +32,11 @@ assert_eq!(batch.unwrap().unwrap(), vec![1, 2, 3]);
 ```
 
 ### When are batches emitted?
+
 - When the buffer reaches the configured batch size
 - When a `TimerTick` control message is received
 - When a `Shutdown` control message is received
 
 ### License
+
 Apache-2.0
