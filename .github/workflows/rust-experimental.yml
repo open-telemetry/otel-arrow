@@ -11,16 +11,15 @@ on:
     paths:
       - 'rust/**'
       - .github/workflows/rust-experimental.yml
-    paths-ignore:
       # otap-dataflow is covered by the main Rust-CI workflow
-      - 'rust/otap-dataflow/**'
+      - '!rust/otap-dataflow/**'
   pull_request:
     paths:
       - 'rust/**'
       - .github/workflows/rust-experimental.yml
-    paths-ignore:
       # otap-dataflow is covered by the main Rust-CI workflow
-      - 'rust/otap-dataflow/**'
+      - '!rust/otap-dataflow/**'
+      
 
 env:
   CARGO_TERM_COLOR: always
