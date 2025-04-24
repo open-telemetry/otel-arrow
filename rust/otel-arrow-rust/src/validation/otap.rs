@@ -3,7 +3,8 @@
 
 // This module provides adapters for testing OTAP protocol handling.
 // Metrics is the only signal implemented, therefore this code has not
-// been made signal-generic.
+// been made signal-generic, and it only supports an Output type (not
+// an Input type).
 
 use crate::proto::opentelemetry::experimental::arrow::v1::{
     arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
@@ -22,7 +23,8 @@ use tonic::{Request, Response, Status};
 use super::error;
 use snafu::{OptionExt, ResultExt};
 
-/// OTAP metrics service type for testing
+/// OTAP metrics service type for testing the OTAP-to-OTLP conversion
+/// for metrics in this crate.
 #[derive(Debug)]
 pub struct OTAPMetricsOutputType;
 
@@ -63,11 +65,10 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
                         let batch_id = batch.batch_id;
 
                         // Process each arrow payload in the batch
-                        match process_arrow_batch(&batch, &mut related_data, &receiver).await {
+                        match process_arrow_metrics(&batch, &mut related_data, &receiver).await {
                             Ok(_) => {
                                 // Send success status back to client
-                                if tx
-                                    .send(Ok(BatchStatus {
+                                if tx.send(Ok(BatchStatus {
                                         batch_id,
                                         status_code: StatusCode::Ok as i32,
                                         status_message: "Successfully processed".to_string(),
@@ -80,8 +81,7 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
                             }
                             Err(e) => {
                                 // Send error status back to client
-                                if tx
-                                    .send(Ok(BatchStatus {
+                                if tx.send(Ok(BatchStatus {
                                         batch_id,
                                         status_code: StatusCode::InvalidArgument as i32,
                                         status_message: format!("Failed to process: {}", e),
@@ -147,8 +147,8 @@ impl ServiceOutputType for OTAPMetricsOutputType {
     }
 }
 
-// Process an Arrow batch and convert it to OTLP metrics, sending each metrics item individually
-async fn process_arrow_batch(
+/// Receives an Arrow batch and convert to OTLP.
+async fn process_arrow_metrics(
     batch: &BatchArrowRecords,
     related_data: &mut crate::otlp::related_data::RelatedData,
     receiver: &TestReceiver<ExportMetricsServiceRequest>,
