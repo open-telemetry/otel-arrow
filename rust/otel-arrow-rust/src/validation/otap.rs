@@ -66,11 +66,12 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
                 receiver: &TestReceiver<ExportMetricsServiceRequest>,
                 tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
             ) -> Result<(), ()> {
-                let status_result = match process_arrow_metrics(batch, related_data, receiver).await {
+                let status_result = match process_arrow_metrics(batch, related_data, receiver).await
+                {
                     Ok(_) => (StatusCode::Ok, "Successfully processed".to_string()),
                     Err(e) => (StatusCode::InvalidArgument, e.to_string()),
                 };
-                
+
                 tx.send(Ok(BatchStatus {
                     batch_id: batch.batch_id,
                     status_code: status_result.0 as i32,
@@ -83,7 +84,10 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
             // Process messages until stream ends or error occurs
             while let Ok(Some(batch)) = input_stream.message().await {
                 // Process batch and send status, break on client disconnection
-                if process_and_send(&batch, &mut related_data, &receiver, &tx).await.is_err() {
+                if process_and_send(&batch, &mut related_data, &receiver, &tx)
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
