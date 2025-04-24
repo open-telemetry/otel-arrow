@@ -1,6 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+// This module implements OTLP signal-specific service types for use
+// as test inputs and outputs.
+
 use crate::proto::opentelemetry::collector::logs::v1::{
     logs_service_client::LogsServiceClient,
     logs_service_server::{LogsService, LogsServiceServer},
@@ -26,9 +29,23 @@ use snafu::ResultExt;
 use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status};
 
-/// OTLP traces service type for testing
 #[derive(Debug)]
 pub struct OTLPTracesInputType;
+
+#[derive(Debug)]
+pub struct OTLPTracesOutputType;
+
+#[derive(Debug)]
+pub struct OTLPMetricsInputType;
+
+#[derive(Debug)]
+pub struct OTLPMetricsOutputType;
+
+#[derive(Debug)]
+pub struct OTLPLogsInputType;
+
+#[derive(Debug)]
+pub struct OTLPLogsOutputType;
 
 impl ServiceInputType for OTLPTracesInputType {
     type Request = ExportTraceServiceRequest;
@@ -61,9 +78,6 @@ impl ServiceInputType for OTLPTracesInputType {
     }
 }
 
-#[derive(Debug)]
-pub struct OTLPTracesOutputType;
-
 impl ServiceOutputType for OTLPTracesOutputType {
     type Request = ExportTraceServiceRequest;
     type Server = TraceServiceServer<TestReceiver<ExportTraceServiceRequest>>;
@@ -89,10 +103,6 @@ impl ServiceOutputType for OTLPTracesOutputType {
         })
     }
 }
-
-/// OTLP metrics service type for testing
-#[derive(Debug)]
-pub struct OTLPMetricsInputType;
 
 impl ServiceInputType for OTLPMetricsInputType {
     type Request = ExportMetricsServiceRequest;
@@ -125,9 +135,6 @@ impl ServiceInputType for OTLPMetricsInputType {
     }
 }
 
-#[derive(Debug)]
-pub struct OTLPMetricsOutputType;
-
 impl ServiceOutputType for OTLPMetricsOutputType {
     type Request = ExportMetricsServiceRequest;
     type Server = MetricsServiceServer<TestReceiver<ExportMetricsServiceRequest>>;
@@ -153,10 +160,6 @@ impl ServiceOutputType for OTLPMetricsOutputType {
         })
     }
 }
-
-/// OTLP logs service type for testing
-#[derive(Debug)]
-pub struct OTLPLogsInputType;
 
 impl ServiceInputType for OTLPLogsInputType {
     type Request = ExportLogsServiceRequest;
@@ -188,9 +191,6 @@ impl ServiceInputType for OTLPLogsInputType {
             .context(error::TonicStatusSnafu)
     }
 }
-
-#[derive(Debug)]
-pub struct OTLPLogsOutputType;
 
 impl ServiceOutputType for OTLPLogsOutputType {
     type Request = ExportLogsServiceRequest;
@@ -290,7 +290,7 @@ mod tests {
             testdata::metrics::create_single_request,
             // This test expects a specific error due to disagreements
             // between the Rust and Golang implementations about OTAP
-            // metrics encoding.
+            // metrics encoding.  https://github.com/open-telemetry/otel-arrow/issues/353
             Some("ColumnDataTypeMismatch"),
         )
         .await;

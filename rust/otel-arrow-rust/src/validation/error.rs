@@ -37,8 +37,6 @@ pub enum Error {
     #[snafu(display("No response received"))]
     NoResponse {},
 
-    //#[snafu(display("Collector did not exit: {:?}", source))]
-    //UnsuccessfulExit { source: std::process::ExitStatus },
     #[snafu(display("Collector exit status: {:?}", code))]
     BadExitStatus { code: Option<i32> },
 

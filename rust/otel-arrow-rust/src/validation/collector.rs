@@ -268,7 +268,9 @@ where
     O: service_type::ServiceOutputType,
     I::Request: std::fmt::Debug + PartialEq,
     O::Request: std::fmt::Debug + PartialEq,
-    F: FnOnce(&mut TestContext<I, O>) -> std::pin::Pin<Box<dyn std::future::Future<Output = error::Result<()>> + '_>>,
+    F: FnOnce(
+        &mut TestContext<I, O>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = error::Result<()>> + '_>>,
 {
     // Generate random ports in the high u16 range to avoid conflicts.
     // Note that the OpenTelemetry Collector will respect a `:0` port

@@ -1,3 +1,10 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+// This module provides adapters for testing OTAP protocol handling.
+// Metrics is the only signal implemented, therefore this code has not
+// been made signal-generic.
+
 use crate::proto::opentelemetry::experimental::arrow::v1::{
     arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
     BatchArrowRecords, BatchStatus, StatusCode,
@@ -19,7 +26,8 @@ use snafu::{OptionExt, ResultExt};
 #[derive(Debug)]
 pub struct OTAPMetricsOutputType;
 
-/// The OTAP metrics service adapter that translates OTAP arrow data to OTLP metrics
+/// Translates OTAP arrow data to OTLP metrics using logic from the
+/// top-level crate::otlp.
 pub struct OTAPMetricsAdapter {
     receiver: TestReceiver<ExportMetricsServiceRequest>,
 }
@@ -30,12 +38,10 @@ impl OTAPMetricsAdapter {
     }
 }
 
-/// Stream type for ArrowMetricsService implementation
-type BatchStatusStream = Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>;
-
 #[tonic::async_trait]
 impl ArrowMetricsService for OTAPMetricsAdapter {
-    type ArrowMetricsStream = BatchStatusStream;
+    type ArrowMetricsStream =
+        Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>;
 
     async fn arrow_metrics(
         &self,
