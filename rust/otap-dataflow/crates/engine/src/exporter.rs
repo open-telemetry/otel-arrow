@@ -92,7 +92,7 @@ where
 /// 2 implementations are provided:
 ///
 /// - `NotSendableEffectHandler<PData>`: For thread-local (!Send) exporters. Uses `Rc` internally.
-///   It's the default effect handler.
+///   It's the default and preferred effect handler.
 /// - `SendableEffectHandler<PData>`: For thread-safe (Send) exporters. Uses `Arc` internally and
 ///  supports sending across thread boundaries.
 ///
@@ -116,8 +116,8 @@ pub struct NotSendableEffectHandler<PData> {
     _pd: PhantomData<PData>,
 }
 
-/// Implementation for the !Send EffectHandler
-impl<Msg> NotSendableEffectHandler<Msg> {
+/// Implementation for the `!Send` effect handler.
+impl<PData> NotSendableEffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given exporter name.
     /// This is the default and preferred effect handler for this project.
     ///
@@ -151,7 +151,7 @@ pub struct SendableEffectHandler<PData> {
     _pd: PhantomData<PData>,
 }
 
-/// Implementation for the Send EffectHandler
+/// Implementation for the `Send` effect handler.
 impl<PData> SendableEffectHandler<PData> {
     /// Creates a new "sendable" effect handler with the given exporter name.
     pub fn new<S: AsRef<str>>(exporter_name: S) -> Self {
@@ -193,18 +193,18 @@ impl<PData> ExporterWrapper<PData> {
         E: Exporter<PData, NotSendableEffectHandler<PData>> + 'static
     {
         ExporterWrapper::NotSend {
-            effect_handler: NotSendableEffectHandler { exporter_name: Rc::from(name), _pd: PhantomData },
+            effect_handler: NotSendableEffectHandler::new(name),
             exporter: Box::new(exporter),
         }
     }
 
     /// Creates a new `ExporterWrapper` with the given exporter and `Send` effect handler.
-    fn create_sendable<E>(exporter: E, name: &str) -> Self
+    pub(crate)fn create_sendable<E>(exporter: E, name: &str) -> Self
     where
         E: Exporter<PData, SendableEffectHandler<PData>> + 'static
     {
         ExporterWrapper::Send {
-            effect_handler: SendableEffectHandler { exporter_name: Arc::from(name), _pd: PhantomData },
+            effect_handler: SendableEffectHandler::new(name),
             exporter: Box::new(exporter),
         }
     }
