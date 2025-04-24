@@ -56,34 +56,23 @@ where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
-        let mut buf_reader = BufReader::new(reader);
-        let mut line = String::new();
-        
-        while buf_reader.read_line(&mut line).await.is_ok() {
-            if !line.is_empty() {
-                // Remove the newline character if present
-                if line.ends_with('\n') {
-                    line.pop();
-                }
-                if line.ends_with('\r') {
-                    line.pop();
-                }
-                
-                eprintln!("[{}] {}", prefix, line);
+        let mut lines = BufReader::new(reader).lines();
 
-                // If we need to check for a ready message
-                if let Some((tx, message)) = probe.take() {
-                    if line.contains(message) {
-                        // Send using tokio oneshot channel
-                        let _ = tx.send(());
-                    } else {
-                        // If not found, put it back
-                        probe = Some((tx, message));
-                    }
+        while let Ok(Some(line)) = lines.next_line().await {
+            eprintln!("[{}] {}", prefix, line);
+
+            // We use Option::take() pattern here to avoid moving out of a shared reference.
+            // The oneshot::Sender::send() method consumes self, so we can't call it through
+            // a shared reference like &probe. By using probe.take(), we temporarily take 
+            // ownership of the sender, use it if needed, and put it back if we don't match
+            // the message. This pattern avoids the "cannot move out of `*tx` which is behind
+            // a shared reference" error that would occur if we tried to call send() on &tx.
+            if let Some((tx, message)) = probe.take() {
+                if line.contains(message) {
+                    let _ = tx.send(());
+                } else {
+                    probe = Some((tx, message));
                 }
-                
-                // Clear the line for next iteration
-                line.clear();
             }
         }
     })
