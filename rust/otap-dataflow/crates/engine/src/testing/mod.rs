@@ -140,7 +140,10 @@ impl CtrMsgCounters {
 
 /// A wrapper function used to enforce the Send constraint.
 /// This is useful for testing nodes that require a Send EffectHandler.
-pub fn exec_in_send_env<F>(f: F) where F: FnOnce() -> () + Send {
+pub fn exec_in_send_env<F>(f: F)
+where
+    F: FnOnce() -> () + Send,
+{
     f();
 }
 

@@ -46,7 +46,7 @@ use std::sync::Arc;
 #[async_trait(?Send)]
 pub trait Exporter<PData, EF = NotSendableEffectHandler<PData>>
 where
-    EF: EffectHandlerTrait<PData>
+    EF: EffectHandlerTrait<PData>,
 {
     /// Starts the exporter and begins exporting incoming data.
     ///
@@ -94,7 +94,7 @@ where
 /// - `NotSendableEffectHandler<PData>`: For thread-local (!Send) exporters. Uses `Rc` internally.
 ///   It's the default and preferred effect handler.
 /// - `SendableEffectHandler<PData>`: For thread-safe (Send) exporters. Uses `Arc` internally and
-///  supports sending across thread boundaries.
+///   supports sending across thread boundaries.
 ///
 /// Note for implementers: Effect handler implementations are designed to be cloned so the cost of
 /// cloning should be minimal.
@@ -139,7 +139,6 @@ impl<PData> EffectHandlerTrait<PData> for NotSendableEffectHandler<PData> {
     }
 }
 
-
 /// A `Send` implementation of the EffectHandlerTrait.
 #[derive(Clone)]
 pub struct SendableEffectHandler<PData> {
@@ -183,14 +182,14 @@ pub(crate) enum ExporterWrapper<PData> {
     Send {
         effect_handler: SendableEffectHandler<PData>,
         exporter: Box<dyn Exporter<PData, SendableEffectHandler<PData>>>,
-    }
+    },
 }
 
 impl<PData> ExporterWrapper<PData> {
     /// Creates a new `ExporterWrapper` with the given exporter and `!Send` effect handler.
     pub(crate) fn create<E>(exporter: E, name: &str) -> Self
     where
-        E: Exporter<PData, NotSendableEffectHandler<PData>> + 'static
+        E: Exporter<PData, NotSendableEffectHandler<PData>> + 'static,
     {
         ExporterWrapper::NotSend {
             effect_handler: NotSendableEffectHandler::new(name),
@@ -199,9 +198,9 @@ impl<PData> ExporterWrapper<PData> {
     }
 
     /// Creates a new `ExporterWrapper` with the given exporter and `Send` effect handler.
-    pub(crate)fn create_sendable<E>(exporter: E, name: &str) -> Self
+    pub(crate) fn create_sendable<E>(exporter: E, name: &str) -> Self
     where
-        E: Exporter<PData, SendableEffectHandler<PData>> + 'static
+        E: Exporter<PData, SendableEffectHandler<PData>> + 'static,
     {
         ExporterWrapper::Send {
             effect_handler: SendableEffectHandler::new(name),
@@ -210,14 +209,19 @@ impl<PData> ExporterWrapper<PData> {
     }
 
     /// Starts the exporter and begins exporting incoming data.
-    pub(crate) async fn start(self, message_channel: MessageChannel<PData>) -> Result<(), Error<PData>> {
+    pub(crate) async fn start(
+        self,
+        message_channel: MessageChannel<PData>,
+    ) -> Result<(), Error<PData>> {
         match self {
-            ExporterWrapper::NotSend { effect_handler, exporter } => {
-                exporter.start(message_channel, effect_handler).await
-            },
-            ExporterWrapper::Send { effect_handler, exporter } => {
-                exporter.start(message_channel, effect_handler).await
-            },
+            ExporterWrapper::NotSend {
+                effect_handler,
+                exporter,
+            } => exporter.start(message_channel, effect_handler).await,
+            ExporterWrapper::Send {
+                effect_handler,
+                exporter,
+            } => exporter.start(message_channel, effect_handler).await,
         }
     }
 }
@@ -265,15 +269,18 @@ impl<PData> MessageChannel<PData> {
 
 #[cfg(test)]
 mod tests {
-    use crate::exporter::{NotSendableEffectHandler, EffectHandlerTrait, Error, Exporter, MessageChannel, SendableEffectHandler};
+    use crate::exporter::{
+        EffectHandlerTrait, Error, Exporter, MessageChannel, NotSendableEffectHandler,
+        SendableEffectHandler,
+    };
     use crate::message::{ControlMsg, Message};
-    use crate::testing::exporter::ExporterTestRuntime;
-    use crate::testing::{exec_in_send_env, CtrMsgCounters, TestMsg};
     use crate::testing::exporter::ExporterTestContext;
+    use crate::testing::exporter::ExporterTestRuntime;
+    use crate::testing::{CtrMsgCounters, TestMsg, exec_in_send_env};
     use async_trait::async_trait;
     use serde_json::Value;
-    use std::time::Duration;
     use std::future::Future;
+    use std::time::Duration;
 
     /// A generic test exporter that counts message events
     /// Works with any effect handler that implements EffectHandlerTrait
@@ -352,7 +359,9 @@ mod tests {
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
-    fn test_scenario() -> impl FnOnce(ExporterTestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+    fn test_scenario()
+    -> impl FnOnce(ExporterTestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
+    {
         |ctx| {
             Box::pin(async move {
                 // Send 3 TimerTick events.
@@ -385,7 +394,10 @@ mod tests {
     }
 
     /// Validation closure that checks the expected counter values
-    fn validation_procedure(counters: CtrMsgCounters) -> impl FnOnce(ExporterTestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+    fn validation_procedure(
+        counters: CtrMsgCounters,
+    ) -> impl FnOnce(ExporterTestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
+    {
         |_ctx| {
             Box::pin(async move {
                 counters.assert(
@@ -404,7 +416,7 @@ mod tests {
         let exporter = ExporterWithNotSendEffectHandler::without_send_test(test_runtime.counters());
         let counters = test_runtime.counters();
 
-        test_runtime.start_exporter(exporter);
+        test_runtime.start_exporter(exporter, "not_send_test".to_owned());
         test_runtime.start_test(test_scenario());
         test_runtime.validate(validation_procedure(counters));
     }
@@ -422,7 +434,7 @@ mod tests {
         );
         let counters = test_runtime.counters();
 
-        test_runtime.start_exporter_with_send_effect_handler(exporter);
+        test_runtime.start_exporter_with_send_effect_handler(exporter, "send_test".to_owned());
         test_runtime.start_test(test_scenario());
         test_runtime.validate(validation_procedure(counters));
     }

@@ -234,6 +234,7 @@ impl<Msg> EffectHandler<Msg> {
     }
 
     /// Creates a new `EffectHandler` for SendableMode.
+    #[must_use]
     pub fn sendable(self) -> SendableEffectHandler<Msg> {
         SendableEffectHandler {
             receiver_name: Arc::from(self.receiver_name.as_ref()),
@@ -268,10 +269,7 @@ impl<Msg: Send> SendableEffectHandler<Msg> {
     pub fn tcp_listener(&self, addr: SocketAddr) -> Result<TcpListener, Error<Msg>> {
         // Helper function to convert errors - not using a closure to avoid move issues
         let name = self.receiver_name.to_string(); // Convert to owned String for thread safety
-        let make_err = |error: std::io::Error| Error::IoError {
-            node: name,
-            error,
-        };
+        let make_err = |error: std::io::Error| Error::IoError { node: name, error };
 
         // Create a SO_REUSEADDR + SO_REUSEPORT listener.
         let sock = match socket2::Socket::new(
@@ -323,6 +321,7 @@ impl<Msg: Send> SendableEffectHandler<Msg> {
 #[cfg(test)]
 mod tests {
     use super::ControlMsgChannel;
+    use crate::message::ControlMsg;
     use crate::receiver::{EffectHandler, Error, Receiver};
     use crate::testing::receiver::ReceiverTestRuntime;
     use crate::testing::{CtrMsgCounters, TestMsg};
@@ -334,7 +333,6 @@ mod tests {
     use tokio::net::TcpStream;
     use tokio::sync::oneshot;
     use tokio::time::{Duration, sleep, timeout};
-    use crate::message::ControlMsg;
 
     struct TestReceiver {
         ctrl_msg_counters: CtrMsgCounters,
@@ -422,7 +420,7 @@ mod tests {
         }
     }
 
-        /// A thread-safe counter for tracking control messages in SendableMode tests.
+    /// A thread-safe counter for tracking control messages in SendableMode tests.
     #[derive(Clone, Default)]
     struct SendableCounter {
         timer_tick_count: Arc<std::sync::atomic::AtomicUsize>,
@@ -437,23 +435,32 @@ mod tests {
         }
 
         fn increment_timer_tick(&self) {
-            _ = self.timer_tick_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            _ = self
+                .timer_tick_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
 
         fn increment_message(&self) {
-            _ = self.message_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            _ = self
+                .message_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
 
         fn increment_config(&self) {
-            _ = self.config_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            _ = self
+                .config_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
 
         fn increment_shutdown(&self) {
-            _ = self.shutdown_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            _ = self
+                .shutdown_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
 
         fn get_timer_tick_count(&self) -> usize {
-            self.timer_tick_count.load(std::sync::atomic::Ordering::SeqCst)
+            self.timer_tick_count
+                .load(std::sync::atomic::Ordering::SeqCst)
         }
 
         fn get_message_count(&self) -> usize {
@@ -465,7 +472,8 @@ mod tests {
         }
 
         fn get_shutdown_count(&self) -> usize {
-            self.shutdown_count.load(std::sync::atomic::Ordering::SeqCst)
+            self.shutdown_count
+                .load(std::sync::atomic::Ordering::SeqCst)
         }
 
         fn assert(
@@ -694,26 +702,26 @@ mod tests {
     //         .enable_all()
     //         .build()
     //         .unwrap();
-        
+
     //     rt.block_on(async {
     //         // Setup channels and components
     //         let (ctrl_sender, ctrl_receiver) = otap_df_channel::mpsc::Channel::new(10);
     //         let (pdata_sender, pdata_receiver) = otap_df_channel::mpsc::Channel::new(10);
     //         let effect_handler = EffectHandler::<TestMsg>::new(
-    //             "send_test", 
+    //             "send_test",
     //             pdata_sender
     //         );
-            
+
     //         // Create receiver with thread-safe counter and address notification channel
     //         let counters = SendableCounter::new();
     //         let test_counters = counters.clone();
     //         let (port_tx, port_rx) = oneshot::channel::<SocketAddr>();
-            
+
     //         let receiver = SendableTestReceiver {
     //             counters,
     //             port_notifier: port_tx,
     //         };
-            
+
     //         // Start the receiver
     //         let ctrl_msg_chan = ControlMsgChannel::new(ctrl_receiver);
     //         let receiver_handle = tokio::spawn(async move {
@@ -722,53 +730,53 @@ mod tests {
     //                 panic!("Receiver failed: {e}");
     //             }
     //         });
-            
+
     //         // Wait for the receiver to bind to a port
     //         let addr = port_rx.await.expect("Failed to receive port");
-            
+
     //         // Connect and send data
     //         let mut stream = TcpStream::connect(addr)
     //             .await
     //             .expect("Failed to connect to receiver");
-                
+
     //         stream
     //             .write_all(b"Hello from SendableMode")
     //             .await
     //             .expect("Failed to send data");
-                
+
     //         // Read acknowledgment
     //         let mut buf = [0u8; 1024];
     //         let _n = stream
     //             .read(&mut buf)
     //             .await
     //             .expect("Failed to read ack");
-            
+
     //         // Send some control messages
     //         ctrl_sender.send_async(ControlMsg::TimerTick {}).await.expect("Failed to send timer tick");
     //         ctrl_sender.send_async(ControlMsg::Config { config: Value::Null }).await.expect("Failed to send config");
-            
+
     //         // Wait a bit for processing
     //         sleep(Duration::from_millis(100)).await;
-            
+
     //         // Read the message that was sent through the pipeline
     //         let received_msg = timeout(
     //             Duration::from_secs(1),
     //             pdata_receiver.recv()
     //         ).await.expect("Timed out waiting for message")
     //           .expect("No message received");
-              
-    //         // Verify the message content  
+
+    //         // Verify the message content
     //         assert_eq!(received_msg, TestMsg("Hello from SendableMode".to_string()));
-            
+
     //         // Send shutdown message
     //         ctrl_sender.send_async(ControlMsg::Shutdown { reason: "test complete".into() }).await.expect("Failed to send shutdown");
-            
+
     //         // Wait for receiver to finish
     //         timeout(Duration::from_secs(1), receiver_handle)
     //             .await
     //             .expect("Receiver didn't shut down")
     //             .expect("Receiver task failed");
-            
+
     //         // Verify counter values
     //         test_counters.assert(1, 1, 1, 1);
     //     });

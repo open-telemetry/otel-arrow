@@ -10,13 +10,13 @@
 //! These utilities are designed to make testing exporters simpler by abstracting away common
 //! setup and lifecycle management.
 
-use std::fmt::Debug;
-use crate::exporter::{NotSendableEffectHandler, Exporter, MessageChannel, SendableEffectHandler};
+use crate::exporter::{Exporter, MessageChannel, NotSendableEffectHandler, SendableEffectHandler};
 use crate::message::ControlMsg;
 use crate::testing::{CtrMsgCounters, create_test_channel, setup_test_runtime};
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use serde_json::Value;
+use std::fmt::Debug;
 use std::future::Future;
 use std::time::Duration;
 use tokio::task::LocalSet;
@@ -136,7 +136,7 @@ impl<PData: Clone + Debug + 'static> ExporterTestRuntime<PData> {
     }
 
     /// Starts an exporter with the configured channels and a non-sendable effect handler.
-    pub fn start_exporter<E>(&mut self, exporter: E)
+    pub fn start_exporter<E>(&mut self, exporter: E, name: String)
     where
         E: Exporter<PData, NotSendableEffectHandler<PData>> + 'static,
     {
@@ -151,14 +151,14 @@ impl<PData: Clone + Debug + 'static> ExporterTestRuntime<PData> {
 
         let _ = self.local_tasks.spawn_local(async move {
             boxed_exporter
-                .start(msg_chan, NotSendableEffectHandler::new("test_exporter"))
+                .start(msg_chan, NotSendableEffectHandler::new(name))
                 .await
                 .expect("Exporter event loop failed");
         });
     }
 
     /// Starts an exporter with the configured channels and a sendable effect handler.
-    pub fn start_exporter_with_send_effect_handler<E>(&mut self, exporter: E)
+    pub fn start_exporter_with_send_effect_handler<E>(&mut self, exporter: E, name: String)
     where
         E: Exporter<PData, SendableEffectHandler<PData>> + 'static,
     {
@@ -173,7 +173,7 @@ impl<PData: Clone + Debug + 'static> ExporterTestRuntime<PData> {
 
         let _ = self.local_tasks.spawn_local(async move {
             boxed_exporter
-                .start(msg_chan, SendableEffectHandler::new("test_exporter"))
+                .start(msg_chan, SendableEffectHandler::new(name))
                 .await
                 .expect("Exporter event loop failed");
         });
@@ -224,4 +224,3 @@ impl<PData: Clone + Debug + 'static> ExporterTestRuntime<PData> {
         self.rt.block_on(future_fn(context))
     }
 }
-
