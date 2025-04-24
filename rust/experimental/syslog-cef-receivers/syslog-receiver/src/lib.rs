@@ -6,6 +6,7 @@ fn parse_syslog_message(input: &[u8]) -> Message<&str> {
     // There is additional string allocation as `syslog_loose` works on `&str` and not bytes.
     // TODO: Consider writing our own parser to avoid this allocation.
     // TODO: What should be the behavior for invalid messages? For now, we simply treat it as RFC3164 struct with the message as the entire input.
+    // TODO: Add length check for the input.
     let data = std::str::from_utf8(input).unwrap();
     parse_message(data, Variant::Either)
 }
