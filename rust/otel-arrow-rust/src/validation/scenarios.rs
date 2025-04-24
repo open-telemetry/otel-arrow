@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use super::collector::{run_test, TEST_TIMEOUT_SECONDS};
+use super::collector::{run_test, TEST_TIMEOUT_SECONDS, RECEIVER_TIMEOUT_SECONDS};
 use super::service_type::{ServiceInputType, ServiceOutputType};
 
 use super::error;
@@ -80,11 +80,17 @@ where
                 }
             };
 
-            // The data data should have been received already
-            let received_request = match context.request_rx.recv().await {
-                Ok(req) => req,
-                Err(e) => {
-                    return (context, Err(e));
+            // The data should have been received already
+            // Apply timeout directly using tokio's timeout function
+            let timeout_duration = std::time::Duration::from_secs(RECEIVER_TIMEOUT_SECONDS);
+            let received_request = match tokio::time::timeout(timeout_duration, context.request_rx.recv())
+		.await {
+                Ok(Some(req)) => req,
+                Ok(None) => {
+                    return (context, Err(error::Error::NoResponse{}));
+                }
+                Err(source) => {
+                    return (context, Err(error::Error::ReceiverTimeout{source}));
                 }
             };
 

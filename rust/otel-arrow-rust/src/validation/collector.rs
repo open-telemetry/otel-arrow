@@ -18,7 +18,6 @@ use snafu::{OptionExt, ResultExt};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::timeout;
 
 use super::error;
 use super::service_type;
@@ -45,22 +44,6 @@ pub static COLLECTOR_PATH: LazyLock<String> = LazyLock::new(|| {
 
     path
 });
-
-/// A wrapper around mpsc::Receiver that adds timeout functionality
-pub struct TimeoutReceiver<T> {
-    pub inner: mpsc::Receiver<T>,
-    pub timeout: Duration,
-}
-
-impl<T> TimeoutReceiver<T> {
-    /// Receive a value with timeout
-    pub async fn recv(&mut self) -> error::Result<T> {
-        timeout(self.timeout, self.inner.recv())
-            .await
-            .context(error::ReceiverTimeoutSnafu)?
-            .context(error::NoResponseSnafu)
-    }
-}
 
 /// Helper function to spawn an async task that reads lines from a buffer and logs them with a prefix.
 /// Optionally checks for a message substring and sends a signal when it matches.
@@ -280,7 +263,7 @@ service:
 pub struct TestContext<I: service_type::ServiceInputType, O: service_type::ServiceOutputType> {
     pub client: I::Client,
     pub collector: CollectorProcess,
-    pub request_rx: TimeoutReceiver<O::Request>,
+    pub request_rx: mpsc::Receiver<O::Request>,
     pub server_handle: tokio::task::JoinHandle<error::Result<()>>,
     pub server_shutdown_tx: tokio::sync::oneshot::Sender<()>,
 }
@@ -309,15 +292,8 @@ where
     let receiver_port = 40000 + (random_value % 25000);
 
     // Start the test receiver server and wrap it with a timeout to avoid tests getting stuck
-    let (server_handle, request_rx_raw, exporter_port, server_shutdown_tx) =
+    let (server_handle, request_rx, exporter_port, server_shutdown_tx) =
         service_type::start_test_receiver::<O>().await?;
-
-    // Create a timeout-wrapped version of the receiver
-    let timeout_duration = std::time::Duration::from_secs(RECEIVER_TIMEOUT_SECONDS);
-    let request_rx = TimeoutReceiver {
-        inner: request_rx_raw,
-        timeout: timeout_duration,
-    };
 
     // Generate and start the collector with the input and output protocols using the dynamic ports
     let collector_config = generate_config(
