@@ -59,20 +59,6 @@ pub trait ServiceOutputType: Debug + Send + Sync + 'static {
         receiver: TestReceiver<Self::Request>,
         incoming: crate::validation::tcp_stream::ShutdownableTcpListenerStream,
     ) -> tokio::task::JoinHandle<error::Result<()>>;
-
-    /// Start a service-specific receiver, wrapping create_service_server.
-    async fn start_receiver(
-        listener: tokio::net::TcpListener,
-    ) -> error::Result<(
-        tokio::task::JoinHandle<error::Result<()>>,
-        mpsc::Receiver<Self::Request>,
-        tokio::sync::oneshot::Sender<()>,
-    )>
-    where
-        Self: Sized,
-    {
-        create_service_server::<Self>(listener).await
-    }
 }
 
 /// Generic test receiver that can be used for any service
@@ -135,8 +121,8 @@ pub async fn start_test_receiver<T: ServiceOutputType>() -> error::Result<(
     // Create listener with dynamically allocated port
     let (listener, port) = create_listener_with_port().await?;
 
-    // Start the service-specific receiver
-    let (handle, request_rx, shutdown_tx) = T::start_receiver(listener).await?;
+    // Start the service-specific receiver by directly calling create_service_server
+    let (handle, request_rx, shutdown_tx) = create_service_server::<T>(listener).await?;
 
     Ok((handle, request_rx, port, shutdown_tx))
 }
