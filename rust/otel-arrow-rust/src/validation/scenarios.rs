@@ -1,6 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+// This test implements specific test scenarios that can be executed
+// for multiple signals and protocols.
+
 use super::collector::{run_test, TEST_TIMEOUT_SECONDS, RECEIVER_TIMEOUT_SECONDS};
 use super::service_type::{ServiceInputType, ServiceOutputType};
 
@@ -32,6 +35,8 @@ where
     }
 }
 
+/// Same as run_single_round_trip_test, but returns Result for concise
+/// error treatment.
 async fn run_single_round_trip<I, O, F>(
     create_request: F,
     expected_error: Option<&'static str>,
