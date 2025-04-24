@@ -33,13 +33,9 @@ pub static COLLECTOR_PATH: LazyLock<String> = LazyLock::new(|| {
     let default_path = "../../bin/otelarrowcol";
     let path = std::env::var("OTEL_COLLECTOR_PATH").unwrap_or(default_path.to_string());
 
-    // Check if the collector exists at the specified path
     if !std::path::Path::new(&path).exists() {
-        eprintln!(
-            "Warning: OpenTelemetry collector not found at '{}'. Tests may fail.",
-            path
-        );
-        eprintln!("Set OTEL_COLLECTOR_PATH environment variable to the correct path or ensure the collector is built.");
+        eprintln!("Warning: OpenTelemetry Collector not found at '{}'.", path);
+        eprintln!("Set OTEL_COLLECTOR_PATH environment variable to the correct path.");
     }
 
     path
@@ -61,12 +57,12 @@ where
         while let Ok(Some(line)) = lines.next_line().await {
             eprintln!("[{}] {}", prefix, line);
 
-            // We use Option::take() pattern here to avoid moving out of a shared reference.
-            // The oneshot::Sender::send() method consumes self, so we can't call it through
-            // a shared reference like &probe. By using probe.take(), we temporarily take 
-            // ownership of the sender, use it if needed, and put it back if we don't match
-            // the message. This pattern avoids the "cannot move out of `*tx` which is behind
-            // a shared reference" error that would occur if we tried to call send() on &tx.
+            // We use Option::take() pattern here to avoid moving out
+            // of a shared reference.  The oneshot::Sender::send()
+            // method consumes itself, so we can't call it through a
+            // shared reference. By using probe.take(), we temporarily
+            // take ownership of the sender, use it if needed, and put
+            // it back if we don't match the message.
             if let Some((tx, message)) = probe.take() {
                 if line.contains(message) {
                     let _ = tx.send(());
@@ -78,7 +74,7 @@ where
     })
 }
 
-/// A helper struct to manage the collector process
+/// Manages a OpenTelemetry Collector child process.
 pub struct CollectorProcess {
     process: Child,
     config_path: PathBuf,
@@ -105,7 +101,6 @@ impl CollectorProcess {
             panic!("SIGTERM not supported on this platform");
         }
 
-        // Wait for the collector to exit
         let status = self
             .process
             .wait()
@@ -125,8 +120,8 @@ impl CollectorProcess {
         collector_path: T,
         config_content: &str,
     ) -> error::Result<Self> {
-        // Create a unique temporary config file for the collector with a random identifier
-        // to prevent collision with other tests
+        // Create a unique temporary config file for the collector
+        // with a random identifier to prevent collision.
         let random_id = format!("{:016x}", rand::random::<u64>());
         let config_path = PathBuf::from(env::temp_dir())
             .join(format!("otel_collector_config_{}.yaml", random_id));
@@ -275,7 +270,10 @@ where
     O::Request: std::fmt::Debug + PartialEq,
     F: FnOnce(&mut TestContext<I, O>) -> std::pin::Pin<Box<dyn std::future::Future<Output = error::Result<()>> + '_>>,
 {
-    // Generate random ports in the high u16 range to avoid conflicts
+    // Generate random ports in the high u16 range to avoid conflicts.
+    // Note that the OpenTelemetry Collector will respect a `:0` port
+    // designator, however it will not print the port that it has selected
+    // in Info-level logs, making it difficult to use in this kind of test.
     let random_value = rand::random::<u16>();
     let receiver_port = 40000 + (random_value % 25000);
 
@@ -308,7 +306,7 @@ where
         server_shutdown_tx,
     };
 
-    // Run the provided test logic, passing a mutable reference to the context
+    // Run the provided test logic.
     let result = test_logic(&mut context).await;
 
     // Cleanup: drop the client connection first
