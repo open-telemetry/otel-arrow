@@ -59,55 +59,32 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
         tokio::spawn(async move {
             let mut related_data = crate::otlp::related_data::RelatedData::default();
 
-            loop {
-                match input_stream.message().await {
-                    Ok(Some(batch)) => {
-                        let batch_id = batch.batch_id;
+            // Helper function to process a batch and send appropriate status
+            async fn process_and_send(
+                batch: &BatchArrowRecords,
+                related_data: &mut crate::otlp::related_data::RelatedData,
+                receiver: &TestReceiver<ExportMetricsServiceRequest>,
+                tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
+            ) -> Result<(), ()> {
+                let status_result = match process_arrow_metrics(batch, related_data, receiver).await {
+                    Ok(_) => (StatusCode::Ok, "Successfully processed".to_string()),
+                    Err(e) => (StatusCode::InvalidArgument, e.to_string()),
+                };
+                
+                tx.send(Ok(BatchStatus {
+                    batch_id: batch.batch_id,
+                    status_code: status_result.0 as i32,
+                    status_message: status_result.1,
+                }))
+                .await
+                .map_err(|_| ())
+            }
 
-                        // Process each arrow payload in the batch
-                        match process_arrow_metrics(&batch, &mut related_data, &receiver).await {
-                            Ok(_) => {
-                                // Send success status back to client
-                                if tx.send(Ok(BatchStatus {
-                                        batch_id,
-                                        status_code: StatusCode::Ok as i32,
-                                        status_message: "Successfully processed".to_string(),
-                                    }))
-                                    .await
-                                    .is_err()
-                                {
-                                    break; // Client disconnected
-                                }
-                            }
-                            Err(e) => {
-                                // Send error status back to client
-                                if tx.send(Ok(BatchStatus {
-                                        batch_id,
-                                        status_code: StatusCode::InvalidArgument as i32,
-                                        status_message: format!("Failed to process: {}", e),
-                                    }))
-                                    .await
-                                    .is_err()
-                                {
-                                    break; // Client disconnected
-                                }
-                            }
-                        }
-                    }
-                    Ok(None) => {
-                        break;
-                    }
-                    Err(e) => {
-                        // Error receiving batch from client
-                        let _ = tx
-                            .send(Ok(BatchStatus {
-                                batch_id: -1, // Unknown batch ID for protocol errors
-                                status_code: StatusCode::Internal as i32,
-                                status_message: format!("Failed to receive batch: {}", e),
-                            }))
-                            .await;
-                        break;
-                    }
+            // Process messages until stream ends or error occurs
+            while let Ok(Some(batch)) = input_stream.message().await {
+                // Process batch and send status, break on client disconnection
+                if process_and_send(&batch, &mut related_data, &receiver, &tx).await.is_err() {
+                    break;
                 }
             }
         });
@@ -163,7 +140,7 @@ async fn process_arrow_metrics(
         let reader =
             StreamReader::try_new(Cursor::new(&payload.record), None).context(error::ArrowSnafu)?;
 
-        // Get the first (and only) batch
+        // We expect only one batch per payload field.
         let arrow_batch = reader
             .into_iter()
             .next()
