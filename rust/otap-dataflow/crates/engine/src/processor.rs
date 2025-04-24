@@ -33,10 +33,8 @@
 use crate::NodeName;
 use crate::error::Error;
 use crate::message::Message;
-use crate::receiver::{LocalMode, SendableMode, ThreadMode};
 use async_trait::async_trait;
 use otap_df_channel::mpsc;
-use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -45,9 +43,6 @@ use std::sync::Arc;
 pub trait Processor {
     /// The type of messages handled by the processor.
     type PData;
-
-    /// The threading mode used by this processor
-    type Mode: ThreadMode;
 
     /// Processes a message and optionally produces new messages.
     ///
@@ -83,7 +78,7 @@ pub trait Processor {
     async fn process(
         &mut self,
         msg: Message<Self::PData>,
-        effect_handler: &mut EffectHandler<Self::PData, Self::Mode>,
+        effect_handler: &mut EffectHandler<Self::PData>,
     ) -> Result<(), Error<Self::PData>>;
 }
 
@@ -105,27 +100,24 @@ pub trait Processor {
 ///
 /// Note for implementers: The `EffectHandler` is designed to be cloned and shared across tasks
 /// so the cost of cloning should be minimal.
-pub struct EffectHandler<Msg, Mode: ThreadMode = LocalMode> {
+pub struct EffectHandler<Msg> {
     /// The name of the processor.
-    processor_name: Mode::NameRef,
+    processor_name: NodeName,
     /// A sender used to forward messages from the processor.
     msg_sender: mpsc::Sender<Msg>,
-    /// Marker for the thread mode.
-    _mode: PhantomData<Mode>,
 }
 
-impl<Msg, Mode: ThreadMode> Clone for EffectHandler<Msg, Mode> {
+impl<Msg> Clone for EffectHandler<Msg> {
     fn clone(&self) -> Self {
         EffectHandler {
             processor_name: self.processor_name.clone(),
             msg_sender: self.msg_sender.clone(),
-            _mode: PhantomData,
         }
     }
 }
 
 // Implementation for any mode
-impl<Msg, Mode: ThreadMode> EffectHandler<Msg, Mode> {
+impl<Msg> EffectHandler<Msg> {
     /// Returns the name of the processor associated with this handler.
     #[must_use]
     pub fn processor_name(&self) -> NodeName {
@@ -145,7 +137,7 @@ impl<Msg, Mode: ThreadMode> EffectHandler<Msg, Mode> {
 }
 
 // Implementation specific to LocalMode (default, non-Send)
-impl<Msg> EffectHandler<Msg, LocalMode> {
+impl<Msg> EffectHandler<Msg> {
     /// Creates a new local (non-Send) `EffectHandler` with the given processor name.
     /// This is the default and preferred mode for this project.
     ///
@@ -155,29 +147,16 @@ impl<Msg> EffectHandler<Msg, LocalMode> {
         EffectHandler {
             processor_name: Rc::from(processor_name.as_ref()),
             msg_sender,
-            _mode: PhantomData,
         }
     }
 }
 
-// Implementation for SendableMode (Send)
-impl<Msg: Send + 'static> EffectHandler<Msg, SendableMode> {
-    /// Creates a new thread-safe (Send) `EffectHandler` with the given processor name.
-    /// Use this only when you need an EffectHandler that can be sent across thread boundaries,
-    /// typically when integrating with libraries that require Send traits (e.g., Tonic GRPC services).
-    ///
-    /// Note: For this project, `LocalMode` is the preferred mode. Only use `SendableMode`
-    /// when you have a specific requirement that prevents using `LocalMode`.
-    ///
-    /// This enables greater parallelism but requires that all state maintained by the
-    /// processor implements `Send + Sync`.
-    pub fn new_sendable<S: AsRef<str>>(processor_name: S, msg_sender: mpsc::Sender<Msg>) -> Self {
-        EffectHandler {
-            processor_name: Arc::from(processor_name.as_ref()),
-            msg_sender,
-            _mode: PhantomData,
-        }
-    }
+/// Creates a new sendable `EffectHandler` with the given processor name.
+pub struct SendableEffectHandler<Msg> {
+    /// The name of the processor.
+    processor_name: Arc<str>,
+    /// A sender used to forward messages from the processor.
+    msg_sender: Arc<mpsc::Sender<Msg>>,
 }
 
 #[cfg(test)]
@@ -185,7 +164,6 @@ mod tests {
     use crate::message::ControlMsg::{Config, Shutdown, TimerTick};
     use crate::message::Message;
     use crate::processor::{EffectHandler, Error, Processor};
-    use crate::receiver::LocalMode;
     use crate::testing::processor::ProcessorTestRuntime;
     use crate::testing::{CtrMsgCounters, TestMsg};
     use async_trait::async_trait;
@@ -198,12 +176,11 @@ mod tests {
     #[async_trait(?Send)]
     impl Processor for TestProcessor {
         type PData = TestMsg;
-        type Mode = LocalMode;
 
         async fn process(
             &mut self,
             msg: Message<Self::PData>,
-            effect_handler: &mut EffectHandler<Self::PData, Self::Mode>,
+            effect_handler: &mut EffectHandler<Self::PData>,
         ) -> Result<(), Error<Self::PData>> {
             match msg {
                 Message::Control(control) => match control {

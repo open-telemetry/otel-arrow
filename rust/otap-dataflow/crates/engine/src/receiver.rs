@@ -19,7 +19,6 @@ use crate::message::ControlMsg;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_channel::mpsc;
-use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -50,9 +49,6 @@ use tokio::net::TcpListener;
 pub trait Receiver {
     /// The type of messages processed by the receiver.
     type PData;
-
-    /// The threading mode used by this receiver
-    type Mode: ThreadMode;
 
     /// Starts the receiver and begins processing incoming data and control messages.
     ///
@@ -89,7 +85,7 @@ pub trait Receiver {
     async fn start(
         self: Box<Self>,
         ctrl_msg_chan: ControlMsgChannel,
-        effect_handler: EffectHandler<Self::PData, Self::Mode>,
+        effect_handler: EffectHandler<Self::PData>,
     ) -> Result<(), Error<Self::PData>>;
 }
 
@@ -118,58 +114,6 @@ impl ControlMsgChannel {
     }
 }
 
-/// Defines the thread-safety behavior for a pipeline component.
-///
-/// The `ThreadMode` trait is a crucial abstraction that allows components (receivers, processors, exporters)
-/// to specify their threading behavior. By implementing either `LocalMode` (!Send) or `SendableMode` (Send),
-/// components can declare whether they can be safely sent across thread boundaries.
-///
-/// For this project, `LocalMode` is the preferred and recommended mode for most components.
-/// `SendableMode` exists primarily to support specific implementations that cannot use `LocalMode`,
-/// such as OTLP Receivers based on Tonic GRPC services (which don't yet support ?Send trait declarations,
-/// see <https://github.com/hyperium/tonic/issues/2171>).
-///
-/// General guidelines for choosing a mode:
-/// - Use `LocalMode` for most components (preferred for this project)
-/// - Use `SendableMode` only when integrating with libraries that require Send traits
-pub trait ThreadMode: Clone + 'static {
-    /// The reference type used for the node name.
-    type NameRef: AsRef<str> + Clone;
-}
-
-/// Marker trait for Send-supporting handlers.
-///
-/// Components that implement this trait can safely be sent across thread boundaries.
-/// This enables greater parallelism in pipeline execution at the potential cost of
-/// synchronization overhead.
-pub trait SendMode: ThreadMode {}
-
-/// A thread-local (non-Send) mode for effect handlers.
-///
-/// Components using `LocalMode` are restricted to the thread they were created on,
-/// but can use non-Send dependencies like `Rc` and avoid synchronization overhead.
-/// This is the default and preferred mode for this project.
-#[derive(Clone, Debug)]
-pub struct LocalMode;
-
-impl ThreadMode for LocalMode {
-    type NameRef = Rc<str>;
-}
-
-/// A thread-safe (Send) mode for effect handlers.
-///
-/// Components using `SendableMode` can be sent across thread boundaries,
-/// enabling greater parallelism. They use thread-safe dependencies like `Arc`
-/// instead of `Rc` and must ensure all their state is `Send + Sync`.
-#[derive(Clone, Debug)]
-pub struct SendableMode;
-
-impl ThreadMode for SendableMode {
-    type NameRef = Arc<str>;
-}
-
-impl SendMode for SendableMode {}
-
 /// Handles side effects such as opening network listeners or sending messages.
 ///
 /// The `Msg` type parameter represents the type of message the receiver
@@ -188,35 +132,56 @@ impl SendMode for SendableMode {}
 ///
 /// Note for implementers: The `EffectHandler` is designed to be cloned and shared across tasks
 /// so the cost of cloning should be minimal.
-pub struct EffectHandler<Msg, Mode: ThreadMode = LocalMode> {
+pub struct EffectHandler<Msg> {
     /// The name of the receiver.
-    receiver_name: Mode::NameRef,
+    receiver_name: NodeName,
 
     /// A sender used to forward messages from the receiver.
     msg_sender: mpsc::Sender<Msg>,
-
-    /// Marker for the thread mode.
-    _mode: PhantomData<Mode>,
 }
 
-impl<Msg, Mode: ThreadMode> Clone for EffectHandler<Msg, Mode> {
+/// A thread-safe version of `EffectHandler` for SendableMode.
+pub struct SendableEffectHandler<Msg> {
+    /// The name of the receiver.
+    receiver_name: Arc<str>,
+
+    /// A sender used to forward messages from the receiver.
+    msg_sender: Arc<mpsc::Sender<Msg>>,
+}
+
+impl<Msg> Clone for EffectHandler<Msg> {
     fn clone(&self) -> Self {
         EffectHandler {
             receiver_name: self.receiver_name.clone(),
             msg_sender: self.msg_sender.clone(),
-            _mode: PhantomData,
+        }
+    }
+}
+
+impl<Msg> Clone for SendableEffectHandler<Msg> {
+    fn clone(&self) -> Self {
+        SendableEffectHandler {
+            receiver_name: self.receiver_name.clone(),
+            msg_sender: self.msg_sender.clone(),
         }
     }
 }
 
 // Implementation for any mode
-impl<Msg, Mode: ThreadMode> EffectHandler<Msg, Mode> {
+impl<Msg> EffectHandler<Msg> {
+    /// Creates a new local (non-Send) `EffectHandler` with the given receiver name.
+    /// This is the default mode that maintains backward compatibility.
+    pub fn new<S: AsRef<str>>(receiver_name: S, msg_sender: mpsc::Sender<Msg>) -> Self {
+        EffectHandler {
+            receiver_name: Rc::from(receiver_name.as_ref()),
+            msg_sender,
+        }
+    }
+
     /// Returns the name of the receiver associated with this handler.
     #[must_use]
-    pub fn receiver_name(&self) -> NodeName {
-        // Convert to NodeName (Rc<str>) to maintain compatibility with existing API
-        let s = self.receiver_name.as_ref();
-        Rc::from(s)
+    pub fn receiver_name(&self) -> &str {
+        &self.receiver_name
     }
 
     /// Sends a message to the next node(s) in the pipeline.
@@ -228,19 +193,6 @@ impl<Msg, Mode: ThreadMode> EffectHandler<Msg, Mode> {
         self.msg_sender.send_async(data).await?;
         Ok(())
     }
-}
-
-// Implementation specific to LocalMode (default, non-Send)
-impl<Msg> EffectHandler<Msg, LocalMode> {
-    /// Creates a new local (non-Send) `EffectHandler` with the given receiver name.
-    /// This is the default mode that maintains backward compatibility.
-    pub fn new<S: AsRef<str>>(receiver_name: S, msg_sender: mpsc::Sender<Msg>) -> Self {
-        EffectHandler {
-            receiver_name: Rc::from(receiver_name.as_ref()),
-            msg_sender,
-            _mode: PhantomData,
-        }
-    }
 
     /// Creates a non-blocking TCP listener on the given address with `SO_REUSE` settings.
     ///
@@ -250,7 +202,7 @@ impl<Msg> EffectHandler<Msg, LocalMode> {
     pub fn tcp_listener(&self, addr: SocketAddr) -> Result<TcpListener, Error<Msg>> {
         // Helper closure to convert errors.
         let err = |error: std::io::Error| Error::IoError {
-            node: self.receiver_name.clone(),
+            node: self.receiver_name.to_string(),
             error,
         };
 
@@ -280,18 +232,32 @@ impl<Msg> EffectHandler<Msg, LocalMode> {
 
         TcpListener::from_std(sock.into()).map_err(err)
     }
+
+    /// Creates a new `EffectHandler` for SendableMode.
+    pub fn sendable(self) -> SendableEffectHandler<Msg> {
+        SendableEffectHandler {
+            receiver_name: Arc::from(self.receiver_name.as_ref()),
+            msg_sender: Arc::new(self.msg_sender),
+        }
+    }
 }
 
 // Implementation for SendableMode (Send)
-impl<Msg: Send + 'static> EffectHandler<Msg, SendableMode> {
-    /// Creates a new thread-safe (Send) `EffectHandler` with the given receiver name.
-    /// Use this when you need an EffectHandler that can be sent across thread boundaries.
-    pub fn new_sendable<S: AsRef<str>>(receiver_name: S, msg_sender: mpsc::Sender<Msg>) -> Self {
-        EffectHandler {
-            receiver_name: Arc::from(receiver_name.as_ref()),
-            msg_sender,
-            _mode: PhantomData,
-        }
+impl<Msg: Send> SendableEffectHandler<Msg> {
+    /// Returns the name of the receiver associated with this handler.
+    #[must_use]
+    pub fn receiver_name(&self) -> &str {
+        &self.receiver_name
+    }
+
+    /// Sends a message to the next node(s) in the pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::ReceiverError`] if the message could not be sent.
+    pub async fn send_message(&self, data: Msg) -> Result<(), Error<Msg>> {
+        self.msg_sender.send_async(data).await?;
+        Ok(())
     }
 
     /// Creates a non-blocking TCP listener on the given address with `SO_REUSE` settings.
@@ -303,7 +269,7 @@ impl<Msg: Send + 'static> EffectHandler<Msg, SendableMode> {
         // Helper function to convert errors - not using a closure to avoid move issues
         let name = self.receiver_name.to_string(); // Convert to owned String for thread safety
         let make_err = |error: std::io::Error| Error::IoError {
-            node: Rc::from(name.as_str()),
+            node: name,
             error,
         };
 
@@ -357,16 +323,18 @@ impl<Msg: Send + 'static> EffectHandler<Msg, SendableMode> {
 #[cfg(test)]
 mod tests {
     use super::ControlMsgChannel;
-    use crate::receiver::{EffectHandler, Error, LocalMode, Receiver};
+    use crate::receiver::{EffectHandler, Error, Receiver};
     use crate::testing::receiver::ReceiverTestRuntime;
     use crate::testing::{CtrMsgCounters, TestMsg};
     use async_trait::async_trait;
     use serde_json::Value;
     use std::net::SocketAddr;
+    use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::sync::oneshot;
-    use tokio::time::{Duration, sleep};
+    use tokio::time::{Duration, sleep, timeout};
+    use crate::message::ControlMsg;
 
     struct TestReceiver {
         ctrl_msg_counters: CtrMsgCounters,
@@ -376,12 +344,11 @@ mod tests {
     #[async_trait(?Send)]
     impl Receiver for TestReceiver {
         type PData = TestMsg;
-        type Mode = LocalMode;
 
         async fn start(
             self: Box<Self>,
             ctrl_msg_recv: ControlMsgChannel,
-            effect_handler: EffectHandler<Self::PData, Self::Mode>,
+            effect_handler: EffectHandler<Self::PData>,
         ) -> Result<(), Error<Self::PData>> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -455,6 +422,196 @@ mod tests {
         }
     }
 
+        /// A thread-safe counter for tracking control messages in SendableMode tests.
+    #[derive(Clone, Default)]
+    struct SendableCounter {
+        timer_tick_count: Arc<std::sync::atomic::AtomicUsize>,
+        message_count: Arc<std::sync::atomic::AtomicUsize>,
+        config_count: Arc<std::sync::atomic::AtomicUsize>,
+        shutdown_count: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl SendableCounter {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn increment_timer_tick(&self) {
+            _ = self.timer_tick_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn increment_message(&self) {
+            _ = self.message_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn increment_config(&self) {
+            _ = self.config_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn increment_shutdown(&self) {
+            _ = self.shutdown_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn get_timer_tick_count(&self) -> usize {
+            self.timer_tick_count.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn get_message_count(&self) -> usize {
+            self.message_count.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn get_config_count(&self) -> usize {
+            self.config_count.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn get_shutdown_count(&self) -> usize {
+            self.shutdown_count.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn assert(
+            &self,
+            timer_tick_count: usize,
+            message_count: usize,
+            config_count: usize,
+            shutdown_count: usize,
+        ) {
+            assert_eq!(
+                self.get_timer_tick_count(),
+                timer_tick_count,
+                "Timer tick count mismatch"
+            );
+            assert_eq!(
+                self.get_message_count(),
+                message_count,
+                "Message count mismatch"
+            );
+            assert_eq!(
+                self.get_config_count(),
+                config_count,
+                "Config count mismatch"
+            );
+            assert_eq!(
+                self.get_shutdown_count(),
+                shutdown_count,
+                "Shutdown count mismatch"
+            );
+        }
+    }
+
+    /// A test receiver that implements Send to test the SendableMode functionality.
+    /// This simulates a receiver that needs to be Send, such as one built on Tonic GRPC.
+    struct SendableTestReceiver {
+        counters: SendableCounter,
+        port_notifier: oneshot::Sender<SocketAddr>,
+    }
+
+    // Explicitly verify that our type is Send
+    const _: () = {
+        fn assert_send<T: Send>() {}
+        fn check() {
+            assert_send::<SendableTestReceiver>();
+        }
+    };
+
+    // Note that we use #[async_trait] here (without ?Send) to make this a Send trait impl
+    #[async_trait(?Send)]
+    impl Receiver for SendableTestReceiver {
+        type PData = TestMsg;
+        async fn start(
+            self: Box<Self>,
+            ctrl_msg_recv: ControlMsgChannel,
+            effect_handler: EffectHandler<Self::PData>,
+        ) -> Result<(), Error<Self::PData>> {
+            let effect_handler = effect_handler.sendable();
+            // Bind to an ephemeral port.
+            let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+            let listener = effect_handler.tcp_listener(addr)?;
+            let local_addr = listener.local_addr().unwrap();
+
+            // Notify the test of the actual bound address.
+            let _ = self.port_notifier.send(local_addr);
+
+            let counters = self.counters;
+
+            // This is a simple implementation that accepts one connection and processes it
+            loop {
+                tokio::select! {
+                    // Process incoming control messages.
+                    ctrl_msg = ctrl_msg_recv.recv() => {
+                        match ctrl_msg {
+                            Ok(msg) => {
+                                match msg {
+                                    ControlMsg::TimerTick { .. } => {
+                                        counters.increment_timer_tick();
+                                    }
+                                    ControlMsg::Config { .. } => {
+                                        counters.increment_config();
+                                    }
+                                    ControlMsg::Shutdown { .. } => {
+                                        counters.increment_shutdown();
+                                        return Ok(());
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            Err(_) => {
+                                // Channel closed, exit.
+                                return Ok(());
+                            }
+                        }
+                    },
+                    // Accept new connections.
+                    connection = listener.accept() => {
+                        match connection {
+                            Ok((mut socket, peer_addr)) => {
+                                let effect_handler_clone = effect_handler.clone();
+                                let counters_clone = counters.clone();
+
+                                // Process the connection locally rather than spawning a task
+                                // Read request data.
+                                let mut buf = [0u8; 1024];
+                                match socket.read(&mut buf).await {
+                                    Ok(n) if n > 0 => {
+                                        let data = String::from_utf8_lossy(&buf[0..n]).to_string();
+                                        let msg = TestMsg(data);
+
+                                        counters_clone.increment_message();
+
+                                        // Send the message to the next node via effect handler.
+                                        if let Err(e) = effect_handler_clone.send_message(msg).await {
+                                            eprintln!("Error sending message via effect handler: {e}");
+                                        }
+                                        // Echo back an acknowledgment.
+                                        let _ = socket.write_all(b"ack").await;
+                                    },
+                                    Err(e) => {
+                                        eprintln!("Error reading from {peer_addr}: {e}");
+                                    }
+                                    _ => {}
+                                }
+                            },
+                            Err(e) => {
+                                eprintln!("Error accepting connection: {e}");
+                                continue;
+                            }
+                        }
+                    }
+                    // A timeout branch in case no events occur.
+                    () = sleep(Duration::from_secs(1)) => {
+                        // You could do periodic tasks here.
+                    }
+                }
+
+                // For this test, exit the loop after 5 timer ticks.
+                if counters.get_timer_tick_count() >= 5 {
+                    break;
+                }
+            }
+
+            Ok(())
+        }
+    }
+
     #[test]
     fn test_receiver() {
         let mut test_runtime = ReceiverTestRuntime::new(10);
@@ -465,6 +622,9 @@ mod tests {
             port_notifier: port_tx,
             ctrl_msg_counters: test_runtime.counters(),
         };
+
+        // ToDo faire un autre test pour SendableTestReceiver, Faire des channels qui peuvent devenir Send (?).
+        // ToDo Creer un channel Sendable en fonction de la configuration du receiver (Send, !Send).
 
         test_runtime.start_receiver(receiver);
         test_runtime.start_test(|ctx| async move {
@@ -513,7 +673,7 @@ mod tests {
         let counters = test_runtime.counters();
         test_runtime.validate(|mut ctx| async move {
             let pdata_rx = ctx.pdata_rx().expect("No pdata_rx");
-            let received = tokio::time::timeout(Duration::from_secs(3), pdata_rx.recv())
+            let received = timeout(Duration::from_secs(3), pdata_rx.recv())
                 .await
                 .expect("Timed out waiting for message")
                 .expect("No message received");
@@ -523,4 +683,94 @@ mod tests {
             counters.assert(3, 0, 1, 1);
         });
     }
+
+    // This test validates that a receiver using SendableMode works correctly.
+    // It manually sets up the required test infrastructure rather than using ReceiverTestRuntime
+    // (which is designed for LocalMode only).
+    // #[test]
+    // fn test_sendable_receiver() {
+    //     // Create a multi-threaded runtime for this test
+    //     let rt = tokio::runtime::Builder::new_multi_thread()
+    //         .enable_all()
+    //         .build()
+    //         .unwrap();
+        
+    //     rt.block_on(async {
+    //         // Setup channels and components
+    //         let (ctrl_sender, ctrl_receiver) = otap_df_channel::mpsc::Channel::new(10);
+    //         let (pdata_sender, pdata_receiver) = otap_df_channel::mpsc::Channel::new(10);
+    //         let effect_handler = EffectHandler::<TestMsg>::new(
+    //             "send_test", 
+    //             pdata_sender
+    //         );
+            
+    //         // Create receiver with thread-safe counter and address notification channel
+    //         let counters = SendableCounter::new();
+    //         let test_counters = counters.clone();
+    //         let (port_tx, port_rx) = oneshot::channel::<SocketAddr>();
+            
+    //         let receiver = SendableTestReceiver {
+    //             counters,
+    //             port_notifier: port_tx,
+    //         };
+            
+    //         // Start the receiver
+    //         let ctrl_msg_chan = ControlMsgChannel::new(ctrl_receiver);
+    //         let receiver_handle = tokio::spawn(async move {
+    //             let receiver = Box::new(receiver);
+    //             if let Err(e) = receiver.start(ctrl_msg_chan, effect_handler).await {
+    //                 panic!("Receiver failed: {e}");
+    //             }
+    //         });
+            
+    //         // Wait for the receiver to bind to a port
+    //         let addr = port_rx.await.expect("Failed to receive port");
+            
+    //         // Connect and send data
+    //         let mut stream = TcpStream::connect(addr)
+    //             .await
+    //             .expect("Failed to connect to receiver");
+                
+    //         stream
+    //             .write_all(b"Hello from SendableMode")
+    //             .await
+    //             .expect("Failed to send data");
+                
+    //         // Read acknowledgment
+    //         let mut buf = [0u8; 1024];
+    //         let _n = stream
+    //             .read(&mut buf)
+    //             .await
+    //             .expect("Failed to read ack");
+            
+    //         // Send some control messages
+    //         ctrl_sender.send_async(ControlMsg::TimerTick {}).await.expect("Failed to send timer tick");
+    //         ctrl_sender.send_async(ControlMsg::Config { config: Value::Null }).await.expect("Failed to send config");
+            
+    //         // Wait a bit for processing
+    //         sleep(Duration::from_millis(100)).await;
+            
+    //         // Read the message that was sent through the pipeline
+    //         let received_msg = timeout(
+    //             Duration::from_secs(1),
+    //             pdata_receiver.recv()
+    //         ).await.expect("Timed out waiting for message")
+    //           .expect("No message received");
+              
+    //         // Verify the message content  
+    //         assert_eq!(received_msg, TestMsg("Hello from SendableMode".to_string()));
+            
+    //         // Send shutdown message
+    //         ctrl_sender.send_async(ControlMsg::Shutdown { reason: "test complete".into() }).await.expect("Failed to send shutdown");
+            
+    //         // Wait for receiver to finish
+    //         timeout(Duration::from_secs(1), receiver_handle)
+    //             .await
+    //             .expect("Receiver didn't shut down")
+    //             .expect("Receiver task failed");
+            
+    //         // Verify counter values
+    //         test_counters.assert(1, 1, 1, 1);
+    //     });
+    // }
 }

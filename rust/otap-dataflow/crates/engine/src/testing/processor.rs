@@ -13,7 +13,6 @@
 use crate::error::Error;
 use crate::message::Message;
 use crate::processor::{EffectHandler, Processor};
-use crate::receiver::LocalMode;
 use crate::testing::{create_test_channel, setup_test_runtime};
 use otap_df_channel::mpsc;
 use std::future::Future;
@@ -22,16 +21,16 @@ use tokio::task::LocalSet;
 /// A context object.
 pub struct ProcessorTestContext<P>
 where
-    P: Processor<Mode = LocalMode>,
+    P: Processor,
 {
     processor: P,
     pdata_rx: mpsc::Receiver<P::PData>,
-    effect_handler: EffectHandler<P::PData, P::Mode>,
+    effect_handler: EffectHandler<P::PData>,
 }
 
 impl<P> ProcessorTestContext<P>
 where
-    P: Processor<Mode = LocalMode>,
+    P: Processor,
 {
     /// Creates a new TestContext with the given transmitters.
     pub fn new(processor: P, channel_capacity: usize) -> Self {
@@ -65,7 +64,7 @@ where
 /// including channel creation, processor instantiation, and task management.
 pub struct ProcessorTestRuntime<P>
 where
-    P: Processor<Mode = LocalMode>,
+    P: Processor,
 {
     processor: Option<P>,
     channel_capacity: usize,
@@ -78,7 +77,7 @@ where
 
 impl<P> ProcessorTestRuntime<P>
 where
-    P: Processor<Mode = LocalMode> + 'static,
+    P: Processor + 'static,
 {
     /// Creates a new test runtime with channels of the specified capacity.
     pub fn new(processor: P, channel_capacity: usize) -> Self {

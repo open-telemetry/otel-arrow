@@ -29,10 +29,8 @@
 //! or thread-safe (`SendableMode`). This allows you to choose the appropriate threading model based on
 //! your exporter's requirements and performance considerations.
 
-use crate::NodeName;
 use crate::error::Error;
 use crate::message::{ControlMsg, Message};
-use crate::receiver::{LocalMode, SendableMode, ThreadMode};
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_channel::mpsc;
@@ -42,13 +40,11 @@ use std::sync::Arc;
 
 /// A trait for egress exporters.
 #[async_trait(?Send)]
-pub trait Exporter {
-    /// The type of messages handled by the exporter.
-    type PData;
-
-    /// The threading mode used by this exporter
-    type Mode: ThreadMode;
-
+pub trait Exporter<PData, EF = EffectHandler<PData>>
+where
+    PData: Clone,
+    EF: EffectHandlerTrait<PData>
+{
     /// Starts the exporter and begins exporting incoming data.
     ///
     /// The pipeline engine will call this function to start the exporter in a separate task.
@@ -79,9 +75,156 @@ pub trait Exporter {
     /// This method should be cancellation safe and clean up any resources when dropped.
     async fn start(
         self: Box<Self>,
-        msg_chan: MessageChannel<Self::PData>,
-        effect_handler: EffectHandler<Self::PData, Self::Mode>,
-    ) -> Result<(), Error<Self::PData>>;
+        msg_chan: MessageChannel<PData>,
+        effect_handler: EF,
+    ) -> Result<(), Error<PData>>;
+}
+
+/// Handles side effects for the exporter.
+///
+/// The `PData` type parameter represents the type of message the exporter will consume.
+///
+/// # Thread Safety Options
+///
+/// - `EffectHandler<PData>`: For thread-local (!Send) exporters. Uses `Rc` internally and is
+///   the default effect handler.
+/// - `SendableEffectHandler<PData>`: For thread-safe (Send) exporters. Uses `Arc` internally and
+///   supports sending across thread boundaries.
+///
+/// Note for implementers: Effect handler implementations are designed to be cloned so the cost of
+/// cloning should be minimal.
+pub trait EffectHandlerTrait<PData: Clone> {
+    /// Returns the name of the exporter associated with this handler.
+    fn exporter_name(&self) -> &str;
+}
+
+/// A `!Send` implementation of the EffectHandlerTrait.
+pub struct EffectHandler<PData> {
+    /// The name of the exporter.
+    exporter_name: Rc<str>,
+
+    /// A 0 size type used to parameterize the `EffectHandler` with the type of message the exporter
+    /// will consume.
+    _pd: PhantomData<PData>,
+}
+
+impl<PData> Clone for EffectHandler<PData> {
+    fn clone(&self) -> Self {
+        EffectHandler {
+            exporter_name: self.exporter_name.clone(),
+            _pd: PhantomData,
+        }
+    }
+}
+
+/// Implementation for the !Send EffectHandler
+impl<Msg> EffectHandler<Msg> {
+    /// Creates a new local (!Send) `EffectHandler` with the given exporter name.
+    /// This is the default and preferred mode for this project.
+    ///
+    /// Use this constructor when your exporter doesn't need to be sent across threads or
+    /// when it uses components that aren't `Send`.
+    pub fn new<S: AsRef<str>>(exporter_name: S) -> Self {
+        EffectHandler {
+            exporter_name: Rc::from(exporter_name.as_ref()),
+            _pd: PhantomData,
+        }
+    }
+}
+
+impl<PData: Clone> EffectHandlerTrait<PData> for EffectHandler<PData> {
+    /// Returns the name of the exporter associated with this handler.
+    #[must_use]
+    fn exporter_name(&self) -> &str {
+        &self.exporter_name
+    }
+}
+
+
+/// A `Send` implementation of the EffectHandlerTrait.
+pub struct SendableEffectHandler<PData> {
+    /// The name of the exporter.
+    exporter_name: Arc<str>,
+
+    /// A 0 size type used to parameterize the `EffectHandler` with the type of message the exporter
+    /// will consume.
+    _pd: PhantomData<PData>,
+}
+
+impl<PData> Clone for SendableEffectHandler<PData> {
+    fn clone(&self) -> Self {
+        SendableEffectHandler {
+            exporter_name: self.exporter_name.clone(),
+            _pd: PhantomData,
+        }
+    }
+}
+
+/// Implementation for the Send EffectHandler
+impl<Msg> SendableEffectHandler<Msg> {
+    /// Creates a new "sendable" effect handler with the given exporter name.
+    pub fn new<S: AsRef<str>>(exporter_name: S) -> Self {
+        SendableEffectHandler {
+            exporter_name: Arc::from(exporter_name.as_ref()),
+            _pd: PhantomData,
+        }
+    }
+}
+
+impl<PData: Clone> EffectHandlerTrait<PData> for SendableEffectHandler<PData> {
+    /// Returns the name of the exporter associated with this handler.
+    #[must_use]
+    fn exporter_name(&self) -> &str {
+        &self.exporter_name
+    }
+}
+
+enum ExporterWrapper<PData> {
+    NonSendable {
+        effect_handler: EffectHandler<PData>,
+        exporter: Box<dyn Exporter<PData, EffectHandler<PData>>>,
+    },
+    Sendable {
+        effect_handler: SendableEffectHandler<PData>,
+        exporter: Box<dyn Exporter<PData, SendableEffectHandler<PData>>>,
+    }
+}
+
+impl<PData: Clone> ExporterWrapper<PData> {
+    async fn start(self, message_channel: MessageChannel<PData>) -> Result<(), Error<PData>> {
+        match self {
+            ExporterWrapper::NonSendable { effect_handler, exporter } => {
+                exporter.start(message_channel, effect_handler).await
+            },
+            ExporterWrapper::Sendable { effect_handler, exporter } => {
+                exporter.start(message_channel, effect_handler).await
+            },
+        }
+    }
+
+    // Create method for local handlers
+    fn create<E>(exporter: E, name: &str) -> Self
+    where
+        E: Exporter<PData, EffectHandler<PData>> + 'static
+    {
+        // Use static dispatch based on the type parameter
+        ExporterWrapper::NonSendable {
+            effect_handler: EffectHandler { exporter_name: Rc::from(name), _pd: PhantomData },
+            exporter: Box::new(exporter),
+        }
+    }
+
+    // Create method for sendable handlers
+    fn create_sendable<E>(exporter: E, name: &str) -> Self
+    where
+        E: Exporter<PData, SendableEffectHandler<PData>> + 'static
+    {
+        // Use static dispatch based on the type parameter
+        ExporterWrapper::Sendable {
+            effect_handler: SendableEffectHandler { exporter_name: Arc::from(name), _pd: PhantomData },
+            exporter: Box::new(exporter),
+        }
+    }
 }
 
 /// A channel for receiving control and pdata messages.
@@ -123,128 +266,38 @@ impl<PData> MessageChannel<PData> {
     }
 }
 
-/// Handles side effects for the exporter.
-///
-/// The `Msg` type parameter represents the type of message the exporter will consume,
-/// while the `Mode` type parameter determines the threading behavior.
-///
-/// # Thread Safety Options
-///
-/// - `EffectHandler<Msg, LocalMode>`: For thread-local (!Send) exporters. Uses `Rc` internally and is
-///   the default for backward compatibility. Created with `EffectHandler::new()`.
-/// - `EffectHandler<Msg, SendableMode>`: For thread-safe (Send) exporters. Uses `Arc` internally and
-///   supports sending across thread boundaries. Created with `EffectHandler::new_sendable()`.
-///
-/// Choose the appropriate mode based on your component's requirements. Use `LocalMode` when thread safety
-/// isn't needed or when using !Send dependencies, and `SendableMode` when the component must be shared
-/// across threads.
-///
-/// Note for implementers: The `EffectHandler` is designed to be cloned and shared across tasks
-/// so the cost of cloning should be minimal.
-pub struct EffectHandler<Msg, Mode: ThreadMode = LocalMode> {
-    /// The name of the exporter.
-    exporter_name: Mode::NameRef,
-
-    /// A 0 size type used to parameterize the `EffectHandler` with the type of message the exporter
-    /// will consume.
-    pd: PhantomData<Msg>,
-
-    /// Marker for the thread mode.
-    _mode: PhantomData<Mode>,
-}
-
-impl<Msg, Mode: ThreadMode> Clone for EffectHandler<Msg, Mode> {
-    fn clone(&self) -> Self {
-        EffectHandler {
-            exporter_name: self.exporter_name.clone(),
-            pd: self.pd,
-            _mode: PhantomData,
-        }
-    }
-}
-
-// Implementation for any mode
-impl<Msg, Mode: ThreadMode> EffectHandler<Msg, Mode> {
-    /// Returns the name of the exporter associated with this handler.
-    #[must_use]
-    pub fn exporter_name(&self) -> NodeName {
-        // Convert to NodeName (Rc<str>) to maintain compatibility with existing API
-        Rc::from(self.exporter_name.as_ref())
-    }
-}
-
-// Implementation specific to LocalMode (default, non-Send)
-impl<Msg> EffectHandler<Msg, LocalMode> {
-    /// Creates a new local (non-Send) `EffectHandler` with the given exporter name.
-    /// This is the default and preferred mode for this project.
-    ///
-    /// Use this constructor when your exporter doesn't need to be sent across threads or
-    /// when it uses components that aren't `Send`.
-    pub fn new<S: AsRef<str>>(exporter_name: S) -> Self {
-        EffectHandler {
-            exporter_name: Rc::from(exporter_name.as_ref()),
-            pd: PhantomData,
-            _mode: PhantomData,
-        }
-    }
-}
-
-// Implementation for SendableMode (Send)
-impl<Msg: Send + 'static> EffectHandler<Msg, SendableMode> {
-    /// Creates a new thread-safe (Send) `EffectHandler` with the given exporter name.
-    /// Use this only when you need an EffectHandler that can be sent across thread boundaries,
-    /// typically when integrating with libraries that require Send traits (e.g., Tonic GRPC services).
-    ///
-    /// Note: For this project, `LocalMode` is the preferred mode. Only use `SendableMode`
-    /// when you have a specific requirement that prevents using `LocalMode`.
-    ///
-    /// This enables greater parallelism but requires that all state maintained by the
-    /// exporter implements `Send + Sync`.
-    pub fn new_sendable<S: AsRef<str>>(exporter_name: S) -> Self {
-        EffectHandler {
-            exporter_name: Arc::from(exporter_name.as_ref()),
-            pd: PhantomData,
-            _mode: PhantomData,
-        }
-    }
-}
-
 // Note for reviewers: More methods will be added in future PRs.
 
 #[cfg(test)]
 mod tests {
-    use crate::exporter::{EffectHandler, Error, Exporter, MessageChannel};
+    use crate::exporter::{EffectHandler, EffectHandlerTrait, Error, Exporter, MessageChannel, SendableEffectHandler};
     use crate::message::{ControlMsg, Message};
-    use crate::receiver::LocalMode;
     use crate::testing::exporter::ExporterTestRuntime;
-    use crate::testing::{CtrMsgCounters, TestMsg};
+    use crate::testing::{exec_in_send_env, CtrMsgCounters, TestMsg};
     use async_trait::async_trait;
     use serde_json::Value;
     use std::time::Duration;
 
     /// A test exporter that counts how many `TimerTick` and Message events it processes.
-    struct TestExporter {
+    struct RegularExporter {
         /// Counter for different message types
         counter: CtrMsgCounters,
     }
 
-    impl TestExporter {
+    impl RegularExporter {
         /// Creates a new test exporter with the given counter.
         pub fn new(counter: CtrMsgCounters) -> Self {
-            TestExporter { counter }
+            RegularExporter { counter }
         }
     }
 
     #[async_trait(?Send)]
-    impl Exporter for TestExporter {
-        type PData = TestMsg;
-        type Mode = LocalMode;
-
+    impl Exporter<TestMsg> for RegularExporter {
         async fn start(
             self: Box<Self>,
-            mut msg_chan: MessageChannel<Self::PData>,
-            effect_handler: EffectHandler<Self::PData, Self::Mode>,
-        ) -> Result<(), Error<Self::PData>> {
+            mut msg_chan: MessageChannel<TestMsg>,
+            effect_handler: EffectHandler<TestMsg>,
+        ) -> Result<(), Error<TestMsg>> {
             // Loop until a Shutdown event is received.
             loop {
                 match msg_chan.recv().await? {
@@ -263,7 +316,59 @@ mod tests {
                     }
                     _ => {
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_name(),
+                            exporter: effect_handler.exporter_name().to_owned(),
+                            error: "Unknown control message".to_owned(),
+                        });
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// A test of an exporter requiring a sendable effect handler that counts how many `TimerTick`
+    /// and Message events it processes.
+    struct ExporterWithSendableEffectHandler {
+        /// Counter for different message types
+        counter: CtrMsgCounters,
+    }
+
+    impl ExporterWithSendableEffectHandler {
+        /// Creates a new test exporter with the given counter.
+        pub fn new(counter: CtrMsgCounters) -> Self {
+            ExporterWithSendableEffectHandler { counter }
+        }
+    }
+
+    #[async_trait(?Send)]
+    impl Exporter<TestMsg, SendableEffectHandler<TestMsg>> for ExporterWithSendableEffectHandler {
+        async fn start(
+            self: Box<Self>,
+            mut msg_chan: MessageChannel<TestMsg>,
+            effect_handler: SendableEffectHandler<TestMsg>,
+        ) -> Result<(), Error<TestMsg>> {
+            // Loop until a Shutdown event is received.
+            loop {
+                match msg_chan.recv().await? {
+                    Message::Control(ControlMsg::TimerTick { .. }) => {
+                        self.counter.increment_timer_tick();
+                    }
+                    Message::Control(ControlMsg::Config { .. }) => {
+                        self.counter.increment_config();
+                    }
+                    Message::Control(ControlMsg::Shutdown { .. }) => {
+                        self.counter.increment_shutdown();
+                        break;
+                    }
+                    Message::PData(_message) => {
+                        self.counter.increment_message();
+                        exec_in_send_env(|| {
+                            _ = effect_handler.exporter_name();
+                        });
+                    }
+                    _ => {
+                        return Err(Error::ExporterError {
+                            exporter: effect_handler.exporter_name().to_owned(),
                             error: "Unknown control message".to_owned(),
                         });
                     }
@@ -276,7 +381,7 @@ mod tests {
     #[test]
     fn test_exporter() {
         let mut test_runtime = ExporterTestRuntime::new(10);
-        let exporter = TestExporter::new(test_runtime.counters());
+        let exporter = RegularExporter::new(test_runtime.counters());
 
         test_runtime.start_exporter(exporter);
         test_runtime.start_test(|ctx| async move {
@@ -294,7 +399,54 @@ mod tests {
                 .expect("Failed to send Config");
 
             // Send a data message
-            ctx.send_data("Hello Exporter")
+            ctx.send_data(TestMsg("Hello Exporter".into()))
+                .await
+                .expect("Failed to send data message");
+
+            // Allow some time for processing
+            ctx.sleep(Duration::from_millis(100)).await;
+
+            // Send shutdown
+            ctx.send_shutdown("test complete")
+                .await
+                .expect("Failed to send Shutdown");
+        });
+
+        // Get a clone of the counters before moving test_runtime into validate
+        let counters = test_runtime.counters();
+
+        test_runtime.validate(|_ctx| async move {
+            counters.assert(
+                3, // timer tick
+                1, // message
+                1, // config
+                1, // shutdown
+            );
+        });
+    }
+
+    #[test]
+    fn test_sendable_exporter() {
+        let mut test_runtime = ExporterTestRuntime::new(10);
+        let exporter = ExporterWithSendableEffectHandler::new(test_runtime.counters());
+
+        test_runtime.start_exporter_with_send_effect_handler(exporter);
+        test_runtime.start_test(|ctx| async move {
+            // Send 3 TimerTick events.
+            for _ in 0..3 {
+                ctx.send_timer_tick()
+                    .await
+                    .expect("Failed to send TimerTick");
+                ctx.sleep(Duration::from_millis(50)).await;
+            }
+
+            // Send a Config event.
+            ctx.send_config(Value::Null)
+                .await
+                .expect("Failed to send Config");
+
+            // Send a data message
+            ctx.send_data(TestMsg("Hello Exporter".into()))
                 .await
                 .expect("Failed to send data message");
 

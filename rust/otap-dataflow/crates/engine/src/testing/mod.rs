@@ -138,6 +138,12 @@ impl CtrMsgCounters {
     }
 }
 
+/// A wrapper function used to enforce the Send constraint.
+/// This is useful for testing nodes that require a Send EffectHandler.
+pub fn exec_in_send_env<F>(f: F) where F: FnOnce() -> () + Send {
+    f();
+}
+
 /// Creates a single-threaded runtime with a local task set for testing components.
 pub fn setup_test_runtime() -> (tokio::runtime::Runtime, LocalSet) {
     let rt = Builder::new_current_thread().enable_all().build().unwrap();
