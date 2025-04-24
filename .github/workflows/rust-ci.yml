@@ -34,8 +34,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # latest on /master branch as of 2025-04-02
         with:
           toolchain: stable
-      - name: make otelarrowcol
-        run: make otelarrowcol
       - name: cargo test ${{ matrix.folder }}
         run: cargo test
         working-directory: ./rust/${{ matrix.folder }}
