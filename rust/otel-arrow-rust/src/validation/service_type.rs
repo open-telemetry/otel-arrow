@@ -49,17 +49,18 @@ pub trait ServiceOutputType: Debug + Send + Sync + 'static {
     /// The name of this service type (for logging and identification)
     fn signal() -> &'static str;
 
-    /// The protocol used by this service type (e.g., "otlp")
+    /// The protocol used by this service type (e.g., "otlp").  This
+    /// is expected to match the receiver and exporter name used in
+    /// the test, hence OTAP uses "otelarrow".
     fn protocol() -> &'static str;
 
     /// Create a server with the given receiver and listener stream
-    /// Returns a JoinHandle for the server task and a shutdown channel
     fn create_server(
         receiver: TestReceiver<Self::Request>,
         incoming: crate::validation::tcp_stream::ShutdownableTcpListenerStream,
     ) -> tokio::task::JoinHandle<error::Result<()>>;
 
-    /// Start a service-specific receiver
+    /// Start a service-specific receiver, wrapping create_service_server.
     async fn start_receiver(
         listener: tokio::net::TcpListener,
     ) -> error::Result<(
