@@ -8,16 +8,16 @@
 
 use std::env;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
 use std::sync::LazyLock;
-use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use snafu::{OptionExt, ResultExt};
-use tokio::sync::mpsc;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::{Child, Command};
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
 use super::error;
@@ -62,30 +62,45 @@ impl<T> TimeoutReceiver<T> {
     }
 }
 
-/// Helper function to spawn a thread that reads lines from a buffer and logs them with a prefix.
+/// Helper function to spawn an async task that reads lines from a buffer and logs them with a prefix.
 /// Optionally checks for a message substring and sends a signal when it matches.
-fn spawn_line_reader<R>(
+async fn spawn_line_reader<R>(
     reader: R,
     prefix: &'static str,
-    mut probe: Option<(std::sync::mpsc::Sender<()>, &'static str)>,
-) -> JoinHandle<()>
+    mut probe: Option<(oneshot::Sender<()>, &'static str)>,
+) -> tokio::task::JoinHandle<()>
 where
-    R: std::io::Read + Send + 'static,
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
-    thread::spawn(move || {
-        let buf_reader = BufReader::new(reader);
-        for line in buf_reader.lines() {
-            if let Ok(line) = line {
+    tokio::spawn(async move {
+        let mut buf_reader = BufReader::new(reader);
+        let mut line = String::new();
+        
+        while buf_reader.read_line(&mut line).await.is_ok() {
+            if !line.is_empty() {
+                // Remove the newline character if present
+                if line.ends_with('\n') {
+                    line.pop();
+                }
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+                
                 eprintln!("[{}] {}", prefix, line);
 
                 // If we need to check for a ready message
-                if let Some((ref tx, message)) = probe {
+                if let Some((tx, message)) = probe.take() {
                     if line.contains(message) {
-                        // Send using standard sync channel
+                        // Send using tokio oneshot channel
                         let _ = tx.send(());
-                        probe = None;
+                    } else {
+                        // If not found, put it back
+                        probe = Some((tx, message));
                     }
                 }
+                
+                // Clear the line for next iteration
+                line.clear();
             }
         }
     })
@@ -95,8 +110,8 @@ where
 pub struct CollectorProcess {
     process: Child,
     config_path: PathBuf,
-    stdout_handle: Option<JoinHandle<()>>,
-    stderr_handle: Option<JoinHandle<()>>,
+    stdout_handle: Option<tokio::task::JoinHandle<()>>,
+    stderr_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl CollectorProcess {
@@ -106,7 +121,7 @@ impl CollectorProcess {
         {
             use nix::sys::signal::{kill, Signal};
             use nix::unistd::Pid;
-            let pid = self.process.id();
+            let pid = self.process.id().unwrap();
             eprintln!("Sending SIGTERM to collector process {}", pid);
 
             kill(Pid::from_raw(pid as i32), Signal::SIGTERM)
@@ -122,6 +137,7 @@ impl CollectorProcess {
         let status = self
             .process
             .wait()
+            .await
             .context(error::InputOutputSnafu { desc: "wait" })?;
 
         status
@@ -154,8 +170,8 @@ impl CollectorProcess {
         let mut process = Command::new(collector_path.as_ref())
             .arg("--config")
             .arg(&config_path)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .context(error::InputOutputSnafu { desc: "command" })?;
 
@@ -163,39 +179,27 @@ impl CollectorProcess {
         let stdout = process
             .stdout
             .take()
-            .context(error::FileNotAvailableSnafu { desc: "stderr" })?;
+            .context(error::FileNotAvailableSnafu { desc: "stdout" })?;
 
         let stderr = process
             .stderr
             .take()
             .context(error::FileNotAvailableSnafu { desc: "stderr" })?;
 
-        // Create a standard sync channel to signal when the collector is ready
-        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        // Create a oneshot channel to signal when the collector is ready
+        let (ready_tx, ready_rx) = oneshot::channel();
 
-        // Create threads to read from stdout and stderr
+        // Create async tasks to read from stdout and stderr
         let (stdout_handle, stderr_handle) = (
-            spawn_line_reader(stdout, "Collector stdout", None),
-            spawn_line_reader(stderr, "Collector stderr", Some((ready_tx, READY_MESSAGE))),
+            spawn_line_reader(stdout, "Collector stdout", None).await,
+            spawn_line_reader(stderr, "Collector stderr", Some((ready_tx, READY_MESSAGE))).await,
         );
-
-        // Now create a oneshot channel for the async side
-        let (tokio_tx, tokio_rx) = tokio::sync::oneshot::channel();
-
-        // Spawn a thread to bridge between the sync and async worlds
-        thread::spawn(move || {
-            // Wait for the ready signal from the sync channel
-            if ready_rx.recv().is_ok() {
-                // Forward it to the async world
-                let _ = tokio_tx.send(());
-            }
-        });
 
         // Create timeout for the async receiver
         let timeout_duration = Duration::from_secs(READY_TIMEOUT_SECONDS);
 
         // Wait for the ready message with timeout and return the collector process when ready
-        _ = tokio::time::timeout(timeout_duration, tokio_rx)
+        _ = tokio::time::timeout(timeout_duration, ready_rx)
             .await
             .context(error::ReadyTimeoutSnafu)?
             .context(error::ChannelClosedSnafu)?;
@@ -212,15 +216,15 @@ impl CollectorProcess {
 impl Drop for CollectorProcess {
     fn drop(&mut self) {
         // Clean up the collector process when done
-        let _ = self.process.kill();
+        let _ = self.process.start_kill();
 
-        // Wait for the stdout and stderr threads to complete
+        // Abort any ongoing stdout and stderr tasks
         if let Some(handle) = self.stdout_handle.take() {
-            let _ = handle.join();
+            handle.abort();
         }
 
         if let Some(handle) = self.stderr_handle.take() {
-            let _ = handle.join();
+            handle.abort();
         }
 
         // Clean up temp config file
