@@ -11,7 +11,7 @@
 //! setup and lifecycle management.
 
 use std::fmt::Debug;
-use crate::exporter::{EffectHandler, Exporter, MessageChannel, SendableEffectHandler};
+use crate::exporter::{NotSendableEffectHandler, Exporter, MessageChannel, SendableEffectHandler};
 use crate::message::ControlMsg;
 use crate::testing::{CtrMsgCounters, create_test_channel, setup_test_runtime};
 use otap_df_channel::error::SendError;
@@ -138,7 +138,7 @@ impl<PData: Clone + Debug + 'static> ExporterTestRuntime<PData> {
     /// Starts an exporter with the configured channels and a non-sendable effect handler.
     pub fn start_exporter<E>(&mut self, exporter: E)
     where
-        E: Exporter<PData, EffectHandler<PData>> + 'static,
+        E: Exporter<PData, NotSendableEffectHandler<PData>> + 'static,
     {
         let msg_chan = MessageChannel::new(
             self.control_rx
@@ -151,7 +151,7 @@ impl<PData: Clone + Debug + 'static> ExporterTestRuntime<PData> {
 
         let _ = self.local_tasks.spawn_local(async move {
             boxed_exporter
-                .start(msg_chan, EffectHandler::new("test_exporter"))
+                .start(msg_chan, NotSendableEffectHandler::new("test_exporter"))
                 .await
                 .expect("Exporter event loop failed");
         });

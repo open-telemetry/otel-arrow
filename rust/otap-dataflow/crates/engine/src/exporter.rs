@@ -23,12 +23,15 @@
 //!
 //! # Thread Safety
 //!
-//! Note that this trait uses `#[async_trait(?Send)]`, meaning implementations
-//! are not required to be thread-safe. To ensure scalability, the pipeline engine will start
-//! multiple instances of the same pipeline in parallel, each with its own exporter instance.
+//! Note that this trait uses `#[async_trait(?Send)]`, meaning implementations are not required to
+//! be thread-safe. If you need to implement an exporter that requires `Send`, you can use the
+//! [`SendableEffectHandler`] type. The default effect handler is `!Send` (see
+//! [`NotSendableEffectHandler`]).
 //!
-//! If you need to implement an exporter using a crate that requires `Send`, you can use the
-//! `SendableEffectHandler` type. The default effect handler `EffectHandler` is `!Send`.
+//! # Scalability
+//!
+//! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
+//! in parallel on different cores, each with its own exporter instance.
 
 use crate::error::Error;
 use crate::message::{ControlMsg, Message};
@@ -41,9 +44,8 @@ use std::sync::Arc;
 
 /// A trait for egress exporters.
 #[async_trait(?Send)]
-pub trait Exporter<PData, EF = EffectHandler<PData>>
+pub trait Exporter<PData, EF = NotSendableEffectHandler<PData>>
 where
-    PData: Clone,
     EF: EffectHandlerTrait<PData>
 {
     /// Starts the exporter and begins exporting incoming data.
@@ -55,16 +57,18 @@ where
     ///
     /// The `Box<Self>` signature indicates that when this method is called, the exporter takes
     /// exclusive ownership of its instance. This approach is necessary because an exporter cannot
-    /// yield control back to the pipeline engine - it must independently manage its outputs and
+    /// yield control back to the pipeline engine. It must independently manage its outputs and
     /// processing timing. The only way the pipeline engine can interact with the exporter after
     /// starting it is through the control message channel.
     ///
     /// Exporters are expected to process both internal control messages and pipeline data messages,
-    /// prioritizing control messages over data messages.
+    /// prioritizing control messages over data messages. This priorization guaranty is ensured by
+    /// the `MessageChannel` implementation.
     ///
     /// # Parameters
     ///
-    /// - `msg_chan`: A channel to receive pdata or control messages.
+    /// - `msg_chan`: A channel to receive pdata or control messages. Control messages are
+    ///   prioritized over pdata messages.
     /// - `effect_handler`: A handler to perform side effects such as network operations.
     ///
     /// # Errors
@@ -85,22 +89,25 @@ where
 ///
 /// The `PData` type parameter represents the type of message the exporter will consume.
 ///
-/// # Thread Safety Options
+/// 2 implementations are provided:
 ///
-/// - `EffectHandler<PData>`: For thread-local (!Send) exporters. Uses `Rc` internally and is
-///   the default effect handler.
+/// - `NotSendableEffectHandler<PData>`: For thread-local (!Send) exporters. Uses `Rc` internally.
+///   It's the default effect handler.
 /// - `SendableEffectHandler<PData>`: For thread-safe (Send) exporters. Uses `Arc` internally and
-///   supports sending across thread boundaries.
+///  supports sending across thread boundaries.
 ///
 /// Note for implementers: Effect handler implementations are designed to be cloned so the cost of
 /// cloning should be minimal.
-pub trait EffectHandlerTrait<PData: Clone> {
+pub trait EffectHandlerTrait<PData> {
     /// Returns the name of the exporter associated with this handler.
     fn exporter_name(&self) -> &str;
+
+    // More methods will be added in the future as needed.
 }
 
 /// A `!Send` implementation of the EffectHandlerTrait.
-pub struct EffectHandler<PData> {
+#[derive(Clone)]
+pub struct NotSendableEffectHandler<PData> {
     /// The name of the exporter.
     exporter_name: Rc<str>,
 
@@ -109,31 +116,22 @@ pub struct EffectHandler<PData> {
     _pd: PhantomData<PData>,
 }
 
-impl<PData> Clone for EffectHandler<PData> {
-    fn clone(&self) -> Self {
-        EffectHandler {
-            exporter_name: self.exporter_name.clone(),
-            _pd: PhantomData,
-        }
-    }
-}
-
 /// Implementation for the !Send EffectHandler
-impl<Msg> EffectHandler<Msg> {
+impl<Msg> NotSendableEffectHandler<Msg> {
     /// Creates a new local (!Send) `EffectHandler` with the given exporter name.
-    /// This is the default and preferred mode for this project.
+    /// This is the default and preferred effect handler for this project.
     ///
     /// Use this constructor when your exporter doesn't need to be sent across threads or
     /// when it uses components that aren't `Send`.
     pub fn new<S: AsRef<str>>(exporter_name: S) -> Self {
-        EffectHandler {
+        NotSendableEffectHandler {
             exporter_name: Rc::from(exporter_name.as_ref()),
             _pd: PhantomData,
         }
     }
 }
 
-impl<PData: Clone> EffectHandlerTrait<PData> for EffectHandler<PData> {
+impl<PData> EffectHandlerTrait<PData> for NotSendableEffectHandler<PData> {
     /// Returns the name of the exporter associated with this handler.
     #[must_use]
     fn exporter_name(&self) -> &str {
@@ -143,6 +141,7 @@ impl<PData: Clone> EffectHandlerTrait<PData> for EffectHandler<PData> {
 
 
 /// A `Send` implementation of the EffectHandlerTrait.
+#[derive(Clone)]
 pub struct SendableEffectHandler<PData> {
     /// The name of the exporter.
     exporter_name: Arc<str>,
@@ -152,17 +151,8 @@ pub struct SendableEffectHandler<PData> {
     _pd: PhantomData<PData>,
 }
 
-impl<PData> Clone for SendableEffectHandler<PData> {
-    fn clone(&self) -> Self {
-        SendableEffectHandler {
-            exporter_name: self.exporter_name.clone(),
-            _pd: PhantomData,
-        }
-    }
-}
-
 /// Implementation for the Send EffectHandler
-impl<Msg> SendableEffectHandler<Msg> {
+impl<PData> SendableEffectHandler<PData> {
     /// Creates a new "sendable" effect handler with the given exporter name.
     pub fn new<S: AsRef<str>>(exporter_name: S) -> Self {
         SendableEffectHandler {
@@ -172,7 +162,7 @@ impl<Msg> SendableEffectHandler<Msg> {
     }
 }
 
-impl<PData: Clone> EffectHandlerTrait<PData> for SendableEffectHandler<PData> {
+impl<PData> EffectHandlerTrait<PData> for SendableEffectHandler<PData> {
     /// Returns the name of the exporter associated with this handler.
     #[must_use]
     fn exporter_name(&self) -> &str {
@@ -180,55 +170,61 @@ impl<PData: Clone> EffectHandlerTrait<PData> for SendableEffectHandler<PData> {
     }
 }
 
-enum ExporterWrapper<PData> {
-    NonSendable {
-        effect_handler: EffectHandler<PData>,
-        exporter: Box<dyn Exporter<PData, EffectHandler<PData>>>,
+/// A wrapper for the exporter that allows for both `Send` and `!Send` effect handlers.
+///
+/// Note: This is useful for creating a single interface for the exporter regardless of the effect
+/// handler type. This is the only type that the pipeline engine will use in order to be agnostic to
+/// the effect handler type.
+pub(crate) enum ExporterWrapper<PData> {
+    NotSend {
+        effect_handler: NotSendableEffectHandler<PData>,
+        exporter: Box<dyn Exporter<PData, NotSendableEffectHandler<PData>>>,
     },
-    Sendable {
+    Send {
         effect_handler: SendableEffectHandler<PData>,
         exporter: Box<dyn Exporter<PData, SendableEffectHandler<PData>>>,
     }
 }
 
-impl<PData: Clone> ExporterWrapper<PData> {
-    async fn start(self, message_channel: MessageChannel<PData>) -> Result<(), Error<PData>> {
-        match self {
-            ExporterWrapper::NonSendable { effect_handler, exporter } => {
-                exporter.start(message_channel, effect_handler).await
-            },
-            ExporterWrapper::Sendable { effect_handler, exporter } => {
-                exporter.start(message_channel, effect_handler).await
-            },
-        }
-    }
-
-    // Create method for local handlers
-    fn create<E>(exporter: E, name: &str) -> Self
+impl<PData> ExporterWrapper<PData> {
+    /// Creates a new `ExporterWrapper` with the given exporter and `!Send` effect handler.
+    pub(crate) fn create<E>(exporter: E, name: &str) -> Self
     where
-        E: Exporter<PData, EffectHandler<PData>> + 'static
+        E: Exporter<PData, NotSendableEffectHandler<PData>> + 'static
     {
-        // Use static dispatch based on the type parameter
-        ExporterWrapper::NonSendable {
-            effect_handler: EffectHandler { exporter_name: Rc::from(name), _pd: PhantomData },
+        ExporterWrapper::NotSend {
+            effect_handler: NotSendableEffectHandler { exporter_name: Rc::from(name), _pd: PhantomData },
             exporter: Box::new(exporter),
         }
     }
 
-    // Create method for sendable handlers
+    /// Creates a new `ExporterWrapper` with the given exporter and `Send` effect handler.
     fn create_sendable<E>(exporter: E, name: &str) -> Self
     where
         E: Exporter<PData, SendableEffectHandler<PData>> + 'static
     {
-        // Use static dispatch based on the type parameter
-        ExporterWrapper::Sendable {
+        ExporterWrapper::Send {
             effect_handler: SendableEffectHandler { exporter_name: Arc::from(name), _pd: PhantomData },
             exporter: Box::new(exporter),
+        }
+    }
+
+    /// Starts the exporter and begins exporting incoming data.
+    pub(crate) async fn start(self, message_channel: MessageChannel<PData>) -> Result<(), Error<PData>> {
+        match self {
+            ExporterWrapper::NotSend { effect_handler, exporter } => {
+                exporter.start(message_channel, effect_handler).await
+            },
+            ExporterWrapper::Send { effect_handler, exporter } => {
+                exporter.start(message_channel, effect_handler).await
+            },
         }
     }
 }
 
 /// A channel for receiving control and pdata messages.
+///
+/// Note: Control messages are prioritized over pdata messages.
 pub struct MessageChannel<PData> {
     control_rx: mpsc::Receiver<ControlMsg>,
     pdata_rx: mpsc::Receiver<PData>,
@@ -269,7 +265,7 @@ impl<PData> MessageChannel<PData> {
 
 #[cfg(test)]
 mod tests {
-    use crate::exporter::{EffectHandler, EffectHandlerTrait, Error, Exporter, MessageChannel, SendableEffectHandler};
+    use crate::exporter::{NotSendableEffectHandler, EffectHandlerTrait, Error, Exporter, MessageChannel, SendableEffectHandler};
     use crate::message::{ControlMsg, Message};
     use crate::testing::exporter::ExporterTestRuntime;
     use crate::testing::{exec_in_send_env, CtrMsgCounters, TestMsg};
@@ -349,10 +345,10 @@ mod tests {
     }
 
     /// A type alias for a test exporter with regular effect handler
-    type RegularExporter = GenericTestExporter<EffectHandler<TestMsg>>;
+    type ExporterWithNotSendEffectHandler = GenericTestExporter<NotSendableEffectHandler<TestMsg>>;
 
     /// A type alias for a test exporter with sendable effect handler
-    type ExporterWithSendableEffectHandler = GenericTestExporter<SendableEffectHandler<TestMsg>>;
+    type ExporterWithSendEffectHandler = GenericTestExporter<SendableEffectHandler<TestMsg>>;
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
@@ -405,7 +401,7 @@ mod tests {
     #[test]
     fn test_exporter_without_send_effect_handler() {
         let mut test_runtime = ExporterTestRuntime::new(10);
-        let exporter = RegularExporter::without_send_test(test_runtime.counters());
+        let exporter = ExporterWithNotSendEffectHandler::without_send_test(test_runtime.counters());
         let counters = test_runtime.counters();
 
         test_runtime.start_exporter(exporter);
@@ -416,7 +412,7 @@ mod tests {
     #[test]
     fn test_exporter_with_send_effect_handler() {
         let mut test_runtime = ExporterTestRuntime::new(10);
-        let exporter = ExporterWithSendableEffectHandler::with_send_test(
+        let exporter = ExporterWithSendEffectHandler::with_send_test(
             test_runtime.counters(),
             |effect_handler| {
                 exec_in_send_env(|| {
