@@ -354,7 +354,8 @@ where
         context.server_handle,
     ).await
 	.context(error::TestTimeoutSnafu)?
-	.context(error::JoinSnafu)?;
+	.context(error::JoinSnafu)?
+    ?;
 
     // Return the result from the test logic
     result

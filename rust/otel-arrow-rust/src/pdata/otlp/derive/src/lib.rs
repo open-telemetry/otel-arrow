@@ -98,7 +98,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
 
     // If there are no fields, it's either an empty message or an enum,
     // either way should not be listed, no builder is needed.
-    if struct_fields.len() == 0 {
+    if struct_fields.is_empty() {
         panic!("message with empty fields")
     }
 
@@ -156,7 +156,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
                 let is_param = param_names.contains(&ident_str.as_str());
                 let is_optional = is_optional(field);
                 let is_oneof = oneof_mapping
-                    .map(|x| x.0.to_string() == field_path)
+                    .map(|x| *x.0 == field_path)
                     .unwrap_or(false);
 
                 // Process type information
@@ -381,8 +381,8 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
 
             // Generate a constructor for each oneof case
             oneof_mapping.1.iter().map(|case| {
-                let case_type = syn::parse_str::<syn::Type>(&case.type_param).unwrap();
-                let variant_path = syn::parse_str::<syn::Expr>(&case.value_variant).unwrap();
+                let case_type = syn::parse_str::<syn::Type>(case.type_param).unwrap();
+                let variant_path = syn::parse_str::<syn::Expr>(case.value_variant).unwrap();
                 let suffix = format!("_{}", case.name);
 
                 // Duplicate the param bounds, assignments; param decls unchanged.

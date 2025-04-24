@@ -284,10 +284,8 @@ pub static FIELD_TYPE_OVERRIDES: LazyLock<HashMap<&'static str, EnumField>> = La
 /// This is the entry point from build.rs where we configure prost/tonic.
 pub fn add_type_attributes(mut builder: tonic_build::Builder) -> tonic_build::Builder {
     for (name, _) in REQUIRED_PARAMS.iter() {
-        builder = builder.type_attribute(
-            name,
-            &format!(r#"#[crate::pdata::otlp::qualified("{}")]"#, name),
-        );
+	let attr = format!(r#"#[crate::pdata::otlp::qualified("{}")]"#, name);
+        builder = builder.type_attribute(name, attr);
         builder = builder.type_attribute(name, r#"#[derive(crate::pdata::otlp::Message)]"#);
     }
     builder
