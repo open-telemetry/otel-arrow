@@ -78,5 +78,10 @@ pub enum Error {
     #[snafu(display("OTel-Arrow error {:?}", source))]
     OTelArrow {
 	source: crate::error::Error,
-    }
+    },
+
+    #[snafu(display("Tokio error {:?}", source))]
+    Join{
+	source: tokio::task::JoinError,
+    },
 }

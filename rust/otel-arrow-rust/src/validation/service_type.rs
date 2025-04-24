@@ -1,14 +1,15 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// Service type abstractions for validation testing
+// Service type abstractions for validation testing.  This abstraction
+// enables Logs, Traces, and Metrics to look generically similar.
+
+use snafu::ResultExt;
 use std::fmt::Debug;
 use tokio::sync::mpsc;
-use super::error::{Result, InputOutputSnafu};
-use std::result::Result as StdResult;
-use snafu::ResultExt;
 
-use crate::validation::tcp_stream::create_shutdownable_tcp_listener;
+use super::error;
+use crate::validation::tcp_stream;
 
 /// A trait that abstracts over the input side of service types (client operations)
 pub trait ServiceInputType: Debug + Send + Sync + 'static {
@@ -28,13 +29,13 @@ pub trait ServiceInputType: Debug + Send + Sync + 'static {
     fn protocol() -> &'static str;
 
     /// Create a new client for this service
-    async fn connect_client(endpoint: String) -> Result<Self::Client>;
+    async fn connect_client(endpoint: String) -> error::Result<Self::Client>;
 
     /// Send data through the client
     async fn send_data(
         client: &mut Self::Client,
         request: Self::Request,
-    ) -> Result<Self::Response>;
+    ) -> error::Result<Self::Response>;
 }
 
 /// A trait that abstracts over the output side of service types (server operations)
@@ -56,14 +57,14 @@ pub trait ServiceOutputType: Debug + Send + Sync + 'static {
     fn create_server(
         receiver: TestReceiver<Self::Request>,
         incoming: crate::validation::tcp_stream::ShutdownableTcpListenerStream,
-    ) -> tokio::task::JoinHandle<Result<()>>;
+    ) -> tokio::task::JoinHandle<error::Result<()>>;
 
     /// Start a service-specific receiver
     async fn start_receiver(
         listener: tokio::net::TcpListener,
-    ) -> Result<
+    ) -> error::Result<
         (
-            tokio::task::JoinHandle<Result<()>>,
+            tokio::task::JoinHandle<error::Result<()>>,
             mpsc::Receiver<Self::Request>,
             tokio::sync::oneshot::Sender<()>,
         ),
@@ -87,7 +88,7 @@ impl<T: Send + 'static> TestReceiver<T> {
         &self,
         request: tonic::Request<T>,
         service_name: &str,
-    ) -> StdResult<tonic::Response<R>, tonic::Status>
+    ) -> Result<tonic::Response<R>, tonic::Status>
     where
         R: Default,
     {
@@ -107,26 +108,26 @@ impl<T: Send + 'static> TestReceiver<T> {
 }
 
 /// Helper function to create a TCP listener with a dynamically allocated port
-async fn create_listener_with_port() -> Result<(tokio::net::TcpListener, u16)> {
+async fn create_listener_with_port() -> error::Result<(tokio::net::TcpListener, u16)> {
     // Bind to a specific address with port 0 for dynamic port allocation
     let addr = "127.0.0.1:0";
     let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .context(InputOutputSnafu{desc: "bind"})?;
+        .context(error::InputOutputSnafu{desc: "bind"})?;
 
     // Get the assigned port
     let port = listener
         .local_addr()
-	.context(InputOutputSnafu{desc: "local_address"})?
+	.context(error::InputOutputSnafu{desc: "local_address"})?
         .port();
 
     Ok((listener, port))
 }
 
 /// Helper function to start a test receiver for any service output type
-pub async fn start_test_receiver<T: ServiceOutputType>() -> Result<
+pub async fn start_test_receiver<T: ServiceOutputType>() -> error::Result<
     (
-        tokio::task::JoinHandle<Result<()>>,
+        tokio::task::JoinHandle<error::Result<()>>,
         mpsc::Receiver<T::Request>,
         u16,                              // actual port number that was assigned
         tokio::sync::oneshot::Sender<()>, // shutdown channel
@@ -143,9 +144,9 @@ pub async fn start_test_receiver<T: ServiceOutputType>() -> Result<
 /// Generic helper function to create a TCP server for any service output type
 async fn create_service_server<T: ServiceOutputType + ?Sized>(
     listener: tokio::net::TcpListener,
-) -> Result<
+) -> error::Result<
     (
-        tokio::task::JoinHandle<Result<()>>,
+        tokio::task::JoinHandle<error::Result<()>>,
         mpsc::Receiver<T::Request>,
         tokio::sync::oneshot::Sender<()>,
     ),
@@ -157,7 +158,7 @@ async fn create_service_server<T: ServiceOutputType + ?Sized>(
     let receiver = TestReceiver { request_tx };
 
     // Convert the listener to a stream of connections with a shutdown channel
-    let (incoming, shutdown_tx) = create_shutdownable_tcp_listener(listener);
+    let (incoming, shutdown_tx) = tcp_stream::create_shutdownable_tcp_listener(listener);
 
     // Create our server - we need to delegate to the service-specific functions
     // since we can't construct the server generically

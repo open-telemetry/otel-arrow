@@ -1,6 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+// This file provides facilities for starting and stopping a child
+// process that runs an OpenTelemetry Collector (Golang) with either
+// OTLP or OTAP, receiver or exporter.  See the run_test::<> entry
+// point.
+
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -11,17 +16,12 @@ use std::sync::LazyLock;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use snafu::{OptionExt, ResultExt};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
-use snafu::{OptionExt, ResultExt};
-
-use super::error::{
-    BadExitStatusSnafu, FileNotAvailableSnafu, InputOutputSnafu, NoResponseSnafu,
-    ReceiverTimeoutSnafu, Result, SignalNotDeliveredSnafu,
-    ReadyTimeoutSnafu, ChannelClosedSnafu,
-};
-use super::service_type::{start_test_receiver, ServiceInputType, ServiceOutputType};
+use super::error;
+use super::service_type;
 
 const READY_MESSAGE: &str = "Everything is ready.";
 
@@ -54,19 +54,11 @@ pub struct TimeoutReceiver<T> {
 
 impl<T> TimeoutReceiver<T> {
     /// Receive a value with timeout
-    pub async fn recv(&mut self) -> Result<T> {
+    pub async fn recv(&mut self) -> error::Result<T> {
         timeout(self.timeout, self.inner.recv())
             .await
-            .context(ReceiverTimeoutSnafu)?
-            .context(NoResponseSnafu)
-
-        // {
-        //     Ok(Some(value)) => Ok(value),
-        //     Ok(None) => Err(ChannelClosedSnafu{}.build()),
-        //     Err(_) => Err(ReceiverTimeoutSnafu {
-        // 	duration: self.timeout,
-        //     }.build()),
-        // }
+            .context(error::ReceiverTimeoutSnafu)?
+            .context(error::NoResponseSnafu)
     }
 }
 
@@ -109,7 +101,7 @@ pub struct CollectorProcess {
 
 impl CollectorProcess {
     /// Sends a SIGTERM signal to initiate graceful shutdown.
-    pub async fn shutdown(&mut self) -> Result<()> {
+    pub async fn shutdown(&mut self) -> error::Result<()> {
         #[cfg(unix)]
         {
             use nix::sys::signal::{kill, Signal};
@@ -117,7 +109,7 @@ impl CollectorProcess {
             let pid = self.process.id();
             eprintln!("Sending SIGTERM to collector process {}", pid);
 
-            kill(Pid::from_raw(pid as i32), Signal::SIGTERM).context(SignalNotDeliveredSnafu)?;
+            kill(Pid::from_raw(pid as i32), Signal::SIGTERM).context(error::SignalNotDeliveredSnafu)?;
         }
 
         #[cfg(not(unix))]
@@ -129,15 +121,15 @@ impl CollectorProcess {
         let status = self
             .process
             .wait()
-            .context(InputOutputSnafu { desc: "wait" })?;
+            .context(error::InputOutputSnafu { desc: "wait" })?;
 
-        status.success().then(|| ()).context(BadExitStatusSnafu {
+        status.success().then(|| ()).context(error::BadExitStatusSnafu {
             code: status.code(),
         })
     }
 
     /// Start a collector with the given configuration
-    pub async fn start<T: AsRef<Path>>(collector_path: T, config_content: &str) -> Result<Self> {
+    pub async fn start<T: AsRef<Path>>(collector_path: T, config_content: &str) -> error::Result<Self> {
         // Create a unique temporary config file for the collector with a random identifier
         // to prevent collision with other tests
         let random_id = format!("{:016x}", rand::random::<u64>());
@@ -146,10 +138,10 @@ impl CollectorProcess {
 
         // Write the config to the file
         let mut file =
-            fs::File::create(&config_path).context(InputOutputSnafu { desc: "create" })?;
+            fs::File::create(&config_path).context(error::InputOutputSnafu { desc: "create" })?;
 
         file.write_all(config_content.as_bytes())
-            .context(InputOutputSnafu { desc: "write" })?;
+            .context(error::InputOutputSnafu { desc: "write" })?;
 
         // Start the collector process with piped stdout and stderr
         let mut process = Command::new(collector_path.as_ref())
@@ -158,18 +150,18 @@ impl CollectorProcess {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .context(InputOutputSnafu { desc: "command" })?;
+            .context(error::InputOutputSnafu { desc: "command" })?;
 
         // Get handles to stdout and stderr
         let stdout = process
             .stdout
             .take()
-            .context(FileNotAvailableSnafu { desc: "stderr" })?;
+            .context(error::FileNotAvailableSnafu { desc: "stderr" })?;
 
         let stderr = process
             .stderr
             .take()
-            .context(FileNotAvailableSnafu { desc: "stderr" })?;
+            .context(error::FileNotAvailableSnafu { desc: "stderr" })?;
 
         // Create a standard sync channel to signal when the collector is ready
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -198,8 +190,8 @@ impl CollectorProcess {
         // Wait for the ready message with timeout and return the collector process when ready
         _ = tokio::time::timeout(timeout_duration, tokio_rx)
             .await
-            .context(ReadyTimeoutSnafu)?
-            .context(ChannelClosedSnafu)?;
+            .context(error::ReadyTimeoutSnafu)?
+            .context(error::ChannelClosedSnafu)?;
 
         Ok(Self {
             process,
@@ -274,11 +266,11 @@ service:
 }
 
 /// TestContext contains all the necessary components for running a test
-pub struct TestContext<I: ServiceInputType, O: ServiceOutputType> {
+pub struct TestContext<I: service_type::ServiceInputType, O: service_type::ServiceOutputType> {
     pub client: I::Client,
     pub collector: CollectorProcess,
     pub request_rx: TimeoutReceiver<O::Request>,
-    pub server_handle: tokio::task::JoinHandle<Result<()>>,
+    pub server_handle: tokio::task::JoinHandle<error::Result<()>>,
     pub server_shutdown_tx: tokio::sync::oneshot::Sender<()>,
 }
 
@@ -292,14 +284,14 @@ pub struct TestContext<I: ServiceInputType, O: ServiceOutputType> {
 /// 5. Perform cleanup
 ///
 /// The service type parameters I and O determine the input and output signal types to test
-pub async fn run_test<I, O, T, F>(test_logic: F) -> Result<()>
+pub async fn run_test<I, O, T, F>(test_logic: F) -> error::Result<()>
 where
-    I: ServiceInputType,
-    O: ServiceOutputType,
+    I: service_type::ServiceInputType,
+    O: service_type::ServiceOutputType,
     I::Request: std::fmt::Debug + PartialEq,
     O::Request: std::fmt::Debug + PartialEq,
     F: FnOnce(TestContext<I, O>) -> T,
-    T: std::future::Future<Output = (TestContext<I, O>, Result<()>)>,
+    T: std::future::Future<Output = (TestContext<I, O>, error::Result<()>)>,
 {
     // Generate random ports in the high u16 range to avoid conflicts
     let random_value = rand::random::<u16>();
@@ -307,7 +299,7 @@ where
 
     // Start the test receiver server and wrap it with a timeout to avoid tests getting stuck
     let (server_handle, request_rx_raw, exporter_port, server_shutdown_tx) =
-        start_test_receiver::<O>().await?;
+        service_type::start_test_receiver::<O>().await?;
 
     // Create a timeout-wrapped version of the receiver
     let timeout_duration = std::time::Duration::from_secs(RECEIVER_TIMEOUT_SECONDS);
@@ -357,16 +349,12 @@ where
     let _ = context.server_shutdown_tx.send(());
 
     // Wait for the server to shut down with timeout
-    match tokio::time::timeout(
+    tokio::time::timeout(
         std::time::Duration::from_secs(SHUTDOWN_TIMEOUT_SECONDS),
         context.server_handle,
-    )
-    .await
-    {
-        Ok(Ok(_)) => eprintln!("Server shut down successfully"),
-        Ok(Err(e)) => eprintln!("Error shutting down server: {}", e),
-        Err(e) => eprintln!("Timed out waiting for server to shut down: {}", e),
-    }
+    ).await
+	.context(error::TestTimeoutSnafu)?
+	.context(error::JoinSnafu)?;
 
     // Return the result from the test logic
     result
