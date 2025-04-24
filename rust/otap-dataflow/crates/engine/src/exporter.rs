@@ -3,7 +3,8 @@
 //! Set of traits and structures used to implement exporters.
 //!
 //! An exporter is an egress node that sends data from a pipeline to external systems, performing
-//! the necessary conversions from the internal format to the format required by the external system.
+//! the necessary conversions from the internal pdata format to the format required by the external
+//! system.
 //!
 //! Exporters can operate in various ways, including:
 //!
@@ -16,8 +17,9 @@
 //!
 //! 1. The exporter is instantiated and configured
 //! 2. The `start` method is called, which begins the exporter's operation
-//! 3. The exporter processes both internal control messages and pipeline data
-//! 4. The exporter shuts down when it receives a `Shutdown` control message or encounters a fatal error
+//! 3. The exporter processes both internal control messages and pipeline data (pdata)
+//! 4. The exporter shuts down when it receives a `Shutdown` control message or encounters a fatal
+//!    error
 //!
 //! # Thread Safety
 //!
@@ -25,9 +27,8 @@
 //! are not required to be thread-safe. To ensure scalability, the pipeline engine will start
 //! multiple instances of the same pipeline in parallel, each with its own exporter instance.
 //!
-//! Through the `Mode` type parameter, exporters can be configured to be either thread-local (`LocalMode`)
-//! or thread-safe (`SendableMode`). This allows you to choose the appropriate threading model based on
-//! your exporter's requirements and performance considerations.
+//! If you need to implement an exporter using a crate that requires `Send`, you can use the
+//! `SendableEffectHandler` type. The default effect handler `EffectHandler` is `!Send`.
 
 use crate::error::Error;
 use crate::message::{ControlMsg, Message};
@@ -266,37 +267,54 @@ impl<PData> MessageChannel<PData> {
     }
 }
 
-// Note for reviewers: More methods will be added in future PRs.
-
 #[cfg(test)]
 mod tests {
     use crate::exporter::{EffectHandler, EffectHandlerTrait, Error, Exporter, MessageChannel, SendableEffectHandler};
     use crate::message::{ControlMsg, Message};
     use crate::testing::exporter::ExporterTestRuntime;
     use crate::testing::{exec_in_send_env, CtrMsgCounters, TestMsg};
+    use crate::testing::exporter::ExporterTestContext;
     use async_trait::async_trait;
     use serde_json::Value;
     use std::time::Duration;
+    use std::future::Future;
 
-    /// A test exporter that counts how many `TimerTick` and Message events it processes.
-    struct RegularExporter {
+    /// A generic test exporter that counts message events
+    /// Works with any effect handler that implements EffectHandlerTrait
+    struct GenericTestExporter<EF> {
         /// Counter for different message types
         counter: CtrMsgCounters,
+        /// Optional callback for testing sendable effect handlers
+        test_send_ef: Option<fn(&EF)>,
     }
 
-    impl RegularExporter {
-        /// Creates a new test exporter with the given counter.
-        pub fn new(counter: CtrMsgCounters) -> Self {
-            RegularExporter { counter }
+    impl<EF> GenericTestExporter<EF> {
+        /// Creates a new test exporter with the given counter
+        pub fn without_send_test(counter: CtrMsgCounters) -> Self {
+            GenericTestExporter {
+                counter,
+                test_send_ef: None,
+            }
+        }
+
+        /// Creates a new test exporter with a callback for PData messages
+        pub fn with_send_test(counter: CtrMsgCounters, callback: fn(&EF)) -> Self {
+            GenericTestExporter {
+                counter,
+                test_send_ef: Some(callback),
+            }
         }
     }
 
     #[async_trait(?Send)]
-    impl Exporter<TestMsg> for RegularExporter {
+    impl<EF> Exporter<TestMsg, EF> for GenericTestExporter<EF>
+    where
+        EF: EffectHandlerTrait<TestMsg> + Clone,
+    {
         async fn start(
             self: Box<Self>,
             mut msg_chan: MessageChannel<TestMsg>,
-            effect_handler: EffectHandler<TestMsg>,
+            effect_handler: EF,
         ) -> Result<(), Error<TestMsg>> {
             // Loop until a Shutdown event is received.
             loop {
@@ -313,6 +331,10 @@ mod tests {
                     }
                     Message::PData(_message) => {
                         self.counter.increment_message();
+                        // Execute optional callback if present
+                        if let Some(callback) = self.test_send_ef {
+                            callback(&effect_handler);
+                        }
                     }
                     _ => {
                         return Err(Error::ExporterError {
@@ -326,149 +348,86 @@ mod tests {
         }
     }
 
-    /// A test of an exporter requiring a sendable effect handler that counts how many `TimerTick`
-    /// and Message events it processes.
-    struct ExporterWithSendableEffectHandler {
-        /// Counter for different message types
-        counter: CtrMsgCounters,
-    }
+    /// A type alias for a test exporter with regular effect handler
+    type RegularExporter = GenericTestExporter<EffectHandler<TestMsg>>;
 
-    impl ExporterWithSendableEffectHandler {
-        /// Creates a new test exporter with the given counter.
-        pub fn new(counter: CtrMsgCounters) -> Self {
-            ExporterWithSendableEffectHandler { counter }
+    /// A type alias for a test exporter with sendable effect handler
+    type ExporterWithSendableEffectHandler = GenericTestExporter<SendableEffectHandler<TestMsg>>;
+
+    /// Test closure that simulates a typical test scenario by sending timer ticks, config,
+    /// data message, and shutdown control messages.
+    fn test_scenario() -> impl FnOnce(ExporterTestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+        |ctx| {
+            Box::pin(async move {
+                // Send 3 TimerTick events.
+                for _ in 0..3 {
+                    ctx.send_timer_tick()
+                        .await
+                        .expect("Failed to send TimerTick");
+                    ctx.sleep(Duration::from_millis(50)).await;
+                }
+
+                // Send a Config event.
+                ctx.send_config(Value::Null)
+                    .await
+                    .expect("Failed to send Config");
+
+                // Send a data message
+                ctx.send_data(TestMsg("Hello Exporter".into()))
+                    .await
+                    .expect("Failed to send data message");
+
+                // Allow some time for processing
+                ctx.sleep(Duration::from_millis(100)).await;
+
+                // Send shutdown
+                ctx.send_shutdown("test complete")
+                    .await
+                    .expect("Failed to send Shutdown");
+            })
         }
     }
 
-    #[async_trait(?Send)]
-    impl Exporter<TestMsg, SendableEffectHandler<TestMsg>> for ExporterWithSendableEffectHandler {
-        async fn start(
-            self: Box<Self>,
-            mut msg_chan: MessageChannel<TestMsg>,
-            effect_handler: SendableEffectHandler<TestMsg>,
-        ) -> Result<(), Error<TestMsg>> {
-            // Loop until a Shutdown event is received.
-            loop {
-                match msg_chan.recv().await? {
-                    Message::Control(ControlMsg::TimerTick { .. }) => {
-                        self.counter.increment_timer_tick();
-                    }
-                    Message::Control(ControlMsg::Config { .. }) => {
-                        self.counter.increment_config();
-                    }
-                    Message::Control(ControlMsg::Shutdown { .. }) => {
-                        self.counter.increment_shutdown();
-                        break;
-                    }
-                    Message::PData(_message) => {
-                        self.counter.increment_message();
-                        exec_in_send_env(|| {
-                            _ = effect_handler.exporter_name();
-                        });
-                    }
-                    _ => {
-                        return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_name().to_owned(),
-                            error: "Unknown control message".to_owned(),
-                        });
-                    }
-                }
-            }
-            Ok(())
+    /// Validation closure that checks the expected counter values
+    fn validation_procedure(counters: CtrMsgCounters) -> impl FnOnce(ExporterTestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+        |_ctx| {
+            Box::pin(async move {
+                counters.assert(
+                    3, // timer tick
+                    1, // message
+                    1, // config
+                    1, // shutdown
+                );
+            })
         }
     }
 
     #[test]
-    fn test_exporter() {
+    fn test_exporter_without_send_effect_handler() {
         let mut test_runtime = ExporterTestRuntime::new(10);
-        let exporter = RegularExporter::new(test_runtime.counters());
+        let exporter = RegularExporter::without_send_test(test_runtime.counters());
+        let counters = test_runtime.counters();
 
         test_runtime.start_exporter(exporter);
-        test_runtime.start_test(|ctx| async move {
-            // Send 3 TimerTick events.
-            for _ in 0..3 {
-                ctx.send_timer_tick()
-                    .await
-                    .expect("Failed to send TimerTick");
-                ctx.sleep(Duration::from_millis(50)).await;
-            }
-
-            // Send a Config event.
-            ctx.send_config(Value::Null)
-                .await
-                .expect("Failed to send Config");
-
-            // Send a data message
-            ctx.send_data(TestMsg("Hello Exporter".into()))
-                .await
-                .expect("Failed to send data message");
-
-            // Allow some time for processing
-            ctx.sleep(Duration::from_millis(100)).await;
-
-            // Send shutdown
-            ctx.send_shutdown("test complete")
-                .await
-                .expect("Failed to send Shutdown");
-        });
-
-        // Get a clone of the counters before moving test_runtime into validate
-        let counters = test_runtime.counters();
-
-        test_runtime.validate(|_ctx| async move {
-            counters.assert(
-                3, // timer tick
-                1, // message
-                1, // config
-                1, // shutdown
-            );
-        });
+        test_runtime.start_test(test_scenario());
+        test_runtime.validate(validation_procedure(counters));
     }
 
     #[test]
-    fn test_sendable_exporter() {
+    fn test_exporter_with_send_effect_handler() {
         let mut test_runtime = ExporterTestRuntime::new(10);
-        let exporter = ExporterWithSendableEffectHandler::new(test_runtime.counters());
-
-        test_runtime.start_exporter_with_send_effect_handler(exporter);
-        test_runtime.start_test(|ctx| async move {
-            // Send 3 TimerTick events.
-            for _ in 0..3 {
-                ctx.send_timer_tick()
-                    .await
-                    .expect("Failed to send TimerTick");
-                ctx.sleep(Duration::from_millis(50)).await;
-            }
-
-            // Send a Config event.
-            ctx.send_config(Value::Null)
-                .await
-                .expect("Failed to send Config");
-
-            // Send a data message
-            ctx.send_data(TestMsg("Hello Exporter".into()))
-                .await
-                .expect("Failed to send data message");
-
-            // Allow some time for processing
-            ctx.sleep(Duration::from_millis(100)).await;
-
-            // Send shutdown
-            ctx.send_shutdown("test complete")
-                .await
-                .expect("Failed to send Shutdown");
-        });
-
-        // Get a clone of the counters before moving test_runtime into validate
+        let exporter = ExporterWithSendableEffectHandler::with_send_test(
+            test_runtime.counters(),
+            |effect_handler| {
+                exec_in_send_env(|| {
+                    _ = effect_handler.exporter_name();
+                });
+            },
+        );
         let counters = test_runtime.counters();
 
-        test_runtime.validate(|_ctx| async move {
-            counters.assert(
-                3, // timer tick
-                1, // message
-                1, // config
-                1, // shutdown
-            );
-        });
+        test_runtime.start_exporter_with_send_effect_handler(exporter);
+        test_runtime.start_test(test_scenario());
+        test_runtime.validate(validation_procedure(counters));
     }
 }

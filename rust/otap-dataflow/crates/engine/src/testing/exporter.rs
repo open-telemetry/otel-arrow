@@ -17,6 +17,7 @@ use crate::testing::{CtrMsgCounters, create_test_channel, setup_test_runtime};
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use serde_json::Value;
+use std::future::Future;
 use std::time::Duration;
 use tokio::task::LocalSet;
 use tokio::time::sleep;
@@ -178,13 +179,18 @@ impl<PData: Clone + Debug + 'static> ExporterTestRuntime<PData> {
         });
     }
 
+    /// Creates a new context with the current transmitters
+    fn create_context(&self) -> ExporterTestContext<PData> {
+        ExporterTestContext::new(self.control_tx.clone(), self.pdata_tx.clone())
+    }
+
     /// Spawns a local task with a TestContext that provides access to transmitters.
     pub fn start_test<F, Fut>(&self, f: F)
     where
         F: FnOnce(ExporterTestContext<PData>) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
-        let context = ExporterTestContext::new(self.control_tx.clone(), self.pdata_tx.clone());
+        let context = self.create_context();
         let _ = self.local_tasks.spawn_local(async move {
             f(context).await;
         });
@@ -202,17 +208,20 @@ impl<PData: Clone + Debug + 'static> ExporterTestRuntime<PData> {
     /// # Returns
     ///
     /// The result of the provided future.
-    pub fn validate<F, Fut, T>(self, future_fn: F) -> T
+    pub fn validate<F, Fut, T>(mut self, future_fn: F) -> T
     where
         F: FnOnce(ExporterTestContext<PData>) -> Fut,
         Fut: Future<Output = T>,
     {
-        // First run all the spawned tasks to completion
-        self.rt.block_on(self.local_tasks);
+        // Create the context before running any tasks
+        let context = self.create_context();
 
-        let context = ExporterTestContext::new(self.control_tx.clone(), self.pdata_tx.clone());
+        // First run all the spawned tasks to completion
+        let local_tasks = std::mem::take(&mut self.local_tasks);
+        self.rt.block_on(local_tasks);
 
         // Then run the validation future with the test context
         self.rt.block_on(future_fn(context))
     }
 }
+
