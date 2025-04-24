@@ -7,8 +7,8 @@
 // an Input type).
 
 use crate::proto::opentelemetry::experimental::arrow::v1::{
-    arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
     BatchArrowRecords, BatchStatus, StatusCode,
+    arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
 };
 
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;

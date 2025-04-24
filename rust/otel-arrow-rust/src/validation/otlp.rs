@@ -5,19 +5,19 @@
 // as test inputs and outputs.
 
 use crate::proto::opentelemetry::collector::logs::v1::{
+    ExportLogsServiceRequest, ExportLogsServiceResponse,
     logs_service_client::LogsServiceClient,
     logs_service_server::{LogsService, LogsServiceServer},
-    ExportLogsServiceRequest, ExportLogsServiceResponse,
 };
 use crate::proto::opentelemetry::collector::metrics::v1::{
+    ExportMetricsServiceRequest, ExportMetricsServiceResponse,
     metrics_service_client::MetricsServiceClient,
     metrics_service_server::{MetricsService, MetricsServiceServer},
-    ExportMetricsServiceRequest, ExportMetricsServiceResponse,
 };
 use crate::proto::opentelemetry::collector::trace::v1::{
+    ExportTraceServiceRequest, ExportTraceServiceResponse,
     trace_service_client::TraceServiceClient,
     trace_service_server::{TraceService, TraceServiceServer},
-    ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
 
 use super::service_type::{ServiceInputType, ServiceOutputType, TestReceiver};

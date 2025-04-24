@@ -11,8 +11,8 @@
 // limitations under the License.
 
 use crate::arrays::{
-    get_bool_array_opt, get_i32_array_opt, get_u16_array, get_u8_array, NullableArrayAccessor,
-    StringArrayAccessor,
+    NullableArrayAccessor, StringArrayAccessor, get_bool_array_opt, get_i32_array_opt,
+    get_u8_array, get_u16_array,
 };
 use crate::error;
 use crate::otlp::related_data::RelatedData;
@@ -21,8 +21,8 @@ use crate::proto::opentelemetry::common::v1::InstrumentationScope;
 use crate::proto::opentelemetry::metrics::v1::metric;
 use crate::schema::consts;
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray, StructArray, UInt16Array,
-    UInt32Array, UInt8Array,
+    Array, ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray, StructArray, UInt8Array,
+    UInt16Array, UInt32Array,
 };
 use arrow::datatypes::DataType::UInt32;
 use arrow::datatypes::{DataType, Field, Fields};

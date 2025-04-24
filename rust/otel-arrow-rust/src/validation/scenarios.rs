@@ -4,7 +4,7 @@
 // This test implements specific test scenarios that can be executed
 // for multiple signals and protocols.
 
-use super::collector::{run_test, RECEIVER_TIMEOUT_SECONDS, TEST_TIMEOUT_SECONDS};
+use super::collector::{RECEIVER_TIMEOUT_SECONDS, TEST_TIMEOUT_SECONDS, run_test};
 use super::service_type::{ServiceInputType, ServiceOutputType};
 
 use super::error;

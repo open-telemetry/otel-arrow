@@ -87,7 +87,7 @@ impl CollectorProcess {
     pub async fn shutdown(&mut self) -> error::Result<()> {
         #[cfg(unix)]
         {
-            use nix::sys::signal::{kill, Signal};
+            use nix::sys::signal::{Signal, kill};
             use nix::unistd::Pid;
             let pid = self.process.id().unwrap();
             eprintln!("Sending SIGTERM to collector process {}", pid);

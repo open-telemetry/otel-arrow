@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
-use tokio_stream::{wrappers::TcpListenerStream, Stream};
+use tokio_stream::{Stream, wrappers::TcpListenerStream};
 
 /// A wrapper around TcpListenerStream that can be shut down
 pub struct ShutdownableTcpListenerStream {
