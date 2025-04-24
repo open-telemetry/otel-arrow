@@ -87,7 +87,6 @@ impl<T: Send + 'static> TestReceiver<T> {
             )));
         }
 
-        // Return success response
         Ok(tonic::Response::new(R::default()))
     }
 }
@@ -100,7 +99,6 @@ async fn create_listener_with_port() -> error::Result<(tokio::net::TcpListener, 
         .await
         .context(error::InputOutputSnafu { desc: "bind" })?;
 
-    // Get the assigned port
     let port = listener
         .local_addr()
         .context(error::InputOutputSnafu {
@@ -118,10 +116,8 @@ pub async fn start_test_receiver<T: ServiceOutputType>() -> error::Result<(
     u16,                              // actual port number that was assigned
     tokio::sync::oneshot::Sender<()>, // shutdown channel
 )> {
-    // Create listener with dynamically allocated port
     let (listener, port) = create_listener_with_port().await?;
 
-    // Start the service-specific receiver by directly calling create_service_server
     let (handle, request_rx, shutdown_tx) = create_service_server::<T>(listener).await?;
 
     Ok((handle, request_rx, port, shutdown_tx))
@@ -135,17 +131,14 @@ async fn create_service_server<T: ServiceOutputType + ?Sized>(
     mpsc::Receiver<T::Request>,
     tokio::sync::oneshot::Sender<()>,
 )> {
-    // Create a channel for receiving data
-    let (request_tx, request_rx) = mpsc::channel::<T::Request>(100);
+    // Create a channel for receiving data.
+    let (request_tx, request_rx) = mpsc::channel::<T::Request>(1);
 
-    // Create a test receiver
     let receiver = TestReceiver { request_tx };
 
-    // Convert the listener to a stream of connections with a shutdown channel
+    // Convert the listener to a stream of connections with a shutdown channel.
     let (incoming, shutdown_tx) = tcp_stream::create_shutdownable_tcp_listener(listener);
 
-    // Create our server - we need to delegate to the service-specific functions
-    // since we can't construct the server generically
     let handle = T::create_server(receiver, incoming);
 
     Ok((handle, request_rx, shutdown_tx))
