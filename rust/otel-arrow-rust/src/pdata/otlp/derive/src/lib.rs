@@ -11,8 +11,8 @@
 // limitations under the License.
 
 use proc_macro::TokenStream;
-use quote::{quote, ToTokens};
-use syn::{parse_macro_input, DeriveInput};
+use quote::{ToTokens, quote};
+use syn::{DeriveInput, parse_macro_input};
 
 /// Attribute macro for associating the OTLP protocol buffer fully
 /// qualified type name.
