@@ -31,8 +31,7 @@ impl OTAPMetricsAdapter {
 }
 
 /// Stream type for ArrowMetricsService implementation
-type BatchStatusStream =
-    Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>;
+type BatchStatusStream = Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>;
 
 #[tonic::async_trait]
 impl ArrowMetricsService for OTAPMetricsAdapter {
@@ -137,7 +136,7 @@ impl ServiceOutputType for OTAPMetricsOutputType {
                 .add_service(ArrowMetricsServiceServer::new(adapter))
                 .serve_with_incoming(incoming)
                 .await
-		.context(error::TonicTransportSnafu)
+                .context(error::TonicTransportSnafu)
         })
     }
 }
@@ -155,22 +154,22 @@ async fn process_arrow_batch(
     // Process each arrow payload
     for payload in &batch.arrow_payloads {
         // Create a reader for the Arrow record
-        let reader = StreamReader::try_new(Cursor::new(&payload.record), None)
-	    .context(error::ArrowSnafu)?;
+        let reader =
+            StreamReader::try_new(Cursor::new(&payload.record), None).context(error::ArrowSnafu)?;
 
         // Get the first (and only) batch
         let arrow_batch = reader
             .into_iter()
             .next()
-	    .context(error::EmptyBatchSnafu)?
-	    .context(error::ArrowSnafu)?;
+            .context(error::EmptyBatchSnafu)?
+            .context(error::ArrowSnafu)?;
 
         // Create a record message
         let record_message = RecordMessage {
             batch_id: batch.batch_id,
             schema_id: payload.schema_id.clone(),
             payload_type: crate::opentelemetry::ArrowPayloadType::try_from(payload.r#type)
-		.context(error::InvalidPayloadSnafu)?,
+                .context(error::InvalidPayloadSnafu)?,
             record: arrow_batch,
         };
 
@@ -185,7 +184,7 @@ async fn process_arrow_batch(
                 "metrics",
             )
             .await
-	    .context(error::TonicStatusSnafu)?;
+            .context(error::TonicStatusSnafu)?;
     }
 
     Ok(())

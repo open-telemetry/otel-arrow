@@ -3,11 +3,6 @@ name = "otel-arrow-rust"
 version = "0.1.0"
 edition = "2021"
 
-[lib]
-# Temporary! The OTLP protos contain comment fragments that read like
-# rust doctests.
-doctest = false
-
 [features]
 default = ["full"]
 full = ["client", "server", "trace"]
@@ -27,7 +22,7 @@ rand = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 snafu = { version = "0.8" }
 prost = "0.13"
-tonic = "0.12"
+tonic = "0.13"
 tokio = { version = "1.43.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread"] }
 tokio-stream = "0.1.17"
 nix = { version = "0.29.0", features = ["process", "signal"] }
@@ -36,7 +31,8 @@ nix = { version = "0.29.0", features = ["process", "signal"] }
 rand = "0.9"
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-build = "0.13"
+prost-build = "0.13"
 otlp-model = { path = "./src/pdata/otlp/model" }
 
 [workspace.lints.rust]

@@ -109,7 +109,8 @@ impl CollectorProcess {
             let pid = self.process.id();
             eprintln!("Sending SIGTERM to collector process {}", pid);
 
-            kill(Pid::from_raw(pid as i32), Signal::SIGTERM).context(error::SignalNotDeliveredSnafu)?;
+            kill(Pid::from_raw(pid as i32), Signal::SIGTERM)
+                .context(error::SignalNotDeliveredSnafu)?;
         }
 
         #[cfg(not(unix))]
@@ -123,13 +124,19 @@ impl CollectorProcess {
             .wait()
             .context(error::InputOutputSnafu { desc: "wait" })?;
 
-        status.success().then(|| ()).context(error::BadExitStatusSnafu {
-            code: status.code(),
-        })
+        status
+            .success()
+            .then(|| ())
+            .context(error::BadExitStatusSnafu {
+                code: status.code(),
+            })
     }
 
     /// Start a collector with the given configuration
-    pub async fn start<T: AsRef<Path>>(collector_path: T, config_content: &str) -> error::Result<Self> {
+    pub async fn start<T: AsRef<Path>>(
+        collector_path: T,
+        config_content: &str,
+    ) -> error::Result<Self> {
         // Create a unique temporary config file for the collector with a random identifier
         // to prevent collision with other tests
         let random_id = format!("{:016x}", rand::random::<u64>());
@@ -352,10 +359,10 @@ where
     tokio::time::timeout(
         std::time::Duration::from_secs(SHUTDOWN_TIMEOUT_SECONDS),
         context.server_handle,
-    ).await
-	.context(error::TestTimeoutSnafu)?
-	.context(error::JoinSnafu)?
-    ?;
+    )
+    .await
+    .context(error::TestTimeoutSnafu)?
+    .context(error::JoinSnafu)??;
 
     // Return the result from the test logic
     result

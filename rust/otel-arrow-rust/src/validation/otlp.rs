@@ -45,8 +45,8 @@ impl ServiceInputType for OTLPTracesInputType {
 
     async fn connect_client(endpoint: String) -> error::Result<Self::Client> {
         TraceServiceClient::connect(endpoint)
-	    .await
-	    .context(error::TonicTransportSnafu)
+            .await
+            .context(error::TonicTransportSnafu)
     }
 
     async fn send_data(
@@ -57,7 +57,7 @@ impl ServiceInputType for OTLPTracesInputType {
             .export(Request::new(request))
             .await
             .map(|response| response.into_inner())
-	    .context(error::TonicStatusSnafu)
+            .context(error::TonicStatusSnafu)
     }
 }
 
@@ -85,7 +85,7 @@ impl ServiceOutputType for OTLPTracesOutputType {
                 .add_service(TraceServiceServer::new(receiver))
                 .serve_with_incoming(incoming)
                 .await
-		.context(error::TonicTransportSnafu)
+                .context(error::TonicTransportSnafu)
         })
     }
 }
@@ -109,8 +109,8 @@ impl ServiceInputType for OTLPMetricsInputType {
 
     async fn connect_client(endpoint: String) -> error::Result<Self::Client> {
         MetricsServiceClient::connect(endpoint)
-	    .await
-	    .context(error::TonicTransportSnafu)
+            .await
+            .context(error::TonicTransportSnafu)
     }
 
     async fn send_data(
@@ -121,7 +121,7 @@ impl ServiceInputType for OTLPMetricsInputType {
             .export(Request::new(request))
             .await
             .map(|response| response.into_inner())
-	    .context(error::TonicStatusSnafu)
+            .context(error::TonicStatusSnafu)
     }
 }
 
@@ -149,7 +149,7 @@ impl ServiceOutputType for OTLPMetricsOutputType {
                 .add_service(MetricsServiceServer::new(receiver))
                 .serve_with_incoming(incoming)
                 .await
-		.context(error::TonicTransportSnafu)
+                .context(error::TonicTransportSnafu)
         })
     }
 }
@@ -173,8 +173,8 @@ impl ServiceInputType for OTLPLogsInputType {
 
     async fn connect_client(endpoint: String) -> error::Result<Self::Client> {
         LogsServiceClient::connect(endpoint)
-	    .await
-	    .context(error::TonicTransportSnafu)
+            .await
+            .context(error::TonicTransportSnafu)
     }
 
     async fn send_data(
@@ -185,7 +185,7 @@ impl ServiceInputType for OTLPLogsInputType {
             .export(Request::new(request))
             .await
             .map(|response| response.into_inner())
-	    .context(error::TonicStatusSnafu)
+            .context(error::TonicStatusSnafu)
     }
 }
 
@@ -213,7 +213,7 @@ impl ServiceOutputType for OTLPLogsOutputType {
                 .add_service(LogsServiceServer::new(receiver))
                 .serve_with_incoming(incoming)
                 .await
-		.context(error::TonicTransportSnafu)
+                .context(error::TonicTransportSnafu)
         })
     }
 }
@@ -252,8 +252,8 @@ impl LogsService for TestReceiver<ExportLogsServiceRequest> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::otap::*;
+    use super::*;
     use crate::validation::scenarios::run_single_round_trip_test;
     use crate::validation::testdata;
 
@@ -288,9 +288,9 @@ mod tests {
     async fn test_otap_metrics_single_request() {
         run_single_round_trip_test::<OTLPMetricsInputType, OTAPMetricsOutputType, _>(
             testdata::metrics::create_single_request,
-	    // This test expects a specific error due to disagreements
-	    // between the Rust and Golang implementations about OTAP
-	    // metrics encoding.
+            // This test expects a specific error due to disagreements
+            // between the Rust and Golang implementations about OTAP
+            // metrics encoding.
             Some("ColumnDataTypeMismatch"),
         )
         .await;

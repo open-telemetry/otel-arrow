@@ -5,11 +5,6 @@
 #[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExportTraceServiceRequest {
-    /// An array of ResourceSpans.
-    /// For data coming from a single resource this array will typically contain one
-    /// element. Intermediary nodes (such as OpenTelemetry Collector) that receive
-    /// data from multiple origins typically batch the data before forwarding further and
-    /// in that case this array will contain multiple elements.
     #[prost(message, repeated, tag = "1")]
     pub resource_spans: ::prost::alloc::vec::Vec<
         super::super::super::trace::v1::ResourceSpans,
@@ -21,21 +16,6 @@ pub struct ExportTraceServiceRequest {
 #[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExportTraceServiceResponse {
-    /// The details of a partially successful export request.
-    ///
-    /// If the request is only partially accepted
-    /// (i.e. when the server accepts only parts of the data and rejects the rest)
-    /// the server MUST initialize the `partial_success` field and MUST
-    /// set the `rejected_<signal>` with the number of items it rejected.
-    ///
-    /// Servers MAY also make use of the `partial_success` field to convey
-    /// warnings/suggestions to senders even when the request was fully accepted.
-    /// In such cases, the `rejected_<signal>` MUST have a value of `0` and
-    /// the `error_message` MUST be non-empty.
-    ///
-    /// A `partial_success` message with an empty value (rejected_<signal> = 0 and
-    /// `error_message` = "") is equivalent to it not being set/present. Senders
-    /// SHOULD interpret it the same way as in the full success case.
     #[prost(message, optional, tag = "1")]
     pub partial_success: ::core::option::Option<ExportTracePartialSuccess>,
 }
@@ -45,19 +25,8 @@ pub struct ExportTraceServiceResponse {
 #[derive(crate::pdata::otlp::Message)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ExportTracePartialSuccess {
-    /// The number of rejected spans.
-    ///
-    /// A `rejected_<signal>` field holding a `0` value indicates that the
-    /// request was fully accepted.
     #[prost(int64, tag = "1")]
     pub rejected_spans: i64,
-    /// A developer-facing human-readable message in English. It should be used
-    /// either to explain why the server rejected parts of the data during a partial
-    /// success or to convey warnings/suggestions during a full success. The message
-    /// should offer guidance on how users can address such issues.
-    ///
-    /// error_message is an optional field. An error_message with an empty value
-    /// is equivalent to it not being set.
     #[prost(string, tag = "2")]
     pub error_message: ::prost::alloc::string::String,
 }
@@ -93,7 +62,7 @@ pub mod trace_service_client {
     }
     impl<T> TraceServiceClient<T>
     where
-        T: tonic::client::GrpcService<tonic::body::BoxBody>,
+        T: tonic::client::GrpcService<tonic::body::Body>,
         T::Error: Into<StdError>,
         T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
         <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
@@ -114,13 +83,13 @@ pub mod trace_service_client {
             F: tonic::service::Interceptor,
             T::ResponseBody: Default,
             T: tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
+                http::Request<tonic::body::Body>,
                 Response = http::Response<
-                    <T as tonic::client::GrpcService<tonic::body::BoxBody>>::ResponseBody,
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
                 >,
             >,
             <T as tonic::codegen::Service<
-                http::Request<tonic::body::BoxBody>,
+                http::Request<tonic::body::Body>,
             >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
         {
             TraceServiceClient::new(InterceptedService::new(inner, interceptor))
@@ -277,7 +246,7 @@ pub mod trace_service_server {
         B: Body + std::marker::Send + 'static,
         B::Error: Into<StdError> + std::marker::Send + 'static,
     {
-        type Response = http::Response<tonic::body::BoxBody>;
+        type Response = http::Response<tonic::body::Body>;
         type Error = std::convert::Infallible;
         type Future = BoxFuture<Self::Response, Self::Error>;
         fn poll_ready(
@@ -335,7 +304,9 @@ pub mod trace_service_server {
                 }
                 _ => {
                     Box::pin(async move {
-                        let mut response = http::Response::new(empty_body());
+                        let mut response = http::Response::new(
+                            tonic::body::Body::default(),
+                        );
                         let headers = response.headers_mut();
                         headers
                             .insert(

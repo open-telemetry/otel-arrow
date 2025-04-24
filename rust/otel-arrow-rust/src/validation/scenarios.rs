@@ -24,14 +24,17 @@ where
     F: FnOnce() -> I::Request,
 {
     match run_single_round_trip::<I, O, F>(create_request, expected_error).await {
-	Ok(_) => { },
-	Err(err) => {
-	    panic!("Test failed: {:?}", err);
-	}
+        Ok(_) => {}
+        Err(err) => {
+            panic!("Test failed: {:?}", err);
+        }
     }
 }
 
-async fn run_single_round_trip<I, O, F>(create_request: F, expected_error: Option<&str>) -> error::Result<()>
+async fn run_single_round_trip<I, O, F>(
+    create_request: F,
+    expected_error: Option<&str>,
+) -> error::Result<()>
 where
     I: ServiceInputType,
     O: ServiceOutputType,
@@ -40,7 +43,7 @@ where
     I::Response: std::fmt::Debug + PartialEq + Default,
     F: FnOnce() -> I::Request,
 {
-     tokio::time::timeout(
+    tokio::time::timeout(
         std::time::Duration::from_secs(TEST_TIMEOUT_SECONDS),
         run_test::<I, O, _, _>(|mut context| async move {
             // Create test data
@@ -51,35 +54,38 @@ where
 
             // Send data to the collector
             match I::send_data(&mut context.client, request).await {
-		Ok(_) => {
-		    // Note: We do not test the response value.
-		},
-		Err(status) => {
-		    if let Some(expected_msg) = expected_error {
-			let err_str = status.to_string();
-			// If we expect an error, check for ptatern
-			if !err_str.contains(expected_msg) {
-			    // one with the expected message.
-			    return (context, Err(error::Error::PatternNotFound{
-				pattern: expected_msg.into(),
-				input: err_str.into(),
-			    }));
-			}
-			// Nothing more to test
-			return (context, Ok(()));
-		    } else {
-			// Unexpected, fail.
-			return (context, Err(status));
-		    }
-		},
-	    };
+                Ok(_) => {
+                    // Note: We do not test the response value.
+                }
+                Err(status) => {
+                    if let Some(expected_msg) = expected_error {
+                        let err_str = status.to_string();
+                        // If we expect an error, check for ptatern
+                        if !err_str.contains(expected_msg) {
+                            // one with the expected message.
+                            return (
+                                context,
+                                Err(error::Error::PatternNotFound {
+                                    pattern: expected_msg.into(),
+                                    input: err_str.into(),
+                                }),
+                            );
+                        }
+                        // Nothing more to test
+                        return (context, Ok(()));
+                    } else {
+                        // Unexpected, fail.
+                        return (context, Err(status));
+                    }
+                }
+            };
 
             // The data data should have been received already
             let received_request = match context.request_rx.recv().await {
                 Ok(req) => req,
                 Err(e) => {
-		    return (context, Err(e));
-		},
+                    return (context, Err(e));
+                }
             };
 
             // Compare the received data with what was sent
@@ -90,5 +96,7 @@ where
             // Return the context and the result
             (context, Ok(()))
         }),
-     ).await.context(error::TestTimeoutSnafu)?
+    )
+    .await
+    .context(error::TestTimeoutSnafu)?
 }

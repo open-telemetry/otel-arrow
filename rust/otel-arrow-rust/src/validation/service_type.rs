@@ -62,13 +62,11 @@ pub trait ServiceOutputType: Debug + Send + Sync + 'static {
     /// Start a service-specific receiver
     async fn start_receiver(
         listener: tokio::net::TcpListener,
-    ) -> error::Result<
-        (
-            tokio::task::JoinHandle<error::Result<()>>,
-            mpsc::Receiver<Self::Request>,
-            tokio::sync::oneshot::Sender<()>,
-        ),
-    >
+    ) -> error::Result<(
+        tokio::task::JoinHandle<error::Result<()>>,
+        mpsc::Receiver<Self::Request>,
+        tokio::sync::oneshot::Sender<()>,
+    )>
     where
         Self: Sized,
     {
@@ -96,7 +94,7 @@ impl<T: Send + 'static> TestReceiver<T> {
 
         // Forward the received request to the test channel
         if let Err(err) = self.request_tx.send(request_inner).await {
-                return Err(tonic::Status::internal(format!(
+            return Err(tonic::Status::internal(format!(
                 "Failed to send {} data to test channel: {}",
                 service_name, err
             )));
@@ -113,25 +111,26 @@ async fn create_listener_with_port() -> error::Result<(tokio::net::TcpListener, 
     let addr = "127.0.0.1:0";
     let listener = tokio::net::TcpListener::bind(addr)
         .await
-        .context(error::InputOutputSnafu{desc: "bind"})?;
+        .context(error::InputOutputSnafu { desc: "bind" })?;
 
     // Get the assigned port
     let port = listener
         .local_addr()
-	.context(error::InputOutputSnafu{desc: "local_address"})?
+        .context(error::InputOutputSnafu {
+            desc: "local_address",
+        })?
         .port();
 
     Ok((listener, port))
 }
 
 /// Helper function to start a test receiver for any service output type
-pub async fn start_test_receiver<T: ServiceOutputType>() -> error::Result<
-    (
-        tokio::task::JoinHandle<error::Result<()>>,
-        mpsc::Receiver<T::Request>,
-        u16,                              // actual port number that was assigned
-        tokio::sync::oneshot::Sender<()>, // shutdown channel
-    )> {
+pub async fn start_test_receiver<T: ServiceOutputType>() -> error::Result<(
+    tokio::task::JoinHandle<error::Result<()>>,
+    mpsc::Receiver<T::Request>,
+    u16,                              // actual port number that was assigned
+    tokio::sync::oneshot::Sender<()>, // shutdown channel
+)> {
     // Create listener with dynamically allocated port
     let (listener, port) = create_listener_with_port().await?;
 
@@ -144,13 +143,11 @@ pub async fn start_test_receiver<T: ServiceOutputType>() -> error::Result<
 /// Generic helper function to create a TCP server for any service output type
 async fn create_service_server<T: ServiceOutputType + ?Sized>(
     listener: tokio::net::TcpListener,
-) -> error::Result<
-    (
-        tokio::task::JoinHandle<error::Result<()>>,
-        mpsc::Receiver<T::Request>,
-        tokio::sync::oneshot::Sender<()>,
-    ),
-> {
+) -> error::Result<(
+    tokio::task::JoinHandle<error::Result<()>>,
+    mpsc::Receiver<T::Request>,
+    tokio::sync::oneshot::Sender<()>,
+)> {
     // Create a channel for receiving data
     let (request_tx, request_rx) = mpsc::channel::<T::Request>(100);
 

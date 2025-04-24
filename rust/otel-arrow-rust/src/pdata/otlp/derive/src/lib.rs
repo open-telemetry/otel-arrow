@@ -155,9 +155,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
                 let field_path = format!("{}.{}", type_name, ident_str);
                 let is_param = param_names.contains(&ident_str.as_str());
                 let is_optional = is_optional(field);
-                let is_oneof = oneof_mapping
-                    .map(|x| *x.0 == field_path)
-                    .unwrap_or(false);
+                let is_oneof = oneof_mapping.map(|x| *x.0 == field_path).unwrap_or(false);
 
                 // Process type information
                 let (inner_type, is_optional_extraction_ok) = if is_optional {
@@ -205,9 +203,9 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
             fields_original
                 .iter()
                 .find(|info| {
-		    let ident = info.ident.to_string();
-		    info.is_param && ident == *param_name
-		})
+                    let ident = info.ident.to_string();
+                    info.is_param && ident == *param_name
+                })
                 .unwrap()
         })
         .collect();

@@ -39,7 +39,6 @@ pub enum Error {
 
     //#[snafu(display("Collector did not exit: {:?}", source))]
     //UnsuccessfulExit { source: std::process::ExitStatus },
-
     #[snafu(display("Collector exit status: {:?}", code))]
     BadExitStatus { code: Option<i32> },
 
@@ -68,20 +67,14 @@ pub enum Error {
     Arrow { source: arrow::error::ArrowError },
 
     #[snafu(display("Empty batch"))]
-    EmptyBatch { },
+    EmptyBatch {},
 
     #[snafu(display("Invalid payload type {:?}", source))]
-    InvalidPayload {
-	source: prost::UnknownEnumValue,
-    },
+    InvalidPayload { source: prost::UnknownEnumValue },
 
     #[snafu(display("OTel-Arrow error {:?}", source))]
-    OTelArrow {
-	source: crate::error::Error,
-    },
+    OTelArrow { source: crate::error::Error },
 
     #[snafu(display("Tokio error {:?}", source))]
-    Join{
-	source: tokio::task::JoinError,
-    },
+    Join { source: tokio::task::JoinError },
 }
