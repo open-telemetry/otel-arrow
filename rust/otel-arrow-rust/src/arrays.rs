@@ -13,13 +13,13 @@
 use crate::error;
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray, Float32Array,
-    Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, PrimitiveArray, RecordBatch,
-    StringArray, TimestampNanosecondArray, UInt16Array, UInt32Array, UInt64Array, UInt8Array,
+    Float64Array, Int8Array, Int16Array, Int32Array, Int64Array, PrimitiveArray, RecordBatch,
+    StringArray, TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{ArrowDictionaryKeyType, TimeUnit};
-use arrow::datatypes::{ArrowNativeType, DataType, UInt16Type, UInt8Type};
+use arrow::datatypes::{ArrowNativeType, DataType, UInt8Type, UInt16Type};
 use paste::paste;
-use snafu::{ensure, OptionExt};
+use snafu::{OptionExt, ensure};
 
 pub trait NullableArrayAccessor {
     type Native;
@@ -233,7 +233,7 @@ pub enum StringArrayAccessor<'a> {
     Dictionary16(DictionaryStringArrayAccessor<'a, UInt16Type>),
 }
 
-impl<'a> NullableArrayAccessor for StringArrayAccessor<'a> {
+impl NullableArrayAccessor for StringArrayAccessor<'_> {
     type Native = String;
 
     fn value_at(&self, idx: usize) -> Option<Self::Native> {
@@ -276,7 +276,7 @@ impl<'a> StringArrayAccessor<'a> {
                         return error::UnsupportedStringDictKeyTypeSnafu {
                             data_type: a.data_type().clone(),
                         }
-                        .fail()
+                        .fail();
                     }
                 }
             }
@@ -284,7 +284,7 @@ impl<'a> StringArrayAccessor<'a> {
                 return error::UnsupportedStringColumnTypeSnafu {
                     data_type: a.data_type().clone(),
                 }
-                .fail()
+                .fail();
             }
         };
         Ok(result)

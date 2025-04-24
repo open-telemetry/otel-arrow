@@ -13,8 +13,8 @@
 //! This module contains traits and utilities for OTLP (OpenTelemetry Protocol) message types.
 
 // Re-export derive macros (required for generated code)
-pub use otlp_derive::qualified;
 pub use otlp_derive::Message;
+pub use otlp_derive::qualified;
 
 // Include tests
 #[cfg(test)]
