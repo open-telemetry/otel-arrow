@@ -278,14 +278,13 @@ pub struct TestContext<I: service_type::ServiceInputType, O: service_type::Servi
 /// 5. Perform cleanup
 ///
 /// The service type parameters I and O determine the input and output signal types to test
-pub async fn run_test<I, O, T, F>(test_logic: F) -> error::Result<()>
+pub async fn run_test<I, O, F>(test_logic: F) -> error::Result<()>
 where
     I: service_type::ServiceInputType,
     O: service_type::ServiceOutputType,
     I::Request: std::fmt::Debug + PartialEq,
     O::Request: std::fmt::Debug + PartialEq,
-    F: FnOnce(TestContext<I, O>) -> T,
-    T: std::future::Future<Output = (TestContext<I, O>, error::Result<()>)>,
+    F: FnOnce(&mut TestContext<I, O>) -> std::pin::Pin<Box<dyn std::future::Future<Output = error::Result<()>> + '_>>,
 {
     // Generate random ports in the high u16 range to avoid conflicts
     let random_value = rand::random::<u16>();
@@ -312,7 +311,7 @@ where
     let client = I::connect_client(client_endpoint).await?;
 
     // Create the test context
-    let context = TestContext {
+    let mut context = TestContext {
         client,
         collector,
         request_rx,
@@ -320,9 +319,8 @@ where
         server_shutdown_tx,
     };
 
-    // Run the provided test logic, transferring ownership of the context
-    // The test_logic now returns the context back along with the result
-    let (mut context, result) = test_logic(context).await;
+    // Run the provided test logic, passing a mutable reference to the context
+    let result = test_logic(&mut context).await;
 
     // Cleanup: drop the client connection first
     drop(context.client);
