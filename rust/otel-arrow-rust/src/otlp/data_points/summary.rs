@@ -120,7 +120,7 @@ impl<'a> QuantileArrays<'a> {
     }
 }
 
-impl<'a> QuantileArrays<'a> {
+impl QuantileArrays<'_> {
     fn value_at(&self, idx: usize) -> Option<Vec<ValueAtQuantile>> {
         if !self.list_array.is_valid(idx) {
             return None;

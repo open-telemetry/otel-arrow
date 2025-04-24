@@ -29,23 +29,23 @@ impl TraceID {
     }
 }
 
-impl Into<Vec<u8>> for TraceID {
-    fn into(self) -> Vec<u8> {
-        self.0.to_vec()
+impl From<TraceID> for Vec<u8> {
+    fn from(tid: TraceID) -> Self {
+        tid.0.to_vec()
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct SpanID([u8; 8]);
 
-impl Into<Vec<u8>> for SpanID {
-    fn into(self) -> Vec<u8> {
-        self.0.to_vec()
-    }
-}
-
 impl SpanID {
     pub fn new(value: &[u8; 8]) -> SpanID {
         SpanID(*value)
+    }
+}
+
+impl From<SpanID> for Vec<u8> {
+    fn from(sid: SpanID) -> Self {
+        sid.0.to_vec()
     }
 }

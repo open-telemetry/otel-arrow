@@ -28,7 +28,7 @@ fn generate_otap_protos(out_dir: &Path, base: &str) {
     let builder = tonic_build::configure()
         .build_server(true)
         .build_client(true)
-        .server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
+	.server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
         .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#);
 
     // Compile the protobuf definitions

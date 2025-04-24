@@ -46,7 +46,7 @@ struct ResourceArrays<'a> {
     schema_url: Option<StringArrayAccessor<'a>>,
 }
 
-impl<'a> ResourceArrays<'a> {
+impl ResourceArrays<'_> {
     fn data_type() -> DataType {
         DataType::Struct(Fields::from(vec![
             Field::new(consts::ID, DataType::UInt16, true),
@@ -113,7 +113,7 @@ struct ScopeArrays<'a> {
     id: Option<&'a UInt16Array>,
 }
 
-impl<'a> ScopeArrays<'a> {
+impl ScopeArrays<'_> {
     fn data_type() -> DataType {
         DataType::Struct(Fields::from(vec![
             Field::new(

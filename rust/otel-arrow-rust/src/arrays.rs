@@ -233,7 +233,7 @@ pub enum StringArrayAccessor<'a> {
     Dictionary16(DictionaryStringArrayAccessor<'a, UInt16Type>),
 }
 
-impl<'a> NullableArrayAccessor for StringArrayAccessor<'a> {
+impl NullableArrayAccessor for StringArrayAccessor<'_> {
     type Native = String;
 
     fn value_at(&self, idx: usize) -> Option<Self::Native> {

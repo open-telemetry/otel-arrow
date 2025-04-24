@@ -204,7 +204,10 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         .map(|param_name| {
             fields_original
                 .iter()
-                .find(|info| info.is_param && info.ident.to_string() == *param_name)
+                .find(|info| {
+		    let ident = info.ident.to_string();
+		    info.is_param && ident == *param_name
+		})
                 .unwrap()
         })
         .collect();
