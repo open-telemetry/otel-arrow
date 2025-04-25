@@ -46,7 +46,7 @@ use std::sync::Arc;
 #[async_trait(?Send)]
 pub trait Exporter<PData, EF = NotSendableEffectHandler<PData>>
 where
-    EF: EffectHandlerTrait<PData>
+    EF: EffectHandlerTrait<PData>,
 {
     /// Starts the exporter and begins exporting incoming data.
     ///
@@ -359,7 +359,7 @@ mod tests {
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
-    fn test_scenario()
+    fn scenario()
     -> impl FnOnce(ExporterTestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
     {
         |ctx| {
@@ -417,7 +417,7 @@ mod tests {
         let counters = test_runtime.counters();
 
         test_runtime.start_exporter(exporter, "not_send_test");
-        test_runtime.start_test(test_scenario());
+        test_runtime.start_test(scenario());
         test_runtime.validate(validation_procedure(counters));
     }
 
@@ -435,7 +435,7 @@ mod tests {
         let counters = test_runtime.counters();
 
         test_runtime.start_exporter_with_send_effect_handler(exporter, "send_test");
-        test_runtime.start_test(test_scenario());
+        test_runtime.start_test(scenario());
         test_runtime.validate(validation_procedure(counters));
     }
 }

@@ -344,15 +344,21 @@ mod tests {
         ControlMsgChannel, EffectHandlerTrait, NotSendableEffectHandler, SendableEffectHandler,
     };
     use crate::receiver::{Error, Receiver};
-    use crate::testing::receiver::TestRuntime;
-    use crate::testing::{exec_in_send_env, CtrlMsgCounters, TestMsg};
+    use crate::testing::receiver::{NotSendValidateContext, SendValidateContext, TestContext};
+    use crate::testing::receiver::{
+        NotSendValidateContext, SendValidateContext, TestContext, TestRuntime,
+    };
+    use crate::testing::{CtrlMsgCounters, TestMsg, exec_in_send_env};
     use async_trait::async_trait;
     use serde_json::Value;
+    use std::future::Future;
     use std::net::SocketAddr;
+    use std::pin::Pin;
+    use std::pin::Pin;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::sync::oneshot;
-    use tokio::time::{sleep, timeout, Duration};
+    use tokio::time::{Duration, sleep, timeout};
 
     /// A generic test exporter that counts message events
     /// Works with any effect handler that implements EffectHandlerTrait
@@ -484,23 +490,12 @@ mod tests {
     /// A type alias for a test receiver with sendable effect handler
     type ReceiverWithSendEffectHandler = GenericTestReceiver<SendableEffectHandler<TestMsg>>;
 
-    #[test]
-    fn test_receiver_with_not_send_effect_handler() {
-        let test_runtime = TestRuntime::new(10);
-
-        // Create a oneshot channel to receive the listening address from MyReceiver.
-        let (port_tx, port_rx) = oneshot::channel();
-        let receiver = ReceiverWithNotSendEffectHandler::without_send_test(
-            test_runtime.counters(),
-            port_tx
-        );
-
-        test_runtime
-            .receiver_with_non_send_effect_handler(
-                receiver,
-                "test receiver not sendable effect handler",
-            )
-            .run_test(|ctx| async move {
+    /// Test closure that simulates a typical receiver scenario.
+    fn scenario(
+        port_rx: oneshot::Receiver<SocketAddr>,
+    ) -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
+        move |ctx| {
+            Box::pin(async move {
                 // Wait for the receiver to send the listening address.
                 let addr: SocketAddr = port_rx.await.expect("Failed to receive listening address");
 
@@ -543,7 +538,14 @@ mod tests {
                 // Close the TCP connection.
                 let _ = stream.shutdown().await;
             })
-            .validate(|mut ctx| async move {
+        }
+    }
+
+    /// Validation closure that checks the received message and counters (!Send context).
+    fn validation_procedure()
+    -> impl FnOnce(NotSendValidateContext<TestMsg>) -> Pin<Box<dyn Future<Output = ()>>> {
+        |mut ctx| {
+            Box::pin(async move {
                 let received = timeout(Duration::from_secs(3), ctx.recv())
                     .await
                     .expect("Timed out waiting for message")
@@ -552,14 +554,50 @@ mod tests {
                 // Assert that the message received is what the test client sent.
                 assert!(matches!(received, TestMsg(msg) if msg == "Hello from test client"));
                 ctx.counters().assert(3, 0, 1, 1);
-            });
+            })
+        }
+    }
+
+    /// Validation closure that checks the received message and counters (Send context).
+    fn create_send_validate_fn()
+    -> impl FnOnce(SendValidateContext<TestMsg>) -> Pin<Box<dyn Future<Output = ()>>> {
+        |mut ctx| {
+            Box::pin(async move {
+                let received = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for message")
+                    .expect("No message received");
+
+                // Assert that the message received is what the test client sent.
+                assert!(matches!(received, TestMsg(msg) if msg == "Hello from test client"));
+                ctx.counters().assert(3, 0, 1, 1);
+            })
+        }
+    }
+
+    #[test]
+    fn test_receiver_with_not_send_effect_handler() {
+        let test_runtime = TestRuntime::new(10);
+
+        // Create a oneshot channel to receive the listening address from the receiver.
+        let (port_tx, port_rx) = oneshot::channel();
+        let receiver =
+            ReceiverWithNotSendEffectHandler::without_send_test(test_runtime.counters(), port_tx);
+
+        test_runtime
+            .receiver_with_non_send_effect_handler(
+                receiver,
+                "test receiver not sendable effect handler",
+            )
+            .run_test(scenario(port_rx))
+            .validate(validation_procedure());
     }
 
     #[test]
     fn test_receiver_with_send_effect_handler() {
         let test_runtime = TestRuntime::new(10);
 
-        // Create a oneshot channel to receive the listening address from MyReceiver.
+        // Create a oneshot channel to receive the listening address from the receiver.
         let (port_tx, port_rx) = oneshot::channel();
         let receiver = ReceiverWithSendEffectHandler::with_send_test(
             test_runtime.counters(),
@@ -576,58 +614,7 @@ mod tests {
                 receiver,
                 "test receiver not sendable effect handler",
             )
-            .run_test(|ctx| async move {
-                // Wait for the receiver to send the listening address.
-                let addr: SocketAddr = port_rx.await.expect("Failed to receive listening address");
-
-                // Connect to the receiver's socket.
-                let mut stream = TcpStream::connect(addr)
-                    .await
-                    .expect("Failed to connect to receiver");
-
-                // Send some test data.
-                stream
-                    .write_all(b"Hello from test client")
-                    .await
-                    .expect("Failed to send data");
-
-                // Optionally, read an echo (acknowledgment) from the receiver.
-                let mut buf = [0u8; 1024];
-                let len = stream
-                    .read(&mut buf)
-                    .await
-                    .expect("Failed to read response");
-                assert_eq!(&buf[..len], b"ack", "Expected acknowledgment from receiver");
-
-                // Send a few TimerTick events from the test.
-                for _ in 0..3 {
-                    ctx.send_timer_tick()
-                        .await
-                        .expect("Failed to send TimerTick");
-                    ctx.sleep(Duration::from_millis(100)).await;
-                }
-
-                ctx.send_config(Value::Null)
-                    .await
-                    .expect("Failed to send config");
-
-                // Finally, send a Shutdown event to terminate the receiver.
-                ctx.send_shutdown("Test")
-                    .await
-                    .expect("Failed to send Shutdown");
-
-                // Close the TCP connection.
-                let _ = stream.shutdown().await;
-            })
-            .validate(|mut ctx| async move {
-                let received = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received");
-
-                // Assert that the message received is what the test client sent.
-                assert!(matches!(received, TestMsg(msg) if msg == "Hello from test client"));
-                ctx.counters().assert(3, 0, 1, 1);
-            });
+            .run_test(scenario(port_rx))
+            .validate(create_send_validate_fn());
     }
 }

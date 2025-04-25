@@ -69,32 +69,42 @@ impl CtrlMsgCounters {
 
     /// Increments the timer tick count.
     pub fn increment_timer_tick(&self) {
-        _ = self.timer_tick_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        _ = self
+            .timer_tick_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Increments the message count.
     pub fn increment_message(&self) {
-        _ = self.message_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        _ = self
+            .message_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Increments the config count.
     pub fn increment_config(&self) {
-        _ = self.config_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        _ = self
+            .config_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Increments the shutdown count.
     pub fn increment_shutdown(&self) {
-        _ = self.shutdown_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        _ = self
+            .shutdown_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Gets the current timer tick count.
     pub fn get_timer_tick_count(&self) -> usize {
-        self.timer_tick_count.load(std::sync::atomic::Ordering::Relaxed)
+        self.timer_tick_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Gets the current message count.
     pub fn get_message_count(&self) -> usize {
-        self.message_count.load(std::sync::atomic::Ordering::Relaxed)
+        self.message_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Gets the current config count.
@@ -104,7 +114,8 @@ impl CtrlMsgCounters {
 
     /// Gets the current shutdown count.
     pub fn get_shutdown_count(&self) -> usize {
-        self.shutdown_count.load(std::sync::atomic::Ordering::Relaxed)
+        self.shutdown_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Asserts that the current counters match the expected values.
@@ -164,6 +175,8 @@ pub fn create_not_send_channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Re
 /// Helper to create `Send` MPSC channels with a specific capacity.
 ///
 /// This function creates a sender-receiver pair with the given capacity.
-pub fn create_send_channel<T>(capacity: usize) -> (tokio::sync::mpsc::Sender<T>, tokio::sync::mpsc::Receiver<T>) {
+pub fn create_send_channel<T>(
+    capacity: usize,
+) -> (tokio::sync::mpsc::Sender<T>, tokio::sync::mpsc::Receiver<T>) {
     tokio::sync::mpsc::channel(capacity)
 }

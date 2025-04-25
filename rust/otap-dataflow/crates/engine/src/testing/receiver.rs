@@ -10,18 +10,20 @@
 //! These utilities are designed to make testing receivers simpler by abstracting away common
 //! setup and lifecycle management.
 
-use std::fmt::Debug;
-use std::marker::PhantomData;
+use crate::error::Error;
 use crate::message::ControlMsg;
-use crate::receiver::{ControlMsgChannel, NotSendableEffectHandler, Receiver, SendableEffectHandler};
+use crate::receiver::{
+    ControlMsgChannel, NotSendableEffectHandler, Receiver, SendableEffectHandler,
+};
 use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime};
+use otap_df_channel::error::RecvError;
 use otap_df_channel::mpsc;
 use serde_json::Value;
+use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::time::Duration;
 use tokio::task::LocalSet;
 use tokio::time::sleep;
-use otap_df_channel::error::RecvError;
-use crate::error::Error;
 
 /// Context used during the test phase of a test.
 pub struct TestContext {
@@ -32,13 +34,13 @@ pub struct TestContext {
 /// Context used during the validation phase of a test (!Send context).
 pub struct NotSendValidateContext<PData> {
     pdata_receiver: mpsc::Receiver<PData>,
-    counters : CtrlMsgCounters,
+    counters: CtrlMsgCounters,
 }
 
 /// Context used during the validation phase of a test (Send context).
 pub struct SendValidateContext<PData> {
     pdata_receiver: tokio::sync::mpsc::Receiver<PData>,
-    counters : CtrlMsgCounters,
+    counters: CtrlMsgCounters,
 }
 
 impl TestContext {
@@ -48,8 +50,10 @@ impl TestContext {
     ///
     /// Returns an error if the message could not be sent.
     pub async fn send_timer_tick(&self) -> Result<(), Error<ControlMsg>> {
-        self.control_sender.send_async(ControlMsg::TimerTick {})
-            .await.map_err(|e| Error::ChannelSendError(e))
+        self.control_sender
+            .send_async(ControlMsg::TimerTick {})
+            .await
+            .map_err(|e| Error::ChannelSendError(e))
     }
 
     /// Sends a config control message.
@@ -60,7 +64,8 @@ impl TestContext {
     pub async fn send_config(&self, config: Value) -> Result<(), Error<ControlMsg>> {
         self.control_sender
             .send_async(ControlMsg::Config { config })
-            .await.map_err(|e| Error::ChannelSendError(e))
+            .await
+            .map_err(|e| Error::ChannelSendError(e))
     }
 
     /// Sends a shutdown control message.
@@ -73,7 +78,8 @@ impl TestContext {
             .send_async(ControlMsg::Shutdown {
                 reason: reason.to_owned(),
             })
-            .await.map_err(|e| Error::ChannelSendError(e))
+            .await
+            .map_err(|e| Error::ChannelSendError(e))
     }
 
     /// Sleeps for the specified duration.
@@ -85,7 +91,10 @@ impl TestContext {
 impl<PData> NotSendValidateContext<PData> {
     /// Receives a pdata message produced by the receiver.
     pub async fn recv(&mut self) -> Result<PData, Error<PData>> {
-        self.pdata_receiver.recv().await.map_err(|e| Error::ChannelRecvError(e))
+        self.pdata_receiver
+            .recv()
+            .await
+            .map_err(|e| Error::ChannelRecvError(e))
     }
 
     /// Returns the control message counters.
@@ -97,7 +106,10 @@ impl<PData> NotSendValidateContext<PData> {
 impl<PData> SendValidateContext<PData> {
     /// Receives a pdata message produced by the receiver.
     pub async fn recv(&mut self) -> Result<PData, Error<PData>> {
-        self.pdata_receiver.recv().await.ok_or(Error::ChannelRecvError(RecvError::Closed))
+        self.pdata_receiver
+            .recv()
+            .await
+            .ok_or(Error::ChannelRecvError(RecvError::Closed))
     }
 
     /// Returns the control message counters.
@@ -126,7 +138,7 @@ pub struct TestRuntime<PData> {
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
 
-    _pd: PhantomData<PData>
+    _pd: PhantomData<PData>,
 }
 
 /// Data and operations for the test phase of a receiver (not sendable effect handler).
@@ -212,7 +224,11 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Initializes the test runtime with a receiver using a non-sendable effect handler.
-    pub fn receiver_with_non_send_effect_handler<R>(mut self, receiver: R, name: &str) -> NonSendableTestPhase<PData>
+    pub fn receiver_with_non_send_effect_handler<R>(
+        mut self,
+        receiver: R,
+        name: &str,
+    ) -> NonSendableTestPhase<PData>
     where
         R: Receiver<PData, NotSendableEffectHandler<PData>> + 'static,
     {
@@ -236,7 +252,11 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Initializes the test runtime with a receiver using a sendable effect handler.
-    pub fn receiver_with_send_effect_handler<R>(mut self, receiver: R, name: &str) -> SendableTestPhase<PData>
+    pub fn receiver_with_send_effect_handler<R>(
+        mut self,
+        receiver: R,
+        name: &str,
+    ) -> SendableTestPhase<PData>
     where
         R: Receiver<PData, SendableEffectHandler<PData>> + 'static,
     {
@@ -271,10 +291,7 @@ impl<PData: Debug + 'static> NonSendableTestPhase<PData> {
             self.receiver
                 .start(
                     self.ctrl_msg_chan,
-                    NotSendableEffectHandler::new(
-                        self.name,
-                        self.pdata_sender
-                    ),
+                    NotSendableEffectHandler::new(self.name, self.pdata_sender),
                 )
                 .await
                 .expect("Receiver event loop failed");
@@ -306,10 +323,7 @@ impl<PData: Debug + 'static> SendableTestPhase<PData> {
             self.receiver
                 .start(
                     self.ctrl_msg_chan,
-                    SendableEffectHandler::new(
-                        self.name,
-                        self.pdata_sender
-                    ),
+                    SendableEffectHandler::new(self.name, self.pdata_sender),
                 )
                 .await
                 .expect("Receiver event loop failed");
@@ -350,12 +364,11 @@ impl<PData> NotSendableValidationPhase<PData> {
     {
         let context = NotSendValidateContext {
             pdata_receiver: self.pdata_receiver,
-            counters: self.counters
+            counters: self.counters,
         };
 
         // First run all the spawned tasks to completion
         self.rt.block_on(self.local_tasks);
-
 
         // Then run the validation future with the test context
         self.rt.block_on(future_fn(context))
@@ -382,12 +395,11 @@ impl<PData> SendableValidationPhase<PData> {
     {
         let context = SendValidateContext {
             pdata_receiver: self.pdata_receiver,
-            counters: self.counters
+            counters: self.counters,
         };
 
         // First run all the spawned tasks to completion
         self.rt.block_on(self.local_tasks);
-
 
         // Then run the validation future with the test context
         self.rt.block_on(future_fn(context))
