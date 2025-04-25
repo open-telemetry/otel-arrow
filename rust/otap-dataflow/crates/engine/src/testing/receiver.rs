@@ -196,14 +196,17 @@ impl ReceiverTestRuntime {
             .start_receiver_handle
             .take()
             .expect("Receiver task not started");
+        self.rt
+            .block_on(start_receiver_handle)
+            .expect("Receiver task failed");
 
         let start_test_handle = self
             .start_test_handle
             .take()
             .expect("Test task not started");
-
-        self.rt.block_on(start_receiver_handle).expect("Receiver task failed");
-        self.rt.block_on(start_test_handle).expect("Test task failed");
+        self.rt
+            .block_on(start_test_handle)
+            .expect("Test task failed");
 
         // Then run the validation future with the test context
         self.rt.block_on(future_fn(context))

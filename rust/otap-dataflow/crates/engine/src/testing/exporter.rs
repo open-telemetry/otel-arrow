@@ -194,19 +194,22 @@ impl ExporterTestRuntime {
     {
         // First run all the spawned tasks to completion
         self.rt.block_on(self.local_tasks);
-        
+
         let start_exporter_handle = self
             .start_exporter_handle
             .take()
             .expect("Exporter task not started");
+        self.rt
+            .block_on(start_exporter_handle)
+            .expect("Exporter task failed");
 
         let start_test_handle = self
             .start_test_handle
             .take()
             .expect("Test task not started");
-
-        self.rt.block_on(start_exporter_handle).expect("Exporter task failed");
-        self.rt.block_on(start_test_handle).expect("Test task failed");
+        self.rt
+            .block_on(start_test_handle)
+            .expect("Test task failed");
 
         let context = ExporterTestContext::new(self.control_tx.clone(), self.pdata_tx.clone());
 
