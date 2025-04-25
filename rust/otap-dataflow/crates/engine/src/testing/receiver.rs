@@ -7,9 +7,7 @@
 
 use crate::error::Error;
 use crate::message::ControlMsg;
-use crate::receiver::{
-    ControlMsgChannel, NotSendEffectHandler, Receiver, SendEffectHandler,
-};
+use crate::receiver::{ControlMsgChannel, NotSendEffectHandler, Receiver, SendEffectHandler};
 use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime};
 use otap_df_channel::error::RecvError;
 use otap_df_channel::mpsc;

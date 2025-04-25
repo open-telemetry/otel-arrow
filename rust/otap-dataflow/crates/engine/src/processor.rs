@@ -98,6 +98,7 @@ where
 ///
 /// Note for implementers: Effect handler implementations are designed to be cloned so the cost of
 /// cloning should be minimal.
+#[async_trait(?Send)]
 pub trait EffectHandlerTrait<PData> {
     /// Returns the name of the processor associated with this handler.
     fn processor_name(&self) -> &str;
@@ -136,6 +137,7 @@ impl<PData> NotSendEffectHandler<PData> {
     }
 }
 
+#[async_trait(?Send)]
 impl<PData> EffectHandlerTrait<PData> for NotSendEffectHandler<PData> {
     /// Returns the name of the exporter associated with this handler.
     #[must_use]
@@ -177,6 +179,7 @@ impl<PData> SendEffectHandler<PData> {
     }
 }
 
+#[async_trait(?Send)]
 impl<PData> EffectHandlerTrait<PData> for SendEffectHandler<PData> {
     /// Returns the name of the processor associated with this handler.
     #[must_use]
@@ -206,9 +209,9 @@ mod tests {
     use crate::processor::{
         EffectHandlerTrait, Error, NotSendEffectHandler, Processor, SendEffectHandler,
     };
-    use crate::testing::processor::TestContext;
-    use crate::testing::processor::{NotSendValidateContext, TestRuntime};
-    use crate::testing::{exec_in_send_env, CtrlMsgCounters, TestMsg};
+    use crate::testing::processor::TestRuntime;
+    use crate::testing::processor::{TestContext, ValidateContext};
+    use crate::testing::{CtrlMsgCounters, TestMsg, exec_in_send_env};
     use async_trait::async_trait;
     use serde_json::Value;
     use std::pin::Pin;
@@ -284,8 +287,11 @@ mod tests {
     /// A type alias for a test processor with sendable effect handler
     type ProcessorWithSendEffectHandler = GenericTestProcessor<SendEffectHandler<TestMsg>>;
 
-    /// Test closure that simulates a typical receiver scenario.
-    fn scenario() -> impl FnOnce(Box<dyn TestContext<TestMsg>>) -> Pin<Box<dyn Future<Output = ()>>> {
+    /// Test closure that simulates a typical processor scenario.
+    fn scenario<C>() -> impl FnOnce(C) -> Pin<Box<dyn Future<Output = ()>>>
+    where
+        C: TestContext<TestMsg> + 'static,
+    {
         move |mut ctx| {
             Box::pin(async move {
                 // Process a TimerTick event.
@@ -318,9 +324,8 @@ mod tests {
     }
 
     /// Validation closure that checks the received message and counters (!Send context).
-    fn validation_procedure()
-    -> impl FnOnce(NotSendValidateContext<TestMsg>) -> Pin<Box<dyn Future<Output = ()>>> {
-        |mut ctx| {
+    fn validation_procedure() -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
+        |ctx| {
             Box::pin(async move {
                 ctx.counters().assert(
                     1, // timer tick
@@ -334,19 +339,27 @@ mod tests {
 
     #[test]
     fn test_receiver_with_not_send_effect_handler() {
-        let mut test_runtime = TestRuntime::new(10);
+        let test_runtime = TestRuntime::new(10);
         let processor =
             ProcessorWithNotSendEffectHandler::without_send_test(test_runtime.counters());
 
         test_runtime
-            .processor_with_non_send_effect_handler(processor, "test_processor")
-            .run_test(scenario())
+            .processor_with_non_send_effect_handler::<ProcessorWithNotSendEffectHandler>(
+                processor,
+                "test_processor",
+            )
+            .run_test(scenario::<
+                crate::testing::processor::NotSendTestContext<
+                    TestMsg,
+                    ProcessorWithNotSendEffectHandler,
+                >,
+            >())
             .validate(validation_procedure());
     }
 
     #[test]
     fn test_receiver_with_send_effect_handler() {
-        let mut test_runtime = TestRuntime::new(10);
+        let test_runtime = TestRuntime::new(10);
         let processor =
             ProcessorWithSendEffectHandler::with_send_test(test_runtime.counters(), |eh| {
                 exec_in_send_env(|| {
@@ -355,8 +368,13 @@ mod tests {
             });
 
         test_runtime
-            .processor_with_send_effect_handler(processor, "test_processor")
-            .run_test(scenario())
+            .processor_with_send_effect_handler::<ProcessorWithSendEffectHandler>(
+                processor,
+                "test_processor",
+            )
+            .run_test(scenario::<
+                crate::testing::processor::SendTestContext<TestMsg, ProcessorWithSendEffectHandler>,
+            >())
             .validate(validation_procedure());
     }
 }

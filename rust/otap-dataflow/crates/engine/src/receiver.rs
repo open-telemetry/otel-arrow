@@ -339,9 +339,7 @@ impl<PData> ReceiverWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ControlMsgChannel, EffectHandlerTrait, NotSendEffectHandler, SendEffectHandler,
-    };
+    use super::{ControlMsgChannel, EffectHandlerTrait, NotSendEffectHandler, SendEffectHandler};
     use crate::receiver::{Error, Receiver};
     use crate::testing::receiver::{
         NotSendValidateContext, SendValidateContext, TestContext, TestRuntime,
