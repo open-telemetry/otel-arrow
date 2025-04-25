@@ -1,0 +1,9 @@
+comment:
+  layout: "header, diff, flags, components"
+
+component_management:
+  individual_components:
+    - component_id: "otap_dataflow"
+      name: "otap-dataflow"
+      paths:
+        - "rust/otap-dataflow/"
