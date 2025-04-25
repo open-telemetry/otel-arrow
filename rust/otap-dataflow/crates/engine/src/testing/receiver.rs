@@ -95,6 +95,12 @@ pub struct ReceiverTestRuntime {
 
     /// Message counter for tracking processed messages
     counter: CtrMsgCounters,
+
+    /// Join handle for starting the receiver task
+    start_receiver_handle: Option<tokio::task::JoinHandle<()>>,
+
+    /// Join handle for starting the test task
+    start_test_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl ReceiverTestRuntime {
@@ -112,6 +118,8 @@ impl ReceiverTestRuntime {
             pdata_tx,
             pdata_rx: Some(pdata_rx),
             counter: CtrMsgCounters::new(),
+            start_receiver_handle: None,
+            start_test_handle: None,
         }
     }
 
@@ -133,7 +141,7 @@ impl ReceiverTestRuntime {
         let pdata_tx = self.pdata_tx.clone();
 
         let receiver = Box::new(receiver);
-        let _ = self.local_tasks.spawn_local(async move {
+        self.start_receiver_handle = Some(self.local_tasks.spawn_local(async move {
             receiver
                 .start(
                     ctrl_msg_chan,
@@ -141,7 +149,7 @@ impl ReceiverTestRuntime {
                 )
                 .await
                 .expect("Receiver event loop failed");
-        });
+        }));
     }
 
     /// Starts the test scenario by executing the provided function with the test context.
@@ -154,9 +162,9 @@ impl ReceiverTestRuntime {
             control_tx: self.control_tx.clone(),
             pdata_rx: None,
         };
-        let _ = self.local_tasks.spawn_local(async move {
+        self.start_test_handle = Some(self.local_tasks.spawn_local(async move {
             f(context).await;
-        });
+        }));
     }
 
     /// Runs all spawned tasks to completion and executes the provided future to validate test
@@ -183,6 +191,19 @@ impl ReceiverTestRuntime {
             control_tx: self.control_tx.clone(),
             pdata_rx: self.pdata_rx.take(),
         };
+
+        let start_receiver_handle = self
+            .start_receiver_handle
+            .take()
+            .expect("Receiver task not started");
+
+        let start_test_handle = self
+            .start_test_handle
+            .take()
+            .expect("Test task not started");
+
+        self.rt.block_on(start_receiver_handle).expect("Receiver task failed");
+        self.rt.block_on(start_test_handle).expect("Test task failed");
 
         // Then run the validation future with the test context
         self.rt.block_on(future_fn(context))

@@ -73,6 +73,9 @@ where
     rt: tokio::runtime::Runtime,
     /// Local task set for non-Send futures
     local_tasks: LocalSet,
+
+    /// Join handle for starting the test task
+    start_test_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl<P> ProcessorTestRuntime<P>
@@ -88,6 +91,7 @@ where
             channel_capacity,
             rt,
             local_tasks,
+            start_test_handle: None,
         }
     }
 
@@ -100,9 +104,9 @@ where
         let processor = self.processor.take().expect("Processor not set");
         let context = ProcessorTestContext::new(processor, self.channel_capacity);
 
-        let _ = self.local_tasks.spawn_local(async move {
+        self.start_test_handle = Some(self.local_tasks.spawn_local(async move {
             f(context).await;
-        });
+        }));
     }
 
     /// Runs all spawned tasks to completion and executes the provided future to validate test
@@ -117,13 +121,18 @@ where
     /// # Returns
     ///
     /// The result of the provided future.
-    pub fn validate<F, Fut, T>(self, future_fn: F) -> T
+    pub fn validate<F, Fut, T>(mut self, future_fn: F) -> T
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = T>,
     {
         // First run all the spawned tasks to completion
         self.rt.block_on(self.local_tasks);
+
+        let start_test_handle = self.start_test_handle
+            .take()
+            .expect("Test task not started");
+        self.rt.block_on(start_test_handle).expect("Test task failed");
 
         // Then run the validation future with the test context
         self.rt.block_on(future_fn())

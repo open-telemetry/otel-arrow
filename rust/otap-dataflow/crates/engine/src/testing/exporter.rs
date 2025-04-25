@@ -107,6 +107,12 @@ pub struct ExporterTestRuntime {
 
     /// Message counter for tracking processed messages
     counter: CtrMsgCounters,
+
+    /// Join handle for the starting the exporter task
+    start_exporter_handle: Option<tokio::task::JoinHandle<()>>,
+
+    /// Join handle for the starting the test task
+    start_test_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl ExporterTestRuntime {
@@ -125,6 +131,8 @@ impl ExporterTestRuntime {
             pdata_tx,
             pdata_rx: Some(pdata_rx),
             counter,
+            start_exporter_handle: None,
+            start_test_handle: None,
         }
     }
 
@@ -147,24 +155,24 @@ impl ExporterTestRuntime {
 
         let boxed_exporter = Box::new(exporter);
 
-        let _ = self.local_tasks.spawn_local(async move {
+        self.start_exporter_handle = Some(self.local_tasks.spawn_local(async move {
             boxed_exporter
                 .start(msg_chan, EffectHandler::new("test_exporter"))
                 .await
                 .expect("Exporter event loop failed");
-        });
+        }));
     }
 
     /// Spawns a local task with a TestContext that provides access to transmitters.
-    pub fn start_test<F, Fut>(&self, f: F)
+    pub fn start_test<F, Fut>(&mut self, f: F)
     where
         F: FnOnce(ExporterTestContext) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
         let context = ExporterTestContext::new(self.control_tx.clone(), self.pdata_tx.clone());
-        let _ = self.local_tasks.spawn_local(async move {
+        self.start_test_handle = Some(self.local_tasks.spawn_local(async move {
             f(context).await;
-        });
+        }));
     }
 
     /// Runs all spawned tasks to completion and executes the provided future to validate test
@@ -179,13 +187,26 @@ impl ExporterTestRuntime {
     /// # Returns
     ///
     /// The result of the provided future.
-    pub fn validate<F, Fut, T>(self, future_fn: F) -> T
+    pub fn validate<F, Fut, T>(mut self, future_fn: F) -> T
     where
         F: FnOnce(ExporterTestContext) -> Fut,
         Fut: Future<Output = T>,
     {
         // First run all the spawned tasks to completion
         self.rt.block_on(self.local_tasks);
+        
+        let start_exporter_handle = self
+            .start_exporter_handle
+            .take()
+            .expect("Exporter task not started");
+
+        let start_test_handle = self
+            .start_test_handle
+            .take()
+            .expect("Test task not started");
+
+        self.rt.block_on(start_exporter_handle).expect("Exporter task failed");
+        self.rt.block_on(start_test_handle).expect("Test task failed");
 
         let context = ExporterTestContext::new(self.control_tx.clone(), self.pdata_tx.clone());
 
