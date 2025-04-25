@@ -25,8 +25,8 @@
 //!
 //! Note that this trait uses `#[async_trait(?Send)]`, meaning implementations are not required to
 //! be thread-safe. If you need to implement a receiver that requires `Send`, you can use the
-//! [`SendableEffectHandler`] type. The default effect handler is [`!Send`] (see
-//! [`NotSendableEffectHandler`]).
+//! [`SendEffectHandler`] type. The default effect handler is [`!Send`] (see
+//! [`NotSendEffectHandler`]).
 //!
 //! # Scalability
 //!
@@ -48,7 +48,7 @@ use tokio::net::TcpListener;
 /// Receivers are responsible for accepting data from external sources and converting
 /// it into messages that can be processed by the pipeline.
 #[async_trait( ? Send)]
-pub trait Receiver<PData, EF = NotSendableEffectHandler<PData>>
+pub trait Receiver<PData, EF = NotSendEffectHandler<PData>>
 where
     EF: EffectHandlerTrait<PData>,
 {
@@ -122,9 +122,9 @@ impl ControlMsgChannel {
 ///
 /// 2 implementations are provided:
 ///
-/// - `NotSendableEffectHandler<PData>`: For thread-local (!Send) receivers. Uses `Rc` internally.
+/// - [`NotSendEffectHandler<PData>`]: For thread-local (!Send) receivers. Uses `Rc` internally.
 ///   It's the default and preferred effect handler.
-/// - `SendableEffectHandler<PData>`: For thread-safe (Send) receivers. Uses `Arc` internally and
+/// - [`SendEffectHandler<PData>`]: For thread-safe (Send) receivers. Uses `Arc` internally and
 ///   supports sending across thread boundaries.
 ///
 /// Note for implementers: Effect handler implementations are designed to be cloned so the cost of
@@ -187,7 +187,7 @@ pub trait EffectHandlerTrait<PData> {
 
 /// A `!Send` implementation of the EffectHandlerTrait.
 #[derive(Clone)]
-pub struct NotSendableEffectHandler<PData> {
+pub struct NotSendEffectHandler<PData> {
     /// The name of the receiver.
     receiver_name: Rc<str>,
 
@@ -196,14 +196,14 @@ pub struct NotSendableEffectHandler<PData> {
 }
 
 /// Implementation for the `!Send` effect handler.
-impl<PData> NotSendableEffectHandler<PData> {
+impl<PData> NotSendEffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given receiver name.
     /// This is the default and preferred effect handler for this project.
     ///
     /// Use this constructor when your receiver doesn't need to be sent across threads or
     /// when it uses components that aren't `Send`.
     pub fn new<S: AsRef<str>>(receiver_name: S, msg_sender: mpsc::Sender<PData>) -> Self {
-        NotSendableEffectHandler {
+        NotSendEffectHandler {
             receiver_name: Rc::from(receiver_name.as_ref()),
             msg_sender,
         }
@@ -211,7 +211,7 @@ impl<PData> NotSendableEffectHandler<PData> {
 }
 
 #[async_trait(?Send)]
-impl<PData> EffectHandlerTrait<PData> for NotSendableEffectHandler<PData> {
+impl<PData> EffectHandlerTrait<PData> for NotSendEffectHandler<PData> {
     /// Returns the name of the receiver associated with this handler.
     #[must_use]
     fn receiver_name(&self) -> &str {
@@ -229,10 +229,9 @@ impl<PData> EffectHandlerTrait<PData> for NotSendableEffectHandler<PData> {
     }
 }
 
-//---
 /// A `Send` implementation of the EffectHandlerTrait.
 #[derive(Clone)]
-pub struct SendableEffectHandler<PData> {
+pub struct SendEffectHandler<PData> {
     /// The name of the receiver.
     receiver_name: Arc<str>,
 
@@ -241,7 +240,7 @@ pub struct SendableEffectHandler<PData> {
 }
 
 /// Implementation for the `Send` effect handler.
-impl<PData> SendableEffectHandler<PData> {
+impl<PData> SendEffectHandler<PData> {
     /// Creates a new sendable effect handler with the given receiver name.
     ///
     /// Use this constructor when your receiver do need to be sent across threads or
@@ -250,7 +249,7 @@ impl<PData> SendableEffectHandler<PData> {
         receiver_name: S,
         msg_sender: tokio::sync::mpsc::Sender<PData>,
     ) -> Self {
-        SendableEffectHandler {
+        SendEffectHandler {
             receiver_name: Arc::from(receiver_name.as_ref()),
             msg_sender,
         }
@@ -258,7 +257,7 @@ impl<PData> SendableEffectHandler<PData> {
 }
 
 #[async_trait(?Send)]
-impl<PData> EffectHandlerTrait<PData> for SendableEffectHandler<PData> {
+impl<PData> EffectHandlerTrait<PData> for SendEffectHandler<PData> {
     /// Returns the name of the receiver associated with this handler.
     #[must_use]
     fn receiver_name(&self) -> &str {
@@ -287,12 +286,12 @@ impl<PData> EffectHandlerTrait<PData> for SendableEffectHandler<PData> {
 /// the effect handler type.
 pub(crate) enum ReceiverWrapper<PData> {
     NotSend {
-        effect_handler: NotSendableEffectHandler<PData>,
-        receiver: Box<dyn Receiver<PData, NotSendableEffectHandler<PData>>>,
+        effect_handler: NotSendEffectHandler<PData>,
+        receiver: Box<dyn Receiver<PData, NotSendEffectHandler<PData>>>,
     },
     Send {
-        effect_handler: SendableEffectHandler<PData>,
-        receiver: Box<dyn Receiver<PData, SendableEffectHandler<PData>>>,
+        effect_handler: SendEffectHandler<PData>,
+        receiver: Box<dyn Receiver<PData, SendEffectHandler<PData>>>,
     },
 }
 
@@ -300,10 +299,10 @@ impl<PData> ReceiverWrapper<PData> {
     /// Creates a new `ReceiverWrapper` with the given receiver and `!Send` effect handler.
     pub(crate) fn create<R>(receiver: R, name: &str, msg_sender: mpsc::Sender<PData>) -> Self
     where
-        R: Receiver<PData, NotSendableEffectHandler<PData>> + 'static,
+        R: Receiver<PData, NotSendEffectHandler<PData>> + 'static,
     {
         ReceiverWrapper::NotSend {
-            effect_handler: NotSendableEffectHandler::new(name, msg_sender),
+            effect_handler: NotSendEffectHandler::new(name, msg_sender),
             receiver: Box::new(receiver),
         }
     }
@@ -315,10 +314,10 @@ impl<PData> ReceiverWrapper<PData> {
         msg_sender: tokio::sync::mpsc::Sender<PData>,
     ) -> Self
     where
-        R: Receiver<PData, SendableEffectHandler<PData>> + 'static,
+        R: Receiver<PData, SendEffectHandler<PData>> + 'static,
     {
         ReceiverWrapper::Send {
-            effect_handler: SendableEffectHandler::new(name, msg_sender),
+            effect_handler: SendEffectHandler::new(name, msg_sender),
             receiver: Box::new(receiver),
         }
     }
@@ -341,10 +340,9 @@ impl<PData> ReceiverWrapper<PData> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ControlMsgChannel, EffectHandlerTrait, NotSendableEffectHandler, SendableEffectHandler,
+        ControlMsgChannel, EffectHandlerTrait, NotSendEffectHandler, SendEffectHandler,
     };
     use crate::receiver::{Error, Receiver};
-    use crate::testing::receiver::{NotSendValidateContext, SendValidateContext, TestContext};
     use crate::testing::receiver::{
         NotSendValidateContext, SendValidateContext, TestContext, TestRuntime,
     };
@@ -353,7 +351,6 @@ mod tests {
     use serde_json::Value;
     use std::future::Future;
     use std::net::SocketAddr;
-    use std::pin::Pin;
     use std::pin::Pin;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
@@ -485,10 +482,10 @@ mod tests {
     }
 
     /// A type alias for a test receiver with regular effect handler
-    type ReceiverWithNotSendEffectHandler = GenericTestReceiver<NotSendableEffectHandler<TestMsg>>;
+    type ReceiverWithNotSendEffectHandler = GenericTestReceiver<NotSendEffectHandler<TestMsg>>;
 
     /// A type alias for a test receiver with sendable effect handler
-    type ReceiverWithSendEffectHandler = GenericTestReceiver<SendableEffectHandler<TestMsg>>;
+    type ReceiverWithSendEffectHandler = GenericTestReceiver<SendEffectHandler<TestMsg>>;
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario(

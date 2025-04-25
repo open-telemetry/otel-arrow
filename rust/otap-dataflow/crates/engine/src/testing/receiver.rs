@@ -2,18 +2,13 @@
 
 //! Test utilities for receivers.
 //!
-//! This module provides specialized utilities for testing receiver components:
-//!
-//! - `ReceiverTestContext`: Provides a context for interacting with receivers during tests
-//! - `ReceiverTestRuntime`: Configures and manages a single-threaded tokio runtime for receiver tests
-//!
 //! These utilities are designed to make testing receivers simpler by abstracting away common
 //! setup and lifecycle management.
 
 use crate::error::Error;
 use crate::message::ControlMsg;
 use crate::receiver::{
-    ControlMsgChannel, NotSendableEffectHandler, Receiver, SendableEffectHandler,
+    ControlMsgChannel, NotSendEffectHandler, Receiver, SendEffectHandler,
 };
 use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime};
 use otap_df_channel::error::RecvError;
@@ -142,7 +137,7 @@ pub struct TestRuntime<PData> {
 }
 
 /// Data and operations for the test phase of a receiver (not sendable effect handler).
-pub struct NonSendableTestPhase<PData> {
+pub struct NonSendTestPhase<PData> {
     name: String,
 
     /// Runtime instance
@@ -151,7 +146,7 @@ pub struct NonSendableTestPhase<PData> {
     local_tasks: LocalSet,
 
     ctrl_msg_chan: ControlMsgChannel,
-    receiver: Box<dyn Receiver<PData, NotSendableEffectHandler<PData>>>,
+    receiver: Box<dyn Receiver<PData, NotSendEffectHandler<PData>>>,
     counters: CtrlMsgCounters,
 
     control_sender: mpsc::Sender<ControlMsg>,
@@ -160,7 +155,7 @@ pub struct NonSendableTestPhase<PData> {
 }
 
 /// Data and operations for the validation phase of a receiver (not sendable effect handler).
-pub struct NotSendableValidationPhase<PData> {
+pub struct NotSendValidationPhase<PData> {
     /// Runtime instance
     rt: tokio::runtime::Runtime,
     /// Local task set for non-Send futures
@@ -172,7 +167,7 @@ pub struct NotSendableValidationPhase<PData> {
 }
 
 /// Data and operations for the validation phase of a receiver (sendable effect handler).
-pub struct SendableTestPhase<PData> {
+pub struct SendTestPhase<PData> {
     name: String,
 
     /// Runtime instance
@@ -181,7 +176,7 @@ pub struct SendableTestPhase<PData> {
     local_tasks: LocalSet,
 
     ctrl_msg_chan: ControlMsgChannel,
-    receiver: Box<dyn Receiver<PData, SendableEffectHandler<PData>>>,
+    receiver: Box<dyn Receiver<PData, SendEffectHandler<PData>>>,
     counters: CtrlMsgCounters,
 
     control_sender: mpsc::Sender<ControlMsg>,
@@ -190,7 +185,7 @@ pub struct SendableTestPhase<PData> {
 }
 
 /// Data and operations for the validation phase of a receiver (sendable effect handler).
-pub struct SendableValidationPhase<PData> {
+pub struct SendValidationPhase<PData> {
     /// Runtime instance
     rt: tokio::runtime::Runtime,
     /// Local task set for non-Send futures
@@ -228,9 +223,9 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         mut self,
         receiver: R,
         name: &str,
-    ) -> NonSendableTestPhase<PData>
+    ) -> NonSendTestPhase<PData>
     where
-        R: Receiver<PData, NotSendableEffectHandler<PData>> + 'static,
+        R: Receiver<PData, NotSendEffectHandler<PData>> + 'static,
     {
         let control_rx = self
             .control_rx
@@ -238,7 +233,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             .expect("Control channel not initialized");
         let (pdata_sender, pdata_receiver) = mpsc::Channel::new(self.channel_capacity);
 
-        NonSendableTestPhase {
+        NonSendTestPhase {
             name: name.to_owned(),
             rt: self.rt,
             local_tasks: self.local_tasks,
@@ -256,9 +251,9 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         mut self,
         receiver: R,
         name: &str,
-    ) -> SendableTestPhase<PData>
+    ) -> SendTestPhase<PData>
     where
-        R: Receiver<PData, SendableEffectHandler<PData>> + 'static,
+        R: Receiver<PData, SendEffectHandler<PData>> + 'static,
     {
         let control_rx = self
             .control_rx
@@ -266,7 +261,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             .expect("Control channel not initialized");
         let (pdata_sender, pdata_receiver) = tokio::sync::mpsc::channel(self.channel_capacity);
 
-        SendableTestPhase {
+        SendTestPhase {
             name: name.to_owned(),
             rt: self.rt,
             local_tasks: self.local_tasks,
@@ -280,9 +275,9 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 }
 
-impl<PData: Debug + 'static> NonSendableTestPhase<PData> {
+impl<PData: Debug + 'static> NonSendTestPhase<PData> {
     /// Starts the test scenario by executing the provided function with the test context.
-    pub fn run_test<F, Fut>(self, f: F) -> NotSendableValidationPhase<PData>
+    pub fn run_test<F, Fut>(self, f: F) -> NotSendValidationPhase<PData>
     where
         F: FnOnce(TestContext) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
@@ -291,7 +286,7 @@ impl<PData: Debug + 'static> NonSendableTestPhase<PData> {
             self.receiver
                 .start(
                     self.ctrl_msg_chan,
-                    NotSendableEffectHandler::new(self.name, self.pdata_sender),
+                    NotSendEffectHandler::new(self.name, self.pdata_sender),
                 )
                 .await
                 .expect("Receiver event loop failed");
@@ -303,7 +298,7 @@ impl<PData: Debug + 'static> NonSendableTestPhase<PData> {
         let _ = self.local_tasks.spawn_local(async move {
             f(context).await;
         });
-        NotSendableValidationPhase {
+        NotSendValidationPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
             counters: self.counters,
@@ -312,9 +307,9 @@ impl<PData: Debug + 'static> NonSendableTestPhase<PData> {
     }
 }
 
-impl<PData: Debug + 'static> SendableTestPhase<PData> {
+impl<PData: Debug + 'static> SendTestPhase<PData> {
     /// Starts the test scenario by executing the provided function with the test context.
-    pub fn run_test<F, Fut>(self, f: F) -> SendableValidationPhase<PData>
+    pub fn run_test<F, Fut>(self, f: F) -> SendValidationPhase<PData>
     where
         F: FnOnce(TestContext) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
@@ -323,7 +318,7 @@ impl<PData: Debug + 'static> SendableTestPhase<PData> {
             self.receiver
                 .start(
                     self.ctrl_msg_chan,
-                    SendableEffectHandler::new(self.name, self.pdata_sender),
+                    SendEffectHandler::new(self.name, self.pdata_sender),
                 )
                 .await
                 .expect("Receiver event loop failed");
@@ -335,7 +330,7 @@ impl<PData: Debug + 'static> SendableTestPhase<PData> {
         let _ = self.local_tasks.spawn_local(async move {
             f(context).await;
         });
-        SendableValidationPhase {
+        SendValidationPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
             counters: self.counters,
@@ -344,7 +339,7 @@ impl<PData: Debug + 'static> SendableTestPhase<PData> {
     }
 }
 
-impl<PData> NotSendableValidationPhase<PData> {
+impl<PData> NotSendValidationPhase<PData> {
     /// Runs all spawned tasks to completion and executes the provided future to validate test
     /// expectations.
     ///
@@ -375,7 +370,7 @@ impl<PData> NotSendableValidationPhase<PData> {
     }
 }
 
-impl<PData> SendableValidationPhase<PData> {
+impl<PData> SendValidationPhase<PData> {
     /// Runs all spawned tasks to completion and executes the provided future to validate test
     /// expectations.
     ///
