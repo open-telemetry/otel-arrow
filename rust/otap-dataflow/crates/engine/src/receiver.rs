@@ -33,8 +33,9 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
+use crate::config::ReceiverConfig;
 use crate::error::Error;
-use crate::message::ControlMsg;
+use crate::message::{ControlMsg, PDataReceiver};
 use async_trait::async_trait;
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_channel::mpsc;
@@ -284,67 +285,91 @@ impl<PData> EffectHandlerTrait<PData> for SendEffectHandler<PData> {
 /// Note: This is useful for creating a single interface for the receiver regardless of the effect
 /// handler type. This is the only type that the pipeline engine will use in order to be agnostic to
 /// the effect handler type.
-pub(crate) enum ReceiverWrapper<PData> {
+pub enum ReceiverWrapper<PData> {
+    /// A receiver with a `!Send` effect handler.
     NotSend {
-        effect_handler: NotSendEffectHandler<PData>,
+        /// The receiver instance.
         receiver: Box<dyn Receiver<PData, NotSendEffectHandler<PData>>>,
+        /// The effect handler for the receiver.
+        effect_handler: NotSendEffectHandler<PData>,
+        /// A receiver for pdata messages.
+        pdata_receiver: Option<mpsc::Receiver<PData>>,
     },
+    /// A receiver with a `Send` effect handler.
     Send {
-        effect_handler: SendEffectHandler<PData>,
+        /// The receiver instance.
         receiver: Box<dyn Receiver<PData, SendEffectHandler<PData>>>,
+        /// The effect handler for the receiver.
+        effect_handler: SendEffectHandler<PData>,
+        /// A receiver for pdata messages.
+        pdata_receiver: Option<tokio::sync::mpsc::Receiver<PData>>,
     },
 }
 
 impl<PData> ReceiverWrapper<PData> {
     /// Creates a new `ReceiverWrapper` with the given receiver and `!Send` effect handler.
-    pub(crate) fn with_not_send<R>(receiver: R, name: &str, msg_sender: mpsc::Sender<PData>) -> Self
+    pub fn with_not_send<R>(receiver: R, config: &ReceiverConfig) -> Self
     where
         R: Receiver<PData, NotSendEffectHandler<PData>> + 'static,
     {
+        let (pdata_sender, pdata_receiver) = mpsc::Channel::new(config.pdata_channel.capacity);
         ReceiverWrapper::NotSend {
-            effect_handler: NotSendEffectHandler::new(name, msg_sender),
+            effect_handler: NotSendEffectHandler::new(&config.name, pdata_sender),
             receiver: Box::new(receiver),
+            pdata_receiver: Some(pdata_receiver),
         }
     }
 
     /// Creates a new `ReceiverWrapper` with the given receiver and `Send` effect handler.
-    pub(crate) fn with_send<R>(
-        receiver: R,
-        name: &str,
-        msg_sender: tokio::sync::mpsc::Sender<PData>,
-    ) -> Self
+    pub fn with_send<R>(receiver: R, config: &ReceiverConfig) -> Self
     where
         R: Receiver<PData, SendEffectHandler<PData>> + 'static,
     {
+        let (pdata_sender, pdata_receiver) = tokio::sync::mpsc::channel(config.pdata_channel.capacity);
         ReceiverWrapper::Send {
-            effect_handler: SendEffectHandler::new(name, msg_sender),
+            effect_handler: SendEffectHandler::new(&config.name, pdata_sender),
             receiver: Box::new(receiver),
+            pdata_receiver: Some(pdata_receiver),
         }
     }
 
     /// Starts the receiver and begins receiver incoming data.
-    pub(crate) async fn start(self, ctrl_msg_chan: ControlMsgChannel) -> Result<(), Error<PData>> {
+    pub async fn start(self, ctrl_msg_chan: ControlMsgChannel) -> Result<(), Error<PData>> {
         match self {
             ReceiverWrapper::NotSend {
                 effect_handler,
                 receiver,
+                ..
             } => receiver.start(ctrl_msg_chan, effect_handler).await,
             ReceiverWrapper::Send {
                 effect_handler,
                 receiver,
+                ..
             } => receiver.start(ctrl_msg_chan, effect_handler).await,
+        }
+    }
+
+    /// Returns the PData receiver.
+    pub fn pdata_receiver(&mut self) -> PDataReceiver<PData> {
+        match self {
+            ReceiverWrapper::NotSend { pdata_receiver, .. } => {
+                PDataReceiver::NotSend(pdata_receiver.take().expect("pdata_receiver is None"))
+            },
+            ReceiverWrapper::Send { pdata_receiver, .. } => {
+                PDataReceiver::Send(pdata_receiver.take().expect("pdata_receiver is None"))
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ControlMsgChannel, EffectHandlerTrait, NotSendEffectHandler, SendEffectHandler};
+    use super::{ControlMsgChannel, EffectHandlerTrait, NotSendEffectHandler, ReceiverWrapper, SendEffectHandler};
     use crate::receiver::{Error, Receiver};
     use crate::testing::receiver::{
-        NotSendValidateContext, SendValidateContext, TestContext, TestRuntime,
+        NotSendValidateContext, TestContext, TestRuntime,
     };
-    use crate::testing::{CtrlMsgCounters, TestMsg, exec_in_send_env};
+    use crate::testing::{exec_in_send_env, CtrlMsgCounters, TestMsg};
     use async_trait::async_trait;
     use serde_json::Value;
     use std::future::Future;
@@ -353,7 +378,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::sync::oneshot;
-    use tokio::time::{Duration, sleep, timeout};
+    use tokio::time::{sleep, timeout, Duration};
 
     /// A generic test exporter that counts message events
     /// Works with any effect handler that implements EffectHandlerTrait
@@ -366,8 +391,8 @@ mod tests {
     }
 
     impl<EF> GenericTestReceiver<EF> {
-        /// Creates a new test node with the given counter
-        pub fn without_send_test(
+        /// Creates a new test node
+        pub fn new(
             ctrl_msg_counters: CtrlMsgCounters,
             port_notifier: oneshot::Sender<SocketAddr>,
         ) -> Self {
@@ -378,8 +403,8 @@ mod tests {
             }
         }
 
-        /// Creates a new test node with a callback for PData messages
-        pub fn with_send_test(
+        /// Creates a new test node which requires a [`Send`] effect handler
+        pub fn with_send_effect_handler(
             ctrl_msg_counters: CtrlMsgCounters,
             callback: fn(&EF),
             port_notifier: oneshot::Sender<SocketAddr>,
@@ -553,63 +578,45 @@ mod tests {
         }
     }
 
-    /// Validation closure that checks the received message and counters (Send context).
-    fn validation_send_procedure()
-    -> impl FnOnce(SendValidateContext<TestMsg>) -> Pin<Box<dyn Future<Output = ()>>> {
-        |mut ctx| {
-            Box::pin(async move {
-                let received = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received");
-
-                // Assert that the message received is what the test client sent.
-                assert!(matches!(received, TestMsg(msg) if msg == "Hello from test client"));
-                ctx.counters().assert(3, 0, 1, 1);
-            })
-        }
-    }
-
     #[test]
     fn test_receiver_with_not_send_effect_handler() {
-        let test_runtime = TestRuntime::new(10);
+        let test_runtime = TestRuntime::new();
 
         // Create a oneshot channel to receive the listening address from the receiver.
         let (port_tx, port_rx) = oneshot::channel();
-        let receiver =
-            ReceiverWithNotSendEffectHandler::without_send_test(test_runtime.counters(), port_tx);
+        let receiver = ReceiverWrapper::with_not_send(
+            ReceiverWithNotSendEffectHandler::new(test_runtime.counters(), port_tx),
+            test_runtime.config()
+        );
 
         test_runtime
-            .receiver_with_non_send_effect_handler(
-                receiver,
-                "test receiver not sendable effect handler",
-            )
+            .set_receiver(receiver)
             .run_test(scenario(port_rx))
-            .validate(validation_procedure());
+            .run_validation(validation_procedure());
     }
 
     #[test]
     fn test_receiver_with_send_effect_handler() {
-        let test_runtime = TestRuntime::new(10);
+        let test_runtime = TestRuntime::new();
 
         // Create a oneshot channel to receive the listening address from the receiver.
         let (port_tx, port_rx) = oneshot::channel();
-        let receiver = ReceiverWithSendEffectHandler::with_send_test(
-            test_runtime.counters(),
-            |effect_handler| {
-                exec_in_send_env(|| {
-                    _ = effect_handler.receiver_name();
-                });
-            },
-            port_tx,
+        let receiver = ReceiverWrapper::with_send(
+            ReceiverWithSendEffectHandler::with_send_effect_handler(
+                test_runtime.counters(),
+                |effect_handler| {
+                    exec_in_send_env(|| {
+                        _ = effect_handler.receiver_name();
+                    });
+                },
+                port_tx,
+            ),
+            test_runtime.config()
         );
 
         test_runtime
-            .receiver_with_send_effect_handler(
-                receiver,
-                "test receiver not sendable effect handler",
-            )
+            .set_receiver(receiver)
             .run_test(scenario(port_rx))
-            .validate(validation_send_procedure());
+            .run_validation(validation_procedure());
     }
 }

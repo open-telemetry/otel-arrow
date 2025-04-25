@@ -2,6 +2,10 @@
 
 //! Message definitions for the pipeline engine.
 
+use otap_df_channel::error::RecvError;
+use otap_df_channel::mpsc;
+use crate::error::Error;
+
 /// A message that can be sent to a node (i.e. receiver, processor, exporter, or connector).
 ///
 /// A message is either a `Data` message, which contains a payload of type `Data`, or a `Control`
@@ -122,5 +126,32 @@ impl<Data> Message<Data> {
     #[must_use]
     pub fn is_shutdown(&self) -> bool {
         matches!(self, Message::Control(ControlMsg::Shutdown { .. }))
+    }
+}
+
+/// A MPSC receiver for pdata messages.
+/// It can be either a not send or a send receiver implementation.
+pub enum PDataReceiver<PData> {
+    /// A MPSC receiver that does not implement [`Send`].
+    NotSend(mpsc::Receiver<PData>),
+    /// A MPSC receiver that implements [`Send`].
+    Send(tokio::sync::mpsc::Receiver<PData>),
+}
+
+impl<PData> PDataReceiver<PData> {
+    /// Returns the next message from the receiver.
+    pub async fn recv(&mut self) -> Result<PData, Error<PData>> {
+        match self {
+            PDataReceiver::NotSend(receiver) => {
+                receiver
+                    .recv()
+                    .await
+                    .map_err(|e| Error::ChannelRecvError(e))
+            }
+            PDataReceiver::Send(receiver) => receiver
+                .recv()
+                .await
+                .ok_or(Error::ChannelRecvError(RecvError::Closed))
+        }
     }
 }

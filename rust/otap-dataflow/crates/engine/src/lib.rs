@@ -10,6 +10,7 @@ pub mod receiver;
 
 #[cfg(test)]
 pub mod testing;
+mod config;
 
 use std::rc::Rc;
 
