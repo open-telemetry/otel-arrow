@@ -13,7 +13,7 @@
 use crate::error::Error;
 use crate::message::Message;
 use crate::processor::{EffectHandler, Processor};
-use crate::testing::{create_test_channel, setup_test_runtime};
+use crate::testing::{create_not_send_channel, setup_test_runtime};
 use otap_df_channel::mpsc;
 use std::future::Future;
 use tokio::task::LocalSet;
@@ -34,7 +34,7 @@ where
 {
     /// Creates a new TestContext with the given transmitters.
     pub fn new(processor: P, channel_capacity: usize) -> Self {
-        let (pdata_tx, pdata_rx) = create_test_channel(channel_capacity);
+        let (pdata_tx, pdata_rx) = create_not_send_channel(channel_capacity);
         let effect_handler = EffectHandler::new("test_processor", pdata_tx);
         Self {
             processor,

@@ -12,7 +12,7 @@
 
 use crate::exporter::{Exporter, MessageChannel, NotSendableEffectHandler, SendableEffectHandler};
 use crate::message::ControlMsg;
-use crate::testing::{CtrMsgCounters, create_test_channel, setup_test_runtime};
+use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime};
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use serde_json::Value;
@@ -108,16 +108,16 @@ pub struct ExporterTestRuntime<PData> {
     pdata_rx: Option<mpsc::Receiver<PData>>,
 
     /// Message counter for tracking processed messages
-    counter: CtrMsgCounters,
+    counter: CtrlMsgCounters,
 }
 
 impl<PData: Clone + Debug + 'static> ExporterTestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
     pub fn new(channel_capacity: usize) -> Self {
         let (rt, local_tasks) = setup_test_runtime();
-        let counter = CtrMsgCounters::new();
-        let (control_tx, control_rx) = create_test_channel(channel_capacity);
-        let (pdata_tx, pdata_rx) = create_test_channel(channel_capacity);
+        let counter = CtrlMsgCounters::new();
+        let (control_tx, control_rx) = create_not_send_channel(channel_capacity);
+        let (pdata_tx, pdata_rx) = create_not_send_channel(channel_capacity);
 
         Self {
             rt,
@@ -131,12 +131,12 @@ impl<PData: Clone + Debug + 'static> ExporterTestRuntime<PData> {
     }
 
     /// Returns the message counter.
-    pub fn counters(&self) -> CtrMsgCounters {
+    pub fn counters(&self) -> CtrlMsgCounters {
         self.counter.clone()
     }
 
     /// Starts an exporter with the configured channels and a non-sendable effect handler.
-    pub fn start_exporter<E>(&mut self, exporter: E, name: String)
+    pub fn start_exporter<E>(&mut self, exporter: E, name: &str)
     where
         E: Exporter<PData, NotSendableEffectHandler<PData>> + 'static,
     {
@@ -148,6 +148,7 @@ impl<PData: Clone + Debug + 'static> ExporterTestRuntime<PData> {
         );
 
         let boxed_exporter = Box::new(exporter);
+        let name = name.to_owned();
 
         let _ = self.local_tasks.spawn_local(async move {
             boxed_exporter
@@ -158,7 +159,7 @@ impl<PData: Clone + Debug + 'static> ExporterTestRuntime<PData> {
     }
 
     /// Starts an exporter with the configured channels and a sendable effect handler.
-    pub fn start_exporter_with_send_effect_handler<E>(&mut self, exporter: E, name: String)
+    pub fn start_exporter_with_send_effect_handler<E>(&mut self, exporter: E, name: &str)
     where
         E: Exporter<PData, SendableEffectHandler<PData>> + 'static,
     {
@@ -170,6 +171,7 @@ impl<PData: Clone + Debug + 'static> ExporterTestRuntime<PData> {
         );
 
         let boxed_exporter = Box::new(exporter);
+        let name = name.to_owned();
 
         let _ = self.local_tasks.spawn_local(async move {
             boxed_exporter

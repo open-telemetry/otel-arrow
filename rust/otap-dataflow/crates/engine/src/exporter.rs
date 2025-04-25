@@ -46,7 +46,7 @@ use std::sync::Arc;
 #[async_trait(?Send)]
 pub trait Exporter<PData, EF = NotSendableEffectHandler<PData>>
 where
-    EF: EffectHandlerTrait<PData>,
+    EF: EffectHandlerTrait<PData>
 {
     /// Starts the exporter and begins exporting incoming data.
     ///
@@ -276,7 +276,7 @@ mod tests {
     use crate::message::{ControlMsg, Message};
     use crate::testing::exporter::ExporterTestContext;
     use crate::testing::exporter::ExporterTestRuntime;
-    use crate::testing::{CtrMsgCounters, TestMsg, exec_in_send_env};
+    use crate::testing::{CtrlMsgCounters, TestMsg, exec_in_send_env};
     use async_trait::async_trait;
     use serde_json::Value;
     use std::future::Future;
@@ -284,24 +284,24 @@ mod tests {
 
     /// A generic test exporter that counts message events
     /// Works with any effect handler that implements EffectHandlerTrait
-    struct GenericTestExporter<EF> {
+    pub struct GenericTestExporter<EF> {
         /// Counter for different message types
-        counter: CtrMsgCounters,
+        pub counter: CtrlMsgCounters,
         /// Optional callback for testing sendable effect handlers
-        test_send_ef: Option<fn(&EF)>,
+        pub test_send_ef: Option<fn(&EF)>,
     }
 
     impl<EF> GenericTestExporter<EF> {
-        /// Creates a new test exporter with the given counter
-        pub fn without_send_test(counter: CtrMsgCounters) -> Self {
+        /// Creates a new test node with the given counter
+        pub fn without_send_test(counter: CtrlMsgCounters) -> Self {
             GenericTestExporter {
                 counter,
                 test_send_ef: None,
             }
         }
 
-        /// Creates a new test exporter with a callback for PData messages
-        pub fn with_send_test(counter: CtrMsgCounters, callback: fn(&EF)) -> Self {
+        /// Creates a new test node with a callback for PData messages
+        pub fn with_send_test(counter: CtrlMsgCounters, callback: fn(&EF)) -> Self {
             GenericTestExporter {
                 counter,
                 test_send_ef: Some(callback),
@@ -395,7 +395,7 @@ mod tests {
 
     /// Validation closure that checks the expected counter values
     fn validation_procedure(
-        counters: CtrMsgCounters,
+        counters: CtrlMsgCounters,
     ) -> impl FnOnce(ExporterTestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
     {
         |_ctx| {
@@ -411,12 +411,12 @@ mod tests {
     }
 
     #[test]
-    fn test_exporter_without_send_effect_handler() {
+    fn test_exporter_with_not_send_effect_handler() {
         let mut test_runtime = ExporterTestRuntime::new(10);
         let exporter = ExporterWithNotSendEffectHandler::without_send_test(test_runtime.counters());
         let counters = test_runtime.counters();
 
-        test_runtime.start_exporter(exporter, "not_send_test".to_owned());
+        test_runtime.start_exporter(exporter, "not_send_test");
         test_runtime.start_test(test_scenario());
         test_runtime.validate(validation_procedure(counters));
     }
@@ -434,7 +434,7 @@ mod tests {
         );
         let counters = test_runtime.counters();
 
-        test_runtime.start_exporter_with_send_effect_handler(exporter, "send_test".to_owned());
+        test_runtime.start_exporter_with_send_effect_handler(exporter, "send_test");
         test_runtime.start_test(test_scenario());
         test_runtime.validate(validation_procedure(counters));
     }

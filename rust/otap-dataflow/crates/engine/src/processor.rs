@@ -165,12 +165,12 @@ mod tests {
     use crate::message::Message;
     use crate::processor::{EffectHandler, Error, Processor};
     use crate::testing::processor::ProcessorTestRuntime;
-    use crate::testing::{CtrMsgCounters, TestMsg};
+    use crate::testing::{CtrlMsgCounters, TestMsg};
     use async_trait::async_trait;
     use serde_json::Value;
 
     struct TestProcessor {
-        counters: CtrMsgCounters,
+        counters: CtrlMsgCounters,
     }
 
     #[async_trait(?Send)]
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn test_processor() {
-        let counters = CtrMsgCounters::new();
+        let counters = CtrlMsgCounters::new();
         let mut test_runtime = ProcessorTestRuntime::new(
             TestProcessor {
                 counters: counters.clone(),
