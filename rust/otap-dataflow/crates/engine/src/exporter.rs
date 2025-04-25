@@ -187,7 +187,7 @@ pub(crate) enum ExporterWrapper<PData> {
 
 impl<PData> ExporterWrapper<PData> {
     /// Creates a new `ExporterWrapper` with the given exporter and `!Send` effect handler.
-    pub(crate) fn create<E>(exporter: E, name: &str) -> Self
+    pub(crate) fn with_not_send<E>(exporter: E, name: &str) -> Self
     where
         E: Exporter<PData, NotSendEffectHandler<PData>> + 'static,
     {
@@ -198,7 +198,7 @@ impl<PData> ExporterWrapper<PData> {
     }
 
     /// Creates a new `ExporterWrapper` with the given exporter and `Send` effect handler.
-    pub(crate) fn create_sendable<E>(exporter: E, name: &str) -> Self
+    pub(crate) fn with_send<E>(exporter: E, name: &str) -> Self
     where
         E: Exporter<PData, SendEffectHandler<PData>> + 'static,
     {

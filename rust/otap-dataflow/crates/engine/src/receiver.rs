@@ -297,7 +297,7 @@ pub(crate) enum ReceiverWrapper<PData> {
 
 impl<PData> ReceiverWrapper<PData> {
     /// Creates a new `ReceiverWrapper` with the given receiver and `!Send` effect handler.
-    pub(crate) fn create<R>(receiver: R, name: &str, msg_sender: mpsc::Sender<PData>) -> Self
+    pub(crate) fn with_not_send<R>(receiver: R, name: &str, msg_sender: mpsc::Sender<PData>) -> Self
     where
         R: Receiver<PData, NotSendEffectHandler<PData>> + 'static,
     {
@@ -308,7 +308,7 @@ impl<PData> ReceiverWrapper<PData> {
     }
 
     /// Creates a new `ReceiverWrapper` with the given receiver and `Send` effect handler.
-    pub(crate) fn create_sendable<R>(
+    pub(crate) fn with_send<R>(
         receiver: R,
         name: &str,
         msg_sender: tokio::sync::mpsc::Sender<PData>,
@@ -554,7 +554,7 @@ mod tests {
     }
 
     /// Validation closure that checks the received message and counters (Send context).
-    fn create_send_validate_fn()
+    fn validation_send_procedure()
     -> impl FnOnce(SendValidateContext<TestMsg>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
             Box::pin(async move {
@@ -610,6 +610,6 @@ mod tests {
                 "test receiver not sendable effect handler",
             )
             .run_test(scenario(port_rx))
-            .validate(create_send_validate_fn());
+            .validate(validation_send_procedure());
     }
 }
