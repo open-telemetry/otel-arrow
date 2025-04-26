@@ -5,6 +5,7 @@
 //! These utilities are designed to make testing exporters simpler by abstracting away common
 //! setup and lifecycle management.
 
+use crate::config::ExporterConfig;
 use crate::exporter::{ExporterWrapper, MessageChannel};
 use crate::message::ControlMsg;
 use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime};
@@ -17,7 +18,6 @@ use std::marker::PhantomData;
 use std::time::Duration;
 use tokio::task::LocalSet;
 use tokio::time::sleep;
-use crate::config::ExporterConfig;
 
 /// A context object that holds transmitters for use in test tasks.
 pub struct ExporterTestContext<PData> {
@@ -49,7 +49,7 @@ impl<PData> ExporterTestContext<PData> {
         Self {
             control_tx,
             pdata_tx,
-            counters
+            counters,
         }
     }
 
@@ -189,10 +189,7 @@ impl<PData: Clone + Debug + 'static> ExporterTestRuntime<PData> {
     }
 
     /// Sets the exporter for the test runtime and returns the test phase.
-    pub fn set_exporter(
-        mut self,
-        exporter: ExporterWrapper<PData>
-    ) -> TestPhase<PData> {
+    pub fn set_exporter(mut self, exporter: ExporterWrapper<PData>) -> TestPhase<PData> {
         let msg_chan = MessageChannel::new(
             self.control_rx
                 .take()
@@ -201,7 +198,8 @@ impl<PData: Clone + Debug + 'static> ExporterTestRuntime<PData> {
         );
 
         let _ = self.local_tasks.spawn_local(async move {
-            exporter.start(msg_chan)
+            exporter
+                .start(msg_chan)
                 .await
                 .expect("Exporter event loop failed");
         });
@@ -241,7 +239,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         ExporterTestContext::new(
             self.control_sender.clone(),
             self.pdata_sender.clone(),
-            self.counters.clone()
+            self.counters.clone(),
         )
     }
 }

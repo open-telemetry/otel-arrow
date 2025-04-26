@@ -33,6 +33,7 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
+use crate::config::ExporterConfig;
 use crate::error::Error;
 use crate::message::{ControlMsg, Message};
 use async_trait::async_trait;
@@ -41,7 +42,6 @@ use otap_df_channel::mpsc;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
-use crate::config::ExporterConfig;
 
 /// A trait for egress exporters.
 #[async_trait(?Send)]
@@ -276,7 +276,10 @@ impl<PData> MessageChannel<PData> {
 
 #[cfg(test)]
 mod tests {
-    use crate::exporter::{EffectHandlerTrait, Error, Exporter, ExporterWrapper, MessageChannel, NotSendEffectHandler, SendEffectHandler};
+    use crate::exporter::{
+        EffectHandlerTrait, Error, Exporter, ExporterWrapper, MessageChannel, NotSendEffectHandler,
+        SendEffectHandler,
+    };
     use crate::message::{ControlMsg, Message};
     use crate::testing::exporter::ExporterTestContext;
     use crate::testing::exporter::ExporterTestRuntime;
@@ -398,7 +401,8 @@ mod tests {
     }
 
     /// Validation closure that checks the expected counter values
-    fn validation_procedure() -> impl FnOnce(ExporterTestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
+    fn validation_procedure()
+    -> impl FnOnce(ExporterTestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
     {
         |ctx| {
             Box::pin(async move {
@@ -417,7 +421,7 @@ mod tests {
         let test_runtime = ExporterTestRuntime::new();
         let exporter = ExporterWrapper::with_not_send(
             ExporterWithNotSendEffectHandler::without_send_test(test_runtime.counters()),
-            test_runtime.config()
+            test_runtime.config(),
         );
 
         test_runtime
@@ -438,7 +442,7 @@ mod tests {
                     });
                 },
             ),
-            test_runtime.config()
+            test_runtime.config(),
         );
 
         test_runtime

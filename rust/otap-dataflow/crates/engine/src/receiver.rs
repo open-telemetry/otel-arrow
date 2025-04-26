@@ -312,7 +312,8 @@ impl<PData> ReceiverWrapper<PData> {
     where
         R: Receiver<PData, NotSendEffectHandler<PData>> + 'static,
     {
-        let (pdata_sender, pdata_receiver) = mpsc::Channel::new(config.output_pdata_channel.capacity);
+        let (pdata_sender, pdata_receiver) =
+            mpsc::Channel::new(config.output_pdata_channel.capacity);
         ReceiverWrapper::NotSend {
             effect_handler: NotSendEffectHandler::new(&config.name, pdata_sender),
             receiver: Box::new(receiver),
@@ -325,7 +326,8 @@ impl<PData> ReceiverWrapper<PData> {
     where
         R: Receiver<PData, SendEffectHandler<PData>> + 'static,
     {
-        let (pdata_sender, pdata_receiver) = tokio::sync::mpsc::channel(config.output_pdata_channel.capacity);
+        let (pdata_sender, pdata_receiver) =
+            tokio::sync::mpsc::channel(config.output_pdata_channel.capacity);
         ReceiverWrapper::Send {
             effect_handler: SendEffectHandler::new(&config.name, pdata_sender),
             receiver: Box::new(receiver),
@@ -354,7 +356,7 @@ impl<PData> ReceiverWrapper<PData> {
         match self {
             ReceiverWrapper::NotSend { pdata_receiver, .. } => {
                 PDataReceiver::NotSend(pdata_receiver.take().expect("pdata_receiver is None"))
-            },
+            }
             ReceiverWrapper::Send { pdata_receiver, .. } => {
                 PDataReceiver::Send(pdata_receiver.take().expect("pdata_receiver is None"))
             }
@@ -364,12 +366,13 @@ impl<PData> ReceiverWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ControlMsgChannel, EffectHandlerTrait, NotSendEffectHandler, ReceiverWrapper, SendEffectHandler};
-    use crate::receiver::{Error, Receiver};
-    use crate::testing::receiver::{
-        NotSendValidateContext, TestContext, TestRuntime,
+    use super::{
+        ControlMsgChannel, EffectHandlerTrait, NotSendEffectHandler, ReceiverWrapper,
+        SendEffectHandler,
     };
-    use crate::testing::{exec_in_send_env, CtrlMsgCounters, TestMsg};
+    use crate::receiver::{Error, Receiver};
+    use crate::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use crate::testing::{CtrlMsgCounters, TestMsg, exec_in_send_env};
     use async_trait::async_trait;
     use serde_json::Value;
     use std::future::Future;
@@ -378,7 +381,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::sync::oneshot;
-    use tokio::time::{sleep, timeout, Duration};
+    use tokio::time::{Duration, sleep, timeout};
 
     /// A generic test exporter that counts message events
     /// Works with any effect handler that implements EffectHandlerTrait
@@ -586,7 +589,7 @@ mod tests {
         let (port_tx, port_rx) = oneshot::channel();
         let receiver = ReceiverWrapper::with_not_send(
             ReceiverWithNotSendEffectHandler::new(test_runtime.counters(), port_tx),
-            test_runtime.config()
+            test_runtime.config(),
         );
 
         test_runtime
@@ -611,7 +614,7 @@ mod tests {
                 },
                 port_tx,
             ),
-            test_runtime.config()
+            test_runtime.config(),
         );
 
         test_runtime

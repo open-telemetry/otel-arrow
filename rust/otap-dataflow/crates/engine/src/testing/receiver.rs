@@ -5,6 +5,7 @@
 //! These utilities are designed to make testing receivers simpler by abstracting away common
 //! setup and lifecycle management.
 
+use crate::config::ReceiverConfig;
 use crate::error::Error;
 use crate::message::{ControlMsg, PDataReceiver};
 use crate::receiver::{ControlMsgChannel, ReceiverWrapper};
@@ -17,7 +18,6 @@ use std::marker::PhantomData;
 use std::time::Duration;
 use tokio::task::LocalSet;
 use tokio::time::sleep;
-use crate::config::ReceiverConfig;
 
 /// Context used during the test phase of a test.
 pub struct TestContext {
@@ -85,9 +85,7 @@ impl TestContext {
 impl<PData> NotSendValidateContext<PData> {
     /// Receives a pdata message produced by the receiver.
     pub async fn recv(&mut self) -> Result<PData, Error<PData>> {
-        self.pdata_receiver
-            .recv()
-            .await
+        self.pdata_receiver.recv().await
     }
 
     /// Returns the control message counters.
@@ -164,7 +162,7 @@ pub struct ValidationPhase<PData> {
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
     pub fn new() -> Self {
-        let config= ReceiverConfig::new("test_receiver");
+        let config = ReceiverConfig::new("test_receiver");
         let (rt, local_tasks) = setup_test_runtime();
         let (control_tx, control_rx) = create_not_send_channel(config.control_channel.capacity);
 
@@ -190,11 +188,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Sets the receiver for the test runtime and returns a test phase.
-    pub fn set_receiver(
-        mut self,
-        receiver: ReceiverWrapper<PData>,
-    ) -> TestPhase<PData>
-    {
+    pub fn set_receiver(mut self, receiver: ReceiverWrapper<PData>) -> TestPhase<PData> {
         let control_rx = self
             .control_rx
             .take()

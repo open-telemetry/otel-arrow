@@ -2,9 +2,9 @@
 
 //! Message definitions for the pipeline engine.
 
+use crate::error::Error;
 use otap_df_channel::error::RecvError;
 use otap_df_channel::mpsc;
-use crate::error::Error;
 
 /// A message that can be sent to a node (i.e. receiver, processor, exporter, or connector).
 ///
@@ -142,16 +142,14 @@ impl<PData> PDataReceiver<PData> {
     /// Returns the next message from the receiver.
     pub async fn recv(&mut self) -> Result<PData, Error<PData>> {
         match self {
-            PDataReceiver::NotSend(receiver) => {
-                receiver
-                    .recv()
-                    .await
-                    .map_err(|e| Error::ChannelRecvError(e))
-            }
+            PDataReceiver::NotSend(receiver) => receiver
+                .recv()
+                .await
+                .map_err(|e| Error::ChannelRecvError(e)),
             PDataReceiver::Send(receiver) => receiver
                 .recv()
                 .await
-                .ok_or(Error::ChannelRecvError(RecvError::Closed))
+                .ok_or(Error::ChannelRecvError(RecvError::Closed)),
         }
     }
 }

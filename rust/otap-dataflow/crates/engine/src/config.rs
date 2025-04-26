@@ -55,8 +55,12 @@ impl ReceiverConfig {
     pub fn new(name: &str) -> Self {
         ReceiverConfig {
             name: name.to_owned(),
-            control_channel: ControlChannelConfig { capacity: DEFAULT_CHANNEL_CAPACITY },
-            output_pdata_channel: PdataChannelConfig { capacity: DEFAULT_CHANNEL_CAPACITY },
+            control_channel: ControlChannelConfig {
+                capacity: DEFAULT_CHANNEL_CAPACITY,
+            },
+            output_pdata_channel: PdataChannelConfig {
+                capacity: DEFAULT_CHANNEL_CAPACITY,
+            },
         }
     }
 }
@@ -66,9 +70,15 @@ impl ProcessorConfig {
     pub fn new(name: &str) -> Self {
         ProcessorConfig {
             name: name.to_owned(),
-            control_channel: ControlChannelConfig { capacity: DEFAULT_CHANNEL_CAPACITY },
-            input_pdata_channel: PdataChannelConfig { capacity: DEFAULT_CHANNEL_CAPACITY },
-            output_pdata_channel: PdataChannelConfig { capacity: DEFAULT_CHANNEL_CAPACITY },
+            control_channel: ControlChannelConfig {
+                capacity: DEFAULT_CHANNEL_CAPACITY,
+            },
+            input_pdata_channel: PdataChannelConfig {
+                capacity: DEFAULT_CHANNEL_CAPACITY,
+            },
+            output_pdata_channel: PdataChannelConfig {
+                capacity: DEFAULT_CHANNEL_CAPACITY,
+            },
         }
     }
 }
@@ -78,8 +88,12 @@ impl ExporterConfig {
     pub fn new(name: &str) -> Self {
         ExporterConfig {
             name: name.to_owned(),
-            control_channel: ControlChannelConfig { capacity: DEFAULT_CHANNEL_CAPACITY },
-            input_pdata_channel: PdataChannelConfig { capacity: DEFAULT_CHANNEL_CAPACITY },
+            control_channel: ControlChannelConfig {
+                capacity: DEFAULT_CHANNEL_CAPACITY,
+            },
+            input_pdata_channel: PdataChannelConfig {
+                capacity: DEFAULT_CHANNEL_CAPACITY,
+            },
         }
     }
 }

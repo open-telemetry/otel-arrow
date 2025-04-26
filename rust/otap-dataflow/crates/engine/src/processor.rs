@@ -32,8 +32,9 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
 
+use crate::config::ProcessorConfig;
 use crate::error::Error;
-use crate::message::Message;
+use crate::message::{Message, PDataReceiver};
 use async_trait::async_trait;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
@@ -199,6 +200,90 @@ impl<PData> EffectHandlerTrait<PData> for SendEffectHandler<PData> {
             .map_err(|tokio::sync::mpsc::error::SendError(pdata)| {
                 Error::ChannelSendError(SendError::Full(pdata))
             })
+    }
+}
+
+/// A wrapper for the processor that allows for both `Send` and `!Send` effect handlers.
+///
+/// Note: This is useful for creating a single interface for the processor regardless of the effect
+/// handler type. This is the only type that the pipeline engine will use in order to be agnostic to
+/// the effect handler type.
+pub enum ProcessorWrapper<PData> {
+    /// A processor with a `!Send` effect handler.
+    NotSend {
+        /// The processor instance.
+        processor: Box<dyn Processor<PData, NotSendEffectHandler<PData>>>,
+        /// The effect handler for the processor.
+        effect_handler: NotSendEffectHandler<PData>,
+        /// A receiver for pdata messages.
+        pdata_receiver: Option<mpsc::Receiver<PData>>,
+    },
+    /// A processor with a `Send` effect handler.
+    Send {
+        /// The processor instance.
+        processor: Box<dyn Processor<PData, SendEffectHandler<PData>>>,
+        /// The effect handler for the processor.
+        effect_handler: SendEffectHandler<PData>,
+        /// A receiver for pdata messages.
+        pdata_receiver: Option<tokio::sync::mpsc::Receiver<PData>>,
+    },
+}
+
+impl<PData> ProcessorWrapper<PData> {
+    /// Creates a new `ProcessorWrapper` with the given processor and `!Send` effect handler.
+    pub fn with_not_send<P>(processor: P, config: &ProcessorConfig) -> Self
+    where
+        P: Processor<PData, NotSendEffectHandler<PData>> + 'static,
+    {
+        let (pdata_sender, pdata_receiver) =
+            mpsc::Channel::new(config.output_pdata_channel.capacity);
+        ProcessorWrapper::NotSend {
+            effect_handler: NotSendEffectHandler::new(&config.name, pdata_sender),
+            processor: Box::new(processor),
+            pdata_receiver: Some(pdata_receiver),
+        }
+    }
+
+    /// Creates a new `ProcessorWrapper` with the given processor and `Send` effect handler.
+    pub fn with_send<P>(processor: P, config: &ProcessorConfig) -> Self
+    where
+        P: Processor<PData, SendEffectHandler<PData>> + 'static,
+    {
+        let (pdata_sender, pdata_receiver) =
+            tokio::sync::mpsc::channel(config.output_pdata_channel.capacity);
+        ProcessorWrapper::Send {
+            effect_handler: SendEffectHandler::new(&config.name, pdata_sender),
+            processor: Box::new(processor),
+            pdata_receiver: Some(pdata_receiver),
+        }
+    }
+
+    /// Call the processor's `process` method.
+    pub async fn process(&mut self, msg: Message<PData>) -> Result<(), Error<PData>> {
+        match self {
+            ProcessorWrapper::NotSend {
+                effect_handler,
+                processor,
+                ..
+            } => processor.process(msg, effect_handler).await,
+            ProcessorWrapper::Send {
+                effect_handler,
+                processor,
+                ..
+            } => processor.process(msg, effect_handler).await,
+        }
+    }
+
+    /// Returns the PData receiver.
+    pub fn pdata_receiver(&mut self) -> PDataReceiver<PData> {
+        match self {
+            ProcessorWrapper::NotSend { pdata_receiver, .. } => {
+                PDataReceiver::NotSend(pdata_receiver.take().expect("pdata_receiver is None"))
+            }
+            ProcessorWrapper::Send { pdata_receiver, .. } => {
+                PDataReceiver::Send(pdata_receiver.take().expect("pdata_receiver is None"))
+            }
+        }
     }
 }
 

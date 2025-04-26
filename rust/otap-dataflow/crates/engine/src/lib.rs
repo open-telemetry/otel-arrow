@@ -8,9 +8,9 @@ pub mod message;
 pub mod processor;
 pub mod receiver;
 
+mod config;
 #[cfg(test)]
 pub mod testing;
-mod config;
 
 use std::rc::Rc;
 
