@@ -135,7 +135,7 @@ pub struct TestRuntime<PData> {
     _pd: PhantomData<PData>,
 }
 
-/// Data and operations for the test phase of a receiver (not sendable effect handler).
+/// Data and operations for the test phase of a receiver.
 pub struct TestPhase<PData> {
     /// Runtime instance
     rt: tokio::runtime::Runtime,
@@ -149,8 +149,8 @@ pub struct TestPhase<PData> {
     control_sender: mpsc::Sender<ControlMsg>,
 }
 
-/// Data and operations for the validation phase of a receiver (not sendable effect handler).
-pub struct NotSendValidationPhase<PData> {
+/// Data and operations for the validation phase of a receiver.
+pub struct ValidationPhase<PData> {
     /// Runtime instance
     rt: tokio::runtime::Runtime,
     /// Local task set for non-Send futures
@@ -159,18 +159,6 @@ pub struct NotSendValidationPhase<PData> {
     counters: CtrlMsgCounters,
 
     pdata_receiver: PDataReceiver<PData>,
-}
-
-/// Data and operations for the validation phase of a receiver (sendable effect handler).
-pub struct SendValidationPhase<PData> {
-    /// Runtime instance
-    rt: tokio::runtime::Runtime,
-    /// Local task set for non-Send futures
-    local_tasks: LocalSet,
-
-    counters: CtrlMsgCounters,
-
-    pdata_receiver: tokio::sync::mpsc::Receiver<PData>,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
@@ -201,7 +189,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         self.counter.clone()
     }
 
-    /// Initializes the test runtime with a receiver using a non-sendable effect handler.
+    /// Sets the receiver for the test runtime and returns a test phase.
     pub fn set_receiver(
         mut self,
         receiver: ReceiverWrapper<PData>,
@@ -225,7 +213,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
 
 impl<PData: Debug + 'static> TestPhase<PData> {
     /// Starts the test scenario by executing the provided function with the test context.
-    pub fn run_test<F, Fut>(mut self, f: F) -> NotSendValidationPhase<PData>
+    pub fn run_test<F, Fut>(mut self, f: F) -> ValidationPhase<PData>
     where
         F: FnOnce(TestContext) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
@@ -244,7 +232,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         let _ = self.local_tasks.spawn_local(async move {
             f(context).await;
         });
-        NotSendValidationPhase {
+        ValidationPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
             counters: self.counters,
@@ -253,7 +241,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     }
 }
 
-impl<PData> NotSendValidationPhase<PData> {
+impl<PData> ValidationPhase<PData> {
     /// Runs all spawned tasks to completion and executes the provided future to validate test
     /// expectations.
     ///
@@ -272,37 +260,6 @@ impl<PData> NotSendValidationPhase<PData> {
         Fut: Future<Output = T>,
     {
         let context = NotSendValidateContext {
-            pdata_receiver: self.pdata_receiver,
-            counters: self.counters,
-        };
-
-        // First run all the spawned tasks to completion
-        self.rt.block_on(self.local_tasks);
-
-        // Then run the validation future with the test context
-        self.rt.block_on(future_fn(context))
-    }
-}
-
-impl<PData> SendValidationPhase<PData> {
-    /// Runs all spawned tasks to completion and executes the provided future to validate test
-    /// expectations.
-    ///
-    /// # Type Parameters
-    ///
-    /// * `F` - A function that creates a future with access to the test context.
-    /// * `Fut` - The future type returned by the function.
-    /// * `T` - The output type of the future.
-    ///
-    /// # Returns
-    ///
-    /// The result of the provided future.
-    pub fn validate<F, Fut, T>(self, future_fn: F) -> T
-    where
-        F: FnOnce(SendValidateContext<PData>) -> Fut,
-        Fut: Future<Output = T>,
-    {
-        let context = SendValidateContext {
             pdata_receiver: self.pdata_receiver,
             counters: self.counters,
         };

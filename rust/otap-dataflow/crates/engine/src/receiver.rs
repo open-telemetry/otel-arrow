@@ -312,7 +312,7 @@ impl<PData> ReceiverWrapper<PData> {
     where
         R: Receiver<PData, NotSendEffectHandler<PData>> + 'static,
     {
-        let (pdata_sender, pdata_receiver) = mpsc::Channel::new(config.pdata_channel.capacity);
+        let (pdata_sender, pdata_receiver) = mpsc::Channel::new(config.output_pdata_channel.capacity);
         ReceiverWrapper::NotSend {
             effect_handler: NotSendEffectHandler::new(&config.name, pdata_sender),
             receiver: Box::new(receiver),
@@ -325,7 +325,7 @@ impl<PData> ReceiverWrapper<PData> {
     where
         R: Receiver<PData, SendEffectHandler<PData>> + 'static,
     {
-        let (pdata_sender, pdata_receiver) = tokio::sync::mpsc::channel(config.pdata_channel.capacity);
+        let (pdata_sender, pdata_receiver) = tokio::sync::mpsc::channel(config.output_pdata_channel.capacity);
         ReceiverWrapper::Send {
             effect_handler: SendEffectHandler::new(&config.name, pdata_sender),
             receiver: Box::new(receiver),

@@ -41,6 +41,7 @@ use otap_df_channel::mpsc;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
+use crate::config::ExporterConfig;
 
 /// A trait for egress exporters.
 #[async_trait(?Send)]
@@ -174,37 +175,43 @@ impl<PData> EffectHandlerTrait<PData> for SendEffectHandler<PData> {
 /// Note: This is useful for creating a single interface for the exporter regardless of the effect
 /// handler type. This is the only type that the pipeline engine will use in order to be agnostic to
 /// the effect handler type.
-pub(crate) enum ExporterWrapper<PData> {
+pub enum ExporterWrapper<PData> {
+    /// A receiver with a `!Send` effect handler.
     NotSend {
-        effect_handler: NotSendEffectHandler<PData>,
+        /// The exporter instance.
         exporter: Box<dyn Exporter<PData, NotSendEffectHandler<PData>>>,
+        /// The effect handler instance for the exporter.
+        effect_handler: NotSendEffectHandler<PData>,
     },
+    /// A receiver with a `Send` effect handler.
     Send {
-        effect_handler: SendEffectHandler<PData>,
+        /// The exporter instance.
         exporter: Box<dyn Exporter<PData, SendEffectHandler<PData>>>,
+        /// The effect handler instance for the exporter.
+        effect_handler: SendEffectHandler<PData>,
     },
 }
 
 impl<PData> ExporterWrapper<PData> {
     /// Creates a new `ExporterWrapper` with the given exporter and `!Send` effect handler.
-    pub(crate) fn with_not_send<E>(exporter: E, name: &str) -> Self
+    pub fn with_not_send<E>(exporter: E, config: &ExporterConfig) -> Self
     where
         E: Exporter<PData, NotSendEffectHandler<PData>> + 'static,
     {
         ExporterWrapper::NotSend {
-            effect_handler: NotSendEffectHandler::new(name),
             exporter: Box::new(exporter),
+            effect_handler: NotSendEffectHandler::new(&config.name),
         }
     }
 
     /// Creates a new `ExporterWrapper` with the given exporter and `Send` effect handler.
-    pub(crate) fn with_send<E>(exporter: E, name: &str) -> Self
+    pub fn with_send<E>(exporter: E, config: &ExporterConfig) -> Self
     where
         E: Exporter<PData, SendEffectHandler<PData>> + 'static,
     {
         ExporterWrapper::Send {
-            effect_handler: SendEffectHandler::new(name),
             exporter: Box::new(exporter),
+            effect_handler: SendEffectHandler::new(&config.name),
         }
     }
 
@@ -269,10 +276,7 @@ impl<PData> MessageChannel<PData> {
 
 #[cfg(test)]
 mod tests {
-    use crate::exporter::{
-        EffectHandlerTrait, Error, Exporter, MessageChannel, NotSendEffectHandler,
-        SendEffectHandler,
-    };
+    use crate::exporter::{EffectHandlerTrait, Error, Exporter, ExporterWrapper, MessageChannel, NotSendEffectHandler, SendEffectHandler};
     use crate::message::{ControlMsg, Message};
     use crate::testing::exporter::ExporterTestContext;
     use crate::testing::exporter::ExporterTestRuntime;
@@ -394,13 +398,11 @@ mod tests {
     }
 
     /// Validation closure that checks the expected counter values
-    fn validation_procedure(
-        counters: CtrlMsgCounters,
-    ) -> impl FnOnce(ExporterTestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
+    fn validation_procedure() -> impl FnOnce(ExporterTestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
     {
-        |_ctx| {
+        |ctx| {
             Box::pin(async move {
-                counters.assert(
+                ctx.counters().assert(
                     3, // timer tick
                     1, // message
                     1, // config
@@ -412,30 +414,36 @@ mod tests {
 
     #[test]
     fn test_exporter_with_not_send_effect_handler() {
-        let mut test_runtime = ExporterTestRuntime::new(10);
-        let exporter = ExporterWithNotSendEffectHandler::without_send_test(test_runtime.counters());
-        let counters = test_runtime.counters();
+        let test_runtime = ExporterTestRuntime::new();
+        let exporter = ExporterWrapper::with_not_send(
+            ExporterWithNotSendEffectHandler::without_send_test(test_runtime.counters()),
+            test_runtime.config()
+        );
 
-        test_runtime.start_exporter(exporter, "not_send_test");
-        test_runtime.start_test(scenario());
-        test_runtime.validate(validation_procedure(counters));
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(scenario())
+            .run_validation(validation_procedure());
     }
 
     #[test]
     fn test_exporter_with_send_effect_handler() {
-        let mut test_runtime = ExporterTestRuntime::new(10);
-        let exporter = ExporterWithSendEffectHandler::with_send_test(
-            test_runtime.counters(),
-            |effect_handler| {
-                exec_in_send_env(|| {
-                    _ = effect_handler.exporter_name();
-                });
-            },
+        let test_runtime = ExporterTestRuntime::new();
+        let exporter = ExporterWrapper::with_send(
+            ExporterWithSendEffectHandler::with_send_test(
+                test_runtime.counters(),
+                |effect_handler| {
+                    exec_in_send_env(|| {
+                        _ = effect_handler.exporter_name();
+                    });
+                },
+            ),
+            test_runtime.config()
         );
-        let counters = test_runtime.counters();
 
-        test_runtime.start_exporter_with_send_effect_handler(exporter, "send_test");
-        test_runtime.start_test(scenario());
-        test_runtime.validate(validation_procedure(counters));
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(scenario())
+            .run_validation(validation_procedure());
     }
 }

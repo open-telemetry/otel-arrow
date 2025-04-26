@@ -24,8 +24,8 @@ pub struct ReceiverConfig {
     pub name: String,
     /// Configuration for control channel.
     pub control_channel: ControlChannelConfig,
-    /// Configuration for pdata channel.
-    pub pdata_channel: PdataChannelConfig,
+    /// Configuration for output pdata channel.
+    pub output_pdata_channel: PdataChannelConfig,
 }
 
 /// Generic configuration for a processor.
@@ -33,13 +33,21 @@ pub struct ProcessorConfig {
     /// Name of the processor.
     pub name: String,
     /// Configuration for control channel.
-    pub pdata_channel: PdataChannelConfig,
+    pub control_channel: ControlChannelConfig,
+    /// Configuration for input pdata channel.
+    pub input_pdata_channel: PdataChannelConfig,
+    /// Configuration for output pdata channel.
+    pub output_pdata_channel: PdataChannelConfig,
 }
 
 /// Generic configuration for an exporter.
 pub struct ExporterConfig {
     /// Name of the exporter.
     pub name: String,
+    /// Configuration for control channel.
+    pub control_channel: ControlChannelConfig,
+    /// Configuration for input pdata channel.
+    pub input_pdata_channel: PdataChannelConfig,
 }
 
 impl ReceiverConfig {
@@ -48,7 +56,7 @@ impl ReceiverConfig {
         ReceiverConfig {
             name: name.to_owned(),
             control_channel: ControlChannelConfig { capacity: DEFAULT_CHANNEL_CAPACITY },
-            pdata_channel: PdataChannelConfig { capacity: DEFAULT_CHANNEL_CAPACITY },
+            output_pdata_channel: PdataChannelConfig { capacity: DEFAULT_CHANNEL_CAPACITY },
         }
     }
 }
@@ -58,7 +66,9 @@ impl ProcessorConfig {
     pub fn new(name: &str) -> Self {
         ProcessorConfig {
             name: name.to_owned(),
-            pdata_channel: PdataChannelConfig { capacity: DEFAULT_CHANNEL_CAPACITY },
+            control_channel: ControlChannelConfig { capacity: DEFAULT_CHANNEL_CAPACITY },
+            input_pdata_channel: PdataChannelConfig { capacity: DEFAULT_CHANNEL_CAPACITY },
+            output_pdata_channel: PdataChannelConfig { capacity: DEFAULT_CHANNEL_CAPACITY },
         }
     }
 }
@@ -68,6 +78,8 @@ impl ExporterConfig {
     pub fn new(name: &str) -> Self {
         ExporterConfig {
             name: name.to_owned(),
+            control_channel: ControlChannelConfig { capacity: DEFAULT_CHANNEL_CAPACITY },
+            input_pdata_channel: PdataChannelConfig { capacity: DEFAULT_CHANNEL_CAPACITY },
         }
     }
 }
