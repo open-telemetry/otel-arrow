@@ -25,7 +25,7 @@
 //!
 //! Note that this trait uses `#[async_trait(?Send)]`, meaning implementations are not required to
 //! be thread-safe. If you need to implement a receiver that requires `Send`, you can use the
-//! [`SendEffectHandler`] type. The default effect handler is [`!Send`] (see
+//! [`SendEffectHandler`] type. The default effect handler is NOT [`Send`] (see
 //! [`NotSendEffectHandler`]).
 //!
 //! # Scalability

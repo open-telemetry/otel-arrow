@@ -110,7 +110,7 @@ impl<PData> ExporterTestContext<PData> {
 ///
 /// This structure encapsulates the common setup logic needed for testing exporters,
 /// including channel creation, exporter instantiation, and task management.
-pub struct ExporterTestRuntime<PData> {
+pub struct TestRuntime<PData> {
     /// The configuration for the exporter
     config: ExporterConfig,
 
@@ -157,7 +157,7 @@ pub struct ValidationPhase<PData> {
     _pd: PhantomData<PData>,
 }
 
-impl<PData: Clone + Debug + 'static> ExporterTestRuntime<PData> {
+impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
     pub fn new() -> Self {
         let config = ExporterConfig::new("test_exporter");

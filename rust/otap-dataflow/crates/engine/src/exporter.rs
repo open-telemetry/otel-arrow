@@ -282,7 +282,7 @@ mod tests {
     };
     use crate::message::{ControlMsg, Message};
     use crate::testing::exporter::ExporterTestContext;
-    use crate::testing::exporter::ExporterTestRuntime;
+    use crate::testing::exporter::TestRuntime;
     use crate::testing::{CtrlMsgCounters, TestMsg, exec_in_send_env};
     use async_trait::async_trait;
     use serde_json::Value;
@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn test_exporter_with_not_send_effect_handler() {
-        let test_runtime = ExporterTestRuntime::new();
+        let test_runtime = TestRuntime::new();
         let exporter = ExporterWrapper::with_not_send(
             ExporterWithNotSendEffectHandler::without_send_test(test_runtime.counters()),
             test_runtime.config(),
@@ -432,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_exporter_with_send_effect_handler() {
-        let test_runtime = ExporterTestRuntime::new();
+        let test_runtime = TestRuntime::new();
         let exporter = ExporterWrapper::with_send(
             ExporterWithSendEffectHandler::with_send_test(
                 test_runtime.counters(),
