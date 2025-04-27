@@ -274,8 +274,8 @@ impl<PData> ProcessorWrapper<PData> {
         }
     }
 
-    /// Returns the PData receiver.
-    pub fn pdata_receiver(&mut self) -> PDataReceiver<PData> {
+    /// Takes the PData receiver from the wrapper and returns it.
+    pub fn take_pdata_receiver(&mut self) -> PDataReceiver<PData> {
         match self {
             ProcessorWrapper::NotSend { pdata_receiver, .. } => {
                 PDataReceiver::NotSend(pdata_receiver.take().expect("pdata_receiver is None"))
@@ -292,7 +292,8 @@ mod tests {
     use crate::message::ControlMsg::{Config, Shutdown, TimerTick};
     use crate::message::Message;
     use crate::processor::{
-        EffectHandlerTrait, Error, NotSendEffectHandler, Processor, SendEffectHandler,
+        EffectHandlerTrait, Error, NotSendEffectHandler, Processor, ProcessorWrapper,
+        SendEffectHandler,
     };
     use crate::testing::processor::TestRuntime;
     use crate::testing::processor::{TestContext, ValidateContext};
@@ -312,7 +313,7 @@ mod tests {
 
     impl<EF> GenericTestProcessor<EF> {
         /// Creates a new test node with the given counter
-        pub fn without_send_test(ctrl_msg_counters: CtrlMsgCounters) -> Self {
+        pub fn new(ctrl_msg_counters: CtrlMsgCounters) -> Self {
             GenericTestProcessor {
                 ctrl_msg_counters,
                 test_send_eh: None,
@@ -320,7 +321,10 @@ mod tests {
         }
 
         /// Creates a new test node with a callback for PData messages
-        pub fn with_send_test(ctrl_msg_counters: CtrlMsgCounters, callback: fn(&EF)) -> Self {
+        pub fn with_send_effect_handler(
+            ctrl_msg_counters: CtrlMsgCounters,
+            callback: fn(&EF),
+        ) -> Self {
             GenericTestProcessor {
                 ctrl_msg_counters,
                 test_send_eh: Some(callback),
@@ -373,10 +377,7 @@ mod tests {
     type ProcessorWithSendEffectHandler = GenericTestProcessor<SendEffectHandler<TestMsg>>;
 
     /// Test closure that simulates a typical processor scenario.
-    fn scenario<C>() -> impl FnOnce(C) -> Pin<Box<dyn Future<Output = ()>>>
-    where
-        C: TestContext<TestMsg> + 'static,
-    {
+    fn scenario() -> impl FnOnce(TestContext<TestMsg>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |mut ctx| {
             Box::pin(async move {
                 // Process a TimerTick event.
@@ -424,42 +425,36 @@ mod tests {
 
     #[test]
     fn test_receiver_with_not_send_effect_handler() {
-        let test_runtime = TestRuntime::new(10);
-        let processor =
-            ProcessorWithNotSendEffectHandler::without_send_test(test_runtime.counters());
+        let test_runtime = TestRuntime::new();
+        let processor = ProcessorWrapper::with_not_send(
+            ProcessorWithNotSendEffectHandler::new(test_runtime.counters()),
+            test_runtime.config(),
+        );
 
         test_runtime
-            .processor_with_non_send_effect_handler::<ProcessorWithNotSendEffectHandler>(
-                processor,
-                "test_processor",
-            )
-            .run_test(scenario::<
-                crate::testing::processor::NotSendTestContext<
-                    TestMsg,
-                    ProcessorWithNotSendEffectHandler,
-                >,
-            >())
+            .set_processor(processor)
+            .run_test(scenario())
             .validate(validation_procedure());
     }
 
     #[test]
     fn test_receiver_with_send_effect_handler() {
-        let test_runtime = TestRuntime::new(10);
-        let processor =
-            ProcessorWithSendEffectHandler::with_send_test(test_runtime.counters(), |eh| {
-                exec_in_send_env(|| {
-                    _ = eh.processor_name();
-                });
-            });
+        let test_runtime = TestRuntime::new();
+        let processor = ProcessorWrapper::with_send(
+            ProcessorWithSendEffectHandler::with_send_effect_handler(
+                test_runtime.counters(),
+                |eh| {
+                    exec_in_send_env(|| {
+                        _ = eh.processor_name();
+                    });
+                },
+            ),
+            test_runtime.config(),
+        );
 
         test_runtime
-            .processor_with_send_effect_handler::<ProcessorWithSendEffectHandler>(
-                processor,
-                "test_processor",
-            )
-            .run_test(scenario::<
-                crate::testing::processor::SendTestContext<TestMsg, ProcessorWithSendEffectHandler>,
-            >())
+            .set_processor(processor)
+            .run_test(scenario())
             .validate(validation_procedure());
     }
 }

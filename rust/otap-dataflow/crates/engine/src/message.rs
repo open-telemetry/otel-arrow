@@ -152,4 +152,22 @@ impl<PData> PDataReceiver<PData> {
                 .ok_or(Error::ChannelRecvError(RecvError::Closed)),
         }
     }
+
+    /// Drains and returns all messages from the pdata receiver.
+    pub async fn drain_pdata(&mut self) -> Vec<PData> {
+        let mut emitted = Vec::new();
+        match self {
+            PDataReceiver::NotSend(receiver) => {
+                while let Ok(msg) = receiver.try_recv() {
+                    emitted.push(msg);
+                }
+            }
+            PDataReceiver::Send(receiver) => {
+                while let Ok(msg) = receiver.try_recv() {
+                    emitted.push(msg);
+                }
+            }
+        }
+        emitted
+    }
 }
