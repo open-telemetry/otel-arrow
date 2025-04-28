@@ -11,14 +11,14 @@
 // limitations under the License.
 
 use arrow::array::{
-    ArrayRef, BinaryArray, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array,
-    Int64Array, Int8Array, RecordBatch, StringArray, TimestampMicrosecondArray,
-    TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt16Array,
-    UInt32Array, UInt64Array, UInt8Array,
+    ArrayRef, BinaryArray, BooleanArray, Float32Array, Float64Array, Int8Array, Int16Array,
+    Int32Array, Int64Array, RecordBatch, StringArray, TimestampMicrosecondArray,
+    TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt8Array,
+    UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
-use rand::distr::{Alphanumeric, SampleString};
 use rand::Rng;
+use rand::distr::{Alphanumeric, SampleString};
 use std::sync::Arc;
 
 pub(crate) fn create_test_schema() -> Schema {

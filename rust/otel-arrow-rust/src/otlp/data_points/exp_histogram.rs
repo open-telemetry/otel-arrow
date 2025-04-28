@@ -11,9 +11,8 @@
 // limitations under the License.
 
 use crate::arrays::{
-    get_f64_array_opt, get_i32_array, get_timestamp_nanosecond_array,
+    NullableArrayAccessor, get_f64_array_opt, get_i32_array, get_timestamp_nanosecond_array,
     get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt, get_u64_array,
-    NullableArrayAccessor,
 };
 use crate::error;
 use crate::otlp::attributes::store::Attribute32Store;
