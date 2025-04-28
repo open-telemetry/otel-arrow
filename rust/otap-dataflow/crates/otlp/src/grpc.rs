@@ -9,7 +9,7 @@ use grpc_stubs::proto::collector::trace::v1::{
     ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
 use tonic::{Request, Response, Status};
-use otap_df_engine::receiver::{EffectHandler, SendableMode};
+use otap_df_engine::receiver::{EffectHandlerTrait, SendEffectHandler};
 
 
 /// Expose the OTLP gRPC services.
@@ -86,29 +86,29 @@ pub mod grpc_stubs {
 
 
 pub struct LogsServiceImpl {
-    effect_handler: EffectHandler<OTLPRequest, SendableMode>,
+    effect_handler: SendEffectHandler<OTLPRequest>,
 }
 
 impl LogsServiceImpl {
-    pub fn new(effect_handler: EffectHandler<OTLPRequest, SendableMode>) -> Self {
+    pub fn new(effect_handler: SendEffectHandler<OTLPRequest>) -> Self {
         Self { effect_handler }
     }
 }
 pub struct MetricsServiceImpl {
-    effect_handler: EffectHandler<OTLPRequest, SendableMode>,
+    effect_handler: SendEffectHandler<OTLPRequest>,
 }
 
 impl MetricsServiceImpl {
-    pub fn new(effect_handler: EffectHandler<OTLPRequest, SendableMode>) -> Self {
+    pub fn new(effect_handler: SendEffectHandler<OTLPRequest>) -> Self {
         Self { effect_handler }
     }
 }
 pub struct TraceServiceImpl {
-    effect_handler: EffectHandler<OTLPRequest, SendableMode>,
+    effect_handler: SendEffectHandler<OTLPRequest>,
 }
 
 impl TraceServiceImpl {
-    pub fn new(effect_handler: EffectHandler<OTLPRequest, SendableMode>) -> Self {
+    pub fn new(effect_handler: SendEffectHandler<OTLPRequest>) -> Self {
         Self { effect_handler }
     }
 }
@@ -157,7 +157,7 @@ impl TraceService for TraceServiceImpl {
 }
 
 // Enum to represent received OTLP requests.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum OTLPRequest {
     Logs(ExportLogsServiceRequest),
     Metrics(ExportMetricsServiceRequest),
