@@ -26,7 +26,6 @@ pub enum CompressionMethod {
     Gzip,
     Deflate,
 }
-
 struct OTLPReceiver {
     listening_addr: SocketAddr,
     compression: Option<CompressionMethod>
