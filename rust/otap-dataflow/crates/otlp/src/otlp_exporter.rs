@@ -47,8 +47,7 @@ impl Exporter for TestExporter {
    
         loop {
             match msg_chan.recv().await? {
-                Message::Control(ControlMsg::TimerTick { .. }) => {
-                }
+                Message::Control(ControlMsg::TimerTick { .. }) |
                 Message::Control(ControlMsg::Config { .. }) => {
                 }
                 Message::Control(ControlMsg::Shutdown { .. }) => {

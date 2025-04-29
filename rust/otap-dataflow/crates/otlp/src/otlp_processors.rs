@@ -1,53 +1,17 @@
 use crate::grpc::OTLPRequest;
-
+use crate::grpc::grpc_stubs::proto::{metrics::v1::{ResourceMetrics, ScopeMetrics, metric}, logs::v1::{ResourceLogs, ScopeLogs}, trace::v1::{ResourceSpans, ScopeSpan}};
 use otap_df_engine::processor::{EffectHandler, Receiver, ControlMsgChannel, SendableMode};
 use regex::Regex;
 
-struct RedactionProcessor {
-    allowList: HashMap<String, String>,
-	// Attribute keys ignored in a span
-	ignoreList: HashMap<String, String>,,
-	// Attribute values blocked in a span
-	blockRegexList: HashMap<String, Regex>,
-	// Attribute values allowed in a span
-	allowRegexList: HashMap<String, Regex>,
-	// Attribute keys blocked in a span
-	blockKeyRegexList: HashMap<String, Regex>,
-	// Hash function to hash blocked values
-	//hashFunction HashFunction,
-
-}
-
-impl RedactionProcessor {
-    fn processMetrics(metrics: ExportMetricsServiceRequest) {
-        for resourceMetric in metrics.resource_metrics {
-            for scopeMetric in resourceMetric.scope_metrics {
-        }
-    }
-
-    fn processTraces(traces: ExportTracesServiceRequest) {
-        for resourceTrace in traces.resource_traces {
-            for scopeTrace in resourceTrace.scope_traces {
-
-            }
-        }
-    }
-
-    fn processLogs(logs: ExportLogsServiceRequest) {
-        for resourceLog in logs.resource_logs {
-            for scopeLog in resourceLog.scope_logs {
-                
-            }
-        }
-    }
-
-    fn process
-}
-
+// otlp processor should have impl the processMetrics, processTraces, and processLogs function
 #[async_trait(?Send)]
-impl Processor for RedactionProcessor {
+trait OTLPProcessor: Processor {
     type PData = OTLPRequest;
     type Mode = LocalMode;
+    
+    fn processMetrics(&self, data: PData);
+    fn processTraces(&self, data: PData);
+    fn processLogs(&self, data: PData);
 
     async fn process(
         &mut self,
@@ -89,4 +53,3 @@ impl Processor for RedactionProcessor {
         Ok(())
     }
 }
-
