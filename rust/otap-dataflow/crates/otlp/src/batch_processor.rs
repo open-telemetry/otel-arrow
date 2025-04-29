@@ -168,7 +168,7 @@ mod tests {
             .process(Message::PData(TestData(1)), &mut effect_handler)
             .await
             .unwrap();
-        let batch = processor
+        let _ = processor
             .process(
                 Message::Control(ControlMsg::Shutdown {
                     deadline: Duration::from_secs(5),
