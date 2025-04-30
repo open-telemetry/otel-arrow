@@ -40,7 +40,7 @@ impl Exporter for TestExporter {
         // start a grpc client and send data from it to the provided addr
 
         // sent signals should we send ack and nack control messages??/
-        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let grpc_endpoint = format!("https://{grpc_addr}:{grpc_port}");
         let mut metrics_client = MetricsServiceClient::connect(grpc_endpoint.clone()).await?;
         let mut logs_client = LogsServiceClient::connect(grpc_endpoint.clone()).await?;
         let mut traces_client = TraceServiceClient::connect(grpc_endpoint.clone()).await?;

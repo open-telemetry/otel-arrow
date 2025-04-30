@@ -24,25 +24,25 @@ pub enum HashFunction {
 // data coming through to processor should be able to be mutable, data should be wrapped in rc or arc to pass
 
 impl OTLPProcessor for RedactionProcessor {
-    fn processMetrics(metrics: ExportMetricsServiceRequest) {
+    fn processMetrics(&mut metrics: ExportMetricsServiceRequest) {
         for resourceMetric in metrics.resource_metrics {
             self.processResourceMetrics(resourceMetric);
         }       
     }
 
-    fn processTraces(traces: ExportTracesServiceRequest) {
+    fn processTraces(&mut traces: ExportTracesServiceRequest) {
         for resourceTrace in traces.resource_traces {
             self.processResourceTraces(resourceTrace);
         }
     }
 
-    fn processLogs(logs: ExportLogsServiceRequest) {
+    fn processLogs(&mut logs: ExportLogsServiceRequest) {
         for resourceLog in logs.resource_logs {
             self.processResourceLogs(resourceLog);
         }
     }
 
-    fn processResourceMetrics(resource: ResourceMetrics) {
+    fn processResourceMetrics(&mut resource: ResourceMetrics) {
         let resourceAttributes = resource.resource.attributes;
         self.processAttr(resourceAttributes);
         for scopeMetric in resource.scope_metrics {
@@ -55,7 +55,7 @@ impl OTLPProcessor for RedactionProcessor {
         }
     }
 
-    fn processResourceTraces(resource: ResourceSpans) {
+    fn processResourceTraces(&mut resource: ResourceSpans) {
         let resourceAttributes = resource.resource.attributes;
         self.processAttr(resourceAttributes);
         for scopeSpan in resource.scope_spans {
@@ -70,7 +70,7 @@ impl OTLPProcessor for RedactionProcessor {
         }
     }
 
-    fn processResourceLogs(resource: ResourceLogs) { 
+    fn processResourceLogs(&mut resource: ResourceLogs) { 
         let resourceAttributes = resource.resource.attributes;
         self.processAttr(resourceAttributes);
         for scopeLog in resource.scope_logs {
@@ -80,7 +80,7 @@ impl OTLPProcessor for RedactionProcessor {
         }
     }
 
-    fn processAttr(attributes: HashMap<String, AttributeValue>) {
+    fn processAttr(&mut attributes: HashMap<String, AttributeValue>) {
         let toDelete = Vec::new();
         let toBlock = Vec::new();
         let allow = Vec::new();

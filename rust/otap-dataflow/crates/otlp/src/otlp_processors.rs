@@ -8,10 +8,10 @@ use regex::Regex;
 trait OTLPProcessor: Processor {
     type PData = OTLPRequest;
     type Mode = LocalMode;
-    
-    fn processMetrics(&self, data: PData);
-    fn processTraces(&self, data: PData);
-    fn processLogs(&self, data: PData);
+
+    fn processMetrics(&self, &mut metrics: PData) ;
+    fn processTraces(&self, &mut traces: PData) ;
+    fn processLogs(&self, &mut logs: PData);
 
     async fn process(
         &mut self,
@@ -20,9 +20,7 @@ trait OTLPProcessor: Processor {
     ) -> Result<(), Error<Self::PData>> {
         match msg {
             Message::Control(control) => match control {
-                TimerTick {} => {
-     
-                }
+                TimerTick {} |
                 Config { .. } => {
                 
                 }
@@ -34,14 +32,17 @@ trait OTLPProcessor: Processor {
             Message::PData(data) => {
                 // process message here
                 let processed_data = match data {
-                    OTLPRequest::Metrics(mut data) => {
-                        self.processMetrics(&mut data);
+                    OTLPRequest::Metrics(mut metrics) => {
+                        self.processMetrics(&mut metrics);
+                        OTLPRequest::Metrics(metrics)
                     }
-                    OTLPRequest::Traces(mut data) => { 
-                        self.processTraces(&mut data);
+                    OTLPRequest::Traces(mut traces) => { 
+                        self.processTraces(&mut traces);
+                        OTLPRequest::Traces(traces)
                     }
-                    OTLPRequest::Logs(mut data) => {
-                        self.processLogs(&mut data);
+                    OTLPRequest::Logs(mut logs) => {
+                        self.processLogs(&mut logs);
+                        OTLPRequest::Logs(logs)
                     }
 
                 };
