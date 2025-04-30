@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Errors for the pipeline engine.
+//!
+//! Important note: It is important not to use `!Send` data types in errors (e.g. avoid using Rc) to
+//! ensure these errors can be emitted in both `Send` and `!Send` contexts.
 
 /// All errors that can occur in the pipeline engine infrastructure.
 #[derive(thiserror::Error, Debug)]
