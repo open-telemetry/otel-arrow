@@ -59,6 +59,97 @@ engine) and are used to orchestrate the behavior of pipeline nodes. For example,
 configuring or reconfiguring nodes, coordinating acknowledgment mechanisms,
 stopping a pipeline, and more.
 
+## EffectHandlers
+
+### Concept and Purpose
+
+Effect handlers are a core abstraction that provide a clean interface for
+pipeline
+components (receivers, processors, and exporters) to perform side effects such
+as
+sending messages, opening sockets, or managing other resources. They hide the
+implementation details of these operations, abstracting away the specific async
+runtime and platform details from the implementers of these nodes.
+
+This abstraction allows the engine to control how these side effects are
+actually
+performed, while providing a consistent interface for component developers.
+There
+are two implementations of effect handlers:
+
+1. **NotSendEffectHandler (!Send)**: The default and preferred implementation.
+   These
+   handlers use `Rc` internally for reference counting and work with components
+   that
+   don't need to be sent across thread boundaries. This aligns with the
+   project's
+   single-threaded, thread-per-core design philosophy.
+
+2. **SendEffectHandler (Send)**: An alternate implementation for components that
+   need to integrate with libraries requiring `Send` bounds. These handlers use
+   `Arc` internally.
+
+### Why Different Effect Handlers Were Introduced
+
+The dual effect handler approach was introduced to address several challenges:
+
+1. **Abstracting Engine Implementation**: Effect handlers decouple the node
+   implementations from the specifics of how messages are sent between nodes,
+   allowing the engine to evolve independently from the components.
+
+2. **Library Integration**: Some external libraries (e.g., Tonic) don't yet
+   support `?Send` trait declarations
+   (see [Tonic issue #2171](https://github.com/hyperium/tonic/issues/2171)).
+   The type-level declaration with `SendEffectHandler` provides a pathway to
+   integrate such libraries.
+
+3. **Unified Interface with Type-Level Requirements**: Components parameterize
+   their effect handler type in their interface, allowing them to declare their
+   specific requirements at the type level while maintaining a consistent API.
+
+### Preferred Implementation Approach
+
+For this project, **`NotSendEffectHandler` is the preferred and recommended
+approach**
+for most components:
+
+- **Receivers**: Implement using `NotSendEffectHandler` unless integrating with
+  libraries that require `Send` traits.
+- **Processors**: Use `NotSendEffectHandler` for optimal performance with the
+  single-threaded runtime.
+- **Exporters**: Similarly, prefer `NotSendEffectHandler` unless specific
+  external
+  integration requires `Send`.
+
+`SendEffectHandler` exists primarily as an escape hatch for specific
+implementations
+that must interact with libraries requiring `Send` traits, such as OTLP
+Receivers
+based on Tonic GRPC services.
+
+### Running Both !Send and Send Nodes in a Single Runtime
+
+One of the key benefits of the effect handler approach is that it allows a
+single-threaded async runtime to seamlessly run components with different
+requirements:
+
+- **Uniform API**: All components implement the same traits and interfaces
+  with type parameters that specify their effect handler type, creating a
+  consistent experience for component developers.
+- **Type-Level Requirements**: Components can declare their specific threading
+  requirements at the type level, making these requirements explicit in the API.
+- **Dynamic Dispatch**: The pipeline engine can treat all nodes uniformly at
+  runtime, dispatching messages to them via their effect handlers.
+- **Zero-Cost Abstraction**: For components using `NotSendEffectHandler`,
+  there's no
+  synchronization overhead.
+- **Future Compatibility**: As libraries evolve to support `?Send`, components
+  can be migrated to use `NotSendEffectHandler` without changing the API.
+
+This flexibility enables the pipeline to maintain high performance for most
+components while accommodating special cases that require thread-safety
+guarantees, all within a single cohesive architecture.
+
 ## Testability
 
 All node types, as well as the pipeline engine itself, are designed for isolated
@@ -82,73 +173,3 @@ to each pipeline component:
 These utilities streamline the process of validating individual component
 behaviors, significantly reducing setup effort while enabling comprehensive
 testing.
-
-## ThreadMode
-
-### Concept and Purpose
-
-The `ThreadMode` trait is a core abstraction that defines the thread-safety
-behavior for pipeline components (receivers, processors, and exporters). It
-allows components to specify whether they can be safely sent across thread
-boundaries by implementing one of two modes:
-
-1. **LocalMode (!Send)**: Thread-local components that are restricted to the
-   thread they were created on. These components use `Rc` internally for
-   reference counting and can leverage non-`Send` dependencies.
-
-2. **SendableMode (Send)**: Thread-safe components that can be sent across
-   thread boundaries. These components use `Arc` internally and require all
-   state to be `Send + Sync`.
-
-### Why ThreadMode Was Introduced
-
-The ThreadMode abstraction was introduced to address several challenges:
-
-1. **Balancing Performance and Flexibility**: The engine is designed to be
-   high-performance using a share-nothing, thread-per-core approach with a
-   single-threaded async runtime. This works best with `!Send` components that
-   don't require synchronization overhead. However, some components (like those
-   based on Tonic GRPC services) require `Send` traits.
-
-2. **Library Integration**: Some external libraries (e.g. Tonic) don't yet
-   support `?Send` trait declarations (
-   see [Tonic issue #2171](https://github.com/hyperium/tonic/issues/2171)).
-   ThreadMode provides a pathway to integrate such libraries.
-
-3. **Unified Interface**: By parameterizing components with their threading
-   behavior, we maintain a consistent API across all components while allowing
-   them to declare their thread-safety requirements.
-
-### Preferred Implementation Approach
-
-For this project, **`LocalMode` is the preferred and recommended approach** for
-most components:
-
-- **Receivers**: Implement using `LocalMode` unless integrating with libraries
-  that require `Send` traits.
-- **Processors**: Use `LocalMode` for optimal performance with the
-  single-threaded runtime.
-- **Exporters**: Similarly, prefer `LocalMode` unless specific external
-  integration requires `Send`.
-
-`SendableMode` exists primarily as an escape hatch for specific implementations
-that cannot use `LocalMode`, such as OTLP Receivers based on Tonic GRPC
-services.
-
-### Running Both !Send and Send Nodes in a Single Runtime
-
-One of the key benefits of the ThreadMode abstraction is that it allows a
-single-threaded async runtime to seamlessly run both `!Send` and `Send` nodes:
-
-- **Uniform API**: All components implement the same traits and interfaces
-  regardless of their thread-safety characteristics.
-- **Dynamic Dispatch**: The pipeline engine can treat all nodes uniformly at
-  runtime, dispatching messages to them via their effect handlers.
-- **Zero-Cost Abstraction**: For `LocalMode` components, there's no
-  synchronization overhead.
-- **Future Compatibility**: As libraries evolve to support `?Send`, components
-  can be migrated to `LocalMode` without changing the API.
-
-This flexibility enables the pipeline to maintain high performance for most
-components while accommodating special cases that require thread-safety
-guarantees, all within a single cohesive architecture.
