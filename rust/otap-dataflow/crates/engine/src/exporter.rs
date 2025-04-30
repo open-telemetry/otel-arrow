@@ -218,10 +218,7 @@ impl<PData> ExporterWrapper<PData> {
     }
 
     /// Starts the exporter and begins exporting incoming data.
-    pub(crate) async fn start(
-        self,
-        message_channel: MessageChannel<PData>,
-    ) -> Result<(), Error<PData>> {
+    pub async fn start(self, message_channel: MessageChannel<PData>) -> Result<(), Error<PData>> {
         match self {
             ExporterWrapper::NotSend {
                 effect_handler,
@@ -362,6 +359,7 @@ mod tests {
     use crate::testing::exporter::TestRuntime;
     use crate::testing::{CtrlMsgCounters, TestMsg, exec_in_send_env};
     use async_trait::async_trait;
+    use otap_df_channel::error::RecvError;
     use otap_df_channel::mpsc;
     use serde_json::Value;
     use std::future::Future;
@@ -413,7 +411,7 @@ mod tests {
                     Message::Control(ControlMsg::Config { .. }) => {
                         self.counter.increment_config();
                     }
-                    Message::Control(ControlMsg::Shutdown { deadline, reason }) => {
+                    Message::Control(ControlMsg::Shutdown { .. }) => {
                         self.counter.increment_shutdown();
                         break;
                     }
@@ -626,7 +624,7 @@ mod tests {
         // 6. Check for RecvError after channels closed
         let msg_err = channel.recv().await;
         println!("Received after close: {:?}", msg_err);
-        assert!(matches!(msg_err, Err(RecvError)));
+        assert!(matches!(msg_err, Err(RecvError::Closed)));
     }
 
     #[tokio::test]
@@ -672,7 +670,7 @@ mod tests {
         // 3. Check for RecvError after channels closed
         let msg_err = channel.recv().await;
         println!("Received after close: {:?}", msg_err);
-        assert!(matches!(msg_err, Err(RecvError)));
+        assert!(matches!(msg_err, Err(RecvError::Closed)));
     }
 
     #[tokio::test]
