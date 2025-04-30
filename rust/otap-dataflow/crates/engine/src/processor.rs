@@ -301,6 +301,7 @@ mod tests {
     use async_trait::async_trait;
     use serde_json::Value;
     use std::pin::Pin;
+    use std::time::Duration;
 
     /// A generic test processor that counts message events
     /// Works with any effect handler that implements EffectHandlerTrait
@@ -401,9 +402,12 @@ mod tests {
                 assert!(ctx.drain_pdata().await.is_empty());
 
                 // Process a Shutdown event.
-                ctx.process(Message::shutdown_ctrl_msg("no reason"))
-                    .await
-                    .expect("Processor failed on Shutdown");
+                ctx.process(Message::shutdown_ctrl_msg(
+                    Duration::from_millis(200),
+                    "no reason",
+                ))
+                .await
+                .expect("Processor failed on Shutdown");
                 assert!(ctx.drain_pdata().await.is_empty());
             })
         }

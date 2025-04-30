@@ -554,7 +554,7 @@ mod tests {
                     .expect("Failed to send config");
 
                 // Finally, send a Shutdown event to terminate the receiver.
-                ctx.send_shutdown("Test")
+                ctx.send_shutdown(Duration::from_millis(200), "Test")
                     .await
                     .expect("Failed to send Shutdown");
 

@@ -42,6 +42,8 @@ use otap_df_channel::mpsc;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::Instant;
 
 /// A trait for egress exporters.
 #[async_trait(?Send)]
@@ -235,10 +237,17 @@ impl<PData> ExporterWrapper<PData> {
 
 /// A channel for receiving control and pdata messages.
 ///
-/// Note: Control messages are prioritized over pdata messages.
+/// Control messages are always prioritized _until_ a `Shutdown` arrives.
+/// After a `Shutdown` control message, pdata messages become prioritized
+/// (i.e. are drained first) up to the shutdown deadline.
 pub struct MessageChannel<PData> {
     control_rx: mpsc::Receiver<ControlMsg>,
     pdata_rx: mpsc::Receiver<PData>,
+    /// Once a Shutdown is seen, this is set to `Some(instant)` at which point
+    /// no more pdata will be accepted.
+    shutting_down_deadline: Option<Instant>,
+    /// Holds the ControlMsg::Shutdown until after we’ve drained pdata.
+    pending_shutdown: Option<ControlMsg>,
 }
 
 impl<PData> MessageChannel<PData> {
@@ -248,27 +257,95 @@ impl<PData> MessageChannel<PData> {
         MessageChannel {
             control_rx,
             pdata_rx,
+            shutting_down_deadline: None,
+            pending_shutdown: None,
         }
     }
 
     /// Asynchronously receives the next message to process.
-    /// Control messages are prioritized over pdata messages.
+    ///
+    /// Before any `Shutdown`: control messages are always
+    /// polled before pdata.
+    ///
+    /// On a `Shutdown` control msg: returns `Message::Control(Shutdown)`
+    /// and records a deadline (`Instant::now() + deadline`).
+    ///
+    /// After shutdown has started: pdata messages are polled
+    /// before control, until the deadline expires, at which point
+    /// this method returns an error.
     ///
     /// # Errors
     ///
-    /// Returns a [`RecvError`] if both channels are closed.
+    /// Returns a [`RecvError`] if both channels are closed, or if the
+    /// shutdown deadline has passed.
     pub async fn recv(&mut self) -> Result<Message<PData>, RecvError> {
-        tokio::select! {
-            biased;     // Instruct the select macro to poll the futures in the order they appear
-                        // from top to bottom.
+        loop {
+            // ——— Draining mode: Shutdown pending ———
+            if let Some(dl) = self.shutting_down_deadline {
+                // If the deadline has passed, emit the pending Shutdown now.
+                if Instant::now() >= dl {
+                    let shutdown = self
+                        .pending_shutdown
+                        .take()
+                        .expect("pending_shutdown must exist");
+                    self.shutting_down_deadline = None;
+                    return Ok(Message::Control(shutdown));
+                }
 
-            // Prioritize control messages explicitly
-            control_res = self.control_rx.recv() => {
-                control_res.map(|ctrl| Message::Control(ctrl))
+                // Drain pdata first, then timer, then other control msgs
+                tokio::select! {
+                    biased;
+
+                    // 1) Any pdata?
+                    pdata = self.pdata_rx.recv() => match pdata {
+                        Ok(d) => return Ok(Message::PData(d)),
+                        Err(_) => {
+                            // pdata channel closed → emit Shutdown
+                            let shutdown = self.pending_shutdown
+                                .take()
+                                .expect("pending_shutdown must exist");
+                            self.shutting_down_deadline = None;
+                            return Ok(Message::Control(shutdown));
+                        }
+                    },
+
+                    // 2) Deadline hit?
+                    _ = tokio::time::sleep_until(dl) => {
+                        let shutdown = self.pending_shutdown
+                            .take()
+                            .expect("pending_shutdown must exist");
+                        self.shutting_down_deadline = None;
+                        return Ok(Message::Control(shutdown));
+                    },
+
+                    // 3) Still accept other control messages
+                    ctrl = self.control_rx.recv() => {
+                        return ctrl.map(Message::Control);
+                    }
+                }
             }
 
-            pdata_res = self.pdata_rx.recv() => {
-                pdata_res.map(|pdata| Message::PData(pdata))
+            // ——— Normal mode: no shutdown yet ———
+            tokio::select! {
+                biased;
+
+                // A) Control first
+                ctrl = self.control_rx.recv() => match ctrl {
+                    Ok(ControlMsg::Shutdown { deadline, reason }) if !deadline.is_zero() => {
+                        // Begin draining mode, but don’t return Shutdown yet
+                        let when = Instant::now() + deadline;
+                        self.shutting_down_deadline = Some(when);
+                        self.pending_shutdown = Some(ControlMsg::Shutdown { deadline: Duration::from_millis(0), reason });
+                        continue; // re-enter the loop into draining mode
+                    }
+                    Ok(msg) => return Ok(Message::Control(msg)),
+                    Err(e)  => return Err(e),
+                },
+
+                // B) Then pdata
+                pdata = self.pdata_rx.recv() => {
+                    return pdata.map(Message::PData);
+                }
             }
         }
     }
@@ -281,10 +358,11 @@ mod tests {
         SendEffectHandler,
     };
     use crate::message::{ControlMsg, Message};
-    use crate::testing::exporter::ExporterTestContext;
+    use crate::testing::exporter::TestContext;
     use crate::testing::exporter::TestRuntime;
     use crate::testing::{CtrlMsgCounters, TestMsg, exec_in_send_env};
     use async_trait::async_trait;
+    use otap_df_channel::mpsc;
     use serde_json::Value;
     use std::future::Future;
     use std::time::Duration;
@@ -335,7 +413,7 @@ mod tests {
                     Message::Control(ControlMsg::Config { .. }) => {
                         self.counter.increment_config();
                     }
-                    Message::Control(ControlMsg::Shutdown { .. }) => {
+                    Message::Control(ControlMsg::Shutdown { deadline, reason }) => {
                         self.counter.increment_shutdown();
                         break;
                     }
@@ -366,8 +444,7 @@ mod tests {
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
-    fn scenario()
-    -> impl FnOnce(ExporterTestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
+    fn scenario() -> impl FnOnce(TestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
     {
         |ctx| {
             Box::pin(async move {
@@ -385,15 +462,12 @@ mod tests {
                     .expect("Failed to send Config");
 
                 // Send a data message
-                ctx.send_data(TestMsg("Hello Exporter".into()))
+                ctx.send_pdata(TestMsg("Hello Exporter".into()))
                     .await
                     .expect("Failed to send data message");
 
-                // Allow some time for processing
-                ctx.sleep(Duration::from_millis(100)).await;
-
                 // Send shutdown
-                ctx.send_shutdown("test complete")
+                ctx.send_shutdown(Duration::from_millis(200), "test complete")
                     .await
                     .expect("Failed to send Shutdown");
             })
@@ -402,8 +476,7 @@ mod tests {
 
     /// Validation closure that checks the expected counter values
     fn validation_procedure()
-    -> impl FnOnce(ExporterTestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
-    {
+    -> impl FnOnce(TestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |ctx| {
             Box::pin(async move {
                 ctx.counters().assert(
@@ -449,5 +522,188 @@ mod tests {
             .set_exporter(exporter)
             .run_test(scenario())
             .run_validation(validation_procedure());
+    }
+
+    #[tokio::test]
+    async fn test_control_priority() {
+        let (control_tx, control_rx) = mpsc::Channel::<ControlMsg>::new(10);
+        let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(10);
+        let mut channel = MessageChannel::new(control_rx, pdata_rx);
+
+        control_tx
+            .send_async(ControlMsg::Ack { id: 1 })
+            .await
+            .unwrap();
+        pdata_tx.send_async("pdata1".to_string()).await.unwrap();
+
+        // Control message should be received first due to bias
+        let msg = channel.recv().await.unwrap();
+        assert!(matches!(msg, Message::Control(ControlMsg::Ack { id: 1 })));
+
+        // Then pdata message
+        let msg = channel.recv().await.unwrap();
+        assert!(matches!(msg, Message::PData(ref s) if s == "pdata1"));
+
+        drop(control_tx);
+        drop(pdata_tx);
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_drain() {
+        let (control_tx, control_rx) = mpsc::Channel::<ControlMsg>::new(10);
+        let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(10);
+        let mut channel = MessageChannel::new(control_rx, pdata_rx);
+
+        // Pre-load pdata
+        pdata_tx.send_async("pdata1".to_string()).await.unwrap();
+        pdata_tx.send_async("pdata2".to_string()).await.unwrap();
+
+        // Send shutdown with a deadline
+        control_tx
+            .send_async(ControlMsg::Shutdown {
+                deadline: Duration::from_millis(100), // 100ms deadline
+                reason: "Test Shutdown".to_string(),
+            })
+            .await
+            .unwrap();
+
+        // Send more pdata *after* shutdown is sent, but before receiver likely gets it
+        pdata_tx.send_async("pdata3".to_string()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await; // Give receiver a chance to see shutdown
+        pdata_tx
+            .send_async("pdata4_during_drain".to_string())
+            .await
+            .unwrap();
+
+        // --- Start Receiving ---
+
+        // 1. Should receive pdata1 (drain)
+        let msg1 = channel.recv().await.unwrap();
+        println!("Received: {:?}", msg1);
+        assert!(matches!(msg1, Message::PData(ref s) if s == "pdata1"));
+
+        // 2. Should receive pdata2 (drain)
+        let msg2 = channel.recv().await.unwrap();
+        println!("Received: {:?}", msg2);
+        assert!(matches!(msg2, Message::PData(ref s) if s == "pdata2"));
+
+        // 3. Should receive pdata3 (drain)
+        let msg3 = channel.recv().await.unwrap();
+        println!("Received: {:?}", msg3);
+        assert!(matches!(msg3, Message::PData(ref s) if s == "pdata3"));
+
+        // 4. Should receive pdata4 (drain)
+        let msg4 = channel.recv().await.unwrap();
+        println!("Received: {:?}", msg4);
+        assert!(matches!(msg4, Message::PData(ref s) if s == "pdata4_during_drain"));
+
+        // Wait for deadline to likely expire
+        tokio::time::sleep(Duration::from_millis(120)).await; // Wait longer than deadline
+
+        // Send pdata *after* deadline
+        // This might get buffered but shouldn't be received before the shutdown msg
+        let _ = pdata_tx
+            .send_async("pdata5_after_deadline".to_string())
+            .await;
+
+        // 5. Now, should receive the Shutdown message itself
+        let msg5 = channel.recv().await.unwrap();
+        println!("Received: {:?}", msg5);
+        assert!(matches!(
+            msg5,
+            Message::Control(ControlMsg::Shutdown { .. })
+        ));
+
+        // Optional: Check if post-deadline message is still there (if channel not closed)
+        // If pdata_tx is still alive:
+        // let msg6 = channel.recv().await;
+        // println!("Received after shutdown signal: {:?}", msg6);
+        // assert!(matches!(msg6, Ok(Message::PData(ref s)) if s == "pdata5_after_deadline"));
+
+        drop(control_tx);
+        drop(pdata_tx); // Close channels
+
+        // 6. Check for RecvError after channels closed
+        let msg_err = channel.recv().await;
+        println!("Received after close: {:?}", msg_err);
+        assert!(matches!(msg_err, Err(RecvError)));
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_drain_pdata_closes() {
+        let (control_tx, control_rx) = mpsc::Channel::<ControlMsg>::new(10);
+        let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(10);
+        let mut channel = MessageChannel::new(control_rx, pdata_rx);
+
+        // Pre-load pdata
+        pdata_tx.send_async("pdata1".to_string()).await.unwrap();
+
+        // Send shutdown with a long deadline
+        control_tx
+            .send_async(ControlMsg::Shutdown {
+                deadline: Duration::from_secs(5), // Long deadline
+                reason: "Test Shutdown PData Closes".to_string(),
+            })
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(10)).await; // Give receiver a chance
+
+        // --- Start Receiving ---
+
+        // 1. Should receive pdata1 (drain)
+        let msg1 = channel.recv().await.unwrap();
+        println!("Received: {:?}", msg1);
+        assert!(matches!(msg1, Message::PData(ref s) if s == "pdata1"));
+
+        // Close the pdata channel during drain
+        drop(pdata_tx);
+
+        // 2. Now, should receive the Shutdown message because pdata channel closed
+        let msg2 = channel.recv().await.unwrap();
+        println!("Received: {:?}", msg2);
+        assert!(matches!(
+            msg2,
+            Message::Control(ControlMsg::Shutdown { .. })
+        ));
+
+        drop(control_tx);
+
+        // 3. Check for RecvError after channels closed
+        let msg_err = channel.recv().await;
+        println!("Received after close: {:?}", msg_err);
+        assert!(matches!(msg_err, Err(RecvError)));
+    }
+
+    #[tokio::test]
+    async fn test_immediate_shutdown() {
+        let (control_tx, control_rx) = mpsc::Channel::<ControlMsg>::new(10);
+        let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(10);
+        let mut channel = MessageChannel::new(control_rx, pdata_rx);
+
+        pdata_tx.send_async("pdata1".to_string()).await.unwrap();
+        control_tx
+            .send_async(ControlMsg::Shutdown {
+                deadline: Duration::from_secs(0), // Immediate deadline
+                reason: "Immediate Shutdown".to_string(),
+            })
+            .await
+            .unwrap();
+
+        // Should immediately receive the shutdown message, no draining
+        let msg1 = channel.recv().await.unwrap();
+        println!("Received: {:?}", msg1);
+        assert!(matches!(
+            msg1,
+            Message::Control(ControlMsg::Shutdown { .. })
+        ));
+
+        // Pdata should still be in the channel if not closed
+        let msg2 = channel.recv().await.unwrap();
+        println!("Received after immediate shutdown signal: {:?}", msg2);
+        assert!(matches!(msg2, Message::PData(ref s) if s == "pdata1"));
+
+        drop(control_tx);
+        drop(pdata_tx);
     }
 }

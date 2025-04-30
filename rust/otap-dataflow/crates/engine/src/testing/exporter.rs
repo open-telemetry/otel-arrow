@@ -20,7 +20,7 @@ use tokio::task::LocalSet;
 use tokio::time::sleep;
 
 /// A context object that holds transmitters for use in test tasks.
-pub struct ExporterTestContext<PData> {
+pub struct TestContext<PData> {
     /// Sender for control messages
     control_tx: mpsc::Sender<ControlMsg>,
     /// Sender for pipeline data
@@ -29,7 +29,7 @@ pub struct ExporterTestContext<PData> {
     counters: CtrlMsgCounters,
 }
 
-impl<PData> Clone for ExporterTestContext<PData> {
+impl<PData> Clone for TestContext<PData> {
     fn clone(&self) -> Self {
         Self {
             control_tx: self.control_tx.clone(),
@@ -39,7 +39,7 @@ impl<PData> Clone for ExporterTestContext<PData> {
     }
 }
 
-impl<PData> ExporterTestContext<PData> {
+impl<PData> TestContext<PData> {
     /// Creates a new TestContext with the given transmitters.
     pub fn new(
         control_tx: mpsc::Sender<ControlMsg>,
@@ -83,9 +83,14 @@ impl<PData> ExporterTestContext<PData> {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_shutdown(&self, reason: &str) -> Result<(), SendError<ControlMsg>> {
+    pub async fn send_shutdown(
+        &self,
+        deadline: Duration,
+        reason: &str,
+    ) -> Result<(), SendError<ControlMsg>> {
         self.control_tx
             .send_async(ControlMsg::Shutdown {
+                deadline,
                 reason: reason.to_owned(),
             })
             .await
@@ -96,7 +101,7 @@ impl<PData> ExporterTestContext<PData> {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_data(&self, content: PData) -> Result<(), SendError<PData>> {
+    pub async fn send_pdata(&self, content: PData) -> Result<(), SendError<PData>> {
         self.pdata_tx.send_async(content).await
     }
 
@@ -153,7 +158,7 @@ pub struct ValidationPhase<PData> {
     /// Local task set for non-Send futures
     local_tasks: LocalSet,
 
-    context: ExporterTestContext<PData>,
+    context: TestContext<PData>,
     _pd: PhantomData<PData>,
 }
 
@@ -217,13 +222,13 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     /// Starts the test scenario by executing the provided function with the test context.
     pub fn run_test<F, Fut>(self, f: F) -> ValidationPhase<PData>
     where
-        F: FnOnce(ExporterTestContext<PData>) -> Fut + 'static,
+        F: FnOnce(TestContext<PData>) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
         let context = self.create_context();
-        let context4test = context.clone();
-        let _ = self.local_tasks.spawn_local(async move {
-            f(context4test).await;
+        let ctx_test = context.clone();
+        self.rt.block_on(async move {
+            f(ctx_test).await;
         });
 
         ValidationPhase {
@@ -235,8 +240,8 @@ impl<PData: Debug + 'static> TestPhase<PData> {
     }
 
     /// Creates a new context with the current transmitters
-    fn create_context(&self) -> ExporterTestContext<PData> {
-        ExporterTestContext::new(
+    fn create_context(&self) -> TestContext<PData> {
+        TestContext::new(
             self.control_sender.clone(),
             self.pdata_sender.clone(),
             self.counters.clone(),
@@ -259,13 +264,12 @@ impl<PData> ValidationPhase<PData> {
     /// The result of the provided future.
     pub fn run_validation<F, Fut, T>(mut self, future_fn: F) -> T
     where
-        F: FnOnce(ExporterTestContext<PData>) -> Fut,
+        F: FnOnce(TestContext<PData>) -> Fut,
         Fut: Future<Output = T>,
     {
         // First run all the spawned tasks to completion
         let local_tasks = std::mem::take(&mut self.local_tasks);
         self.rt.block_on(local_tasks);
-
         // Then run the validation future with the test context
         self.rt.block_on(future_fn(self.context))
     }

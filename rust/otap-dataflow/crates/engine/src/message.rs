@@ -5,6 +5,7 @@
 use crate::error::Error;
 use otap_df_channel::error::RecvError;
 use otap_df_channel::mpsc;
+use std::time::Duration;
 
 /// A message that can be sent to a node (i.e. receiver, processor, exporter, or connector).
 ///
@@ -53,8 +54,10 @@ pub enum ControlMsg {
     },
 
     /// A graceful shutdown message requiring the node to finish processing messages and release
-    /// resources.
+    /// resources by a specified deadline. A deadline of 0 indicates an immediate shutdown.
     Shutdown {
+        /// The deadline for the shutdown.
+        deadline: Duration,
         /// The reason for the shutdown.
         reason: String,
     },
@@ -104,8 +107,9 @@ impl<Data> Message<Data> {
 
     /// Creates a shutdown control message with the given reason.
     #[must_use]
-    pub fn shutdown_ctrl_msg(reason: &str) -> Self {
+    pub fn shutdown_ctrl_msg(deadline: Duration, reason: &str) -> Self {
         Message::Control(ControlMsg::Shutdown {
+            deadline,
             reason: reason.to_owned(),
         })
     }

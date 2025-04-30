@@ -67,9 +67,14 @@ impl TestContext {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_shutdown(&self, reason: &str) -> Result<(), Error<ControlMsg>> {
+    pub async fn send_shutdown(
+        &self,
+        deadline: Duration,
+        reason: &str,
+    ) -> Result<(), Error<ControlMsg>> {
         self.control_sender
             .send_async(ControlMsg::Shutdown {
+                deadline,
                 reason: reason.to_owned(),
             })
             .await
