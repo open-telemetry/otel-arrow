@@ -18,7 +18,6 @@ otap-df-channel = { path = "../channel" }
 tonic = { version = "0.13.0", default-features = false, features = [
     "server",
     "channel",
-    "router",
     "transport",
     "codegen",
     "prost",
