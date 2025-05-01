@@ -15,8 +15,8 @@
 
 use crate::message::ControlMsg;
 use otap_df_channel::mpsc;
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
 
@@ -39,21 +39,21 @@ impl TestMsg {
 ///
 /// Uses Rc<RefCell<usize>> to allow sharing between components and test code.
 #[derive(Clone)]
-pub struct CtrMsgCounters {
-    timer_tick_count: Rc<RefCell<usize>>,
-    message_count: Rc<RefCell<usize>>,
-    config_count: Rc<RefCell<usize>>,
-    shutdown_count: Rc<RefCell<usize>>,
+pub struct CtrlMsgCounters {
+    timer_tick_count: Arc<AtomicUsize>,
+    message_count: Arc<AtomicUsize>,
+    config_count: Arc<AtomicUsize>,
+    shutdown_count: Arc<AtomicUsize>,
 }
 
-impl CtrMsgCounters {
+impl CtrlMsgCounters {
     /// Creates a new set of counters with all counts initialized to zero.
     pub fn new() -> Self {
-        CtrMsgCounters {
-            timer_tick_count: Rc::new(RefCell::new(0)),
-            message_count: Rc::new(RefCell::new(0)),
-            config_count: Rc::new(RefCell::new(0)),
-            shutdown_count: Rc::new(RefCell::new(0)),
+        CtrlMsgCounters {
+            timer_tick_count: Arc::new(AtomicUsize::new(0)),
+            message_count: Arc::new(AtomicUsize::new(0)),
+            config_count: Arc::new(AtomicUsize::new(0)),
+            shutdown_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -69,42 +69,53 @@ impl CtrMsgCounters {
 
     /// Increments the timer tick count.
     pub fn increment_timer_tick(&self) {
-        *self.timer_tick_count.borrow_mut() += 1;
+        _ = self
+            .timer_tick_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Increments the message count.
     pub fn increment_message(&self) {
-        *self.message_count.borrow_mut() += 1;
+        _ = self
+            .message_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Increments the config count.
     pub fn increment_config(&self) {
-        *self.config_count.borrow_mut() += 1;
+        _ = self
+            .config_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Increments the shutdown count.
     pub fn increment_shutdown(&self) {
-        *self.shutdown_count.borrow_mut() += 1;
+        _ = self
+            .shutdown_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Gets the current timer tick count.
     pub fn get_timer_tick_count(&self) -> usize {
-        *self.timer_tick_count.borrow()
+        self.timer_tick_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Gets the current message count.
     pub fn get_message_count(&self) -> usize {
-        *self.message_count.borrow()
+        self.message_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Gets the current config count.
     pub fn get_config_count(&self) -> usize {
-        *self.config_count.borrow()
+        self.config_count.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Gets the current shutdown count.
     pub fn get_shutdown_count(&self) -> usize {
-        *self.shutdown_count.borrow()
+        self.shutdown_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Asserts that the current counters match the expected values.
@@ -138,6 +149,15 @@ impl CtrMsgCounters {
     }
 }
 
+/// A wrapper function used to enforce the Send constraint.
+/// This is useful for testing nodes that require a Send EffectHandler.
+pub fn exec_in_send_env<F>(f: F)
+where
+    F: FnOnce() -> () + Send,
+{
+    f();
+}
+
 /// Creates a single-threaded runtime with a local task set for testing components.
 pub fn setup_test_runtime() -> (tokio::runtime::Runtime, LocalSet) {
     let rt = Builder::new_current_thread().enable_all().build().unwrap();
@@ -145,9 +165,18 @@ pub fn setup_test_runtime() -> (tokio::runtime::Runtime, LocalSet) {
     (rt, local_tasks)
 }
 
-/// Helper to create MPSC channels with a specific capacity.
+/// Helper to create `!Send` MPSC channels with a specific capacity.
 ///
 /// This function creates a sender-receiver pair with the given capacity.
-pub fn create_test_channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
+pub fn create_not_send_channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
     mpsc::Channel::new(capacity)
+}
+
+/// Helper to create `Send` MPSC channels with a specific capacity.
+///
+/// This function creates a sender-receiver pair with the given capacity.
+pub fn create_send_channel<T>(
+    capacity: usize,
+) -> (tokio::sync::mpsc::Sender<T>, tokio::sync::mpsc::Receiver<T>) {
+    tokio::sync::mpsc::channel(capacity)
 }
