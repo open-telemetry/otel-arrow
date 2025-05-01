@@ -7,10 +7,10 @@ use otap_df_channel::error::RecvError;
 use otap_df_channel::mpsc;
 use std::time::Duration;
 
-/// A message that can be sent to a node (i.e. receiver, processor, exporter, or connector).
+/// Represents messages sent to nodes (receivers, processors, exporters, or connectors) within the
+/// pipeline.
 ///
-/// A message is either a `Data` message, which contains a payload of type `Data`, or a `Control`
-/// message, which contains a `ControlMsg`.
+/// Messages are categorized as either pipeline data (`PData`) or control messages (`Control`).
 #[derive(Debug, Clone)]
 pub enum Message<PData> {
     /// A pipeline data message traversing the pipeline.
@@ -20,7 +20,7 @@ pub enum Message<PData> {
     Control(ControlMsg),
 }
 
-/// Control messages for the pipeline engine.
+/// Control messages used for managing pipeline operations and node behaviors.
 #[derive(Debug, Clone)]
 pub enum ControlMsg {
     /// Indicates that a downstream component (either internal or external) has reliably received
@@ -136,7 +136,7 @@ impl<Data> Message<Data> {
 /// A MPSC receiver for pdata messages.
 /// It can be either a not send or a send receiver implementation.
 pub enum PDataReceiver<PData> {
-    /// A MPSC receiver that does not implement [`Send`].
+    /// A MPSC receiver that does NOT implement [`Send`].
     NotSend(mpsc::Receiver<PData>),
     /// A MPSC receiver that implements [`Send`].
     Send(tokio::sync::mpsc::Receiver<PData>),
