@@ -23,10 +23,9 @@
 //!
 //! # Thread Safety
 //!
-//! Note that this trait uses `#[async_trait(?Send)]`, meaning implementations are not required to
-//! be thread-safe. If you need to implement a receiver that requires `Send`, you can use the
-//! [`SendEffectHandler`] type. The default effect handler is NOT [`Send`] (see
-//! [`NotSendEffectHandler`]).
+//! Note: By default, receivers use the `#[async_trait(?Send)]` attribute, allowing implementations
+//! that are not thread-safe (`!Send`). If thread-safety (`Send`) is required, explicitly choose
+//! the [`SendEffectHandler`] type. The default handler, [`NotSendEffectHandler`], is non-thread-safe.
 //!
 //! # Scalability
 //!
@@ -139,7 +138,7 @@ pub trait EffectHandlerTrait<PData> {
     ///
     /// # Errors
     ///
-    /// Returns an [`Error::ReceiverError`] if the message could not be sent.
+    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
     async fn send_message(&self, data: PData) -> Result<(), Error<PData>>;
 
     /// Creates a non-blocking TCP listener on the given address with socket options defined by the
@@ -223,7 +222,7 @@ impl<PData> EffectHandlerTrait<PData> for NotSendEffectHandler<PData> {
     ///
     /// # Errors
     ///
-    /// Returns an [`Error::ReceiverError`] if the message could not be sent.
+    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
     async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
         self.msg_sender.send_async(data).await?;
         Ok(())
@@ -269,7 +268,7 @@ impl<PData> EffectHandlerTrait<PData> for SendEffectHandler<PData> {
     ///
     /// # Errors
     ///
-    /// Returns an [`Error::ReceiverError`] if the message could not be sent.
+    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
     async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
         self.msg_sender
             .send(data)
@@ -352,7 +351,7 @@ impl<PData> ReceiverWrapper<PData> {
     }
 
     /// Returns the PData receiver.
-    pub fn pdata_receiver(&mut self) -> PDataReceiver<PData> {
+    pub fn take_pdata_receiver(&mut self) -> PDataReceiver<PData> {
         match self {
             ReceiverWrapper::NotSend { pdata_receiver, .. } => {
                 PDataReceiver::NotSend(pdata_receiver.take().expect("pdata_receiver is None"))
@@ -383,7 +382,7 @@ mod tests {
     use tokio::sync::oneshot;
     use tokio::time::{Duration, sleep, timeout};
 
-    /// A generic test exporter that counts message events
+    /// A generic test receiver that counts message events
     /// Works with any effect handler that implements EffectHandlerTrait
     pub struct GenericTestReceiver<EF> {
         /// Counter for different message types

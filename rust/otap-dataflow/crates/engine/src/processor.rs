@@ -47,7 +47,7 @@ pub trait Processor<PData, EF = NotSendEffectHandler<PData>>
 where
     EF: EffectHandlerTrait<PData>,
 {
-    /// Processes a message and optionally produces new messages.
+    /// Processes a message and optionally produces effects, such as generating new pdata messages.
     ///
     /// This method is called by the pipeline engine for each message that arrives at the processor.
     /// Unlike receivers, processors have known inputs (messages from previous stages), so the pipeline
@@ -94,7 +94,7 @@ where
 ///
 /// - [`NotSendEffectHandler<PData>`]: For thread-local (!Send) processors. Uses `Rc` internally.
 ///   It's the default and preferred effect handler.
-/// - [`SendEffectHandler<PData>`]: For thread-safe (Send) exporters. Uses `Arc` internally and
+/// - [`SendEffectHandler<PData>`]: For thread-safe (Send) processors. Uses `Arc` internally and
 ///   supports sending across thread boundaries.
 ///
 /// Note for implementers: Effect handler implementations are designed to be cloned so the cost of
@@ -140,7 +140,7 @@ impl<PData> NotSendEffectHandler<PData> {
 
 #[async_trait(?Send)]
 impl<PData> EffectHandlerTrait<PData> for NotSendEffectHandler<PData> {
-    /// Returns the name of the exporter associated with this handler.
+    /// Returns the name of the processor associated with this handler.
     #[must_use]
     fn processor_name(&self) -> &str {
         &self.processor_name
@@ -150,7 +150,7 @@ impl<PData> EffectHandlerTrait<PData> for NotSendEffectHandler<PData> {
     ///
     /// # Errors
     ///
-    /// Returns an [`Error::ReceiverError`] if the message could not be sent.
+    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
     async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
         self.msg_sender.send_async(data).await?;
         Ok(())
@@ -168,7 +168,7 @@ pub struct SendEffectHandler<PData> {
 
 /// Implementation for the `Send` effect handler.
 impl<PData> SendEffectHandler<PData> {
-    /// Creates a new "sendable" effect handler with the given exporter name.
+    /// Creates a new "sendable" effect handler with the given processor name.
     pub fn new<S: AsRef<str>>(
         processor_name: S,
         msg_sender: tokio::sync::mpsc::Sender<PData>,
@@ -192,7 +192,7 @@ impl<PData> EffectHandlerTrait<PData> for SendEffectHandler<PData> {
     ///
     /// # Errors
     ///
-    /// Returns an [`Error::ReceiverError`] if the message could not be sent.
+    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
     async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
         self.msg_sender
             .send(data)

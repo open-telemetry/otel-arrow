@@ -217,7 +217,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         F: FnOnce(TestContext) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
-        let pdata_receiver = self.receiver.pdata_receiver();
+        let pdata_receiver = self.receiver.take_pdata_receiver();
         let _ = self.local_tasks.spawn_local(async move {
             self.receiver
                 .start(self.ctrl_msg_chan)
