@@ -583,11 +583,11 @@ mod tests {
     async fn test_control_priority() {
         let (control_tx, pdata_tx, mut channel) = make_chan();
 
+        pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
         control_tx
             .send_async(ControlMsg::Ack { id: 1 })
             .await
             .unwrap();
-        pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
 
         // Control message should be received first due to bias
         let msg = channel.recv().await.unwrap();
