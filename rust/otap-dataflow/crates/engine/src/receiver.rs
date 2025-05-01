@@ -621,4 +621,63 @@ mod tests {
             .run_test(scenario(port_rx))
             .run_validation(validation_procedure());
     }
+
+    /// Validation closure that checks the received message and counters (!Send context).
+    fn validation_procedure()
+    -> impl FnOnce(NotSendValidateContext<TestMsg>) -> Pin<Box<dyn Future<Output = ()>>> {
+        |mut ctx| {
+            Box::pin(async move {
+                let received = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for message")
+                    .expect("No message received");
+
+                // Assert that the message received is what the test client sent.
+                assert!(matches!(received, TestMsg(msg) if msg == "Hello from test client"));
+                ctx.counters().assert(3, 0, 1, 1);
+            })
+        }
+    }
+
+    #[test]
+    fn test_receiver_with_not_send_effect_handler() {
+        let test_runtime = TestRuntime::new();
+
+        // Create a oneshot channel to receive the listening address from the receiver.
+        let (port_tx, port_rx) = oneshot::channel();
+        let receiver = ReceiverWrapper::with_not_send(
+            ReceiverWithNotSendEffectHandler::new(test_runtime.counters(), port_tx),
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario(port_rx))
+            .run_validation(validation_procedure());
+    }
+
+    #[test]
+    fn test_receiver_with_send_effect_handler() {
+        let test_runtime = TestRuntime::new();
+
+        // Create a oneshot channel to receive the listening address from the receiver.
+        let (port_tx, port_rx) = oneshot::channel();
+        let receiver = ReceiverWrapper::with_send(
+            ReceiverWithSendEffectHandler::with_send_effect_handler(
+                test_runtime.counters(),
+                |effect_handler| {
+                    exec_in_send_env(|| {
+                        _ = effect_handler.receiver_name();
+                    });
+                },
+                port_tx,
+            ),
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(scenario(port_rx))
+            .run_validation(validation_procedure());
+    }
 }

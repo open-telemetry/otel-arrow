@@ -35,6 +35,7 @@ significant changes.
 - [x] Receiver trait
 - [x] Processor trait
 - [x] Exporter trait
+- [x] EffectHandler trait
 - [ ] Connector trait
 - [ ] CPU & Memory Benchmarks
 - [ ] Documentation

@@ -23,7 +23,8 @@
 ///   overwhelming the system scheduler.
 ///
 /// ToDo: Make this default value configurable and based on performance testing.
-const DEFAULT_CHANNEL_CAPACITY: usize = 256;
+const DEFAULT_CONTROL_CHANNEL_CAPACITY: usize = 32;
+const DEFAULT_PDATA_CHANNEL_CAPACITY: usize = 256;
 
 /// Generic configuration for a control channel.
 pub struct ControlChannelConfig {
@@ -75,10 +76,10 @@ impl ReceiverConfig {
         ReceiverConfig {
             name: name.to_owned(),
             control_channel: ControlChannelConfig {
-                capacity: DEFAULT_CHANNEL_CAPACITY,
+                capacity: DEFAULT_CONTROL_CHANNEL_CAPACITY,
             },
             output_pdata_channel: PdataChannelConfig {
-                capacity: DEFAULT_CHANNEL_CAPACITY,
+                capacity: DEFAULT_PDATA_CHANNEL_CAPACITY,
             },
         }
     }
@@ -90,13 +91,13 @@ impl ProcessorConfig {
         ProcessorConfig {
             name: name.to_owned(),
             control_channel: ControlChannelConfig {
-                capacity: DEFAULT_CHANNEL_CAPACITY,
+                capacity: DEFAULT_CONTROL_CHANNEL_CAPACITY,
             },
             input_pdata_channel: PdataChannelConfig {
-                capacity: DEFAULT_CHANNEL_CAPACITY,
+                capacity: DEFAULT_PDATA_CHANNEL_CAPACITY,
             },
             output_pdata_channel: PdataChannelConfig {
-                capacity: DEFAULT_CHANNEL_CAPACITY,
+                capacity: DEFAULT_PDATA_CHANNEL_CAPACITY,
             },
         }
     }
@@ -108,10 +109,10 @@ impl ExporterConfig {
         ExporterConfig {
             name: name.to_owned(),
             control_channel: ControlChannelConfig {
-                capacity: DEFAULT_CHANNEL_CAPACITY,
+                capacity: DEFAULT_CONTROL_CHANNEL_CAPACITY,
             },
             input_pdata_channel: PdataChannelConfig {
-                capacity: DEFAULT_CHANNEL_CAPACITY,
+                capacity: DEFAULT_PDATA_CHANNEL_CAPACITY,
             },
         }
     }
