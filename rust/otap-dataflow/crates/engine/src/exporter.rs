@@ -367,16 +367,25 @@ impl<PData> MessageChannel<PData> {
 
                 // B) Then pdata
                 pdata = self.pdata_rx.recv() => {
-                    return pdata.map(Message::PData);
+                    match pdata {
+                        Ok(pdata) => {
+                            return Ok(Message::PData(pdata));
+                        }
+                        Err(RecvError::Closed) => {
+                            // pdata channel closed -> emit Shutdown
+                            self.shutting_down = true;
+                            return Ok(Message::Control(ControlMsg::Shutdown {
+                                deadline: Duration::ZERO,
+                                reason: "pdata channel closed".to_owned(),
+                            }));
+                        }
+                        Err(e) => {
+                            return Err(e);
+                        }
+                    }
                 }
             }
         }
-    }
-
-    /// Returns true if the channel is shutting down.
-    #[must_use]
-    pub fn is_shutting_down(&self) -> bool {
-        self.shutting_down
     }
 }
 
