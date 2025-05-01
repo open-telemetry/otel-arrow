@@ -59,6 +59,58 @@ engine) and are used to orchestrate the behavior of pipeline nodes. For example,
 configuring or reconfiguring nodes, coordinating acknowledgment mechanisms,
 stopping a pipeline, and more.
 
+## Effect Handlers
+
+### Concept and Purpose
+
+Effect handlers are a core abstraction that provide a clean interface for
+pipeline components (receivers, processors, and exporters) to perform side
+effects such as sending messages, opening sockets, or managing other resources.
+They hide the implementation details of these operations, abstracting away the
+specific async runtime and platform details from the implementers of these
+nodes.
+
+This abstraction allows the engine to control how these side effects are
+actually performed, while providing a consistent interface for component
+developers. There are two implementations of effect handlers:
+
+1. **NotSendEffectHandler (!Send)**: The default and preferred implementation.
+   These handlers use `Rc` internally for reference counting and work with
+   components that don't need to be sent across thread boundaries. This aligns
+   with the project's single-threaded, thread-per-core design philosophy.
+
+2. **SendEffectHandler (Send)**: An alternate implementation for components that
+   need to integrate with libraries requiring `Send` bounds. These handlers use
+   `Arc` internally.
+
+### Why Different Effect Handlers Were Introduced
+
+The dual effect handler approach was introduced to address several challenges:
+
+1. **Abstracting Engine Implementation**: Effect handlers decouple the node
+   implementations from the specifics of how messages are sent between nodes,
+   allowing the engine to evolve independently from the components.
+
+2. **Library Integration**: Some external libraries (e.g. Tonic) don't yet
+   support `?Send` trait declarations
+   (see [Tonic issue #2171](https://github.com/hyperium/tonic/issues/2171)).
+   The type-level declaration with `SendEffectHandler` provides a pathway to
+   integrate such libraries. For nodes that don't need to be `Send`, there's no
+   synchronization overhead.
+
+3. **Unified Interface with Type-Level Requirements**: Components parameterize
+   their effect handler type in their interface, allowing them to declare their
+   specific requirements at the type level while maintaining a consistent API.
+
+### Preferred Implementation Approach
+
+For this project, **`NotSendEffectHandler` is the preferred and recommended
+approach** for most components.
+
+`SendEffectHandler` exists primarily as an escape hatch for specific
+implementations that must interact with libraries requiring `Send` traits, such
+as OTLP Receivers based on Tonic GRPC services.
+
 ## Testability
 
 All node types, as well as the pipeline engine itself, are designed for isolated

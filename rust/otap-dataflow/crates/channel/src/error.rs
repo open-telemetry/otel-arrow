@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Errors for the channels.
+//!
+//! Important note: It is important not to use `!Send` data types in errors (e.g. avoid using Rc) to
+//! ensure these errors can be emitted in both `Send` and `!Send` contexts.
 
 /// Errors that can occur sending messages to a channel.
 #[derive(thiserror::Error, Debug)]
