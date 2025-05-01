@@ -248,15 +248,13 @@ impl<PData> ExporterWrapper<PData> {
 /// data sources in the pipeline, and then send a shutdown message with a deadline to all nodes in
 /// the pipeline.
 pub struct MessageChannel<PData> {
-    control_rx: mpsc::Receiver<ControlMsg>,
-    pdata_rx: mpsc::Receiver<PData>,
+    control_rx: Option<mpsc::Receiver<ControlMsg>>,
+    pdata_rx: Option<mpsc::Receiver<PData>>,
     /// Once a Shutdown is seen, this is set to `Some(instant)` at which point
     /// no more pdata will be accepted.
     shutting_down_deadline: Option<Instant>,
     /// Holds the ControlMsg::Shutdown until after we’ve drained pdata.
     pending_shutdown: Option<ControlMsg>,
-    /// Flag to indicate if the channel is shutting down.
-    shutting_down: bool,
 }
 
 impl<PData> MessageChannel<PData> {
@@ -264,11 +262,10 @@ impl<PData> MessageChannel<PData> {
     #[must_use]
     pub fn new(control_rx: mpsc::Receiver<ControlMsg>, pdata_rx: mpsc::Receiver<PData>) -> Self {
         MessageChannel {
-            control_rx,
-            pdata_rx,
+            control_rx: Some(control_rx),
+            pdata_rx: Some(pdata_rx),
             shutting_down_deadline: None,
             pending_shutdown: None,
-            shutting_down: false,
         }
     }
 
@@ -292,7 +289,7 @@ impl<PData> MessageChannel<PData> {
         let mut sleep_until_deadline: Option<Pin<Box<Sleep>>> = None;
 
         loop {
-            if self.shutting_down {
+            if self.control_rx.is_none() || self.pdata_rx.is_none() {   // MessageChannel has been shutdown
                 return Err(RecvError::Closed);
             }
 
@@ -305,7 +302,8 @@ impl<PData> MessageChannel<PData> {
                         .take()
                         .expect("pending_shutdown must exist");
                     self.shutting_down_deadline = None;
-                    self.shutting_down = true;
+                    drop(self.control_rx.take().expect("control_rx must exist"));
+                    drop(self.pdata_rx.take().expect("pdata_rx must exist"));
                     return Ok(Message::Control(shutdown));
                 }
 
@@ -319,7 +317,7 @@ impl<PData> MessageChannel<PData> {
                     biased;
 
                     // 1) Any pdata?
-                    pdata = self.pdata_rx.recv() => match pdata {
+                    pdata = self.pdata_rx.as_ref().expect("pdata_rx must exist").recv() => match pdata {
                         Ok(pdata) => return Ok(Message::PData(pdata)),
                         Err(_) => {
                             // pdata channel closed → emit Shutdown
@@ -327,7 +325,8 @@ impl<PData> MessageChannel<PData> {
                                 .take()
                                 .expect("pending_shutdown must exist");
                             self.shutting_down_deadline = None;
-                            self.shutting_down = true;
+                            drop(self.control_rx.take().expect("control_rx must exist"));
+                            drop(self.pdata_rx.take().expect("pdata_rx must exist"));
                             return Ok(Message::Control(shutdown));
                         }
                     },
@@ -348,11 +347,12 @@ impl<PData> MessageChannel<PData> {
                 biased;
 
                 // A) Control first
-                ctrl = self.control_rx.recv() => match ctrl {
+                ctrl = self.control_rx.as_ref().expect("control_rx must exist").recv() => match ctrl {
                     Ok(ControlMsg::Shutdown { deadline, reason }) => {
                         if deadline.is_zero() {
                             // Immediate shutdown, no draining
-                            self.shutting_down = true;
+                            drop(self.control_rx.take().expect("control_rx must exist"));
+                            drop(self.pdata_rx.take().expect("pdata_rx must exist"));
                             return Ok(Message::Control(ControlMsg::Shutdown { deadline: Duration::ZERO, reason }));
                         }
                         // Begin draining mode, but don’t return Shutdown yet
@@ -366,14 +366,15 @@ impl<PData> MessageChannel<PData> {
                 },
 
                 // B) Then pdata
-                pdata = self.pdata_rx.recv() => {
+                pdata = self.pdata_rx.as_ref().expect("pdata_rx must exist").recv() => {
                     match pdata {
                         Ok(pdata) => {
                             return Ok(Message::PData(pdata));
                         }
                         Err(RecvError::Closed) => {
                             // pdata channel closed -> emit Shutdown
-                            self.shutting_down = true;
+                            drop(self.control_rx.take().expect("control_rx must exist"));
+                            drop(self.pdata_rx.take().expect("pdata_rx must exist"));
                             return Ok(Message::Control(ControlMsg::Shutdown {
                                 deadline: Duration::ZERO,
                                 reason: "pdata channel closed".to_owned(),
@@ -616,7 +617,6 @@ mod tests {
 
         // Send more pdata after shutdown is sent, but before receiver likely gets it
         pdata_tx.send_async("pdata3".to_string()).await.unwrap();
-        sleep(Duration::from_millis(10)).await; // Give receiver a chance to see shutdown
         pdata_tx
             .send_async("pdata4_during_drain".to_string())
             .await
@@ -733,7 +733,7 @@ mod tests {
     /// After Shutdown all later control messages are silently dropped (ignored).
     #[tokio::test]
     async fn test_ignore_ctrl_after_shutdown() {
-        let (control_tx, _pdata_tx, mut chan) = make_chan();
+        let (control_tx, pdata_tx, mut chan) = make_chan();
 
         control_tx
             .send_async(ControlMsg::Shutdown {
@@ -746,14 +746,16 @@ mod tests {
         let msg = chan.recv().await.unwrap();
         assert!(matches!(msg, Message::Control(ControlMsg::Shutdown { .. })));
 
-        // Send a control message that should be ignored.
-        control_tx
+        // Send a control message that should fail as the channel has been closed
+        // following the shutdown.
+        assert!(control_tx
             .send_async(ControlMsg::Ack { id: 99 })
             .await
-            .unwrap();
+            .is_err());
 
-        // Send a pdata message that should be ignored.
-        _pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
+        // Send a pdata message that should fail as the channel has been closed
+        // following the shutdown.
+        assert!(pdata_tx.send_async("pdata1".to_owned()).await.is_err());
 
         // Another recv should report Closed, proving Ack was discarded.
         assert!(matches!(chan.recv().await, Err(RecvError::Closed)));
