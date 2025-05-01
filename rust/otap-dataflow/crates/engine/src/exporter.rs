@@ -72,7 +72,7 @@ where
     /// mutate itself as much as it needs during its run loop.
     ///
     /// Exporters are expected to process both internal control messages and pipeline data messages,
-    /// prioritizing control messages over data messages. This prioritisation guarantee is ensured
+    /// prioritizing control messages over data messages. This prioritization guarantee is ensured
     /// by the `MessageChannel` implementation.
     ///
     /// # Parameters
