@@ -59,7 +59,7 @@ engine) and are used to orchestrate the behavior of pipeline nodes. For example,
 configuring or reconfiguring nodes, coordinating acknowledgment mechanisms,
 stopping a pipeline, and more.
 
-## EffectHandlers
+## Effect Handlers
 
 ### Concept and Purpose
 
