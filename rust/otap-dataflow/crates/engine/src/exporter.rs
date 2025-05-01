@@ -289,7 +289,8 @@ impl<PData> MessageChannel<PData> {
         let mut sleep_until_deadline: Option<Pin<Box<Sleep>>> = None;
 
         loop {
-            if self.control_rx.is_none() || self.pdata_rx.is_none() {   // MessageChannel has been shutdown
+            if self.control_rx.is_none() || self.pdata_rx.is_none() {
+                // MessageChannel has been shutdown
                 return Err(RecvError::Closed);
             }
 
@@ -301,9 +302,7 @@ impl<PData> MessageChannel<PData> {
                         .pending_shutdown
                         .take()
                         .expect("pending_shutdown must exist");
-                    self.shutting_down_deadline = None;
-                    drop(self.control_rx.take().expect("control_rx must exist"));
-                    drop(self.pdata_rx.take().expect("pdata_rx must exist"));
+                    self.shutdown();
                     return Ok(Message::Control(shutdown));
                 }
 
@@ -324,9 +323,7 @@ impl<PData> MessageChannel<PData> {
                             let shutdown = self.pending_shutdown
                                 .take()
                                 .expect("pending_shutdown must exist");
-                            self.shutting_down_deadline = None;
-                            drop(self.control_rx.take().expect("control_rx must exist"));
-                            drop(self.pdata_rx.take().expect("pdata_rx must exist"));
+                            self.shutdown();
                             return Ok(Message::Control(shutdown));
                         }
                     },
@@ -336,7 +333,7 @@ impl<PData> MessageChannel<PData> {
                         let shutdown = self.pending_shutdown
                             .take()
                             .expect("pending_shutdown must exist");
-                        self.shutting_down_deadline = None;
+                        self.shutdown();
                         return Ok(Message::Control(shutdown));
                     }
                 }
@@ -351,8 +348,7 @@ impl<PData> MessageChannel<PData> {
                     Ok(ControlMsg::Shutdown { deadline, reason }) => {
                         if deadline.is_zero() {
                             // Immediate shutdown, no draining
-                            drop(self.control_rx.take().expect("control_rx must exist"));
-                            drop(self.pdata_rx.take().expect("pdata_rx must exist"));
+                            self.shutdown();
                             return Ok(Message::Control(ControlMsg::Shutdown { deadline: Duration::ZERO, reason }));
                         }
                         // Begin draining mode, but don’t return Shutdown yet
@@ -373,8 +369,7 @@ impl<PData> MessageChannel<PData> {
                         }
                         Err(RecvError::Closed) => {
                             // pdata channel closed -> emit Shutdown
-                            drop(self.control_rx.take().expect("control_rx must exist"));
-                            drop(self.pdata_rx.take().expect("pdata_rx must exist"));
+                            self.shutdown();
                             return Ok(Message::Control(ControlMsg::Shutdown {
                                 deadline: Duration::ZERO,
                                 reason: "pdata channel closed".to_owned(),
@@ -387,6 +382,12 @@ impl<PData> MessageChannel<PData> {
                 }
             }
         }
+    }
+
+    fn shutdown(&mut self) {
+        self.shutting_down_deadline = None;
+        drop(self.control_rx.take().expect("control_rx must exist"));
+        drop(self.pdata_rx.take().expect("pdata_rx must exist"));
     }
 }
 
@@ -748,10 +749,12 @@ mod tests {
 
         // Send a control message that should fail as the channel has been closed
         // following the shutdown.
-        assert!(control_tx
-            .send_async(ControlMsg::Ack { id: 99 })
-            .await
-            .is_err());
+        assert!(
+            control_tx
+                .send_async(ControlMsg::Ack { id: 99 })
+                .await
+                .is_err()
+        );
 
         // Send a pdata message that should fail as the channel has been closed
         // following the shutdown.
