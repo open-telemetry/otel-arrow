@@ -17,7 +17,7 @@
 /// `capacity = producer_rate * worst_case_consumer_pause * safety_margin`
 ///
 /// - producer_rate: the number of messages per second each producer can burst.
-/// - worst_case_consumer_pause: the maximum duration a consumer might be unable to make progress
+/// - worst_case_consumer_pause: the maximum duration (in seconds) a consumer might be unable to make progress
 ///   (e.g. syscall, I/O hiccup, thread pre-emption).
 /// - safety_margin: a factor of 1.5–2* is typically sufficient to prevent occasional spikes from
 ///   overwhelming the system scheduler.
