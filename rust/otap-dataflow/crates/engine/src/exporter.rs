@@ -61,7 +61,7 @@ where
     /// primary function involves interacting with the external world, and the pipeline has no
     /// prior knowledge of when these interactions will occur.
     ///
-    /// The exporter is taken as `Box<Self>` so it owns itself once `start` is called.
+    /// The exporter is taken as `Box<Self>` so the method takes ownership of the exporter once `start` is called.
     /// This lets it move into an independent task, after which the pipeline can only
     /// reach it through the control-message channel.
     ///
