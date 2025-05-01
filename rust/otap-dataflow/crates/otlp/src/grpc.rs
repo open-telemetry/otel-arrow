@@ -1,113 +1,43 @@
-use grpc_stubs::proto::collector::logs::v1::logs_service_server::LogsService;
-use grpc_stubs::proto::collector::logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse};
-use grpc_stubs::proto::collector::metrics::v1::metrics_service_server::MetricsService;
-use grpc_stubs::proto::collector::metrics::v1::{
-    ExportMetricsServiceRequest, ExportMetricsServiceResponse,
-};
-use grpc_stubs::proto::collector::trace::v1::trace_service_server::TraceService;
-use grpc_stubs::proto::collector::trace::v1::{
-    ExportTraceServiceRequest, ExportTraceServiceResponse,
-};
-use tonic::{Request, Response, Status};
+use crate::grpc_stubs::proto::collector::{
+logs::v1::{logs_service_server::LogsService, ExportLogsServiceRequest, ExportLogsServiceResponse}, 
+metrics::v1::{metrics_service_server::MetricsService, ExportMetricsServiceRequest, ExportMetricsServiceResponse}, 
+trace::v1::{trace_service_server::TraceService, ExportTraceServiceRequest, ExportTraceServiceResponse}};
+
 use otap_df_engine::receiver::{EffectHandlerTrait, SendEffectHandler};
+use tonic::{Request, Response, Status};
 
 
-/// Expose the OTLP gRPC services.
-/// See the build.rs file for more information.
-pub mod grpc_stubs {
-    #[path = ""]
-    pub mod proto {
-        #[path = ""]
-        pub mod collector {
-            #[path = ""]
-            pub mod logs {
-                #[allow(unused_qualifications)]
-                #[allow(unused_results)]
-                #[allow(clippy::enum_variant_names)]
-                #[allow(rustdoc::invalid_html_tags)]
-                #[path = "opentelemetry.proto.collector.logs.v1.rs"]
-                pub mod v1;
-            }
-            #[path = ""]
-            pub mod metrics {
-                #[allow(unused_qualifications)]
-                #[allow(unused_results)]
-                #[allow(clippy::enum_variant_names)]
-                #[allow(rustdoc::invalid_html_tags)]
-                #[path = "opentelemetry.proto.collector.metrics.v1.rs"]
-                pub mod v1;
-            }
-            #[path = ""]
-            pub mod trace {
-                #[allow(unused_qualifications)]
-                #[allow(unused_results)]
-                #[allow(clippy::enum_variant_names)]
-                #[allow(rustdoc::invalid_html_tags)]
-                #[path = "opentelemetry.proto.collector.trace.v1.rs"]
-                pub mod v1;
-            }
-        }
-
-        #[path = ""]
-        pub mod logs {
-            #[allow(rustdoc::invalid_html_tags)]
-            #[path = "opentelemetry.proto.logs.v1.rs"]
-            pub mod v1;
-        }
-
-        #[path = ""]
-        pub mod metrics {
-            #[allow(rustdoc::invalid_html_tags)]
-            #[path = "opentelemetry.proto.metrics.v1.rs"]
-            pub mod v1;
-        }
-
-        #[path = ""]
-        pub mod trace {
-            #[allow(rustdoc::invalid_html_tags)]
-            #[path = "opentelemetry.proto.trace.v1.rs"]
-            pub mod v1;
-        }
-
-        #[path = ""]
-        pub mod common {
-            #[allow(clippy::enum_variant_names)]
-            #[path = "opentelemetry.proto.common.v1.rs"]
-            pub mod v1;
-        }
-
-        #[path = ""]
-        pub mod resource {
-            #[path = "opentelemetry.proto.resource.v1.rs"]
-            pub mod v1;
-        }
-    }
-}
-
-
+/// struct that implements the Log Service trait
 pub struct LogsServiceImpl {
     effect_handler: SendEffectHandler<OTLPRequest>,
 }
 
 impl LogsServiceImpl {
+    /// Create a LogsServiceImpl with a sendable Effect Handler
     pub fn new(effect_handler: SendEffectHandler<OTLPRequest>) -> Self {
         Self { effect_handler }
     }
 }
+
+/// struct that implements the Metric Service trait
 pub struct MetricsServiceImpl {
     effect_handler: SendEffectHandler<OTLPRequest>,
 }
 
 impl MetricsServiceImpl {
+    /// Create a MetricsServiceImpl with a sendable Effect Handler
     pub fn new(effect_handler: SendEffectHandler<OTLPRequest>) -> Self {
         Self { effect_handler }
     }
 }
+
+/// struct that implements the Trace Service trait
 pub struct TraceServiceImpl {
     effect_handler: SendEffectHandler<OTLPRequest>,
 }
 
 impl TraceServiceImpl {
+    /// Create a TraceServiceImpl with a sendable Effect Handler
     pub fn new(effect_handler: SendEffectHandler<OTLPRequest>) -> Self {
         Self { effect_handler }
     }
@@ -120,7 +50,9 @@ impl LogsService for LogsServiceImpl {
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
         let effect_handler_clone = self.effect_handler.clone();
-        effect_handler_clone.send_message(OTLPRequest::Logs(request.into_inner())).await;
+        _ = tokio::task::spawn_local(async move {
+            _ = effect_handler_clone.send_message(OTLPRequest::Logs(request.into_inner())).await;
+        });
 
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,
@@ -135,7 +67,9 @@ impl MetricsService for MetricsServiceImpl {
         request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
         let effect_handler_clone = self.effect_handler.clone();
-        effect_handler_clone.send_message(OTLPRequest::Metrics(request.into_inner())).await;
+        _ = tokio::task::spawn_local(async move {
+            _ = effect_handler_clone.send_message(OTLPRequest::Metrics(request.into_inner())).await;
+        });
         Ok(Response::new(ExportMetricsServiceResponse {
             partial_success: None,
         }))
@@ -149,18 +83,22 @@ impl TraceService for TraceServiceImpl {
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
         let effect_handler_clone = self.effect_handler.clone();
-        effect_handler_clone.send_message(OTLPRequest::Traces(request.into_inner())).await;
+        _ = tokio::task::spawn_local(async move {
+            _ = effect_handler_clone.send_message(OTLPRequest::Traces(request.into_inner())).await;
+        });
         Ok(Response::new(ExportTraceServiceResponse {
             partial_success: None,
         }))
     }
 }
 
-// Enum to represent received OTLP requests.
+/// Enum to represent received OTLP requests.
 #[derive(Debug, Clone)]
 pub enum OTLPRequest {
+    /// Logs Data
     Logs(ExportLogsServiceRequest),
+    /// Metrics Data
     Metrics(ExportMetricsServiceRequest),
+    /// Traces/Span Data
     Traces(ExportTraceServiceRequest),
 }
-

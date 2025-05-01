@@ -6,7 +6,7 @@
 //! TODO: implement config control message to handle live changing configuration
 
 use crate::grpc::{LogsServiceImpl, MetricsServiceImpl, TraceServiceImpl, OTLPRequest};
-use crate::grpc::grpc_stubs::proto::collector::{logs::v1::logs_service_server::LogsServiceServer,
+use crate::grpc_stubs::proto::collector::{logs::v1::logs_service_server::LogsServiceServer,
     metrics::v1::metrics_service_server::MetricsServiceServer,
     trace::v1::trace_service_server::TraceServiceServer};
 use otap_df_engine::receiver::{EffectHandlerTrait, Receiver, ControlMsgChannel, SendEffectHandler};
@@ -19,14 +19,20 @@ use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server;
 
-// Enum to represent received OTLP requests.
+/// Enum to represent varioous compression methods
 #[derive(Debug)]
 pub enum CompressionMethod {
+    /// Fastest compression
     Zstd,
+    /// Most compatible compression method
     Gzip,
+    /// Used for legacy systems
     Deflate,
+    /// Don't use any compression, this is the default if no compression is specified
+    None, 
 }
 
+/// A Receiver that listens for OTLP messages
 pub struct OTLPReceiver {
     listening_addr: SocketAddr,
     compression: Option<CompressionMethod>
@@ -39,11 +45,20 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
         self: Box<Self>,
         ctrl_msg_recv: ControlMsgChannel,
         effect_handler: SendEffectHandler<OTLPRequest>,
-    ) -> Result<(), Error<OTLPRequest> {
+    ) -> Result<(), Error<OTLPRequest>> {
 
         // create listener on addr provided from config
         let listener = effect_handler.tcp_listener(self.listening_addr)?;
-        let listener_stream = TcpListenerStream::new(listener);
+        let mut listener_stream = TcpListenerStream::new(listener);
+        // check for compression method
+        let compression_encoding = match self.compression {
+            Some(CompressionMethod::Gzip) => Some(CompressionEncoding::Gzip),
+            Some(CompressionMethod::Zstd) => Some(CompressionEncoding::Zstd),
+            Some(CompressionMethod::Deflate) => Some(CompressionEncoding::Deflate),
+            Some(CompressionMethod::None) => None,
+            _ => None,
+        };
+
 
         //start event loop
         loop {
@@ -57,19 +72,11 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
             let trace_service_server;
 
             // check if a compression method was set
-            if let Some(compression_method) = self.compression {
-
-                // map compression method to the tonic compression encoding type
-                let encoding = match compression_method {
-                    CompressionMethod::Gzip => CompressionEncoding::Gzip,
-                    CompressionMethod::Zstd => CompressionEncoding::Zstd,
-                    CompressionMethod::Deflate => CompressionEncoding::Deflate
-                };
-                // define services with compression
+            if let Some(encoding) = compression_encoding {
+                // define servicees with compression
                 logs_service_server = LogsServiceServer::new(logs_service).send_compressed(encoding).accept_compressed(encoding);
                 metrics_service_server = MetricsServiceServer::new(metrics_service).send_compressed(encoding).accept_compressed(encoding);
                 trace_service_server = TraceServiceServer::new(trace_service).send_compressed(encoding).accept_compressed(encoding);
-
             } else {
                 // define servicees without compression
                 logs_service_server = LogsServiceServer::new(logs_service);
@@ -83,7 +90,7 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
                 // Process internal event
                 mut ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
-                        Ok(ControlMsg::Shutdown {reason}) => {
+                        Ok(ControlMsg::Shutdown {reason, deadline}) => {
                             break;
                         },
                         Err(e) => {
@@ -100,7 +107,7 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
                 .add_service(logs_service_server)
                 .add_service(metrics_service_server)
                 .add_service(trace_service_server)
-                .serve_with_incoming(listener_stream)=> {
+                .serve_with_incoming(&mut listener_stream)=> {
                     if let Err(e) = result {
                         break;
                     }

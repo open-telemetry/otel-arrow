@@ -2,5 +2,9 @@
 
 //! Implementation of the OTLP nodes (receiver, exporter, processor).
 
+/// gRPC service implementation
 pub mod grpc;
+/// Generated protobuf files
+pub mod grpc_stubs;
+/// Implementation of OTLP Receiver that implements the receiver trait
 pub mod otlp_receiver;
