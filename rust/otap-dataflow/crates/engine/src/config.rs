@@ -1,10 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Generic configuration for the pipeline engine.
+//! Set of system configuration structures used by the engine, for example, to define channel sizes.
 //!
-//! Note: Custom configuration types should be defined in the respective node implementations.
+// Note: This type of system configuration is distinct from the pipeline configuration, which
+// focuses instead on defining the interconnection of nodes within the DAG and each node’s specific
+// settings.
 
-const DEFAULT_CHANNEL_CAPACITY: usize = 100;
+/// For now, the channel capacity is set to 256 (a power of two). This value is currently somewhat
+/// arbitrary and will likely be adjusted (and made configurable) in the future once we have more
+/// insight into the engine’s performance. The general idea is to choose a default that is big
+/// enough to absorb short-lived rate mismatches yet small enough to expose back-pressure quickly
+/// and stay L1/L2-cache-friendly.
+///
+/// The default capacity is generally guided by the following formula:
+///
+/// `capacity = producer_rate * worst_case_consumer_pause * safety_margin`
+///
+/// - producer_rate: the number of messages per second each producer can burst.
+/// - worst_case_consumer_pause: the maximum duration (in seconds) a consumer might be unable to make progress
+///   (e.g. syscall, I/O hiccup, thread pre-emption).
+/// - safety_margin: a factor of 1.5–2* is typically sufficient to prevent occasional spikes from
+///   overwhelming the system scheduler.
+///
+/// ToDo: Make this default value configurable and based on performance testing.
+const DEFAULT_CHANNEL_CAPACITY: usize = 256;
 
 /// Generic configuration for a control channel.
 pub struct ControlChannelConfig {
