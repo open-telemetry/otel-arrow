@@ -2,8 +2,8 @@
 
 //! Implementation of the OTLP nodes (receiver, exporter, processor).
 //! 
-//! TODO: implement Ack control message, wait for receiver node to receive a Ack control message then the service can send a response back 
-//! TODO: implement config control message to handle live changing configuration
+//! ToDo implement Ack and Nack control message, wait for receiver node to receive a Ack control message then the service can send a response back 
+//! ToDo implement config control message to handle live changing configuration
 
 use crate::grpc::{LogsServiceImpl, MetricsServiceImpl, TraceServiceImpl, OTLPRequest};
 use crate::grpc_stubs::proto::collector::{logs::v1::logs_service_server::LogsServiceServer,
@@ -48,8 +48,7 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
     ) -> Result<(), Error<OTLPRequest>> {
 
         // create listener on addr provided from config
-        let listener = effect_handler.tcp_listener(self.listening_addr)?;
-        let mut listener_stream = TcpListenerStream::new(listener);
+        
         // check for compression method
         let compression_encoding = match self.compression {
             Some(CompressionMethod::Gzip) => Some(CompressionEncoding::Gzip),
@@ -83,6 +82,9 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
                 metrics_service_server = MetricsServiceServer::new(metrics_service);
                 trace_service_server = TraceServiceServer::new(trace_service);
             }
+
+            let listener = effect_handler.tcp_listener(self.listening_addr)?;
+            let listener_stream = TcpListenerStream::new(listener);
             
             tokio::select! {
                 biased; //prioritize ctrl_msg over all other blocks
@@ -91,6 +93,8 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
                 mut ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
                         Ok(ControlMsg::Shutdown {reason, deadline}) => {
+                            // wait for deadline then shutdown
+                            let _ = sleep(deadline);
                             break;
                         },
                         Err(e) => {
@@ -107,7 +111,7 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
                 .add_service(logs_service_server)
                 .add_service(metrics_service_server)
                 .add_service(trace_service_server)
-                .serve_with_incoming(&mut listener_stream)=> {
+                .serve_with_incoming(listener_stream)=> {
                     if let Err(e) = result {
                         break;
                     }
@@ -124,218 +128,123 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
 
 }
 
-
 #[cfg(test)]
 mod tests {
+    use crate::grpc::OTLPRequest;
+    use crate::otlp_receiver::OTLPReceiver;
+    use crate::grpc_stubs::proto::collector::{
+        logs::v1::{logs_service_client::LogsServiceClient, ExportLogsServiceRequest}, 
+        metrics::v1::{metrics_service_client::MetricsServiceClient, ExportMetricsServiceRequest}, 
+        trace::v1::{trace_service_client::TraceServiceClient, ExportTraceServiceRequest}};
     use otap_df_engine::error::Error;
     use otap_df_engine::message::ControlMsg;
-    use otap_df_engine::testing::receiver::ReceiverTestRuntime;
-    use otap_df_engine::testing::{CtrMsgCounters, TestMsg};
-    use crate::grpc::grpc_stubs::proto::collector::{logs::v1::logs_service_client::LogsServiceClient,
-        metrics::v1::metrics_service_client::MetricsServiceClient,
-        trace::v1::trace_service_client::TraceServiceClient};
+    use otap_df_engine::receiver::ReceiverWrapper;
+    use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
+    use otap_df_engine::testing::{CtrlMsgCounters, TestMsg, exec_in_send_env};
     use std::net::SocketAddr;
-    use tokio::time::{Duration, sleep};
-    use crate::otlp_receiver::OTLPReceiver;
-    use serde_json::Value;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpStream;
-    use tokio::sync::oneshot;
-
-    #[test]
-    fn test_receiver() {
-        let mut test_runtime = ReceiverTestRuntime::new(10);
-
-        // Create a oneshot channel to receive the listening address from MyReceiver.
-        let (port_tx, port_rx) = oneshot::channel();
-        let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
-        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
-        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
-
-        let receiver = OTLPReceiver {
-            listening_addr: addr,
-            compression: None
-        };
-
-
-
-        //start grpc client 
-
-        test_runtime.start_receiver(receiver);
-        test_runtime.start_test(|ctx| async move {
-            // Wait for the receiver to send the listening address.
-            let addr: SocketAddr = port_rx.await.expect("Failed to receive listening address");
-            let grpc_endpoint_clone = grpc_endpoint.clone();
-            // Connect to the receiver's socket.
-            //send test otlp data here
-
-            let mut metrics_client = MetricsServiceClient::connect(grpc_endpoint_clone.clone()).await.unwrap();
-
-            let metrics_response = metrics_client.export(ExportMetricsServiceRequest::default()).await;
-
-            let mut logs_client = LogsServiceClient::connect(grpc_endpoint.clone())
-                .await
-                .unwrap();
-            let logs_response = logs_client.export(ExportLogsServiceRequest::default()).await;
-
-            let mut traces_client = TraceServiceClient::connect(grpc_endpoint.clone())
-                .await
-                .unwrap();
-            let traces_response = traces_client.export(ExportTraceServiceRequest::default()).await;
-
-            // Finally, send a Shutdown event to terminate the receiver.
-            ctx.send_shutdown("Test")
-                .await
-                .expect("Failed to send Shutdown");
-
-            
-        });
-        let counters = test_runtime.counters();
-        test_runtime.validate(|mut ctx| async move {
-            counters.assert(0, 0, 0, 1);
-            let pdata_rx = ctx.pdata_rx().expect("No pdata_rx");
-            let metrics_received = tokio::time::timeout(Duration::from_secs(3), pdata_rx.recv())
-                .await
-                .expect("Timed out waiting for message")
-                .expect("No message received");
-
-            // Assert that the message received is what the test client sent.
-            assert!(matches!(metrics_received, ExportMetricsServiceRequest::default()));
-
-            let logs_received = tokio::time::timeout(Duration::from_secs(3), pdata_rx.recv())
-            .await
-            .expect("Timed out waiting for message")
-            .expect("No message received");
-            assert!(matches!(logs_received, ExportLogsServiceRequest::default()));
-
-            let traces_received = tokio::time::timeout(Duration::from_secs(3), pdata_rx.recv())
-            .await
-            .expect("Timed out waiting for message")
-            .expect("No message received");
-            assert!(matches!(traces_received, ExportTracesServiceRequest::default()));
-            
-
-        });
-    }
-
-
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        ControlMsgChannel, EffectHandlerTrait, NotSendEffectHandler, ReceiverWrapper,
-        SendEffectHandler,
-    };
-    use crate::receiver::{Error, Receiver};
-    use crate::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
-    use crate::testing::{CtrlMsgCounters, TestMsg, exec_in_send_env};
-    use async_trait::async_trait;
-    use serde_json::Value;
+    use tokio::time::{Duration, timeout};
     use std::future::Future;
-    use std::net::SocketAddr;
     use std::pin::Pin;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpStream;
-    use tokio::sync::oneshot;
-    use tokio::time::{Duration, sleep, timeout};
-
 
     /// A type alias for a test receiver with sendable effect handler
-    type ReceiverWithSendEffectHandler = GenericTestReceiver<SendEffectHandler<TestMsg>>;
+    type ReceiverWithSendEffectHandler = OTLPReceiver;
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario(
-        port_rx: oneshot::Receiver<SocketAddr>,
+        grpc_endpoint: String,
     ) -> impl FnOnce(TestContext) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
-                // Wait for the receiver to send the listening address.
-                let addr: SocketAddr = port_rx.await.expect("Failed to receive listening address");
+                // send data to the receiver
 
-                // Connect to the receiver's socket.
-                let mut stream = TcpStream::connect(addr)
+                // connect to the different clients and call export to send a message
+                let mut metrics_client = MetricsServiceClient::connect(grpc_endpoint.clone()).await.expect("Failed to connect to server from Metrics Service Client");
+
+                let _metrics_response = metrics_client.export(ExportMetricsServiceRequest::default()).await.expect("Failed to receive response after sending Metrics Request");
+    
+                let mut logs_client = LogsServiceClient::connect(grpc_endpoint.clone())
                     .await
-                    .expect("Failed to connect to receiver");
-
-                // Send some test data.
-                stream
-                    .write_all(b"Hello from test client")
+                    .expect("Failed to connect to server from Logs Service Client");
+                let _logs_response = logs_client.export(ExportLogsServiceRequest::default()).await.expect("Failed to receive response after sending Logs Request");
+    
+                let mut traces_client = TraceServiceClient::connect(grpc_endpoint.clone())
                     .await
-                    .expect("Failed to send data");
-
-                // Optionally, read an echo (acknowledgment) from the receiver.
-                let mut buf = [0u8; 1024];
-                let len = stream
-                    .read(&mut buf)
-                    .await
-                    .expect("Failed to read response");
-                assert_eq!(&buf[..len], b"ack", "Expected acknowledgment from receiver");
-
-                // Send a few TimerTick events from the test.
-                for _ in 0..3 {
-                    ctx.send_timer_tick()
-                        .await
-                        .expect("Failed to send TimerTick");
-                    ctx.sleep(Duration::from_millis(100)).await;
-                }
-
-                ctx.send_config(Value::Null)
-                    .await
-                    .expect("Failed to send config");
+                    .expect("Failed to connect to server from Trace Service Client");
+                let _traces_response = traces_client.export(ExportTraceServiceRequest::default()).await.expect("Failed to receive response after sending Trace Request");
 
                 // Finally, send a Shutdown event to terminate the receiver.
                 ctx.send_shutdown(Duration::from_millis(200), "Test")
                     .await
                     .expect("Failed to send Shutdown");
-
-                // Close the TCP connection.
-                let _ = stream.shutdown().await;
             })
         }
     }
 
+
+
     /// Validation closure that checks the received message and counters (!Send context).
     fn validation_procedure()
-    -> impl FnOnce(NotSendValidateContext<TestMsg>) -> Pin<Box<dyn Future<Output = ()>>> {
+    -> impl FnOnce(NotSendValidateContext<OTLPRequest>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
             Box::pin(async move {
-                let received = timeout(Duration::from_secs(3), ctx.recv())
+                
+                // read from the effect handler
+                let metrics_received = timeout(Duration::from_secs(3), ctx.recv())
                     .await
                     .expect("Timed out waiting for message")
                     .expect("No message received");
 
                 // Assert that the message received is what the test client sent.
-                assert!(matches!(received, TestMsg(msg) if msg == "Hello from test client"));
-                ctx.counters().assert(3, 0, 1, 1);
+                let expected_metrics_message = ExportMetricsServiceRequest::default();
+                assert!(matches!(metrics_received, expected_metrics_message));
+
+                let logs_received = timeout(Duration::from_secs(3), ctx.recv())
+                .await
+                .expect("Timed out waiting for message")
+                .expect("No message received");
+                let expected_logs_message = ExportLogsServiceRequest::default();
+                assert!(matches!(logs_received, expected_logs_message));
+
+
+                let traces_received = timeout(Duration::from_secs(3), ctx.recv())
+                .await
+                .expect("Timed out waiting for message")
+                .expect("No message received");
+
+                let expected_trace_message =  ExportTraceServiceRequest::default();
+                assert!(matches!(traces_received, expected_trace_message));
+
+                // check that control messages were received
+                ctx.counters().assert(0, 0, 0, 1);
+
             })
         }
     }
-
 
     #[test]
     fn test_receiver_with_send_effect_handler() {
         let test_runtime = TestRuntime::new();
 
-        // Create a oneshot channel to receive the listening address from the receiver.
-        let (port_tx, port_rx) = oneshot::channel();
+        // addr and port for the server to run at
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = "4317";
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        // create our receiver
         let receiver = ReceiverWrapper::with_send(
-            ReceiverWithSendEffectHandler::with_send_effect_handler(
-                test_runtime.counters(),
-                |effect_handler| {
-                    exec_in_send_env(|| {
-                        _ = effect_handler.receiver_name();
-                    });
-                },
-                port_tx,
-            ),
+            OTLPReceiver {
+                listening_addr: addr,
+                compression: None
+            },
             test_runtime.config(),
         );
 
+        // run the test
         test_runtime
             .set_receiver(receiver)
-            .run_test(scenario(port_rx))
+            .run_test(scenario(grpc_endpoint))
             .run_validation(validation_procedure());
     }
 }
+

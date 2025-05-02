@@ -102,3 +102,18 @@ pub enum OTLPRequest {
     /// Traces/Span Data
     Traces(ExportTraceServiceRequest),
 }
+
+
+// #[cfg(test)]
+// mod tests {
+//     use crate::grpc::OTLPRequest;
+//     use otap_df_engine::error::Error;
+//     use otap_df_channel::error::SendError;
+
+//     // fn assert_send<T: Send>() {}
+//     // #[test]
+//     // fn test() {
+//     //     _ = assert_send::<Error<SendError<OTLPRequest>>>();
+//     // }
+
+// }
