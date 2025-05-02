@@ -11,3 +11,4 @@ pub mod receiver;
 mod config;
 #[cfg(test)]
 pub mod testing;
+pub mod pipeline;
