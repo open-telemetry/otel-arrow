@@ -8,7 +8,7 @@
 
 ----
 
-[Quickstart Guide](#-quickstart-guide)
+[Quickstart Guide]((#-quickstart-guide))
 | [Design Principles](docs/design-principles.md)
 | [Architecture](docs/architecture.md) | [Change log](CHANGELOG.md)
 | [Contributing](CONTRIBUTING.md) |
@@ -58,7 +58,7 @@ TBD (Explain why Rust, why Arrow, ...)
 └── examples           # Examples or demo applications
 ```
 
-## :rocket: Quickstart Guide
+## 🚀 Quickstart Guide
 
 ### 📥 Installation
 
