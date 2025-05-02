@@ -30,6 +30,7 @@ fn main() -> anyhow::Result<()> {
                 test_all()?;
                 Ok(())
             }
+            "compile-proto" => compile_proto_otlp(),
             "structure-check" => structure_check::run(),
             "help" => print_help(),
             _ => {
@@ -50,6 +51,7 @@ Usage: Execute the command using `cargo xtask <task>`, e.g., `cargo xtask check`
 Tasks:
   - check: Run all checks.
   - structure-check: Validate the entire structure of the project.
+  - compile-proto: Compile the protobufs files
 "
     );
     Ok(())
@@ -73,6 +75,20 @@ fn test_all() -> anyhow::Result<()> {
     println!("🚀 Running workspace tests with cargo test...");
     run("cargo", &["test", "--workspace"])?;
     println!("✅ All tests passed successfully.\n");
+    Ok(())
+}
+
+fn compile_proto_otlp() -> anyhow::Result<()> {
+    tonic_build::configure()
+        .out_dir("crates/otlp/src/grpc_stubs")
+        .compile_protos(
+            &[
+                "crates/otlp/proto/opentelemetry/proto/collector/logs/v1/logs_service.proto",
+                "crates/otlp/proto/opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
+                "crates/otlp/proto/opentelemetry/proto/collector/trace/v1/trace_service.proto",
+            ],
+            &["crates/otlp/proto"],
+        )?;
     Ok(())
 }
 
