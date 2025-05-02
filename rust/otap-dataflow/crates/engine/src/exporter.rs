@@ -23,15 +23,6 @@
 //!
 //! # Thread Safety
 //!
-<<<<<<< HEAD
-//! Note that this trait uses `#[async_trait(?Send)]`, meaning implementations
-//! are not required to be thread-safe. To ensure scalability, the pipeline engine will start
-//! multiple instances of the same pipeline in parallel, each with its own exporter instance.
-//!
-//! Through the `Mode` type parameter, exporters can be configured to be either thread-local (`LocalMode`)
-//! or thread-safe (`SendableMode`). This allows you to choose the appropriate threading model based on
-//! your exporter's requirements and performance considerations.
-=======
 //! Note that this trait uses `#[async_trait(?Send)]`, meaning implementations are not required to
 //! be thread-safe. If you need to implement an exporter that requires `Send`, you can use the
 //! [`SendEffectHandler`] type. The default effect handler is `!Send` (see
@@ -41,7 +32,6 @@
 //!
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
->>>>>>> main
 
 use crate::config::ExporterConfig;
 use crate::error::Error;
@@ -51,35 +41,20 @@ use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_channel::mpsc;
 use std::marker::PhantomData;
-<<<<<<< HEAD
-use std::rc::Rc;
-use std::sync::Arc;
-=======
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{Instant, Sleep, sleep_until};
->>>>>>> main
 
 /// A trait for egress exporters.
 ///
 /// Note: The default effect handler is `!Send` (see [`NotSendEffectHandler`]).
 #[async_trait(?Send)]
-<<<<<<< HEAD
-pub trait Exporter {
-    /// The type of messages handled by the exporter.
-    type PData;
-
-    /// The threading mode used by this exporter
-    type Mode: ThreadMode;
-
-=======
 pub trait Exporter<PData, EF = NotSendEffectHandler<PData>>
 where
     EF: EffectHandlerTrait<PData>,
 {
->>>>>>> main
     /// Starts the exporter and begins exporting incoming data.
     ///
     /// The pipeline engine will call this function to start the exporter in a separate task.
