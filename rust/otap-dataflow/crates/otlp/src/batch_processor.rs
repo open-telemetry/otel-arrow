@@ -4,7 +4,6 @@
 use async_trait::async_trait;
 use otap_df_engine::error::Error;
 use otap_df_engine::message::{ControlMsg, Message};
-use log;
 use otap_df_engine::processor::{SendEffectHandler, Processor, EffectHandlerTrait};
 use std::time::Duration;
 
