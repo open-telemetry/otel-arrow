@@ -6,21 +6,17 @@ on: [push, pull_request]
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_FOLDERS: >-
-    [
-      'otap-dataflow',
-      'beaubourg',
-      'otel-arrow-rust',
-      'experimental/query_abstraction',
-      'experimental/syslog-cef-receivers'
-    ]
 
 jobs:
   test:
-    strategy:
-      fail-fast: false
-      matrix:
-        folder: ${{ fromJSON(env.RUST_FOLDERS) }}
+    fail-fast: false
+    matrix:
+      folder:
+        - otap-dataflow
+        - beaubourg
+        - otel-arrow-rust
+        - experimental/query_abstraction
+        - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -40,7 +36,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        folder: ${{ fromJSON(env.RUST_FOLDERS) }}
+        folder:
+        - otap-dataflow
+        - beaubourg
+        - otel-arrow-rust
+        - experimental/query_abstraction
+        - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -61,7 +62,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        folder: ${{ fromJSON(env.RUST_FOLDERS) }}
+        folder:
+        - otap-dataflow
+        - beaubourg
+        - otel-arrow-rust
+        - experimental/query_abstraction
+        - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -84,7 +90,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        folder: ${{ fromJSON(env.RUST_FOLDERS) }}
+        folder:
+        - otap-dataflow
+        - beaubourg
+        - otel-arrow-rust
+        - experimental/query_abstraction
+        - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -112,7 +123,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        folder: ${{ fromJSON(env.RUST_FOLDERS) }}
+        folder:
+        - otap-dataflow
+        - beaubourg
+        - otel-arrow-rust
+        - experimental/query_abstraction
+        - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -153,7 +169,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        folder: ${{ fromJSON(env.RUST_FOLDERS) }}
+        folder:
+        - otap-dataflow
+        - beaubourg
+        - otel-arrow-rust
+        - experimental/query_abstraction
+        - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -173,7 +194,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        folder: ${{ fromJSON(env.RUST_FOLDERS) }}
+        folder:
+        - otap-dataflow
+        - beaubourg
+        - otel-arrow-rust
+        - experimental/query_abstraction
+        - experimental/syslog-cef-receivers
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
