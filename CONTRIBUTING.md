@@ -2,24 +2,24 @@
 
 ## Introduction
 
-Welcome to the OpenTelemetry Protocol with Apache Arrow project! 🎉  
+Welcome to the OpenTelemetry Protocol with Apache Arrow project! :tada:
 This repository defines and supports Golang libraries for producing and
 consuming telemetry data streams using the OpenTelemetry Protocol with Apache
 Arrow.
 
 We value all contributions, whether big or small, and encourage you to join us
-in improving this project. If you have questions, don’t hesitate to reach out to
-the OpenTelemetry community—we’re here to help!
+in improving this project. If you have questions, don't hesitate to reach out to
+the OpenTelemetry community - we're here to help!
 
 ## Pre-requisites
 
 To work with this repository, you'll need:
 
 - **Go (Golang):** v1.18 or higher. [Installation
-  Guide](https://golang.org/doc/install)  
+  Guide](https://golang.org/doc/install)
 - **Protocol Buffer Compiler (protoc):** Required for regenerating gRPC
-  services. [Installation Guide](https://grpc.io/docs/protoc-installation/)  
-- **protoc-gen-go:** Install using:  
+  services. [Installation Guide](https://grpc.io/docs/protoc-installation/)
+- **protoc-gen-go:** Install using:
 
   ```shell
   go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28

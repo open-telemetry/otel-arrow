@@ -22,7 +22,7 @@ By default, there is no flag enabled. All these flags are cumulative.
 | -record-stats      | Display Arrow record statistics (see [details](#record-stats-output))                |
 | -schema-updates    | Display Arrow schema updates (see [details](#schema-updates-output))                 |
 | -producer-stats    | Display OTel Arrow producer statistics (see [details](#producer-stats-output))       |
-| -compression-ratio | Display compression ratio per record type (see [details](#compression-ratio-output)) |  
+| -compression-ratio | Display compression ratio per record type (see [details](#compression-ratio-output)) |
 | -all               | Display all statistics and updates                                                   |
 
 ## Supported formats

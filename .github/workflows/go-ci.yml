@@ -1,10 +1,10 @@
 name: Go-CI
 permissions:
   contents: read
-  # needed for codeql 
+  # needed for codeql
   security-events: write
 
-on: 
+on:
   # run this job on every push and pull request
   # ignore changes only in the rust directory
   push:
