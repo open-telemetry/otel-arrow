@@ -2,40 +2,60 @@
 
 //! Test utilities for exporters.
 //!
-//! This module provides specialized utilities for testing exporter components:
-//!
-//! - `ExporterTestContext`: Provides a context for interacting with exporters during tests
-//! - `ExporterTestRuntime`: Configures and manages a single-threaded tokio runtime for exporter tests
-//!
 //! These utilities are designed to make testing exporters simpler by abstracting away common
 //! setup and lifecycle management.
 
-use crate::exporter::{EffectHandler, Exporter, MessageChannel};
+use crate::config::ExporterConfig;
+use crate::exporter::{ExporterWrapper, MessageChannel};
 use crate::message::ControlMsg;
-use crate::receiver::LocalMode;
-use crate::testing::{CtrMsgCounters, TestMsg, create_test_channel, setup_test_runtime};
+use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime};
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use serde_json::Value;
+use std::fmt::Debug;
+use std::future::Future;
+use std::marker::PhantomData;
 use std::time::Duration;
 use tokio::task::LocalSet;
 use tokio::time::sleep;
 
 /// A context object that holds transmitters for use in test tasks.
-pub struct ExporterTestContext {
+pub struct TestContext<PData> {
     /// Sender for control messages
     control_tx: mpsc::Sender<ControlMsg>,
     /// Sender for pipeline data
-    pdata_tx: mpsc::Sender<TestMsg>,
+    pdata_tx: mpsc::Sender<PData>,
+    /// Message counter for tracking processed messages
+    counters: CtrlMsgCounters,
 }
 
-impl ExporterTestContext {
+impl<PData> Clone for TestContext<PData> {
+    fn clone(&self) -> Self {
+        Self {
+            control_tx: self.control_tx.clone(),
+            pdata_tx: self.pdata_tx.clone(),
+            counters: self.counters.clone(),
+        }
+    }
+}
+
+impl<PData> TestContext<PData> {
     /// Creates a new TestContext with the given transmitters.
-    pub fn new(control_tx: mpsc::Sender<ControlMsg>, pdata_tx: mpsc::Sender<TestMsg>) -> Self {
+    pub fn new(
+        control_tx: mpsc::Sender<ControlMsg>,
+        pdata_tx: mpsc::Sender<PData>,
+        counters: CtrlMsgCounters,
+    ) -> Self {
         Self {
             control_tx,
             pdata_tx,
+            counters,
         }
+    }
+
+    /// Returns the control message counters.
+    pub fn counters(&self) -> CtrlMsgCounters {
+        self.counters.clone()
     }
 
     /// Sends a timer tick control message.
@@ -63,9 +83,14 @@ impl ExporterTestContext {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_shutdown(&self, reason: &str) -> Result<(), SendError<ControlMsg>> {
+    pub async fn send_shutdown(
+        &self,
+        deadline: Duration,
+        reason: &str,
+    ) -> Result<(), SendError<ControlMsg>> {
         self.control_tx
             .send_async(ControlMsg::Shutdown {
+                deadline,
                 reason: reason.to_owned(),
             })
             .await
@@ -76,8 +101,8 @@ impl ExporterTestContext {
     /// # Errors
     ///
     /// Returns an error if the message could not be sent.
-    pub async fn send_data<S: Into<String>>(&self, content: S) -> Result<(), SendError<TestMsg>> {
-        self.pdata_tx.send_async(TestMsg::new(content)).await
+    pub async fn send_pdata(&self, content: PData) -> Result<(), SendError<PData>> {
+        self.pdata_tx.send_async(content).await
     }
 
     /// Sleeps for the specified duration.
@@ -90,7 +115,10 @@ impl ExporterTestContext {
 ///
 /// This structure encapsulates the common setup logic needed for testing exporters,
 /// including channel creation, exporter instantiation, and task management.
-pub struct ExporterTestRuntime {
+pub struct TestRuntime<PData> {
+    /// The configuration for the exporter
+    config: ExporterConfig,
+
     /// Runtime instance
     rt: tokio::runtime::Runtime,
     /// Local task set for non-Send futures
@@ -101,24 +129,50 @@ pub struct ExporterTestRuntime {
     /// Receiver for control messages
     control_rx: Option<mpsc::Receiver<ControlMsg>>,
 
-    /// Sender for pipeline data
-    pdata_tx: mpsc::Sender<TestMsg>,
-    /// Receiver for pipeline data
-    pdata_rx: Option<mpsc::Receiver<TestMsg>>,
+    /// Sender for pdata messages
+    pdata_tx: mpsc::Sender<PData>,
+    /// Receiver for pdata messages
+    pdata_rx: Option<mpsc::Receiver<PData>>,
 
     /// Message counter for tracking processed messages
-    counter: CtrMsgCounters,
+    counter: CtrlMsgCounters,
 }
 
-impl ExporterTestRuntime {
+/// Data and operations for the test phase of an exporter.
+pub struct TestPhase<PData> {
+    /// Runtime instance
+    rt: tokio::runtime::Runtime,
+    /// Local task set for non-Send futures
+    local_tasks: LocalSet,
+
+    counters: CtrlMsgCounters,
+
+    control_sender: mpsc::Sender<ControlMsg>,
+    pdata_sender: mpsc::Sender<PData>,
+}
+
+/// Data and operations for the validation phase of an exporter.
+pub struct ValidationPhase<PData> {
+    /// Runtime instance
+    rt: tokio::runtime::Runtime,
+    /// Local task set for non-Send futures
+    local_tasks: LocalSet,
+
+    context: TestContext<PData>,
+    _pd: PhantomData<PData>,
+}
+
+impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
-    pub fn new(channel_capacity: usize) -> Self {
+    pub fn new() -> Self {
+        let config = ExporterConfig::new("test_exporter");
         let (rt, local_tasks) = setup_test_runtime();
-        let counter = CtrMsgCounters::new();
-        let (control_tx, control_rx) = create_test_channel(channel_capacity);
-        let (pdata_tx, pdata_rx) = create_test_channel(channel_capacity);
+        let counter = CtrlMsgCounters::new();
+        let (control_tx, control_rx) = create_not_send_channel(config.control_channel.capacity);
+        let (pdata_tx, pdata_rx) = create_not_send_channel(config.input_pdata_channel.capacity);
 
         Self {
+            config,
             rt,
             local_tasks,
             control_tx,
@@ -129,16 +183,18 @@ impl ExporterTestRuntime {
         }
     }
 
+    /// Returns the current exporter configuration.
+    pub fn config(&self) -> &ExporterConfig {
+        &self.config
+    }
+
     /// Returns the message counter.
-    pub fn counters(&self) -> CtrMsgCounters {
+    pub fn counters(&self) -> CtrlMsgCounters {
         self.counter.clone()
     }
 
-    /// Starts an exporter with the configured channels.
-    pub fn start_exporter<E>(&mut self, exporter: E)
-    where
-        E: Exporter<PData = TestMsg, Mode = LocalMode> + 'static,
-    {
+    /// Sets the exporter for the test runtime and returns the test phase.
+    pub fn set_exporter(mut self, exporter: ExporterWrapper<PData>) -> TestPhase<PData> {
         let msg_chan = MessageChannel::new(
             self.control_rx
                 .take()
@@ -146,28 +202,54 @@ impl ExporterTestRuntime {
             self.pdata_rx.take().expect("PData channel not initialized"),
         );
 
-        let boxed_exporter = Box::new(exporter);
-
         let _ = self.local_tasks.spawn_local(async move {
-            boxed_exporter
-                .start(msg_chan, EffectHandler::new("test_exporter"))
+            exporter
+                .start(msg_chan)
                 .await
                 .expect("Exporter event loop failed");
         });
+        TestPhase {
+            rt: self.rt,
+            local_tasks: self.local_tasks,
+            counters: self.counter.clone(),
+            control_sender: self.control_tx,
+            pdata_sender: self.pdata_tx,
+        }
     }
+}
 
-    /// Spawns a local task with a TestContext that provides access to transmitters.
-    pub fn start_test<F, Fut>(&self, f: F)
+impl<PData: Debug + 'static> TestPhase<PData> {
+    /// Starts the test scenario by executing the provided function with the test context.
+    pub fn run_test<F, Fut>(self, f: F) -> ValidationPhase<PData>
     where
-        F: FnOnce(ExporterTestContext) -> Fut + 'static,
+        F: FnOnce(TestContext<PData>) -> Fut + 'static,
         Fut: Future<Output = ()> + 'static,
     {
-        let context = ExporterTestContext::new(self.control_tx.clone(), self.pdata_tx.clone());
-        let _ = self.local_tasks.spawn_local(async move {
-            f(context).await;
+        let context = self.create_context();
+        let ctx_test = context.clone();
+        self.rt.block_on(async move {
+            f(ctx_test).await;
         });
+
+        ValidationPhase {
+            rt: self.rt,
+            local_tasks: self.local_tasks,
+            context,
+            _pd: PhantomData,
+        }
     }
 
+    /// Creates a new context with the current transmitters
+    fn create_context(&self) -> TestContext<PData> {
+        TestContext::new(
+            self.control_sender.clone(),
+            self.pdata_sender.clone(),
+            self.counters.clone(),
+        )
+    }
+}
+
+impl<PData> ValidationPhase<PData> {
     /// Runs all spawned tasks to completion and executes the provided future to validate test
     /// expectations.
     ///
@@ -180,17 +262,15 @@ impl ExporterTestRuntime {
     /// # Returns
     ///
     /// The result of the provided future.
-    pub fn validate<F, Fut, T>(self, future_fn: F) -> T
+    pub fn run_validation<F, Fut, T>(mut self, future_fn: F) -> T
     where
-        F: FnOnce(ExporterTestContext) -> Fut,
+        F: FnOnce(TestContext<PData>) -> Fut,
         Fut: Future<Output = T>,
     {
         // First run all the spawned tasks to completion
-        self.rt.block_on(self.local_tasks);
-
-        let context = ExporterTestContext::new(self.control_tx.clone(), self.pdata_tx.clone());
-
+        let local_tasks = std::mem::take(&mut self.local_tasks);
+        self.rt.block_on(local_tasks);
         // Then run the validation future with the test context
-        self.rt.block_on(future_fn(context))
+        self.rt.block_on(future_fn(self.context))
     }
 }

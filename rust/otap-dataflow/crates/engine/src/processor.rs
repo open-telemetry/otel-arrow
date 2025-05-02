@@ -23,18 +23,34 @@
 //! # Thread Safety
 //!
 //! Note that this trait uses `#[async_trait(?Send)]`, meaning implementations
+<<<<<<< HEAD
 //! are not required to be thread-safe. To ensure scalability, the pipeline engine will start
 //! multiple instances of the same pipeline in parallel, each with its own processor instance.
 //!
 //! Through the `Mode` type parameter, processors can be configured to be either thread-local (`LocalMode`)
 //! or thread-safe (`SendableMode`). This allows you to choose the appropriate threading model based on
 //! your processor's requirements and performance considerations.
+=======
+//! are not required to be thread-safe. If you need to implement a processor that requires `Send`,
+//! you can use the [`SendEffectHandler`] type. The default effect handler is `!Send` (see
+//! [`NotSendEffectHandler`]).
+//!
+//! # Scalability
+//!
+//! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
+//! in parallel on different cores, each with its own processor instance.
+>>>>>>> main
 
-use crate::NodeName;
+use crate::config::ProcessorConfig;
 use crate::error::Error;
+<<<<<<< HEAD
 use crate::message::Message;
 use crate::receiver::{LocalMode, SendableMode, ThreadMode};
+=======
+use crate::message::{Message, PDataReceiver};
+>>>>>>> main
 use async_trait::async_trait;
+use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use std::marker::PhantomData;
 use std::rc::Rc;
@@ -42,14 +58,11 @@ use std::sync::Arc;
 
 /// A trait for processors in the pipeline.
 #[async_trait(?Send)]
-pub trait Processor {
-    /// The type of messages handled by the processor.
-    type PData;
-
-    /// The threading mode used by this processor
-    type Mode: ThreadMode;
-
-    /// Processes a message and optionally produces new messages.
+pub trait Processor<PData, EF = NotSendEffectHandler<PData>>
+where
+    EF: EffectHandlerTrait<PData>,
+{
+    /// Processes a message and optionally produces effects, such as generating new pdata messages.
     ///
     /// This method is called by the pipeline engine for each message that arrives at the processor.
     /// Unlike receivers, processors have known inputs (messages from previous stages), so the pipeline
@@ -82,55 +95,70 @@ pub trait Processor {
     /// Returns an [`Error`] if the processor encounters an unrecoverable error.
     async fn process(
         &mut self,
-        msg: Message<Self::PData>,
-        effect_handler: &mut EffectHandler<Self::PData, Self::Mode>,
-    ) -> Result<(), Error<Self::PData>>;
+        msg: Message<PData>,
+        effect_handler: &mut EF,
+    ) -> Result<(), Error<PData>>;
 }
 
-/// Handles side effects such as sending messages to the next node.
+/// Handles side effects for the processor.
 ///
-/// The `Msg` type parameter represents the type of message the processor
-/// will eventually produce, while the `Mode` type parameter determines the threading behavior.
+/// The `PData` type parameter represents the type of message the processor will consume and
+/// produce.
 ///
-/// # Thread Safety Options
+/// 2 implementations are provided:
 ///
-/// - `EffectHandler<Msg, LocalMode>`: For thread-local (!Send) processors. Uses `Rc` internally and is
-///   the default for backward compatibility. Created with `EffectHandler::new()`.
-/// - `EffectHandler<Msg, SendableMode>`: For thread-safe (Send) processors. Uses `Arc` internally and
-///   supports sending across thread boundaries. Created with `EffectHandler::new_sendable()`.
+/// - [`NotSendEffectHandler<PData>`]: For thread-local (!Send) processors. Uses `Rc` internally.
+///   It's the default and preferred effect handler.
+/// - [`SendEffectHandler<PData>`]: For thread-safe (Send) processors. Uses `Arc` internally and
+///   supports sending across thread boundaries.
 ///
-/// Choose the appropriate mode based on your component's requirements. Use `LocalMode` when thread safety
-/// isn't needed or when using !Send dependencies, and `SendableMode` when the component must be shared
-/// across threads.
-///
-/// Note for implementers: The `EffectHandler` is designed to be cloned and shared across tasks
-/// so the cost of cloning should be minimal.
-pub struct EffectHandler<Msg, Mode: ThreadMode = LocalMode> {
+/// Note for implementers: Effect handler implementations are designed to be cloned so the cost of
+/// cloning should be minimal.
+#[async_trait(?Send)]
+pub trait EffectHandlerTrait<PData> {
+    /// Returns the name of the processor associated with this handler.
+    fn processor_name(&self) -> &str;
+
+    /// Sends a message to the next node(s) in the pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
+    async fn send_message(&self, data: PData) -> Result<(), Error<PData>>;
+
+    // More methods will be added in the future as needed.
+}
+
+/// A `!Send` implementation of the EffectHandlerTrait.
+#[derive(Clone)]
+pub struct NotSendEffectHandler<PData> {
     /// The name of the processor.
-    processor_name: Mode::NameRef,
+    processor_name: Rc<str>,
     /// A sender used to forward messages from the processor.
-    msg_sender: mpsc::Sender<Msg>,
-    /// Marker for the thread mode.
-    _mode: PhantomData<Mode>,
+    msg_sender: mpsc::Sender<PData>,
 }
 
-impl<Msg, Mode: ThreadMode> Clone for EffectHandler<Msg, Mode> {
-    fn clone(&self) -> Self {
-        EffectHandler {
-            processor_name: self.processor_name.clone(),
-            msg_sender: self.msg_sender.clone(),
-            _mode: PhantomData,
+/// Implementation for the `!Send` effect handler.
+impl<PData> NotSendEffectHandler<PData> {
+    /// Creates a new local (!Send) `EffectHandler` with the given processor name.
+    /// This is the default and preferred effect handler for this project.
+    ///
+    /// Use this constructor when your processor doesn't need to be sent across threads or
+    /// when it uses components that aren't `Send`.
+    pub fn new<S: AsRef<str>>(processor_name: S, msg_sender: mpsc::Sender<PData>) -> Self {
+        NotSendEffectHandler {
+            processor_name: Rc::from(processor_name.as_ref()),
+            msg_sender,
         }
     }
 }
 
-// Implementation for any mode
-impl<Msg, Mode: ThreadMode> EffectHandler<Msg, Mode> {
+#[async_trait(?Send)]
+impl<PData> EffectHandlerTrait<PData> for NotSendEffectHandler<PData> {
     /// Returns the name of the processor associated with this handler.
     #[must_use]
-    pub fn processor_name(&self) -> NodeName {
-        // Convert to NodeName (Rc<str>) to maintain compatibility with existing API
-        Rc::from(self.processor_name.as_ref())
+    fn processor_name(&self) -> &str {
+        &self.processor_name
     }
 
     /// Sends a message to the next node(s) in the pipeline.
@@ -138,44 +166,138 @@ impl<Msg, Mode: ThreadMode> EffectHandler<Msg, Mode> {
     /// # Errors
     ///
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
-    pub async fn send_message(&self, data: Msg) -> Result<(), Error<Msg>> {
+    async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
         self.msg_sender.send_async(data).await?;
         Ok(())
     }
 }
 
-// Implementation specific to LocalMode (default, non-Send)
-impl<Msg> EffectHandler<Msg, LocalMode> {
-    /// Creates a new local (non-Send) `EffectHandler` with the given processor name.
-    /// This is the default and preferred mode for this project.
-    ///
-    /// Use this constructor when your processor doesn't need to be sent across threads or
-    /// when it uses components that aren't `Send`.
-    pub fn new<S: AsRef<str>>(processor_name: S, msg_sender: mpsc::Sender<Msg>) -> Self {
-        EffectHandler {
-            processor_name: Rc::from(processor_name.as_ref()),
+/// A `Send` implementation of the EffectHandlerTrait.
+#[derive(Clone)]
+pub struct SendEffectHandler<PData> {
+    /// The name of the processor.
+    processor_name: Arc<str>,
+    /// A sender used to forward messages from the processor.
+    msg_sender: tokio::sync::mpsc::Sender<PData>,
+}
+
+/// Implementation for the `Send` effect handler.
+impl<PData> SendEffectHandler<PData> {
+    /// Creates a new "sendable" effect handler with the given processor name.
+    pub fn new<S: AsRef<str>>(
+        processor_name: S,
+        msg_sender: tokio::sync::mpsc::Sender<PData>,
+    ) -> Self {
+        SendEffectHandler {
+            processor_name: Arc::from(processor_name.as_ref()),
             msg_sender,
-            _mode: PhantomData,
         }
     }
 }
 
-// Implementation for SendableMode (Send)
-impl<Msg: Send + 'static> EffectHandler<Msg, SendableMode> {
-    /// Creates a new thread-safe (Send) `EffectHandler` with the given processor name.
-    /// Use this only when you need an EffectHandler that can be sent across thread boundaries,
-    /// typically when integrating with libraries that require Send traits (e.g., Tonic GRPC services).
+#[async_trait(?Send)]
+impl<PData> EffectHandlerTrait<PData> for SendEffectHandler<PData> {
+    /// Returns the name of the processor associated with this handler.
+    #[must_use]
+    fn processor_name(&self) -> &str {
+        &self.processor_name
+    }
+
+    /// Sends a message to the next node(s) in the pipeline.
     ///
-    /// Note: For this project, `LocalMode` is the preferred mode. Only use `SendableMode`
-    /// when you have a specific requirement that prevents using `LocalMode`.
+    /// # Errors
     ///
-    /// This enables greater parallelism but requires that all state maintained by the
-    /// processor implements `Send + Sync`.
-    pub fn new_sendable<S: AsRef<str>>(processor_name: S, msg_sender: mpsc::Sender<Msg>) -> Self {
-        EffectHandler {
-            processor_name: Arc::from(processor_name.as_ref()),
-            msg_sender,
-            _mode: PhantomData,
+    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
+    async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
+        self.msg_sender
+            .send(data)
+            .await
+            .map_err(|tokio::sync::mpsc::error::SendError(pdata)| {
+                Error::ChannelSendError(SendError::Full(pdata))
+            })
+    }
+}
+
+/// A wrapper for the processor that allows for both `Send` and `!Send` effect handlers.
+///
+/// Note: This is useful for creating a single interface for the processor regardless of the effect
+/// handler type. This is the only type that the pipeline engine will use in order to be agnostic to
+/// the effect handler type.
+pub enum ProcessorWrapper<PData> {
+    /// A processor with a `!Send` effect handler.
+    NotSend {
+        /// The processor instance.
+        processor: Box<dyn Processor<PData, NotSendEffectHandler<PData>>>,
+        /// The effect handler for the processor.
+        effect_handler: NotSendEffectHandler<PData>,
+        /// A receiver for pdata messages.
+        pdata_receiver: Option<mpsc::Receiver<PData>>,
+    },
+    /// A processor with a `Send` effect handler.
+    Send {
+        /// The processor instance.
+        processor: Box<dyn Processor<PData, SendEffectHandler<PData>>>,
+        /// The effect handler for the processor.
+        effect_handler: SendEffectHandler<PData>,
+        /// A receiver for pdata messages.
+        pdata_receiver: Option<tokio::sync::mpsc::Receiver<PData>>,
+    },
+}
+
+impl<PData> ProcessorWrapper<PData> {
+    /// Creates a new `ProcessorWrapper` with the given processor and `!Send` effect handler.
+    pub fn with_not_send<P>(processor: P, config: &ProcessorConfig) -> Self
+    where
+        P: Processor<PData, NotSendEffectHandler<PData>> + 'static,
+    {
+        let (pdata_sender, pdata_receiver) =
+            mpsc::Channel::new(config.output_pdata_channel.capacity);
+        ProcessorWrapper::NotSend {
+            effect_handler: NotSendEffectHandler::new(&config.name, pdata_sender),
+            processor: Box::new(processor),
+            pdata_receiver: Some(pdata_receiver),
+        }
+    }
+
+    /// Creates a new `ProcessorWrapper` with the given processor and `Send` effect handler.
+    pub fn with_send<P>(processor: P, config: &ProcessorConfig) -> Self
+    where
+        P: Processor<PData, SendEffectHandler<PData>> + 'static,
+    {
+        let (pdata_sender, pdata_receiver) =
+            tokio::sync::mpsc::channel(config.output_pdata_channel.capacity);
+        ProcessorWrapper::Send {
+            effect_handler: SendEffectHandler::new(&config.name, pdata_sender),
+            processor: Box::new(processor),
+            pdata_receiver: Some(pdata_receiver),
+        }
+    }
+
+    /// Call the processor's `process` method.
+    pub async fn process(&mut self, msg: Message<PData>) -> Result<(), Error<PData>> {
+        match self {
+            ProcessorWrapper::NotSend {
+                effect_handler,
+                processor,
+                ..
+            } => processor.process(msg, effect_handler).await,
+            ProcessorWrapper::Send {
+                effect_handler,
+                processor,
+                ..
+            } => processor.process(msg, effect_handler).await,
+        }
+    }
+
+    /// Takes the PData receiver from the wrapper and returns it.
+    pub fn take_pdata_receiver(&mut self) -> PDataReceiver<PData> {
+        match self {
+            ProcessorWrapper::NotSend { pdata_receiver, .. } => {
+                PDataReceiver::NotSend(pdata_receiver.take().expect("pdata_receiver is None"))
+            }
+            ProcessorWrapper::Send { pdata_receiver, .. } => {
+                PDataReceiver::Send(pdata_receiver.take().expect("pdata_receiver is None"))
+            }
         }
     }
 }
@@ -184,42 +306,77 @@ impl<Msg: Send + 'static> EffectHandler<Msg, SendableMode> {
 mod tests {
     use crate::message::ControlMsg::{Config, Shutdown, TimerTick};
     use crate::message::Message;
-    use crate::processor::{EffectHandler, Error, Processor};
-    use crate::receiver::LocalMode;
-    use crate::testing::processor::ProcessorTestRuntime;
-    use crate::testing::{CtrMsgCounters, TestMsg};
+    use crate::processor::{
+        EffectHandlerTrait, Error, NotSendEffectHandler, Processor, ProcessorWrapper,
+        SendEffectHandler,
+    };
+    use crate::testing::processor::TestRuntime;
+    use crate::testing::processor::{TestContext, ValidateContext};
+    use crate::testing::{CtrlMsgCounters, TestMsg, exec_in_send_env};
     use async_trait::async_trait;
     use serde_json::Value;
+    use std::pin::Pin;
+    use std::time::Duration;
 
-    struct TestProcessor {
-        counters: CtrMsgCounters,
+    /// A generic test processor that counts message events
+    /// Works with any effect handler that implements EffectHandlerTrait
+    pub struct GenericTestProcessor<EF> {
+        /// Counter for different message types
+        ctrl_msg_counters: CtrlMsgCounters,
+        /// Optional callback for testing sendable effect handlers
+        test_send_eh: Option<fn(&EF)>,
+    }
+
+    impl<EF> GenericTestProcessor<EF> {
+        /// Creates a new test node with the given counter
+        pub fn new(ctrl_msg_counters: CtrlMsgCounters) -> Self {
+            GenericTestProcessor {
+                ctrl_msg_counters,
+                test_send_eh: None,
+            }
+        }
+
+        /// Creates a new test node with a callback for PData messages
+        pub fn with_send_effect_handler(
+            ctrl_msg_counters: CtrlMsgCounters,
+            callback: fn(&EF),
+        ) -> Self {
+            GenericTestProcessor {
+                ctrl_msg_counters,
+                test_send_eh: Some(callback),
+            }
+        }
     }
 
     #[async_trait(?Send)]
-    impl Processor for TestProcessor {
-        type PData = TestMsg;
-        type Mode = LocalMode;
-
+    impl<EF> Processor<TestMsg, EF> for GenericTestProcessor<EF>
+    where
+        EF: EffectHandlerTrait<TestMsg> + Clone + 'static,
+    {
         async fn process(
             &mut self,
-            msg: Message<Self::PData>,
-            effect_handler: &mut EffectHandler<Self::PData, Self::Mode>,
-        ) -> Result<(), Error<Self::PData>> {
+            msg: Message<TestMsg>,
+            effect_handler: &mut EF,
+        ) -> Result<(), Error<TestMsg>> {
             match msg {
                 Message::Control(control) => match control {
                     TimerTick {} => {
-                        self.counters.increment_timer_tick();
+                        self.ctrl_msg_counters.increment_timer_tick();
                     }
                     Config { .. } => {
-                        self.counters.increment_config();
+                        self.ctrl_msg_counters.increment_config();
                     }
                     Shutdown { .. } => {
-                        self.counters.increment_shutdown();
+                        self.ctrl_msg_counters.increment_shutdown();
                     }
                     _ => {}
                 },
                 Message::PData(data) => {
-                    self.counters.increment_message();
+                    self.ctrl_msg_counters.increment_message();
+                    if let Some(test_send_eh) = self.test_send_eh {
+                        // Call the test callback if provided.
+                        test_send_eh(&effect_handler);
+                    }
                     effect_handler
                         .send_message(TestMsg(format!("{} RECEIVED", data.0)))
                         .await?;
@@ -229,54 +386,94 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_processor() {
-        let counters = CtrMsgCounters::new();
-        let mut test_runtime = ProcessorTestRuntime::new(
-            TestProcessor {
-                counters: counters.clone(),
-            },
-            10,
-        );
+    /// A type alias for a test processor with regular effect handler
+    type ProcessorWithNotSendEffectHandler = GenericTestProcessor<NotSendEffectHandler<TestMsg>>;
 
-        test_runtime.start_test(|mut context| async move {
-            // Process a TimerTick event.
-            context
-                .process(Message::timer_tick_ctrl_msg())
-                .await
-                .expect("Processor failed on TimerTick");
-            assert!(context.drain_pdata().await.is_empty());
+    /// A type alias for a test processor with sendable effect handler
+    type ProcessorWithSendEffectHandler = GenericTestProcessor<SendEffectHandler<TestMsg>>;
 
-            // Process a Message event.
-            context
-                .process(Message::data_msg(TestMsg("Hello".to_owned())))
-                .await
-                .expect("Processor failed on Message");
-            let msgs = context.drain_pdata().await;
-            assert_eq!(msgs.len(), 1);
-            assert_eq!(msgs[0], TestMsg("Hello RECEIVED".to_string()));
+    /// Test closure that simulates a typical processor scenario.
+    fn scenario() -> impl FnOnce(TestContext<TestMsg>) -> Pin<Box<dyn Future<Output = ()>>> {
+        move |mut ctx| {
+            Box::pin(async move {
+                // Process a TimerTick event.
+                ctx.process(Message::timer_tick_ctrl_msg())
+                    .await
+                    .expect("Processor failed on TimerTick");
+                assert!(ctx.drain_pdata().await.is_empty());
 
-            // Process a Config event.
-            context
-                .process(Message::config_ctrl_msg(Value::Null))
-                .await
-                .expect("Processor failed on Config");
-            assert!(context.drain_pdata().await.is_empty());
+                // Process a Message event.
+                ctx.process(Message::data_msg(TestMsg("Hello".to_owned())))
+                    .await
+                    .expect("Processor failed on Message");
+                let msgs = ctx.drain_pdata().await;
+                assert_eq!(msgs.len(), 1);
+                assert_eq!(msgs[0], TestMsg("Hello RECEIVED".to_string()));
 
-            // Process a Shutdown event.
-            context
-                .process(Message::shutdown_ctrl_msg("no reason"))
+                // Process a Config event.
+                ctx.process(Message::config_ctrl_msg(Value::Null))
+                    .await
+                    .expect("Processor failed on Config");
+                assert!(ctx.drain_pdata().await.is_empty());
+
+                // Process a Shutdown event.
+                ctx.process(Message::shutdown_ctrl_msg(
+                    Duration::from_millis(200),
+                    "no reason",
+                ))
                 .await
                 .expect("Processor failed on Shutdown");
-            assert!(context.drain_pdata().await.is_empty());
-        });
-        test_runtime.validate(|| async move {
-            counters.assert(
-                1, // timer tick
-                1, // message
-                1, // config
-                1, // shutdown
-            );
-        });
+                assert!(ctx.drain_pdata().await.is_empty());
+            })
+        }
+    }
+
+    /// Validation closure that checks the received message and counters (!Send context).
+    fn validation_procedure() -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
+        |ctx| {
+            Box::pin(async move {
+                ctx.counters().assert(
+                    1, // timer tick
+                    1, // message
+                    1, // config
+                    1, // shutdown
+                );
+            })
+        }
+    }
+
+    #[test]
+    fn test_receiver_with_not_send_effect_handler() {
+        let test_runtime = TestRuntime::new();
+        let processor = ProcessorWrapper::with_not_send(
+            ProcessorWithNotSendEffectHandler::new(test_runtime.counters()),
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario())
+            .validate(validation_procedure());
+    }
+
+    #[test]
+    fn test_receiver_with_send_effect_handler() {
+        let test_runtime = TestRuntime::new();
+        let processor = ProcessorWrapper::with_send(
+            ProcessorWithSendEffectHandler::with_send_effect_handler(
+                test_runtime.counters(),
+                |eh| {
+                    exec_in_send_env(|| {
+                        _ = eh.processor_name();
+                    });
+                },
+            ),
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario())
+            .validate(validation_procedure());
     }
 }

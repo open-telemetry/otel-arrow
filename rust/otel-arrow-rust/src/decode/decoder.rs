@@ -19,7 +19,7 @@ use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceReq
 use arrow::array::RecordBatch;
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
-use snafu::{ensure, OptionExt, ResultExt};
+use snafu::{OptionExt, ResultExt, ensure};
 use std::collections::HashMap;
 use std::io::Cursor;
 
@@ -103,7 +103,7 @@ impl Consumer {
         Ok(records)
     }
 
-    pub fn consume_batches(
+    pub fn consume_metrics_batches(
         &mut self,
         records: &mut BatchArrowRecords,
     ) -> error::Result<ExportMetricsServiceRequest> {

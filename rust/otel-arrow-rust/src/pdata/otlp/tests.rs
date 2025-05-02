@@ -14,23 +14,18 @@
 mod tests {
     use crate::pdata::SpanID;
     use crate::pdata::TraceID;
-    use crate::proto::opentelemetry::common::v1::any_value::Value;
     use crate::proto::opentelemetry::common::v1::AnyValue;
     use crate::proto::opentelemetry::common::v1::ArrayValue;
     use crate::proto::opentelemetry::common::v1::EntityRef;
     use crate::proto::opentelemetry::common::v1::InstrumentationScope;
     use crate::proto::opentelemetry::common::v1::KeyValue;
     use crate::proto::opentelemetry::common::v1::KeyValueList;
+    use crate::proto::opentelemetry::common::v1::any_value::Value;
     use crate::proto::opentelemetry::logs::v1::LogRecord;
     use crate::proto::opentelemetry::logs::v1::LogRecordFlags;
     use crate::proto::opentelemetry::logs::v1::ResourceLogs;
     use crate::proto::opentelemetry::logs::v1::ScopeLogs;
     use crate::proto::opentelemetry::logs::v1::SeverityNumber;
-    use crate::proto::opentelemetry::metrics::v1::exemplar::Value as ExemplarValue;
-    use crate::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
-    use crate::proto::opentelemetry::metrics::v1::metric::Data as MetricData;
-    use crate::proto::opentelemetry::metrics::v1::number_data_point::Value as NumberValue;
-    use crate::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
     use crate::proto::opentelemetry::metrics::v1::AggregationTemporality;
     use crate::proto::opentelemetry::metrics::v1::Exemplar;
     use crate::proto::opentelemetry::metrics::v1::ExponentialHistogram;
@@ -43,39 +38,35 @@ mod tests {
     use crate::proto::opentelemetry::metrics::v1::Sum;
     use crate::proto::opentelemetry::metrics::v1::Summary;
     use crate::proto::opentelemetry::metrics::v1::SummaryDataPoint;
+    use crate::proto::opentelemetry::metrics::v1::exemplar::Value as ExemplarValue;
+    use crate::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::Buckets;
+    use crate::proto::opentelemetry::metrics::v1::metric::Data as MetricData;
+    use crate::proto::opentelemetry::metrics::v1::number_data_point::Value as NumberValue;
+    use crate::proto::opentelemetry::metrics::v1::summary_data_point::ValueAtQuantile;
     use crate::proto::opentelemetry::resource::v1::Resource;
-    use crate::proto::opentelemetry::trace::v1::span::Event;
-    use crate::proto::opentelemetry::trace::v1::span::Link;
-    use crate::proto::opentelemetry::trace::v1::span::SpanKind;
-    use crate::proto::opentelemetry::trace::v1::status::StatusCode;
     use crate::proto::opentelemetry::trace::v1::ResourceSpans;
     use crate::proto::opentelemetry::trace::v1::ScopeSpans;
     use crate::proto::opentelemetry::trace::v1::Span;
     use crate::proto::opentelemetry::trace::v1::SpanFlags;
     use crate::proto::opentelemetry::trace::v1::Status;
     use crate::proto::opentelemetry::trace::v1::TracesData;
+    use crate::proto::opentelemetry::trace::v1::span::Event;
+    use crate::proto::opentelemetry::trace::v1::span::Link;
+    use crate::proto::opentelemetry::trace::v1::span::SpanKind;
+    use crate::proto::opentelemetry::trace::v1::status::StatusCode;
 
     #[test]
     fn test_any_value() {
         // Primitives
-        assert_eq!(
-            AnyValue::new_int(3i64),
-            AnyValue {
-                value: Some(Value::IntValue(3i64)),
-            }
-        );
-        assert_eq!(
-            AnyValue::new_double(3.123),
-            AnyValue {
-                value: Some(Value::DoubleValue(3.123)),
-            }
-        );
-        assert_eq!(
-            AnyValue::new_bool(true),
-            AnyValue {
-                value: Some(Value::BoolValue(true)),
-            }
-        );
+        assert_eq!(AnyValue::new_int(3i64), AnyValue {
+            value: Some(Value::IntValue(3i64)),
+        });
+        assert_eq!(AnyValue::new_double(3.123), AnyValue {
+            value: Some(Value::DoubleValue(3.123)),
+        });
+        assert_eq!(AnyValue::new_bool(true), AnyValue {
+            value: Some(Value::BoolValue(true)),
+        });
 
         // String
         let xyz = "xyz".to_string();
@@ -380,14 +371,10 @@ mod tests {
     fn test_metric_sum() {
         let m1 = Metric::new_sum(
             "counter",
-            Sum::new(
-                AggregationTemporality::Delta,
-                true,
-                vec![
-                    NumberDataPoint::new_int(125_000_000_000u64, 123i64),
-                    NumberDataPoint::new_double(125_000_000_000u64, 123f64),
-                ],
-            ),
+            Sum::new(AggregationTemporality::Delta, true, vec![
+                NumberDataPoint::new_int(125_000_000_000u64, 123i64),
+                NumberDataPoint::new_double(125_000_000_000u64, 123f64),
+            ]),
         );
 
         let m1_value = Metric {
@@ -489,33 +476,24 @@ mod tests {
 
         let m1 = Metric::new_histogram(
             "histogram",
-            Histogram::new(
-                AggregationTemporality::Delta,
-                vec![
-                    HistogramDataPoint::build(
-                        125_000_000_000u64,
-                        &[1u64, 2u64, 3u64],
-                        &[1.0, 10.0],
-                    )
+            Histogram::new(AggregationTemporality::Delta, vec![
+                HistogramDataPoint::build(125_000_000_000u64, &[1u64, 2u64, 3u64], &[1.0, 10.0])
                     .start_time_unix_nano(124_000_000_000u64)
-                    .exemplars(vec![Exemplar::build_double(124_500_000_000u64, 10.1)
-                        .span_id(sid)
-                        .trace_id(tid)
-                        .finish()])
+                    .exemplars(vec![
+                        Exemplar::build_double(124_500_000_000u64, 10.1)
+                            .span_id(sid)
+                            .trace_id(tid)
+                            .finish(),
+                    ])
                     .finish(),
-                    HistogramDataPoint::build(
-                        126_000_000_000u64,
-                        &[3u64, 2u64, 1u64],
-                        &[1.0, 10.0],
-                    )
+                HistogramDataPoint::build(126_000_000_000u64, &[3u64, 2u64, 1u64], &[1.0, 10.0])
                     .start_time_unix_nano(125_000_000_000u64)
                     .count(100u64)
                     .sum(1000.0)
                     .min(0.1)
                     .max(10.1)
                     .finish(),
-                ],
-            ),
+            ]),
         );
 
         let m1_value = Metric {
@@ -570,26 +548,20 @@ mod tests {
         let m1 = Metric::new_summary(
             "summary",
             Summary::new(vec![
-                SummaryDataPoint::build(
-                    125_000_000_000u64,
-                    vec![
-                        ValueAtQuantile::new(0.1, 0.1),
-                        ValueAtQuantile::new(0.5, 2.1),
-                        ValueAtQuantile::new(1.0, 10.1),
-                    ],
-                )
+                SummaryDataPoint::build(125_000_000_000u64, vec![
+                    ValueAtQuantile::new(0.1, 0.1),
+                    ValueAtQuantile::new(0.5, 2.1),
+                    ValueAtQuantile::new(1.0, 10.1),
+                ])
                 .start_time_unix_nano(124_000_000_000u64)
                 .count(100u64)
                 .sum(1000.0)
                 .finish(),
-                SummaryDataPoint::build(
-                    126_000_000_000u64,
-                    vec![
-                        ValueAtQuantile::new(0.1, 0.5),
-                        ValueAtQuantile::new(0.5, 2.5),
-                        ValueAtQuantile::new(1.0, 10.5),
-                    ],
-                )
+                SummaryDataPoint::build(126_000_000_000u64, vec![
+                    ValueAtQuantile::new(0.1, 0.5),
+                    ValueAtQuantile::new(0.5, 2.5),
+                    ValueAtQuantile::new(1.0, 10.5),
+                ])
                 .start_time_unix_nano(124_000_000_000u64)
                 .count(200u64)
                 .sum(2000.0)
@@ -659,9 +631,8 @@ mod tests {
     fn test_metric_exponential_histogram() {
         let m1 = Metric::new_exponential_histogram(
             "exp_histogram",
-            ExponentialHistogram::new(
-                AggregationTemporality::Delta,
-                vec![ExponentialHistogramDataPoint::build(
+            ExponentialHistogram::new(AggregationTemporality::Delta, vec![
+                ExponentialHistogramDataPoint::build(
                     125_000_000_000u64,
                     7,
                     Buckets::new(1, vec![3, 4, 5]),
@@ -670,8 +641,8 @@ mod tests {
                 .count(17u64)
                 .zero_count(2u64)
                 .negative(Buckets::new(0, vec![1, 2]))
-                .finish()],
-            ),
+                .finish(),
+            ]),
         );
 
         let m1_value = Metric {

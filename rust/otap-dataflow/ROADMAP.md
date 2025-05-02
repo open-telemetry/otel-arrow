@@ -35,7 +35,8 @@ significant changes.
 - [x] Receiver trait
 - [x] Processor trait
 - [x] Exporter trait
-- [ ] Pipeline Engine
+- [x] EffectHandler trait
+- [ ] Connector trait
 - [ ] CPU & Memory Benchmarks
 - [ ] Documentation
 
@@ -44,7 +45,7 @@ significant changes.
 - Channels
   - [ ] SPSC Channel
   - [ ] Broadcast Channel
-- [ ] Connector trait
+- [ ] Pipeline Engine
 - [ ] Instrumentation
 - [ ] Thread pinning
 - Benchmarks
