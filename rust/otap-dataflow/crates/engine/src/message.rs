@@ -2,10 +2,15 @@
 
 //! Message definitions for the pipeline engine.
 
-/// A message that can be sent to a node (i.e. receiver, processor, exporter, or connector).
+use crate::error::Error;
+use otap_df_channel::error::RecvError;
+use otap_df_channel::mpsc;
+use std::time::Duration;
+
+/// Represents messages sent to nodes (receivers, processors, exporters, or connectors) within the
+/// pipeline.
 ///
-/// A message is either a `Data` message, which contains a payload of type `Data`, or a `Control`
-/// message, which contains a `ControlMsg`.
+/// Messages are categorized as either pipeline data (`PData`) or control messages (`Control`).
 #[derive(Debug, Clone)]
 pub enum Message<PData> {
     /// A pipeline data message traversing the pipeline.
@@ -15,7 +20,7 @@ pub enum Message<PData> {
     Control(ControlMsg),
 }
 
-/// Control messages for the pipeline engine.
+/// Control messages used for managing pipeline operations and node behaviors.
 #[derive(Debug, Clone)]
 pub enum ControlMsg {
     /// Indicates that a downstream component (either internal or external) has reliably received
@@ -49,8 +54,10 @@ pub enum ControlMsg {
     },
 
     /// A graceful shutdown message requiring the node to finish processing messages and release
-    /// resources.
+    /// resources by a specified deadline. A deadline of 0 indicates an immediate shutdown.
     Shutdown {
+        /// The deadline for the shutdown.
+        deadline: Duration,
         /// The reason for the shutdown.
         reason: String,
     },
@@ -100,8 +107,9 @@ impl<Data> Message<Data> {
 
     /// Creates a shutdown control message with the given reason.
     #[must_use]
-    pub fn shutdown_ctrl_msg(reason: &str) -> Self {
+    pub fn shutdown_ctrl_msg(deadline: Duration, reason: &str) -> Self {
         Message::Control(ControlMsg::Shutdown {
+            deadline,
             reason: reason.to_owned(),
         })
     }
@@ -122,5 +130,48 @@ impl<Data> Message<Data> {
     #[must_use]
     pub fn is_shutdown(&self) -> bool {
         matches!(self, Message::Control(ControlMsg::Shutdown { .. }))
+    }
+}
+
+/// A MPSC receiver for pdata messages.
+/// It can be either a not send or a send receiver implementation.
+pub enum PDataReceiver<PData> {
+    /// A MPSC receiver that does NOT implement [`Send`].
+    NotSend(mpsc::Receiver<PData>),
+    /// A MPSC receiver that implements [`Send`].
+    Send(tokio::sync::mpsc::Receiver<PData>),
+}
+
+impl<PData> PDataReceiver<PData> {
+    /// Returns the next message from the receiver.
+    pub async fn recv(&mut self) -> Result<PData, Error<PData>> {
+        match self {
+            PDataReceiver::NotSend(receiver) => receiver
+                .recv()
+                .await
+                .map_err(|e| Error::ChannelRecvError(e)),
+            PDataReceiver::Send(receiver) => receiver
+                .recv()
+                .await
+                .ok_or(Error::ChannelRecvError(RecvError::Closed)),
+        }
+    }
+
+    /// Drains and returns all messages from the pdata receiver.
+    pub async fn drain_pdata(&mut self) -> Vec<PData> {
+        let mut emitted = Vec::new();
+        match self {
+            PDataReceiver::NotSend(receiver) => {
+                while let Ok(msg) = receiver.try_recv() {
+                    emitted.push(msg);
+                }
+            }
+            PDataReceiver::Send(receiver) => {
+                while let Ok(msg) = receiver.try_recv() {
+                    emitted.push(msg);
+                }
+            }
+        }
+        emitted
     }
 }
