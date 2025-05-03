@@ -10,7 +10,7 @@ that have yet to be incorporated into the main library.
 
 | Folder          | Type                | CI Workflow(s)    |
 |-----------------|---------------------|-------------------|
-| beaubourg       | 🤝 Contributed Code | [![Rust-Experimental](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-experimental.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-experimental.yml) |
+| beaubourg       | :handshake: Contributed Code | [![Rust-Experimental](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-experimental.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-experimental.yml) |
 | experimental    | 🧪 Prototype        | [![Rust-Experimental](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-experimental.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-experimental.yml) |
 | otap-dataflow   | 🏗️ Core Component   | [![Rust-CI](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml)          |
-| otel-arrow-rust | 🤝 Contributed Code | [![Rust-Experimental](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-experimental.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-experimental.yml) |
+| otel-arrow-rust | :handshake: Contributed Code | [![Rust-Experimental](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-experimental.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-experimental.yml) |

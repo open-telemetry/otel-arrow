@@ -19,7 +19,6 @@ on:
       - .github/workflows/rust-experimental.yml
       # otap-dataflow is covered by the main Rust-CI workflow
       - '!rust/otap-dataflow/**'
-      
 
 env:
   CARGO_TERM_COLOR: always
@@ -63,7 +62,7 @@ jobs:
           toolchain: nightly
           components: rustfmt
       - name: cargo fmt ${{ matrix.folder }}
-        run: cargo fmt --all -- --check 
+        run: cargo fmt --all -- --check
         working-directory: ./rust/${{ matrix.folder }}
 
   clippy:
