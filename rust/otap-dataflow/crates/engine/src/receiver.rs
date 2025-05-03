@@ -306,32 +306,13 @@ pub enum ReceiverWrapper<PData> {
 }
 
 impl<PData> ReceiverWrapper<PData> {
-    /// Creates a new `ReceiverWrapper` with the given receiver and `!Send` effect handler.
-    pub fn with_not_send<R>(receiver: R, config: &ReceiverConfig) -> Self
+    /// Creates a new `ReceiverWrapper` with the given receiver and appropriate effect handler.
+    pub fn new<R, H>(receiver: R, config: &ReceiverConfig) -> Self
     where
-        R: Receiver<PData, NotSendEffectHandler<PData>> + 'static,
+        R: Receiver<PData, H> + 'static,
+        H: EffectHandlerFactory<PData, R>,
     {
-        let (pdata_sender, pdata_receiver) =
-            mpsc::Channel::new(config.output_pdata_channel.capacity);
-        ReceiverWrapper::NotSend {
-            effect_handler: NotSendEffectHandler::new(&config.name, pdata_sender),
-            receiver: Box::new(receiver),
-            pdata_receiver: Some(pdata_receiver),
-        }
-    }
-
-    /// Creates a new `ReceiverWrapper` with the given receiver and `Send` effect handler.
-    pub fn with_send<R>(receiver: R, config: &ReceiverConfig) -> Self
-    where
-        R: Receiver<PData, SendEffectHandler<PData>> + 'static,
-    {
-        let (pdata_sender, pdata_receiver) =
-            tokio::sync::mpsc::channel(config.output_pdata_channel.capacity);
-        ReceiverWrapper::Send {
-            effect_handler: SendEffectHandler::new(&config.name, pdata_sender),
-            receiver: Box::new(receiver),
-            pdata_receiver: Some(pdata_receiver),
-        }
+        H::create_wrapper(receiver, config)
     }
 
     /// Starts the receiver and begins receiver incoming data.
@@ -359,6 +340,50 @@ impl<PData> ReceiverWrapper<PData> {
             ReceiverWrapper::Send { pdata_receiver, .. } => {
                 PDataReceiver::Send(pdata_receiver.take().expect("pdata_receiver is None"))
             }
+        }
+    }
+}
+
+/// A trait that provides factory methods for creating effect handlers
+/// and wrapping receivers.
+pub trait EffectHandlerFactory<PData, R>
+where
+    R: Receiver<PData, Self> + 'static,
+    Self: EffectHandlerTrait<PData> + Sized,
+{
+    /// Creates a new `ReceiverWrapper` with the appropriate type of
+    /// effect handler for the given receiver.
+    fn create_wrapper(receiver: R, config: &ReceiverConfig) -> ReceiverWrapper<PData>;
+}
+
+impl<PData, R> EffectHandlerFactory<PData, R> for NotSendEffectHandler<PData>
+where
+    R: Receiver<PData, Self> + 'static,
+{
+    fn create_wrapper(receiver: R, config: &ReceiverConfig) -> ReceiverWrapper<PData> {
+        let (pdata_sender, pdata_receiver) =
+            mpsc::Channel::new(config.output_pdata_channel.capacity);
+
+        ReceiverWrapper::NotSend {
+            effect_handler: NotSendEffectHandler::new(&config.name, pdata_sender),
+            receiver: Box::new(receiver),
+            pdata_receiver: Some(pdata_receiver),
+        }
+    }
+}
+
+impl<PData, R> EffectHandlerFactory<PData, R> for SendEffectHandler<PData>
+where
+    R: Receiver<PData, Self> + 'static,
+{
+    fn create_wrapper(receiver: R, config: &ReceiverConfig) -> ReceiverWrapper<PData> {
+        let (pdata_sender, pdata_receiver) =
+            tokio::sync::mpsc::channel(config.output_pdata_channel.capacity);
+
+        ReceiverWrapper::Send {
+            effect_handler: SendEffectHandler::new(&config.name, pdata_sender),
+            receiver: Box::new(receiver),
+            pdata_receiver: Some(pdata_receiver),
         }
     }
 }
@@ -586,7 +611,7 @@ mod tests {
 
         // Create a oneshot channel to receive the listening address from the receiver.
         let (port_tx, port_rx) = oneshot::channel();
-        let receiver = ReceiverWrapper::with_not_send(
+        let receiver = ReceiverWrapper::new(
             ReceiverWithNotSendEffectHandler::new(test_runtime.counters(), port_tx),
             test_runtime.config(),
         );
@@ -603,7 +628,7 @@ mod tests {
 
         // Create a oneshot channel to receive the listening address from the receiver.
         let (port_tx, port_rx) = oneshot::channel();
-        let receiver = ReceiverWrapper::with_send(
+        let receiver = ReceiverWrapper::new(
             ReceiverWithSendEffectHandler::with_send_effect_handler(
                 test_runtime.counters(),
                 |effect_handler| {

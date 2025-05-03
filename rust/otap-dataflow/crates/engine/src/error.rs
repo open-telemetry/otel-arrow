@@ -32,7 +32,7 @@ pub enum Error<T> {
         /// The name of the receiver that already exists.
         receiver: String,
     },
-    
+
     /// A wrapper for the receiver errors.
     #[error("A receiver error occurred in node {receiver}: {error}")]
     ReceiverError {
@@ -50,7 +50,7 @@ pub enum Error<T> {
         /// The name of the processor that already exists.
         processor: String,
     },
-    
+
     /// A wrapper for the processor errors.
     #[error("A processor error occurred in node {processor}: {error}")]
     ProcessorError {
@@ -68,7 +68,7 @@ pub enum Error<T> {
         /// The name of the exporter that already exists.
         exporter: String,
     },
-    
+
     /// A wrapper for the exporter errors.
     #[error("An exporter error occurred in node {exporter}: {error}")]
     ExporterError {

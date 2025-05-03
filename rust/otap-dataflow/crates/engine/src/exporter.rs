@@ -49,7 +49,7 @@ use tokio::time::{Instant, Sleep, sleep_until};
 /// A trait for egress exporters.
 ///
 /// Note: The default effect handler is `!Send` (see [`NotSendEffectHandler`]).
-#[async_trait(?Send)]
+#[async_trait( ? Send)]
 pub trait Exporter<PData, EF = NotSendEffectHandler<PData>>
 where
     EF: EffectHandlerTrait<PData>,
@@ -202,26 +202,13 @@ pub enum ExporterWrapper<PData> {
 }
 
 impl<PData> ExporterWrapper<PData> {
-    /// Creates a new `ExporterWrapper` with the given exporter and `!Send` effect handler.
-    pub fn with_not_send<E>(exporter: E, config: &ExporterConfig) -> Self
+    /// Creates a new `ExporterWrapper` with the given exporter and appropriate effect handler.
+    pub fn new<E, H>(exporter: E, config: &ExporterConfig) -> Self
     where
-        E: Exporter<PData, NotSendEffectHandler<PData>> + 'static,
+        E: Exporter<PData, H> + 'static,
+        H: EffectHandlerFactory<PData, E>,
     {
-        ExporterWrapper::NotSend {
-            exporter: Box::new(exporter),
-            effect_handler: NotSendEffectHandler::new(&config.name),
-        }
-    }
-
-    /// Creates a new `ExporterWrapper` with the given exporter and `Send` effect handler.
-    pub fn with_send<E>(exporter: E, config: &ExporterConfig) -> Self
-    where
-        E: Exporter<PData, SendEffectHandler<PData>> + 'static,
-    {
-        ExporterWrapper::Send {
-            exporter: Box::new(exporter),
-            effect_handler: SendEffectHandler::new(&config.name),
-        }
+        H::create_wrapper(exporter, config)
     }
 
     /// Starts the exporter and begins exporting incoming data.
@@ -391,6 +378,42 @@ impl<PData> MessageChannel<PData> {
     }
 }
 
+/// A trait that provides factory methods for creating effect handlers
+/// and wrapping exporters.
+pub trait EffectHandlerFactory<PData, E>
+where
+    E: Exporter<PData, Self> + 'static,
+    Self: EffectHandlerTrait<PData> + Sized,
+{
+    /// Creates a new `ExporterWrapper` with the appropriate type of
+    /// effect handler for the given exporter.
+    fn create_wrapper(exporter: E, config: &ExporterConfig) -> ExporterWrapper<PData>;
+}
+
+impl<PData, E> EffectHandlerFactory<PData, E> for NotSendEffectHandler<PData>
+where
+    E: Exporter<PData, Self> + 'static,
+{
+    fn create_wrapper(exporter: E, config: &ExporterConfig) -> ExporterWrapper<PData> {
+        ExporterWrapper::NotSend {
+            effect_handler: NotSendEffectHandler::new(&config.name),
+            exporter: Box::new(exporter),
+        }
+    }
+}
+
+impl<PData, E> EffectHandlerFactory<PData, E> for SendEffectHandler<PData>
+where
+    E: Exporter<PData, Self> + 'static,
+{
+    fn create_wrapper(exporter: E, config: &ExporterConfig) -> ExporterWrapper<PData> {
+        ExporterWrapper::Send {
+            effect_handler: SendEffectHandler::new(&config.name),
+            exporter: Box::new(exporter),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::exporter::{
@@ -534,7 +557,7 @@ mod tests {
     #[test]
     fn test_exporter_with_not_send_effect_handler() {
         let test_runtime = TestRuntime::new();
-        let exporter = ExporterWrapper::with_not_send(
+        let exporter = ExporterWrapper::new(
             ExporterWithNotSendEffectHandler::without_send_test(test_runtime.counters()),
             test_runtime.config(),
         );
@@ -548,7 +571,7 @@ mod tests {
     #[test]
     fn test_exporter_with_send_effect_handler() {
         let test_runtime = TestRuntime::new();
-        let exporter = ExporterWrapper::with_send(
+        let exporter = ExporterWrapper::new(
             ExporterWithSendEffectHandler::with_send_test(
                 test_runtime.counters(),
                 |effect_handler| {
