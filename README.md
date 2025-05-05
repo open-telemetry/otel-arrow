@@ -77,7 +77,7 @@ document](./docs/phase2-design.md).
 These are our future milestones for OpenTelemetry and Apache Arrow
 integration:
 
-1. Extend OpenTelemetry client SDKs to natively support the OpenTelemetry  
+1. Extend OpenTelemetry client SDKs to natively support the OpenTelemetry
    Protocol with Apache Arrow Protocol
 2. Extend the OpenTelemetry collector with direct support for OpenTelemetry
    Protocol with Apache Arrow pipelines

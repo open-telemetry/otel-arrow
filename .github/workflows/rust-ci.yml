@@ -56,7 +56,7 @@ jobs:
           toolchain: nightly
           components: rustfmt
       - name: cargo fmt ${{ matrix.folder }}
-        run: cargo fmt --all -- --check 
+        run: cargo fmt --all -- --check
         working-directory: ./rust/${{ matrix.folder }}
 
   clippy:
@@ -119,7 +119,7 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
           fail_ci_if_error: true
-  
+
   cargo_deny:
     strategy:
       fail-fast: false
