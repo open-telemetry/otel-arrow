@@ -50,10 +50,9 @@ impl LogsService for LogsServiceImpl {
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
         let effect_handler_clone = self.effect_handler.clone();
-        _ = tokio::task::spawn_local(async move {
+        _ = tokio::task::spawn_local( async move {
             _ = effect_handler_clone.send_message(OTLPRequest::Logs(request.into_inner())).await;
         });
-
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,
         }))
@@ -67,7 +66,7 @@ impl MetricsService for MetricsServiceImpl {
         request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
         let effect_handler_clone = self.effect_handler.clone();
-        _ = tokio::task::spawn_local(async move {
+        _ = tokio::task::spawn_local( async move {
             _ = effect_handler_clone.send_message(OTLPRequest::Metrics(request.into_inner())).await;
         });
         Ok(Response::new(ExportMetricsServiceResponse {
@@ -83,7 +82,7 @@ impl TraceService for TraceServiceImpl {
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
         let effect_handler_clone = self.effect_handler.clone();
-        _ = tokio::task::spawn_local(async move {
+        _ = tokio::task::spawn_local( async move {
             _ = effect_handler_clone.send_message(OTLPRequest::Traces(request.into_inner())).await;
         });
         Ok(Response::new(ExportTraceServiceResponse {
@@ -104,16 +103,16 @@ pub enum OTLPRequest {
 }
 
 
-// #[cfg(test)]
-// mod tests {
-//     use crate::grpc::OTLPRequest;
-//     use otap_df_engine::error::Error;
-//     use otap_df_channel::error::SendError;
+#[cfg(test)]
+mod tests {
+    use crate::grpc::OTLPRequest;
+    use otap_df_engine::error::Error;
+    use otap_df_channel::error::SendError;
 
-//     // fn assert_send<T: Send>() {}
-//     // #[test]
-//     // fn test() {
-//     //     _ = assert_send::<Error<SendError<OTLPRequest>>>();
-//     // }
+    fn assert_send<T: Send>() {}
+    #[test]
+    fn test() {
+        _ = assert_send::<Error<SendError<OTLPRequest>>>();
+    }
 
-// }
+}

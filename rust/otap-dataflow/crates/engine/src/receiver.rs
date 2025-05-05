@@ -256,8 +256,8 @@ impl<PData> SendEffectHandler<PData> {
     }
 }
 
-#[async_trait]
-impl<PData> EffectHandlerTrait<PData> for SendEffectHandler<PData> 
+#[async_trait(?Send)]
+impl<PData> EffectHandlerTrait<PData> for SendEffectHandler<PData> {
     /// Returns the name of the receiver associated with this handler.
     #[must_use]
     fn receiver_name(&self) -> &str {
