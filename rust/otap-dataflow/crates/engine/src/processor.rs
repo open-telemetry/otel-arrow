@@ -23,14 +23,6 @@
 //! # Thread Safety
 //!
 //! Note that this trait uses `#[async_trait(?Send)]`, meaning implementations
-<<<<<<< HEAD
-//! are not required to be thread-safe. To ensure scalability, the pipeline engine will start
-//! multiple instances of the same pipeline in parallel, each with its own processor instance.
-//!
-//! Through the `Mode` type parameter, processors can be configured to be either thread-local (`LocalMode`)
-//! or thread-safe (`SendableMode`). This allows you to choose the appropriate threading model based on
-//! your processor's requirements and performance considerations.
-=======
 //! are not required to be thread-safe. If you need to implement a processor that requires `Send`,
 //! you can use the [`SendEffectHandler`] type. The default effect handler is `!Send` (see
 //! [`NotSendEffectHandler`]).
@@ -39,16 +31,10 @@
 //!
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own processor instance.
->>>>>>> main
 
 use crate::config::ProcessorConfig;
 use crate::error::Error;
-<<<<<<< HEAD
-use crate::message::Message;
-use crate::receiver::{LocalMode, SendableMode, ThreadMode};
-=======
 use crate::message::{Message, PDataReceiver};
->>>>>>> main
 use async_trait::async_trait;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;

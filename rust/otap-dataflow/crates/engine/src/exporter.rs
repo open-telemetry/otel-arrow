@@ -36,7 +36,6 @@
 use crate::config::ExporterConfig;
 use crate::error::Error;
 use crate::message::{ControlMsg, Message};
-use crate::receiver::{LocalMode, SendableMode, ThreadMode};
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_channel::mpsc;

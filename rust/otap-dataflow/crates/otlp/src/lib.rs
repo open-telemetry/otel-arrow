@@ -3,4 +3,5 @@
 //! Implementation of the OTLP nodes (receiver, exporter, processor).
 
 pub mod grpc;
-pub mod otlp_receiver;
+
+pub mod otlp_exporter;
