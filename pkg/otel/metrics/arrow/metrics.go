@@ -42,8 +42,8 @@ var (
 		{Name: constants.Name, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Dictionary8)},
 		{Name: constants.Description, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
 		{Name: constants.Unit, Type: arrow.BinaryTypes.String, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
-		{Name: constants.AggregationTemporality, Type: arrow.PrimitiveTypes.Int32, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8)},
-		{Name: constants.IsMonotonic, Type: arrow.FixedWidthTypes.Boolean, Metadata: schema.Metadata(schema.Optional)},
+		{Name: constants.AggregationTemporality, Type: arrow.PrimitiveTypes.Int32, Metadata: schema.Metadata(schema.Optional, schema.Dictionary8), Nullable: true},
+		{Name: constants.IsMonotonic, Type: arrow.FixedWidthTypes.Boolean, Metadata: schema.Metadata(schema.Optional), Nullable: true},
 	}, nil)
 )
 
@@ -239,7 +239,7 @@ func (b *MetricsBuilder) Append(metrics pmetric.Metrics) error {
 		// than 256 types, so we use an uint8 instead.
 		b.mtb.Append(uint8(metric.Metric.Type()))
 		b.nb.AppendNonEmpty(metric.Metric.Name())
-		b.db.AppendNonEmpty(metric.Metric.Description())
+		b.db.Append(metric.Metric.Description())
 		b.ub.AppendNonEmpty(metric.Metric.Unit())
 
 		switch metric.Metric.Type() {
