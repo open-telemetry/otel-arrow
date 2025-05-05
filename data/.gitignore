@@ -1,4 +1,8 @@
 otlp_*.pg
+otlp_*.pb
+otlp_*.json.zst
+otap_*.pb
+otap_*.json.zst
 hipstershop_*.pb
 generated_otlp_*.pb
 
