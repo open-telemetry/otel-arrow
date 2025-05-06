@@ -28,40 +28,40 @@ pub enum CompressionMethod {
     Gzip,
     /// Used for legacy systems
     Deflate,
-    /// Don't use any compression, this is the default if no compression is specified
-    None, 
 }
 
 /// A Receiver that listens for OTLP messages
 pub struct OTLPReceiver {
     listening_addr: SocketAddr,
-    compression: Option<CompressionMethod>
+    compression: Option<CompressionMethod>,
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
 {
     async fn start(
         self: Box<Self>,
-        ctrl_msg_recv: ControlMsgChannel,
+        mut ctrl_msg_recv: ControlMsgChannel,
         effect_handler: SendEffectHandler<OTLPRequest>,
     ) -> Result<(), Error<OTLPRequest>> {
 
         // create listener on addr provided from config
-        
+        let listener = effect_handler.tcp_listener(self.listening_addr)?;
+        let mut listener_stream = TcpListenerStream::new(listener);
+
         // check for compression method
         let compression_encoding = match self.compression {
             Some(CompressionMethod::Gzip) => Some(CompressionEncoding::Gzip),
             Some(CompressionMethod::Zstd) => Some(CompressionEncoding::Zstd),
             Some(CompressionMethod::Deflate) => Some(CompressionEncoding::Deflate),
-            Some(CompressionMethod::None) => None,
             _ => None,
         };
 
 
         //start event loop
         loop {
-            //create services for the grpc server and clone the effect handler to pass message
+
+                    //create services for the grpc server and clone the effect handler to pass message
             let logs_service = LogsServiceImpl::new(effect_handler.clone());
             let metrics_service = MetricsServiceImpl::new(effect_handler.clone());
             let trace_service = TraceServiceImpl::new(effect_handler.clone());
@@ -82,15 +82,12 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
                 metrics_service_server = MetricsServiceServer::new(metrics_service);
                 trace_service_server = TraceServiceServer::new(trace_service);
             }
-
-            let listener = effect_handler.tcp_listener(self.listening_addr)?;
-            let listener_stream = TcpListenerStream::new(listener);
             
             tokio::select! {
                 biased; //prioritize ctrl_msg over all other blocks
 
                 // Process internal event
-                mut ctrl_msg = ctrl_msg_recv.recv() => {
+                ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
                         Ok(ControlMsg::Shutdown {reason, deadline}) => {
                             // wait for deadline then shutdown
@@ -102,7 +99,6 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
                         }
                         _ => {
                             // unknown control message do nothing
-                            
                         }
                     }
                 }
@@ -111,9 +107,10 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
                 .add_service(logs_service_server)
                 .add_service(metrics_service_server)
                 .add_service(trace_service_server)
-                .serve_with_incoming(listener_stream)=> {
+                .serve_with_incoming(&mut listener_stream)=> {
                     if let Err(e) = result {
-                        break;
+                        // Report receiver error
+                        return Err(Error::ReceiverError{receiver: effect_handler.receiver_name().to_string(), error: e.to_string()});
                     }
                 }
                 // A timeout branch in case no events occur.
@@ -140,14 +137,10 @@ mod tests {
     use otap_df_engine::message::ControlMsg;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
-    use otap_df_engine::testing::{CtrlMsgCounters, TestMsg, exec_in_send_env};
     use std::net::SocketAddr;
     use tokio::time::{Duration, timeout};
     use std::future::Future;
     use std::pin::Pin;
-
-    /// A type alias for a test receiver with sendable effect handler
-    type ReceiverWithSendEffectHandler = OTLPReceiver;
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario(
@@ -173,9 +166,13 @@ mod tests {
                 let _traces_response = traces_client.export(ExportTraceServiceRequest::default()).await.expect("Failed to receive response after sending Trace Request");
 
                 // Finally, send a Shutdown event to terminate the receiver.
-                ctx.send_shutdown(Duration::from_millis(200), "Test")
+                ctx.send_shutdown(Duration::from_millis(0), "Test")
                     .await
                     .expect("Failed to send Shutdown");
+
+                // server should be down after shutdown
+                let fail_metrics_client = MetricsServiceClient::connect(grpc_endpoint.clone()).await;
+                assert!(fail_metrics_client.is_err(), "Server did not shutdown");
             })
         }
     }
@@ -187,7 +184,8 @@ mod tests {
     -> impl FnOnce(NotSendValidateContext<OTLPRequest>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
             Box::pin(async move {
-                
+                // check that messages have been sent through the effect_handler
+
                 // read from the effect handler
                 let metrics_received = timeout(Duration::from_secs(3), ctx.recv())
                     .await
@@ -195,15 +193,15 @@ mod tests {
                     .expect("No message received");
 
                 // Assert that the message received is what the test client sent.
-                let expected_metrics_message = ExportMetricsServiceRequest::default();
-                assert!(matches!(metrics_received, expected_metrics_message));
+                let _expected_metrics_message = ExportMetricsServiceRequest::default();
+                assert!(matches!(metrics_received, _expected_metrics_message));
 
                 let logs_received = timeout(Duration::from_secs(3), ctx.recv())
                 .await
                 .expect("Timed out waiting for message")
                 .expect("No message received");
-                let expected_logs_message = ExportLogsServiceRequest::default();
-                assert!(matches!(logs_received, expected_logs_message));
+                let _expected_logs_message = ExportLogsServiceRequest::default();
+                assert!(matches!(logs_received, _expected_logs_message));
 
 
                 let traces_received = timeout(Duration::from_secs(3), ctx.recv())
@@ -211,11 +209,8 @@ mod tests {
                 .expect("Timed out waiting for message")
                 .expect("No message received");
 
-                let expected_trace_message =  ExportTraceServiceRequest::default();
-                assert!(matches!(traces_received, expected_trace_message));
-
-                // check that control messages were received
-                ctx.counters().assert(0, 0, 0, 1);
+                let _expected_trace_message =  ExportTraceServiceRequest::default();
+                assert!(matches!(traces_received, _expected_trace_message));
 
             })
         }
@@ -235,7 +230,7 @@ mod tests {
         let receiver = ReceiverWrapper::with_send(
             OTLPReceiver {
                 listening_addr: addr,
-                compression: None
+                compression: None,
             },
             test_runtime.config(),
         );

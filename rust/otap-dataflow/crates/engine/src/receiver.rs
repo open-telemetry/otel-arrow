@@ -47,10 +47,11 @@ use tokio::net::TcpListener;
 ///
 /// Receivers are responsible for accepting data from external sources and converting
 /// it into messages that can be processed by the pipeline.
-#[async_trait( ? Send)]
+#[async_trait]
 pub trait Receiver<PData, EF = NotSendEffectHandler<PData>>
 where
     EF: EffectHandlerTrait<PData>,
+    PData: Send
 {
     /// Starts the receiver and begins processing incoming external data and control messages.
     ///
@@ -96,13 +97,13 @@ where
 /// This structure wraps a receiver end of a channel that carries [`ControlMsg`]
 /// values used to control the behavior of a receiver at runtime.
 pub struct ControlMsgChannel {
-    rx: mpsc::Receiver<ControlMsg>,
+    rx: tokio::sync::mpsc::Receiver<ControlMsg>,
 }
 
 impl ControlMsgChannel {
     /// Creates a new `ControlMsgChannel` with the given receiver.
     #[must_use]
-    pub fn new(rx: mpsc::Receiver<ControlMsg>) -> Self {
+    pub fn new(rx: tokio::sync::mpsc::Receiver<ControlMsg>) -> Self {
         ControlMsgChannel { rx }
     }
 
@@ -111,8 +112,8 @@ impl ControlMsgChannel {
     /// # Errors
     ///
     /// Returns a [`RecvError`] if the channel is closed.
-    pub async fn recv(&self) -> Result<ControlMsg, RecvError> {
-        self.rx.recv().await
+    pub async fn recv(&mut self) -> Result<ControlMsg, RecvError> {
+        self.rx.recv().await.ok_or(RecvError::Closed)
     }
 }
 
@@ -129,8 +130,8 @@ impl ControlMsgChannel {
 ///
 /// Note for implementers: Effect handler implementations are designed to be cloned so the cost of
 /// cloning should be minimal.
-#[async_trait(?Send)]
-pub trait EffectHandlerTrait<PData> {
+#[async_trait]
+pub trait EffectHandlerTrait<PData: Send> {
     /// Returns the name of the receiver associated with this handler.
     fn receiver_name(&self) -> &str;
 
@@ -210,25 +211,6 @@ impl<PData> NotSendEffectHandler<PData> {
     }
 }
 
-#[async_trait(?Send)]
-impl<PData> EffectHandlerTrait<PData> for NotSendEffectHandler<PData> {
-    /// Returns the name of the receiver associated with this handler.
-    #[must_use]
-    fn receiver_name(&self) -> &str {
-        &self.receiver_name
-    }
-
-    /// Sends a message to the next node(s) in the pipeline.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
-    async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
-        self.msg_sender.send_async(data).await?;
-        Ok(())
-    }
-}
-
 /// A `Send` implementation of the EffectHandlerTrait.
 #[derive(Clone)]
 pub struct SendEffectHandler<PData> {
@@ -256,8 +238,8 @@ impl<PData> SendEffectHandler<PData> {
     }
 }
 
-#[async_trait(?Send)]
-impl<PData> EffectHandlerTrait<PData> for SendEffectHandler<PData> {
+#[async_trait]
+impl<PData: Send> EffectHandlerTrait<PData> for SendEffectHandler<PData> {
     /// Returns the name of the receiver associated with this handler.
     #[must_use]
     fn receiver_name(&self) -> &str {
@@ -284,16 +266,7 @@ impl<PData> EffectHandlerTrait<PData> for SendEffectHandler<PData> {
 /// Note: This is useful for creating a single interface for the receiver regardless of the effect
 /// handler type. This is the only type that the pipeline engine will use in order to be agnostic to
 /// the effect handler type.
-pub enum ReceiverWrapper<PData> {
-    /// A receiver with a `!Send` effect handler.
-    NotSend {
-        /// The receiver instance.
-        receiver: Box<dyn Receiver<PData, NotSendEffectHandler<PData>>>,
-        /// The effect handler for the receiver.
-        effect_handler: NotSendEffectHandler<PData>,
-        /// A receiver for pdata messages.
-        pdata_receiver: Option<mpsc::Receiver<PData>>,
-    },
+pub enum ReceiverWrapper<PData: Send> {
     /// A receiver with a `Send` effect handler.
     Send {
         /// The receiver instance.
@@ -305,21 +278,7 @@ pub enum ReceiverWrapper<PData> {
     },
 }
 
-impl<PData> ReceiverWrapper<PData> {
-    /// Creates a new `ReceiverWrapper` with the given receiver and `!Send` effect handler.
-    pub fn with_not_send<R>(receiver: R, config: &ReceiverConfig) -> Self
-    where
-        R: Receiver<PData, NotSendEffectHandler<PData>> + 'static,
-    {
-        let (pdata_sender, pdata_receiver) =
-            mpsc::Channel::new(config.output_pdata_channel.capacity);
-        ReceiverWrapper::NotSend {
-            effect_handler: NotSendEffectHandler::new(&config.name, pdata_sender),
-            receiver: Box::new(receiver),
-            pdata_receiver: Some(pdata_receiver),
-        }
-    }
-
+impl<PData: Send> ReceiverWrapper<PData> {
     /// Creates a new `ReceiverWrapper` with the given receiver and `Send` effect handler.
     pub fn with_send<R>(receiver: R, config: &ReceiverConfig) -> Self
     where
@@ -337,11 +296,6 @@ impl<PData> ReceiverWrapper<PData> {
     /// Starts the receiver and begins receiver incoming data.
     pub async fn start(self, ctrl_msg_chan: ControlMsgChannel) -> Result<(), Error<PData>> {
         match self {
-            ReceiverWrapper::NotSend {
-                effect_handler,
-                receiver,
-                ..
-            } => receiver.start(ctrl_msg_chan, effect_handler).await,
             ReceiverWrapper::Send {
                 effect_handler,
                 receiver,
@@ -353,9 +307,6 @@ impl<PData> ReceiverWrapper<PData> {
     /// Returns the PData receiver.
     pub fn take_pdata_receiver(&mut self) -> PDataReceiver<PData> {
         match self {
-            ReceiverWrapper::NotSend { pdata_receiver, .. } => {
-                PDataReceiver::NotSend(pdata_receiver.take().expect("pdata_receiver is None"))
-            }
             ReceiverWrapper::Send { pdata_receiver, .. } => {
                 PDataReceiver::Send(pdata_receiver.take().expect("pdata_receiver is None"))
             }
@@ -419,14 +370,14 @@ mod tests {
         }
     }
 
-    #[async_trait(?Send)]
+    #[async_trait]
     impl<EF> Receiver<TestMsg, EF> for GenericTestReceiver<EF>
     where
-        EF: EffectHandlerTrait<TestMsg> + Clone + 'static,
+        EF: EffectHandlerTrait<TestMsg> + Clone + Send + 'static,
     {
         async fn start(
             self: Box<Self>,
-            ctrl_msg_recv: ControlMsgChannel,
+            mut ctrl_msg_recv: ControlMsgChannel,
             effect_handler: EF,
         ) -> Result<(), Error<TestMsg>> {
             // Bind to an ephemeral port.
@@ -578,82 +529,6 @@ mod tests {
                 ctx.counters().assert(3, 0, 1, 1);
             })
         }
-    }
-
-    #[test]
-    fn test_receiver_with_not_send_effect_handler() {
-        let test_runtime = TestRuntime::new();
-
-        // Create a oneshot channel to receive the listening address from the receiver.
-        let (port_tx, port_rx) = oneshot::channel();
-        let receiver = ReceiverWrapper::with_not_send(
-            ReceiverWithNotSendEffectHandler::new(test_runtime.counters(), port_tx),
-            test_runtime.config(),
-        );
-
-        test_runtime
-            .set_receiver(receiver)
-            .run_test(scenario(port_rx))
-            .run_validation(validation_procedure());
-    }
-
-    #[test]
-    fn test_receiver_with_send_effect_handler() {
-        let test_runtime = TestRuntime::new();
-
-        // Create a oneshot channel to receive the listening address from the receiver.
-        let (port_tx, port_rx) = oneshot::channel();
-        let receiver = ReceiverWrapper::with_send(
-            ReceiverWithSendEffectHandler::with_send_effect_handler(
-                test_runtime.counters(),
-                |effect_handler| {
-                    exec_in_send_env(|| {
-                        _ = effect_handler.receiver_name();
-                    });
-                },
-                port_tx,
-            ),
-            test_runtime.config(),
-        );
-
-        test_runtime
-            .set_receiver(receiver)
-            .run_test(scenario(port_rx))
-            .run_validation(validation_procedure());
-    }
-
-    /// Validation closure that checks the received message and counters (!Send context).
-    fn validation_procedure()
-    -> impl FnOnce(NotSendValidateContext<TestMsg>) -> Pin<Box<dyn Future<Output = ()>>> {
-        |mut ctx| {
-            Box::pin(async move {
-                let received = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received");
-
-                // Assert that the message received is what the test client sent.
-                assert!(matches!(received, TestMsg(msg) if msg == "Hello from test client"));
-                ctx.counters().assert(3, 0, 1, 1);
-            })
-        }
-    }
-
-    #[test]
-    fn test_receiver_with_not_send_effect_handler() {
-        let test_runtime = TestRuntime::new();
-
-        // Create a oneshot channel to receive the listening address from the receiver.
-        let (port_tx, port_rx) = oneshot::channel();
-        let receiver = ReceiverWrapper::with_not_send(
-            ReceiverWithNotSendEffectHandler::new(test_runtime.counters(), port_tx),
-            test_runtime.config(),
-        );
-
-        test_runtime
-            .set_receiver(receiver)
-            .run_test(scenario(port_rx))
-            .run_validation(validation_procedure());
     }
 
     #[test]
