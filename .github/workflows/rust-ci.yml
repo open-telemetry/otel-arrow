@@ -8,7 +8,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test-and-coverage:
+  test_and_coverage:
     strategy:
       fail-fast: false
       matrix:
@@ -97,7 +97,7 @@ jobs:
 
 
 
-  cargo_deny:
+  deny:
     strategy:
       fail-fast: false
       matrix:
