@@ -8,9 +8,17 @@ use grpc_stubs::proto::collector::trace::v1::trace_service_server::TraceService;
 use grpc_stubs::proto::collector::trace::v1::{
     ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
+
+use crate::grpc::grpc_stubs::proto::collector::{logs::v1::logs_service_server::LogsServiceServer,
+    metrics::v1::metrics_service_server::MetricsServiceServer,
+    trace::v1::trace_service_server::TraceServiceServer};
 use tonic::{Request, Response, Status};
 use otap_df_engine::receiver::{EffectHandler, SendableMode};
-use tokio::sync::mpsc::Sender;
+use tonic::transport::Server;
+use tokio::sync::mpsc::{Sender, Receiver};
+use std::error::Error;
+use std::net::SocketAddr;
+use crate::grpc::OTLPRequest;
 
 pub struct LogsServiceMock {
     sender: Sender<OTLPRequest>
@@ -84,14 +92,15 @@ impl TraceService for TraceServiceMock {
 }
 
 
-pub fn start_mock_server(sender: Sender, listening_addr: SocketAddr, shutdown_signal: ) -> Result<(), Box<dyn Error>> {
+pub fn start_mock_server<T>(sender: Sender<OTLPRequest>, listening_addr: SocketAddr, shutdown_signal: Receiver<T>) -> Result<(), Box<dyn Error>> {
     let mock_logs_service = LogsServiceServer::new(LogsServiceMock::new(sender.clone()));
     let mock_metrics_service = MetricsServiceServer::new(MetricsServiceMock::new(sender.clone()));
     let mock_trace_service = TraceServiceServer::new(TraceServiceMock::new(sender.clone()));
+    let shutdown_signal_clone = shutdown_signal.clone();
     tokio::spawn(async move {
-        Server::builder().add_service(mock_logs_service).add_service(mock_metrics_service).add_service(mock_trace__service).serve_with_shutdown(listening_addr, async {
+        Server::builder().add_service(mock_logs_service).add_service(mock_metrics_service).add_service(mock_trace_service).serve_with_shutdown(listening_addr, async {
             // Wait for the shutdown signal
-            shutdown_signal.await.ok();
+            shutdown_signal_clone.await.ok();
         }).await
     });
     // start server in the background 

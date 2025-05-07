@@ -5,3 +5,4 @@
 pub mod grpc;
 
 pub mod otlp_exporter;
+pub mod mock;
