@@ -29,10 +29,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # latest on /master branch as of 2025-04-02
         with:
           toolchain: stable
-      - name: install cargo-llvm-cov
-        uses: taiki-e/install-action@5075451c95db43b063f20f0c8fef04c04d5bf0ba # cargo-llvm-cov
+      - name: Install nextest
+        run: cargo install --locked cargo-nextest
       - name: Run tests with coverage
-        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+        run: |
+          # Run tests with coverage using nextest
+          cargo nextest run --all-features --lcov --output-path lcov.info
+          # Generate HTML report
+          cargo nextest run --all-features --lcov --html --output-path coverage.html
         working-directory: ./rust/${{ matrix.folder }}
       - name: Upload to codecov.io
         uses: codecov/codecov-action@ad3126e916f78f00edff4ed0317cf185271ccc2d # v5.4.2
@@ -40,6 +44,7 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
           fail_ci_if_error: true
+          file: ./lcov.info
 
   fmt:
     strategy:
