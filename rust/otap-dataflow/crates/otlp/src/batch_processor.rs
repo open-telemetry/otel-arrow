@@ -35,7 +35,7 @@ impl<PData: Clone + Send + 'static> Processor<PData, SendEffectHandler<PData>> f
             Message::PData(data) => {
                 self.batch.push(data);
                 if self.batch.len() >= self.batch_size {
-                    let batch = std::mem::take(&mut self.batch);
+                    let batch = std::mem::replace(&mut self.batch, Vec::with_capacity(self.batch_size));
                     for item in batch {
                         effect_handler.send_message(item).await?;
                     }
