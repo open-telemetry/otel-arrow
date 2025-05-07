@@ -157,7 +157,7 @@ impl TraceService for TraceServiceImpl {
 }
 
 // Enum to represent received OTLP requests.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum OTLPRequest {
     Logs(ExportLogsServiceRequest),
     Metrics(ExportMetricsServiceRequest),

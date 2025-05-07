@@ -63,7 +63,7 @@ impl MetricsService for MetricsServiceMock {
         &self,
         request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
-        self.sender.send(OTLPRequest::Metrics(request.into_inner())).await.expect("Logs failed to be sent through channel");
+        self.sender.send(OTLPRequest::Metrics(request.into_inner())).await.expect("Metrics failed to be sent through channel");
         Ok(Response::new(ExportMetricsServiceResponse {
             partial_success: None,
         }))
@@ -76,7 +76,7 @@ impl TraceService for TraceServiceMock {
         &self,
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        self.sender.send(OTLPRequest::Trace(request.into_inner())).await.expect("Logs failed to be sent through channel");
+        self.sender.send(OTLPRequest::Trace(request.into_inner())).await.expect("Traces failed to be sent through channel");
         Ok(Response::new(ExportTraceServiceResponse {
             partial_success: None,
         }))
@@ -84,12 +84,15 @@ impl TraceService for TraceServiceMock {
 }
 
 
-pub fn start_mock_server(sender: Sender, listening_addr: SocketAddr) -> Result<(), Box<dyn Error>> {
+pub fn start_mock_server(sender: Sender, listening_addr: SocketAddr, shutdown_signal: ) -> Result<(), Box<dyn Error>> {
     let mock_logs_service = LogsServiceServer::new(LogsServiceMock::new(sender.clone()));
     let mock_metrics_service = MetricsServiceServer::new(MetricsServiceMock::new(sender.clone()));
     let mock_trace_service = TraceServiceServer::new(TraceServiceMock::new(sender.clone()));
     tokio::spawn(async move {
-        Server::builder().add_service(mock_logs_service).add_service(mock_metrics_service).add_service(mock_trace__service).serve(listening_addr).await?;
+        Server::builder().add_service(mock_logs_service).add_service(mock_metrics_service).add_service(mock_trace__service).serve_with_shutdown(listening_addr, async {
+            // Wait for the shutdown signal
+            shutdown_signal.await.ok();
+        }).await
     });
     // start server in the background 
 }
