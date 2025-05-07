@@ -3,7 +3,6 @@
 [![Slack](https://img.shields.io/badge/slack-@cncf/otel/arrow-brightgreen.svg?logo=slack)](https://cloud-native.slack.com/archives/C07S4Q67LTF)
 [![Go-CI](https://github.com/open-telemetry/otel-arrow/actions/workflows/go-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/go-ci.yml)
 [![Rust-CI](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml)
-[![Rust-Experimental](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-experimental.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-experimental.yml)
 [![OpenSSF Scorecard for otel-arrow](https://api.scorecard.dev/projects/github.com/open-telemetry/otel-arrow/badge)](https://scorecard.dev/viewer/?uri=github.com/open-telemetry/otel-arrow)
 
 The [OpenTelemetry Protocol with Apache
@@ -78,7 +77,7 @@ document](./docs/phase2-design.md).
 These are our future milestones for OpenTelemetry and Apache Arrow
 integration:
 
-1. Extend OpenTelemetry client SDKs to natively support the OpenTelemetry  
+1. Extend OpenTelemetry client SDKs to natively support the OpenTelemetry
    Protocol with Apache Arrow Protocol
 2. Extend the OpenTelemetry collector with direct support for OpenTelemetry
    Protocol with Apache Arrow pipelines
@@ -216,7 +215,7 @@ calendar](https://github.com/open-telemetry/community?tab=readme-ov-file#calenda
 for specific dates and for Zoom meeting links.
 
 Meeting notes are available as a public [Google
-doc](https://docs.google.com/document/d/1X-RPSOSDUUTD2-zrPRQ6YJ54i4JkHIgvAm5EoVhTzPs/edit?usp=sharing).
+doc](https://docs.google.com/document/d/1z8_Ra-ALDaYNa88mMj1gOZtOpLZLRk0-dZEmDjPmcUs).
 If you have trouble accessing the doc, please get in touch on
 [Slack](https://cloud-native.slack.com/archives/C07S4Q67LTF).
 

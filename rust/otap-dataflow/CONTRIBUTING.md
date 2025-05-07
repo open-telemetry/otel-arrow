@@ -44,7 +44,7 @@ that are affecting multiple areas, or topics that may warrant more discussion.
 ### Maintainers (@open-telemetry/weaver-maintainers)
 
 - [Joshua MacDonald](https://github.com/jmacd) Microsoft
-- [Laurent Quérel](https://github.com/lquerel) F5 Networks
+- [Laurent Qu&#xE9;rel](https://github.com/lquerel) F5 Networks
 
 ### Approvers
 
