@@ -74,7 +74,7 @@ support large-scale testing by enabling deployments in cloud environments.
 
 ## Plan for Iterative Development
 
-Given perf benchmarking can be a very extensive project with large scope, I'd
+Given perf benchmarking can be a very extensive project with large scope, we'd
 like to start with small steps and iterate quickly based on feedback.
 
 We will begin with a basic load test that uses OTel Collector's latest release,
