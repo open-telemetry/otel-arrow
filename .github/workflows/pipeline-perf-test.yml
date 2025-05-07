@@ -17,23 +17,23 @@ jobs:
             egress-policy: audit
 
         - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        
+
         - name: Set up Python
           uses: actions/setup-python@v4
           with:
             python-version: '3.9'
             cache: 'pip'
-        
+
         - name: Install dependencies
           run: |
             python -m pip install --upgrade pip
             pip install -r tools/pipeline_perf_test/orchestrator/requirements.txt
-        
+
         - name: Run pipeline performance tests
           run: |
             cd tools/pipeline_perf_test
             python orchestrator/orchestrator.py --duration 5
-        
+
         - name: Upload test results
           if: always()
           uses: actions/upload-artifact@v3
