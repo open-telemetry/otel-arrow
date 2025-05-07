@@ -18,14 +18,18 @@ pub mod otlp;
 
 // TODO: otherwise, specialize TraceID and SpanID for [u8; 8 or 16].
 
-// TODO: also, define From<> instead of Into<> in ../proto/mod.rs
-
 #[derive(Clone, Copy, Debug)]
 pub struct TraceID([u8; 16]);
 
 impl TraceID {
     pub fn new(value: &[u8; 16]) -> TraceID {
         TraceID(*value)
+    }
+}
+
+impl From<[u8; 16]> for TraceID {
+    fn from(tid: [u8; 16]) -> Self {
+        TraceID(tid)
     }
 }
 
@@ -47,5 +51,11 @@ impl SpanID {
 impl From<SpanID> for Vec<u8> {
     fn from(sid: SpanID) -> Self {
         sid.0.to_vec()
+    }
+}
+
+impl From<[u8; 8]> for SpanID {
+    fn from(sid: [u8; 8]) -> Self {
+        SpanID(sid)
     }
 }
