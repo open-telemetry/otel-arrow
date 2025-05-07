@@ -77,7 +77,7 @@ support large-scale testing by enabling deployments in cloud environments.
 Given perf benchmarking can be a very extensive project with large scope, I'd
 like to start with small steps and iterate quickly based on feedback.
 
-I'd get started with basic load test that uses OTel Collector's latest release,
+We will begin with a basic load test that uses OTel Collector's latest release,
 later adding ability to 'bring-you-own', where users can use a custom built
 Collector or leverage OTAP pipelines or customize the config etc.
 
