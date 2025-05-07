@@ -26,7 +26,7 @@ extensions:
         from_context: Authorization
   # Basicauth uses the Authorization property.
   basicauth:
-    htpasswd: 
+    htpasswd:
       inline: |
         testuser:testpw
 
@@ -73,7 +73,7 @@ exporters:
     auth:
       authenticator: headers_setter
 
-  debug:      
+  debug:
     verbosity: normal
 
 processors:
