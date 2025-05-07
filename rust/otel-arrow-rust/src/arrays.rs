@@ -14,11 +14,12 @@ use crate::error::{self, InvalidListArraySnafu};
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray,
     FixedSizeBinaryArray, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array,
-    Int64Array, PrimitiveArray, RecordBatch, StringArray, TimestampNanosecondArray, UInt8Array,
-    UInt16Array, UInt32Array, UInt64Array,
+    Int64Array, PrimitiveArray, RecordBatch, StringArray, StructArray, TimestampNanosecondArray,
+    UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
-use arrow::datatypes::{ArrowDictionaryKeyType, TimeUnit};
-use arrow::datatypes::{ArrowNativeType, DataType, UInt8Type, UInt16Type};
+use arrow::datatypes::{
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, TimeUnit, UInt8Type, UInt16Type,
+};
 use paste::paste;
 use snafu::{OptionExt, ensure};
 
@@ -139,9 +140,7 @@ macro_rules! impl_downcast {
 
               pub fn [<get_ $suffix _array> ]<'a>(rb: &'a RecordBatch, name: &str) -> error::Result<&'a $array_type> {
                 use arrow::datatypes::DataType::*;
-                let arr = rb.column_by_name(name).context(error::ColumnNotFoundSnafu {
-            name,
-        })?;
+                let arr = get_required_array(rb, name)?;
 
                  arr.as_any()
                             .downcast_ref::<$array_type>()
@@ -176,6 +175,17 @@ impl_downcast!(
     Timestamp(TimeUnit::Nanosecond, None),
     TimestampNanosecondArray
 );
+
+/// Get reference to array that the caller requires to be in the record batch.
+/// If the column is not in the record batch, returns `ColumnNotFound` error
+fn get_required_array<'a>(
+    record_batch: &'a RecordBatch,
+    column_name: &str,
+) -> error::Result<&'a ArrayRef> {
+    record_batch
+        .column_by_name(column_name)
+        .context(error::ColumnNotFoundSnafu { name: column_name })
+}
 
 trait NullableInt64ArrayAccessor {
     fn i64_at(&self, idx: usize) -> error::Result<Option<i64>>;
@@ -243,6 +253,13 @@ pub enum ByteArrayAccessor<'a> {
 }
 
 impl<'a> ByteArrayAccessor<'a> {
+    pub fn try_new_for_column(
+        record_batch: &'a RecordBatch,
+        column_name: &str,
+    ) -> error::Result<Self> {
+        Self::try_new(get_required_array(record_batch, column_name)?)
+    }
+
     pub fn try_new(arr: &'a ArrayRef) -> error::Result<Self> {
         match arr.data_type() {
             DataType::Binary => {
@@ -394,6 +411,13 @@ where
     pub fn try_new(arr: &'a ArrayRef) -> error::Result<Self> {
         Self::try_new_with_datatype(V::DATA_TYPE, arr)
     }
+
+    pub fn try_new_for_column(
+        record_batch: &'a RecordBatch,
+        column_name: &str,
+    ) -> error::Result<Self> {
+        Self::try_new(get_required_array(record_batch, column_name)?)
+    }
 }
 
 impl<'a> MaybeDictArrayAccessor<'a, BinaryArray> {
@@ -411,6 +435,13 @@ impl<'a> MaybeDictArrayAccessor<'a, FixedSizeBinaryArray> {
 impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
     pub fn try_new(arr: &'a ArrayRef) -> error::Result<Self> {
         Self::try_new_with_datatype(StringArray::DATA_TYPE, arr)
+    }
+
+    pub fn try_new_for_column(
+        record_batch: &'a RecordBatch,
+        column_name: &str,
+    ) -> error::Result<Self> {
+        Self::try_new(get_required_array(record_batch, column_name)?)
     }
 }
 
@@ -444,6 +475,74 @@ where
         } else {
             None
         }
+    }
+}
+
+/// Helper for accessing columns of a struct array
+///
+/// Methods return various errors into this crate's Error type if
+/// if callers requirments for the struct columns are not met (for
+/// example `ColumnDataTypeMismatchSnafu`)
+pub struct StructColumnAccessor<'a> {
+    inner: &'a StructArray,
+}
+
+impl<'a> StructColumnAccessor<'a> {
+    pub fn new(arr: &'a StructArray) -> Self {
+        Self { inner: arr }
+    }
+
+    pub fn primitive_column<T: ArrowPrimitiveType + 'static>(
+        &self,
+        column_name: &str,
+    ) -> error::Result<Option<&'a PrimitiveArray<T>>> {
+        self.inner
+            .column_by_name(column_name)
+            .map(|arr| {
+                arr.as_any()
+                    .downcast_ref::<PrimitiveArray<T>>()
+                    .with_context(|| error::ColumnDataTypeMismatchSnafu {
+                        name: column_name.to_string(),
+                        expect: T::DATA_TYPE,
+                        actual: arr.data_type().clone(),
+                    })
+            })
+            .transpose()
+    }
+
+    pub fn bool_column(&self, column_name: &str) -> error::Result<Option<&'a BooleanArray>> {
+        self.inner
+            .column_by_name(column_name)
+            .map(|arr| {
+                arr.as_any()
+                    .downcast_ref()
+                    .with_context(|| error::ColumnDataTypeMismatchSnafu {
+                        name: column_name.to_string(),
+                        expect: DataType::Boolean,
+                        actual: arr.data_type().clone(),
+                    })
+            })
+            .transpose()
+    }
+
+    pub fn string_column(
+        &self,
+        column_name: &str,
+    ) -> error::Result<Option<StringArrayAccessor<'a>>> {
+        self.inner
+            .column_by_name(column_name)
+            .map(StringArrayAccessor::try_new)
+            .transpose()
+    }
+
+    pub fn byte_array_column(
+        &self,
+        column_name: &str,
+    ) -> error::Result<Option<ByteArrayAccessor<'a>>> {
+        self.inner
+            .column_by_name(column_name)
+            .map(ByteArrayAccessor::try_new)
+            .transpose()
     }
 }
 
