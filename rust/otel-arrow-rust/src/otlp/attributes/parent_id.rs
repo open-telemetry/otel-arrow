@@ -10,30 +10,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::arrays::NullableArrayAccessor;
 use crate::otlp::attributes::decoder::{
     Attrs16ParentIdDecoder, Attrs32ParentIdDecoder, AttrsParentIdDecoder,
 };
-use arrow::array::{UInt16Array, UInt32Array};
-use arrow::datatypes::DataType;
+use arrow::datatypes::{UInt16Type, UInt32Type};
 use num_enum::TryFromPrimitive;
 use std::hash::Hash;
 use std::ops::{Add, AddAssign};
 
 pub trait ParentId: Copy + Hash + Eq + Default + Add<Output = Self> + AddAssign {
-    type Array: NullableArrayAccessor<Native = Self> + 'static;
-
-    fn arrow_data_type() -> DataType;
+    type ArrayType;
 
     fn new_decoder() -> AttrsParentIdDecoder<Self>;
 }
 
 impl ParentId for u16 {
-    type Array = UInt16Array;
-
-    fn arrow_data_type() -> DataType {
-        DataType::UInt16
-    }
+    type ArrayType = UInt16Type;
 
     fn new_decoder() -> AttrsParentIdDecoder<Self> {
         Attrs16ParentIdDecoder::default()
@@ -41,11 +33,7 @@ impl ParentId for u16 {
 }
 
 impl ParentId for u32 {
-    type Array = UInt32Array;
-
-    fn arrow_data_type() -> DataType {
-        DataType::UInt32
-    }
+    type ArrayType = UInt32Type;
 
     fn new_decoder() -> AttrsParentIdDecoder<Self> {
         Attrs32ParentIdDecoder::default()

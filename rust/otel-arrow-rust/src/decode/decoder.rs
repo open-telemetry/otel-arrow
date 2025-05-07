@@ -143,6 +143,8 @@ impl Consumer {
 
 #[cfg(test)]
 mod tests {
+
+    use crate::opentelemetry::BatchArrowRecords;
     use crate::test_util::{create_record_batch, create_test_schema};
     use std::io::Cursor;
     use std::sync::Arc;
