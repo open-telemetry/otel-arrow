@@ -6,6 +6,8 @@
 // focuses instead on defining the interconnection of nodes within the DAG and each node’s specific
 // settings.
 
+use std::rc::Rc;
+
 /// For now, the channel capacity is set to 256 (a power of two). This value is currently somewhat
 /// arbitrary and will likely be adjusted (and made configurable) in the future once we have more
 /// insight into the engine’s performance. The general idea is to choose a default that is big
@@ -41,7 +43,7 @@ pub struct PdataChannelConfig {
 /// Generic configuration for a receiver.
 pub struct ReceiverConfig {
     /// Name of the receiver.
-    pub name: String,
+    pub name: Rc<str>,
     /// Configuration for control channel.
     pub control_channel: ControlChannelConfig,
     /// Configuration for output pdata channel.
@@ -51,7 +53,7 @@ pub struct ReceiverConfig {
 /// Generic configuration for a processor.
 pub struct ProcessorConfig {
     /// Name of the processor.
-    pub name: String,
+    pub name: Rc<str>,
     /// Configuration for control channel.
     pub control_channel: ControlChannelConfig,
     /// Configuration for input pdata channel.
@@ -63,7 +65,7 @@ pub struct ProcessorConfig {
 /// Generic configuration for an exporter.
 pub struct ExporterConfig {
     /// Name of the exporter.
-    pub name: String,
+    pub name: Rc<str>,
     /// Configuration for control channel.
     pub control_channel: ControlChannelConfig,
     /// Configuration for input pdata channel.
@@ -74,7 +76,7 @@ impl ReceiverConfig {
     /// Creates a new receiver configuration with the given name and default channel capacity.
     pub fn new(name: &str) -> Self {
         ReceiverConfig {
-            name: name.to_owned(),
+            name: Rc::from(name),
             control_channel: ControlChannelConfig {
                 capacity: DEFAULT_CONTROL_CHANNEL_CAPACITY,
             },
@@ -89,7 +91,7 @@ impl ProcessorConfig {
     /// Creates a new processor configuration with the given name and default channel capacity.
     pub fn new(name: &str) -> Self {
         ProcessorConfig {
-            name: name.to_owned(),
+            name: Rc::from(name),
             control_channel: ControlChannelConfig {
                 capacity: DEFAULT_CONTROL_CHANNEL_CAPACITY,
             },
@@ -107,7 +109,7 @@ impl ExporterConfig {
     /// Creates a new exporter configuration with the given name and default channel capacity.
     pub fn new(name: &str) -> Self {
         ExporterConfig {
-            name: name.to_owned(),
+            name: Rc::from(name),
             control_channel: ControlChannelConfig {
                 capacity: DEFAULT_CONTROL_CHANNEL_CAPACITY,
             },
