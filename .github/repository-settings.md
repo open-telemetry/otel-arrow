@@ -6,7 +6,8 @@ guidelines](https://github.com/open-telemetry/community/blob/main/docs/how-to-co
 
 ## 2025-05-07
 
-- Configure branch protection for `main` branch to 'Require' certain CI checks:
+- Configure branch protection for `main` branch to 'Require' certain checks:
+  - Repo Lint
   - Go-CI
     - build_test
   - Rust-CI
