@@ -30,6 +30,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"go.opentelemetry.io/collector/pdata/plog/plogotlp"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/open-telemetry/otel-arrow/pkg/datagen"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
@@ -90,7 +91,7 @@ func writeProto(file *os.File, batchsize int, useOtap bool, generator *datagen.L
 		if err != nil {
 			log.Fatal("error creating batch arrow records: ", err)
 		}
-		msg, err = json.Marshal(bar)
+		msg, err = proto.Marshal(bar)
 		if err != nil {
 			log.Fatal("marshaling error: ", err)
 		}
