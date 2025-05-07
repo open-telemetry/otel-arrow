@@ -1,4 +1,6 @@
-name: Docs-CI
+# This workflow is for various linting tasks that act in bulk over the repository.
+# Scoped linting (i.e. code formatting) should be done in the respective language-specific workflows.
+name: Repo Lint
 
 permissions: read-all
 
