@@ -48,7 +48,7 @@ impl<PData: Clone + Send + 'static> Processor<PData, SendEffectHandler<PData>> f
                 match ctrl_msg {
                     ControlMsg::TimerTick { .. } => {
                         if !self.batch.is_empty() {
-                            let batch = std::mem::take(&mut self.batch);
+                            let batch = std::mem::replace(&mut self.batch, Vec::with_capacity(self.batch_size));
                             for item in batch {
                                 effect_handler.send_message(item).await?;
                             }
@@ -58,7 +58,7 @@ impl<PData: Clone + Send + 'static> Processor<PData, SendEffectHandler<PData>> f
                     ControlMsg::Shutdown { deadline, reason } => {
                         // Flush any remaining batch on shutdown
                         if !self.batch.is_empty() {
-                            let batch = std::mem::take(&mut self.batch);
+                            let batch = std::mem::replace(&mut self.batch, Vec::with_capacity(self.batch_size));
                             for item in batch {
                                 effect_handler.send_message(item).await?;
                             }
