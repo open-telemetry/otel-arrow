@@ -110,11 +110,11 @@ def run_loadgen(duration: int) -> Dict[str, Any]:
 
     # Run the load generator
     cmd = ["python3", "load_generator/loadgen.py", "--duration", str(duration)]
-    
+
     try:
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         output = result.stdout
-        
+
         # Parse the output to extract metrics
         metrics = {}
         for line in output.strip().split("\n"):
@@ -130,7 +130,7 @@ def run_loadgen(duration: int) -> Dict[str, Any]:
                     metrics["logs_per_second"] = rate
                 except (IndexError, ValueError):
                     pass
-                    
+
         print(f"Load generator completed. Sent {metrics.get('logs_sent', 'unknown')} logs at {metrics.get('logs_per_second', 'unknown')} logs/second")
         return metrics
     except subprocess.CalledProcessError as e:
