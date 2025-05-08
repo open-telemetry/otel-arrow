@@ -1,15 +1,15 @@
-use crate::grpc_stubs::proto::collector::logs::v1::logs_service_server::LogsService;
-use crate::grpc_stubs::proto::collector::logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse};
-use crate::grpc_stubs::proto::collector::metrics::v1::metrics_service_server::MetricsService;
-use crate::grpc_stubs::proto::collector::metrics::v1::{
+use crate::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsService;
+use crate::proto::opentelemetry::collector::logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse};
+use crate::proto::opentelemetry::collector::metrics::v1::metrics_service_server::MetricsService;
+use crate::proto::opentelemetry::collector::metrics::v1::{
     ExportMetricsServiceRequest, ExportMetricsServiceResponse,
 };
-use crate::grpc_stubs::proto::collector::trace::v1::trace_service_server::TraceService;
-use crate:: grpc_stubs::proto::collector::trace::v1::{
+use crate::proto::opentelemetry::collector::trace::v1::trace_service_server::TraceService;
+use crate::proto::opentelemetry::collector::trace::v1::{
     ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
 
-use crate::grpc::grpc_stubs::proto::collector::{logs::v1::logs_service_server::LogsServiceServer,
+use crate::proto::opentelemetry::collector::{logs::v1::logs_service_server::LogsServiceServer,
     metrics::v1::metrics_service_server::MetricsServiceServer,
     trace::v1::trace_service_server::TraceServiceServer};
 use tonic::{Request, Response, Status};
@@ -94,7 +94,7 @@ impl TraceService for TraceServiceMock {
 }
 
 
-pub fn start_mock_server<T>(sender: Sender<OTLPRequest>, listening_addr: SocketAddr, shutdown_signal: Receiver<T>) -> JoinHandle<Result<(), Error>> {
+pub fn start_mock_server<T>(sender: Sender<OTLPRequest>, listening_addr: SocketAddr, shutdown_signal: Receiver<T>) -> JoinHandle<Result<(), dyn Error>> {
     let mock_logs_service = LogsServiceServer::new(LogsServiceMock::new(sender.clone()));
     let mock_metrics_service = MetricsServiceServer::new(MetricsServiceMock::new(sender.clone()));
     let mock_trace_service = TraceServiceServer::new(TraceServiceMock::new(sender.clone()));

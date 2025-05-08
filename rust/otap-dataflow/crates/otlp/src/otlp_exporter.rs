@@ -1,8 +1,8 @@
 // ToDo: Handle Ack and Nack messages in the pipeline
 
 
-use crate::grpc::{LogsServiceImpl, MetricsServiceImpl, TraceServiceImpl, OTLPRequest};
-use crate::grpc_stubs::proto::collector::{logs::v1::logs_service_client::LogsServiceClient,
+use crate::grpc::OTLPRequest;
+use crate::proto::opentelemetry::collector::{logs::v1::logs_service_client::LogsServiceClient,
     metrics::v1::metrics_service_client::MetricsServiceClient,
     trace::v1::trace_service_client::TraceServiceClient};
 use otap_df_engine::exporter::{EffectHandlerTrait, Exporter, MessageChannel, SendEffectHandler};
@@ -108,13 +108,13 @@ mod tests {
         EffectHandlerTrait, Error, Exporter, ExporterWrapper, MessageChannel,
         SendEffectHandler,
     };
-    use crate::grpc::grpc_stubs::proto::collector::{metrics::v1::, trace::v1::, logs::v1, };
-
-    use grpc_stubs::proto::collector::metrics::v1::{
+    use crate::proto::opentelemetry::collector::logs::v1::{
+        ExportLogssServiceRequest, ExportLogsServiceResponse,
+    };
+    use crate::proto::opentelemetry::collector::metrics::v1::{
         ExportMetricsServiceRequest, ExportMetricsServiceResponse,
     };
-    use grpc_stubs::proto::collector::trace::v1::trace_service_server::TraceService;
-    use grpc_stubs::proto::collector::trace::v1::{
+    use crate::proto::opentelemetry::collector::trace::v1::{
         ExportTraceServiceRequest, ExportTraceServiceResponse,
     };
     use otap_df_engine::message::{ControlMsg, Message};
@@ -218,13 +218,14 @@ mod tests {
         let grpc_endpoint = format!("http::{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         let exporter = ExporterWrapper::with_send(
-            OTLPExporter(grpc_endpoint: grpc_endpoint),
+            OTLPExporter::new(grpc_endpoint, None),
             test_runtime.config(),
         );
         run_mock_server(sender: sender, listening_addr: addr, shutdown_signal: shutdown_receiver);
         test_runtime
             .set_exporter(exporter)
-            .run_test(scenario(receiver: receiver));
+            .run_test(scenario(receiver));
+
         shutdown_sender.send("Shutdown").await;
     }   
 
