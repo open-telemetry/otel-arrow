@@ -15,10 +15,10 @@ class DockerProcess:
     def shutdown(self) -> None:
         """Gracefully shutdown the Docker container"""
         if self.container_id:
-            print(f"Stopping Docker container {self.container_id}...")
+            # print(f"Stopping Docker container {self.container_id}...") 
             try:
                 subprocess.run(["docker", "stop", self.container_id], check=True, capture_output=True, text=True)
-                print(f"Docker container {self.container_id} stopped")
+                # print(f"Docker container {self.container_id} stopped")
             except subprocess.CalledProcessError as e:
                 print(f"Error stopping Docker container: {e}")
                 print(f"Error output: {e.stderr}")
@@ -90,8 +90,8 @@ def launch_container(
         print(f"Error output: {e.stderr if hasattr(e, 'stderr') else 'No error output'}")
         raise
 
-def run_loadgen(duration: int) -> Dict[str, Any]:
-    """Run the load generator and return the results"""
+def run_loadgen(duration: int) -> (int, float):
+    """Run the load generator and return the count of logs and duration"""
     print("Starting load generator...")
 
     # Record start time to calculate actual rate
@@ -107,32 +107,26 @@ def run_loadgen(duration: int) -> Dict[str, Any]:
         # Calculate actual duration
         actual_duration = time.time() - start_time
 
-        # Parse the output to extract metrics
-        metrics = {}
+        # Parse the output to extract logs sent count
+        logs_sent = 0
         for line in output.strip().split("\n"):
             if "LOADGEN_LOGS_SENT:" in line:
                 try:
-                    sent = int(line.split("LOADGEN_LOGS_SENT:")[1].strip())
-                    metrics["logs_sent"] = sent
-                    # Calculate the rate ourselves
-                    metrics["logs_per_second"] = sent / actual_duration
+                    logs_sent = int(line.split("LOADGEN_LOGS_SENT:")[1].strip())
                 except (IndexError, ValueError) as e:
                     print(f"Failed to parse logs sent count: {e}")
+                    logs_sent = -1
 
-        # If we didn't find the count in the output, set to unknown
-        if "logs_sent" not in metrics:
-            metrics["logs_sent"] = "unknown"
-            metrics["logs_per_second"] = "unknown"
+        if logs_sent == 0:
             print(f"Could not find LOADGEN_LOGS_SENT in output: {output}")
         else:
-            print(f"Load generator completed. Sent {metrics['logs_sent']} logs in {actual_duration:.2f}s")
-            print(f"Achieved rate: {metrics['logs_per_second']:.2f} logs/second")
+            print(f"Load generator completed. Sent {logs_sent} logs in {actual_duration:.2f}s")
 
-        return metrics
+        return logs_sent, actual_duration
     except subprocess.CalledProcessError as e:
         print(f"Error running load generator: {e}")
         print(f"Error output: {e.stderr}")
-        return {"error": str(e)}
+        return -1, 0.0
 
 def build_backend_image(backend_dir: str = "backend") -> str:
     """
@@ -163,15 +157,22 @@ def build_backend_image(backend_dir: str = "backend") -> str:
         raise
 
 BACKEND_STATS_URL = "http://localhost:5000/metrics"
-def query_backend():
+def get_backend_received_count() -> int:
+    """
+    Query the backend service for the count of received logs.
+
+    Returns:
+        int: The count of received logs, or -1 if the query fails.
+    """
     print("\nQuerying backend for received count...")
     try:
         response = requests.get(BACKEND_STATS_URL)
         data = response.json()
         count = data.get("received_logs", -1)
-        print(f"Backend reports received logs: {count}")
+        return count
     except Exception as e:
         print(f"Failed to query backend service: {e}")
+        return -1
 
 # example usage
 # python3 orchestrator/orchestrator.py --collector-config system_under_test/otel-collector/collector-config.yaml --duration 30
@@ -251,8 +252,17 @@ def main():
         time.sleep(2)
 
         # Run the load generator
-        metrics = run_loadgen(args.duration)
-        query_backend()
+        logs_sent_count, duration = run_loadgen(args.duration)
+        logs_received_backend_count = get_backend_received_count()
+
+        # Calculate total logs lost
+        total_logs_lost = logs_sent_count - logs_received_backend_count
+
+        # Print results
+        print(f"Total logs sent: {logs_sent_count}")
+        print(f"Total logs backend reports as received: {logs_received_backend_count}")
+        print(f"Duration: {duration:.2f} seconds")
+        print(f"Total logs lost: {total_logs_lost}")
 
         # Write results to file
         with open(results_file, "w") as f:
@@ -260,8 +270,9 @@ def main():
             f.write(f"Test duration: {args.duration} seconds\n")
             f.write(f"Collector config: {args.collector_config}\n\n")
             f.write("Results:\n")
-            for key, value in metrics.items():
-                f.write(f"- {key}: {value}\n")
+            f.write(f"- Total logs sent: {logs_sent_count}\n")
+            f.write(f"- Duration: {duration:.2f} seconds\n")
+            f.write(f"- Total logs lost: {total_logs_lost}\n")
 
         print(f"Test completed. Results saved to {results_file}")
 
@@ -276,7 +287,6 @@ def main():
             if network_created:
                 try:
                     subprocess.run(["docker", "network", "rm", network], check=True, capture_output=True)
-                    print(f"Removed Docker network: {network}")
                 except subprocess.CalledProcessError as e:
                     print(f"Error removing Docker network: {e}")
         else :
