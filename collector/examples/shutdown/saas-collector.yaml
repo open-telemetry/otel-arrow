@@ -13,7 +13,7 @@ receivers:
             max_connection_age_grace: 60s
 
 exporters:
-  debug:      
+  debug:
 
 service:
   pipelines:
@@ -31,7 +31,7 @@ service:
       receivers: [otelarrow]
       processors: []
       exporters: [debug]
-      
+
   telemetry:
     metrics:
       level: none

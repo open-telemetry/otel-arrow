@@ -26,7 +26,7 @@ significant changes.
 - [ ] Documentation generation
 - [ ] Continuous benchmarking and performance tracking
   - [ ] Comparison with Go Collector
-  
+
 ### Pipeline Engine Foundations (phase 1)
 
 - Channels
@@ -35,7 +35,8 @@ significant changes.
 - [x] Receiver trait
 - [x] Processor trait
 - [x] Exporter trait
-- [ ] Pipeline Engine
+- [x] EffectHandler trait
+- [ ] Connector trait
 - [ ] CPU & Memory Benchmarks
 - [ ] Documentation
 
@@ -44,7 +45,7 @@ significant changes.
 - Channels
   - [ ] SPSC Channel
   - [ ] Broadcast Channel
-- [ ] Connector trait
+- [ ] Pipeline Engine
 - [ ] Instrumentation
 - [ ] Thread pinning
 - Benchmarks
@@ -86,7 +87,7 @@ significant changes.
 
 ## Completed Milestones
 
-- ✅ Project structure setup and xtask to check project conformity
+- :white_check_mark: Project structure setup and xtask to check project conformity
 
 ---
 
