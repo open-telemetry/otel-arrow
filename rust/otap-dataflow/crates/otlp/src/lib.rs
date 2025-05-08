@@ -5,4 +5,4 @@
 /// gRPC service implementation
 pub mod grpc;
 /// Generated protobuf files
-pub mod grpc_stubs;
+pub mod proto;

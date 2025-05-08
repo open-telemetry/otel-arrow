@@ -1,6 +1,6 @@
 #[allow(missing_docs)]
 #[path = ""]
-pub mod proto {
+pub mod opentelemetry {
     #[path = ""]
     pub mod collector {
         #[path = ""]
