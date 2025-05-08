@@ -104,6 +104,40 @@ def launch_target(target_type: str = "collector", config_path: Optional[str] = N
         print(f"Error output: {e.stderr if hasattr(e, 'stderr') else 'No error output'}")
         raise
 
+def run_loadgen(duration: int) -> Dict[str, Any]:
+    """Run the load generator and return the results"""
+    print("Starting load generator...")
+
+    # Run the load generator
+    cmd = ["python3", "load_generator/loadgen.py", "--duration", str(duration)]
+    
+    try:
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        output = result.stdout
+        
+        # Parse the output to extract metrics
+        metrics = {}
+        for line in output.strip().split("\n"):
+            if "Sent" in line:
+                try:
+                    sent = int(line.split("Sent ")[1].split(" logs")[0])
+                    metrics["logs_sent"] = sent
+                except (IndexError, ValueError):
+                    pass
+            if "Achieved rate" in line:
+                try:
+                    rate = float(line.split("Achieved rate: ")[1].split(" logs/second")[0])
+                    metrics["logs_per_second"] = rate
+                except (IndexError, ValueError):
+                    pass
+                    
+        print(f"Load generator completed. Sent {metrics.get('logs_sent', 'unknown')} logs at {metrics.get('logs_per_second', 'unknown')} logs/second")
+        return metrics
+    except subprocess.CalledProcessError as e:
+        print(f"Error running load generator: {e}")
+        print(f"Error output: {e.stderr}")
+        return {"error": str(e)}
+
 # example usage
 # python3 orchestrator/orchestrator.py --collector-config system_under_test/otel-collector/collector-config.yaml
 # python3 orchestrator/orchestrator.py --collector-config system_under_test/otel-collector/collector-config.yaml --duration 30
@@ -137,14 +171,18 @@ def main():
         # Give it a moment to initialize
         time.sleep(2)
 
-        # For now, just write a simple results file as a placeholder
+        # Run the load generator
+        metrics = run_loadgen(args.duration)
+
+        # Write results to file
         with open(results_file, "w") as f:
             f.write(f"Performance test run at: {timestamp}\n")
             f.write(f"Test duration: {args.duration} seconds\n")
-            f.write("Test results will be populated here in the future\n")
+            f.write(f"Collector config: {args.collector_config}\n\n")
+            f.write("Results:\n")
+            for key, value in metrics.items():
+                f.write(f"- {key}: {value}\n")
 
-        # Simulate test running for the specified duration
-        time.sleep(args.duration)
         print(f"Test completed. Results saved to {results_file}")
 
     finally:
