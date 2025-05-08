@@ -17,7 +17,7 @@ struct ChannelState<T> {
     senders: usize,
     has_receiver: bool,
     receiver_waker: Option<Waker>,
-    sender_wakers: Vec<Waker>,
+    sender_wakers: VecDeque<Waker>,
 }
 
 /// A single-threaded MPSC channel.
@@ -38,7 +38,7 @@ impl<T> Channel<T> {
                 senders: 1,
                 has_receiver: true,
                 receiver_waker: None,
-                sender_wakers: Vec::new(),
+                sender_wakers: VecDeque::new(),
             }),
         });
 
@@ -153,7 +153,7 @@ impl<T> Receiver<T> {
         if let Some(value) = state.buffer.pop_front() {
             // Wake one sender if channel was full
             if state.buffer.len() == state.capacity - 1 {
-                if let Some(waker) = state.sender_wakers.pop() {
+                if let Some(waker) = state.sender_wakers.pop_front() {
                     waker.wake();
                 }
             }
@@ -192,7 +192,7 @@ impl<T> Future for SendFuture<T> {
             Err(SendError::Full(value)) => {
                 self.value = Some(value);
                 let mut state = self.sender.channel.state.borrow_mut();
-                state.sender_wakers.push(cx.waker().clone());
+                state.sender_wakers.push_back(cx.waker().clone());
                 Poll::Pending
             }
             Err(e) => Poll::Ready(Err(e)),
@@ -435,5 +435,55 @@ mod tests {
 
         rt.block_on(local);
         rt.block_on(handle).expect("Test task failed");
+    }
+
+    #[test]
+    fn test_fairness_in_waking_senders() {
+        let rt = create_test_runtime();
+        let local = tokio::task::LocalSet::new();
+
+        _ = local.spawn_local(async {
+            let (tx, rx) = Channel::new(1);
+            let received = Rc::new(RefCell::new(vec![]));
+            let received_clone = received.clone();
+
+            // Send a value to fill the channel to its capacity
+            let result = tx.send_async(1).await;
+            assert!(result.is_ok());
+
+            // Spawn senders that wait for the reciver to be process items and wake them up
+            let sender_clone1 = tx.clone();
+            let sender_clone2 = tx.clone();
+
+            let pending_sender_1 = tokio::task::spawn_local(async move {
+                let result = sender_clone1.send_async(2).await;
+                assert!(result.is_ok());
+            });
+
+            let pending_sender_2 = tokio::task::spawn_local(async move {
+                let result = sender_clone2.send_async(3).await;
+                assert!(result.is_ok());
+            });
+
+            // Spawn consumer
+            let consumer = tokio::task::spawn_local(async move {
+                let mut count_of_items_processed = 0;
+                const MAX_ITEMS_TO_RECEIVE: usize = 3;
+                while let Ok(value) = rx.recv().await {
+                    received_clone.borrow_mut().push(value);
+                    count_of_items_processed += 1;
+                    if count_of_items_processed >= MAX_ITEMS_TO_RECEIVE {
+                        break;
+                    }
+                }
+            });
+
+            pending_sender_1.await.unwrap();
+            pending_sender_2.await.unwrap();
+            consumer.await.unwrap();
+            assert_eq!(*received.borrow(), vec![1, 2, 3]); // Wake the sender in FIFO order. We should receive 1 -> 2 -> 3 and not 1 -> 3 -> 2
+        });
+
+        rt.block_on(local);
     }
 }
