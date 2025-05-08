@@ -18,7 +18,7 @@ exporters:
 
     arrow:
       max_stream_lifetime: 120s
-    
+
 service:
   pipelines:
     traces:

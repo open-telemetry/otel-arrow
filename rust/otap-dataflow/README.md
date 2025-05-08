@@ -8,7 +8,7 @@
 
 ----
 
-[Quickstart Guide](#-quickstart-guide)
+[Quickstart Guide]((#-quickstart-guide))
 | [Design Principles](docs/design-principles.md)
 | [Architecture](docs/architecture.md) | [Change log](CHANGELOG.md)
 | [Contributing](CONTRIBUTING.md) |
@@ -40,7 +40,7 @@ Some examples of use cases include:
 
 TBD (Explain why Rust, why Arrow, ...)
 
-## 🚧 Workspace Structure
+## :construction: Workspace Structure
 
 ```text
 .
@@ -64,11 +64,11 @@ TBD (Explain why Rust, why Arrow, ...)
 
 TBD
 
-### 🎯 Usage Example
+### :dart: Usage Example
 
 TBD
 
-## 📚 Documentation
+## :books: Documentation
 
 - [Developer/Contributing Guide](CONTRIBUTING.md)
 - [Design Principles](docs/design-principles.md)
@@ -114,18 +114,18 @@ Before submitting a PR, please run the following commands:
 cargo xtask check
 ```
 
-## 📝 License
+## :memo: License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
 
-## 📞 Support & Community
+## :telephone_receiver: Support & Community
 
 CNCF Slack channel: [#otel-arrow](https://slack.cncf.io/)
 
-## 🌟 Roadmap
+## :star2: Roadmap
 
 See our detailed [Roadmap](ROADMAP.md) for upcoming features and improvements.
 
-## ✅ Changelog
+## :white_check_mark: Changelog
 
 - [CHANGELOG.md](CHANGELOG.md)

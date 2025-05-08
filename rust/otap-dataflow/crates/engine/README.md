@@ -49,7 +49,7 @@ overhead, thus ensuring consistently low latency. Avoiding unbounded channels
 and data structures protects against unpredictable resource consumption,
 maintaining stable performance. Finally, limiting external dependencies reduces
 complexity, security risks, and maintenance effort, further streamlining the
-gateway’s operation and reliability.
+gateway's operation and reliability.
 
 ## Control Messages
 

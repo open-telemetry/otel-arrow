@@ -48,5 +48,8 @@ coverage.html
 # Benchmarks output
 /output/
 
+# PerfTest pipeline output
+/tools/pipeline_perf_test/results/
+
 # Collector test binary
 collector/cmd/otelarrowcol/otelarrowcol

@@ -2,7 +2,7 @@
 
 
 use crate::grpc::{LogsServiceImpl, MetricsServiceImpl, TraceServiceImpl, OTLPRequest};
-use crate::grpc::grpc_stubs::proto::collector::{logs::v1::logs_service_client::LogsServiceClient,
+use crate::grpc_stubs::proto::collector::{logs::v1::logs_service_client::LogsServiceClient,
     metrics::v1::metrics_service_client::MetricsServiceClient,
     trace::v1::trace_service_client::TraceServiceClient};
 use otap_df_engine::exporter::{EffectHandlerTrait, Exporter, MessageChannel, SendEffectHandler};
@@ -43,11 +43,10 @@ impl Exporter<OTLPRequest, SendEffectHandler<OTLPRequest>> for OTLPExporter {
     ) -> Result<(), Error<OTLPRequest>> {
 
         // check for compression
-        let compression_encoding = match self.compression {
+        let compression_encoding = match self.compression_method {
             Some(CompressionMethod::Gzip) => Some(CompressionEncoding::Gzip),
             Some(CompressionMethod::Zstd) => Some(CompressionEncoding::Zstd),
             Some(CompressionMethod::Deflate) => Some(CompressionEncoding::Deflate),
-            Some(CompressionMethod::None) => None,
             _ => None,
         };
         // Loop until a Shutdown event is received.

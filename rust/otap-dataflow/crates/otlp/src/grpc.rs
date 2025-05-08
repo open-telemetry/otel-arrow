@@ -1,88 +1,15 @@
-use grpc_stubs::proto::collector::logs::v1::logs_service_server::LogsService;
-use grpc_stubs::proto::collector::logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse};
-use grpc_stubs::proto::collector::metrics::v1::metrics_service_server::MetricsService;
-use grpc_stubs::proto::collector::metrics::v1::{
+use crate::grpc_stubs::proto::collector::logs::v1::logs_service_server::LogsService;
+use crate::grpc_stubs::proto::collector::logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse};
+use crate::grpc_stubs::proto::collector::metrics::v1::metrics_service_server::MetricsService;
+use crate::grpc_stubs::proto::collector::metrics::v1::{
     ExportMetricsServiceRequest, ExportMetricsServiceResponse,
 };
-use grpc_stubs::proto::collector::trace::v1::trace_service_server::TraceService;
-use grpc_stubs::proto::collector::trace::v1::{
+use crate::grpc_stubs::proto::collector::trace::v1::trace_service_server::TraceService;
+use crate::grpc_stubs::proto::collector::trace::v1::{
     ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
 use tonic::{Request, Response, Status};
 use otap_df_engine::receiver::{EffectHandler, SendableMode};
-
-
-/// Expose the OTLP gRPC services.
-/// See the build.rs file for more information.
-pub mod grpc_stubs {
-    #[path = ""]
-    pub mod proto {
-        #[path = ""]
-        pub mod collector {
-            #[path = ""]
-            pub mod logs {
-                #[allow(unused_qualifications)]
-                #[allow(unused_results)]
-                #[allow(clippy::enum_variant_names)]
-                #[allow(rustdoc::invalid_html_tags)]
-                #[path = "opentelemetry.proto.collector.logs.v1.rs"]
-                pub mod v1;
-            }
-            #[path = ""]
-            pub mod metrics {
-                #[allow(unused_qualifications)]
-                #[allow(unused_results)]
-                #[allow(clippy::enum_variant_names)]
-                #[allow(rustdoc::invalid_html_tags)]
-                #[path = "opentelemetry.proto.collector.metrics.v1.rs"]
-                pub mod v1;
-            }
-            #[path = ""]
-            pub mod trace {
-                #[allow(unused_qualifications)]
-                #[allow(unused_results)]
-                #[allow(clippy::enum_variant_names)]
-                #[allow(rustdoc::invalid_html_tags)]
-                #[path = "opentelemetry.proto.collector.trace.v1.rs"]
-                pub mod v1;
-            }
-        }
-
-        #[path = ""]
-        pub mod logs {
-            #[allow(rustdoc::invalid_html_tags)]
-            #[path = "opentelemetry.proto.logs.v1.rs"]
-            pub mod v1;
-        }
-
-        #[path = ""]
-        pub mod metrics {
-            #[allow(rustdoc::invalid_html_tags)]
-            #[path = "opentelemetry.proto.metrics.v1.rs"]
-            pub mod v1;
-        }
-
-        #[path = ""]
-        pub mod trace {
-            #[allow(rustdoc::invalid_html_tags)]
-            #[path = "opentelemetry.proto.trace.v1.rs"]
-            pub mod v1;
-        }
-
-        #[path = ""]
-        pub mod common {
-            #[allow(clippy::enum_variant_names)]
-            #[path = "opentelemetry.proto.common.v1.rs"]
-            pub mod v1;
-        }
-
-        #[path = ""]
-        pub mod resource {
-            #[path = "opentelemetry.proto.resource.v1.rs"]
-            pub mod v1;
-        }
-    }
-}
 
 
 pub struct LogsServiceImpl {
@@ -156,11 +83,14 @@ impl TraceService for TraceServiceImpl {
     }
 }
 
+
 // Enum to represent received OTLP requests.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum OTLPRequest {
+    /// Logs Data
     Logs(ExportLogsServiceRequest),
+    /// Metrics Data
     Metrics(ExportMetricsServiceRequest),
+    /// Traces/Span Data
     Traces(ExportTraceServiceRequest),
 }
-

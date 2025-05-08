@@ -1,0 +1,6 @@
+docker
+psutil
+requests
+kubernetes
+pyyaml
+opentelemetry-proto

@@ -11,16 +11,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // - Run `cargo build` to regenerate the API.
     // - Comment the following lines.
     // - Commit the changes.
-    tonic_build::configure()
-        // .build_client(false)
-        .out_dir("src/grpc/grpc_stubs")
-        .compile_protos(
-            &[
-                "proto/opentelemetry/proto/collector/logs/v1/logs_service.proto",
-                "proto/opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
-                "proto/opentelemetry/proto/collector/trace/v1/trace_service.proto",
-            ],
-            &["proto"],
-        )?;
+    // tonic_build::configure()
+    //     // .build_client(false)
+    //     .out_dir("src/grpc_subs")
+    //     .compile_protos(
+    //         &[
+    //             "proto/opentelemetry/proto/collector/logs/v1/logs_service.proto",
+    //             "proto/opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
+    //             "proto/opentelemetry/proto/collector/trace/v1/trace_service.proto",
+    //         ],
+    //         &["proto"],
+    //     )?;
     Ok(())
 }

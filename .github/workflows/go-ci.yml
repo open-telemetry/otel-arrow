@@ -1,22 +1,10 @@
 name: Go-CI
 permissions:
   contents: read
-  # needed for codeql 
+  # needed for codeql
   security-events: write
 
-on: 
-  # run this job on every push and pull request
-  # ignore changes only in the rust directory
-  push:
-    paths-ignore:
-      - 'rust/**'
-      - .github/workflows/rust-ci.yml
-      - .github/workflows/rust-experimental.yml
-  pull_request:
-    paths-ignore:
-      - 'rust/**'
-      - .github/workflows/rust-ci.yml
-      - .github/workflows/rust-experimental.yml
+on: [push, pull_request]
 
 jobs:
 

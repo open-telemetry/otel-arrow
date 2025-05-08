@@ -59,7 +59,7 @@ service:
       receivers: [otelarrow/second]
       processors: []
       exporters: [debug/second, file/second_metrics]
-      
+
   telemetry:
     resource:
       "service.name": "data-recorder"
