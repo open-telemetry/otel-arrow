@@ -6,7 +6,7 @@ use criterion::{
     BatchSize, BenchmarkGroup, Criterion, criterion_group, criterion_main, measurement::WallTime,
 };
 
-use otap_df_config::{PipelineDag, NodeKind, SignalType};
+use otap_df_config::{NodeKind, PipelineDag, SignalType};
 
 #[allow(missing_docs)]
 pub mod bench_entry {
