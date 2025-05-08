@@ -442,7 +442,7 @@ mod tests {
         let rt = create_test_runtime();
         let local = tokio::task::LocalSet::new();
 
-        _ = local.spawn_local(async {
+        let handle = local.spawn_local(async {
             let (tx, rx) = Channel::new(1);
             let received = Rc::new(RefCell::new(vec![]));
             let received_clone = received.clone();
@@ -485,5 +485,6 @@ mod tests {
         });
 
         rt.block_on(local);
+        rt.block_on(handle).expect("Test task failed");
     }
 }
