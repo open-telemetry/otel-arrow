@@ -94,6 +94,9 @@ def run_loadgen(duration: int) -> Dict[str, Any]:
     """Run the load generator and return the results"""
     print("Starting load generator...")
 
+    # Record start time to calculate actual rate
+    start_time = time.time()
+
     # Run the load generator
     cmd = ["python3", "load_generator/loadgen.py", "--duration", str(duration)]
 
@@ -101,23 +104,30 @@ def run_loadgen(duration: int) -> Dict[str, Any]:
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
         output = result.stdout
 
+        # Calculate actual duration
+        actual_duration = time.time() - start_time
+
         # Parse the output to extract metrics
         metrics = {}
         for line in output.strip().split("\n"):
-            if "Sent" in line:
+            if "LOADGEN_LOGS_SENT:" in line:
                 try:
-                    sent = int(line.split("Sent ")[1].split(" logs")[0])
+                    sent = int(line.split("LOADGEN_LOGS_SENT:")[1].strip())
                     metrics["logs_sent"] = sent
-                except (IndexError, ValueError):
-                    pass
-            if "Achieved rate" in line:
-                try:
-                    rate = float(line.split("Achieved rate: ")[1].split(" logs/second")[0])
-                    metrics["logs_per_second"] = rate
-                except (IndexError, ValueError):
-                    pass
+                    # Calculate the rate ourselves
+                    metrics["logs_per_second"] = sent / actual_duration
+                except (IndexError, ValueError) as e:
+                    print(f"Failed to parse logs sent count: {e}")
 
-        print(f"Load generator completed. Sent {metrics.get('logs_sent', 'unknown')} logs at {metrics.get('logs_per_second', 'unknown')} logs/second")
+        # If we didn't find the count in the output, set to unknown
+        if "logs_sent" not in metrics:
+            metrics["logs_sent"] = "unknown"
+            metrics["logs_per_second"] = "unknown"
+            print(f"Could not find LOADGEN_LOGS_SENT in output: {output}")
+        else:
+            print(f"Load generator completed. Sent {metrics['logs_sent']} logs in {actual_duration:.2f}s")
+            print(f"Achieved rate: {metrics['logs_per_second']:.2f} logs/second")
+
         return metrics
     except subprocess.CalledProcessError as e:
         print(f"Error running load generator: {e}")

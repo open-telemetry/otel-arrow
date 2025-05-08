@@ -10,7 +10,7 @@ def create_log_record():
     return logs_pb2.LogRecord(
         time_unix_nano=int(time.time_ns()),
         severity_text="INFO",
-        severity_number=9,  # INFO in OTel severity number
+        severity_number=9,
         body=common_pb2.AnyValue(string_value="This is a test log message"),
         attributes=[
             common_pb2.KeyValue(
@@ -53,12 +53,9 @@ def main():
             sent += 1
         except Exception as e:
             print(f"Failed to send log: {e}")
-
-    actual_duration = time.time() - start_time
-    rate_achieved = sent / actual_duration
-
-    print(f"Loadgen done. Sent {sent} logs over {actual_duration:.2f}s.")
-    print(f"Achieved rate: {rate_achieved:.2f} logs/second")
+    
+    # Print in a format that's easy for the orchestrator to parse
+    print(f"LOADGEN_LOGS_SENT: {sent}")
 
 if __name__ == "__main__":
     main()
