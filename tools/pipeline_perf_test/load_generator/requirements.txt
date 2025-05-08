@@ -1,0 +1,7 @@
+docker
+psutil
+requests
+kubernetes
+pyyaml
+grpcio
+opentelemetry-proto
