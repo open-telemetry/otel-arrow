@@ -149,6 +149,9 @@ pub struct TestPhase<PData> {
 
     control_sender: mpsc::Sender<ControlMsg>,
     pdata_sender: mpsc::Sender<PData>,
+
+    /// Join handle for the starting the exporter task
+    run_exporter_handle: tokio::task::JoinHandle<()>,
 }
 
 /// Data and operations for the validation phase of an exporter.
@@ -159,6 +162,10 @@ pub struct ValidationPhase<PData> {
     local_tasks: LocalSet,
 
     context: TestContext<PData>,
+
+    /// Join handle for the running the exporter task
+    run_exporter_handle: tokio::task::JoinHandle<()>,
+
     _pd: PhantomData<PData>,
 }
 
@@ -202,7 +209,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             self.pdata_rx.take().expect("PData channel not initialized"),
         );
 
-        let _ = self.local_tasks.spawn_local(async move {
+        let run_exporter_handle = self.local_tasks.spawn_local(async move {
             exporter
                 .start(msg_chan)
                 .await
@@ -214,6 +221,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             counters: self.counter.clone(),
             control_sender: self.control_tx,
             pdata_sender: self.pdata_tx,
+            run_exporter_handle,
         }
     }
 }
@@ -235,6 +243,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             rt: self.rt,
             local_tasks: self.local_tasks,
             context,
+            run_exporter_handle: self.run_exporter_handle,
             _pd: PhantomData,
         }
     }
@@ -270,6 +279,11 @@ impl<PData> ValidationPhase<PData> {
         // First run all the spawned tasks to completion
         let local_tasks = std::mem::take(&mut self.local_tasks);
         self.rt.block_on(local_tasks);
+
+        self.rt
+            .block_on(self.run_exporter_handle)
+            .expect("Exporter task failed");
+
         // Then run the validation future with the test context
         self.rt.block_on(future_fn(self.context))
     }
