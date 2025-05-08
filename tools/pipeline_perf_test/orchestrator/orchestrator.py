@@ -7,12 +7,12 @@ from typing import Optional, Dict, Any, List
 
 class TargetProcess:
     """Class to manage target processes like the OTEL collector"""
-    
+
     def __init__(self, target_type: str, container_id: str, config_path: Optional[str] = None):
         self.target_type = target_type
         self.container_id = container_id
         self.config_path = config_path
-    
+
     def shutdown(self) -> None:
         """Gracefully shutdown the target process"""
         if self.container_id:
@@ -25,23 +25,23 @@ class TargetProcess:
                 print(f"Error output: {e.stderr}")
 
 
-def launch_target(target_type: str = "collector", config_path: Optional[str] = None, 
-                 env_vars: Optional[Dict[str, str]] = None, 
-                 image_location: str = "otel", 
+def launch_target(target_type: str = "collector", config_path: Optional[str] = None,
+                 env_vars: Optional[Dict[str, str]] = None,
+                 image_location: str = "otel",
                  image_tag: str = "latest",
                  ports: Optional[Dict[str, str]] = None,
                  container_name: Optional[str] = None
                  ) -> TargetProcess:
     """
     Launch the target using Docker
-    
+
     Args:
         target_type: Type of target to launch (e.g., 'collector')
         config_path: Path to configuration file for the target
         env_vars: Environment variables to set for the target process
         image_location: Docker image location (e.g., 'otel' or 'ghcr.io/username')
         image_tag: Docker image tag (e.g., 'latest', 'v1.0')
-        
+
     Returns:
         TargetProcess: Object representing the launched process
     """
@@ -55,7 +55,7 @@ def launch_target(target_type: str = "collector", config_path: Optional[str] = N
     #else:
         # TODO: Add other targets
         # image_name = f"{image_location}/{target_type}:{image_tag}"
-    
+
     # Construct the Docker command
     cmd = ["docker", "run", "--rm", "-d"]
 
@@ -67,12 +67,12 @@ def launch_target(target_type: str = "collector", config_path: Optional[str] = N
     if ports:
         for host_port, container_port in ports.items():
             cmd.extend(["-p", f"{host_port}:{container_port}"])
-    
+
     # Add environment variables if provided
     if env_vars:
         for key, value in env_vars.items():
             cmd.extend(["-e", f"{key}={value}"])
-    
+
     # Add config mount if provided
     if config_path:
         # Get absolute path to config file
@@ -80,19 +80,19 @@ def launch_target(target_type: str = "collector", config_path: Optional[str] = N
         config_dir = os.path.dirname(abs_config_path)
         config_filename = os.path.basename(abs_config_path)
         cmd.extend(["-v", f"{config_dir}:/etc/otel/config:ro"])
-        
+
         # Add the config file argument to the container command
         cmd.extend([image_name, "--config", f"/etc/otel/config/{config_filename}"])
     else:
         cmd.append(image_name)
-    
+
     # Run the Docker container
     print(f"Launching {target_type} using Docker image: {image_name}...")
     try:
         # Start the container and get its ID
         container_id = subprocess.check_output(cmd, text=True).strip()
         print(f"Docker container started with ID: {container_id}")
-        
+
         # Return a TargetProcess object
         return TargetProcess(
             target_type=target_type,
@@ -126,17 +126,17 @@ def main():
     target_process = None
     try:
         print("\nRunning perf tests...")
-        
+
         # Launch the target system under test - OTEL collector now
         target_process = launch_target(
-            'collector', 
+            'collector',
             args.collector_config,
             image_location=args.image_location,
             image_tag=args.image_tag
         )
         # Give it a moment to initialize
         time.sleep(2)
-            
+
         # For now, just write a simple results file as a placeholder
         with open(results_file, "w") as f:
             f.write(f"Performance test run at: {timestamp}\n")
@@ -155,7 +155,7 @@ def main():
                 target_process.shutdown()
         else :
             print("Resources kept for debugging. Manual cleanup may be required.")
-        
+
 
 if __name__ == "__main__":
     main()

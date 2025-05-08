@@ -43,9 +43,9 @@ def main():
 
     actual_duration = time.time() - start_time
     rate_achieved = sent / actual_duration
-    
-    print(f"✅ Loadgen done. Sent {sent} spans over {actual_duration:.2f}s.")
-    print(f"📊 Achieved rate: {rate_achieved:.2f} spans/second")
+
+    print(f"Loadgen done. Sent {sent} spans over {actual_duration:.2f}s.")
+    print(f"Achieved rate: {rate_achieved:.2f} spans/second")
 
 if __name__ == "__main__":
     main()

@@ -28,16 +28,17 @@ jobs:
             python -m pip install --upgrade pip
             pip install -r tools/pipeline_perf_test/orchestrator/requirements.txt
             pip install -r tools/pipeline_perf_test/load_generator/requirements.txt
-        
+
         - name: Run pipeline performance tests
           run: |
             cd tools/pipeline_perf_test
             python orchestrator/orchestrator.py --collector-config system_under_test/otel-collector/collector-config.yaml --duration 30
-        
+
         - name: Upload test results
           if: always()
-          uses: actions/upload-artifact@v3
+          uses: actions/upload-artifact@3cea5372237819ed00197afe530f5a7ea3e805c8 # v3.1.2
           with:
             name: performance-test-results
             path: tools/pipeline_perf_test/results/
             retention-days: 7
+
