@@ -15,10 +15,8 @@ class DockerProcess:
     def shutdown(self) -> None:
         """Gracefully shutdown the Docker container"""
         if self.container_id:
-            # print(f"Stopping Docker container {self.container_id}...") 
             try:
                 subprocess.run(["docker", "stop", self.container_id], check=True, capture_output=True, text=True)
-                # print(f"Docker container {self.container_id} stopped")
             except subprocess.CalledProcessError as e:
                 print(f"Error stopping Docker container: {e}")
                 print(f"Error output: {e.stderr}")
@@ -294,7 +292,7 @@ def main():
                     subprocess.run(["docker", "network", "rm", network], check=True, capture_output=True)
                 except subprocess.CalledProcessError as e:
                     print(f"Error removing Docker network: {e}")
-        else :
+        else:
             print("Resources kept for debugging. Manual cleanup may be required.")
 
 
