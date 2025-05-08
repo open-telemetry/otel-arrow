@@ -1,6 +1,6 @@
-# 📈 Benchmarks
+# Benchmarks
 
-**Status:** 🚧 *Work in Progress*
+**Status:** *Work in Progress*
 
 ## Benches
 
@@ -8,16 +8,16 @@ This workspace includes **Criterion-based micro-benchmarks** for the
 `otap-dataflow` crates. These benchmarks help evaluate and track the
 performance of individual components and cross-cutting functionality over time.
 
-### 📁 Bench Directory Structure
+### Bench Directory Structure
 
 All benchmarks are defined under the `benchmarks/benches/` directory.
 The organization mirrors the structure of the crates in `crates/`:
 
-- 📦 **Crate-specific benchmarks**:  
+- **Crate-specific benchmarks**:
   Located in subdirectories named after the crate, e.g.,
   `benchmarks/benches/config/` for `crates/config`.
 
-- 🔄 **Cross-crate or e2e benchmarks**:  
+- **Cross-crate or e2e benchmarks**:
   General-purpose or integration-style benchmarks that span multiple
   crates may be placed in directories such as `benchmarks/benches/e2e/`.
 
@@ -28,7 +28,7 @@ The organization mirrors the structure of the crates in `crates/`:
 > More detail:
 > [here](https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options)
 
-### ➕ Adding New Benchmarks
+### Adding New Benchmarks
 
 To add a benchmark for a new crate:
 
@@ -56,7 +56,7 @@ This will expect a file at: `benchmarks/benches/config/main.rs`
 
 #### 3. Create the benchmark file
 
-Use Criterion’s macro-based structure. Example:
+Use Criterion's macro-based structure. Example:
 
 ```rust
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -70,7 +70,7 @@ criterion_group!(benches, bench_some_function);
 criterion_main!(benches);
 ```
 
-### 🏃 Running Benchmarks
+### Running Benchmarks
 
 From the workspace root:
 
