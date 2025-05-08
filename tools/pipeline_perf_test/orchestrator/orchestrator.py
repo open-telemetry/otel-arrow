@@ -26,82 +26,86 @@ class TargetProcess:
                 print(f"Error output: {e.stderr}")
 
 
-def launch_target(target_type: str = "collector", config_path: Optional[str] = None,
-                 env_vars: Optional[Dict[str, str]] = None,
-                 image_location: str = "otel",
-                 image_tag: str = "latest",
-                 ports: Optional[Dict[str, str]] = None,
-                 container_name: Optional[str] = None,
-                 network: Optional[str] = None
-                 ) -> TargetProcess:
+def launch_container(
+    image_name: str,
+    container_type: str = "generic",
+    config_path: Optional[str] = None,
+    env_vars: Optional[Dict[str, str]] = None,
+    ports: Optional[Dict[str, str]] = None,
+    container_name: Optional[str] = None,
+    network: Optional[str] = None,
+    command_args: Optional[List[str]] = None
+) -> TargetProcess:
     """
-    Launch the target using Docker
-
+    Launch a Docker container
+    
     Args:
-        target_type: Type of target to launch (e.g., 'collector')
-        config_path: Path to configuration file for the target
-        env_vars: Environment variables to set for the target process
-        image_location: Docker image location (e.g., 'otel' or 'ghcr.io/username')
-        image_tag: Docker image tag (e.g., 'latest', 'v1.0')
-
+        image_name: Docker image name with tag
+        container_type: Type of container (e.g., 'collector', 'backend')
+        config_path: Path to configuration file (for collector)
+        env_vars: Environment variables to set for the container
+        ports: Port mappings from host to container
+        container_name: Optional name for the container
+        network: Docker network to connect to
+        command_args: Additional command arguments to pass to the container
+        
     Returns:
-        TargetProcess: Object representing the launched process
+        TargetProcess: Object representing the launched container
     """
-    # Determine the Docker image name based on target type
-    if target_type.lower() == 'collector':
-        image_name = f"{image_location}/opentelemetry-collector:{image_tag}"
-        if ports is None:
-            ports = {"4317": "4317"}  # Default OTLP gRPC port
-        if container_name is None:
-            container_name = "otel-collector"
-    #else:
-        # TODO: Add other targets
-        # image_name = f"{image_location}/{target_type}:{image_tag}"
-
+    print(f"Starting {container_type} service using Docker image: {image_name}...")
+    
+    # Set default container name if not provided
+    if container_name is None:
+        container_name = f"otel-{container_type}"
+    
     # Construct the Docker command
     cmd = ["docker", "run", "--rm", "-d"]
-
-    # Add container name if provided
-    if container_name:
-        cmd.extend(["--name", container_name])
-
+    
+    # Add container name
+    cmd.extend(["--name", container_name])
+    
     # Add network if specified
     if network:
         cmd.extend(["--network", network])
-
+    
     # Add port mappings
     if ports:
         for host_port, container_port in ports.items():
             cmd.extend(["-p", f"{host_port}:{container_port}"])
-
+    
     # Add environment variables if provided
     if env_vars:
         for key, value in env_vars.items():
             cmd.extend(["-e", f"{key}={value}"])
-
-    # Add config mount if provided
-    if config_path:
+    
+    # Add config mount for collector
+    if config_path and container_type.lower() == 'collector':
         # Get absolute path to config file
         abs_config_path = os.path.abspath(config_path)
         config_dir = os.path.dirname(abs_config_path)
         config_filename = os.path.basename(abs_config_path)
         cmd.extend(["-v", f"{config_dir}:/etc/otel/config:ro"])
-
+        
         # Add the config file argument to the container command
-        cmd.extend([image_name, "--config", f"/etc/otel/config/{config_filename}"])
-    else:
         cmd.append(image_name)
-
+        cmd.extend(["--config", f"/etc/otel/config/{config_filename}"])
+    else:
+        # Just add the image name
+        cmd.append(image_name)
+    
+    # Add any additional command arguments
+    if command_args:
+        cmd.extend(command_args)
+    
     # Run the Docker container
-    print(f"Launching {target_type} using Docker image: {image_name}...")
     try:
         # Start the container and get its ID
         container_id = subprocess.check_output(cmd, text=True).strip()
         print(f"Docker container started with ID: {container_id}")
-
+        
         # Return a TargetProcess object
         return TargetProcess(
-            target_type=target_type,
+            target_type=container_type,
             container_id=container_id,
             config_path=config_path
         )
@@ -172,71 +176,6 @@ def build_backend_image(backend_dir: str = "backend") -> str:
         print(f"Error output: {e.stderr}")
         raise
 
-def launch_backend_container(
-    image_name: str = "fake-backend:latest",
-    ports: Optional[Dict[str, str]] = None,
-    container_name: Optional[str] = None,
-    env_vars: Optional[Dict[str, str]] = None,
-    network: Optional[str] = None
-) -> TargetProcess:
-    """
-    Launch the backend service as a Docker container
-    
-    Args:
-        image_name: Docker image name with tag
-        ports: Port mappings from host to container
-        container_name: Optional name for the container
-        env_vars: Environment variables to set
-        network: Docker network to connect to
-        
-    Returns:
-        TargetProcess: Object representing the launched backend container
-    """
-    print("Starting backend service in Docker...")
-    
-    if container_name is None:
-        container_name = "fake-backend"
-    
-    # Construct Docker command
-    cmd = ["docker", "run", "--rm", "-d"]
-    
-    # Add container name
-    cmd.extend(["--name", container_name])
-    
-    # Add network if specified
-    if network:
-        cmd.extend(["--network", network])
-    
-    # Add port mappings
-    for host_port, container_port in ports.items():
-        cmd.extend(["-p", f"{host_port}:{container_port}"])
-    
-    # Add environment variables if provided
-    if env_vars:
-        for key, value in env_vars.items():
-            cmd.extend(["-e", f"{key}={value}"])
-    
-    # Add the image name
-    cmd.append(image_name)
-    
-    # Run the Docker container
-    print(f"Launching backend using Docker image: {image_name}...")
-    try:
-        # Start the container and get its ID
-        container_id = subprocess.check_output(cmd, text=True).strip()
-        print(f"Backend Docker container started with ID: {container_id}")
-        
-        # Return a TargetProcess object
-        return TargetProcess(
-            target_type="backend",
-            container_id=container_id,
-            config_path=None
-        )
-    except subprocess.CalledProcessError as e:
-        print(f"Error launching backend Docker container: {e}")
-        print(f"Error output: {e.stderr if hasattr(e, 'stderr') else 'No error output'}")
-        raise
-
 INGESTION_METRICS_URL = "http://localhost:5000/metrics"
 def query_backend():
     print("\nQuerying backend for received count...")
@@ -286,8 +225,8 @@ def main():
             print(f"Using existing Docker network: {network}")
 
     backend_process = None
-
     target_process = None
+
     try:
         print("\nRunning perf tests...")
 
@@ -297,8 +236,9 @@ def main():
             backend_image = build_backend_image(args.backend_dir)
         
         # Launch the backend service as a Docker container
-        backend_process = launch_backend_container(
+        backend_process = launch_container(
             image_name=backend_image,
+            container_type="backend",
             ports={"5317": "5317", "5000": "5000"},
             container_name="fake-backend",
             network=network
@@ -313,13 +253,15 @@ def main():
             # If we're using a custom network, the collector can reach the backend by container name
             collector_env["BACKEND_ENDPOINT"] = "fake-backend:5317"
 
-                # Launch the collector
-        target_process = launch_target(
-            'collector',
-            args.collector_config,
-            image_location=args.image_location,
-            image_tag=args.image_tag,
+        # Launch the collector
+        collector_image = f"{args.image_location}/opentelemetry-collector:{args.image_tag}"
+        target_process = launch_container(
+            image_name=collector_image,
+            container_type="collector",
+            config_path=args.collector_config,
             env_vars=collector_env,
+            ports={"4317": "4317"},
+            container_name="otel-collector",
             network=network
         )
         
