@@ -162,11 +162,11 @@ def build_backend_image(backend_dir: str = "backend") -> str:
         print(f"Error output: {e.stderr}")
         raise
 
-INGESTION_METRICS_URL = "http://localhost:5000/metrics"
+BACKEND_STATS_URL = "http://localhost:5000/metrics"
 def query_backend():
     print("\nQuerying backend for received count...")
     try:
-        response = requests.get(INGESTION_METRICS_URL)
+        response = requests.get(BACKEND_STATS_URL)
         data = response.json()
         count = data.get("received_logs", -1)
         print(f"Backend reports received logs: {count}")
@@ -174,19 +174,15 @@ def query_backend():
         print(f"Failed to query backend service: {e}")
 
 # example usage
-# python3 orchestrator/orchestrator.py --collector-config system_under_test/otel-collector/collector-config.yaml
 # python3 orchestrator/orchestrator.py --collector-config system_under_test/otel-collector/collector-config.yaml --duration 30
 def main():
     parser = argparse.ArgumentParser(description="Orchestrate OTel pipeline perf test")
-    parser.add_argument("--keep-resources", action="store_true", help="Don't delete resources after test. Useful for debugging.")
     parser.add_argument("--duration", type=int, default=10, help="Duration to perform perf test in seconds")
-    parser.add_argument("--results-dir", type=str, default="./results", help="Directory to store test results")
     parser.add_argument("--collector-config", type=str, required=True, help="Path to OTEL collector configuration file")
-    parser.add_argument("--image-location", type=str, default="otel", help="Docker image location (e.g., 'otel' or 'ghcr.io/username')")
-    parser.add_argument("--image-tag", type=str, default="latest", help="Docker image tag (e.g., 'latest', 'v1.0')")
-    parser.add_argument("--backend-dir", type=str, default="backend", help="Directory containing backend Dockerfile")
+    parser.add_argument("--keep-resources", action="store_true", help="Don't delete resources after test. Useful for debugging.")
+    parser.add_argument("--results-dir", type=str, default="./results", help="Directory to store test results")
     parser.add_argument("--skip-backend-build", action="store_true", help="Skip building backend Docker image (use existing image)")
-    parser.add_argument("--network", type=str, help="Docker network to use for containers")
+    
     args = parser.parse_args()
 
     # Create results directory
@@ -195,20 +191,19 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     results_file = os.path.join(args.results_dir, f"perf_results_{timestamp}.txt")
 
-    # Create a Docker network for inter-container communication if specified
-    network = args.network
+    # Create a Docker network for inter-container communication
+    network = "perf-test-network"
     network_created = False
-    if network:
-        try:
-            subprocess.run(["docker", "network", "create", network], check=True, capture_output=True)
-            print(f"Created Docker network: {network}")
-            network_created = True
-        except subprocess.CalledProcessError as e:
-            if "already exists" not in str(e.stderr):
-                print(f"Error creating network: {e}")
-                print(f"Error output: {e.stderr}")
-                raise
-            print(f"Using existing Docker network: {network}")
+    try:
+        subprocess.run(["docker", "network", "create", network], check=True, capture_output=True)
+        print(f"Created Docker network: {network}")
+        network_created = True
+    except subprocess.CalledProcessError as e:
+        if "already exists" not in str(e.stderr):
+            print(f"Error creating network: {e}")
+            print(f"Error output: {e.stderr}")
+            raise
+        print(f"Using existing Docker network: {network}")
 
     backend_process = None
     target_process = None
@@ -219,7 +214,7 @@ def main():
         # Build the backend Docker image if not skipped
         backend_image = "fake-backend:latest"
         if not args.skip_backend_build:
-            backend_image = build_backend_image(args.backend_dir)
+            backend_image = build_backend_image("backend")
         
         # Launch the backend service as a Docker container
         backend_process = launch_container(
@@ -242,7 +237,7 @@ def main():
         collector_cmd_args = ["--config", f"/etc/otel/config/{config_filename}"]
             
         # Launch the collector
-        collector_image = f"{args.image_location}/opentelemetry-collector:{args.image_tag}"
+        collector_image = f"otel/opentelemetry-collector:latest"
         target_process = launch_container(
             image_name=collector_image,
             container_name="otel-collector",
