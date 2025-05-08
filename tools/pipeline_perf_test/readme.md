@@ -2,14 +2,14 @@
 
 ## Goals
 
-1. Run performance benchmarks across a full telemetry pipeline — including
+1. Run performance benchmarks across a full telemetry pipeline - including
    OpenTelemetry SDK clients, Collector(s), and an ingestion backend, supporting
    the needs of [OTel Arrow
    Phase2](../../docs/phase2-design.md).
 2. Allow easy customization of pipeline components (e.g., swapping processors,
    modifying Collector config, etc.).
 3. Be designed in a way that the framework itself can be forked and reused by
-   vendors and other users — similar to how OpenTelemetry Demo is adopted by the
+   vendors and other users - similar to how OpenTelemetry Demo is adopted by the
    community for vendor-specific customization.
 
 ## High-Level Components

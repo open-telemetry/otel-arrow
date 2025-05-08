@@ -240,12 +240,13 @@ mod tests {
         let rt = create_test_runtime();
         let local = tokio::task::LocalSet::new();
 
-        _ = local.spawn_local(async {
+        let handle = local.spawn_local(async {
             let (tx, rx) = Channel::new(2);
 
             // Test send and receive
             let result = tx.send(1);
             assert!(result.is_ok());
+
             let result = tx.send(2);
             assert!(result.is_ok());
             assert_eq!(rx.try_recv().unwrap(), 1);
@@ -256,6 +257,7 @@ mod tests {
         });
 
         rt.block_on(local);
+        rt.block_on(handle).expect("Test task failed");
     }
 
     #[test]
@@ -263,7 +265,7 @@ mod tests {
         let rt = create_test_runtime();
         let local = tokio::task::LocalSet::new();
 
-        _ = local.spawn_local(async {
+        let handle = local.spawn_local(async {
             let (tx, _rx) = Channel::new(1);
 
             // First send should succeed
@@ -278,6 +280,7 @@ mod tests {
         });
 
         rt.block_on(local);
+        rt.block_on(handle).expect("Test task failed");
     }
 
     #[test]
@@ -285,7 +288,7 @@ mod tests {
         let rt = create_test_runtime();
         let local = tokio::task::LocalSet::new();
 
-        _ = local.spawn_local(async {
+        let handle = local.spawn_local(async {
             let (tx1, rx) = Channel::new(4);
             let tx2 = tx1.clone();
 
@@ -301,6 +304,7 @@ mod tests {
         });
 
         rt.block_on(local);
+        rt.block_on(handle).expect("Test task failed");
     }
 
     #[test]
@@ -308,7 +312,7 @@ mod tests {
         let rt = create_test_runtime();
         let local = tokio::task::LocalSet::new();
 
-        _ = local.spawn_local(async {
+        let handle = local.spawn_local(async {
             let (tx, rx) = Channel::new(1);
             let received = Rc::new(RefCell::new(vec![]));
             let received_clone = received.clone();
@@ -334,6 +338,7 @@ mod tests {
         });
 
         rt.block_on(local);
+        rt.block_on(handle).expect("Test task failed");
     }
 
     #[test]
@@ -341,7 +346,7 @@ mod tests {
         let rt = create_test_runtime();
         let local = tokio::task::LocalSet::new();
 
-        _ = local.spawn_local(async {
+        let handle = local.spawn_local(async {
             let (tx, rx) = Channel::new(1);
 
             // Send a value
@@ -365,6 +370,7 @@ mod tests {
         });
 
         rt.block_on(local);
+        rt.block_on(handle).expect("Test task failed");
     }
 
     #[test]
@@ -372,7 +378,7 @@ mod tests {
         let rt = create_test_runtime();
         let local = tokio::task::LocalSet::new();
 
-        _ = local.spawn_local(async {
+        let handle = local.spawn_local(async {
             let (tx, rx) = Channel::new(1);
 
             let result = tx.send(1);
@@ -387,6 +393,7 @@ mod tests {
         });
 
         rt.block_on(local);
+        rt.block_on(handle).expect("Test task failed");
     }
 
     #[test]
@@ -394,7 +401,7 @@ mod tests {
         let rt = create_test_runtime();
         let local = tokio::task::LocalSet::new();
 
-        _ = local.spawn_local(async {
+        let handle = local.spawn_local(async {
             let (tx, rx) = Channel::new(1);
             let send_completed = Rc::new(RefCell::new(false));
             let send_completed_clone = send_completed.clone();
@@ -427,5 +434,6 @@ mod tests {
         });
 
         rt.block_on(local);
+        rt.block_on(handle).expect("Test task failed");
     }
 }
