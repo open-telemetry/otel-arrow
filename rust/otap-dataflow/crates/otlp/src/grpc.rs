@@ -1,11 +1,11 @@
-use crate::grpc_stubs::proto::collector::logs::v1::logs_service_server::LogsService;
-use crate::grpc_stubs::proto::collector::logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse};
-use crate::grpc_stubs::proto::collector::metrics::v1::metrics_service_server::MetricsService;
-use crate::grpc_stubs::proto::collector::metrics::v1::{
+use crate::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsService;
+use crate::proto::opentelemetry::collector::logs::v1::{ExportLogsServiceRequest, ExportLogsServiceResponse};
+use crate::proto::opentelemetry::collector::metrics::v1::metrics_service_server::MetricsService;
+use crate::proto::opentelemetry::collector::metrics::v1::{
     ExportMetricsServiceRequest, ExportMetricsServiceResponse,
 };
-use crate::grpc_stubs::proto::collector::trace::v1::trace_service_server::TraceService;
-use crate::grpc_stubs::proto::collector::trace::v1::{
+use crate::proto::opentelemetry::collector::trace::v1::trace_service_server::TraceService;
+use crate::proto::opentelemetry::collector::trace::v1::{
     ExportTraceServiceRequest, ExportTraceServiceResponse,
 };
 use tonic::{Request, Response, Status};
