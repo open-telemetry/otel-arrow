@@ -9,10 +9,8 @@ from typing import Optional, Dict, Any, List
 class TargetProcess:
     """Class to manage target processes like the OTEL collector"""
 
-    def __init__(self, target_type: str, container_id: str, config_path: Optional[str] = None):
-        self.target_type = target_type
+    def __init__(self, container_id: str):
         self.container_id = container_id
-        self.config_path = config_path
 
     def shutdown(self) -> None:
         """Gracefully shutdown the target process"""
@@ -30,11 +28,11 @@ def launch_container(
     image_name: str,
     container_type: str = "generic",
     config_path: Optional[str] = None,
-    env_vars: Optional[Dict[str, str]] = None,
     ports: Optional[Dict[str, str]] = None,
     container_name: Optional[str] = None,
     network: Optional[str] = None,
-    command_args: Optional[List[str]] = None
+    command_args: Optional[List[str]] = None,
+    volumes: Optional[Dict[str, str]] = None
 ) -> TargetProcess:
     """
     Launch a Docker container
@@ -42,12 +40,12 @@ def launch_container(
     Args:
         image_name: Docker image name with tag
         container_type: Type of container (e.g., 'collector', 'backend')
-        config_path: Path to configuration file (for collector)
-        env_vars: Environment variables to set for the container
+        config_path: Path to configuration file (saved for reference)
         ports: Port mappings from host to container
         container_name: Optional name for the container
         network: Docker network to connect to
         command_args: Additional command arguments to pass to the container
+        volumes: Volume mounts from host to container
         
     Returns:
         TargetProcess: Object representing the launched container
@@ -73,25 +71,13 @@ def launch_container(
         for host_port, container_port in ports.items():
             cmd.extend(["-p", f"{host_port}:{container_port}"])
     
-    # Add environment variables if provided
-    if env_vars:
-        for key, value in env_vars.items():
-            cmd.extend(["-e", f"{key}={value}"])
+    # Add volume mounts if provided
+    if volumes:
+        for host_path, container_path in volumes.items():
+            cmd.extend(["-v", f"{host_path}:{container_path}"])
     
-    # Add config mount for collector
-    if config_path and container_type.lower() == 'collector':
-        # Get absolute path to config file
-        abs_config_path = os.path.abspath(config_path)
-        config_dir = os.path.dirname(abs_config_path)
-        config_filename = os.path.basename(abs_config_path)
-        cmd.extend(["-v", f"{config_dir}:/etc/otel/config:ro"])
-        
-        # Add the config file argument to the container command
-        cmd.append(image_name)
-        cmd.extend(["--config", f"/etc/otel/config/{config_filename}"])
-    else:
-        # Just add the image name
-        cmd.append(image_name)
+    # Add the image name
+    cmd.append(image_name)
     
     # Add any additional command arguments
     if command_args:
@@ -105,9 +91,7 @@ def launch_container(
         
         # Return a TargetProcess object
         return TargetProcess(
-            target_type=container_type,
-            container_id=container_id,
-            config_path=config_path
+            container_id=container_id
         )
     except subprocess.CalledProcessError as e:
         print(f"Error launching Docker container: {e}")
@@ -247,22 +231,27 @@ def main():
         # Give it a moment to initialize
         time.sleep(2)
 
-        # Set up environment variables for the collector to connect to backend
-        collector_env = {}
-        if network:
-            # If we're using a custom network, the collector can reach the backend by container name
-            collector_env["BACKEND_ENDPOINT"] = "fake-backend:5317"
+        # Prepare collector config mounting
+        collector_volumes = {}
+        collector_cmd_args = []
+        if args.collector_config:
+            abs_config_path = os.path.abspath(args.collector_config)
+            config_dir = os.path.dirname(abs_config_path)
+            config_filename = os.path.basename(abs_config_path)
+            collector_volumes[config_dir] = "/etc/otel/config:ro"
+            collector_cmd_args = ["--config", f"/etc/otel/config/{config_filename}"]
 
         # Launch the collector
         collector_image = f"{args.image_location}/opentelemetry-collector:{args.image_tag}"
         target_process = launch_container(
             image_name=collector_image,
             container_type="collector",
-            config_path=args.collector_config,
-            env_vars=collector_env,
+            config_path=args.collector_config,  # Just saved for reference
             ports={"4317": "4317"},
             container_name="otel-collector",
-            network=network
+            network=network,
+            volumes=collector_volumes,
+            command_args=collector_cmd_args
         )
         
         # Give it a moment to initialize
