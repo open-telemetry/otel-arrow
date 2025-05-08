@@ -16,6 +16,7 @@ package main
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"flag"
 	"io"
 	"log"
@@ -26,18 +27,21 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/open-telemetry/otel-arrow/pkg/datagen"
+	"github.com/open-telemetry/otel-arrow/pkg/otel/arrow_record"
 )
 
 var help = flag.Bool("help", false, "Show help")
-var outputFile = "./data/otlp_metrics.pb"
+var outputFile = ""
 var batchSize = 20
 var format = "proto"
+var otap = false
 
 // when format == "json" this function will write zstd compressed
 // json to the desired output file.
-func writeJSON(file *os.File, batchSize int, generator *datagen.MetricsGenerator) {
+func writeJSON(file *os.File, batchSize int, useOtap bool, generator *datagen.MetricsGenerator) {
 	fw, err := zstd.NewWriter(file)
 	if err != nil {
 		log.Fatal("error creating compressed writer", err)
@@ -45,12 +49,25 @@ func writeJSON(file *os.File, batchSize int, generator *datagen.MetricsGenerator
 	defer fw.Close()
 
 	for i := 0; i < batchSize; i++ {
-		request := pmetricotlp.NewExportRequestFromMetrics(generator.GenerateAllKindOfMetrics(1, 100))
+		var msg []byte
 
-		// Marshal the request to bytes.
-		msg, err := request.MarshalJSON()
-		if err != nil {
-			log.Fatal("marshaling error: ", err)
+		if useOtap {
+			producer := arrow_record.NewProducer()
+			bar, err := producer.BatchArrowRecordsFromMetrics(generator.GenerateAllKindOfMetrics(1, 100))
+			if err != nil {
+				log.Fatal("error creating batch arrow records: ", err)
+			}
+			msg, err = json.Marshal(bar)
+			if err != nil {
+				log.Fatal("marshaling error: ", err)
+			}
+		} else {
+			request := pmetricotlp.NewExportRequestFromMetrics(generator.GenerateAllKindOfMetrics(1, 100))
+			var err error
+			msg, err = request.MarshalJSON()
+			if err != nil {
+				log.Fatal("marshaling error: ", err)
+			}
 		}
 		if _, err := fw.Write(msg); err != nil {
 			log.Fatal("writing error: ", err)
@@ -63,16 +80,31 @@ func writeJSON(file *os.File, batchSize int, generator *datagen.MetricsGenerator
 	fw.Flush()
 }
 
-func writeProto(file *os.File, batchSize int, generator *datagen.MetricsGenerator) {
-	request := pmetricotlp.NewExportRequestFromMetrics(generator.GenerateAllKindOfMetrics(batchSize, 100))
-	// Marshal the request to bytes.
-	msg, err := request.MarshalProto()
-	if err != nil {
-		log.Fatal("marshaling error: ", err)
+func writeProto(file *os.File, batchSize int, useOtap bool, generator *datagen.MetricsGenerator) {
+	metrics := generator.GenerateAllKindOfMetrics(batchSize, 100)
+	var msg []byte
+
+	if useOtap {
+		producer := arrow_record.NewProducer()
+		bar, err := producer.BatchArrowRecordsFromMetrics(metrics)
+		if err != nil {
+			log.Fatal("error creating arrow records: ", err)
+		}
+		msg, err = proto.Marshal(bar)
+		if err != nil {
+			log.Fatal("marshaling error: ", err)
+		}
+	} else {
+		request := pmetricotlp.NewExportRequestFromMetrics(generator.GenerateAllKindOfMetrics(batchSize, 100))
+		var err error
+		msg, err = request.MarshalProto()
+		if err != nil {
+			log.Fatal("marshaling error: ", err)
+		}
 	}
 
 	// Write protobuf to file
-	err = os.WriteFile(outputFile, msg, 0600)
+	_, err := file.Write(msg)
 
 	if err != nil {
 		log.Fatal("write error: ", err)
@@ -84,6 +116,7 @@ func main() {
 	flag.StringVar(&outputFile, "output", outputFile, "Output file")
 	flag.IntVar(&batchSize, "batchsize", batchSize, "Batch size")
 	flag.StringVar(&format, "format", format, "file format")
+	flag.BoolVar(&otap, "otap", otap, "Use OTAP format. If true, generated files will contain OTAP messages. Otherwise, they will contain OTLP messages. Default is false.")
 
 	// Parse the flag
 	flag.Parse()
@@ -103,6 +136,22 @@ func main() {
 
 	generator := datagen.NewMetricsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
+	// set default output file name
+	if outputFile == "" {
+		outputFile = "./data/"
+		if otap {
+			outputFile += "otap_metrics"
+		} else {
+			outputFile += "otlp_metrics"
+		}
+
+		if format == "json" {
+			outputFile += ".json.zst"
+		} else {
+			outputFile += ".pb"
+		}
+	}
+
 	if _, err := os.Stat(outputFile); os.IsNotExist(err) {
 		err = os.MkdirAll(path.Dir(outputFile), 0700)
 		if err != nil {
@@ -115,9 +164,9 @@ func main() {
 	}
 
 	if format == "json" {
-		writeJSON(f, batchSize, generator)
+		writeJSON(f, batchSize, otap, generator)
 	} else { // proto
-		writeProto(f, batchSize, generator)
+		writeProto(f, batchSize, otap, generator)
 	}
 
 }
