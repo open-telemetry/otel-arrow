@@ -1,6 +1,7 @@
 import argparse
 import os
 import time
+import requests
 import subprocess
 from datetime import datetime
 from typing import Optional, Dict, Any, List
@@ -30,7 +31,8 @@ def launch_target(target_type: str = "collector", config_path: Optional[str] = N
                  image_location: str = "otel",
                  image_tag: str = "latest",
                  ports: Optional[Dict[str, str]] = None,
-                 container_name: Optional[str] = None
+                 container_name: Optional[str] = None,
+                 network: Optional[str] = None
                  ) -> TargetProcess:
     """
     Launch the target using Docker
@@ -62,6 +64,10 @@ def launch_target(target_type: str = "collector", config_path: Optional[str] = N
     # Add container name if provided
     if container_name:
         cmd.extend(["--name", container_name])
+
+    # Add network if specified
+    if network:
+        cmd.extend(["--network", network])
 
     # Add port mappings
     if ports:
@@ -138,6 +144,110 @@ def run_loadgen(duration: int) -> Dict[str, Any]:
         print(f"Error output: {e.stderr}")
         return {"error": str(e)}
 
+def build_backend_image(backend_dir: str = "backend") -> str:
+    """
+    Build the backend Docker image locally
+    
+    Args:
+        backend_dir: Directory containing the backend Dockerfile
+        
+    Returns:
+        str: Name of the built image
+    """
+    image_name = "fake-backend:latest"
+    
+    print(f"Building backend Docker image '{image_name}'...")
+    
+    # Get the absolute path to the backend directory
+    backend_path = os.path.abspath(backend_dir)
+    
+    # Build the Docker image
+    try:
+        cmd = ["docker", "build", "-t", image_name, backend_path]
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        print(f"Successfully built backend Docker image: {image_name}")
+        return image_name
+    except subprocess.CalledProcessError as e:
+        print(f"Error building backend Docker image: {e}")
+        print(f"Error output: {e.stderr}")
+        raise
+
+def launch_backend_container(
+    image_name: str = "fake-backend:latest",
+    ports: Optional[Dict[str, str]] = None,
+    container_name: Optional[str] = None,
+    env_vars: Optional[Dict[str, str]] = None,
+    network: Optional[str] = None
+) -> TargetProcess:
+    """
+    Launch the backend service as a Docker container
+    
+    Args:
+        image_name: Docker image name with tag
+        ports: Port mappings from host to container
+        container_name: Optional name for the container
+        env_vars: Environment variables to set
+        network: Docker network to connect to
+        
+    Returns:
+        TargetProcess: Object representing the launched backend container
+    """
+    print("Starting backend service in Docker...")
+    
+    if container_name is None:
+        container_name = "fake-backend"
+    
+    # Construct Docker command
+    cmd = ["docker", "run", "--rm", "-d"]
+    
+    # Add container name
+    cmd.extend(["--name", container_name])
+    
+    # Add network if specified
+    if network:
+        cmd.extend(["--network", network])
+    
+    # Add port mappings
+    for host_port, container_port in ports.items():
+        cmd.extend(["-p", f"{host_port}:{container_port}"])
+    
+    # Add environment variables if provided
+    if env_vars:
+        for key, value in env_vars.items():
+            cmd.extend(["-e", f"{key}={value}"])
+    
+    # Add the image name
+    cmd.append(image_name)
+    
+    # Run the Docker container
+    print(f"Launching backend using Docker image: {image_name}...")
+    try:
+        # Start the container and get its ID
+        container_id = subprocess.check_output(cmd, text=True).strip()
+        print(f"Backend Docker container started with ID: {container_id}")
+        
+        # Return a TargetProcess object
+        return TargetProcess(
+            target_type="backend",
+            container_id=container_id,
+            config_path=None
+        )
+    except subprocess.CalledProcessError as e:
+        print(f"Error launching backend Docker container: {e}")
+        print(f"Error output: {e.stderr if hasattr(e, 'stderr') else 'No error output'}")
+        raise
+
+INGESTION_METRICS_URL = "http://localhost:5000/metrics"
+def query_backend():
+    print("\nQuerying backend for received count...")
+    try:
+        response = requests.get(INGESTION_METRICS_URL)
+        data = response.json()
+        count = data.get("received_logs", -1)
+        print(f"Backend reports received logs: {count}")
+    except Exception as e:
+        print(f"Failed to query backend service: {e}")
+
 # example usage
 # python3 orchestrator/orchestrator.py --collector-config system_under_test/otel-collector/collector-config.yaml
 # python3 orchestrator/orchestrator.py --collector-config system_under_test/otel-collector/collector-config.yaml --duration 30
@@ -149,6 +259,9 @@ def main():
     parser.add_argument("--collector-config", type=str, required=True, help="Path to OTEL collector configuration file")
     parser.add_argument("--image-location", type=str, default="otel", help="Docker image location (e.g., 'otel' or 'ghcr.io/username')")
     parser.add_argument("--image-tag", type=str, default="latest", help="Docker image tag (e.g., 'latest', 'v1.0')")
+    parser.add_argument("--backend-dir", type=str, default="backend", help="Directory containing backend Dockerfile")
+    parser.add_argument("--skip-backend-build", action="store_true", help="Skip building backend Docker image (use existing image)")
+    parser.add_argument("--network", type=str, help="Docker network to use for containers")
     args = parser.parse_args()
 
     # Create results directory
@@ -157,22 +270,65 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     results_file = os.path.join(args.results_dir, f"perf_results_{timestamp}.txt")
 
+    # Create a Docker network for inter-container communication if specified
+    network = args.network
+    network_created = False
+    if network:
+        try:
+            subprocess.run(["docker", "network", "create", network], check=True, capture_output=True)
+            print(f"Created Docker network: {network}")
+            network_created = True
+        except subprocess.CalledProcessError as e:
+            if "already exists" not in str(e.stderr):
+                print(f"Error creating network: {e}")
+                print(f"Error output: {e.stderr}")
+                raise
+            print(f"Using existing Docker network: {network}")
+
+    backend_process = None
+
     target_process = None
     try:
         print("\nRunning perf tests...")
 
-        # Launch the target system under test - OTEL collector now
+        # Build the backend Docker image if not skipped
+        backend_image = "fake-backend:latest"
+        if not args.skip_backend_build:
+            backend_image = build_backend_image(args.backend_dir)
+        
+        # Launch the backend service as a Docker container
+        backend_process = launch_backend_container(
+            image_name=backend_image,
+            ports={"5317": "5317", "5000": "5000"},
+            container_name="fake-backend",
+            network=network
+        )
+
+        # Give it a moment to initialize
+        time.sleep(2)
+
+        # Set up environment variables for the collector to connect to backend
+        collector_env = {}
+        if network:
+            # If we're using a custom network, the collector can reach the backend by container name
+            collector_env["BACKEND_ENDPOINT"] = "fake-backend:5317"
+
+                # Launch the collector
         target_process = launch_target(
             'collector',
             args.collector_config,
             image_location=args.image_location,
-            image_tag=args.image_tag
+            image_tag=args.image_tag,
+            env_vars=collector_env,
+            network=network
         )
+        
         # Give it a moment to initialize
         time.sleep(2)
 
         # Run the load generator
         metrics = run_loadgen(args.duration)
+        query_backend()
 
         # Write results to file
         with open(results_file, "w") as f:
@@ -191,6 +347,14 @@ def main():
             # Shutdown the target process if it was launched
             if target_process:
                 target_process.shutdown()
+            if backend_process:
+                backend_process.shutdown()
+            if network_created:
+                try:
+                    subprocess.run(["docker", "network", "rm", network], check=True, capture_output=True)
+                    print(f"Removed Docker network: {network}")
+                except subprocess.CalledProcessError as e:
+                    print(f"Error removing Docker network: {e}")
         else :
             print("Resources kept for debugging. Manual cleanup may be required.")
 

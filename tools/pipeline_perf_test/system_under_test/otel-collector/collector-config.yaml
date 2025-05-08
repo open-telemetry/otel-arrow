@@ -7,6 +7,10 @@ receivers:
 exporters:
   debug:
     verbosity: detailed
+  otlp:
+    endpoint: fake-backend:5317
+    tls:
+      insecure: true
 
 service:
   pipelines:
@@ -18,4 +22,4 @@ service:
       exporters: [debug]
     logs:
       receivers: [otlp]
-      exporters: [debug]
+      exporters: [otlp]
