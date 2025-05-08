@@ -258,10 +258,14 @@ def main():
         # Calculate total logs lost
         total_logs_lost = logs_sent_count - logs_received_backend_count
 
+        # Calculate logs sent rate
+        logs_sent_rate = logs_sent_count / duration if duration > 0 else 0
+
         # Print results
         print(f"Total logs sent: {logs_sent_count}")
         print(f"Total logs backend reports as received: {logs_received_backend_count}")
         print(f"Duration: {duration:.2f} seconds")
+        print(f"Logs sent rate: {logs_sent_rate:.2f} logs/second")
         print(f"Total logs lost: {total_logs_lost}")
 
         # Write results to file
@@ -272,6 +276,7 @@ def main():
             f.write("Results:\n")
             f.write(f"- Total logs sent: {logs_sent_count}\n")
             f.write(f"- Duration: {duration:.2f} seconds\n")
+            f.write(f"- Logs sent rate: {logs_sent_rate:.2f} logs/second\n")
             f.write(f"- Total logs lost: {total_logs_lost}\n")
 
         print(f"Test completed. Results saved to {results_file}")
