@@ -42,10 +42,6 @@ receivers:
   # Users wanting OTLP/gRPC may use the otelarrowreceiver.
   - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.123.0
 
-processors:
-  - gomod: github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor v0.35.0
-  - gomod: github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor v0.35.0
-
 extensions:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/headerssetterextension v0.123.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.123.0
@@ -53,5 +49,3 @@ extensions:
 
 replaces:
   - github.com/open-telemetry/otel-arrow => ../../../
-  - github.com/open-telemetry/otel-arrow/collector/processor/concurrentbatchprocessor => ../../processor/concurrentbatchprocessor
-  - github.com/open-telemetry/otel-arrow/collector/processor/obfuscationprocessor => ../../processor/obfuscationprocessor

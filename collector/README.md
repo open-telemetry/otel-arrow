@@ -19,26 +19,6 @@ official OpenTelemetry Collector-Contrib release images since v0.105.0.
 
 See [Building][BUILDING].
 
-## Components included in this repository
-
-Several components were developed to facilitate testing and debugging the
-primary OpenTelemetry Protocol with Apache Arrow components.  Most importantly,
-these tools can be used to report problematic data to the maintainers.  These
-components are:
-
-### For production use
-
-- [`processor/concurrentbatchprocessor`][CONCURRENTBATCHPROCESSOR]: Derived from
-  the upstream [batchprocessor][UPSTREAMBATCHPROCESSOR], this component is
-  enhanced with the ability to send batches concurrently, with an overall
-  in-flight-bytes limit.
-
-### For research and validation
-
-- [`processor/obfuscationprocessor`][OBFUSCATIONPROCESSOR]: Supports obfuscation
-  of OpenTelemetry data using a [Feistel
-  cipher](https://en.wikipedia.org/wiki/Feistel_cipher).
-
 ## Other components built into `otelarrowcol`
 
 Several Collector-Contrib extensions are included in the build:
@@ -57,10 +37,30 @@ use the upstream [fileexporter][FILEEXPORTER] and
 
 From the core collector repository:
 
-- [otelhttpexporter][UPSTREAMHTTPOTLP]:  Useful for debugging, sends standard
+- [otlphttpexporter][UPSTREAMHTTPOTLP]:  Useful for debugging, sends standard
       OTLP over HTTP
+- [otlpexporter][UPSTREAMOTLP]:  Useful for testing and validation, the
+      core OTLP exporter
 - [debugexporter][UPSTREAMDEBUG]:   Useful for debugging, prints OTLP data to
       the console
+
+## Phase 1 components (removed)
+
+During Phase 1 of the project, several components were built that
+could not be maintained given the pace of OpenTelemetry Collector
+development.  Notable former components:
+
+- **Concurrent Batch Processor**: This component is an improvement on the
+  OpenTelemetry core `batchprocessor`. Today the `exporterhelper` has
+  built-in support for batching later in the pipeline, which we
+  endorse.
+- **Obfuscation Processor**: This component applied a Feistel cipher to all
+  string fields of the OpenTelemetry data model. This could be revived as
+  a Collector-Contrib component.
+- **Validation Connector**: This component routed telemetry in two
+  ways such that a collector could self-validate an OTel-Arrow
+  bridge. It was difficult to make ensure reliable connector ordering
+  at startup, required changes in the core Collector libraries.
 
 [BUILDING]: ./BUILDING.md
 [COLLECTORCONTRIB]:
@@ -69,10 +69,6 @@ From the core collector repository:
     https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md
 [ARROWRECEIVER]:
     https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md
-[UPSTREAMBATCHPROCESSOR]:
-    https://github.com/open-telemetry/opentelemetry-collector/blob/main/processor/batchprocessor/README.md
-[CONCURRENTBATCHPROCESSOR]: ./processor/concurrentbatchprocessor/README.md
-[OBFUSCATIONPROCESSOR]: ./processor/obfuscationprocessor/README.md
 [FILEEXPORTER]:
     https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/fileexporter/README.md
 [FILERECEIVER]:
@@ -85,5 +81,7 @@ From the core collector repository:
     https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/pprofextension/README.md
 [UPSTREAMHTTPOTLP]:
     https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/otlphttpexporter/README.md
+[UPSTREAMOTLP]:
+    https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/otlpexporter/README.md
 [UPSTREAMDEBUG]:
     https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/debugexporter/README.md
