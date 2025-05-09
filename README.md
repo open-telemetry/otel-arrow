@@ -229,12 +229,12 @@ you're more than welcome to participate!
 
 - [Joshua MacDonald](https://github.com/jmacd), Microsoft
 - [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
+- [Drew Relmas](https://github.com/drewrelmas), Microsoft
 
 [Approvers](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver)
 ([@open-telemetry/arrow-approvers](https://github.com/orgs/open-telemetry/teams/arrow-approvers)):
 
 - [Alex Boten](https://github.com/codeboten), Honeycomb
-- [Drew Relmas](https://github.com/drewrelmas), Microsoft
 - [Moh Osman](https://github.com/moh-osman3), ServiceNow
 
 ### Thanks to all the people who have contributed
