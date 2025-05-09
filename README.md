@@ -5,13 +5,20 @@
 [![Rust-CI](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml)
 [![OpenSSF Scorecard for otel-arrow](https://api.scorecard.dev/projects/github.com/open-telemetry/otel-arrow/badge)](https://scorecard.dev/viewer/?uri=github.com/open-telemetry/otel-arrow)
 
-The [OpenTelemetry Protocol with Apache
+The [OpenTelemetry with Apache
 Arrow](https://github.com/open-telemetry/otel-arrow) project is an
 effort within [OpenTelemetry](https://opentelemetry.io/) to use
 [Apache Arrow](https://arrow.apache.org/) libraries for bulk data
-transport in OpenTelemetry pipelines.  This repository is
-the home of the OpenTelemetry Protocol with Apache Arrow protocol,
-which we refer to as "OTAP", and reference implementations.
+transport in OpenTelemetry pipelines.  This repository is the home of
+the OpenTelemetry Protocol with Apache Arrow protocol, which we refer
+to as "OTAP", and reference implementations in Golang and Rust.
+
+The [OpenTelemetry Arrow project has an OpenTelemetry SIG with weekly
+meetings][PROJECTDEF]. Find our [meeting schedule on the OpenTelemetry
+calendar][OTELCAL].
+
+[PROJECTDEF]: https://github.com/open-telemetry/community/blob/main/projects/otelarrow.md
+[OTELCAL]: https://github.com/open-telemetry/community/blob/main/README.md#calendar
 
 ## Quick start
 
@@ -21,6 +28,10 @@ for details.
 
 The [examples](./collector/examples/README.md) in this repository use
 a test collector named `otelarrowcol`, see [collector/BUILDING.md](./collector/BUILDING.md).
+
+[Phase 2 of the project is being actively developed](#phase-2). We are
+building an end-to-end OpenTelemetry Arrow pipeline in Rust.  Find us
+in the CNCF Slack `#otel-arrow` channel.
 
 [RECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md
 [EXPORTER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md
