@@ -51,7 +51,7 @@ def launch_container(
 
     # Add container name
     cmd.extend(["--name", container_name])
-   
+
     # Add network if specified
     if network:
         cmd.extend(["--network", network])
@@ -60,15 +60,15 @@ def launch_container(
     if ports:
         for host_port, container_port in ports.items():
             cmd.extend(["-p", f"{host_port}:{container_port}"])
-    
+
     # Add volume mounts if provided
     if volumes:
         for host_path, container_path in volumes.items():
             cmd.extend(["-v", f"{host_path}:{container_path}"])
-   
+
     # Add the image name
     cmd.append(image_name)
-   
+
     # Add any additional command arguments
     if command_args:
         cmd.extend(command_args)
@@ -78,7 +78,7 @@ def launch_container(
         # Start the container and get its ID
         container_id = subprocess.check_output(cmd, text=True).strip()
         print(f"Docker container started with ID: {container_id}")
-        
+
         # Return a TargetProcess object
         return DockerProcess(
             container_id=container_id
@@ -137,7 +137,7 @@ def build_backend_image(backend_dir: str = "backend") -> str:
         str: Name of the built image
     """
     image_name = "fake-backend:latest"
-   
+
     print(f"Building backend Docker image '{image_name}'...")
 
     # Get the absolute path to the backend directory
