@@ -172,8 +172,14 @@ def get_backend_received_count() -> int:
         print(f"Failed to query backend service: {e}")
         return -1
 
-# example usage
-# python3 orchestrator/orchestrator.py --collector-config system_under_test/otel-collector/collector-config.yaml --duration 30
+# Pre-requisites:
+# 1. Create and activate a virtual environment:
+#    python3 -m venv venv
+#    source venv/bin/activate  # On Windows use: venv\Scripts\activate
+# 2. Install dependencies:
+#    pip install -r requirements.txt
+# 3. Run the orchestrator:
+#    python3 orchestrator/orchestrator.py --collector-config system_under_test/otel-collector/collector-config.yaml --duration 30
 def main():
     parser = argparse.ArgumentParser(description="Orchestrate OTel pipeline perf test")
     parser.add_argument("--duration", type=int, default=10, help="Duration to perform perf test in seconds")
