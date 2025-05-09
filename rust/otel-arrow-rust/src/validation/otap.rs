@@ -69,7 +69,19 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
                 let status_result = match process_arrow_metrics(batch, related_data, receiver).await
                 {
                     Ok(_) => (StatusCode::Ok, "Successfully processed".to_string()),
-                    Err(e) => (StatusCode::InvalidArgument, e.to_string()),
+                    Err(e) => {
+                        // Truncate the error message to <128 characters
+                        // because we have seen collectors encounter problems
+                        // related to large response headers in testing.
+                        let err_msg = e.to_string();
+                        let truncated_msg = if err_msg.len() > 124 {
+                            format!("{}...", &err_msg[..124])
+                        } else {
+                            err_msg
+                        };
+
+                        (StatusCode::InvalidArgument, truncated_msg)
+                    }
                 };
 
                 tx.send(Ok(BatchStatus {
