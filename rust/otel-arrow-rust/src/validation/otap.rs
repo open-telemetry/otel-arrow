@@ -73,17 +73,16 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
                 {
                     Ok(_) => (StatusCode::Ok, "Successfully processed".to_string()),
                     Err(e) => {
-                        // Truncate the error message to <128 characters
-                        // because we have seen collectors encounter problems
-                        // related to large response headers in testing.
+                        // Truncate the error message to 100 code points
+                        // There are no std helpers for this (on purpose)
                         let err_msg = e.to_string();
-                        let truncated_msg = if err_msg.len() > 124 {
-                            format!("{}...", &err_msg[..124])
-                        } else {
-                            err_msg
-                        };
+                        let upto = err_msg
+                            .char_indices()
+                            .map(|(i, _)| i)
+                            .nth(100)
+                            .unwrap_or(err_msg.len());
 
-                        (StatusCode::InvalidArgument, truncated_msg)
+                        (StatusCode::InvalidArgument, err_msg[..upto].to_string())
                     }
                 };
 
