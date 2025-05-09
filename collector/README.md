@@ -50,17 +50,22 @@ During Phase 1 of the project, several components were built that
 could not be maintained given the pace of OpenTelemetry Collector
 development.  Notable former components:
 
-- **Concurrent Batch Processor**: This component is an improvement on the
-  OpenTelemetry core `batchprocessor`. Today the `exporterhelper` has
-  built-in support for batching later in the pipeline, which we
-  endorse.
+- **Concurrent Batch Processor**: This component was at the time an
+  improvement on the OpenTelemetry core `batchprocessor`. Today we
+  recommend the `exporterhelper` built-in support for batching,
+  configurable after the queue sender. [Removed.][PHASE1REMOVAL1]
 - **Obfuscation Processor**: This component applied a Feistel cipher to all
   string fields of the OpenTelemetry data model. This could be revived as
-  a Collector-Contrib component.
+  a Collector-Contrib component. [Removed.][PHASE1REMOVAL1]
 - **Validation Connector**: This component routed telemetry in two
   ways such that a collector could self-validate an OTel-Arrow
   bridge. It was difficult to make ensure reliable connector ordering
   at startup, required changes in the core Collector libraries.
+  [Removed.][PHASE1REMOVAL3]
+- **Protobuf/JSON file exporter and receiver**: These components had
+  support for reading compressed protocol buffers, matching data that
+  we used in Phase 1. Today we recommend the Collector-Contrib
+  `fileexporter` and `otlpjsonfilereceiver`. [Removed.][PHASE1REMOVAL2]
 
 [BUILDING]: ./BUILDING.md
 [COLLECTORCONTRIB]:
@@ -85,3 +90,6 @@ development.  Notable former components:
     https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/otlpexporter/README.md
 [UPSTREAMDEBUG]:
     https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/debugexporter/README.md
+[PHASE1REMOVAL1]: https://github.com/open-telemetry/otel-arrow/pull/409
+[PHASE1REMOVAL2]: https://github.com/open-telemetry/otel-arrow/pull/278
+[PHASE1REMOVAL3]: https://github.com/open-telemetry/otel-arrow/pull/252
