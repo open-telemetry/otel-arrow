@@ -17,7 +17,7 @@ arrow-ipc = { version = "53", features = ["zstd"] }
 lazy_static = "1.5"
 num_enum = "0.7"
 otlp-derive = { path = "./src/pdata/otlp/derive" }
-paste = "1.0"
+paste = "1.0.15"
 rand = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 snafu = { version = "0.8" }
