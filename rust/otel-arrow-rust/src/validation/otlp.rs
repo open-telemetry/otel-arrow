@@ -291,7 +291,7 @@ mod tests {
             // There are some corrections to the test logic that will need to be made before
             // this test will pass
             // https://github.com/open-telemetry/otel-arrow/issues/392
-            Some("InvalidArgument"),
+            Some("ColumnNotFound"),
         )
         .await;
     }
