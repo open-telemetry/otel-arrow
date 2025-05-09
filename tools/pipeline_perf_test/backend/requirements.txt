@@ -1,0 +1,3 @@
+grpcio
+flask
+opentelemetry-proto
