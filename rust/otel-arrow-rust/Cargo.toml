@@ -2,7 +2,6 @@
 name = "otel-arrow-rust"
 version = "0.1.0"
 edition = "2024"
-style_edition = "2024"
 
 [features]
 default = ["full"]
