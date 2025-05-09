@@ -99,8 +99,8 @@ impl<PData> Pipeline<PData> {
     /// Connects the receiver's out ports to the downstream nodes.
     pub fn connect_receiver_out_ports(
         &mut self,
-        receiver_name: Rc<str>,
-        out_ports: HashMap<Rc<str>, HashSet<Rc<str>>>,
+        _receiver_name: Rc<str>,
+        _out_ports: HashMap<Rc<str>, HashSet<Rc<str>>>,
     ) -> Result<(), Error<PData>> {
         Ok(())
     }
@@ -108,8 +108,8 @@ impl<PData> Pipeline<PData> {
     /// Connects the processor's out ports to the downstream nodes.
     pub fn connect_processor_out_ports(
         &mut self,
-        processor_name: Rc<str>,
-        out_ports: HashMap<Rc<str>, HashSet<Rc<str>>>,
+        _processor_name: Rc<str>,
+        _out_ports: HashMap<Rc<str>, HashSet<Rc<str>>>,
     ) -> Result<(), Error<PData>> {
         Ok(())
     }
