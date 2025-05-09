@@ -133,6 +133,10 @@ wildcards = "allow"
 highlight = "all"
 # List of crates that are allowed. Use with care!
 allow = [
+    # The paste library is unmaintained by the original author dtolnay.
+    # However, it may be considered as finished code. Since it executes
+    # at compile time (during macro expansion) there is little risk of
+    # harm.
     { name = "paste", version = "=1.0.15" },
 ]
 # List of crates to deny
