@@ -53,7 +53,7 @@ def main():
             sent += 1
         except Exception as e:
             print(f"Failed to send log: {e}")
-    
+
     # Print in a format that's easy for the orchestrator to parse
     print(f"LOADGEN_LOGS_SENT: {sent}")
 

@@ -32,7 +32,7 @@ def launch_container(
 ) -> DockerProcess:
     """
     Launch a Docker container
-    
+
     Args:
         image_name: Docker image name with tag
         container_name: name for the container
@@ -40,22 +40,22 @@ def launch_container(
         network: Docker network to connect to
         command_args: Additional command arguments to pass to the container
         volumes: Volume mounts from host to container
-        
+
     Returns:
         DockerProcess: Object representing the launched container
     """
     print(f"Starting {container_name} service using Docker image: {image_name}...")
-    
+
     # Construct the Docker command
     cmd = ["docker", "run", "--rm", "-d"]
-    
+
     # Add container name
     cmd.extend(["--name", container_name])
-    
+   
     # Add network if specified
     if network:
         cmd.extend(["--network", network])
-    
+
     # Add port mappings
     if ports:
         for host_port, container_port in ports.items():
@@ -65,14 +65,14 @@ def launch_container(
     if volumes:
         for host_path, container_path in volumes.items():
             cmd.extend(["-v", f"{host_path}:{container_path}"])
-    
+   
     # Add the image name
     cmd.append(image_name)
-    
+   
     # Add any additional command arguments
     if command_args:
         cmd.extend(command_args)
-    
+
     # Run the Docker container
     try:
         # Start the container and get its ID
@@ -129,20 +129,20 @@ def run_loadgen(duration: int) -> (int, float):
 def build_backend_image(backend_dir: str = "backend") -> str:
     """
     Build the backend Docker image locally
-    
+
     Args:
         backend_dir: Directory containing the backend Dockerfile
-        
+
     Returns:
         str: Name of the built image
     """
     image_name = "fake-backend:latest"
-    
+   
     print(f"Building backend Docker image '{image_name}'...")
-    
+
     # Get the absolute path to the backend directory
     backend_path = os.path.abspath(backend_dir)
-    
+
     # Build the Docker image
     try:
         cmd = ["docker", "build", "-t", image_name, backend_path]
@@ -181,7 +181,7 @@ def main():
     parser.add_argument("--keep-resources", action="store_true", help="Don't delete resources after test. Useful for debugging.")
     parser.add_argument("--results-dir", type=str, default="./results", help="Directory to store test results")
     parser.add_argument("--skip-backend-build", action="store_true", help="Skip building backend Docker image (use existing image)")
-    
+
     args = parser.parse_args()
 
     # Create results directory
@@ -214,7 +214,7 @@ def main():
         backend_image = "fake-backend:latest"
         if not args.skip_backend_build:
             backend_image = build_backend_image("backend")
-        
+
         # Launch the backend service as a Docker container
         backend_process = launch_container(
             image_name=backend_image,
@@ -234,7 +234,7 @@ def main():
         config_filename = os.path.basename(abs_config_path)
         collector_volumes[config_dir] = "/etc/otel/config:ro"
         collector_cmd_args = ["--config", f"/etc/otel/config/{config_filename}"]
-            
+
         # Launch the collector
         collector_image = f"otel/opentelemetry-collector:latest"
         target_process = launch_container(
@@ -245,7 +245,7 @@ def main():
             volumes=collector_volumes,
             command_args=collector_cmd_args
         )
-        
+
         # Give it a moment to initialize
         time.sleep(2)
 
