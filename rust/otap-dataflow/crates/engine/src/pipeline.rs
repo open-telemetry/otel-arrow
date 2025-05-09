@@ -116,7 +116,10 @@ impl<PData> Pipeline<PData> {
 
     /// Runs the pipeline.
     pub fn run(self) -> Result<(), Error<PData>> {
-        let rt = Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create runtime");
         let local_tasks = LocalSet::new();
 
         // local_tasks.spawn_local(async move {

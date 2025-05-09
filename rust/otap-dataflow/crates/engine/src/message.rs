@@ -90,7 +90,7 @@ impl ControlSender {
             ControlSender::Local(sender) => sender
                 .send_async(msg)
                 .await
-                .map_err(|e| Error::ChannelSendError(e)),
+                .map_err(Error::ChannelSendError),
             ControlSender::ThreadSafe(sender) => sender
                 .send(msg)
                 .await

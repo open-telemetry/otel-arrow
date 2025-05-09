@@ -226,6 +226,7 @@ pub struct EffectHandlerLocal<PData> {
 /// Implementation for the `!Send` effect handler.
 impl<PData> EffectHandlerLocal<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given receiver name.
+    #[must_use]
     pub fn new(receiver_name: Cow<'static, str>, msg_sender: mpsc::Sender<PData>) -> Self {
         EffectHandlerLocal {
             core: EffectHandlerCore { receiver_name },
@@ -278,6 +279,7 @@ impl<PData> EffectHandlerShared<PData> {
     ///
     /// Use this constructor when your receiver do need to be sent across threads or
     /// when it uses components that are `Send`.
+    #[must_use]
     pub fn new(
         receiver_name: Cow<'static, str>,
         msg_sender: tokio::sync::mpsc::Sender<PData>,
@@ -394,6 +396,7 @@ impl<PData> ReceiverWrapper<PData> {
     }
 
     /// Returns the control message sender for the receiver.
+    #[must_use]
     pub fn control_sender(&self) -> ControlSender {
         match self {
             ReceiverWrapper::Local { control_sender, .. } => {
