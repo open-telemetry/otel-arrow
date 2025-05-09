@@ -26,14 +26,17 @@ use snafu::{OptionExt, ResultExt};
 /// OTAP metrics service type for testing the OTAP-to-OTLP conversion
 /// for metrics in this crate.
 #[derive(Debug)]
+#[cfg(test)]
 pub struct OTAPMetricsOutputType;
 
 /// Translates OTAP arrow data to OTLP metrics using logic from the
 /// top-level crate::otlp.
+#[cfg(test)]
 pub struct OTAPMetricsAdapter {
     receiver: TestReceiver<ExportMetricsServiceRequest>,
 }
 
+#[cfg(test)]
 impl OTAPMetricsAdapter {
     fn new(receiver: TestReceiver<ExportMetricsServiceRequest>) -> Self {
         Self { receiver }
@@ -69,7 +72,18 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
                 let status_result = match process_arrow_metrics(batch, related_data, receiver).await
                 {
                     Ok(_) => (StatusCode::Ok, "Successfully processed".to_string()),
-                    Err(e) => (StatusCode::InvalidArgument, e.to_string()),
+                    Err(e) => {
+                        // Truncate the error message to 100 code points
+                        // There are no std helpers for this (on purpose)
+                        let err_msg = e.to_string();
+                        let upto = err_msg
+                            .char_indices()
+                            .map(|(i, _)| i)
+                            .nth(100)
+                            .unwrap_or(err_msg.len());
+
+                        (StatusCode::InvalidArgument, err_msg[..upto].to_string())
+                    }
                 };
 
                 tx.send(Ok(BatchStatus {
