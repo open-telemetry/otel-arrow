@@ -44,23 +44,23 @@ TBD (Explain why Rust, why Arrow, ...)
 
 ```text
 .
-├── Cargo.toml
-├── crates
-│   ├── channel        # Async Channel Implementations
-│   ├── config         # Pipeline Configuration Model
-│   ├── engine         # Async Pipeline Engine
-│   ├── otap           # OTAP Nodes
-│   └── otlp           # OTLP Nodes
-├── docs               # Documentation
-├── examples           # Rust Examples
-├── src                # Main library source code
-├── xtask              # Xtask for project management
-└── examples           # Examples or demo applications
+|-- Cargo.toml
+|-- crates
+|   |-- channel        # Async Channel Implementations
+|   |-- config         # Pipeline Configuration Model
+|   |-- engine         # Async Pipeline Engine
+|   |-- otap           # OTAP Nodes
+|   |-- otlp           # OTLP Nodes
+|-- docs               # Documentation
+|-- examples           # Rust Examples
+|-- src                # Main library source code
+|-- xtask              # Xtask for project management
+|-- examples           # Examples or demo applications
 ```
 
-## 🚀 Quickstart Guide
+## Quickstart Guide
 
-### 📥 Installation
+### Installation
 
 TBD
 
@@ -75,7 +75,7 @@ TBD
 - [Architecture](docs/architecture.md)
 - [Glossary](docs/glossary.md)
 
-## 🛠️ Development Setup
+## Development Setup
 
 **Requirements**:
 
@@ -102,7 +102,7 @@ cargo test --workspace
 cargo run --example <example_name>
 ```
 
-## 🧩 Contributing
+## Contributing
 
 - [Contribution Guidelines](CONTRIBUTING.md)
 - Code of Conduct (TBD)

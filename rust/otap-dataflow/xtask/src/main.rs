@@ -30,6 +30,7 @@ fn main() -> anyhow::Result<()> {
                 test_all()?;
                 Ok(())
             }
+            "compile-proto" => compile_proto_otlp(),
             "structure-check" => structure_check::run(),
             "help" => print_help(),
             _ => {
@@ -50,6 +51,7 @@ Usage: Execute the command using `cargo xtask <task>`, e.g., `cargo xtask check`
 Tasks:
   - check: Run all checks.
   - structure-check: Validate the entire structure of the project.
+  - compile-proto: Compile the protobufs files
 "
     );
     Ok(())
@@ -73,6 +75,26 @@ fn test_all() -> anyhow::Result<()> {
     println!("🚀 Running workspace tests with cargo test...");
     run("cargo", &["test", "--workspace"])?;
     println!("✅ All tests passed successfully.\n");
+    Ok(())
+}
+
+fn compile_proto_otlp() -> anyhow::Result<()> {
+    tonic_build::configure()
+        .out_dir("crates/otlp/src/proto")
+        .compile_protos(
+            &[
+                "opentelemetry/proto/common/v1/common.proto",
+                "opentelemetry/proto/resource/v1/resource.proto",
+                "opentelemetry/proto/trace/v1/trace.proto",
+                "opentelemery/proto/metrics/v1/metrics.proto",
+                "opentelemery/proto/logs/v1/logs.proto",
+                "opentelemery/proto/collector/logs/v1/logs_service.proto",
+                "opentelemery/proto/collector/trace/v1/trace_service.proto",
+                "opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
+            ],
+            &["../../proto/opentelemetry-proto"],
+        )
+        .expect("Failed to compile OTLP protos.");
     Ok(())
 }
 

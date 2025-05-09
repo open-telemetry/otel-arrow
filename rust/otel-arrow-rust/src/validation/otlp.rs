@@ -288,10 +288,10 @@ mod tests {
     async fn test_otap_metrics_single_request() {
         run_single_round_trip_test::<OTLPMetricsInputType, OTAPMetricsOutputType, _>(
             testdata::metrics::create_single_request,
-            // This test expects a specific error due to disagreements
-            // between the Rust and Golang implementations about OTAP
-            // metrics encoding.  https://github.com/open-telemetry/otel-arrow/issues/353
-            Some("ColumnDataTypeMismatch"),
+            // There are some corrections to the test logic that will need to be made before
+            // this test will pass
+            // https://github.com/open-telemetry/otel-arrow/issues/392
+            Some("InvalidArgument"),
         )
         .await;
     }

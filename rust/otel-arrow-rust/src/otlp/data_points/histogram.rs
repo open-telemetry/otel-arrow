@@ -114,7 +114,11 @@ where
         let list = list.as_any().downcast_ref::<ListArray>().with_context(|| {
             error::InvalidListArraySnafu {
                 //todo: maybe set the field name here.
-                expect: DataType::List(FieldRef::new(Field::new("", T::DATA_TYPE, true))),
+                expect_oneof: vec![DataType::List(FieldRef::new(Field::new(
+                    "",
+                    T::DATA_TYPE,
+                    true,
+                )))],
                 actual: list.data_type().clone(),
             }
         })?;
@@ -127,7 +131,7 @@ where
             .as_any()
             .downcast_ref::<PrimitiveArray<T>>()
             .with_context(|| error::InvalidListArraySnafu {
-                expect: T::DATA_TYPE,
+                expect_oneof: vec![T::DATA_TYPE],
                 actual: value_array.data_type().clone(),
             })?;
 
