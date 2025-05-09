@@ -48,13 +48,6 @@ func (b *StringBuilder) AppendNull() {
 
 func (b *StringBuilder) Append(value string) {
 	if b.builder != nil {
-		// This is a workaround for dictionaries that do not support empty
-		// strings.
-		if value == "" {
-			b.builder.AppendNull()
-			return
-		}
-
 		switch builder := b.builder.(type) {
 		case *array.StringBuilder:
 			builder.Append(value)

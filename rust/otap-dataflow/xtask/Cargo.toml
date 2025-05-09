@@ -11,6 +11,7 @@ rust-version.workspace = true
 [dependencies]
 anyhow = "1.0.97"
 toml = "0.8.20"
+tonic-build = { version = "0.13.0", features = ["cleanup-markdown"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
