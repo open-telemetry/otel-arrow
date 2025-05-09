@@ -1,4 +1,6 @@
 name: Pipeline Performance Tests
+permissions:
+  contents: read
 
 on:
     push:
