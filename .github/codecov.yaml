@@ -23,15 +23,7 @@ component_management:
       name: "syslog_cef_receivers"
       paths:
         - "rust/experimental/syslog-cef-receivers/"
-    - component_id: "go_api"
-      name: go_api
+    - component_id: "otel_arrow_go"
+      name: otel_arrow_go
       paths:
-        - "go/api/"
-    - component_id: "go_pkg"
-      name: go_pkg
-      paths:
-        - "go/pkg/"
-    - component_id: "go_tools"
-      name: go_tools
-      paths:
-        - "go/tools/"
+        - "go/"
