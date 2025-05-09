@@ -6,8 +6,9 @@ use crate::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
 use crate::error::Error;
 use crate::exporter::{Exporter, ExporterWrapper};
 use crate::processor::{Processor, ProcessorWrapper};
-use crate::receiver::{Receiver, ReceiverWrapper};
-use crate::{exporter, processor, receiver};
+use crate::receiver::{ReceiverLocal, ReceiverWrapper};
+use crate::{exporter, processor};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use tokio::runtime::Builder;
@@ -15,26 +16,28 @@ use tokio::task::LocalSet;
 
 /// A pipeline is a collection of receivers, processors, and exporters.
 pub struct Pipeline<PData> {
-    receivers: HashMap<Rc<str>, ReceiverWrapper<PData>>,
+    receivers: HashMap<Cow<'static, str>, ReceiverWrapper<PData>>,
     processors: HashMap<Rc<str>, ProcessorWrapper<PData>>,
     exporters: HashMap<Rc<str>, ExporterWrapper<PData>>,
 }
 
 impl<PData> Pipeline<PData> {
     /// Adds a receiver to the pipeline.
-    pub fn add_receiver<R, H>(
+    pub fn add_receiver<R>(
         &mut self,
         receiver: R,
         config: &ReceiverConfig,
     ) -> Result<(), Error<PData>>
     where
-        R: Receiver<PData, H> + 'static,
-        H: receiver::EffectHandlerFactory<PData, R>,
+        R: ReceiverLocal<PData> + 'static,
     {
         let receiver_name = config.name.to_string();
         if self
             .receivers
-            .insert(config.name.clone(), ReceiverWrapper::new(receiver, config))
+            .insert(
+                config.name.clone(),
+                ReceiverWrapper::local(receiver, config),
+            )
             .is_some()
         {
             return Err(Error::ReceiverAlreadyExists {
@@ -123,73 +126,73 @@ impl<PData> Pipeline<PData> {
         //         exporters,
         //     } = self;
 
-            // Start exporters first (they need to be ready to receive data)
-            // let mut exporter_handles = HashMap::new();
-            // for (name, exporter) in exporters {
-            //     let handle = spawn_local(async move {
-            //         if let Err(e) = exporter.start().await {
-            //             eprintln!("Exporter '{}' failed: {:?}", name, e);
-            //             return Err(e);
-            //         }
-            //         Ok(())
-            //     });
-            //     exporter_handles.insert(name, handle);
-            // }
+        // Start exporters first (they need to be ready to receive data)
+        // let mut exporter_handles = HashMap::new();
+        // for (name, exporter) in exporters {
+        //     let handle = spawn_local(async move {
+        //         if let Err(e) = exporter.start().await {
+        //             eprintln!("Exporter '{}' failed: {:?}", name, e);
+        //             return Err(e);
+        //         }
+        //         Ok(())
+        //     });
+        //     exporter_handles.insert(name, handle);
+        // }
 
-            // Start processors next 
-            // let mut processor_handles = HashMap::new();
-            // for (name, processor) in processors {
-            //     let handle = spawn_local(async move {
-            //         if let Err(e) = processor.run().await {
-            //             eprintln!("Processor '{}' failed: {:?}", name, e);
-            //             return Err(e);
-            //         }
-            //         Ok(())
-            //     });
-            //     processor_handles.insert(name, handle);
-            // }
+        // Start processors next
+        // let mut processor_handles = HashMap::new();
+        // for (name, processor) in processors {
+        //     let handle = spawn_local(async move {
+        //         if let Err(e) = processor.run().await {
+        //             eprintln!("Processor '{}' failed: {:?}", name, e);
+        //             return Err(e);
+        //         }
+        //         Ok(())
+        //     });
+        //     processor_handles.insert(name, handle);
+        // }
 
-            // Start receivers last 
-            // let mut receiver_handles = HashMap::new();
-            // for (name, receiver) in receivers {
-            //     let handle = spawn_local(async move {
-            //         if let Err(e) = receiver.start().await {
-            //             eprintln!("Receiver '{}' failed: {:?}", name, e);
-            //             return Err(e);
-            //         }
-            //         Ok(())
-            //     });
-            //     receiver_handles.insert(name, handle);
-            // }
+        // Start receivers last
+        // let mut receiver_handles = HashMap::new();
+        // for (name, receiver) in receivers {
+        //     let handle = spawn_local(async move {
+        //         if let Err(e) = receiver.start().await {
+        //             eprintln!("Receiver '{}' failed: {:?}", name, e);
+        //             return Err(e);
+        //         }
+        //         Ok(())
+        //     });
+        //     receiver_handles.insert(name, handle);
+        // }
 
-            // Wait for all tasks to complete, gathering any errors
-            // let mut errors = Vec::new();
+        // Wait for all tasks to complete, gathering any errors
+        // let mut errors = Vec::new();
 
-            // Wait for receivers to complete first
-            // for (name, handle) in receiver_handles {
-            //     if let Err(e) = handle.await.unwrap() {
-            //         errors.push(e);
-            //     }
-            // }
+        // Wait for receivers to complete first
+        // for (name, handle) in receiver_handles {
+        //     if let Err(e) = handle.await.unwrap() {
+        //         errors.push(e);
+        //     }
+        // }
 
-            // Then wait for processors
-            // for (name, handle) in processor_handles {
-            //     if let Err(e) = handle.await.unwrap() {
-            //         errors.push(e);
-            //     }
-            // }
+        // Then wait for processors
+        // for (name, handle) in processor_handles {
+        //     if let Err(e) = handle.await.unwrap() {
+        //         errors.push(e);
+        //     }
+        // }
 
-            // Finally wait for exporters
-            // for (name, handle) in exporter_handles {
-            //     if let Err(e) = handle.await.unwrap() {
-            //         errors.push(e);
-            //     }
-            // }
+        // Finally wait for exporters
+        // for (name, handle) in exporter_handles {
+        //     if let Err(e) = handle.await.unwrap() {
+        //         errors.push(e);
+        //     }
+        // }
 
-            // Return the first error if any occurred
-            // if let Some(e) = errors.into_iter().next() {
-            //     return Err(e);
-            // }
+        // Return the first error if any occurred
+        // if let Some(e) = errors.into_iter().next() {
+        //     return Err(e);
+        // }
 
         //     Ok(())
         // });

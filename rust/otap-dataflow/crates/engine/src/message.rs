@@ -3,7 +3,7 @@
 //! Message definitions for the pipeline engine.
 
 use crate::error::Error;
-use otap_df_channel::error::RecvError;
+use otap_df_channel::error::{RecvError, SendError};
 use otap_df_channel::mpsc;
 use std::time::Duration;
 
@@ -68,6 +68,34 @@ impl ControlMsg {
     #[must_use]
     pub fn is_shutdown(&self) -> bool {
         matches!(self, ControlMsg::Shutdown { .. })
+    }
+}
+
+/// A generic sender for control messages.
+pub enum ControlSender {
+    /// A MPSC sender that does NOT implement [`Send`].
+    Local(mpsc::Sender<ControlMsg>),
+    /// A MPSC sender that implements [`Send`].
+    ThreadSafe(tokio::sync::mpsc::Sender<ControlMsg>),
+}
+
+impl ControlSender {
+    /// Sends a control message to the pipeline.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the message could not be sent.
+    pub async fn send(&self, msg: ControlMsg) -> Result<(), Error<ControlMsg>> {
+        match self {
+            ControlSender::Local(sender) => sender
+                .send_async(msg)
+                .await
+                .map_err(|e| Error::ChannelSendError(e)),
+            ControlSender::ThreadSafe(sender) => sender
+                .send(msg)
+                .await
+                .map_err(|e| Error::ChannelSendError(SendError::Closed(e.0))),
+        }
     }
 }
 

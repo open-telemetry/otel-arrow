@@ -22,3 +22,4 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 
 socket2 = "0.5.8"
+futures = "0.3.31"

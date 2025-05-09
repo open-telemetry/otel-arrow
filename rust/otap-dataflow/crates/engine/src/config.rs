@@ -6,6 +6,7 @@
 // focuses instead on defining the interconnection of nodes within the DAG and each node’s specific
 // settings.
 
+use std::borrow::Cow;
 use std::rc::Rc;
 
 /// For now, the channel capacity is set to 256 (a power of two). This value is currently somewhat
@@ -43,7 +44,7 @@ pub struct PdataChannelConfig {
 /// Generic configuration for a receiver.
 pub struct ReceiverConfig {
     /// Name of the receiver.
-    pub name: Rc<str>,
+    pub name: Cow<'static, str>,
     /// Configuration for control channel.
     pub control_channel: ControlChannelConfig,
     /// Configuration for output pdata channel.
@@ -74,9 +75,12 @@ pub struct ExporterConfig {
 
 impl ReceiverConfig {
     /// Creates a new receiver configuration with the given name and default channel capacity.
-    pub fn new(name: &str) -> Self {
+    pub fn new<T>(name: T) -> Self
+    where
+        T: Into<Cow<'static, str>>,
+    {
         ReceiverConfig {
-            name: Rc::from(name),
+            name: name.into(),
             control_channel: ControlChannelConfig {
                 capacity: DEFAULT_CONTROL_CHANNEL_CAPACITY,
             },
