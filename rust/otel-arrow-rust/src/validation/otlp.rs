@@ -30,21 +30,27 @@ use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status};
 
 #[derive(Debug)]
+#[cfg(test)]
 pub struct OTLPTracesInputType;
 
 #[derive(Debug)]
+#[cfg(test)]
 pub struct OTLPTracesOutputType;
 
 #[derive(Debug)]
+#[cfg(test)]
 pub struct OTLPMetricsInputType;
 
 #[derive(Debug)]
+#[cfg(test)]
 pub struct OTLPMetricsOutputType;
 
 #[derive(Debug)]
+#[cfg(test)]
 pub struct OTLPLogsInputType;
 
 #[derive(Debug)]
+#[cfg(test)]
 pub struct OTLPLogsOutputType;
 
 impl ServiceInputType for OTLPTracesInputType {

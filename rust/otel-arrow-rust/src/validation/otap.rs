@@ -26,14 +26,17 @@ use snafu::{OptionExt, ResultExt};
 /// OTAP metrics service type for testing the OTAP-to-OTLP conversion
 /// for metrics in this crate.
 #[derive(Debug)]
+#[cfg(test)]
 pub struct OTAPMetricsOutputType;
 
 /// Translates OTAP arrow data to OTLP metrics using logic from the
 /// top-level crate::otlp.
+#[cfg(test)]
 pub struct OTAPMetricsAdapter {
     receiver: TestReceiver<ExportMetricsServiceRequest>,
 }
 
+#[cfg(test)]
 impl OTAPMetricsAdapter {
     fn new(receiver: TestReceiver<ExportMetricsServiceRequest>) -> Self {
         Self { receiver }
