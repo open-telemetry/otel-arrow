@@ -26,7 +26,7 @@ import (
 
 	carrow "github.com/open-telemetry/otel-arrow/pkg/arrow"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
-	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
+	builder "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/config"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/events"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/transform"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/schema/update"

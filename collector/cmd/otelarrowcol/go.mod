@@ -4,7 +4,7 @@ module github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol
 
 go 1.23.0
 
-toolchain go1.24.1
+toolchain go1.24.2
 
 require (
 	github.com/open-telemetry/opentelemetry-collector-contrib/exporter/fileexporter v0.123.0
@@ -197,4 +197,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/open-telemetry/otel-arrow => ../../../
+replace github.com/open-telemetry/otel-arrow => ../../../go/
