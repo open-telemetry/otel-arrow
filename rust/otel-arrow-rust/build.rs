@@ -23,18 +23,31 @@ fn main() {
     generate_otlp_protos(out_dir, &base);
 }
 
+fn prost_cfg() -> prost_build::Config {
+    // Documentation comments are a problem because they look like
+    // doctests and clippy wants to checks them.
+    let mut cfg = prost_build::Config::default();
+    cfg.disable_comments(["."]);
+    // Disable prettyplease, otherwise 'cargo fmt' will reformat
+    // compared with 'cargo build'.
+    cfg.format(false);
+    cfg
+}
+
 fn generate_otap_protos(out_dir: &Path, base: &str) {
     // Create a tonic-build configuration with our custom settings
     let builder = tonic_build::configure()
         .build_server(true)
         .build_client(true)
         .server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
-        .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#);
+        .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#)
+        .disable_comments(".")
+        .out_dir(out_dir);
 
     // Compile the protobuf definitions
     builder
-        .out_dir(out_dir)
-        .compile_protos(
+        .compile_protos_with_config(
+            prost_cfg(),
             &["experimental/arrow/v1/arrow_service.proto"],
             &[format!("{}/../../proto/opentelemetry/proto/", base)],
         )
@@ -47,14 +60,16 @@ fn generate_otlp_protos(out_dir: &Path, base: &str) {
         .build_server(true)
         .build_client(true)
         .server_mod_attribute(".", r#"#[cfg(feature = "server")]"#)
-        .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#);
+        .client_mod_attribute(".", r#"#[cfg(feature = "client")]"#)
+        .disable_comments(".")
+        .out_dir(out_dir);
 
     // Note: this adds derive expressions for each OTLP message type.
     let builder = otlp_model::add_type_attributes(builder);
 
     builder
-        .out_dir(out_dir)
-        .compile_protos(
+        .compile_protos_with_config(
+            prost_cfg(),
             &[
                 "opentelemetry/proto/common/v1/common.proto",
                 "opentelemetry/proto/resource/v1/resource.proto",

@@ -1,17 +1,24 @@
 # OpenTelemetry Protocol with Apache Arrow
 
 [![Slack](https://img.shields.io/badge/slack-@cncf/otel/arrow-brightgreen.svg?logo=slack)](https://cloud-native.slack.com/archives/C07S4Q67LTF)
-[![Go-CI](https://github.com/drewrelmas/otel-arrow/actions/workflows/go-ci.yml/badge.svg)](https://github.com/drewrelmas/otel-arrow/actions/workflows/go-ci.yml)
-[![Rust-CI](https://github.com/drewrelmas/otel-arrow/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/drewrelmas/otel-arrow/actions/workflows/rust-ci.yml)
+[![Go-CI](https://github.com/open-telemetry/otel-arrow/actions/workflows/go-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/go-ci.yml)
+[![Rust-CI](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml)
 [![OpenSSF Scorecard for otel-arrow](https://api.scorecard.dev/projects/github.com/open-telemetry/otel-arrow/badge)](https://scorecard.dev/viewer/?uri=github.com/open-telemetry/otel-arrow)
 
-The [OpenTelemetry Protocol with Apache
+The [OpenTelemetry with Apache
 Arrow](https://github.com/open-telemetry/otel-arrow) project is an
 effort within [OpenTelemetry](https://opentelemetry.io/) to use
 [Apache Arrow](https://arrow.apache.org/) libraries for bulk data
-transport in OpenTelemetry pipelines.  This repository is
-the home of the OpenTelemetry Protocol with Apache Arrow protocol,
-which we refer to as "OTAP", and reference implementations.
+transport in OpenTelemetry pipelines.  This repository is the home of
+the OpenTelemetry Protocol with Apache Arrow protocol, which we refer
+to as "OTAP", and reference implementations in Golang and Rust.
+
+The [OpenTelemetry Arrow project has an OpenTelemetry SIG with weekly
+meetings][PROJECTDEF]. Find our [meeting schedule on the OpenTelemetry
+calendar][OTELCAL].
+
+[PROJECTDEF]: https://github.com/open-telemetry/community/blob/main/projects/otelarrow.md
+[OTELCAL]: https://github.com/open-telemetry/community/blob/main/README.md#calendar
 
 ## Quick start
 
@@ -21,6 +28,10 @@ for details.
 
 The [examples](./collector/examples/README.md) in this repository use
 a test collector named `otelarrowcol`, see [collector/BUILDING.md](./collector/BUILDING.md).
+
+[Phase 2 of the project is being actively developed](#phase-2). We are
+building an end-to-end OpenTelemetry Arrow pipeline in Rust.  Find us
+in the CNCF Slack `#otel-arrow` channel.
 
 [RECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md
 [EXPORTER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md
@@ -77,7 +88,7 @@ document](./docs/phase2-design.md).
 These are our future milestones for OpenTelemetry and Apache Arrow
 integration:
 
-1. Extend OpenTelemetry client SDKs to natively support the OpenTelemetry  
+1. Extend OpenTelemetry client SDKs to natively support the OpenTelemetry
    Protocol with Apache Arrow Protocol
 2. Extend the OpenTelemetry collector with direct support for OpenTelemetry
    Protocol with Apache Arrow pipelines
@@ -215,7 +226,7 @@ calendar](https://github.com/open-telemetry/community?tab=readme-ov-file#calenda
 for specific dates and for Zoom meeting links.
 
 Meeting notes are available as a public [Google
-doc](https://docs.google.com/document/d/1X-RPSOSDUUTD2-zrPRQ6YJ54i4JkHIgvAm5EoVhTzPs/edit?usp=sharing).
+doc](https://docs.google.com/document/d/1z8_Ra-ALDaYNa88mMj1gOZtOpLZLRk0-dZEmDjPmcUs).
 If you have trouble accessing the doc, please get in touch on
 [Slack](https://cloud-native.slack.com/archives/C07S4Q67LTF).
 
@@ -229,12 +240,12 @@ you're more than welcome to participate!
 
 - [Joshua MacDonald](https://github.com/jmacd), Microsoft
 - [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
+- [Drew Relmas](https://github.com/drewrelmas), Microsoft
 
 [Approvers](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver)
 ([@open-telemetry/arrow-approvers](https://github.com/orgs/open-telemetry/teams/arrow-approvers)):
 
 - [Alex Boten](https://github.com/codeboten), Honeycomb
-- [Drew Relmas](https://github.com/drewrelmas), Microsoft
 - [Moh Osman](https://github.com/moh-osman3), ServiceNow
 
 ### Thanks to all the people who have contributed

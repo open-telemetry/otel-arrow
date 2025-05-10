@@ -40,7 +40,11 @@ yanked = "warn"
 # A list of advisory IDs to ignore. Note that ignored advisories will still
 # output a note when they are encountered.
 ignore = [
-    #"RUSTSEC-0000-0000",
+    # The use of serde-yaml is dangerous and we know it. This is a historical
+    # code base that was written at a time when serde-yaml was still maintained,
+    # and we ignore this advisory because there is no alternative. We do not
+    # plan to make use of yaml parsing in our newer code, this can stay.
+    "RUSTSEC-2024-0320"
 ]
 # Threshold for security vulnerabilities, any vulnerability with a CVSS score
 # lower than the range specified will be ignored. Note that ignored advisories

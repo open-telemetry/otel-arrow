@@ -11,8 +11,8 @@
 // limitations under the License.
 
 use crate::arrays::{
-    get_bool_array_opt, get_i32_array_opt, get_u16_array, get_u8_array, NullableArrayAccessor,
-    StringArrayAccessor,
+    Int32ArrayAccessor, NullableArrayAccessor, StringArrayAccessor, get_bool_array_opt,
+    get_u8_array, get_u16_array,
 };
 use crate::error;
 use crate::otlp::related_data::RelatedData;
@@ -21,8 +21,7 @@ use crate::proto::opentelemetry::common::v1::InstrumentationScope;
 use crate::proto::opentelemetry::metrics::v1::metric;
 use crate::schema::consts;
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray, StructArray, UInt16Array,
-    UInt32Array, UInt8Array,
+    Array, ArrayRef, BooleanArray, RecordBatch, StructArray, UInt8Array, UInt16Array, UInt32Array,
 };
 use arrow::datatypes::DataType::UInt32;
 use arrow::datatypes::{DataType, Field, Fields};
@@ -46,7 +45,7 @@ struct ResourceArrays<'a> {
     schema_url: Option<StringArrayAccessor<'a>>,
 }
 
-impl<'a> ResourceArrays<'a> {
+impl ResourceArrays<'_> {
     fn data_type() -> DataType {
         DataType::Struct(Fields::from(vec![
             Field::new(consts::ID, DataType::UInt16, true),
@@ -95,7 +94,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
 
         let schema_url = struct_array
             .column_by_name(consts::SCHEMA_URL)
-            .map(StringArrayAccessor::new)
+            .map(StringArrayAccessor::try_new)
             .transpose()?;
 
         Ok(Self {
@@ -108,12 +107,12 @@ impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
 
 struct ScopeArrays<'a> {
     name: Option<StringArrayAccessor<'a>>,
-    version: Option<&'a StringArray>,
+    version: Option<StringArrayAccessor<'a>>,
     dropped_attributes_count: Option<&'a UInt32Array>,
     id: Option<&'a UInt16Array>,
 }
 
-impl<'a> ScopeArrays<'a> {
+impl ScopeArrays<'_> {
     fn data_type() -> DataType {
         DataType::Struct(Fields::from(vec![
             Field::new(
@@ -169,20 +168,12 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
 
         let name = scope_array
             .column_by_name(consts::NAME)
-            .map(StringArrayAccessor::new)
+            .map(StringArrayAccessor::try_new)
             .transpose()?;
 
         let version = scope_array
             .column_by_name(consts::VERSION)
-            .map(|a| {
-                a.as_any().downcast_ref::<StringArray>().context(
-                    error::ColumnDataTypeMismatchSnafu {
-                        name: consts::VERSION,
-                        expect: DataType::Utf8,
-                        actual: a.data_type().clone(),
-                    },
-                )
-            })
+            .map(StringArrayAccessor::try_new)
             .transpose()?;
 
         let dropped_attributes_count = scope_array
@@ -226,8 +217,8 @@ struct MetricsArrays<'a> {
     schema_url: Option<StringArrayAccessor<'a>>,
     name: StringArrayAccessor<'a>,
     description: Option<StringArrayAccessor<'a>>,
-    unit: Option<&'a StringArray>,
-    aggregation_temporality: Option<&'a Int32Array>,
+    unit: Option<StringArrayAccessor<'a>>,
+    aggregation_temporality: Option<Int32ArrayAccessor<'a>>,
     is_monotonic: Option<&'a BooleanArray>,
 }
 
@@ -237,33 +228,28 @@ impl<'a> TryFrom<&'a RecordBatch> for MetricsArrays<'a> {
     fn try_from(rb: &'a RecordBatch) -> Result<Self, Self::Error> {
         let id = get_u16_array(rb, consts::ID)?;
         let metric_type = get_u8_array(rb, consts::METRIC_TYPE)?;
-        let name = StringArrayAccessor::new(
+        let name = StringArrayAccessor::try_new(
             rb.column_by_name(consts::NAME)
                 .context(error::ColumnNotFoundSnafu { name: consts::NAME })?,
         )?;
 
         let description = rb
             .column_by_name(consts::DESCRIPTION)
-            .map(StringArrayAccessor::new)
+            .map(StringArrayAccessor::try_new)
             .transpose()?;
         let schema_url = rb
             .column_by_name(consts::SCHEMA_URL)
-            .map(StringArrayAccessor::new)
+            .map(StringArrayAccessor::try_new)
             .transpose()?;
 
         let unit = rb
             .column_by_name(consts::UNIT)
-            .map(|a| {
-                a.as_any().downcast_ref::<StringArray>().with_context(|| {
-                    error::ColumnDataTypeMismatchSnafu {
-                        name: consts::UNIT,
-                        expect: DataType::Utf8,
-                        actual: a.data_type().clone(),
-                    }
-                })
-            })
+            .map(StringArrayAccessor::try_new)
             .transpose()?;
-        let aggregation_temporality = get_i32_array_opt(rb, consts::AGGREGATION_TEMPORALITY)?;
+        let aggregation_temporality = rb
+            .column_by_name(consts::AGGREGATION_TEMPORALITY)
+            .map(Int32ArrayAccessor::try_new)
+            .transpose()?;
         let is_monotonic = get_bool_array_opt(rb, consts::IS_MONOTONIC)?;
         Ok(Self {
             id,

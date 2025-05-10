@@ -13,7 +13,7 @@ methods document in [BUILDING](../BUILDING.md).
   support, allowing request headers through.
 - [`recorder`](./recorder/README.md): A collector with support for recording
   data files for diagnostic and benchmark purposes.
-  
+
 Here are some tools used in running these examples:
 
 - [printer](./printer/README.md): Small Golang tool for printing raw HTTP

@@ -246,7 +246,7 @@ func (b *EHistogramDataPointBuilder) TryBuild(attrsAccu *carrow.Attributes32Accu
 		b.tunb.Append(arrow.Timestamp(ehdp.Timestamp()))
 
 		b.AppendCountSum(*ehdp)
-		b.sb.AppendNonZero(ehdp.Scale())
+		b.sb.Append(ehdp.Scale())
 		b.zcb.Append(ehdp.ZeroCount())
 		if err := b.pb.Append(ehdp.Positive()); err != nil {
 			return nil, werror.Wrap(err)

@@ -1,12 +1,7 @@
 [package]
 name = "otel-arrow-rust"
 version = "0.1.0"
-edition = "2021"
-
-[lib]
-# Temporary! The OTLP protos contain comment fragments that read like
-# rust doctests.
-doctest = false
+edition = "2024"
 
 [features]
 default = ["full"]
@@ -22,15 +17,72 @@ arrow-ipc = { version = "53", features = ["zstd"] }
 lazy_static = "1.5"
 num_enum = "0.7"
 otlp-derive = { path = "./src/pdata/otlp/derive" }
-paste = "1.0"
+paste = "1.0.15"
+rand = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 snafu = { version = "0.8" }
 prost = "0.13"
-tonic = "0.12"
+tonic = "0.13"
+tokio = { version = "1.43.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "process"] }
 
 [dev-dependencies]
 rand = "0.9"
+nix = { version = "0.29.0", features = ["process", "signal"] }
+tokio-stream = "0.1.17"
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-build = "0.13"
+prost-build = "0.13"
 otlp-model = { path = "./src/pdata/otlp/model" }
+
+[workspace.lints.rust]
+# General compatibility lints
+rust_2018_idioms = { level = "warn", priority = -1 }
+rust_2021_compatibility = { level = "warn", priority = -1 }
+rust_2024_compatibility = { level = "warn", priority = -1 }
+future_incompatible = { level = "warn", priority = -1 }
+nonstandard_style = { level = "warn", priority = -1 }
+
+# Strict safety & quality standards
+missing_docs = "deny"
+unsafe_code = "deny"
+unstable_features = "deny"
+unused_import_braces = "deny"
+unused_qualifications = "deny"
+unused_results = "deny"
+trivial_numeric_casts = "deny"
+variant_size_differences = "deny"
+unused_extern_crates = "deny"
+
+# Additional helpful warnings
+unused_lifetimes = "warn"
+semicolon_in_expressions_from_macros = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_macro_rules = "warn"
+
+[workspace.lints.clippy]
+# Strong defaults: deny problematic patterns
+cargo = { level = "deny", priority = -1 }
+correctness = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+restriction = { level = "allow", priority = -1 }
+
+# Specific Clippy lint customizations
+unwrap_used = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+must-use-candidate = "warn"
+await_holding_lock = "warn"
+manual_async_fn = "warn"
+dbg_macro = "warn"
+explicit_into_iter_loop = "warn"
+
+# Explicitly allowed practical exceptions
+multiple_crate_versions = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
+wrong_self_convention = "allow"
+module_name_repetitions = "allow"
