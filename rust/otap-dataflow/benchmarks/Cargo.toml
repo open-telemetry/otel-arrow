@@ -13,6 +13,10 @@ tokio.workspace = true
 serde_json.workspace = true
 
 otap-df-config = { path = "../crates/config" }
+otap-df-channel = { path = "../crates/channel" }
+futures-channel = "0.3"
+once_cell = "1.21.3"
+futures = "0.3.31"
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
@@ -22,4 +26,8 @@ workspace = true
 
 [[bench]]
 name = "config"
+harness = false
+
+[[bench]]
+name = "channel"
 harness = false
