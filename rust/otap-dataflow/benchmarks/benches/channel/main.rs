@@ -1,87 +1,108 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Benchmark tests for channel implementations
+//! This benchmark compares the performance of different async channels
+//! - `tokio mpsc`,
+//! - `flume mpsc`,
+//! - our own !Send `local_mpsc`.
 
 #![allow(missing_docs)]
 
-use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkGroup, BenchmarkId, Criterion};
-use criterion::measurement::WallTime;
+use std::rc::Rc;
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use futures::{SinkExt, StreamExt};
 use futures_channel::mpsc as futures_mpsc;
-//use kanal::mpmc;
-use tokio::sync::mpsc as tokio_mpsc;
-use tokio::runtime::{Builder, Runtime};
+use tokio::task::LocalSet;
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 const MSG_COUNT: usize = 100_000;
+const CHANNEL_SIZE: usize = 256;
 
-fn make_runtime() -> Runtime {
-    Builder::new_current_thread()
+fn bench_compare(c: &mut Criterion) {
+    // Use a single-threaded Tokio runtime
+    let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .expect("failed to build Tokio runtime")
-}
+        .expect("failed to build Tokio runtime");
 
-fn bench_tokio(c: &mut Criterion, rt: &Runtime) {
-    let mut group = c.benchmark_group("tokio_mpsc");
-    let _ = group.bench_function(BenchmarkId::new("tokio", MSG_COUNT), |b| {
-        b.to_async(rt).iter(|| async {
-            let (tx, mut rx) = tokio_mpsc::channel::<usize>(1024);
-            let _ = tokio::spawn(async move {
-                for i in 0..MSG_COUNT { tx.send(i).await.unwrap(); }
+    // Pin the current thread to a core
+    let cores = core_affinity::get_core_ids().expect("couldn't get core IDs");
+    let core = cores.iter().last().expect("no cores found");
+    _ = core_affinity::set_for_current(*core);
+
+    let mut group = c.benchmark_group("async_channel");
+    _ = group.throughput(Throughput::Elements(MSG_COUNT as u64));
+    
+    // Benchmark tokio mpsc channel
+    let _ = group.bench_function(BenchmarkId::new("tokio_mpsc", MSG_COUNT), |b| {
+        b.to_async(&rt).iter(|| async {
+            let (mut tx, mut rx) = futures_mpsc::channel(CHANNEL_SIZE);
+            let pdata = Rc::new("test".to_string());
+
+            let local = LocalSet::new();
+            let _ = local.spawn_local(async move {
+                for _ in 0..MSG_COUNT { _ = tx.send(pdata.clone()).await; }
             });
-            let mut _sum = 0;
-            while let Some(v) = rx.recv().await {
-                _sum += v;
-            }
+
+            let _ = local.run_until(async {
+                let mut _sum = 0;
+                while let Some(_v) = rx.next().await {
+                    _sum += 1;
+                }
+                assert_eq!(_sum, MSG_COUNT);
+            });
         });
     });
+
+    // Benchmark flume mpsc channel
+    let _ = group.bench_function(BenchmarkId::new("flume_mpsc", MSG_COUNT), |b| {
+        b.to_async(&rt)
+            .iter(|| async {
+                let (tx, rx) = flume::bounded(CHANNEL_SIZE);
+                let pdata = Rc::new("test".to_string());
+
+                let local = LocalSet::new();
+                let _ = local.spawn_local(async move {
+                    for _ in 0..MSG_COUNT { _ = tx.send_async(pdata.clone()).await; }
+                });
+
+                let _ = local.run_until(async {
+                    let mut _sum = 0;
+                    while let Ok(_v) = rx.recv_async().await {
+                        _sum += 1;
+                    }
+                    assert_eq!(_sum, MSG_COUNT);
+                });
+
+            });
+    });
+
+    // Benchmark local mpsc channel
+    let _ = group.bench_function(BenchmarkId::new("local_mpsc", MSG_COUNT), |b| {
+        b.to_async(&rt).iter(|| async {
+            let (tx, rx) = otap_df_channel::mpsc::Channel::new(CHANNEL_SIZE);
+            let pdata = Rc::new("test".to_string());
+
+            let local = LocalSet::new();
+            let _ = local.spawn_local(async move {
+                for _ in 0..MSG_COUNT { _ = tx.send_async(pdata.clone()).await; }
+            });
+
+            let _ = local.run_until(async {
+                let mut _sum = 0;
+                while let Ok(_v) = rx.recv().await {
+                    _sum += 1;
+                }
+                assert_eq!(_sum, MSG_COUNT);
+            });
+
+        });
+    });
+
     group.finish();
 }
 
-fn bench_futures(c: &mut Criterion, rt: &Runtime) {
-    let mut group = c.benchmark_group("futures_mpsc");
-    let _ = group.bench_function(BenchmarkId::new("futures", MSG_COUNT), |b| {
-        b.to_async(rt).iter(|| async {
-            let (mut tx, mut rx) = futures_mpsc::channel::<usize>(1024);
-            let _ = tokio::spawn(async move {
-                for i in 0..MSG_COUNT { tx.send(i).await.unwrap(); }
-                drop(tx);
-            });
-            let mut _sum = 0;
-            while let Some(v) = rx.next().await {
-                _sum += v;
-            }
-        });
-    });
-    group.finish();
-}
-
-
-// async fn bench_kanal(c: &mut Criterion) {
-//     let mut group = c.benchmark_group("kanal_mpmc");
-//     group.bench_function(BenchmarkId::new("kanal", MSG_COUNT), |b| {
-//         b.to_async(current_thread_runtime())
-//             .iter(|| async {
-//                 let (tx, rx) = mpmc::unbounded::<usize>();
-//                 tokio::spawn(async move {
-//                     for i in 0..MSG_COUNT { tx.send(i).unwrap(); }
-//                 });
-//                 let mut sum = 0;
-//                 for v in rx {
-//                     sum += v;
-//                 }
-//             });
-//     });
-//     group.finish();
-// }
-
-fn criterion_benchmark(c: &mut Criterion) {
-    let rt = make_runtime();
-
-    bench_tokio(c, &rt);
-    bench_futures(c, &rt);
-    //bench_kanal(c, &rt);
-}
-
-criterion_group!(benches, criterion_benchmark);
+criterion_group!(benches, bench_compare);
 criterion_main!(benches);

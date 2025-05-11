@@ -12,14 +12,15 @@ rust-version.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 
+[dev-dependencies]
+criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
+mimalloc = "0.1.46"
 otap-df-config = { path = "../crates/config" }
 otap-df-channel = { path = "../crates/channel" }
 futures-channel = "0.3"
-once_cell = "1.21.3"
 futures = "0.3.31"
-
-[dev-dependencies]
-criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
+flume = "0.11.1"
+core_affinity = "0.8.3"
 
 [lints]
 workspace = true
@@ -31,3 +32,11 @@ harness = false
 [[bench]]
 name = "channel"
 harness = false
+
+[profile.bench]
+opt-level = 3
+debug = false
+incremental = false
+lto = "fat"
+codegen-units = 1
+panic = "abort"
