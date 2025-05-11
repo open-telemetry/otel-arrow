@@ -160,7 +160,7 @@ impl<'a> TryFrom<&'a StructArray> for LogBodyArrays<'a> {
             double: column_accessor.primitive_column(consts::ATTRIBUTE_DOUBLE)?,
             bool: column_accessor.bool_column(consts::ATTRIBUTE_BOOL)?,
             bytes: column_accessor.byte_array_column(consts::ATTRIBUTE_BYTES)?,
-            ser: column_accessor.byte_array_column(consts::ATTRIBUTE_SER)?,
+            _ser: column_accessor.byte_array_column(consts::ATTRIBUTE_SER)?,
         })
     }
 }
