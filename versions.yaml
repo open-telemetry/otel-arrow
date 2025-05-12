@@ -6,3 +6,4 @@ module-sets:
     version: v0.35.0
     modules:
       - github.com/open-telemetry/otel-arrow
+      - github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol
