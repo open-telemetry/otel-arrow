@@ -111,6 +111,9 @@ struct LogBodyArrays<'a> {
     double: Option<&'a Float64Array>,
     bool: Option<&'a BooleanArray>,
     bytes: Option<ByteArrayAccessor<'a>>,
+    // _ser is for serialized value type of AnyValue including "kvlist" and "array"
+    //
+    // TODO: see https://github.com/open-telemetry/otel-arrow/issues/384
     _ser: Option<ByteArrayAccessor<'a>>,
 }
 
