@@ -12,13 +12,13 @@
 
 use crate::decode::record_message::RecordMessage;
 use crate::error;
-use crate::opentelemetry::ArrowPayloadType;
 use crate::otlp::attributes::store::{Attribute16Store, Attribute32Store};
 use crate::otlp::data_points::data_point_store::{
     EHistogramDataPointsStore, HistogramDataPointsStore, NumberDataPointsStore,
     SummaryDataPointsStore,
 };
 use crate::otlp::exemplar::ExemplarsStore;
+use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 #[derive(Default)]
 pub struct RelatedData {
