@@ -140,7 +140,7 @@ impl NullableArrayAccessor for LogBodyArrays<'_> {
             AttributeValueType::Double => Value::DoubleValue(self.double.value_at_or_default(idx)),
             AttributeValueType::Bool => Value::BoolValue(self.bool.value_at_or_default(idx)),
             AttributeValueType::Bytes => Value::BytesValue(self.bytes.value_at_or_default(idx)),
-            // TODO
+            // TODO: see https://github.com/open-telemetry/otel-arrow/issues/384
             // 1. handle slice
             // 2. handle map
             _ => {
