@@ -144,8 +144,11 @@ pub fn metrics_from(
         if prev_scope_id != Some(scope_id) {
             prev_scope_id = Some(scope_id);
             // safety: We must have appended at least one resource metrics when reach here
-            let current_scope_metrics_slice =
-                &mut metrics.resource_metrics.last_mut().unwrap().scope_metrics;
+            let current_scope_metrics_slice = &mut metrics
+                .resource_metrics
+                .last_mut()
+                .expect("At this stage, we should have at least one resource metrics.")
+                .scope_metrics;
             let scope_metrics = current_scope_metrics_slice.append_and_get();
             let mut scope = scope_arrays.create_instrumentation_scope(idx);
             if let Some(scope_id) = scope_delta_id_opt
@@ -165,10 +168,10 @@ pub fn metrics_from(
         let current_scope_metrics = &mut metrics
             .resource_metrics
             .last_mut()
-            .unwrap()
+            .expect("At this stage, we should have at least one resource metrics.")
             .scope_metrics
             .last_mut()
-            .unwrap();
+            .expect("At this stage, we should ahve added at least one scope metrics.");
         let current_metric = current_scope_metrics.metrics.append_and_get();
         let delta_id = metrics_arrays.id.value_at_or_default(idx);
         let metric_id = related_data.metric_id_from_delta(delta_id);

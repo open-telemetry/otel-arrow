@@ -234,7 +234,11 @@ pub fn logs_from(
             }
 
             // safety: we must have appended at least one resource logs when reach here
-            let current_scope_logs_slice = &mut logs.resource_logs.last_mut().expect("At this stage, we should have at least one resource log.").scope_logs;
+            let current_scope_logs_slice = &mut logs
+                .resource_logs
+                .last_mut()
+                .expect("At this stage, we should have at least one resource log.")
+                .scope_logs;
             let scope_logs = current_scope_logs_slice.append_and_get();
             scope_logs.scope = Some(scope);
             scope_logs.schema_url = logs_arrays.schema_url.value_at(idx).unwrap_or_default();
@@ -244,10 +248,10 @@ pub fn logs_from(
         let current_scope_logs = &mut logs
             .resource_logs
             .last_mut()
-            .unwrap()
+            .expect("At this stage, we should have at least one resource log.")
             .scope_logs
             .last_mut()
-            .unwrap();
+            .expect("At this stage, we should have added at least one scope log.");
 
         let current_log_record = current_scope_logs.log_records.append_and_get();
         let delta_id = logs_arrays.id.value_at_or_default(idx);
