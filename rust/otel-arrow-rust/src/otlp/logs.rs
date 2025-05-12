@@ -5,6 +5,7 @@ use arrow::array::{
     Array, BooleanArray, Float64Array, Int64Array, RecordBatch, StructArray,
     TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
 };
+use arrow::datatypes::{DataType, Fields};
 use snafu::{OptionExt, ResultExt, ensure};
 
 use crate::arrays::{
@@ -74,7 +75,13 @@ impl<'a> TryFrom<&'a RecordBatch> for LogsArrays<'a> {
         let body = rb
             .column_by_name(consts::BODY)
             .map(|arr| {
-                let logs_body = arr.as_any().downcast_ref::<StructArray>().unwrap();
+                let logs_body = arr.as_any().downcast_ref::<StructArray>().context(
+                    error::ColumnDataTypeMismatchSnafu {
+                        name: consts::BODY,
+                        actual: arr.data_type().clone(),
+                        expect: DataType::Struct(Fields::default()),
+                    },
+                )?;
 
                 LogBodyArrays::try_from(logs_body)
             })
