@@ -6,7 +6,7 @@
 // been made signal-generic, and it only supports an Output type (not
 // an Input type).
 
-use crate::proto::opentelemetry::experimental::arrow::v1::{
+use crate::proto::opentelemetry::arrow::v1::{
     BatchArrowRecords, BatchStatus, StatusCode,
     arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
 };
@@ -169,8 +169,10 @@ async fn process_arrow_metrics(
         let record_message = RecordMessage {
             batch_id: batch.batch_id,
             schema_id: payload.schema_id.clone(),
-            payload_type: crate::opentelemetry::ArrowPayloadType::try_from(payload.r#type)
-                .context(error::InvalidPayloadSnafu)?,
+            payload_type: crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::try_from(
+                payload.r#type,
+            )
+            .context(error::InvalidPayloadSnafu)?,
             record: arrow_batch,
         };
 
