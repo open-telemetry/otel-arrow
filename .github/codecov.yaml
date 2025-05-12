@@ -1,4 +1,3 @@
-comment:
   layout: "header, diff, flags, components"
 
 component_management:
@@ -23,3 +22,7 @@ component_management:
       name: "syslog_cef_receivers"
       paths:
         - "rust/experimental/syslog-cef-receivers/"
+    - component_id: "otel_arrow_go"
+      name: "otel-arrow-go"
+      paths:
+        - "go/"
