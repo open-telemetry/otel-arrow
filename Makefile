@@ -32,7 +32,7 @@ gotidy:
 	for dir in $(GODIRS); do (cd $${dir}; GOWORK="off" $(GOCMD) mod tidy) || exit 1; done
 
 doc:
-	$(GOCMD) run tools/data_model_gen/main.go
+	$(GOCMD) run go/tools/data_model_gen/main.go
 
 # Multimod can be installed using:
 #
