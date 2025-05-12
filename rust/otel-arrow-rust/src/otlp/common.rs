@@ -164,9 +164,13 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
 }
 
 struct Downcaster<S, F> {
+    // name is the column name, e.g. crate::schema::consts::RESOURCE
     name: &'static str,
+    // source is a record batch (determines lifetime of the downcast array)
     source: S,
+    // array is a function returning an optional array ref e.g., `|s| s.column_by_name(name)`
     array: F,
+    // expect_type is used when downcasting fails, included in the result context.
     expect_type: fn() -> DataType,
 }
 
