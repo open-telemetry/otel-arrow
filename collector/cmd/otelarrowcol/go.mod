@@ -197,4 +197,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/open-telemetry/otel-arrow => ../../../
+replace github.com/open-telemetry/otel-arrow => ../../../go/
