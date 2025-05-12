@@ -43,15 +43,10 @@ service:
   pipelines:
     traces:
       receivers: [otelarrow]
-
-      # Note there is no need to re-apply the batch processor on the
-      # SaaS-side of a bridge.
-      processors: []
       exporters: [debug, otlphttp]
 
     metrics:
       receivers: [otelarrow]
-      processors: []
       exporters: [debug, otlphttp]
 
   telemetry:
