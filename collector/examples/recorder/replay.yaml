@@ -39,20 +39,16 @@ service:
   pipelines:
     traces/first:
       receivers: [file/first_traces]
-      processors: []
       exporters: [debug/first, otelarrow/forward]
     metrics/first:
       receivers: [file/first_metrics]
-      processors: []
       exporters: [debug/first, otelarrow/forward]
 
     traces/second:
       receivers: [otelarrow/second]
-      processors: []
       exporters: [debug/second, file/second_traces]
     metrics/second:
       receivers: [otelarrow/second]
-      processors: []
       exporters: [debug/second, file/second_metrics]
 
   telemetry:
