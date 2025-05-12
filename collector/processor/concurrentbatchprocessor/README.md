@@ -1,6 +1,6 @@
 # Batch Processor
 
-**Component Status: Removed. The exporterhelper batcher is mature, 
+**Component Status: Removed. The exporterhelper batcher is mature,
 this component is no longer needed.**
 
 The batch processor accepts spans, metrics, or logs and places them into
