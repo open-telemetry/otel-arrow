@@ -49,4 +49,4 @@ extensions:
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/pprofextension v0.123.0
 
 replaces:
-  - github.com/open-telemetry/otel-arrow => ../../../
+  - github.com/open-telemetry/otel-arrow => ../../../go/
