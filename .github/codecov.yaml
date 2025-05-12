@@ -1,3 +1,4 @@
+comment:
   layout: "header, diff, flags, components"
 
 component_management:
