@@ -233,7 +233,7 @@ pub fn logs_from(
                 scope.attributes = attrs.to_vec();
             }
 
-            // safety: we must have appeneded at least one resource logs when reach here
+            // safety: we must have appended at least one resource logs when reach here
             let current_scope_logs_slice = &mut logs.resource_logs.last_mut().unwrap().scope_logs;
             let scope_logs = current_scope_logs_slice.append_and_get();
             scope_logs.scope = Some(scope);
