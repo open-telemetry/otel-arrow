@@ -62,7 +62,7 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
         tokio::spawn(async move {
             // Helper function to process a batch and send appropriate status
             async fn process_and_send(
-		consumer: &mut crate::Consumer,
+                consumer: &mut crate::Consumer,
                 batch: &mut BatchArrowRecords,
                 receiver: &TestReceiver<ExportMetricsServiceRequest>,
                 tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
@@ -92,11 +92,14 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
                 .map_err(|_| ())
             }
 
-	    let mut consumer = crate::Consumer::default();
+            let mut consumer = crate::Consumer::default();
             // Process messages until stream ends or error occurs
             while let Ok(Some(mut batch)) = input_stream.message().await {
                 // Process batch and send status, break on client disconnection
-                if process_and_send(&mut consumer, &mut batch, &receiver, &tx).await.is_err() {
+                if process_and_send(&mut consumer, &mut batch, &receiver, &tx)
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
