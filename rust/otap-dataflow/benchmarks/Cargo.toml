@@ -21,6 +21,9 @@ futures-channel = "0.3"
 futures = "0.3.31"
 flume = "0.11.1"
 core_affinity = "0.8.3"
+local-sync = "0.1.1"
+async-unsync = "0.3.0"
+unsync = "0.1.2"
 
 [lints]
 workspace = true

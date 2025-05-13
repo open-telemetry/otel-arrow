@@ -101,6 +101,72 @@ fn bench_compare(c: &mut Criterion) {
         });
     });
 
+    // Benchmark local-sync (monoio) mpsc channel
+    let _ = group.bench_function(BenchmarkId::new("local_sync_mpsc", MSG_COUNT), |b| {
+        b.to_async(&rt).iter(|| async {
+            let (tx, mut rx) = local_sync::mpsc::bounded::channel(CHANNEL_SIZE);
+            let pdata = Rc::new("test".to_string());
+
+            let local = LocalSet::new();
+            let _ = local.spawn_local(async move {
+                for _ in 0..MSG_COUNT { _ = tx.send(pdata.clone()).await; }
+            });
+
+            let _ = local.run_until(async {
+                let mut _sum = 0;
+                while let Some(_v) = rx.recv().await {
+                    _sum += 1;
+                }
+                assert_eq!(_sum, MSG_COUNT);
+            });
+
+        });
+    });
+
+    // Benchmark async unsync mpsc channel
+    let _ = group.bench_function(BenchmarkId::new("async_unsync_mpsc", MSG_COUNT), |b| {
+        b.to_async(&rt).iter(|| async {
+            let (tx, mut rx) = async_unsync::bounded::channel(CHANNEL_SIZE).into_split();
+            let pdata = Rc::new("test".to_string());
+
+            let local = LocalSet::new();
+            let _ = local.spawn_local(async move {
+                for _ in 0..MSG_COUNT { _ = tx.send(pdata.clone()); }
+            });
+
+            let _ = local.run_until(async {
+                let mut _sum = 0;
+                while let Some(_v) = rx.recv().await {
+                    _sum += 1;
+                }
+                assert_eq!(_sum, MSG_COUNT);
+            });
+
+        });
+    });
+
+    // Benchmark unsync mpsc channel
+    let _ = group.bench_function(BenchmarkId::new("unsync_mpsc", MSG_COUNT), |b| {
+        b.to_async(&rt).iter(|| async {
+            let (mut tx, mut rx) = unsync::spsc::channel(CHANNEL_SIZE);
+            let pdata = Rc::new("test".to_string());
+
+            let local = LocalSet::new();
+            let _ = local.spawn_local(async move {
+                for _ in 0..MSG_COUNT { _ = tx.send(pdata.clone()); }
+            });
+
+            let _ = local.run_until(async {
+                let mut _sum = 0;
+                while let Some(_v) = rx.recv().await {
+                    _sum += 1;
+                }
+                assert_eq!(_sum, MSG_COUNT);
+            });
+
+        });
+    });
+
     group.finish();
 }
 
