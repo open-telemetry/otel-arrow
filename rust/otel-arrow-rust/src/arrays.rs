@@ -356,7 +356,11 @@ where
     fn try_new_with_datatype(data_type: DataType, arr: &'a ArrayRef) -> error::Result<Self> {
         // if the type isn't a dictionary, we treat it as an unencoded array
         if *arr.data_type() == data_type {
-            return Ok(Self::Native(arr.as_any().downcast_ref::<T>().unwrap()));
+            return Ok(Self::Native(
+                arr.as_any()
+                    .downcast_ref::<T>()
+                    .expect("array can be downcast to it's native datatype"),
+            ));
         }
 
         // determine if the type is a dictionary where the value is the desired datatype
@@ -373,13 +377,13 @@ where
                 DataType::UInt8 => Self::Dictionary8(DictionaryArrayAccessor::new(
                     arr.as_any()
                         .downcast_ref::<DictionaryArray<UInt8Type>>()
-                        .unwrap(),
-                )),
+                        .expect("array can be downcast to DictionaryArray<UInt8Type"),
+                )?),
                 DataType::UInt16 => Self::Dictionary16(DictionaryArrayAccessor::new(
                     arr.as_any()
                         .downcast_ref::<DictionaryArray<UInt16Type>>()
-                        .unwrap(),
-                )),
+                        .expect("array can be downcast to DictionaryArray<UInt16Type>"),
+                )?),
                 _ => {
                     return error::UnsupportedDictionaryKeyTypeSnafu {
                         expect_oneof: vec![DataType::UInt8, DataType::UInt16],
@@ -462,14 +466,24 @@ where
     K: ArrowDictionaryKeyType,
     V: Array + NullableArrayAccessor + 'static,
 {
-    pub fn new(dict: &'a DictionaryArray<K>) -> Self {
-        let value = dict.values().as_any().downcast_ref::<V>().unwrap();
-        Self { inner: dict, value }
+    pub fn new(dict: &'a DictionaryArray<K>) -> error::Result<Self> {
+        let value = dict
+            .values()
+            .as_any()
+            .downcast_ref::<V>()
+            .with_context(|| error::InvalidListArraySnafu {
+                expect_oneof: Vec::new(),
+                actual: dict.values().data_type().clone(),
+            })?;
+        Ok(Self { inner: dict, value })
     }
 
     pub fn value_at(&self, idx: usize) -> Option<V::Native> {
         if self.inner.is_valid(idx) {
-            let offset = self.inner.key(idx).unwrap();
+            let offset = self
+                .inner
+                .key(idx)
+                .expect("dictionary should be valid at index");
             self.value.value_at(offset)
         } else {
             None
