@@ -194,7 +194,7 @@ The [OpenTelemetry-Arrow maintainers][MAINTAINERS] are:
 The [OpenTelemetry-Arrow approvers][APPROVERS] are:
 
 - [Lei Huang](https://github.com/v0y4g3r)
-- [Albert Lockett](https://github.com/v0y4g3r)
+- [Albert Lockett](https://github.com/albertlockett)
 
 The people who held these roles in the past:
 
