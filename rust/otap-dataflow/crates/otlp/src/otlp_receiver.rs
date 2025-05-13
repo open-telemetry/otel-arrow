@@ -4,6 +4,7 @@
 //! 
 //! ToDo implement Ack and Nack control message, wait for receiver node to receive a Ack control message then the service can send a response back 
 //! ToDo implement config control message to handle live changing configuration
+//! ToDo Add HTTP support
 
 use crate::grpc::{LogsServiceImpl, MetricsServiceImpl, TraceServiceImpl, ProfilesServiceImpl, OTLPRequest};
 use crate::proto::opentelemetry::collector::{logs::v1::logs_service_server::LogsServiceServer,
