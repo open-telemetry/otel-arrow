@@ -51,19 +51,12 @@ impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
             })?;
 
         let struct_col_accessor = StructColumnAccessor::new(struct_array);
-        let id_array = struct_col_accessor.primitive_column(consts::ID)?;
-        let dropped_attributes_count =
-            struct_col_accessor.primitive_column_op(consts::DROPPED_ATTRIBUTES_COUNT)?;
-
-        let schema_url = struct_array
-            .column_by_name(consts::SCHEMA_URL)
-            .map(StringArrayAccessor::try_new)
-            .transpose()?;
 
         Ok(Self {
-            id: id_array,
-            dropped_attributes_count,
-            schema_url,
+            id: struct_col_accessor.primitive_column(consts::ID)?,
+            dropped_attributes_count: struct_col_accessor
+                .primitive_column_op(consts::DROPPED_ATTRIBUTES_COUNT)?,
+            schema_url: struct_col_accessor.string_column_op(consts::SCHEMA_URL)?,
         })
     }
 }
@@ -116,27 +109,14 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
                 actual: struct_array.data_type().clone(),
                 expect: Self::data_type().clone(),
             })?;
-
-        let name = scope_array
-            .column_by_name(consts::NAME)
-            .map(StringArrayAccessor::try_new)
-            .transpose()?;
-
-        let version = scope_array
-            .column_by_name(consts::VERSION)
-            .map(StringArrayAccessor::try_new)
-            .transpose()?;
-
         let struct_col_accessor = StructColumnAccessor::new(scope_array);
-        let id = struct_col_accessor.primitive_column_op(consts::ID)?;
-        let dropped_attributes_count =
-            struct_col_accessor.primitive_column_op(consts::DROPPED_ATTRIBUTES_COUNT)?;
 
         Ok(Self {
-            name,
-            version,
-            dropped_attributes_count,
-            id,
+            name: struct_col_accessor.string_column_op(consts::NAME)?,
+            version: struct_col_accessor.string_column_op(consts::VERSION)?,
+            dropped_attributes_count: struct_col_accessor
+                .primitive_column_op(consts::DROPPED_ATTRIBUTES_COUNT)?,
+            id: struct_col_accessor.primitive_column_op(consts::ID)?,
         })
     }
 }
