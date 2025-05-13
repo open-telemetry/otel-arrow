@@ -15,12 +15,6 @@ workspace = true
 [dependencies]
 otap-df-engine = { path = "../engine" }
 otap-df-channel = { path = "../channel" }
-log = "0.4"
-
-# Workspace dependencies
-thiserror.workspace = true
-
-[dev-dependencies]
 tonic = { version = "0.13.0", default-features = false, features = [
     "server",
     "channel",
@@ -32,8 +26,14 @@ tonic = { version = "0.13.0", default-features = false, features = [
     "deflate",
 ] }
 prost = "0.13.4"
+thiserror.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+async-trait.workspace = true
+log = "0.4"
 
 [build-dependencies]
 tonic-build = { version = "0.13.0", features = ["cleanup-markdown"] }
+
+
+thiserror = { workspace = true }
