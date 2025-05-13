@@ -8,6 +8,7 @@ use crate::schema::consts;
 use arrow::array::{Array, ArrayRef, RecordBatch, StructArray, UInt16Array, UInt32Array};
 use arrow::datatypes::{DataType, Field, Fields};
 use snafu::OptionExt;
+use std::sync::LazyLock;
 
 pub(in crate::otlp) struct ResourceArrays<'a> {
     pub id: &'a UInt16Array,
@@ -15,17 +16,21 @@ pub(in crate::otlp) struct ResourceArrays<'a> {
     pub schema_url: Option<StringArrayAccessor<'a>>,
 }
 
+static RESOURCE_ARRAY_DATA_TYPE: LazyLock<DataType> = LazyLock::new(|| {
+    DataType::Struct(Fields::from(vec![
+        Field::new(consts::ID, DataType::UInt16, true),
+        Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
+        Field::new(
+            consts::SCHEMA_URL,
+            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+            true,
+        ),
+    ]))
+});
+
 impl ResourceArrays<'_> {
-    fn data_type() -> DataType {
-        DataType::Struct(Fields::from(vec![
-            Field::new(consts::ID, DataType::UInt16, true),
-            Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
-            Field::new(
-                consts::SCHEMA_URL,
-                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
-                true,
-            ),
-        ]))
+    fn data_type() -> &'static DataType {
+        &RESOURCE_ARRAY_DATA_TYPE
     }
 }
 
@@ -37,7 +42,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ResourceArrays<'a> {
             name: consts::RESOURCE,
             source: rb,
             array: |rb: &'a RecordBatch| rb.column_by_name(consts::RESOURCE),
-            expect_type: Self::data_type,
+            expect_type: || Self::data_type().clone(),
         }
         .downcast::<StructArray>()?;
 
@@ -82,18 +87,22 @@ pub(in crate::otlp) struct ScopeArrays<'a> {
     pub id: Option<&'a UInt16Array>,
 }
 
+pub static SCOPE_ARRAY_DATA_TYPE: LazyLock<DataType> = LazyLock::new(|| {
+    DataType::Struct(Fields::from(vec![
+        Field::new(
+            consts::NAME,
+            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+            true,
+        ),
+        Field::new(consts::VERSION, DataType::Utf8, true),
+        Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
+        Field::new(consts::ID, DataType::UInt16, true),
+    ]))
+});
+
 impl ScopeArrays<'_> {
-    fn data_type() -> DataType {
-        DataType::Struct(Fields::from(vec![
-            Field::new(
-                consts::NAME,
-                DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
-                true,
-            ),
-            Field::new(consts::VERSION, DataType::Utf8, true),
-            Field::new(consts::DROPPED_ATTRIBUTES_COUNT, DataType::UInt32, true),
-            Field::new(consts::ID, DataType::UInt16, true),
-        ]))
+    fn data_type() -> &'static DataType {
+        &SCOPE_ARRAY_DATA_TYPE
     }
 
     pub fn create_instrumentation_scope(&self, idx: usize) -> InstrumentationScope {
@@ -114,7 +123,7 @@ impl<'a> TryFrom<&'a RecordBatch> for ScopeArrays<'a> {
             name: consts::SCOPE,
             source: rb,
             array: |rb: &'a RecordBatch| rb.column_by_name(consts::SCOPE),
-            expect_type: Self::data_type,
+            expect_type: || Self::data_type().clone(),
         }
         .downcast::<StructArray>()?;
 
