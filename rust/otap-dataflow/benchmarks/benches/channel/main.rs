@@ -7,12 +7,12 @@
 
 #![allow(missing_docs)]
 
-use std::rc::Rc;
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures::{SinkExt, StreamExt};
 use futures_channel::mpsc as futures_mpsc;
-use tokio::task::LocalSet;
 use mimalloc::MiMalloc;
+use std::rc::Rc;
+use tokio::task::LocalSet;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -34,7 +34,7 @@ fn bench_compare(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("async_channel");
     _ = group.throughput(Throughput::Elements(MSG_COUNT as u64));
-    
+
     // Benchmark tokio mpsc channel
     let _ = group.bench_function(BenchmarkId::new("tokio_mpsc", MSG_COUNT), |b| {
         b.to_async(&rt).iter(|| async {
@@ -43,7 +43,9 @@ fn bench_compare(c: &mut Criterion) {
 
             let local = LocalSet::new();
             let _ = local.spawn_local(async move {
-                for _ in 0..MSG_COUNT { _ = tx.send(pdata.clone()).await; }
+                for _ in 0..MSG_COUNT {
+                    _ = tx.send(pdata.clone()).await;
+                }
             });
 
             let _ = local.run_until(async {
@@ -58,25 +60,25 @@ fn bench_compare(c: &mut Criterion) {
 
     // Benchmark flume mpsc channel
     let _ = group.bench_function(BenchmarkId::new("flume_mpsc", MSG_COUNT), |b| {
-        b.to_async(&rt)
-            .iter(|| async {
-                let (tx, rx) = flume::bounded(CHANNEL_SIZE);
-                let pdata = Rc::new("test".to_string());
+        b.to_async(&rt).iter(|| async {
+            let (tx, rx) = flume::bounded(CHANNEL_SIZE);
+            let pdata = Rc::new("test".to_string());
 
-                let local = LocalSet::new();
-                let _ = local.spawn_local(async move {
-                    for _ in 0..MSG_COUNT { _ = tx.send_async(pdata.clone()).await; }
-                });
-
-                let _ = local.run_until(async {
-                    let mut _sum = 0;
-                    while let Ok(_v) = rx.recv_async().await {
-                        _sum += 1;
-                    }
-                    assert_eq!(_sum, MSG_COUNT);
-                });
-
+            let local = LocalSet::new();
+            let _ = local.spawn_local(async move {
+                for _ in 0..MSG_COUNT {
+                    _ = tx.send_async(pdata.clone()).await;
+                }
             });
+
+            let _ = local.run_until(async {
+                let mut _sum = 0;
+                while let Ok(_v) = rx.recv_async().await {
+                    _sum += 1;
+                }
+                assert_eq!(_sum, MSG_COUNT);
+            });
+        });
     });
 
     // Benchmark local mpsc channel
@@ -87,7 +89,9 @@ fn bench_compare(c: &mut Criterion) {
 
             let local = LocalSet::new();
             let _ = local.spawn_local(async move {
-                for _ in 0..MSG_COUNT { _ = tx.send_async(pdata.clone()).await; }
+                for _ in 0..MSG_COUNT {
+                    _ = tx.send_async(pdata.clone()).await;
+                }
             });
 
             let _ = local.run_until(async {
@@ -97,7 +101,6 @@ fn bench_compare(c: &mut Criterion) {
                 }
                 assert_eq!(_sum, MSG_COUNT);
             });
-
         });
     });
 
@@ -109,7 +112,9 @@ fn bench_compare(c: &mut Criterion) {
 
             let local = LocalSet::new();
             let _ = local.spawn_local(async move {
-                for _ in 0..MSG_COUNT { _ = tx.send(pdata.clone()).await; }
+                for _ in 0..MSG_COUNT {
+                    _ = tx.send(pdata.clone()).await;
+                }
             });
 
             let _ = local.run_until(async {
@@ -119,7 +124,6 @@ fn bench_compare(c: &mut Criterion) {
                 }
                 assert_eq!(_sum, MSG_COUNT);
             });
-
         });
     });
 
@@ -131,7 +135,9 @@ fn bench_compare(c: &mut Criterion) {
 
             let local = LocalSet::new();
             let _ = local.spawn_local(async move {
-                for _ in 0..MSG_COUNT { _ = tx.send(pdata.clone()); }
+                for _ in 0..MSG_COUNT {
+                    _ = tx.send(pdata.clone());
+                }
             });
 
             let _ = local.run_until(async {
@@ -141,7 +147,6 @@ fn bench_compare(c: &mut Criterion) {
                 }
                 assert_eq!(_sum, MSG_COUNT);
             });
-
         });
     });
 
@@ -153,7 +158,9 @@ fn bench_compare(c: &mut Criterion) {
 
             let local = LocalSet::new();
             let _ = local.spawn_local(async move {
-                for _ in 0..MSG_COUNT { _ = tx.send(pdata.clone()); }
+                for _ in 0..MSG_COUNT {
+                    _ = tx.send(pdata.clone());
+                }
             });
 
             let _ = local.run_until(async {
@@ -163,7 +170,6 @@ fn bench_compare(c: &mut Criterion) {
                 }
                 assert_eq!(_sum, MSG_COUNT);
             });
-
         });
     });
 
