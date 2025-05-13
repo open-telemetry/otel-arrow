@@ -16,16 +16,16 @@ received_logs = 0
 
 class FakeLogsExporter(logs_service_pb2_grpc.LogsServiceServicer):
     def Export(self, request, context):
-        print("Received logs")
         global received_logs
         count = sum(len(ss.log_records) for rs in request.resource_logs for ss in rs.scope_logs)
         received_logs += count
-        print(f"Total received logs: {received_logs}")
+        if received_logs % 10000 == 0:
+            print(f"Total received logs: {received_logs}")
         return ExportLogsServiceResponse()
 
 @app.route("/metrics")
 def metrics():
-    print("Metrics endpoint called")
+    print("Metrics endpoint called. Returning: {received_logs}")
     return jsonify({"received_logs": received_logs})
 
 

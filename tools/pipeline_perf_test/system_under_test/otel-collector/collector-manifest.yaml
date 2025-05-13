@@ -1,0 +1,88 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+data:
+  collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+
+    processors:
+      batch:
+
+    exporters:
+      debug:
+        verbosity: detailed
+      otlp:
+        endpoint: backend-service:5317
+        tls:
+          insecure: true
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [debug]
+        metrics:
+          receivers: [otlp]
+          exporters: [debug]
+        logs:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlp]
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  labels:
+    app: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+      - name: collector
+        image: otel/opentelemetry-collector:latest
+        args:
+        - "--config=/etc/otel/collector-config.yaml"
+        resources:
+          requests:
+            cpu: 1
+            memory: 200Mi
+          limits:
+            cpu: 1
+            memory: 1Gi
+        ports:
+        - containerPort: 4317
+          name: otlp-grpc
+        volumeMounts:
+        - name: collector-config
+          mountPath: /etc/otel
+      volumes:
+      - name: collector-config
+        configMap:
+          name: otel-collector-config
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector-service
+spec:
+  selector:
+    app: otel-collector
+  ports:
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317

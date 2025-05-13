@@ -1,6 +1,15 @@
-docker
-psutil
-requests
-kubernetes
-pyyaml
-opentelemetry-proto
+# Dependencies for the pipeline performance test orchestrator
+
+# General dependencies
+requests>=2.25.0
+pyyaml>=5.4.1
+
+# Docker management
+docker>=5.0.0
+psutil>=5.8.0
+
+# Kubernetes management
+kubernetes>=23.6.0
+
+# Other dependencies
+opentelemetry-proto>=1.12.0
