@@ -24,6 +24,8 @@ use num_enum::TryFromPrimitive;
 use snafu::{OptionExt, ResultExt};
 use std::collections::HashMap;
 
+use super::cbor;
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
 #[repr(u8)]
 pub enum AttributeValueType {
@@ -90,6 +92,10 @@ where
             .column_by_name(consts::ATTRIBUTE_BYTES)
             .map(ByteArrayAccessor::try_new)
             .transpose()?;
+        let value_ser_arr = rb
+            .column_by_name(consts::ATTRIBUTE_SER)
+            .map(ByteArrayAccessor::try_new)
+            .transpose()?;
 
         for idx in 0..rb.num_rows() {
             let key = key_arr.value_at_or_default(idx);
@@ -109,13 +115,17 @@ where
                 AttributeValueType::Bytes => {
                     Value::BytesValue(value_bytes_arr.value_at_or_default(idx))
                 }
-                AttributeValueType::Slice => {
-                    // todo: support deserialize [any_value::Value::ArrayValue]
-                    return error::UnsupportedAttributeValueSnafu { type_name: "slice" }.fail();
-                }
-                AttributeValueType::Map => {
-                    // todo: support deserialize [any_value::Value::KvlistValue]
-                    return error::UnsupportedAttributeValueSnafu { type_name: "map" }.fail();
+                AttributeValueType::Slice | AttributeValueType::Map => {
+                    let bytes = value_ser_arr.value_at(idx);
+                    if bytes.is_none() {
+                        continue;
+                    }
+
+                    let decoded_result = cbor::decode_pcommon_val(&bytes.expect("expected Some"))?;
+                    match decoded_result {
+                        Some(value) => value,
+                        None => continue,
+                    }
                 }
                 AttributeValueType::Empty => {
                     // should warn here.

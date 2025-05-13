@@ -310,4 +310,13 @@ mod tests {
         )
         .await
     }
+
+    #[tokio::test]
+    async fn test_otap_logs_serialized_bodies() {
+        run_single_round_trip_test::<OTLPLogsInputType, OTAPLogsOutputType, _>(
+            testdata::logs::create_request_with_serialized_bodies,
+            None, // Expect success
+        )
+        .await
+    }
 }

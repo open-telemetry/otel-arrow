@@ -10,6 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod cbor;
 pub mod decoder;
 mod parent_id;
 pub mod store;
