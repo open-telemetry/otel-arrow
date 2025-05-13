@@ -57,11 +57,8 @@ pub mod opentelemetry {
     }
 
     #[path = "."]
-    pub mod experimental {
-        #[path = "."]
-        pub mod arrow {
-            #[path = "opentelemetry.proto.experimental.arrow.v1.rs"]
-            pub mod v1;
-        }
+    pub mod arrow {
+        #[path = "opentelemetry.proto.experimental.arrow.v1.rs"]
+        pub mod v1;
     }
 }

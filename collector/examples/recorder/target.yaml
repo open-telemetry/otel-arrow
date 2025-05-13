@@ -44,22 +44,18 @@ service:
   pipelines:
     traces/first:
       receivers: [otelarrow/first]
-      processors: []
       exporters: [debug/first, file/first_traces, otelarrow/forward]
     metrics/first:
       receivers: [otelarrow/first]
-      processors: []
       exporters: [debug/first, file/first_metrics, otelarrow/forward]
 
     traces/second:
       receivers: [otelarrow/second]
-      processors: []
       exporters: [debug/second, file/second_traces]
     metrics/second:
       receivers: [otelarrow/second]
-      processors: []
       exporters: [debug/second, file/second_metrics]
-      
+
   telemetry:
     resource:
       "service.name": "data-recorder"

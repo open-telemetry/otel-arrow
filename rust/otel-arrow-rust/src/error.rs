@@ -11,7 +11,7 @@
 // limitations under the License.
 
 use crate::otlp::attributes::store::AttributeValueType;
-use crate::otlp::metric::MetricType;
+use crate::otlp::metrics::MetricType;
 use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
 use num_enum::TryFromPrimitiveError;
@@ -96,9 +96,13 @@ pub enum Error {
         location: Location,
     },
 
-    #[snafu(display("Invalid List array data type, expect {}, actual {}", expect, actual))]
+    #[snafu(display(
+        "Invalid List array data type, expect one of {:?}, actual {}",
+        expect_oneof,
+        actual
+    ))]
     InvalidListArray {
-        expect: DataType,
+        expect_oneof: Vec<DataType>,
         actual: DataType,
         #[snafu(implicit)]
         location: Location,
@@ -133,8 +137,38 @@ pub enum Error {
         location: Location,
     },
 
+    #[snafu(display("Log record not found"))]
+    LogRecordNotFound {
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     #[snafu(display("Metric record not found"))]
     MetricRecordNotFound {
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display(
+        "Unsupported dictionary key type, expect one of {:?}, actual {}",
+        expect_oneof,
+        actual
+    ))]
+    UnsupportedDictionaryKeyType {
+        expect_oneof: Vec<DataType>,
+        actual: DataType,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display(
+        "Unsupported dictionary value type. expect {:?}, actual {}",
+        expect_oneof,
+        actual
+    ))]
+    UnsupportedDictionaryValueType {
+        expect_oneof: Vec<DataType>,
+        actual: DataType,
         #[snafu(implicit)]
         location: Location,
     },
