@@ -236,23 +236,6 @@ regardless of your experience level. Whether you're a seasoned OpenTelemetry
 developer, just starting your journey, or simply curious about the work we do,
 you're more than welcome to participate!
 
-[Maintainers](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer)
-([@open-telemetry/arrow-maintainers](https://github.com/orgs/open-telemetry/teams/arrow-maintainers)):
-
-- [Joshua MacDonald](https://github.com/jmacd), Microsoft
-- [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
-- [Drew Relmas](https://github.com/drewrelmas), Microsoft
-
-[Approvers](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver)
-([@open-telemetry/arrow-approvers](https://github.com/orgs/open-telemetry/teams/arrow-approvers)):
-
-- [Alex Boten](https://github.com/codeboten), Honeycomb
-- [Moh Osman](https://github.com/moh-osman3), ServiceNow
-
-### Thanks to all the people who have contributed
-
-[![contributors](https://contributors-img.web.app/image?repo=open-telemetry/otel-arrow)](https://github.com/open-telemetry/otel-arrow/graphs/contributors)
-
 ## References
 
 - [OpenTelemetry Project](https://opentelemetry.io/)
