@@ -17,7 +17,7 @@ receivers:
             max_connection_age_grace: 10s
 
 exporters:
-  debug:      
+  debug:
 
   otlphttp:
     # You can use an HTTP listener on port 5001 to see the headers
@@ -43,17 +43,12 @@ service:
   pipelines:
     traces:
       receivers: [otelarrow]
-
-      # Note there is no need to re-apply the batch processor on the
-      # SaaS-side of a bridge.
-      processors: []
       exporters: [debug, otlphttp]
 
     metrics:
       receivers: [otelarrow]
-      processors: []
       exporters: [debug, otlphttp]
-      
+
   telemetry:
     metrics:
       address: 127.0.0.1:8889

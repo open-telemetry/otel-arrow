@@ -48,5 +48,9 @@ coverage.html
 # Benchmarks output
 /output/
 
+# PerfTest pipeline output
+/tools/pipeline_perf_test/results/
+
 # Collector test binary
 collector/cmd/otelarrowcol/otelarrowcol
+tools/pipeline_perf_test/load_generator/loadgen-manifest.yaml.tmp

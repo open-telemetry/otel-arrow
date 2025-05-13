@@ -5,6 +5,6 @@
 /// gRPC service implementation
 pub mod grpc;
 /// Generated protobuf files
-pub mod grpc_stubs;
+pub mod proto;
 /// Implementation of OTLP Receiver that implements the receiver trait
 pub mod otlp_receiver;

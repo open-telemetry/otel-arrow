@@ -26,7 +26,7 @@ extensions:
         from_context: Authorization
   # Basicauth uses the Authorization property.
   basicauth:
-    htpasswd: 
+    htpasswd:
       inline: |
         testuser:testpw
 
@@ -73,19 +73,14 @@ exporters:
     auth:
       authenticator: headers_setter
 
-  debug:      
+  debug:
     verbosity: normal
-
-processors:
-  # Note we have omitted a batch processor because the batch processor
-  # does not pass through per-request metadata.
 
 service:
   extensions: [headers_setter, basicauth]
   pipelines:
     traces:
       receivers: [otelarrow/standard]
-      processors: []
       exporters: [debug, otelarrow/arrow]
 
   telemetry:
