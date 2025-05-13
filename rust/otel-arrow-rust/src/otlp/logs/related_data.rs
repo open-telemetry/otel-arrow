@@ -3,8 +3,8 @@
 
 use crate::decode::record_message::RecordMessage;
 use crate::error;
-use crate::opentelemetry::ArrowPayloadType;
 use crate::otlp::attributes::store::Attribute16Store;
+use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 #[derive(Default)]
 pub struct RelatedData {

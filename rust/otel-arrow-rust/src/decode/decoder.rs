@@ -12,10 +12,10 @@
 
 use crate::decode::record_message::RecordMessage;
 use crate::error;
-use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, BatchArrowRecords};
 use crate::otlp::logs::logs_from;
 use crate::otlp::logs::related_data::RelatedData as LogsRelatedData;
 use crate::otlp::metrics::{metrics_from, related_data::RelatedData as MetricsRelatedData};
+use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, BatchArrowRecords};
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
 use arrow::array::RecordBatch;
@@ -117,7 +117,6 @@ impl Consumer {
                 let metric_rec_idx = metric_record.context(error::MetricRecordNotFoundSnafu)?;
                 metrics_from(&record_message[metric_rec_idx].record, &mut related_data)
             }
-            // TODO add support for MultivariateMetrics
             main_record_type => error::UnsupportedPayloadTypeSnafu {
                 actual: main_record_type,
             }
