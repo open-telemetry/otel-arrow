@@ -1,7 +1,8 @@
-use crate::proto::opentelemery::collector::{
+use crate::proto::opentelemetry::collector::{
     logs::v1::{logs_service_server::LogsService, ExportLogsServiceRequest, ExportLogsServiceResponse}, 
     metrics::v1::{metrics_service_server::MetricsService, ExportMetricsServiceRequest, ExportMetricsServiceResponse}, 
-    trace::v1::{trace_service_server::TraceService, ExportTraceServiceRequest, ExportTraceServiceResponse}};
+    trace::v1::{trace_service_server::TraceService, ExportTraceServiceRequest, ExportTraceServiceResponse},
+    profiles::v1development::{profiles_service_server::ProfilesService, ExportProfilesServiceRequest, ExportProfilesServiceResponse}};
 
 use otap_df_engine::receiver::{EffectHandlerTrait, SendEffectHandler};
 use tonic::{Request, Response, Status};
@@ -38,6 +39,18 @@ pub struct TraceServiceImpl {
 
 impl TraceServiceImpl {
     /// Create a TraceServiceImpl with a sendable Effect Handler
+    pub fn new(effect_handler: SendEffectHandler<OTLPRequest>) -> Self {
+        Self { effect_handler }
+    }
+}
+
+/// struct that implements the Profile Service trait
+pub struct ProfilesServiceImpl {
+    effect_handler: SendEffectHandler<OTLPRequest>,
+}
+
+impl ProfilesServiceImpl {
+    /// create a ProfileServiceImpl with a sendable Effect Handler
     pub fn new(effect_handler: SendEffectHandler<OTLPRequest>) -> Self {
         Self { effect_handler }
     }
@@ -82,14 +95,30 @@ impl TraceService for TraceServiceImpl {
     }
 }
 
+#[tonic::async_trait]
+impl ProfilesService for ProfilesServiceImpl {
+    async fn export(
+        &self,
+        request: Request<ExportProfilesServiceRequest>,
+    ) -> Result<Response<ExportProfilesServiceResponse>, Status> {
+        _ = self.effect_handler.send_message(OTLPRequest::Profiles(request.into_inner())).await;
+        Ok(Response::new(ExportProfilesServiceResponse {
+            partial_success: None,
+        }))
+    }
+}
+
+
 /// Enum to represent received OTLP requests.
 #[derive(Debug, Clone)]
 pub enum OTLPRequest {
-    /// Logs Data
+    /// Logs Object
     Logs(ExportLogsServiceRequest),
-    /// Metrics Data
+    /// Metrics Object
     Metrics(ExportMetricsServiceRequest),
-    /// Traces/Span Data
+    /// Traces/Span Object
     Traces(ExportTraceServiceRequest),
+    /// Profiles Object
+    Profiles(ExportProfilesServiceRequest),
 }
 

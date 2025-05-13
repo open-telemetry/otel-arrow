@@ -5,10 +5,11 @@
 //! ToDo implement Ack and Nack control message, wait for receiver node to receive a Ack control message then the service can send a response back 
 //! ToDo implement config control message to handle live changing configuration
 
-use crate::grpc::{LogsServiceImpl, MetricsServiceImpl, TraceServiceImpl, OTLPRequest};
-use crate::grpc_stubs::proto::collector::{logs::v1::logs_service_server::LogsServiceServer,
+use crate::grpc::{LogsServiceImpl, MetricsServiceImpl, TraceServiceImpl, ProfilesServiceImpl, OTLPRequest};
+use crate::proto::opentelemetry::collector::{logs::v1::logs_service_server::LogsServiceServer,
     metrics::v1::metrics_service_server::MetricsServiceServer,
-    trace::v1::trace_service_server::TraceServiceServer};
+    trace::v1::trace_service_server::TraceServiceServer,
+    profiles::v1development::profiles_service_server::ProfilesServiceServer};
 use otap_df_engine::receiver::{EffectHandlerTrait, Receiver, ControlMsgChannel, SendEffectHandler};
 use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
@@ -65,10 +66,12 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
             let logs_service = LogsServiceImpl::new(effect_handler.clone());
             let metrics_service = MetricsServiceImpl::new(effect_handler.clone());
             let trace_service = TraceServiceImpl::new(effect_handler.clone());
+            let profiles_service = ProfilesServiceImpl::new(effect_handler.clone());
 
             let logs_service_server;
             let metrics_service_server;
             let trace_service_server;
+            let profiles_service_server;
 
             // check if a compression method was set
             if let Some(encoding) = compression_encoding {
@@ -76,11 +79,13 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
                 logs_service_server = LogsServiceServer::new(logs_service).send_compressed(encoding).accept_compressed(encoding);
                 metrics_service_server = MetricsServiceServer::new(metrics_service).send_compressed(encoding).accept_compressed(encoding);
                 trace_service_server = TraceServiceServer::new(trace_service).send_compressed(encoding).accept_compressed(encoding);
+                profiles_service_server = ProfilesServiceServer::new(profiles_service).send_compressed(encoding).accept_compressed(encoding);
             } else {
                 // define servicees without compression
                 logs_service_server = LogsServiceServer::new(logs_service);
                 metrics_service_server = MetricsServiceServer::new(metrics_service);
                 trace_service_server = TraceServiceServer::new(trace_service);
+                profiles_service_server = ProfilesServiceServer::new(profiles_service);
             }
             
             tokio::select! {
@@ -107,6 +112,7 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
                 .add_service(logs_service_server)
                 .add_service(metrics_service_server)
                 .add_service(trace_service_server)
+                .add_service(profiles_service_server)
                 .serve_with_incoming(&mut listener_stream)=> {
                     if let Err(e) = result {
                         // Report receiver error
@@ -129,10 +135,11 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
 mod tests {
     use crate::grpc::OTLPRequest;
     use crate::otlp_receiver::OTLPReceiver;
-    use crate::grpc_stubs::proto::collector::{
+    use crate::proto::opentelemetry::collector::{
         logs::v1::{logs_service_client::LogsServiceClient, ExportLogsServiceRequest}, 
         metrics::v1::{metrics_service_client::MetricsServiceClient, ExportMetricsServiceRequest}, 
-        trace::v1::{trace_service_client::TraceServiceClient, ExportTraceServiceRequest}};
+        trace::v1::{trace_service_client::TraceServiceClient, ExportTraceServiceRequest},
+        profiles::v1development::{profiles_service_client::ProfilesServiceClient, ExportProfilesServiceRequest}};
     use otap_df_engine::error::Error;
     use otap_df_engine::message::ControlMsg;
     use otap_df_engine::receiver::ReceiverWrapper;
@@ -164,6 +171,11 @@ mod tests {
                     .await
                     .expect("Failed to connect to server from Trace Service Client");
                 let _traces_response = traces_client.export(ExportTraceServiceRequest::default()).await.expect("Failed to receive response after sending Trace Request");
+
+                let mut profiles_client = ProfilesServiceClient::connect(grpc_endpoint.clone())
+                    .await
+                    .expect("Failed to connect to server from Profile Service Client");
+                let _profiles_response = profiles_client.export(ExportProfilesServiceRequest::default()).await.expect("Failed to receive response after sending Profile Request");
 
                 // Finally, send a Shutdown event to terminate the receiver.
                 ctx.send_shutdown(Duration::from_millis(0), "Test")
@@ -212,12 +224,19 @@ mod tests {
                 let _expected_trace_message =  ExportTraceServiceRequest::default();
                 assert!(matches!(traces_received, _expected_trace_message));
 
+                let profiles_received = timeout(Duration::from_secs(3), ctx.recv())
+                    .await
+                    .expect("Timed out waiting for message")
+                    .expect("No message received");
+                let _expected_profile_message = ExportProfilesServiceRequest::default();
+                assert!(matches!(profiles_received, _expected_profile_message));
+
             })
         }
     }
 
     #[test]
-    fn test_receiver_with_send_effect_handler() {
+    fn test_otlp_receiver() {
         let test_runtime = TestRuntime::new();
 
         // addr and port for the server to run at
