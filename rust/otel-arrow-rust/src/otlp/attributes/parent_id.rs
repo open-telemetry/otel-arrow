@@ -52,5 +52,5 @@ pub enum ParentIdEncoding {
     /// ParentIdDeltaGroupEncoding stores the parent ID as a delta from the
     /// previous parent ID in the same group. A group is defined by the
     /// combination Key and Value.
-    ParentIdDeltaGroupEncoding = 2, // ALWAYS USED
+    ParentIdDeltaGroupEncoding = 2,
 }
