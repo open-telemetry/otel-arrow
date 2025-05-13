@@ -26,4 +26,4 @@ component_management:
     - component_id: "otel_arrow_go"
       name: "otel-arrow-go"
       paths:
-        - "go/pkg/otel/"
+        - "go/"
