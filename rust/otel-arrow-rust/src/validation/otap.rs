@@ -60,12 +60,12 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
 
         // Spawn a task to process incoming arrow records and convert them to OTLP
         tokio::spawn(async move {
-            let mut related_data = crate::otlp::related_data::RelatedData::default();
+            let mut related_data = crate::otlp::metrics::related_data::RelatedData::default();
 
             // Helper function to process a batch and send appropriate status
             async fn process_and_send(
                 batch: &BatchArrowRecords,
-                related_data: &mut crate::otlp::related_data::RelatedData,
+                related_data: &mut crate::otlp::metrics::related_data::RelatedData,
                 receiver: &TestReceiver<ExportMetricsServiceRequest>,
                 tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
             ) -> Result<(), ()> {
@@ -145,7 +145,7 @@ impl ServiceOutputType for OTAPMetricsOutputType {
 /// Receives an Arrow batch and convert to OTLP.
 async fn process_arrow_metrics(
     batch: &BatchArrowRecords,
-    related_data: &mut crate::otlp::related_data::RelatedData,
+    related_data: &mut crate::otlp::metrics::related_data::RelatedData,
     receiver: &TestReceiver<ExportMetricsServiceRequest>,
 ) -> error::Result<()> {
     use crate::decode::record_message::RecordMessage;
@@ -177,7 +177,7 @@ async fn process_arrow_metrics(
         };
 
         // Convert Arrow payload to OTLP metrics
-        let otlp_metrics = crate::otlp::metric::metrics_from(&record_message.record, related_data)
+        let otlp_metrics = crate::otlp::metrics::metrics_from(&record_message.record, related_data)
             .context(error::OTelArrowSnafu)?;
 
         // Send this individual metrics item to the receiver

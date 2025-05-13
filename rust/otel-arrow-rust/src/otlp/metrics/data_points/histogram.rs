@@ -17,9 +17,9 @@ use crate::arrays::{
 };
 use crate::error;
 use crate::otlp::attributes::store::Attribute32Store;
-use crate::otlp::data_points::data_point_store::HistogramDataPointsStore;
-use crate::otlp::exemplar::ExemplarsStore;
-use crate::otlp::metric::AppendAndGet;
+use crate::otlp::metrics::AppendAndGet;
+use crate::otlp::metrics::data_points::data_point_store::HistogramDataPointsStore;
+use crate::otlp::metrics::exemplar::ExemplarsStore;
 use crate::schema::consts;
 use arrow::array::{Array, ArrayRef, ListArray, PrimitiveArray, RecordBatch};
 use arrow::datatypes::{
