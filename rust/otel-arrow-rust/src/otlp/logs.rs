@@ -160,17 +160,13 @@ impl<'a> TryFrom<&'a StructArray> for LogBodyArrays<'a> {
         let column_accessor = StructColumnAccessor::new(body);
         Ok(Self {
             body,
-            value_type: column_accessor
-                .primitive_column(consts::ATTRIBUTE_TYPE)?
-                .context(error::ColumnNotFoundSnafu {
-                    name: consts::ATTRIBUTE_TYPE,
-                })?,
-            str: column_accessor.string_column(consts::ATTRIBUTE_STR)?,
-            int: column_accessor.primitive_column(consts::ATTRIBUTE_INT)?,
-            double: column_accessor.primitive_column(consts::ATTRIBUTE_DOUBLE)?,
-            bool: column_accessor.bool_column(consts::ATTRIBUTE_BOOL)?,
-            bytes: column_accessor.byte_array_column(consts::ATTRIBUTE_BYTES)?,
-            _ser: column_accessor.byte_array_column(consts::ATTRIBUTE_SER)?,
+            value_type: column_accessor.primitive_column(consts::ATTRIBUTE_TYPE)?,
+            str: column_accessor.string_column_op(consts::ATTRIBUTE_STR)?,
+            int: column_accessor.primitive_column_op(consts::ATTRIBUTE_INT)?,
+            double: column_accessor.primitive_column_op(consts::ATTRIBUTE_DOUBLE)?,
+            bool: column_accessor.bool_column_op(consts::ATTRIBUTE_BOOL)?,
+            bytes: column_accessor.byte_array_column_op(consts::ATTRIBUTE_BYTES)?,
+            _ser: column_accessor.byte_array_column_op(consts::ATTRIBUTE_SER)?,
         })
     }
 }

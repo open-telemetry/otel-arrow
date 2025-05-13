@@ -178,7 +178,7 @@ impl_downcast!(
 
 /// Get reference to array that the caller requires to be in the record batch.
 /// If the column is not in the record batch, returns `ColumnNotFound` error
-fn get_required_array<'a>(
+pub fn get_required_array<'a>(
     record_batch: &'a RecordBatch,
     column_name: &str,
 ) -> error::Result<&'a ArrayRef> {
@@ -508,6 +508,16 @@ impl<'a> StructColumnAccessor<'a> {
     pub fn primitive_column<T: ArrowPrimitiveType + 'static>(
         &self,
         column_name: &str,
+    ) -> error::Result<&'a PrimitiveArray<T>> {
+        self.primitive_column_op(column_name)?
+            .with_context(|| error::ColumnNotFoundSnafu {
+                name: column_name.to_string(),
+            })
+    }
+
+    pub fn primitive_column_op<T: ArrowPrimitiveType + 'static>(
+        &self,
+        column_name: &str,
     ) -> error::Result<Option<&'a PrimitiveArray<T>>> {
         self.inner
             .column_by_name(column_name)
@@ -523,7 +533,7 @@ impl<'a> StructColumnAccessor<'a> {
             .transpose()
     }
 
-    pub fn bool_column(&self, column_name: &str) -> error::Result<Option<&'a BooleanArray>> {
+    pub fn bool_column_op(&self, column_name: &str) -> error::Result<Option<&'a BooleanArray>> {
         self.inner
             .column_by_name(column_name)
             .map(|arr| {
@@ -538,7 +548,7 @@ impl<'a> StructColumnAccessor<'a> {
             .transpose()
     }
 
-    pub fn string_column(
+    pub fn string_column_op(
         &self,
         column_name: &str,
     ) -> error::Result<Option<StringArrayAccessor<'a>>> {
@@ -548,7 +558,7 @@ impl<'a> StructColumnAccessor<'a> {
             .transpose()
     }
 
-    pub fn byte_array_column(
+    pub fn byte_array_column_op(
         &self,
         column_name: &str,
     ) -> error::Result<Option<ByteArrayAccessor<'a>>> {
