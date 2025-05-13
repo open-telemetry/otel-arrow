@@ -11,7 +11,7 @@
 // limitations under the License.
 
 use crate::otlp::attributes::store::AttributeValueType;
-use crate::otlp::metric::MetricType;
+use crate::otlp::metrics::MetricType;
 use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
 use num_enum::TryFromPrimitiveError;
@@ -133,6 +133,12 @@ pub enum Error {
 
     #[snafu(display("Batch is empty"))]
     EmptyBatch {
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Log record not found"))]
+    LogRecordNotFound {
         #[snafu(implicit)]
         location: Location,
     },

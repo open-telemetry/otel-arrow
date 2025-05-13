@@ -27,6 +27,7 @@ def create_log_record():
 def main():
     parser = argparse.ArgumentParser(description="Loadgen for OTLP logs")
     parser.add_argument("--duration", type=int, default=15, help="Duration in seconds (default: 15)")
+    parser.add_argument("--batch-size", type=int, default=100, help="Number of logs per batch (default: 100)")
     args = parser.parse_args()
 
     endpoint = os.getenv("OTLP_ENDPOINT", "localhost:4317")
@@ -34,14 +35,12 @@ def main():
     stub = logs_service_pb2_grpc.LogsServiceStub(channel)
 
     end_time = time.time() + args.duration
-    start_time = time.time()
 
     sent = 0
+    failed = 0
     while time.time() < end_time:
-        log_record = create_log_record()
-        scope_logs = logs_pb2.ScopeLogs(
-            log_records=[log_record]
-        )
+        log_batch = [create_log_record() for _ in range(args.batch_size)]
+        scope_logs = logs_pb2.ScopeLogs(log_records=log_batch)
         resource_logs = logs_pb2.ResourceLogs(
             scope_logs=[scope_logs]
         )
@@ -50,12 +49,13 @@ def main():
         )
         try:
             stub.Export(request)
-            sent += 1
+            sent += args.batch_size
         except Exception as e:
-            print(f"Failed to send log: {e}")
+            failed += args.batch_size
+            print(f"Failed to send log batch: {e}")
 
-    # Print in a format that's easy for the orchestrator to parse
     print(f"LOADGEN_LOGS_SENT: {sent}")
+    print(f"LOADGEN_LOGS_FAILED: {failed}")
 
 if __name__ == "__main__":
     main()
