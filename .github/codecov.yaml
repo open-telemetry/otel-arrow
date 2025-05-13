@@ -1,0 +1,29 @@
+comment:
+  layout: "header, diff, flags, components"
+
+component_management:
+  individual_components:
+    - component_id: "otap_dataflow"
+      name: "otap-dataflow"
+      paths:
+        - "rust/otap-dataflow/"
+    - component_id: "beaubourg"
+      name: "beaubourg"
+      paths:
+        - "rust/beaubourg/"
+    - component_id: "otel_arrow_rust"
+      name: "otel-arrow-rust"
+      paths:
+        - "rust/otel-arrow-rust/"
+    - component_id: "query_abstraction"
+      name: "query_abstraction"
+      paths:
+        - "rust/experimental/query_abstraction/"
+    - component_id: "syslog_cef_receivers"
+      name: "syslog_cef_receivers"
+      paths:
+        - "rust/experimental/syslog-cef-receivers/"
+    - component_id: "otel_arrow_go"
+      name: "otel-arrow-go"
+      paths:
+        - "go/"

@@ -8,7 +8,7 @@ exporters:
   debug:
     verbosity: detailed
   otlp:
-    endpoint: fake-backend:5317
+    endpoint: backend-service:5317
     tls:
       insecure: true
 

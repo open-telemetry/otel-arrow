@@ -31,9 +31,20 @@ jobs:
             pip install -r tools/pipeline_perf_test/orchestrator/requirements.txt
             pip install -r tools/pipeline_perf_test/load_generator/requirements.txt
 
-        - name: Run pipeline performance tests
+        - name: Run pipeline performance test with default configuration
           run: |
             cd tools/pipeline_perf_test
-            python orchestrator/orchestrator.py --collector-config system_under_test/otel-collector/collector-config.yaml --duration 30
+            python orchestrator/orchestrator.py --collector-config system_under_test/otel-collector/collector-config.yaml --duration 30 --results-dir ./results/default
+
+        - name: Run pipeline performance test with batch processor configuration
+          run: |
+            cd tools/pipeline_perf_test
+            python orchestrator/orchestrator.py --collector-config system_under_test/otel-collector/collector-config-with-batch-processor.yaml --duration 30 --results-dir ./results/batch-processor
+
+        - name: Upload performance test results
+          uses: actions/upload-artifact@v4
+          with:
+            name: performance-test-results
+            path: tools/pipeline_perf_test/results/
 
 
