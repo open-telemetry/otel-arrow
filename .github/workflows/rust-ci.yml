@@ -31,10 +31,12 @@ jobs:
           toolchain: stable
       - name: install cargo-llvm-cov
         uses: taiki-e/install-action@5075451c95db43b063f20f0c8fef04c04d5bf0ba # cargo-llvm-cov
+      - name: install nextest
+        uses: taiki-e/install-action@nextest
       - name: Build the test collector
         run: make otelarrowcol
       - name: Run tests with coverage
-        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
         working-directory: ./rust/${{ matrix.folder }}
       - name: Upload to codecov.io
         uses: codecov/codecov-action@ad3126e916f78f00edff4ed0317cf185271ccc2d # v5.4.2
