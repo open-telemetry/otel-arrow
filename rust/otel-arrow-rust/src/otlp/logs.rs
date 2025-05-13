@@ -288,6 +288,13 @@ pub fn logs_from(
         if let Some(body_val) = logs_arrays.body.value_at(idx) {
             current_log_record.body = Some(body_val?)
         }
+
+        if let Some(attrs) = related_data
+            .log_record_attr_map_store
+            .attribute_by_id(delta_id)
+        {
+            current_log_record.attributes = attrs.to_vec();
+        }
     }
 
     Ok(logs)
