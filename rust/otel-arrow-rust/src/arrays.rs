@@ -462,8 +462,7 @@ where
     K: ArrowDictionaryKeyType,
     V: Array + NullableArrayAccessor + 'static,
 {
-    pub fn new(a: &'a DictionaryArray<K>) -> Self {
-        let dict = a.as_any().downcast_ref::<DictionaryArray<K>>().unwrap();
+    pub fn new(dict: &'a DictionaryArray<K>) -> Self {
         let value = dict.values().as_any().downcast_ref::<V>().unwrap();
         Self { inner: dict, value }
     }
