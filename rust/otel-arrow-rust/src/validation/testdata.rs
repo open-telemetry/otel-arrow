@@ -88,13 +88,20 @@ pub mod logs {
     pub fn create_single_request() -> ExportLogsServiceRequest {
         let timestamp = 1619712000000000000u64;
 
-        let log_record = LogRecord::build(timestamp, SeverityNumber::Info, "test_log")
+        // TODO after we support event_name, set this to non-empty string
+        // to ensure we correctly decode it
+        // https://github.com/open-telemetry/otel-arrow/issues/422
+        let event_name = "";
+
+        let log_record = LogRecord::build(timestamp, SeverityNumber::Info, event_name)
             .severity_text("INFO")
             .body(AnyValue::new_string(format!("Test log message")))
             .attributes(vec![KeyValue::new(
                 "test.attribute",
                 AnyValue::new_string("test value"),
             )])
+            .trace_id((0u8..16u8).into_iter().collect::<Vec<u8>>())
+            .span_id((0u8..8u8).into_iter().collect::<Vec<u8>>())
             .finish();
 
         ExportLogsServiceRequest::new(vec![

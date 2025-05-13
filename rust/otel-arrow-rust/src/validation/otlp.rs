@@ -297,8 +297,17 @@ mod tests {
             // There are some corrections to the test logic that will need to be made before
             // this test will pass
             // https://github.com/open-telemetry/otel-arrow/issues/392
-            Some("ColumnNotFound"),
+            Some("InvalidArgument"),
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn test_otap_logs_single_request() {
+        run_single_round_trip_test::<OTLPLogsInputType, OTAPLogsOutputType, _>(
+            testdata::logs::create_single_request,
+            None, // Expect success
+        )
+        .await
     }
 }

@@ -4,9 +4,6 @@
 receivers:
   otelarrow:
 
-processors:
-  concurrentbatch:
-
 exporters:
   otelarrow:
     endpoint: 127.0.0.1:8100
@@ -23,15 +20,12 @@ service:
   pipelines:
     traces:
       receivers: [otelarrow]
-      processors: [concurrentbatch]
       exporters: [otelarrow]
     metrics:
       receivers: [otelarrow]
-      processors: [concurrentbatch]
       exporters: [otelarrow]
     logs:
       receivers: [otelarrow]
-      processors: [concurrentbatch]
       exporters: [otelarrow]
 
   telemetry:

@@ -11,8 +11,8 @@
 // limitations under the License.
 
 use crate::arrays::{
-    Int64ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor, StringArrayAccessor,
-    get_binary_array_opt, get_bool_array_opt, get_f64_array_opt, get_u8_array,
+    ByteArrayAccessor, Int64ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor,
+    StringArrayAccessor, get_bool_array_opt, get_f64_array_opt, get_u8_array,
 };
 use crate::error;
 use crate::otlp::attributes::parent_id::ParentId;
@@ -80,22 +80,17 @@ where
             .transpose()?;
         let value_type_arr = get_u8_array(rb, consts::ATTRIBUTE_TYPE)?;
 
-        let value_str_arr = StringArrayAccessor::try_new(
-            rb.column_by_name(consts::ATTRIBUTE_STR)
-                .context(error::ColumnNotFoundSnafu {
-                    name: consts::ATTRIBUTE_STR,
-                })?,
-        )?;
-
-        let value_int_arr = Int64ArrayAccessor::try_new(
-            rb.column_by_name(consts::ATTRIBUTE_INT)
-                .context(error::ColumnNotFoundSnafu {
-                    name: consts::ATTRIBUTE_STR,
-                })?,
-        )?;
+        let value_str_arr = StringArrayAccessor::try_new_for_column(rb, consts::ATTRIBUTE_STR)?;
+        let value_int_arr = rb
+            .column_by_name(consts::ATTRIBUTE_INT)
+            .map(Int64ArrayAccessor::try_new)
+            .transpose()?;
         let value_double_arr = get_f64_array_opt(rb, consts::ATTRIBUTE_DOUBLE)?;
         let value_bool_arr = get_bool_array_opt(rb, consts::ATTRIBUTE_BOOL)?;
-        let value_bytes_arr = get_binary_array_opt(rb, consts::ATTRIBUTE_BYTES)?;
+        let value_bytes_arr = rb
+            .column_by_name(consts::ATTRIBUTE_BYTES)
+            .map(ByteArrayAccessor::try_new)
+            .transpose()?;
 
         for idx in 0..rb.num_rows() {
             let key = key_arr.value_at_or_default(idx);

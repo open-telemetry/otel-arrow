@@ -27,22 +27,4 @@ mod validation;
 pub mod pdata;
 pub mod proto;
 
-#[path = ""]
-pub mod opentelemetry {
-    pub use proto::*;
-    pub mod proto {
-        pub use crate::opentelemetry::proto::arrow::arrow_metrics_service_client as metrics_client;
-        pub use crate::opentelemetry::proto::arrow::arrow_metrics_service_server as metrics_server;
-        pub use crate::opentelemetry::proto::arrow::{
-            ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus,
-        };
-        pub use metrics_client::ArrowMetricsServiceClient;
-        pub use metrics_server::{ArrowMetricsService, ArrowMetricsServiceServer};
-
-        #[allow(clippy::all)]
-        #[path = "opentelemetry.proto.experimental.arrow.v1.rs"]
-        pub(crate) mod arrow;
-    }
-}
-
 pub use decode::decoder::Consumer;
