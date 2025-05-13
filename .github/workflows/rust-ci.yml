@@ -29,10 +29,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # latest on /master branch as of 2025-04-02
         with:
           toolchain: stable
-      - name: Install coverage tools
-        run: |
-          cargo install cargo-llvm-cov --locked
-          cargo install cargo-nextest --locked
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@5075451c95db43b063f20f0c8fef04c04d5bf0ba # v2.0.0
+        with:
+          tool: cargo-llvm-cov
+          version: latest
+          cache: true
+
+      - name: Install cargo-nextest
+        run: cargo install cargo-nextest --locked
       - name: Run tests with coverage
         run: cargo llvm-cov nextest --all-features --lcov --output-path lcov.info
         working-directory: ./rust/${{ matrix.folder }}
