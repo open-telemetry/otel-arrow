@@ -149,6 +149,12 @@ pub struct ValidationPhase<PData> {
     counters: CtrlMsgCounters,
 
     pdata_receiver: PDataReceiver<PData>,
+
+    /// Join handle for the running the receiver task
+    run_receiver_handle: tokio::task::JoinHandle<()>,
+
+    /// Join handle for the running the test task
+    run_test_handle: tokio::task::JoinHandle<()>,
 }
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
@@ -197,7 +203,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         Fut: Future<Output = ()> + 'static,
     {
         let pdata_receiver = self.receiver.take_pdata_receiver();
-        let _ = self.local_tasks.spawn_local(async move {
+        let run_receiver_handle = self.local_tasks.spawn_local(async move {
             self.receiver
                 .start()
                 .await
@@ -207,7 +213,7 @@ impl<PData: Debug + 'static> TestPhase<PData> {
         let context = TestContext {
             control_sender: self.control_sender,
         };
-        let _ = self.local_tasks.spawn_local(async move {
+        let run_test_handle = self.local_tasks.spawn_local(async move {
             f(context).await;
         });
         ValidationPhase {
@@ -215,6 +221,8 @@ impl<PData: Debug + 'static> TestPhase<PData> {
             local_tasks: self.local_tasks,
             counters: self.counters,
             pdata_receiver,
+            run_receiver_handle,
+            run_test_handle,
         }
     }
 }
@@ -244,6 +252,14 @@ impl<PData> ValidationPhase<PData> {
 
         // First run all the spawned tasks to completion
         self.rt.block_on(self.local_tasks);
+
+        self.rt
+            .block_on(self.run_receiver_handle)
+            .expect("Receiver task failed");
+
+        self.rt
+            .block_on(self.run_test_handle)
+            .expect("Test task failed");
 
         // Then run the validation future with the test context
         self.rt.block_on(future_fn(context))

@@ -28,6 +28,9 @@ fn prost_cfg() -> prost_build::Config {
     // doctests and clippy wants to checks them.
     let mut cfg = prost_build::Config::default();
     cfg.disable_comments(["."]);
+    // Disable prettyplease, otherwise 'cargo fmt' will reformat
+    // compared with 'cargo build'.
+    cfg.format(false);
     cfg
 }
 
