@@ -221,7 +221,8 @@ mod tests {
             OTLPExporter::new(grpc_endpoint, None),
             test_runtime.config(),
         );
-        run_mock_server(sender: sender, listening_addr: addr, shutdown_signal: shutdown_receiver);
+        let server_handle = run_mock_server(sender, listening_addr, shutdown_receiver);
+
         test_runtime
             .set_exporter(exporter)
             .run_test(scenario(receiver));

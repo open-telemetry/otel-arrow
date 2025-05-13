@@ -94,15 +94,15 @@ impl TraceService for TraceServiceMock {
 }
 
 
-pub fn start_mock_server<T>(sender: Sender<OTLPRequest>, listening_addr: SocketAddr, shutdown_signal: Receiver<T>) -> JoinHandle<Result<(), dyn Error>> {
+pub fn start_mock_server<T: Send + 'static>(sender: Sender<OTLPRequest>, listening_addr: SocketAddr, shutdown_signal: Receiver<T>) -> JoinHandle<Result<(), Box<dyn Error + Send + Sync>>>{
     let mock_logs_service = LogsServiceServer::new(LogsServiceMock::new(sender.clone()));
     let mock_metrics_service = MetricsServiceServer::new(MetricsServiceMock::new(sender.clone()));
     let mock_trace_service = TraceServiceServer::new(TraceServiceMock::new(sender.clone()));
     tokio::spawn(async move {
         Server::builder().add_service(mock_logs_service).add_service(mock_metrics_service).add_service(mock_trace_service).serve_with_shutdown(listening_addr, async {
             // Wait for the shutdown signal
-            shutdown_signal.await.ok();
-        }).await
+            drop(shutdown_signal.await.ok());
+        }).await.map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
     })
     // start server in the background 
 }
