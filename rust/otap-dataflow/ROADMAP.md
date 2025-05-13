@@ -26,7 +26,7 @@ significant changes.
 - [ ] Documentation generation
 - [ ] Continuous benchmarking and performance tracking
   - [ ] Comparison with Go Collector
-  
+
 ### Pipeline Engine Foundations (phase 1)
 
 - Channels
@@ -87,7 +87,7 @@ significant changes.
 
 ## Completed Milestones
 
-- ✅ Project structure setup and xtask to check project conformity
+- :white_check_mark: Project structure setup and xtask to check project conformity
 
 ---
 

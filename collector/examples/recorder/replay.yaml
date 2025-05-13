@@ -13,7 +13,7 @@ receivers:
   file/first_traces:
     path: "first.traces.json"
     throttle: 0
-        
+
 exporters:
   otelarrow/forward:
     endpoint: 127.0.0.1:8082
@@ -39,22 +39,18 @@ service:
   pipelines:
     traces/first:
       receivers: [file/first_traces]
-      processors: []
       exporters: [debug/first, otelarrow/forward]
     metrics/first:
       receivers: [file/first_metrics]
-      processors: []
       exporters: [debug/first, otelarrow/forward]
 
     traces/second:
       receivers: [otelarrow/second]
-      processors: []
       exporters: [debug/second, file/second_traces]
     metrics/second:
       receivers: [otelarrow/second]
-      processors: []
       exporters: [debug/second, file/second_metrics]
-      
+
   telemetry:
     resource:
       "service.name": "data-replayer"

@@ -2,24 +2,24 @@
 
 ## Introduction
 
-Welcome to the OpenTelemetry Protocol with Apache Arrow project! 🎉  
+Welcome to the OpenTelemetry Protocol with Apache Arrow project! :tada:
 This repository defines and supports Golang libraries for producing and
 consuming telemetry data streams using the OpenTelemetry Protocol with Apache
 Arrow.
 
 We value all contributions, whether big or small, and encourage you to join us
-in improving this project. If you have questions, don’t hesitate to reach out to
-the OpenTelemetry community—we’re here to help!
+in improving this project. If you have questions, don't hesitate to reach out to
+the OpenTelemetry community - we're here to help!
 
 ## Pre-requisites
 
 To work with this repository, you'll need:
 
 - **Go (Golang):** v1.18 or higher. [Installation
-  Guide](https://golang.org/doc/install)  
+  Guide](https://golang.org/doc/install)
 - **Protocol Buffer Compiler (protoc):** Required for regenerating gRPC
-  services. [Installation Guide](https://grpc.io/docs/protoc-installation/)  
-- **protoc-gen-go:** Install using:  
+  services. [Installation Guide](https://grpc.io/docs/protoc-installation/)
+- **protoc-gen-go:** Install using:
 
   ```shell
   go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28
@@ -181,6 +181,34 @@ to upgrade this repository is:
 3. Regenerate `otelarrowcol` via `make genotelarrowcol`
 4. Run `go work sync` to update the other modules with fresh dependencies.
 
+## OpenTelemetry-Arrow Team
+
+It takes a team to keep a repository like this functioning.  We use
+the OpenTelemetry the [Maintainer][MAINTAINERROLE] and
+[Approver][APPROVERROLE] roles to organize our work.
+
+The current [OpenTelemetry-Arrow maintainers
+(@open-telemetry/arrow-maintainers)][MAINTAINERS] are:
+
+- [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
+- [Joshua MacDonald](https://github.com/jmacd), Microsoft
+- [Drew Relmas](https://github.com/drewrelmas), Microsoft
+
+The current [OpenTelemetry-Arrow approvers
+(@open-telemetry/arrow-approvers)][APPROVERS] are:
+
+- [Lei Huang](https://github.com/v0y4g3r), Greptime
+- [Albert Lockett](https://github.com/albertlockett), F5
+
+The people who filled these roles in the past:
+
+- [Moh Osman](https://github.com/moh-osman3)
+- [Alex Boten](https://github.com/codeboten)
+
+Thanks to all the contributors!
+
+[![OpenTelemetry-Arrow contributors](https://contributors-img.web.app/image?repo=open-telemetry/otel-arrow)](https://github.com/open-telemetry/otel-arrow/graphs/contributors)
+
 [RELEASING.md]: ./RELEASING.md
 [OTCDOCS]: https://opentelemetry.io/docs/collector/
 [OTCGH]: https://github.com/open-telemetry/opentelemetry-collector
@@ -195,3 +223,7 @@ to upgrade this repository is:
     https://github.com/open-telemetry/opentelemetry-collector/receiver/otlpreceiver
 [OTLPEXPORTER]:
     https://github.com/open-telemetry/opentelemetry-collector/exporter/otlpexporter
+[APPROVERS]: https://github.com/orgs/open-telemetry/teams/arrow-approvers
+[MAINTAINERS]: https://github.com/orgs/open-telemetry/teams/arrow-maintainers
+[MAINTAINERROLE]: https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer
+[APPROVERROLE]: https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver

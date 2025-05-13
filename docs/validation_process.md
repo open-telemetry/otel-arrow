@@ -33,7 +33,7 @@ data. The `assert.Equiv` function implements this comparison.
 
 ![General validation process](./img/OTEL%20-%20validation%20process.png)
 
-## Encoding/Decoding of invalid data  
+## Encoding/Decoding of invalid data
 
 A generic process has been implemented to inject specific errors and data
 changes in the encoded data. For example, the existing process keep the Arrow
