@@ -8,7 +8,10 @@ pub mod message;
 pub mod processor;
 pub mod receiver;
 
-mod config;
+pub mod config;
 pub mod pipeline;
 #[cfg(test)]
 pub mod testing;
+pub mod local;
+pub mod shared;
+mod effect_handler;

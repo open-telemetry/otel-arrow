@@ -66,7 +66,7 @@ pub struct ProcessorConfig {
 /// Generic configuration for an exporter.
 pub struct ExporterConfig {
     /// Name of the exporter.
-    pub name: Rc<str>,
+    pub name: Cow<'static, str>,
     /// Configuration for control channel.
     pub control_channel: ControlChannelConfig,
     /// Configuration for input pdata channel.
@@ -111,9 +111,12 @@ impl ProcessorConfig {
 
 impl ExporterConfig {
     /// Creates a new exporter configuration with the given name and default channel capacity.
-    pub fn new(name: &str) -> Self {
+    pub fn new<T>(name: T) -> Self
+    where
+        T: Into<Cow<'static, str>>
+    {
         ExporterConfig {
-            name: Rc::from(name),
+            name: name.into(),
             control_channel: ControlChannelConfig {
                 capacity: DEFAULT_CONTROL_CHANNEL_CAPACITY,
             },

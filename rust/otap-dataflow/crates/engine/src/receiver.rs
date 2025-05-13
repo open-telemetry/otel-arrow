@@ -37,304 +37,21 @@
 use crate::config::ReceiverConfig;
 use crate::error::Error;
 use crate::message::{ControlMsg, ControlSender, PDataReceiver};
-use async_trait::async_trait;
-use otap_df_channel::error::{RecvError, SendError};
 use otap_df_channel::mpsc;
-use std::borrow::Cow;
-use std::net::SocketAddr;
-use tokio::net::TcpListener;
-
-/// A trait for ingress receivers (!Send definition).
-///
-/// Receivers are responsible for accepting data from external sources and converting
-/// it into messages that can be processed by the pipeline.
-#[async_trait( ? Send)]
-pub trait ReceiverLocal<PData> {
-    /// Starts the receiver and begins processing incoming external data and control messages.
-    ///
-    /// The pipeline engine will call this function to start the receiver in a separate task.
-    /// Receivers are assigned their own dedicated task at pipeline initialization because their
-    /// primary function involves interacting with the external world, and the pipeline has no
-    /// prior knowledge of when these interactions will occur.
-    ///
-    /// The `Box<Self>` signature indicates that when this method is called, the receiver takes
-    /// exclusive ownership of its instance. This approach is necessary because a receiver cannot
-    /// yield control back to the pipeline engine - it must independently manage its inputs and
-    /// processing timing. The only way the pipeline engine can interact with the receiver after
-    /// starting it is through the control message channel.
-    ///
-    /// Receivers are expected to process both internal control messages and external sources and
-    /// use the EffectHandler to send messages to the next node(s) in the pipeline.
-    ///
-    /// Important note: Receivers are expected to process internal control messages in priority over
-    /// external data.
-    ///
-    /// # Parameters
-    ///
-    /// - `ctrl_chan`: A channel to receive control messages.
-    /// - `effect_handler`: A handler to perform side effects such as opening a listener.
-    ///
-    /// Each of these parameters is **NOT** [`Send`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Error`] if an unrecoverable error occurs.
-    ///
-    /// # Cancellation Safety
-    ///
-    /// This method should be cancellation safe and clean up any resources when dropped.
-    async fn start(
-        self: Box<Self>,
-        ctrl_chan: ControlChannelLocal,
-        effect_handler: EffectHandlerLocal<PData>,
-    ) -> Result<(), Error<PData>>;
-}
-
-/// A trait for ingress receivers (Send definition).
-///
-/// Receivers are responsible for accepting data from external sources and converting
-/// it into messages that can be processed by the pipeline.
-#[async_trait]
-pub trait ReceiverShared<PData> {
-    /// Similar to [`ReceiverLocal::start`], but operates in a Send context.
-    async fn start(
-        self: Box<Self>,
-        ctrl_chan: ControlChannelShared,
-        effect_handler: EffectHandlerShared<PData>,
-    ) -> Result<(), Error<PData>>;
-}
-
-/// A channel for receiving control messages (in a !Send environment).
-///
-/// This structure wraps a receiver end of a channel that carries [`ControlMsg`]
-/// values used to control the behavior of a receiver at runtime.
-pub struct ControlChannelLocal {
-    rx: mpsc::Receiver<ControlMsg>,
-}
-
-impl ControlChannelLocal {
-    /// Creates a new `ControlChannelLocal` with the given receiver.
-    #[must_use]
-    pub fn new(rx: mpsc::Receiver<ControlMsg>) -> Self {
-        Self { rx }
-    }
-
-    /// Asynchronously receives the next control message.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`RecvError`] if the channel is closed.
-    pub async fn recv(&self) -> Result<ControlMsg, RecvError> {
-        self.rx.recv().await
-    }
-}
-
-/// A channel for receiving control messages (in a Send environment).
-///
-/// This structure wraps a receiver end of a channel that carries [`ControlMsg`]
-/// values used to control the behavior of a receiver at runtime.
-pub struct ControlChannelShared {
-    rx: tokio::sync::mpsc::Receiver<ControlMsg>,
-}
-
-impl ControlChannelShared {
-    /// Creates a new `ControlChannelShared` with the given receiver.
-    #[must_use]
-    pub fn new(rx: tokio::sync::mpsc::Receiver<ControlMsg>) -> Self {
-        Self { rx }
-    }
-
-    /// Asynchronously receives the next control message.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`RecvError`] if the channel is closed.
-    pub async fn recv(&mut self) -> Result<ControlMsg, RecvError> {
-        self.rx.recv().await.ok_or(RecvError::Closed)
-    }
-}
-
-/// Common implementation across both `!Send` and `Send` effect handlers.
-#[derive(Clone)]
-struct EffectHandlerCore {
-    receiver_name: Cow<'static, str>,
-}
-
-impl EffectHandlerCore {
-    #[must_use]
-    fn receiver_name(&self) -> &str {
-        &self.receiver_name
-    }
-
-    /// Creates a non-blocking TCP listener on the given address with socket options defined by the
-    /// pipeline engine implementation. It's important for receiver implementer to create TCP
-    /// listeners via this method to ensure the scalability and the serviceability of the pipeline.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Error::IoError`] if any step in the process fails.
-    ///
-    /// ToDo: return a std::net::TcpListener instead of a tokio::net::tcp::TcpListener to avoid leaking our current dependency on Tokio.
-    fn tcp_listener<PData, S: AsRef<str>>(
-        &self,
-        addr: SocketAddr,
-        receiver_name: S,
-    ) -> Result<TcpListener, Error<PData>> {
-        // Helper closure to convert errors.
-        let err = |error: std::io::Error| Error::IoError {
-            node: receiver_name.as_ref().to_owned(),
-            error,
-        };
-
-        // Create a SO_REUSEADDR + SO_REUSEPORT listener.
-        let sock = socket2::Socket::new(
-            match addr {
-                SocketAddr::V4(_) => socket2::Domain::IPV4,
-                SocketAddr::V6(_) => socket2::Domain::IPV6,
-            },
-            socket2::Type::STREAM,
-            None,
-        )
-        .map_err(err)?;
-
-        // Allows multiple sockets to bind to an address/port combination even if a socket in the
-        // TIME_WAIT state currently occupies that combination.
-        // Goal: Restarting the server quickly without waiting for the OS to release a port.
-        sock.set_reuse_address(true).map_err(err)?;
-        // Explicitly allows multiple sockets to simultaneously bind and listen to the exact same
-        // IP and port. Incoming connections or packets are distributed between the sockets
-        // (load balancing).
-        // Goal: Load balancing incoming connections.
-        sock.set_reuse_port(true).map_err(err)?;
-        sock.set_nonblocking(true).map_err(err)?;
-        sock.bind(&addr.into()).map_err(err)?;
-        sock.listen(8192).map_err(err)?;
-
-        TcpListener::from_std(sock.into()).map_err(err)
-    }
-}
-
-/// A `!Send` implementation of the EffectHandlerTrait.
-#[derive(Clone)]
-pub struct EffectHandlerLocal<PData> {
-    core: EffectHandlerCore,
-
-    /// A sender used to forward messages from the receiver.
-    msg_sender: mpsc::Sender<PData>,
-}
-
-/// Implementation for the `!Send` effect handler.
-impl<PData> EffectHandlerLocal<PData> {
-    /// Creates a new local (!Send) `EffectHandler` with the given receiver name.
-    #[must_use]
-    pub fn new(receiver_name: Cow<'static, str>, msg_sender: mpsc::Sender<PData>) -> Self {
-        EffectHandlerLocal {
-            core: EffectHandlerCore { receiver_name },
-            msg_sender,
-        }
-    }
-
-    /// Returns the name of the receiver associated with this handler.
-    #[must_use]
-    pub fn receiver_name(&self) -> &str {
-        self.core.receiver_name()
-    }
-
-    /// Sends a message to the next node(s) in the pipeline.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
-    pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
-        self.msg_sender.send_async(data).await?;
-        Ok(())
-    }
-
-    /// Creates a non-blocking TCP listener on the given address with socket options defined by the
-    /// pipeline engine implementation. It's important for receiver implementer to create TCP
-    /// listeners via this method to ensure the scalability and the serviceability of the pipeline.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Error::IoError`] if any step in the process fails.
-    pub fn tcp_listener(&self, addr: SocketAddr) -> Result<TcpListener, Error<PData>> {
-        self.core.tcp_listener(addr, self.receiver_name())
-    }
-
-    // More methods will be added in the future as needed.
-}
-
-/// A `Send` implementation of the EffectHandlerTrait.
-#[derive(Clone)]
-pub struct EffectHandlerShared<PData> {
-    core: EffectHandlerCore,
-
-    /// A sender used to forward messages from the receiver.
-    msg_sender: tokio::sync::mpsc::Sender<PData>,
-}
-
-/// Implementation for the `Send` effect handler.
-impl<PData> EffectHandlerShared<PData> {
-    /// Creates a new sendable effect handler with the given receiver name.
-    ///
-    /// Use this constructor when your receiver do need to be sent across threads or
-    /// when it uses components that are `Send`.
-    #[must_use]
-    pub fn new(
-        receiver_name: Cow<'static, str>,
-        msg_sender: tokio::sync::mpsc::Sender<PData>,
-    ) -> Self {
-        EffectHandlerShared {
-            core: EffectHandlerCore { receiver_name },
-            msg_sender,
-        }
-    }
-
-    /// Returns the name of the receiver associated with this handler.
-    #[must_use]
-    pub fn receiver_name(&self) -> &str {
-        self.core.receiver_name()
-    }
-
-    /// Sends a message to the next node(s) in the pipeline.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
-    pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
-        self.msg_sender
-            .send(data)
-            .await
-            .map_err(|tokio::sync::mpsc::error::SendError(pdata)| {
-                Error::ChannelSendError(SendError::Full(pdata))
-            })
-    }
-
-    /// Creates a non-blocking TCP listener on the given address with socket options defined by the
-    /// pipeline engine implementation. It's important for receiver implementer to create TCP
-    /// listeners via this method to ensure the scalability and the serviceability of the pipeline.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Error::IoError`] if any step in the process fails.
-    pub fn tcp_listener(&self, addr: SocketAddr) -> Result<TcpListener, Error<PData>> {
-        self.core.tcp_listener(addr, self.receiver_name())
-    }
-
-    // More methods will be added in the future as needed.
-}
+use crate::local::receiver as local;
+use crate::shared::receiver as shared;
 
 /// A wrapper for the receiver that allows for both `Send` and `!Send` receivers.
 ///
 /// Note: This is useful for creating a single interface for the receiver regardless of their
 /// 'sendability'.
 pub enum ReceiverWrapper<PData> {
-    /// A receiver with a `!Send` receiver.
+    /// A receiver with a `!Send` implementation.
     Local {
         /// The receiver instance.
-        receiver: Box<dyn ReceiverLocal<PData>>,
+        receiver: Box<dyn local::Receiver<PData>>,
         /// The effect handler for the receiver.
-        effect_handler: EffectHandlerLocal<PData>,
+        effect_handler: local::EffectHandler<PData>,
         /// A sender for control messages.
         control_sender: mpsc::Sender<ControlMsg>,
         /// A receiver for control messages.
@@ -345,9 +62,9 @@ pub enum ReceiverWrapper<PData> {
     /// A receiver with a `Send` receiver.
     Shared {
         /// The receiver instance.
-        receiver: Box<dyn ReceiverShared<PData>>,
+        receiver: Box<dyn shared::Receiver<PData>>,
         /// The effect handler for the receiver.
-        effect_handler: EffectHandlerShared<PData>,
+        effect_handler: shared::EffectHandler<PData>,
         /// A sender for control messages.
         control_sender: tokio::sync::mpsc::Sender<ControlMsg>,
         /// A receiver for control messages.
@@ -361,7 +78,7 @@ impl<PData> ReceiverWrapper<PData> {
     /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
     pub fn local<R>(receiver: R, config: &ReceiverConfig) -> Self
     where
-        R: ReceiverLocal<PData> + 'static,
+        R: local::Receiver<PData> + 'static,
     {
         let (control_sender, control_receiver) =
             mpsc::Channel::new(config.control_channel.capacity);
@@ -369,7 +86,7 @@ impl<PData> ReceiverWrapper<PData> {
             mpsc::Channel::new(config.output_pdata_channel.capacity);
 
         ReceiverWrapper::Local {
-            effect_handler: EffectHandlerLocal::new(config.name.clone(), pdata_sender),
+            effect_handler: local::EffectHandler::new(config.name.clone(), pdata_sender),
             receiver: Box::new(receiver),
             control_sender,
             control_receiver,
@@ -380,14 +97,14 @@ impl<PData> ReceiverWrapper<PData> {
     /// Creates a new `ReceiverWrapper` with the given receiver and configuration.
     pub fn shared<R>(receiver: R, config: &ReceiverConfig) -> Self
     where
-        R: ReceiverShared<PData> + 'static,
+        R: shared::Receiver<PData> + 'static,
     {
         let (control_sender, control_receiver) =
             tokio::sync::mpsc::channel(config.control_channel.capacity);
         let (pdata_sender, pdata_receiver) =
             tokio::sync::mpsc::channel(config.output_pdata_channel.capacity);
         ReceiverWrapper::Shared {
-            effect_handler: EffectHandlerShared::new(config.name.clone(), pdata_sender),
+            effect_handler: shared::EffectHandler::new(config.name.clone(), pdata_sender),
             receiver: Box::new(receiver),
             control_sender,
             control_receiver,
@@ -417,7 +134,7 @@ impl<PData> ReceiverWrapper<PData> {
                 control_receiver,
                 ..
             } => {
-                let ctrl_msg_chan = ControlChannelLocal::new(control_receiver);
+                let ctrl_msg_chan = local::ControlChannel::new(control_receiver);
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
             ReceiverWrapper::Shared {
@@ -426,7 +143,7 @@ impl<PData> ReceiverWrapper<PData> {
                 control_receiver,
                 ..
             } => {
-                let ctrl_msg_chan = ControlChannelShared::new(control_receiver);
+                let ctrl_msg_chan = shared::ControlChannel::new(control_receiver);
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
         }
@@ -447,11 +164,8 @@ impl<PData> ReceiverWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ControlChannelLocal, ControlChannelShared, EffectHandlerLocal, EffectHandlerShared,
-        ReceiverShared, ReceiverWrapper,
-    };
-    use crate::receiver::{Error, ReceiverLocal};
+    use super::ReceiverWrapper;
+    use crate::receiver::Error;
     use crate::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use crate::testing::{CtrlMsgCounters, TestMsg};
     use async_trait::async_trait;
@@ -462,10 +176,12 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::sync::oneshot;
-    use tokio::time::{Duration, sleep, timeout};
+    use tokio::time::{sleep, timeout, Duration};
+    use crate::local::receiver as local;
+    use crate::shared::receiver as shared;
 
     /// A test receiver that counts message events.
-    /// Works with any type of receiver traits.
+    /// Works with any type of receiver !Send or Send.
     pub struct TestReceiver {
         /// Counter for different message types
         ctrl_msg_counters: CtrlMsgCounters,
@@ -486,11 +202,11 @@ mod tests {
     }
 
     #[async_trait(?Send)]
-    impl ReceiverLocal<TestMsg> for TestReceiver {
+    impl local::Receiver<TestMsg> for TestReceiver {
         async fn start(
             self: Box<Self>,
-            ctrl_msg_recv: ControlChannelLocal,
-            effect_handler: EffectHandlerLocal<TestMsg>,
+            ctrl_msg_recv: local::ControlChannel,
+            effect_handler: local::EffectHandler<TestMsg>,
         ) -> Result<(), Error<TestMsg>> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
@@ -565,11 +281,11 @@ mod tests {
     }
 
     #[async_trait]
-    impl ReceiverShared<TestMsg> for TestReceiver {
+    impl shared::Receiver<TestMsg> for TestReceiver {
         async fn start(
             self: Box<Self>,
-            mut ctrl_msg_recv: ControlChannelShared,
-            effect_handler: EffectHandlerShared<TestMsg>,
+            mut ctrl_msg_recv: shared::ControlChannel,
+            effect_handler: shared::EffectHandler<TestMsg>,
         ) -> Result<(), Error<TestMsg>> {
             // Bind to an ephemeral port.
             let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();

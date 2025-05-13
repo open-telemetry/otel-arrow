@@ -4,39 +4,37 @@
 
 use crate::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
 use crate::error::Error;
-use crate::exporter::{Exporter, ExporterWrapper};
+use crate::exporter::ExporterWrapper;
 use crate::processor::{Processor, ProcessorWrapper};
-use crate::receiver::{ReceiverLocal, ReceiverWrapper};
+use crate::receiver::ReceiverWrapper;
 use crate::{exporter, processor};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
+use crate::local::receiver::Receiver;
 
 /// A pipeline is a collection of receivers, processors, and exporters.
 pub struct Pipeline<PData> {
     receivers: HashMap<Cow<'static, str>, ReceiverWrapper<PData>>,
     processors: HashMap<Rc<str>, ProcessorWrapper<PData>>,
-    exporters: HashMap<Rc<str>, ExporterWrapper<PData>>,
+    exporters: HashMap<Cow<'static, str>, ExporterWrapper<PData>>,
 }
 
 impl<PData> Pipeline<PData> {
     /// Adds a receiver to the pipeline.
     pub fn add_receiver<R>(
         &mut self,
-        receiver: R,
+        receiver: ReceiverWrapper<PData>,
         config: &ReceiverConfig,
-    ) -> Result<(), Error<PData>>
-    where
-        R: ReceiverLocal<PData> + 'static,
-    {
+    ) -> Result<(), Error<PData>> {
         let receiver_name = config.name.to_string();
         if self
             .receivers
             .insert(
                 config.name.clone(),
-                ReceiverWrapper::local(receiver, config),
+                receiver,
             )
             .is_some()
         {
@@ -74,19 +72,15 @@ impl<PData> Pipeline<PData> {
     }
 
     /// Adds an exporter to the pipeline.
-    pub fn add_exporter<E, H>(
+    pub fn add_exporter<E>(
         &mut self,
-        exporter: E,
+        exporter: ExporterWrapper<PData>,
         config: &ExporterConfig,
-    ) -> Result<(), Error<PData>>
-    where
-        E: Exporter<PData, H> + 'static,
-        H: exporter::EffectHandlerFactory<PData, E>,
-    {
+    ) -> Result<(), Error<PData>> {
         let exporter_name = config.name.to_string();
         if self
             .exporters
-            .insert(config.name.clone(), ExporterWrapper::new(exporter, config))
+            .insert(config.name.clone(), exporter)
             .is_some()
         {
             return Err(Error::ExporterAlreadyExists {
