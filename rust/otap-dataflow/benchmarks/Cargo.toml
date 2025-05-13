@@ -12,10 +12,18 @@ rust-version.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 
-otap-df-config = { path = "../crates/config" }
-
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
+mimalloc = "0.1.46"
+otap-df-config = { path = "../crates/config" }
+otap-df-channel = { path = "../crates/channel" }
+futures-channel = "0.3"
+futures = "0.3.31"
+flume = "0.11.1"
+core_affinity = "0.8.3"
+local-sync = "0.1.1"
+async-unsync = "0.3.0"
+unsync = "0.1.2"
 
 [lints]
 workspace = true
@@ -23,3 +31,15 @@ workspace = true
 [[bench]]
 name = "config"
 harness = false
+
+[[bench]]
+name = "channel"
+harness = false
+
+[profile.bench]
+opt-level = 3
+debug = false
+incremental = false
+lto = "fat"
+codegen-units = 1
+panic = "abort"
