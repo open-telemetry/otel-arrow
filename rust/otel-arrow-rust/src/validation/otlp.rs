@@ -298,4 +298,13 @@ mod tests {
         )
         .await;
     }
+
+    #[tokio::test]
+    async fn test_otap_logs_single_request() {
+        run_single_round_trip_test::<OTLPLogsInputType, OTAPLogsOutputType, _>(
+            testdata::logs::create_single_request,
+            None, // Expect success
+        )
+        .await
+    }
 }
