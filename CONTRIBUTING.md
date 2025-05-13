@@ -183,17 +183,19 @@ to upgrade this repository is:
 
 ## OpenTelemetry-Arrow Team
 
-It takes a team to keep a repository like this functioning.
+It takes a team to keep a repository like this functioning.  We use
+the OpenTelemetry the [Maintainer][MAINTAINERROLE] and
+[Approver][APPROVERROLE] roles to organize our work.
 
-The [Maintainers][MAINTAINERROLE] are [OpenTelemetry-Arrow
-maintainers (@open-telemetry/arrow-maintainers)][MAINTAINERS] are:
+The current [OpenTelemetry-Arrow maintainers
+(@open-telemetry/arrow-maintainers)][MAINTAINERS] are:
 
 - [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
 - [Joshua MacDonald](https://github.com/jmacd), Microsoft
 - [Drew Relmas](https://github.com/drewrelmas), Microsoft
 
-The [Approvers][APPROVERROLE] are [OpenTelemetry-Arrow
-approvers (@open-telemetry/arrow-approvers)][APPROVERS] are:
+The current [OpenTelemetry-Arrow approvers
+(@open-telemetry/arrow-approvers)][APPROVERS] are:
 
 - [Lei Huang](https://github.com/v0y4g3r), Greptime
 - [Albert Lockett](https://github.com/albertlockett), F5
@@ -203,7 +205,7 @@ The people who filled these roles in the past:
 - [Moh Osman](https://github.com/moh-osman3)
 - [Alex Boten](https://github.com/codeboten)
 
-Thanks to all the people who have contributed!
+Thanks to all the contributors!
 
 [![OpenTelemetry-Arrow contributors](https://contributors-img.web.app/image?repo=open-telemetry/otel-arrow)](https://github.com/open-telemetry/otel-arrow/graphs/contributors)
 
