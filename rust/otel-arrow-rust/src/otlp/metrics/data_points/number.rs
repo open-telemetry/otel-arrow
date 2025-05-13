@@ -16,8 +16,8 @@ use crate::arrays::{
 };
 use crate::error::Result;
 use crate::otlp::attributes::store::Attribute32Store;
-use crate::otlp::data_points::data_point_store::NumberDataPointsStore;
-use crate::otlp::exemplar::ExemplarsStore;
+use crate::otlp::metrics::data_points::data_point_store::NumberDataPointsStore;
+use crate::otlp::metrics::exemplar::ExemplarsStore;
 use crate::proto::opentelemetry::metrics::v1::NumberDataPoint;
 use crate::proto::opentelemetry::metrics::v1::number_data_point::Value;
 use crate::schema::consts;

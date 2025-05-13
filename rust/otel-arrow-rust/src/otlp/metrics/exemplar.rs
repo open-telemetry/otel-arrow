@@ -16,13 +16,13 @@ use crate::arrays::{
 };
 use crate::error;
 use crate::otlp::attributes::store::Attribute32Store;
-use crate::otlp::metric::AppendAndGet;
+use crate::otlp::metrics::AppendAndGet;
 use crate::proto::opentelemetry::metrics::v1::Exemplar;
 use crate::proto::opentelemetry::metrics::v1::exemplar::Value;
 use crate::schema::consts;
 use arrow::array::RecordBatch;
 use num_enum::TryFromPrimitive;
-use snafu::{OptionExt, ensure};
+use snafu::ensure;
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -51,17 +51,8 @@ impl ExemplarsStore {
         let double_value_arr = get_f64_array_opt(rb, consts::DOUBLE_VALUE)?;
         let parent_id_arr = get_u32_array(rb, consts::PARENT_ID)?;
         let time_unix_nano_arr = get_timestamp_nanosecond_array(rb, consts::TIME_UNIX_NANO)?;
-        let span_id_arr = ByteArrayAccessor::try_new(rb.column_by_name(consts::SPAN_ID).context(
-            error::ColumnNotFoundSnafu {
-                name: consts::SPAN_ID,
-            },
-        )?)?;
-        let trace_id_arr = ByteArrayAccessor::try_new(
-            rb.column_by_name(consts::TRACE_ID)
-                .context(error::ColumnNotFoundSnafu {
-                    name: consts::TRACE_ID,
-                })?,
-        )?;
+        let span_id_arr = ByteArrayAccessor::try_new_for_column(rb, consts::SPAN_ID)?;
+        let trace_id_arr = ByteArrayAccessor::try_new_for_column(rb, consts::TRACE_ID)?;
 
         for idx in 0..rb.num_rows() {
             let int_value = int_value_arr.value_at(idx);
