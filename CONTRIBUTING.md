@@ -187,7 +187,7 @@ It takes a team to keep a repository like this functioning.
 
 The [OpenTelemetry-Arrow maintainers][MAINTAINERS] are:
 
-- [Laurent Qu\xc3\xa9rel](https://github.com/lquerel)
+- [Laurent Quérel](https://github.com/lquerel)
 - [Joshua MacDonald](https://github.com/jmacd)
 - [Drew Relmas](https://github.com/drewrelmas)
 
