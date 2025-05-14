@@ -24,8 +24,8 @@ spec:
         - "{{DURATION}}"  # This will be replaced by the orchestrator
         resources:
           requests:
-            cpu: 100m
-            memory: 100Mi
+            cpu: "2"
+            memory: 1000Mi
           limits:
-            cpu: 500m
-            memory: 500Mi
+            cpu: "4"
+            memory: 1000Mi

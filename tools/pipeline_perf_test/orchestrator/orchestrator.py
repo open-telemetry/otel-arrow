@@ -749,6 +749,14 @@ def main():
         # Calculate logs sent rate (based on attempted sends, not successful ones)
         total_logs_attempted = logs_sent_count + logs_failed_count
         logs_sent_rate = total_logs_attempted / duration if duration > 0 else 0
+        
+        # Format rate for human readability (K/sec or M/sec)
+        if logs_sent_rate >= 1000000:
+            formatted_rate = f"{logs_sent_rate/1000000:.2f}M/sec"
+        elif logs_sent_rate >= 1000:
+            formatted_rate = f"{logs_sent_rate/1000:.2f}K/sec"
+        else:
+            formatted_rate = f"{logs_sent_rate:.2f}/sec"
 
         # Calculate percentage of logs lost
         logs_lost_percentage = (total_logs_lost / total_logs_attempted * 100) if total_logs_attempted > 0 else 0
@@ -760,7 +768,7 @@ def main():
         print(f"Logs received by backend: {logs_received_backend_count}")
         print(f"Logs lost in transit: {transit_lost}")
         print(f"Duration: {duration:.2f} seconds")
-        print(f"Logs attempt rate: {logs_sent_rate:.2f} logs/second")
+        print(f"Logs attempt rate: {formatted_rate} ({logs_sent_rate:.2f} logs/second)")
         print(f"Total logs lost: {total_logs_lost} ({logs_lost_percentage:.2f}% of attempted logs)")
 
         # Write results to file
@@ -782,7 +790,7 @@ def main():
             f.write(f"- Logs received by backend: {logs_received_backend_count}\n")
             f.write(f"- Logs lost in transit: {transit_lost}\n")
             f.write(f"- Duration: {duration:.2f} seconds\n")
-            f.write(f"- Logs attempt rate: {logs_sent_rate:.2f} logs/second\n")
+            f.write(f"- Logs attempt rate: {formatted_rate} ({logs_sent_rate:.2f} logs/second)\n")
             f.write(f"- Total logs lost: {total_logs_lost} (failed at loadgen + lost in transit)\n")
             f.write(f"- Percentage of logs lost: {logs_lost_percentage:.2f}%\n")
 
