@@ -127,12 +127,13 @@ pub fn metrics_from(
                 resource.dropped_attributes_count = dropped_attributes_count;
             }
 
-            if let Some(res_id) = resource_arrays.id.value_at(idx)
-                && let Some(attrs) = related_data
+            if let Some(res_id) = resource_arrays.id.value_at(idx) {
+                if let Some(attrs) = related_data
                     .res_attr_map_store
                     .attribute_by_delta_id(res_id)
-            {
-                resource.attributes = attrs.to_vec();
+                {
+                    resource.attributes = attrs.to_vec();
+                }
             }
 
             res_metrics.schema_url = resource_arrays.schema_url.value_at(idx).unwrap_or_default();
@@ -151,12 +152,13 @@ pub fn metrics_from(
                 .scope_metrics;
             let scope_metrics = current_scope_metrics_slice.append_and_get();
             let mut scope = scope_arrays.create_instrumentation_scope(idx);
-            if let Some(scope_id) = scope_delta_id_opt
-                && let Some(attrs) = related_data
+            if let Some(scope_id) = scope_delta_id_opt {
+                if let Some(attrs) = related_data
                     .scope_attr_map_store
                     .attribute_by_delta_id(scope_id)
-            {
-                scope.attributes = attrs.to_vec();
+                {
+                    scope.attributes = attrs.to_vec();
+                }
             }
             scope_metrics.scope = Some(scope);
             // ScopeMetrics uses the schema_url from metrics arrays.

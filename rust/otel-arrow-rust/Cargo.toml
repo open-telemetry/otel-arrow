@@ -36,7 +36,7 @@ tonic-build = "0.13"
 prost-build = "0.13"
 otlp-model = { path = "./src/pdata/otlp/model" }
 
-[workspace.lints.rust]
+[lints.rust]
 # General compatibility lints
 rust_2018_idioms = { level = "warn", priority = -1 }
 rust_2021_compatibility = { level = "warn", priority = -1 }

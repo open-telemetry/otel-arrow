@@ -10,6 +10,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(missing_docs)]
+
 use std::path::Path;
 
 fn main() {
@@ -23,10 +25,12 @@ fn main() {
     generate_otlp_protos(out_dir, &base);
 }
 
+#[allow(unused_results)]
 fn prost_cfg() -> prost_build::Config {
     // Documentation comments are a problem because they look like
     // doctests and clippy wants to checks them.
     let mut cfg = prost_build::Config::default();
+    #[allow(unused_mut)]
     cfg.disable_comments(["."]);
     // Disable prettyplease, otherwise 'cargo fmt' will reformat
     // compared with 'cargo build'.
