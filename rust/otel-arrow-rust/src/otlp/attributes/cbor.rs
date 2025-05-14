@@ -7,8 +7,8 @@ use crate::proto::opentelemetry::common::v1::{AnyValue, ArrayValue, KeyValue, Ke
 use snafu::ResultExt;
 
 /// Decode bytes from a serialized attribute into pcommon value.
-/// This should be used for values in the `ser` column of attributes
-/// and Log bodies.
+///
+/// This should be used for values in the `ser` column of attributes and Log bodies.
 pub fn decode_pcommon_val(input: &[u8]) -> Result<Option<Value>> {
     let decoded_val = ciborium::from_reader::<ciborium::Value, &[u8]>(input)
         .context(error::InvalidSerializedAttributeBytesSnafu)?;
@@ -16,8 +16,9 @@ pub fn decode_pcommon_val(input: &[u8]) -> Result<Option<Value>> {
     MaybeValue::try_from(decoded_val).map(Into::into)
 }
 
-// `MaybeValue` is a thin wrapper around `Option<Value>`. We use this so we to
-// avoid violating the coherence rule when implementing TryFrom.
+/// `MaybeValue` is a thin wrapper around `Option<Value>`.
+///
+/// We use this so we to avoid violating the coherence rule when implementing TryFrom.
 struct MaybeValue(Option<Value>);
 
 impl From<MaybeValue> for Option<Value> {
@@ -41,40 +42,55 @@ impl TryFrom<ciborium::Value> for MaybeValue {
                     .try_into()
                     .context(error::InvalidSerializedIntAttributeValueSnafu)?,
             )),
-            ciborium::Value::Array(array_vals) => {
-                let vals: Result<Vec<_>> = array_vals
-                    .into_iter()
-                    .map(|element| match Self::try_from(element) {
-                        Ok(val) => Ok(AnyValue { value: val.into() }),
-                        Err(e) => Err(e),
-                    })
-                    .collect();
-
-                Some(Value::ArrayValue(ArrayValue { values: vals? }))
-            }
-            ciborium::Value::Map(map_vals) => {
-                let kvs: Result<Vec<_>> = map_vals
-                    .into_iter()
-                    .map(|(k, v)| {
-                        if let ciborium::Value::Text(key) = k {
-                            match Self::try_from(v) {
-                                Ok(val) => Ok(KeyValue::new(key, AnyValue { value: val.into() })),
-                                Err(e) => Err(e),
-                            }
-                        } else {
-                            error::InvalidSerializedMapKeyTypeSnafu { actual: k }.fail()
-                        }
-                    })
-                    .collect();
-
-                Some(Value::KvlistValue(KeyValueList::new(kvs?)))
-            }
-
+            ciborium::Value::Array(array_vals) => Some(Value::try_from(array_vals)?),
+            ciborium::Value::Map(kv_vals) => Some(Value::try_from(kv_vals)?),
             other => {
                 return error::UnsupportedSerializedAttributeValueSnafu { actual: other }.fail();
             }
         };
 
         Ok(Self(val))
+    }
+}
+
+/// Converts an array of cbor values into the ArrayValue variant of Value
+impl TryFrom<Vec<ciborium::Value>> for Value {
+    type Error = Error;
+
+    fn try_from(values: Vec<ciborium::Value>) -> std::result::Result<Self, Self::Error> {
+        let vals: Result<Vec<_>> = values
+            .into_iter()
+            .map(|element| match MaybeValue::try_from(element) {
+                Ok(val) => Ok(AnyValue { value: val.into() }),
+                Err(e) => Err(e),
+            })
+            .collect();
+
+        Ok(Value::ArrayValue(ArrayValue { values: vals? }))
+    }
+}
+
+/// Converts the array of cbor kv pairs into the KvlistValue variant of Value
+impl TryFrom<Vec<(ciborium::Value, ciborium::Value)>> for Value {
+    type Error = Error;
+
+    fn try_from(
+        kv_values: Vec<(ciborium::Value, ciborium::Value)>,
+    ) -> std::result::Result<Self, Self::Error> {
+        let kvs: Result<Vec<_>> = kv_values
+            .into_iter()
+            .map(|(k, v)| {
+                if let ciborium::Value::Text(key) = k {
+                    match MaybeValue::try_from(v) {
+                        Ok(val) => Ok(KeyValue::new(key, AnyValue { value: val.into() })),
+                        Err(e) => Err(e),
+                    }
+                } else {
+                    error::InvalidSerializedMapKeyTypeSnafu { actual: k }.fail()
+                }
+            })
+            .collect();
+
+        Ok(Value::KvlistValue(KeyValueList::new(kvs?)))
     }
 }
