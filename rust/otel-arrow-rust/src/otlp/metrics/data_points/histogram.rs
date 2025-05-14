@@ -90,7 +90,7 @@ impl HistogramDataPointsStore {
                 last_id += id;
                 let exemplars = exemplar_store.get_or_create_exemplar_by_id(last_id);
                 hdps.exemplars = std::mem::take(exemplars);
-                if let Some(attrs) = attrs_store.attribute_by_id(last_id) {
+                if let Some(attrs) = attrs_store.attributes_by_id(last_id) {
                     hdps.attributes = attrs.to_vec();
                 }
             }

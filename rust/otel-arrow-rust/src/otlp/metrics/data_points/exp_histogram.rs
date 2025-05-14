@@ -85,7 +85,7 @@ impl EHistogramDataPointsStore {
                 last_id += id;
                 let exemplars = exemplar_store.get_or_create_exemplar_by_id(last_id);
                 hdp.exemplars = std::mem::take(exemplars);
-                if let Some(attrs) = attr_store.attribute_by_id(last_id) {
+                if let Some(attrs) = attr_store.attributes_by_id(last_id) {
                     hdp.attributes = attrs.to_vec();
                 }
             }

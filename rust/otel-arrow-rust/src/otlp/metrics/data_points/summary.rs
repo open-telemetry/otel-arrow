@@ -64,7 +64,7 @@ impl SummaryDataPointsStore {
             }
             sdp.flags = flag_arr.value_at_or_default(idx);
             if let Some(id) = id_arr_opt.value_at(idx)
-                && let Some(attr) = attr_store.attribute_by_delta_id(id)
+                && let Some(attr) = attr_store.attributes_by_delta_id(id)
             {
                 sdp.attributes = attr.to_vec();
             }

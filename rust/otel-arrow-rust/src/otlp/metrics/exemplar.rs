@@ -102,7 +102,7 @@ impl ExemplarsStore {
             }
 
             if let Some(id) = id_opt
-                && let Some(attrs) = attr_store.attribute_by_delta_id(id)
+                && let Some(attrs) = attr_store.attributes_by_delta_id(id)
             {
                 current_exemplar.filtered_attributes = attrs.to_vec();
             }

@@ -84,7 +84,7 @@ impl NumberDataPointsStore {
                 let exemplars = exemplar_store.get_or_create_exemplar_by_id(last_id);
                 nbdp.exemplars.extend(std::mem::take(exemplars));
 
-                if let Some(attr) = attribute_store.attribute_by_id(last_id) {
+                if let Some(attr) = attribute_store.attributes_by_id(last_id) {
                     nbdp.attributes = attr.to_vec();
                 }
             }

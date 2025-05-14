@@ -130,7 +130,7 @@ pub fn metrics_from(
             if let Some(res_id) = resource_arrays.id.value_at(idx)
                 && let Some(attrs) = related_data
                     .res_attr_map_store
-                    .attribute_by_delta_id(res_id)
+                    .attributes_by_delta_id(res_id)
             {
                 resource.attributes = attrs.to_vec();
             }
@@ -154,7 +154,7 @@ pub fn metrics_from(
             if let Some(scope_id) = scope_delta_id_opt
                 && let Some(attrs) = related_data
                     .scope_attr_map_store
-                    .attribute_by_delta_id(scope_id)
+                    .attributes_by_delta_id(scope_id)
             {
                 scope.attributes = attrs.to_vec();
             }
