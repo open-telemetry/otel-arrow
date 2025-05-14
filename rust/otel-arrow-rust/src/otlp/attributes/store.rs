@@ -23,6 +23,7 @@ use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch};
 use num_enum::TryFromPrimitive;
 use snafu::{OptionExt, ResultExt};
 use std::collections::HashMap;
+use std::hash::Hash;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
 #[repr(u8)]
@@ -42,8 +43,8 @@ pub type Attribute16Store = AttributeStore<u16>;
 
 #[derive(Default)]
 pub struct AttributeStore<T> {
-    last_id: T,
-    attribute_by_ids: HashMap<T, Vec<KeyValue>>,
+    pub last_id: T,
+    pub attribute_by_ids: HashMap<T, Vec<KeyValue>>,
 }
 
 impl<T> AttributeStore<T>
@@ -59,6 +60,15 @@ where
 
     pub fn attributes_by_id(&self, id: T) -> Option<&[KeyValue]> {
         self.attribute_by_ids.get(&id).map(|r| r.as_slice())
+    }
+}
+
+impl<T: Default + Eq + Hash, const N: usize> From<[(T, Vec<KeyValue>); N]> for AttributeStore<T> {
+    fn from(values: [(T, Vec<KeyValue>); N]) -> Self {
+        Self {
+            last_id: T::default(),
+            attribute_by_ids: HashMap::from(values),
+        }
     }
 }
 
