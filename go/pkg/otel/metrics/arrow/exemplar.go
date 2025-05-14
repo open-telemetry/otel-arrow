@@ -296,20 +296,9 @@ func NewExemplarParentIdEncoder(encoderType int) *ExemplarParentIdEncoder {
 }
 
 func (e *ExemplarParentIdEncoder) Encode(parentID uint32) uint32 {
-	switch e.encoderType {
-	case carrow.ParentIdNoEncoding:
-		return parentID
-	case carrow.ParentIdDeltaEncoding:
-		delta := parentID - e.prevParentID
-		e.prevParentID = parentID
-		return delta
-	case carrow.ParentIdDeltaGroupEncoding:
-		delta := parentID - e.prevParentID
-		e.prevParentID = parentID
-		return delta
-	default:
-		panic("Unknown parent ID encoding type.")
-	}
+	delta := parentID - e.prevParentID
+	e.prevParentID = parentID
+	return delta
 }
 
 // No sorting

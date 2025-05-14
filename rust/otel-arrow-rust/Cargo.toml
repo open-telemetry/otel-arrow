@@ -2,6 +2,16 @@
 name = "otel-arrow-rust"
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/open-telemetry/otel-arrow"
+license = "Apache-2.0"
+description = "Rust implementation of otel-arrow"
+categories = [
+    "development-tools",
+    "development-tools",
+    "api-bindings",
+    "asynchronous"
+]
+keywords = ["arrow", "opentelemetry", "logging", "tracing", "metrics"]
 
 [features]
 default = ["full"]
@@ -14,6 +24,7 @@ derive = []
 [dependencies]
 arrow = "53"
 arrow-ipc = { version = "53", features = ["zstd"] }
+ciborium = "0.2.2"
 lazy_static = "1.5"
 num_enum = "0.7"
 otlp-derive = { path = "./src/pdata/otlp/derive" }
@@ -35,7 +46,7 @@ tonic-build = "0.13"
 prost-build = "0.13"
 otlp-model = { path = "./src/pdata/otlp/model" }
 
-[workspace.lints.rust]
+[lints.rust]
 # General compatibility lints
 rust_2018_idioms = { level = "warn", priority = -1 }
 rust_2021_compatibility = { level = "warn", priority = -1 }
@@ -60,7 +71,7 @@ semicolon_in_expressions_from_macros = "warn"
 unsafe_op_in_unsafe_fn = "warn"
 unused_macro_rules = "warn"
 
-[workspace.lints.clippy]
+[lints.clippy]
 # Strong defaults: deny problematic patterns
 cargo = { level = "deny", priority = -1 }
 correctness = { level = "deny", priority = -1 }

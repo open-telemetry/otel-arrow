@@ -7,6 +7,11 @@ on: [push, pull_request]
 env:
   CARGO_TERM_COLOR: always
 
+# Cancel in-progress runs on new commits to same PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test_and_coverage:
     strategy:
@@ -26,15 +31,19 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # latest on /master branch as of 2025-04-02
+      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
         with:
           toolchain: stable
       - name: install cargo-llvm-cov
-        uses: taiki-e/install-action@5075451c95db43b063f20f0c8fef04c04d5bf0ba # cargo-llvm-cov
+        uses: taiki-e/install-action@83254c543806f3224380bf1001d6fac8feaf2d0b
+        with:
+          tool: cargo-llvm-cov
+      - name: install nextest
+        uses: taiki-e/install-action@nextest
       - name: Build the test collector
         run: make otelarrowcol
       - name: Run tests with coverage
-        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
         working-directory: ./rust/${{ matrix.folder }}
       - name: Upload to codecov.io
         uses: codecov/codecov-action@ad3126e916f78f00edff4ed0317cf185271ccc2d # v5.4.2
@@ -61,7 +70,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # latest on /master branch as of 2025-04-02
+      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
         with:
           toolchain: nightly
           components: rustfmt
@@ -87,7 +96,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # latest on /master branch as of 2025-04-02
+      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
         with:
           toolchain: stable
           components: clippy
@@ -117,7 +126,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # latest on /master branch as of 2025-04-02
+      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
         with:
           toolchain: stable
       - name: advisories
@@ -163,7 +172,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # latest on /master branch as of 2025-04-02
+      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
         with:
           toolchain: stable
       - name: cargo bench ${{ matrix.folder }}
@@ -188,7 +197,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # latest on /master branch as of 2025-04-02
+      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
         with:
           toolchain: stable
       - name: cargo doc ${{ matrix.folder }}
@@ -209,7 +218,7 @@ jobs:
       - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # latest on /master branch as of 2025-04-02
+      - uses: dtolnay/rust-toolchain@b3b07ba8b418998c39fb20f53e8b695cdcc8de1b
         with:
           toolchain: stable
       - name: cargo xtask ${{ matrix.folder }}

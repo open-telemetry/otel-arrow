@@ -20,7 +20,6 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	arrowutils "github.com/open-telemetry/otel-arrow/pkg/arrow"
-	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/otlp"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
 	tarrow "github.com/open-telemetry/otel-arrow/pkg/otel/traces/arrow"
@@ -50,7 +49,6 @@ type (
 	EventParentIdDecoder struct {
 		prevParentID uint16
 		prevName     string
-		encodingType int
 	}
 )
 
@@ -83,7 +81,7 @@ func SpanEventsStoreFrom(
 		eventsByID: make(map[uint16][]*ptrace.SpanEvent),
 	}
 	// ToDo Make this decoding dependent on the encoding type column metadata.
-	parentIdDecoder := NewEventParentIdDecoder(carrow.ParentIdDeltaGroupEncoding)
+	parentIdDecoder := NewEventParentIdDecoder()
 
 	spanEventIDs, err := SchemaToSpanEventIDs(record.Schema())
 	if err != nil {
@@ -175,33 +173,21 @@ func SchemaToSpanEventIDs(schema *arrow.Schema) (*SpanEventIDs, error) {
 	}, nil
 }
 
-func NewEventParentIdDecoder(encodingType int) *EventParentIdDecoder {
+func NewEventParentIdDecoder() *EventParentIdDecoder {
 	return &EventParentIdDecoder{
 		prevParentID: 0,
 		prevName:     "",
-		encodingType: encodingType,
 	}
 }
 
 func (d *EventParentIdDecoder) Decode(value uint16, name string) uint16 {
-	switch d.encodingType {
-	case carrow.ParentIdNoEncoding:
+	if d.prevName == name {
+		parentID := d.prevParentID + value
+		d.prevParentID = parentID
+		return parentID
+	} else {
+		d.prevName = name
+		d.prevParentID = value
 		return value
-	case carrow.ParentIdDeltaEncoding:
-		decodedParentID := d.prevParentID + value
-		d.prevParentID = decodedParentID
-		return decodedParentID
-	case carrow.ParentIdDeltaGroupEncoding:
-		if d.prevName == name {
-			parentID := d.prevParentID + value
-			d.prevParentID = parentID
-			return parentID
-		} else {
-			d.prevName = name
-			d.prevParentID = value
-			return value
-		}
-	default:
-		panic("unknown event parent ID encoding type")
 	}
 }

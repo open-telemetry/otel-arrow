@@ -20,10 +20,11 @@ use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use crate::schema::consts;
 use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch};
-use arrow::datatypes::Schema;
 use num_enum::TryFromPrimitive;
 use snafu::{OptionExt, ResultExt};
 use std::collections::HashMap;
+
+use super::cbor;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
 #[repr(u8)]
@@ -81,10 +82,20 @@ where
         let value_type_arr = get_u8_array(rb, consts::ATTRIBUTE_TYPE)?;
 
         let value_str_arr = StringArrayAccessor::try_new_for_column(rb, consts::ATTRIBUTE_STR)?;
-        let value_int_arr = Int64ArrayAccessor::try_new_for_column(rb, consts::ATTRIBUTE_INT)?;
+        let value_int_arr = rb
+            .column_by_name(consts::ATTRIBUTE_INT)
+            .map(Int64ArrayAccessor::try_new)
+            .transpose()?;
         let value_double_arr = get_f64_array_opt(rb, consts::ATTRIBUTE_DOUBLE)?;
         let value_bool_arr = get_bool_array_opt(rb, consts::ATTRIBUTE_BOOL)?;
-        let value_bytes_arr = ByteArrayAccessor::try_new_for_column(rb, consts::ATTRIBUTE_BYTES)?;
+        let value_bytes_arr = rb
+            .column_by_name(consts::ATTRIBUTE_BYTES)
+            .map(ByteArrayAccessor::try_new)
+            .transpose()?;
+        let value_ser_arr = rb
+            .column_by_name(consts::ATTRIBUTE_SER)
+            .map(ByteArrayAccessor::try_new)
+            .transpose()?;
 
         for idx in 0..rb.num_rows() {
             let key = key_arr.value_at_or_default(idx);
@@ -104,13 +115,17 @@ where
                 AttributeValueType::Bytes => {
                     Value::BytesValue(value_bytes_arr.value_at_or_default(idx))
                 }
-                AttributeValueType::Slice => {
-                    // todo: support deserialize [any_value::Value::ArrayValue]
-                    return error::UnsupportedAttributeValueSnafu { type_name: "slice" }.fail();
-                }
-                AttributeValueType::Map => {
-                    // todo: support deserialize [any_value::Value::KvlistValue]
-                    return error::UnsupportedAttributeValueSnafu { type_name: "map" }.fail();
+                AttributeValueType::Slice | AttributeValueType::Map => {
+                    let bytes = value_ser_arr.value_at(idx);
+                    if bytes.is_none() {
+                        continue;
+                    }
+
+                    let decoded_result = cbor::decode_pcommon_val(&bytes.expect("expected Some"))?;
+                    match decoded_result {
+                        Some(value) => value,
+                        None => continue,
+                    }
                 }
                 AttributeValueType::Empty => {
                     // should warn here.
@@ -128,10 +143,6 @@ where
                 MaybeDictArrayAccessor::<PrimitiveArray<<T as ParentId>::ArrayType>>::try_new(
                     parent_id_arr,
                 )?;
-
-            // Curious, but looks like this is not used anywhere in otel-arrow
-            // See https://github.com/open-telemetry/otel-arrow/blob/985aa1500a012859cec44855e187eacf46eda7c8/pkg/otel/common/otlp/attributes.go#L134
-            let _delta_encoded = is_delta_encoded(rb.schema_ref());
             let mut parent_id_decoder = T::new_decoder();
 
             let parent_id = parent_id_decoder.decode(
@@ -165,19 +176,6 @@ impl FindOrAppendValue<Option<AnyValue>> for Vec<KeyValue> {
             key: key.to_string(),
             value: None,
         });
-        &mut self.last_mut().unwrap().value
+        &mut self.last_mut().expect("vec is not empty").value
     }
-}
-
-/// Key form
-const DELTA_ENCODING_KEY: &str = "encoding";
-const DELTA_ENCODING_VALUE: &str = "delta";
-
-/// Checks if parent id field is delta encoded from the metadata of schema.
-fn is_delta_encoded(schema: &Schema) -> bool {
-    schema
-        .metadata
-        .get(DELTA_ENCODING_KEY)
-        .map(|v| v == DELTA_ENCODING_VALUE)
-        .unwrap_or(false)
 }
