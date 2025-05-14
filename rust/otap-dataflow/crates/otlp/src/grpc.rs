@@ -4,54 +4,54 @@ use crate::proto::opentelemetry::collector::{
     trace::v1::{trace_service_server::TraceService, ExportTraceServiceRequest, ExportTraceServiceResponse},
     profiles::v1development::{profiles_service_server::ProfilesService, ExportProfilesServiceRequest, ExportProfilesServiceResponse}};
 
-use otap_df_engine::receiver::{EffectHandlerTrait, SendEffectHandler};
+use otap_df_engine::shared::receiver as shared;
 use tonic::{Request, Response, Status};
     
     
 /// struct that implements the Log Service trait
 pub struct LogsServiceImpl {
-    effect_handler: SendEffectHandler<OTLPRequest>,
+    effect_handler: shared::EffectHandler<OTLPData>,
 }
 
 impl LogsServiceImpl {
     /// Create a LogsServiceImpl with a sendable Effect Handler
-    pub fn new(effect_handler: SendEffectHandler<OTLPRequest>) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
 }
 
 /// struct that implements the Metric Service trait
 pub struct MetricsServiceImpl {
-    effect_handler: SendEffectHandler<OTLPRequest>,
+    effect_handler: shared::EffectHandler<OTLPData>,
 }
 
 impl MetricsServiceImpl {
     /// Create a MetricsServiceImpl with a sendable Effect Handler
-    pub fn new(effect_handler: SendEffectHandler<OTLPRequest>) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
 }
 
 /// struct that implements the Trace Service trait
 pub struct TraceServiceImpl {
-    effect_handler: SendEffectHandler<OTLPRequest>,
+    effect_handler: shared::EffectHandler<OTLPData>,
 }
 
 impl TraceServiceImpl {
     /// Create a TraceServiceImpl with a sendable Effect Handler
-    pub fn new(effect_handler: SendEffectHandler<OTLPRequest>) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
 }
 
 /// struct that implements the Profile Service trait
 pub struct ProfilesServiceImpl {
-    effect_handler: SendEffectHandler<OTLPRequest>,
+    effect_handler: shared::EffectHandler<OTLPData>,
 }
 
 impl ProfilesServiceImpl {
     /// create a ProfileServiceImpl with a sendable Effect Handler
-    pub fn new(effect_handler: SendEffectHandler<OTLPRequest>) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
 }
@@ -62,7 +62,7 @@ impl LogsService for LogsServiceImpl {
         &self,
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
-        _ = self.effect_handler.send_message(OTLPRequest::Logs(request.into_inner())).await;
+        _ = self.effect_handler.send_message(OTLPData::Logs(request.into_inner())).await;
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,
         }))
@@ -75,7 +75,7 @@ impl MetricsService for MetricsServiceImpl {
         &self,
         request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
-        _ = self.effect_handler.send_message(OTLPRequest::Metrics(request.into_inner())).await;
+        _ = self.effect_handler.send_message(OTLPData::Metrics(request.into_inner())).await;
         Ok(Response::new(ExportMetricsServiceResponse {
             partial_success: None,
         }))
@@ -88,7 +88,7 @@ impl TraceService for TraceServiceImpl {
         &self,
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        _ = self.effect_handler.send_message(OTLPRequest::Traces(request.into_inner())).await;
+        _ = self.effect_handler.send_message(OTLPData::Traces(request.into_inner())).await;
         Ok(Response::new(ExportTraceServiceResponse {
             partial_success: None,
         }))
@@ -101,7 +101,7 @@ impl ProfilesService for ProfilesServiceImpl {
         &self,
         request: Request<ExportProfilesServiceRequest>,
     ) -> Result<Response<ExportProfilesServiceResponse>, Status> {
-        _ = self.effect_handler.send_message(OTLPRequest::Profiles(request.into_inner())).await;
+        _ = self.effect_handler.send_message(OTLPData::Profiles(request.into_inner())).await;
         Ok(Response::new(ExportProfilesServiceResponse {
             partial_success: None,
         }))
@@ -111,7 +111,7 @@ impl ProfilesService for ProfilesServiceImpl {
 
 /// Enum to represent received OTLP requests.
 #[derive(Debug, Clone)]
-pub enum OTLPRequest {
+pub enum OTLPData {
     /// Logs Object
     Logs(ExportLogsServiceRequest),
     /// Metrics Object
@@ -122,3 +122,13 @@ pub enum OTLPRequest {
     Profiles(ExportProfilesServiceRequest),
 }
 
+/// Enum to represent varioous compression methods
+#[derive(Debug)]
+pub enum CompressionMethod {
+    /// Fastest compression
+    Zstd,
+    /// Most compatible compression method
+    Gzip,
+    /// Used for legacy systems
+    Deflate,
+}

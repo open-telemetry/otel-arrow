@@ -20,7 +20,6 @@ use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use crate::schema::consts;
 use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch};
-use arrow::datatypes::Schema;
 use num_enum::TryFromPrimitive;
 use snafu::{OptionExt, ResultExt};
 use std::collections::HashMap;
@@ -134,10 +133,6 @@ where
                 MaybeDictArrayAccessor::<PrimitiveArray<<T as ParentId>::ArrayType>>::try_new(
                     parent_id_arr,
                 )?;
-
-            // Curious, but looks like this is not used anywhere in otel-arrow
-            // See https://github.com/open-telemetry/otel-arrow/blob/985aa1500a012859cec44855e187eacf46eda7c8/pkg/otel/common/otlp/attributes.go#L134
-            let _delta_encoded = is_delta_encoded(rb.schema_ref());
             let mut parent_id_decoder = T::new_decoder();
 
             let parent_id = parent_id_decoder.decode(
@@ -173,17 +168,4 @@ impl FindOrAppendValue<Option<AnyValue>> for Vec<KeyValue> {
         });
         &mut self.last_mut().unwrap().value
     }
-}
-
-/// Key form
-const DELTA_ENCODING_KEY: &str = "encoding";
-const DELTA_ENCODING_VALUE: &str = "delta";
-
-/// Checks if parent id field is delta encoded from the metadata of schema.
-fn is_delta_encoded(schema: &Schema) -> bool {
-    schema
-        .metadata
-        .get(DELTA_ENCODING_KEY)
-        .map(|v| v == DELTA_ENCODING_VALUE)
-        .unwrap_or(false)
 }

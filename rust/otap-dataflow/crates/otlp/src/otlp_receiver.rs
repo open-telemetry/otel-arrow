@@ -6,12 +6,12 @@
 //! ToDo implement config control message to handle live changing configuration
 //! ToDo Add HTTP support
 
-use crate::grpc::{LogsServiceImpl, MetricsServiceImpl, TraceServiceImpl, ProfilesServiceImpl, OTLPRequest};
+use crate::grpc::{LogsServiceImpl, MetricsServiceImpl, TraceServiceImpl, ProfilesServiceImpl, OTLPData, CompressionMethod};
 use crate::proto::opentelemetry::collector::{logs::v1::logs_service_server::LogsServiceServer,
     metrics::v1::metrics_service_server::MetricsServiceServer,
     trace::v1::trace_service_server::TraceServiceServer,
     profiles::v1development::profiles_service_server::ProfilesServiceServer};
-use otap_df_engine::receiver::{EffectHandlerTrait, Receiver, ControlMsgChannel, SendEffectHandler};
+use otap_df_engine::shared::receiver as shared;
 use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
 use async_trait::async_trait;
@@ -21,16 +21,6 @@ use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Server;
 
-/// Enum to represent varioous compression methods
-#[derive(Debug)]
-pub enum CompressionMethod {
-    /// Fastest compression
-    Zstd,
-    /// Most compatible compression method
-    Gzip,
-    /// Used for legacy systems
-    Deflate,
-}
 
 /// A Receiver that listens for OTLP messages
 pub struct OTLPReceiver {
@@ -39,13 +29,13 @@ pub struct OTLPReceiver {
 }
 
 #[async_trait]
-impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
+impl shared::Receiver<OTLPData>  for OTLPReceiver
 {
     async fn start(
         self: Box<Self>,
-        mut ctrl_msg_recv: ControlMsgChannel,
-        effect_handler: SendEffectHandler<OTLPRequest>,
-    ) -> Result<(), Error<OTLPRequest>> {
+        mut ctrl_msg_recv: shared::ControlChannel,
+        effect_handler: shared::EffectHandler<OTLPData>,
+    ) -> Result<(), Error<OTLPData>> {
 
         // create listener on addr provided from config
         let listener = effect_handler.tcp_listener(self.listening_addr)?;
@@ -117,7 +107,7 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
                 .serve_with_incoming(&mut listener_stream)=> {
                     if let Err(e) = result {
                         // Report receiver error
-                        return Err(Error::ReceiverError{receiver: effect_handler.receiver_name().to_string(), error: e.to_string()});
+                        return Err(Error::ReceiverError{receiver: effect_handler.receiver_name(), error: e.to_string()});
                     }
                 }
                 // A timeout branch in case no events occur.
@@ -134,7 +124,7 @@ impl Receiver<OTLPRequest, SendEffectHandler<OTLPRequest>>  for OTLPReceiver
 
 #[cfg(test)]
 mod tests {
-    use crate::grpc::OTLPRequest;
+    use crate::grpc::OTLPData;
     use crate::otlp_receiver::OTLPReceiver;
     use crate::proto::opentelemetry::collector::{
         logs::v1::{logs_service_client::LogsServiceClient, ExportLogsServiceRequest}, 
@@ -194,7 +184,7 @@ mod tests {
 
     /// Validation closure that checks the received message and counters (!Send context).
     fn validation_procedure()
-    -> impl FnOnce(NotSendValidateContext<OTLPRequest>) -> Pin<Box<dyn Future<Output = ()>>> {
+    -> impl FnOnce(NotSendValidateContext<OTLPData>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
             Box::pin(async move {
                 // check that messages have been sent through the effect_handler
@@ -247,7 +237,7 @@ mod tests {
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
         // create our receiver
-        let receiver = ReceiverWrapper::with_send(
+        let receiver = ReceiverWrapper::shared(
             OTLPReceiver {
                 listening_addr: addr,
                 compression: None,

@@ -7,11 +7,10 @@
 
 use crate::config::ReceiverConfig;
 use crate::error::Error;
-use crate::message::{ControlMsg, PDataReceiver};
-use crate::receiver::{ControlMsgChannel, ReceiverWrapper};
-use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime};
-use otap_df_channel::error::{RecvError, SendError};
-use otap_df_channel::mpsc;
+use crate::message::{ControlMsg, ControlSender, PDataReceiver};
+use crate::receiver::ReceiverWrapper;
+use crate::testing::{CtrlMsgCounters, setup_test_runtime};
+use otap_df_channel::error::RecvError;
 use serde_json::Value;
 use std::fmt::Debug;
 use std::marker::PhantomData;
@@ -22,7 +21,7 @@ use tokio::time::sleep;
 /// Context used during the test phase of a test.
 pub struct TestContext {
     /// Sender for control messages
-    control_sender: tokio::sync::mpsc::Sender<ControlMsg>,
+    control_sender: ControlSender,
 }
 
 /// Context used during the validation phase of a test (!Send context).
@@ -44,10 +43,7 @@ impl TestContext {
     ///
     /// Returns an error if the message could not be sent.
     pub async fn send_timer_tick(&self) -> Result<(), Error<ControlMsg>> {
-        self.control_sender
-            .send(ControlMsg::TimerTick {})
-            .await
-            .map_err(|e| Error::ChannelSendError(SendError::Closed(e.0)))
+        self.control_sender.send(ControlMsg::TimerTick {}).await
     }
 
     /// Sends a config control message.
@@ -59,7 +55,6 @@ impl TestContext {
         self.control_sender
             .send(ControlMsg::Config { config })
             .await
-            .map_err(|e| Error::ChannelSendError(SendError::Closed(e.0)))
     }
 
     /// Sends a shutdown control message.
@@ -78,7 +73,6 @@ impl TestContext {
                 reason: reason.to_owned(),
             })
             .await
-            .map_err(|e| Error::ChannelSendError(SendError::Closed(e.0)))
     }
 
     /// Sleeps for the specified duration.
@@ -127,11 +121,6 @@ pub struct TestRuntime<PData> {
     /// Local task set for non-Send futures
     local_tasks: LocalSet,
 
-    /// Sender for control messages
-    control_tx: tokio::sync::mpsc::Sender<ControlMsg>,
-    /// Receiver for control messages
-    control_rx: Option<tokio::sync::mpsc::Receiver<ControlMsg>>,
-
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
 
@@ -145,11 +134,9 @@ pub struct TestPhase<PData: Send> {
     /// Local task set for non-Send futures
     local_tasks: LocalSet,
 
-    ctrl_msg_chan: ControlMsgChannel,
+    control_sender: ControlSender,
     receiver: ReceiverWrapper<PData>,
     counters: CtrlMsgCounters,
-
-    control_sender: tokio::sync::mpsc::Sender<ControlMsg>,
 }
 
 /// Data and operations for the validation phase of a receiver.
@@ -175,14 +162,11 @@ impl<PData: Clone + Debug + Send + 'static> TestRuntime<PData> {
     pub fn new() -> Self {
         let config = ReceiverConfig::new("test_receiver");
         let (rt, local_tasks) = setup_test_runtime();
-        let (control_tx, control_rx) = tokio::sync::mpsc::channel(config.control_channel.capacity);
 
         Self {
             config,
             rt,
             local_tasks,
-            control_tx,
-            control_rx: Some(control_rx),
             counter: CtrlMsgCounters::new(),
             _pd: PhantomData,
         }
@@ -199,18 +183,13 @@ impl<PData: Clone + Debug + Send + 'static> TestRuntime<PData> {
     }
 
     /// Sets the receiver for the test runtime and returns a test phase.
-    pub fn set_receiver(mut self, receiver: ReceiverWrapper<PData>) -> TestPhase<PData> {
-        let control_rx = self
-            .control_rx
-            .take()
-            .expect("Control channel not initialized");
-
+    pub fn set_receiver(self, receiver: ReceiverWrapper<PData>) -> TestPhase<PData> {
+        let control_sender = receiver.control_sender();
         TestPhase {
             rt: self.rt,
             local_tasks: self.local_tasks,
             receiver,
-            ctrl_msg_chan: ControlMsgChannel::new(control_rx),
-            control_sender: self.control_tx.clone(),
+            control_sender,
             counters: self.counter,
         }
     }
@@ -226,13 +205,13 @@ impl<PData: Debug + Send + 'static> TestPhase<PData> {
         let pdata_receiver = self.receiver.take_pdata_receiver();
         let run_receiver_handle = self.local_tasks.spawn_local(async move {
             self.receiver
-                .start(self.ctrl_msg_chan)
+                .start()
                 .await
                 .expect("Receiver event loop failed");
         });
 
         let context = TestContext {
-            control_sender: self.control_sender.clone(),
+            control_sender: self.control_sender,
         };
         let run_test_handle = self.local_tasks.spawn_local(async move {
             f(context).await;
