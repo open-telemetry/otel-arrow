@@ -14,7 +14,6 @@ use crate::otlp::attributes::decoder::{
     Attrs16ParentIdDecoder, Attrs32ParentIdDecoder, AttrsParentIdDecoder,
 };
 use arrow::datatypes::{UInt16Type, UInt32Type};
-use num_enum::TryFromPrimitive;
 use std::hash::Hash;
 use std::ops::{Add, AddAssign};
 
@@ -38,19 +37,4 @@ impl ParentId for u32 {
     fn new_decoder() -> AttrsParentIdDecoder<Self> {
         Attrs32ParentIdDecoder::default()
     }
-}
-
-#[allow(clippy::enum_variant_names)]
-#[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
-#[repr(u8)]
-pub enum ParentIdEncoding {
-    /// ParentIdNoEncoding stores the parent ID as is.
-    ParentIdNoEncoding = 0,
-    /// ParentIdDeltaEncoding stores the parent ID as a delta from the previous
-    /// parent ID.
-    ParentIdDeltaEncoding = 1,
-    /// ParentIdDeltaGroupEncoding stores the parent ID as a delta from the
-    /// previous parent ID in the same group. A group is defined by the
-    /// combination Key and Value.
-    ParentIdDeltaGroupEncoding = 2,
 }
