@@ -14,9 +14,16 @@
 
 pub mod otlp;
 
-// TODO use the OTel-Rust API definitions, if such a dependency.
-
-// TODO: otherwise, specialize TraceID and SpanID for [u8; 8 or 16].
+// Note that these types are placeholders, we probably want to share
+// these definitions as well as the Prost/Tonic generation with the
+// OTel-Rust SDK where they are already defined. To avoid coordinating
+// these repositories in the short term, we provide definitions for
+// TraceID and SpanID.
+//
+// In particular, the OTel specification has careful words about how
+// to format and parse these two fields, which are non-standard with
+// respect to JSON, and the OTel-Rust SDK implements this aspect of
+// the spec.
 
 #[derive(Clone, Copy, Debug)]
 pub struct TraceID([u8; 16]);

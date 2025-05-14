@@ -10,19 +10,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use prost::Message;
 
 use otel_arrow_rust::pdata::*;
 use otel_arrow_rust::proto::opentelemetry::common::v1::*;
 use otel_arrow_rust::proto::opentelemetry::logs::v1::*;
-use otel_arrow_rust::proto::opentelemetry::metrics::v1::*;
 use otel_arrow_rust::proto::opentelemetry::metrics::v1::exponential_histogram_data_point::*;
 use otel_arrow_rust::proto::opentelemetry::metrics::v1::summary_data_point::*;
+use otel_arrow_rust::proto::opentelemetry::metrics::v1::*;
 use otel_arrow_rust::proto::opentelemetry::resource::v1::*;
-use otel_arrow_rust::proto::opentelemetry::trace::v1::*;
 use otel_arrow_rust::proto::opentelemetry::trace::v1::span::*;
 use otel_arrow_rust::proto::opentelemetry::trace::v1::status::*;
+use otel_arrow_rust::proto::opentelemetry::trace::v1::*;
 
 fn create_traces_data() -> TracesData {
     let kv1 = KeyValue::new("k1", AnyValue::new_string("v1"));
@@ -147,19 +147,21 @@ fn create_metrics_data() -> MetricsData {
     );
 
     let is1 = InstrumentationScope::new("library");
-    let sm1 = ScopeMetrics::build(is1).metrics(vec![
-        sum_metric,
-        gauge_metric,
-        histogram_metric,
-        summary_metric,
-        exp_histogram_metric,
-    ]).finish();
+    let sm1 = ScopeMetrics::build(is1)
+        .metrics(vec![
+            sum_metric,
+            gauge_metric,
+            histogram_metric,
+            summary_metric,
+            exp_histogram_metric,
+        ])
+        .finish();
 
     let res = Resource::new(vec![
-	KeyValue::new("k1", AnyValue::new_string("v1")),
-	KeyValue::new("k2", AnyValue::new_string("v2")),
+        KeyValue::new("k1", AnyValue::new_string("v1")),
+        KeyValue::new("k2", AnyValue::new_string("v2")),
     ]);
-    
+
     let rm1 = ResourceMetrics::build(res)
         .scope_metrics(vec![sm1])
         .finish();
@@ -169,11 +171,11 @@ fn create_metrics_data() -> MetricsData {
 
 fn create_logs_data() -> LogsData {
     let kvs = vec![
-	KeyValue::new("k1", AnyValue::new_string("v1")),
-	KeyValue::new("k2", AnyValue::new_string("v2")),
+        KeyValue::new("k1", AnyValue::new_string("v1")),
+        KeyValue::new("k2", AnyValue::new_string("v2")),
     ];
     let res = Resource::new(kvs.clone());
-    
+
     let is1 = InstrumentationScope::new("library");
 
     let lr1 = LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
@@ -199,18 +201,14 @@ fn create_logs_data() -> LogsData {
     let sl2 = sl1.clone();
     let sls = vec![sl1, sl2];
 
-    LogsData::new(
-	vec![ResourceLogs::build(res)
-             .scope_logs(sls)
-             .finish()],
-    )
+    LogsData::new(vec![ResourceLogs::build(res).scope_logs(sls).finish()])
 }
 
 fn otlp_pdata_to_bytes_traces(c: &mut Criterion) {
     let mut group = c.benchmark_group("OTLP Traces Serialization");
-    
+
     let traces_data = create_traces_data();
-    
+
     group.bench_function("TracesData", |b| {
         b.iter(|| {
             // Use black_box to prevent the compiler from optimizing away the results
@@ -225,9 +223,9 @@ fn otlp_pdata_to_bytes_traces(c: &mut Criterion) {
 
 fn otlp_pdata_to_bytes_metrics(c: &mut Criterion) {
     let mut group = c.benchmark_group("OTLP Metrics Serialization");
-    
+
     let metrics_data = create_metrics_data();
-    
+
     group.bench_function("MetricsData", |b| {
         b.iter(|| {
             let mut buf = Vec::new();
@@ -241,9 +239,9 @@ fn otlp_pdata_to_bytes_metrics(c: &mut Criterion) {
 
 fn otlp_pdata_to_bytes_logs(c: &mut Criterion) {
     let mut group = c.benchmark_group("OTLP Logs Serialization");
-    
+
     let resource_logs = create_logs_data();
-    
+
     group.bench_function("ResourceLogs", |b| {
         b.iter(|| {
             let mut buf = Vec::new();
