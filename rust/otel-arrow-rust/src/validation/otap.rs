@@ -68,10 +68,11 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
         let (tx, rx) = tokio::sync::mpsc::channel(100); // TODO?
 
         // Spawn a task to process incoming arrow records and convert them to OTLP
-        tokio::spawn(async move {
+        #[allow(clippy::let_underscore_future)]
+        let _ = tokio::spawn(async move {
             // Helper function to process a batch and send appropriate status
             async fn process_and_send(
-                consumer: &mut crate::Consumer,
+                consumer: &mut Consumer,
                 batch: &mut BatchArrowRecords,
                 receiver: &TestReceiver<ExportMetricsServiceRequest>,
                 tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
@@ -90,7 +91,7 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
                 .map_err(|_| ())
             }
 
-            let mut consumer = crate::Consumer::default();
+            let mut consumer = Consumer::default();
             // Process messages until stream ends or error occurs
             while let Ok(Some(mut batch)) = input_stream.message().await {
                 // Process batch and send status, break on client disconnection
@@ -140,14 +141,14 @@ impl ServiceOutputType for OTAPMetricsOutputType {
 
 /// Receives an Arrow batch and convert to OTLP.
 async fn process_arrow_metrics(
-    consumer: &mut crate::Consumer,
+    consumer: &mut Consumer,
     batch: &mut BatchArrowRecords,
     receiver: &TestReceiver<ExportMetricsServiceRequest>,
 ) -> error::Result<()> {
     let otlp_metrics = consumer
         .consume_metrics_batches(batch)
         .context(error::OTelArrowSnafu)?;
-    receiver
+    let _ = receiver
         .process_export_request::<ExportMetricsServiceRequest>(
             Request::new(otlp_metrics),
             "metrics",
@@ -188,12 +189,13 @@ impl ArrowLogsService for OTAPLogsAdapter {
 
         let (tx, rx) = tokio::sync::mpsc::channel(100);
 
-        tokio::spawn(async move {
+        #[allow(clippy::let_underscore_future)]
+        let _ = tokio::spawn(async move {
             let mut consumer = Consumer::default();
             while let Ok(Some(mut batch)) = input_stream.message().await {
                 let status_result = match consumer.consume_logs_batches(&mut batch) {
                     Ok(otlp_logs) => {
-                        receiver
+                        let _ = receiver
                             .process_export_request::<ExportLogsServiceRequest>(
                                 Request::new(otlp_logs),
                                 "logs",

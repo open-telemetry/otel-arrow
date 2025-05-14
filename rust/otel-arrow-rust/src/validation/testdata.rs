@@ -61,7 +61,7 @@ pub mod metrics {
             .finish();
 
         let metric = Metric::build_gauge("test_gauge", Gauge::new(vec![data_point]))
-            .description(format!("Test metric"))
+            .description("Test metric".to_string())
             .unit("count")
             .finish();
 
@@ -106,7 +106,7 @@ pub mod logs {
     pub fn create_single_request() -> ExportLogsServiceRequest {
         let log_record = LogRecord::build(TIMESTAMP, SeverityNumber::Info, EVENT_NAME)
             .severity_text("INFO")
-            .body(AnyValue::new_string(format!("Test log message")))
+            .body(AnyValue::new_string("Test log message".to_string()))
             .attributes(vec![
                 KeyValue::new("test.attribute", AnyValue::new_string("test value")),
                 KeyValue::new(
@@ -121,8 +121,8 @@ pub mod logs {
                     AnyValue::new_array((0..3).map(AnyValue::new_int).collect::<Vec<_>>()),
                 ),
             ])
-            .trace_id((0u8..16u8).into_iter().collect::<Vec<u8>>())
-            .span_id((0u8..8u8).into_iter().collect::<Vec<u8>>())
+            .trace_id((0u8..16u8).collect::<Vec<u8>>())
+            .span_id((0u8..8u8).collect::<Vec<u8>>())
             .finish();
 
         to_export_logs_request(vec![log_record])
@@ -140,8 +140,8 @@ pub mod logs {
                 "test.attribute",
                 AnyValue::new_string("test value"),
             )])
-            .trace_id((0u8..16u8).into_iter().collect::<Vec<u8>>())
-            .span_id((0u8..8u8).into_iter().collect::<Vec<u8>>())
+            .trace_id((0u8..16u8).collect::<Vec<u8>>())
+            .span_id((0u8..8u8).collect::<Vec<u8>>())
             .finish();
 
         let map_body_log_record = LogRecord::build(TIMESTAMP, SeverityNumber::Debug, EVENT_NAME)
@@ -170,8 +170,8 @@ pub mod logs {
                 "test.attribute",
                 AnyValue::new_string("test value2"),
             )])
-            .trace_id((8u8..24u8).into_iter().collect::<Vec<u8>>())
-            .span_id((8u8..16u8).into_iter().collect::<Vec<u8>>())
+            .trace_id((8u8..24u8).collect::<Vec<u8>>())
+            .span_id((8u8..16u8).collect::<Vec<u8>>())
             .finish();
 
         to_export_logs_request(vec![list_body_log_record, map_body_log_record])

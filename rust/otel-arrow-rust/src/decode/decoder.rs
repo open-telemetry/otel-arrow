@@ -50,6 +50,7 @@ impl StreamConsumer {
     }
 }
 
+/// Consumer consumes OTAP `BatchArrowRecords` and converts them into OTLP messages.
 #[derive(Default)]
 pub struct Consumer {
     stream_consumers: HashMap<String, StreamConsumer>,
@@ -105,6 +106,9 @@ impl Consumer {
         Ok(records)
     }
 
+    /// Consumes all the arrow payloads in the passed OTAP `BatchArrayRecords` and decodes them
+    /// into OTLP messages, then constructs the `ExportMetricsServiceRequest` containing the
+    /// metrics messages
     pub fn consume_metrics_batches(
         &mut self,
         records: &mut BatchArrowRecords,
@@ -124,6 +128,9 @@ impl Consumer {
         }
     }
 
+    /// Consumes all the arrow payloads in the passed OTAP `BatchArrayRecords` and decodes them
+    /// into OTLP messages, then constructs the `ExportLogsServiceRequest` containing the
+    /// logs messages
     pub fn consume_logs_batches(
         &mut self,
         records: &mut BatchArrowRecords,

@@ -176,6 +176,6 @@ impl FindOrAppendValue<Option<AnyValue>> for Vec<KeyValue> {
             key: key.to_string(),
             value: None,
         });
-        &mut self.last_mut().unwrap().value
+        &mut self.last_mut().expect("vec is not empty").value
     }
 }

@@ -206,12 +206,13 @@ pub fn logs_from(
                 resource.dropped_attributes_count = dropped_attributes_count;
             }
 
-            if let Some(res_id) = resource_arrays.id.value_at(idx)
-                && let Some(attrs) = related_data
+            if let Some(res_id) = resource_arrays.id.value_at(idx) {
+                if let Some(attrs) = related_data
                     .res_attr_map_store
                     .attribute_by_delta_id(res_id)
-            {
-                resource.attributes = attrs.to_vec();
+                {
+                    resource.attributes = attrs.to_vec();
+                }
             }
 
             resource_logs.schema_url = resource_arrays.schema_url.value_at(idx).unwrap_or_default();
@@ -223,12 +224,13 @@ pub fn logs_from(
         if prev_scope_id != Some(scope_id) {
             prev_scope_id = Some(scope_id);
             let mut scope = scope_arrays.create_instrumentation_scope(idx);
-            if let Some(scope_id) = scope_delta_id_opt
-                && let Some(attrs) = related_data
+            if let Some(scope_id) = scope_delta_id_opt {
+                if let Some(attrs) = related_data
                     .scope_attr_map_store
                     .attribute_by_delta_id(scope_id)
-            {
-                scope.attributes = attrs.to_vec();
+                {
+                    scope.attributes = attrs.to_vec();
+                }
             }
 
             // safety: we must have appended at least one resource logs when reach here
