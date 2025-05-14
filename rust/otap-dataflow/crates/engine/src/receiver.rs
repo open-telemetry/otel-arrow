@@ -107,7 +107,7 @@ impl<PData> ReceiverWrapper<PData> {
                 control_receiver,
                 ..
             } => {
-                let ctrl_msg_chan = local::ControlChannel::new(control_receiver);
+                let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
             ReceiverWrapper::Shared {
@@ -178,7 +178,7 @@ mod tests {
     impl local::Receiver<TestMsg> for TestReceiver {
         async fn start(
             self: Box<Self>,
-            ctrl_msg_recv: local::ControlChannel,
+            mut ctrl_msg_recv: local::ControlChannel,
             effect_handler: local::EffectHandler<TestMsg>,
         ) -> Result<(), Error<TestMsg>> {
             // Bind to an ephemeral port.
