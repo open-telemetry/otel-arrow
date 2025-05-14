@@ -24,6 +24,7 @@ pub mod otlp;
 pub struct TraceID([u8; 16]);
 
 impl TraceID {
+    #[must_use]
     pub fn new(value: &[u8; 16]) -> TraceID {
         TraceID(*value)
     }
@@ -39,6 +40,7 @@ impl From<TraceID> for Vec<u8> {
 pub struct SpanID([u8; 8]);
 
 impl SpanID {
+    #[must_use]
     pub fn new(value: &[u8; 8]) -> SpanID {
         SpanID(*value)
     }

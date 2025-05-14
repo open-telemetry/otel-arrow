@@ -61,9 +61,9 @@ semicolon_in_expressions_from_macros = "warn"
 unsafe_op_in_unsafe_fn = "warn"
 unused_macro_rules = "warn"
 
-[workspace.lints.clippy]
+[lints.clippy]
 # Strong defaults: deny problematic patterns
-cargo = { level = "deny", priority = -1 }
+# cargo = { level = "deny", priority = -1 }
 correctness = { level = "deny", priority = -1 }
 perf = { level = "deny", priority = -1 }
 complexity = { level = "warn", priority = -1 }

@@ -109,7 +109,7 @@ impl CollectorProcess {
 
         status
             .success()
-            .then(|| ())
+            .then_some(())
             .context(error::BadExitStatusSnafu {
                 code: status.code(),
             })
@@ -123,8 +123,7 @@ impl CollectorProcess {
         // Create a unique temporary config file for the collector
         // with a random identifier to prevent collision.
         let random_id = format!("{:016x}", rand::random::<u64>());
-        let config_path = PathBuf::from(env::temp_dir())
-            .join(format!("otel_collector_config_{}.yaml", random_id));
+        let config_path = env::temp_dir().join(format!("otel_collector_config_{}.yaml", random_id));
 
         // Write the config to the file
         let mut file =
@@ -166,7 +165,7 @@ impl CollectorProcess {
         let timeout_duration = Duration::from_secs(READY_TIMEOUT_SECONDS);
 
         // Wait for the ready message with timeout and return the collector process when ready
-        _ = tokio::time::timeout(timeout_duration, ready_rx)
+        tokio::time::timeout(timeout_duration, ready_rx)
             .await
             .context(error::ReadyTimeoutSnafu)?
             .context(error::ChannelClosedSnafu)?;

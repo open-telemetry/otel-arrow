@@ -12,6 +12,11 @@
 
 #[path = "."]
 pub mod opentelemetry {
+    // disable that #[must_use] attribute must be used (where applicable)
+    // for the generated proto code. There's no way in prost to add this
+    // attribute generated to  methods
+    #![allow(clippy::must_use_candidate)]
+
     #[path = "."]
     pub mod trace {
         #[path = "opentelemetry.proto.trace.v1.rs"]

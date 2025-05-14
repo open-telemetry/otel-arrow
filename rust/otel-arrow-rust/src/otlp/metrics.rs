@@ -257,6 +257,6 @@ where
 {
     fn append_and_get(&mut self) -> &mut T {
         self.push(T::default());
-        self.last_mut().unwrap()
+        self.last_mut().expect("vec is not empty")
     }
 }
