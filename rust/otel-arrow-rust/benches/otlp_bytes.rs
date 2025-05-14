@@ -10,6 +10,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! This crate benchmarks OTLP and OTAP.
+
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use prost::Message;
 
@@ -91,10 +93,10 @@ fn create_metrics_data() -> MetricsData {
     let histogram_metric = Metric::new_histogram(
         "histogram",
         Histogram::new(AggregationTemporality::Delta, vec![
-            HistogramDataPoint::build(125_000_000_000u64, &[1u64, 2u64, 3u64], &[1.0, 10.0])
+            HistogramDataPoint::build(125_000_000_000u64, [1u64, 2u64, 3u64], [1.0, 10.0])
                 .start_time_unix_nano(124_000_000_000u64)
                 .finish(),
-            HistogramDataPoint::build(126_000_000_000u64, &[3u64, 2u64, 1u64], &[1.0, 10.0])
+            HistogramDataPoint::build(126_000_000_000u64, [3u64, 2u64, 1u64], [1.0, 10.0])
                 .start_time_unix_nano(125_000_000_000u64)
                 .count(100u64)
                 .sum(1000.0)
@@ -209,11 +211,11 @@ fn otlp_pdata_to_bytes_traces(c: &mut Criterion) {
 
     let traces_data = create_traces_data();
 
-    group.bench_function("TracesData", |b| {
+    _ = group.bench_function("TracesData", |b| {
         b.iter(|| {
             // Use black_box to prevent the compiler from optimizing away the results
             let mut buf = Vec::new();
-            black_box(traces_data.encode(&mut buf)).unwrap();
+            black_box(traces_data.encode(&mut buf)).expect("encoding success");
             black_box(buf)
         })
     });
@@ -226,10 +228,10 @@ fn otlp_pdata_to_bytes_metrics(c: &mut Criterion) {
 
     let metrics_data = create_metrics_data();
 
-    group.bench_function("MetricsData", |b| {
+    _ = group.bench_function("MetricsData", |b| {
         b.iter(|| {
             let mut buf = Vec::new();
-            black_box(metrics_data.encode(&mut buf)).unwrap();
+            black_box(metrics_data.encode(&mut buf)).expect("encoding success");
             black_box(buf)
         })
     });
@@ -242,10 +244,10 @@ fn otlp_pdata_to_bytes_logs(c: &mut Criterion) {
 
     let resource_logs = create_logs_data();
 
-    group.bench_function("ResourceLogs", |b| {
+    _ = group.bench_function("ResourceLogs", |b| {
         b.iter(|| {
             let mut buf = Vec::new();
-            black_box(resource_logs.encode(&mut buf)).unwrap();
+            black_box(resource_logs.encode(&mut buf)).expect("encoding success");
             black_box(buf)
         })
     });
