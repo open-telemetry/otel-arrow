@@ -9,11 +9,8 @@ from opentelemetry.proto.logs.v1 import logs_pb2
 from opentelemetry.proto.common.v1 import common_pb2
 
 def create_log_record():
-    # Using a hardcoded timestamp (May 14, 2025 12:00:00 UTC in nanoseconds)
-    # This avoids the system call overhead of time.time_ns()
-    hardcoded_time_ns = 1747065600000000000
     return logs_pb2.LogRecord(
-        time_unix_nano=hardcoded_time_ns,
+        time_unix_nano=int(time.time_ns()),
         severity_text="INFO",
         severity_number=9,
         body=common_pb2.AnyValue(string_value="This is a test log message"),
@@ -35,17 +32,19 @@ def worker_thread(thread_id, args, end_time):
     channel = grpc.insecure_channel(endpoint)
     stub = logs_service_pb2_grpc.LogsServiceStub(channel)
 
+    # Pre-create the batch once and reuse it
+    log_batch = [create_log_record() for _ in range(args.batch_size)]
+    scope_logs = logs_pb2.ScopeLogs(log_records=log_batch)
+    resource_logs = logs_pb2.ResourceLogs(
+        scope_logs=[scope_logs]
+    )
+    request = logs_service_pb2.ExportLogsServiceRequest(
+        resource_logs=[resource_logs]
+    )
+
     sent = 0
     failed = 0
     while time.time() < end_time:
-        log_batch = [create_log_record() for _ in range(args.batch_size)]
-        scope_logs = logs_pb2.ScopeLogs(log_records=log_batch)
-        resource_logs = logs_pb2.ResourceLogs(
-            scope_logs=[scope_logs]
-        )
-        request = logs_service_pb2.ExportLogsServiceRequest(
-            resource_logs=[resource_logs]
-        )
         try:
             stub.Export(request)
             sent += args.batch_size
