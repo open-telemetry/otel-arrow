@@ -10,6 +10,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![allow(missing_docs)]
+
 //! This crate benchmarks OTLP and OTAP.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
