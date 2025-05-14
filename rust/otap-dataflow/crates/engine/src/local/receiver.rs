@@ -92,13 +92,13 @@ pub trait Receiver<PData> {
 /// This structure wraps a receiver end of a channel that carries [`ControlMsg`]
 /// values used to control the behavior of a receiver at runtime.
 pub struct ControlChannel {
-    rx: mpsc::Receiver<ControlMsg>,
+    rx: crate::message::Receiver<ControlMsg>,
 }
 
 impl ControlChannel {
     /// Creates a new `ControlChannelLocal` with the given receiver.
     #[must_use]
-    pub fn new(rx: mpsc::Receiver<ControlMsg>) -> Self {
+    pub fn new(rx: crate::message::Receiver<ControlMsg>) -> Self {
         Self { rx }
     }
 
@@ -107,7 +107,7 @@ impl ControlChannel {
     /// # Errors
     ///
     /// Returns a [`RecvError`] if the channel is closed.
-    pub async fn recv(&self) -> Result<ControlMsg, RecvError> {
+    pub async fn recv(&mut self) -> Result<ControlMsg, RecvError> {
         self.rx.recv().await
     }
 }
