@@ -165,20 +165,20 @@ impl<Data> Message<Data> {
 /// It can be either a not send or a send receiver implementation.
 pub enum PDataReceiver<PData> {
     /// A MPSC receiver that does NOT implement [`Send`].
-    NotSend(mpsc::Receiver<PData>),
+    Local(Receiver<PData>),
     /// A MPSC receiver that implements [`Send`].
-    Send(tokio::sync::mpsc::Receiver<PData>),
+    Shared(tokio::sync::mpsc::Receiver<PData>),
 }
 
 impl<PData> PDataReceiver<PData> {
     /// Returns the next message from the receiver.
     pub async fn recv(&mut self) -> Result<PData, Error<PData>> {
         match self {
-            PDataReceiver::NotSend(receiver) => receiver
+            PDataReceiver::Local(receiver) => receiver
                 .recv()
                 .await
                 .map_err(|e| Error::ChannelRecvError(e)),
-            PDataReceiver::Send(receiver) => receiver
+            PDataReceiver::Shared(receiver) => receiver
                 .recv()
                 .await
                 .ok_or(Error::ChannelRecvError(RecvError::Closed)),
@@ -189,12 +189,12 @@ impl<PData> PDataReceiver<PData> {
     pub async fn drain_pdata(&mut self) -> Vec<PData> {
         let mut emitted = Vec::new();
         match self {
-            PDataReceiver::NotSend(receiver) => {
+            PDataReceiver::Local(receiver) => {
                 while let Ok(msg) = receiver.try_recv() {
                     emitted.push(msg);
                 }
             }
-            PDataReceiver::Send(receiver) => {
+            PDataReceiver::Shared(receiver) => {
                 while let Ok(msg) = receiver.try_recv() {
                     emitted.push(msg);
                 }
@@ -245,6 +245,14 @@ impl<T> Receiver<T> {
         match self {
             Receiver::Local(receiver) => receiver.recv().await,
             Receiver::Shared(receiver) => receiver.recv().await.ok_or(RecvError::Closed),
+        }
+    }
+
+    /// Tries to receive a message from the channel.
+    pub fn try_recv(&mut self) -> Result<T, RecvError> {
+        match self {
+            Receiver::Local(receiver) => receiver.try_recv(),
+            Receiver::Shared(receiver) => receiver.try_recv().map_err(|_| RecvError::Closed),
         }
     }
 }

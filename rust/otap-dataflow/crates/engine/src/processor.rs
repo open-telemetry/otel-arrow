@@ -10,7 +10,7 @@
 use crate::config::ProcessorConfig;
 use crate::error::Error;
 use crate::local::processor as local;
-use crate::message::{ControlMsg, Message, PDataReceiver};
+use crate::message::{ControlMsg, Message, PDataReceiver, Receiver, Sender};
 use crate::shared::processor as shared;
 use otap_df_channel::mpsc;
 
@@ -27,11 +27,11 @@ pub enum ProcessorWrapper<PData> {
         /// The effect handler for the processor.
         effect_handler: local::EffectHandler<PData>,
         /// A sender for control messages.
-        control_sender: mpsc::Sender<ControlMsg>,
+        control_sender: Sender<ControlMsg>,
         /// A receiver for control messages.
-        control_receiver: mpsc::Receiver<ControlMsg>,
+        control_receiver: Receiver<ControlMsg>,
         /// A receiver for pdata messages.
-        pdata_receiver: Option<mpsc::Receiver<PData>>,
+        pdata_receiver: Option<Receiver<PData>>,
     },
     /// A processor with a `Send` implementation.
     Shared {
@@ -62,9 +62,9 @@ impl<PData> ProcessorWrapper<PData> {
         ProcessorWrapper::Local {
             processor: Box::new(processor),
             effect_handler: local::EffectHandler::new(config.name.clone(), pdata_sender),
-            control_sender,
-            control_receiver,
-            pdata_receiver: Some(pdata_receiver),
+            control_sender: Sender::Local(control_sender),
+            control_receiver: Receiver::Local(control_receiver),
+            pdata_receiver: Some(Receiver::Local(pdata_receiver)),
         }
     }
 
@@ -107,10 +107,10 @@ impl<PData> ProcessorWrapper<PData> {
     pub fn take_pdata_receiver(&mut self) -> PDataReceiver<PData> {
         match self {
             ProcessorWrapper::Local { pdata_receiver, .. } => {
-                PDataReceiver::NotSend(pdata_receiver.take().expect("pdata_receiver is None"))
+                PDataReceiver::Local(pdata_receiver.take().expect("pdata_receiver is None"))
             }
             ProcessorWrapper::Shared { pdata_receiver, .. } => {
-                PDataReceiver::Send(pdata_receiver.take().expect("pdata_receiver is None"))
+                PDataReceiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
             }
         }
     }

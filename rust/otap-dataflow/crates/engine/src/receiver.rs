@@ -9,7 +9,7 @@
 use crate::config::ReceiverConfig;
 use crate::error::Error;
 use crate::local::receiver as local;
-use crate::message::{ControlMsg, ControlSender, PDataReceiver};
+use crate::message::{ControlMsg, ControlSender, PDataReceiver, Receiver};
 use crate::shared::receiver as shared;
 use otap_df_channel::mpsc;
 
@@ -29,7 +29,7 @@ pub enum ReceiverWrapper<PData> {
         /// A receiver for control messages.
         control_receiver: mpsc::Receiver<ControlMsg>,
         /// A receiver for pdata messages.
-        pdata_receiver: Option<mpsc::Receiver<PData>>,
+        pdata_receiver: Option<Receiver<PData>>,
     },
     /// A receiver with a `Send` implementation.
     Shared {
@@ -62,7 +62,7 @@ impl<PData> ReceiverWrapper<PData> {
             receiver: Box::new(receiver),
             control_sender,
             control_receiver,
-            pdata_receiver: Some(pdata_receiver),
+            pdata_receiver: Some(Receiver::Local(pdata_receiver)),
         }
     }
 
@@ -126,10 +126,10 @@ impl<PData> ReceiverWrapper<PData> {
     pub fn take_pdata_receiver(&mut self) -> PDataReceiver<PData> {
         match self {
             ReceiverWrapper::Local { pdata_receiver, .. } => {
-                PDataReceiver::NotSend(pdata_receiver.take().expect("pdata_receiver is None"))
+                PDataReceiver::Local(pdata_receiver.take().expect("pdata_receiver is None"))
             }
             ReceiverWrapper::Shared { pdata_receiver, .. } => {
-                PDataReceiver::Send(pdata_receiver.take().expect("pdata_receiver is None"))
+                PDataReceiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
             }
         }
     }
