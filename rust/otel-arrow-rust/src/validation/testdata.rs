@@ -85,17 +85,57 @@ pub mod logs {
     };
     use crate::proto::opentelemetry::resource::v1::Resource;
 
+    // TODO after we support event_name, set this to non-empty string
+    // to ensure we correctly decode it
+    // https://github.com/open-telemetry/otel-arrow/issues/422
+    const EVENT_NAME: &str = "";
+    const TIMESTAMP: u64 = 1619712000000000000u64;
+
+    pub fn to_export_logs_request(log_records: Vec<LogRecord>) -> ExportLogsServiceRequest {
+        ExportLogsServiceRequest::new(vec![
+            ResourceLogs::build(Resource::default())
+                .scope_logs(vec![
+                    ScopeLogs::build(InstrumentationScope::default())
+                        .log_records(log_records)
+                        .finish(),
+                ])
+                .finish(),
+        ])
+    }
+
     pub fn create_single_request() -> ExportLogsServiceRequest {
-        let timestamp = 1619712000000000000u64;
-
-        // TODO after we support event_name, set this to non-empty string
-        // to ensure we correctly decode it
-        // https://github.com/open-telemetry/otel-arrow/issues/422
-        let event_name = "";
-
-        let log_record = LogRecord::build(timestamp, SeverityNumber::Info, event_name)
+        let log_record = LogRecord::build(TIMESTAMP, SeverityNumber::Info, EVENT_NAME)
             .severity_text("INFO")
             .body(AnyValue::new_string(format!("Test log message")))
+            .attributes(vec![
+                KeyValue::new("test.attribute", AnyValue::new_string("test value")),
+                KeyValue::new(
+                    "test.map.attribute",
+                    AnyValue::new_kvlist(vec![KeyValue::new(
+                        "attr_map_k1",
+                        AnyValue::new_string("attr_map_v1"),
+                    )]),
+                ),
+                KeyValue::new(
+                    "test.list.attribute",
+                    AnyValue::new_array((0..3).map(AnyValue::new_int).collect::<Vec<_>>()),
+                ),
+            ])
+            .trace_id((0u8..16u8).into_iter().collect::<Vec<u8>>())
+            .span_id((0u8..8u8).into_iter().collect::<Vec<u8>>())
+            .finish();
+
+        to_export_logs_request(vec![log_record])
+    }
+
+    /// Create requests where OTAP should serialize the log bodies using cbor
+    pub fn create_request_with_serialized_bodies() -> ExportLogsServiceRequest {
+        let list_body_log_record = LogRecord::build(TIMESTAMP, SeverityNumber::Info, EVENT_NAME)
+            .severity_text("INFO")
+            .body(AnyValue::new_array(vec![
+                AnyValue::new_string("test1"),
+                AnyValue::new_string("test2"),
+            ]))
             .attributes(vec![KeyValue::new(
                 "test.attribute",
                 AnyValue::new_string("test value"),
@@ -104,14 +144,36 @@ pub mod logs {
             .span_id((0u8..8u8).into_iter().collect::<Vec<u8>>())
             .finish();
 
-        ExportLogsServiceRequest::new(vec![
-            ResourceLogs::build(Resource::default())
-                .scope_logs(vec![
-                    ScopeLogs::build(InstrumentationScope::default())
-                        .log_records(vec![log_record])
-                        .finish(),
-                ])
-                .finish(),
-        ])
+        let map_body_log_record = LogRecord::build(TIMESTAMP, SeverityNumber::Debug, EVENT_NAME)
+            .severity_text("DEBUG")
+            .body(AnyValue::new_kvlist(vec![
+                // test serialization/deserialization of all supported types ..
+                KeyValue::new("test_map_str", AnyValue::new_string("str_val")),
+                KeyValue::new("test_map_int", AnyValue::new_int(99)),
+                KeyValue::new("test_map_f64", AnyValue::new_double(5.0)),
+                KeyValue::new("test_map_bool", AnyValue::new_bool(true)),
+                KeyValue::new("test_map_bytes", AnyValue::new_bytes(b"123")),
+                KeyValue::new("test_map_nil", AnyValue { value: None }),
+                KeyValue::new(
+                    "test_map_nested_list",
+                    AnyValue::new_array(vec![AnyValue::new_string("list_val_1")]),
+                ),
+                KeyValue::new(
+                    "test_map_nested_map",
+                    AnyValue::new_kvlist(vec![KeyValue::new(
+                        "child_map_key_1",
+                        AnyValue::new_string("child_str_val_1"),
+                    )]),
+                ),
+            ]))
+            .attributes(vec![KeyValue::new(
+                "test.attribute",
+                AnyValue::new_string("test value2"),
+            )])
+            .trace_id((8u8..24u8).into_iter().collect::<Vec<u8>>())
+            .span_id((8u8..16u8).into_iter().collect::<Vec<u8>>())
+            .finish();
+
+        to_export_logs_request(vec![list_body_log_record, map_body_log_record])
     }
 }
