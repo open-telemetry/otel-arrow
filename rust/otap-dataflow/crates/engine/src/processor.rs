@@ -1,36 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Set of traits and structures used to implement processors.
+//! Processor wrapper used to provide a unified interface to the pipeline engine that abstracts over
+//! the fact that processor implementations may be `!Send` or `Send`.
 //!
-//! A processor is a node in the pipeline that transforms, filters, or otherwise processes messages
-//! as they flow through the pipeline. Processors can perform operations such as:
-//!
-//! 1. Filtering messages based on certain criteria
-//! 2. Transforming message content or format
-//! 3. Aggregating multiple messages into a single message
-//! 4. Splitting a single message into multiple messages
-//! 5. Adding or removing attributes from messages
-//!
-//! # Lifecycle
-//!
-//! 1. The processor is instantiated and configured
-//! 2. The processor receives and processes both data messages and control messages
-//! 3. For each message, the processor can transform it, filter it, or split it into multiple messages
-//! 4. The processor can maintain state between processing calls if needed
-//! 5. The processor responds to control messages such as Config, TimerTick, or Shutdown
-//! 6. The processor shuts down when it receives a `Shutdown` control message or encounters a fatal error
-//!
-//! # Thread Safety
-//!
-//! Note that this trait uses `#[async_trait(?Send)]`, meaning implementations
-//! are not required to be thread-safe. If you need to implement a processor that requires `Send`,
-//! you can use the [`SendEffectHandler`] type. The default effect handler is `!Send` (see
-//! [`NotSendEffectHandler`]).
-//!
-//! # Scalability
-//!
-//! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
-//! in parallel on different cores, each with its own processor instance.
+//! For more details on the `!Send` implementation of a processor, see [`local::Processor`].
+//! See [`shared::Processor`] for the Send implementation.
+
 
 use crate::config::ProcessorConfig;
 use crate::error::Error;
@@ -45,7 +20,7 @@ use otap_df_channel::mpsc;
 /// handler type. This is the only type that the pipeline engine will use in order to be agnostic to
 /// the effect handler type.
 pub enum ProcessorWrapper<PData> {
-    /// A processor with a `!Send` effect handler.
+    /// A processor with a `!Send` implementation.
     Local {
         /// The processor instance.
         processor: Box<dyn local::Processor<PData>>,
@@ -58,7 +33,7 @@ pub enum ProcessorWrapper<PData> {
         /// A receiver for pdata messages.
         pdata_receiver: Option<mpsc::Receiver<PData>>,
     },
-    /// A processor with a `Send` effect handler.
+    /// A processor with a `Send` implementation.
     Shared {
         /// The processor instance.
         processor: Box<dyn shared::Processor<PData>>,
