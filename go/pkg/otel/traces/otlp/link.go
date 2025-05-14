@@ -22,7 +22,6 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	arrowutils "github.com/open-telemetry/otel-arrow/pkg/arrow"
-	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/otlp"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
 	tarrow "github.com/open-telemetry/otel-arrow/pkg/otel/traces/arrow"
@@ -52,7 +51,6 @@ type (
 	LinkParentIdDecoder struct {
 		prevParentID uint16
 		prevTraceID  []byte
-		encodingType int
 	}
 )
 
@@ -91,7 +89,7 @@ func SpanLinksStoreFrom(
 
 	linksCount := int(record.NumRows())
 	// ToDo Make this decoding dependent on the encoding type column metadata.
-	parentIdDecoder := NewLinkParentIdDecoder(carrow.ParentIdDeltaGroupEncoding)
+	parentIdDecoder := NewLinkParentIdDecoder()
 
 	// Read all link fields from the record and reconstruct the link lists
 	// by ID.
@@ -195,32 +193,20 @@ func SchemaToSpanLinkIDs(schema *arrow.Schema) (*SpanLinkIDs, error) {
 	}, nil
 }
 
-func NewLinkParentIdDecoder(encodingType int) *LinkParentIdDecoder {
+func NewLinkParentIdDecoder() *LinkParentIdDecoder {
 	return &LinkParentIdDecoder{
 		prevParentID: 0,
-		encodingType: encodingType,
 	}
 }
 
 func (d *LinkParentIdDecoder) Decode(value uint16, traceID []byte) uint16 {
-	switch d.encodingType {
-	case carrow.ParentIdNoEncoding:
+	if bytes.Equal(d.prevTraceID, traceID) {
+		parentID := d.prevParentID + value
+		d.prevParentID = parentID
+		return parentID
+	} else {
+		d.prevTraceID = traceID
+		d.prevParentID = value
 		return value
-	case carrow.ParentIdDeltaEncoding:
-		decodedParentID := d.prevParentID + value
-		d.prevParentID = decodedParentID
-		return decodedParentID
-	case 2:
-		if bytes.Equal(d.prevTraceID, traceID) {
-			parentID := d.prevParentID + value
-			d.prevParentID = parentID
-			return parentID
-		} else {
-			d.prevTraceID = traceID
-			d.prevParentID = value
-			return value
-		}
-	default:
-		panic("unknown encoding type")
 	}
 }

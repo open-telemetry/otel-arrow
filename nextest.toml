@@ -1,0 +1,15 @@
+[profile.default]
+test-binary-threads = 4
+
+[profile.default.reporters]
+pretty = true
+junit = true
+
+[profile.default.output]
+format = "pretty"
+
+[profile.default.test-runner]
+no-fail-fast = true
+
+[profile.default.test-discovery]
+threads = 4
