@@ -20,6 +20,9 @@
        "schedule": ["before 8am on Monday"]
      }
    ],
+   "postUpdateOptions": [
+     "gomodTidy"
+   ]
    "labels": [
      "dependencies"
    ]
