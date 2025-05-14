@@ -33,9 +33,8 @@
 
 use crate::effect_handler::EffectHandlerCore;
 use crate::error::Error;
-use crate::message::Message;
+use crate::message::{Message, Sender};
 use async_trait::async_trait;
-use otap_df_channel::mpsc;
 use std::borrow::Cow;
 
 /// A trait for processors in the pipeline (!Send definition).
@@ -85,14 +84,14 @@ pub struct EffectHandler<PData> {
     core: EffectHandlerCore,
 
     /// A sender used to forward messages from the processor.
-    msg_sender: mpsc::Sender<PData>,
+    msg_sender: Sender<PData>,
 }
 
 /// Implementation for the `!Send` effect handler.
 impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given processor name.
     #[must_use]
-    pub fn new(name: Cow<'static, str>, msg_sender: mpsc::Sender<PData>) -> Self {
+    pub fn new(name: Cow<'static, str>, msg_sender: Sender<PData>) -> Self {
         EffectHandler {
             core: EffectHandlerCore { node_name: name },
             msg_sender,
@@ -111,7 +110,7 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
     pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
-        self.msg_sender.send_async(data).await?;
+        self.msg_sender.send(data).await?;
         Ok(())
     }
 

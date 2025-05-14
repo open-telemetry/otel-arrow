@@ -9,9 +9,9 @@ pub mod processor;
 pub mod receiver;
 
 pub mod config;
-mod effect_handler;
 pub mod local;
-pub mod pipeline;
 pub mod shared;
+pub mod pipeline;
+mod effect_handler;
 #[cfg(test)]
 pub mod testing;

@@ -61,7 +61,7 @@ impl<PData> ProcessorWrapper<PData> {
 
         ProcessorWrapper::Local {
             processor: Box::new(processor),
-            effect_handler: local::EffectHandler::new(config.name.clone(), pdata_sender),
+            effect_handler: local::EffectHandler::new(config.name.clone(), Sender::Local(pdata_sender)),
             control_sender: Sender::Local(control_sender),
             control_receiver: Receiver::Local(control_receiver),
             pdata_receiver: Some(Receiver::Local(pdata_receiver)),

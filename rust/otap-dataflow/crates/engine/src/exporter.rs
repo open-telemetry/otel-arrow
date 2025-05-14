@@ -9,6 +9,7 @@
 use crate::config::ExporterConfig;
 use crate::error::Error;
 use crate::local::exporter as local;
+use crate::message;
 use crate::message::ControlMsg;
 use crate::message::Receiver;
 use crate::shared::exporter as shared;
@@ -70,7 +71,7 @@ impl<PData> ExporterWrapper<PData> {
                 effect_handler,
                 exporter,
             } => {
-                let message_channel = local::MessageChannel::new(control_rx, pdata_rx);
+                let message_channel = message::MessageChannel::new(control_rx, pdata_rx);
                 exporter.start(message_channel, effect_handler).await
             }
             ExporterWrapper::Shared {
@@ -129,7 +130,7 @@ mod tests {
     impl local::Exporter<TestMsg> for TestExporter {
         async fn start(
             self: Box<Self>,
-            mut msg_chan: local::MessageChannel<TestMsg>,
+            mut msg_chan: message::MessageChannel<TestMsg>,
             effect_handler: local::EffectHandler<TestMsg>,
         ) -> Result<(), Error<TestMsg>> {
             // Loop until a Shutdown event is received.
@@ -273,14 +274,14 @@ mod tests {
     fn make_chan() -> (
         mpsc::Sender<ControlMsg>,
         mpsc::Sender<String>,
-        local::MessageChannel<String>,
+        message::MessageChannel<String>,
     ) {
         let (control_tx, control_rx) = mpsc::Channel::<ControlMsg>::new(10);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(10);
         (
             control_tx,
             pdata_tx,
-            local::MessageChannel::new(
+            message::MessageChannel::new(
                 message::Receiver::Local(control_rx),
                 message::Receiver::Local(pdata_rx),
             ),
