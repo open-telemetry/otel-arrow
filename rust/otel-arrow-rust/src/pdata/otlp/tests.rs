@@ -324,9 +324,9 @@ mod tests {
 
         let is1 = InstrumentationScope::new("library");
 
-        let tid = TraceID([1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2]);
-        let sid = SpanID([1, 2, 1, 2, 1, 2, 1, 2]);
-        let psid = SpanID([2, 1, 2, 1, 2, 1, 2, 1]);
+        let tid: TraceID = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2].into();
+        let sid: SpanID = [1, 2, 1, 2, 1, 2, 1, 2].into();
+        let psid: SpanID = [2, 1, 2, 1, 2, 1, 2, 1].into();
 
         let s1 = Span::build(tid, sid, "myop", 123_000_000_000u64)
             .parent_span_id(psid)
