@@ -111,7 +111,7 @@ impl<PData> ExporterWrapper<PData> {
                     exporter.start(message_channel, effect_handler).await
                 } else {
                     Err(Error::ExporterError {
-                        exporter: effect_handler.exporter_name().to_owned(),
+                        exporter: effect_handler.exporter_name(),
                         error: "Shared ExporterWrapper requires shared channels".to_owned(),
                     })
                 }

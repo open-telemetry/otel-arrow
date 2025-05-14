@@ -262,7 +262,7 @@ impl<PData> EffectHandler<PData> {
 
     /// Returns the name of the exporter associated with this handler.
     #[must_use]
-    pub fn exporter_name(&self) -> &str {
+    pub fn exporter_name(&self) -> Cow<'static, str> {
         self.core.node_name()
     }
 

@@ -2,12 +2,11 @@
 
 //! Set of system configuration structures used by the engine, for example, to define channel sizes.
 //!
-// Note: This type of system configuration is distinct from the pipeline configuration, which
-// focuses instead on defining the interconnection of nodes within the DAG and each node’s specific
-// settings.
+//! Note: This type of system configuration is distinct from the pipeline configuration, which
+//! focuses instead on defining the interconnection of nodes within the DAG and each node’s specific
+//! settings.
 
 use std::borrow::Cow;
-use std::rc::Rc;
 
 /// For now, the channel capacity is set to 256 (a power of two). This value is currently somewhat
 /// arbitrary and will likely be adjusted (and made configurable) in the future once we have more
@@ -54,7 +53,7 @@ pub struct ReceiverConfig {
 /// Generic configuration for a processor.
 pub struct ProcessorConfig {
     /// Name of the processor.
-    pub name: Rc<str>,
+    pub name: Cow<'static, str>,
     /// Configuration for control channel.
     pub control_channel: ControlChannelConfig,
     /// Configuration for input pdata channel.
@@ -94,9 +93,12 @@ impl ReceiverConfig {
 impl ProcessorConfig {
     /// Creates a new processor configuration with the given name and default channel capacity.
     #[must_use]
-    pub fn new(name: &str) -> Self {
+    pub fn new<T>(name: T) -> Self
+    where
+        T: Into<Cow<'static, str>>,
+    {
         ProcessorConfig {
-            name: Rc::from(name),
+            name: name.into(),
             control_channel: ControlChannelConfig {
                 capacity: DEFAULT_CONTROL_CHANNEL_CAPACITY,
             },

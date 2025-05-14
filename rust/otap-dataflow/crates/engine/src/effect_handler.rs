@@ -1,22 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Set of traits and structures used to implement receivers.
+//! Common foundation of all effect handlers.
 
 use crate::error::Error;
 use std::borrow::Cow;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
-/// Common implementation across both `!Send` and `Send` effect handlers.
+/// Common implementation of all effect handlers.
+///
+/// Note: This implementation is `Send`.
 #[derive(Clone)]
 pub(crate) struct EffectHandlerCore {
     pub(crate) node_name: Cow<'static, str>,
 }
 
 impl EffectHandlerCore {
+    /// Returns the name of the node associated with this effect handler.
     #[must_use]
-    pub(crate) fn node_name(&self) -> &str {
-        &self.node_name
+    pub(crate) fn node_name(&self) -> Cow<'static, str> {
+        self.node_name.clone()
     }
 
     /// Creates a non-blocking TCP listener on the given address with socket options defined by the
@@ -28,14 +31,15 @@ impl EffectHandlerCore {
     /// Returns an [`Error::IoError`] if any step in the process fails.
     ///
     /// ToDo: return a std::net::TcpListener instead of a tokio::net::tcp::TcpListener to avoid leaking our current dependency on Tokio.
-    pub(crate) fn tcp_listener<PData, S: AsRef<str>>(
+    pub(crate) fn tcp_listener<PData>(
         &self,
         addr: SocketAddr,
-        receiver_name: S,
+        receiver_name: impl Into<Cow<'static, str>>,
     ) -> Result<TcpListener, Error<PData>> {
+        let node_name: Cow<'static, str> = receiver_name.into();
         // Helper closure to convert errors.
         let err = |error: std::io::Error| Error::IoError {
-            node: receiver_name.as_ref().to_owned(),
+            node: node_name.clone(),
             error,
         };
 

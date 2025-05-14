@@ -136,7 +136,7 @@ impl<PData> EffectHandler<PData> {
 
     /// Returns the name of the receiver associated with this handler.
     #[must_use]
-    pub fn receiver_name(&self) -> &str {
+    pub fn receiver_name(&self) -> Cow<'static, str> {
         self.core.node_name()
     }
 

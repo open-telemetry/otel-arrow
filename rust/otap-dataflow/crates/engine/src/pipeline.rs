@@ -17,7 +17,7 @@ use tokio::task::LocalSet;
 /// A pipeline is a collection of receivers, processors, and exporters.
 pub struct Pipeline<PData> {
     receivers: HashMap<Cow<'static, str>, ReceiverWrapper<PData>>,
-    processors: HashMap<Rc<str>, ProcessorWrapper<PData>>,
+    processors: HashMap<Cow<'static, str>, ProcessorWrapper<PData>>,
     exporters: HashMap<Cow<'static, str>, ExporterWrapper<PData>>,
 }
 
@@ -28,7 +28,7 @@ impl<PData> Pipeline<PData> {
         receiver: ReceiverWrapper<PData>,
         config: &ReceiverConfig,
     ) -> Result<(), Error<PData>> {
-        let receiver_name = config.name.to_string();
+        let receiver_name = config.name.clone();
         if self
             .receivers
             .insert(config.name.clone(), receiver)
@@ -51,7 +51,7 @@ impl<PData> Pipeline<PData> {
         P: Processor<PData, H> + 'static,
         H: processor::EffectHandlerFactory<PData, P>,
     {
-        let processor_name = config.name.to_string();
+        let processor_name = config.name.clone();
         if self
             .processors
             .insert(
@@ -73,7 +73,7 @@ impl<PData> Pipeline<PData> {
         exporter: ExporterWrapper<PData>,
         config: &ExporterConfig,
     ) -> Result<(), Error<PData>> {
-        let exporter_name = config.name.to_string();
+        let exporter_name = config.name.clone();
         if self
             .exporters
             .insert(config.name.clone(), exporter)
