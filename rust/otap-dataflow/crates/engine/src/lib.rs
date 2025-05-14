@@ -9,5 +9,5 @@ pub mod processor;
 pub mod receiver;
 
 mod config;
-#[cfg(test)]
+
 pub mod testing;

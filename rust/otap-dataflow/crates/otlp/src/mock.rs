@@ -21,33 +21,37 @@ use std::net::SocketAddr;
 use crate::grpc::OTLPRequest;
 use tokio::task::JoinHandle;
 
-
+/// struct that implements the Log Service trait
 pub struct LogsServiceMock {
     sender: Sender<OTLPRequest>
 }
 
 impl LogsServiceMock {
+    /// creates a new mock logs service
     pub fn new(sender: Sender<OTLPRequest>) -> Self {
         Self { sender }
     }
 }
 
-
+/// struct that implements the Metrics Service trait
 pub struct MetricsServiceMock {
     sender: Sender<OTLPRequest>
 }
 
 impl MetricsServiceMock {
+    /// creates a new mock metrics service
     pub fn new(sender: Sender<OTLPRequest>) -> Self {
         Self { sender }
     }
 }
 
+/// struct that implements the Trace Service trait
 pub struct TraceServiceMock {
     sender: Sender<OTLPRequest>
 }
 
 impl TraceServiceMock {
+    /// creates a new mock trace service
     pub fn new(sender: Sender<OTLPRequest>) -> Self {
         Self { sender }
     }
@@ -93,6 +97,12 @@ impl TraceService for TraceServiceMock {
     }
 }
 
+/// Starts a OTLP server in the background on a given address and a shutdown signal channel
+
+/// # Arguments
+/// * `sender` - A sender for OTLP requests to be sent through the channel
+/// * `listening_addr` - The address to listen on
+/// * `shutdown_signal` - A receiver for the shutdown signal
 
 pub fn start_mock_server<T: Send + 'static>(sender: Sender<OTLPRequest>, listening_addr: SocketAddr, shutdown_signal: Receiver<T>) -> JoinHandle<Result<(), Box<dyn Error + Send + Sync>>>{
     let mock_logs_service = LogsServiceServer::new(LogsServiceMock::new(sender.clone()));

@@ -9,8 +9,8 @@ trait OTLPProcessor: Processor {
     type PData = OTLPRequest;
     type Mode = LocalMode;
 
-    fn processMetrics(&self, &mut metrics: PData) ;
-    fn processTraces(&self, &mut traces: PData) ;
+    fn processMetrics(&self, &mut metrics: PData);
+    fn processTraces(&self, &mut traces: PData);
     fn processLogs(&self, &mut logs: PData);
 
     async fn process(

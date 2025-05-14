@@ -10,7 +10,7 @@ use crate::error::Error;
 use crate::message::{ControlMsg, PDataReceiver};
 use crate::receiver::{ControlMsgChannel, ReceiverWrapper};
 use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime};
-use otap_df_channel::error::RecvError;
+use otap_df_channel::error::{RecvError, SendError};
 use otap_df_channel::mpsc;
 use serde_json::Value;
 use std::fmt::Debug;
@@ -22,7 +22,7 @@ use tokio::time::sleep;
 /// Context used during the test phase of a test.
 pub struct TestContext {
     /// Sender for control messages
-    control_sender: mpsc::Sender<ControlMsg>,
+    control_sender: tokio::sync::mpsc::Sender<ControlMsg>,
 }
 
 /// Context used during the validation phase of a test (!Send context).
@@ -45,9 +45,9 @@ impl TestContext {
     /// Returns an error if the message could not be sent.
     pub async fn send_timer_tick(&self) -> Result<(), Error<ControlMsg>> {
         self.control_sender
-            .send_async(ControlMsg::TimerTick {})
+            .send(ControlMsg::TimerTick {})
             .await
-            .map_err(|e| Error::ChannelSendError(e))
+            .map_err(|e| Error::ChannelSendError(SendError::Closed(e.0)))
     }
 
     /// Sends a config control message.
@@ -57,9 +57,9 @@ impl TestContext {
     /// Returns an error if the message could not be sent.
     pub async fn send_config(&self, config: Value) -> Result<(), Error<ControlMsg>> {
         self.control_sender
-            .send_async(ControlMsg::Config { config })
+            .send(ControlMsg::Config { config })
             .await
-            .map_err(|e| Error::ChannelSendError(e))
+            .map_err(|e| Error::ChannelSendError(SendError::Closed(e.0)))
     }
 
     /// Sends a shutdown control message.
@@ -73,12 +73,12 @@ impl TestContext {
         reason: &str,
     ) -> Result<(), Error<ControlMsg>> {
         self.control_sender
-            .send_async(ControlMsg::Shutdown {
+            .send(ControlMsg::Shutdown {
                 deadline,
                 reason: reason.to_owned(),
             })
             .await
-            .map_err(|e| Error::ChannelSendError(e))
+            .map_err(|e| Error::ChannelSendError(SendError::Closed(e.0)))
     }
 
     /// Sleeps for the specified duration.
@@ -128,9 +128,9 @@ pub struct TestRuntime<PData> {
     local_tasks: LocalSet,
 
     /// Sender for control messages
-    control_tx: mpsc::Sender<ControlMsg>,
+    control_tx: tokio::sync::mpsc::Sender<ControlMsg>,
     /// Receiver for control messages
-    control_rx: Option<mpsc::Receiver<ControlMsg>>,
+    control_rx: Option<tokio::sync::mpsc::Receiver<ControlMsg>>,
 
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
@@ -139,7 +139,7 @@ pub struct TestRuntime<PData> {
 }
 
 /// Data and operations for the test phase of a receiver.
-pub struct TestPhase<PData> {
+pub struct TestPhase<PData: Send> {
     /// Runtime instance
     rt: tokio::runtime::Runtime,
     /// Local task set for non-Send futures
@@ -149,7 +149,7 @@ pub struct TestPhase<PData> {
     receiver: ReceiverWrapper<PData>,
     counters: CtrlMsgCounters,
 
-    control_sender: mpsc::Sender<ControlMsg>,
+    control_sender: tokio::sync::mpsc::Sender<ControlMsg>,
 }
 
 /// Data and operations for the validation phase of a receiver.
@@ -170,12 +170,12 @@ pub struct ValidationPhase<PData> {
     run_test_handle: tokio::task::JoinHandle<()>,
 }
 
-impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
+impl<PData: Clone + Debug + Send + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
     pub fn new() -> Self {
         let config = ReceiverConfig::new("test_receiver");
         let (rt, local_tasks) = setup_test_runtime();
-        let (control_tx, control_rx) = create_not_send_channel(config.control_channel.capacity);
+        let (control_tx, control_rx) = tokio::sync::mpsc::channel(config.control_channel.capacity);
 
         Self {
             config,
@@ -216,7 +216,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 }
 
-impl<PData: Debug + 'static> TestPhase<PData> {
+impl<PData: Debug + Send + 'static> TestPhase<PData> {
     /// Starts the test scenario by executing the provided function with the test context.
     pub fn run_test<F, Fut>(mut self, f: F) -> ValidationPhase<PData>
     where

@@ -19,17 +19,14 @@ service:
   pipelines:
     traces:
       receivers: [otelarrow]
-      processors: []
       exporters: [debug]
 
     metrics:
       receivers: [otelarrow]
-      processors: []
       exporters: [debug]
 
     logs:
       receivers: [otelarrow]
-      processors: []
       exporters: [debug]
 
   telemetry:

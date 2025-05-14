@@ -1,7 +1,7 @@
 // ToDo: Handle Ack and Nack messages in the pipeline
 
 
-use crate::grpc::OTLPRequest;
+use crate::grpc::{OTLPRequest, CompressionMethod};
 use crate::proto::opentelemetry::collector::{logs::v1::logs_service_client::LogsServiceClient,
     metrics::v1::metrics_service_client::MetricsServiceClient,
     trace::v1::trace_service_client::TraceServiceClient};
@@ -14,13 +14,7 @@ use tokio::time::{Duration, sleep};
 use tonic::codec::CompressionEncoding;
 
 
-#[derive(Debug)]
-pub enum CompressionMethod {
-    Zstd,
-    Gzip,
-    Deflate,
-}
-
+///
 struct OTLPExporter {
     grpc_endpoint: String,
     compression_method: Option<CompressionMethod>
@@ -33,6 +27,7 @@ impl OTLPExporter {
     }
 }
 
+///
 #[async_trait(?Send)]
 impl Exporter<OTLPRequest, SendEffectHandler<OTLPRequest>> for OTLPExporter {
 
@@ -105,11 +100,11 @@ impl Exporter<OTLPRequest, SendEffectHandler<OTLPRequest>> for OTLPExporter {
 #[cfg(test)]
 mod tests {
     use otap_df_engine::exporter::{
-        EffectHandlerTrait, Error, Exporter, ExporterWrapper, MessageChannel,
+        EffectHandlerTrait, Exporter, ExporterWrapper, MessageChannel,
         SendEffectHandler,
     };
     use crate::proto::opentelemetry::collector::logs::v1::{
-        ExportLogssServiceRequest, ExportLogsServiceResponse,
+        ExportLogsServiceRequest, ExportLogsServiceResponse,
     };
     use crate::proto::opentelemetry::collector::metrics::v1::{
         ExportMetricsServiceRequest, ExportMetricsServiceResponse,
@@ -117,24 +112,32 @@ mod tests {
     use crate::proto::opentelemetry::collector::trace::v1::{
         ExportTraceServiceRequest, ExportTraceServiceResponse,
     };
+    use crate::grpc::OTLPRequest;
     use otap_df_engine::message::{ControlMsg, Message};
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
     use otap_df_engine::testing::{CtrlMsgCounters, TestMsg, exec_in_send_env};
     use async_trait::async_trait;
     use otap_df_channel::error::RecvError;
+    use otap_df_engine::error::Error;
     use otap_df_channel::mpsc;
+    use tokio::sync::mpsc::{Receiver, channel};
     use serde_json::Value;
     use std::future::Future;
-    use std::time::Duration;
+    use std::net::SocketAddr;
+    use tokio::time::{Duration, timeout};
     use tokio::time::sleep;
-    use crate::mock::run_mock_server;
+    use crate::mock::{LogsServiceMock, MetricsServiceMock, TraceServiceMock};
+    use crate::mock::start_mock_server;
     use crate::otlp_exporter::OTLPExporter;
-
+    use crate::proto::opentelemetry::collector::{logs::v1::logs_service_server::LogsServiceServer,
+        metrics::v1::metrics_service_server::MetricsServiceServer,
+        trace::v1::trace_service_server::TraceServiceServer};
+    use tonic::transport::Server;
     
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
-    fn scenario(receiver: Receiver) -> impl FnOnce(TestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
+    fn scenario() -> impl FnOnce(TestContext<OTLPRequest>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
     {
         |ctx| {
             Box::pin(async move {
@@ -176,7 +179,22 @@ mod tests {
                 ctx.send_shutdown(Duration::from_millis(200), "test complete")
                     .await
                     .expect("Failed to send Shutdown");
+            })
+        }
+    }
 
+    /// Validation closure that checks the expected counter values
+    fn validation_procedure(mut receiver: Receiver<OTLPRequest>)
+    -> impl FnOnce(TestContext<OTLPRequest>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
+        |ctx| {
+            Box::pin(async move {
+
+                ctx.counters().assert(
+                    3, // timer tick
+                    1, // message
+                    1, // config
+                    1, // shutdown
+                );
 
                 // check that the message was properly sent from the exporter
                 let metrics_received = timeout(Duration::from_secs(3), receiver.recv())
@@ -207,27 +225,39 @@ mod tests {
         }
     }
 
-
-    #[test]
-    fn test_exporter_with_send_effect_handler() {
+    #[tokio::test]
+    async fn test_otlp_exporter() {
         let test_runtime = TestRuntime::new();
-        let (sender, receiver) = tokio::sync::mpsc::channel(32);
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(32);
         let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
         let grpc_addr = "127.0.0.1";
         let grpc_port = "4317";
         let grpc_endpoint = format!("http::{grpc_addr}:{grpc_port}");
-        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         let exporter = ExporterWrapper::with_send(
             OTLPExporter::new(grpc_endpoint, None),
             test_runtime.config(),
         );
-        let server_handle = run_mock_server(sender, listening_addr, shutdown_receiver);
 
+        let mock_logs_service = LogsServiceServer::new(LogsServiceMock::new(sender.clone()));
+        let mock_metrics_service = MetricsServiceServer::new(MetricsServiceMock::new(sender.clone()));
+        let mock_trace_service = TraceServiceServer::new(TraceServiceMock::new(sender.clone()));
+        tokio::spawn(async move {
+            Server::builder().add_service(mock_logs_service).add_service(mock_metrics_service).add_service(mock_trace_service).serve_with_shutdown(listening_addr, async {
+                // Wait for the shutdown signal
+                drop(shutdown_receiver.await.ok());
+            }).await
+        });
+        // let server_handle = start_mock_server(sender, listening_addr, shutdown_receiver);
+
+        
         test_runtime
             .set_exporter(exporter)
-            .run_test(scenario(receiver));
+            .run_test(scenario())
+            .run_validation(validation_procedure(receiver));
 
-        shutdown_sender.send("Shutdown").await;
+
+        let _ = shutdown_sender.send("Shutdown");
     }   
 
 }

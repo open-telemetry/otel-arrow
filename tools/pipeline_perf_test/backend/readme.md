@@ -1,9 +1,13 @@
-# Ingestion Service / Backend
+# Backend Service
 
-A destination to which telemetry is exported to ultimately.
+The backend service acts as a destination for exported telemetry data. It
+currently supports OTLP/gRPC on port `5317`, counts the logs it receives, and
+exposes these count at the `:5000/metrics` endpoint.
 
-- Options include:
-  - Null Sink (i.e., drop everything)
-  - A fake service that adds configurable latency and tracks requests received.
-  - A real backend for validating full pipeline integrity (vendor forks may
-    leverage this)
+## Planned Enhancements
+
+- A Null Sink to discard all incoming data.
+- A mock service that introduces configurable latency and tracks incoming
+  requests.
+- A fully functional backend to validate end-to-end pipeline integrity (allowing
+  vendor-specific forks to extend functionality).
