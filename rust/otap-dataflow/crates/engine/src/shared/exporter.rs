@@ -25,22 +25,22 @@
 //!
 //! This implementation is designed for use in both single-threaded and multi-threaded environments.  
 //! The `Exporter` trait requires the `Send` bound, enabling the use of thread-safe types.
-//! 
+//!
 //! # Scalability
 //!
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
+use crate::effect_handler::EffectHandlerCore;
+use crate::error::Error;
+use crate::message::{ControlMsg, Message};
+use async_trait::async_trait;
+use otap_df_channel::error::RecvError;
 use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::time::Duration;
-use async_trait::async_trait;
-use tokio::time::{sleep_until, Instant, Sleep};
-use otap_df_channel::error::RecvError;
-use crate::effect_handler::EffectHandlerCore;
-use crate::error::Error;
-use crate::message::{ControlMsg, Message};
+use tokio::time::{Instant, Sleep, sleep_until};
 
 /// A trait for egress exporters (Send definition).
 #[async_trait]
@@ -75,8 +75,8 @@ impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
     pub fn new(
-        control_rx: tokio::sync::mpsc::Receiver<ControlMsg>, 
-        pdata_rx: tokio::sync::mpsc::Receiver<PData>
+        control_rx: tokio::sync::mpsc::Receiver<ControlMsg>,
+        pdata_rx: tokio::sync::mpsc::Receiver<PData>,
     ) -> Self {
         MessageChannel {
             control_rx: Some(control_rx),
@@ -217,7 +217,7 @@ impl<PData> EffectHandler<PData> {
     pub fn new(name: Cow<'static, str>) -> Self {
         EffectHandler {
             core: EffectHandlerCore { node_name: name },
-            _pd: PhantomData::default(),
+            _pd: PhantomData,
         }
     }
 
@@ -226,6 +226,6 @@ impl<PData> EffectHandler<PData> {
     pub fn exporter_name(&self) -> &str {
         self.core.node_name()
     }
-    
+
     // More methods will be added in the future as needed.
 }

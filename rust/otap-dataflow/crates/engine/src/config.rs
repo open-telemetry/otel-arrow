@@ -93,6 +93,7 @@ impl ReceiverConfig {
 
 impl ProcessorConfig {
     /// Creates a new processor configuration with the given name and default channel capacity.
+    #[must_use]
     pub fn new(name: &str) -> Self {
         ProcessorConfig {
             name: Rc::from(name),
@@ -111,9 +112,10 @@ impl ProcessorConfig {
 
 impl ExporterConfig {
     /// Creates a new exporter configuration with the given name and default channel capacity.
+    #[must_use]
     pub fn new<T>(name: T) -> Self
     where
-        T: Into<Cow<'static, str>>
+        T: Into<Cow<'static, str>>,
     {
         ExporterConfig {
             name: name.into(),

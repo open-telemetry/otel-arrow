@@ -2,6 +2,5 @@
 
 //! Traits and structs defining the local (!Send) version of receivers, processors, and exporters.
 
-pub mod receiver;
 pub mod exporter;
-
+pub mod receiver;

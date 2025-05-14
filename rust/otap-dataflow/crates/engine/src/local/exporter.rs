@@ -23,7 +23,7 @@
 //!
 //! # Thread Safety
 //!
-//! This implementation is designed to be used in a single-threaded environment. 
+//! This implementation is designed to be used in a single-threaded environment.
 //! The `Exporter` trait does not require the `Send` bound, allowing for the use of non-thread-safe
 //! types.
 //!
@@ -32,17 +32,16 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
 //! in parallel on different cores, each with its own exporter instance.
 
+use crate::effect_handler::EffectHandlerCore;
+use crate::error::Error;
+use crate::message::{ControlMsg, Message, Receiver};
+use async_trait::async_trait;
+use otap_df_channel::error::RecvError;
 use std::borrow::Cow;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::time::Duration;
-use async_trait::async_trait;
-use tokio::time::{sleep_until, Instant, Sleep};
-use otap_df_channel::error::RecvError;
-use otap_df_channel::mpsc;
-use crate::effect_handler::EffectHandlerCore;
-use crate::error::Error;
-use crate::message::{ControlMsg, Message};
+use tokio::time::{Instant, Sleep, sleep_until};
 
 /// A trait for egress exporters (!Send definition).
 #[async_trait( ? Send)]
@@ -97,8 +96,8 @@ pub trait Exporter<PData> {
 /// data sources in the pipeline, and then send a shutdown message with a deadline to all nodes in
 /// the pipeline.
 pub struct MessageChannel<PData> {
-    control_rx: Option<mpsc::Receiver<ControlMsg>>,
-    pdata_rx: Option<mpsc::Receiver<PData>>,
+    control_rx: Option<Receiver<ControlMsg>>,
+    pdata_rx: Option<Receiver<PData>>,
     /// Once a Shutdown is seen, this is set to `Some(instant)` at which point
     /// no more pdata will be accepted.
     shutting_down_deadline: Option<Instant>,
@@ -109,7 +108,7 @@ pub struct MessageChannel<PData> {
 impl<PData> MessageChannel<PData> {
     /// Creates a new `MessageChannel` with the given control and data receivers.
     #[must_use]
-    pub fn new(control_rx: mpsc::Receiver<ControlMsg>, pdata_rx: mpsc::Receiver<PData>) -> Self {
+    pub fn new(control_rx: Receiver<ControlMsg>, pdata_rx: Receiver<PData>) -> Self {
         MessageChannel {
             control_rx: Some(control_rx),
             pdata_rx: Some(pdata_rx),
@@ -165,7 +164,7 @@ impl<PData> MessageChannel<PData> {
                     biased;
 
                     // 1) Any pdata?
-                    pdata = self.pdata_rx.as_ref().expect("pdata_rx must exist").recv() => match pdata {
+                    pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => match pdata {
                         Ok(pdata) => return Ok(Message::PData(pdata)),
                         Err(_) => {
                             // pdata channel closed → emit Shutdown
@@ -193,7 +192,7 @@ impl<PData> MessageChannel<PData> {
                 biased;
 
                 // A) Control first
-                ctrl = self.control_rx.as_ref().expect("control_rx must exist").recv() => match ctrl {
+                ctrl = self.control_rx.as_mut().expect("control_rx must exist").recv() => match ctrl {
                     Ok(ControlMsg::Shutdown { deadline, reason }) => {
                         if deadline.is_zero() {
                             // Immediate shutdown, no draining
@@ -211,7 +210,7 @@ impl<PData> MessageChannel<PData> {
                 },
 
                 // B) Then pdata
-                pdata = self.pdata_rx.as_ref().expect("pdata_rx must exist").recv() => {
+                pdata = self.pdata_rx.as_mut().expect("pdata_rx must exist").recv() => {
                     match pdata {
                         Ok(pdata) => {
                             return Ok(Message::PData(pdata));
@@ -257,7 +256,7 @@ impl<PData> EffectHandler<PData> {
     pub fn new(name: Cow<'static, str>) -> Self {
         EffectHandler {
             core: EffectHandlerCore { node_name: name },
-            _pd: PhantomData::default(),
+            _pd: PhantomData,
         }
     }
 
@@ -266,6 +265,6 @@ impl<PData> EffectHandler<PData> {
     pub fn exporter_name(&self) -> &str {
         self.core.node_name()
     }
-    
+
     // More methods will be added in the future as needed.
 }

@@ -36,10 +36,10 @@
 
 use crate::config::ReceiverConfig;
 use crate::error::Error;
-use crate::message::{ControlMsg, ControlSender, PDataReceiver};
-use otap_df_channel::mpsc;
 use crate::local::receiver as local;
+use crate::message::{ControlMsg, ControlSender, PDataReceiver};
 use crate::shared::receiver as shared;
+use otap_df_channel::mpsc;
 
 /// A wrapper for the receiver that allows for both `Send` and `!Send` receivers.
 ///
@@ -120,7 +120,7 @@ impl<PData> ReceiverWrapper<PData> {
                 ControlSender::Local(control_sender.clone())
             }
             ReceiverWrapper::Shared { control_sender, .. } => {
-                ControlSender::ThreadSafe(control_sender.clone())
+                ControlSender::Shared(control_sender.clone())
             }
         }
     }
@@ -165,7 +165,9 @@ impl<PData> ReceiverWrapper<PData> {
 #[cfg(test)]
 mod tests {
     use super::ReceiverWrapper;
+    use crate::local::receiver as local;
     use crate::receiver::Error;
+    use crate::shared::receiver as shared;
     use crate::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use crate::testing::{CtrlMsgCounters, TestMsg};
     use async_trait::async_trait;
@@ -176,9 +178,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio::sync::oneshot;
-    use tokio::time::{sleep, timeout, Duration};
-    use crate::local::receiver as local;
-    use crate::shared::receiver as shared;
+    use tokio::time::{Duration, sleep, timeout};
 
     /// A test receiver that counts message events.
     /// Works with any type of receiver !Send or Send.

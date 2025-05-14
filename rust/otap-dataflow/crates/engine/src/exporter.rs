@@ -35,8 +35,9 @@
 
 use crate::config::ExporterConfig;
 use crate::error::Error;
-use crate::processor::{EffectHandlerTrait, NotSendEffectHandler, SendEffectHandler};
 use crate::local::exporter as local;
+use crate::message::ControlMsg;
+use crate::message::Receiver;
 use crate::shared::exporter as shared;
 
 /// A wrapper for the exporter that allows for both `Send` and `!Send` effect handlers.
@@ -84,27 +85,48 @@ impl<PData> ExporterWrapper<PData> {
             exporter: Box::new(exporter),
         }
     }
-    
+
     /// Starts the exporter and begins exporting incoming data.
-    pub async fn start(self, message_channel: MessageChannel<PData>) -> Result<(), Error<PData>> {
+    pub async fn start(
+        self,
+        control_rx: Receiver<ControlMsg>,
+        pdata_rx: Receiver<PData>,
+    ) -> Result<(), Error<PData>> {
         match self {
             ExporterWrapper::Local {
                 effect_handler,
                 exporter,
-            } => exporter.start(message_channel, effect_handler).await,
+            } => {
+                let message_channel = local::MessageChannel::new(control_rx, pdata_rx);
+                exporter.start(message_channel, effect_handler).await
+            }
             ExporterWrapper::Shared {
                 effect_handler,
                 exporter,
-            } => exporter.start(message_channel, effect_handler).await,
+            } => {
+                if let (Receiver::Shared(control_rx), Receiver::Shared(pdata_rx)) =
+                    (control_rx, pdata_rx)
+                {
+                    let message_channel = shared::MessageChannel::new(control_rx, pdata_rx);
+                    exporter.start(message_channel, effect_handler).await
+                } else {
+                    Err(Error::ExporterError {
+                        exporter: effect_handler.exporter_name().to_owned(),
+                        error: "Shared ExporterWrapper requires shared channels".to_owned(),
+                    })
+                }
+            }
         }
     }
 }
 
-
 #[cfg(test)]
 mod tests {
-    use crate::exporter::{Error, ExporterWrapper    };
+    use crate::exporter::{Error, ExporterWrapper};
+    use crate::local::exporter as local;
+    use crate::message;
     use crate::message::{ControlMsg, Message};
+    use crate::shared::exporter as shared;
     use crate::testing::exporter::TestContext;
     use crate::testing::exporter::TestRuntime;
     use crate::testing::{CtrlMsgCounters, TestMsg};
@@ -115,9 +137,7 @@ mod tests {
     use std::future::Future;
     use std::time::Duration;
     use tokio::time::sleep;
-    use crate::local::exporter as local;
-    use crate::shared::exporter as shared;
-    
+
     /// A test exporter that counts message events.
     /// Works with any type of exporter !Send or Send.
     pub struct TestExporter {
@@ -128,9 +148,7 @@ mod tests {
     impl TestExporter {
         /// Creates a new test node with the given counter
         pub fn new(counter: CtrlMsgCounters) -> Self {
-            TestExporter {
-                counter,
-            }
+            TestExporter { counter }
         }
     }
 
@@ -203,7 +221,7 @@ mod tests {
             Ok(())
         }
     }
-    
+
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
     fn scenario() -> impl FnOnce(TestContext<TestMsg>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
@@ -269,9 +287,7 @@ mod tests {
     fn test_exporter_shared() {
         let test_runtime = TestRuntime::new();
         let exporter = ExporterWrapper::shared(
-            TestExporter::new(
-                test_runtime.counters()
-            ),
+            TestExporter::new(test_runtime.counters()),
             test_runtime.config(),
         );
 
@@ -284,14 +300,17 @@ mod tests {
     fn make_chan() -> (
         mpsc::Sender<ControlMsg>,
         mpsc::Sender<String>,
-        MessageChannel<String>,
+        local::MessageChannel<String>,
     ) {
         let (control_tx, control_rx) = mpsc::Channel::<ControlMsg>::new(10);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(10);
         (
             control_tx,
             pdata_tx,
-            MessageChannel::new(control_rx, pdata_rx),
+            local::MessageChannel::new(
+                message::Receiver::Local(control_rx),
+                message::Receiver::Local(pdata_rx),
+            ),
         )
     }
 

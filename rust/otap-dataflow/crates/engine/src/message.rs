@@ -76,7 +76,7 @@ pub enum ControlSender {
     /// A MPSC sender that does NOT implement [`Send`].
     Local(mpsc::Sender<ControlMsg>),
     /// A MPSC sender that implements [`Send`].
-    ThreadSafe(tokio::sync::mpsc::Sender<ControlMsg>),
+    Shared(tokio::sync::mpsc::Sender<ControlMsg>),
 }
 
 impl ControlSender {
@@ -91,7 +91,7 @@ impl ControlSender {
                 .send_async(msg)
                 .await
                 .map_err(Error::ChannelSendError),
-            ControlSender::ThreadSafe(sender) => sender
+            ControlSender::Shared(sender) => sender
                 .send(msg)
                 .await
                 .map_err(|e| Error::ChannelSendError(SendError::Closed(e.0))),
@@ -201,5 +201,50 @@ impl<PData> PDataReceiver<PData> {
             }
         }
         emitted
+    }
+}
+
+/// A generic channel Sender supporting both local and shared semantic (i.e. !Send and Send).
+pub enum Sender<T> {
+    /// Local channel sender.
+    Local(mpsc::Sender<T>),
+    /// Shared channel sender.
+    Shared(tokio::sync::mpsc::Sender<T>),
+}
+
+impl<T> Clone for Sender<T> {
+    fn clone(&self) -> Self {
+        match self {
+            Sender::Local(sender) => Sender::Local(sender.clone()),
+            Sender::Shared(sender) => Sender::Shared(sender.clone()),
+        }
+    }
+}
+
+impl<T> Sender<T> {
+    /// Sends a message to the channel.
+    pub async fn send(&self, msg: T) -> Result<(), SendError<T>> {
+        match self {
+            Sender::Local(sender) => sender.send_async(msg).await,
+            Sender::Shared(sender) => sender.send(msg).await.map_err(|e| SendError::Closed(e.0)),
+        }
+    }
+}
+
+/// A generic channel Receiver supporting both local and shared semantic (i.e. !Send and Send).
+pub enum Receiver<T> {
+    /// Local channel receiver.
+    Local(mpsc::Receiver<T>),
+    /// Shared channel receiver.
+    Shared(tokio::sync::mpsc::Receiver<T>),
+}
+
+impl<T> Receiver<T> {
+    /// Receives a message from the channel.
+    pub async fn recv(&mut self) -> Result<T, RecvError> {
+        match self {
+            Receiver::Local(receiver) => receiver.recv().await,
+            Receiver::Shared(receiver) => receiver.recv().await.ok_or(RecvError::Closed),
+        }
     }
 }

@@ -1,14 +1,44 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::borrow::Cow;
-use otap_df_channel::error::{RecvError, SendError};
-use std::net::SocketAddr;
-use tokio::net::TcpListener;
-use async_trait::async_trait;
+//! Set of traits and structures used to implement receivers.
+//!
+//! A receiver is an ingress node that feeds a pipeline with data from external sources while
+//! performing the necessary conversions to produce messages in a format recognized by the rest of
+//! downstream pipeline nodes (e.g. OTLP or OTAP message format).
+//!
+//! A receiver can operate in various ways, including:
+//!
+//! 1. Listening on a socket to receive push-based telemetry data,
+//! 2. Being notified of changes in a local directory (e.g. log file monitoring),
+//! 3. Actively scraping an endpoint to retrieve the latest metrics from a system,
+//! 4. Or using any other method to receive or extract telemetry data from external sources.
+//!
+//! # Lifecycle
+//!
+//! 1. The receiver is instantiated and configured.
+//! 2. The `start` method is called, which begins the receiver's operation.
+//! 3. The receiver processes both internal control messages and external data.
+//! 4. The receiver shuts down when it receives a `Shutdown` control message or encounters a fatal
+//!    error.
+//!
+//! # Thread Safety
+//!
+//! This implementation is designed for use in both single-threaded and multi-threaded environments.
+//! The `Exporter` trait requires the `Send` bound, enabling the use of thread-safe types.
+//!
+//! # Scalability
+//!
+//! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
+//! parallel on different cores, each with its own receiver instance.
+
+use crate::effect_handler::EffectHandlerCore;
 use crate::error::Error;
 use crate::message::ControlMsg;
-use crate::effect_handler::EffectHandlerCore;
-use crate::local;
+use async_trait::async_trait;
+use otap_df_channel::error::{RecvError, SendError};
+use std::borrow::Cow;
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
 
 /// A trait for ingress receivers (Send definition).
 ///
@@ -70,7 +100,9 @@ impl<PData> EffectHandler<PData> {
         msg_sender: tokio::sync::mpsc::Sender<PData>,
     ) -> Self {
         EffectHandler {
-            core: EffectHandlerCore { node_name: receiver_name },
+            core: EffectHandlerCore {
+                node_name: receiver_name,
+            },
             msg_sender,
         }
     }

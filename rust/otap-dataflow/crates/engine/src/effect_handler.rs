@@ -2,10 +2,10 @@
 
 //! Set of traits and structures used to implement receivers.
 
+use crate::error::Error;
 use std::borrow::Cow;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
-use crate::error::Error;
 
 /// Common implementation across both `!Send` and `Send` effect handlers.
 #[derive(Clone)]

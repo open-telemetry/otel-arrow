@@ -5,15 +5,14 @@
 use crate::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
 use crate::error::Error;
 use crate::exporter::ExporterWrapper;
+use crate::processor;
 use crate::processor::{Processor, ProcessorWrapper};
 use crate::receiver::ReceiverWrapper;
-use crate::{exporter, processor};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use tokio::runtime::Builder;
 use tokio::task::LocalSet;
-use crate::local::receiver::Receiver;
 
 /// A pipeline is a collection of receivers, processors, and exporters.
 pub struct Pipeline<PData> {
@@ -32,10 +31,7 @@ impl<PData> Pipeline<PData> {
         let receiver_name = config.name.to_string();
         if self
             .receivers
-            .insert(
-                config.name.clone(),
-                receiver,
-            )
+            .insert(config.name.clone(), receiver)
             .is_some()
         {
             return Err(Error::ReceiverAlreadyExists {
