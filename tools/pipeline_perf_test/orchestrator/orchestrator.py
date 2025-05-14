@@ -749,7 +749,7 @@ def main():
         # Calculate logs sent rate (based on attempted sends, not successful ones)
         total_logs_attempted = logs_sent_count + logs_failed_count
         logs_sent_rate = total_logs_attempted / duration if duration > 0 else 0
-        
+
         # Format rate for human readability (K/sec or M/sec)
         if logs_sent_rate >= 1000000:
             formatted_rate = f"{logs_sent_rate/1000000:.2f}M/sec"

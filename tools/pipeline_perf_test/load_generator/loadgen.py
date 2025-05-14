@@ -34,10 +34,9 @@ def worker_thread(thread_id, args, end_time):
     endpoint = os.getenv("OTLP_ENDPOINT", "localhost:4317")
     channel = grpc.insecure_channel(endpoint)
     stub = logs_service_pb2_grpc.LogsServiceStub(channel)
-    
+
     sent = 0
     failed = 0
-    
     while time.time() < end_time:
         log_batch = [create_log_record() for _ in range(args.batch_size)]
         scope_logs = logs_pb2.ScopeLogs(log_records=log_batch)
@@ -53,7 +52,7 @@ def worker_thread(thread_id, args, end_time):
         except Exception as e:
             failed += args.batch_size
             print(f"Thread {thread_id}: Failed to send log batch: {e}")
-            
+
     return sent, failed
 
 def main():
@@ -64,11 +63,11 @@ def main():
     args = parser.parse_args()
 
     end_time = time.time() + args.duration
-    
+
     # Create and start worker threads
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
         futures = [executor.submit(worker_thread, i, args, end_time) for i in range(args.threads)]
-        
+
         # Wait for all threads to complete
         total_sent = 0
         total_failed = 0
