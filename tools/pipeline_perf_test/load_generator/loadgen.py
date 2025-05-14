@@ -75,7 +75,7 @@ def main():
             sent, failed = future.result()
             total_sent += sent
             total_failed += failed
-    
+
     print(f"LOADGEN_LOGS_SENT: {total_sent}")
     print(f"LOADGEN_LOGS_FAILED: {total_failed}")
 
