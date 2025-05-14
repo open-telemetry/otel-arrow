@@ -11,16 +11,15 @@
 // limitations under the License.
 
 use crate::arrays::{
-    NullableArrayAccessor, StringArrayAccessor, get_binary_array_opt, get_bool_array_opt,
-    get_f64_array_opt, get_i64_array_opt, get_u8_array,
+    ByteArrayAccessor, Int64ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor,
+    StringArrayAccessor, get_bool_array_opt, get_f64_array_opt, get_u8_array,
 };
 use crate::error;
 use crate::otlp::attributes::parent_id::ParentId;
 use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use crate::schema::consts;
-use arrow::array::{Array, RecordBatch};
-use arrow::datatypes::Schema;
+use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch};
 use num_enum::TryFromPrimitive;
 use snafu::{OptionExt, ResultExt};
 use std::collections::HashMap;
@@ -66,7 +65,8 @@ where
 impl<T> TryFrom<&RecordBatch> for AttributeStore<T>
 where
     T: ParentId,
-    <T as ParentId>::Array: Array,
+    <T as ParentId>::ArrayType: ArrowPrimitiveType,
+    <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native: Into<T>,
 {
     type Error = error::Error;
 
@@ -75,21 +75,21 @@ where
 
         let key_arr = rb
             .column_by_name(consts::ATTRIBUTE_KEY)
-            .map(StringArrayAccessor::new)
+            .map(StringArrayAccessor::try_new)
             .transpose()?;
         let value_type_arr = get_u8_array(rb, consts::ATTRIBUTE_TYPE)?;
 
-        let value_str_arr = StringArrayAccessor::new(
-            rb.column_by_name(consts::ATTRIBUTE_STR)
-                .context(error::ColumnNotFoundSnafu {
-                    name: consts::ATTRIBUTE_STR,
-                })?,
-        )?;
-
-        let value_int_arr = get_i64_array_opt(rb, consts::ATTRIBUTE_INT)?;
+        let value_str_arr = StringArrayAccessor::try_new_for_column(rb, consts::ATTRIBUTE_STR)?;
+        let value_int_arr = rb
+            .column_by_name(consts::ATTRIBUTE_INT)
+            .map(Int64ArrayAccessor::try_new)
+            .transpose()?;
         let value_double_arr = get_f64_array_opt(rb, consts::ATTRIBUTE_DOUBLE)?;
         let value_bool_arr = get_bool_array_opt(rb, consts::ATTRIBUTE_BOOL)?;
-        let value_bytes_arr = get_binary_array_opt(rb, consts::ATTRIBUTE_BYTES)?;
+        let value_bytes_arr = rb
+            .column_by_name(consts::ATTRIBUTE_BYTES)
+            .map(ByteArrayAccessor::try_new)
+            .transpose()?;
 
         for idx in 0..rb.num_rows() {
             let key = key_arr.value_at_or_default(idx);
@@ -129,20 +129,17 @@ where
                     .context(error::ColumnNotFoundSnafu {
                         name: consts::PARENT_ID,
                     })?;
-            let parent_id_arr = parent_id_arr.as_any().downcast_ref::<T::Array>().context(
-                error::ColumnDataTypeMismatchSnafu {
-                    name: consts::PARENT_ID,
-                    expect: T::arrow_data_type(),
-                    actual: parent_id_arr.data_type().clone(),
-                },
-            )?;
-            // Curious, but looks like this is not used anywhere in otel-arrow
-            // See https://github.com/open-telemetry/otel-arrow/blob/985aa1500a012859cec44855e187eacf46eda7c8/pkg/otel/common/otlp/attributes.go#L134
-            let _delta_encoded = is_delta_encoded(rb.schema_ref());
+            let parent_id_arr =
+                MaybeDictArrayAccessor::<PrimitiveArray<<T as ParentId>::ArrayType>>::try_new(
+                    parent_id_arr,
+                )?;
             let mut parent_id_decoder = T::new_decoder();
 
-            let parent_id =
-                parent_id_decoder.decode(parent_id_arr.value_at_or_default(idx), &key, &value);
+            let parent_id = parent_id_decoder.decode(
+                parent_id_arr.value_at_or_default(idx).into(),
+                &key,
+                &value,
+            );
             let attributes = store.attribute_by_ids.entry(parent_id).or_default();
             //todo: support assigning ArrayValue and KvListValue by deep copy as in https://github.com/open-telemetry/opentelemetry-collector/blob/fbf6d103eea79e72ff6b2cc3a2a18fc98a836281/pdata/pcommon/value.go#L323
             *attributes.find_or_append(&key) = Some(AnyValue { value: Some(value) });
@@ -171,17 +168,4 @@ impl FindOrAppendValue<Option<AnyValue>> for Vec<KeyValue> {
         });
         &mut self.last_mut().unwrap().value
     }
-}
-
-/// Key form
-const DELTA_ENCODING_KEY: &str = "encoding";
-const DELTA_ENCODING_VALUE: &str = "delta";
-
-/// Checks if parent id field is delta encoded from the metadata of schema.
-fn is_delta_encoded(schema: &Schema) -> bool {
-    schema
-        .metadata
-        .get(DELTA_ENCODING_KEY)
-        .map(|v| v == DELTA_ENCODING_VALUE)
-        .unwrap_or(false)
 }

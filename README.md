@@ -4,14 +4,22 @@
 [![Go-CI](https://github.com/open-telemetry/otel-arrow/actions/workflows/go-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/go-ci.yml)
 [![Rust-CI](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml)
 [![OpenSSF Scorecard for otel-arrow](https://api.scorecard.dev/projects/github.com/open-telemetry/otel-arrow/badge)](https://scorecard.dev/viewer/?uri=github.com/open-telemetry/otel-arrow)
+[![codecov](https://codecov.io/gh/open-telemetry/otel-arrow/graph/badge.svg?token=7u3gFLH54G)](https://codecov.io/gh/open-telemetry/otel-arrow)
 
-The [OpenTelemetry Protocol with Apache
+The [OpenTelemetry with Apache
 Arrow](https://github.com/open-telemetry/otel-arrow) project is an
 effort within [OpenTelemetry](https://opentelemetry.io/) to use
 [Apache Arrow](https://arrow.apache.org/) libraries for bulk data
-transport in OpenTelemetry pipelines.  This repository is
-the home of the OpenTelemetry Protocol with Apache Arrow protocol,
-which we refer to as "OTAP", and reference implementations.
+transport in OpenTelemetry pipelines.  This repository is the home of
+the OpenTelemetry Protocol with Apache Arrow protocol, which we refer
+to as "OTAP", and reference implementations in Golang and Rust.
+
+The [OpenTelemetry Arrow project has an OpenTelemetry SIG with weekly
+meetings][PROJECTDEF]. Find our [meeting schedule on the OpenTelemetry
+calendar][OTELCAL].
+
+[PROJECTDEF]: https://github.com/open-telemetry/community/blob/main/projects/otelarrow.md
+[OTELCAL]: https://github.com/open-telemetry/community/blob/main/README.md#calendar
 
 ## Quick start
 
@@ -21,6 +29,10 @@ for details.
 
 The [examples](./collector/examples/README.md) in this repository use
 a test collector named `otelarrowcol`, see [collector/BUILDING.md](./collector/BUILDING.md).
+
+[Phase 2 of the project is being actively developed](#phase-2). We are
+building an end-to-end OpenTelemetry Arrow pipeline in Rust.  Find us
+in the CNCF Slack `#otel-arrow` channel.
 
 [RECEIVER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/otelarrowreceiver/README.md
 [EXPORTER]: https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/exporter/otelarrowexporter/README.md
@@ -223,23 +235,6 @@ The meeting is open for all to join. We invite everyone to join our meeting,
 regardless of your experience level. Whether you're a seasoned OpenTelemetry
 developer, just starting your journey, or simply curious about the work we do,
 you're more than welcome to participate!
-
-[Maintainers](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#maintainer)
-([@open-telemetry/arrow-maintainers](https://github.com/orgs/open-telemetry/teams/arrow-maintainers)):
-
-- [Joshua MacDonald](https://github.com/jmacd), Microsoft
-- [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
-
-[Approvers](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver)
-([@open-telemetry/arrow-approvers](https://github.com/orgs/open-telemetry/teams/arrow-approvers)):
-
-- [Alex Boten](https://github.com/codeboten), Honeycomb
-- [Drew Relmas](https://github.com/drewrelmas), Microsoft
-- [Moh Osman](https://github.com/moh-osman3), ServiceNow
-
-### Thanks to all the people who have contributed
-
-[![contributors](https://contributors-img.web.app/image?repo=open-telemetry/otel-arrow)](https://github.com/open-telemetry/otel-arrow/graphs/contributors)
 
 ## References
 

@@ -40,7 +40,11 @@ yanked = "warn"
 # A list of advisory IDs to ignore. Note that ignored advisories will still
 # output a note when they are encountered.
 ignore = [
-    #"RUSTSEC-0000-0000",
+    # The paste library is unmaintained by the original author dtolnay.
+    # However, it may be considered as finished code. Since it executes
+    # at compile time (during macro expansion) there is little risk of
+    # harm.
+    "RUSTSEC-2024-0436",
 ]
 # Threshold for security vulnerabilities, any vulnerability with a CVSS score
 # lower than the range specified will be ignored. Note that ignored advisories
@@ -133,7 +137,6 @@ wildcards = "allow"
 highlight = "all"
 # List of crates that are allowed. Use with care!
 allow = [
-    { name = "paste", version = "=1.0.15" },
 ]
 # List of crates to deny
 deny = [

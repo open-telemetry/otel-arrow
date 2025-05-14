@@ -1,4 +1,6 @@
 name: Pipeline Performance Tests
+permissions:
+  contents: read
 
 on:
     push:
@@ -6,9 +8,13 @@ on:
     pull_request:
         branches: [ main ]
 
+# Cancel in-progress runs on new commits to same PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
     pipeline-perf-test:
-        if: ${{ contains(github.event.pull_request.labels.*.name, 'performance') }}
         runs-on: ubuntu-latest
         steps:
         - name: Harden the runner (Audit all outbound calls)
@@ -17,27 +23,33 @@ jobs:
             egress-policy: audit
 
         - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        
+
         - name: Set up Python
-          uses: actions/setup-python@v4
+          uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c # v4
           with:
             python-version: '3.9'
             cache: 'pip'
-        
+
         - name: Install dependencies
           run: |
             python -m pip install --upgrade pip
             pip install -r tools/pipeline_perf_test/orchestrator/requirements.txt
-        
-        - name: Run pipeline performance tests
+            pip install -r tools/pipeline_perf_test/load_generator/requirements.txt
+
+        - name: Run pipeline performance test with default configuration
           run: |
             cd tools/pipeline_perf_test
-            python orchestrator/orchestrator.py --duration 5
-        
-        - name: Upload test results
-          if: always()
-          uses: actions/upload-artifact@v3
+            python orchestrator/orchestrator.py --collector-config system_under_test/otel-collector/collector-config.yaml --duration 30 --results-dir ./results/default
+
+        - name: Run pipeline performance test with batch processor configuration
+          run: |
+            cd tools/pipeline_perf_test
+            python orchestrator/orchestrator.py --collector-config system_under_test/otel-collector/collector-config-with-batch-processor.yaml --duration 30 --results-dir ./results/batch-processor
+
+        - name: Upload performance test results
+          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
           with:
             name: performance-test-results
             path: tools/pipeline_perf_test/results/
-            retention-days: 7
+
+

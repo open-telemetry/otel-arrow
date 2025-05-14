@@ -30,21 +30,27 @@ use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status};
 
 #[derive(Debug)]
+#[cfg(test)]
 pub struct OTLPTracesInputType;
 
 #[derive(Debug)]
+#[cfg(test)]
 pub struct OTLPTracesOutputType;
 
 #[derive(Debug)]
+#[cfg(test)]
 pub struct OTLPMetricsInputType;
 
 #[derive(Debug)]
+#[cfg(test)]
 pub struct OTLPMetricsOutputType;
 
 #[derive(Debug)]
+#[cfg(test)]
 pub struct OTLPLogsInputType;
 
 #[derive(Debug)]
+#[cfg(test)]
 pub struct OTLPLogsOutputType;
 
 impl ServiceInputType for OTLPTracesInputType {
@@ -288,11 +294,20 @@ mod tests {
     async fn test_otap_metrics_single_request() {
         run_single_round_trip_test::<OTLPMetricsInputType, OTAPMetricsOutputType, _>(
             testdata::metrics::create_single_request,
-            // This test expects a specific error due to disagreements
-            // between the Rust and Golang implementations about OTAP
-            // metrics encoding.  https://github.com/open-telemetry/otel-arrow/issues/353
-            Some("ColumnDataTypeMismatch"),
+            // There are some corrections to the test logic that will need to be made before
+            // this test will pass
+            // https://github.com/open-telemetry/otel-arrow/issues/392
+            Some("InvalidArgument"),
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn test_otap_logs_single_request() {
+        run_single_round_trip_test::<OTLPLogsInputType, OTAPLogsOutputType, _>(
+            testdata::logs::create_single_request,
+            None, // Expect success
+        )
+        .await
     }
 }
