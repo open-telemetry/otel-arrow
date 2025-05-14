@@ -103,6 +103,7 @@ impl<PData> ReceiverWrapper<PData> {
             tokio::sync::mpsc::channel(config.control_channel.capacity);
         let (pdata_sender, pdata_receiver) =
             tokio::sync::mpsc::channel(config.output_pdata_channel.capacity);
+
         ReceiverWrapper::Shared {
             effect_handler: shared::EffectHandler::new(config.name.clone(), pdata_sender),
             receiver: Box::new(receiver),
