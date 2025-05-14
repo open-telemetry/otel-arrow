@@ -121,8 +121,8 @@ pub mod logs {
                     AnyValue::new_array((0..3).map(AnyValue::new_int).collect::<Vec<_>>()),
                 ),
             ])
-            .trace_id((0u8..16u8).into_iter().collect::<Vec<u8>>())
-            .span_id((0u8..8u8).into_iter().collect::<Vec<u8>>())
+            .trace_id((0u8..16u8).collect::<Vec<u8>>())
+            .span_id((0u8..8u8).collect::<Vec<u8>>())
             .finish();
 
         to_export_logs_request(vec![log_record])
@@ -170,8 +170,8 @@ pub mod logs {
                 "test.attribute",
                 AnyValue::new_string("test value2"),
             )])
-            .trace_id((8u8..24u8).into_iter().collect::<Vec<u8>>())
-            .span_id((8u8..16u8).into_iter().collect::<Vec<u8>>())
+            .trace_id((8u8..24u8).collect::<Vec<u8>>())
+            .span_id((8u8..16u8).collect::<Vec<u8>>())
             .finish();
 
         to_export_logs_request(vec![list_body_log_record, map_body_log_record])
