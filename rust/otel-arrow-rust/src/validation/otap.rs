@@ -28,7 +28,7 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status};
 
 use super::error;
-use snafu::{OptionExt, ResultExt};
+use snafu::ResultExt;
 
 const OTAP_PROTOCOL_NAME: &str = "otelarrow"; // matches the exporter and receiver name
 
@@ -69,17 +69,14 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
 
         // Spawn a task to process incoming arrow records and convert them to OTLP
         tokio::spawn(async move {
-            let mut related_data = crate::otlp::metrics::related_data::RelatedData::default();
-
             // Helper function to process a batch and send appropriate status
             async fn process_and_send(
-                batch: &BatchArrowRecords,
-                related_data: &mut crate::otlp::metrics::related_data::RelatedData,
+                consumer: &mut crate::Consumer,
+                batch: &mut BatchArrowRecords,
                 receiver: &TestReceiver<ExportMetricsServiceRequest>,
                 tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
             ) -> Result<(), ()> {
-                let status_result = match process_arrow_metrics(batch, related_data, receiver).await
-                {
+                let status_result = match process_arrow_metrics(consumer, batch, receiver).await {
                     Ok(_) => (StatusCode::Ok, "Successfully processed".to_string()),
                     Err(e) => (StatusCode::InvalidArgument, truncate_error(e.to_string())),
                 };
@@ -93,10 +90,11 @@ impl ArrowMetricsService for OTAPMetricsAdapter {
                 .map_err(|_| ())
             }
 
+            let mut consumer = crate::Consumer::default();
             // Process messages until stream ends or error occurs
-            while let Ok(Some(batch)) = input_stream.message().await {
+            while let Ok(Some(mut batch)) = input_stream.message().await {
                 // Process batch and send status, break on client disconnection
-                if process_and_send(&batch, &mut related_data, &receiver, &tx)
+                if process_and_send(&mut consumer, &mut batch, &receiver, &tx)
                     .await
                     .is_err()
                 {
@@ -142,51 +140,20 @@ impl ServiceOutputType for OTAPMetricsOutputType {
 
 /// Receives an Arrow batch and convert to OTLP.
 async fn process_arrow_metrics(
-    batch: &BatchArrowRecords,
-    related_data: &mut crate::otlp::metrics::related_data::RelatedData,
+    consumer: &mut crate::Consumer,
+    batch: &mut BatchArrowRecords,
     receiver: &TestReceiver<ExportMetricsServiceRequest>,
 ) -> error::Result<()> {
-    use crate::decode::record_message::RecordMessage;
-    use arrow::ipc::reader::StreamReader;
-    use std::io::Cursor;
-
-    // Process each arrow payload
-    for payload in &batch.arrow_payloads {
-        // Create a reader for the Arrow record
-        let reader =
-            StreamReader::try_new(Cursor::new(&payload.record), None).context(error::ArrowSnafu)?;
-
-        // We expect only one batch per payload field.
-        let arrow_batch = reader
-            .into_iter()
-            .next()
-            .context(error::EmptyBatchSnafu)?
-            .context(error::ArrowSnafu)?;
-
-        // Create a record message
-        let record_message = RecordMessage {
-            batch_id: batch.batch_id,
-            schema_id: payload.schema_id.clone(),
-            payload_type: crate::proto::opentelemetry::arrow::v1::ArrowPayloadType::try_from(
-                payload.r#type,
-            )
-            .context(error::InvalidPayloadSnafu)?,
-            record: arrow_batch,
-        };
-
-        // Convert Arrow payload to OTLP metrics
-        let otlp_metrics = crate::otlp::metrics::metrics_from(&record_message.record, related_data)
-            .context(error::OTelArrowSnafu)?;
-
-        // Send this individual metrics item to the receiver
-        receiver
-            .process_export_request::<ExportMetricsServiceRequest>(
-                Request::new(otlp_metrics),
-                "metrics",
-            )
-            .await
-            .context(error::TonicStatusSnafu)?;
-    }
+    let otlp_metrics = consumer
+        .consume_metrics_batches(batch)
+        .context(error::OTelArrowSnafu)?;
+    receiver
+        .process_export_request::<ExportMetricsServiceRequest>(
+            Request::new(otlp_metrics),
+            "metrics",
+        )
+        .await
+        .context(error::TonicStatusSnafu)?;
 
     Ok(())
 }

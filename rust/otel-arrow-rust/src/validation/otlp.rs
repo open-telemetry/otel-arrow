@@ -294,10 +294,7 @@ mod tests {
     async fn test_otap_metrics_single_request() {
         run_single_round_trip_test::<OTLPMetricsInputType, OTAPMetricsOutputType, _>(
             testdata::metrics::create_single_request,
-            // There are some corrections to the test logic that will need to be made before
-            // this test will pass
-            // https://github.com/open-telemetry/otel-arrow/issues/392
-            Some("InvalidArgument"),
+            None,
         )
         .await;
     }
@@ -306,6 +303,15 @@ mod tests {
     async fn test_otap_logs_single_request() {
         run_single_round_trip_test::<OTLPLogsInputType, OTAPLogsOutputType, _>(
             testdata::logs::create_single_request,
+            None, // Expect success
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn test_otap_logs_serialized_bodies() {
+        run_single_round_trip_test::<OTLPLogsInputType, OTAPLogsOutputType, _>(
+            testdata::logs::create_request_with_serialized_bodies,
             None, // Expect success
         )
         .await
