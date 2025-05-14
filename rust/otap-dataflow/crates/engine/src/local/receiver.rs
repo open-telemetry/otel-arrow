@@ -33,10 +33,9 @@
 
 use crate::effect_handler::EffectHandlerCore;
 use crate::error::Error;
-use crate::message::ControlMsg;
+use crate::message::{ControlMsg, Sender};
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
-use otap_df_channel::mpsc;
 use std::borrow::Cow;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -118,14 +117,14 @@ pub struct EffectHandler<PData> {
     core: EffectHandlerCore,
 
     /// A sender used to forward messages from the receiver.
-    msg_sender: mpsc::Sender<PData>,
+    msg_sender: Sender<PData>,
 }
 
 /// Implementation for the `!Send` effect handler.
 impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given receiver name.
     #[must_use]
-    pub fn new(receiver_name: Cow<'static, str>, msg_sender: mpsc::Sender<PData>) -> Self {
+    pub fn new(receiver_name: Cow<'static, str>, msg_sender: Sender<PData>) -> Self {
         EffectHandler {
             core: EffectHandlerCore {
                 node_name: receiver_name,
@@ -146,7 +145,7 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
     pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
-        self.msg_sender.send_async(data).await?;
+        self.msg_sender.send(data).await?;
         Ok(())
     }
 

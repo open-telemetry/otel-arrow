@@ -9,7 +9,7 @@
 use crate::config::ReceiverConfig;
 use crate::error::Error;
 use crate::local::receiver as local;
-use crate::message::{ControlMsg, ControlSender, PDataReceiver, Receiver};
+use crate::message::{ControlMsg, ControlSender, PDataReceiver, Receiver, Sender};
 use crate::shared::receiver as shared;
 use otap_df_channel::mpsc;
 
@@ -58,7 +58,7 @@ impl<PData> ReceiverWrapper<PData> {
             mpsc::Channel::new(config.output_pdata_channel.capacity);
 
         ReceiverWrapper::Local {
-            effect_handler: local::EffectHandler::new(config.name.clone(), pdata_sender),
+            effect_handler: local::EffectHandler::new(config.name.clone(), Sender::Local(pdata_sender)),
             receiver: Box::new(receiver),
             control_sender,
             control_receiver,
