@@ -31,9 +31,9 @@ pub(crate) const TEST_TIMEOUT_SECONDS: u64 = 20;
 
 pub static COLLECTOR_PATH: LazyLock<String> = LazyLock::new(|| {
     let default_path = "../../bin/otelarrowcol";
-    let path = std::env::var("OTEL_COLLECTOR_PATH").unwrap_or(default_path.to_string());
+    let path = env::var("OTEL_COLLECTOR_PATH").unwrap_or(default_path.to_string());
 
-    if !std::path::Path::new(&path).exists() {
+    if !Path::new(&path).exists() {
         eprintln!("Warning: OpenTelemetry Collector not found at '{}'.", path);
         eprintln!("Set OTEL_COLLECTOR_PATH environment variable to the correct path.");
     }
@@ -109,7 +109,7 @@ impl CollectorProcess {
 
         status
             .success()
-            .then(|| ())
+            .then_some(())
             .context(error::BadExitStatusSnafu {
                 code: status.code(),
             })
@@ -123,8 +123,7 @@ impl CollectorProcess {
         // Create a unique temporary config file for the collector
         // with a random identifier to prevent collision.
         let random_id = format!("{:016x}", rand::random::<u64>());
-        let config_path = PathBuf::from(env::temp_dir())
-            .join(format!("otel_collector_config_{}.yaml", random_id));
+        let config_path = env::temp_dir().join(format!("otel_collector_config_{}.yaml", random_id));
 
         // Write the config to the file
         let mut file =
@@ -166,7 +165,7 @@ impl CollectorProcess {
         let timeout_duration = Duration::from_secs(READY_TIMEOUT_SECONDS);
 
         // Wait for the ready message with timeout and return the collector process when ready
-        _ = tokio::time::timeout(timeout_duration, ready_rx)
+        tokio::time::timeout(timeout_duration, ready_rx)
             .await
             .context(error::ReadyTimeoutSnafu)?
             .context(error::ChannelClosedSnafu)?;
@@ -249,7 +248,7 @@ pub struct TestContext<I: service_type::ServiceInputType, O: service_type::Servi
     pub collector: CollectorProcess,
     pub request_rx: mpsc::Receiver<O::Request>,
     pub server_handle: tokio::task::JoinHandle<error::Result<()>>,
-    pub server_shutdown_tx: tokio::sync::oneshot::Sender<()>,
+    pub server_shutdown_tx: oneshot::Sender<()>,
 }
 
 /// Generic test runner for telemetry signal tests
@@ -270,7 +269,7 @@ where
     O::Request: std::fmt::Debug + PartialEq,
     F: FnOnce(
         &mut TestContext<I, O>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = error::Result<()>> + '_>>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = error::Result<()>> + '_>>,
 {
     // Generate random ports in the high u16 range to avoid conflicts.
     // Note that the OpenTelemetry Collector will respect a `:0` port
@@ -324,7 +323,7 @@ where
 
     // Wait for the server to shut down with timeout
     tokio::time::timeout(
-        std::time::Duration::from_secs(SHUTDOWN_TIMEOUT_SECONDS),
+        Duration::from_secs(SHUTDOWN_TIMEOUT_SECONDS),
         context.server_handle,
     )
     .await

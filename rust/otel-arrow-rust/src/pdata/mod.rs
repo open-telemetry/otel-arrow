@@ -25,10 +25,13 @@ pub mod otlp;
 // respect to JSON, and the OTel-Rust SDK implements this aspect of
 // the spec.
 
+/// TraceID identifier of a Trace
 #[derive(Clone, Copy, Debug)]
 pub struct TraceID([u8; 16]);
 
 impl TraceID {
+    /// creates a new instance of the TraceID by copying the bytes
+    #[must_use]
     pub fn new(value: &[u8; 16]) -> TraceID {
         TraceID(*value)
     }
@@ -46,10 +49,13 @@ impl From<TraceID> for Vec<u8> {
     }
 }
 
+/// SpanID identifier of a Span
 #[derive(Clone, Copy, Debug)]
 pub struct SpanID([u8; 8]);
 
 impl SpanID {
+    /// creates a new instance of the SpanID by copying the bytes
+    #[must_use]
     pub fn new(value: &[u8; 8]) -> SpanID {
         SpanID(*value)
     }

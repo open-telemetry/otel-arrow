@@ -92,7 +92,7 @@ where
                                 .then_some(())
                                 .ok_or_else(|| error::Error::PatternNotFound {
                                     pattern: expected_msg.into(),
-                                    input: status.to_string().into(),
+                                    input: status.to_string(),
                                 })
                         } else {
                             // Unexpected, fail.
