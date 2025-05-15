@@ -191,7 +191,7 @@ impl SeverityNumber {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    #[must_use] pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "SEVERITY_NUMBER_UNSPECIFIED",
             Self::Trace => "SEVERITY_NUMBER_TRACE",
@@ -221,7 +221,7 @@ impl SeverityNumber {
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+    #[must_use] pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "SEVERITY_NUMBER_UNSPECIFIED" => Some(Self::Unspecified),
             "SEVERITY_NUMBER_TRACE" => Some(Self::Trace),
@@ -273,14 +273,14 @@ impl LogRecordFlags {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    #[must_use] pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::DoNotUse => "LOG_RECORD_FLAGS_DO_NOT_USE",
             Self::TraceFlagsMask => "LOG_RECORD_FLAGS_TRACE_FLAGS_MASK",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+    #[must_use] pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "LOG_RECORD_FLAGS_DO_NOT_USE" => Some(Self::DoNotUse),
             "LOG_RECORD_FLAGS_TRACE_FLAGS_MASK" => Some(Self::TraceFlagsMask),

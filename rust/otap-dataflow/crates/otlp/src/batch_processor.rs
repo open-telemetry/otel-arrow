@@ -5,11 +5,9 @@ use async_trait::async_trait;
 use otap_df_engine::error::Error;
 use otap_df_engine::message::{ControlMsg, Message};
 use otap_df_engine::processor::{SendEffectHandler, Processor, EffectHandlerTrait};
+#[allow(unused_imports)]
 use std::time::Duration;
-use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
-use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
-use crate::grpc::OTLPRequest;
+
 
 /// A processor that buffers messages and emits them in batches.
 pub struct BatchProcessor<OTLPRequest> {
@@ -59,7 +57,7 @@ impl<OTLPRequest: Clone + Send + 'static> Processor<OTLPRequest, SendEffectHandl
                         }
                         Ok(())
                     }
-                    ControlMsg::Shutdown { deadline, reason } => {
+                    ControlMsg::Shutdown { deadline: _, reason: _ } => {
                         // Flush any remaining batch on shutdown
                         if !self.batch.is_empty() {
                             let batch = std::mem::replace(&mut self.batch, Vec::with_capacity(self.batch_size));
@@ -96,7 +94,6 @@ mod tests {
     use crate::grpc::OTLPRequest;
     use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
     use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
-    use prost_types::Timestamp;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn make_effect_handler() -> (SendEffectHandler<OTLPRequest>, mpsc::Receiver<OTLPRequest>) {

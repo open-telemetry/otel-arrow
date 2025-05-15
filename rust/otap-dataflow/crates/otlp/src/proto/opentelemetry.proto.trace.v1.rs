@@ -284,7 +284,7 @@ pub mod span {
         ///
         /// The values are not transformed in any way and thus are considered stable
         /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-        pub fn as_str_name(&self) -> &'static str {
+        #[must_use] pub fn as_str_name(&self) -> &'static str {
             match self {
                 Self::Unspecified => "SPAN_KIND_UNSPECIFIED",
                 Self::Internal => "SPAN_KIND_INTERNAL",
@@ -295,7 +295,7 @@ pub mod span {
             }
         }
         /// Creates an enum from field names used in the ProtoBuf definition.
-        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        #[must_use] pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
             match value {
                 "SPAN_KIND_UNSPECIFIED" => Some(Self::Unspecified),
                 "SPAN_KIND_INTERNAL" => Some(Self::Internal),
@@ -339,7 +339,7 @@ pub mod status {
         ///
         /// The values are not transformed in any way and thus are considered stable
         /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-        pub fn as_str_name(&self) -> &'static str {
+        #[must_use] pub fn as_str_name(&self) -> &'static str {
             match self {
                 Self::Unset => "STATUS_CODE_UNSET",
                 Self::Ok => "STATUS_CODE_OK",
@@ -347,7 +347,7 @@ pub mod status {
             }
         }
         /// Creates an enum from field names used in the ProtoBuf definition.
-        pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        #[must_use] pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
             match value {
                 "STATUS_CODE_UNSET" => Some(Self::Unset),
                 "STATUS_CODE_OK" => Some(Self::Ok),
@@ -390,7 +390,7 @@ impl SpanFlags {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    #[must_use] pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::DoNotUse => "SPAN_FLAGS_DO_NOT_USE",
             Self::TraceFlagsMask => "SPAN_FLAGS_TRACE_FLAGS_MASK",
@@ -399,7 +399,7 @@ impl SpanFlags {
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+    #[must_use] pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "SPAN_FLAGS_DO_NOT_USE" => Some(Self::DoNotUse),
             "SPAN_FLAGS_TRACE_FLAGS_MASK" => Some(Self::TraceFlagsMask),

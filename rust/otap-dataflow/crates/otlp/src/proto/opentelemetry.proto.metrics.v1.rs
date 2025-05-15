@@ -717,7 +717,7 @@ impl AggregationTemporality {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    #[must_use] pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "AGGREGATION_TEMPORALITY_UNSPECIFIED",
             Self::Delta => "AGGREGATION_TEMPORALITY_DELTA",
@@ -725,7 +725,7 @@ impl AggregationTemporality {
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+    #[must_use] pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "AGGREGATION_TEMPORALITY_UNSPECIFIED" => Some(Self::Unspecified),
             "AGGREGATION_TEMPORALITY_DELTA" => Some(Self::Delta),
@@ -756,14 +756,14 @@ impl DataPointFlags {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub fn as_str_name(&self) -> &'static str {
+    #[must_use] pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::DoNotUse => "DATA_POINT_FLAGS_DO_NOT_USE",
             Self::NoRecordedValueMask => "DATA_POINT_FLAGS_NO_RECORDED_VALUE_MASK",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
-    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+    #[must_use] pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
         match value {
             "DATA_POINT_FLAGS_DO_NOT_USE" => Some(Self::DoNotUse),
             "DATA_POINT_FLAGS_NO_RECORDED_VALUE_MASK" => Some(Self::NoRecordedValueMask),
