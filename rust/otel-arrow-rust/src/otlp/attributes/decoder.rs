@@ -15,8 +15,8 @@
 use crate::otlp::attributes::parent_id::ParentId;
 use crate::proto::opentelemetry::common::v1::any_value;
 
-pub type Attrs16ParentIdDecoder = AttrsParentIdDecoder<u16>;
-pub type Attrs32ParentIdDecoder = AttrsParentIdDecoder<u32>;
+pub type Attrs16ParentIdDecoder<'a> = AttrsParentIdDecoder<'a, u16>;
+pub type Attrs32ParentIdDecoder<'a> = AttrsParentIdDecoder<'a, u32>;
 
 // AttrsParentIdDecoder implements parent_id decoding for attribute
 // sets.  The parent_id in this case is the entity which refers to the
@@ -26,15 +26,15 @@ pub type Attrs32ParentIdDecoder = AttrsParentIdDecoder<u32>;
 // Phase 1 note: there were several experimental encoding schemes
 // tested.  Two schemes named "ParentIdDeltaEncoding",
 // "ParentIdNoEncoding" have been removed.
-pub struct AttrsParentIdDecoder<T> {
+pub struct AttrsParentIdDecoder<'a, T: ParentId<'a>> {
     prev_parent_id: T,
     prev_key: Option<String>,
     prev_value: Option<any_value::Value>,
 }
 
-impl<T> Default for AttrsParentIdDecoder<T>
+impl<'a, T> Default for AttrsParentIdDecoder<'a, T>
 where
-    T: ParentId,
+    T: ParentId<'a>,
 {
     fn default() -> Self {
         Self {
@@ -45,9 +45,9 @@ where
     }
 }
 
-impl<T> AttrsParentIdDecoder<T>
+impl<'a, T> AttrsParentIdDecoder<'a, T>
 where
-    T: ParentId,
+    T: ParentId<'a>,
 {
     pub fn decode(&mut self, delta_or_parent_id: T, key: &str, value: &any_value::Value) -> T {
         if self.prev_key.as_deref() == Some(key) && self.prev_value.as_ref() == Some(value) {

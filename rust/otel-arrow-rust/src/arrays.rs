@@ -449,6 +449,8 @@ impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
     }
 }
 
+pub type UInt16ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, UInt16Array>;
+pub type UInt32ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, UInt32Array>;
 pub type Int32ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int32Array>;
 pub type Int64ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int64Array>;
 pub type StringArrayAccessor<'a> = MaybeDictArrayAccessor<'a, StringArray>;

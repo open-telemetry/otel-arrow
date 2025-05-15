@@ -21,16 +21,16 @@ use crate::otlp::metrics::exemplar::ExemplarsStore;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 #[derive(Default)]
-pub struct RelatedData {
+pub struct RelatedData<'a> {
     pub(crate) metric_id: u16,
 
     // Resource attributes.
-    pub(crate) res_attr_map_store: Attribute16Store,
-    pub(crate) scope_attr_map_store: Attribute16Store,
-    pub(crate) number_d_p_attrs_store: Attribute32Store,
-    pub(crate) summary_attrs_store: Attribute32Store,
-    pub(crate) histogram_attrs_store: Attribute32Store,
-    pub(crate) exp_histogram_attrs_store: Attribute32Store,
+    pub(crate) res_attr_map_store: Attribute16Store<'a>,
+    pub(crate) scope_attr_map_store: Attribute16Store<'a>,
+    pub(crate) number_d_p_attrs_store: Attribute32Store<'a>,
+    pub(crate) summary_attrs_store: Attribute32Store<'a>,
+    pub(crate) histogram_attrs_store: Attribute32Store<'a>,
+    pub(crate) exp_histogram_attrs_store: Attribute32Store<'a>,
 
     // Exemplars
     pub(crate) number_data_point_exemplars_store: ExemplarsStore,
@@ -38,9 +38,9 @@ pub struct RelatedData {
     pub(crate) e_histogram_data_point_exemplars_store: ExemplarsStore,
 
     // Exemplar attributes store
-    pub(crate) number_d_p_exemplar_attrs_store: Attribute32Store,
-    pub(crate) histogram_exemplar_attrs_store: Attribute32Store,
-    pub(crate) exp_histogram_exemplar_attrs_store: Attribute32Store,
+    pub(crate) number_d_p_exemplar_attrs_store: Attribute32Store<'a>,
+    pub(crate) histogram_exemplar_attrs_store: Attribute32Store<'a>,
+    pub(crate) exp_histogram_exemplar_attrs_store: Attribute32Store<'a>,
 
     // Data points
     pub(crate) number_data_points_store: NumberDataPointsStore,
@@ -49,7 +49,7 @@ pub struct RelatedData {
     pub(crate) e_histogram_data_points_store: EHistogramDataPointsStore,
 }
 
-impl RelatedData {
+impl<'a> RelatedData<'a> {
     pub fn metric_id_from_delta(&mut self, delta: u16) -> u16 {
         self.metric_id += delta;
         self.metric_id

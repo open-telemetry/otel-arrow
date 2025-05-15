@@ -23,10 +23,10 @@ use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch};
 use num_enum::TryFromPrimitive;
 use snafu::{OptionExt, ResultExt};
 use std::collections::HashMap;
-use std::hash::Hash;
 
 use super::cbor;
 
+/// Where is the Golang equivalent of this?
 #[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
 #[repr(u8)]
 pub enum AttributeValueType {
@@ -40,18 +40,18 @@ pub enum AttributeValueType {
     Bytes = 7,
 }
 
-pub type Attribute32Store = AttributeStore<u32>;
-pub type Attribute16Store = AttributeStore<u16>;
+pub type Attribute32Store<'a> = AttributeStore<'a, u32>;
+pub type Attribute16Store<'a> = AttributeStore<'a, u16>;
 
 #[derive(Default)]
-pub struct AttributeStore<T> {
+pub struct AttributeStore<'a, T: ParentId<'a>> {
     pub last_id: T,
     pub attribute_by_ids: HashMap<T, Vec<KeyValue>>,
 }
 
-impl<T> AttributeStore<T>
+impl<'a, T> AttributeStore<'a, T>
 where
-    T: ParentId,
+    T: ParentId<'a>,
 {
     pub fn attributes_by_delta_id(&mut self, delta: T) -> Option<&[KeyValue]> {
         self.last_id += delta;
@@ -65,7 +65,7 @@ where
     }
 }
 
-impl<T: Default + Eq + Hash, const N: usize> From<[(T, Vec<KeyValue>); N]> for AttributeStore<T> {
+impl<'a, T: ParentId<'a>, const N: usize> From<[(T, Vec<KeyValue>); N]> for AttributeStore<'a, T> {
     fn from(values: [(T, Vec<KeyValue>); N]) -> Self {
         Self {
             last_id: T::default(),
@@ -74,11 +74,11 @@ impl<T: Default + Eq + Hash, const N: usize> From<[(T, Vec<KeyValue>); N]> for A
     }
 }
 
-impl<T> TryFrom<&RecordBatch> for AttributeStore<T>
+impl<'a, T> TryFrom<&RecordBatch> for AttributeStore<'a, T>
 where
-    T: ParentId,
-    <T as ParentId>::ArrayType: ArrowPrimitiveType,
-    <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native: Into<T>,
+    T: ParentId<'a>,
+    <T as ParentId<'a>>::ArrayType: ArrowPrimitiveType,
+    <<T as ParentId<'a>>::ArrayType as ArrowPrimitiveType>::Native: Into<T>,
 {
     type Error = error::Error;
 
