@@ -16,7 +16,7 @@ use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
 use num_enum::TryFromPrimitiveError;
 use snafu::{Location, Snafu};
-use std::backtrace::Backtrace;
+use std::{backtrace::Backtrace, num::TryFromIntError};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -61,9 +61,33 @@ pub enum Error {
         location: Location,
     },
 
-    #[snafu(display("Currently attribute store value type: {} is not supported", type_name))]
-    UnsupportedAttributeValue {
-        type_name: String,
+    #[snafu(display("Invalid bytes for serialized attribute value"))]
+    InvalidSerializedAttributeBytes {
+        source: ciborium::de::Error<std::io::Error>,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Invalid serialized integer attribute value"))]
+    InvalidSerializedIntAttributeValue {
+        source: TryFromIntError,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display(
+        "Invalid serialized map key type, expected: String, actual: {:?}",
+        actual
+    ))]
+    InvalidSerializedMapKeyType {
+        actual: ciborium::Value,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Serialized attribute {:?} is not supported", actual))]
+    UnsupportedSerializedAttributeValue {
+        actual: ciborium::Value,
         #[snafu(implicit)]
         location: Location,
     },

@@ -28,7 +28,7 @@ impl Stream for ShutdownableTcpListenerStream {
         let shutdown_poll = Pin::new(&mut self.shutdown_rx).poll(cx);
 
         // If shutdown has been signaled, mark as shutdown and end the stream.
-        if let Poll::Ready(_) = shutdown_poll {
+        if shutdown_poll.is_ready() {
             eprintln!("Shutdown signal received, closing TCP listener stream");
             *self.shutdown_triggered.lock().unwrap() = true;
             return Poll::Ready(None);

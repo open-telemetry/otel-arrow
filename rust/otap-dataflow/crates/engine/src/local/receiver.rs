@@ -33,10 +33,9 @@
 
 use crate::effect_handler::EffectHandlerCore;
 use crate::error::Error;
-use crate::message::ControlMsg;
+use crate::message::{ControlMsg, Sender};
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
-use otap_df_channel::mpsc;
 use std::borrow::Cow;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -92,13 +91,13 @@ pub trait Receiver<PData> {
 /// This structure wraps a receiver end of a channel that carries [`ControlMsg`]
 /// values used to control the behavior of a receiver at runtime.
 pub struct ControlChannel {
-    rx: mpsc::Receiver<ControlMsg>,
+    rx: crate::message::Receiver<ControlMsg>,
 }
 
 impl ControlChannel {
     /// Creates a new `ControlChannelLocal` with the given receiver.
     #[must_use]
-    pub fn new(rx: mpsc::Receiver<ControlMsg>) -> Self {
+    pub fn new(rx: crate::message::Receiver<ControlMsg>) -> Self {
         Self { rx }
     }
 
@@ -107,7 +106,7 @@ impl ControlChannel {
     /// # Errors
     ///
     /// Returns a [`RecvError`] if the channel is closed.
-    pub async fn recv(&self) -> Result<ControlMsg, RecvError> {
+    pub async fn recv(&mut self) -> Result<ControlMsg, RecvError> {
         self.rx.recv().await
     }
 }
@@ -118,14 +117,14 @@ pub struct EffectHandler<PData> {
     core: EffectHandlerCore,
 
     /// A sender used to forward messages from the receiver.
-    msg_sender: mpsc::Sender<PData>,
+    msg_sender: Sender<PData>,
 }
 
 /// Implementation for the `!Send` effect handler.
 impl<PData> EffectHandler<PData> {
     /// Creates a new local (!Send) `EffectHandler` with the given receiver name.
     #[must_use]
-    pub fn new(receiver_name: Cow<'static, str>, msg_sender: mpsc::Sender<PData>) -> Self {
+    pub fn new(receiver_name: Cow<'static, str>, msg_sender: Sender<PData>) -> Self {
         EffectHandler {
             core: EffectHandlerCore {
                 node_name: receiver_name,
@@ -146,7 +145,7 @@ impl<PData> EffectHandler<PData> {
     ///
     /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
     pub async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
-        self.msg_sender.send_async(data).await?;
+        self.msg_sender.send(data).await?;
         Ok(())
     }
 

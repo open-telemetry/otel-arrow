@@ -1,43 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Set of traits and structures used to implement receivers.
+//! Receiver wrapper used to provide a unified interface to the pipeline engine that abstracts over
+//! the fact that receiver implementations may be `!Send` or `Send`.
 //!
-//! A receiver is an ingress node that feeds a pipeline with data from external sources while
-//! performing the necessary conversions to produce messages in a format recognized by the rest of
-//! downstream pipeline nodes (e.g. OTLP or OTAP message format).
-//!
-//! A receiver can operate in various ways, including:
-//!
-//! 1. Listening on a socket to receive push-based telemetry data,
-//! 2. Being notified of changes in a local directory (e.g. log file monitoring),
-//! 3. Actively scraping an endpoint to retrieve the latest metrics from a system,
-//! 4. Or using any other method to receive or extract telemetry data from external sources.
-//!
-//! # Lifecycle
-//!
-//! 1. The receiver is instantiated and configured.
-//! 2. The `start` method is called, which begins the receiver's operation.
-//! 3. The receiver processes both internal control messages and external data.
-//! 4. The receiver shuts down when it receives a `Shutdown` control message or encounters a fatal
-//!    error.
-//!
-//! # Thread Safety
-//!
-//! Two types of Receivers can be implemented and integrated into the engine:
-//!
-//! - [`ReceiverLocal`] is the trait to implement for receivers that do not require the [`Send`]
-//!   bound. It is recommended to use this trait when your implementation allows it.
-//! - [`ReceiverShared`] is the trait to implement for receivers that do require [`Send`].
-//!
-//! # Scalability
-//!
-//! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
-//! parallel on different cores, each with its own receiver instance.
+//! For more details on the `!Send` implementation of a receiver, see [`local::Receiver`].
+//! See [`shared::Receiver`] for the Send implementation.
 
 use crate::config::ReceiverConfig;
 use crate::error::Error;
 use crate::local::receiver as local;
-use crate::message::{ControlMsg, ControlSender, PDataReceiver};
+use crate::message::{ControlMsg, Receiver, Sender};
 use crate::shared::receiver as shared;
 use otap_df_channel::mpsc;
 
@@ -57,9 +29,9 @@ pub enum ReceiverWrapper<PData> {
         /// A receiver for control messages.
         control_receiver: mpsc::Receiver<ControlMsg>,
         /// A receiver for pdata messages.
-        pdata_receiver: Option<mpsc::Receiver<PData>>,
+        pdata_receiver: Option<Receiver<PData>>,
     },
-    /// A receiver with a `Send` receiver.
+    /// A receiver with a `Send` implementation.
     Shared {
         /// The receiver instance.
         receiver: Box<dyn shared::Receiver<PData>>,
@@ -86,11 +58,14 @@ impl<PData> ReceiverWrapper<PData> {
             mpsc::Channel::new(config.output_pdata_channel.capacity);
 
         ReceiverWrapper::Local {
-            effect_handler: local::EffectHandler::new(config.name.clone(), pdata_sender),
+            effect_handler: local::EffectHandler::new(
+                config.name.clone(),
+                Sender::Local(pdata_sender),
+            ),
             receiver: Box::new(receiver),
             control_sender,
             control_receiver,
-            pdata_receiver: Some(pdata_receiver),
+            pdata_receiver: Some(Receiver::Local(pdata_receiver)),
         }
     }
 
@@ -103,6 +78,7 @@ impl<PData> ReceiverWrapper<PData> {
             tokio::sync::mpsc::channel(config.control_channel.capacity);
         let (pdata_sender, pdata_receiver) =
             tokio::sync::mpsc::channel(config.output_pdata_channel.capacity);
+
         ReceiverWrapper::Shared {
             effect_handler: shared::EffectHandler::new(config.name.clone(), pdata_sender),
             receiver: Box::new(receiver),
@@ -114,13 +90,11 @@ impl<PData> ReceiverWrapper<PData> {
 
     /// Returns the control message sender for the receiver.
     #[must_use]
-    pub fn control_sender(&self) -> ControlSender {
+    pub fn control_sender(&self) -> Sender<ControlMsg> {
         match self {
-            ReceiverWrapper::Local { control_sender, .. } => {
-                ControlSender::Local(control_sender.clone())
-            }
+            ReceiverWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
             ReceiverWrapper::Shared { control_sender, .. } => {
-                ControlSender::Shared(control_sender.clone())
+                Sender::Shared(control_sender.clone())
             }
         }
     }
@@ -134,7 +108,7 @@ impl<PData> ReceiverWrapper<PData> {
                 control_receiver,
                 ..
             } => {
-                let ctrl_msg_chan = local::ControlChannel::new(control_receiver);
+                let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
                 receiver.start(ctrl_msg_chan, effect_handler).await
             }
             ReceiverWrapper::Shared {
@@ -150,13 +124,13 @@ impl<PData> ReceiverWrapper<PData> {
     }
 
     /// Returns the PData receiver.
-    pub fn take_pdata_receiver(&mut self) -> PDataReceiver<PData> {
+    pub fn take_pdata_receiver(&mut self) -> Receiver<PData> {
         match self {
             ReceiverWrapper::Local { pdata_receiver, .. } => {
-                PDataReceiver::NotSend(pdata_receiver.take().expect("pdata_receiver is None"))
+                pdata_receiver.take().expect("pdata_receiver is None")
             }
             ReceiverWrapper::Shared { pdata_receiver, .. } => {
-                PDataReceiver::Send(pdata_receiver.take().expect("pdata_receiver is None"))
+                Receiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
             }
         }
     }
@@ -205,7 +179,7 @@ mod tests {
     impl local::Receiver<TestMsg> for TestReceiver {
         async fn start(
             self: Box<Self>,
-            ctrl_msg_recv: local::ControlChannel,
+            mut ctrl_msg_recv: local::ControlChannel,
             effect_handler: local::EffectHandler<TestMsg>,
         ) -> Result<(), Error<TestMsg>> {
             // Bind to an ephemeral port.

@@ -1,41 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Set of traits and structures used to implement exporters.
+//! Exporter wrapper used to provide a unified interface to the pipeline engine that abstracts over
+//! the fact that exporter implementations may be `!Send` or `Send`.
 //!
-//! An exporter is an egress node that sends data from a pipeline to external systems, performing
-//! the necessary conversions from the internal pdata format to the format required by the external
-//! system.
-//!
-//! Exporters can operate in various ways, including:
-//!
-//! 1. Sending telemetry data to remote endpoints via network protocols,
-//! 2. Writing data to files or databases,
-//! 3. Pushing data to message queues or event buses,
-//! 4. Or any other method of exporting telemetry data to external systems.
-//!
-//! # Lifecycle
-//!
-//! 1. The exporter is instantiated and configured
-//! 2. The `start` method is called, which begins the exporter's operation
-//! 3. The exporter processes both internal control messages and pipeline data (pdata)
-//! 4. The exporter shuts down when it receives a `Shutdown` control message or encounters a fatal
-//!    error
-//!
-//! # Thread Safety
-//!
-//! Note that this trait uses `#[async_trait(?Send)]`, meaning implementations are not required to
-//! be thread-safe. If you need to implement an exporter that requires `Send`, you can use the
-//! [`SendEffectHandler`] type. The default effect handler is `!Send` (see
-//! [`NotSendEffectHandler`]).
-//!
-//! # Scalability
-//!
-//! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
-//! in parallel on different cores, each with its own exporter instance.
+//! For more details on the `!Send` implementation of an exporter, see [`local::Exporter`].
+//! See [`shared::Exporter`] for the Send implementation.
 
 use crate::config::ExporterConfig;
 use crate::error::Error;
 use crate::local::exporter as local;
+use crate::message;
 use crate::message::ControlMsg;
 use crate::message::Receiver;
 use crate::shared::exporter as shared;
@@ -52,7 +26,7 @@ pub enum ExporterWrapper<PData> {
         /// The effect handler instance for the exporter.
         effect_handler: local::EffectHandler<PData>,
     },
-    /// An exporter with a `Send` effect handler.
+    /// An exporter with a `Send` implementation.
     Shared {
         /// The exporter instance.
         exporter: Box<dyn shared::Exporter<PData>>,
@@ -97,7 +71,7 @@ impl<PData> ExporterWrapper<PData> {
                 effect_handler,
                 exporter,
             } => {
-                let message_channel = local::MessageChannel::new(control_rx, pdata_rx);
+                let message_channel = message::MessageChannel::new(control_rx, pdata_rx);
                 exporter.start(message_channel, effect_handler).await
             }
             ExporterWrapper::Shared {
@@ -156,7 +130,7 @@ mod tests {
     impl local::Exporter<TestMsg> for TestExporter {
         async fn start(
             self: Box<Self>,
-            mut msg_chan: local::MessageChannel<TestMsg>,
+            mut msg_chan: message::MessageChannel<TestMsg>,
             effect_handler: local::EffectHandler<TestMsg>,
         ) -> Result<(), Error<TestMsg>> {
             // Loop until a Shutdown event is received.
@@ -300,14 +274,14 @@ mod tests {
     fn make_chan() -> (
         mpsc::Sender<ControlMsg>,
         mpsc::Sender<String>,
-        local::MessageChannel<String>,
+        message::MessageChannel<String>,
     ) {
         let (control_tx, control_rx) = mpsc::Channel::<ControlMsg>::new(10);
         let (pdata_tx, pdata_rx) = mpsc::Channel::<String>::new(10);
         (
             control_tx,
             pdata_tx,
-            local::MessageChannel::new(
+            message::MessageChannel::new(
                 message::Receiver::Local(control_rx),
                 message::Receiver::Local(pdata_rx),
             ),

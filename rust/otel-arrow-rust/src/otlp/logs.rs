@@ -21,7 +21,7 @@ use crate::proto::opentelemetry::common::v1::AnyValue;
 use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::schema::consts;
 
-use super::attributes::store::AttributeValueType;
+use super::attributes::{cbor, store::AttributeValueType};
 
 pub mod related_data;
 
@@ -111,10 +111,9 @@ struct LogBodyArrays<'a> {
     double: Option<&'a Float64Array>,
     bool: Option<&'a BooleanArray>,
     bytes: Option<ByteArrayAccessor<'a>>,
-    // _ser is for serialized value type of AnyValue including "kvlist" and "array"
-    //
-    // TODO: see https://github.com/open-telemetry/otel-arrow/issues/384
-    _ser: Option<ByteArrayAccessor<'a>>,
+
+    // ser is for serialized value type of AnyValue including "kvlist" and "array"
+    ser: Option<ByteArrayAccessor<'a>>,
 }
 
 impl NullableArrayAccessor for LogBodyArrays<'_> {
@@ -134,15 +133,18 @@ impl NullableArrayAccessor for LogBodyArrays<'_> {
             }
         };
 
+        if value_type == AttributeValueType::Slice || value_type == AttributeValueType::Map {
+            let bytes = self.ser.value_at(idx)?;
+            let decode_result = cbor::decode_pcommon_val(&bytes).transpose()?;
+            return Some(decode_result.map(|val| AnyValue { value: Some(val) }));
+        }
+
         let value = match value_type {
             AttributeValueType::Str => Value::StringValue(self.str.value_at_or_default(idx)),
             AttributeValueType::Int => Value::IntValue(self.int.value_at_or_default(idx)),
             AttributeValueType::Double => Value::DoubleValue(self.double.value_at_or_default(idx)),
             AttributeValueType::Bool => Value::BoolValue(self.bool.value_at_or_default(idx)),
             AttributeValueType::Bytes => Value::BytesValue(self.bytes.value_at_or_default(idx)),
-            // TODO: see https://github.com/open-telemetry/otel-arrow/issues/384
-            // 1. handle slice
-            // 2. handle map
             _ => {
                 // silently ignore unknown types to avoid DOS attacks
                 return None;
@@ -166,7 +168,7 @@ impl<'a> TryFrom<&'a StructArray> for LogBodyArrays<'a> {
             double: column_accessor.primitive_column_op(consts::ATTRIBUTE_DOUBLE)?,
             bool: column_accessor.bool_column_op(consts::ATTRIBUTE_BOOL)?,
             bytes: column_accessor.byte_array_column_op(consts::ATTRIBUTE_BYTES)?,
-            _ser: column_accessor.byte_array_column_op(consts::ATTRIBUTE_SER)?,
+            ser: column_accessor.byte_array_column_op(consts::ATTRIBUTE_SER)?,
         })
     }
 }
@@ -204,12 +206,13 @@ pub fn logs_from(
                 resource.dropped_attributes_count = dropped_attributes_count;
             }
 
-            if let Some(res_id) = resource_arrays.id.value_at(idx)
-                && let Some(attrs) = related_data
+            if let Some(res_id) = resource_arrays.id.value_at(idx) {
+                if let Some(attrs) = related_data
                     .res_attr_map_store
                     .attribute_by_delta_id(res_id)
-            {
-                resource.attributes = attrs.to_vec();
+                {
+                    resource.attributes = attrs.to_vec();
+                }
             }
 
             resource_logs.schema_url = resource_arrays.schema_url.value_at(idx).unwrap_or_default();
@@ -221,12 +224,13 @@ pub fn logs_from(
         if prev_scope_id != Some(scope_id) {
             prev_scope_id = Some(scope_id);
             let mut scope = scope_arrays.create_instrumentation_scope(idx);
-            if let Some(scope_id) = scope_delta_id_opt
-                && let Some(attrs) = related_data
+            if let Some(scope_id) = scope_delta_id_opt {
+                if let Some(attrs) = related_data
                     .scope_attr_map_store
                     .attribute_by_delta_id(scope_id)
-            {
-                scope.attributes = attrs.to_vec();
+                {
+                    scope.attributes = attrs.to_vec();
+                }
             }
 
             // safety: we must have appended at least one resource logs when reach here

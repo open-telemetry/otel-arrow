@@ -43,14 +43,14 @@ impl<PData> TestContext<PData> {
         let mut emitted = Vec::new();
 
         match &mut self.processor {
-            ProcessorWrapper::NotSend { pdata_receiver, .. } => {
+            ProcessorWrapper::Local { pdata_receiver, .. } => {
                 if let Some(pdata_receiver) = pdata_receiver {
                     while let Ok(msg) = pdata_receiver.try_recv() {
                         emitted.push(msg);
                     }
                 }
             }
-            ProcessorWrapper::Send { pdata_receiver, .. } => {
+            ProcessorWrapper::Shared { pdata_receiver, .. } => {
                 if let Some(pdata_receiver) = pdata_receiver {
                     while let Ok(msg) = pdata_receiver.try_recv() {
                         emitted.push(msg);

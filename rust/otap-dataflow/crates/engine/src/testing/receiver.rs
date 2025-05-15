@@ -7,7 +7,7 @@
 
 use crate::config::ReceiverConfig;
 use crate::error::Error;
-use crate::message::{ControlMsg, ControlSender, PDataReceiver};
+use crate::message::{ControlMsg, Receiver, Sender};
 use crate::receiver::ReceiverWrapper;
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use otap_df_channel::error::RecvError;
@@ -21,12 +21,12 @@ use tokio::time::sleep;
 /// Context used during the test phase of a test.
 pub struct TestContext {
     /// Sender for control messages
-    control_sender: ControlSender,
+    control_sender: Sender<ControlMsg>,
 }
 
 /// Context used during the validation phase of a test (!Send context).
 pub struct NotSendValidateContext<PData> {
-    pdata_receiver: PDataReceiver<PData>,
+    pdata_receiver: Receiver<PData>,
     counters: CtrlMsgCounters,
 }
 
@@ -43,7 +43,10 @@ impl TestContext {
     ///
     /// Returns an error if the message could not be sent.
     pub async fn send_timer_tick(&self) -> Result<(), Error<ControlMsg>> {
-        self.control_sender.send(ControlMsg::TimerTick {}).await
+        self.control_sender
+            .send(ControlMsg::TimerTick {})
+            .await
+            .map_err(Error::ChannelSendError)
     }
 
     /// Sends a config control message.
@@ -55,6 +58,7 @@ impl TestContext {
         self.control_sender
             .send(ControlMsg::Config { config })
             .await
+            .map_err(Error::ChannelSendError)
     }
 
     /// Sends a shutdown control message.
@@ -73,6 +77,7 @@ impl TestContext {
                 reason: reason.to_owned(),
             })
             .await
+            .map_err(Error::ChannelSendError)
     }
 
     /// Sleeps for the specified duration.
@@ -83,7 +88,7 @@ impl TestContext {
 
 impl<PData> NotSendValidateContext<PData> {
     /// Receives a pdata message produced by the receiver.
-    pub async fn recv(&mut self) -> Result<PData, Error<PData>> {
+    pub async fn recv(&mut self) -> Result<PData, RecvError> {
         self.pdata_receiver.recv().await
     }
 
@@ -134,7 +139,7 @@ pub struct TestPhase<PData: Send> {
     /// Local task set for non-Send futures
     local_tasks: LocalSet,
 
-    control_sender: ControlSender,
+    control_sender: Sender<ControlMsg>,
     receiver: ReceiverWrapper<PData>,
     counters: CtrlMsgCounters,
 }
@@ -148,7 +153,7 @@ pub struct ValidationPhase<PData> {
 
     counters: CtrlMsgCounters,
 
-    pdata_receiver: PDataReceiver<PData>,
+    pdata_receiver: Receiver<PData>,
 
     /// Join handle for the running the receiver task
     run_receiver_handle: tokio::task::JoinHandle<()>,

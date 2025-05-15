@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! A pipeline is a collection of receivers, processors, and exporters.
+//!
+//! Important note: This is a work in progress and not yet fully implemented.
 
 use crate::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
 use crate::error::Error;
 use crate::exporter::ExporterWrapper;
-use crate::processor;
-use crate::processor::{Processor, ProcessorWrapper};
+use crate::processor::ProcessorWrapper;
 use crate::receiver::ReceiverWrapper;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
@@ -42,22 +43,15 @@ impl<PData> Pipeline<PData> {
     }
 
     /// Adds a processor to the pipeline.
-    pub fn add_processor<P, H>(
+    pub fn add_processor<P>(
         &mut self,
-        processor: P,
+        processor: ProcessorWrapper<PData>,
         config: &ProcessorConfig,
-    ) -> Result<(), Error<PData>>
-    where
-        P: Processor<PData, H> + 'static,
-        H: processor::EffectHandlerFactory<PData, P>,
-    {
+    ) -> Result<(), Error<PData>> {
         let processor_name = config.name.clone();
         if self
             .processors
-            .insert(
-                config.name.clone(),
-                ProcessorWrapper::new(processor, config),
-            )
+            .insert(config.name.clone(), processor)
             .is_some()
         {
             return Err(Error::ProcessorAlreadyExists {
