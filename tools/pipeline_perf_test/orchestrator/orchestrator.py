@@ -165,7 +165,7 @@ class DockerProcess(DeployedProcess):
                 except Exception as e:
                     print(f"Unexpected error while monitoring {container_id}: {e}")
                     break
-        print(f"Starting montitoring for Docker container: {self.container_id[:12]}")
+        print(f"Starting monitoring for Docker container: {self.container_id[:12]}")
         monitor_args = {
             "container_id": self.container_id,
             "stats": self.stats,
@@ -177,7 +177,7 @@ class DockerProcess(DeployedProcess):
 
     def stop_monitoring(self) -> None:
         """Gracefully stop the container monitoring thread"""
-        print(f"Stopping montitoring for Docker container: {self.container_id[:12]}")
+        print(f"Stopping monitoring for Docker container: {self.container_id[:12]}")
         self.stop_monitoring_event.set()
         self.monitoring_thread.join()
 
@@ -270,7 +270,7 @@ class K8sDeployedResource(DeployedProcess):
                     print(f"Unexpected error while monitoring pod {pod_name}: {e}")
                 time.sleep(interval)
 
-        print(f"Starting montitoring for K8S deployment: {self.namespace}/{self.deployment_name}")
+        print(f"Starting monitoring for K8S deployment: {self.namespace}/{self.deployment_name}")
         monitor_args = {
             "deployment_name": self.deployment_name,
             "namespace": self.namespace,
@@ -283,7 +283,7 @@ class K8sDeployedResource(DeployedProcess):
 
     def stop_monitoring(self) -> None:
         """Gracefully stop the container monitoring thread"""
-        print(f"Stopping montitoring for K8S deployment: {self.namespace}/{self.deployment_name}")
+        print(f"Stopping monitoring for K8S deployment: {self.namespace}/{self.deployment_name}")
         self.stop_monitoring_event.set()
         self.monitoring_thread.join()
 
@@ -1035,8 +1035,8 @@ def main():
         print(f"Logs attempt rate: {formatted_rate} ({logs_sent_rate:.2f} logs/second)")
         print(f"Total logs lost: {total_logs_lost} ({logs_lost_percentage:.2f}% of attempted logs)")
         if target_process_stats:
-            print(f"CPU min/avg/max: {target_process_stats.get_summary_string('cpu')}")
-            print(f"Memory min/avg/max: {target_process_stats.get_summary_string('mem')}")
+            print(f"CPU (#Cores) min/avg/max: {target_process_stats.get_summary_string('cpu')}")
+            print(f"Memory (MiB) min/avg/max: {target_process_stats.get_summary_string('mem')}")
 
         # Write results to file
         with open(results_file, "w") as f:
@@ -1061,8 +1061,8 @@ def main():
             f.write(f"- Total logs lost: {total_logs_lost} (failed at loadgen + lost in transit)\n")
             f.write(f"- Percentage of logs lost: {logs_lost_percentage:.2f}%\n")
             if target_process_stats:
-                f.write(f"- CPU min/avg/max: {target_process_stats.get_summary_string('cpu')}\n")
-                f.write(f"- Memory min/avg/max: {target_process_stats.get_summary_string('mem')}\n")
+                f.write(f"- CPU (#Cores) min/avg/max: {target_process_stats.get_summary_string('cpu')}\n")
+                f.write(f"- Memory (MiB) min/avg/max: {target_process_stats.get_summary_string('mem')}\n")
 
         print(f"Test completed. Results saved to {results_file}")
 
