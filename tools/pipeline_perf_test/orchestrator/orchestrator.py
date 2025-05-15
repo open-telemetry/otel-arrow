@@ -22,7 +22,7 @@ class ProcessStatsAggregation:
         self.max = None
         self.total = 0.0
         self.samples = 0
-    
+
     def add_sample(self, sample: float):
         """Add a sample to the aggregation.
 
@@ -629,11 +629,11 @@ def parse_mem_to_mib(mem_str: str) -> float:
     """Parse the string returned by docker stats to a float representing the number of MiB in use by the container."""
     units_to_mib = {
         "kib": 1 / 1024,                   # 1 KiB = 1/1024 MiB
-        "kb": 1000 / 1024 / 1024,          # 1 KB = 1000 bytes → convert to MiB
-        "mb": 1000000 / 1024 / 1024,       # 1 MB = 1,000,000 bytes → convert to MiB
+        "kb": 1000 / 1024 / 1024,          # 1 KB = 1000 bytes convert to MiB
+        "mb": 1000000 / 1024 / 1024,       # 1 MB = 1,000,000 bytes convert to MiB
         "mi": 1,                           # already MiB
         "mib": 1,                          # already MiB
-        "gb": 1_000_000_000 / 1024 / 1024, # 1 GB = 1,000,000,000 bytes → MiB
+        "gb": 1_000_000_000 / 1024 / 1024, # 1 GB = 1,000,000,000 bytes MiB
         "gib": 1024                        # 1 GiB = 1024 MiB
     }
     match = re.match(r"([0-9.]+)([a-zA-Z]+)", mem_str)
