@@ -6,11 +6,10 @@
 //! setup and lifecycle management.
 
 use crate::config::ExporterConfig;
-use crate::exporter::{ExporterWrapper, MessageChannel};
-use crate::message::ControlMsg;
+use crate::exporter::ExporterWrapper;
+use crate::message::{ControlMsg, Receiver, Sender};
 use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime};
 use otap_df_channel::error::SendError;
-use otap_df_channel::mpsc;
 use serde_json::Value;
 use std::fmt::Debug;
 use std::future::Future;
@@ -22,9 +21,9 @@ use tokio::time::sleep;
 /// A context object that holds transmitters for use in test tasks.
 pub struct TestContext<PData> {
     /// Sender for control messages
-    control_tx: mpsc::Sender<ControlMsg>,
+    control_tx: Sender<ControlMsg>,
     /// Sender for pipeline data
-    pdata_tx: mpsc::Sender<PData>,
+    pdata_tx: Sender<PData>,
     /// Message counter for tracking processed messages
     counters: CtrlMsgCounters,
 }
@@ -42,8 +41,8 @@ impl<PData> Clone for TestContext<PData> {
 impl<PData> TestContext<PData> {
     /// Creates a new TestContext with the given transmitters.
     pub fn new(
-        control_tx: mpsc::Sender<ControlMsg>,
-        pdata_tx: mpsc::Sender<PData>,
+        control_tx: Sender<ControlMsg>,
+        pdata_tx: Sender<PData>,
         counters: CtrlMsgCounters,
     ) -> Self {
         Self {
@@ -64,7 +63,7 @@ impl<PData> TestContext<PData> {
     ///
     /// Returns an error if the message could not be sent.
     pub async fn send_timer_tick(&self) -> Result<(), SendError<ControlMsg>> {
-        self.control_tx.send_async(ControlMsg::TimerTick {}).await
+        self.control_tx.send(ControlMsg::TimerTick {}).await
     }
 
     /// Sends a config control message.
@@ -73,9 +72,7 @@ impl<PData> TestContext<PData> {
     ///
     /// Returns an error if the message could not be sent.
     pub async fn send_config(&self, config: Value) -> Result<(), SendError<ControlMsg>> {
-        self.control_tx
-            .send_async(ControlMsg::Config { config })
-            .await
+        self.control_tx.send(ControlMsg::Config { config }).await
     }
 
     /// Sends a shutdown control message.
@@ -89,7 +86,7 @@ impl<PData> TestContext<PData> {
         reason: &str,
     ) -> Result<(), SendError<ControlMsg>> {
         self.control_tx
-            .send_async(ControlMsg::Shutdown {
+            .send(ControlMsg::Shutdown {
                 deadline,
                 reason: reason.to_owned(),
             })
@@ -102,7 +99,7 @@ impl<PData> TestContext<PData> {
     ///
     /// Returns an error if the message could not be sent.
     pub async fn send_pdata(&self, content: PData) -> Result<(), SendError<PData>> {
-        self.pdata_tx.send_async(content).await
+        self.pdata_tx.send(content).await
     }
 
     /// Sleeps for the specified duration.
@@ -124,18 +121,10 @@ pub struct TestRuntime<PData> {
     /// Local task set for non-Send futures
     local_tasks: LocalSet,
 
-    /// Sender for control messages
-    control_tx: mpsc::Sender<ControlMsg>,
-    /// Receiver for control messages
-    control_rx: Option<mpsc::Receiver<ControlMsg>>,
-
-    /// Sender for pdata messages
-    pdata_tx: mpsc::Sender<PData>,
-    /// Receiver for pdata messages
-    pdata_rx: Option<mpsc::Receiver<PData>>,
-
     /// Message counter for tracking processed messages
     counter: CtrlMsgCounters,
+
+    _pd: PhantomData<PData>,
 }
 
 /// Data and operations for the test phase of an exporter.
@@ -147,8 +136,8 @@ pub struct TestPhase<PData> {
 
     counters: CtrlMsgCounters,
 
-    control_sender: mpsc::Sender<ControlMsg>,
-    pdata_sender: mpsc::Sender<PData>,
+    control_sender: Sender<ControlMsg>,
+    pdata_sender: Sender<PData>,
 
     /// Join handle for the starting the exporter task
     run_exporter_handle: tokio::task::JoinHandle<()>,
@@ -175,18 +164,13 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
         let config = ExporterConfig::new("test_exporter");
         let (rt, local_tasks) = setup_test_runtime();
         let counter = CtrlMsgCounters::new();
-        let (control_tx, control_rx) = create_not_send_channel(config.control_channel.capacity);
-        let (pdata_tx, pdata_rx) = create_not_send_channel(config.input_pdata_channel.capacity);
 
         Self {
             config,
             rt,
             local_tasks,
-            control_tx,
-            control_rx: Some(control_rx),
-            pdata_tx,
-            pdata_rx: Some(pdata_rx),
             counter,
+            _pd: PhantomData::default(),
         }
     }
 
@@ -201,17 +185,37 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     }
 
     /// Sets the exporter for the test runtime and returns the test phase.
-    pub fn set_exporter(mut self, exporter: ExporterWrapper<PData>) -> TestPhase<PData> {
-        let msg_chan = MessageChannel::new(
-            self.control_rx
-                .take()
-                .expect("Control channel not initialized"),
-            self.pdata_rx.take().expect("PData channel not initialized"),
-        );
+    pub fn set_exporter(self, exporter: ExporterWrapper<PData>) -> TestPhase<PData> {
+        let (control_tx, control_rx, pdata_tx, pdata_rx) = match &exporter {
+            ExporterWrapper::Local { .. } => {
+                let (control_tx, control_rx) =
+                    create_not_send_channel(self.config.control_channel.capacity);
+                let (pdata_tx, pdata_rx) =
+                    create_not_send_channel(self.config.control_channel.capacity);
+                (
+                    Sender::Local(control_tx),
+                    Receiver::Local(control_rx),
+                    Sender::Local(pdata_tx),
+                    Receiver::Local(pdata_rx),
+                )
+            }
+            ExporterWrapper::Shared { .. } => {
+                let (control_tx, control_rx) =
+                    tokio::sync::mpsc::channel(self.config.control_channel.capacity);
+                let (pdata_tx, pdata_rx) =
+                    tokio::sync::mpsc::channel(self.config.control_channel.capacity);
+                (
+                    Sender::Shared(control_tx),
+                    Receiver::Shared(control_rx),
+                    Sender::Shared(pdata_tx),
+                    Receiver::Shared(pdata_rx),
+                )
+            }
+        };
 
         let run_exporter_handle = self.local_tasks.spawn_local(async move {
             exporter
-                .start(msg_chan)
+                .start(control_rx, pdata_rx)
                 .await
                 .expect("Exporter event loop failed");
         });
@@ -219,8 +223,8 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             rt: self.rt,
             local_tasks: self.local_tasks,
             counters: self.counter.clone(),
-            control_sender: self.control_tx,
-            pdata_sender: self.pdata_tx,
+            control_sender: control_tx,
+            pdata_sender: pdata_tx,
             run_exporter_handle,
         }
     }
