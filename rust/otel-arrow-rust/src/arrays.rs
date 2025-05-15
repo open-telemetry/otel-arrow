@@ -10,7 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::error::{self, InvalidListArraySnafu};
+use crate::error;
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray,
     FixedSizeBinaryArray, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array,
@@ -283,7 +283,7 @@ impl<'a> ByteArrayAccessor<'a> {
                 }
                 .fail(),
             },
-            _ => InvalidListArraySnafu {
+            _ => error::InvalidListArraySnafu {
                 expect_oneof: vec![
                     DataType::Binary,
                     DataType::FixedSizeBinary(-1),
@@ -396,7 +396,7 @@ where
             return Ok(result);
         }
 
-        InvalidListArraySnafu {
+        error::InvalidListArraySnafu {
             expect_oneof: vec![
                 data_type.clone(),
                 DataType::Dictionary(Box::new(DataType::UInt8), Box::new(data_type.clone())),

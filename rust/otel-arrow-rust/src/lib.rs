@@ -10,7 +10,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![feature(let_chains)]
+//! This crate contains the rust implementation of the OTEL Arrow Protocol.
+//! It contains code for decoding OTAP Arrow record batches into OTLP protos,
+//! and encoding OTLP protos into OTAP Messages. It also contains
+//! the rust implementation of pdata.
 
 #[allow(dead_code)]
 pub(crate) mod arrays;

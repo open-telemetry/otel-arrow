@@ -57,7 +57,7 @@ pub trait ServiceOutputType: Debug + Send + Sync + 'static {
     /// Create a server with the given receiver and listener stream
     fn create_server(
         receiver: TestReceiver<Self::Request>,
-        incoming: crate::validation::tcp_stream::ShutdownableTcpListenerStream,
+        incoming: tcp_stream::ShutdownableTcpListenerStream,
     ) -> tokio::task::JoinHandle<error::Result<()>>;
 }
 
