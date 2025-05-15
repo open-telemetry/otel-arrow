@@ -53,7 +53,7 @@ impl shared::Receiver<OTLPData>  for OTLPReceiver
         //start event loop
         loop {
 
-                    //create services for the grpc server and clone the effect handler to pass message
+            //create services for the grpc server and clone the effect handler to pass message
             let logs_service = LogsServiceImpl::new(effect_handler.clone());
             let metrics_service = MetricsServiceImpl::new(effect_handler.clone());
             let trace_service = TraceServiceImpl::new(effect_handler.clone());
@@ -79,8 +79,8 @@ impl shared::Receiver<OTLPData>  for OTLPReceiver
                 profiles_service_server = ProfilesServiceServer::new(profiles_service);
             }
             
-            tokio::select! {
-                biased; //prioritize ctrl_msg over all other blocks
+//             tokio::select! {
+//                 biased; //prioritize ctrl_msg over all other blocks
 
                 // Process internal event
                 ctrl_msg = ctrl_msg_recv.recv() => {
@@ -105,9 +105,9 @@ impl shared::Receiver<OTLPData>  for OTLPReceiver
                 .add_service(trace_service_server)
                 .add_service(profiles_service_server)
                 .serve_with_incoming(&mut listener_stream)=> {
-                    if let Err(e) = result {
+                    if let Err(error) = result {
                         // Report receiver error
-                        return Err(Error::ReceiverError{receiver: effect_handler.receiver_name(), error: e.to_string()});
+                        return Err(Error::ReceiverError{receiver: effect_handler.receiver_name(), error: error.to_string()});
                     }
                 }
                 // A timeout branch in case no events occur.
@@ -120,7 +120,7 @@ impl shared::Receiver<OTLPData>  for OTLPReceiver
         Ok(())
     }
 
-}
+// }
 
 #[cfg(test)]
 mod tests {

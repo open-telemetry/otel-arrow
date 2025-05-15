@@ -56,6 +56,7 @@ impl ProfilesServiceImpl {
     }
 }
 
+
 #[tonic::async_trait]
 impl LogsService for LogsServiceImpl {
     async fn export(
