@@ -8,19 +8,31 @@ use otap_df_engine::processor::{SendEffectHandler, Processor, EffectHandlerTrait
 #[allow(unused_imports)]
 use std::time::Duration;
 
+/// Configuration for the BatchProcessor.
+#[derive(Debug, Clone)]
+pub struct Config {
+    /// The maximum number of messages to buffer before sending a batch.
+    pub send_batch_size: u32,
+    /// The maximum allowed value for send_batch_size.
+    pub send_batch_max_size: u32,
+}
 
 /// A processor that buffers messages and emits them in batches.
 pub struct BatchProcessor<OTLPRequest> {
     batch: Vec<OTLPRequest>,
-    batch_size: usize,
+    config: Config,
 }
 
 #[allow(dead_code)]
 impl<OTLPRequest> BatchProcessor<OTLPRequest> {
-    pub fn new(batch_size: usize) -> Self {
+    pub fn new(config: Config) -> Self {
+        // Validate configuration
+        if config.send_batch_size > config.send_batch_max_size && config.send_batch_max_size > 0 {
+            panic!("send_batch_size must be less than or equal to send_batch_max_size");
+        }
         Self {
-            batch: Vec::with_capacity(batch_size),
-            batch_size,
+            batch: Vec::with_capacity(config.send_batch_size as usize),
+            config,
         }
     }
 }
@@ -36,8 +48,8 @@ impl<OTLPRequest: Clone + Send + 'static> Processor<OTLPRequest, SendEffectHandl
         match msg {
             Message::PData(data) => {
                 self.batch.push(data);
-                if self.batch.len() >= self.batch_size {
-                    let batch = std::mem::replace(&mut self.batch, Vec::with_capacity(self.batch_size));
+                if self.batch.len() >= self.config.send_batch_size as usize {
+                    let batch = std::mem::replace(&mut self.batch, Vec::with_capacity(self.config.send_batch_size as usize));
                     for item in batch {
                         effect_handler.send_message(item).await?;
                     }
@@ -50,7 +62,7 @@ impl<OTLPRequest: Clone + Send + 'static> Processor<OTLPRequest, SendEffectHandl
                 match ctrl_msg {
                     ControlMsg::TimerTick { .. } => {
                         if !self.batch.is_empty() {
-                            let batch = std::mem::replace(&mut self.batch, Vec::with_capacity(self.batch_size));
+                            let batch = std::mem::replace(&mut self.batch, Vec::with_capacity(self.config.send_batch_size as usize));
                             for item in batch {
                                 effect_handler.send_message(item).await?;
                             }
@@ -60,7 +72,7 @@ impl<OTLPRequest: Clone + Send + 'static> Processor<OTLPRequest, SendEffectHandl
                     ControlMsg::Shutdown { deadline: _, reason: _ } => {
                         // Flush any remaining batch on shutdown
                         if !self.batch.is_empty() {
-                            let batch = std::mem::replace(&mut self.batch, Vec::with_capacity(self.batch_size));
+                            let batch = std::mem::replace(&mut self.batch, Vec::with_capacity(self.config.send_batch_size as usize));
                             for item in batch {
                                 effect_handler.send_message(item).await?;
                             }
@@ -137,7 +149,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_emission_on_size() {
-        let mut processor = BatchProcessor::<OTLPRequest>::new(3);
+        let mut processor = BatchProcessor::<OTLPRequest>::new(Config {
+            send_batch_size: 3,
+            send_batch_max_size: 10,
+        });
         let (mut effect_handler, mut rx) = make_effect_handler();
         
         // Create test trace requests
@@ -175,7 +190,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_emission_on_timer_tick() {
-        let mut processor = BatchProcessor::<OTLPRequest>::new(10);
+        let mut processor = BatchProcessor::<OTLPRequest>::new(Config {
+            send_batch_size: 10,
+            send_batch_max_size: 10,
+        });
         let (mut effect_handler, mut rx) = make_effect_handler();
         
         // Create test trace requests
@@ -210,7 +228,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_emission_on_shutdown() {
-        let mut processor = BatchProcessor::<OTLPRequest>::new(10);
+        let mut processor = BatchProcessor::<OTLPRequest>::new(Config {
+            send_batch_size: 10,
+            send_batch_max_size: 10,
+        });
         let (mut effect_handler, mut rx) = make_effect_handler();
         
         // Create test trace requests
@@ -246,7 +267,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_ack_control_msg() {
-        let mut processor = BatchProcessor::<OTLPRequest>::new(10);
+        let mut processor = BatchProcessor::<OTLPRequest>::new(Config {
+            send_batch_size: 10,
+            send_batch_max_size: 10,
+        });
         let (mut effect_handler, _rx) = make_effect_handler();
         
         // ACK should be handled without panicking
@@ -258,7 +282,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_no_batch_on_empty_timer_or_shutdown() {
-        let mut processor = BatchProcessor::<OTLPRequest>::new(10);
+        let mut processor = BatchProcessor::<OTLPRequest>::new(Config {
+            send_batch_size: 10,
+            send_batch_max_size: 10,
+        });
         let (mut effect_handler, mut rx) = make_effect_handler();
         
         // Send timer tick with empty batch - should not panic
@@ -282,7 +309,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_nack_control_msg() {
-        let mut processor = BatchProcessor::<OTLPRequest>::new(3);
+        let mut processor = BatchProcessor::<OTLPRequest>::new(Config {
+            send_batch_size: 3,
+            send_batch_max_size: 10,
+        });
         let (mut effect_handler, _rx) = make_effect_handler();
         
         // NACK should be handled without panicking
@@ -300,7 +330,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_config_control_msg() {
-        let mut processor = BatchProcessor::<OTLPRequest>::new(3);
+        let mut processor = BatchProcessor::<OTLPRequest>::new(Config {
+            send_batch_size: 3,
+            send_batch_max_size: 10,
+        });
         let (mut effect_handler, _rx) = make_effect_handler();
         
         // Config update should be handled without panicking
