@@ -14,11 +14,16 @@
 
 pub mod otlp;
 
-// TODO use the OTel-Rust API definitions, if such a dependency.
-
-// TODO: otherwise, specialize TraceID and SpanID for [u8; 8 or 16].
-
-// TODO: also, define From<> instead of Into<> in ../proto/mod.rs
+// Note that these types are placeholders, we probably want to share
+// these definitions as well as the Prost/Tonic generation with the
+// OTel-Rust SDK where they are already defined. To avoid coordinating
+// these repositories in the short term, we provide definitions for
+// TraceID and SpanID.
+//
+// In particular, the OTel specification has careful words about how
+// to format and parse these two fields, which are non-standard with
+// respect to JSON, and the OTel-Rust SDK implements this aspect of
+// the spec.
 
 /// TraceID identifier of a Trace
 #[derive(Clone, Copy, Debug)]
@@ -29,6 +34,12 @@ impl TraceID {
     #[must_use]
     pub fn new(value: &[u8; 16]) -> TraceID {
         TraceID(*value)
+    }
+}
+
+impl From<[u8; 16]> for TraceID {
+    fn from(tid: [u8; 16]) -> Self {
+        TraceID(tid)
     }
 }
 
@@ -53,5 +64,11 @@ impl SpanID {
 impl From<SpanID> for Vec<u8> {
     fn from(sid: SpanID) -> Self {
         sid.0.to_vec()
+    }
+}
+
+impl From<[u8; 8]> for SpanID {
+    fn from(sid: [u8; 8]) -> Self {
+        SpanID(sid)
     }
 }
