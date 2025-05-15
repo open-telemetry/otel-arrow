@@ -45,7 +45,7 @@ use tokio::time::{Instant, Sleep, sleep_until};
 /// A trait for egress exporters (Send definition).
 #[async_trait]
 pub trait Exporter<PData> {
-    /// Similar to [`local::exporter::Exporter::start`], but operates in a Send context.
+    /// Similar to local::exporter::Exporter::start, but operates in a Send context.
     async fn start(
         self: Box<Self>,
         msg_chan: MessageChannel<PData>,
