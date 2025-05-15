@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! A pipeline is a collection of receivers, processors, and exporters.
+//!
+//! Important note: This is a work in progress and not yet fully implemented.
 
 use crate::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
 use crate::error::Error;
