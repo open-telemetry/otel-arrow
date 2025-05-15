@@ -1,17 +1,102 @@
 import argparse
 import os
-import time
-import requests
+import re
 import subprocess
-import json
+import threading
+import time
 from datetime import datetime
-from typing import Optional, Dict, Any, List, Union, Tuple
+from typing import Optional, Dict, List, Tuple
+
+import requests
+
+
+class ProcessStatsAggregation:
+    """Class for aggregation of resource stats"""
+    min: float
+    max: float
+    total: float
+    samples: int
+
+    def __init__(self):
+        self.min = None
+        self.max = None
+        self.total = 0.0
+        self.samples = 0
+    
+    def add_sample(self, sample: float):
+        """Add a sample to the aggregation.
+
+        Args:
+            sample: A float representing the value observed
+        """
+        self.samples += 1
+        self.total += sample
+        if not self.min or self.min > sample:
+            self.min = sample
+        if not self.max or self.max < sample:
+            self.max = sample
+
+
+class ProcessStats:
+    """Class for tracking observed process resource utilization stats"""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.cpu = ProcessStatsAggregation()
+        self.mem = ProcessStatsAggregation()
+
+    def add_sample(self, cpu_percent: float, mem_mib: float):
+        """Add an observation of cpu and memory utilizations stats
+
+        Args:
+            cpu_percent: Percentage utilization of single cpu expressed as a float.
+            mem_mb: Memory utilization for the process in MiB.
+        """
+        with self.lock:
+            self.cpu.add_sample(cpu_percent)
+            self.mem.add_sample(mem_mib)
+
+    def get_summary_string(self, metric_prefix: str, delimiter: str ="/") -> str:
+        """Helper method to format min/avg/max stats."""
+        summary = self.get_summary()
+        return delimiter.join([
+            f"{summary.get(metric_prefix + '_min', 0.0):.2f}",
+            f"{summary.get(metric_prefix + '_avg', 0.0):.2f}",
+            f"{summary.get(metric_prefix + '_max', 0.0):.2f}"
+        ])
+
+    def get_summary(self) -> Dict[str, float]:
+        """Get a summary of observed resource utilization stats"""
+        with self.lock:
+            if not self.cpu.samples or not self.mem.samples:
+                return {}
+            return {
+                "cpu_min": self.cpu.min,
+                "cpu_avg": self.cpu.total / self.cpu.samples,
+                "cpu_max": self.cpu.max,
+                "mem_min": self.mem.min,
+                "mem_avg": self.mem.total / self.mem.samples,
+                "mem_max": self.mem.max,
+            }
+
 
 class DeployedProcess:
     """Base class for managing deployed processes"""
 
     def __init__(self, process_type: str):
         self.process_type = process_type
+        self.stats = ProcessStats()
+
+    def get_stats(self) -> ProcessStats:
+        """Get the process stats object for the process"""
+        return self.stats
+
+    def start_monitoring(self, interval: float) -> None:
+        """Initialize process monitoring"""
+        pass
+
+    def stop_monitoring(self) -> None:
+        """Stop process monitoring"""
+        pass
 
     def shutdown(self) -> None:
         """Gracefully shutdown the process"""
@@ -24,6 +109,8 @@ class DockerProcess(DeployedProcess):
     def __init__(self, container_id: str):
         super().__init__("docker")
         self.container_id = container_id
+        self.monitoring_thread = None
+        self.stop_monitoring_event = threading.Event()
 
     def shutdown(self) -> None:
         """Gracefully shutdown and remove the Docker container"""
@@ -42,6 +129,58 @@ class DockerProcess(DeployedProcess):
                 print(f"Error stopping/removing Docker container: {e}")
                 print(f"Error output: {e.stderr}")
 
+    def start_monitoring(self, interval: float) -> None:
+        """
+        Monitor Docker container's CPU and memory usage in a background thread using subprocess.
+
+        Args:
+            interval: Time in seconds between polling.
+        """
+        def monitor(container_id: str,
+                    stats: ProcessStats,
+                    stop_event: threading.Event,
+                    interval: float = 1.0):
+            while not stop_event.is_set():
+                try:
+                    cmd = ["docker", "stats", container_id, "--no-stream", "--format",
+                        "{{.Container}} {{.CPUPerc}} {{.MemUsage}}"]
+                    result = subprocess.check_output(cmd, text=True).strip()
+                    if result:
+                        parts = result.split()
+                        # Example: ['11e99006dc11', '87.54%', '21.84MiB', '/', '7.662GiB']
+                        cpu_str = parts[1]
+                        cpu = float(cpu_str.strip('%')) / 100.0
+                        mem_used_str = parts[2]
+                        mem_mb = parse_mem_to_mib(mem_used_str)
+
+                        stats.add_sample(cpu, mem_mb)
+                        # Can add a flag to turn this on or off later
+                        print(f"Monitored Container ({container_id[:12]}) Cur. CPU: {cpu:.2f} "
+                              f"({stats.get_summary_string('cpu')}) Cur Mem: {mem_mb:.2f} "
+                              f"({stats.get_summary_string('mem')})")
+                        time.sleep(interval)
+                except subprocess.CalledProcessError as e:
+                    print(f"Error collecting stats for container {container_id}: {e}")
+                    break
+                except Exception as e:
+                    print(f"Unexpected error while monitoring {container_id}: {e}")
+                    break
+        print(f"Starting montitoring for Docker container: {self.container_id[:12]}")
+        monitor_args = {
+            "container_id": self.container_id,
+            "stats": self.stats,
+            "stop_event": self.stop_monitoring_event,
+            "interval": interval
+        }
+        self.monitoring_thread = threading.Thread(target=monitor, kwargs=monitor_args, daemon=True)
+        self.monitoring_thread.start()
+
+    def stop_monitoring(self) -> None:
+        """Gracefully stop the container monitoring thread"""
+        print(f"Stopping montitoring for Docker container: {self.container_id[:12]}")
+        self.stop_monitoring_event.set()
+        self.monitoring_thread.join()
+
 
 class K8sDeployedResource(DeployedProcess):
     """Class to manage Kubernetes deployed resources"""
@@ -51,6 +190,8 @@ class K8sDeployedResource(DeployedProcess):
         self.deployment_name = deployment_name
         self.manifest_path = manifest_path
         self.namespace = namespace
+        self.monitoring_thread = None
+        self.stop_monitoring_event = threading.Event()
 
     def shutdown(self) -> None:
         """Delete the Kubernetes resources defined in the manifest"""
@@ -62,6 +203,89 @@ class K8sDeployedResource(DeployedProcess):
         except subprocess.CalledProcessError as e:
             print(f"Error deleting Kubernetes resources: {e}")
             print(f"Error output: {e.stderr}")
+
+    def start_monitoring(self, interval: float) -> None:
+        """
+        Monitor a Kubernetes pod's CPU and memory usage in a background thread using subprocess.
+
+        Args:
+            interval: Time in seconds between polling.
+        """
+        def monitor(deployment_name: str,
+                    namespace: str,
+                    stats: ProcessStats,
+                    stop_event: threading.Event,
+                    interval: float = 1.0):
+            # The approach below relies on kubernetes monitoring-server and kubelet metrics via
+            # cAdvisor. These have an update interval on the order of 15 seconds, which is
+            # fairly high for short lived tests. We will likely need to evaluate other approaches.
+            # Possibly lowering housekeeping interval:
+            # https://github.com/google/cadvisor/issues/2660 but that's also not a great solution.
+            def get_pod_name():
+                # Get the pod name associated with the deployment
+                try:
+                    cmd = [
+                        "kubectl", "get", "pods", "-n", namespace,
+                        "-l", f"app={deployment_name}",
+                        "-o", "jsonpath={.items[0].metadata.name}"
+                    ]
+                    pod_name = subprocess.check_output(cmd, text=True).strip()
+                    return pod_name
+                except subprocess.CalledProcessError as e:
+                    print(f"Failed to get pod for deployment {deployment_name}: {e}")
+                    return None
+
+            pod_name = get_pod_name()
+            if not pod_name:
+                print("Pod name could not be determined. Monitoring aborted.")
+                return
+
+            while not stop_event.is_set():
+                try:
+                    cmd = ["kubectl", "top", "pod", pod_name, "-n", namespace, "--no-headers"]
+                    result = subprocess.check_output(cmd, text=True).strip()
+
+                    if result:
+                        # Example: mypod-abc123 12m 21Mi
+                        parts = result.split()
+                        cpu_str = parts[1]  # e.g., '12m'
+                        mem_str = parts[2]  # e.g., '21Mi'
+
+                        # Convert CPU and memory to standardized formats
+                        if cpu_str.endswith('m'):
+                            cpu = float(cpu_str.rstrip('m')) / 1000.0  # millicores to cores
+                        else:
+                            cpu = float(cpu_str)  # cores
+
+                        mem_mib = parse_mem_to_mib(mem_str)
+
+                        stats.add_sample(cpu, mem_mib)
+                        print(f"Monitored Pod ({pod_name}) "
+                              f"CPU: {cpu:.2f} ({stats.get_summary_string('cpu')}) "
+                              f"MEM: {mem_mib:.2f} ({stats.get_summary_string('mem')})")
+                except subprocess.CalledProcessError:
+                    print(f"Error collecting stats for pod {pod_name}, "
+                          "they may take up to 15 seconds to become available...")
+                except Exception as e:
+                    print(f"Unexpected error while monitoring pod {pod_name}: {e}")
+                time.sleep(interval)
+
+        print(f"Starting montitoring for K8S deployment: {self.namespace}/{self.deployment_name}")
+        monitor_args = {
+            "deployment_name": self.deployment_name,
+            "namespace": self.namespace,
+            "stats": self.stats,
+            "stop_event": self.stop_monitoring_event,
+            "interval": interval
+        }
+        self.monitoring_thread = threading.Thread(target=monitor, kwargs=monitor_args, daemon=True)
+        self.monitoring_thread.start()
+
+    def stop_monitoring(self) -> None:
+        """Gracefully stop the container monitoring thread"""
+        print(f"Stopping montitoring for K8S deployment: {self.namespace}/{self.deployment_name}")
+        self.stop_monitoring_event.set()
+        self.monitoring_thread.join()
 
     def wait_until_ready(self, timeout_sec: int = 60) -> bool:
         """
@@ -302,7 +526,7 @@ def parse_logs_for_sent_count(logs: str) -> Tuple[int, int]:
 
     return logs_sent, logs_failed
 
-def run_k8s_loadgen(loadgen_manifest: str, namespace: str, duration: int, skip_build: bool = False) -> Tuple[int, int, float]:
+def run_k8s_loadgen(loadgen_manifest: str, namespace: str, duration: int, k8s_collector_resource: K8sDeployedResource, skip_build: bool = False) -> Tuple[int, int, float]:
     """
     Deploy and run the load generator in Kubernetes and return the counts of logs and duration
 
@@ -310,6 +534,7 @@ def run_k8s_loadgen(loadgen_manifest: str, namespace: str, duration: int, skip_b
         loadgen_manifest: Path to the load generator Kubernetes manifest
         namespace: Kubernetes namespace
         duration: Test duration in seconds
+        k8s_collector_resource: The collector resource to monitor
         skip_build: Skip building the loadgen image
 
     Returns:
@@ -349,6 +574,10 @@ def run_k8s_loadgen(loadgen_manifest: str, namespace: str, duration: int, skip_b
     # Job might take time to get created, so we'll wait a bit before polling
     time.sleep(5)
 
+    # Start monitoring the collector resource, this should all get refactored to avoid
+    # relying on sleep in favor of explicit ready / start / stop / error signals.
+    k8s_collector_resource.start_monitoring(duration / 10)
+
     # Poll for job completion
     completed = False
     max_wait = duration + 30  # Add buffer time
@@ -366,6 +595,10 @@ def run_k8s_loadgen(loadgen_manifest: str, namespace: str, duration: int, skip_b
             time.sleep(5)  # Check every 5 seconds
         except subprocess.CalledProcessError:
             time.sleep(5)  # Continue checking
+
+    # High likelyhood that this will have accumulated samples from the idle collector after the job finished.
+    # Better handling for component start/stop + test start/stop will be important in future PRs.
+    k8s_collector_resource.stop_monitoring()
 
     if not completed:
         print("Warning: Load generator job didn't complete in the expected time, getting logs anyway")
@@ -391,6 +624,23 @@ def run_k8s_loadgen(loadgen_manifest: str, namespace: str, duration: int, skip_b
         pass
 
     return logs_sent, logs_failed, actual_duration
+
+def parse_mem_to_mib(mem_str: str) -> float:
+    """Parse the string returned by docker stats to a float representing the number of MiB in use by the container."""
+    units_to_mib = {
+        "kib": 1 / 1024,                   # 1 KiB = 1/1024 MiB
+        "kb": 1000 / 1024 / 1024,          # 1 KB = 1000 bytes → convert to MiB
+        "mb": 1000000 / 1024 / 1024,       # 1 MB = 1,000,000 bytes → convert to MiB
+        "mi": 1,                           # already MiB
+        "mib": 1,                          # already MiB
+        "gb": 1_000_000_000 / 1024 / 1024, # 1 GB = 1,000,000,000 bytes → MiB
+        "gib": 1024                        # 1 GiB = 1024 MiB
+    }
+    match = re.match(r"([0-9.]+)([a-zA-Z]+)", mem_str)
+    if not match:
+        return 0.0
+    value, unit = match.groups()
+    return float(value) * units_to_mib.get(unit.lower(), 1)
 
 def get_backend_received_count(url: str) -> int:
     """
@@ -522,7 +772,7 @@ def cleanup_docker_containers(container_names: List[str]) -> None:
 #    pip install -r orchestrator/requirements.txt
 # 3. Run the orchestrator with Docker:
 #    python3 orchestrator/orchestrator.py --collector-config system_under_test/otel-collector/collector-config.yaml --duration 30
-# 4. Run with Kubernetes:
+# 4. Run with Kubernetes (currently requires kubernetes metrics-server):
 #    python3 orchestrator/orchestrator.py --deployment-target kubernetes --k8s-collector-manifest system_under_test/otel-collector/collector-manifest.yaml --k8s-backend-manifest backend/backend-manifest.yaml --k8s-loadgen-manifest load_generator/loadgen-manifest.yaml --k8s-namespace perf-test-otel --duration 30
 def main():
     parser = argparse.ArgumentParser(description="Orchestrate OTel pipeline perf test")
@@ -565,6 +815,7 @@ def main():
     backend_process = None
     target_process = None
     loadgen_process = None
+    target_process_stats = None
     k8s_backend_resource = None
     k8s_collector_resource = None
     k8s_port_forward_process = None
@@ -650,12 +901,22 @@ def main():
                 command_args=["--duration", str(args.duration)]
             )
 
+            # Start monitoring once the load generator is built and launched
+            # Set statically to ensure ~10 samples for now
+            target_process.start_monitoring(args.duration/10)
+
             # Wait for the loadgen container to finish (it runs for the specified duration)
             print(f"Waiting for load generator to finish (running for {args.duration}s)...")
 
             try:
-                wait_time = args.duration + 5  # Add 5 seconds buffer
-                time.sleep(wait_time)
+                # Let the load run for the specified duration
+                time.sleep(args.duration)
+                # Stop monitoring immediately to avoid recording idle stats.
+                # Eventually this should be based on active signaling that the test load is done rather than timers.
+                target_process.stop_monitoring()
+                # Add 5 seconds buffer
+                time.sleep(5)
+                target_process_stats = target_process.get_stats()
 
                 # Get logs from the container (which should have finished by now)
                 print("Getting logs from load generator container...")
@@ -730,8 +991,11 @@ def main():
                 args.k8s_loadgen_manifest,
                 args.k8s_namespace,
                 args.duration,
+                k8s_collector_resource,
                 args.skip_loadgen_build
             )
+
+            target_process_stats = k8s_collector_resource.get_stats()
 
             # Query backend for received count (using port forwarding set up earlier)
             logs_received_backend_count = get_backend_received_count("http://localhost:5000/metrics")
@@ -770,6 +1034,9 @@ def main():
         print(f"Duration: {duration:.2f} seconds")
         print(f"Logs attempt rate: {formatted_rate} ({logs_sent_rate:.2f} logs/second)")
         print(f"Total logs lost: {total_logs_lost} ({logs_lost_percentage:.2f}% of attempted logs)")
+        if target_process_stats:
+            print(f"CPU min/avg/max: {target_process_stats.get_summary_string('cpu')}")
+            print(f"Memory min/avg/max: {target_process_stats.get_summary_string('mem')}")
 
         # Write results to file
         with open(results_file, "w") as f:
@@ -793,6 +1060,9 @@ def main():
             f.write(f"- Logs attempt rate: {formatted_rate} ({logs_sent_rate:.2f} logs/second)\n")
             f.write(f"- Total logs lost: {total_logs_lost} (failed at loadgen + lost in transit)\n")
             f.write(f"- Percentage of logs lost: {logs_lost_percentage:.2f}%\n")
+            if target_process_stats:
+                f.write(f"- CPU min/avg/max: {target_process_stats.get_summary_string('cpu')}\n")
+                f.write(f"- Memory min/avg/max: {target_process_stats.get_summary_string('mem')}\n")
 
         print(f"Test completed. Results saved to {results_file}")
 
