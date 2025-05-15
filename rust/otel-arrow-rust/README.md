@@ -4,14 +4,14 @@ The Rust implementation for [OTEL Arrow
 protocol](https://github.com/open-telemetry/otel-arrow).
 
 - Decoding Arrow IPC record batches to Opentelemetry data structures.
-  - 🚧 Metrics
-    - ✅ Univariate metrics
+  - :construction: Metrics
+    - :white_check_mark: Univariate metrics
     - [ ] Multivariate metrics
-  - ✅ Logs
+  - :white_check_mark: Logs
   - [ ] Traces
 - Encoding Opentelemetry data structures to Arrow IPC record batches.
   - [ ] Metrics
-  - 🚧 Logs
+  - :construction: Logs
   - [ ] Traces
 
 ## Build
