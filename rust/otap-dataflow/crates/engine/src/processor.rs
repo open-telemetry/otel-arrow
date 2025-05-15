@@ -231,32 +231,13 @@ pub enum ProcessorWrapper<PData> {
 }
 
 impl<PData> ProcessorWrapper<PData> {
-    /// Creates a new `ProcessorWrapper` with the given processor and `!Send` effect handler.
-    pub fn with_not_send<P>(processor: P, config: &ProcessorConfig) -> Self
+    /// Creates a new `ProcessorWrapper` with the given processor and appropriate effect handler.
+    pub fn new<P, H>(processor: P, config: &ProcessorConfig) -> Self
     where
-        P: Processor<PData, NotSendEffectHandler<PData>> + 'static,
+        P: Processor<PData, H> + 'static,
+        H: EffectHandlerFactory<PData, P>,
     {
-        let (pdata_sender, pdata_receiver) =
-            mpsc::Channel::new(config.output_pdata_channel.capacity);
-        ProcessorWrapper::NotSend {
-            effect_handler: NotSendEffectHandler::new(&config.name, pdata_sender),
-            processor: Box::new(processor),
-            pdata_receiver: Some(pdata_receiver),
-        }
-    }
-
-    /// Creates a new `ProcessorWrapper` with the given processor and `Send` effect handler.
-    pub fn with_send<P>(processor: P, config: &ProcessorConfig) -> Self
-    where
-        P: Processor<PData, SendEffectHandler<PData>> + 'static,
-    {
-        let (pdata_sender, pdata_receiver) =
-            tokio::sync::mpsc::channel(config.output_pdata_channel.capacity);
-        ProcessorWrapper::Send {
-            effect_handler: SendEffectHandler::new(&config.name, pdata_sender),
-            processor: Box::new(processor),
-            pdata_receiver: Some(pdata_receiver),
-        }
+        H::create_wrapper(processor, config)
     }
 
     /// Call the processor's `process` method.
@@ -284,6 +265,50 @@ impl<PData> ProcessorWrapper<PData> {
             ProcessorWrapper::Send { pdata_receiver, .. } => {
                 PDataReceiver::Send(pdata_receiver.take().expect("pdata_receiver is None"))
             }
+        }
+    }
+}
+
+/// A trait that provides factory methods for creating effect handlers
+/// and wrapping processors.
+pub trait EffectHandlerFactory<PData, P>
+where
+    P: Processor<PData, Self> + 'static,
+    Self: EffectHandlerTrait<PData> + Sized,
+{
+    /// Creates a new `ProcessorWrapper` with the appropriate type of
+    /// effect handler for the given processor.
+    fn create_wrapper(processor: P, config: &ProcessorConfig) -> ProcessorWrapper<PData>;
+}
+
+impl<PData, P> EffectHandlerFactory<PData, P> for NotSendEffectHandler<PData>
+where
+    P: Processor<PData, Self> + 'static,
+{
+    fn create_wrapper(processor: P, config: &ProcessorConfig) -> ProcessorWrapper<PData> {
+        let (pdata_sender, pdata_receiver) =
+            mpsc::Channel::new(config.output_pdata_channel.capacity);
+
+        ProcessorWrapper::NotSend {
+            effect_handler: NotSendEffectHandler::new(&config.name, pdata_sender),
+            processor: Box::new(processor),
+            pdata_receiver: Some(pdata_receiver),
+        }
+    }
+}
+
+impl<PData, P> EffectHandlerFactory<PData, P> for SendEffectHandler<PData>
+where
+    P: Processor<PData, Self> + 'static,
+{
+    fn create_wrapper(processor: P, config: &ProcessorConfig) -> ProcessorWrapper<PData> {
+        let (pdata_sender, pdata_receiver) =
+            tokio::sync::mpsc::channel(config.output_pdata_channel.capacity);
+
+        ProcessorWrapper::Send {
+            effect_handler: SendEffectHandler::new(&config.name, pdata_sender),
+            processor: Box::new(processor),
+            pdata_receiver: Some(pdata_receiver),
         }
     }
 }
@@ -431,7 +456,7 @@ mod tests {
     #[test]
     fn test_receiver_with_not_send_effect_handler() {
         let test_runtime = TestRuntime::new();
-        let processor = ProcessorWrapper::with_not_send(
+        let processor = ProcessorWrapper::new(
             ProcessorWithNotSendEffectHandler::new(test_runtime.counters()),
             test_runtime.config(),
         );
@@ -445,7 +470,7 @@ mod tests {
     #[test]
     fn test_receiver_with_send_effect_handler() {
         let test_runtime = TestRuntime::new();
-        let processor = ProcessorWrapper::with_send(
+        let processor = ProcessorWrapper::new(
             ProcessorWithSendEffectHandler::with_send_effect_handler(
                 test_runtime.counters(),
                 |eh| {

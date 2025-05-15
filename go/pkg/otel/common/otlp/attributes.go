@@ -25,7 +25,6 @@ import (
 	arrowutils "github.com/open-telemetry/otel-arrow/pkg/arrow"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
 	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
-	oschema "github.com/open-telemetry/otel-arrow/pkg/otel/common/schema"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
 	"github.com/open-telemetry/otel-arrow/pkg/werror"
 )
@@ -34,16 +33,15 @@ type (
 	// AttributeIDs is a struct containing the Arrow field IDs of the
 	// attributes.
 	AttributeIDs struct {
-		ParentID             int
-		ParentIDDeltaEncoded bool
-		Key                  int
-		Type                 int
-		Str                  int
-		Int                  int
-		Double               int
-		Bool                 int
-		Bytes                int
-		Ser                  int
+		ParentID int
+		Key      int
+		Type     int
+		Str      int
+		Int      int
+		Double   int
+		Bool     int
+		Bytes    int
+		Ser      int
 	}
 
 	// AttributesStore is a store for attributes.
@@ -60,7 +58,6 @@ type (
 		prevParentID u
 		prevKey      string
 		prevValue    *pcommon.Value
-		encodingType int
 	}
 )
 
@@ -191,12 +188,6 @@ func SchemaToAttributeIDs(schema *arrow.Schema) (*AttributeIDs, error) {
 		return nil, werror.Wrap(err)
 	}
 
-	deltaEncoded := false
-	v, found := schema.Field(parentID).Metadata.GetValue(oschema.EncodingKey)
-	if found {
-		deltaEncoded = v == oschema.DeltaEncodingValue
-	}
-
 	key, err := arrowutils.MandatoryFieldIDFromSchema(schema, constants.AttributeKey)
 	if err != nil {
 		return nil, werror.Wrap(err)
@@ -232,45 +223,39 @@ func SchemaToAttributeIDs(schema *arrow.Schema) (*AttributeIDs, error) {
 	}
 
 	return &AttributeIDs{
-		ParentID:             parentID,
-		ParentIDDeltaEncoded: deltaEncoded,
-		Key:                  key,
-		Type:                 vType,
-		Str:                  vStr,
-		Int:                  vInt,
-		Double:               vDouble,
-		Bool:                 vBool,
-		Bytes:                vBytes,
-		Ser:                  vSer,
+		ParentID: parentID,
+		Key:      key,
+		Type:     vType,
+		Str:      vStr,
+		Int:      vInt,
+		Double:   vDouble,
+		Bool:     vBool,
+		Bytes:    vBytes,
+		Ser:      vSer,
 	}, nil
 }
 
+// AttrsParentIdDecoder implements parent_id decoding for attribute
+// sets.  The parent_id in this case is the entity which refers to the
+// set of attributes (e.g., a resource, a scope, a metric) contained
+// in a RecordBatch.
+//
+// Phase 1 note: there were several experimental encoding schemes
+// tested.  Two schemes named "ParentIdDeltaEncoding",
+// "ParentIdNoEncoding" have been removed.
 func NewAttrsParentIDDecoder[u constraints.Unsigned]() *AttrsParentIDDecoder[u] {
-	return &AttrsParentIDDecoder[u]{
-		encodingType: carrow.ParentIdDeltaGroupEncoding,
-	}
+	return &AttrsParentIDDecoder[u]{}
 }
 
 func (d *AttrsParentIDDecoder[unsigned]) Decode(deltaOrParentID unsigned, key string, value *pcommon.Value) unsigned {
-	switch d.encodingType {
-	case carrow.ParentIdNoEncoding:
+	if d.prevKey == key && carrow.Equal(d.prevValue, value) {
+		parentID := d.prevParentID + deltaOrParentID
+		d.prevParentID = parentID
+		return parentID
+	} else {
+		d.prevKey = key
+		d.prevValue = value
+		d.prevParentID = deltaOrParentID
 		return deltaOrParentID
-	case carrow.ParentIdDeltaEncoding:
-		decodedParentID := d.prevParentID + deltaOrParentID
-		d.prevParentID = decodedParentID
-		return decodedParentID
-	case carrow.ParentIdDeltaGroupEncoding:
-		if d.prevKey == key && carrow.Equal(d.prevValue, value) {
-			parentID := d.prevParentID + deltaOrParentID
-			d.prevParentID = parentID
-			return parentID
-		} else {
-			d.prevKey = key
-			d.prevValue = value
-			d.prevParentID = deltaOrParentID
-			return deltaOrParentID
-		}
-	default:
-		panic("unknown parent ID encoding type")
 	}
 }

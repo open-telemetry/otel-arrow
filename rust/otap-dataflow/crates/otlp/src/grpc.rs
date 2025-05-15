@@ -3,45 +3,46 @@ use crate::proto::opentelemetry::collector::{
     metrics::v1::{metrics_service_server::MetricsService, ExportMetricsServiceRequest, ExportMetricsServiceResponse}, 
     trace::v1::{trace_service_server::TraceService, ExportTraceServiceRequest, ExportTraceServiceResponse}};
 
-use otap_df_engine::receiver::{EffectHandlerTrait, SendEffectHandler};
+use otap_df_engine::shared::receiver as shared;
 use tonic::{Request, Response, Status};
     
     
 /// struct that implements the Log Service trait
 pub struct LogsServiceImpl {
-    effect_handler: SendEffectHandler<OTLPRequest>,
+    effect_handler: shared::EffectHandler<OTLPData>,
 }
 
 impl LogsServiceImpl {
     /// Create a LogsServiceImpl with a sendable Effect Handler
-    pub fn new(effect_handler: SendEffectHandler<OTLPRequest>) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
 }
 
 /// struct that implements the Metric Service trait
 pub struct MetricsServiceImpl {
-    effect_handler: SendEffectHandler<OTLPRequest>,
+    effect_handler: shared::EffectHandler<OTLPData>,
 }
 
 impl MetricsServiceImpl {
     /// Create a MetricsServiceImpl with a sendable Effect Handler
-    pub fn new(effect_handler: SendEffectHandler<OTLPRequest>) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
 }
 
 /// struct that implements the Trace Service trait
 pub struct TraceServiceImpl {
-    effect_handler: SendEffectHandler<OTLPRequest>,
+    effect_handler: shared::EffectHandler<OTLPData>,
 }
 
 impl TraceServiceImpl {
     /// Create a TraceServiceImpl with a sendable Effect Handler
-    pub fn new(effect_handler: SendEffectHandler<OTLPRequest>) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
 }
+
 
 #[tonic::async_trait]
 impl LogsService for LogsServiceImpl {
@@ -49,7 +50,7 @@ impl LogsService for LogsServiceImpl {
         &self,
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
-        _ = self.effect_handler.send_message(OTLPRequest::Logs(request.into_inner())).await;
+        _ = self.effect_handler.send_message(OTLPData::Logs(request.into_inner())).await;
         Ok(Response::new(ExportLogsServiceResponse {
             partial_success: None,
         }))
@@ -62,7 +63,7 @@ impl MetricsService for MetricsServiceImpl {
         &self,
         request: Request<ExportMetricsServiceRequest>,
     ) -> Result<Response<ExportMetricsServiceResponse>, Status> {
-        _ = self.effect_handler.send_message(OTLPRequest::Metrics(request.into_inner())).await;
+        _ = self.effect_handler.send_message(OTLPData::Metrics(request.into_inner())).await;
         Ok(Response::new(ExportMetricsServiceResponse {
             partial_success: None,
         }))
@@ -75,7 +76,7 @@ impl TraceService for TraceServiceImpl {
         &self,
         request: Request<ExportTraceServiceRequest>,
     ) -> Result<Response<ExportTraceServiceResponse>, Status> {
-        _ = self.effect_handler.send_message(OTLPRequest::Traces(request.into_inner())).await;
+        _ = self.effect_handler.send_message(OTLPData::Traces(request.into_inner())).await;
         Ok(Response::new(ExportTraceServiceResponse {
             partial_success: None,
         }))
@@ -83,9 +84,10 @@ impl TraceService for TraceServiceImpl {
 }
 
 
+
 /// Enum to represent received OTLP requests.
 #[derive(Debug, Clone)]
-pub enum OTLPRequest {
+pub enum OTLPData {
     /// Logs Object
     Logs(ExportLogsServiceRequest),
     /// Metrics Object
@@ -94,8 +96,7 @@ pub enum OTLPRequest {
     Traces(ExportTraceServiceRequest),
 }
 
-
-/// Enum to represent various compression methods
+/// Enum to represent varioous compression methods
 #[derive(Debug)]
 pub enum CompressionMethod {
     /// Fastest compression

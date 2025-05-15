@@ -21,7 +21,6 @@ import (
 
 	arrowutils "github.com/open-telemetry/otel-arrow/pkg/arrow"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common"
-	carrow "github.com/open-telemetry/otel-arrow/pkg/otel/common/arrow"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/common/otlp"
 	"github.com/open-telemetry/otel-arrow/pkg/otel/constants"
 	"github.com/open-telemetry/otel-arrow/pkg/werror"
@@ -55,7 +54,6 @@ type (
 		prevType        int
 		prevIntValue    *int64
 		prevDoubleValue *float64
-		encodingType    int
 	}
 )
 
@@ -113,7 +111,7 @@ func ExemplarsStoreFrom(
 		exemplarsByIDs: make(map[uint32]pmetric.ExemplarSlice),
 	}
 	// ToDo Make this decoding dependent on the encoding type column metadata.
-	parentIdDecoder := NewExemplarParentIdDecoder(carrow.ParentIdDeltaGroupEncoding)
+	parentIdDecoder := NewExemplarParentIdDecoder()
 
 	exemplarIDs, err := SchemaToExemplarIDs(record.Schema())
 	if err != nil {
@@ -203,57 +201,45 @@ func ExemplarsStoreFrom(
 	return store, nil
 }
 
-func NewExemplarParentIdDecoder(encodingType int) *ExemplarParentIdDecoder {
+func NewExemplarParentIdDecoder() *ExemplarParentIdDecoder {
 	return &ExemplarParentIdDecoder{
 		prevParentID:    0,
 		prevType:        UndefinedTypeValue,
 		prevIntValue:    nil,
 		prevDoubleValue: nil,
-		encodingType:    encodingType,
 	}
 }
 
 func (d *ExemplarParentIdDecoder) Decode(value uint32, intValue *int64, doubleValue *float64) uint32 {
-	switch d.encodingType {
-	case carrow.ParentIdNoEncoding:
-		return value
-	case carrow.ParentIdDeltaEncoding:
-		decodedParentID := d.prevParentID + value
-		d.prevParentID = decodedParentID
-		return decodedParentID
-	case carrow.ParentIdDeltaGroupEncoding:
-		if intValue != nil {
-			if d.prevType == IntValue && d.prevIntValue != nil && *d.prevIntValue == *intValue {
-				parentID := d.prevParentID + value
-				d.prevParentID = parentID
-				return parentID
-			} else {
-				d.prevType = IntValue
-				d.prevIntValue = intValue
-				d.prevDoubleValue = nil
-				d.prevParentID = value
-				return value
-			}
+	if intValue != nil {
+		if d.prevType == IntValue && d.prevIntValue != nil && *d.prevIntValue == *intValue {
+			parentID := d.prevParentID + value
+			d.prevParentID = parentID
+			return parentID
+		} else {
+			d.prevType = IntValue
+			d.prevIntValue = intValue
+			d.prevDoubleValue = nil
+			d.prevParentID = value
+			return value
 		}
-
-		if doubleValue != nil {
-			if d.prevType == DoubleValue && d.prevDoubleValue != nil && *d.prevDoubleValue == *doubleValue {
-				parentID := d.prevParentID + value
-				d.prevParentID = parentID
-				return parentID
-			} else {
-				d.prevType = DoubleValue
-				d.prevIntValue = nil
-				d.prevDoubleValue = doubleValue
-				d.prevParentID = value
-				return value
-			}
-		}
-
-		parentID := d.prevParentID + value
-		d.prevParentID = parentID
-		return parentID
-	default:
-		panic("unknown exemplar parent ID encoding type")
 	}
+
+	if doubleValue != nil {
+		if d.prevType == DoubleValue && d.prevDoubleValue != nil && *d.prevDoubleValue == *doubleValue {
+			parentID := d.prevParentID + value
+			d.prevParentID = parentID
+			return parentID
+		} else {
+			d.prevType = DoubleValue
+			d.prevIntValue = nil
+			d.prevDoubleValue = doubleValue
+			d.prevParentID = value
+			return value
+		}
+	}
+
+	parentID := d.prevParentID + value
+	d.prevParentID = parentID
+	return parentID
 }
