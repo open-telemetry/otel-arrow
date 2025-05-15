@@ -82,7 +82,7 @@ fn compile_proto_otlp() -> anyhow::Result<()> {
     tonic_build::configure()
         .out_dir("crates/otlp/src/proto")
         .compile_protos(
-            &[  
+            &[
                 "opentelemetry/proto/common/v1/common.proto",
                 "opentelemetry/proto/resource/v1/resource.proto",
                 "opentelemetry/proto/profiles/v1development/profiles.proto",

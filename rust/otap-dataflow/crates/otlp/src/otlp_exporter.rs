@@ -123,7 +123,6 @@ impl local::Exporter<OTLPData> for OTLPExporter {
         loop {
             match msg_chan.recv().await? {
                 // handle control messages
-                //
                 Message::Control(ControlMsg::TimerTick { .. })
                 | Message::Control(ControlMsg::Config { .. }) => {}
                 // shutdown the exporter
@@ -226,16 +225,9 @@ mod tests {
                     .expect("Failed to send profile message");
 
                 // Send shutdown
-                ctx.send_shutdown(Duration::from_millis(0), "test complete")
+                ctx.send_shutdown(Duration::from_millis(200), "test complete")
                     .await
                     .expect("Failed to send Shutdown");
-
-                ctx.send_config(Value::Null)
-                    .await
-                    .expect("Failed to send Config");
-                // let fail_message = OTLPData::Metrics(ExportMetricsServiceRequest::default());
-                // let send_pdata_fail = ctx.send_pdata(fail_message).await;
-                // assert!(send_pdata_fail.is_err(), "Server is still up");
             })
         }
     }
