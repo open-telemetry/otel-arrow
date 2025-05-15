@@ -1,6 +1,6 @@
 """Orchestrator is the primary entrypoint for pipeline perf test benchmarking.
 
-This script orchestrates performance testing for OpenTelemetry (OTel) pipelines by deploying test 
+This script orchestrates performance testing for OpenTelemetry (OTel) pipelines by deploying test
 environments  either using Docker or Kubernetes. It sets up and manages test resources, executes
 a load generation workload, and captures performance results for analysis.
 
@@ -18,7 +18,7 @@ Key Arguments:
     - --collector-config: Path to the OTEL configuration file (required for Docker deployment).
 - Kubernetes-specific:
     - --k8s-namespace: Kubernetes namespace to use (default: 'default').
-    - --k8s-collector-manifest / --k8s-backend-manifest / --k8s-loadgen-manifest: Paths to 
+    - --k8s-collector-manifest / --k8s-backend-manifest / --k8s-loadgen-manifest: Paths to
             respective Kubernetes manifest YAML files (all required for Kubernetes deployment).
 
 Usage Example:

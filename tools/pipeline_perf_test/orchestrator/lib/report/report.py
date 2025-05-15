@@ -1,10 +1,10 @@
 """Reporting module for pipeline perf test orchestrator.
 
-Provides utilities for generating performance test reports and analyzing results 
+Provides utilities for generating performance test reports and analyzing results
 from OpenTelemetry pipeline tests.
 
-This module includes functions to parse logs, retrieve metrics from the backend, 
-and format a summary report containing key performance indicators such as logs sent, 
+This module includes functions to parse logs, retrieve metrics from the backend,
+and format a summary report containing key performance indicators such as logs sent,
 logs received, and resource usage.
 
 
@@ -23,7 +23,7 @@ def get_report_string(
     target_process_stats=None
 ) -> None:
     """Return a string representing a loadtest report
-    
+
     Args:
         - timestamp: the start timestamp that the test run began at
         - args: the command line args
@@ -31,7 +31,7 @@ def get_report_string(
         - logs_sent_count: the number of sent log messages
         - target_process_stats: CPU and Memory stats for the target process
     """
-    
+
     logs_received_backend_count = get_backend_received_count("http://localhost:5000/metrics")
 
     # Calculate total logs lost (including those that failed at loadgen side and those lost in transit)
@@ -58,7 +58,7 @@ def get_report_string(
 
     # Calculate percentage of logs lost
     logs_lost_percentage = (total_logs_lost / total_logs_attempted * 100) if total_logs_attempted > 0 else 0
-    
+
     lines = []
     lines.append(f"Performance test run at: {timestamp}")
     lines.append(f"Test duration: {args.duration} seconds")

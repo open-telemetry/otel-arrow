@@ -1,7 +1,7 @@
 """
 kubernetes.py
 
-Defines the `K8sDeployedResource` class, a concrete implementation of `DeployedProcess` for managing 
+Defines the `K8sDeployedResource` class, a concrete implementation of `DeployedProcess` for managing
 components deployed in a Kubernetes cluster as part of a performance testing pipeline.
 
 This class provides an abstraction for handling the deployment, monitoring, and shutdown of

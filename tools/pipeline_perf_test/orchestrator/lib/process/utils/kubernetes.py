@@ -4,8 +4,8 @@ kubernetes.py
 Utility functions for managing Kubernetes resources used in OpenTelemetry pipeline performance
 testing.
 
-This module provides helper functions to deploy resources, retrieve logs, manage namespaces, 
-handle port forwarding, and run Kubernetes-based load generators. It abstracts the underlying 
+This module provides helper functions to deploy resources, retrieve logs, manage namespaces,
+handle port forwarding, and run Kubernetes-based load generators. It abstracts the underlying
 `kubectl` operations to streamline orchestration workflows within a Kubernetes environment.
 
 These functions are intended to support orchestration of performance testing scenarios on Kubernetes

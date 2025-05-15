@@ -3,8 +3,8 @@ docker.py
 
 Utility functions for managing Docker containers used in OpenTelemetry performance testing.
 
-This module provides helper functions for building images, launching containers, 
-fetching logs, and cleaning up resources. It is used internally by orchestration 
+This module provides helper functions for building images, launching containers,
+fetching logs, and cleaning up resources. It is used internally by orchestration
 logic to support Docker-based test deployments.
 
 These utilities abstract lower-level Docker CLI operations to simplify higher-level process

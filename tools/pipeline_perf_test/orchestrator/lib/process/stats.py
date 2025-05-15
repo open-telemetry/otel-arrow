@@ -1,12 +1,12 @@
 """The stats module manages resource usage statistics for perf processes
 
-Provides classes and utilities for tracking and aggregating resource usage statistics 
+Provides classes and utilities for tracking and aggregating resource usage statistics
 of deployed processes during OpenTelemetry performance tests.
 
-This module enables consistent collection and analysis of performance metrics such as 
+This module enables consistent collection and analysis of performance metrics such as
 CPU and memory usage across different deployment environments (Docker, Kubernetes, etc.).
 
-These tools are used by the monitoring subsystem in the orchestrator to collect meaningful 
+These tools are used by the monitoring subsystem in the orchestrator to collect meaningful
 performance data and produce standardized test results.
 """
 import re

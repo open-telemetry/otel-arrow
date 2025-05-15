@@ -1,10 +1,10 @@
 """
 base.py
 
-Defines the abstract base class `DeployedProcess` for managing deployed system components 
+Defines the abstract base class `DeployedProcess` for managing deployed system components
 (e.g., backend services, load generators, or collectors) in a performance testing environment.
 
-This class serves as the foundation for concrete implementations that manage specific deployment 
+This class serves as the foundation for concrete implementations that manage specific deployment
 targets or environments (e.g., Docker containers, Kubernetes pods). It encapsulates shared
 functionality  such as process monitoring and statistics collection via the `ProcessStats` utility.
 

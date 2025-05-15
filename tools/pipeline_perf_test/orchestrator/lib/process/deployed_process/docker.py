@@ -1,11 +1,11 @@
 """
 docker.py
 
-Defines the `DockerProcess` class, a concrete implementation of `DeployedProcess` for managing 
+Defines the `DockerProcess` class, a concrete implementation of `DeployedProcess` for managing
 Docker-based components within a performance testing environment.
 
-This class encapsulates the lifecycle and monitoring logic for processes running inside Docker 
-containers, such as load generators, backends, or telemetry collectors. It tracks resource 
+This class encapsulates the lifecycle and monitoring logic for processes running inside Docker
+containers, such as load generators, backends, or telemetry collectors. It tracks resource
 usage and enables clean shutdown of containers under test.
 
 Key Features:
