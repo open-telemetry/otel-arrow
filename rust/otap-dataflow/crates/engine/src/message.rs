@@ -2,12 +2,11 @@
 
 //! Message definitions for the pipeline engine.
 
-use crate::error::Error;
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_channel::mpsc;
-use std::time::Duration;
 use std::pin::Pin;
-use tokio::time::{sleep_until, Instant, Sleep};
+use std::time::Duration;
+use tokio::time::{Instant, Sleep, sleep_until};
 
 /// Represents messages sent to nodes (receivers, processors, exporters, or connectors) within the
 /// pipeline.
@@ -73,34 +72,6 @@ impl ControlMsg {
     }
 }
 
-/// A generic sender for control messages.
-pub enum ControlSender {
-    /// A MPSC sender that does NOT implement [`Send`].
-    Local(mpsc::Sender<ControlMsg>),
-    /// A MPSC sender that implements [`Send`].
-    Shared(tokio::sync::mpsc::Sender<ControlMsg>),
-}
-
-impl ControlSender {
-    /// Sends a control message to the pipeline.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the message could not be sent.
-    pub async fn send(&self, msg: ControlMsg) -> Result<(), Error<ControlMsg>> {
-        match self {
-            ControlSender::Local(sender) => sender
-                .send_async(msg)
-                .await
-                .map_err(Error::ChannelSendError),
-            ControlSender::Shared(sender) => sender
-                .send(msg)
-                .await
-                .map_err(|e| Error::ChannelSendError(SendError::Closed(e.0))),
-        }
-    }
-}
-
 impl<Data> Message<Data> {
     /// Create a data message with the given payload.
     #[must_use]
@@ -160,49 +131,6 @@ impl<Data> Message<Data> {
     #[must_use]
     pub fn is_shutdown(&self) -> bool {
         matches!(self, Message::Control(ControlMsg::Shutdown { .. }))
-    }
-}
-
-/// A MPSC receiver for pdata messages.
-/// It can be either a not send or a send receiver implementation.
-pub enum PDataReceiver<PData> {
-    /// A MPSC receiver that does NOT implement [`Send`].
-    Local(Receiver<PData>),
-    /// A MPSC receiver that implements [`Send`].
-    Shared(tokio::sync::mpsc::Receiver<PData>),
-}
-
-impl<PData> PDataReceiver<PData> {
-    /// Returns the next message from the receiver.
-    pub async fn recv(&mut self) -> Result<PData, Error<PData>> {
-        match self {
-            PDataReceiver::Local(receiver) => receiver
-                .recv()
-                .await
-                .map_err(|e| Error::ChannelRecvError(e)),
-            PDataReceiver::Shared(receiver) => receiver
-                .recv()
-                .await
-                .ok_or(Error::ChannelRecvError(RecvError::Closed)),
-        }
-    }
-
-    /// Drains and returns all messages from the pdata receiver.
-    pub async fn drain_pdata(&mut self) -> Vec<PData> {
-        let mut emitted = Vec::new();
-        match self {
-            PDataReceiver::Local(receiver) => {
-                while let Ok(msg) = receiver.try_recv() {
-                    emitted.push(msg);
-                }
-            }
-            PDataReceiver::Shared(receiver) => {
-                while let Ok(msg) = receiver.try_recv() {
-                    emitted.push(msg);
-                }
-            }
-        }
-        emitted
     }
 }
 

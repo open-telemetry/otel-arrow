@@ -6,11 +6,10 @@
 //! For more details on the `!Send` implementation of a processor, see [`local::Processor`].
 //! See [`shared::Processor`] for the Send implementation.
 
-
 use crate::config::ProcessorConfig;
 use crate::error::Error;
 use crate::local::processor as local;
-use crate::message::{ControlMsg, Message, PDataReceiver, Receiver, Sender};
+use crate::message::{ControlMsg, Message, Receiver, Sender};
 use crate::shared::processor as shared;
 use otap_df_channel::mpsc;
 
@@ -61,7 +60,10 @@ impl<PData> ProcessorWrapper<PData> {
 
         ProcessorWrapper::Local {
             processor: Box::new(processor),
-            effect_handler: local::EffectHandler::new(config.name.clone(), Sender::Local(pdata_sender)),
+            effect_handler: local::EffectHandler::new(
+                config.name.clone(),
+                Sender::Local(pdata_sender),
+            ),
             control_sender: Sender::Local(control_sender),
             control_receiver: Receiver::Local(control_receiver),
             pdata_receiver: Some(Receiver::Local(pdata_receiver)),
@@ -104,13 +106,13 @@ impl<PData> ProcessorWrapper<PData> {
     }
 
     /// Takes the PData receiver from the wrapper and returns it.
-    pub fn take_pdata_receiver(&mut self) -> PDataReceiver<PData> {
+    pub fn take_pdata_receiver(&mut self) -> Receiver<PData> {
         match self {
             ProcessorWrapper::Local { pdata_receiver, .. } => {
-                PDataReceiver::Local(pdata_receiver.take().expect("pdata_receiver is None"))
+                pdata_receiver.take().expect("pdata_receiver is None")
             }
             ProcessorWrapper::Shared { pdata_receiver, .. } => {
-                PDataReceiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
+                Receiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
             }
         }
     }

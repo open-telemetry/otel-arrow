@@ -9,7 +9,7 @@
 use crate::config::ReceiverConfig;
 use crate::error::Error;
 use crate::local::receiver as local;
-use crate::message::{ControlMsg, ControlSender, PDataReceiver, Receiver, Sender};
+use crate::message::{ControlMsg, Receiver, Sender};
 use crate::shared::receiver as shared;
 use otap_df_channel::mpsc;
 
@@ -58,7 +58,10 @@ impl<PData> ReceiverWrapper<PData> {
             mpsc::Channel::new(config.output_pdata_channel.capacity);
 
         ReceiverWrapper::Local {
-            effect_handler: local::EffectHandler::new(config.name.clone(), Sender::Local(pdata_sender)),
+            effect_handler: local::EffectHandler::new(
+                config.name.clone(),
+                Sender::Local(pdata_sender),
+            ),
             receiver: Box::new(receiver),
             control_sender,
             control_receiver,
@@ -87,13 +90,11 @@ impl<PData> ReceiverWrapper<PData> {
 
     /// Returns the control message sender for the receiver.
     #[must_use]
-    pub fn control_sender(&self) -> ControlSender {
+    pub fn control_sender(&self) -> Sender<ControlMsg> {
         match self {
-            ReceiverWrapper::Local { control_sender, .. } => {
-                ControlSender::Local(control_sender.clone())
-            }
+            ReceiverWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
             ReceiverWrapper::Shared { control_sender, .. } => {
-                ControlSender::Shared(control_sender.clone())
+                Sender::Shared(control_sender.clone())
             }
         }
     }
@@ -123,13 +124,13 @@ impl<PData> ReceiverWrapper<PData> {
     }
 
     /// Returns the PData receiver.
-    pub fn take_pdata_receiver(&mut self) -> PDataReceiver<PData> {
+    pub fn take_pdata_receiver(&mut self) -> Receiver<PData> {
         match self {
             ReceiverWrapper::Local { pdata_receiver, .. } => {
-                PDataReceiver::Local(pdata_receiver.take().expect("pdata_receiver is None"))
+                pdata_receiver.take().expect("pdata_receiver is None")
             }
             ReceiverWrapper::Shared { pdata_receiver, .. } => {
-                PDataReceiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
+                Receiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
             }
         }
     }

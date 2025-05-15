@@ -3,10 +3,10 @@
 //! Node configuration model
 //! IMPORTANT NOTE: This is a work in progress and not yet fully implemented.
 
-use std::borrow::Cow;
 use crate::{NodeKind, SignalType};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 type NodeName = Cow<'static, str>;
