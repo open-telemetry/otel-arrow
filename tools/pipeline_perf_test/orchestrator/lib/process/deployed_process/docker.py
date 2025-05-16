@@ -77,7 +77,7 @@ class DockerProcess(DeployedProcess):
             while not stop_event.is_set():
                 try:
                     stat_data = container.stats(stream=False)
-                    
+
                     # CPU usage calculation
                     cpu_stats = stat_data['cpu_stats']
                     precpu_stats = stat_data['precpu_stats']

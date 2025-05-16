@@ -37,7 +37,7 @@ class PortBinding:
 
 def build_volume_dict(volume_mounts: list[VolumeMount]) -> dict:
     """Map a list of VolumeMounts to the format expected by docker api"
-    
+
     Args:
         - volume_mounts: a list of VolumeMount objects specifying mount configs
     """
@@ -49,7 +49,7 @@ def build_volume_dict(volume_mounts: list[VolumeMount]) -> dict:
 
 def build_port_bindings(bindings: list[PortBinding]) -> dict:
     """Map a list of PortBindings to the format expected by docker api"
-    
+
     Args:
         - bindings: a list of PortBindings objects specifying port mapping configs
     """
@@ -239,7 +239,7 @@ def create_docker_network(network_name: str, client: docker.DockerClient, log_cl
         network_name: a string representing the name of the docker network to use
         client: docker api client
         log_cli: Enable logging the equivalent cli command
-    
+
     Returns:
         boolean value indicating if the network is newly created (true) or existing (false)
     """
