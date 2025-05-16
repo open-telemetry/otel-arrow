@@ -15,9 +15,10 @@ workspace = true
 [dependencies]
 otap-df-engine = { path = "../engine" }
 otap-df-channel = { path = "../channel" }
-tonic = { version = "0.13.1", default-features = false, features = [
+tonic = { version = "0.13.0", default-features = false, features = [
     "server",
     "channel",
+    "router",
     "transport",
     "codegen",
     "prost",
@@ -26,13 +27,9 @@ tonic = { version = "0.13.1", default-features = false, features = [
     "deflate",
 ] }
 prost = "0.13.5"
-thiserror.workspace = true
-serde_json.workspace = true
-tokio.workspace = true
-async-trait.workspace = true
-
-[build-dependencies]
-tonic-build = { version = "0.13.1", features = ["cleanup-markdown"] }
-
-
 thiserror = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+
+
