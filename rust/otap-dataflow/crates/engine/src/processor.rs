@@ -1,207 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Set of traits and structures used to implement processors.
+//! Processor wrapper used to provide a unified interface to the pipeline engine that abstracts over
+//! the fact that processor implementations may be `!Send` or `Send`.
 //!
-//! A processor is a node in the pipeline that transforms, filters, or otherwise processes messages
-//! as they flow through the pipeline. Processors can perform operations such as:
-//!
-//! 1. Filtering messages based on certain criteria
-//! 2. Transforming message content or format
-//! 3. Aggregating multiple messages into a single message
-//! 4. Splitting a single message into multiple messages
-//! 5. Adding or removing attributes from messages
-//!
-//! # Lifecycle
-//!
-//! 1. The processor is instantiated and configured
-//! 2. The processor receives and processes both data messages and control messages
-//! 3. For each message, the processor can transform it, filter it, or split it into multiple messages
-//! 4. The processor can maintain state between processing calls if needed
-//! 5. The processor responds to control messages such as Config, TimerTick, or Shutdown
-//! 6. The processor shuts down when it receives a `Shutdown` control message or encounters a fatal error
-//!
-//! # Thread Safety
-//!
-//! Note that this trait uses `#[async_trait(?Send)]`, meaning implementations
-//! are not required to be thread-safe. If you need to implement a processor that requires `Send`,
-//! you can use the [`SendEffectHandler`] type. The default effect handler is `!Send` (see
-//! [`NotSendEffectHandler`]).
-//!
-//! # Scalability
-//!
-//! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline
-//! in parallel on different cores, each with its own processor instance.
+//! For more details on the `!Send` implementation of a processor, see [`local::Processor`].
+//! See [`shared::Processor`] for the Send implementation.
 
 use crate::config::ProcessorConfig;
 use crate::error::Error;
-use crate::message::{Message, PDataReceiver};
-use async_trait::async_trait;
-use otap_df_channel::error::SendError;
+use crate::local::processor as local;
+use crate::message::{ControlMsg, Message, Receiver, Sender};
+use crate::shared::processor as shared;
 use otap_df_channel::mpsc;
-use std::rc::Rc;
-use std::sync::Arc;
-
-/// A trait for processors in the pipeline.
-#[async_trait(?Send)]
-pub trait Processor<PData, EF = NotSendEffectHandler<PData>>
-where
-    EF: EffectHandlerTrait<PData>,
-{
-    /// Processes a message and optionally produces effects, such as generating new pdata messages.
-    ///
-    /// This method is called by the pipeline engine for each message that arrives at the processor.
-    /// Unlike receivers, processors have known inputs (messages from previous stages), so the pipeline
-    /// engine can control when to call this method and when the processor executes.
-    ///
-    /// This approach allows for greater flexibility and optimization, giving the pipeline engine
-    /// the ability to decide whether to spawn one task per processor or one task for a group of processors.
-    /// The method signature uses `&mut self` rather than `Box<Self>` because the engine only wants to
-    /// temporarily allow mutation of the processor instance, not transfer ownership.
-    ///
-    /// The processor can:
-    /// - Transform the message and return a new message
-    /// - Filter the message by returning None
-    /// - Split the message into multiple messages by returning a vector
-    /// - Handle control messages (e.g., Config, TimerTick, Shutdown)
-    ///
-    /// # Parameters
-    ///
-    /// - `msg`: The message to process, which can be either a data message or a control message
-    /// - `effect_handler`: A handler to perform side effects such as sending messages to the next node.
-    ///    This can be either Send or !Send depending on the processor's Mode type.
-    ///
-    /// # Returns
-    ///
-    /// - `Ok(())`: The processor successfully processed the message
-    /// - `Err(Error)`: The processor encountered an error and could not process the message
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Error`] if the processor encounters an unrecoverable error.
-    async fn process(
-        &mut self,
-        msg: Message<PData>,
-        effect_handler: &mut EF,
-    ) -> Result<(), Error<PData>>;
-}
-
-/// Handles side effects for the processor.
-///
-/// The `PData` type parameter represents the type of message the processor will consume and
-/// produce.
-///
-/// 2 implementations are provided:
-///
-/// - [`NotSendEffectHandler<PData>`]: For thread-local (!Send) processors. Uses `Rc` internally.
-///   It's the default and preferred effect handler.
-/// - [`SendEffectHandler<PData>`]: For thread-safe (Send) processors. Uses `Arc` internally and
-///   supports sending across thread boundaries.
-///
-/// Note for implementers: Effect handler implementations are designed to be cloned so the cost of
-/// cloning should be minimal.
-#[async_trait(?Send)]
-pub trait EffectHandlerTrait<PData> {
-    /// Returns the name of the processor associated with this handler.
-    fn processor_name(&self) -> &str;
-
-    /// Sends a message to the next node(s) in the pipeline.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
-    async fn send_message(&self, data: PData) -> Result<(), Error<PData>>;
-
-    // More methods will be added in the future as needed.
-}
-
-/// A `!Send` implementation of the EffectHandlerTrait.
-#[derive(Clone)]
-pub struct NotSendEffectHandler<PData> {
-    /// The name of the processor.
-    processor_name: Rc<str>,
-    /// A sender used to forward messages from the processor.
-    msg_sender: mpsc::Sender<PData>,
-}
-
-/// Implementation for the `!Send` effect handler.
-impl<PData> NotSendEffectHandler<PData> {
-    /// Creates a new local (!Send) `EffectHandler` with the given processor name.
-    /// This is the default and preferred effect handler for this project.
-    ///
-    /// Use this constructor when your processor doesn't need to be sent across threads or
-    /// when it uses components that aren't `Send`.
-    pub fn new<S: AsRef<str>>(processor_name: S, msg_sender: mpsc::Sender<PData>) -> Self {
-        NotSendEffectHandler {
-            processor_name: Rc::from(processor_name.as_ref()),
-            msg_sender,
-        }
-    }
-}
-
-#[async_trait(?Send)]
-impl<PData> EffectHandlerTrait<PData> for NotSendEffectHandler<PData> {
-    /// Returns the name of the processor associated with this handler.
-    #[must_use]
-    fn processor_name(&self) -> &str {
-        &self.processor_name
-    }
-
-    /// Sends a message to the next node(s) in the pipeline.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
-    async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
-        self.msg_sender.send_async(data).await?;
-        Ok(())
-    }
-}
-
-/// A `Send` implementation of the EffectHandlerTrait.
-#[derive(Clone)]
-pub struct SendEffectHandler<PData> {
-    /// The name of the processor.
-    processor_name: Arc<str>,
-    /// A sender used to forward messages from the processor.
-    msg_sender: tokio::sync::mpsc::Sender<PData>,
-}
-
-/// Implementation for the `Send` effect handler.
-impl<PData> SendEffectHandler<PData> {
-    /// Creates a new "sendable" effect handler with the given processor name.
-    pub fn new<S: AsRef<str>>(
-        processor_name: S,
-        msg_sender: tokio::sync::mpsc::Sender<PData>,
-    ) -> Self {
-        SendEffectHandler {
-            processor_name: Arc::from(processor_name.as_ref()),
-            msg_sender,
-        }
-    }
-}
-
-#[async_trait(?Send)]
-impl<PData> EffectHandlerTrait<PData> for SendEffectHandler<PData> {
-    /// Returns the name of the processor associated with this handler.
-    #[must_use]
-    fn processor_name(&self) -> &str {
-        &self.processor_name
-    }
-
-    /// Sends a message to the next node(s) in the pipeline.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
-    async fn send_message(&self, data: PData) -> Result<(), Error<PData>> {
-        self.msg_sender
-            .send(data)
-            .await
-            .map_err(|tokio::sync::mpsc::error::SendError(pdata)| {
-                Error::ChannelSendError(SendError::Full(pdata))
-            })
-    }
-}
 
 /// A wrapper for the processor that allows for both `Send` and `!Send` effect handlers.
 ///
@@ -209,51 +19,72 @@ impl<PData> EffectHandlerTrait<PData> for SendEffectHandler<PData> {
 /// handler type. This is the only type that the pipeline engine will use in order to be agnostic to
 /// the effect handler type.
 pub enum ProcessorWrapper<PData> {
-    /// A processor with a `!Send` effect handler.
-    NotSend {
+    /// A processor with a `!Send` implementation.
+    Local {
         /// The processor instance.
-        processor: Box<dyn Processor<PData, NotSendEffectHandler<PData>>>,
+        processor: Box<dyn local::Processor<PData>>,
         /// The effect handler for the processor.
-        effect_handler: NotSendEffectHandler<PData>,
+        effect_handler: local::EffectHandler<PData>,
+        /// A sender for control messages.
+        control_sender: Sender<ControlMsg>,
+        /// A receiver for control messages.
+        control_receiver: Receiver<ControlMsg>,
         /// A receiver for pdata messages.
-        pdata_receiver: Option<mpsc::Receiver<PData>>,
+        pdata_receiver: Option<Receiver<PData>>,
     },
-    /// A processor with a `Send` effect handler.
-    Send {
+    /// A processor with a `Send` implementation.
+    Shared {
         /// The processor instance.
-        processor: Box<dyn Processor<PData, SendEffectHandler<PData>>>,
+        processor: Box<dyn shared::Processor<PData>>,
         /// The effect handler for the processor.
-        effect_handler: SendEffectHandler<PData>,
+        effect_handler: shared::EffectHandler<PData>,
+        /// A sender for control messages.
+        control_sender: tokio::sync::mpsc::Sender<ControlMsg>,
+        /// A receiver for control messages.
+        control_receiver: tokio::sync::mpsc::Receiver<ControlMsg>,
         /// A receiver for pdata messages.
         pdata_receiver: Option<tokio::sync::mpsc::Receiver<PData>>,
     },
 }
 
 impl<PData> ProcessorWrapper<PData> {
-    /// Creates a new `ProcessorWrapper` with the given processor and `!Send` effect handler.
-    pub fn with_not_send<P>(processor: P, config: &ProcessorConfig) -> Self
+    /// Creates a new local `ProcessorWrapper` with the given processor and appropriate effect handler.
+    pub fn local<P>(processor: P, config: &ProcessorConfig) -> Self
     where
-        P: Processor<PData, NotSendEffectHandler<PData>> + 'static,
+        P: local::Processor<PData> + 'static,
     {
+        let (control_sender, control_receiver) =
+            mpsc::Channel::new(config.control_channel.capacity);
         let (pdata_sender, pdata_receiver) =
             mpsc::Channel::new(config.output_pdata_channel.capacity);
-        ProcessorWrapper::NotSend {
-            effect_handler: NotSendEffectHandler::new(&config.name, pdata_sender),
+
+        ProcessorWrapper::Local {
             processor: Box::new(processor),
-            pdata_receiver: Some(pdata_receiver),
+            effect_handler: local::EffectHandler::new(
+                config.name.clone(),
+                Sender::Local(pdata_sender),
+            ),
+            control_sender: Sender::Local(control_sender),
+            control_receiver: Receiver::Local(control_receiver),
+            pdata_receiver: Some(Receiver::Local(pdata_receiver)),
         }
     }
 
-    /// Creates a new `ProcessorWrapper` with the given processor and `Send` effect handler.
-    pub fn with_send<P>(processor: P, config: &ProcessorConfig) -> Self
+    /// Creates a new shared `ProcessorWrapper` with the given processor and appropriate effect handler.
+    pub fn shared<P>(processor: P, config: &ProcessorConfig) -> Self
     where
-        P: Processor<PData, SendEffectHandler<PData>> + 'static,
+        P: shared::Processor<PData> + 'static,
     {
+        let (control_sender, control_receiver) =
+            tokio::sync::mpsc::channel(config.control_channel.capacity);
         let (pdata_sender, pdata_receiver) =
             tokio::sync::mpsc::channel(config.output_pdata_channel.capacity);
-        ProcessorWrapper::Send {
-            effect_handler: SendEffectHandler::new(&config.name, pdata_sender),
+
+        ProcessorWrapper::Shared {
             processor: Box::new(processor),
+            effect_handler: shared::EffectHandler::new(config.name.clone(), pdata_sender),
+            control_sender,
+            control_receiver,
             pdata_receiver: Some(pdata_receiver),
         }
     }
@@ -261,12 +92,12 @@ impl<PData> ProcessorWrapper<PData> {
     /// Call the processor's `process` method.
     pub async fn process(&mut self, msg: Message<PData>) -> Result<(), Error<PData>> {
         match self {
-            ProcessorWrapper::NotSend {
+            ProcessorWrapper::Local {
                 effect_handler,
                 processor,
                 ..
             } => processor.process(msg, effect_handler).await,
-            ProcessorWrapper::Send {
+            ProcessorWrapper::Shared {
                 effect_handler,
                 processor,
                 ..
@@ -275,13 +106,13 @@ impl<PData> ProcessorWrapper<PData> {
     }
 
     /// Takes the PData receiver from the wrapper and returns it.
-    pub fn take_pdata_receiver(&mut self) -> PDataReceiver<PData> {
+    pub fn take_pdata_receiver(&mut self) -> Receiver<PData> {
         match self {
-            ProcessorWrapper::NotSend { pdata_receiver, .. } => {
-                PDataReceiver::NotSend(pdata_receiver.take().expect("pdata_receiver is None"))
+            ProcessorWrapper::Local { pdata_receiver, .. } => {
+                pdata_receiver.take().expect("pdata_receiver is None")
             }
-            ProcessorWrapper::Send { pdata_receiver, .. } => {
-                PDataReceiver::Send(pdata_receiver.take().expect("pdata_receiver is None"))
+            ProcessorWrapper::Shared { pdata_receiver, .. } => {
+                Receiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
             }
         }
     }
@@ -289,59 +120,39 @@ impl<PData> ProcessorWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
+    use crate::local::processor as local;
     use crate::message::ControlMsg::{Config, Shutdown, TimerTick};
     use crate::message::Message;
-    use crate::processor::{
-        EffectHandlerTrait, Error, NotSendEffectHandler, Processor, ProcessorWrapper,
-        SendEffectHandler,
-    };
+    use crate::processor::{Error, ProcessorWrapper};
+    use crate::shared::processor as shared;
     use crate::testing::processor::TestRuntime;
     use crate::testing::processor::{TestContext, ValidateContext};
-    use crate::testing::{CtrlMsgCounters, TestMsg, exec_in_send_env};
+    use crate::testing::{CtrlMsgCounters, TestMsg};
     use async_trait::async_trait;
     use serde_json::Value;
     use std::pin::Pin;
     use std::time::Duration;
 
-    /// A generic test processor that counts message events
-    /// Works with any effect handler that implements EffectHandlerTrait
-    pub struct GenericTestProcessor<EF> {
+    /// A generic test processor that counts message events.
+    /// Works with any type of processor !Send or Send.
+    pub struct TestProcessor {
         /// Counter for different message types
         ctrl_msg_counters: CtrlMsgCounters,
-        /// Optional callback for testing sendable effect handlers
-        test_send_eh: Option<fn(&EF)>,
     }
 
-    impl<EF> GenericTestProcessor<EF> {
+    impl TestProcessor {
         /// Creates a new test node with the given counter
         pub fn new(ctrl_msg_counters: CtrlMsgCounters) -> Self {
-            GenericTestProcessor {
-                ctrl_msg_counters,
-                test_send_eh: None,
-            }
-        }
-
-        /// Creates a new test node with a callback for PData messages
-        pub fn with_send_effect_handler(
-            ctrl_msg_counters: CtrlMsgCounters,
-            callback: fn(&EF),
-        ) -> Self {
-            GenericTestProcessor {
-                ctrl_msg_counters,
-                test_send_eh: Some(callback),
-            }
+            TestProcessor { ctrl_msg_counters }
         }
     }
 
     #[async_trait(?Send)]
-    impl<EF> Processor<TestMsg, EF> for GenericTestProcessor<EF>
-    where
-        EF: EffectHandlerTrait<TestMsg> + Clone + 'static,
-    {
+    impl local::Processor<TestMsg> for TestProcessor {
         async fn process(
             &mut self,
             msg: Message<TestMsg>,
-            effect_handler: &mut EF,
+            effect_handler: &mut local::EffectHandler<TestMsg>,
         ) -> Result<(), Error<TestMsg>> {
             match msg {
                 Message::Control(control) => match control {
@@ -358,10 +169,6 @@ mod tests {
                 },
                 Message::PData(data) => {
                     self.ctrl_msg_counters.increment_message();
-                    if let Some(test_send_eh) = self.test_send_eh {
-                        // Call the test callback if provided.
-                        test_send_eh(&effect_handler);
-                    }
                     effect_handler
                         .send_message(TestMsg(format!("{} RECEIVED", data.0)))
                         .await?;
@@ -371,11 +178,36 @@ mod tests {
         }
     }
 
-    /// A type alias for a test processor with regular effect handler
-    type ProcessorWithNotSendEffectHandler = GenericTestProcessor<NotSendEffectHandler<TestMsg>>;
-
-    /// A type alias for a test processor with sendable effect handler
-    type ProcessorWithSendEffectHandler = GenericTestProcessor<SendEffectHandler<TestMsg>>;
+    #[async_trait]
+    impl shared::Processor<TestMsg> for TestProcessor {
+        async fn process(
+            &mut self,
+            msg: Message<TestMsg>,
+            effect_handler: &mut shared::EffectHandler<TestMsg>,
+        ) -> Result<(), Error<TestMsg>> {
+            match msg {
+                Message::Control(control) => match control {
+                    TimerTick {} => {
+                        self.ctrl_msg_counters.increment_timer_tick();
+                    }
+                    Config { .. } => {
+                        self.ctrl_msg_counters.increment_config();
+                    }
+                    Shutdown { .. } => {
+                        self.ctrl_msg_counters.increment_shutdown();
+                    }
+                    _ => {}
+                },
+                Message::PData(data) => {
+                    self.ctrl_msg_counters.increment_message();
+                    effect_handler
+                        .send_message(TestMsg(format!("{} RECEIVED", data.0)))
+                        .await?;
+                }
+            }
+            Ok(())
+        }
+    }
 
     /// Test closure that simulates a typical processor scenario.
     fn scenario() -> impl FnOnce(TestContext<TestMsg>) -> Pin<Box<dyn Future<Output = ()>>> {
@@ -428,10 +260,10 @@ mod tests {
     }
 
     #[test]
-    fn test_receiver_with_not_send_effect_handler() {
+    fn test_processor_local() {
         let test_runtime = TestRuntime::new();
-        let processor = ProcessorWrapper::with_not_send(
-            ProcessorWithNotSendEffectHandler::new(test_runtime.counters()),
+        let processor = ProcessorWrapper::local(
+            TestProcessor::new(test_runtime.counters()),
             test_runtime.config(),
         );
 
@@ -442,17 +274,10 @@ mod tests {
     }
 
     #[test]
-    fn test_receiver_with_send_effect_handler() {
+    fn test_processor_shared() {
         let test_runtime = TestRuntime::new();
-        let processor = ProcessorWrapper::with_send(
-            ProcessorWithSendEffectHandler::with_send_effect_handler(
-                test_runtime.counters(),
-                |eh| {
-                    exec_in_send_env(|| {
-                        _ = eh.processor_name();
-                    });
-                },
-            ),
+        let processor = ProcessorWrapper::shared(
+            TestProcessor::new(test_runtime.counters()),
             test_runtime.config(),
         );
 

@@ -11,6 +11,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 mod error;
+pub mod node;
 
 /// Signal types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -34,6 +35,8 @@ pub enum NodeKind {
     Exporter,
     /// A merged chain of consecutive processors
     ProcessorChain,
+    /// A connector between two pipelines
+    Connector,
 }
 
 /// A node in the pipeline
