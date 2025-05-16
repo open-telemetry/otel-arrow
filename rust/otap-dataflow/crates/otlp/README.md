@@ -32,12 +32,17 @@ use std::time::Duration;
 
 // Example instantiation with configuration:
 let config = Config {
-    send_batch_size: 3,
+    send_batch_size: 2,
     send_batch_max_size: 10,
-    timeout: Duration::from_secs(5),  // 5 second timeout
-    metadata_keys: vec!["traceId".to_string()],
-    metadata_cardinality_limit: 1000,
+    timeout: Duration::from_secs(0),  // No timeout
+    metadata_keys: vec!["traceId".to_string(), "spanId".to_string()],
+    metadata_cardinality_limit: 10,
 };
+
+// Common metadata keys for different OTLP data types:
+// - Traces: "traceId", "spanId"
+// - Metrics: "metricName", "label:<label_name>"
+// - Logs: "traceId", "spanId", "severity"
 
 let mut processor = BatchProcessor::<u32>::new(config);
 
