@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 mod error;
-mod node;
+pub mod node;
 
 /// Signal types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

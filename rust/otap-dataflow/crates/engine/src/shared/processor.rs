@@ -113,8 +113,7 @@ impl<PData> EffectHandler<PData> {
         self.msg_sender
             .send(data)
             .await
-            .map_err(|e| Error::ChannelSendError(SendError::Closed(e.0)))?;
-        Ok(())
+            .map_err(|e| Error::ChannelSendError(SendError::Closed(e.0)))
     }
 
     // More methods will be added in the future as needed.

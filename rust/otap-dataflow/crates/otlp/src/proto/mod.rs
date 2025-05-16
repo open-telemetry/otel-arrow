@@ -30,10 +30,6 @@ pub mod opentelemetry {
         }
         #[path = ""]
         pub mod profiles {
-            #[allow(unused_qualifications)]
-            #[allow(unused_results)]
-            #[allow(clippy::enum_variant_names)]
-            #[allow(rustdoc::invalid_html_tags)]
             #[path = "opentelemetry.proto.collector.profiles.v1development.rs"]
             pub mod v1development;
         }
@@ -59,7 +55,6 @@ pub mod opentelemetry {
 
     #[path = ""]
     pub mod profiles {
-        #[allow(rustdoc::invalid_html_tags)]
         #[path = "opentelemetry.proto.profiles.v1development.rs"]
         pub mod v1development;
     }

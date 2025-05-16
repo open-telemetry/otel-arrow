@@ -14,6 +14,7 @@ workspace = true
 
 [dependencies]
 otap-df-channel = { path = "../channel" }
+otap-df-config = { path = "../config" }
 
 thiserror = { workspace = true }
 serde_json = { workspace = true }

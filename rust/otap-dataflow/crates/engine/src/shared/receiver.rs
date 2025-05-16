@@ -46,7 +46,7 @@ use tokio::net::TcpListener;
 /// it into messages that can be processed by the pipeline.
 #[async_trait]
 pub trait Receiver<PData> {
-    /// Similar to [`local::receiver::Receiver::start`], but operates in a Send context.
+    /// Similar to local::receiver::Receiver::start, but operates in a Send context.
     async fn start(
         self: Box<Self>,
         ctrl_chan: ControlChannel,
