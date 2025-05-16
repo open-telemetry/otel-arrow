@@ -151,7 +151,10 @@ impl CtrlMsgCounters {
 
 /// Creates a single-threaded runtime with a local task set for testing components.
 pub fn setup_test_runtime() -> (tokio::runtime::Runtime, LocalSet) {
-    let rt = Builder::new_current_thread().enable_all().build().unwrap();
+    let rt = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create new runtime");
     let local_tasks = LocalSet::new();
     (rt, local_tasks)
 }
