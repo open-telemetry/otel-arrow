@@ -2,7 +2,7 @@ module github.com/open-telemetry/otel-arrow
 
 go 1.23.0
 
-toolchain go1.24.1
+toolchain go1.24.3
 
 require (
 	github.com/HdrHistogram/hdrhistogram-go v1.1.2
@@ -15,14 +15,14 @@ require (
 	github.com/olekukonko/tablewriter v0.0.5
 	github.com/pierrec/lz4 v2.0.5+incompatible
 	github.com/stretchr/testify v1.10.0
-	github.com/zeebo/assert v1.3.0
+	github.com/zeebo/assert v1.3.1
 	go.opentelemetry.io/collector/pdata v1.23.0
 	go.opentelemetry.io/otel v1.34.0
 	go.opentelemetry.io/otel/metric v1.34.0
 	go.uber.org/mock v0.4.0
 	golang.org/x/exp v0.0.0-20240909161429-701f63a606c0
 	google.golang.org/grpc v1.71.0
-	google.golang.org/protobuf v1.36.5
+	google.golang.org/protobuf v1.36.6
 )
 
 require (
