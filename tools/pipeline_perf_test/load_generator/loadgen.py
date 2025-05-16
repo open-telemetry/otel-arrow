@@ -44,8 +44,8 @@ def worker_thread(thread_id, args, end_time):
 
     # Pre-create the batch once and reuse it
     log_batch = [create_log_record(
-        body_size=args.body_size, 
-        num_attributes=args.num_attributes, 
+        body_size=args.body_size,
+        num_attributes=args.num_attributes,
         attribute_value_size=args.attribute_value_size
     ) for _ in range(args.batch_size)]
 
@@ -78,11 +78,11 @@ def main():
     parser.add_argument("--duration", type=int, default=15, help="Duration in seconds (default: 15)")
     parser.add_argument("--batch-size", type=int, default=5000, help="Number of logs per batch (default: 10000)")
     parser.add_argument("--threads", type=int, default=4, help="Number of worker threads (default: 8)")
-    parser.add_argument("--body-size", type=int, default=25, 
+    parser.add_argument("--body-size", type=int, default=25,
                         help="Size of log message body in characters (default: 25)")
-    parser.add_argument("--num-attributes", type=int, default=2, 
+    parser.add_argument("--num-attributes", type=int, default=2,
                         help="Number of attributes per log (default: 2)")
-    parser.add_argument("--attribute-value-size", type=int, default=15, 
+    parser.add_argument("--attribute-value-size", type=int, default=15,
                         help="Size of attribute values in characters (default: 15)")
     args = parser.parse_args()
 
