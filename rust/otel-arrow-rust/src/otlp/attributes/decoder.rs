@@ -206,9 +206,9 @@ where
                 let values_range = value_arr.slice(curr_range_start, range_length);
                 let values_eq_next = create_next_element_equality_array(&values_range)?;
 
-                for range_idx in (curr_range_start + 1)..(idx + 1) {
-                    let delta_or_parent_id = parent_id_arr.value_at_or_default(range_idx);
-                    let prev_value_range_idx = range_idx - 1 - curr_range_start;
+                for batch_idx in (curr_range_start + 1)..(idx + 1) {
+                    let delta_or_parent_id = parent_id_arr.value_at_or_default(batch_idx);
+                    let prev_value_range_idx = batch_idx - 1 - curr_range_start;
 
                     if values_eq_next.value(prev_value_range_idx)
                         && !values_eq_next.is_null(prev_value_range_idx)
@@ -224,9 +224,9 @@ where
             } else {
                 // if we're here, we've determined that the parent ID values are not delta encoded
                 // because the type doesn't support it
-                for range_idx in (curr_range_start + 1)..(idx + 1) {
+                for batch_idx in (curr_range_start + 1)..(idx + 1) {
                     materialized_parent_ids
-                        .append_value(parent_id_arr.value_at_or_default(range_idx));
+                        .append_value(parent_id_arr.value_at_or_default(batch_idx));
                 }
             }
 
