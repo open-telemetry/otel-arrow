@@ -213,7 +213,7 @@ where
                     if values_eq_next.value(prev_value_range_idx)
                         && !values_eq_next.is_null(prev_value_range_idx)
                     {
-                        // value at current index equals previous (or there's a null) so we're delta encoded
+                        // value at current index equals previous so we're delta encoded
                         curr_parent_id += delta_or_parent_id;
                     } else {
                         // value change (or null) breaks the sequence of delta encoding
