@@ -57,13 +57,6 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
         let listener = effect_handler.tcp_listener(self.listening_addr)?;
         let mut listener_stream = TcpListenerStream::new(listener);
 
-        // get the tonic equivelent compression enum
-        let encoding = if let Some(compression) = self.compression_method {
-            Some(compression.map_to_compression_encoding())
-        } else {
-            None
-        };
-
         //start event loop
         loop {
             //create services for the grpc server and clone the effect handler to pass message
@@ -78,7 +71,9 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
             let mut profiles_service_server = ProfilesServiceServer::new(profiles_service);
 
             // apply the tonic compression if it is set
-            if let Some(encoding) = encoding {
+            if let Some(ref compression) = self.compression_method {
+                let encoding = compression.map_to_compression_encoding();
+
                 logs_service_server = logs_service_server
                     .send_compressed(encoding)
                     .accept_compressed(encoding);
