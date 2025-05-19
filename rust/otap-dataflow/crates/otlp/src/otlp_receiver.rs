@@ -23,7 +23,6 @@ use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
 use otap_df_engine::shared::receiver as shared;
 use std::net::SocketAddr;
-use tokio::time::{Duration, sleep};
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 

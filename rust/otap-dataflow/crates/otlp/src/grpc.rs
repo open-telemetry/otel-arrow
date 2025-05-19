@@ -10,12 +10,11 @@
 
 use crate::proto::opentelemetry::collector::{
     logs::v1::{
-        ExportLogsServiceRequest, ExportLogsServiceResponse,
-        logs_service_server::{LogsService, LogsServiceServer},
+        ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
     },
     metrics::v1::{
         ExportMetricsServiceRequest, ExportMetricsServiceResponse,
-        metrics_service_server::{MetricsService, MetricsServiceServer},
+        metrics_service_server::MetricsService,
     },
     profiles::v1development::{
         ExportProfilesServiceRequest, ExportProfilesServiceResponse,
