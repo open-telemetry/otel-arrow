@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "benchmarks",
     "crates/*",
     "xtask"
 ]
@@ -16,10 +17,11 @@ rust-version = "1.86.0"
 
 [workspace.dependencies]
 thiserror = "2.0.12"
-serde = { version = "1.0.217", features = ["derive"] }
-serde_json = "1.0.139"
-tokio = { version = "1.43.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread"] }
-async-trait = "0.1.86"
+serde = { version = "1.0.219", features = ["derive", "rc"] }
+serde_json = "1.0.140"
+tokio = { version = "1.45.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread"] }
+async-trait = "0.1.88"
+criterion = "0.5.1"
 
 [workspace.lints.rust]
 # General compatibility lints

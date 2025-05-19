@@ -7,4 +7,4 @@ license = "Apache-2.0"
 [lib]
 
 [dependencies]
-tonic-build = "0.12"
+tonic-build = "0.13"

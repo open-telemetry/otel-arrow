@@ -9,6 +9,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+- Remove `concurrentbatch` and `obfuscation` processors. [#409](https://github.com/open-telemetry/otel-arrow/pull/409)
+
 ## [0.35.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.35.0) - 2025-04-07
 
 - Upgrade to v0.123.x of collector dependencies.
@@ -304,8 +306,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.3.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.3.0) - 2023-08-31
 
-- This release includes a BREAKING CHANGE 🛑 🛑 🛑 🛑 🛑, see #27.  Also
-  includes #24, #29, #30, #36.
+- This release includes a BREAKING CHANGE :stop_sign: :stop_sign: :stop_sign:
+  :stop_sign: :stop_sign:, see #27.  Also includes #24, #29, #30, #36.
 
 ## [0.2.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.2.0) - 2023-08-25
 

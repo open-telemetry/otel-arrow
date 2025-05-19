@@ -1,168 +1,174 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Set of traits and structures used to implement processors.
+//! Processor wrapper used to provide a unified interface to the pipeline engine that abstracts over
+//! the fact that processor implementations may be `!Send` or `Send`.
 //!
-//! A processor is a node in the pipeline that transforms, filters, or otherwise processes messages
-//! as they flow through the pipeline. Processors can perform operations such as:
-//!
-//! 1. Filtering messages based on certain criteria
-//! 2. Transforming message content or format
-//! 3. Aggregating multiple messages into a single message
-//! 4. Splitting a single message into multiple messages
-//! 5. Adding or removing attributes from messages
-//!
-//! # Lifecycle
-//!
-//! 1. The processor is instantiated and configured
-//! 2. The processor receives and processes both data messages and control messages
-//! 3. For each message, the processor can transform it, filter it, or split it into multiple messages
-//! 4. The processor can maintain state between processing calls if needed
-//! 5. The processor responds to control messages such as Config, TimerTick, or Shutdown
-//! 6. The processor shuts down when it receives a `Shutdown` control message or encounters a fatal error
-//!
-//! # Thread Safety
-//!
-//! Note that this trait uses `#[async_trait(?Send)]`, meaning implementations
-//! are not required to be thread-safe. To ensure scalability, the pipeline engine will start
-//! multiple instances of the same pipeline in parallel, each with its own processor instance.
+//! For more details on the `!Send` implementation of a processor, see [`local::Processor`].
+//! See [`shared::Processor`] for the Send implementation.
 
-use crate::NodeName;
+use crate::config::ProcessorConfig;
 use crate::error::Error;
-use crate::message::Message;
-use async_trait::async_trait;
+use crate::local::processor as local;
+use crate::message::{ControlMsg, Message, Receiver, Sender};
+use crate::shared::processor as shared;
 use otap_df_channel::mpsc;
-use std::rc::Rc;
 
-/// A trait for processors in the pipeline.
-#[async_trait(?Send)]
-pub trait Processor {
-    /// The type of messages handled by the processor.
-    type PData;
-
-    /// Processes a message and optionally produces new messages.
-    ///
-    /// This method is called by the pipeline engine for each message that arrives at the processor.
-    /// Unlike receivers, processors have known inputs (messages from previous stages), so the pipeline
-    /// engine can control when to call this method and when the processor executes.
-    ///
-    /// This approach allows for greater flexibility and optimization, giving the pipeline engine
-    /// the ability to decide whether to spawn one task per processor or one task for a group of processors.
-    /// The method signature uses `&mut self` rather than `Box<Self>` because the engine only wants to
-    /// temporarily allow mutation of the processor instance, not transfer ownership.
-    ///
-    /// The processor can:
-    /// - Transform the message and return a new message
-    /// - Filter the message by returning None
-    /// - Split the message into multiple messages by returning a vector
-    /// - Handle control messages (e.g., Config, TimerTick, Shutdown)
-    ///
-    /// # Parameters
-    ///
-    /// - `msg`: The message to process, which can be either a data message or a control message
-    /// - `effect_handler`: A handler to perform side effects such as sending messages to the next node
-    ///
-    /// # Returns
-    ///
-    /// - `Ok(())`: The processor successfully processed the message
-    /// - `Err(Error)`: The processor encountered an error and could not process the message
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Error`] if the processor encounters an unrecoverable error.
-    async fn process(
-        &mut self,
-        msg: Message<Self::PData>,
-        effect_handler: &mut EffectHandler<Self::PData>,
-    ) -> Result<(), Error<Self::PData>>;
-}
-
-/// Handles side effects such as sending messages to the next node.
+/// A wrapper for the processor that allows for both `Send` and `!Send` effect handlers.
 ///
-/// The `Msg` type parameter represents the type of message the processor
-/// will eventually produce.
-///
-/// Note for implementers: The `EffectHandler` is designed to be cloned and shared across tasks
-/// so the cost of cloning should be minimal.
-pub struct EffectHandler<Msg> {
-    /// The name of the processor.
-    processor_name: NodeName,
-    /// A sender used to forward messages from the processor.
-    msg_sender: mpsc::Sender<Msg>,
+/// Note: This is useful for creating a single interface for the processor regardless of the effect
+/// handler type. This is the only type that the pipeline engine will use in order to be agnostic to
+/// the effect handler type.
+pub enum ProcessorWrapper<PData> {
+    /// A processor with a `!Send` implementation.
+    Local {
+        /// The processor instance.
+        processor: Box<dyn local::Processor<PData>>,
+        /// The effect handler for the processor.
+        effect_handler: local::EffectHandler<PData>,
+        /// A sender for control messages.
+        control_sender: Sender<ControlMsg>,
+        /// A receiver for control messages.
+        control_receiver: Receiver<ControlMsg>,
+        /// A receiver for pdata messages.
+        pdata_receiver: Option<Receiver<PData>>,
+    },
+    /// A processor with a `Send` implementation.
+    Shared {
+        /// The processor instance.
+        processor: Box<dyn shared::Processor<PData>>,
+        /// The effect handler for the processor.
+        effect_handler: shared::EffectHandler<PData>,
+        /// A sender for control messages.
+        control_sender: tokio::sync::mpsc::Sender<ControlMsg>,
+        /// A receiver for control messages.
+        control_receiver: tokio::sync::mpsc::Receiver<ControlMsg>,
+        /// A receiver for pdata messages.
+        pdata_receiver: Option<tokio::sync::mpsc::Receiver<PData>>,
+    },
 }
 
-impl<Msg> Clone for EffectHandler<Msg> {
-    fn clone(&self) -> Self {
-        EffectHandler {
-            processor_name: self.processor_name.clone(),
-            msg_sender: self.msg_sender.clone(),
-        }
-    }
-}
+impl<PData> ProcessorWrapper<PData> {
+    /// Creates a new local `ProcessorWrapper` with the given processor and appropriate effect handler.
+    pub fn local<P>(processor: P, config: &ProcessorConfig) -> Self
+    where
+        P: local::Processor<PData> + 'static,
+    {
+        let (control_sender, control_receiver) =
+            mpsc::Channel::new(config.control_channel.capacity);
+        let (pdata_sender, pdata_receiver) =
+            mpsc::Channel::new(config.output_pdata_channel.capacity);
 
-impl<Msg> EffectHandler<Msg> {
-    /// Creates a new `EffectHandler` with the given processor name and message sender.
-    pub fn new<S: AsRef<str>>(processor_name: S, msg_sender: mpsc::Sender<Msg>) -> Self {
-        EffectHandler {
-            processor_name: Rc::from(processor_name.as_ref()),
-            msg_sender,
+        ProcessorWrapper::Local {
+            processor: Box::new(processor),
+            effect_handler: local::EffectHandler::new(
+                config.name.clone(),
+                Sender::Local(pdata_sender),
+            ),
+            control_sender: Sender::Local(control_sender),
+            control_receiver: Receiver::Local(control_receiver),
+            pdata_receiver: Some(Receiver::Local(pdata_receiver)),
         }
     }
 
-    /// Returns the name of the processor associated with this handler.
-    #[must_use]
-    pub fn processor_name(&self) -> NodeName {
-        self.processor_name.clone()
+    /// Creates a new shared `ProcessorWrapper` with the given processor and appropriate effect handler.
+    pub fn shared<P>(processor: P, config: &ProcessorConfig) -> Self
+    where
+        P: shared::Processor<PData> + 'static,
+    {
+        let (control_sender, control_receiver) =
+            tokio::sync::mpsc::channel(config.control_channel.capacity);
+        let (pdata_sender, pdata_receiver) =
+            tokio::sync::mpsc::channel(config.output_pdata_channel.capacity);
+
+        ProcessorWrapper::Shared {
+            processor: Box::new(processor),
+            effect_handler: shared::EffectHandler::new(config.name.clone(), pdata_sender),
+            control_sender,
+            control_receiver,
+            pdata_receiver: Some(pdata_receiver),
+        }
     }
 
-    /// Sends a message to the next node(s) in the pipeline.
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Error::ChannelSendError`] if the message could not be sent.
-    pub async fn send_message(&self, data: Msg) -> Result<(), Error<Msg>> {
-        self.msg_sender.send_async(data).await?;
-        Ok(())
+    /// Call the processor's `process` method.
+    pub async fn process(&mut self, msg: Message<PData>) -> Result<(), Error<PData>> {
+        match self {
+            ProcessorWrapper::Local {
+                effect_handler,
+                processor,
+                ..
+            } => processor.process(msg, effect_handler).await,
+            ProcessorWrapper::Shared {
+                effect_handler,
+                processor,
+                ..
+            } => processor.process(msg, effect_handler).await,
+        }
+    }
+
+    /// Takes the PData receiver from the wrapper and returns it.
+    pub fn take_pdata_receiver(&mut self) -> Receiver<PData> {
+        match self {
+            ProcessorWrapper::Local { pdata_receiver, .. } => {
+                pdata_receiver.take().expect("pdata_receiver is None")
+            }
+            ProcessorWrapper::Shared { pdata_receiver, .. } => {
+                Receiver::Shared(pdata_receiver.take().expect("pdata_receiver is None"))
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::local::processor as local;
     use crate::message::ControlMsg::{Config, Shutdown, TimerTick};
     use crate::message::Message;
-    use crate::processor::{EffectHandler, Error, Processor};
-    use crate::testing::processor::ProcessorTestRuntime;
-    use crate::testing::{CtrMsgCounters, TestMsg};
+    use crate::processor::{Error, ProcessorWrapper};
+    use crate::shared::processor as shared;
+    use crate::testing::processor::TestRuntime;
+    use crate::testing::processor::{TestContext, ValidateContext};
+    use crate::testing::{CtrlMsgCounters, TestMsg};
     use async_trait::async_trait;
     use serde_json::Value;
+    use std::pin::Pin;
+    use std::time::Duration;
 
-    struct TestProcessor {
-        counters: CtrMsgCounters,
+    /// A generic test processor that counts message events.
+    /// Works with any type of processor !Send or Send.
+    pub struct TestProcessor {
+        /// Counter for different message types
+        ctrl_msg_counters: CtrlMsgCounters,
+    }
+
+    impl TestProcessor {
+        /// Creates a new test node with the given counter
+        pub fn new(ctrl_msg_counters: CtrlMsgCounters) -> Self {
+            TestProcessor { ctrl_msg_counters }
+        }
     }
 
     #[async_trait(?Send)]
-    impl Processor for TestProcessor {
-        type PData = TestMsg;
-
+    impl local::Processor<TestMsg> for TestProcessor {
         async fn process(
             &mut self,
-            msg: Message<Self::PData>,
-            effect_handler: &mut EffectHandler<Self::PData>,
-        ) -> Result<(), Error<Self::PData>> {
+            msg: Message<TestMsg>,
+            effect_handler: &mut local::EffectHandler<TestMsg>,
+        ) -> Result<(), Error<TestMsg>> {
             match msg {
                 Message::Control(control) => match control {
                     TimerTick {} => {
-                        self.counters.increment_timer_tick();
+                        self.ctrl_msg_counters.increment_timer_tick();
                     }
                     Config { .. } => {
-                        self.counters.increment_config();
+                        self.ctrl_msg_counters.increment_config();
                     }
                     Shutdown { .. } => {
-                        self.counters.increment_shutdown();
+                        self.ctrl_msg_counters.increment_shutdown();
                     }
                     _ => {}
                 },
                 Message::PData(data) => {
-                    self.counters.increment_message();
+                    self.ctrl_msg_counters.increment_message();
                     effect_handler
                         .send_message(TestMsg(format!("{} RECEIVED", data.0)))
                         .await?;
@@ -172,54 +178,112 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_processor() {
-        let counters = CtrMsgCounters::new();
-        let mut test_runtime = ProcessorTestRuntime::new(
-            TestProcessor {
-                counters: counters.clone(),
-            },
-            10,
-        );
+    #[async_trait]
+    impl shared::Processor<TestMsg> for TestProcessor {
+        async fn process(
+            &mut self,
+            msg: Message<TestMsg>,
+            effect_handler: &mut shared::EffectHandler<TestMsg>,
+        ) -> Result<(), Error<TestMsg>> {
+            match msg {
+                Message::Control(control) => match control {
+                    TimerTick {} => {
+                        self.ctrl_msg_counters.increment_timer_tick();
+                    }
+                    Config { .. } => {
+                        self.ctrl_msg_counters.increment_config();
+                    }
+                    Shutdown { .. } => {
+                        self.ctrl_msg_counters.increment_shutdown();
+                    }
+                    _ => {}
+                },
+                Message::PData(data) => {
+                    self.ctrl_msg_counters.increment_message();
+                    effect_handler
+                        .send_message(TestMsg(format!("{} RECEIVED", data.0)))
+                        .await?;
+                }
+            }
+            Ok(())
+        }
+    }
 
-        test_runtime.start_test(|mut context| async move {
-            // Process a TimerTick event.
-            context
-                .process(Message::timer_tick_ctrl_msg())
-                .await
-                .expect("Processor failed on TimerTick");
-            assert!(context.drain_pdata().await.is_empty());
+    /// Test closure that simulates a typical processor scenario.
+    fn scenario() -> impl FnOnce(TestContext<TestMsg>) -> Pin<Box<dyn Future<Output = ()>>> {
+        move |mut ctx| {
+            Box::pin(async move {
+                // Process a TimerTick event.
+                ctx.process(Message::timer_tick_ctrl_msg())
+                    .await
+                    .expect("Processor failed on TimerTick");
+                assert!(ctx.drain_pdata().await.is_empty());
 
-            // Process a Message event.
-            context
-                .process(Message::data_msg(TestMsg("Hello".to_owned())))
-                .await
-                .expect("Processor failed on Message");
-            let msgs = context.drain_pdata().await;
-            assert_eq!(msgs.len(), 1);
-            assert_eq!(msgs[0], TestMsg("Hello RECEIVED".to_string()));
+                // Process a Message event.
+                ctx.process(Message::data_msg(TestMsg("Hello".to_owned())))
+                    .await
+                    .expect("Processor failed on Message");
+                let msgs = ctx.drain_pdata().await;
+                assert_eq!(msgs.len(), 1);
+                assert_eq!(msgs[0], TestMsg("Hello RECEIVED".to_string()));
 
-            // Process a Config event.
-            context
-                .process(Message::config_ctrl_msg(Value::Null))
-                .await
-                .expect("Processor failed on Config");
-            assert!(context.drain_pdata().await.is_empty());
+                // Process a Config event.
+                ctx.process(Message::config_ctrl_msg(Value::Null))
+                    .await
+                    .expect("Processor failed on Config");
+                assert!(ctx.drain_pdata().await.is_empty());
 
-            // Process a Shutdown event.
-            context
-                .process(Message::shutdown_ctrl_msg("no reason"))
+                // Process a Shutdown event.
+                ctx.process(Message::shutdown_ctrl_msg(
+                    Duration::from_millis(200),
+                    "no reason",
+                ))
                 .await
                 .expect("Processor failed on Shutdown");
-            assert!(context.drain_pdata().await.is_empty());
-        });
-        test_runtime.validate(|| async move {
-            counters.assert(
-                1, // timer tick
-                1, // message
-                1, // config
-                1, // shutdown
-            );
-        });
+                assert!(ctx.drain_pdata().await.is_empty());
+            })
+        }
+    }
+
+    /// Validation closure that checks the received message and counters (!Send context).
+    fn validation_procedure() -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
+        |ctx| {
+            Box::pin(async move {
+                ctx.counters().assert(
+                    1, // timer tick
+                    1, // message
+                    1, // config
+                    1, // shutdown
+                );
+            })
+        }
+    }
+
+    #[test]
+    fn test_processor_local() {
+        let test_runtime = TestRuntime::new();
+        let processor = ProcessorWrapper::local(
+            TestProcessor::new(test_runtime.counters()),
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario())
+            .validate(validation_procedure());
+    }
+
+    #[test]
+    fn test_processor_shared() {
+        let test_runtime = TestRuntime::new();
+        let processor = ProcessorWrapper::shared(
+            TestProcessor::new(test_runtime.counters()),
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario())
+            .validate(validation_procedure());
     }
 }

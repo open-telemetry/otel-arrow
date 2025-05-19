@@ -9,8 +9,9 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-anyhow = "1.0.97"
-toml = "0.8.20"
+anyhow = "1.0.98"
+toml = "0.8.22"
+tonic-build = { version = "0.13.1", features = ["cleanup-markdown"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }

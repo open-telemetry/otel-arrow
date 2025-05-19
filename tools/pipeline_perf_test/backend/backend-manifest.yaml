@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  labels:
+    app: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+      - name: backend
+        image: backend-service:latest
+        imagePullPolicy: IfNotPresent # Use the local image
+        env:
+        - name: LISTEN_PORT
+          value: "5317"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 200Mi
+          limits:
+            cpu: 1
+            memory: 1Gi
+        ports:
+        - containerPort: 5317
+          name: otlp
+        - containerPort: 5000
+          name: metrics
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+spec:
+  selector:
+    app: backend
+  ports:
+  - name: otlp
+    port: 5317
+    targetPort: 5317
+  - name: metrics
+    port: 5000
+    targetPort: 5000

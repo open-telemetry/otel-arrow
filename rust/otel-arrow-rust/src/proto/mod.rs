@@ -10,6 +10,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// disable some of the rust/clippy lints that we are not able to control via prost codegen
+#![allow(
+    clippy::must_use_candidate,
+    unused_qualifications,
+    missing_docs,
+    unused_results
+)]
+
 #[path = "."]
 pub mod opentelemetry {
     #[path = "."]
@@ -57,11 +65,8 @@ pub mod opentelemetry {
     }
 
     #[path = "."]
-    pub mod experimental {
-        #[path = "."]
-        pub mod arrow {
-            #[path = "opentelemetry.proto.experimental.arrow.v1.rs"]
-            pub mod v1;
-        }
+    pub mod arrow {
+        #[path = "opentelemetry.proto.experimental.arrow.v1.rs"]
+        pub mod v1;
     }
 }
