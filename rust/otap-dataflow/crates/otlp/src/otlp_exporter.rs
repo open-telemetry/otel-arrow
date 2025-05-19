@@ -4,6 +4,7 @@
 //!
 //! ToDo: Handle Ack and Nack messages in the pipeline
 //! ToDo: Handle configuratin changes
+//! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
 use crate::grpc::{CompressionMethod, OTLPData};
 use crate::proto::opentelemetry::collector::{
@@ -16,8 +17,6 @@ use async_trait::async_trait;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
-use tokio::time::sleep;
-use tonic::codec::CompressionEncoding;
 
 /// Exporter that sends OTLP data via gRPC
 struct OTLPExporter {
@@ -44,71 +43,40 @@ impl local::Exporter<OTLPData> for OTLPExporter {
         effect_handler: local::EffectHandler<OTLPData>,
     ) -> Result<(), Error<OTLPData>> {
         // start a grpc client and connect to the server
-        let mut metrics_client;
-        let mut logs_client;
-        let mut trace_client;
-        let mut profiles_client;
-        match MetricsServiceClient::connect(self.grpc_endpoint.clone()).await {
-            Err(error) => {
-                return Err(Error::ExporterError {
-                    exporter: effect_handler.exporter_name(),
-                    error: error.to_string(),
-                });
-            }
-            Ok(client) => {
-                metrics_client = client;
-            }
-        }
+        let mut metrics_client = MetricsServiceClient::connect(self.grpc_endpoint.clone())
+            .await
+            .map_err(|error| Error::ExporterError {
+                exporter: effect_handler.exporter_name(),
+                error: error.to_string(),
+            })?;
 
-        match LogsServiceClient::connect(self.grpc_endpoint.clone()).await {
-            Err(error) => {
-                return Err(Error::ExporterError {
-                    exporter: effect_handler.exporter_name(),
-                    error: error.to_string(),
-                });
-            }
-            Ok(client) => {
-                logs_client = client;
-            }
-        }
+        let mut logs_client = LogsServiceClient::connect(self.grpc_endpoint.clone())
+            .await
+            .map_err(|error| Error::ExporterError {
+                exporter: effect_handler.exporter_name(),
+                error: error.to_string(),
+            })?;
 
-        match TraceServiceClient::connect(self.grpc_endpoint.clone()).await {
-            Err(error) => {
-                return Err(Error::ExporterError {
-                    exporter: effect_handler.exporter_name(),
-                    error: error.to_string(),
-                });
-            }
-            Ok(client) => {
-                trace_client = client;
-            }
-        }
+        let mut trace_client = TraceServiceClient::connect(self.grpc_endpoint.clone())
+            .await
+            .map_err(|error| Error::ExporterError {
+                exporter: effect_handler.exporter_name(),
+                error: error.to_string(),
+            })?;
+        let mut profiles_client = ProfilesServiceClient::connect(self.grpc_endpoint.clone())
+            .await
+            .map_err(|error| Error::ExporterError {
+                exporter: effect_handler.exporter_name(),
+                error: error.to_string(),
+            })?;
 
-        match ProfilesServiceClient::connect(self.grpc_endpoint.clone()).await {
-            Err(error) => {
-                return Err(Error::ExporterError {
-                    exporter: effect_handler.exporter_name(),
-                    error: error.to_string(),
-                });
-            }
-            Ok(client) => {
-                profiles_client = client;
-            }
-        }
+        if let Some(compression) = self.compression_method {
+            let encoding = compression.map_to_compression_encoding();
 
-        // check if compression is set
-        let compression_encoding = match self.compression_method {
-            Some(CompressionMethod::Gzip) => Some(CompressionEncoding::Gzip),
-            Some(CompressionMethod::Zstd) => Some(CompressionEncoding::Zstd),
-            Some(CompressionMethod::Deflate) => Some(CompressionEncoding::Deflate),
-            _ => None,
-        };
-        // if compression is set then apply the encoding method
-        if let Some(encoding) = compression_encoding {
-            metrics_client = metrics_client
+            logs_client = logs_client
                 .send_compressed(encoding)
                 .accept_compressed(encoding);
-            logs_client = logs_client
+            metrics_client = metrics_client
                 .send_compressed(encoding)
                 .accept_compressed(encoding);
             trace_client = trace_client
@@ -118,7 +86,6 @@ impl local::Exporter<OTLPData> for OTLPExporter {
                 .send_compressed(encoding)
                 .accept_compressed(encoding);
         }
-
         // Loop until a Shutdown event is received.
         loop {
             match msg_chan.recv().await? {
@@ -127,24 +94,45 @@ impl local::Exporter<OTLPData> for OTLPExporter {
                 | Message::Control(ControlMsg::Config { .. }) => {}
                 // shutdown the exporter
                 Message::Control(ControlMsg::Shutdown { deadline, reason }) => {
-                    _ = sleep(deadline);
+                    // ToDo: add proper deadline function
                     break;
                 }
                 //send data
                 Message::PData(message) => {
                     match message {
                         // match on OTLPData type and use the respective client to send message
+                        // ToDo: Add Ack/Nack handling, send a signal that data has been exported
                         OTLPData::Metrics(req) => {
-                            _ = metrics_client.export(req).await;
+                            _ = metrics_client.export(req).await.map_err(|error| {
+                                Error::ExporterError {
+                                    exporter: effect_handler.exporter_name(),
+                                    error: error.to_string(),
+                                }
+                            })?;
                         }
                         OTLPData::Logs(req) => {
-                            _ = logs_client.export(req).await;
+                            _ = logs_client.export(req).await.map_err(|error| {
+                                Error::ExporterError {
+                                    exporter: effect_handler.exporter_name(),
+                                    error: error.to_string(),
+                                }
+                            })?;
                         }
                         OTLPData::Traces(req) => {
-                            _ = trace_client.export(req).await;
+                            _ = trace_client.export(req).await.map_err(|error| {
+                                Error::ExporterError {
+                                    exporter: effect_handler.exporter_name(),
+                                    error: error.to_string(),
+                                }
+                            })?;
                         }
                         OTLPData::Profiles(req) => {
-                            _ = profiles_client.export(req).await;
+                            _ = profiles_client.export(req).await.map_err(|error| {
+                                Error::ExporterError {
+                                    exporter: effect_handler.exporter_name(),
+                                    error: error.to_string(),
+                                }
+                            })?;
                         }
                     }
                 }
@@ -177,10 +165,8 @@ mod tests {
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
-    use serde_json::Value;
     use std::net::SocketAddr;
     use tokio::runtime::Runtime;
-    use tokio::time::sleep;
     use tokio::time::{Duration, timeout};
     use tonic::transport::Server;
 
@@ -190,19 +176,6 @@ mod tests {
     -> impl FnOnce(TestContext<OTLPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |ctx| {
             Box::pin(async move {
-                // Send 3 TimerTick events.
-                for _ in 0..3 {
-                    ctx.send_timer_tick()
-                        .await
-                        .expect("Failed to send TimerTick");
-                    ctx.sleep(Duration::from_millis(50)).await;
-                }
-
-                // Send a Config event.
-                ctx.send_config(Value::Null)
-                    .await
-                    .expect("Failed to send Config");
-
                 // Send a data message
                 let metric_message = OTLPData::Metrics(ExportMetricsServiceRequest::default());
                 ctx.send_pdata(metric_message)
@@ -236,7 +209,7 @@ mod tests {
     fn validation_procedure(
         mut receiver: tokio::sync::mpsc::Receiver<OTLPData>,
     ) -> impl FnOnce(TestContext<OTLPData>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
-        |ctx| {
+        |_| {
             Box::pin(async move {
                 // check that the message was properly sent from the exporter
                 let metrics_received = timeout(Duration::from_secs(3), receiver.recv())
@@ -280,7 +253,7 @@ mod tests {
         let (sender, receiver) = tokio::sync::mpsc::channel(32);
         let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
         let grpc_addr = "127.0.0.1";
-        let grpc_port = "4318";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         let exporter = ExporterWrapper::local(

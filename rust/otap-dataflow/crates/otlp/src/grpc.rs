@@ -5,14 +5,17 @@
 //!
 //! Implements the necessary service traits for OTLP data
 //!
+//! ToDo Modify OTLPData -> Optimize message transport
+//!
 
 use crate::proto::opentelemetry::collector::{
     logs::v1::{
-        ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
+        ExportLogsServiceRequest, ExportLogsServiceResponse,
+        logs_service_server::{LogsService, LogsServiceServer},
     },
     metrics::v1::{
         ExportMetricsServiceRequest, ExportMetricsServiceResponse,
-        metrics_service_server::MetricsService,
+        metrics_service_server::{MetricsService, MetricsServiceServer},
     },
     profiles::v1development::{
         ExportProfilesServiceRequest, ExportProfilesServiceResponse,
@@ -24,6 +27,7 @@ use crate::proto::opentelemetry::collector::{
 };
 
 use otap_df_engine::shared::receiver as shared;
+use tonic::codec::CompressionEncoding;
 use tonic::{Request, Response, Status};
 
 /// struct that implements the Log Service trait
@@ -151,7 +155,7 @@ pub enum OTLPData {
     Profiles(ExportProfilesServiceRequest),
 }
 
-/// Enum to represent varioous compression methods
+/// Enum to represent various compression methods
 #[derive(Debug)]
 pub enum CompressionMethod {
     /// Fastest compression
@@ -160,4 +164,16 @@ pub enum CompressionMethod {
     Gzip,
     /// Used for legacy systems
     Deflate,
+}
+
+impl CompressionMethod {
+    /// map the compression method to the proper tonic compression encoding equivalent
+    /// use the CompressionMethod enum to abstract from tonic
+    pub fn map_to_compression_encoding(&self) -> CompressionEncoding {
+        match *self {
+            CompressionMethod::Gzip => CompressionEncoding::Gzip,
+            CompressionMethod::Zstd => CompressionEncoding::Zstd,
+            CompressionMethod::Deflate => CompressionEncoding::Deflate,
+        }
+    }
 }

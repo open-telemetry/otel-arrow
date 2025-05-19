@@ -15,7 +15,7 @@ workspace = true
 [dependencies]
 otap-df-engine = { path = "../engine" }
 otap-df-channel = { path = "../channel" }
-tonic = { version = "0.13.0", default-features = false, features = [
+tonic = { version = "0.13.1", default-features = false, features = [
     "server",
     "channel",
     "router",
@@ -33,3 +33,5 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 
 
+[dev-dependencies]
+portpicker = "0.1.1"

@@ -2,9 +2,11 @@
 
 //! Implementation of the OTLP receiver node
 //!
-//! ToDo implement Ack and Nack control message, wait for receiver node to receive a Ack control message then the service can send a response back
-//! ToDo implement config control message to handle live changing configuration
-//! ToDo Add HTTP support
+//! ToDo: implement Ack and Nack control message, wait for receiver node to receive a Ack control message then the service can send a response back
+//! ToDo: implement config control message to handle live changing configuration
+//! ToDo: Add HTTP support
+//! ToDo: Implement proper deadline function for Shutdown ctrl msg
+//!
 
 use crate::grpc::{
     CompressionMethod, LogsServiceImpl, MetricsServiceImpl, OTLPData, ProfilesServiceImpl,
@@ -22,7 +24,6 @@ use otap_df_engine::message::ControlMsg;
 use otap_df_engine::shared::receiver as shared;
 use std::net::SocketAddr;
 use tokio::time::{Duration, sleep};
-use tonic::codec::CompressionEncoding;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
@@ -42,6 +43,9 @@ impl OTLPReceiver {
     }
 }
 
+// Use the async_trait due to the need for thread safety because of tonic requiring Send and Sync traits
+// The Shared version of the receiver allows us to implement a Receiver that requires the effect handler to be Send and Sync
+//
 #[async_trait]
 impl shared::Receiver<OTLPData> for OTLPReceiver {
     async fn start(
@@ -53,12 +57,11 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
         let listener = effect_handler.tcp_listener(self.listening_addr)?;
         let mut listener_stream = TcpListenerStream::new(listener);
 
-        // check for compression method
-        let compression_encoding = match self.compression_method {
-            Some(CompressionMethod::Gzip) => Some(CompressionEncoding::Gzip),
-            Some(CompressionMethod::Zstd) => Some(CompressionEncoding::Zstd),
-            Some(CompressionMethod::Deflate) => Some(CompressionEncoding::Deflate),
-            _ => None,
+        // get the tonic equivelent compression enum
+        let encoding = if let Some(compression) = self.compression_method {
+            Some(compression.map_to_compression_encoding())
+        } else {
+            None
         };
 
         //start event loop
@@ -69,32 +72,25 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
             let trace_service = TraceServiceImpl::new(effect_handler.clone());
             let profiles_service = ProfilesServiceImpl::new(effect_handler.clone());
 
-            let logs_service_server;
-            let metrics_service_server;
-            let trace_service_server;
-            let profiles_service_server;
+            let mut logs_service_server = LogsServiceServer::new(logs_service);
+            let mut metrics_service_server = MetricsServiceServer::new(metrics_service);
+            let mut trace_service_server = TraceServiceServer::new(trace_service);
+            let mut profiles_service_server = ProfilesServiceServer::new(profiles_service);
 
-            // check if a compression method was set
-            if let Some(encoding) = compression_encoding {
-                // define servicees with compression
-                logs_service_server = LogsServiceServer::new(logs_service)
+            // apply the tonic compression if it is set
+            if let Some(encoding) = encoding {
+                logs_service_server = logs_service_server
                     .send_compressed(encoding)
                     .accept_compressed(encoding);
-                metrics_service_server = MetricsServiceServer::new(metrics_service)
+                metrics_service_server = metrics_service_server
                     .send_compressed(encoding)
                     .accept_compressed(encoding);
-                trace_service_server = TraceServiceServer::new(trace_service)
+                trace_service_server = trace_service_server
                     .send_compressed(encoding)
                     .accept_compressed(encoding);
-                profiles_service_server = ProfilesServiceServer::new(profiles_service)
+                profiles_service_server = profiles_service_server
                     .send_compressed(encoding)
                     .accept_compressed(encoding);
-            } else {
-                // define servicees without compression
-                logs_service_server = LogsServiceServer::new(logs_service);
-                metrics_service_server = MetricsServiceServer::new(metrics_service);
-                trace_service_server = TraceServiceServer::new(trace_service);
-                profiles_service_server = ProfilesServiceServer::new(profiles_service);
             }
 
             tokio::select! {
@@ -103,8 +99,7 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
                         Ok(ControlMsg::Shutdown {deadline, reason}) => {
-                            // wait for deadline then shutdown
-                            _ = sleep(deadline);
+                            // ToDo: add proper deadline function
                             break;
                         },
                         Err(e) => {
@@ -126,10 +121,6 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
                         // Report receiver error
                         return Err(Error::ReceiverError{receiver: effect_handler.receiver_name(), error: error.to_string()});
                     }
-                }
-                // A timeout branch in case no events occur.
-                _ = sleep(Duration::from_secs(1)) => {
-                    // wait for next event
                 }
             }
         }
@@ -260,7 +251,7 @@ mod tests {
 
         // addr and port for the server to run at
         let grpc_addr = "127.0.0.1";
-        let grpc_port = "4317";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 

@@ -133,7 +133,7 @@ pub struct TestRuntime<PData> {
 }
 
 /// Data and operations for the test phase of a receiver.
-pub struct TestPhase<PData: Send> {
+pub struct TestPhase<PData> {
     /// Runtime instance
     rt: tokio::runtime::Runtime,
     /// Local task set for non-Send futures
@@ -162,7 +162,7 @@ pub struct ValidationPhase<PData> {
     run_test_handle: tokio::task::JoinHandle<()>,
 }
 
-impl<PData: Clone + Debug + Send + 'static> TestRuntime<PData> {
+impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
     pub fn new() -> Self {
         let config = ReceiverConfig::new("test_receiver");
@@ -200,7 +200,7 @@ impl<PData: Clone + Debug + Send + 'static> TestRuntime<PData> {
     }
 }
 
-impl<PData: Debug + Send + 'static> TestPhase<PData> {
+impl<PData: Debug + 'static> TestPhase<PData> {
     /// Starts the test scenario by executing the provided function with the test context.
     pub fn run_test<F, Fut>(mut self, f: F) -> ValidationPhase<PData>
     where
