@@ -22,7 +22,7 @@ trace = []
 derive = []
 
 [dependencies]
-arrow = "53"
+arrow = "55"
 arrow-ipc = { version = "53", features = ["zstd"] }
 ciborium = "0.2.2"
 lazy_static = "1.5"
