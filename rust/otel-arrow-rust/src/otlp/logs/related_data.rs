@@ -49,9 +49,9 @@ impl TryFrom<&OtapBatch> for RelatedData {
 pub struct RelatedDataV2<'a> {
     pub(crate) log_record_id: u16,
 
-    pub(crate) res_attr_map_store: AttributeStoreV2<'a, u16>,
-    pub(crate) scope_attr_map_store: AttributeStoreV2<'a, u16>,
-    pub(crate) log_record_attr_map_store: AttributeStoreV2<'a, u16>,
+    pub(crate) res_attr_map_store: Option<AttributeStoreV2<'a, u16>>,
+    pub(crate) scope_attr_map_store: Option<AttributeStoreV2<'a, u16>>,
+    pub(crate) log_record_attr_map_store: Option<AttributeStoreV2<'a, u16>>,
     // pub(crate)
 }
 
@@ -91,9 +91,9 @@ impl<'a> RelatedDataV2<'a> {
         let related_data = Self {
             log_record_id: 0,
             // TODO handle unwrap gracefully here if the message isn't in the list of batches
-            res_attr_map_store: res_attr_map_store.unwrap(),
-            scope_attr_map_store: scope_attr_map_store.unwrap(),
-            log_record_attr_map_store: log_record_attr_map_store.unwrap(),
+            res_attr_map_store: res_attr_map_store,
+            scope_attr_map_store: scope_attr_map_store,
+            log_record_attr_map_store: log_record_attr_map_store,
         };
 
         Ok((related_data, logs_record_idx))

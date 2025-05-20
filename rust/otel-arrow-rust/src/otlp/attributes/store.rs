@@ -204,13 +204,15 @@ where
     value_int_arr: Option<Int64ArrayAccessor<'a>>,
     value_double_arr: Option<&'a Float64Array>,
     value_bool_arr: Option<&'a BooleanArray>,
-    // TODO other types
+    value_bytes_arr: Option<ByteArrayAccessor<'a>>,
+    value_ser_arr: Option<ByteArrayAccessor<'a>>,
 }
 
 impl<'a, T> AttributeStoreV2<'a, T>
 where
     T: ParentId,
     <T as ParentId>::ArrayType: ArrowPrimitiveType,
+    <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native: Into<T>,
 {
     pub fn try_from(rb: &'a RecordBatch) -> error::Result<Self> {
         let key_arr = rb
@@ -230,6 +232,14 @@ where
             .transpose()?;
         let value_double_arr = get_f64_array_opt(rb, consts::ATTRIBUTE_DOUBLE)?;
         let value_bool_arr = get_bool_array_opt(rb, consts::ATTRIBUTE_BOOL)?;
+        let value_bytes_arr = rb
+            .column_by_name(consts::ATTRIBUTE_BYTES)
+            .map(ByteArrayAccessor::try_new)
+            .transpose()?;
+        let value_ser_arr = rb
+            .column_by_name(consts::ATTRIBUTE_SER)
+            .map(ByteArrayAccessor::try_new)
+            .transpose()?;
 
         let parent_id_arr =
             rb.column_by_name(consts::PARENT_ID)
@@ -271,24 +281,32 @@ where
             value_int_arr,
             value_double_arr,
             value_bool_arr,
+            value_bytes_arr,
+            value_ser_arr,
             parent_ids: parent_id_arr,
         })
     }
 
     pub fn attribute_by_delta_id(&'_ mut self, delta: T) -> Option<AttributeIterator<'_, T>> {
         self.last_id += delta;
-        self.curr_idx += 1;
-        // TODO need to do some checking here if the last_id at curr_idx is equal or whatever
-        Some(AttributeIterator {
-            store: self,
-            curr_idx: self.parent_id_offsets.value(self.curr_idx) as usize,
-            end_idx: if self.curr_idx + 1 < self.parent_id_offsets.len() {
-                self.parent_id_offsets.value(self.curr_idx + 1) as usize
-            } else {
-                // iterate to end
-                self.value_type_arr.len()
-            },
-        })
+
+        let parent_ids_start = self.parent_id_offsets.value(self.curr_idx) as usize;
+        let expected_parent_id = self.parent_ids.value_at(parent_ids_start).unwrap();
+        if self.last_id == expected_parent_id.into() {
+            self.curr_idx += 1;
+            Some(AttributeIterator {
+                store: self,
+                curr_idx: self.parent_id_offsets.value(self.curr_idx - 1) as usize,
+                end_idx: if self.curr_idx < self.parent_id_offsets.len() {
+                    self.parent_id_offsets.value(self.curr_idx) as usize
+                } else {
+                    // iterate to end
+                    self.value_type_arr.len()
+                },
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -335,8 +353,20 @@ where
                 .value_bool_arr
                 .value_at(idx)
                 .map(Value::BoolValue),
-            // TODO add the other array types
-            _ => todo!(),
+            AttributeValueType::Bytes => self
+                .store
+                .value_bytes_arr
+                .value_at(idx)
+                .map(Value::BytesValue),
+            AttributeValueType::Map | AttributeValueType::Slice => self
+                .store
+                .value_ser_arr
+                .value_at(idx)
+                .map(|ref bytes| cbor::decode_pcommon_val(&bytes).ok())
+                .flatten()
+                .flatten(),
+
+            AttributeValueType::Empty => None,
         }
     }
 }
@@ -362,5 +392,89 @@ where
             key,
             value: Some(AnyValue { value: value }),
         })
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::sync::Arc;
+
+    use arrow::{
+        array::{Int64Array, RecordBatch, StringArray, UInt8Array, UInt16Array},
+        datatypes::{DataType, Field, Schema},
+    };
+
+    use crate::schema::consts;
+
+    use super::{AttributeStoreV2, AttributeValueType};
+
+    #[test]
+    fn test_attribute_store_v2() {
+        let test_data = vec![
+            (1, "attr1", Some("hello"), None),
+            (1, "attr1", Some("hello2"), None),
+            (1, "attr2", Some("hello"), None),
+            (1, "attr2", Some("hello3"), None),
+            (1, "attr3", None, Some(1)),
+            (1, "attr4", None, Some(2)),
+            (2, "attr1", Some("hello"), None),
+            (2, "attr2", Some("hello2"), None),
+            (4, "attr1", Some("hello"), None),
+            (4, "attr2", Some("hello2"), None),
+            (4, "attr3", None, Some(3)),
+        ];
+
+        let parent_id = UInt16Array::from_iter_values(test_data.iter().map(|a| a.0));
+        let key_arr = StringArray::from_iter_values(test_data.iter().map(|a| a.1));
+        let string_arr = StringArray::from_iter(test_data.iter().map(|a| a.2));
+        let int_arr = Int64Array::from_iter(test_data.iter().map(|a| a.3));
+
+        let type_arr = UInt8Array::from_iter_values(test_data.iter().map(|a| if a.2.is_some() {
+            AttributeValueType::Str
+            } else {
+                AttributeValueType::Int
+            } as u8));
+
+        let record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+                Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+            ])),
+            vec![
+                Arc::new(parent_id),
+                Arc::new(type_arr),
+                Arc::new(key_arr),
+                Arc::new(string_arr),
+                Arc::new(int_arr),
+            ],
+        )
+        .unwrap();
+
+        let mut attr_store = AttributeStoreV2::<u16>::try_from(&record_batch).unwrap();
+
+        let parent_1_attrs = attr_store
+            .attribute_by_delta_id(1)
+            .unwrap()
+            .collect::<Vec<_>>();
+        assert_eq!(6, parent_1_attrs.len());
+
+        // delta encoded parents -- 1 + 1 = 2
+        let parent_2_attrs = attr_store
+            .attribute_by_delta_id(1)
+            .unwrap()
+            .collect::<Vec<_>>();
+        assert_eq!(2, parent_2_attrs.len());
+
+        let parent_3_attrs = attr_store.attribute_by_delta_id(1);
+        assert!(parent_3_attrs.is_none());
+
+        let parent_4_attrs = attr_store
+            .attribute_by_delta_id(1)
+            .unwrap()
+            .collect::<Vec<_>>();
+        assert_eq!(3, parent_4_attrs.len());
     }
 }
