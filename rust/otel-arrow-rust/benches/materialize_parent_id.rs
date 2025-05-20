@@ -111,44 +111,4 @@ fn bench_materialize_parent_ids(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_materialize_parent_ids);
-
 criterion_main!(benches);
-
-/*
-Before refactoring key attr iID
-
-   Compiling otel-arrow-rust v0.1.0 (/Users/a.lockett/Development/otel-arrow/rust/otel-arrow-rust)
-    Finished `bench` profile [optimized] target(s) in 2.91s
-     Running benches/materialize_parent_id.rs (target/release/deps/materialize_parent_id-a7d317d401e450db)
-Gnuplot not found, using plotters backend
-materialize_parent_ids/materialize_parent_ids/128
-                        time:   [3.9560 µs 3.9672 µs 3.9787 µs]
-                        change: [-0.8860% -0.4680% -0.0247%] (p = 0.03 < 0.05)
-                        Change within noise threshold.
-
-materialize_parent_ids/materialize_parent_ids/128
-                        time:   [3.5858 µs 3.5949 µs 3.6041 µs]
-                        change: [-9.5912% -9.2245% -8.8545%] (p = 0.00 < 0.05)
-                        Performance has improved.
-
-
-Before setting targetcpu = native
-
-Gnuplot not found, using plotters backend
-materialize_parent_ids/materialize_parent_ids/128
-                        time:   [3.5086 µs 3.5255 µs 3.5432 µs]
-                        change: [-2.2071% -1.7504% -1.3228%] (p = 0.00 < 0.05)
-                        Performance has improved.
-Found 7 outliers among 100 measurements (7.00%)
-  5 (5.00%) low mild
-  2 (2.00%) high mild
-materialize_parent_ids/materialize_parent_ids/1536
-                        time:   [22.737 µs 22.829 µs 22.929 µs]
-Found 4 outliers among 100 measurements (4.00%)
-  1 (1.00%) low mild
-  3 (3.00%) high mild
-materialize_parent_ids/materialize_parent_ids/8092
-                        time:   [115.25 µs 115.57 µs 115.88 µs]
-
-
-*/
