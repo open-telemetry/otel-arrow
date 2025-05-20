@@ -245,7 +245,7 @@ mod tests {
 
         // addr and port for the server to run at
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = "4334";// portpicker::pick_unused_port().expect("No free ports");
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
