@@ -127,6 +127,7 @@ where
             .context(error::ColumnNotFoundSnafu {
                 name: consts::ATTRIBUTE_KEY,
             })?;
+    let key_eq_next = create_next_eq_array_for_array(keys_arr);
 
     let type_arr = record_batch
         .column_by_name(consts::ATTRIBUTE_TYPE)
@@ -155,26 +156,13 @@ where
     // where all the types & attribute keys are the same, we use the "eq" compute kernel to
     // compare all the values. Then we use the resulting next-element equality array for the
     // values to determine if there is delta encoding
-
-    // start of the contiguous range:
     let mut curr_range_start = 0;
-    // next-element equality array for attribute keys for current type:
-    let mut key_eq_next: Option<BooleanArray> = None;
-
     for idx in 0..record_batch.num_rows() {
         // check if we've found the end of a range of where all the type & attribute are the same
         let found_range_end = if idx == types_eq_next.len() {
             true // end of list
-        } else if !types_eq_next.value(idx) {
-            // there's a new type -- generate the next element equality array for keys of this type
-            let key_range = keys_arr.slice(curr_range_start, idx + 1 - curr_range_start);
-            key_eq_next = Some(create_next_element_equality_array(&key_range)?);
-            true
-        } else if let Some(key_eq_next) = key_eq_next.as_ref() {
-            // the range of contiguous keys for this type will end when we find a new key
-            !key_eq_next.value(idx - curr_range_start)
         } else {
-            false
+            !types_eq_next.value(idx) || !key_eq_next.value(idx)
         };
 
         // when we find the range end, decode the parent ID values

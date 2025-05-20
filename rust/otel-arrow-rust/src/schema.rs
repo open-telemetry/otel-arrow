@@ -12,4 +12,6 @@
 
 //todo: support schema transformation if we need to implement the encoding part.
 
+#![allow(missing_docs)]
+
 pub mod consts;
