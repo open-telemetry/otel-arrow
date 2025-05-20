@@ -136,5 +136,9 @@ fn bench_attribute_store(c: &mut Criterion) {
     group.finish()
 }
 
-criterion_group!(benches, bench_attribute_store);
+criterion_group! {
+    name = benches;
+    config = Criterion::default().measurement_time(std::time::Duration::from_secs(10));
+    targets = bench_attribute_store
+}
 criterion_main!(benches);
