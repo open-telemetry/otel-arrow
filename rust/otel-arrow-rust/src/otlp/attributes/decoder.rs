@@ -197,6 +197,8 @@ where
             // add the first value from this range to the parent IDs
             let mut curr_parent_id = parent_id_arr
                 .value_at(curr_range_start)
+                // safety: there's a check at the beginning of this function to ensure that
+                // the batch is not empty
                 .expect("expect the batch not to be empty");
             materialized_parent_ids.append_value(curr_parent_id);
 
