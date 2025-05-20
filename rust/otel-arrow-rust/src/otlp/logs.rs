@@ -216,7 +216,8 @@ pub fn logs_from(logs_otap_batch: &OtapBatch) -> Result<ExportLogsServiceRequest
                     .res_attr_map_store
                     .attribute_by_delta_id(res_id)
                 {
-                    resource.attributes = attrs.to_vec();
+                    // resource.attributes = attrs.to_vec();
+                    resource.attributes = attrs.collect();
                 }
             }
 
@@ -234,7 +235,8 @@ pub fn logs_from(logs_otap_batch: &OtapBatch) -> Result<ExportLogsServiceRequest
                     .scope_attr_map_store
                     .attribute_by_delta_id(scope_id)
                 {
-                    scope.attributes = attrs.to_vec();
+                    // scope.attributes = attrs.to_vec();
+                    scope.attributes = attrs.collect();
                 }
             }
 
@@ -300,9 +302,11 @@ pub fn logs_from(logs_otap_batch: &OtapBatch) -> Result<ExportLogsServiceRequest
 
         if let Some(attrs) = related_data
             .log_record_attr_map_store
-            .attribute_by_id(delta_id)
+            // .attribute_by_id(delta_id)
+            .attribute_by_delta_id(delta_id)
         {
-            current_log_record.attributes = attrs.to_vec();
+            // current_log_record.attributes = attrs.to_vec();
+            current_log_record.attributes = attrs.collect()
         }
     }
 

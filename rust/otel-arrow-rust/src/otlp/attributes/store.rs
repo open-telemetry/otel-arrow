@@ -21,12 +21,13 @@ use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
 use crate::schema::consts;
 use arrow::array::{
     ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray, Float64Array, PrimitiveArray,
-    RecordBatch, UInt8Array,
+    RecordBatch, UInt8Array, UInt64Array,
 };
 use num_enum::TryFromPrimitive;
 use snafu::{OptionExt, ResultExt};
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::iter;
 
 use super::cbor;
 
@@ -189,14 +190,11 @@ pub struct AttributeStoreV2<'a, T>
 where
     T: ParentId,
     <T as ParentId>::ArrayType: ArrowPrimitiveType,
-    // <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native: Into<T>,
 {
     last_id: T,
 
-    // TODO, not sure if this is the right datastructure here,
-    // and if it is, we probably want to fix the qualifications
-    first_parent_id_offsets:
-        HashMap<<<T as ParentId>::ArrayType as arrow::array::ArrowPrimitiveType>::Native, usize>,
+    curr_idx: usize,
+    parent_id_offsets: UInt64Array,
 
     // TODO fix type names and put in a better order
     parent_ids: MaybeDictArrayAccessor<'a, PrimitiveArray<T::ArrayType>>,
@@ -209,12 +207,10 @@ where
     // TODO other types
 }
 
-#[allow(unused_qualifications)]
 impl<'a, T> AttributeStoreV2<'a, T>
 where
     T: ParentId,
     <T as ParentId>::ArrayType: ArrowPrimitiveType,
-    <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native: std::cmp::Eq + Hash + From<T>,
 {
     pub fn try_from(rb: &'a RecordBatch) -> error::Result<Self> {
         let key_arr = rb
@@ -245,24 +241,30 @@ where
                 parent_id_arr,
             )?;
 
-        // TODO this probabaly isn't how we wanna iterate this
-        let arr = match parent_id_arr {
-            MaybeDictArrayAccessor::Native(arr) => arr,
-            // MaybeDictArrayAccessor::Dictionary16(arr) => arr,
-            _ => {
-                todo!()
-            }
-        };
-        let mut p_id_offsets = HashMap::new();
-        for (i, val) in arr.iter().enumerate() {
-            let val = val.unwrap();
-            if !p_id_offsets.contains_key(&val) {
-                _ = p_id_offsets.insert(val, i);
-            }
-        }
+        let parent_id_eq_next = super::decoder::create_next_element_equality_array(
+            rb.column_by_name(consts::PARENT_ID).unwrap(),
+        )?;
+
+        let parent_id_offsets = UInt64Array::from_iter_values(
+            iter::once(0).chain(
+                parent_id_eq_next
+                    .into_iter()
+                    .enumerate()
+                    // TODO safe to unwrap?
+                    .filter_map(|(i, val)| {
+                        if !val.unwrap() {
+                            Some((i + 1) as u64)
+                        } else {
+                            None
+                        }
+                    }),
+            ),
+        );
 
         Ok(Self {
             last_id: T::default(),
+            curr_idx: 0,
+            parent_id_offsets,
             keys: key_arr,
             value_type_arr,
             value_str_arr,
@@ -270,79 +272,95 @@ where
             value_double_arr,
             value_bool_arr,
             parent_ids: parent_id_arr,
-            first_parent_id_offsets: p_id_offsets,
         })
     }
 
-    pub fn attribute_by_delta_id(&mut self, delta: T) -> Option<Vec<KeyValue>> {
+    pub fn attribute_by_delta_id(&'_ mut self, delta: T) -> Option<AttributeIterator<'_, T>> {
         self.last_id += delta;
-        // self.attribute_by_ids
-        //     .get(&self.last_id)
-        //     .map(|r| r.as_slice())
-        self.attribute_by_id(self.last_id)
+        self.curr_idx += 1;
+        // TODO need to do some checking here if the last_id at curr_idx is equal or whatever
+        Some(AttributeIterator {
+            store: self,
+            curr_idx: self.parent_id_offsets.value(self.curr_idx) as usize,
+            end_idx: if self.curr_idx + 1 < self.parent_id_offsets.len() {
+                self.parent_id_offsets.value(self.curr_idx + 1) as usize
+            } else {
+                // iterate to end
+                self.value_type_arr.len()
+            },
+        })
+    }
+}
+
+pub struct AttributeIterator<'a, T>
+where
+    T: ParentId,
+    <T as ParentId>::ArrayType: ArrowPrimitiveType,
+{
+    store: &'a AttributeStoreV2<'a, T>,
+    curr_idx: usize,
+    end_idx: usize,
+}
+
+impl<'a, T> AttributeIterator<'a, T>
+where
+    T: ParentId,
+    <T as ParentId>::ArrayType: ArrowPrimitiveType,
+{
+    fn value_type(&self, idx: usize) -> error::Result<AttributeValueType> {
+        AttributeValueType::try_from(self.store.value_type_arr.value_at_or_default(idx))
+            .context(error::UnrecognizedAttributeValueTypeSnafu)
     }
 
-    pub fn attribute_by_id(&self, id: T) -> Option<Vec<KeyValue>> {
-        let idx = self.first_parent_id_offsets.get(&id.into());
-        if idx.is_none() {
+    fn otel_value(&self, idx: usize, value_type: AttributeValueType) -> Option<Value> {
+        // Note: we do not expect any match arm to return None,
+        // and we use _or_default() or equivalent.  If any of
+        // these evaluate to None, somehow create a warning, as it
+        // indicates corrupted data?
+
+        match value_type {
+            AttributeValueType::Str => self
+                .store
+                .value_str_arr
+                .value_at(idx)
+                .map(Value::StringValue),
+            AttributeValueType::Int => self.store.value_int_arr.value_at(idx).map(Value::IntValue),
+            AttributeValueType::Double => self
+                .store
+                .value_double_arr
+                .value_at(idx)
+                .map(Value::DoubleValue),
+            AttributeValueType::Bool => self
+                .store
+                .value_bool_arr
+                .value_at(idx)
+                .map(Value::BoolValue),
+            // TODO add the other array types
+            _ => todo!(),
+        }
+    }
+}
+
+impl<'a, T> Iterator for AttributeIterator<'a, T>
+where
+    T: ParentId,
+    <T as ParentId>::ArrayType: ArrowPrimitiveType,
+{
+    type Item = KeyValue;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.curr_idx >= self.end_idx {
             return None;
         }
 
-        let mut idx = *idx.unwrap();
+        let key = self.store.keys.value_at_or_default(self.curr_idx);
+        let value_type = self.value_type(self.curr_idx).unwrap();
+        let value = self.otel_value(self.curr_idx, value_type);
+        self.curr_idx += 1;
 
-        let parent_id = self.parent_ids.value_at(idx);
-        let mut result = vec![];
-        loop {
-            if self.parent_ids.value_at(idx) != parent_id {
-                break;
-            }
-
-            let value_type =
-                AttributeValueType::try_from(self.value_type_arr.value_at_or_default(idx))
-                    .context(error::UnrecognizedAttributeValueTypeSnafu)
-                    .unwrap();
-
-            let value = match value_type {
-                AttributeValueType::Str => {
-                    Value::StringValue(self.value_str_arr.value_at(idx).unwrap_or_default())
-                }
-                AttributeValueType::Int => {
-                    Value::IntValue(self.value_int_arr.value_at_or_default(idx))
-                }
-                AttributeValueType::Double => {
-                    Value::DoubleValue(self.value_double_arr.value_at_or_default(idx))
-                }
-                AttributeValueType::Bool => {
-                    Value::BoolValue(self.value_bool_arr.value_at_or_default(idx))
-                }
-                _ => {
-                    todo!()
-                } // AttributeValueType::Bytes => {
-                  //     Value::BytesValue(value_bytes_arr.value_at_or_default(idx))
-                  // }
-                  // AttributeValueType::Slice | AttributeValueType::Map => {
-                  //     let bytes = value_ser_arr.value_at(idx);
-                  //     if bytes.is_none() {
-                  //         continue;
-                  //     }
-
-                  //     let decoded_result = cbor::decode_pcommon_val(&bytes.expect("expected Some"))?;
-                  //     match decoded_result {
-                  //         Some(value) => value,
-                  //         None => continue,
-                  //     }
-                  // }
-                  // AttributeValueType::Empty => {
-                  //     // should warn here.
-                  //     continue;
-                  // }
-            };
-            result.push(KeyValue {
-                key: self.keys.value_at(idx).unwrap(),
-                value: Some(AnyValue { value: Some(value) }),
-            })
-        }
-
-        Some(result)
+        Some(KeyValue {
+            key,
+            value: Some(AnyValue { value: value }),
+        })
     }
 }
