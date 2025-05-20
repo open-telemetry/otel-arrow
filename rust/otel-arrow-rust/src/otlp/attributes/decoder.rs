@@ -244,7 +244,7 @@ where
         .columns()
         .iter()
         .enumerate()
-        .map(move |(i, col)| {
+        .map(|(i, col)| {
             if i == parent_id_idx {
                 materialized_parent_ids.clone()
             } else {
