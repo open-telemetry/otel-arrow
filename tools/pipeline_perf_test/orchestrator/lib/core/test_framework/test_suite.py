@@ -12,6 +12,7 @@ Classes:
     TestSuite: A class that manages a collection of tests and components, runs the tests, and provides
     context to each test.
 """
+
 from typing import List, Dict
 
 from .test_definition import TestDefinition
@@ -34,7 +35,10 @@ class TestSuite:
     Methods:
         run(): Executes all the tests in the test suite, providing each test with the necessary context.
     """
-    def __init__(self, tests: List[TestDefinition], components: Dict[str, LifecycleComponent]):
+
+    def __init__(
+        self, tests: List[TestDefinition], components: Dict[str, LifecycleComponent]
+    ):
         """
         Initializes the test suite with a list of tests and a dictionary of components.
 
@@ -61,7 +65,6 @@ class TestSuite:
         """
         for test_definition in self.tests:
             test_execution_context = TestExecutionContext(
-                test_definition=test_definition,
-                suite_context=self.context
+                test_definition=test_definition, suite_context=self.context
             )
             test_definition.run(test_execution_context)

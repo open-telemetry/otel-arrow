@@ -22,6 +22,7 @@ Classes:
 Each context layer provides helper methods to retrieve components by name, ensuring consistent
 access across the execution lifecycle.
 """
+
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, TYPE_CHECKING
@@ -39,6 +40,7 @@ class TestSuiteContext(BaseContext):
     """
     Holds global state for a test suite run, including all shared components.
     """
+
     components: Dict[str, LifecycleComponent] = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
 
@@ -56,6 +58,7 @@ class TestExecutionContext(BaseContext):
     """
     Context for executing a single TestDefinition, scoped per test.
     """
+
     test_definition: "TestDefinition"
     suite_context: "TestSuiteContext"
     step_contexts: List["TestStepContext"] = field(default_factory=list)
@@ -70,6 +73,7 @@ class TestStepContext(BaseContext):
     """
     Context for an individual test step execution.
     """
+
     step: "TestStep"
     test_definition: "TestDefinition"
     test_context: "TestExecutionContext"

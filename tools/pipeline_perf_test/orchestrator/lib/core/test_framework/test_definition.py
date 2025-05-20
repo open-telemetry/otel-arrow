@@ -11,6 +11,7 @@ different reporting strategies to the results.
 Classes:
     TestDefinition: A class that defines a test, including the steps to run and the reporting strategies to use.
 """
+
 import time
 from typing import Any, Dict, List, Optional
 
@@ -36,7 +37,13 @@ class TestDefinition:
         run(context): Executes the test, runs the test steps, and reports results using the specified strategies.
         aggregate_monitoring_data(context): Collects and aggregates monitoring data from all components.
     """
-    def __init__(self, name: str, steps: List[TestStep], reporting_strategies: Optional[List[ReportingStrategy]] = None):
+
+    def __init__(
+        self,
+        name: str,
+        steps: List[TestStep],
+        reporting_strategies: Optional[List[ReportingStrategy]] = None,
+    ):
         """
         Initializes the test definition with the given name, steps, and reporting strategies.
 
@@ -77,7 +84,7 @@ class TestDefinition:
                 step_ctx.status = "error"
                 step_ctx.error = e
                 print(f"Step '{step.name}' failed: {e}")
-                #TODO: Depending on policy: break or continue
+                # TODO: Depending on policy: break or continue
                 break
             finally:
                 step_ctx.end_time = time.time()

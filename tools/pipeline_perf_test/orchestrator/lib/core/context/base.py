@@ -4,6 +4,7 @@ Module: context
 This module provides the BaseContext class which provides shared fields common to
 different implementations of Contexts throughout the orchestrator.
 """
+
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -13,6 +14,7 @@ class BaseContext:
     """
     Base context class which includes common timing, status, metadata fields.
     """
+
     status: Optional[str] = field(init=False)
     error: Optional[Exception] = field(init=False)
     start_time: Optional[float] = field(init=False)
