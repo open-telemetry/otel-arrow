@@ -262,7 +262,7 @@ where
 //    arr = [1, 1, 1, 2, 2,    null, null, 1, 1]
 // result = [T, T, F, T, null, null, null, T]
 //
-pub fn create_next_element_equality_array(arr: &ArrayRef) -> Result<BooleanArray> {
+pub(crate) fn create_next_element_equality_array(arr: &ArrayRef) -> Result<BooleanArray> {
     // if the array is a dictionary, we compare the dicitonary keys
     if let DataType::Dictionary(dict_key_type, _) = arr.data_type() {
         match **dict_key_type {
