@@ -166,8 +166,10 @@ mod tests {
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
     use std::net::SocketAddr;
+    use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
     use tokio::time::{Duration, timeout};
+    use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
 
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
@@ -253,38 +255,39 @@ mod tests {
         let (sender, receiver) = tokio::sync::mpsc::channel(32);
         let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
         let grpc_addr = "127.0.0.1";
-        let grpc_port = "53330";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
-        let exporter = ExporterWrapper::local(
-            OTLPExporter::new(grpc_endpoint, None),
-            test_runtime.config(),
-        );
-
         // tokio runtime to run grpc server in the background
         let tokio_rt = Runtime::new().unwrap();
 
-        let mock_logs_service = LogsServiceServer::new(LogsServiceMock::new(sender.clone()));
-        let mock_metrics_service =
-            MetricsServiceServer::new(MetricsServiceMock::new(sender.clone()));
-        let mock_trace_service = TraceServiceServer::new(TraceServiceMock::new(sender.clone()));
-        let mock_profiles_service =
-            ProfilesServiceServer::new(ProfilesServiceMock::new(sender.clone()));
-
         // run a gRPC concurrently to receive data from the exporter
         _ = tokio_rt.spawn(async move {
+            let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            let tcp_stream = TcpListenerStream::new(tcp_listener);
+            let mock_logs_service = LogsServiceServer::new(LogsServiceMock::new(sender.clone()));
+            let mock_metrics_service =
+                MetricsServiceServer::new(MetricsServiceMock::new(sender.clone()));
+            let mock_trace_service = TraceServiceServer::new(TraceServiceMock::new(sender.clone()));
+            let mock_profiles_service =
+                ProfilesServiceServer::new(ProfilesServiceMock::new(sender.clone()));
             _ = Server::builder()
                 .add_service(mock_logs_service)
                 .add_service(mock_metrics_service)
                 .add_service(mock_trace_service)
                 .add_service(mock_profiles_service)
-                .serve_with_shutdown(listening_addr, async {
+                .serve_with_incoming_shutdown(tcp_stream, async {
                     // Wait for the shutdown signal
                     drop(shutdown_signal.await.ok())
                 })
                 .await
                 .expect("Test gRPC server has failed");
         });
+
+        let exporter = ExporterWrapper::local(
+            OTLPExporter::new(grpc_endpoint, None),
+            test_runtime.config(),
+        );
 
         test_runtime
             .set_exporter(exporter)
