@@ -13,6 +13,7 @@
 use arrow::array::RecordBatch;
 use arrow::compute::{sort_to_indices, take_record_batch};
 use arrow::datatypes::DataType;
+use arrow::record_batch;
 
 use crate::arrays::get_required_array;
 use crate::error::{self, Result};
@@ -63,23 +64,39 @@ impl RecordMessage {
             return Ok(());
         }
 
-        let parent_id_column = get_required_array(&self.record, consts::PARENT_ID)?;
-        let record_batch = match parent_id_column.data_type() {
-            DataType::UInt16 => materialize_parent_id::<u16>(&self.record),
-            DataType::UInt32 => materialize_parent_id::<u32>(&self.record),
-            d => error::UnsupportedParentIdTypeSnafu { actual: d.clone() }.fail(),
-        }?;
+        // let parent_id_column = get_required_array(&self.record, consts::PARENT_ID)?;
+        // let record_batch = match parent_id_column.data_type() {
+        //     DataType::UInt16 => materialize_parent_id::<u16>(&self.record),
+        //     DataType::UInt32 => materialize_parent_id::<u32>(&self.record),
+        //     d => error::UnsupportedParentIdTypeSnafu { actual: d.clone() }.fail(),
+        // }?;
 
-        let parent_id_materialized = get_required_array(&record_batch, consts::PARENT_ID)?;
-        // TODO comment about satety here
-        let sort_indices = sort_to_indices(&parent_id_materialized, None, None)
-            .expect("should be able to sort parent ids");
+        // let parent_id_materialized = get_required_array(&record_batch, consts::PARENT_ID)?;
+        // // TODO comment about satety here
+        // let sort_indices = sort_to_indices(&parent_id_materialized, None, None)
+        //     .expect("should be able to sort parent ids");
         // TODO comment about safety here
-        self.record = take_record_batch(&record_batch, &sort_indices)
-            .expect("should be able to take by sort indices");
+        self.record = sort_by_parent_id(&self.record)?;
 
         Ok(())
     }
+}
+
+pub fn sort_by_parent_id(record_batch: &RecordBatch) -> Result<RecordBatch> {
+    let parent_id_column = get_required_array(record_batch, consts::PARENT_ID)?;
+    let record_batch = match parent_id_column.data_type() {
+        DataType::UInt16 => materialize_parent_id::<u16>(record_batch),
+        DataType::UInt32 => materialize_parent_id::<u32>(record_batch),
+        d => error::UnsupportedParentIdTypeSnafu { actual: d.clone() }.fail(),
+    }?;
+
+    let parent_id_materialized = get_required_array(&record_batch, consts::PARENT_ID)?;
+    // TODO comment about satety here
+    let sort_indices = sort_to_indices(&parent_id_materialized, None, None)
+        .expect("should be able to sort parent ids");
+    // TODO comment about safety here
+    Ok(take_record_batch(&record_batch, &sort_indices)
+        .expect("should be able to take by sort indices"))
 }
 
 #[derive(PartialEq)]

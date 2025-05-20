@@ -102,6 +102,8 @@ where
             .map(ByteArrayAccessor::try_new)
             .transpose()?;
 
+        let mut parent_id_decoder = T::new_decoder();
+
         for idx in 0..rb.num_rows() {
             let key = key_arr.value_at_or_default(idx);
             let value_type = AttributeValueType::try_from(value_type_arr.value_at_or_default(idx))
@@ -148,7 +150,6 @@ where
                 MaybeDictArrayAccessor::<PrimitiveArray<<T as ParentId>::ArrayType>>::try_new(
                     parent_id_arr,
                 )?;
-            let mut parent_id_decoder = T::new_decoder();
 
             let parent_id = parent_id_decoder.decode(
                 parent_id_arr.value_at_or_default(idx).into(),

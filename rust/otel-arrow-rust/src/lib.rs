@@ -17,7 +17,8 @@
 
 #[allow(dead_code)]
 pub(crate) mod arrays;
-mod decode;
+
+pub mod decode;
 mod error;
 pub mod otap;
 pub mod otlp;
