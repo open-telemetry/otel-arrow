@@ -47,7 +47,7 @@ class TestSuiteContext(BaseContext):
         self.components[name] = component
 
     def get_component(self, name: str) -> Optional[LifecycleComponent]:
-        "Cat a component from the test suite context by name"
+        "Get a component from the test suite context by name"
         return self.components.get(name)
 
 
@@ -61,7 +61,7 @@ class TestExecutionContext(BaseContext):
     step_contexts: List["TestStepContext"] = field(default_factory=list)
 
     def get_component(self, name: str) -> Optional[LifecycleComponent]:
-        "Cat a component from the test suite context by name"
+        "Get a component from the test suite context by name"
         return self.suite_context.get_component(name)
 
 
@@ -75,5 +75,5 @@ class TestStepContext(BaseContext):
     test_context: "TestExecutionContext"
 
     def get_component(self, name: str) -> Optional[LifecycleComponent]:
-        "Cat a component from the test suite context by name"
+        "Get a component from the test suite context by name"
         return self.test_context.suite_context.get_component(name)
