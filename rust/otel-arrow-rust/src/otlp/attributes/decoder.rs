@@ -236,8 +236,8 @@ where
     let materialized_parent_ids = Arc::new(materialized_parent_ids.finish());
 
     // create new record batch but with parent column replaced
-    let parent_id_idx = record_batch
-        .schema()
+    let schema = record_batch.schema();
+    let parent_id_idx = schema
         .index_of(consts::PARENT_ID)
         .expect("parent_id should be in the schema");
     let columns = record_batch
@@ -256,7 +256,7 @@ where
     // safety: RecordBatch::try_new will only return error if our schema doesn't
     // match the passed arrays, or if the arrays are different lengths. Both of
     // these criteria should be met at this point
-    Ok(RecordBatch::try_new(record_batch.schema(), columns)
+    Ok(RecordBatch::try_new(schema, columns)
         .expect("should be able to create record batch with parent_id replaced"))
 }
 
