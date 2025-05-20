@@ -94,7 +94,7 @@ fn create_bench_batch(num_attrs: usize) -> RecordBatch {
 fn bench_materialize_parent_ids(c: &mut Criterion) {
     let mut group = c.benchmark_group("materialize_parent_ids");
 
-    for size in [128, 1536, 8092] {
+    for size in [0, 128, 1536, 8092] {
         let input = create_bench_batch(size);
         let _ = group.bench_with_input(
             BenchmarkId::new("materialize_parent_ids", size),
