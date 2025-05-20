@@ -132,6 +132,13 @@ pub enum Error {
         location: Location,
     },
 
+    #[snafu(display("Unsupported parent id type. Expected u16 or u32, got: {}", actual))]
+    UnsupportedParentIdType {
+        actual: DataType,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     #[snafu(display("Unsupported payload type, got: {}", actual))]
     UnsupportedPayloadType {
         actual: i32,

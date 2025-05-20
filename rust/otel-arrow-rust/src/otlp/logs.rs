@@ -6,6 +6,7 @@ use arrow::array::{
     TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, Fields};
+use related_data::RelatedDataV2;
 use snafu::{OptionExt, ResultExt, ensure};
 
 use crate::arrays::{
