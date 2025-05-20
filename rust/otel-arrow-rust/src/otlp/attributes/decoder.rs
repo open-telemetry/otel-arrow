@@ -206,7 +206,7 @@ where
                 let values_range = value_arr.slice(curr_range_start, range_length);
                 let values_eq_next = create_next_element_equality_array(&values_range)?;
 
-                for batch_idx in (curr_range_start + 1)..(idx + 1) {
+                for batch_idx in (curr_range_start + 1)..=idx {
                     let delta_or_parent_id = parent_id_arr.value_at_or_default(batch_idx);
                     let prev_value_range_idx = batch_idx - 1 - curr_range_start;
 
