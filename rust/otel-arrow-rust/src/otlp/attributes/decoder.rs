@@ -84,18 +84,19 @@ where
 /// parent IDs are delta encoded.
 ///
 /// There are additional exceptions that end the sequence of delta encoding:
-/// - null values (we don't consider null values equal, even if current row & previous
-///   row value are both null)
 /// - value types Empty, Slice & Map are never considered equal
+/// - null values; we don't consider null values equal, even if current row & previous
+///   row value are both null. (although in the future, we may want to revisit this
+///   see: https://github.com/open-telemetry/otel-arrow/issues/463)
 ///
 /// For example:
 ///
 /// | attr key |  attr val  | parent_id |
 /// |----------|------------| --------- |
 /// |   "a1"   |  str("a")  |  0        | <-- parent id = 0
-/// |   "a1"   |  str("a")  |  0        | <-- key & val == previous row -> delta encoded -> parent id = prev id + 0 = 0
 /// |   "a1"   |  str("a")  |  1        | <-- key & val == previous row -> delta encoded -> parent id = prev id + 1 = 1
-/// |   "a1"   |  str("a")  |  2        | <-- key & val == previous row -> delta encoded -> parent id = prev id + 2 = 3
+/// |   "a1"   |  str("a")  |  1        | <-- key & val == previous row -> delta encoded -> parent id = prev id + 1 = 2
+/// |   "a1"   |  str("a")  |  2        | <-- key & val == previous row -> delta encoded -> parent id = prev id + 2 = 4
 /// |   "a1"   |  str("b")  |  0        | <-- val != prev val -> no delta encoding -> parent id = 0
 /// |   "a2"   |  str("b")  |  0        | <-- key != prev val -> no delta encoding -> parent id = 0
 /// ...
@@ -326,8 +327,6 @@ mod test {
         let test_data = [
             // (key, str_val, int_val, parent_id, expected)
             ("attr1", Some("a"), None, 1, 1), //
-            ("attr1", Some("a"), None, 0, 1), // delta = 0
-            ("attr1", Some("a"), None, 0, 1), // delta = 0
             ("attr1", Some("a"), None, 1, 2), // delta = 1
             ("attr1", Some("a"), None, 1, 3), // delta = 1
             ("attr1", Some("b"), None, 1, 1), // not delta (val changed)
@@ -335,7 +334,7 @@ mod test {
             ("attr2", Some("a"), None, 1, 1), // not delta (key changed)
             ("attr2", Some("a"), None, 1, 2), // delta = 1
             ("attr2", None, Some(1), 1, 1),   // not delta (type changed)
-            ("attr2", None, Some(1), 0, 1),   // delta = 0
+            ("attr2", None, Some(1), 1, 2),   // delta = 1
         ];
 
         let keys_arr = StringArray::from_iter_values(test_data.iter().map(|a| a.0));
@@ -456,10 +455,10 @@ mod test {
             let test_data = [
                 // (key, dict_key, parent_id, expected)
                 ("attr1", 0, 1, 1),
-                ("attr1", 0, 0, 1), // delta = 0
-                ("attr1", 0, 0, 1), // delta = 0
                 ("attr1", 0, 1, 2), // delta = 1
                 ("attr1", 0, 1, 3), // delta = 1
+                ("attr1", 0, 1, 4), // delta = 1
+                ("attr1", 0, 1, 5), // delta = 1
                 ("attr1", 1, 1, 1), // not delta (val changed)
                 ("attr1", 1, 1, 2), // delta = 1
             ];
