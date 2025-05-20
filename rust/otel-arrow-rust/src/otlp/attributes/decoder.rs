@@ -130,7 +130,7 @@ where
     let type_arr = record_batch
         .column_by_name(consts::ATTRIBUTE_TYPE)
         .context(error::ColumnNotFoundSnafu {
-            name: consts::ATTRIBUTE_KEY,
+            name: consts::ATTRIBUTE_TYPE,
         })?;
     let types_eq_next = create_next_element_equality_array(type_arr)?;
     let type_arr = get_u8_array(record_batch, consts::ATTRIBUTE_TYPE)?;
