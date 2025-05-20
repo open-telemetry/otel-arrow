@@ -40,7 +40,7 @@ fn create_bench_batch(num_attrs: usize) -> RecordBatch {
             int_values.append_null();
             bool_values.append_null();
             double_values.append_null();
-            str_values.append_value(&format!("str{}", (i as f64 / 10.0) as usize));
+            str_values.append_value(format!("str{}", (i as f64 / 10.0) as usize));
             continue;
         }
 
@@ -88,7 +88,7 @@ fn create_bench_batch(num_attrs: usize) -> RecordBatch {
         Arc::new(double_values.finish()),
         Arc::new(bool_values.finish()),
     ])
-    .unwrap()
+    .expect("expect can create this record batch")
 }
 
 fn bench_materialize_parent_ids(c: &mut Criterion) {
@@ -101,7 +101,8 @@ fn bench_materialize_parent_ids(c: &mut Criterion) {
             &input,
             |b, input| {
                 b.iter(|| {
-                    let _ = materialize_parent_id::<u16>(input).unwrap();
+                    let _ = materialize_parent_id::<u16>(input)
+                        .expect("function should not error here");
                 });
             },
         );
