@@ -10,6 +10,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// TODO write documentation for this crate
+#![allow(missing_docs)]
+
 pub mod attributes;
 pub mod logs;
 pub mod metrics;

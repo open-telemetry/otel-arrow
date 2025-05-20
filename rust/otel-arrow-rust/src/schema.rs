@@ -12,4 +12,7 @@
 
 //todo: support schema transformation if we need to implement the encoding part.
 
+// TODO write documentation for this crate
+#![allow(missing_docs)]
+
 pub mod consts;
