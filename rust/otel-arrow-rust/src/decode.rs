@@ -10,8 +10,5 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// TODO fix this
-#![allow(missing_docs)]
-
 pub mod decoder;
 pub mod record_message;

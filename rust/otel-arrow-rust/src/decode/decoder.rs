@@ -25,8 +25,6 @@ use snafu::{OptionExt, ResultExt, ensure};
 use std::collections::HashMap;
 use std::io::Cursor;
 
-use super::record_message::RecordMessageSort;
-
 pub struct StreamConsumer {
     payload_type: ArrowPayloadType,
     stream_reader: StreamReader<Cursor<Vec<u8>>>,
@@ -95,13 +93,12 @@ impl Consumer {
             if let Some(rs) = stream_consumer.next() {
                 // the encoder side ensures there should be only one record here.
                 let record = rs.context(error::ReadRecordBatchSnafu)?;
-                records.push(RecordMessage::new(
-                    bar.batch_id,
+                records.push(RecordMessage {
+                    batch_id: bar.batch_id,
                     schema_id,
                     payload_type,
                     record,
-                    RecordMessageSort::TransportOptimized,
-                ));
+                });
             } else {
                 //todo: handle stream reader finished
             }

@@ -52,7 +52,6 @@ pub struct RelatedDataV2<'a> {
     pub(crate) res_attr_map_store: Option<AttributeStoreV2<'a, u16>>,
     pub(crate) scope_attr_map_store: Option<AttributeStoreV2<'a, u16>>,
     pub(crate) log_record_attr_map_store: Option<AttributeStoreV2<'a, u16>>,
-    // pub(crate)
 }
 
 impl<'a> RelatedDataV2<'a> {
@@ -90,7 +89,6 @@ impl<'a> RelatedDataV2<'a> {
 
         let related_data = Self {
             log_record_id: 0,
-            // TODO handle unwrap gracefully here if the message isn't in the list of batches
             res_attr_map_store: res_attr_map_store,
             scope_attr_map_store: scope_attr_map_store,
             log_record_attr_map_store: log_record_attr_map_store,

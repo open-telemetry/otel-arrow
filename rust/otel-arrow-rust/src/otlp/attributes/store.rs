@@ -197,7 +197,6 @@ where
     curr_idx: usize,
     parent_id_offsets: UInt64Array,
 
-    // TODO fix type names and put in a better order
     parent_ids: MaybeDictArrayAccessor<'a, PrimitiveArray<T::ArrayType>>,
     keys: StringArrayAccessor<'a>,
     value_type_arr: &'a UInt8Array,
