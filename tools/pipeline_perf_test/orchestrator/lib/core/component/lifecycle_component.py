@@ -36,7 +36,7 @@ class LifecyclePhase(Enum):
     """
     Enum representing the various phases in the lifecycle of a component.
 
-    These phases correspond to different stages of the component’s lifecycle, where hooks can be registered
+    These phases correspond to different stages of the component's lifecycle, where hooks can be registered
     and executed to perform actions before or after a phase is executed. These phases help manage the
     orchestration of components during test execution.
 

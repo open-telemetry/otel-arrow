@@ -14,7 +14,7 @@ Typical implementations of this interface include:
     - ReceiveLoad: Starts a component that passively receives load (e.g., validating otlp receiver).
 
 Classes:
-    ExecutionStrategy (ABC): Abstract interface for starting and stopping a component’s workload execution.
+    ExecutionStrategy (ABC): Abstract interface for starting and stopping a component's workload execution.
 """
 
 from abc import ABC, abstractmethod
@@ -26,11 +26,11 @@ class ExecutionStrategy(ABC):
 
     Execution strategies define how a component behaves when it is running.
     This interface is responsible for triggering and controlling runtime execution
-    of a component’s main workload or behavior.
+    of a component's main workload or behavior.
 
     Methods:
-        start(component): Begin execution of the component’s workload.
-        stop(component): Stop execution of the component’s workload.
+        start(component): Begin execution of the component's workload.
+        stop(component): Stop execution of the component's workload.
     """
 
     @abstractmethod

@@ -11,7 +11,7 @@ or gathering any relevant statistics or insights from the component.
 Typical implementations of this interface include:
     - ResourceMonitoring: Monitors system resources such as CPU, memory, and network usage.
     - HealthMonitoring: Monitors the health and availability of the component (e.g., via heartbeats).
-    - ResourceLogging: Monitors the application’s logs from file, docker, k8s.
+    - ResourceLogging: Monitors the application's logs from file, docker, k8s.
 
 Classes:
     MonitoringStrategy (ABC): Abstract base class for all monitoring strategies.
@@ -25,7 +25,7 @@ class MonitoringStrategy(ABC):
     """
     Abstract base class for monitoring strategies.
 
-    Monitoring strategies define how to start, stop, and collect data from a component’s monitoring
+    Monitoring strategies define how to start, stop, and collect data from a component's monitoring
     system. Concrete implementations should specify how to track, log, and aggregate monitoring
     data for a given component.
 
