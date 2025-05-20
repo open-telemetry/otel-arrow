@@ -12,7 +12,7 @@ Classes:
     TestDefinition: A class that defines a test, including the steps to run and the reporting strategies to use.
 """
 import time
-from typing import List, Dict
+from typing import Any, Dict, List, Optional
 
 from .test_context import TestExecutionContext, TestStepContext
 from .test_step import TestStep
@@ -36,7 +36,7 @@ class TestDefinition:
         run(context): Executes the test, runs the test steps, and reports results using the specified strategies.
         aggregate_monitoring_data(context): Collects and aggregates monitoring data from all components.
     """
-    def __init__(self, name: str, steps: List[TestStep], reporting_strategies: List[ReportingStrategy] = None):
+    def __init__(self, name: str, steps: List[TestStep], reporting_strategies: Optional[List[ReportingStrategy]] = None):
         """
         Initializes the test definition with the given name, steps, and reporting strategies.
 
@@ -90,7 +90,7 @@ class TestDefinition:
         for strategy in self.reporting_strategies:
             strategy.report(aggregated_data)
 
-    def aggregate_monitoring_data(self, context) -> Dict[str, Dict[str, any]]:
+    def aggregate_monitoring_data(self, context) -> Dict[str, Dict[str, Any]]:
         """
         Aggregates monitoring data from all components in the context.
 

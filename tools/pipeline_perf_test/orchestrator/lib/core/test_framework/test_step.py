@@ -11,7 +11,7 @@ Classes:
     TestStep: A class representing a single step in a test, which includes a name and an action to execute.
 """
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from .test_context import TestStepContext
 
@@ -30,7 +30,7 @@ class TestStep:
     Methods:
         run(context): Executes the action associated with the test step, providing the context to the action.
     """
-    def __init__(self, name: str, action: Callable[[TestStepContext], any]):
+    def __init__(self, name: str, action: Callable[[TestStepContext], Any]):
         """
         Initializes a test step with a name and an associated action.
 
