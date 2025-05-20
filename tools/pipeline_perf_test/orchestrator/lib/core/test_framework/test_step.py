@@ -30,13 +30,13 @@ class TestStep:
     Methods:
         run(context): Executes the action associated with the test step, providing the context to the action.
     """
-    def __init__(self, name: str, action: Callable):
+    def __init__(self, name: str, action: Callable[[TestStepContext], any]):
         """
         Initializes a test step with a name and an associated action.
 
         Args:
             name (str): The name of the test step.
-            action (Callable): A callable function that defines the action to execute when the test step is run.
+            action (Callable[[TestStepContext], any]): A callable function that defines the action to execute when the test step is run.
         """
         self.name = name
         self.action = action

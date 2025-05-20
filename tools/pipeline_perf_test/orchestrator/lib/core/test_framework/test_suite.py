@@ -24,13 +24,12 @@ class TestSuite:
     A test suite class for managing and executing a series of tests on a set of components.
 
     The `TestSuite` class is designed to execute a list of tests on a set of components. Each test is provided
-    with a `Context` that contains all components, enabling the test to interact with and manipulate the components
-    during execution.
+    with a `TestExecutionContext` that contains all components, enabling the test to interact with and
+    manipulate the components during execution.
 
     Attributes:
         tests (List[TestDefinition]): A list of test definitions that define the tests to run.
         components (Dict[str, Component]): A dictionary of components, indexed by their names.
-        context (Context): A context object that stores and manages the components for the test suite.
 
     Methods:
         run(): Executes all the tests in the test suite, providing each test with the necessary context.

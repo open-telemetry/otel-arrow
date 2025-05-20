@@ -59,7 +59,7 @@ class TestDefinition:
         data from all components. Afterward, it reports the aggregated results using the provided reporting strategies.
 
         Args:
-            context (Context): The context that contains all the components and relevant data for the test.
+            context (TestExecutionContext): The context that contains all the components and relevant data for the test.
         """
         print(f"Running test: {self.name}")
         context.start_time = time.time()
@@ -99,7 +99,7 @@ class TestDefinition:
         monitoring data.
 
         Args:
-            context (Context): The context containing all components and their monitoring data.
+            context (TestExecutionContext): The context containing all components
 
         Returns:
             Dict[str, Dict[str, any]]: A dictionary of aggregated monitoring data, indexed by component name.
