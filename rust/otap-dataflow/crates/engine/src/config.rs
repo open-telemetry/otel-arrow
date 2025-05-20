@@ -6,7 +6,7 @@
 //! focuses instead on defining the interconnection of nodes within the DAG and each node’s specific
 //! settings.
 
-use otap_df_config::node::NodeName;
+use otap_df_config::NodeName;
 
 /// For now, the channel capacity is set to 256 (a power of two). This value is currently somewhat
 /// arbitrary and will likely be adjusted (and made configurable) in the future once we have more

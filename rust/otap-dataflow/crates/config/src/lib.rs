@@ -8,10 +8,16 @@
 use crate::error::Error;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 mod error;
 pub mod node;
+
+/// The name of a node in the pipeline.
+pub type NodeName = Cow<'static, str>;
+/// The name of a node out port in the pipeline.
+pub type PortName = Cow<'static, str>;
 
 /// Signal types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -106,7 +112,7 @@ impl PipelineDag {
         let node = Node::new(id, kind, input_type, output_type, config);
         let prev = self.nodes.insert(id.to_owned(), node);
         if prev.is_some() {
-            return Err(Error::DuplicatedNodeId(id.to_owned()));
+            return Err(Error::DuplicateNode { node_name: Cow::Owned(id.to_string()) });
         }
         Ok(())
     }
@@ -124,21 +130,26 @@ impl PipelineDag {
         let mut errors = Vec::new();
 
         if let Some(cycle) = self.detect_cycle() {
-            errors.push(Error::CycleDetected(cycle));
+            errors.push(Error::CycleDetected(
+                cycle
+                    .into_iter()
+                    .map(|node_name| Cow::Owned(node_name))
+                    .collect(),
+            ));
         }
 
         for edge in &self.edges {
             let from_node = match self.nodes.get(&edge.from) {
                 Some(n) => n,
                 None => {
-                    errors.push(Error::UnknownNode(edge.from.clone()));
+                    errors.push(Error::UnknownNode(Cow::Owned(edge.from.clone())));
                     continue;
                 }
             };
             let to_node = match self.nodes.get(&edge.to) {
                 Some(n) => n,
                 None => {
-                    errors.push(Error::UnknownNode(edge.to.clone()));
+                    errors.push(Error::UnknownNode(Cow::Owned(edge.to.clone())));
                     continue;
                 }
             };
@@ -372,7 +383,7 @@ impl PipelineDag {
             for e in self.edges.iter().filter(|e| e.from == n) {
                 let d = in_degree
                     .get_mut(&e.to)
-                    .ok_or(Error::UnknownNode(e.to.clone()))?;
+                    .ok_or(Error::UnknownNode(Cow::Owned(e.to.clone())))?;
                 *d -= 1;
                 if *d == 0 {
                     queue.push_back(e.to.clone());
