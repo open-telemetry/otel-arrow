@@ -13,5 +13,9 @@ mod effect_handler;
 pub mod local;
 pub mod pipeline;
 pub mod shared;
+<<<<<<< HEAD
 // #[cfg(test)]
+=======
+
+>>>>>>> main
 pub mod testing;
