@@ -2,7 +2,7 @@
 Module: lifecycle_component
 
 This module defines the abstract base class `LifecycleComponent`, which serves as a blueprint for components
-in a load generation test orchestrator. It provides hooks for various lifecycle phases such as configuration,
+managed by the orchestrator. It provides hooks for various lifecycle phases such as configuration,
 deployment, starting, stopping, and destruction, allowing for custom behavior during these phases.
 
 Components derived from `LifecycleComponent` must implement the lifecycle methods (`configure`, `deploy`,
@@ -88,10 +88,10 @@ class LifecycleComponent(ABC):
         add_hook(phase, hook): Registers a hook function to be executed during a specified lifecycle phase.
         _run_hooks(phase): Executes all hooks that have been registered for a specified lifecycle phase.
         configure(): Abstract method to be implemented by subclasses for configuring the component.
-        deploy(): Abstract method to be implemented by subclasses for deploying the component.
-        start(): Abstract method to be implemented by subclasses for starting the component.
-        stop(): Abstract method to be implemented by subclasses for stopping the component.
-        destroy(): Abstract method to be implemented by subclasses for destroying the component.
+        deploy(): Abstract method to be implemented by subclasses for deploying the component (e.g. spawn process, start container).
+        start(): Abstract method to be implemented by subclasses for starting the component's execution behavior (e.g. send load).
+        stop(): Abstract method to be implemented by subclasses for stopping the component's execution behavior (e.g. stop load).
+        destroy(): Abstract method to be implemented by subclasses for destroying the component (e.g. kill process, stop/remove container).
         start_monitoring(): Abstract method to be implemented by subclasses to start monitoring the component.
         stop_monitoring(): Abstract method to be implemented by subclasses to stop monitoring the component.
         collect_monitoring_data(): Abstract method to be implemented by subclasses to collect monitoring data for the component.
@@ -150,19 +150,23 @@ class LifecycleComponent(ABC):
 
     @abstractmethod
     def deploy(self):
-        """Abstract method for deploying the component."""
+        """Abstract method for deploying the component (spawn a process or start a container/deployment)."""
 
     @abstractmethod
     def start(self):
-        """Abstract method for starting the component."""
+        """Abstract method for starting the component's execution behavior."""
 
     @abstractmethod
     def stop(self):
-        """Abstract method for stopping the component."""
+        """Abstract method for stopping the component's execution behavior."""
 
     @abstractmethod
     def destroy(self):
-        """Abstract method for destroying the component."""
+        """Abstract method for destroying the component (e.g. kill process, stop/remove container).
+
+        The specific signals (term/kill) and container cleanup (stop vs rm) will be dictated and
+        configured by the strategy implementation and lifecycle hooks.
+        """
 
     @abstractmethod
     def start_monitoring(self):
