@@ -8,3 +8,7 @@ pub mod grpc;
 
 /// Generated protobuf files
 pub mod proto;
+
+pub mod types;
+
+pub use types::OTLPRequest;
