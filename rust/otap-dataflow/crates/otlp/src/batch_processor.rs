@@ -327,6 +327,7 @@ mod tests {
                             value: Some(Value::StringValue("service1".to_string())),
                         }),
                     }],
+                    entity_refs: vec![],
                     ..Default::default()
                 }),
                 scope_spans: vec![ScopeSpans {
@@ -367,6 +368,8 @@ mod tests {
                         },
                     ],
                     dropped_attributes_count: 0,
+                    entity_refs: vec![],  // Add this line
+                    ..Default::default()  // This will handle any other required fields
                 }),
                 scope_spans: vec![ScopeSpans {
                     scope: Some(InstrumentationScope {
@@ -434,7 +437,7 @@ mod tests {
                         .flat_map(|rs| rs.scope_spans.iter())
                         .flat_map(|ss| ss.spans.iter())
                         .count();
-                    assert_eq!(span_count, 2); // NOTE: THIS SHOULD BE 2
+                    assert_eq!(span_count, 2); // NOTE: THIS SHOULD BE 2?
                 }
 
                 // Verify second batch has 1 span (traceId "2")
@@ -548,6 +551,7 @@ mod tests {
                                 }),
                             }],
                             dropped_attributes_count: 0,
+                            entity_refs: vec![],
                         }),
                         scope_spans: vec![ScopeSpans {
                             scope: Some(InstrumentationScope {
@@ -577,6 +581,7 @@ mod tests {
                                 }),
                             }],
                             dropped_attributes_count: 0,
+                            entity_refs: vec![],
                         }),
                         scope_spans: vec![ScopeSpans {
                             scope: Some(InstrumentationScope {
@@ -604,8 +609,9 @@ mod tests {
                                 value: Some(AnyValue {
                                     value: Some(Value::StringValue("service1".to_string())),
                                 }),
-                            }],
+                            }], 
                             dropped_attributes_count: 0,
+                            entity_refs: vec![],
                         }),
                         scope_spans: vec![ScopeSpans {
                             scope: Some(InstrumentationScope {
