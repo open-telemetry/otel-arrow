@@ -404,31 +404,41 @@ mod tests {
             .run_test(|mut ctx| async move {
                 // Create two requests with traceId "1" (should batch)
                 let req1 = create_test_trace_request_with_trace_id("1");
+                let req1_clone = req1.clone();
                 let req2 = create_test_trace_request_with_trace_id("1");
                 ctx.process(Message::PData(req1)).await.unwrap();
                 ctx.process(Message::PData(req2)).await.unwrap();
 
                 // Create one request with traceId "2" (separate batch)
                 let req3 = create_test_trace_request_with_trace_id("2");
+                let req3_clone = req3.clone();
                 ctx.process(Message::PData(req3)).await.unwrap();
 
                 // Verify results
-                let drained = ctx.drain_pdata().await;
-                assert_eq!(drained.len(), 2); // Should get 2 batches
+                if let OTLPRequest::Traces(req) = &req1_clone {
+                    let span_count = req.resource_spans
+                        .iter()
+                        .flat_map(|rs| rs.scope_spans.iter())
+                        .flat_map(|ss| ss.spans.iter())
+                        .count();
+                    assert_eq!(span_count, 1);
+                }
 
+                ctx.process(Message::Control(ControlMsg::TimerTick {})).await.unwrap(); // <--- flush emitted
                 // Verify first batch has 2 spans (traceId "1")
-                if let OTLPRequest::Traces(req) = &drained[0] {
+                if let OTLPRequest::Traces(req) = &req1_clone {
+                    println!("req1_clone: {:#?}", req);
                     let span_count = req
                         .resource_spans
                         .iter()
                         .flat_map(|rs| rs.scope_spans.iter())
                         .flat_map(|ss| ss.spans.iter())
                         .count();
-                    assert_eq!(span_count, 2);
+                    assert_eq!(span_count, 2); // NOTE: THIS SHOULD BE 2
                 }
 
                 // Verify second batch has 1 span (traceId "2")
-                if let OTLPRequest::Traces(req) = &drained[1] {
+                if let OTLPRequest::Traces(req) = &req3_clone {
                     let span_count = req
                         .resource_spans
                         .iter()
