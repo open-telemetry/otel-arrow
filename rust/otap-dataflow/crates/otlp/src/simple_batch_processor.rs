@@ -202,9 +202,9 @@ mod tests {
     use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
     use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
     use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
-    use std::time::Duration;
     use otap_df_channel::mpsc;
     use otap_df_engine::message::{Message, ControlMsg,Sender, Receiver};
+    use std::time::{Duration, Instant};
 
     // -- Helper constructors for test data --
     fn trace_req(_span_name: &str) -> ExportTraceServiceRequest {
@@ -361,4 +361,71 @@ mod tests {
             })
             .validate(|_vctx| async {});
     }
+
+    #[test]
+    fn batch_flush_on_shutdown() {
+        let mut runtime = TestRuntime::<OTLPData>::new();
+        let config = BatchConfig { send_batch_size: 10, timeout: Duration::from_millis(50) };
+        let wrapper = wrap_local(SimpleBatchProcessor::new(config));
+
+        runtime.set_processor(wrapper)
+            .run_test(|mut ctx| async move {
+                ctx.process(Message::PData(OTLPData::Logs(logs_req("baz1")))).await.unwrap();
+                ctx.process(Message::Control(ControlMsg::Shutdown { 
+                    deadline: Duration::from_millis(50) , 
+                    reason: "test".to_string() 
+                })).await.unwrap();
+                let emitted = ctx.drain_pdata().await;
+                assert_eq!(emitted.len(), 1, "Should emit 1 logs batch on shutdown");
+                match &emitted[0] {
+                    OTLPData::Logs(_) => {},
+                    _ => panic!("Expected logs batch"),
+                }
+            })
+            .validate(|_vctx| async {});
+    }
+
+    // Test that the processor can handle multiple types of data simultaneously
+    #[test]
+fn batch_multiple_types_flush_on_shutdown() {
+    let mut runtime = TestRuntime::<OTLPData>::new();
+    let config = BatchConfig { send_batch_size: 10, timeout: Duration::from_millis(50) };
+    let wrapper = wrap_local(SimpleBatchProcessor::new(config));
+
+    runtime.set_processor(wrapper)
+        .run_test(|mut ctx| async move {
+            // Send one of each type of data
+            ctx.process(Message::PData(OTLPData::Logs(logs_req("baz1")))).await.unwrap();
+            ctx.process(Message::PData(OTLPData::Metrics(metric_req("bar1")))).await.unwrap();
+            ctx.process(Message::PData(OTLPData::Traces(trace_req("foo1")))).await.unwrap();
+
+            // Trigger shutdown to flush all batches
+            ctx.process(Message::Control(ControlMsg::Shutdown { 
+                deadline: Duration::from_millis(50), 
+                reason: "test".to_string() 
+            })).await.unwrap();
+            
+            // Get all emitted batches
+            let emitted = ctx.drain_pdata().await;
+            assert_eq!(emitted.len(), 3, "Should emit 3 batches on shutdown");
+            
+            // Check that we have one of each type, regardless of order
+            let mut has_logs = false;
+            let mut has_metrics = false;
+            let mut has_traces = false;
+            
+            for item in &emitted {
+                match item {
+                    OTLPData::Logs(_) => has_logs = true,
+                    OTLPData::Metrics(_) => has_metrics = true,
+                    OTLPData::Traces(_) => has_traces = true,
+                }
+            }
+            
+            assert!(has_logs, "Missing logs batch in output");
+            assert!(has_metrics, "Missing metrics batch in output");
+            assert!(has_traces, "Missing traces batch in output");
+        })
+        .validate(|_vctx| async {});
+}
 }
