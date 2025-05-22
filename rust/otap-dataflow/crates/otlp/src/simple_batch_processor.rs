@@ -1,4 +1,20 @@
-/// Simple batch processor implementation
+//! A simple batching processor for OTLP (OpenTelemetry Protocol) data.
+//!
+//! This module provides a basic batching implementation that collects OTLP data (traces, metrics, and logs)
+//! and flushes them based on either:
+//! - Batch size: When the number of items reaches a configured threshold
+//! - Timeout: When a specified duration has passed since the last flush
+//!
+//! # Configuration
+//! The processor is configured using [`BatchConfig`] which allows setting:
+//! - `send_batch_size`: Maximum number of items to batch before flushing
+//! - `timeout` : Maximum duration to wait before flushing an incomplete batch
+//!
+//! # Features
+//! - Handles all three OTLP data types (traces, metrics, logs) independently
+//! - Thread-safe operation through message passing
+//! - Configurable batching behavior
+//! - Simple and efficient implementation suitable for basic use cases
 
 use std::time::{Duration, Instant};
 use async_trait::async_trait;
