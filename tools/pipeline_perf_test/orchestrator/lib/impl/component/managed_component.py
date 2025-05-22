@@ -30,6 +30,7 @@ LifecycleHookStrategy = Literal["append", "replace"]
 
 
 class LifecycleHooks(BaseModel):
+    """Base configuration model that specifies a lifecycle hook to set on a component"""
     pre: Optional[List[str]] = Field(
         default_factory=list, description="Commands to run before start/stop"
     )
@@ -40,7 +41,8 @@ class LifecycleHooks(BaseModel):
     post_strategy: LifecycleHookStrategy = "append"
 
 
-class ManagedComponentActioConfig(BaseModel):
+class ManagedComponentActionConfig(BaseModel):
+    """Base configuration model that specifies an action to invoke on a component"""
     type: Literal["component_action"]
     target: str
     action: LifecyclePhase
