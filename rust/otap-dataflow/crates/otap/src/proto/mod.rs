@@ -10,15 +10,12 @@
 
 #[path = ""]
 pub mod opentelemetry {
-
     #[path = ""]
     pub mod experimental {
         #[path = ""]
         pub mod arrow {
-            #[path = "opentelemetry.proto.collector.logs.v1.rs"]
+            #[path = "opentelemetry.proto.experimental.arrow.v1.rs"]
             pub mod v1;
         }
-        #[path = ""]
     }
-
 }
