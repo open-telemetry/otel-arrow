@@ -12,9 +12,9 @@
 
 use crate::decode::record_message::RecordMessage;
 use crate::error;
+use crate::otap::{OtapBatch, from_record_messages};
 use crate::otlp::logs::logs_from;
-use crate::otlp::logs::related_data::RelatedData as LogsRelatedData;
-use crate::otlp::metrics::{metrics_from, related_data::RelatedData as MetricsRelatedData};
+use crate::otlp::metrics::metrics_from;
 use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, BatchArrowRecords};
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
@@ -115,11 +115,12 @@ impl Consumer {
     ) -> error::Result<ExportMetricsServiceRequest> {
         match get_main_payload_type(records)? {
             ArrowPayloadType::UnivariateMetrics => {
-                let record_message = self.consume_bar(records)?;
-                let (mut related_data, metric_record) =
-                    MetricsRelatedData::from_record_messages(&record_message)?;
-                let metric_rec_idx = metric_record.context(error::MetricRecordNotFoundSnafu)?;
-                metrics_from(&record_message[metric_rec_idx].record, &mut related_data)
+                let record_messages = self.consume_bar(records)?;
+                let otap_batch = OtapBatch::Metrics(from_record_messages(record_messages));
+                // let (mut related_data, metric_record) =
+                //     MetricsRelatedData::from_record_messages(&record_message)?;
+                // let metric_rec_idx = metric_record.context(error::MetricRecordNotFoundSnafu)?;
+                metrics_from(&otap_batch)
             }
             main_record_type => error::UnsupportedPayloadTypeSnafu {
                 actual: main_record_type,
@@ -137,11 +138,9 @@ impl Consumer {
     ) -> error::Result<ExportLogsServiceRequest> {
         match get_main_payload_type(records)? {
             ArrowPayloadType::Logs => {
-                let record_message = self.consume_bar(records)?;
-                let (mut related_data, log_record) =
-                    LogsRelatedData::from_record_messages(&record_message)?;
-                let log_rec_idx = log_record.context(error::LogRecordNotFoundSnafu)?;
-                logs_from(&record_message[log_rec_idx].record, &mut related_data)
+                let record_messages = self.consume_bar(records)?;
+                let otap_batch = OtapBatch::Logs(from_record_messages(record_messages));
+                logs_from(&otap_batch)
             }
             main_record_type => error::UnsupportedPayloadTypeSnafu {
                 actual: main_record_type,

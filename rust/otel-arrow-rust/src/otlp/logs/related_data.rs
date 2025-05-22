@@ -3,6 +3,7 @@
 
 use crate::decode::record_message::RecordMessage;
 use crate::error;
+use crate::otap::OtapBatch;
 use crate::otlp::attributes::store::Attribute16Store;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
@@ -20,35 +21,26 @@ impl RelatedData {
         self.log_record_id += delta;
         self.log_record_id
     }
+}
 
-    /// returns an instance of self and also the index of the main log record
-    /// in the input array.
-    pub fn from_record_messages(rbs: &[RecordMessage]) -> error::Result<(Self, Option<usize>)> {
-        let mut related_data = RelatedData::default();
-        let mut logs_record_idx: Option<usize> = None;
+impl TryFrom<&OtapBatch> for RelatedData {
+    type Error = error::Error;
 
-        for (idx, rm) in rbs.iter().enumerate() {
-            match rm.payload_type {
-                ArrowPayloadType::Logs => logs_record_idx = Some(idx),
-                ArrowPayloadType::ResourceAttrs => {
-                    related_data.res_attr_map_store = Attribute16Store::try_from(&rm.record)?;
-                }
-                ArrowPayloadType::ScopeAttrs => {
-                    related_data.scope_attr_map_store = Attribute16Store::try_from(&rm.record)?;
-                }
-                ArrowPayloadType::LogAttrs => {
-                    related_data.log_record_attr_map_store =
-                        Attribute16Store::try_from(&rm.record)?;
-                }
-                _ => {
-                    return error::UnsupportedPayloadTypeSnafu {
-                        actual: rm.payload_type,
-                    }
-                    .fail();
-                }
-            }
+    fn try_from(otap_batch: &OtapBatch) -> error::Result<Self> {
+        let mut related_data = Self::default();
+
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::ResourceAttrs) {
+            related_data.res_attr_map_store = Attribute16Store::try_from(rb)?;
         }
 
-        Ok((related_data, logs_record_idx))
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::ScopeAttrs) {
+            related_data.scope_attr_map_store = Attribute16Store::try_from(rb)?;
+        }
+
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::LogAttrs) {
+            related_data.log_record_attr_map_store = Attribute16Store::try_from(rb)?;
+        }
+
+        Ok(related_data)
     }
 }

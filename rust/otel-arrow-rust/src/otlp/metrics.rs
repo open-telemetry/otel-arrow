@@ -15,8 +15,10 @@ use crate::arrays::{
     get_u8_array, get_u16_array,
 };
 use crate::error;
+use crate::otap::OtapBatch;
 use crate::otlp::common::{ResourceArrays, ScopeArrays};
 use crate::otlp::metrics::related_data::RelatedData;
+use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
 use crate::proto::opentelemetry::metrics::v1::metric;
 use crate::schema::consts;
@@ -26,7 +28,7 @@ use snafu::{OptionExt, ResultExt};
 
 pub mod data_points;
 pub mod exemplar;
-pub mod related_data;
+mod related_data;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
 #[repr(u8)]
@@ -93,10 +95,7 @@ impl<'a> TryFrom<&'a RecordBatch> for MetricsArrays<'a> {
 }
 
 /// Builds [ExportMetricsServiceRequest] from given record batch.
-pub fn metrics_from(
-    rb: &RecordBatch,
-    related_data: &mut RelatedData,
-) -> error::Result<ExportMetricsServiceRequest> {
+pub fn metrics_from(metrics_otap_batch: &OtapBatch) -> error::Result<ExportMetricsServiceRequest> {
     let mut metrics = ExportMetricsServiceRequest::default();
 
     let mut prev_res_id: Option<u16> = None;
@@ -104,6 +103,11 @@ pub fn metrics_from(
 
     let mut res_id = 0;
     let mut scope_id = 0;
+
+    let rb = metrics_otap_batch
+        .get(ArrowPayloadType::UnivariateMetrics)
+        .context(error::MetricRecordNotFoundSnafu)?;
+    let mut related_data = RelatedData::try_from(metrics_otap_batch)?;
 
     let resource_arrays = ResourceArrays::try_from(rb)?;
     let scope_arrays = ScopeArrays::try_from(rb)?;

@@ -6,7 +6,9 @@
 
 use arrow::array::RecordBatch;
 
-use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
+use crate::{
+    decode::record_message::RecordMessage, proto::opentelemetry::arrow::v1::ArrowPayloadType,
+};
 
 /// The OtapBatch enum is used to represent a batch of OTAP data.
 pub enum OtapBatch {
@@ -46,7 +48,7 @@ impl OtapBatch {
 /// storing and retrieving Arrow record batches in a type-safe manner. It is
 /// implemented by various structs that represent each signal type and provides
 /// methods to efficiently set and get record batches.
-trait ArrowBatchStore: Sized + Default {
+trait OtapBatchStore: Sized + Default {
     // Internally, implementers should use a bitmask for the types they support.
     // The offsets in the bitmask should correspond to the ArrowPayloadType enum values.
     const TYPE_MASK: u64;
@@ -81,6 +83,17 @@ trait ArrowBatchStore: Sized + Default {
             self.batches()[POSITION_LOOKUP[payload_type as usize]].as_ref()
         }
     }
+}
+
+/// Convert the list of decoded messages into an OtapBatchStore implementation
+#[allow(private_bounds)]
+pub fn from_record_messages<T: OtapBatchStore>(record_messages: Vec<RecordMessage>) -> T {
+    let mut batch_store = T::new();
+    for message in record_messages {
+        batch_store.set(message.payload_type, message.record);
+    }
+
+    batch_store
 }
 
 /// The POSITION_LOOKUP array is used to map the ArrowPayloadType enum values to
@@ -146,7 +159,7 @@ pub struct Logs {
     batches: [Option<RecordBatch>; 4],
 }
 
-impl ArrowBatchStore for Logs {
+impl OtapBatchStore for Logs {
     const TYPE_MASK: u64 = 0u64
         + (1 << ArrowPayloadType::ResourceAttrs as u64)
         + (1 << ArrowPayloadType::ScopeAttrs as u64)
@@ -168,7 +181,7 @@ pub struct Metrics {
     batches: [Option<RecordBatch>; 18],
 }
 
-impl ArrowBatchStore for Metrics {
+impl OtapBatchStore for Metrics {
     const TYPE_MASK: u64 = 0u64
         + (1 << ArrowPayloadType::ResourceAttrs as u64)
         + (1 << ArrowPayloadType::ScopeAttrs as u64)
@@ -204,7 +217,7 @@ pub struct Traces {
     batches: [Option<RecordBatch>; 8],
 }
 
-impl ArrowBatchStore for Traces {
+impl OtapBatchStore for Traces {
     const TYPE_MASK: u64 = 0u64
         + (1 << ArrowPayloadType::ResourceAttrs as u64)
         + (1 << ArrowPayloadType::ScopeAttrs as u64)
