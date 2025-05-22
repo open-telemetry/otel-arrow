@@ -6,7 +6,7 @@ use arrow::array::{
     TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, Fields};
-use related_data::RelatedDataV2;
+use related_data::RelatedData;
 use snafu::{OptionExt, ResultExt, ensure};
 
 use crate::arrays::{
@@ -16,7 +16,6 @@ use crate::arrays::{
 use crate::error::{self, Error, Result};
 use crate::otap::OtapBatch;
 use crate::otlp::common::{ResourceArrays, ScopeArrays};
-use crate::otlp::logs::related_data::RelatedData;
 use crate::otlp::metrics::AppendAndGet;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
@@ -212,15 +211,6 @@ pub fn logs_from(logs_otap_batch: &OtapBatch) -> Result<ExportLogsServiceRequest
             }
 
             if let Some(res_id) = resource_arrays.id.value_at(idx) {
-                // store v1 impl
-                // if let Some(attrs) = related_data
-                //     .res_attr_map_store
-                //     .attribute_by_delta_id(res_id)
-                // {
-                //     resource.attributes = attrs.to_vec();
-                // }
-
-                // store v2 impl
                 if let Some(attrs) = related_data
                     .res_attr_map_store
                     .as_mut()
@@ -240,15 +230,6 @@ pub fn logs_from(logs_otap_batch: &OtapBatch) -> Result<ExportLogsServiceRequest
             prev_scope_id = Some(scope_id);
             let mut scope = scope_arrays.create_instrumentation_scope(idx);
             if let Some(scope_id) = scope_delta_id_opt {
-                // sotre v1 impl
-                // if let Some(attrs) = related_data
-                //     .scope_attr_map_store
-                //     .attribute_by_delta_id(scope_id)
-                // {
-                //     scope.attributes = attrs.to_vec();
-                // }
-
-                // store v2 impl
                 if let Some(attrs) = related_data
                     .scope_attr_map_store
                     .as_mut()
@@ -318,15 +299,6 @@ pub fn logs_from(logs_otap_batch: &OtapBatch) -> Result<ExportLogsServiceRequest
             current_log_record.body = Some(body_val?)
         }
 
-        // store v1 impl
-        // if let Some(attrs) = related_data
-        //     .log_record_attr_map_store
-        //     .attribute_by_id(delta_id)
-        // {
-        //     current_log_record.attributes = attrs.to_vec();
-        // }
-
-        // store v2 impl
         if let Some(attrs) = related_data
             .log_record_attr_map_store
             .as_mut()
