@@ -17,9 +17,12 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
+from pydantic import BaseModel
 from typing import Callable, Dict, List, Optional, Any
 
+from .runtime import ComponentRuntime
 from ..context.base import BaseContext
+from ..test_framework.test_context import TestStepContext
 
 
 @dataclass
@@ -28,13 +31,49 @@ class LifecycleHookContext(BaseContext):
     Holds state for a test hook execution.
     """
 
-    component: Optional["LifecycleComponent"] = None
-    phase: Optional["LifecyclePhase"] = None
+    parent_ctx: Optional["TestStepContext"] = None
+    phase: Optional["HookableLifecyclePhase"] = None
+
+    def get_step_component(self) -> Optional["LifecycleComponent"]:
+        """Fetches the component instance on which this hook is firing.
+
+        Returns: the component instance or none.
+        """
+        if self.parent_ctx is None:
+            raise RuntimeError(
+                "LifecycleHookContext.parent_ctx must be set to access the step component."
+            )
+        return self.parent_ctx.step.component
 
 
 class LifecyclePhase(Enum):
     """
-    Enum representing the various phases in the lifecycle of a component.
+    Enum representing the various primary phases in the lifecycle of a component.
+
+    These phases help manage the orchestration of components during test execution.
+
+    Phases include:
+        - CONFIGURE        (call configuration strategies to e.g. prepare manifests for deployment)
+        - DEPLOY           (call a deployment strategy to e.g. deploy / start a process/container)
+        - START            (call an execution strategy to e.g. start sending load)
+        - STOP             (call an execution strategy to e.g. stop sending load)
+        - DESTROY          (call a deployment strategy to e.g. stop a process/container)
+        - START_MONITORING (call a monitoring strategy to e.g. monitor a process / container)
+        - STOP_MONITORING  (call a monitoring strategy to e.g. stop monitoring a process / container)
+    """
+
+    CONFIGURE = "configure"
+    DEPLOY = "deploy"
+    START = "start"
+    STOP = "stop"
+    DESTROY = "destroy"
+    START_MONITORING = "start_monitoring"
+    STOP_MONITORING = "stop_monitoring"
+
+
+class HookableLifecyclePhase(Enum):
+    """
+    Enum representing the various phases in the lifecycle of a component which support hooks.
 
     These phases correspond to different stages of the component's lifecycle, where hooks can be registered
     and executed to perform actions before or after a phase is executed. These phases help manage the
@@ -106,11 +145,11 @@ class LifecycleComponent(ABC):
         be executed.
         """
         self._hooks: Dict[
-            LifecyclePhase, List[Callable[[LifecycleHookContext], Any]]
+            HookableLifecyclePhase, List[Callable[[LifecycleHookContext], Any]]
         ] = defaultdict(list)
 
     def add_hook(
-        self, phase: LifecyclePhase, hook: Callable[[LifecycleHookContext], Any]
+        self, phase: HookableLifecyclePhase, hook: Callable[[LifecycleHookContext], Any]
     ):
         """
         Registers a hook to be executed during a specific lifecycle phase.
@@ -128,7 +167,7 @@ class LifecycleComponent(ABC):
         """
         self._hooks[phase].append(hook)
 
-    def _run_hooks(self, phase: LifecyclePhase):
+    def _run_hooks(self, phase: HookableLifecyclePhase, ctx: TestStepContext):
         """
         Executes all hooks that are registered for a specified lifecycle phase.
 
@@ -137,31 +176,42 @@ class LifecycleComponent(ABC):
         Args:
             phase (LifecyclePhase): The lifecycle phase during which to run the hooks (e.g., PRE_CONFIGURE, POST_CONFIGURE).
         """
-        hook_context = LifecycleHookContext(
-            component=self,
-            phase=phase,
-        )
+        ctx.log(f"Running hooks for phase: {phase.value}")
         for hook in self._hooks.get(phase, []):
-            hook(hook_context)
+            hook_context = LifecycleHookContext(
+                phase=phase, name=f"{hook.__name__} ({phase.value})"
+            )
+            ctx.add_child_ctx(hook_context)
+            try:
+                hook_context.start()
+                hook(hook_context)
+                hook_context.status = "success"
+            except Exception as e:
+                hook_context.status = "error"
+                hook_context.error = e
+                hook_context.log(f"Hook failed: {e}")
+                break
+            finally:
+                hook_context.end()
 
     @abstractmethod
-    def configure(self):
+    def configure(self, ctx: TestStepContext):
         """Abstract method for configuring the component."""
 
     @abstractmethod
-    def deploy(self):
+    def deploy(self, ctx: TestStepContext):
         """Abstract method for deploying the component (spawn a process or start a container/deployment)."""
 
     @abstractmethod
-    def start(self):
+    def start(self, ctx: TestStepContext):
         """Abstract method for starting the component's execution behavior."""
 
     @abstractmethod
-    def stop(self):
+    def stop(self, ctx: TestStepContext):
         """Abstract method for stopping the component's execution behavior."""
 
     @abstractmethod
-    def destroy(self):
+    def destroy(self, ctx: TestStepContext):
         """Abstract method for destroying the component (e.g. kill process, stop/remove container).
 
         The specific signals (term/kill) and container cleanup (stop vs rm) will be dictated and
@@ -169,13 +219,13 @@ class LifecycleComponent(ABC):
         """
 
     @abstractmethod
-    def start_monitoring(self):
+    def start_monitoring(self, ctx: TestStepContext):
         """Abstract method to start monitoring the component."""
 
     @abstractmethod
-    def stop_monitoring(self):
+    def stop_monitoring(self, ctx: TestStepContext):
         """Abstract method to stop monitoring the component."""
 
     @abstractmethod
-    def collect_monitoring_data(self):
+    def collect_monitoring_data(self, ctx: TestStepContext):
         """Abstract method to collect monitoring data for the component."""

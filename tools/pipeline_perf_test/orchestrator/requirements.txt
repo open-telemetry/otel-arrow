@@ -3,6 +3,7 @@
 # General dependencies
 requests>=2.25.0
 pyyaml>=5.4.1
+pydantic>=2.11.4
 
 # Docker management
 docker>=5.0.0
