@@ -140,7 +140,7 @@ impl Consumer {
             ArrowPayloadType::Logs => {
                 let record_messages = self.consume_bar(records)?;
                 let otap_batch = OtapBatch::Logs(from_record_messages(record_messages));
-                logs_from(&otap_batch)
+                logs_from(otap_batch)
             }
             main_record_type => error::UnsupportedPayloadTypeSnafu {
                 actual: main_record_type,

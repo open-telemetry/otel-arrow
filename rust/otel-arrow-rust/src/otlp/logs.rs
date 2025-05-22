@@ -23,6 +23,7 @@ use crate::proto::opentelemetry::common::v1::AnyValue;
 use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::schema::consts;
 
+use super::attributes::decoder::{materialize_parent_id, sort_by_parent_id};
 use super::attributes::{cbor, store::AttributeValueType};
 
 mod related_data;
@@ -175,7 +176,7 @@ impl<'a> TryFrom<&'a StructArray> for LogBodyArrays<'a> {
     }
 }
 
-pub fn logs_from(logs_otap_batch: &OtapBatch) -> Result<ExportLogsServiceRequest> {
+pub fn logs_from(mut logs_otap_batch: OtapBatch) -> Result<ExportLogsServiceRequest> {
     let mut logs = ExportLogsServiceRequest::default();
     let mut prev_res_id: Option<u16> = None;
     let mut prev_scope_id: Option<u16> = None;
@@ -183,10 +184,28 @@ pub fn logs_from(logs_otap_batch: &OtapBatch) -> Result<ExportLogsServiceRequest
     let mut res_id = 0;
     let mut scope_id = 0;
 
+    if let Some(rb) = logs_otap_batch.get(ArrowPayloadType::LogAttrs) {
+        // let optimized = materialize_parent_id::<u16>(rb)?;
+        let optimized = sort_by_parent_id(rb).unwrap();
+        arrow::util::pretty::print_batches(&[optimized.clone()]).unwrap();
+        logs_otap_batch.set(ArrowPayloadType::LogAttrs, optimized);
+    }
+
+    if let Some(rb) = logs_otap_batch.get(ArrowPayloadType::ResourceAttrs) {
+        let optimized = sort_by_parent_id(rb)?;
+        logs_otap_batch.set(ArrowPayloadType::ResourceAttrs, optimized);
+    }
+
+    if let Some(rb) = logs_otap_batch.get(ArrowPayloadType::ScopeAttrs) {
+        let optimized = sort_by_parent_id(rb)?;
+        logs_otap_batch.set(ArrowPayloadType::ScopeAttrs, optimized);
+    }
+
     let rb = logs_otap_batch
         .get(ArrowPayloadType::Logs)
         .context(error::LogRecordNotFoundSnafu)?;
-    let mut related_data = RelatedData::try_from(logs_otap_batch)?;
+
+    let mut related_data = RelatedData::try_from(&logs_otap_batch)?;
 
     let resource_arrays = ResourceArrays::try_from(rb)?;
     let scope_arrays = ScopeArrays::try_from(rb)?;
