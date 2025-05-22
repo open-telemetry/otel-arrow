@@ -1,22 +1,34 @@
 # OTLP Nodes
 
-## BatchProcessor
+## SimpleBatchProcessor
 
-A generic, async batch processor for the OpenTelemetry Arrow pipeline engine. Buffers incoming data messages and emits them in batches based on batch size, timer ticks, timeout, or shutdown signals.
+A lightweight, synchronous batch processor designed for OpenTelemetry Protocol (OTLP) data within the Arrow pipeline. This processor efficiently collects and batches telemetry data before forwarding it for further processing.
 
-### Features
-- Buffers messages of any type (`PData`).
-- Emits batches based on batch size, timer ticks, timeout, or shutdown.
-- Handles pipeline control messages (`TimerTick`, `Shutdown`, `Ack`, `Nack`, `Config`).
-- Supports metadata-based batching.
-- Conforms to the `Processor` trait in `otap_df_engine`.
-- Uses `SendEffectHandler` for thread-safe message passing.
+### Key Features
 
-### Configuration Options
-The batch processor can be configured with the following options:
+- Multiple Data Type Support: Handles all three OTLP data types (traces, metrics, and logs) independently
+- Automatic Batching: Collects data points and combines them into batches based on configurable criteria
 
-- `send_batch_size`: The number of messages to buffer before sending a batch (default: 0).
-- `send_batch_max_size`: The maximum allowed batch size (default: 0, no maximum).
-- `timeout`: Time after which a batch will be sent regardless of size (default: 0).
-- `metadata_keys`: List of metadata keys to use for distinct batching (default: empty).
-- `metadata_cardinality_limit`: Maximum number of batcher instances (default: 1000).
+### Configurable Flush Triggers
+
+- **Batch size**: Flushes when the number of items reaches a configured threshold
+- **Timeout**: Flushes after a specified duration, ensuring data doesn't stay buffered too long
+- **Shutdown**: Ensures all buffered data is emitted during graceful shutdown
+
+### Additional Features
+
+- **Thread-Safe**: Uses message passing for safe concurrent operation
+- **Lightweight**: Minimal overhead implementation suitable for basic batching needs
+
+### Use Cases
+
+- Simple telemetry collection and forwarding
+- Development and testing environments
+- Scenarios where minimal processing overhead is desired
+- When you need a straightforward, no-frills batching solution
+
+### When to Consider Alternatives
+
+- If you need advanced batching features like metadata-based routing
+- When you require dynamic configuration changes at runtime
+- For high-cardinality scenarios that might need more sophisticated batching logic
