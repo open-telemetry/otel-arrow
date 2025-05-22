@@ -9,8 +9,6 @@
 ///
 /// ToDo Modify OTLPData -> Optimize message transport
 
-use crate::types::OTLPRequest;
-
 use crate::proto::opentelemetry::collector::{
     logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
