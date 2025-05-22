@@ -14,7 +14,7 @@ use crate::arrays::{
     StructColumnAccessor, get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt,
 };
 use crate::error::{self, Error, Result};
-use crate::otap::OtapBatch;
+use crate::otap::{OtapBatch, transform::sort_by_parent_id};
 use crate::otlp::common::{ResourceArrays, ScopeArrays};
 use crate::otlp::metrics::AppendAndGet;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
@@ -23,7 +23,6 @@ use crate::proto::opentelemetry::common::v1::AnyValue;
 use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::schema::consts;
 
-use super::attributes::decoder::{materialize_parent_id, sort_by_parent_id};
 use super::attributes::{cbor, store::AttributeValueType};
 
 mod related_data;

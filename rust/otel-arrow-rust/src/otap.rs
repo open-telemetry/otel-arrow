@@ -10,6 +10,12 @@ use crate::{
     decode::record_message::RecordMessage, proto::opentelemetry::arrow::v1::ArrowPayloadType,
 };
 
+#[allow(missing_docs)]
+pub mod transform;
+
+/// definitions for schema metadata for OTAP record batches
+pub mod schema;
+
 /// The OtapBatch enum is used to represent a batch of OTAP data.
 pub enum OtapBatch {
     /// Represents a batch of logs data.

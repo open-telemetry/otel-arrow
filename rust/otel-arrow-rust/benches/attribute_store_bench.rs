@@ -11,7 +11,7 @@ use arrow::array::{
 use arrow::datatypes::{DataType, Field, Schema};
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
-use otel_arrow_rust::otlp::attributes::decoder::sort_by_parent_id;
+use otel_arrow_rust::otap::transform::sort_by_parent_id;
 use otel_arrow_rust::otlp::attributes::store::{Attribute16Store, AttributeStoreV2};
 use otel_arrow_rust::otlp::attributes::{
     decoder::materialize_parent_id, store::AttributeValueType,
