@@ -138,6 +138,7 @@ where
         Ok(Self { list, value })
     }
 
+    #[must_use]
     pub fn value_at_opt(&self, idx: usize) -> Option<Vec<T::Native>> {
         if !self.list.is_valid(idx) {
             return None;
@@ -147,6 +148,7 @@ where
         let vec = (start..end)
             .map(|idx| self.value.value_at(idx).unwrap_or_default())
             .collect();
+
         Some(vec)
     }
 }

@@ -38,6 +38,7 @@ impl OtapBatch {
     /// Get the record batch for the given payload type, if this payload type was included
     /// in the batch. If the payload type is not valid for this type of telemetry signal, this
     /// also method returns None.
+    #[must_use]
     pub fn get(&self, payload_type: ArrowPayloadType) -> Option<&RecordBatch> {
         match self {
             Self::Logs(logs) => logs.get(payload_type),
@@ -90,6 +91,7 @@ trait OtapBatchStore: Sized + Default {
 
 /// Convert the list of decoded messages into an OtapBatchStore implementation
 #[allow(private_bounds)]
+#[must_use]
 pub fn from_record_messages<T: OtapBatchStore>(record_messages: Vec<RecordMessage>) -> T {
     let mut batch_store = T::new();
     for message in record_messages {
@@ -163,8 +165,7 @@ pub struct Logs {
 }
 
 impl OtapBatchStore for Logs {
-    const TYPE_MASK: u64 = 0u64
-        + (1 << ArrowPayloadType::ResourceAttrs as u64)
+    const TYPE_MASK: u64 = (1 << ArrowPayloadType::ResourceAttrs as u64)
         + (1 << ArrowPayloadType::ScopeAttrs as u64)
         + (1 << ArrowPayloadType::Logs as u64)
         + (1 << ArrowPayloadType::LogAttrs as u64);
@@ -185,8 +186,7 @@ pub struct Metrics {
 }
 
 impl OtapBatchStore for Metrics {
-    const TYPE_MASK: u64 = 0u64
-        + (1 << ArrowPayloadType::ResourceAttrs as u64)
+    const TYPE_MASK: u64 = (1 << ArrowPayloadType::ResourceAttrs as u64)
         + (1 << ArrowPayloadType::ScopeAttrs as u64)
         + (1 << ArrowPayloadType::UnivariateMetrics as u64)
         + (1 << ArrowPayloadType::NumberDataPoints as u64)
@@ -221,8 +221,7 @@ pub struct Traces {
 }
 
 impl OtapBatchStore for Traces {
-    const TYPE_MASK: u64 = 0u64
-        + (1 << ArrowPayloadType::ResourceAttrs as u64)
+    const TYPE_MASK: u64 = (1 << ArrowPayloadType::ResourceAttrs as u64)
         + (1 << ArrowPayloadType::ScopeAttrs as u64)
         + (1 << ArrowPayloadType::Spans as u64)
         + (1 << ArrowPayloadType::SpanAttrs as u64)

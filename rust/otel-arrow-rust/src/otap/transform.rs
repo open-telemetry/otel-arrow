@@ -72,11 +72,11 @@ where
 {
     let schema = record_batch.schema_ref();
     let column_index = schema.index_of(column_name);
-    if !column_index.is_ok() {
+    if column_index.is_err() {
         // column doesn't exist, nothing to do
         return Ok(record_batch.clone());
     }
-    // safety: we've just checked above that column_index is Ok
+    // safety: we've already returned if column_index is an error
     let column_index = column_index.expect("column_index should be Ok");
 
     let column = record_batch.column(column_index);
@@ -116,6 +116,7 @@ where
         .expect("should be able to create record batch"))
 }
 
+#[must_use]
 pub fn remove_delta_encoding_from_column<T>(array: &PrimitiveArray<T>) -> PrimitiveArray<T>
 where
     T: ArrowPrimitiveType,

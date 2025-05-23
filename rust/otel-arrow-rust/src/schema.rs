@@ -22,6 +22,7 @@ use std::sync::Arc;
 pub mod consts;
 
 /// Returns a new record batch with the new key/value updated in the schema metadata.
+#[must_use]
 pub fn update_schema_metadata(
     record_batch: RecordBatch,
     key: String,
@@ -33,19 +34,24 @@ pub fn update_schema_metadata(
 
     let new_schema = schema.as_ref().clone().with_metadata(schema_metadata);
 
-    // TODO expect, safety, etc
-    record_batch.with_schema(Arc::new(new_schema)).unwrap()
+    // safety: this should not fail, as we haven't changed the fields in the schema,
+    // just the metadata, so the schema should be compatible with the columns
+    record_batch
+        .with_schema(Arc::new(new_schema))
+        .expect("can create record batch with same schema.")
 }
 
 /// Returns a new record batch with the new key/value updated in the field metadata.
+#[must_use]
 pub fn update_field_metadata(schema: &Schema, column_name: &str, key: &str, value: &str) -> Schema {
     // find the column index
     let column_index = schema.index_of(column_name);
-    if !column_index.is_ok() {
+    if column_index.is_err() {
         // nothing to do, column doesn't exist
         return schema.clone();
     }
-    let column_index = column_index.unwrap();
+    // safety: we have already returned if column_id is Err
+    let column_index = column_index.expect("expect column_id is Ok");
 
     // create a new field with updated metadata
     let field = &schema.fields[column_index];
@@ -71,6 +77,7 @@ pub fn update_field_metadata(schema: &Schema, column_name: &str, key: &str, valu
 }
 
 /// Get the value of the schema metadata for a given key.
+#[must_use]
 pub fn get_schema_metadata<'a>(schema: &'a Schema, key: &'a str) -> Option<&'a str> {
     // get the schema metadata
     let schema_metadata = schema.metadata();
@@ -78,6 +85,7 @@ pub fn get_schema_metadata<'a>(schema: &'a Schema, key: &'a str) -> Option<&'a s
 }
 
 /// Get the value of the field metadata for a given column and key.
+#[must_use]
 pub fn get_field_metadata<'a>(
     schema: &'a Schema,
     column_name: &str,
@@ -85,11 +93,12 @@ pub fn get_field_metadata<'a>(
 ) -> Option<&'a str> {
     // find the column index
     let column_index = schema.index_of(column_name);
-    if !column_index.is_ok() {
+    if column_index.is_err() {
         // nothing to do, column doesn't exist
         return None;
     }
-    let column_index = column_index.unwrap();
+    // safety: we've already returned if column_index is error
+    let column_index = column_index.expect("column_index to be Ok");
 
     // get the field metadata
     let field = &schema.fields[column_index];

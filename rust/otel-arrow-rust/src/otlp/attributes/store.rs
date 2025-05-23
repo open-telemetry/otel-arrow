@@ -19,18 +19,11 @@ use crate::error;
 use crate::otlp::attributes::parent_id::ParentId;
 use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
-use crate::schema::{
-    consts::{self, metadata},
-    get_field_metadata, get_schema_metadata,
-};
-use arrow::array::{
-    ArrowPrimitiveType, BooleanArray, Float64Array, PrimitiveArray, RecordBatch, UInt8Array,
-    UInt64Array,
-};
+use crate::schema::consts;
+use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch};
 use num_enum::TryFromPrimitive;
 use snafu::{OptionExt, ResultExt};
 use std::collections::HashMap;
-use std::iter;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
 #[repr(u8)]
