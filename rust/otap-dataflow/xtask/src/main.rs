@@ -108,9 +108,7 @@ fn compile_proto_otap() -> anyhow::Result<()> {
     tonic_build::configure()
         .out_dir("crates/otap/src/proto")
         .compile_protos(
-            &[
-                "proto/experimental/arrow/v1/arrow_service.proto"
-            ],
+            &["proto/experimental/arrow/v1/arrow_service.proto"],
             &["../../proto/opentelemetry"],
         )
         .expect("Failed to compile OTLP protos.");
