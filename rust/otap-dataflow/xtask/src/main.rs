@@ -31,7 +31,7 @@ fn main() -> anyhow::Result<()> {
                 Ok(())
             }
             "compile-proto" => {
-                // compile_proto_otlp()?;
+                compile_proto_otlp()?;
                 compile_proto_otap()?;
                 Ok(())
             }
@@ -83,6 +83,7 @@ fn test_all() -> anyhow::Result<()> {
 }
 
 fn compile_proto_otlp() -> anyhow::Result<()> {
+    let base = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
     tonic_build::configure()
         .out_dir("crates/otlp/src/proto")
         .compile_protos(
@@ -98,18 +99,19 @@ fn compile_proto_otlp() -> anyhow::Result<()> {
                 "opentelemetry/proto/collector/metrics/v1/metrics_service.proto",
                 "opentelemetry/proto/collector/profiles/v1development/profiles_service.proto",
             ],
-            &["../../proto/opentelemetry-proto"],
+            &[format!("{}/../../../proto/opentelemetry-proto", base)],
         )
         .expect("Failed to compile OTLP protos.");
     Ok(())
 }
 
 fn compile_proto_otap() -> anyhow::Result<()> {
+    let base = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
     tonic_build::configure()
         .out_dir("crates/otap/src/proto")
         .compile_protos(
             &["proto/experimental/arrow/v1/arrow_service.proto"],
-            &["../../proto/opentelemetry"],
+            &[format!("{}/../../../proto/opentelemetry", base)],
         )
         .expect("Failed to compile OTLP protos.");
     Ok(())
