@@ -26,10 +26,11 @@ struct OTAPExporter {
 
 impl OTAPExporter {
     /// Creates a new OTAP exporter
+    #[must_use]
     pub fn new(grpc_endpoint: String, compression_method: Option<CompressionMethod>) -> Self {
         OTAPExporter {
-            grpc_endpoint: grpc_endpoint,
-            compression_method: compression_method,
+            grpc_endpoint,
+            compression_method,
         }
     }
 }
@@ -154,7 +155,7 @@ mod tests {
     };
     use crate::otap_exporter::OTAPExporter;
     use crate::proto::opentelemetry::experimental::arrow::v1::{
-        BatchArrowRecords, arrow_logs_service_server::ArrowLogsServiceServer,
+        ArrowPayloadType, BatchArrowRecords, arrow_logs_service_server::ArrowLogsServiceServer,
         arrow_metrics_service_server::ArrowMetricsServiceServer,
         arrow_traces_service_server::ArrowTracesServiceServer,
     };
@@ -168,6 +169,10 @@ mod tests {
     use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::Server;
 
+    const METRIC_BATCH_ID: i64 = 0;
+    const LOG_BATCH_ID: i64 = 1;
+    const TRACE_BATCH_ID: i64 = 2;
+
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
     fn scenario()
@@ -175,17 +180,26 @@ mod tests {
         |ctx| {
             Box::pin(async move {
                 // Send a data message
-                let metric_message = OTAPData::ArrowMetrics(create_batch_arrow_record(0));
+                let metric_message = OTAPData::ArrowMetrics(create_batch_arrow_record(
+                    METRIC_BATCH_ID,
+                    ArrowPayloadType::MultivariateMetrics,
+                ));
                 ctx.send_pdata(metric_message)
                     .await
                     .expect("Failed to send metric message");
 
-                let log_message = OTAPData::ArrowLogs(create_batch_arrow_record(1));
+                let log_message = OTAPData::ArrowLogs(create_batch_arrow_record(
+                    LOG_BATCH_ID,
+                    ArrowPayloadType::Logs,
+                ));
                 ctx.send_pdata(log_message)
                     .await
                     .expect("Failed to send log message");
 
-                let trace_message = OTAPData::ArrowTraces(create_batch_arrow_record(2));
+                let trace_message = OTAPData::ArrowTraces(create_batch_arrow_record(
+                    TRACE_BATCH_ID,
+                    ArrowPayloadType::Spans,
+                ));
                 ctx.send_pdata(trace_message)
                     .await
                     .expect("Failed to send trace message");
@@ -211,14 +225,18 @@ mod tests {
                     .expect("No message received");
 
                 // Assert that the message received is what the exporter sent
-                let _expected_metrics_message = create_batch_arrow_record(0);
+                let _expected_metrics_message = create_batch_arrow_record(
+                    METRIC_BATCH_ID,
+                    ArrowPayloadType::MultivariateMetrics,
+                );
                 assert!(matches!(metrics_received, _expected_metrics_message));
 
                 let logs_received = timeout(Duration::from_secs(3), receiver.recv())
                     .await
                     .expect("Timed out waiting for message")
                     .expect("No message received");
-                let _expected_logs_message = create_batch_arrow_record(1);
+                let _expected_logs_message =
+                    create_batch_arrow_record(LOG_BATCH_ID, ArrowPayloadType::Logs);
                 assert!(matches!(logs_received, _expected_logs_message));
 
                 let traces_received = timeout(Duration::from_secs(3), receiver.recv())
@@ -226,7 +244,8 @@ mod tests {
                     .expect("Timed out waiting for message")
                     .expect("No message received");
 
-                let _expected_trace_message = create_batch_arrow_record(2);
+                let _expected_trace_message =
+                    create_batch_arrow_record(TRACE_BATCH_ID, ArrowPayloadType::Spans);
                 assert!(matches!(traces_received, _expected_trace_message));
             })
         }

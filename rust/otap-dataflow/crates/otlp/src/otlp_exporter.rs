@@ -26,10 +26,11 @@ struct OTLPExporter {
 
 impl OTLPExporter {
     /// Creates a new OTLP exporter
+    #[must_use]
     pub fn new(grpc_endpoint: String, compression_method: Option<CompressionMethod>) -> Self {
         OTLPExporter {
-            grpc_endpoint: grpc_endpoint,
-            compression_method: compression_method,
+            grpc_endpoint,
+            compression_method,
         }
     }
 }

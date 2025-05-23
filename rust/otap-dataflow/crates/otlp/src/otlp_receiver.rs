@@ -34,10 +34,11 @@ pub struct OTLPReceiver {
 
 impl OTLPReceiver {
     /// creates a new OTLP Receiver
+    #[must_use]
     pub fn new(listening_addr: SocketAddr, compression_method: Option<CompressionMethod>) -> Self {
         OTLPReceiver {
-            listening_addr: listening_addr,
-            compression_method: compression_method,
+            listening_addr,
+            compression_method,
         }
     }
 }

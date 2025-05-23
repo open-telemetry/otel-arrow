@@ -36,6 +36,7 @@ pub struct LogsServiceImpl {
 
 impl LogsServiceImpl {
     /// Create a LogsServiceImpl with a sendable Effect Handler
+    #[must_use]
     pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
@@ -48,6 +49,7 @@ pub struct MetricsServiceImpl {
 
 impl MetricsServiceImpl {
     /// Create a MetricsServiceImpl with a sendable Effect Handler
+    #[must_use]
     pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
@@ -60,6 +62,7 @@ pub struct TraceServiceImpl {
 
 impl TraceServiceImpl {
     /// Create a TraceServiceImpl with a sendable Effect Handler
+    #[must_use]
     pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
@@ -72,6 +75,7 @@ pub struct ProfilesServiceImpl {
 
 impl ProfilesServiceImpl {
     /// create a ProfileServiceImpl with a sendable Effect Handler
+    #[must_use]
     pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
@@ -168,6 +172,7 @@ pub enum CompressionMethod {
 impl CompressionMethod {
     /// map the compression method to the proper tonic compression encoding equivalent
     /// use the CompressionMethod enum to abstract from tonic
+    #[must_use]
     pub fn map_to_compression_encoding(&self) -> CompressionEncoding {
         match *self {
             CompressionMethod::Gzip => CompressionEncoding::Gzip,

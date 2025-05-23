@@ -13,7 +13,7 @@ use crate::grpc::{
     OTAPData,
 };
 use crate::proto::opentelemetry::experimental::arrow::v1::{
-    BatchArrowRecords, arrow_logs_service_server::ArrowLogsServiceServer,
+    arrow_logs_service_server::ArrowLogsServiceServer,
     arrow_metrics_service_server::ArrowMetricsServiceServer,
     arrow_traces_service_server::ArrowTracesServiceServer,
 };
@@ -33,10 +33,11 @@ pub struct OTAPReceiver {
 
 impl OTAPReceiver {
     /// creates a new OTAP Receiver
+    #[must_use]
     pub fn new(listening_addr: SocketAddr, compression_method: Option<CompressionMethod>) -> Self {
         OTAPReceiver {
-            listening_addr: listening_addr,
-            compression_method: compression_method,
+            listening_addr,
+            compression_method,
         }
     }
 }
@@ -122,7 +123,7 @@ mod tests {
     use crate::mock::create_batch_arrow_record;
     use crate::otap_receiver::OTAPReceiver;
     use crate::proto::opentelemetry::experimental::arrow::v1::{
-        arrow_logs_service_client::ArrowLogsServiceClient,
+        ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
         arrow_metrics_service_client::ArrowMetricsServiceClient,
         arrow_traces_service_client::ArrowTracesServiceClient,
     };
@@ -150,7 +151,7 @@ mod tests {
                         .expect("Failed to connect to server from Metrics Service Client");
                 let metrics_stream = stream! {
                     for batch_id in 0..3 {
-                        let metrics_records = create_batch_arrow_record(batch_id );
+                        let metrics_records = create_batch_arrow_record(batch_id, ArrowPayloadType::MultivariateMetrics);
                         yield metrics_records;
                     }
                 };
@@ -164,7 +165,7 @@ mod tests {
                     .expect("Failed to connect to server from Logs Service Client");
                 let logs_stream = stream! {
                     for batch_id in 0..3 {
-                        let logs_records = create_batch_arrow_record(batch_id );
+                        let logs_records = create_batch_arrow_record(batch_id, ArrowPayloadType::Logs);
                         yield logs_records;
                     }
                 };
@@ -172,13 +173,14 @@ mod tests {
                     .arrow_logs(logs_stream)
                     .await
                     .expect("Failed to receive response after sending Logs Request");
+
                 let mut arrow_traces_client =
                     ArrowTracesServiceClient::connect(grpc_endpoint.clone())
                         .await
                         .expect("Failed to connect to server from Trace Service Client");
                 let traces_stream = stream! {
                     for batch_id in 0..3 {
-                        let traces_records = create_batch_arrow_record(batch_id );
+                        let traces_records = create_batch_arrow_record(batch_id, ArrowPayloadType::Spans);
                         yield traces_records;
                     }
                 };
@@ -215,7 +217,8 @@ mod tests {
                         .expect("No message received");
 
                     // Assert that the message received is what the test client sent.
-                    let _expected_metrics_message = create_batch_arrow_record(batch_id);
+                    let _expected_metrics_message =
+                        create_batch_arrow_record(batch_id, ArrowPayloadType::MultivariateMetrics);
                     assert!(matches!(metrics_received, _expected_metrics_message));
                 }
 
@@ -226,7 +229,8 @@ mod tests {
                         .expect("No message received");
 
                     // Assert that the message received is what the test client sent.
-                    let _expected_logs_message = create_batch_arrow_record(batch_id);
+                    let _expected_logs_message =
+                        create_batch_arrow_record(batch_id, ArrowPayloadType::Logs);
                     assert!(matches!(logs_received, _expected_logs_message));
                 }
 
@@ -237,7 +241,8 @@ mod tests {
                         .expect("No message received");
 
                     // Assert that the message received is what the test client sent.
-                    let _expected_traces_message = create_batch_arrow_record(batch_id);
+                    let _expected_traces_message =
+                        create_batch_arrow_record(batch_id, ArrowPayloadType::Spans);
                     assert!(matches!(traces_received, _expected_traces_message));
                 }
             })

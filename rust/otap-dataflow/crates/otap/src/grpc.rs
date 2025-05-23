@@ -16,7 +16,6 @@ use crate::proto::opentelemetry::experimental::arrow::v1::{
 };
 use otap_df_engine::shared::receiver as shared;
 use std::pin::Pin;
-use tokio::task::spawn_local;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::codec::CompressionEncoding;
@@ -29,6 +28,7 @@ pub struct ArrowLogsServiceImpl {
 
 impl ArrowLogsServiceImpl {
     /// create a new ArrowLogsServiceImpl struct with a sendable effect handler
+    #[must_use]
     pub fn new(effect_handler: shared::EffectHandler<OTAPData>) -> Self {
         Self { effect_handler }
     }
@@ -40,6 +40,7 @@ pub struct ArrowMetricsServiceImpl {
 
 impl ArrowMetricsServiceImpl {
     /// create a new ArrowMetricsServiceImpl struct with a sendable effect handler
+    #[must_use]
     pub fn new(effect_handler: shared::EffectHandler<OTAPData>) -> Self {
         Self { effect_handler }
     }
@@ -52,6 +53,7 @@ pub struct ArrowTracesServiceImpl {
 
 impl ArrowTracesServiceImpl {
     /// create a new ArrowTracesServiceImpl struct with a sendable effect handler
+    #[must_use]
     pub fn new(effect_handler: shared::EffectHandler<OTAPData>) -> Self {
         Self { effect_handler }
     }
@@ -73,9 +75,9 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
         let output = ReceiverStream::new(rx);
 
         // write to the channel
-        _ = spawn_local(async move {
+        _ = tokio::spawn(async move {
             // Process messages until stream ends or error occurs
-            while let Ok(Some(mut batch)) = input_stream.message().await {
+            while let Ok(Some(batch)) = input_stream.message().await {
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
                 let status_result = match effect_handler_clone
@@ -116,9 +118,9 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
         let output = ReceiverStream::new(rx);
 
         // write to the channel
-        _ = spawn_local(async move {
+        _ = tokio::spawn(async move {
             // Process messages until stream ends or error occurs
-            while let Ok(Some(mut batch)) = input_stream.message().await {
+            while let Ok(Some(batch)) = input_stream.message().await {
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
                 let status_result = match effect_handler_clone
@@ -158,9 +160,9 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
         let output = ReceiverStream::new(rx);
 
         // write to the channel
-        _ = spawn_local(async move {
+        _ = tokio::spawn(async move {
             // Process messages until stream ends or error occurs
-            while let Ok(Some(mut batch)) = input_stream.message().await {
+            while let Ok(Some(batch)) = input_stream.message().await {
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
                 let status_result = match effect_handler_clone
@@ -209,6 +211,7 @@ pub enum CompressionMethod {
 impl CompressionMethod {
     /// map the compression method to the proper tonic compression encoding equivalent
     /// use the CompressionMethod enum to abstract from tonic
+    #[must_use]
     pub fn map_to_compression_encoding(&self) -> CompressionEncoding {
         match *self {
             CompressionMethod::Gzip => CompressionEncoding::Gzip,

@@ -11,17 +11,14 @@
 
 use crate::grpc::OTAPData;
 use crate::proto::opentelemetry::experimental::arrow::v1::{
-    ArrowPayload, BatchArrowRecords, BatchStatus, StatusCode,
+    ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
     arrow_logs_service_server::ArrowLogsService, arrow_metrics_service_server::ArrowMetricsService,
     arrow_traces_service_server::ArrowTracesService,
 };
-use otap_df_engine::shared::receiver as shared;
 use std::pin::Pin;
 use tokio::sync::mpsc::Sender;
-use tokio::task::spawn_local;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::codec::CompressionEncoding;
 use tonic::{Request, Response, Status};
 
 /// struct that implements the ArrowLogsService trait
@@ -31,6 +28,7 @@ pub struct ArrowLogsServiceMock {
 
 impl ArrowLogsServiceMock {
     /// create a new ArrowLogsServiceMock struct with a sendable effect handler
+    #[must_use]
     pub fn new(sender: Sender<OTAPData>) -> Self {
         Self { sender }
     }
@@ -42,6 +40,7 @@ pub struct ArrowMetricsServiceMock {
 
 impl ArrowMetricsServiceMock {
     /// create a new ArrowMetricsServiceMock struct with a sendable effect handler
+    #[must_use]
     pub fn new(sender: Sender<OTAPData>) -> Self {
         Self { sender }
     }
@@ -54,6 +53,7 @@ pub struct ArrowTracesServiceMock {
 
 impl ArrowTracesServiceMock {
     /// create a new ArrowTracesServiceMock struct with a sendable effect handler
+    #[must_use]
     pub fn new(sender: Sender<OTAPData>) -> Self {
         Self { sender }
     }
@@ -75,9 +75,9 @@ impl ArrowLogsService for ArrowLogsServiceMock {
         let output = ReceiverStream::new(rx);
 
         // write to the channel
-        _ = spawn_local(async move {
+        _ = tokio::spawn(async move {
             // Process messages until stream ends or error occurs
-            while let Ok(Some(mut batch)) = input_stream.message().await {
+            while let Ok(Some(batch)) = input_stream.message().await {
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
                 let status_result = match sender_clone.send(OTAPData::ArrowLogs(batch)).await {
@@ -115,9 +115,9 @@ impl ArrowMetricsService for ArrowMetricsServiceMock {
         let output = ReceiverStream::new(rx);
 
         // write to the channel
-        _ = spawn_local(async move {
+        _ = tokio::spawn(async move {
             // Process messages until stream ends or error occurs
-            while let Ok(Some(mut batch)) = input_stream.message().await {
+            while let Ok(Some(batch)) = input_stream.message().await {
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
                 let status_result = match sender_clone.send(OTAPData::ArrowMetrics(batch)).await {
@@ -154,9 +154,9 @@ impl ArrowTracesService for ArrowTracesServiceMock {
         let output = ReceiverStream::new(rx);
 
         // write to the channel
-        _ = spawn_local(async move {
+        _ = tokio::spawn(async move {
             // Process messages until stream ends or error occurs
-            while let Ok(Some(mut batch)) = input_stream.message().await {
+            while let Ok(Some(batch)) = input_stream.message().await {
                 // Process batch and send status, break on client disconnection
                 let batch_id = batch.batch_id;
                 let status_result = match sender_clone.send(OTAPData::ArrowTraces(batch)).await {
@@ -178,10 +178,14 @@ impl ArrowTracesService for ArrowTracesServiceMock {
 }
 
 /// creates a basic batch arrow record to use for testing
-pub fn create_batch_arrow_record(batch_id: i64) -> BatchArrowRecords {
+#[must_use]
+pub fn create_batch_arrow_record(
+    batch_id: i64,
+    payload_type: ArrowPayloadType,
+) -> BatchArrowRecords {
     let arrow_payload = ArrowPayload {
         schema_id: "0".to_string(),
-        r#type: 0,
+        r#type: payload_type as i32,
         record: vec![0],
     };
     BatchArrowRecords {
