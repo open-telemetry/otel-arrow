@@ -84,17 +84,11 @@ pub mod metadata {
     /// schema metadata for which columns the record batch is sorted by
     pub const SORT_COLUMNS: &str = "sort_columns";
 
-    /// values for the state of the parent_id column
-    pub mod parent_id {
-        /// field metadata key representing the state of the parent_id field
-        pub const STATE: &str = "parent_id_state";
+    /// field metadata key for the encoding of some column
+    pub const ENCODING: &str = "encoding";
 
-        /// field metadata value representing the parent_id column is materialized
-        /// e.g. the values in the columns are the actual parent ids
-        pub const MATERIALIZED: &str = "materialized";
-
-        /// field metadata value representing the parent_id column is not materialized
-        /// e.g. the values in the columns are quasi delta encoded
-        pub const TRANSPORT_OPTIMIZED: &str = "parent_id_delta";
+    pub mod encodings {
+        /// plain encoding - e.g. the values in the array are not encoded
+        pub const PLAIN: &str = "plain";
     }
 }

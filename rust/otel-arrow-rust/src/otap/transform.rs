@@ -1,13 +1,20 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use arrow::array::RecordBatch;
+use std::ops::AddAssign;
+use std::sync::Arc;
+
+use arrow::array::{
+    Array, ArrayRef, ArrowPrimitiveType, PrimitiveArray, PrimitiveBuilder, RecordBatch,
+};
 use arrow::compute::{sort_to_indices, take_record_batch};
 use arrow::datatypes::DataType;
+use snafu::OptionExt;
 
 use crate::arrays::get_required_array;
 use crate::error::{self, Result};
 use crate::otlp::attributes::decoder::materialize_parent_id;
+use crate::schema::update_field_metadata;
 use crate::schema::{
     consts::{self, metadata},
     update_schema_metadata,
@@ -16,7 +23,7 @@ use crate::schema::{
 pub fn sort_by_parent_id(record_batch: &RecordBatch) -> Result<RecordBatch> {
     let parent_id_column = record_batch.column_by_name(consts::PARENT_ID);
     if parent_id_column.is_none() {
-        // nothing to do?
+        // nothing to do
         return Ok(record_batch.clone());
     }
 
@@ -53,6 +60,81 @@ pub fn sort_by_parent_id(record_batch: &RecordBatch) -> Result<RecordBatch> {
     );
 
     Ok(result)
+}
+
+pub fn remove_delta_encoding<T>(
+    record_batch: &RecordBatch,
+    column_name: &str,
+) -> Result<RecordBatch>
+where
+    T: ArrowPrimitiveType,
+    <T as ArrowPrimitiveType>::Native: AddAssign,
+{
+    let schema = record_batch.schema_ref();
+    let column_index = schema.index_of(column_name);
+    if !column_index.is_ok() {
+        // column doesn't exist, nothing to do
+        return Ok(record_batch.clone());
+    }
+    // safety: we've just checked above that column_index is Ok
+    let column_index = column_index.expect("column_index should be Ok");
+
+    let column = record_batch.column(column_index);
+    let column = column
+        .as_any()
+        .downcast_ref::<PrimitiveArray<T>>()
+        .with_context(|| error::ColumnDataTypeMismatchSnafu {
+            name: column_name,
+            actual: column.data_type().clone(),
+            expect: T::DATA_TYPE,
+        })?;
+
+    let new_column = Arc::new(remove_delta_encoding_from_column(column));
+    let columns = record_batch
+        .columns()
+        .iter()
+        .enumerate()
+        .map(|(i, col)| {
+            if i == column_index {
+                new_column.clone()
+            } else {
+                col.clone()
+            }
+        })
+        .collect::<Vec<ArrayRef>>();
+
+    let schema = update_field_metadata(
+        schema,
+        column_name,
+        metadata::ENCODING,
+        metadata::encodings::PLAIN,
+    );
+
+    // safety: this should only return an error if our schema, or column lengths don't match
+    // but based on how we've constructed the batch, this shouldn't happen
+    Ok(RecordBatch::try_new(Arc::new(schema), columns)
+        .expect("should be able to create record batch"))
+}
+
+pub fn remove_delta_encoding_from_column<T>(array: &PrimitiveArray<T>) -> PrimitiveArray<T>
+where
+    T: ArrowPrimitiveType,
+    <T as ArrowPrimitiveType>::Native: AddAssign,
+{
+    let mut result = PrimitiveBuilder::<T>::with_capacity(array.len());
+    let mut acc: T::Native = T::Native::default(); // zero
+
+    for i in 0..array.len() {
+        if array.is_valid(i) {
+            let delta = array.value(i);
+            acc += delta;
+            result.append_value(acc);
+        } else {
+            result.append_null();
+        }
+    }
+
+    result.finish()
 }
 
 #[cfg(test)]

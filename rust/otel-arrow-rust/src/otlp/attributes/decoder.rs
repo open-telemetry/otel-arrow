@@ -250,8 +250,8 @@ where
     let schema = update_field_metadata(
         schema.as_ref(),
         consts::PARENT_ID,
-        metadata::parent_id::STATE,
-        metadata::parent_id::MATERIALIZED,
+        metadata::ENCODING,
+        metadata::encodings::PLAIN,
     );
 
     // safety: RecordBatch::try_new will only return error if our schema doesn't

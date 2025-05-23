@@ -21,7 +21,7 @@ use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceReq
 use arrow::array::RecordBatch;
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
-use snafu::{OptionExt, ResultExt, ensure};
+use snafu::{ResultExt, ensure};
 use std::collections::HashMap;
 use std::io::Cursor;
 

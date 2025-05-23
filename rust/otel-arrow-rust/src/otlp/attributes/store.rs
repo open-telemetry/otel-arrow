@@ -225,8 +225,8 @@ where
             .fail();
         }
 
-        if Some(metadata::parent_id::MATERIALIZED)
-            != get_field_metadata(schema, consts::PARENT_ID, metadata::parent_id::STATE)
+        if Some(metadata::encodings::PLAIN)
+            != get_field_metadata(schema, consts::PARENT_ID, metadata::ENCODING)
         {
             return error::UnexpectedRecordBatchStateSnafu {
                 reason: "expected parent_id column to have been materialized",
@@ -421,14 +421,14 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::sync::Arc;
+    use std::{collections::HashMap, sync::Arc};
 
     use arrow::{
         array::{Int64Array, RecordBatch, StringArray, UInt8Array, UInt16Array},
         datatypes::{DataType, Field, Schema},
     };
 
-    use crate::schema::consts;
+    use crate::schema::consts::{self, metadata};
 
     use super::{AttributeStoreV2, AttributeValueType};
 
@@ -460,13 +460,24 @@ mod test {
             } as u8));
 
         let record_batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![
-                Field::new(consts::PARENT_ID, DataType::UInt16, false),
-                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
-                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
-                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
-                Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
-            ])),
+            Arc::new(
+                Schema::new(vec![
+                    Field::new(consts::PARENT_ID, DataType::UInt16, false).with_metadata(
+                        HashMap::from_iter(vec![(
+                            metadata::ENCODING.to_string(),
+                            metadata::encodings::PLAIN.to_string(),
+                        )]),
+                    ),
+                    Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                    Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                    Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+                    Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+                ])
+                .with_metadata(HashMap::from_iter(vec![(
+                    metadata::SORT_COLUMNS.to_string(),
+                    consts::PARENT_ID.to_string(),
+                )])),
+            ),
             vec![
                 Arc::new(parent_id),
                 Arc::new(type_arr),
