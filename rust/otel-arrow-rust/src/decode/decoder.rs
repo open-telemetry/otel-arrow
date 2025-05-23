@@ -121,7 +121,7 @@ impl Consumer {
             ArrowPayloadType::UnivariateMetrics => {
                 let record_messages = self.consume_bar(records)?;
                 let otap_batch = OtapBatch::Metrics(from_record_messages(record_messages));
-                metrics_from(&otap_batch)
+                metrics_from(otap_batch)
             }
             main_record_type => error::UnsupportedPayloadTypeSnafu {
                 actual: main_record_type,

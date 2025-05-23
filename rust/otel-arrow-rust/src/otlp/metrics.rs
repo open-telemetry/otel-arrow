@@ -95,7 +95,7 @@ impl<'a> TryFrom<&'a RecordBatch> for MetricsArrays<'a> {
 }
 
 /// Builds [ExportMetricsServiceRequest] from given record batch.
-pub fn metrics_from(metrics_otap_batch: &OtapBatch) -> error::Result<ExportMetricsServiceRequest> {
+pub fn metrics_from(metrics_otap_batch: OtapBatch) -> error::Result<ExportMetricsServiceRequest> {
     let mut metrics = ExportMetricsServiceRequest::default();
 
     let mut prev_res_id: Option<u16> = None;
@@ -107,7 +107,7 @@ pub fn metrics_from(metrics_otap_batch: &OtapBatch) -> error::Result<ExportMetri
     let rb = metrics_otap_batch
         .get(ArrowPayloadType::UnivariateMetrics)
         .context(error::MetricRecordNotFoundSnafu)?;
-    let mut related_data = RelatedData::try_from(metrics_otap_batch)?;
+    let mut related_data = RelatedData::try_from(&metrics_otap_batch)?;
 
     let resource_arrays = ResourceArrays::try_from(rb)?;
     let scope_arrays = ScopeArrays::try_from(rb)?;
