@@ -22,7 +22,7 @@ trace = []
 derive = []
 
 [dependencies]
-arrow = {version = "55", features = ["prettyprint"] }
+arrow = "55"
 arrow-ipc = { version = "55", features = ["zstd"] }
 ciborium = "0.2.2"
 lazy_static = "1.5"
@@ -35,10 +35,6 @@ snafu = { version = "0.8" }
 prost = "0.13"
 tonic = "0.13"
 tokio = { version = "1.43.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "process"] }
-
-[[bench]]
-name = "attribute_store_bench"
-harness = false
 
 [[bench]]
 name = "otlp_bytes"
