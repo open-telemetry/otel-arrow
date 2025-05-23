@@ -106,7 +106,7 @@ where
     let schema = update_field_metadata(
         schema,
         column_name,
-        metadata::ENCODING,
+        metadata::COLUMN_ENCODING,
         metadata::encodings::PLAIN,
     );
 
@@ -142,11 +142,13 @@ mod test {
     use super::*;
 
     use arrow::array::{StringArray, UInt8Array, UInt16Array};
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::datatypes::{DataType, Field, Schema, UInt8Type, UInt16Type};
     use std::sync::Arc;
 
     use crate::arrays::{get_string_array, get_u16_array};
+    use crate::error::Error;
     use crate::otlp::attributes::store::AttributeValueType;
+    use crate::schema::{get_field_metadata, get_schema_metadata};
 
     #[test]
     fn test_sort_by_parent_id() {
@@ -190,5 +192,57 @@ mod test {
 
         assert_eq!(str_result, &expected_strs);
         assert_eq!(parent_id_result, &expected_parent_ids);
+
+        // ensure it updated the metadata correctly
+        assert_eq!(
+            Some("parent_id"),
+            get_schema_metadata(result.schema_ref(), metadata::SORT_COLUMNS)
+        );
+    }
+
+    #[test]
+    fn test_remove_delta_encoding() {
+        let record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "test",
+                DataType::UInt16,
+                true,
+            )])),
+            vec![Arc::new(UInt16Array::from(vec![
+                Some(1),
+                Some(1),
+                None,
+                Some(1),
+                Some(1),
+                None,
+            ]))],
+        )
+        .unwrap();
+
+        let result = remove_delta_encoding::<UInt16Type>(&record_batch, "test").unwrap();
+
+        let transformed_column = result
+            .column_by_name("test")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .unwrap();
+
+        let expected = UInt16Array::from(vec![Some(1), Some(2), None, Some(3), Some(4), None]);
+        assert_eq!(transformed_column, &expected);
+
+        // ensure it updates the metadata correctly
+        assert_eq!(
+            Some(metadata::encodings::PLAIN),
+            get_field_metadata(result.schema_ref(), "test", metadata::COLUMN_ENCODING)
+        );
+
+        // check it doesn't error if we specify invalid column
+        let result = remove_delta_encoding::<UInt16Type>(&record_batch, "badcol").unwrap();
+        assert_eq!(result, record_batch);
+
+        // check it returns an error if invoked for the wrong record type
+        let result = remove_delta_encoding::<UInt8Type>(&record_batch, "test");
+        assert!(matches!(result, Err(Error::ColumnDataTypeMismatch { .. })))
     }
 }

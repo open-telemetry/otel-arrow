@@ -250,7 +250,7 @@ where
     let schema = update_field_metadata(
         schema.as_ref(),
         consts::PARENT_ID,
-        metadata::ENCODING,
+        metadata::COLUMN_ENCODING,
         metadata::encodings::PLAIN,
     );
 

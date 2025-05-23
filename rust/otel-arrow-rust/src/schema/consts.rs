@@ -85,7 +85,7 @@ pub mod metadata {
     pub const SORT_COLUMNS: &str = "sort_columns";
 
     /// field metadata key for the encoding of some column
-    pub const ENCODING: &str = "encoding";
+    pub const COLUMN_ENCODING: &str = "encoding";
 
     pub mod encodings {
         /// plain encoding - e.g. the values in the array are not encoded
