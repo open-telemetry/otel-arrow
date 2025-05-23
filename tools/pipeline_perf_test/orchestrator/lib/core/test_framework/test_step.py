@@ -12,9 +12,13 @@ Classes:
 """
 
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Optional, TYPE_CHECKING
 
 from .test_context import TestStepContext
+
+
+if TYPE_CHECKING:
+    from ..component.lifecycle_component import LifecycleComponent
 
 
 class TestStep:
@@ -32,7 +36,12 @@ class TestStep:
         run(context): Executes the action associated with the test step, providing the context to the action.
     """
 
-    def __init__(self, name: str, action: Callable[[TestStepContext], Any]):
+    def __init__(
+        self,
+        name: str,
+        action: Callable[[TestStepContext], Any],
+        component: Optional["LifecycleComponent"] = None,
+    ):
         """
         Initializes a test step with a name and an associated action.
 
@@ -42,6 +51,7 @@ class TestStep:
         """
         self.name = name
         self.action = action
+        self.component = component
 
     def run(self, context: TestStepContext):
         """
@@ -56,18 +66,5 @@ class TestStep:
         Returns:
             The result of the action execution, which is whatever is returned by the action callable.
         """
-        print(f"Running step: {self.name}")
-        result = None
-        context.start_time = time.time()
-        try:
-            result = self.action(context)
-            context.status = "success"
-        except Exception as e:
-            context.status = "error"
-            context.error = e
-            print(f"Error in step '{self.name}': {e}")
-            raise  # Optional: re-raise to propagate to the test level
-        finally:
-            context.end_time = time.time()
 
-        return result
+        return self.action(context)

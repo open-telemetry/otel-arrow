@@ -19,22 +19,27 @@ Classes:
 
 from abc import ABC, abstractmethod
 
+from ..component.lifecycle_component import LifecycleComponent
+from ..test_framework.test_context import TestStepContext
+
 
 class DeploymentStrategy(ABC):
     @abstractmethod
-    def start(self, component):
+    def start(self, component: LifecycleComponent, ctx: TestStepContext):
         """
         Deploy the component to the target environment.
 
         Args:
             component: The component instance to deploy.
+            ctx: The current execution context for the containing test step.
         """
 
     @abstractmethod
-    def stop(self, component):
+    def stop(self, component: LifecycleComponent, ctx: TestStepContext):
         """
         Tear down and remove the deployed component.
 
         Args:
             component: The component instance to destroy.
+            ctx: The current execution context for the containing test step.
         """
