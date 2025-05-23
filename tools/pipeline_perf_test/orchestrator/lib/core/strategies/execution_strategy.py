@@ -19,6 +19,9 @@ Classes:
 
 from abc import ABC, abstractmethod
 
+from ..component.lifecycle_component import LifecycleComponent
+from ..test_framework.test_context import TestStepContext
+
 
 class ExecutionStrategy(ABC):
     """
@@ -29,24 +32,26 @@ class ExecutionStrategy(ABC):
     of a component's main workload or behavior.
 
     Methods:
-        start(component): Begin execution of the component's workload.
-        stop(component): Stop execution of the component's workload.
+        start(component, ctx): Begin execution of the component's workload.
+        stop(component, ctx): Stop execution of the component's workload.
     """
 
     @abstractmethod
-    def start(self, component):
+    def start(self, component: LifecycleComponent, ctx: TestStepContext):
         """
         Start executing the component's workload.
 
         Args:
             component: The component instance to execute.
+            ctx: The current execution context for the containing test step.
         """
 
     @abstractmethod
-    def stop(self, component):
+    def stop(self, component: LifecycleComponent, ctx: TestStepContext):
         """
         Stop executing the component's workload.
 
         Args:
             component: The component instance to stop.
+            ctx: The current execution context for the containing test step.
         """
