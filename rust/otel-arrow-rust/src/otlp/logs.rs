@@ -186,7 +186,6 @@ pub fn logs_from(mut logs_otap_batch: OtapBatch) -> Result<ExportLogsServiceRequ
     if let Some(rb) = logs_otap_batch.get(ArrowPayloadType::LogAttrs) {
         // let optimized = materialize_parent_id::<u16>(rb)?;
         let optimized = sort_by_parent_id(rb).unwrap();
-        arrow::util::pretty::print_batches(&[optimized.clone()]).unwrap();
         logs_otap_batch.set(ArrowPayloadType::LogAttrs, optimized);
     }
 

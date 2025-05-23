@@ -57,7 +57,11 @@ pub struct Consumer {
 }
 
 impl Consumer {
-    fn consume_bar(&mut self, bar: &mut BatchArrowRecords) -> error::Result<Vec<RecordMessage>> {
+    /// consume and deserialize record batches
+    pub fn consume_bar(
+        &mut self,
+        bar: &mut BatchArrowRecords,
+    ) -> error::Result<Vec<RecordMessage>> {
         let mut records = Vec::with_capacity(bar.arrow_payloads.len());
 
         for payload in std::mem::take(&mut bar.arrow_payloads) {
