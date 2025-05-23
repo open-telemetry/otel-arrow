@@ -10,6 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::cbor;
 use crate::arrays::{
     ByteArrayAccessor, Int64ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor,
     StringArrayAccessor, get_bool_array_opt, get_f64_array_opt, get_u8_array,
@@ -23,8 +24,6 @@ use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch};
 use num_enum::TryFromPrimitive;
 use snafu::{OptionExt, ResultExt};
 use std::collections::HashMap;
-
-use super::cbor;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
 #[repr(u8)]
@@ -97,6 +96,8 @@ where
             .map(ByteArrayAccessor::try_new)
             .transpose()?;
 
+        let mut parent_id_decoder = T::new_decoder();
+
         for idx in 0..rb.num_rows() {
             let key = key_arr.value_at_or_default(idx);
             let value_type = AttributeValueType::try_from(value_type_arr.value_at_or_default(idx))
@@ -143,7 +144,6 @@ where
                 MaybeDictArrayAccessor::<PrimitiveArray<<T as ParentId>::ArrayType>>::try_new(
                     parent_id_arr,
                 )?;
-            let mut parent_id_decoder = T::new_decoder();
 
             let parent_id = parent_id_decoder.decode(
                 parent_id_arr.value_at_or_default(idx).into(),

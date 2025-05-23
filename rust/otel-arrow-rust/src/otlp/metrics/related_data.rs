@@ -10,8 +10,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::decode::record_message::RecordMessage;
 use crate::error;
+use crate::otap::OtapBatch;
 use crate::otlp::attributes::store::{Attribute16Store, Attribute32Store};
 use crate::otlp::metrics::data_points::data_point_store::{
     EHistogramDataPointsStore, HistogramDataPointsStore, NumberDataPointsStore,
@@ -54,149 +54,97 @@ impl RelatedData {
         self.metric_id += delta;
         self.metric_id
     }
+}
 
-    pub fn from_record_messages(
-        rbs: &[RecordMessage],
-    ) -> error::Result<(RelatedData, Option<usize>)> {
+impl TryFrom<&OtapBatch> for RelatedData {
+    type Error = error::Error;
+
+    fn try_from(otap_batch: &OtapBatch) -> error::Result<Self> {
         let mut related_data = RelatedData::default();
 
-        // index for main metrics record.
-        let mut metrics_record_idx: Option<usize> = None;
-
-        let mut number_dp_idx: Option<usize> = None;
-        let mut summary_dp_idx: Option<usize> = None;
-        let mut histogram_dp_idx: Option<usize> = None;
-        let mut exp_histogram_dp_idx: Option<usize> = None;
-        let mut number_dp_ex_idx: Option<usize> = None;
-        let mut histogram_dp_ex_idx: Option<usize> = None;
-        let mut exp_histogram_dp_ex_idx: Option<usize> = None;
-
-        for (idx, rm) in rbs.iter().enumerate() {
-            match rm.payload_type {
-                ArrowPayloadType::ResourceAttrs => {
-                    related_data.res_attr_map_store = Attribute16Store::try_from(&rm.record)?;
-                }
-                ArrowPayloadType::ScopeAttrs => {
-                    related_data.scope_attr_map_store = Attribute16Store::try_from(&rm.record)?;
-                }
-                ArrowPayloadType::UnivariateMetrics => {
-                    // this record is the main metrics record.
-                    metrics_record_idx = Some(idx);
-                }
-                ArrowPayloadType::NumberDataPoints => {
-                    number_dp_idx = Some(idx);
-                }
-                ArrowPayloadType::SummaryDataPoints => {
-                    summary_dp_idx = Some(idx);
-                }
-                ArrowPayloadType::HistogramDataPoints => {
-                    histogram_dp_idx = Some(idx);
-                }
-                ArrowPayloadType::ExpHistogramDataPoints => {
-                    exp_histogram_dp_idx = Some(idx);
-                }
-                ArrowPayloadType::NumberDpAttrs => {
-                    related_data.number_d_p_attrs_store = Attribute32Store::try_from(&rm.record)?;
-                }
-                ArrowPayloadType::SummaryDpAttrs => {
-                    related_data.summary_attrs_store = Attribute32Store::try_from(&rm.record)?;
-                }
-                ArrowPayloadType::HistogramDpAttrs => {
-                    related_data.histogram_attrs_store = Attribute32Store::try_from(&rm.record)?;
-                }
-                ArrowPayloadType::ExpHistogramDpAttrs => {
-                    related_data.exp_histogram_attrs_store =
-                        Attribute32Store::try_from(&rm.record)?;
-                }
-                ArrowPayloadType::NumberDpExemplars => {
-                    number_dp_ex_idx = Some(idx);
-                }
-                ArrowPayloadType::HistogramDpExemplars => {
-                    histogram_dp_ex_idx = Some(idx);
-                }
-                ArrowPayloadType::ExpHistogramDpExemplars => {
-                    exp_histogram_dp_ex_idx = Some(idx);
-                }
-                ArrowPayloadType::NumberDpExemplarAttrs => {
-                    related_data.number_d_p_exemplar_attrs_store =
-                        Attribute32Store::try_from(&rm.record)?;
-                }
-                ArrowPayloadType::HistogramDpExemplarAttrs => {
-                    related_data.histogram_exemplar_attrs_store =
-                        Attribute32Store::try_from(&rm.record)?;
-                }
-                ArrowPayloadType::ExpHistogramDpExemplarAttrs => {
-                    related_data.exp_histogram_exemplar_attrs_store =
-                        Attribute32Store::try_from(&rm.record)?;
-                }
-                _ => {
-                    //todo: support logs/trace/span
-                    return error::UnsupportedPayloadTypeSnafu {
-                        actual: rm.payload_type,
-                    }
-                    .fail();
-                }
-            }
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::ResourceAttrs) {
+            related_data.res_attr_map_store = Attribute16Store::try_from(rb)?;
         }
 
-        // Process exemplars.
-        if let Some(number_dp_ex_rec_idx) = number_dp_ex_idx {
-            let record = &rbs[number_dp_ex_rec_idx].record;
-            related_data.number_data_point_exemplars_store = ExemplarsStore::try_from(
-                record,
-                &mut related_data.number_d_p_exemplar_attrs_store,
-            )?;
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::ScopeAttrs) {
+            related_data.scope_attr_map_store = Attribute16Store::try_from(rb)?;
         }
 
-        if let Some(histogram_dp_ex_rec_idx) = histogram_dp_ex_idx {
-            let record = &rbs[histogram_dp_ex_rec_idx].record;
-            related_data.histogram_data_point_exemplars_store =
-                ExemplarsStore::try_from(record, &mut related_data.histogram_exemplar_attrs_store)?
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::NumberDpExemplarAttrs) {
+            related_data.number_d_p_exemplar_attrs_store = Attribute32Store::try_from(rb)?;
         }
 
-        if let Some(exp_histogram_dp_ex_rec_idx) = exp_histogram_dp_ex_idx {
-            let record = &rbs[exp_histogram_dp_ex_rec_idx].record;
-            related_data.e_histogram_data_point_exemplars_store = ExemplarsStore::try_from(
-                record,
-                &mut related_data.exp_histogram_exemplar_attrs_store,
-            )?;
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::NumberDpExemplars) {
+            related_data.number_data_point_exemplars_store =
+                ExemplarsStore::try_from(rb, &mut related_data.number_d_p_exemplar_attrs_store)?;
         }
 
-        // Process data points
-        if let Some(number_data_point_record_idx) = number_dp_idx {
-            let number_data_point_record = &rbs[number_data_point_record_idx];
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::NumberDpAttrs) {
+            related_data.number_d_p_attrs_store = Attribute32Store::try_from(rb)?;
+        }
+
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::NumberDataPoints) {
             related_data.number_data_points_store = NumberDataPointsStore::from_record_batch(
-                &number_data_point_record.record,
+                rb,
                 &mut related_data.number_data_point_exemplars_store,
                 &related_data.number_d_p_attrs_store,
             )?;
         }
-        if let Some(summary_data_point_rec_idx) = summary_dp_idx {
-            let record = &rbs[summary_data_point_rec_idx].record;
-            related_data.summary_data_points_store = SummaryDataPointsStore::from_record_batch(
-                record,
-                &mut related_data.summary_attrs_store,
-            )?;
+
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::SummaryDpAttrs) {
+            related_data.summary_attrs_store = Attribute32Store::try_from(rb)?;
         }
-        if let Some(histogram_dp_idx) = histogram_dp_idx {
-            let record = &rbs[histogram_dp_idx].record;
+
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::SummaryDataPoints) {
+            related_data.summary_data_points_store = SummaryDataPointsStore::from_record_batch(
+                rb,
+                &mut related_data.summary_attrs_store,
+            )?
+        }
+
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::HistogramDpExemplarAttrs) {
+            related_data.histogram_exemplar_attrs_store = Attribute32Store::try_from(rb)?;
+        }
+
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::HistogramDpExemplars) {
+            related_data.histogram_data_point_exemplars_store =
+                ExemplarsStore::try_from(rb, &mut related_data.histogram_exemplar_attrs_store)?;
+        }
+
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::HistogramDataPoints) {
             related_data.histogram_data_points_store = HistogramDataPointsStore::from_record_batch(
-                record,
+                rb,
                 &mut related_data.histogram_data_point_exemplars_store,
                 &related_data.histogram_attrs_store,
             )?;
         }
 
-        if let Some(exp_histogram_data_point_idx) = exp_histogram_dp_idx {
-            let record = &rbs[exp_histogram_data_point_idx].record;
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::HistogramDpAttrs) {
+            related_data.histogram_attrs_store = Attribute32Store::try_from(rb)?;
+        }
+
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::ExpHistogramDpAttrs) {
+            related_data.exp_histogram_attrs_store = Attribute32Store::try_from(rb)?;
+        }
+
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::ExpHistogramDpExemplarAttrs) {
+            related_data.exp_histogram_exemplar_attrs_store = Attribute32Store::try_from(rb)?;
+        }
+
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::ExpHistogramDpExemplars) {
+            related_data.e_histogram_data_point_exemplars_store =
+                ExemplarsStore::try_from(rb, &mut related_data.exp_histogram_exemplar_attrs_store)?;
+        }
+
+        if let Some(rb) = otap_batch.get(ArrowPayloadType::ExpHistogramDataPoints) {
             related_data.e_histogram_data_points_store =
                 EHistogramDataPointsStore::from_record_batch(
-                    record,
+                    rb,
                     &mut related_data.e_histogram_data_point_exemplars_store,
                     &related_data.exp_histogram_attrs_store,
                 )?;
         }
 
-        Ok((related_data, metrics_record_idx))
+        Ok(related_data)
     }
 }
