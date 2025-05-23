@@ -46,13 +46,19 @@ pub fn sort_by_parent_id(record_batch: &RecordBatch) -> Result<RecordBatch> {
     }?;
 
     let parent_id_materialized = get_required_array(&record_batch, consts::PARENT_ID)?;
-    // TODO comment about satety here
+
+    // safety: this should only fail if we've used some datatype that is not
+    // supported by sort_to_indices (like RunEndEncoded), but we've already
+    // checked the parent_id datatype just above so we can be sure this is ok
     let sort_indices = sort_to_indices(&parent_id_materialized, None, None)
         .expect("should be able to sort parent ids");
-    // TODO comment about safety here
 
+    // safety: take should only panic here if we have passed indices that are out
+    // of bounds, or if the indices are not an int type, both of which shouldn't be
+    // the case here based on us having used sort_to_indices to create indices
     let sorted_batch = take_record_batch(&record_batch, &sort_indices)
         .expect("should be able to take by sort indices");
+
     let result = update_schema_metadata(
         sorted_batch,
         metadata::SORT_COLUMNS.to_string(),

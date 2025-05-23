@@ -21,7 +21,6 @@ pub enum OtapBatch {
     Metrics(Metrics),
     /// Represents a batch of spans data.
     Traces(Traces),
-    // TODO add profiles eventually
 }
 
 impl OtapBatch {
