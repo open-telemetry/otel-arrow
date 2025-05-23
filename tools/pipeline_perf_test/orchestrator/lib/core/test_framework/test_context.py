@@ -27,12 +27,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, TYPE_CHECKING
 
-from ..component.lifecycle_component import LifecycleComponent
 from ..context.base import BaseContext
 
 if TYPE_CHECKING:
     from .test_definition import TestDefinition
     from .test_step import TestStep
+    from ..component.lifecycle_component import LifecycleComponent, LifecycleHookContext
 
 
 @dataclass
@@ -42,15 +42,45 @@ class TestSuiteContext(BaseContext):
     """
 
     components: Dict[str, LifecycleComponent] = field(default_factory=dict)
-    metadata: dict = field(default_factory=dict)
+    clients: Dict[str, object] = field(default_factory=dict)
+    child_contexts: List["TestExecutionContext"] = field(default_factory=list)
 
     def add_component(self, name: str, component: LifecycleComponent):
         "Add a component to the test suite context by name"
         self.components[name] = component
 
-    def get_component(self, name: str) -> Optional[LifecycleComponent]:
-        "Get a component from the test suite context by name"
+    def get_components(self) -> Dict[str, "LifecycleComponent"]:
+        """Get all components on the context indexed by name.
+
+        Returns: a dict of component names to component instances.
+        """
+        return self.components
+
+    def get_component_by_name(self, name: str) -> Optional["LifecycleComponent"]:
+        """Get a component instance by the name of the component.
+
+        Args:
+            name: The name of the component to return
+
+        Returns: The named component or none if not found.
+        """
         return self.components.get(name)
+
+    def get_client(
+        self, name: str, client_factory: Optional[callable] = None
+    ) -> object:
+        """
+        Retrieve a client from the context, creating it if it does not exist.
+
+        name: The name of the client.
+        client_factory: A factory function to create the client if it does not exist.
+
+        return: The client object.
+        """
+        client = self.clients.get(name)
+        if not client:
+            return client_factory()
+        return client
 
 
 @dataclass
@@ -59,13 +89,13 @@ class TestExecutionContext(BaseContext):
     Context for executing a single TestDefinition, scoped per test.
     """
 
-    test_definition: "TestDefinition"
-    suite_context: "TestSuiteContext"
-    step_contexts: List["TestStepContext"] = field(default_factory=list)
+    parent_ctx: Optional["TestSuiteContext"] = None
+    child_contexts: List["TestStepContext"] = field(default_factory=list)
+    test_definition: Optional["TestDefinition"] = None
 
-    def get_component(self, name: str) -> Optional[LifecycleComponent]:
-        "Get a component from the test suite context by name"
-        return self.suite_context.get_component(name)
+    def get_test_definition(self) -> Optional["TestDefinition"]:
+        """Get the Test Definition on which this context is operating."""
+        return self.test_definition
 
 
 @dataclass
@@ -74,10 +104,14 @@ class TestStepContext(BaseContext):
     Context for an individual test step execution.
     """
 
-    step: "TestStep"
-    test_definition: "TestDefinition"
-    test_context: "TestExecutionContext"
+    parent_ctx: Optional["TestExecutionContext"] = None
+    child_contexts: List["LifecycleHookContext"] = field(default_factory=list)
+    step: Optional["TestStep"] = None
 
-    def get_component(self, name: str) -> Optional[LifecycleComponent]:
-        "Get a component from the test suite context by name"
-        return self.test_context.suite_context.get_component(name)
+    def get_step_component(self) -> Optional["LifecycleComponent"]:
+        "Get the component targeted for this step (if applicable)."
+        return self.step.component
+
+    def get_step(self) -> Optional["TestStep"]:
+        """Get the Test Step on which this context is operating."""
+        return self.step
