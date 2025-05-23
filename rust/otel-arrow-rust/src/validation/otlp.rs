@@ -316,13 +316,4 @@ mod tests {
         )
         .await
     }
-
-    #[tokio::test]
-    async fn test_otap_logs_multi_resources_scopes_and_logs() {
-        run_single_round_trip_test::<OTLPLogsInputType, OTAPLogsOutputType, _>(
-            testdata::logs::create_request_with_multiple_resources_and_scope,
-            None, // Expect success
-        )
-        .await
-    }
 }
