@@ -180,6 +180,13 @@ pub enum Error {
         location: Location,
     },
 
+    #[snafu(display("Record batch is in unexpected state. reason: {}", reason))]
+    UnexpectedRecordBatchState {
+        reason: String,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     #[snafu(display(
         "Unsupported dictionary key type, expect one of {:?}, actual {}",
         expect_oneof,

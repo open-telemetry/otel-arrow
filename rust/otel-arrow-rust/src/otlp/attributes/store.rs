@@ -10,6 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::cbor;
 use crate::arrays::{
     ByteArrayAccessor, Int64ArrayAccessor, MaybeDictArrayAccessor, NullableArrayAccessor,
     StringArrayAccessor, get_bool_array_opt, get_f64_array_opt, get_u8_array,
@@ -18,18 +19,18 @@ use crate::error;
 use crate::otlp::attributes::parent_id::ParentId;
 use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::proto::opentelemetry::common::v1::{AnyValue, KeyValue};
-use crate::schema::consts;
+use crate::schema::{
+    consts::{self, metadata},
+    get_field_metadata, get_schema_metadata,
+};
 use arrow::array::{
-    ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray, Float64Array, PrimitiveArray,
-    RecordBatch, UInt8Array, UInt64Array,
+    ArrowPrimitiveType, BooleanArray, Float64Array, PrimitiveArray, RecordBatch, UInt8Array,
+    UInt64Array,
 };
 use num_enum::TryFromPrimitive;
 use snafu::{OptionExt, ResultExt};
 use std::collections::HashMap;
-use std::hash::Hash;
 use std::iter;
-
-use super::cbor;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
 #[repr(u8)]
@@ -197,7 +198,7 @@ where
     curr_idx: usize,
     parent_id_offsets: UInt64Array,
 
-    parent_ids: MaybeDictArrayAccessor<'a, PrimitiveArray<T::ArrayType>>,
+    parent_ids: &'a PrimitiveArray<T::ArrayType>,
     keys: StringArrayAccessor<'a>,
     value_type_arr: &'a UInt8Array,
     value_str_arr: Option<StringArrayAccessor<'a>>,
@@ -214,7 +215,38 @@ where
     <T as ParentId>::ArrayType: ArrowPrimitiveType,
     <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native: Into<T>,
 {
+    /// Verify that the data in this record batch is encoded & sorted in the way the store expects
+    fn validate_record_batch_state(rb: &RecordBatch) -> error::Result<()> {
+        let schema = rb.schema_ref();
+        if Some(consts::PARENT_ID) != get_schema_metadata(schema, metadata::SORT_COLUMNS) {
+            return error::UnexpectedRecordBatchStateSnafu {
+                reason: "expected batch to be sorted by the parent_id column",
+            }
+            .fail();
+        }
+
+        if Some(metadata::parent_id::MATERIALIZED)
+            != get_field_metadata(schema, consts::PARENT_ID, metadata::parent_id::STATE)
+        {
+            return error::UnexpectedRecordBatchStateSnafu {
+                reason: "expected parent_id column to have been materialized",
+            }
+            .fail();
+        }
+
+        Ok(())
+    }
+}
+
+impl<'a, T> AttributeStoreV2<'a, T>
+where
+    T: ParentId,
+    <T as ParentId>::ArrayType: ArrowPrimitiveType,
+    <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native: Into<T>,
+{
     pub fn try_from(rb: &'a RecordBatch) -> error::Result<Self> {
+        Self::validate_record_batch_state(rb)?;
+
         let key_arr = rb
             .column_by_name(consts::ATTRIBUTE_KEY)
             .map(StringArrayAccessor::try_new)
@@ -241,15 +273,7 @@ where
             .map(ByteArrayAccessor::try_new)
             .transpose()?;
 
-        let parent_id_arr =
-            rb.column_by_name(consts::PARENT_ID)
-                .context(error::ColumnNotFoundSnafu {
-                    name: consts::PARENT_ID,
-                })?;
-        let parent_id_arr =
-            MaybeDictArrayAccessor::<PrimitiveArray<<T as ParentId>::ArrayType>>::try_new(
-                parent_id_arr,
-            )?;
+        let parent_id_arr = T::get_parent_id_column(rb)?;
 
         let parent_id_eq_next = super::decoder::create_next_element_equality_array(
             rb.column_by_name(consts::PARENT_ID).unwrap(),

@@ -79,3 +79,22 @@ pub const ATTRIBUTE_DOUBLE: &str = "double";
 pub const ATTRIBUTE_BOOL: &str = "bool";
 pub const ATTRIBUTE_BYTES: &str = "bytes";
 pub const ATTRIBUTE_SER: &str = "ser";
+
+pub mod metadata {
+    /// schema metadata for which columns the record batch is sorted by
+    pub const SORT_COLUMNS: &str = "sort_columns";
+
+    /// values for the state of the parent_id column
+    pub mod parent_id {
+        /// field metadata key representing the state of the parent_id field
+        pub const STATE: &str = "parent_id_state";
+
+        /// field metadata value representing the parent_id column is materialized
+        /// e.g. the values in the columns are the actual parent ids
+        pub const MATERIALIZED: &str = "materialized";
+
+        /// field metadata value representing the parent_id column is not materialized
+        /// e.g. the values in the columns are quasi delta encoded
+        pub const TRANSPORT_OPTIMIZED: &str = "parent_id_delta";
+    }
+}

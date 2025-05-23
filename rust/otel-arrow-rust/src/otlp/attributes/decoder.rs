@@ -22,12 +22,15 @@ use arrow::compute::kernels::cmp::eq;
 use arrow::datatypes::{DataType, UInt8Type, UInt16Type};
 use snafu::{OptionExt, ResultExt};
 
-use crate::arrays::{MaybeDictArrayAccessor, NullableArrayAccessor, get_u8_array};
+use crate::arrays::{NullableArrayAccessor, get_u8_array};
 use crate::error::{self, Result};
 use crate::otlp::attributes::parent_id::ParentId;
 use crate::otlp::attributes::store::AttributeValueType;
 use crate::proto::opentelemetry::common::v1::any_value;
-use crate::schema::consts;
+use crate::schema::{
+    consts::{self, metadata},
+    update_field_metadata,
+};
 
 pub type Attrs16ParentIdDecoder = AttrsParentIdDecoder<u16>;
 pub type Attrs32ParentIdDecoder = AttrsParentIdDecoder<u32>;
@@ -77,7 +80,7 @@ where
     }
 }
 
-// TODO -- everything below should probably also move to transform module
+// TODO -- everything below should probably eventually move to otap::transform module
 
 /// Decodes the parent IDs from their transport optimized encoding to the actual ID values.
 ///
@@ -145,11 +148,8 @@ where
     let val_bool_arr = record_batch.column_by_name(consts::ATTRIBUTE_BOOL);
     let val_bytes_arr = record_batch.column_by_name(consts::ATTRIBUTE_BYTES);
 
-    let parent_id_arr =
-        MaybeDictArrayAccessor::<PrimitiveArray<<T as ParentId>::ArrayType>>::try_new_for_column(
-            record_batch,
-            consts::PARENT_ID,
-        )?;
+    // downcast parent ID into an array of the primitive type
+    let parent_id_arr = T::get_parent_id_column(record_batch)?;
 
     let mut materialized_parent_ids =
         PrimitiveArray::<T::ArrayType>::builder(record_batch.num_rows());
@@ -246,10 +246,18 @@ where
         })
         .collect::<Vec<ArrayRef>>();
 
+    // update the field metadata for the parent_id column
+    let schema = update_field_metadata(
+        schema.as_ref(),
+        consts::PARENT_ID,
+        metadata::parent_id::STATE,
+        metadata::parent_id::MATERIALIZED,
+    );
+
     // safety: RecordBatch::try_new will only return error if our schema doesn't
     // match the passed arrays, or if the arrays are different lengths. Both of
     // these criteria should be met at this point
-    Ok(RecordBatch::try_new(schema, columns)
+    Ok(RecordBatch::try_new(Arc::new(schema), columns)
         .expect("should be able to create record batch with parent_id replaced"))
 }
 
@@ -262,7 +270,7 @@ where
 // result = [T, T, F, T, null, null, null, T]
 //
 pub(crate) fn create_next_element_equality_array(arr: &ArrayRef) -> Result<BooleanArray> {
-    // if the array is a dictionary, we compare the dicitonary keys
+    // if the array is a dictionary, we compare the dictionary keys
     if let DataType::Dictionary(dict_key_type, _) = arr.data_type() {
         match **dict_key_type {
             DataType::UInt8 => {

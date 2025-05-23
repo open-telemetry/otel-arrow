@@ -1,8 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Arc;
-
 use arrow::array::RecordBatch;
 use arrow::compute::{sort_to_indices, take_record_batch};
 use arrow::datatypes::DataType;
@@ -10,10 +8,10 @@ use arrow::datatypes::DataType;
 use crate::arrays::get_required_array;
 use crate::error::{self, Result};
 use crate::otlp::attributes::decoder::materialize_parent_id;
-use crate::schema::consts;
-
-use super::schema::consts::metadata;
-use super::schema::insert_schema_metadata;
+use crate::schema::{
+    consts::{self, metadata},
+    update_schema_metadata,
+};
 
 pub fn sort_by_parent_id(record_batch: &RecordBatch) -> Result<RecordBatch> {
     let parent_id_column = record_batch.column_by_name(consts::PARENT_ID);
@@ -48,7 +46,7 @@ pub fn sort_by_parent_id(record_batch: &RecordBatch) -> Result<RecordBatch> {
 
     let sorted_batch = take_record_batch(&record_batch, &sort_indices)
         .expect("should be able to take by sort indices");
-    let result = insert_schema_metadata(
+    let result = update_schema_metadata(
         sorted_batch,
         metadata::SORT_COLUMNS.to_string(),
         consts::PARENT_ID.to_string(),
