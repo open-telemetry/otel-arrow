@@ -79,3 +79,16 @@ pub const ATTRIBUTE_DOUBLE: &str = "double";
 pub const ATTRIBUTE_BOOL: &str = "bool";
 pub const ATTRIBUTE_BYTES: &str = "bytes";
 pub const ATTRIBUTE_SER: &str = "ser";
+
+pub mod metadata {
+    /// schema metadata for which columns the record batch is sorted by
+    pub const SORT_COLUMNS: &str = "sort_columns";
+
+    /// field metadata key for the encoding of some column
+    pub const COLUMN_ENCODING: &str = "encoding";
+
+    pub mod encodings {
+        /// plain encoding - e.g. the values in the array are not encoded
+        pub const PLAIN: &str = "plain";
+    }
+}

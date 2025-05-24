@@ -132,6 +132,13 @@ pub enum Error {
         location: Location,
     },
 
+    #[snafu(display("Unsupported parent id type. Expected u16 or u32, got: {}", actual))]
+    UnsupportedParentIdType {
+        actual: DataType,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     #[snafu(display("Unsupported payload type, got: {}", actual))]
     UnsupportedPayloadType {
         actual: i32,
@@ -169,6 +176,13 @@ pub enum Error {
 
     #[snafu(display("Metric record not found"))]
     MetricRecordNotFound {
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display("Record batch is in unexpected state. reason: {}", reason))]
+    UnexpectedRecordBatchState {
+        reason: String,
         #[snafu(implicit)]
         location: Location,
     },
