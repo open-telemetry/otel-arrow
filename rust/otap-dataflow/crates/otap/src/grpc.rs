@@ -7,6 +7,7 @@
 //!
 //! ToDo: Modify OTAPData -> Optimize message transport
 //! ToDo: Handle Ack and Nack, return proper batch status
+//! ToDo: Change how channel sizes are handled? Currently defined when creating otap_receiver -> passing channel size to the ServiceImpl
 //!
 
 use crate::proto::opentelemetry::experimental::arrow::v1::{
@@ -14,6 +15,7 @@ use crate::proto::opentelemetry::experimental::arrow::v1::{
     arrow_metrics_service_server::ArrowMetricsService,
     arrow_traces_service_server::ArrowTracesService,
 };
+use otap_df_engine::error::Error;
 use otap_df_engine::shared::receiver as shared;
 use std::pin::Pin;
 use tokio_stream::Stream;
@@ -24,38 +26,50 @@ use tonic::{Request, Response, Status};
 /// struct that implements the ArrowLogsService trait
 pub struct ArrowLogsServiceImpl {
     effect_handler: shared::EffectHandler<OTAPData>,
+    message_size: usize,
 }
 
 impl ArrowLogsServiceImpl {
     /// create a new ArrowLogsServiceImpl struct with a sendable effect handler
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OTAPData>) -> Self {
-        Self { effect_handler }
+    pub fn new(effect_handler: shared::EffectHandler<OTAPData>, message_size: usize) -> Self {
+        Self {
+            effect_handler,
+            message_size,
+        }
     }
 }
 /// struct that implements the ArrowMetricsService trait
 pub struct ArrowMetricsServiceImpl {
     effect_handler: shared::EffectHandler<OTAPData>,
+    message_size: usize,
 }
 
 impl ArrowMetricsServiceImpl {
     /// create a new ArrowMetricsServiceImpl struct with a sendable effect handler
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OTAPData>) -> Self {
-        Self { effect_handler }
+    pub fn new(effect_handler: shared::EffectHandler<OTAPData>, message_size: usize) -> Self {
+        Self {
+            effect_handler,
+            message_size,
+        }
     }
 }
 
 /// struct that implements the ArrowTracesService trait
 pub struct ArrowTracesServiceImpl {
     effect_handler: shared::EffectHandler<OTAPData>,
+    message_size: usize,
 }
 
 impl ArrowTracesServiceImpl {
     /// create a new ArrowTracesServiceImpl struct with a sendable effect handler
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OTAPData>) -> Self {
-        Self { effect_handler }
+    pub fn new(effect_handler: shared::EffectHandler<OTAPData>, message_size: usize) -> Self {
+        Self {
+            effect_handler,
+            message_size,
+        }
     }
 }
 
@@ -68,7 +82,7 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
         request: Request<tonic::Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowLogsStream>, Status> {
         let mut input_stream = request.into_inner();
-        let (tx, rx) = tokio::sync::mpsc::channel(100);
+        let (tx, rx) = tokio::sync::mpsc::channel(self.message_size);
         let effect_handler_clone = self.effect_handler.clone();
 
         // Provide client a stream to listen to
@@ -78,23 +92,14 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
         _ = tokio::spawn(async move {
             // Process messages until stream ends or error occurs
             while let Ok(Some(batch)) = input_stream.message().await {
-                // Process batch and send status, break on client disconnection
-                let batch_id = batch.batch_id;
-                let status_result = match effect_handler_clone
-                    .send_message(OTAPData::ArrowLogs(batch))
+                // accept the batch data and handle output response
+                if accept_data(OTAPData::ArrowLogs, batch, &effect_handler_clone, &tx)
                     .await
+                    .is_err()
                 {
-                    Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
-                    Err(error) => (StatusCode::Canceled, error.to_string()),
-                };
-
-                _ = tx
-                    .send(Ok(BatchStatus {
-                        batch_id: batch_id,
-                        status_code: status_result.0 as i32,
-                        status_message: status_result.1,
-                    }))
-                    .await;
+                    // end loop if error occurs
+                    break;
+                }
             }
         });
 
@@ -111,7 +116,7 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
         request: Request<tonic::Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowMetricsStream>, Status> {
         let mut input_stream = request.into_inner();
-        let (tx, rx) = tokio::sync::mpsc::channel(100);
+        let (tx, rx) = tokio::sync::mpsc::channel(self.message_size);
         let effect_handler_clone = self.effect_handler.clone();
 
         // Provide client a stream to listen to
@@ -121,22 +126,14 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
         _ = tokio::spawn(async move {
             // Process messages until stream ends or error occurs
             while let Ok(Some(batch)) = input_stream.message().await {
-                // Process batch and send status, break on client disconnection
-                let batch_id = batch.batch_id;
-                let status_result = match effect_handler_clone
-                    .send_message(OTAPData::ArrowMetrics(batch))
+                // accept the batch data and handle output response
+                if accept_data(OTAPData::ArrowMetrics, batch, &effect_handler_clone, &tx)
                     .await
+                    .is_err()
                 {
-                    Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
-                    Err(error) => (StatusCode::Canceled, error.to_string()),
-                };
-                _ = tx
-                    .send(Ok(BatchStatus {
-                        batch_id: batch_id,
-                        status_code: status_result.0 as i32,
-                        status_message: status_result.1,
-                    }))
-                    .await;
+                    // end loop if error occurs
+                    break;
+                }
             }
         });
 
@@ -153,7 +150,7 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
         request: Request<tonic::Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowTracesStream>, Status> {
         let mut input_stream = request.into_inner();
-        let (tx, rx) = tokio::sync::mpsc::channel(100);
+        let (tx, rx) = tokio::sync::mpsc::channel(self.message_size);
         let effect_handler_clone = self.effect_handler.clone();
 
         // create a stream to output result to
@@ -163,27 +160,43 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
         _ = tokio::spawn(async move {
             // Process messages until stream ends or error occurs
             while let Ok(Some(batch)) = input_stream.message().await {
-                // Process batch and send status, break on client disconnection
-                let batch_id = batch.batch_id;
-                let status_result = match effect_handler_clone
-                    .send_message(OTAPData::ArrowTraces(batch))
+                // accept the batch data and handle output response
+                if accept_data(OTAPData::ArrowTraces, batch, &effect_handler_clone, &tx)
                     .await
+                    .is_err()
                 {
-                    Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
-                    Err(error) => (StatusCode::Canceled, error.to_string()),
-                };
-                _ = tx
-                    .send(Ok(BatchStatus {
-                        batch_id: batch_id,
-                        status_code: status_result.0 as i32,
-                        status_message: status_result.1,
-                    }))
-                    .await;
+                    // end loop if error occurs
+                    break;
+                }
             }
         });
 
         Ok(Response::new(Box::pin(output) as Self::ArrowTracesStream))
     }
+}
+
+/// handles sending the data down the pipeline via effect_handler and generating the approriate response
+async fn accept_data<OTAPDataType>(
+    otap_data: OTAPDataType,
+    batch: BatchArrowRecords,
+    effect_handler: &shared::EffectHandler<OTAPData>,
+    tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
+) -> Result<(), ()>
+where
+    OTAPDataType: Fn(BatchArrowRecords) -> OTAPData,
+{
+    let batch_id = batch.batch_id;
+    let status_result = match effect_handler.send_message(otap_data(batch)).await {
+        Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
+        Err(error) => (StatusCode::Canceled, error.to_string()),
+    };
+    tx.send(Ok(BatchStatus {
+        batch_id: batch_id,
+        status_code: status_result.0 as i32,
+        status_message: status_result.1,
+    }))
+    .await
+    .map_err(|_| ())
 }
 
 /// Enum to describe the Arrow data

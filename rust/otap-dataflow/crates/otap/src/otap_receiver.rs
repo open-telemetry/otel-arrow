@@ -29,15 +29,21 @@ use tonic::transport::Server;
 pub struct OTAPReceiver {
     listening_addr: SocketAddr,
     compression_method: Option<CompressionMethod>,
+    message_size: usize,
 }
 
 impl OTAPReceiver {
     /// creates a new OTAP Receiver
     #[must_use]
-    pub fn new(listening_addr: SocketAddr, compression_method: Option<CompressionMethod>) -> Self {
+    pub fn new(
+        listening_addr: SocketAddr,
+        compression_method: Option<CompressionMethod>,
+        message_size: usize,
+    ) -> Self {
         OTAPReceiver {
             listening_addr,
             compression_method,
+            message_size,
         }
     }
 }
@@ -59,9 +65,11 @@ impl shared::Receiver<OTAPData> for OTAPReceiver {
         //start event loop
         loop {
             //create services for the grpc server and clone the effect handler to pass message
-            let logs_service = ArrowLogsServiceImpl::new(effect_handler.clone());
-            let metrics_service = ArrowMetricsServiceImpl::new(effect_handler.clone());
-            let trace_service = ArrowTracesServiceImpl::new(effect_handler.clone());
+            let logs_service = ArrowLogsServiceImpl::new(effect_handler.clone(), self.message_size);
+            let metrics_service =
+                ArrowMetricsServiceImpl::new(effect_handler.clone(), self.message_size);
+            let trace_service =
+                ArrowTracesServiceImpl::new(effect_handler.clone(), self.message_size);
 
             let mut logs_service_server = ArrowLogsServiceServer::new(logs_service);
             let mut metrics_service_server = ArrowMetricsServiceServer::new(metrics_service);
@@ -258,10 +266,13 @@ mod tests {
         let grpc_port = portpicker::pick_unused_port().expect("No free ports");
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let message_size = 100;
 
         // create our receiver
-        let receiver =
-            ReceiverWrapper::shared(OTAPReceiver::new(addr, None), test_runtime.config());
+        let receiver = ReceiverWrapper::shared(
+            OTAPReceiver::new(addr, None, message_size),
+            test_runtime.config(),
+        );
 
         // run the test
         test_runtime
