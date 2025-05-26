@@ -16,6 +16,9 @@ workspace = true
 otap-df-channel = { path = "../channel" }
 otap-df-config = { path = "../config" }
 
+futures.workspace = true
+futures-timer.workspace = true
+pin-project.workspace = true
 thiserror = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

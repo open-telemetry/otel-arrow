@@ -14,6 +14,7 @@ use crate::{
 pub mod transform;
 
 /// The OtapBatch enum is used to represent a batch of OTAP data.
+#[derive(Clone)]
 pub enum OtapBatch {
     /// Represents a batch of logs data.
     Logs(Logs),
@@ -51,7 +52,7 @@ impl OtapBatch {
 /// storing and retrieving Arrow record batches in a type-safe manner. It is
 /// implemented by various structs that represent each signal type and provides
 /// methods to efficiently set and get record batches.
-trait OtapBatchStore: Sized + Default {
+trait OtapBatchStore: Sized + Default + Clone {
     // Internally, implementers should use a bitmask for the types they support.
     // The offsets in the bitmask should correspond to the ArrowPayloadType enum values.
     const TYPE_MASK: u64;
@@ -158,7 +159,7 @@ const POSITION_LOOKUP: &[usize] = &[
 const UNUSED_INDEX: usize = 99;
 
 /// Store of record batches for a batch of OTAP logs data.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Logs {
     batches: [Option<RecordBatch>; 4],
 }
@@ -179,7 +180,7 @@ impl OtapBatchStore for Logs {
 }
 
 /// Store of record batches for a batch of OTAP metrics data.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Metrics {
     batches: [Option<RecordBatch>; 18],
 }
@@ -214,7 +215,7 @@ impl OtapBatchStore for Metrics {
 }
 
 /// Store of record batches for a batch of OTAP traces data.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Traces {
     batches: [Option<RecordBatch>; 8],
 }
@@ -235,6 +236,59 @@ impl OtapBatchStore for Traces {
 
     fn batches(&self) -> &[Option<RecordBatch>] {
         &self.batches
+    }
+}
+
+/// Return the child payload types for the given payload type
+#[must_use]
+pub fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPayloadType] {
+    match payload_type {
+        ArrowPayloadType::Logs => &[
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::LogAttrs,
+        ],
+        ArrowPayloadType::Spans => &[
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::LogAttrs,
+            ArrowPayloadType::SpanEvents,
+            ArrowPayloadType::SpanLinks,
+        ],
+        ArrowPayloadType::SpanEvents => &[ArrowPayloadType::SpanEventAttrs],
+        ArrowPayloadType::SpanLinks => &[ArrowPayloadType::SpanLinkAttrs],
+        ArrowPayloadType::UnivariateMetrics => &[
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::LogAttrs,
+            ArrowPayloadType::NumberDataPoints,
+            ArrowPayloadType::SummaryDataPoints,
+            ArrowPayloadType::HistogramDataPoints,
+            ArrowPayloadType::ExpHistogramDataPoints,
+        ],
+        ArrowPayloadType::NumberDataPoints => &[
+            ArrowPayloadType::NumberDpAttrs,
+            ArrowPayloadType::NumberDpExemplars,
+        ],
+        ArrowPayloadType::NumberDpExemplarAttrs => &[ArrowPayloadType::NumberDpExemplarAttrs],
+        ArrowPayloadType::SummaryDataPoints => &[ArrowPayloadType::SummaryDpAttrs],
+        ArrowPayloadType::HistogramDataPoints => &[
+            ArrowPayloadType::HistogramDpAttrs,
+            ArrowPayloadType::HistogramDpExemplars,
+        ],
+        ArrowPayloadType::HistogramDpExemplars => &[ArrowPayloadType::HistogramDpExemplarAttrs],
+        ArrowPayloadType::ExpHistogramDataPoints => &[
+            ArrowPayloadType::ExpHistogramDpAttrs,
+            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+        ],
+
+        ArrowPayloadType::ExpHistogramDpExemplarAttrs => {
+            &[ArrowPayloadType::ExpHistogramDpExemplarAttrs]
+        }
+        ArrowPayloadType::MultivariateMetrics => {
+            child_payload_types(ArrowPayloadType::MultivariateMetrics)
+        }
+        _ => &[],
     }
 }
 
