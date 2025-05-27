@@ -26,32 +26,32 @@ use tonic::{Request, Response, Status};
 /// struct that implements the ArrowLogsService trait
 pub struct ArrowLogsServiceImpl {
     effect_handler: shared::EffectHandler<OTAPData>,
-    message_size: usize,
+    channel_size: usize,
 }
 
 impl ArrowLogsServiceImpl {
     /// create a new ArrowLogsServiceImpl struct with a sendable effect handler
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OTAPData>, message_size: usize) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OTAPData>, channel_size: usize) -> Self {
         Self {
             effect_handler,
-            message_size,
+            channel_size,
         }
     }
 }
 /// struct that implements the ArrowMetricsService trait
 pub struct ArrowMetricsServiceImpl {
     effect_handler: shared::EffectHandler<OTAPData>,
-    message_size: usize,
+    channel_size: usize,
 }
 
 impl ArrowMetricsServiceImpl {
     /// create a new ArrowMetricsServiceImpl struct with a sendable effect handler
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OTAPData>, message_size: usize) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OTAPData>, channel_size: usize) -> Self {
         Self {
             effect_handler,
-            message_size,
+            channel_size,
         }
     }
 }
@@ -59,16 +59,16 @@ impl ArrowMetricsServiceImpl {
 /// struct that implements the ArrowTracesService trait
 pub struct ArrowTracesServiceImpl {
     effect_handler: shared::EffectHandler<OTAPData>,
-    message_size: usize,
+    channel_size: usize,
 }
 
 impl ArrowTracesServiceImpl {
     /// create a new ArrowTracesServiceImpl struct with a sendable effect handler
     #[must_use]
-    pub fn new(effect_handler: shared::EffectHandler<OTAPData>, message_size: usize) -> Self {
+    pub fn new(effect_handler: shared::EffectHandler<OTAPData>, channel_size: usize) -> Self {
         Self {
             effect_handler,
-            message_size,
+            channel_size,
         }
     }
 }
@@ -82,13 +82,15 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
         request: Request<tonic::Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowLogsStream>, Status> {
         let mut input_stream = request.into_inner();
-        let (tx, rx) = tokio::sync::mpsc::channel(self.message_size);
+        // ToDo [LQ] How can we abstract this to avoid any dependency on Tokio inside receiver implementations.
+        let (tx, rx) = tokio::sync::mpsc::channel(self.channel_size);
         let effect_handler_clone = self.effect_handler.clone();
 
         // Provide client a stream to listen to
         let output = ReceiverStream::new(rx);
 
         // write to the channel
+        // ToDo [LQ] How can we abstract this to avoid any dependency on Tokio inside receiver implementations.
         _ = tokio::spawn(async move {
             // Process messages until stream ends or error occurs
             while let Ok(Some(batch)) = input_stream.message().await {
@@ -116,7 +118,7 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
         request: Request<tonic::Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowMetricsStream>, Status> {
         let mut input_stream = request.into_inner();
-        let (tx, rx) = tokio::sync::mpsc::channel(self.message_size);
+        let (tx, rx) = tokio::sync::mpsc::channel(self.channel_size);
         let effect_handler_clone = self.effect_handler.clone();
 
         // Provide client a stream to listen to
@@ -150,7 +152,7 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
         request: Request<tonic::Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowTracesStream>, Status> {
         let mut input_stream = request.into_inner();
-        let (tx, rx) = tokio::sync::mpsc::channel(self.message_size);
+        let (tx, rx) = tokio::sync::mpsc::channel(self.channel_size);
         let effect_handler_clone = self.effect_handler.clone();
 
         // create a stream to output result to
@@ -190,6 +192,7 @@ where
         Ok(_) => (StatusCode::Ok, "Successfully received".to_string()),
         Err(error) => (StatusCode::Canceled, error.to_string()),
     };
+    // ToDo Add Ack/Nack management once supported by the pipeline engine.
     tx.send(Ok(BatchStatus {
         batch_id: batch_id,
         status_code: status_result.0 as i32,

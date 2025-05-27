@@ -7,6 +7,7 @@
 //!
 //! ToDo: Modify OTAPData -> Optimize message transport
 //! ToDo: Handle Ack and Nack, return proper batch status
+//! ToDo: [LQ] Improve the pipeline test infrastructure to allow testing the tuple `pdata channel -> OTAP Exporter - grpc -> OTAP receiver -> pdata channel`
 //!
 
 use crate::grpc::OTAPData;

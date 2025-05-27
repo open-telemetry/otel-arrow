@@ -4,11 +4,13 @@
 //!
 /// gRPC service implementation
 pub mod grpc;
-/// testing utilities
-pub mod mock;
 /// Implementation of OTAP Exporter that implements the exporter trait
 pub mod otap_exporter;
 /// Implementation of OTAP Receiver that implements the receiver trait
 pub mod otap_receiver;
 /// Generated protobuf files
 pub mod proto;
+
+/// testing utilities
+#[cfg(test)]
+mod mock;

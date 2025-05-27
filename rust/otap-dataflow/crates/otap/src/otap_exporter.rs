@@ -97,6 +97,7 @@ impl local::Exporter<OTAPData> for OTAPExporter {
                         // check what message the data is
                         OTAPData::ArrowMetrics(req) => {
                             // handle stream differently here?
+                            // ToDo: [LQ or someone else] Check if there is a better way to handle that.
                             let request_stream = stream! {
                                 yield req;
                             };
