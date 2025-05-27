@@ -24,6 +24,7 @@
 
 /// Simple batch processor implementation
 mod simple_batch_processor;
+mod simple_generic_batch_processor;
 
 /// gRPC service implementation
 pub mod grpc;
