@@ -6,6 +6,7 @@ use arrow::array::{
     TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, Fields};
+use related_data::RelatedData;
 use snafu::{OptionExt, ResultExt, ensure};
 
 use crate::arrays::{
@@ -13,9 +14,10 @@ use crate::arrays::{
     StructColumnAccessor, get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt,
 };
 use crate::error::{self, Error, Result};
+use crate::otap::OtapBatch;
 use crate::otlp::common::{ResourceArrays, ScopeArrays};
-use crate::otlp::logs::related_data::RelatedData;
 use crate::otlp::metrics::AppendAndGet;
+use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::common::v1::AnyValue;
 use crate::proto::opentelemetry::common::v1::any_value::Value;
@@ -23,7 +25,7 @@ use crate::schema::consts;
 
 use super::attributes::{cbor, store::AttributeValueType};
 
-pub mod related_data;
+mod related_data;
 
 struct LogsArrays<'a> {
     id: &'a UInt16Array,
@@ -173,16 +175,19 @@ impl<'a> TryFrom<&'a StructArray> for LogBodyArrays<'a> {
     }
 }
 
-pub fn logs_from(
-    rb: &RecordBatch,
-    related_data: &mut RelatedData,
-) -> Result<ExportLogsServiceRequest> {
+pub fn logs_from(logs_otap_batch: OtapBatch) -> Result<ExportLogsServiceRequest> {
     let mut logs = ExportLogsServiceRequest::default();
     let mut prev_res_id: Option<u16> = None;
     let mut prev_scope_id: Option<u16> = None;
 
     let mut res_id = 0;
     let mut scope_id = 0;
+
+    let rb = logs_otap_batch
+        .get(ArrowPayloadType::Logs)
+        .context(error::LogRecordNotFoundSnafu)?;
+
+    let mut related_data = RelatedData::try_from(&logs_otap_batch)?;
 
     let resource_arrays = ResourceArrays::try_from(rb)?;
     let scope_arrays = ScopeArrays::try_from(rb)?;
@@ -209,7 +214,8 @@ pub fn logs_from(
             if let Some(res_id) = resource_arrays.id.value_at(idx) {
                 if let Some(attrs) = related_data
                     .res_attr_map_store
-                    .attribute_by_delta_id(res_id)
+                    .as_mut()
+                    .and_then(|store| store.attribute_by_delta_id(res_id))
                 {
                     resource.attributes = attrs.to_vec();
                 }
@@ -227,7 +233,8 @@ pub fn logs_from(
             if let Some(scope_id) = scope_delta_id_opt {
                 if let Some(attrs) = related_data
                     .scope_attr_map_store
-                    .attribute_by_delta_id(scope_id)
+                    .as_mut()
+                    .and_then(|store| store.attribute_by_delta_id(scope_id))
                 {
                     scope.attributes = attrs.to_vec();
                 }
@@ -295,9 +302,10 @@ pub fn logs_from(
 
         if let Some(attrs) = related_data
             .log_record_attr_map_store
-            .attribute_by_id(delta_id)
+            .as_mut()
+            .and_then(|store| store.attribute_by_delta_id(delta_id))
         {
-            current_log_record.attributes = attrs.to_vec();
+            current_log_record.attributes = attrs.to_vec()
         }
     }
 

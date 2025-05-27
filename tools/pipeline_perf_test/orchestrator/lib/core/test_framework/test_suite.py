@@ -13,11 +13,14 @@ Classes:
     context to each test.
 """
 
-from typing import List, Dict
+from typing import List, Dict, TYPE_CHECKING
 
 from .test_definition import TestDefinition
-from ..component.lifecycle_component import LifecycleComponent
 from .test_context import TestSuiteContext, TestExecutionContext
+
+
+if TYPE_CHECKING:
+    from ..component.lifecycle_component import LifecycleComponent
 
 
 class TestSuite:
@@ -37,7 +40,7 @@ class TestSuite:
     """
 
     def __init__(
-        self, tests: List[TestDefinition], components: Dict[str, LifecycleComponent]
+        self, tests: List[TestDefinition], components: Dict[str, "LifecycleComponent"]
     ):
         """
         Initializes the test suite with a list of tests and a dictionary of components.
@@ -51,7 +54,8 @@ class TestSuite:
         """
         self.tests = tests
         self.components = components
-        self.context = TestSuiteContext()
+        # TODO: support a name field on TestSuite
+        self.context = TestSuiteContext(name="TestSuite")
         for k, v in components.items():
             self.context.add_component(k, v)
 
@@ -63,8 +67,22 @@ class TestSuite:
         to each test. The context provides access to the components, allowing the test to interact
         with them as needed.
         """
+        self.context.start()
         for test_definition in self.tests:
             test_execution_context = TestExecutionContext(
-                test_definition=test_definition, suite_context=self.context
+                name=test_definition.name, test_definition=test_definition
             )
-            test_definition.run(test_execution_context)
+            self.context.add_child_ctx(test_execution_context)
+            test_execution_context.start()
+            try:
+                test_definition.run(test_execution_context)
+                test_execution_context.status = "success"
+            except Exception as e:
+                test_execution_context.status = "error"
+                test_execution_context.error = e
+                test_execution_context.log(f"Test '{test_definition.name}' failed: {e}")
+                # TODO: Depending on policy: break or continue
+                raise
+            finally:
+                test_execution_context.end()
+        self.context.end()

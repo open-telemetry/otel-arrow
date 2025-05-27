@@ -12,7 +12,6 @@ Classes:
     TestDefinition: A class that defines a test, including the steps to run and the reporting strategies to use.
 """
 
-import time
 from typing import Any, Dict, List, Optional
 
 from .test_context import TestExecutionContext, TestStepContext
@@ -69,35 +68,30 @@ class TestDefinition:
             context (TestExecutionContext): The context that contains all the components and relevant data for the test.
         """
         print(f"Running test: {self.name}")
-        context.start_time = time.time()
         for step in self.steps:
-            step_ctx = TestStepContext(
-                step=step,
-                test_definition=self,
-                test_context=context,
-            )
+            step_ctx = TestStepContext(name=step.name, step=step)
+            context.add_child_ctx(step_ctx)
             try:
-                step_ctx.start_time = time.time()
+                step_ctx.start()
                 step.run(step_ctx)
                 step_ctx.status = "success"
             except Exception as e:
                 step_ctx.status = "error"
                 step_ctx.error = e
-                print(f"Step '{step.name}' failed: {e}")
-                # TODO: Depending on policy: break or continue
-                break
+                step_ctx.log(f"Step '{step.name}' failed: {e}")
+                # TODO: Depending on policy: raise or continue
+                raise
             finally:
-                step_ctx.end_time = time.time()
-
-        context.step_contexts.append(step_ctx)
-        context.end_time = time.time()
+                step_ctx.end()
 
         # Report using all reporting strategies
         aggregated_data = self.aggregate_monitoring_data(context)
         for strategy in self.reporting_strategies:
             strategy.report(aggregated_data)
 
-    def aggregate_monitoring_data(self, context) -> Dict[str, Dict[str, Any]]:
+    def aggregate_monitoring_data(
+        self, context: TestExecutionContext
+    ) -> Dict[str, Dict[str, Any]]:
         """
         Aggregates monitoring data from all components in the context.
 
@@ -114,9 +108,9 @@ class TestDefinition:
         aggregated_data = {}
 
         # Collect data from each component
-        for component_name, component in context.suite_context.components.items():
+        for component_name, component in context.get_components().items():
             # Collect the monitoring data from the component
-            collected_data = component.collect_monitoring_data()
+            collected_data = component.collect_monitoring_data(context)
 
             # Aggregate it by component name
             aggregated_data[component_name] = collected_data
