@@ -179,11 +179,3 @@ def get_docker_logs(ctx: LifecycleHookContext):
     # dummy impl
     runtime = get_docker_runtime(ctx)
     ctx.log(f"docker logs {runtime.container_id}")
-
-
-# def launch_container(
-# def build_docker_image(
-# def get_docker_logs(container_id: str, client: docker.DockerClient, log_cli: bool = False) -> str:
-# def cleanup_docker_containers(container_names: List[str], client: docker.DockerClient, log_cli: bool = False) -> None:
-# def create_docker_network(network_name: str, client: docker.DockerClient, log_cli: bool = False) -> bool:
-# def delete_docker_network(network_name: str, client: docker.DockerClient, log_cli: bool = False) -> None:
