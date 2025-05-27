@@ -502,4 +502,106 @@ mod tests {
             })
             .validate(|_ctx| async {});
     }
+
+    #[test]
+    fn metrics_batch_preserves_all_metric_kinds() {
+        use crate::proto::opentelemetry::metrics::v1::{
+            Metric, Gauge, Sum, Histogram, NumberDataPoint, HistogramDataPoint,
+        };
+        use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+        use crate::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
+        use otap_df_engine::message::{Message, ControlMsg};
+        use std::time::Duration;
+
+        // Create a Gauge metric
+        let gauge_metric = Metric {
+            name: "gauge".to_string(),
+            data: Some(crate::proto::opentelemetry::metrics::v1::metric::Data::Gauge(Gauge {
+                data_points: vec![NumberDataPoint::default()],
+            })),
+        ..Default::default()
+    };
+
+    // Create a Sum metric
+    let sum_metric = Metric {
+        name: "sum".to_string(),
+        data: Some(crate::proto::opentelemetry::metrics::v1::metric::Data::Sum(Sum {
+            data_points: vec![NumberDataPoint::default()],
+            aggregation_temporality: 1,
+            is_monotonic: false,
+        })),
+        ..Default::default()
+    };
+
+    // Create a Histogram metric
+    let histogram_metric = Metric {
+        name: "histogram".to_string(),
+        data: Some(crate::proto::opentelemetry::metrics::v1::metric::Data::Histogram(Histogram {
+            data_points: vec![HistogramDataPoint::default()],
+            aggregation_temporality: 1,
+        })),
+        ..Default::default()
+    };
+
+    // Build one batch with all three types
+    let req = ExportMetricsServiceRequest {
+        resource_metrics: vec![ResourceMetrics {
+            resource: None,
+            scope_metrics: vec![ScopeMetrics {
+                scope: None,
+                metrics: vec![
+                    gauge_metric.clone(),
+                    sum_metric.clone(),
+                    histogram_metric.clone(),
+                ],
+                schema_url: String::new(),
+            }],
+            schema_url: String::new(),
+        }],
+    };
+
+    // Set up processor; batch size larger than input, so all show up together
+    let mut runtime = TestRuntime::<OTLPData>::new();
+    let config = BatchConfig { send_batch_size: 10, timeout: Duration::from_secs(60) };
+    let wrapper = wrap_local(GenericBatcher::new(config));
+
+    runtime.set_processor(wrapper)
+    .run_test(|mut ctx| async move {
+        ctx.process(Message::PData(OTLPData::Metrics(req))).await.unwrap();
+        ctx.process(Message::Control(ControlMsg::Shutdown { deadline: Duration::from_secs(1), reason: "test".into() })).await.unwrap();
+        let emitted = ctx.drain_pdata().await;
+        // Should emit one batch with all metrics
+        assert_eq!(emitted.len(), 1, "Should emit a single metrics batch");
+        match &emitted[0] {
+            OTLPData::Metrics(batch) => {
+                // Flatten all metrics in output
+                let all_metrics: Vec<Metric> = batch.resource_metrics.iter()
+                    .flat_map(|rm| &rm.scope_metrics)
+                    .flat_map(|sm| &sm.metrics)
+                    .cloned()
+                    .collect();
+                let names: Vec<_> = all_metrics.iter().map(|m| m.name.as_str()).collect();
+                assert!(names.contains(&"gauge"),   "Gauge metric found in batch");
+                assert!(names.contains(&"sum"),     "Sum metric found in batch");
+                assert!(names.contains(&"histogram"), "Histogram metric found in batch");
+
+                // Optionally: Check types preserved
+                fn metric_kind(m: &Metric) -> &'static str {
+                    match &m.data {
+                        Some(crate::proto::opentelemetry::metrics::v1::metric::Data::Gauge(_)) => "gauge",
+                        Some(crate::proto::opentelemetry::metrics::v1::metric::Data::Sum(_)) => "sum",
+                        Some(crate::proto::opentelemetry::metrics::v1::metric::Data::Histogram(_)) => "histogram",
+                        Some(_) => "other",
+                        None => "none"
+                    }
+                }
+                assert!(all_metrics.iter().any(|m| metric_kind(m) == "gauge"), "Gauge type found");
+                assert!(all_metrics.iter().any(|m| metric_kind(m) == "sum"), "Sum type found");
+                assert!(all_metrics.iter().any(|m| metric_kind(m) == "histogram"), "Histogram type found");
+            }
+            _ => panic!("Expected Metrics batch"),
+        }
+    })
+    .validate(|_ctx| async {});
+}
 }
