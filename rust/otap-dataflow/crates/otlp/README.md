@@ -1,34 +1,40 @@
 # OTLP Nodes
 
-## SimpleBatchProcessor
+## GenericBatchProcessor
 
-A lightweight, synchronous batch processor designed for OpenTelemetry Protocol (OTLP) data within the Arrow pipeline. This processor efficiently collects and batches telemetry data before forwarding it for further processing.
+A flexible, type-safe batch processor for OpenTelemetry Protocol (OTLP) data that leverages Rust's type system for efficient and safe batching of telemetry data.
 
 ### Key Features
 
-- Multiple Data Type Support: Handles all three OTLP data types (traces, metrics, and logs) independently
-- Automatic Batching: Collects data points and combines them into batches based on configurable criteria
+- **Generic Data Handling**: Uses Rust's type system to handle all OTLP data types (traces, metrics, logs) with a single, unified implementation
+- **Type-Safe Batching**: Ensures type safety at compile time while maintaining efficient batching operations
+- **Preservation of Data Structure**: Maintains the original structure of metrics (Gauges, Sums, Histograms) during batching
 
 ### Configurable Flush Triggers
 
-- **Batch size**: Flushes when the number of items reaches a configured threshold
-- **Timeout**: Flushes after a specified duration, ensuring data doesn't stay buffered too long
-- **Shutdown**: Ensures all buffered data is emitted during graceful shutdown
+- **Batch Size**: Flushes when the number of items reaches a configurable threshold
+- **Timeout**: Flushes after a specified duration to ensure timely processing
+- **Shutdown**: Guarantees all buffered data is emitted during graceful shutdown
 
-### Additional Features
+### Technical Highlights
 
-- **Thread-Safe**: Uses message passing for safe concurrent operation
-- **Lightweight**: Minimal overhead implementation suitable for basic batching needs
+- **Efficient Data Structures**: Uses `VecDeque` for optimal front/back operations during batching
+- **Zero-Copy Operations**: Minimizes data copying during batching operations
+- **Thread-Safe Design**: Implements safe concurrent operation through message passing
 
 ### Use Cases
 
-- Simple telemetry collection and forwarding
-- Development and testing environments
-- Scenarios where minimal processing overhead is desired
-- When you need a straightforward, no-frills batching solution
+- Production environments requiring type safety and performance
+- Scenarios with mixed telemetry types needing consistent batching
+- Systems where data integrity and structure preservation are critical
+- High-performance telemetry pipelines with strict latency requirements
 
-### When to Consider Alternatives
+### Example Usage
 
-- If you need advanced batching features like metadata-based routing
-- When you require dynamic configuration changes at runtime
-- For high-cardinality scenarios that might need more sophisticated batching logic
+```rust
+let config = BatchConfig {
+    send_batch_size: 100,  // Batch size threshold
+    timeout: Duration::from_secs(5),  // Maximum time to hold a batch
+};
+let batcher = GenericBatcher::new(config);
+// Use with your OTLP data pipeline
