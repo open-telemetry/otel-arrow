@@ -23,7 +23,6 @@
 #![deny(rustdoc::broken_intra_doc_links)]
 
 /// Simple batch processor implementation
-mod simple_batch_processor;
 mod simple_generic_batch_processor;
 
 /// gRPC service implementation
