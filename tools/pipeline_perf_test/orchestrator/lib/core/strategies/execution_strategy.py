@@ -20,7 +20,7 @@ Classes:
 from abc import ABC, abstractmethod
 
 from ..component.lifecycle_component import LifecycleComponent
-from ..test_framework.test_context import TestStepContext
+from ..context.test_contexts import TestStepContext
 
 
 class ExecutionStrategy(ABC):

@@ -4,7 +4,7 @@ import docker
 from pydantic import BaseModel, Field
 
 from ....core.strategies.deployment_strategy import DeploymentStrategy
-from ....core.test_framework.test_context import TestStepContext
+from ....core.context.test_contexts import TestStepContext
 from ....core.component.lifecycle_component import (
     LifecycleHookContext,
     HookableLifecyclePhase,
