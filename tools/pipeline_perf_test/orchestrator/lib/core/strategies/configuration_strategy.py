@@ -21,6 +21,9 @@ Classes:
 
 from abc import ABC, abstractmethod
 
+from ..component.lifecycle_component import LifecycleComponent
+from ..test_framework.test_context import TestStepContext
+
 
 class ConfigurationStrategy(ABC):
     """
@@ -30,14 +33,15 @@ class ConfigurationStrategy(ABC):
     is applied to a given component.
 
     Methods:
-        start(component): Apply configuration to the specified component.
+        start(component, ctx): Apply configuration to the specified component.
     """
 
     @abstractmethod
-    def start(self, component):
+    def start(self, component: LifecycleComponent, ctx: TestStepContext):
         """
         Start configuration for the given component.
 
         Args:
             component: The component instance to configure.
+            ctx: The current execution context for the containing test step.
         """
