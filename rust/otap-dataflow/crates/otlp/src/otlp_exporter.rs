@@ -6,7 +6,8 @@
 //! ToDo: Handle configuratin changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
-use crate::grpc::{CompressionMethod, OTLPData};
+use crate::compression::CompressionMethod;
+use crate::grpc::OTLPData;
 use crate::proto::opentelemetry::collector::{
     logs::v1::logs_service_client::LogsServiceClient,
     metrics::v1::metrics_service_client::MetricsServiceClient,

@@ -6,7 +6,7 @@
 //! ToDo: Handle configuratin changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
-use crate::grpc::{CompressionMethod, OTAPData};
+use crate::grpc::OTAPData;
 use crate::proto::opentelemetry::experimental::arrow::v1::{
     arrow_logs_service_client::ArrowLogsServiceClient,
     arrow_metrics_service_client::ArrowMetricsServiceClient,
@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
+use otap_df_otlp::compression::CompressionMethod;
 
 /// Exporter that sends OTAP data via gRPC
 struct OTAPExporter {

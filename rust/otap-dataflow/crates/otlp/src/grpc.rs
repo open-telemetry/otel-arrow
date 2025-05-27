@@ -26,7 +26,6 @@ use crate::proto::opentelemetry::collector::{
 };
 
 use otap_df_engine::shared::receiver as shared;
-use tonic::codec::CompressionEncoding;
 use tonic::{Request, Response, Status};
 
 /// struct that implements the Log Service trait
@@ -156,28 +155,4 @@ pub enum OTLPData {
     Traces(ExportTraceServiceRequest),
     /// Profiles Object
     Profiles(ExportProfilesServiceRequest),
-}
-
-/// Enum to represent various compression methods
-#[derive(Debug)]
-pub enum CompressionMethod {
-    /// Fastest compression
-    Zstd,
-    /// Most compatible compression method
-    Gzip,
-    /// Used for legacy systems
-    Deflate,
-}
-
-impl CompressionMethod {
-    /// map the compression method to the proper tonic compression encoding equivalent
-    /// use the CompressionMethod enum to abstract from tonic
-    #[must_use]
-    pub fn map_to_compression_encoding(&self) -> CompressionEncoding {
-        match *self {
-            CompressionMethod::Gzip => CompressionEncoding::Gzip,
-            CompressionMethod::Zstd => CompressionEncoding::Zstd,
-            CompressionMethod::Deflate => CompressionEncoding::Deflate,
-        }
-    }
 }

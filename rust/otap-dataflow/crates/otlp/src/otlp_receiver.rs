@@ -8,9 +8,9 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
+use crate::compression::CompressionMethod;
 use crate::grpc::{
-    CompressionMethod, LogsServiceImpl, MetricsServiceImpl, OTLPData, ProfilesServiceImpl,
-    TraceServiceImpl,
+    LogsServiceImpl, MetricsServiceImpl, OTLPData, ProfilesServiceImpl, TraceServiceImpl,
 };
 use crate::proto::opentelemetry::collector::{
     logs::v1::logs_service_server::LogsServiceServer,

@@ -9,8 +9,7 @@
 //!
 
 use crate::grpc::{
-    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, CompressionMethod,
-    OTAPData,
+    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OTAPData,
 };
 use crate::proto::opentelemetry::experimental::arrow::v1::{
     arrow_logs_service_server::ArrowLogsServiceServer,
@@ -21,6 +20,7 @@ use async_trait::async_trait;
 use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
 use otap_df_engine::shared::receiver as shared;
+use otap_df_otlp::compression::CompressionMethod;
 use std::net::SocketAddr;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
