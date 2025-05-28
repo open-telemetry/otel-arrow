@@ -14,5 +14,10 @@ workspace = true
 
 [dependencies]
 otap-df-engine = { path = "../engine" }
-
+otap-df-otlp = { path = "../otlp" }
+self-meter = "0.6.0"
+byte-unit = "4"
+serde = {version="1", features=["derive"]}
+serde_yaml = "0.8"
 thiserror = { workspace = true }
+async-trait = { workspace = true }
