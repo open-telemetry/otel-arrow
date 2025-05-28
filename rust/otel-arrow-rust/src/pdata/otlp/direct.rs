@@ -4,49 +4,231 @@ use crate::proto::opentelemetry::resource::v1::Resource;
 // use crate::proto::opentelemetry::common::v1::KeyValue;
 // use crate::proto::opentelemetry::common::v1::KeyValueList;
 
+///////////////////////////////////////////////////////////////////////
+
 pub struct ItemCounter(usize);
 
 impl ItemCounter {
     pub fn new() -> Self {
         Self(0)
     }
+}
 
-    pub fn visit_logs_data(&mut self, ld: &LogsData) {
-        for rl in &ld.resource_logs {
-            self.visit_resource_logs(rl)
-        }
-    }
+///////////////////////////////////////////////////////////////////////
 
-    pub fn visit_resource_logs(&mut self, rl: &ResourceLogs) {
-        if let Some(res) = rl.resource.as_ref() {
-            self.visit_resource(res);
-        }
-        for sl in &rl.scope_logs {
-            self.visit_scope_logs(sl)
-        }
-    }
+pub struct LogsDataAdapter<'a> {
+    data: Option<&'a LogsData>,
+}
 
-    pub fn visit_resource(&mut self, _r: &Resource) {
-        // ...
-    }
-
-    pub fn visit_scope(&mut self, _s: &InstrumentationScope) {
-        // ...
-    }
-
-    pub fn visit_scope_logs(&mut self, sl: &ScopeLogs) {
-        if let Some(scope) = sl.scope.as_ref() {
-            self.visit_scope(scope);
-        }
-        for lr in &sl.log_records {
-            self.visit_log_record(lr)
-        }
-    }
-
-    pub fn visit_log_record(&mut self, _l: &LogRecord) {
-        self.0 += 1;
+impl<'a> LogsDataAdapter<'a> {
+    pub fn new(data: Option<&'a LogsData>) -> Self {
+        Self { data }
     }
 }
+
+impl<'a> LogsDataVisitor for LogsDataAdapter<'a> {
+    fn visit_logs_data(&mut self, mut v: impl ResourceLogsVisitor) {
+        self.data.map(|ld| {
+            for rl in &ld.resource_logs {
+                let mut ra = ResourceAdapter::new(rl.resource.as_ref());
+                let mut sla = ScopeLogsAdapter::new(&rl.scope_logs);
+                v.visit_resource_logs(&mut ra, &mut sla)
+            }
+        });
+    }
+}
+
+///////////////////////////////////////////////////////////////////////
+
+pub struct ResourceLogsAdapter<'a> {
+    data: Option<&'a ResourceLogs>,
+}
+
+impl<'a> ResourceLogsAdapter<'a> {
+    pub fn new(data: Option<&'a ResourceLogs>) -> Self {
+        Self { data }
+    }
+}
+
+impl<'a> ResourceLogsVisitor for ResourceLogsAdapter<'a> {
+    fn visit_resource_logs(&mut self, rv: impl ResourceVisitor, slv: impl ScopeLogsVisitor) {
+        self.data.map(|rl| {
+            rl.resource.as_ref().map(|r| {
+                let mut aa = AttributesAdapter::new(&r.attributes);
+                rv.visit_resource(&mut aa);
+            });
+            for sl in &self.data.scope_logs {
+                let mut sa = ScopeAdapter::new(&sl.scope);
+                let mut rla = LogRecordsAdapter::new(&sl.log_records);
+                slv.visit_scope_logs(&mut sa, &mut rla)
+            }
+        });
+    }
+}
+
+///////////////////////////////////////////////////////////////////////
+
+pub struct ResourceAdapter<'a> {
+    data: Option<&'a Resource>,
+}
+
+impl<'a> ResourceAdapter<'a> {
+    pub fn new(data: Option<&'a Resource>) -> Self {
+        Self { data }
+    }
+}
+
+impl<'a> ResourceVisitor for &mut ResourceAdapter<'a> {
+    fn visit_resource(&mut self, a: impl AttributesVisitor) {
+        for sl in &self.data.attributes {
+            a.visit_attribute()
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////
+
+pub struct ScopeLogsAdapter<'a> {
+    data: &'a Vec<ScopeLogs>,
+}
+
+impl<'a> ScopeLogsAdapter<'a> {
+    pub fn new(data: &'a Vec<ScopeLogs>) -> Self {
+        Self { data }
+    }
+}
+
+impl<'a> ScopeLogsVisitor for &mut ScopeLogsAdapter<'a> {
+    fn visit_scope_logs(&mut self, sv: impl ScopeVisitor, lrv: impl LogRecordVisitor) {
+        self.data.scope.as_ref().map(|sl| {
+            sl.scope
+                .as_ref()
+                .map(|s| sv.visit_scope(&ScopeAdapater::new(s)))
+        });
+        for lr in self.data.log_records {
+            lrv.visit_log_record(&LogRecordAdapter::new(lr))
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////
+
+pub struct ScopeAdapter<'a> {
+    data: Option<&'a InstrumentationScope>,
+}
+
+impl<'a> ScopeAdapter<'a> {
+    pub fn new(data: Option<&'a InstrumentationScope>) -> Self {
+        Self { data }
+    }
+}
+
+impl<'a> ScopeVisitor for ScopeAdapter<'a> {
+    fn visit_scope(
+        &mut self,
+        nv: impl StringVisitor,
+        vv: impl StringVisitor,
+        av: impl AttributesVisitor,
+    ) {
+        self.data.name.map(|name| nv.visit_string(name));
+        self.data.version.map(|ver| vv.visit_string(ver));
+
+        // if let Some(scope) = sl.scope.as_ref() {
+        //     self.visit_scope(scope);
+        // }
+        for a in &self.data.attributes {
+            self.visit_attributes(AttributesAdapter(a));
+        }
+    }
+}
+
+///////////////////////////////////////////////////////////////////////
+
+pub trait LogsVisitor {
+    type Return;
+
+    fn visit_logs(&mut self, v: impl LogsDataVisitor) -> Self::Return;
+}
+
+pub trait LogsDataVisitor {
+    fn visit_logs_data(&mut self, v: impl ResourceLogsVisitor);
+}
+
+pub trait ResourceLogsVisitor {
+    fn visit_resource_logs(&mut self, r: impl ResourceVisitor, s: impl ScopeLogsVisitor);
+}
+
+pub trait ResourceVisitor {
+    fn visit_resource(&mut self, r: impl AttributesVisitor);
+}
+
+pub trait ScopeLogsVisitor {
+    fn visit_scope_logs(&mut self, r: impl ScopeVisitor, s: impl LogRecordVisitor);
+}
+
+pub trait AttributesVisitor {
+    fn visit_attribute(&mut self);
+}
+
+pub trait ScopeVisitor {
+    fn visit_scope(
+        &mut self,
+        nv: impl StringVisitor,
+        vv: impl StringVisitor,
+        av: impl AttributesVisitor,
+    );
+}
+
+pub trait LogRecordVisitor {}
+
+pub trait StringVisitor {}
+
+// , k: impl KeyVisitor, s: impl ValueVisitor
+// pub trait KeyVisitor {
+//     fn visit_key(&mut self);
+// }
+
+// pub trait ValueVisitor {
+//     fn visit_int(&mut self);
+// }
+
+//impl<'a, T> LogsAdapter<'a, T> {
+// pub fn visit_logs_data(&mut self, ld: &LogsData) {
+//     for rl in &ld.resource_logs {
+//         self.visit_resource_logs(rl)
+//     }
+// }
+
+// pub fn visit_resource_logs(&mut self, rl: &ResourceLogs) {
+//     if let Some(res) = rl.resource.as_ref() {
+//         self.visit_resource(res);
+//     }
+//     for sl in &rl.scope_logs {
+//         self.visit_scope_logs(sl)
+//     }
+// }
+
+// pub fn visit_resource(&mut self, _r: &Resource) {
+//     // ...
+// }
+
+// pub fn visit_scope(&mut self, _s: &InstrumentationScope) {
+//     // ...
+// }
+
+// pub fn visit_scope_logs(&mut self, sl: &ScopeLogs) {
+//     if let Some(scope) = sl.scope.as_ref() {
+//         self.visit_scope(scope);
+//     }
+//     for lr in &sl.log_records {
+//         self.visit_log_record(lr)
+//     }
+// }
+
+// pub fn visit_log_record(&mut self, _l: &LogRecord) {
+//     self.0 += 1;
+// }
+//}
 
 #[cfg(test)]
 mod tests {
@@ -72,147 +254,7 @@ mod tests {
                 .finish(),
         ]);
 
-        ic.visit_logs_data(&ld);
+        let ic = LogsAdapter::new(&ld).visit(ItemCounter::new());
         assert_eq!(2, ic.0);
     }
 }
-
-// trait Visitable {
-// //    type Return;
-// }
-
-// trait VisitLogsData<T>
-// where
-//     T: Visitable,
-// {
-//     fn visit_resource_logs(v: T) -> impl VisitResourceLogs<T>;
-// }
-
-// trait VisitResourceLogs<T>
-// where
-//     T: Visitable,
-// {
-//     // fn visit_resource(v: T) -> impl VisitResource<T::Return0>;
-//     // fn visit_scope_logs(v: T) -> impl VisitScopeLogs<T::Return1>;
-// }
-
-// // trait VisitResource {
-// // }
-
-// // trait VisitScopeLogs {
-// // }
-
-// impl ItemCounter {
-
-// }
-
-// impl Visit
-
-// trait AnyValueVisitor {
-//     fn visit_string(&mut self) {
-//     }
-//     fn visit_i64(&mut self) {
-//     }
-//     fn visit_f64(&mut self) {
-//     }
-// };
-
-// // ...
-// trait Visitor<R>
-// {
-//     fn visit(&self);
-// }
-
-// impl Visitor<T> for LogsData {
-//     fn visit(&self, r: R) -> R;
-// };
-
-// trait LogsDataVisitor<R> {
-//     fn visit_resource_logs(&mut self, r: mut R) -> R;
-// }
-
-// trait ResourceLogsVisitor<R>: ResourceVisitor<R> {
-//     fn visit_scope_logs(& self, r: mut R) -> R;
-// }
-
-// trait ResourceVisitor<R> {
-//     fn visit_resource(&mut self, r: mut R) -> R;
-// }
-
-// trait ScopeLogsVisitor<R> {
-//     fn visit_scope(&mut self, r: mut R) -> R;
-// }
-
-// trait ScopeVisitor<R>: LogRecordVisitor {
-//     fn visit_scope(&mut self, r: mut R) -> R;
-// }
-
-// trait LogRecordsVisitor<R> {
-//     fn visit_log_record(&mut self, r: mut R) -> R;
-// }
-
-// trait VisitIdx<T, R> {
-//     fn visit_idx(&mut self, item: T) -> R;
-// }
-
-// struct SliceVisitor {
-//     items: Iterator
-// }
-
-// //trait VisitSlice<T, R> {
-// //    fn visit_slice(&mut self, item: &AsRef<[T]>) -> R;
-// //}
-
-// struct<T> Count<T> {
-//     cnt: T,
-// }
-
-//impl VisitIdx<T> f
-
-// impl<T, R> SliceVisitor<T, R> for Count<R> {
-//     fn visit_item(&mut self, _: T) {
-// 	self.cnt += 1;
-//     }
-// }
-
-// struct SliceVisitor<S, T, R> {
-//     state: S,
-
-//     _tph PhantomData<T>,
-//     _tph PhantomData<R>,
-// }
-
-// impl<S, T, R> SliceVisitor<S, T, R> {
-//     fn visit(slice: AsRef<[T]>) -> R {
-// 	for item in slice.as_ref() {
-// 	    visit(
-// 	}
-//     }
-// }
-
-// struct ItemVisitor<S, T, R> {
-//     state: S,
-
-//     _tph PhantomData<T>,
-//     _tph PhantomData<R>,
-// }
-
-// impl<S, T, R> ItemVisitor<S, T, R> {
-//     fn visit(item: AsRef<T>) -> R {
-// 	for item in item.as_ref() {
-// 	    visit(
-// 	}
-//     }
-// }
-
-// struct KeyValueVisitor {
-
-// }
-
-// struct Sizer {
-
-// }
-
-// struct Marshaler {
-//     //fn marshal_to()
-// }
