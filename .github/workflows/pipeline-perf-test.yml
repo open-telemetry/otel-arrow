@@ -79,8 +79,8 @@ jobs:
                 echo
               done
               
-              # Combine all benchmark JSON files into a single output
-              jq -s 'map(.[])' results/benchmark_*.json > output.json
+              # Combine all benchmark JSON files into a single output (find them recursively)
+              find results -name "benchmark_*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > output.json
               
               echo "Consolidated benchmark data:"
               cat output.json
