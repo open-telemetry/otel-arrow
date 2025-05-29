@@ -1,5 +1,5 @@
 """
-Module: test_context
+Module: test_contexts
 
 This module defines the core context classes used for managing state and shared data throughout
 the lifecycle of a test suite execution. These context classes enable structured access to components
@@ -30,8 +30,8 @@ from typing import Dict, List, Optional, TYPE_CHECKING
 from ..context.base import BaseContext
 
 if TYPE_CHECKING:
-    from .test_definition import TestDefinition
-    from .test_step import TestStep
+    from ..test_framework.test_definition import TestDefinition
+    from ..test_framework.test_step import TestStep
     from ..component.lifecycle_component import LifecycleComponent, LifecycleHookContext
 
 
