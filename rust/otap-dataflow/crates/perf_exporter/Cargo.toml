@@ -21,3 +21,4 @@ serde = {version="1", features=["derive"]}
 serde_yaml = "0.8"
 thiserror = { workspace = true }
 async-trait = { workspace = true }
+tokio = { workspace = true }
