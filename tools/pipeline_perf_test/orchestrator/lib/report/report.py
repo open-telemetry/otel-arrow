@@ -40,7 +40,7 @@ def get_benchmark_json(
     # Calculate metrics
     total_logs_attempted = logs_sent_count + logs_failed_count
     logs_sent_rate = total_logs_attempted / args.duration if args.duration > 0 else 0
-    
+
     loadgen_failed = logs_failed_count
     transit_lost = logs_sent_count - logs_received_backend_count
     total_logs_lost = loadgen_failed + transit_lost
@@ -51,7 +51,7 @@ def get_benchmark_json(
         config_name = args.collector_config.split('/')[-1].replace('.yaml', '').replace('.yml', '')
     else:
         config_name = args.k8s_collector_manifest.split('/')[-1].replace('.yaml', '').replace('.yml', '')
-    
+
     benchmark_name = f"pipeline-perf-{config_name}"
 
     # Create benchmark data structure - starting with just throughput
