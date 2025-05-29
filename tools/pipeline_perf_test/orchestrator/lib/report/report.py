@@ -11,9 +11,59 @@ logs received, and resource usage.
 Used by the orchestration layer to produce post-test summaries and assist in test
 validation and debugging.
 """
+import json
 from typing import Tuple
 
 import requests
+
+def get_benchmark_json(
+    timestamp,
+    args,
+    logs_failed_count,
+    logs_sent_count,
+    target_process_stats=None
+) -> str:
+    """Return a JSON string compatible with github-action-benchmark
+
+    Args:
+        - timestamp: the start timestamp that the test run began at
+        - args: the command line args
+        - logs_failed_count: the number of failed log messages
+        - logs_sent_count: the number of sent log messages
+        - target_process_stats: CPU and Memory stats for the target process
+
+    Returns:
+        str: JSON string compatible with github-action-benchmark
+    """
+    logs_received_backend_count = get_backend_received_count("http://localhost:5000/metrics")
+
+    # Calculate metrics
+    total_logs_attempted = logs_sent_count + logs_failed_count
+    logs_sent_rate = total_logs_attempted / args.duration if args.duration > 0 else 0
+    
+    loadgen_failed = logs_failed_count
+    transit_lost = logs_sent_count - logs_received_backend_count
+    total_logs_lost = loadgen_failed + transit_lost
+    logs_lost_percentage = (total_logs_lost / total_logs_attempted * 100) if total_logs_attempted > 0 else 0
+
+    # Determine benchmark name based on configuration
+    if args.deployment_target == "docker":
+        config_name = args.collector_config.split('/')[-1].replace('.yaml', '').replace('.yml', '')
+    else:
+        config_name = args.k8s_collector_manifest.split('/')[-1].replace('.yaml', '').replace('.yml', '')
+    
+    benchmark_name = f"pipeline-perf-{config_name}"
+
+    # Create benchmark data structure - starting with just throughput
+    benchmarks = [
+        {
+            "name": f"{benchmark_name}-throughput",
+            "unit": "logs/sec",
+            "value": logs_sent_rate
+        }
+    ]
+
+    return json.dumps(benchmarks, indent=2)
 
 def get_report_string(
     timestamp,
