@@ -2,9 +2,9 @@ use crate::OTLPData;
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
 use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
-use crate::proto::opentelemetry::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
-use crate::proto::opentelemetry::metrics::v1::{Metric, ResourceMetrics, ScopeMetrics};
-use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
+use crate::proto::opentelemetry::logs::v1::{ResourceLogs, ScopeLogs};
+use crate::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
+use crate::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans};
 use async_trait::async_trait;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
@@ -446,6 +446,9 @@ mod tests {
     use otap_df_engine::config::ProcessorConfig;
     use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::testing::processor::TestRuntime;
+    use crate::proto::opentelemetry::logs::v1::LogRecord;
+    use crate::proto::opentelemetry::metrics::v1::Metric;
+    use crate::proto::opentelemetry::trace::v1::Span;
 
     fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
     where
@@ -457,7 +460,7 @@ mod tests {
 
     #[test]
     fn traces_group_preserving_split() {
-        let mut runtime = TestRuntime::<OTLPData>::new();
+        let runtime = TestRuntime::<OTLPData>::new();
         let config = BatchConfig {
             send_batch_size: 3,
             timeout: Duration::from_secs(60),
@@ -467,7 +470,7 @@ mod tests {
             .set_processor(wrapper)
             .run_test(|mut ctx| async move {
                 // Compose a request with 2 resource groups, each with 2 scope groups, each with 2 spans
-                let mut req = ExportTraceServiceRequest {
+                let req = ExportTraceServiceRequest {
                     resource_spans: vec![
                         ResourceSpans {
                             resource: None,
@@ -567,7 +570,7 @@ mod tests {
 
     #[test]
     fn metrics_group_preserving_split() {
-        let mut runtime = TestRuntime::<OTLPData>::new();
+        let runtime = TestRuntime::<OTLPData>::new();
         let config = BatchConfig {
             send_batch_size: 2,
             timeout: Duration::from_secs(60),
@@ -677,7 +680,7 @@ mod tests {
 
     #[test]
     fn logs_group_preserving_split() {
-        let mut runtime = TestRuntime::<OTLPData>::new();
+        let runtime = TestRuntime::<OTLPData>::new();
         let config = BatchConfig {
             send_batch_size: 3,
             timeout: Duration::from_secs(60),
@@ -787,7 +790,7 @@ mod tests {
 
     #[test]
     fn handles_empty_input_batch() {
-        let mut runtime = TestRuntime::<OTLPData>::new();
+        let runtime = TestRuntime::<OTLPData>::new();
         let wrapper = wrap_local(GenericBatcher::new(BatchConfig { send_batch_size: 10, timeout: Duration::from_secs(1) }));
         runtime.set_processor(wrapper)
             .run_test(|mut ctx| async move {
@@ -800,7 +803,7 @@ mod tests {
 
     #[test]
     fn skips_empty_resource_spans() {
-        let mut runtime = TestRuntime::<OTLPData>::new();
+        let runtime = TestRuntime::<OTLPData>::new();
         let wrapper = wrap_local(GenericBatcher::new(BatchConfig { send_batch_size: 3, timeout: Duration::from_secs(1) }));
         runtime.set_processor(wrapper).run_test(|mut ctx| async move {
             // input has many resource/spans with no actual spans
@@ -817,5 +820,155 @@ mod tests {
         let emitted = ctx.drain_pdata().await;
         assert!(emitted.is_empty());
         }).validate(|_| async {});
+    }
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::time::Duration;
+    use serde_json;
+    use crate::proto::opentelemetry::logs::v1::LogRecord;
+    use crate::proto::opentelemetry::metrics::v1::Metric;
+    use crate::proto::opentelemetry::trace::v1::Span;
+    use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+    use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+    use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+    use otap_df_engine::config::ProcessorConfig;
+    use otap_df_engine::processor::ProcessorWrapper;
+    use otap_df_engine::testing::processor::TestRuntime;
+    // use otap_df_engine::local::Processor;
+    use otap_df_engine::local::processor::Processor;
+
+    fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
+    where
+        P: Processor<OTLPData> + 'static,
+    {
+        let config = ProcessorConfig::new("simple_generic_batch_processor_test");
+        ProcessorWrapper::local(processor, &config)
+    }
+
+    // Helper: Write string to a file
+    fn log_to_file(s: &str) {
+        let mut f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/generic_batch_proc_test.json")
+            .expect("could not open /tmp file for writing");
+        writeln!(f, "{}\n", s).expect("Write failed");
+    }
+
+    fn sample_trace() -> ExportTraceServiceRequest {
+        ExportTraceServiceRequest {
+            resource_spans: vec![
+                ResourceSpans {
+                    resource: None,
+                    schema_url: "".to_string(),
+                    scope_spans: vec![
+                        ScopeSpans {
+                            scope: None,
+                            spans: vec![
+                                Span { name: "trace-span-1".into(), ..Default::default() },
+                                Span { name: "trace-span-2".into(), ..Default::default() },
+                                Span { name: "trace-span-3".into(), ..Default::default() },
+                            ],
+                            schema_url: "".to_string(),
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+
+    fn sample_metrics() -> ExportMetricsServiceRequest {
+        ExportMetricsServiceRequest {
+            resource_metrics: vec![
+                ResourceMetrics {
+                    resource: None,
+                    schema_url: "".to_string(),
+                    scope_metrics: vec![
+                        ScopeMetrics {
+                            scope: None,
+                            metrics: vec![
+                                Metric { name: "metric-1".to_string(), ..Default::default() },
+                                Metric { name: "metric-2".to_string(), ..Default::default() },
+                                Metric { name: "metric-3".to_string(), ..Default::default() },
+                            ],
+                            schema_url: "".to_string(),
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+
+    fn sample_logs() -> ExportLogsServiceRequest {
+        ExportLogsServiceRequest {
+            resource_logs: vec![
+                ResourceLogs {
+                    resource: None,
+                    schema_url: "".to_string(),
+                    scope_logs: vec![
+                        ScopeLogs {
+                            scope: None,
+                            log_records: vec![
+                                LogRecord { severity_text: "info".to_string(), ..Default::default() },
+                                LogRecord { severity_text: "error".to_string(), ..Default::default() },
+                                LogRecord { severity_text: "error".to_string(), ..Default::default() },
+                            ],
+                            schema_url: "".to_string(),
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+
+    #[test]
+    fn log_inputs_and_outputs_json() {
+        // Clear output file
+        std::fs::write("/tmp/generic_batch_proc_test.json", "").unwrap();
+
+        let mut runtime = otap_df_engine::testing::processor::TestRuntime::<OTLPData>::new();
+        let wrapper = wrap_local(GenericBatcher::new(BatchConfig {
+            send_batch_size: 2, // test splitting
+            timeout: Duration::from_secs(1),
+        }));
+
+        runtime.set_processor(wrapper)
+            .run_test(|mut ctx| async move {
+                // TRACE INPUT
+                let trace_req = sample_trace();
+                log_to_file(&format!("INPUT TRACE:\n{}", format!("{:#?}", trace_req)));
+                ctx.process(Message::PData(OTLPData::Traces(trace_req))).await.unwrap();
+
+                // METRICS INPUT
+                let metrics_req = sample_metrics();
+                log_to_file(&format!("INPUT METRIC:\n{}", format!("{:#?}", metrics_req)));
+                ctx.process(Message::PData(OTLPData::Metrics(metrics_req))).await.unwrap();
+
+                // LOGS INPUT
+                let logs_req = sample_logs();
+                log_to_file(&format!("INPUT LOGS:\n{}", format!("{:#?}", logs_req)));
+                ctx.process(Message::PData(OTLPData::Logs(logs_req))).await.unwrap();
+
+                // flush everything
+                ctx.process(Message::Control(ControlMsg::Shutdown { deadline: Duration::from_secs(1), reason: "test".into() })).await.unwrap();
+
+                // OUTPUTS
+                let outputs = ctx.drain_pdata().await;
+                for (i, out) in outputs.iter().enumerate() {
+                    match out {
+                        OTLPData::Traces(req) => log_to_file(&format!("OUTPUT[{}] TRACE:\n{}", i, format!("{:#?}", req))),
+                        OTLPData::Metrics(req) => log_to_file(&format!("OUTPUT[{}] METRIC:\n{}", i, format!("{:#?}", req))),
+                        OTLPData::Logs(req) => log_to_file(&format!("OUTPUT[{}] LOGS:\n{}", i, format!("{:#?}", req))),
+                        #[allow(unreachable_patterns)]
+                        _ => log_to_file(&format!("OUTPUT[{}] (unknown type)", i)),
+                    }
+                }
+            })
+            .validate(|_| async {});
     }
 }
