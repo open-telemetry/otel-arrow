@@ -17,12 +17,11 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import Enum
-from pydantic import BaseModel
 from typing import Callable, Dict, List, Optional, Any
 
 from .runtime import ComponentRuntime
-from ..context.base import BaseContext
-from ..test_framework.test_context import TestStepContext
+from ..context.base import BaseContext, ExecutionStatus
+from ..context.test_contexts import TestStepContext, TestExecutionContext
 
 
 @dataclass
@@ -148,6 +147,26 @@ class LifecycleComponent(ABC):
             HookableLifecyclePhase, List[Callable[[LifecycleHookContext], Any]]
         ] = defaultdict(list)
 
+        self.runtime: ComponentRuntime = ComponentRuntime()
+
+    def get_or_create_runtime(self, namespace: str, factory: Callable[[], Any]) -> Any:
+        """Get an existing runtime data structure or initialize a new one.
+
+        Args:
+            namespace: The namespace to get/create data for.
+            factory: The initialization method if no namespace data exists.
+        """
+        return self.runtime.get_or_create(namespace, factory)
+
+    def set_runtime_data(self, namespace: str, data: Any):
+        """Set the data value on the component's runtime with the specified namespace.
+
+        Args:
+            namespace: The namespace to set the data value on.
+            data: The data to set.
+        """
+        self.runtime.set(namespace, data)
+
     def add_hook(
         self, phase: HookableLifecyclePhase, hook: Callable[[LifecycleHookContext], Any]
     ):
@@ -185,9 +204,10 @@ class LifecycleComponent(ABC):
             try:
                 hook_context.start()
                 hook(hook_context)
-                hook_context.status = "success"
+                if hook_context.status == ExecutionStatus.RUNNING:
+                    hook_context.status = ExecutionStatus.SUCCESS
             except Exception as e:
-                hook_context.status = "error"
+                hook_context.status = ExecutionStatus.ERROR
                 hook_context.error = e
                 hook_context.log(f"Hook failed: {e}")
                 break
@@ -227,5 +247,5 @@ class LifecycleComponent(ABC):
         """Abstract method to stop monitoring the component."""
 
     @abstractmethod
-    def collect_monitoring_data(self, ctx: TestStepContext):
+    def collect_monitoring_data(self, ctx: TestExecutionContext):
         """Abstract method to collect monitoring data for the component."""

@@ -113,21 +113,25 @@ def main():
     try:
         print("\nRunning perf tests...")
 
+        # Initialize image names
+        backend_image = "backend-service:latest"
+        loadgen_image = "otel-loadgen:latest"
+
         docker_client = None
         if not args.skip_backend_build or not args.skip_loadgen_build:
             print("Building container images(s)...")
             docker_client = docker.from_env()
             # Build the backend Docker image if not skipped
-            backend_image = "backend-service:latest"
             if not args.skip_backend_build:
                 backend_image = build_docker_image(backend_image, "backend", docker_client, log_cli=args.log_cli_commands)
             else:
                 print(f"Using existing backend image: {backend_image}")
 
             # Build the loadgen Docker image if not skipped
-            loadgen_image = "otel-loadgen:latest"
             if not args.skip_loadgen_build:
                 loadgen_image = build_docker_image(loadgen_image, "load_generator", docker_client, log_cli=args.log_cli_commands)
+            else:
+                print(f"Using existing loadgen image: {loadgen_image}")
 
         if args.deployment_target == "docker":
             if not docker_client:
@@ -278,7 +282,7 @@ def main():
                 args.k8s_namespace,
                 args.duration,
                 k8s_collector_resource,
-                args.skip_loadgen_build
+                loadgen_image
             )
 
             target_process_stats = k8s_collector_resource.get_stats()

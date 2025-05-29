@@ -5,8 +5,11 @@ This module provides the BaseContext class which provides shared fields common t
 different implementations of Contexts throughout the orchestrator.
 """
 
+import datetime
 import json
 import time
+import traceback
+from enum import Enum
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, TYPE_CHECKING
@@ -16,6 +19,20 @@ if TYPE_CHECKING:
     from ..component.lifecycle_component import LifecycleComponent
 
 
+class ExecutionStatus(str, Enum):
+    """This class represents the execution status of a context at the current point in time"""
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+    ERROR = "error"
+    SKIPPED = "skipped"
+    PENDING = "pending"
+    RUNNING = "running"
+    CANCELLED = "cancelled"
+    TIMEOUT = "timeout"
+    INCOMPLETE = "incomplete"
+
+
 @dataclass
 class BaseContext:
     """
@@ -23,7 +40,7 @@ class BaseContext:
     """
 
     name: Optional[str] = None
-    status: Optional[str] = None
+    status: Optional[ExecutionStatus] = ExecutionStatus.PENDING
     error: Optional[Exception] = None
     start_time: Optional[float] = None
     end_time: Optional[float] = None
@@ -31,6 +48,12 @@ class BaseContext:
 
     parent_ctx: Optional["BaseContext"] = None
     child_contexts: List["BaseContext"] = field(default_factory=list)
+
+    @property
+    def duration(self) -> Optional[float]:
+        if self.start_time is not None and self.end_time is not None:
+            return self.end_time - self.start_time
+        return None
 
     def add_child_ctx(self, ctx: "BaseContext"):
         """Add a context to the list of children on the calling context and set the parent on the child.
@@ -89,13 +112,8 @@ class BaseContext:
             msg_dict["name"] = self.name
         if self.status:
             msg_dict["status"] = self.status
-        duration = (
-            self.end_time - self.start_time
-            if self.start_time and self.end_time
-            else None
-        )
-        if duration:
-            msg_dict["duration"] = f"{duration:.4f}"
+        if self.duration:
+            msg_dict["duration"] = f"{self.duration:.4f}"
 
         log_entry = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {json.dumps(msg_dict)}"
         print(log_entry)
@@ -103,9 +121,63 @@ class BaseContext:
     def start(self):
         """Mark start of context (e.g., for timing)."""
         self.log("Context Starting...")
+        self.status = ExecutionStatus.RUNNING
         self.start_time = time.time()
 
     def end(self):
         """Mark end of context and log duration."""
         self.end_time = time.time()
         self.log("Context Ended")
+
+    @staticmethod
+    def _format_time(timestamp: Optional[float]) -> str:
+        if timestamp is None:
+            return "None"
+        return datetime.datetime.fromtimestamp(timestamp).isoformat()
+
+    def summary_string(self, indent: int = 2) -> str:
+        """
+        Summarize the key information about the context.
+
+        Returns: a string representation of the context", including metadata,
+            timing, status, and any error message.
+        """
+        pad = " " * indent
+        error_str = (
+            "".join(
+                traceback.format_exception_only(type(self.error), self.error)
+            ).strip()
+            if self.error
+            else "None"
+        )
+        duration_str = f"{self.duration:.4f}" if self.duration is not None else "None"
+
+        return (
+            f"{pad}Name: {self.name}\n"
+            f"{pad}Status: {self.status.value}\n"
+            f"{pad}Error: {error_str}\n"
+            f"{pad}Start Time: {self._format_time(self.start_time)}\n"
+            f"{pad}End Time: {self._format_time(self.end_time)}\n"
+            f"{pad}Duration: {duration_str}\n"
+            f"{pad}Metadata: {json.dumps(self.metadata, indent=2)}"
+        )
+
+    def to_dict(self) -> dict:
+        """
+        Serialize the BaseContext instance into a dictionary.
+
+        Returns:
+            dict: A dictionary representation of the context, including metadata,
+                timing, status, error message (as string), and recursively
+                serialized parent and child contexts.
+        """
+        return {
+            "name": self.name,
+            "status": self.status.value if self.status else None,
+            "error": str(self.error) if self.error else None,
+            "start_time": self.start_time,
+            "end_time": self.end_time,
+            "duration": self.duration,
+            "metadata": self.metadata,
+            "child_contexts": [child.to_dict() for child in self.child_contexts],
+        }
