@@ -60,7 +60,7 @@ import docker
 from lib.process.utils.docker import VolumeMount, PortBinding, cleanup_docker_containers
 from lib.process.utils.docker import build_docker_image, launch_container, get_docker_logs, create_docker_network, delete_docker_network
 from lib.process.utils.kubernetes import create_k8s_namespace, deploy_kubernetes_resources, run_k8s_loadgen, setup_k8s_port_forwarding
-from lib.report.report import get_report_string, parse_logs_for_sent_count
+from lib.report.report import get_report_string, get_benchmark_json, parse_logs_for_sent_count
 
 def main():
     parser = argparse.ArgumentParser(description="Orchestrate OTel pipeline perf test")
@@ -97,7 +97,6 @@ def main():
     os.makedirs(args.results_dir, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = os.path.join(args.results_dir, f"perf_results_{timestamp}.txt")
 
     # Initialize resources and counters
     network_created = False
@@ -299,19 +298,21 @@ def main():
             )
         )
 
-        # # Write results to file
-        with open(results_file, "w") as f:
+        # Write benchmark result to file in a JSON
+        # format expected by GitHub Action Benchmark
+        benchmark_file = os.path.join(args.results_dir, f"benchmark_{timestamp}.json")
+        with open(benchmark_file, "w") as f:
             f.write(
-            get_report_string(
+            get_benchmark_json(
                 timestamp,
                 args,
                 logs_failed_count,
                 logs_sent_count,
                 target_process_stats
             )
-        )
+            )
 
-        print(f"Test completed. Results saved to {results_file}")
+        print(f"Test completed. Benchmark data saved to {benchmark_file}")
 
     finally:
         if not args.keep_resources:
