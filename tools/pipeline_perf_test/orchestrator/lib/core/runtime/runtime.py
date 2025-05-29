@@ -1,9 +1,9 @@
 """
-runtime.py
+component_runtime.py
 
-This module defines the `ComponentRuntime` class, which provides a flexible and
+This module defines the `Runtime` class, which provides a flexible and
 plugin-extensible mechanism for storing runtime information associated with a
-component during its lifecycle.
+component or element during its lifecycle.
 
 Runtime data is namespaced using string keys (e.g., strategy names), allowing
 different strategies or plugins to attach their own execution-specific state
@@ -25,8 +25,8 @@ across multiple strategies.
 from typing import Callable, Dict, Any
 
 
-class ComponentRuntime:
-    """Holds runtime info for a component in a plugin-extensible way."""
+class Runtime:
+    """Holds runtime info for a component or test element in a plugin-extensible way."""
 
     _data: Dict[str, Any]  # strategy_name -> plugin-defined state
 
