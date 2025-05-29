@@ -12,11 +12,16 @@ Classes:
     TestDefinition: A class that defines a test, including the steps to run and the reporting strategies to use.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import List, Optional, TYPE_CHECKING
 
-from .test_context import TestExecutionContext, TestStepContext
+from ..component.component_data import ComponentData
+from ..context.base import ExecutionStatus
+from ..context.test_contexts import TestExecutionContext, TestStepContext
+from .test_data import TestData
 from .test_step import TestStep
-from ..strategies.reporting_strategy import ReportingStrategy
+
+if TYPE_CHECKING:
+    from ..strategies.reporting_strategy import ReportingStrategy
 
 
 class TestDefinition:
@@ -41,7 +46,7 @@ class TestDefinition:
         self,
         name: str,
         steps: List[TestStep],
-        reporting_strategies: Optional[List[ReportingStrategy]] = None,
+        reporting_strategies: Optional[List["ReportingStrategy"]] = None,
     ):
         """
         Initializes the test definition with the given name, steps, and reporting strategies.
@@ -74,9 +79,10 @@ class TestDefinition:
             try:
                 step_ctx.start()
                 step.run(step_ctx)
-                step_ctx.status = "success"
+                if step_ctx.status == ExecutionStatus.RUNNING:
+                    step_ctx.status = ExecutionStatus.SUCCESS
             except Exception as e:
-                step_ctx.status = "error"
+                step_ctx.status = ExecutionStatus.ERROR
                 step_ctx.error = e
                 step_ctx.log(f"Step '{step.name}' failed: {e}")
                 # TODO: Depending on policy: raise or continue
@@ -84,35 +90,18 @@ class TestDefinition:
             finally:
                 step_ctx.end()
 
-        # Report using all reporting strategies
-        aggregated_data = self.aggregate_monitoring_data(context)
-        for strategy in self.reporting_strategies:
-            strategy.report(aggregated_data)
-
-    def aggregate_monitoring_data(
-        self, context: TestExecutionContext
-    ) -> Dict[str, Dict[str, Any]]:
+    def get_test_data(self, ctx: TestExecutionContext) -> TestData:
         """
-        Aggregates monitoring data from all components in the context.
-
-        This method collects monitoring data from each component in the provided context and combines it
-        into a single dictionary, where the keys are component names and the values are the respective
-        monitoring data.
-
-        Args:
-            context (TestExecutionContext): The context containing all components
+        Aggregates test data, including the current test context and monitoring data from all components.
 
         Returns:
-            Dict[str, Dict[str, any]]: A dictionary of aggregated monitoring data, indexed by component name.
+            TestData: A dictionary of aggregated monitoring data, indexed by component name along with the context
         """
-        aggregated_data = {}
 
-        # Collect data from each component
-        for component_name, component in context.get_components().items():
-            # Collect the monitoring data from the component
-            collected_data = component.collect_monitoring_data(context)
+        component_data = {}
+        for component_name, component in ctx.get_components().items():
+            component_data[component_name] = ComponentData.from_component(
+                component, ctx
+            )
 
-            # Aggregate it by component name
-            aggregated_data[component_name] = collected_data
-
-        return aggregated_data
+        return TestData(context=ctx, component_data=component_data)

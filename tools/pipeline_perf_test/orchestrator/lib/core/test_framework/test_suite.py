@@ -15,8 +15,9 @@ Classes:
 
 from typing import List, Dict, TYPE_CHECKING
 
+from ...core.context.base import ExecutionStatus
 from .test_definition import TestDefinition
-from .test_context import TestSuiteContext, TestExecutionContext
+from ..context.test_contexts import TestSuiteContext, TestExecutionContext
 
 
 if TYPE_CHECKING:
@@ -76,13 +77,20 @@ class TestSuite:
             test_execution_context.start()
             try:
                 test_definition.run(test_execution_context)
-                test_execution_context.status = "success"
+                if test_execution_context.status == ExecutionStatus.RUNNING:
+                    test_execution_context.status = ExecutionStatus.SUCCESS
             except Exception as e:
-                test_execution_context.status = "error"
+                test_execution_context.status = ExecutionStatus.ERROR
                 test_execution_context.error = e
                 test_execution_context.log(f"Test '{test_definition.name}' failed: {e}")
                 # TODO: Depending on policy: break or continue
                 raise
             finally:
                 test_execution_context.end()
+            # Report using all defined reporting strategies
+            test_data = test_definition.get_test_data(test_execution_context)
+            for strategy in test_definition.reporting_strategies:
+                strategy.report(test_data)
+        # TODO: Support policy based status (fail if any test fails, etc)
+        self.context.status = ExecutionStatus.SUCCESS
         self.context.end()
