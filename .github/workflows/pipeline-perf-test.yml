@@ -95,7 +95,7 @@ jobs:
               max-items-in-chart: 100
               github-token: ${{ secrets.GITHUB_TOKEN }}
               benchmark-data-dir-path: "docs/benchmarks/pipeline-perf"
-              auto-push: false
+              auto-push: true
               save-data-file: true
 
 
