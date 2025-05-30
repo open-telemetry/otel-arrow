@@ -146,12 +146,12 @@ impl<'a> ScopeLogsVisitable for &ScopeLogsAdapter<'a> {
 //////////////////////////////////////////////////////////////////////
 
 pub struct ResourceAdapter<'a> {
-    data: &'a Resource,
+    _data: &'a Resource,
 }
 
 impl<'a> ResourceAdapter<'a> {
     pub fn new(data: &'a Resource) -> Self {
-        Self { data }
+        Self { _data: data }
     }
 }
 
@@ -162,12 +162,12 @@ impl<'a> ResourceVisitable for &ResourceAdapter<'a> {
 //////////////////////////////////////////////////////////////////////
 
 pub struct ScopeAdapter<'a> {
-    data: &'a Scope,
+    _data: &'a Scope,
 }
 
 impl<'a> ScopeAdapter<'a> {
     pub fn new(data: &'a Scope) -> Self {
-        Self { data }
+        Self { _data: data }
     }
 }
 
@@ -178,12 +178,12 @@ impl<'a> ScopeVisitable for &ScopeAdapter<'a> {
 //////////////////////////////////////////////////////////////////////
 
 pub struct LogRecordAdapter<'a> {
-    data: &'a LogRecord,
+    _data: &'a LogRecord,
 }
 
 impl<'a> LogRecordAdapter<'a> {
     pub fn new(data: &'a LogRecord) -> Self {
-        Self { data }
+        Self { _data: data }
     }
 }
 
@@ -213,6 +213,10 @@ impl ItemCounter {
     pub fn new() -> Self {
         Self { count: 0 }
     }
+
+    fn borrow_mut<'a>(&'a mut self) -> &'a mut Self {
+        self
+    }
 }
 
 impl LogsVisitor for ItemCounter {
@@ -226,17 +230,13 @@ impl LogsVisitor for ItemCounter {
 
 impl<'a> ResourceLogsVisitor for &mut ItemCounter {
     fn visit_resource_logs(&mut self, v: impl ResourceLogsVisitable) {
-        let mut sub = ItemCounter::new();
-        v.visit_resource_logs(Noop {}, &mut sub);
-        self.count += sub.count;
+        v.visit_resource_logs(Noop {}, self.borrow_mut());
     }
 }
 
 impl<'a> ScopeLogsVisitor for &mut ItemCounter {
     fn visit_scope_logs(&mut self, sv: impl ScopeLogsVisitable) {
-        let mut sub = ItemCounter::new();
-        sv.visit_scope_logs(Noop {}, &mut sub);
-        self.count += sub.count;
+        sv.visit_scope_logs(Noop {}, self.borrow_mut());
     }
 }
 
