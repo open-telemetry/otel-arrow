@@ -13,18 +13,19 @@ Classes:
     context to each test.
 """
 
-from typing import List, Dict, TYPE_CHECKING
+from typing import List, Dict, Optional, TYPE_CHECKING
 
-from ...core.context.base import ExecutionStatus
+from ...core.context.base import ExecutionStatus, BaseContext
 from .test_definition import TestDefinition
 from ..context.test_contexts import TestSuiteContext, TestExecutionContext
-
+from .test_element import TestFrameworkElement
+from ..context.test_element_hook_context import HookableTestPhase
 
 if TYPE_CHECKING:
-    from ..component.lifecycle_component import LifecycleComponent
+    from ..component.component import Component
 
 
-class TestSuite:
+class TestSuite(TestFrameworkElement):
     """
     A test suite class for managing and executing a series of tests on a set of components.
 
@@ -40,9 +41,7 @@ class TestSuite:
         run(): Executes all the tests in the test suite, providing each test with the necessary context.
     """
 
-    def __init__(
-        self, tests: List[TestDefinition], components: Dict[str, "LifecycleComponent"]
-    ):
+    def __init__(self, tests: List[TestDefinition], components: Dict[str, "Component"]):
         """
         Initializes the test suite with a list of tests and a dictionary of components.
 
@@ -53,6 +52,7 @@ class TestSuite:
             tests (List[TestDefinition]): The list of test definitions to be executed in the test suite.
             components (Dict[str, Component]): A dictionary of components to be used in the tests.
         """
+        super().__init__()
         self.tests = tests
         self.components = components
         # TODO: support a name field on TestSuite
@@ -60,15 +60,20 @@ class TestSuite:
         for k, v in components.items():
             self.context.add_component(k, v)
 
-    def run(self):
+    def run(self, _ctx: Optional[BaseContext] = None) -> None:
         """
         Run all tests in the test suite.
 
         This method iterates through the list of tests and runs each one, passing the context object
         to each test. The context provides access to the components, allowing the test to interact
         with them as needed.
+
+        Args:
+            _ctx: unused context object, defaults to None.
         """
+        self.context.test_suite = self
         self.context.start()
+        self._run_hooks(HookableTestPhase.PRE_RUN, self.context)
         for test_definition in self.tests:
             test_execution_context = TestExecutionContext(
                 name=test_definition.name, test_definition=test_definition
@@ -92,5 +97,6 @@ class TestSuite:
             for strategy in test_definition.reporting_strategies:
                 strategy.report(test_data)
         # TODO: Support policy based status (fail if any test fails, etc)
+        self._run_hooks(HookableTestPhase.POST_RUN, self.context)
         self.context.status = ExecutionStatus.SUCCESS
         self.context.end()
