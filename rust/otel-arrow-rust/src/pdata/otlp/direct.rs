@@ -284,19 +284,19 @@ impl LogsDataVisitor for ItemCounter {
     }
 }
 
-impl<'a> ResourceLogsVisitor for &mut ItemCounter {
+impl ResourceLogsVisitor for &mut ItemCounter {
     fn visit_resource_logs(&mut self, v: impl ResourceLogsVisitable) {
         v.visit_resource_logs(Noop {}, self.borrow_mut());
     }
 }
 
-impl<'a> ScopeLogsVisitor for &mut ItemCounter {
+impl ScopeLogsVisitor for &mut ItemCounter {
     fn visit_scope_logs(&mut self, sv: impl ScopeLogsVisitable) {
         sv.visit_scope_logs(Noop {}, self.borrow_mut());
     }
 }
 
-impl<'a> LogRecordVisitor for &mut ItemCounter {
+impl LogRecordVisitor for &mut ItemCounter {
     fn visit_log_record(&mut self, _: impl LogRecordVisitable) {
         self.count += 1;
     }
