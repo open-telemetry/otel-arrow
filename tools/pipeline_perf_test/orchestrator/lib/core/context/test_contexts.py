@@ -24,6 +24,7 @@ access across the execution lifecycle.
 """
 
 from __future__ import annotations
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, TYPE_CHECKING
 
@@ -32,31 +33,57 @@ from ..context.base import BaseContext
 if TYPE_CHECKING:
     from ..test_framework.test_definition import TestDefinition
     from ..test_framework.test_step import TestStep
-    from ..component.lifecycle_component import LifecycleComponent, LifecycleHookContext
+    from ..test_framework.test_suite import TestSuite
+    from ..test_framework.test_element import TestFrameworkElement
+    from ..component.component import Component, ComponentHookContext
+
+
+class TestFrameworkElementContext(BaseContext, ABC):
+    """
+    Abstract base class for all test framework element contexts.
+    Used to represent the polymorphic parent/child relationship between
+    TestSuiteContext, TestExecutionContext, and TestStepContext.
+    """
+
+    @abstractmethod
+    def get_test_element(self) -> Optional["TestFrameworkElement"]:
+        """Get the TestFrameworkElement associated with the context if any."""
+
+    def get_test_suite(self) -> Optional["TestSuite"]:
+        """Get the root test suite object from a given context."""
+        if self.parent_ctx:
+            return self.parent_ctx.get_test_suite()
+        raise RuntimeError(
+            "TestSuiteContext.test_suite must be set to access the root test suite."
+        )
 
 
 @dataclass
-class TestSuiteContext(BaseContext):
+class TestSuiteContext(TestFrameworkElementContext):
     """
     Holds global state for a test suite run, including all shared components.
     """
 
-    components: Dict[str, LifecycleComponent] = field(default_factory=dict)
-    clients: Dict[str, object] = field(default_factory=dict)
+    components: Dict[str, Component] = field(default_factory=dict)
     child_contexts: List["TestExecutionContext"] = field(default_factory=list)
+    test_suite: Optional["TestSuite"] = None
 
-    def add_component(self, name: str, component: LifecycleComponent):
+    def get_test_element(self) -> Optional["TestFrameworkElement"]:
+        """Test Suite has no direct TestElement, return None."""
+        return self.test_suite
+
+    def add_component(self, name: str, component: Component):
         "Add a component to the test suite context by name"
         self.components[name] = component
 
-    def get_components(self) -> Dict[str, "LifecycleComponent"]:
+    def get_components(self) -> Dict[str, "Component"]:
         """Get all components on the context indexed by name.
 
         Returns: a dict of component names to component instances.
         """
         return self.components
 
-    def get_component_by_name(self, name: str) -> Optional["LifecycleComponent"]:
+    def get_component_by_name(self, name: str) -> Optional["Component"]:
         """Get a component instance by the name of the component.
 
         Args:
@@ -66,25 +93,17 @@ class TestSuiteContext(BaseContext):
         """
         return self.components.get(name)
 
-    def get_client(
-        self, name: str, client_factory: Optional[callable] = None
-    ) -> object:
-        """
-        Retrieve a client from the context, creating it if it does not exist.
-
-        name: The name of the client.
-        client_factory: A factory function to create the client if it does not exist.
-
-        return: The client object.
-        """
-        client = self.clients.get(name)
-        if not client:
-            return client_factory()
-        return client
+    def get_test_suite(self) -> Optional["TestSuite"]:
+        """Get the root test suite object from a given context."""
+        if self.test_suite:
+            return self.test_suite
+        raise RuntimeError(
+            "TestSuiteContext.test_suite must be set to access the root test suite."
+        )
 
 
 @dataclass
-class TestExecutionContext(BaseContext):
+class TestExecutionContext(TestFrameworkElementContext):
     """
     Context for executing a single TestDefinition, scoped per test.
     """
@@ -93,25 +112,25 @@ class TestExecutionContext(BaseContext):
     child_contexts: List["TestStepContext"] = field(default_factory=list)
     test_definition: Optional["TestDefinition"] = None
 
-    def get_test_definition(self) -> Optional["TestDefinition"]:
-        """Get the Test Definition on which this context is operating."""
+    def get_test_element(self) -> Optional["TestFrameworkElement"]:
+        """Get the TestDefinition associated with this execution context."""
         return self.test_definition
 
 
 @dataclass
-class TestStepContext(BaseContext):
+class TestStepContext(TestFrameworkElementContext):
     """
     Context for an individual test step execution.
     """
 
     parent_ctx: Optional["TestExecutionContext"] = None
-    child_contexts: List["LifecycleHookContext"] = field(default_factory=list)
+    child_contexts: List["ComponentHookContext"] = field(default_factory=list)
     step: Optional["TestStep"] = None
 
-    def get_step_component(self) -> Optional["LifecycleComponent"]:
+    def get_step_component(self) -> Optional["Component"]:
         "Get the component targeted for this step (if applicable)."
         return self.step.component
 
-    def get_step(self) -> Optional["TestStep"]:
-        """Get the Test Step on which this context is operating."""
+    def get_test_element(self) -> Optional["TestFrameworkElement"]:
+        """Get the TestStep associated with this context."""
         return self.step

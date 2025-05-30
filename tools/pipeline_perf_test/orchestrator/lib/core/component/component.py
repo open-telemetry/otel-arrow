@@ -1,51 +1,34 @@
 """
-Module: lifecycle_component
+Module: component
 
-This module defines the abstract base class `LifecycleComponent`, which serves as a blueprint for components
+This module defines the abstract base class `Component`, which serves as a blueprint for components
 managed by the orchestrator. It provides hooks for various lifecycle phases such as configuration,
 deployment, starting, stopping, and destruction, allowing for custom behavior during these phases.
 
-Components derived from `LifecycleComponent` must implement the lifecycle methods (`configure`, `deploy`,
+Components derived from `Component` must implement the lifecycle methods (`configure`, `deploy`,
 `start`, `stop`, and `destroy`) and can register hooks to be executed at specific points in the lifecycle.
 
 Classes:
-    LifecyclePhase: An enumeration of the different phases in the lifecycle of a component.
-    LifecycleComponent: An abstract base class that defines the structure for components with lifecycle hooks.
+    ComponentPhase: An enumeration of the different phases in the lifecycle of a component.
+    Component: An abstract base class that defines the structure for components with lifecycle hooks.
 """
 
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Dict, List, Optional, Any
+from typing import Callable, Dict, List, Any
 
-from .runtime import ComponentRuntime
-from ..context.base import BaseContext, ExecutionStatus
+from ..runtime.runtime import Runtime
+from ..context.base import ExecutionStatus
 from ..context.test_contexts import TestStepContext, TestExecutionContext
+from ..strategies.hook_strategy import HookStrategy
+from ..context.component_hook_context import (
+    HookableComponentPhase,
+    ComponentHookContext,
+)
 
 
-@dataclass
-class LifecycleHookContext(BaseContext):
-    """
-    Holds state for a test hook execution.
-    """
-
-    parent_ctx: Optional["TestStepContext"] = None
-    phase: Optional["HookableLifecyclePhase"] = None
-
-    def get_step_component(self) -> Optional["LifecycleComponent"]:
-        """Fetches the component instance on which this hook is firing.
-
-        Returns: the component instance or none.
-        """
-        if self.parent_ctx is None:
-            raise RuntimeError(
-                "LifecycleHookContext.parent_ctx must be set to access the step component."
-            )
-        return self.parent_ctx.step.component
-
-
-class LifecyclePhase(Enum):
+class ComponentPhase(Enum):
     """
     Enum representing the various primary phases in the lifecycle of a component.
 
@@ -70,43 +53,9 @@ class LifecyclePhase(Enum):
     STOP_MONITORING = "stop_monitoring"
 
 
-class HookableLifecyclePhase(Enum):
+class Component(ABC):
     """
-    Enum representing the various phases in the lifecycle of a component which support hooks.
-
-    These phases correspond to different stages of the component's lifecycle, where hooks can be registered
-    and executed to perform actions before or after a phase is executed. These phases help manage the
-    orchestration of components during test execution.
-
-    Phases include:
-        - PRE_CONFIGURE, POST_CONFIGURE
-        - PRE_DEPLOY, POST_DEPLOY
-        - PRE_START, POST_START
-        - PRE_STOP, POST_STOP
-        - PRE_DESTROY, POST_DESTROY
-        - PRE_START_MONITORING, POST_START_MONITORING
-        - PRE_STOP_MONITORING, POST_STOP_MONITORING
-    """
-
-    PRE_CONFIGURE = "pre_configure"
-    POST_CONFIGURE = "post_configure"
-    PRE_DEPLOY = "pre_deploy"
-    POST_DEPLOY = "post_deploy"
-    PRE_START = "pre_start"
-    POST_START = "post_start"
-    PRE_STOP = "pre_stop"
-    POST_STOP = "post_stop"
-    PRE_DESTROY = "pre_destroy"
-    POST_DESTROY = "post_destroy"
-    PRE_START_MONITORING = "pre_start_monitoring"
-    POST_START_MONITORING = "post_start_monitoring"
-    PRE_STOP_MONITORING = "pre_stop_monitoring"
-    POST_STOP_MONITORING = "post_stop_monitoring"
-
-
-class LifecycleComponent(ABC):
-    """
-    Abstract base class for components within a load generation test orchestrator.
+    Abstract base class for components within the test orchestrator.
 
     This class provides a mechanism for registering and executing hooks at various lifecycle phases, allowing
     subclasses to define specific behaviors during phases such as configuration, deployment, starting, stopping,
@@ -118,9 +67,9 @@ class LifecycleComponent(ABC):
     lifecycle.
 
     Attributes:
-        _hooks (Dict[LifecyclePhase, List[Callable]]): A registry of hooks for each lifecycle phase,
+        _hooks (Dict[HookableComponentPhase, List[HookStrategy]]): A registry of hooks for each lifecycle phase,
                                                        where the key is the phase and the value is a list of
-                                                       callable functions to execute during that phase.
+                                                       HookStrategy functions to execute during that phase.
 
     Methods:
         add_hook(phase, hook): Registers a hook function to be executed during a specified lifecycle phase.
@@ -137,17 +86,16 @@ class LifecycleComponent(ABC):
 
     def __init__(self):
         """
-        Initializes the LifecycleComponent instance by setting up an empty hook registry.
+        Initializes the Component instance by setting up an empty hook registry.
 
         The hook registry maps lifecycle phases to lists of hook functions (callables). Hooks
         can be added to different phases, and when those phases are triggered, the corresponding hooks will
         be executed.
         """
-        self._hooks: Dict[
-            HookableLifecyclePhase, List[Callable[[LifecycleHookContext], Any]]
-        ] = defaultdict(list)
-
-        self.runtime: ComponentRuntime = ComponentRuntime()
+        self._hooks: Dict[HookableComponentPhase, List[HookStrategy]] = defaultdict(
+            list
+        )
+        self.runtime: Runtime = Runtime()
 
     def get_or_create_runtime(self, namespace: str, factory: Callable[[], Any]) -> Any:
         """Get an existing runtime data structure or initialize a new one.
@@ -167,9 +115,7 @@ class LifecycleComponent(ABC):
         """
         self.runtime.set(namespace, data)
 
-    def add_hook(
-        self, phase: HookableLifecyclePhase, hook: Callable[[LifecycleHookContext], Any]
-    ):
+    def add_hook(self, phase: HookableComponentPhase, hook: HookStrategy):
         """
         Registers a hook to be executed during a specific lifecycle phase.
 
@@ -177,36 +123,36 @@ class LifecycleComponent(ABC):
         the component, deploying it, starting or stopping it, and more. Each hook is a callable function.
 
         Args:
-            phase (LifecyclePhase): The lifecycle phase during which the hook should be executed.
+            phase (HookableComponentPhase): The lifecycle phase during which the hook should be executed.
                                      Example phases are "pre_configure", "post_configure", "pre_deploy", etc.
             hook (Callable): A function to be executed during the specified lifecycle phase.
 
         Example:
-            component.add_hook(LifecyclePhase.PRE_DEPLOY, lambda: print("Preparing deployment..."))
+            component.add_hook(HookableComponentPhase.PRE_DEPLOY, lambda: print("Preparing deployment..."))
         """
         self._hooks[phase].append(hook)
 
-    def _run_hooks(self, phase: HookableLifecyclePhase, ctx: TestStepContext):
+    def _run_hooks(self, phase: HookableComponentPhase, ctx: TestStepContext):
         """
         Executes all hooks that are registered for a specified lifecycle phase.
 
         This method iterates through the list of hooks registered for the given phase and calls each hook function.
 
         Args:
-            phase (LifecyclePhase): The lifecycle phase during which to run the hooks (e.g., PRE_CONFIGURE, POST_CONFIGURE).
+            phase (HookableComponentPhase): The lifecycle phase during which to run the hooks (e.g., PRE_CONFIGURE, POST_CONFIGURE).
         """
         ctx.log(f"Running hooks for phase: {phase.value}")
         for hook in self._hooks.get(phase, []):
-            hook_context = LifecycleHookContext(
-                phase=phase, name=f"{hook.__name__} ({phase.value})"
+            hook_context = ComponentHookContext(
+                phase=phase, name=f"{hook.__class__.__name__} ({phase.value})"
             )
             ctx.add_child_ctx(hook_context)
             try:
                 hook_context.start()
-                hook(hook_context)
+                hook.execute(hook_context)
                 if hook_context.status == ExecutionStatus.RUNNING:
                     hook_context.status = ExecutionStatus.SUCCESS
-            except Exception as e:
+            except Exception as e:  # pylint: disable=broad-except
                 hook_context.status = ExecutionStatus.ERROR
                 hook_context.error = e
                 hook_context.log(f"Hook failed: {e}")

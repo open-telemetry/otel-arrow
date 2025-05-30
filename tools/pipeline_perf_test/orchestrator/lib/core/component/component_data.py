@@ -7,7 +7,7 @@ metrics (as arbitrary key-value pairs) and runtime information, allowing consist
 representation of component state for reporting, analysis, or serialization.
 
 The `ComponentData` class provides a `from_component` factory method to construct
-instances directly from a `LifecycleComponent` and a `TestExecutionContext`.
+instances directly from a `Component` and a `TestExecutionContext`.
 
 Typical usage:
     data = ComponentData.from_component(component, context)
@@ -17,10 +17,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, TYPE_CHECKING
 
 from ..context.test_contexts import TestExecutionContext
-from .runtime import ComponentRuntime
+from ..runtime.runtime import Runtime
 
 if TYPE_CHECKING:
-    from .lifecycle_component import LifecycleComponent
+    from .component import Component
 
 
 @dataclass
@@ -28,11 +28,11 @@ class ComponentData:
     """The class holds data about a component including arbitrary runtime data and metrics"""
 
     metrics: Dict[str, Any] = field(default_factory=dict)
-    runtime: ComponentRuntime = None
+    runtime: Runtime = None
 
     @classmethod
     def from_component(
-        cls, component: "LifecycleComponent", context: TestExecutionContext
+        cls, component: "Component", context: TestExecutionContext
     ) -> "ComponentData":
         """Create a ComponentData instance from a component and context."""
         return cls(
