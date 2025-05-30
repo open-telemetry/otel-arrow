@@ -14,7 +14,7 @@ workspace = true
 
 [dependencies]
 otap-df-engine = { path = "../engine" }
-otap-df-otlp = { path = "../otlp" }
+otap-df-otap = { path = "../otap" }
 self-meter = "0.6.0"
 byte-unit = "4"
 serde = {version="1", features=["derive"]}
