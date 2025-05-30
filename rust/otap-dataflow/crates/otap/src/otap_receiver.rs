@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Implementation of the OTLP receiver node
+//! Implementation of the OTAP receiver node
 //!
 //! ToDo: implement Ack and Nack control message, wait for receiver node to receive a Ack control message then the service can send a response back
 //! ToDo: implement config control message to handle live changing configuration
@@ -8,37 +8,42 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
-use crate::compression::CompressionMethod;
 use crate::grpc::{
-    LogsServiceImpl, MetricsServiceImpl, OTLPData, ProfilesServiceImpl, TraceServiceImpl,
+    ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OTAPData,
 };
-use crate::proto::opentelemetry::collector::{
-    logs::v1::logs_service_server::LogsServiceServer,
-    metrics::v1::metrics_service_server::MetricsServiceServer,
-    profiles::v1development::profiles_service_server::ProfilesServiceServer,
-    trace::v1::trace_service_server::TraceServiceServer,
+use crate::proto::opentelemetry::experimental::arrow::v1::{
+    arrow_logs_service_server::ArrowLogsServiceServer,
+    arrow_metrics_service_server::ArrowMetricsServiceServer,
+    arrow_traces_service_server::ArrowTracesServiceServer,
 };
 use async_trait::async_trait;
 use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
 use otap_df_engine::shared::receiver as shared;
+use otap_df_otlp::compression::CompressionMethod;
 use std::net::SocketAddr;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
-/// A Receiver that listens for OTLP messages
-pub struct OTLPReceiver {
+/// A Receiver that listens for OTAP messages
+pub struct OTAPReceiver {
     listening_addr: SocketAddr,
     compression_method: Option<CompressionMethod>,
+    message_size: usize,
 }
 
-impl OTLPReceiver {
-    /// creates a new OTLP Receiver
+impl OTAPReceiver {
+    /// creates a new OTAP Receiver
     #[must_use]
-    pub fn new(listening_addr: SocketAddr, compression_method: Option<CompressionMethod>) -> Self {
-        OTLPReceiver {
+    pub fn new(
+        listening_addr: SocketAddr,
+        compression_method: Option<CompressionMethod>,
+        message_size: usize,
+    ) -> Self {
+        OTAPReceiver {
             listening_addr,
             compression_method,
+            message_size,
         }
     }
 }
@@ -47,12 +52,12 @@ impl OTLPReceiver {
 // The Shared version of the receiver allows us to implement a Receiver that requires the effect handler to be Send and Sync
 //
 #[async_trait]
-impl shared::Receiver<OTLPData> for OTLPReceiver {
+impl shared::Receiver<OTAPData> for OTAPReceiver {
     async fn start(
         self: Box<Self>,
         mut ctrl_msg_recv: shared::ControlChannel,
-        effect_handler: shared::EffectHandler<OTLPData>,
-    ) -> Result<(), Error<OTLPData>> {
+        effect_handler: shared::EffectHandler<OTAPData>,
+    ) -> Result<(), Error<OTAPData>> {
         // create listener on addr provided from config
         let listener = effect_handler.tcp_listener(self.listening_addr)?;
         let mut listener_stream = TcpListenerStream::new(listener);
@@ -60,15 +65,15 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
         //start event loop
         loop {
             //create services for the grpc server and clone the effect handler to pass message
-            let logs_service = LogsServiceImpl::new(effect_handler.clone());
-            let metrics_service = MetricsServiceImpl::new(effect_handler.clone());
-            let trace_service = TraceServiceImpl::new(effect_handler.clone());
-            let profiles_service = ProfilesServiceImpl::new(effect_handler.clone());
+            let logs_service = ArrowLogsServiceImpl::new(effect_handler.clone(), self.message_size);
+            let metrics_service =
+                ArrowMetricsServiceImpl::new(effect_handler.clone(), self.message_size);
+            let trace_service =
+                ArrowTracesServiceImpl::new(effect_handler.clone(), self.message_size);
 
-            let mut logs_service_server = LogsServiceServer::new(logs_service);
-            let mut metrics_service_server = MetricsServiceServer::new(metrics_service);
-            let mut trace_service_server = TraceServiceServer::new(trace_service);
-            let mut profiles_service_server = ProfilesServiceServer::new(profiles_service);
+            let mut logs_service_server = ArrowLogsServiceServer::new(logs_service);
+            let mut metrics_service_server = ArrowMetricsServiceServer::new(metrics_service);
+            let mut trace_service_server = ArrowTracesServiceServer::new(trace_service);
 
             // apply the tonic compression if it is set
             if let Some(ref compression) = self.compression_method {
@@ -81,9 +86,6 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
                     .send_compressed(encoding)
                     .accept_compressed(encoding);
                 trace_service_server = trace_service_server
-                    .send_compressed(encoding)
-                    .accept_compressed(encoding);
-                profiles_service_server = profiles_service_server
                     .send_compressed(encoding)
                     .accept_compressed(encoding);
             }
@@ -110,7 +112,6 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
                 .add_service(logs_service_server)
                 .add_service(metrics_service_server)
                 .add_service(trace_service_server)
-                .add_service(profiles_service_server)
                 .serve_with_incoming(&mut listener_stream)=> {
                     if let Err(error) = result {
                         // Report receiver error
@@ -126,16 +127,15 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
 
 #[cfg(test)]
 mod tests {
-    use crate::grpc::OTLPData;
-    use crate::otlp_receiver::OTLPReceiver;
-    use crate::proto::opentelemetry::collector::{
-        logs::v1::{ExportLogsServiceRequest, logs_service_client::LogsServiceClient},
-        metrics::v1::{ExportMetricsServiceRequest, metrics_service_client::MetricsServiceClient},
-        profiles::v1development::{
-            ExportProfilesServiceRequest, profiles_service_client::ProfilesServiceClient,
-        },
-        trace::v1::{ExportTraceServiceRequest, trace_service_client::TraceServiceClient},
+    use crate::grpc::OTAPData;
+    use crate::mock::create_batch_arrow_record;
+    use crate::otap_receiver::OTAPReceiver;
+    use crate::proto::opentelemetry::experimental::arrow::v1::{
+        ArrowPayloadType, arrow_logs_service_client::ArrowLogsServiceClient,
+        arrow_metrics_service_client::ArrowMetricsServiceClient,
+        arrow_traces_service_client::ArrowTracesServiceClient,
     };
+    use async_stream::stream;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use std::future::Future;
@@ -152,38 +152,50 @@ mod tests {
                 // send data to the receiver
 
                 // connect to the different clients and call export to send a message
-                let mut metrics_client = MetricsServiceClient::connect(grpc_endpoint.clone())
-                    .await
-                    .expect("Failed to connect to server from Metrics Service Client");
-
-                let _metrics_response = metrics_client
-                    .export(ExportMetricsServiceRequest::default())
+                // let mut grpc_endpoint_clone = grpc_endpoint.clone();
+                let mut arrow_metrics_client =
+                    ArrowMetricsServiceClient::connect(grpc_endpoint.clone())
+                        .await
+                        .expect("Failed to connect to server from Metrics Service Client");
+                let metrics_stream = stream! {
+                    for batch_id in 0..3 {
+                        let metrics_records = create_batch_arrow_record(batch_id, ArrowPayloadType::MultivariateMetrics);
+                        yield metrics_records;
+                    }
+                };
+                let _metrics_response = arrow_metrics_client
+                    .arrow_metrics(metrics_stream)
                     .await
                     .expect("Failed to receive response after sending Metrics Request");
 
-                let mut logs_client = LogsServiceClient::connect(grpc_endpoint.clone())
+                let mut arrow_logs_client = ArrowLogsServiceClient::connect(grpc_endpoint.clone())
                     .await
                     .expect("Failed to connect to server from Logs Service Client");
-                let _logs_response = logs_client
-                    .export(ExportLogsServiceRequest::default())
+                let logs_stream = stream! {
+                    for batch_id in 0..3 {
+                        let logs_records = create_batch_arrow_record(batch_id, ArrowPayloadType::Logs);
+                        yield logs_records;
+                    }
+                };
+                let _logs_response = arrow_logs_client
+                    .arrow_logs(logs_stream)
                     .await
                     .expect("Failed to receive response after sending Logs Request");
 
-                let mut traces_client = TraceServiceClient::connect(grpc_endpoint.clone())
-                    .await
-                    .expect("Failed to connect to server from Trace Service Client");
-                let _traces_response = traces_client
-                    .export(ExportTraceServiceRequest::default())
+                let mut arrow_traces_client =
+                    ArrowTracesServiceClient::connect(grpc_endpoint.clone())
+                        .await
+                        .expect("Failed to connect to server from Trace Service Client");
+                let traces_stream = stream! {
+                    for batch_id in 0..3 {
+                        let traces_records = create_batch_arrow_record(batch_id, ArrowPayloadType::Spans);
+                        yield traces_records;
+                    }
+                };
+                let _traces_response = arrow_traces_client
+                    .arrow_traces(traces_stream)
                     .await
                     .expect("Failed to receive response after sending Trace Request");
-
-                let mut profiles_client = ProfilesServiceClient::connect(grpc_endpoint.clone())
-                    .await
-                    .expect("Failed to connect to server from Profile Service Client");
-                let _profiles_response = profiles_client
-                    .export(ExportProfilesServiceRequest::default())
-                    .await
-                    .expect("Failed to receive response after sending Profile Request");
 
                 // Finally, send a Shutdown event to terminate the receiver.
                 ctx.send_shutdown(Duration::from_millis(0), "Test")
@@ -192,7 +204,7 @@ mod tests {
 
                 // server should be down after shutdown
                 let fail_metrics_client =
-                    MetricsServiceClient::connect(grpc_endpoint.clone()).await;
+                    ArrowMetricsServiceClient::connect(grpc_endpoint.clone()).await;
                 assert!(fail_metrics_client.is_err(), "Server did not shutdown");
             })
         }
@@ -200,48 +212,53 @@ mod tests {
 
     /// Validation closure that checks the received message and counters (!Send context).
     fn validation_procedure()
-    -> impl FnOnce(NotSendValidateContext<OTLPData>) -> Pin<Box<dyn Future<Output = ()>>> {
+    -> impl FnOnce(NotSendValidateContext<OTAPData>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
             Box::pin(async move {
                 // check that messages have been sent through the effect_handler
 
                 // read from the effect handler
-                let metrics_received = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received");
+                for batch_id in 0..3 {
+                    let metrics_received = timeout(Duration::from_secs(3), ctx.recv())
+                        .await
+                        .expect("Timed out waiting for message")
+                        .expect("No message received");
 
-                // Assert that the message received is what the test client sent.
-                let _expected_metrics_message = ExportMetricsServiceRequest::default();
-                assert!(matches!(metrics_received, _expected_metrics_message));
+                    // Assert that the message received is what the test client sent.
+                    let _expected_metrics_message =
+                        create_batch_arrow_record(batch_id, ArrowPayloadType::MultivariateMetrics);
+                    assert!(matches!(metrics_received, _expected_metrics_message));
+                }
 
-                let logs_received = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received");
-                let _expected_logs_message = ExportLogsServiceRequest::default();
-                assert!(matches!(logs_received, _expected_logs_message));
+                for batch_id in 0..3 {
+                    let logs_received = timeout(Duration::from_secs(3), ctx.recv())
+                        .await
+                        .expect("Timed out waiting for message")
+                        .expect("No message received");
 
-                let traces_received = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received");
+                    // Assert that the message received is what the test client sent.
+                    let _expected_logs_message =
+                        create_batch_arrow_record(batch_id, ArrowPayloadType::Logs);
+                    assert!(matches!(logs_received, _expected_logs_message));
+                }
 
-                let _expected_trace_message = ExportTraceServiceRequest::default();
-                assert!(matches!(traces_received, _expected_trace_message));
+                for batch_id in 0..3 {
+                    let traces_received = timeout(Duration::from_secs(3), ctx.recv())
+                        .await
+                        .expect("Timed out waiting for message")
+                        .expect("No message received");
 
-                let profiles_received = timeout(Duration::from_secs(3), ctx.recv())
-                    .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received");
-                let _expected_profile_message = ExportProfilesServiceRequest::default();
-                assert!(matches!(profiles_received, _expected_profile_message));
+                    // Assert that the message received is what the test client sent.
+                    let _expected_traces_message =
+                        create_batch_arrow_record(batch_id, ArrowPayloadType::Spans);
+                    assert!(matches!(traces_received, _expected_traces_message));
+                }
             })
         }
     }
 
     #[test]
-    fn test_otlp_receiver() {
+    fn test_otap_receiver() {
         let test_runtime = TestRuntime::new();
 
         // addr and port for the server to run at
@@ -249,10 +266,13 @@ mod tests {
         let grpc_port = portpicker::pick_unused_port().expect("No free ports");
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let message_size = 100;
 
         // create our receiver
-        let receiver =
-            ReceiverWrapper::shared(OTLPReceiver::new(addr, None), test_runtime.config());
+        let receiver = ReceiverWrapper::shared(
+            OTAPReceiver::new(addr, None, message_size),
+            test_runtime.config(),
+        );
 
         // run the test
         test_runtime
