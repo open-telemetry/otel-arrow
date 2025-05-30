@@ -69,7 +69,7 @@ def get_benchmark_json(
         },
         {
             "name": f"{benchmark_name}-logs-received",
-            "unit": "count", 
+            "unit": "count",
             "value": logs_received_backend_count
         },
         {
@@ -98,7 +98,7 @@ def get_benchmark_json(
                         "unit": "percent",
                         "value": round(stats_summary['cpu_max'], 2)
                     })
-                
+
                 # Add memory statistics (in MiB)
                 if 'mem_avg' in stats_summary:
                     benchmarks.append({
