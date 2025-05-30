@@ -22,5 +22,5 @@ pub mod direct;
 #[cfg(test)]
 mod tests;
 
-pub use direct::ItemCounter;
-pub use direct::LogsDataAdapter;
+// pub use direct::ItemCounter;
+// pub use direct::LogsDataAdapter;

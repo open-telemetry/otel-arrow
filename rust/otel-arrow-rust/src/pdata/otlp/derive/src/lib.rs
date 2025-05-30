@@ -14,6 +14,19 @@ use proc_macro::TokenStream;
 use quote::{ToTokens, quote};
 use syn::{DeriveInput, parse_macro_input};
 
+#[derive(Clone)]
+struct FieldInfo {
+    ident: syn::Ident,
+    is_param: bool,
+    is_optional: bool,
+    is_oneof: bool,
+    field_type: syn::Type,
+    as_type: Option<syn::Type>,
+}
+
+type TokenVec = Vec<proc_macro2::TokenStream>;
+type OneofMapping<'a> = Option<(&'a &'a str, &'a Vec<otlp_model::OneofCase>)>;
+
 /// Attribute macro for associating the OTLP protocol buffer fully
 /// qualified type name.
 #[proc_macro_attribute]
@@ -46,8 +59,6 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let outer_name = &input.ident;
     let builder_name = syn::Ident::new(&format!("{}Builder", outer_name), outer_name.span());
-
-    type TokenVec = Vec<proc_macro2::TokenStream>;
 
     // Get the fully qualified type name from attribute
     let type_name = input
@@ -108,16 +119,6 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
             attr.path().is_ident("prost") && attr.to_token_stream().to_string().contains("optional")
         })
     };
-
-    // Process all fields once with common logic
-    struct FieldInfo {
-        ident: syn::Ident,
-        is_param: bool,
-        is_optional: bool,
-        is_oneof: bool,
-        field_type: syn::Type,
-        as_type: Option<syn::Type>,
-    }
 
     // Extract option inner type as a standalone function for better reuse
     let extract_option_inner_type = |ty: &syn::Type| -> Option<(syn::Type, bool)> {
@@ -208,13 +209,43 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
                 })
                 .unwrap()
         })
+        .cloned()
         .collect();
     let builder_fields: Vec<_> = fields_original
         .iter()
         .filter(|info| !info.is_param)
+        .cloned()
         .collect();
-    let all_fields: Vec<_> = param_fields.iter().chain(builder_fields.iter()).collect();
+    let all_fields: Vec<_> = param_fields
+        .iter()
+        .chain(builder_fields.iter())
+        .cloned()
+        .collect();
 
+    let mut tokens = TokenStream::new();
+
+    tokens.extend(derive_otlp_builders(
+        outer_name,
+        &builder_name,
+        param_names,
+        &param_fields,
+        &builder_fields,
+        &all_fields,
+        oneof_mapping,
+    ));
+
+    tokens
+}
+
+fn derive_otlp_builders(
+    outer_name: &syn::Ident,
+    builder_name: &syn::Ident,
+    param_names: &Vec<&str>,
+    param_fields: &[FieldInfo],
+    builder_fields: &[FieldInfo],
+    all_fields: &[FieldInfo],
+    oneof_mapping: OneofMapping,
+) -> TokenStream {
     // Generate generic type parameters names like ["T1", "T2", ...]
     let type_params: Vec<syn::Ident> = (0..all_fields.len())
         .map(|idx| {
