@@ -54,14 +54,67 @@ def get_benchmark_json(
 
     benchmark_name = f"pipeline-perf-{config_name}"
 
-    # Create benchmark data structure - starting with just throughput
+    # Create benchmark data structure with few key metrics
+    # TODO: Add more metrics as needed
     benchmarks = [
         {
             "name": f"{benchmark_name}-throughput",
             "unit": "logs/sec",
             "value": logs_sent_rate
+        },
+        {
+            "name": f"{benchmark_name}-logs-sent",
+            "unit": "count",
+            "value": logs_sent_count
+        },
+        {
+            "name": f"{benchmark_name}-logs-received",
+            "unit": "count",
+            "value": logs_received_backend_count
+        },
+        {
+            "name": f"{benchmark_name}-loss-percentage",
+            "unit": "percent",
+            "value": logs_lost_percentage
         }
     ]
+
+    # Add CPU and Memory metrics if available
+    if target_process_stats:
+        try:
+            # Get comprehensive statistics summary
+            stats_summary = target_process_stats.get_summary()
+            if stats_summary:
+                # Add CPU statistics
+                if 'cpu_avg' in stats_summary:
+                    benchmarks.append({
+                        "name": f"{benchmark_name}-cpu-avg",
+                        "unit": "percent",
+                        "value": round(stats_summary['cpu_avg'], 2)
+                    })
+                if 'cpu_max' in stats_summary:
+                    benchmarks.append({
+                        "name": f"{benchmark_name}-cpu-max",
+                        "unit": "percent",
+                        "value": round(stats_summary['cpu_max'], 2)
+                    })
+
+                # Add memory statistics (in MiB)
+                if 'mem_avg' in stats_summary:
+                    benchmarks.append({
+                        "name": f"{benchmark_name}-memory-avg",
+                        "unit": "MiB",
+                        "value": round(stats_summary['mem_avg'], 2)
+                    })
+                if 'mem_max' in stats_summary:
+                    benchmarks.append({
+                        "name": f"{benchmark_name}-memory-max",
+                        "unit": "MiB",
+                        "value": round(stats_summary['mem_max'], 2)
+                    })
+        except (AttributeError, KeyError) as e:
+            # If process stats are not available or in unexpected format, continue without them
+            print(f"Warning: Unable to extract process stats for benchmarking: {e}")
 
     return json.dumps(benchmarks, indent=2)
 
