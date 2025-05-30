@@ -16,7 +16,8 @@ from typing import Dict, List, Optional, TYPE_CHECKING
 
 
 if TYPE_CHECKING:
-    from ..component.lifecycle_component import LifecycleComponent
+    from ..test_framework.test_suite import TestSuite
+    from ..component.component import Component
 
 
 class ExecutionStatus(str, Enum):
@@ -51,6 +52,7 @@ class BaseContext:
 
     @property
     def duration(self) -> Optional[float]:
+        """Duration of the context between start/stop calls or none if not run/stopped."""
         if self.start_time is not None and self.end_time is not None:
             return self.end_time - self.start_time
         return None
@@ -64,7 +66,7 @@ class BaseContext:
         self.child_contexts.append(ctx)
         ctx.parent_ctx = self
 
-    def get_components(self) -> Dict[str, "LifecycleComponent"]:
+    def get_components(self) -> Dict[str, "Component"]:
         """Get the components from the root context.
 
         Returns: The dict of components, indexed by component name.
@@ -73,7 +75,7 @@ class BaseContext:
             return self.parent_ctx.get_components()
         raise NotImplementedError("This context does not support get_components")
 
-    def get_component_by_name(self, name: str) -> Optional["LifecycleComponent"]:
+    def get_component_by_name(self, name: str) -> Optional["Component"]:
         """Get a component instance by the name of the component (from the root context).
 
         Args:
@@ -85,20 +87,11 @@ class BaseContext:
             return self.parent_ctx.get_component(name)
         raise NotImplementedError("This context does not support get_component_by_name")
 
-    def get_client(
-        self, name: str, client_factory: Optional[callable] = None
-    ) -> object:
-        """
-        Retrieve a client from the root context, creating it if it does not exist.
-
-        name: The name of the client.
-        client_factory: A factory function to create the client if it does not exist.
-
-        return: The client object.
-        """
+    def get_test_suite(self) -> Optional["TestSuite"]:
+        """Get the root test suite object from a given context."""
         if hasattr(self, "parent_ctx"):
-            return self.parent_ctx.get_client(name, client_factory)
-        raise NotImplementedError("This context does not support get_client")
+            return self.parent_ctx.get_test_suite()
+        raise NotImplementedError("This context does not support get_test_suite")
 
     def log(self, message: str):
         """
