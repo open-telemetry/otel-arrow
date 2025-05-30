@@ -11,17 +11,18 @@ Classes:
     TestStep: A class representing a single step in a test, which includes a name and an action to execute.
 """
 
-import time
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
-from .test_context import TestStepContext
-
+from ..context.base import BaseContext
+from ..context.test_contexts import TestStepContext
+from .test_element import TestFrameworkElement
+from ..context.test_element_hook_context import HookableTestPhase
 
 if TYPE_CHECKING:
-    from ..component.lifecycle_component import LifecycleComponent
+    from ..component.component import Component
 
 
-class TestStep:
+class TestStep(TestFrameworkElement):
     """
     Represents a single step in a test execution sequence.
 
@@ -40,7 +41,7 @@ class TestStep:
         self,
         name: str,
         action: Callable[[TestStepContext], Any],
-        component: Optional["LifecycleComponent"] = None,
+        component: Optional["Component"] = None,
     ):
         """
         Initializes a test step with a name and an associated action.
@@ -49,11 +50,12 @@ class TestStep:
             name (str): The name of the test step.
             action (Callable[[TestStepContext], any]): A callable function that defines the action to execute when the test step is run.
         """
+        super().__init__()
         self.name = name
         self.action = action
         self.component = component
 
-    def run(self, context: TestStepContext):
+    def run(self, ctx: Optional[BaseContext] = None) -> None:
         """
         Executes the action associated with the test step.
 
@@ -66,5 +68,8 @@ class TestStep:
         Returns:
             The result of the action execution, which is whatever is returned by the action callable.
         """
+        assert isinstance(ctx, TestStepContext), "Expected TestExecutionContext"
 
-        return self.action(context)
+        self._run_hooks(HookableTestPhase.PRE_RUN, ctx)
+        self.action(ctx)
+        self._run_hooks(HookableTestPhase.POST_RUN, ctx)

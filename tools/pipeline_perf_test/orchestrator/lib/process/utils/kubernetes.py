@@ -17,7 +17,6 @@ import time
 from typing import Tuple
 
 from ..deployed_process.kubernetes import K8sDeployedResource
-from ..utils.docker import build_docker_image
 from ...report.report import parse_logs_for_sent_count
 
 def deploy_kubernetes_resources(manifest_path: str, deployment_name: str, namespace: str = "default") -> K8sDeployedResource:
@@ -158,7 +157,7 @@ def create_k8s_namespace(namespace: str) -> bool:
         print(f"Error output: {e.stderr}")
         return False
 
-def run_k8s_loadgen(loadgen_manifest: str, namespace: str, duration: int, k8s_collector_resource: K8sDeployedResource, skip_build: bool = False) -> Tuple[int, int, float]:
+def run_k8s_loadgen(loadgen_manifest: str, namespace: str, duration: int, k8s_collector_resource: K8sDeployedResource, loadgen_image: str) -> Tuple[int, int, float]:
     """
     Deploy and run the load generator in Kubernetes and return the counts of logs and duration
 
@@ -167,27 +166,24 @@ def run_k8s_loadgen(loadgen_manifest: str, namespace: str, duration: int, k8s_co
         namespace: Kubernetes namespace
         duration: Test duration in seconds
         k8s_collector_resource: The collector resource to monitor
-        skip_build: Skip building the loadgen image
+        loadgen_image: The loadgen Docker image name/tag to use
 
     Returns:
         Tuple[int, int, float]: Count of logs sent, logs failed, and actual duration
     """
     print("Starting load generator in Kubernetes...")
+    print(f"Using loadgen image: {loadgen_image}")
 
-    # Build the loadgen Docker image if not skipped
-    if not skip_build:
-        loadgen_image = "otel-loadgen:latest"
-        loadgen_image = build_docker_image(loadgen_image, "load_generator")
-        print(f"Built loadgen image: {loadgen_image}")
-
-    # Modify the manifest to set the correct duration
+    # Modify the manifest to set the correct duration and image
     # Read the manifest
     with open(loadgen_manifest, 'r') as f:
         manifest_content = f.read()
 
     # Replace the {{DURATION}} placeholder with the actual duration
+    # and the image name with the provided loadgen_image
     temp_manifest = f"{loadgen_manifest}.tmp"
     updated_manifest = manifest_content.replace("{{DURATION}}", str(duration))
+    updated_manifest = updated_manifest.replace("otel-loadgen:latest", loadgen_image)
 
     print(f"Setting loadgen duration to {duration}s")
 

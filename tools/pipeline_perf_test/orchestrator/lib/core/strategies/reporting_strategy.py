@@ -19,6 +19,8 @@ Classes:
 from abc import ABC, abstractmethod
 from typing import Dict, Any
 
+from ..test_framework.test_data import TestData
+
 
 class FormatStrategy(ABC):
     """
@@ -94,10 +96,10 @@ class ReportingStrategy(ABC):
     """
 
     @abstractmethod
-    def report(self, aggregated_data: Dict[str, Dict[str, Any]]):
+    def report(self, test_data: TestData):
         """
-        Generate and report test data by formatting and outputting the aggregated data.
+        Generate and report by formatting and outputting the test data.
 
         Args:
-            aggregated_data (Dict[str, Dict[str, any]]): The aggregated data to format and report.
+            test_data: The aggregated data to format and report.
         """
