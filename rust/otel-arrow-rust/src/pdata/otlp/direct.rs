@@ -239,11 +239,11 @@ impl<'a> LogRecordVisitable for &LogRecordAdapter<'a> {
 /// Noop implements a no-op for every visitor trait.
 pub struct Noop {}
 
-impl<'a> ResourceVisitor for Noop {
+impl ResourceVisitor for Noop {
     fn visit_resource(&mut self, _: impl ResourceVisitable) {}
 }
 
-impl<'a> ScopeVisitor for Noop {
+impl ScopeVisitor for Noop {
     fn visit_scope(&mut self, _: impl ScopeVisitable) {}
 }
 
