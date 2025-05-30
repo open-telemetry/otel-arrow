@@ -10,6 +10,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use convert_case::{Case, Casing};
 use proc_macro::TokenStream;
 use quote::{ToTokens, quote};
 use syn::{DeriveInput, parse_macro_input};
@@ -19,6 +20,7 @@ struct FieldInfo {
     ident: syn::Ident,
     is_param: bool,
     is_optional: bool,
+    _is_repeated: bool,
     is_oneof: bool,
     field_type: syn::Type,
     as_type: Option<syn::Type>,
@@ -58,7 +60,6 @@ pub fn qualified(args: TokenStream, input: TokenStream) -> TokenStream {
 pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let outer_name = &input.ident;
-    let builder_name = syn::Ident::new(&format!("{}Builder", outer_name), outer_name.span());
 
     // Get the fully qualified type name from attribute
     let type_name = input
@@ -114,10 +115,17 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     }
 
     // Function to check if a field is marked as optional
-    let is_optional = |field: &syn::Field| {
-        field.attrs.iter().any(|attr| {
-            attr.path().is_ident("prost") && attr.to_token_stream().to_string().contains("optional")
-        })
+    let is_optional_repeated = |field: &syn::Field| {
+        (
+            field.attrs.iter().any(|attr| {
+                attr.path().is_ident("prost")
+                    && attr.to_token_stream().to_string().contains("optional")
+            }),
+            field.attrs.iter().any(|attr| {
+                attr.path().is_ident("prost")
+                    && attr.to_token_stream().to_string().contains("repeated")
+            }),
+        )
     };
 
     // Extract option inner type as a standalone function for better reuse
@@ -155,7 +163,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
                 let ident_str = ident.to_string();
                 let field_path = format!("{}.{}", type_name, ident_str);
                 let is_param = param_names.contains(&ident_str.as_str());
-                let is_optional = is_optional(field);
+                let (is_optional, _is_repeated) = is_optional_repeated(field);
                 let is_oneof = oneof_mapping.map(|x| *x.0 == field_path).unwrap_or(false);
 
                 // Process type information
@@ -189,6 +197,7 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
                     ident: ident.clone(),
                     is_param,
                     is_optional,
+                    _is_repeated,
                     is_oneof,
                     field_type,
                     as_type,
@@ -226,7 +235,15 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
 
     tokens.extend(derive_otlp_builders(
         outer_name,
-        &builder_name,
+        param_names,
+        &param_fields,
+        &builder_fields,
+        &all_fields,
+        oneof_mapping,
+    ));
+
+    tokens.extend(derive_otlp_visitors(
+        outer_name,
         param_names,
         &param_fields,
         &builder_fields,
@@ -237,15 +254,17 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     tokens
 }
 
+/// Emits the builders, new(), and finish() methods.
 fn derive_otlp_builders(
     outer_name: &syn::Ident,
-    builder_name: &syn::Ident,
     param_names: &Vec<&str>,
     param_fields: &[FieldInfo],
     builder_fields: &[FieldInfo],
     all_fields: &[FieldInfo],
     oneof_mapping: OneofMapping,
 ) -> TokenStream {
+    let builder_name = syn::Ident::new(&format!("{}Builder", outer_name), outer_name.span());
+
     // Generate generic type parameters names like ["T1", "T2", ...]
     let type_params: Vec<syn::Ident> = (0..all_fields.len())
         .map(|idx| {
@@ -473,4 +492,84 @@ fn derive_otlp_builders(
     }
 
     TokenStream::from(expanded)
+}
+
+/// Emits the visitor, visitable and adapters methods.
+fn derive_otlp_visitors(
+    outer_name: &syn::Ident,
+    _param_names: &Vec<&str>,
+    _param_fields: &[FieldInfo],
+    _builder_fields: &[FieldInfo],
+    all_fields: &[FieldInfo],
+    _oneof_mapping: OneofMapping,
+) -> TokenStream {
+    let visitor_name = syn::Ident::new(&format!("{}Visitor", outer_name), outer_name.span());
+    let visitable_name = syn::Ident::new(&format!("{}Visitable", outer_name), outer_name.span());
+    let method_name = syn::Ident::new(
+        &format!("Visit{}", outer_name).to_case(Case::Snake),
+        outer_name.span(),
+    );
+
+    let visitable_args: TokenVec = all_fields
+        .iter()
+        .map(|info| {
+            let param_name = &info.ident;
+            let type_tokens = info.base_type();
+
+            quote! { #param_name: #type_tokens }
+        })
+        .collect();
+
+    let expanded = quote! {
+    pub trait #visitor_name {
+    fn #method_name(&mut self, v: impl #visitable_name);
+    }
+
+    pub trait #visitable_name {
+    fn #method_name(&self, #(#visitable_args),*);
+    }
+    };
+
+    TokenStream::from(expanded)
+}
+
+impl FieldInfo {
+    fn base_type(&self) -> TokenStream {
+        let mut have_super = false;
+        for (idx, candidate) in self.field_type.to_token_stream().into_iter().enumerate() {
+            match candidate.to_string().as_str() {
+                ":" => {}
+                "<" => {}
+                "prost" => {}
+                "super" => {
+                    have_super = true;
+                }
+                "v1" => {}
+                "resource" => {}
+                "common" => {}
+                "metrics" => {}
+                "trace" => {}
+                "logs" => {}
+                "alloc" => {}
+                "vec" => {}
+                "Vec" => {}
+                basename => {
+                    let viz = format!("{}Visitor", basename);
+                    return TokenStream::from(if have_super {
+                        let quals: Vec<_> = self
+                            .field_type
+                            .to_token_stream()
+                            .into_iter()
+                            .take(idx)
+                            .collect();
+
+                        quote! { #quals #viz }
+                    } else {
+                        quote! { #viz }
+                    });
+                }
+            };
+        }
+        format!("{}Visitor", self.field_type.to_token_stream().to_string())
+    }
 }
