@@ -65,7 +65,7 @@ fn count_logs(c: &mut Criterion) {
 
     _ = group.bench_function("Visitor", |b| {
         b.iter(|| {
-            black_box(ItemCounter::new().visit_logs_data(&LogsDataAdapter::new(&logs)));
+            black_box(ItemCounter::new().visit_logs(&LogsDataAdapter::new(&logs)));
         })
     });
 
@@ -74,9 +74,8 @@ fn count_logs(c: &mut Criterion) {
             let mut count = 0;
             for rl in &logs.resource_logs {
                 for sl in &rl.scope_logs {
-                    for _ in &sl.log_records {
-                        count += 1;
-                    }
+                    // Note! This is an optimization not available to the visitor.
+                    count += sl.log_records.len();
                 }
             }
             black_box(count);
