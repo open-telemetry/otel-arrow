@@ -15,14 +15,21 @@ Typical concrete implementations of this interface might include:
     - RemoteConfig: Reads configs from a remote location and applies them
 
 Classes:
+    ConfigurationStrategyConfig(BaseModel): Base model for Configuration Strategy config.
     ConfigStrategy (ABC): Abstract base class that declares the `start` method,
                           which must be implemented by all concrete configuration strategies.
 """
 
 from abc import ABC, abstractmethod
 
-from ..component.lifecycle_component import LifecycleComponent
+from pydantic import BaseModel
+
+from ..component.component import Component
 from ..context.test_contexts import TestStepContext
+
+
+class ConfigurationStrategyConfig(BaseModel):
+    """Base model for Configuration Strategy config, passed to strategy init."""
 
 
 class ConfigurationStrategy(ABC):
@@ -37,7 +44,11 @@ class ConfigurationStrategy(ABC):
     """
 
     @abstractmethod
-    def start(self, component: LifecycleComponent, ctx: TestStepContext):
+    def __init__(self, config: ConfigurationStrategyConfig) -> None:
+        """All configuration strategies must be initialized with a config object."""
+
+    @abstractmethod
+    def start(self, component: Component, ctx: TestStepContext):
         """
         Start configuration for the given component.
 
