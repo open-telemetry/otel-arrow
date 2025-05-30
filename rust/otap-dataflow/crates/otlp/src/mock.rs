@@ -45,6 +45,7 @@ pub struct MetricsServiceMock {
 
 impl MetricsServiceMock {
     /// creates a new mock metrics service
+    #[must_use]
     pub fn new(sender: Sender<OTLPData>) -> Self {
         Self { sender }
     }
@@ -57,6 +58,7 @@ pub struct TraceServiceMock {
 
 impl TraceServiceMock {
     /// creates a new mock trace service
+    #[must_use]
     pub fn new(sender: Sender<OTLPData>) -> Self {
         Self { sender }
     }
@@ -69,6 +71,7 @@ pub struct ProfilesServiceMock {
 
 impl ProfilesServiceMock {
     /// creates a new mock profiles service
+    #[must_use]
     pub fn new(sender: Sender<OTLPData>) -> Self {
         Self { sender }
     }
