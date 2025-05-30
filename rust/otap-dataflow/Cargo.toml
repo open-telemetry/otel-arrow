@@ -23,7 +23,6 @@ futures-timer = "3.0"
 object_store = "0.12"
 otel-arrow-rust = { path = "../otel-arrow-rust"}
 parquet = { version = "55", default-features = false, features = ["arrow", "async", "object_store"]}
-pin-project = "1"
 tempfile = "3"
 thiserror = "2.0.12"
 serde = { version = "1.0.219", features = ["derive", "rc"] }

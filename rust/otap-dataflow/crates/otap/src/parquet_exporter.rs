@@ -30,8 +30,6 @@ mod object_store;
 mod partition;
 mod writer;
 
-const EXPORTER_NAME: &str = "parquet";
-
 /// Parquet exporter for OTAP Data
 pub struct ParquetExporter {
     config: config::Config,
@@ -57,7 +55,7 @@ where
     ) -> Result<(), Error<T>> {
         let object_store =
             object_store::from_uri(&self.config.base_uri).map_err(|e| Error::ExporterError {
-                exporter: EXPORTER_NAME.into(),
+                exporter: effect_handler.exporter_name(),
                 error: format!("error initializing object store {}", e),
             })?;
 
