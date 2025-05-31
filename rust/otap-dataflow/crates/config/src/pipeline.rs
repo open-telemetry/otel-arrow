@@ -543,8 +543,8 @@ mod tests {
                         ..
                     } if source_node == "A"
                         && !*missing_source
-                        && missing_targets.as_slice() == &["Y"]
-                        && target_nodes.as_slice() == &["Y"] => {}
+                        && missing_targets.as_slice() == ["Y"]
+                        && target_nodes.as_slice() == ["Y"] => {}
                     other => panic!("expected InvalidHyperEdge missing_targets, got {:?}", other),
                 }
             }

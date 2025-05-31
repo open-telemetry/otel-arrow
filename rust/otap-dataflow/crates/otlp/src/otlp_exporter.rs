@@ -15,15 +15,26 @@ use crate::proto::opentelemetry::collector::{
     trace::v1::trace_service_client::TraceServiceClient,
 };
 use async_trait::async_trait;
+use linkme::distributed_slice;
+use serde_json::Value;
 use otap_df_engine::error::Error;
-use otap_df_engine::local::exporter as local;
+use otap_df_engine::local::{exporter as local, LocalExporterFactory};
 use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
+use crate::LOCAL_EXPORTERS;
 
 /// Exporter that sends OTLP data via gRPC
 struct OTLPExporter {
     grpc_endpoint: String,
     compression_method: Option<CompressionMethod>,
 }
+
+/// Declares the OTLP exporter as a local exporter factory
+#[allow(unsafe_code)]
+#[distributed_slice(LOCAL_EXPORTERS)]
+pub static OTLP_EXPORTER: LocalExporterFactory<OTLPData> = LocalExporterFactory {
+    name: "builtin:otlp:exporter",
+    create: |config: &Value| Box::new(OTLPExporter::from_config(config)),
+};
 
 impl OTLPExporter {
     /// Creates a new OTLP exporter
@@ -33,6 +44,16 @@ impl OTLPExporter {
         OTLPExporter {
             grpc_endpoint,
             compression_method,
+        }
+    }
+    
+    /// Creates a new OTLPExporter from a configuration object
+    #[must_use]
+    pub fn from_config(_config: &Value) -> Self {
+        // ToDo: implement config parsing
+        OTLPExporter {
+            grpc_endpoint: "127.0.0.1:4317".to_owned(),
+            compression_method: None,
         }
     }
 }
@@ -274,7 +295,7 @@ mod tests {
             let mock_trace_service = TraceServiceServer::new(TraceServiceMock::new(sender.clone()));
             let mock_profiles_service =
                 ProfilesServiceServer::new(ProfilesServiceMock::new(sender.clone()));
-            _ = Server::builder()
+            Server::builder()
                 .add_service(mock_logs_service)
                 .add_service(mock_metrics_service)
                 .add_service(mock_trace_service)

@@ -14,7 +14,7 @@
 use std::borrow::Cow;
 pub mod data_plane;
 pub mod error;
-mod experimental;
+pub mod experimental;
 pub mod node;
 pub mod pipeline;
 pub mod tenant;

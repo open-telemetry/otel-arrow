@@ -23,6 +23,7 @@ tokio = { version = "1.45.0", features = ["rt", "time", "net", "io-util", "sync"
 async-trait = "0.1.88"
 criterion = "0.5.1"
 miette = { version="7.6.0", features = ["fancy"] }
+linkme = "0.3.33"
 
 [workspace.lints.rust]
 # General compatibility lints

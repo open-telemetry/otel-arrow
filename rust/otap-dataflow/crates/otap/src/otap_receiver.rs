@@ -19,11 +19,14 @@ use crate::proto::opentelemetry::experimental::arrow::v1::{
 use async_trait::async_trait;
 use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
-use otap_df_engine::shared::receiver as shared;
+use otap_df_engine::shared::{receiver as shared, SharedReceiverFactory};
 use otap_df_otlp::compression::CompressionMethod;
 use std::net::SocketAddr;
+use linkme::distributed_slice;
+use serde_json::Value;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
+use crate::SHARED_RECEIVERS;
 
 /// A Receiver that listens for OTAP messages
 pub struct OTAPReceiver {
@@ -31,6 +34,14 @@ pub struct OTAPReceiver {
     compression_method: Option<CompressionMethod>,
     message_size: usize,
 }
+
+/// Declares the OTAP exporter as a local exporter factory
+#[allow(unsafe_code)]
+#[distributed_slice(SHARED_RECEIVERS)]
+pub static OTAP_EXPORTER: SharedReceiverFactory<OTAPData> = SharedReceiverFactory {
+    name: "builtin:otap:receiver",
+    create: |config: &Value| Box::new(OTAPReceiver::from_config(config)),
+};
 
 impl OTAPReceiver {
     /// creates a new OTAP Receiver
@@ -44,6 +55,17 @@ impl OTAPReceiver {
             listening_addr,
             compression_method,
             message_size,
+        }
+    }
+
+    /// Creates a new OTAPReceiver from a configuration object
+    #[must_use]
+    pub fn from_config(_config: &Value) -> Self {
+        // ToDo: implement config parsing
+        OTAPReceiver {
+            listening_addr: "127.0.0.1:4317".parse().expect("Invalid socket address"),
+            compression_method: None,
+            message_size: 100, // default message size
         }
     }
 }

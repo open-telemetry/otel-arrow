@@ -13,6 +13,7 @@ use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 
+/// Errors that can occur during pipeline configuration validation and optimization.
 #[derive(thiserror::Error, Debug)]
 pub enum ExperimentalError {
     /// A cycle was detected in the pipeline configuration.
@@ -22,14 +23,20 @@ pub enum ExperimentalError {
         nodes: Vec<NodeId>,
     },
 
+    /// An edge connects nodes with mismatched signal types.
     #[error("Type mismatch on edge from `{from_id}` ({from_out:?}) to `{to_id}` ({to_in:?})")]
     TypeMismatch {
+        /// The id of the node where the edge starts.
         from_id: String,
+        /// The id of the node where the edge ends.
         to_id: String,
+        /// The signal type of the output port of the starting node.
         from_out: SignalType,
+        /// The signal type of the input port of the ending node.
         to_in: SignalType,
     },
 
+    /// A node referenced in an edge does not exist in the DAG.
     #[error("Edge references unknown node `{0}`")]
     UnknownNode(NodeId),
 }

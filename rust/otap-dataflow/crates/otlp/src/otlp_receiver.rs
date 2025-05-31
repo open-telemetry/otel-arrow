@@ -21,16 +21,27 @@ use crate::proto::opentelemetry::collector::{
 use async_trait::async_trait;
 use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
-use otap_df_engine::shared::receiver as shared;
+use otap_df_engine::shared::{receiver as shared, SharedReceiverFactory};
 use std::net::SocketAddr;
+use linkme::distributed_slice;
+use serde_json::Value;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
+use crate::SHARED_RECEIVERS;
 
 /// A Receiver that listens for OTLP messages
 pub struct OTLPReceiver {
     listening_addr: SocketAddr,
     compression_method: Option<CompressionMethod>,
 }
+
+/// Declares the OTLP receiver as a shared receiver factory
+#[allow(unsafe_code)]
+#[distributed_slice(SHARED_RECEIVERS)]
+pub static OTLP_RECEIVER: SharedReceiverFactory<OTLPData> = SharedReceiverFactory {
+    name: "builtin:otlp:receiver",
+    create: |config: &Value| Box::new(OTLPReceiver::from_config(config)),
+};
 
 impl OTLPReceiver {
     /// creates a new OTLP Receiver
@@ -39,6 +50,16 @@ impl OTLPReceiver {
         OTLPReceiver {
             listening_addr,
             compression_method,
+        }
+    }
+
+    /// Creates a new OTLPReceiver from a configuration object
+    #[must_use]
+    pub fn from_config(_config: &Value) -> Self {
+        // ToDo: implement config parsing
+        OTLPReceiver {
+            listening_addr: "127.0.0.1:4317".parse().expect("Invalid socket address"),
+            compression_method: None,
         }
     }
 }
@@ -129,19 +150,19 @@ mod tests {
     use crate::grpc::OTLPData;
     use crate::otlp_receiver::OTLPReceiver;
     use crate::proto::opentelemetry::collector::{
-        logs::v1::{ExportLogsServiceRequest, logs_service_client::LogsServiceClient},
-        metrics::v1::{ExportMetricsServiceRequest, metrics_service_client::MetricsServiceClient},
+        logs::v1::{logs_service_client::LogsServiceClient, ExportLogsServiceRequest},
+        metrics::v1::{metrics_service_client::MetricsServiceClient, ExportMetricsServiceRequest},
         profiles::v1development::{
-            ExportProfilesServiceRequest, profiles_service_client::ProfilesServiceClient,
+            profiles_service_client::ProfilesServiceClient, ExportProfilesServiceRequest,
         },
-        trace::v1::{ExportTraceServiceRequest, trace_service_client::TraceServiceClient},
+        trace::v1::{trace_service_client::TraceServiceClient, ExportTraceServiceRequest},
     };
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{timeout, Duration};
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario(
