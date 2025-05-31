@@ -14,10 +14,13 @@ use crate::proto::opentelemetry::experimental::arrow::v1::{
 };
 use async_stream::stream;
 use async_trait::async_trait;
+use linkme::distributed_slice;
+use serde_json::Value;
 use otap_df_engine::error::Error;
-use otap_df_engine::local::exporter as local;
+use otap_df_engine::local::{exporter as local, LocalExporterFactory};
 use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
 use otap_df_otlp::compression::CompressionMethod;
+use crate::LOCAL_EXPORTERS;
 
 /// Exporter that sends OTAP data via gRPC
 struct OTAPExporter {
@@ -25,13 +28,32 @@ struct OTAPExporter {
     compression_method: Option<CompressionMethod>,
 }
 
+/// Declares the OTAP exporter as a local exporter factory
+#[allow(unsafe_code)]
+#[distributed_slice(LOCAL_EXPORTERS)]
+pub static OTAP_EXPORTER: LocalExporterFactory<OTAPData> = LocalExporterFactory {
+    name: "builtin:otap:exporter",
+    create: |config: &Value| Box::new(OTAPExporter::from_config(config)),
+};
+
 impl OTAPExporter {
     /// Creates a new OTAP exporter
     #[must_use]
+    #[allow(dead_code)]
     pub fn new(grpc_endpoint: String, compression_method: Option<CompressionMethod>) -> Self {
         OTAPExporter {
             grpc_endpoint,
             compression_method,
+        }
+    }
+
+    /// Creates a new OTAPExporter from a configuration object
+    #[must_use]
+    pub fn from_config(_config: &Value) -> Self {
+        // ToDo: implement config parsing
+        OTAPExporter {
+            grpc_endpoint: "127.0.0.1:4317".to_owned(),
+            compression_method: None,
         }
     }
 }
@@ -86,7 +108,7 @@ impl local::Exporter<OTAPData> for OTAPExporter {
                 Message::Control(ControlMsg::TimerTick { .. })
                 | Message::Control(ControlMsg::Config { .. }) => {}
                 // shutdown the exporter
-                Message::Control(ControlMsg::Shutdown { deadline, reason }) => {
+                Message::Control(ControlMsg::Shutdown { .. }) => {
                     // ToDo: add proper deadline function
                     break;
                 }
@@ -157,7 +179,7 @@ mod tests {
     };
     use crate::otap_exporter::OTAPExporter;
     use crate::proto::opentelemetry::experimental::arrow::v1::{
-        ArrowPayloadType, BatchArrowRecords, arrow_logs_service_server::ArrowLogsServiceServer,
+        ArrowPayloadType, arrow_logs_service_server::ArrowLogsServiceServer,
         arrow_metrics_service_server::ArrowMetricsServiceServer,
         arrow_traces_service_server::ArrowTracesServiceServer,
     };

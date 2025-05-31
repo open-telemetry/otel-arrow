@@ -151,7 +151,7 @@ mod tests {
                     }
                     _ => {
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_name().to_owned(),
+                            exporter: effect_handler.exporter_name(),
                             error: "Unknown control message".to_owned(),
                         });
                     }
@@ -186,7 +186,7 @@ mod tests {
                     }
                     _ => {
                         return Err(Error::ExporterError {
-                            exporter: effect_handler.exporter_name().to_owned(),
+                            exporter: effect_handler.exporter_name(),
                             error: "Unknown control message".to_owned(),
                         });
                     }

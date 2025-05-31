@@ -93,6 +93,7 @@ impl<PData> NotSendValidateContext<PData> {
     }
 
     /// Returns the control message counters.
+    #[must_use]
     pub fn counters(&self) -> CtrlMsgCounters {
         self.counters.clone()
     }
@@ -108,6 +109,7 @@ impl<PData> SendValidateContext<PData> {
     }
 
     /// Returns the control message counters.
+    #[must_use]
     pub fn counters(&self) -> CtrlMsgCounters {
         self.counters.clone()
     }
@@ -164,6 +166,7 @@ pub struct ValidationPhase<PData> {
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
+    #[must_use]
     pub fn new() -> Self {
         let config = ReceiverConfig::new("test_receiver");
         let (rt, local_tasks) = setup_test_runtime();
@@ -197,6 +200,12 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             control_sender,
             counters: self.counter,
         }
+    }
+}
+
+impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
