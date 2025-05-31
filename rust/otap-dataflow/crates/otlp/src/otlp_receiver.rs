@@ -93,7 +93,7 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
                 // Process internal event
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
-                        Ok(ControlMsg::Shutdown {deadline, reason}) => {
+                        Ok(ControlMsg::Shutdown {..}) => {
                             // ToDo: add proper deadline function
                             break;
                         },

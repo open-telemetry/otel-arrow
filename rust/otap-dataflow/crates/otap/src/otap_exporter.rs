@@ -28,6 +28,7 @@ struct OTAPExporter {
 impl OTAPExporter {
     /// Creates a new OTAP exporter
     #[must_use]
+    #[allow(dead_code)]
     pub fn new(grpc_endpoint: String, compression_method: Option<CompressionMethod>) -> Self {
         OTAPExporter {
             grpc_endpoint,
@@ -86,7 +87,7 @@ impl local::Exporter<OTAPData> for OTAPExporter {
                 Message::Control(ControlMsg::TimerTick { .. })
                 | Message::Control(ControlMsg::Config { .. }) => {}
                 // shutdown the exporter
-                Message::Control(ControlMsg::Shutdown { deadline, reason }) => {
+                Message::Control(ControlMsg::Shutdown { .. }) => {
                     // ToDo: add proper deadline function
                     break;
                 }

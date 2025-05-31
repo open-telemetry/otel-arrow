@@ -2,25 +2,29 @@
 
 //! Errors for the config crate.
 
-use std::fmt::Display;
 use crate::node::DispatchStrategy;
 use crate::{NodeId, PipelineId, PortName, TenantId};
+use miette::Diagnostic;
+use std::fmt::Display;
 
 /// Errors that can occur while processing the configuration of a data plane, a tenant, a pipeline,
 /// or a node.
 ///
 /// Note: All errors are contextualized with the tenant and pipeline ids, if applicable.
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, Diagnostic)]
 pub enum Error {
     /// A collection of errors that occurred during parsing or validating the configuration.
     #[error("Invalid configuration: {errors:?}")]
+    #[diagnostic(code(data_plane::invalid_configuration), url(docsrs))]
     InvalidConfiguration {
         /// A list of errors that occurred during parsing or validating the configuration.
+        #[related]
         errors: Vec<Error>,
     },
 
     /// An error that occurred while reading a configuration file.
     #[error("File read error: {details}\nContext: {context}")]
+    #[diagnostic(code(data_plane::file_read_error), url(docsrs))]
     FileReadError {
         /// The context in which the error occurred.
         context: Context,
@@ -29,9 +33,8 @@ pub enum Error {
     },
 
     /// An error that occurred while deserializing a configuration file.
-    #[error(
-        "{format} deserialization error: {details}\nContext: {context}"
-    )]
+    #[error("{format} deserialization error: {details}\nContext: {context}")]
+    #[diagnostic(code(data_plane::deserialization_error), url(docsrs))]
     DeserializationError {
         /// The context in which the error occurred.
         context: Context,
@@ -42,9 +45,8 @@ pub enum Error {
     },
 
     /// A cycle was detected in the pipeline configuration.
-    #[error(
-        "Cycle detected involving nodes: {nodes:?}\nContext: {context}"
-    )]
+    #[error("Cycle detected involving nodes: {nodes:?}\nContext: {context}")]
+    #[diagnostic(code(data_plane::cycle_detected), url(docsrs))]
     CycleDetected {
         /// The context in which the error occurred.
         context: Context,
@@ -54,6 +56,7 @@ pub enum Error {
 
     /// A node with the same id already exists in the pipeline.
     #[error("Duplicated node id `{node_id}`\nContext: {context}")]
+    #[diagnostic(code(data_plane::duplicate_node), url(docsrs))]
     DuplicateNode {
         /// The context in which the error occurred.
         context: Context,
@@ -65,6 +68,7 @@ pub enum Error {
     #[error(
         "The same out-port `{port}` was connected more than once on the node `{source_node}`\nContext: {context}"
     )]
+    #[diagnostic(code(data_plane::duplicate_out_port), url(docsrs))]
     DuplicateOutPort {
         /// The context in which the error occurred.
         context: Context,
@@ -78,6 +82,7 @@ pub enum Error {
     #[error(
         "Invalid hyper-edge specification: {source_node} -> {target_nodes:?}\nContext: {context}"
     )]
+    #[diagnostic(code(data_plane::invalid_hyper_edge_spec), url(docsrs))]
     InvalidHyperEdgeSpec {
         /// The context in which the error occurred.
         context: Context,
@@ -107,6 +112,7 @@ pub struct Context {
 
 impl Context {
     /// Creates a new context with the given tenant and pipeline ids.
+    #[must_use]
     pub fn new(tenant_id: TenantId, pipeline_id: PipelineId) -> Self {
         Self {
             tenant_id: Some(tenant_id),
@@ -124,4 +130,5 @@ impl Display for Context {
             write!(f, " Pipeline: '{pipeline_id}'")?;
         }
         Ok(())
-    }}
+    }
+}

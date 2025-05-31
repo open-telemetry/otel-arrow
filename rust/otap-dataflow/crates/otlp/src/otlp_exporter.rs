@@ -27,6 +27,7 @@ struct OTLPExporter {
 
 impl OTLPExporter {
     /// Creates a new OTLP exporter
+    #[allow(dead_code)]
     #[must_use]
     pub fn new(grpc_endpoint: String, compression_method: Option<CompressionMethod>) -> Self {
         OTLPExporter {
@@ -95,7 +96,7 @@ impl local::Exporter<OTLPData> for OTLPExporter {
                 Message::Control(ControlMsg::TimerTick { .. })
                 | Message::Control(ControlMsg::Config { .. }) => {}
                 // shutdown the exporter
-                Message::Control(ControlMsg::Shutdown { deadline, reason }) => {
+                Message::Control(ControlMsg::Shutdown { .. }) => {
                     // ToDo: add proper deadline function
                     break;
                 }

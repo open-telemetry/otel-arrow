@@ -48,6 +48,7 @@ pub struct CtrlMsgCounters {
 
 impl CtrlMsgCounters {
     /// Creates a new set of counters with all counts initialized to zero.
+    #[must_use]
     pub fn new() -> Self {
         CtrlMsgCounters {
             timer_tick_count: Arc::new(AtomicUsize::new(0)),
@@ -96,23 +97,27 @@ impl CtrlMsgCounters {
     }
 
     /// Gets the current timer tick count.
+    #[must_use]
     pub fn get_timer_tick_count(&self) -> usize {
         self.timer_tick_count
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Gets the current message count.
+    #[must_use]
     pub fn get_message_count(&self) -> usize {
         self.message_count
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Gets the current config count.
+    #[must_use]
     pub fn get_config_count(&self) -> usize {
         self.config_count.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Gets the current shutdown count.
+    #[must_use]
     pub fn get_shutdown_count(&self) -> usize {
         self.shutdown_count
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -149,7 +154,14 @@ impl CtrlMsgCounters {
     }
 }
 
+impl Default for CtrlMsgCounters {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Creates a single-threaded runtime with a local task set for testing components.
+#[must_use]
 pub fn setup_test_runtime() -> (tokio::runtime::Runtime, LocalSet) {
     let rt = Builder::new_current_thread()
         .enable_all()
@@ -162,6 +174,7 @@ pub fn setup_test_runtime() -> (tokio::runtime::Runtime, LocalSet) {
 /// Helper to create `!Send` MPSC channels with a specific capacity.
 ///
 /// This function creates a sender-receiver pair with the given capacity.
+#[must_use]
 pub fn create_not_send_channel<T>(capacity: usize) -> (mpsc::Sender<T>, mpsc::Receiver<T>) {
     mpsc::Channel::new(capacity)
 }

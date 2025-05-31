@@ -15,7 +15,6 @@ use crate::proto::opentelemetry::experimental::arrow::v1::{
     arrow_metrics_service_server::ArrowMetricsService,
     arrow_traces_service_server::ArrowTracesService,
 };
-use otap_df_engine::error::Error;
 use otap_df_engine::shared::receiver as shared;
 use std::pin::Pin;
 use tokio_stream::Stream;
@@ -193,7 +192,7 @@ where
     };
     // ToDo Add Ack/Nack management once supported by the pipeline engine.
     tx.send(Ok(BatchStatus {
-        batch_id: batch_id,
+        batch_id,
         status_code: status_result.0 as i32,
         status_message: status_result.1,
     }))
