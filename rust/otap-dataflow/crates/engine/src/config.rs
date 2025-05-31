@@ -6,7 +6,7 @@
 //! focuses instead on defining the interconnection of nodes within the DAG and each node’s specific
 //! settings.
 
-use otap_df_config::NodeName;
+use otap_df_config::NodeId;
 
 /// For now, the channel capacity is set to 256 (a power of two). This value is currently somewhat
 /// arbitrary and will likely be adjusted (and made configurable) in the future once we have more
@@ -43,7 +43,7 @@ pub struct PdataChannelConfig {
 /// Generic configuration for a receiver.
 pub struct ReceiverConfig {
     /// Name of the receiver.
-    pub name: NodeName,
+    pub name: NodeId,
     /// Configuration for control channel.
     pub control_channel: ControlChannelConfig,
     /// Configuration for output pdata channel.
@@ -53,7 +53,7 @@ pub struct ReceiverConfig {
 /// Generic configuration for a processor.
 pub struct ProcessorConfig {
     /// Name of the processor.
-    pub name: NodeName,
+    pub name: NodeId,
     /// Configuration for control channel.
     pub control_channel: ControlChannelConfig,
     /// Configuration for input pdata channel.
@@ -65,7 +65,7 @@ pub struct ProcessorConfig {
 /// Generic configuration for an exporter.
 pub struct ExporterConfig {
     /// Name of the exporter.
-    pub name: NodeName,
+    pub name: NodeId,
     /// Configuration for control channel.
     pub control_channel: ControlChannelConfig,
     /// Configuration for input pdata channel.
@@ -76,7 +76,7 @@ impl ReceiverConfig {
     /// Creates a new receiver configuration with the given name and default channel capacity.
     pub fn new<T>(name: T) -> Self
     where
-        T: Into<NodeName>,
+        T: Into<NodeId>,
     {
         ReceiverConfig {
             name: name.into(),
@@ -95,7 +95,7 @@ impl ProcessorConfig {
     #[must_use]
     pub fn new<T>(name: T) -> Self
     where
-        T: Into<NodeName>,
+        T: Into<NodeId>,
     {
         ProcessorConfig {
             name: name.into(),
@@ -117,7 +117,7 @@ impl ExporterConfig {
     #[must_use]
     pub fn new<T>(name: T) -> Self
     where
-        T: Into<NodeName>,
+        T: Into<NodeId>,
     {
         ExporterConfig {
             name: name.into(),
