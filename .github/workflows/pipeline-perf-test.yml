@@ -5,8 +5,7 @@ permissions:
 on:
     push:
         branches: [ main ]
-    pull_request:
-        branches: [ main ]
+    workflow_dispatch:
 
 # Cancel in-progress runs on new commits to same PR
 concurrency:
@@ -15,7 +14,7 @@ concurrency:
 
 jobs:
     pipeline-perf-test:
-        runs-on: ubuntu-latest
+        runs-on: self-hosted
         steps:
         - name: Harden the runner (Audit all outbound calls)
           uses: step-security/harden-runner@c6295a65d1254861815972266d5933fd6e532bdf # v2.11.1
@@ -27,7 +26,7 @@ jobs:
         - name: Set up Python
           uses: actions/setup-python@7f4fc3e22c37d6ff65e88745f38bd3157c663f7c # v4.9.1
           with:
-            python-version: '3.9'
+            python-version: '3.13'
             cache: 'pip'
 
         - name: Install dependencies
@@ -46,10 +45,53 @@ jobs:
             cd tools/pipeline_perf_test
             python orchestrator/orchestrator.py --collector-config system_under_test/otel-collector/collector-config-with-batch-processor.yaml --duration 30 --results-dir ./results/batch-processor
 
-        - name: Upload performance test results
-          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        - name: Upload benchmark results for processing
+          uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
           with:
-            name: performance-test-results
-            path: tools/pipeline_perf_test/results/
+            name: benchmark-results-pipeline
+            path: tools/pipeline_perf_test/results/*/benchmark_*.json
 
+    update-benchmarks:
+        runs-on: ubuntu-24.04
+        needs: [pipeline-perf-test]
+        permissions:
+          # deployments permission to deploy GitHub pages website
+          deployments: write
+          # contents permission to update benchmark contents in gh-pages branch
+          contents: write
+        steps:
+          - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
+          - name: Download benchmark artifacts
+            uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+            with:
+              pattern: benchmark-results-*
+              merge-multiple: true
+              path: results
+
+          - name: Consolidate benchmark data
+            run: |
+              echo "Consolidating benchmark JSON files..."
+              find results -name "benchmark_*.json" -type f | while read file; do
+                echo "Processing: $file"
+                cat "$file"
+                echo
+              done
+
+              # Combine all benchmark JSON files into a single output (find them recursively)
+              find results -name "benchmark_*.json" -type f -exec cat {} \; | jq -s 'map(.[])' > output.json
+
+              echo "Consolidated benchmark data:"
+              cat output.json
+
+          - name: Update benchmark data and deploy to GitHub Pages
+            uses: benchmark-action/github-action-benchmark@d48d326b4ca9ba73ca0cd0d59f108f9e02a381c7 # v1
+            with:
+              tool: "customSmallerIsBetter"
+              output-file-path: output.json
+              gh-pages-branch: benchmarks
+              max-items-in-chart: 100
+              github-token: ${{ secrets.GITHUB_TOKEN }}
+              benchmark-data-dir-path: "docs/benchmarks/pipeline-perf"
+              auto-push: true
+              save-data-file: true

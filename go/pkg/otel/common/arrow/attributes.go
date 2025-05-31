@@ -313,6 +313,9 @@ func (c *Attributes32Accumulator) Reset() {
 
 func Equal(a, b *pcommon.Value) bool {
 	if a == nil || b == nil {
+		// TODO: in the future we may want to reconsider whether wo nil values
+		// are equal for purpose of delta encoding parent IDs.
+		// see https://github.com/open-telemetry/otel-arrow/issues/463
 		return false
 	}
 

@@ -40,6 +40,10 @@ tokio = { version = "1.43.0", features = ["rt", "time", "net", "io-util", "sync"
 name = "otlp_bytes"
 harness = false
 
+[[bench]]
+name = "materialize_parent_id"
+harness = false
+
 [dev-dependencies]
 rand = "0.9"
 nix = { version = "0.29.0", features = ["process", "signal"] }

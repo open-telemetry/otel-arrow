@@ -1,4 +1,4 @@
-"""Orchestrator is the primary entrypoint for pipeline perf test benchmarking.
+r"""Orchestrator is the primary entrypoint for pipeline perf test benchmarking.
 
 This script orchestrates performance testing for OpenTelemetry (OTel) pipelines by deploying test
 environments  either using Docker or Kubernetes. It sets up and manages test resources, executes
@@ -56,15 +56,18 @@ import time
 from datetime import datetime
 
 # This will get cleaned up when we refactor the test control flow, but for now just import lots of stuff.
-from lib.process.utils.docker import cleanup_docker_containers, build_docker_image, launch_container, get_docker_logs
+import docker
+from lib.process.utils.docker import VolumeMount, PortBinding, cleanup_docker_containers
+from lib.process.utils.docker import build_docker_image, launch_container, get_docker_logs, create_docker_network, delete_docker_network
 from lib.process.utils.kubernetes import create_k8s_namespace, deploy_kubernetes_resources, run_k8s_loadgen, setup_k8s_port_forwarding
-from lib.report.report import get_report_string, parse_logs_for_sent_count
+from lib.report.report import get_report_string, get_benchmark_json, parse_logs_for_sent_count
 
 def main():
     parser = argparse.ArgumentParser(description="Orchestrate OTel pipeline perf test")
     parser.add_argument("--duration", type=int, default=10, help="Duration to perform perf test in seconds")
     parser.add_argument("--keep-resources", action="store_true", help="Don't delete resources after test. Useful for debugging.")
     parser.add_argument("--results-dir", type=str, default="./results", help="Directory to store test results")
+    parser.add_argument("--log-cli-commands", action="store_true", help="Log the equivalent docker / kubetcl cli commands executed. Useful for debugging.")
 
     # Deployment target choice
     parser.add_argument("--deployment-target", type=str, choices=["docker", "kubernetes"], default="docker",
@@ -94,7 +97,6 @@ def main():
     os.makedirs(args.results_dir, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = os.path.join(args.results_dir, f"perf_results_{timestamp}.txt")
 
     # Initialize resources and counters
     network_created = False
@@ -110,69 +112,82 @@ def main():
     try:
         print("\nRunning perf tests...")
 
+        # Initialize image names
+        backend_image = "backend-service:latest"
+        loadgen_image = "otel-loadgen:latest"
+
+        docker_client = None
+        if not args.skip_backend_build or not args.skip_loadgen_build:
+            print("Building container images(s)...")
+            docker_client = docker.from_env()
+            # Build the backend Docker image if not skipped
+            if not args.skip_backend_build:
+                backend_image = build_docker_image(backend_image, "backend", docker_client, log_cli=args.log_cli_commands)
+            else:
+                print(f"Using existing backend image: {backend_image}")
+
+            # Build the loadgen Docker image if not skipped
+            if not args.skip_loadgen_build:
+                loadgen_image = build_docker_image(loadgen_image, "load_generator", docker_client, log_cli=args.log_cli_commands)
+            else:
+                print(f"Using existing loadgen image: {loadgen_image}")
+
         if args.deployment_target == "docker":
+            if not docker_client:
+                docker_client = docker.from_env()
             # Clean up any existing containers with the same names we'll use
-            cleanup_docker_containers(["backend-service", "otel-collector", "otel-loadgen"])
+            cleanup_docker_containers(["backend-service", "otel-collector", "otel-loadgen"], docker_client, log_cli=args.log_cli_commands)
 
             # Docker deployment flow
             # Create a Docker network for inter-container communication
             network = "perf-test-network"
-            try:
-                subprocess.run(["docker", "network", "create", network], check=True, capture_output=True)
-                print(f"Created Docker network: {network}")
-                network_created = True
-            except subprocess.CalledProcessError as e:
-                if "already exists" not in str(e.stderr):
-                    print(f"Error creating network: {e}")
-                    print(f"Error output: {e.stderr}")
-                    raise
-                print(f"Using existing Docker network: {network}")
+            network_created = create_docker_network(network, docker_client, log_cli=args.log_cli_commands)
 
-            # Build the backend Docker image if not skipped
-            backend_image = "backend-service:latest"
-            if not args.skip_backend_build:
-                backend_image = build_docker_image(backend_image, "backend")
-            else:
-                print(f"Using existing backend image: {backend_image}")
 
+            backend_ports = [
+                PortBinding(container_port=5317, host_port=5317),
+                PortBinding(container_port=5000, host_port=5000),
+            ]
             # Launch the backend service as a Docker container
             backend_process = launch_container(
                 image_name=backend_image,
                 container_name="backend-service",
-                ports={"5317": "5317", "5000": "5000"},
-                network=network
+                client=docker_client,
+                ports=backend_ports,
+                network=network,
+                log_cli=args.log_cli_commands
             )
 
             # Give it a moment to initialize
             time.sleep(2)
 
             # Prepare collector config mounting
-            collector_volumes = {}
             collector_cmd_args = []
             abs_config_path = os.path.abspath(args.collector_config)
             config_dir = os.path.dirname(abs_config_path)
             config_filename = os.path.basename(abs_config_path)
-            collector_volumes[config_dir] = "/etc/otel/config:ro"
+            collector_volumes = [VolumeMount(config_dir,"/etc/otel/config","ro")]
             collector_cmd_args = ["--config", f"/etc/otel/config/{config_filename}"]
 
+
+            collector_ports = [
+                PortBinding(container_port=4317, host_port=4317),
+            ]
             # Launch the collector
             collector_image = "otel/opentelemetry-collector:latest"
             target_process = launch_container(
                 image_name=collector_image,
                 container_name="otel-collector",
-                ports={"4317": "4317"},
+                client=docker_client,
+                ports=collector_ports,
                 network=network,
-                volumes=collector_volumes,
-                command_args=collector_cmd_args
+                volume_mounts=collector_volumes,
+                command_args=collector_cmd_args,
+                log_cli=args.log_cli_commands
             )
 
             # Give it a moment to initialize
             time.sleep(2)
-
-            # Build the loadgen Docker image if not skipped
-            loadgen_image = "otel-loadgen:latest"
-            if not args.skip_loadgen_build:
-                loadgen_image = build_docker_image(loadgen_image, "load_generator")
 
             # Run the load generator using Docker
             print("Starting load generator using Docker...")
@@ -182,9 +197,11 @@ def main():
             loadgen_process = launch_container(
                 image_name=loadgen_image,
                 container_name="otel-loadgen",
+                client=docker_client,
                 network=network,
                 environment=loadgen_env,
-                command_args=["--duration", str(args.duration)]
+                command_args=["--duration", str(args.duration)],
+                log_cli=args.log_cli_commands
             )
 
             # Start monitoring once the load generator is built and launched
@@ -194,39 +211,29 @@ def main():
             # Wait for the loadgen container to finish (it runs for the specified duration)
             print(f"Waiting for load generator to finish (running for {args.duration}s)...")
 
-            try:
-                # Let the load run for the specified duration
-                time.sleep(args.duration)
-                # Stop monitoring immediately to avoid recording idle stats.
-                # Eventually this should be based on active signaling that the test load is done rather than timers.
-                target_process.stop_monitoring()
-                # Add 5 seconds buffer
-                time.sleep(5)
-                target_process_stats = target_process.get_stats()
+            # Let the load run for the specified duration
+            time.sleep(args.duration)
+            # Stop monitoring immediately to avoid recording idle stats.
+            # Eventually this should be based on active signaling that the test load is done rather than timers.
+            target_process.stop_monitoring()
+            # Add 5 seconds buffer
+            time.sleep(5)
+            target_process_stats = target_process.get_stats()
 
-                # Get logs from the container (which should have finished by now)
-                print("Getting logs from load generator container...")
-                logs = get_docker_logs(loadgen_process.container_id)
+            # Get logs from the container (which should have finished by now)
+            print("Getting logs from load generator container...")
+            logs = get_docker_logs(loadgen_process.container_id, docker_client, log_cli=args.log_cli_commands)
 
-                # Parse the output to extract logs sent count and failed count
-                logs_sent_count, logs_failed_count = parse_logs_for_sent_count(logs)
+            # Parse the output to extract logs sent count and failed count
+            logs_sent_count, logs_failed_count = parse_logs_for_sent_count(logs)
 
-                if logs_sent_count > 0:
-                    print(f"Load generator completed. Sent {logs_sent_count} logs, Failed {logs_failed_count} logs")
-
-            except subprocess.CalledProcessError as e:
-                print(f"Error getting logs from load generator container: {e}")
+            if logs_sent_count > 0:
+                print(f"Load generator completed. Sent {logs_sent_count} logs, Failed {logs_failed_count} logs")
+            else:
                 logs_sent_count = -1
                 logs_failed_count = 0
 
         else:
-            # Build the backend Docker image if not skipped
-            backend_image = "backend-service:latest"
-            if not args.skip_backend_build:
-                backend_image = build_docker_image(backend_image, "backend")
-            else:
-                print(f"Using existing backend image: {backend_image}")
-
             # Create namespace if it doesn't exist
             if not create_k8s_namespace(args.k8s_namespace):
                 print("Failed to create or confirm Kubernetes namespace. Exiting.")
@@ -274,7 +281,7 @@ def main():
                 args.k8s_namespace,
                 args.duration,
                 k8s_collector_resource,
-                args.skip_loadgen_build
+                loadgen_image
             )
 
             target_process_stats = k8s_collector_resource.get_stats()
@@ -291,19 +298,21 @@ def main():
             )
         )
 
-        # # Write results to file
-        with open(results_file, "w") as f:
+        # Write benchmark result to file in a JSON
+        # format expected by GitHub Action Benchmark
+        benchmark_file = os.path.join(args.results_dir, f"benchmark_{timestamp}.json")
+        with open(benchmark_file, "w") as f:
             f.write(
-            get_report_string(
+            get_benchmark_json(
                 timestamp,
                 args,
                 logs_failed_count,
                 logs_sent_count,
                 target_process_stats
             )
-        )
+            )
 
-        print(f"Test completed. Results saved to {results_file}")
+        print(f"Test completed. Benchmark data saved to {benchmark_file}")
 
     finally:
         if not args.keep_resources:
@@ -317,10 +326,7 @@ def main():
                 if loadgen_process:
                     loadgen_process.shutdown()
                 if network_created:
-                    try:
-                        subprocess.run(["docker", "network", "rm", "perf-test-network"], check=True, capture_output=True)
-                    except subprocess.CalledProcessError as e:
-                        print(f"Error removing Docker network: {e}")
+                    delete_docker_network(network, docker_client)
             else:
                 # Cleanup Kubernetes resources
                 # First terminate port forwarding if it's active

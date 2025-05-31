@@ -19,9 +19,10 @@
 pub(crate) mod arrays;
 mod decode;
 mod error;
-mod otlp;
+pub mod otap;
+pub mod otlp;
 #[allow(dead_code)]
-mod schema;
+pub mod schema;
 #[cfg(test)]
 mod test_util;
 #[cfg(test)]
