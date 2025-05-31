@@ -113,8 +113,7 @@ impl PipelineDag {
         let prev = self.nodes.insert(id.to_owned(), node);
         if prev.is_some() {
             return Err(Error::DuplicateNode {
-                tenant_id: None,
-                pipeline_id: None,
+                context: Default::default(),
                 node_id: Cow::Owned(id.to_string()),
             });
         }

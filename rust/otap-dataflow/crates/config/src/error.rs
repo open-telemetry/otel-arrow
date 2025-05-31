@@ -2,6 +2,7 @@
 
 //! Errors for the config crate.
 
+use std::fmt::Display;
 use crate::node::DispatchStrategy;
 use crate::{NodeId, PipelineId, PortName, TenantId};
 
@@ -19,25 +20,21 @@ pub enum Error {
     },
 
     /// An error that occurred while reading a configuration file.
-    #[error("File read error: {details}\nTenant: {tenant_id:?}, Pipeline: {pipeline_id:?}")]
+    #[error("File read error: {details}\nContext: {context}")]
     FileReadError {
-        /// The tenant id, if applicable.
-        tenant_id: Option<TenantId>,
-        /// The pipeline id, if applicable.
-        pipeline_id: Option<PipelineId>,
+        /// The context in which the error occurred.
+        context: Context,
         /// A description of the error that occurred.
         details: String,
     },
 
     /// An error that occurred while deserializing a configuration file.
     #[error(
-        "{format} deserialization error: {details}\nTenant: {tenant_id:?}, Pipeline: {pipeline_id:?}"
+        "{format} deserialization error: {details}\nContext: {context}"
     )]
     DeserializationError {
-        /// The tenant id, if applicable.
-        tenant_id: Option<TenantId>,
-        /// The pipeline id, if applicable.
-        pipeline_id: Option<PipelineId>,
+        /// The context in which the error occurred.
+        context: Context,
         /// The format of the configuration file (e.g. "JSON").
         format: String,
         /// A description of the error that occurred.
@@ -46,37 +43,31 @@ pub enum Error {
 
     /// A cycle was detected in the pipeline configuration.
     #[error(
-        "Cycle detected involving nodes: {nodes:?}\nTenant: {tenant_id:?}, Pipeline: {pipeline_id:?}"
+        "Cycle detected involving nodes: {nodes:?}\nContext: {context}"
     )]
     CycleDetected {
-        /// The tenant id, if applicable.
-        tenant_id: Option<TenantId>,
-        /// The pipeline id, if applicable.
-        pipeline_id: Option<PipelineId>,
+        /// The context in which the error occurred.
+        context: Context,
         /// The nodes involved in the cycle.
         nodes: Vec<NodeId>,
     },
 
     /// A node with the same id already exists in the pipeline.
-    #[error("Duplicated node id `{node_id}`\nTenant: {tenant_id:?}, Pipeline: {pipeline_id:?}")]
+    #[error("Duplicated node id `{node_id}`\nContext: {context}")]
     DuplicateNode {
-        /// The tenant id, if applicable.
-        tenant_id: Option<TenantId>,
-        /// The pipeline id, if applicable.
-        pipeline_id: Option<PipelineId>,
+        /// The context in which the error occurred.
+        context: Context,
         /// The id of the node that was duplicated.
         node_id: NodeId,
     },
 
     /// The same out‐port was connected more than once on a single node.
     #[error(
-        "The same out-port `{port}` was connected more than once on the node `{source_node}`\nTenant: {tenant_id:?}, Pipeline: {pipeline_id:?}"
+        "The same out-port `{port}` was connected more than once on the node `{source_node}`\nContext: {context}"
     )]
     DuplicateOutPort {
-        /// The tenant id, if applicable.
-        tenant_id: Option<TenantId>,
-        /// The pipeline id, if applicable.
-        pipeline_id: Option<PipelineId>,
+        /// The context in which the error occurred.
+        context: Context,
         /// The node on which the port was duplicated.
         source_node: NodeId,
         /// The port name that was used twice.
@@ -85,13 +76,11 @@ pub enum Error {
 
     /// An edge was specified with a source node or target nodes that do not exist in the pipeline.
     #[error(
-        "Invalid hyper-edge specification: {source_node} -> {target_nodes:?}\nTenant: {tenant_id:?}, Pipeline: {pipeline_id:?}"
+        "Invalid hyper-edge specification: {source_node} -> {target_nodes:?}\nContext: {context}"
     )]
     InvalidHyperEdgeSpec {
-        /// The tenant id, if applicable.
-        tenant_id: Option<TenantId>,
-        /// The pipeline id, if applicable.
-        pipeline_id: Option<PipelineId>,
+        /// The context in which the error occurred.
+        context: Context,
 
         /// The source node of the hyper-edge.
         source_node: NodeId,
@@ -105,3 +94,34 @@ pub enum Error {
         missing_targets: Vec<NodeId>,
     },
 }
+
+/// Information that all errors provide to help identify
+/// the context in which they occurred.
+#[derive(Debug, Default)]
+pub struct Context {
+    /// The tenant id, if applicable.
+    pub tenant_id: Option<TenantId>,
+    /// The pipeline id, if applicable.
+    pub pipeline_id: Option<PipelineId>,
+}
+
+impl Context {
+    /// Creates a new context with the given tenant and pipeline ids.
+    pub fn new(tenant_id: TenantId, pipeline_id: PipelineId) -> Self {
+        Self {
+            tenant_id: Some(tenant_id),
+            pipeline_id: Some(pipeline_id),
+        }
+    }
+}
+
+impl Display for Context {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(tenant_id) = &self.tenant_id {
+            write!(f, "Tenant: '{tenant_id}'")?;
+        }
+        if let Some(pipeline_id) = &self.pipeline_id {
+            write!(f, " Pipeline: '{pipeline_id}'")?;
+        }
+        Ok(())
+    }}

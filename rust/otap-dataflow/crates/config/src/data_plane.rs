@@ -25,8 +25,7 @@ impl DataPlaneSpec {
     pub fn from_json(json: &str) -> Result<Self, Error> {
         let spec: DataPlaneSpec =
             serde_json::from_str(json).map_err(|e| Error::DeserializationError {
-                tenant_id: None,
-                pipeline_id: None,
+                context: Default::default(),
                 format: "JSON".to_string(),
                 details: e.to_string(),
             })?;

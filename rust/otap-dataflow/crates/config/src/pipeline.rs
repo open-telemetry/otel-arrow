@@ -2,7 +2,7 @@
 
 //! Pipeline configuration specification.
 
-use crate::error::Error;
+use crate::error::{Context, Error};
 use crate::node::{DispatchStrategy, HyperEdgeSpec, NodeKind, NodeSpec};
 use crate::{Description, NodeId, PipelineId, PortName, TenantId};
 use schemars::JsonSchema;
@@ -69,8 +69,7 @@ impl PipelineSpec {
     ) -> Result<Self, Error> {
         let spec: PipelineSpec =
             serde_json::from_str(json_str).map_err(|e| Error::DeserializationError {
-                tenant_id: Some(tenant_id.clone()),
-                pipeline_id: Some(pipeline_id.clone()),
+                context: Context::new(tenant_id.clone(), pipeline_id.clone()),
                 format: "JSON".to_string(),
                 details: e.to_string(),
             })?;
@@ -86,8 +85,7 @@ impl PipelineSpec {
         path: P,
     ) -> Result<Self, Error> {
         let contents = std::fs::read_to_string(path).map_err(|e| Error::FileReadError {
-            tenant_id: Some(tenant_id.clone()),
-            pipeline_id: Some(pipeline_id.clone()),
+            context: Context::new(tenant_id.clone(), pipeline_id.clone()),
             details: e.to_string(),
         })?;
         Self::from_json(tenant_id, pipeline_id, &contents)
@@ -116,8 +114,7 @@ impl PipelineSpec {
 
                 if !missing_targets.is_empty() {
                     errors.push(Error::InvalidHyperEdgeSpec {
-                        tenant_id: Some(tenant_id.clone()),
-                        pipeline_id: Some(pipeline_id.clone()),
+                        context: Context::new(tenant_id.clone(), pipeline_id.clone()),
                         source_node: node_id.clone(),
                         target_nodes: edge.targets.iter().cloned().collect(),
                         dispatch_strategy: edge.dispatch_strategy.clone(),
@@ -133,8 +130,7 @@ impl PipelineSpec {
             let cycles = self.detect_cycles();
             for cycle in cycles {
                 errors.push(Error::CycleDetected {
-                    tenant_id: Some(tenant_id.clone()),
-                    pipeline_id: Some(pipeline_id.clone()),
+                    context: Context::new(tenant_id.clone(), pipeline_id.clone()),
                     nodes: cycle,
                 });
             }
@@ -368,8 +364,7 @@ impl PipelineBuilder {
         // Report duplicated nodes
         for node_id in &self.duplicate_nodes {
             errors.push(Error::DuplicateNode {
-                tenant_id: Some(tenant_id.clone()),
-                pipeline_id: Some(pipeline_id.clone()),
+                context: Context::new(tenant_id.clone(), pipeline_id.clone()),
                 node_id: node_id.clone(),
             });
         }
@@ -381,8 +376,7 @@ impl PipelineBuilder {
                 let key = (conn.src.clone(), conn.out_port.clone());
                 if !seen_ports.insert(key.clone()) {
                     errors.push(Error::DuplicateOutPort {
-                        tenant_id: Some(tenant_id.clone()),
-                        pipeline_id: Some(pipeline_id.clone()),
+                        context: Context::new(tenant_id.clone(), pipeline_id.clone()),
                         source_node: conn.src.clone(),
                         port: conn.out_port.clone(),
                     });
@@ -411,8 +405,7 @@ impl PipelineBuilder {
             // if anything is missing, record as InvalidHyperEdgeSpec
             if !src_exists || !missing.is_empty() {
                 errors.push(Error::InvalidHyperEdgeSpec {
-                    tenant_id: Some(tenant_id.clone()),
-                    pipeline_id: Some(pipeline_id.clone()),
+                    context: Context::new(tenant_id.clone(), pipeline_id.clone()),
                     source_node: conn.src.clone(),
                     target_nodes: conn.targets.iter().cloned().collect(),
                     dispatch_strategy: conn.strategy,
