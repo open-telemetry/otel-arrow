@@ -23,14 +23,8 @@ impl NullableArrayAccessor for SpanStatusArrays<'_> {
         if !self.status.is_valid(idx) {
             return None;
         }
-
         let code = self.code.value_at_or_default(idx);
-        let message = self
-            .message
-            .as_ref()
-            .map(|arr| arr.value_at_or_default(idx))
-            .unwrap_or_default();
-
+        let message = self.message.value_at_or_default(idx);
         Some(Status { code, message })
     }
 }
