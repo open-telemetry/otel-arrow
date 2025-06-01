@@ -16,5 +16,6 @@
 pub mod attributes;
 pub mod logs;
 pub mod metrics;
+pub mod traces;
 
 mod common;

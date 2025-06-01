@@ -224,4 +224,23 @@ pub enum Error {
         #[snafu(implicit)]
         location: Location,
     },
+
+    #[snafu(display("Found duplicate field name: {}", name))]
+    DuplicateFieldName {
+        name: String,
+        #[snafu(implicit)]
+        location: Location,
+    },
+
+    #[snafu(display(
+        "Invalid byte slice for ID, expect len: {} ,given len: {}",
+        expected,
+        given
+    ))]
+    InvalidId {
+        expected: usize,
+        given: usize,
+        #[snafu(implicit)]
+        location: Location,
+    },
 }

@@ -25,12 +25,16 @@ use super::tcp_stream::ShutdownableTcpListenerStream;
 use std::pin::Pin;
 use tokio_stream::Stream;
 use tonic::transport::Server;
-use tonic::{Request, Response, Status};
+use tonic::{Request, Response, Status, Streaming};
 
 use super::error;
+use crate::proto::opentelemetry::arrow::v1::arrow_traces_service_server::ArrowTracesService;
 use snafu::ResultExt;
 
 const OTAP_PROTOCOL_NAME: &str = "otelarrow"; // matches the exporter and receiver name
+
+type ArrowServiceResponseStream =
+    Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>;
 
 /// OTAP metrics service type for testing the OTAP-to-OTLP conversion
 /// for metrics in this crate.
@@ -54,12 +58,11 @@ impl OTAPMetricsAdapter {
 
 #[tonic::async_trait]
 impl ArrowMetricsService for OTAPMetricsAdapter {
-    type ArrowMetricsStream =
-        Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>;
+    type ArrowMetricsStream = ArrowServiceResponseStream;
 
     async fn arrow_metrics(
         &self,
-        request: Request<tonic::Streaming<BatchArrowRecords>>,
+        request: Request<Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowMetricsStream>, Status> {
         let mut input_stream = request.into_inner();
         let receiver = self.receiver.clone();
@@ -178,11 +181,10 @@ impl OTAPLogsAdapter {
 
 #[tonic::async_trait]
 impl ArrowLogsService for OTAPLogsAdapter {
-    type ArrowLogsStream =
-        Pin<Box<dyn Stream<Item = Result<BatchStatus, Status>> + Send + 'static>>;
+    type ArrowLogsStream = ArrowServiceResponseStream;
     async fn arrow_logs(
         &self,
-        request: Request<tonic::Streaming<BatchArrowRecords>>,
+        request: Request<Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowLogsStream>, Status> {
         let mut input_stream = request.into_inner();
         let receiver = self.receiver.clone();
@@ -254,6 +256,20 @@ impl ServiceOutputType for OTAPLogsOutputType {
                 .await
                 .context(error::TonicTransportSnafu)
         })
+    }
+}
+
+pub struct OTAPTracesAdapter {}
+
+#[tonic::async_trait]
+impl ArrowTracesService for OTAPTracesAdapter {
+    type ArrowTracesStream = ArrowServiceResponseStream;
+
+    async fn arrow_traces(
+        &self,
+        request: Request<Streaming<BatchArrowRecords>>,
+    ) -> Result<Response<Self::ArrowTracesStream>, Status> {
+        todo!()
     }
 }
 
