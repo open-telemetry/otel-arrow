@@ -3,8 +3,36 @@
 
 use std::ops::Add;
 
+/// A delta decoder that accumulates values for the same key and resets when the key changes.
+///
+/// This decoder is used in OpenTelemetry Arrow format processing where delta-encoded values
+/// need to be accumulated within the same logical group (identified by a key) but reset
+/// when moving to a different group.
+///
+/// # Type Parameters
+///
+/// * `K` - The key type that must implement `Eq` and `Clone` for comparison and storage
+/// * `V` - The value type that must implement `Add` and `Copy` for accumulation
+///
+/// # Examples
+///
+/// ```
+/// use crate::otlp::traces::delta_decoder::DeltaDecoder;
+///
+/// let mut decoder = DeltaDecoder::new();
+///
+/// // First value for key "span1"
+/// assert_eq!(decoder.decode(&"span1".to_string(), 10), 10);
+///
+/// // Second value for same key - accumulates
+/// assert_eq!(decoder.decode(&"span1".to_string(), 5), 15);
+///
+/// // Different key - resets accumulation
+/// assert_eq!(decoder.decode(&"span2".to_string(), 20), 20);
+/// ```
 #[derive(Default)]
 pub struct DeltaDecoder<K, V> {
+    /// Stores the previous key-value pair for comparison and accumulation
     prev_key_value: Option<(K, V)>,
 }
 
@@ -13,25 +41,68 @@ where
     K: Eq + Clone,
     V: Add<Output = V> + Copy,
 {
+    /// Creates a new `DeltaDecoder` instance.
     pub(crate) fn new() -> Self {
         Self {
             prev_key_value: None,
         }
     }
-    pub(crate) fn decode(&mut self, key: &K, value: V) -> V {
-        let Some((prev_key, prev_value)) = std::mem::take(&mut self.prev_key_value) else {
-            self.prev_key_value = Some((key.clone(), value));
-            return value;
-        };
 
-        if &prev_key == key {
-            let value = prev_value.add(value);
-            self.prev_key_value = Some((prev_key, value));
-            value
-        } else {
-            // new key, reset value.
-            self.prev_key_value = Some((key.clone(), value));
-            value
+    /// Decodes a delta value by accumulating it with previous values for the same key.
+    ///
+    /// This method implements the core delta decoding logic:
+    /// - If this is the first call or the key is different from the previous key,
+    ///   the delta value is returned as-is and becomes the new baseline
+    /// - If the key matches the previous key, the delta value is added to the
+    ///   accumulated value and the new total is returned
+    ///
+    /// # Parameters
+    ///
+    /// * `key` - A reference to the key that identifies the logical group
+    /// * `delta_value` - The delta value to be decoded/accumulated
+    ///
+    /// # Returns
+    ///
+    /// The accumulated value for the given key. For the first occurrence of a key,
+    /// this will be the delta value itself. For subsequent occurrences of the same
+    /// key, this will be the sum of all delta values seen for that key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut decoder = DeltaDecoder::new();
+    ///
+    /// // First decode - returns delta value as baseline
+    /// assert_eq!(decoder.decode(&"key1", 100), 100);
+    ///
+    /// // Same key - accumulates delta
+    /// assert_eq!(decoder.decode(&"key1", 50), 150);
+    ///
+    /// // Different key - resets and starts new accumulation
+    /// assert_eq!(decoder.decode(&"key2", 200), 200);
+    ///
+    /// // Back to first key - resets (doesn't remember previous accumulation)
+    /// assert_eq!(decoder.decode(&"key1", 75), 75);
+    /// ```
+    pub(crate) fn decode(&mut self, key: &K, delta_value: V) -> V {
+        match &mut self.prev_key_value {
+            None => {
+                // First decode - store the key and return the initial value
+                self.prev_key_value = Some((key.clone(), delta_value));
+                delta_value
+            }
+            Some((prev_key, prev_accumulated_value)) => {
+                if prev_key == key {
+                    // Same key - accumulate the delta with previous value, no need to clone
+                    *prev_accumulated_value = *prev_accumulated_value + delta_value;
+                    *prev_accumulated_value
+                } else {
+                    // Different key - reset accumulation and start fresh
+                    *prev_key = key.clone();
+                    *prev_accumulated_value = delta_value;
+                    delta_value
+                }
+            }
         }
     }
 }

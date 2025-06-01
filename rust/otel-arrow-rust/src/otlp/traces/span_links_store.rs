@@ -25,6 +25,34 @@ impl SpanLinksStore {
     }
 }
 
+/// Creates a `SpanLinksStore` from an Arrow RecordBatch containing span link data.
+///
+/// This function processes a RecordBatch where each row represents a span link, extracting:
+/// - Parent span ID (decoded using delta encoding)
+/// - Linked span's trace ID and span ID  
+/// - Trace state
+/// - Dropped attributes count
+/// - Any associated attributes (if an Attribute32Store is provided)
+///
+/// The links are grouped by their parent span ID in the resulting store for efficient lookup.
+///
+/// # Parameters
+/// - `rb`: The RecordBatch containing span link data with expected schema:
+///   - ID (UInt32): Optional attribute ID
+///   - TRACE_ID (FixedSizeBinary[16]): Trace ID of linked span
+///   - PARENT_ID (UInt16): Delta-encoded parent span ID  
+///   - SPAN_ID (FixedSizeBinary[8]): Span ID of linked span
+///   - TRACE_STATE (String): Trace state string
+///   - DROPPED_ATTRIBUTES_COUNT (UInt32): Count of dropped attributes
+/// - `attr_store`: Optional mutable reference to an Attribute32Store for looking up attributes
+///
+/// # Returns
+/// - `Result<SpanLinksStore>`: Contains all span links grouped by parent span ID
+///
+/// # Errors
+/// Returns an error if:
+/// - Required columns are missing or have wrong data types
+/// - Delta decoding fails
 pub fn span_links_store_from_record_batch(
     rb: &RecordBatch,
     attr_store: Option<&mut Attribute32Store>,

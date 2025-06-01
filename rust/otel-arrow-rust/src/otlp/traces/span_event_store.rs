@@ -42,32 +42,6 @@ impl SpanEventsStore {
 /// # Returns
 /// Returns a `SpanEventsStore` containing all events grouped by parent span ID,
 /// or an error if the RecordBatch cannot be processed.
-///
-/// # Example
-/// ```
-/// use arrow::array::{RecordBatch, UInt32Array, StringArray, UInt16Array, TimestampNanosecondArray};
-/// use arrow::datatypes::{DataType, Field, Schema};
-/// use std::sync::Arc;
-///
-/// let schema = Arc::new(Schema::new(vec![
-///     Field::new("id", DataType::UInt32, true),
-///     Field::new("name", DataType::Utf8, true),
-///     Field::new("parent_id", DataType::UInt16, true),
-///     Field::new("time_unix_nano", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
-/// ]));
-///
-/// let batch = RecordBatch::try_new(
-///     schema,
-///     vec![
-///         Arc::new(UInt32Array::from(vec![1])),
-///         Arc::new(StringArray::from(vec!["event1"])),
-///         Arc::new(UInt16Array::from(vec![10])),
-///         Arc::new(TimestampNanosecondArray::from(vec![1000000000])),
-///     ],
-/// ).unwrap();
-///
-/// let store = span_events_store_from_record_batch(&batch, None).unwrap();
-/// ```
 pub fn span_events_store_from_record_batch(
     rb: &RecordBatch,
     attrs_store: Option<&mut Attribute32Store>,
