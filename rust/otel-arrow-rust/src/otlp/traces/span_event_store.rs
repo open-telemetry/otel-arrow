@@ -25,6 +25,49 @@ impl SpanEventsStore {
     }
 }
 
+/// Creates a `SpanEventsStore` from an Arrow RecordBatch containing span event data.
+///
+/// This function processes a RecordBatch containing span event information and organizes
+/// the events into a `SpanEventsStore` where events are grouped by their parent span ID.
+///
+/// # Arguments
+/// * `rb` - The Arrow RecordBatch containing span event data. Expected columns:
+///   - `id`: Unique identifier for each event (optional)
+///   - `name`: Event name (optional)
+///   - `parent_id`: ID of the parent span (optional)
+///   - `time_unix_nano`: Timestamp in nanoseconds (optional)
+///   - `dropped_attributes_count`: Count of dropped attributes (optional)
+/// * `attrs_store` - Optional attribute store for looking up event attributes by ID
+///
+/// # Returns
+/// Returns a `SpanEventsStore` containing all events grouped by parent span ID,
+/// or an error if the RecordBatch cannot be processed.
+///
+/// # Example
+/// ```
+/// use arrow::array::{RecordBatch, UInt32Array, StringArray, UInt16Array, TimestampNanosecondArray};
+/// use arrow::datatypes::{DataType, Field, Schema};
+/// use std::sync::Arc;
+///
+/// let schema = Arc::new(Schema::new(vec![
+///     Field::new("id", DataType::UInt32, true),
+///     Field::new("name", DataType::Utf8, true),
+///     Field::new("parent_id", DataType::UInt16, true),
+///     Field::new("time_unix_nano", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+/// ]));
+///
+/// let batch = RecordBatch::try_new(
+///     schema,
+///     vec![
+///         Arc::new(UInt32Array::from(vec![1])),
+///         Arc::new(StringArray::from(vec!["event1"])),
+///         Arc::new(UInt16Array::from(vec![10])),
+///         Arc::new(TimestampNanosecondArray::from(vec![1000000000])),
+///     ],
+/// ).unwrap();
+///
+/// let store = span_events_store_from_record_batch(&batch, None).unwrap();
+/// ```
 pub fn span_events_store_from_record_batch(
     rb: &RecordBatch,
     attrs_store: Option<&mut Attribute32Store>,
