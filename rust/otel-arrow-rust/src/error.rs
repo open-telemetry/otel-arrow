@@ -180,6 +180,12 @@ pub enum Error {
         location: Location,
     },
 
+    #[snafu(display("Span record not found"))]
+    SpanRecordNotFound {
+        #[snafu(implicit)]
+        location: Location,
+    },
+
     #[snafu(display("Record batch is in unexpected state. reason: {}", reason))]
     UnexpectedRecordBatchState {
         reason: String,

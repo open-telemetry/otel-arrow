@@ -5,7 +5,7 @@ use related_data::RelatedData;
 use snafu::ensure;
 
 use crate::arrays::NullableArrayAccessor;
-use crate::error::{self, Result};
+use crate::error::{self, Result, SpanRecordNotFoundSnafu};
 use crate::otap::OtapBatch;
 use crate::otlp::common::{ResourceArrays, ScopeArrays};
 use crate::otlp::metrics::AppendAndGet;
@@ -33,7 +33,9 @@ pub fn traces_from(traces_otap_batch: OtapBatch) -> Result<ExportTraceServiceReq
     let mut res_id = 0;
     let mut scope_id = 0;
 
-    let rb = traces_otap_batch.get(ArrowPayloadType::Spans).unwrap();
+    let rb = traces_otap_batch
+        .get(ArrowPayloadType::Spans)
+        .ok_or(SpanRecordNotFoundSnafu.build())?;
 
     let mut related_data = RelatedData::try_from(&traces_otap_batch)?;
 

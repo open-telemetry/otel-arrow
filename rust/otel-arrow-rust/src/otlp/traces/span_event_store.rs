@@ -30,8 +30,8 @@ pub fn span_events_store_from_record_batch(
     attrs_store: Option<&mut Attribute32Store>,
 ) -> error::Result<SpanEventsStore> {
     let mut store = SpanEventsStore::default();
-    let mut span_event_accessor = SpanEventIDAccessor::try_new(rb, attrs_store)?;
-    while let Some(span_event) = span_event_accessor.next() {
+    let span_event_iterator = SpanEventIDIterator::try_new(rb, attrs_store)?;
+    for span_event in span_event_iterator {
         store
             .events_by_id
             .entry(span_event.parent_id)
@@ -41,7 +41,7 @@ pub fn span_events_store_from_record_batch(
     Ok(store)
 }
 
-struct SpanEventIDAccessor<'a> {
+struct SpanEventIDIterator<'a> {
     id: Option<&'a UInt32Array>,
     name: Option<StringArrayAccessor<'a>>,
     parent_id: Option<&'a UInt16Array>,
@@ -53,7 +53,7 @@ struct SpanEventIDAccessor<'a> {
     attr_store: Option<&'a mut Attribute32Store>,
 }
 
-impl<'a> SpanEventIDAccessor<'a> {
+impl<'a> SpanEventIDIterator<'a> {
     fn try_new(
         rb: &'a RecordBatch,
         attr_store: Option<&'a mut Attribute32Store>,
@@ -85,7 +85,7 @@ impl<'a> SpanEventIDAccessor<'a> {
     }
 }
 
-impl<'a> Iterator for SpanEventIDAccessor<'a> {
+impl Iterator for SpanEventIDIterator<'_> {
     type Item = SpanEvent;
 
     fn next(&mut self) -> Option<Self::Item> {

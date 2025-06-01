@@ -30,9 +30,9 @@ pub fn span_links_store_from_record_batch(
     attr_store: Option<&mut Attribute32Store>,
 ) -> error::Result<SpanLinksStore> {
     let mut store = SpanLinksStore::default();
-    let mut iterator = SpanLinkIterator::try_new(rb, attr_store)?;
+    let iterator = SpanLinkIterator::try_new(rb, attr_store)?;
 
-    while let Some(batch) = iterator.next() {
+    for batch in iterator {
         let link = batch?;
         store
             .links_by_id
@@ -56,7 +56,7 @@ struct SpanLinkIterator<'a> {
     num_rows: usize,
 }
 
-impl<'a> Iterator for SpanLinkIterator<'a> {
+impl Iterator for SpanLinkIterator<'_> {
     type Item = error::Result<SpanLink>;
 
     fn next(&mut self) -> Option<Self::Item> {

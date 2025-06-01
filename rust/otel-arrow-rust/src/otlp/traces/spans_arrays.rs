@@ -75,7 +75,7 @@ impl<'a> TryFrom<&'a RecordBatch> for SpansArrays<'a> {
         // fixme(v0y4g3r): this would be a mistake in go implementation when it encodes nano seconds into DurationMillisecondsArray.
         let duration_time_unix_nano = rb
             .column_by_name(consts::DURATION_TIME_UNIX_NANO)
-            .map(|arr| DurationMillisArrayAccessor::try_new(arr))
+            .map(DurationMillisArrayAccessor::try_new)
             .transpose()?;
         let dropped_attributes_count = get_u32_array_opt(rb, consts::DROPPED_ATTRIBUTES_COUNT)?;
         let dropped_events_count = get_u32_array_opt(rb, consts::DROPPED_EVENTS_COUNT)?;
