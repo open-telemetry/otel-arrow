@@ -1,16 +1,18 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::arrays::{NullableArrayAccessor, StringArrayAccessor, StructColumnAccessor};
+use crate::arrays::{
+    Int32ArrayAccessor, NullableArrayAccessor, StringArrayAccessor, StructColumnAccessor,
+};
 use crate::error;
 use crate::error::Error;
 use crate::proto::opentelemetry::trace::v1::Status;
 use crate::schema::consts;
-use arrow::array::{Array, Int32Array, StructArray};
+use arrow::array::{Array, StructArray};
 
 pub(crate) struct SpanStatusArrays<'a> {
     status: &'a StructArray,
-    code: Option<&'a Int32Array>,
+    code: Option<Int32ArrayAccessor<'a>>,
     message: Option<StringArrayAccessor<'a>>,
 }
 
@@ -22,10 +24,7 @@ impl NullableArrayAccessor for SpanStatusArrays<'_> {
             return None;
         }
 
-        let code = self
-            .code
-            .map(|arr| arr.value_at_or_default(idx))
-            .unwrap_or_default();
+        let code = self.code.value_at_or_default(idx);
         let message = self
             .message
             .as_ref()
@@ -43,7 +42,7 @@ impl<'a> TryFrom<&'a StructArray> for SpanStatusArrays<'a> {
         let column_accessor = StructColumnAccessor::new(status);
         Ok(Self {
             status,
-            code: column_accessor.primitive_column_op(consts::STATUS_CODE)?,
+            code: column_accessor.int32_column_op(consts::STATUS_CODE)?,
             message: column_accessor.string_column_op(consts::STATUS_MESSAGE)?,
         })
     }

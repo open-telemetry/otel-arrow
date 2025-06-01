@@ -26,7 +26,7 @@ pub enum Error {
     #[snafu(display("Cannot find column: {}", name))]
     ColumnNotFound { name: String, backtrace: Backtrace },
     #[snafu(display(
-        "Column {} data type mismatch, expect: {}, actual: {}",
+        "Column `{}` data type mismatch, expect: {}, actual: {}",
         name,
         expect,
         actual

@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::arrays::{
-    ByteArrayAccessor, StringArrayAccessor, get_timestamp_nanosecond_array_opt, get_u16_array,
-    get_u32_array_opt,
+    ByteArrayAccessor, DurationMillisArrayAccessor, StringArrayAccessor,
+    get_timestamp_nanosecond_array_opt, get_u16_array, get_u32_array_opt,
 };
 use crate::error;
 use crate::otlp::traces::spans_status_arrays::SpanStatusArrays;
@@ -23,7 +23,7 @@ pub(crate) struct SpansArrays<'a> {
     pub(crate) name: Option<StringArrayAccessor<'a>>,
     pub(crate) kind: Option<&'a Int32Array>,
     pub(crate) start_time_unix_nano: Option<&'a TimestampNanosecondArray>,
-    pub(crate) duration_time_unix_nano: Option<&'a TimestampNanosecondArray>,
+    pub(crate) duration_time_unix_nano: Option<DurationMillisArrayAccessor<'a>>,
     pub(crate) dropped_attributes_count: Option<&'a UInt32Array>,
     pub(crate) dropped_events_count: Option<&'a UInt32Array>,
     pub(crate) dropped_links_count: Option<&'a UInt32Array>,
@@ -72,8 +72,11 @@ impl<'a> TryFrom<&'a RecordBatch> for SpansArrays<'a> {
 
         let start_time_unix_nano =
             get_timestamp_nanosecond_array_opt(rb, consts::START_TIME_UNIX_NANO)?;
-        let duration_time_unix_nano =
-            get_timestamp_nanosecond_array_opt(rb, consts::DURATION_TIME_UNIX_NANO)?;
+        // fixme(v0y4g3r): this would be a mistake in go implementation when it encodes nano seconds into DurationMillisecondsArray.
+        let duration_time_unix_nano = rb
+            .column_by_name(consts::DURATION_TIME_UNIX_NANO)
+            .map(|arr| DurationMillisArrayAccessor::try_new(arr))
+            .transpose()?;
         let dropped_attributes_count = get_u32_array_opt(rb, consts::DROPPED_ATTRIBUTES_COUNT)?;
         let dropped_events_count = get_u32_array_opt(rb, consts::DROPPED_EVENTS_COUNT)?;
         let dropped_links_count = get_u32_array_opt(rb, consts::DROPPED_LINKS_COUNT)?;

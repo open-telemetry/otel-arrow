@@ -28,7 +28,10 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status, Streaming};
 
 use super::error;
-use crate::proto::opentelemetry::arrow::v1::arrow_traces_service_server::ArrowTracesService;
+use crate::proto::opentelemetry::arrow::v1::arrow_traces_service_server::{
+    ArrowTracesService, ArrowTracesServiceServer,
+};
+use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
 use snafu::ResultExt;
 
 const OTAP_PROTOCOL_NAME: &str = "otelarrow"; // matches the exporter and receiver name
@@ -259,7 +262,46 @@ impl ServiceOutputType for OTAPLogsOutputType {
     }
 }
 
-pub struct OTAPTracesAdapter {}
+#[derive(Debug)]
+#[cfg(test)]
+pub struct OTAPTracesOutputType;
+
+impl ServiceOutputType for OTAPTracesOutputType {
+    type Request = ExportTraceServiceRequest;
+    type Server = ArrowTracesServiceServer<OTAPTracesAdapter>;
+
+    fn signal() -> &'static str {
+        "traces"
+    }
+
+    fn protocol() -> &'static str {
+        OTAP_PROTOCOL_NAME
+    }
+
+    fn create_server(
+        receiver: TestReceiver<Self::Request>,
+        incoming: ShutdownableTcpListenerStream,
+    ) -> tokio::task::JoinHandle<error::Result<()>> {
+        tokio::spawn(async move {
+            let adapter = OTAPTracesAdapter::new(receiver);
+            Server::builder()
+                .add_service(ArrowTracesServiceServer::new(adapter))
+                .serve_with_incoming(incoming)
+                .await
+                .context(error::TonicTransportSnafu)
+        })
+    }
+}
+
+pub struct OTAPTracesAdapter {
+    receiver: TestReceiver<ExportTraceServiceRequest>,
+}
+
+impl OTAPTracesAdapter {
+    fn new(receiver: TestReceiver<ExportTraceServiceRequest>) -> Self {
+        Self { receiver }
+    }
+}
 
 #[tonic::async_trait]
 impl ArrowTracesService for OTAPTracesAdapter {
@@ -269,7 +311,49 @@ impl ArrowTracesService for OTAPTracesAdapter {
         &self,
         request: Request<Streaming<BatchArrowRecords>>,
     ) -> Result<Response<Self::ArrowTracesStream>, Status> {
-        todo!()
+        let mut input_stream = request.into_inner();
+        let receiver = self.receiver.clone();
+
+        let (tx, rx) = tokio::sync::mpsc::channel(100);
+
+        #[allow(clippy::let_underscore_future)]
+        let _ = tokio::spawn(async move {
+            let mut consumer = Consumer::default();
+            while let Ok(Some(mut batch)) = input_stream.message().await {
+                let status_result = match consumer.consume_traces_batches(&mut batch) {
+                    Ok(otlp_traces) => {
+                        let _ = receiver
+                            .process_export_request::<ExportTraceServiceRequest>(
+                                Request::new(otlp_traces),
+                                "traces",
+                            )
+                            .await
+                            .context(error::TonicStatusSnafu)
+                            .unwrap();
+
+                        (StatusCode::Ok, "Successfully processed".to_string())
+                    }
+                    Err(e) => (StatusCode::InvalidArgument, truncate_error(e.to_string())),
+                };
+
+                let tx_result = tx
+                    .send(Ok(BatchStatus {
+                        batch_id: batch.batch_id,
+                        status_code: status_result.0 as i32,
+                        status_message: status_result.1,
+                    }))
+                    .await;
+
+                if tx_result.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let output_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        Ok(Response::new(
+            Box::pin(output_stream) as Self::ArrowTracesStream
+        ))
     }
 }
 
