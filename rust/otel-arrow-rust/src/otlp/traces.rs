@@ -14,7 +14,6 @@ use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
 
 mod delta_decoder;
-mod event_sorter;
 mod related_data;
 mod span_event;
 mod span_event_store;
