@@ -2,10 +2,12 @@
 
 //! Implementation of the OTLP nodes (receiver, exporter, processor).
 
+use crate::grpc::OTLPData;
 use linkme::distributed_slice;
 use otap_df_engine::local::{LocalExporterFactory, LocalProcessorFactory, LocalReceiverFactory};
-use otap_df_engine::shared::{SharedExporterFactory, SharedProcessorFactory, SharedReceiverFactory};
-use crate::grpc::OTLPData;
+use otap_df_engine::shared::{
+    SharedExporterFactory, SharedProcessorFactory, SharedReceiverFactory,
+};
 
 /// compression formats
 pub mod compression;

@@ -6,6 +6,7 @@
 //! ToDo: Handle configuratin changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
+use crate::LOCAL_EXPORTERS;
 use crate::compression::CompressionMethod;
 use crate::grpc::OTLPData;
 use crate::proto::opentelemetry::collector::{
@@ -16,11 +17,10 @@ use crate::proto::opentelemetry::collector::{
 };
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use serde_json::Value;
 use otap_df_engine::error::Error;
-use otap_df_engine::local::{exporter as local, LocalExporterFactory};
+use otap_df_engine::local::{LocalExporterFactory, exporter as local};
 use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
-use crate::LOCAL_EXPORTERS;
+use serde_json::Value;
 
 /// Exporter that sends OTLP data via gRPC
 struct OTLPExporter {
@@ -46,7 +46,7 @@ impl OTLPExporter {
             compression_method,
         }
     }
-    
+
     /// Creates a new OTLPExporter from a configuration object
     #[must_use]
     pub fn from_config(_config: &Value) -> Self {
@@ -302,7 +302,7 @@ mod tests {
                 .add_service(mock_profiles_service)
                 .serve_with_incoming_shutdown(tcp_stream, async {
                     // Wait for the shutdown signal
-                    drop(shutdown_signal.await.ok())
+                    let _ = shutdown_signal.await;
                 })
                 .await
                 .expect("Test gRPC server has failed");

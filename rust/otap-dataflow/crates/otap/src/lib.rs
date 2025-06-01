@@ -3,10 +3,12 @@
 //! Implementation of the OTAP nodes (receiver, exporter, processor).
 //!
 
+use crate::grpc::OTAPData;
 use linkme::distributed_slice;
 use otap_df_engine::local::{LocalExporterFactory, LocalProcessorFactory, LocalReceiverFactory};
-use otap_df_engine::shared::{SharedExporterFactory, SharedProcessorFactory, SharedReceiverFactory};
-use crate::grpc::OTAPData;
+use otap_df_engine::shared::{
+    SharedExporterFactory, SharedProcessorFactory, SharedReceiverFactory,
+};
 
 /// gRPC service implementation
 pub mod grpc;

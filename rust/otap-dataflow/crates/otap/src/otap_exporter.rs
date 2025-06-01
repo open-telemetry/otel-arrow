@@ -6,6 +6,7 @@
 //! ToDo: Handle configuratin changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
+use crate::LOCAL_EXPORTERS;
 use crate::grpc::OTAPData;
 use crate::proto::opentelemetry::experimental::arrow::v1::{
     arrow_logs_service_client::ArrowLogsServiceClient,
@@ -15,12 +16,11 @@ use crate::proto::opentelemetry::experimental::arrow::v1::{
 use async_stream::stream;
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use serde_json::Value;
 use otap_df_engine::error::Error;
-use otap_df_engine::local::{exporter as local, LocalExporterFactory};
+use otap_df_engine::local::{LocalExporterFactory, exporter as local};
 use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
 use otap_df_otlp::compression::CompressionMethod;
-use crate::LOCAL_EXPORTERS;
+use serde_json::Value;
 
 /// Exporter that sends OTAP data via gRPC
 struct OTAPExporter {
@@ -297,13 +297,13 @@ mod tests {
                 ArrowMetricsServiceServer::new(ArrowMetricsServiceMock::new(sender.clone()));
             let mock_trace_service =
                 ArrowTracesServiceServer::new(ArrowTracesServiceMock::new(sender.clone()));
-            _ = Server::builder()
+            Server::builder()
                 .add_service(mock_logs_service)
                 .add_service(mock_metrics_service)
                 .add_service(mock_trace_service)
                 .serve_with_incoming_shutdown(tcp_stream, async {
                     // Wait for the shutdown signal
-                    drop(shutdown_signal.await.ok())
+                    let _ = shutdown_signal.await;
                 })
                 .await
                 .expect("Test gRPC server has failed");

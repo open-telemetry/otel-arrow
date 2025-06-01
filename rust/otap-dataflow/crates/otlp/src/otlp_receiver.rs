@@ -8,6 +8,7 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
+use crate::SHARED_RECEIVERS;
 use crate::compression::CompressionMethod;
 use crate::grpc::{
     LogsServiceImpl, MetricsServiceImpl, OTLPData, ProfilesServiceImpl, TraceServiceImpl,
@@ -19,15 +20,14 @@ use crate::proto::opentelemetry::collector::{
     trace::v1::trace_service_server::TraceServiceServer,
 };
 use async_trait::async_trait;
+use linkme::distributed_slice;
 use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
-use otap_df_engine::shared::{receiver as shared, SharedReceiverFactory};
-use std::net::SocketAddr;
-use linkme::distributed_slice;
+use otap_df_engine::shared::{SharedReceiverFactory, receiver as shared};
 use serde_json::Value;
+use std::net::SocketAddr;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
-use crate::SHARED_RECEIVERS;
 
 /// A Receiver that listens for OTLP messages
 pub struct OTLPReceiver {
@@ -150,19 +150,19 @@ mod tests {
     use crate::grpc::OTLPData;
     use crate::otlp_receiver::OTLPReceiver;
     use crate::proto::opentelemetry::collector::{
-        logs::v1::{logs_service_client::LogsServiceClient, ExportLogsServiceRequest},
-        metrics::v1::{metrics_service_client::MetricsServiceClient, ExportMetricsServiceRequest},
+        logs::v1::{ExportLogsServiceRequest, logs_service_client::LogsServiceClient},
+        metrics::v1::{ExportMetricsServiceRequest, metrics_service_client::MetricsServiceClient},
         profiles::v1development::{
-            profiles_service_client::ProfilesServiceClient, ExportProfilesServiceRequest,
+            ExportProfilesServiceRequest, profiles_service_client::ProfilesServiceClient,
         },
-        trace::v1::{trace_service_client::TraceServiceClient, ExportTraceServiceRequest},
+        trace::v1::{ExportTraceServiceRequest, trace_service_client::TraceServiceClient},
     };
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::receiver::{NotSendValidateContext, TestContext, TestRuntime};
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     /// Test closure that simulates a typical receiver scenario.
     fn scenario(

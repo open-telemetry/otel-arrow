@@ -8,6 +8,7 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
+use crate::SHARED_RECEIVERS;
 use crate::grpc::{
     ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OTAPData,
 };
@@ -17,16 +18,15 @@ use crate::proto::opentelemetry::experimental::arrow::v1::{
     arrow_traces_service_server::ArrowTracesServiceServer,
 };
 use async_trait::async_trait;
+use linkme::distributed_slice;
 use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
-use otap_df_engine::shared::{receiver as shared, SharedReceiverFactory};
+use otap_df_engine::shared::{SharedReceiverFactory, receiver as shared};
 use otap_df_otlp::compression::CompressionMethod;
-use std::net::SocketAddr;
-use linkme::distributed_slice;
 use serde_json::Value;
+use std::net::SocketAddr;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
-use crate::SHARED_RECEIVERS;
 
 /// A Receiver that listens for OTAP messages
 pub struct OTAPReceiver {
@@ -179,6 +179,7 @@ mod tests {
                     ArrowMetricsServiceClient::connect(grpc_endpoint.clone())
                         .await
                         .expect("Failed to connect to server from Metrics Service Client");
+                #[allow(tail_expr_drop_order)]
                 let metrics_stream = stream! {
                     for batch_id in 0..3 {
                         let metrics_records = create_batch_arrow_record(batch_id, ArrowPayloadType::MultivariateMetrics);
@@ -193,6 +194,7 @@ mod tests {
                 let mut arrow_logs_client = ArrowLogsServiceClient::connect(grpc_endpoint.clone())
                     .await
                     .expect("Failed to connect to server from Logs Service Client");
+                #[allow(tail_expr_drop_order)]
                 let logs_stream = stream! {
                     for batch_id in 0..3 {
                         let logs_records = create_batch_arrow_record(batch_id, ArrowPayloadType::Logs);
@@ -208,6 +210,7 @@ mod tests {
                     ArrowTracesServiceClient::connect(grpc_endpoint.clone())
                         .await
                         .expect("Failed to connect to server from Trace Service Client");
+                #[allow(tail_expr_drop_order)]
                 let traces_stream = stream! {
                     for batch_id in 0..3 {
                         let traces_records = create_batch_arrow_record(batch_id, ArrowPayloadType::Spans);
