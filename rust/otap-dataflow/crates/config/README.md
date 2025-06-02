@@ -35,6 +35,15 @@ This configuration model is intentionally simple and self-contained:
 The goal is to make the configuration as **predictable and transparent** as possible, reducing
 cognitive load and the risk of hidden or implicit behaviors.
 
+> **Advanced Configuration Layer**  
+> Support for advanced concepts such as references, inheritance, and templating is planned for a
+> dedicated configuration layer aimed at human authors.  
+> A translator/resolver will assemble these advanced, versionable configuration files into this more
+> self-contained, straightforward model for engine consumption.
+
+This configuration model is intended to be easily integrable with systems like **Kubernetes** as
+well as other environments.
+
 ## Compatibility & Translation
 
 This configuration model is intended to be a **superset of the current OTEL Go Collector
@@ -52,6 +61,9 @@ An API will be introduced to allow for **dynamic management** of configuration:
 
 - Add, update, get, and delete tenants
 - Add, update, get, and delete pipelines within tenants
-- Add, update, and delete nodes within pipelines
+- Add, update, get, and delete nodes within pipelines
 
 Every component of the configuration model will be addressable and manageable via this API.
+
+We are also exploring an **authorization framework** to manage access and permissions at the level
+of tenants, pipelines, and nodes.
