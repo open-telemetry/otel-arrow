@@ -17,6 +17,7 @@
 //! - support for acknowledgements and nack messages
 //! - handle periodically flushing batches after some time threshold
 //! - dynamic configuration updates
+//! 
 //! See the [GitHub issue](https://github.com/open-telemetry/otel-arrow/issues/399) for more details.
 
 use std::io::ErrorKind;
