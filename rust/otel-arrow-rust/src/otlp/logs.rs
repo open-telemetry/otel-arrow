@@ -270,22 +270,28 @@ pub fn logs_from(logs_otap_batch: OtapBatch) -> Result<ExportLogsServiceRequest>
             logs_arrays.observed_time_unix_nano.value_at_or_default(idx) as u64;
 
         if let Some(trace_id_bytes) = logs_arrays.trace_id.value_at(idx) {
-            ensure!(trace_id_bytes.len() == 16, error::InvalidTraceIdSnafu {
-                message: format!(
-                    "log_id = {}, index = {}, trace_id = {:?}",
-                    log_id, idx, trace_id_bytes
-                ),
-            });
+            ensure!(
+                trace_id_bytes.len() == 16,
+                error::InvalidTraceIdSnafu {
+                    message: format!(
+                        "log_id = {}, index = {}, trace_id = {:?}",
+                        log_id, idx, trace_id_bytes
+                    ),
+                }
+            );
             current_log_record.trace_id = trace_id_bytes
         }
 
         if let Some(span_id_bytes) = logs_arrays.span_id.value_at(idx) {
-            ensure!(span_id_bytes.len() == 8, error::InvalidSpanIdSnafu {
-                message: format!(
-                    "log_id = {}, index = {}, span_id = {:?}",
-                    log_id, idx, span_id_bytes
-                ),
-            });
+            ensure!(
+                span_id_bytes.len() == 8,
+                error::InvalidSpanIdSnafu {
+                    message: format!(
+                        "log_id = {}, index = {}, span_id = {:?}",
+                        log_id, idx, span_id_bytes
+                    ),
+                }
+            );
             current_log_record.span_id = span_id_bytes;
         }
 

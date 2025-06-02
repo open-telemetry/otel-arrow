@@ -74,15 +74,21 @@ impl ExemplarsStore {
             current_exemplar.time_unix_nano = time_unix_nano as u64;
 
             let span_id_bytes = span_id_arr.value_at_or_default(idx);
-            ensure!(span_id_bytes.len() == 8, error::InvalidSpanIdSnafu {
-                message: format!("rb: {:?}", rb),
-            });
+            ensure!(
+                span_id_bytes.len() == 8,
+                error::InvalidSpanIdSnafu {
+                    message: format!("rb: {:?}", rb),
+                }
+            );
             current_exemplar.span_id = span_id_bytes;
 
             let trace_id_bytes = trace_id_arr.value_at_or_default(idx);
-            ensure!(trace_id_bytes.len() == 16, error::InvalidTraceIdSnafu {
-                message: format!("rb: {:?}", rb),
-            });
+            ensure!(
+                trace_id_bytes.len() == 16,
+                error::InvalidTraceIdSnafu {
+                    message: format!("rb: {:?}", rb),
+                }
+            );
             current_exemplar.trace_id = trace_id_bytes;
 
             match (int_value, double_value) {
