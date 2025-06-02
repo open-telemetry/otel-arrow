@@ -18,7 +18,9 @@ otap-df-otap = { path = "../otap" }
 self-meter = "0.6.0"
 byte-unit = "4"
 serde = {version="1", features=["derive"]}
-serde_yaml = "0.8"
 thiserror = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true }
+
+[dev-dependencies]
+portpicker = "0.1.1"

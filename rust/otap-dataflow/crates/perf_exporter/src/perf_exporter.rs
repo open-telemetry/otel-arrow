@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Implementation of the OTLP exporter node
+//! Implementation of the Perf exporter node
 //!
-//! ToDo: Handle Ack and Nack messages in the pipeline
-//! ToDo: Handle configuratin changes
+//! ToDo: Handle configuration changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
+use crate::config::Config;
 use async_trait::async_trait;
 use byte_unit::Byte;
 use otap_df_engine::error::Error;
@@ -15,81 +15,33 @@ use otap_df_otap::proto::opentelemetry::experimental::arrow::v1::{
     ArrowPayloadType, BatchArrowRecords,
 };
 use self_meter::{Meter, Report, ThreadReport};
-use serde::Deserialize;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::time::Instant;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
+use tokio::time::{Duration, Instant};
 
-#[derive(Debug, Deserialize)]
-pub struct Config {
-    /// Time duration after which a perf trace is displayed (default = 1000ms).
-    #[serde(default = "default_timeout")]
-    timeout: u64,
-
-    #[serde(default = "default_self_usage")]
-    self_usage: bool,
-
-    #[serde(default = "default_cpu_usage")]
-    cpu_usage: bool,
-
-    #[serde(default = "default_mem_usage")]
-    mem_usage: bool,
-
-    #[serde(default = "default_disk_usage")]
-    disk_usage: bool,
-
-    #[serde(default = "default_io_usage")]
-    io_usage: bool,
-}
-
-fn default_timeout() -> u64 {
-    1000
-}
-
-fn default_self_usage() -> bool {
-    true
-}
-
-fn default_cpu_usage() -> bool {
-    true
-}
-
-fn default_mem_usage() -> bool {
-    true
-}
-fn default_disk_usage() -> bool {
-    true
-}
-fn default_io_usage() -> bool {
-    true
-}
-
+/// Perf Exporter that emits performance data
 struct PerfExporter {
     config: Config,
-    received_msg_count: usize,
-    received_evt_count: usize,
-    total_received_msg_count: usize,
-    total_received_evt_count: usize,
-
-    last_perf_time: Instant,
-
-    meter: Option<Meter>,
+    meter_enabled: bool,
     addr: SocketAddr,
+    thread_map: Option<HashMap<u32, String>>,
 }
 
 impl PerfExporter {
-    pub fn new(meter: Option<Meter>, config: Config, addr: SocketAddr) -> Self {
+    pub fn new(
+        meter_enabled: bool,
+        config: Config,
+        addr: SocketAddr,
+        thread_map: Option<HashMap<u32, String>>,
+    ) -> Self {
         PerfExporter {
-            received_msg_count: 0,
-            received_evt_count: 0,
-            total_received_msg_count: 0,
-            total_received_evt_count: 0,
-            last_perf_time: Instant::now(),
-            meter: meter,
-            config: config,
-            addr: addr,
+            meter_enabled,
+            config,
+            addr,
+            thread_map,
         }
     }
 }
@@ -101,7 +53,7 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
         mut msg_chan: MessageChannel<BatchArrowRecords>,
         effect_handler: local::EffectHandler<BatchArrowRecords>,
     ) -> Result<(), Error<BatchArrowRecords>> {
-        // Loop until a Shutdown event is received.
+        // create a tcp stream for sending data
         let mut stream =
             TcpStream::connect(self.addr)
                 .await
@@ -109,6 +61,39 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                     exporter: effect_handler.exporter_name(),
                     error: error.to_string(),
                 })?;
+
+        // init variables for tracking
+        let mut received_msg_count: usize = 0;
+        let mut received_evt_count: usize = 0;
+        let mut total_received_msg_count: usize = 0;
+        let mut total_received_evt_count: usize = 0;
+        let mut last_perf_time: Instant = Instant::now();
+
+        let mut meter: Option<Meter> = None;
+
+        // if meter is enabled then init meter
+        if self.meter_enabled {
+            let mut new_meter =
+                Meter::new(Duration::from_millis(self.config.timeout())).map_err(|error| {
+                    Error::ExporterError {
+                        exporter: effect_handler.exporter_name(),
+                        error: error.to_string(),
+                    }
+                })?;
+            // track threads if they are provided
+            if let Some(thread_map) = self.thread_map {
+                for (pid, thread_name) in thread_map {
+                    new_meter.track_thread(pid, thread_name.as_str());
+                }
+            }
+            meter = Some(new_meter);
+        } else {
+            return Err(Error::ExporterError {
+                exporter: effect_handler.exporter_name().to_owned(),
+                error: "Meter enabled but no interval duration provided".to_owned(),
+            });
+        }
+        // Loop until a Shutdown event is received.
         loop {
             match msg_chan.recv().await? {
                 Message::Control(ControlMsg::TimerTick { .. }) => {
@@ -122,25 +107,25 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                     */
                     // get delta time
                     let now = Instant::now();
-                    let duration = now - self.last_perf_time;
+                    let duration = now - last_perf_time;
 
                     // Formatted output messages for the report
                     // generate msgs
                     let msg_throughput = format!(
                         "message throughput     : {:.2} msg/s",
-                        (self.received_msg_count as f64 / duration.as_secs_f64())
+                        (received_msg_count as f64 / duration.as_secs_f64())
                     );
                     // TODO HANDLE LATENCY need to get message timestamps from batch
                     let msg_latency = "message average latency: TBD".to_string();
 
                     let msg_received =
-                        format!("total message received : {}", self.total_received_msg_count);
+                        format!("total message received : {}", total_received_msg_count);
                     let evt_throughput = format!(
                         "event   throughput     : {:.2} evt/s",
-                        (self.received_evt_count as f64 / duration.as_secs_f64())
+                        (received_evt_count as f64 / duration.as_secs_f64())
                     );
                     let evt_received =
-                        format!("total event received   : {}", self.total_received_evt_count);
+                        format!("total event received   : {}", total_received_evt_count);
 
                     display_report_default(
                         effect_handler.exporter_name(),
@@ -158,12 +143,12 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                     })?;
 
                     // generate meter reports if enabled
-                    if let Some(meter) = self.meter.as_mut() {
+                    if let Some(meter) = meter.as_mut() {
                         // measure resource usage using self_meter package
-                        meter.scan().map_err(|error| Error::ExporterError {
+                        meter.scan().map_err(|_| Error::ExporterError {
                             exporter: effect_handler.exporter_name(),
-                            error: error.to_string(),
-                        });
+                            error: "Failed to scan resource usage".to_owned(),
+                        })?;
                         // get report of resource usage
                         let meter_report = meter.report();
 
@@ -180,22 +165,22 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                         let thread_report_iter = meter.thread_report();
                         // if threads are being scanned then display the report of each thread
                         if let Some(thread_report_iter) = thread_report_iter {
-                            thread_report_iter.map(|thread_report| async move {
+                            for thread_report in thread_report_iter {
                                 display_report_thread(&self.config, thread_report, &mut stream)
                                     .await
                                     .map_err(|_| Error::ExporterError {
                                         exporter: effect_handler.exporter_name(),
                                         error: "Failed to provide thread report".to_owned(),
                                     })?;
-                            });
+                            }
                         }
                     }
 
                     // reset received counters
                     // update last_perf_time
-                    self.received_msg_count = 0;
-                    self.received_evt_count = 0;
-                    self.last_perf_time = now;
+                    received_msg_count = 0;
+                    received_evt_count = 0;
+                    last_perf_time = now;
                 }
                 Message::Control(ControlMsg::Config { .. }) => {}
                 Message::Control(ControlMsg::Shutdown { .. }) => {
@@ -204,11 +189,11 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                 Message::PData(batch) => {
                     // increment counters for received messages
                     // increment by number of arrowpayloads
-                    self.received_msg_count += batch.arrow_payloads.len();
-                    self.total_received_msg_count += self.received_msg_count;
+                    received_msg_count += batch.arrow_payloads.len();
+                    total_received_msg_count += received_msg_count;
                     // increment counters for received events
-                    self.received_evt_count += calculate_event_count(batch);
-                    self.total_received_evt_count += self.received_evt_count;
+                    received_evt_count += calculate_event_count(batch);
+                    total_received_evt_count += received_evt_count;
                 }
                 _ => {
                     return Err(Error::ExporterError {
@@ -241,7 +226,7 @@ async fn display_report_meter(
     report: Report,
     stream: &mut TcpStream,
 ) -> Result<(), ()> {
-    if config.cpu_usage {
+    if config.cpu_usage() {
         // print all cpu usage data
         let global_cpu_usage = format!(
             "\t- global cpu usage       : {}% (100% is all cores)",
@@ -268,7 +253,7 @@ async fn display_report_meter(
             .await
             .map_err(|_| ())?;
     }
-    if config.mem_usage {
+    if config.mem_usage() {
         // print all memory usage data
         let memory_rss = format!(
             "\t- memory rss             : {}",
@@ -319,7 +304,7 @@ async fn display_report_meter(
             .await
             .map_err(|_| ())?;
     }
-    if config.disk_usage {
+    if config.disk_usage() {
         let disk_read = format!(
             "\t- disk read              : {}/s",
             Byte::from_bytes(report.disk_read as u128).get_appropriate_unit(false)
@@ -345,7 +330,7 @@ async fn display_report_meter(
             .await
             .map_err(|_| ())?;
     }
-    if config.io_usage {
+    if config.io_usage() {
         let io_read = format!(
             "\t- io read                : {}/s",
             Byte::from_bytes(report.io_read as u128).get_appropriate_unit(false)
@@ -383,7 +368,7 @@ async fn display_report_thread(
 ) -> Result<(), ()> {
     let thread_name = thread_report.0;
     let report = thread_report.1;
-    if config.cpu_usage {
+    if config.cpu_usage() {
         // print all cpu usage data
         let thread_cpu_usage = format!(
             "\t- thread {}'s cpu usage       : {}% (100% is single cores)",
@@ -433,38 +418,74 @@ async fn display_report_default(
 #[cfg(test)]
 mod tests {
 
+    use crate::config::Config;
     use crate::perf_exporter::PerfExporter;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::TestContext;
     use otap_df_engine::testing::exporter::TestRuntime;
+    use otap_df_otap::proto::opentelemetry::experimental::arrow::v1::{
+        ArrowPayload, ArrowPayloadType, BatchArrowRecords,
+    };
     use self_meter::Meter;
     use std::net::SocketAddr;
+    use tokio::io::AsyncReadExt;
+    use tokio::net::TcpListener;
     use tokio::runtime::Runtime;
     use tokio::time::{Duration, timeout};
 
+    const TRACES_BATCH_ID: i64 = 0;
+    const LOGS_BATCH_ID: i64 = 1;
+    const METRICS_BATCH_ID: i64 = 2;
+
+    pub fn create_batch_arrow_record_helper(
+        batch_id: i64,
+        payload_type: ArrowPayloadType,
+    ) -> BatchArrowRecords {
+        let arrow_payload = ArrowPayload {
+            schema_id: "0".to_string(),
+            r#type: payload_type as i32,
+            record: vec![0],
+        };
+        BatchArrowRecords {
+            batch_id: batch_id,
+            arrow_payloads: vec![arrow_payload],
+            headers: vec![0],
+        }
+    }
+
     /// Test closure that simulates a typical test scenario by sending timer ticks, config,
     /// data message, and shutdown control messages.
-    fn scenario(
-        addr: SocketAddr,
-    ) -> impl FnOnce(TestContext<BatchArrowRecords>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
+    ///
+    fn scenario()
+    -> impl FnOnce(TestContext<BatchArrowRecords>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
     {
         |ctx| {
             Box::pin(async move {
                 // Send 3 TimerTick events. with a couple messages between them
-                // let stream = TcpStream::connect(addr).await.unwrap()?;
-                for _ in 0..3 {
-                    ctx.send_timer_tick()
-                        .await
-                        .expect("Failed to send TimerTick");
-                    let batch_data = create_batch_data();
-                    // Send a data message
-                    ctx.send_pdata(batch_data)
-                        .await
-                        .expect("Failed to send data message");
+                let traces_batch_data =
+                    create_batch_arrow_record_helper(TRACES_BATCH_ID, ArrowPayloadType::Spans);
+                let logs_batch_data =
+                    create_batch_arrow_record_helper(LOGS_BATCH_ID, ArrowPayloadType::Logs);
+                let metrics_batch_data = create_batch_arrow_record_helper(
+                    METRICS_BATCH_ID,
+                    ArrowPayloadType::UnivariateMetrics,
+                );
 
-                    // Send a data message
-                    ctx.sleep(Duration::from_millis(50)).await;
-                }
+                // Send a data message
+                ctx.send_pdata(traces_batch_data)
+                    .await
+                    .expect("Failed to send data message");
+                ctx.send_pdata(logs_batch_data)
+                    .await
+                    .expect("Failed to send data message");
+                ctx.send_pdata(metrics_batch_data)
+                    .await
+                    .expect("Failed to send data message");
+
+                // send timer_tick to trigger report
+                ctx.send_timer_tick()
+                    .await
+                    .expect("Failed to send TimerTick");
 
                 // Send shutdown
                 ctx.send_shutdown(Duration::from_millis(200), "test complete")
@@ -475,17 +496,20 @@ mod tests {
     }
 
     /// Validation closure that checks the expected counter values
-    fn validation_procedure()
-    -> impl FnOnce(TestContext<BatchArrowRecords>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
+    fn validation_procedure(
+        mut receiver: tokio::sync::mpsc::Receiver<String>,
+    ) -> impl FnOnce(TestContext<BatchArrowRecords>) -> std::pin::Pin<Box<dyn Future<Output = ()>>>
     {
-        |ctx| {
+        |_| {
             Box::pin(async move {
-                // ctx.counters().assert(
-                //     3, // timer tick
-                //     1, // message
-                //     1, // config
-                //     1, // shutdown
-                // );
+                let report_received = timeout(Duration::from_secs(3), receiver.recv())
+                    .await
+                    .expect("Timed out waiting for message")
+                    .expect("No message received");
+
+                // Assert that the message received is what the exporter sen
+                let expected_message = "test".to_string();
+                assert!(matches!(report_received, expected_message));
             })
         }
     }
@@ -493,18 +517,33 @@ mod tests {
     #[test]
     fn test_exporter_local() {
         let test_runtime = TestRuntime::new();
-        let meter = Meter::new().unwrap();
-        meter.track_current_thread("main");
+        let (sender, receiver) = tokio::sync::mpsc::channel(64);
         let config = Config::default();
-        let addr = SocketAddr::from(([127, 0, 0, 1], 3001));
+        let addr = "127.0.0.1";
+        let port = portpicker::pick_unused_port().expect("No free ports");
+        let listening_addr: SocketAddr = format!("{addr}:{port}").parse().unwrap();
         let exporter = ExporterWrapper::local(
-            PerfExporter::new(meter, config, addr),
+            PerfExporter::new(true, config, listening_addr, None),
             test_runtime.config(),
         );
+        // tokio runtime to run tcp server in the background
+        let tokio_rt = Runtime::new().unwrap();
+
+        _ = tokio_rt.spawn(async move {
+            let listener = TcpListener::bind(listening_addr).await.unwrap();
+            loop {
+                let (mut tcp_stream, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 1024];
+                tcp_stream.read_exact(&mut buf).await;
+                // send received data to channel to verify in the validation stage
+                let result = String::from_utf8(buf).unwrap();
+                sender.send(result).await.unwrap();
+            }
+        });
 
         test_runtime
             .set_exporter(exporter)
-            .run_test(scenario(addr))
-            .run_validation(validation_procedure());
+            .run_test(scenario())
+            .run_validation(validation_procedure(receiver));
     }
 }
