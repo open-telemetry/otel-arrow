@@ -118,7 +118,6 @@ impl TaskManager {
             process_id=%self.process_labels.process_id,
             task_count=%self.registered_tasks.lock().expect("registered_tasks lock failed").len(),
             "joining registered tasks");
-        
         while let Some(item) = self
             .registered_tasks
             .lock()
