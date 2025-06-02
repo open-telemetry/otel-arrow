@@ -89,7 +89,7 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
             meter = Some(new_meter);
         } else {
             return Err(Error::ExporterError {
-                exporter: effect_handler.exporter_name().to_owned(),
+                exporter: effect_handler.exporter_name(),
                 error: "Meter enabled but no interval duration provided".to_owned(),
             });
         }
@@ -145,9 +145,9 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                     // generate meter reports if enabled
                     if let Some(meter) = meter.as_mut() {
                         // measure resource usage using self_meter package
-                        meter.scan().map_err(|_| Error::ExporterError {
+                        meter.scan().map_err(|error| Error::ExporterError {
                             exporter: effect_handler.exporter_name(),
-                            error: "Failed to scan resource usage".to_owned(),
+                            error: error.to_string(),
                         })?;
                         // get report of resource usage
                         let meter_report = meter.report();
@@ -197,7 +197,7 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                 }
                 _ => {
                     return Err(Error::ExporterError {
-                        exporter: effect_handler.exporter_name().to_owned(),
+                        exporter: effect_handler.exporter_name(),
                         error: "Unknown control message".to_owned(),
                     });
                 }
@@ -531,13 +531,13 @@ mod tests {
 
         _ = tokio_rt.spawn(async move {
             let listener = TcpListener::bind(listening_addr).await.unwrap();
-            loop {
                 let (mut tcp_stream, _) = listener.accept().await.unwrap();
+            loop{
                 let mut buf = vec![0u8; 1024];
-                tcp_stream.read_exact(&mut buf).await;
+                let _ = tcp_stream.read_exact(&mut buf).await.expect("failed to read message");
                 // send received data to channel to verify in the validation stage
                 let result = String::from_utf8(buf).unwrap();
-                sender.send(result).await.unwrap();
+                sender.send(result).await.expect("Failed to send message");
             }
         });
 
