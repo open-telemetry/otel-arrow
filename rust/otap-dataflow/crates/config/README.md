@@ -51,9 +51,9 @@ multi-tenancy and configurable dispatch strategies, that are not present in the
 upstream Collector.
 
 A translation mechanism will be developed to **automatically convert any OTEL
-Collector YAML configuration file into this new config model**.
-Some aspects of the OTEL Collector, such as the extension mechanism, are still
-under consideration and have not yet been fully mapped in the new model.
+Collector YAML configuration file into this new config model**. Some aspects of
+the OTEL Collector, such as the extension mechanism, are still under
+consideration and have not yet been fully mapped in the new model.
 
 ## Config Validation & Error Reporting
 
@@ -76,12 +76,11 @@ at once and increasing overall productivity.
   - Add, update, get, and delete pipelines within tenants
   - Add, update, get, and delete nodes within pipelines
 
-- **Transactional updates:**
-  Updates can target multiple nodes as part of a single, consistent
-  transaction.
-  A consistent transaction is an operation where, once applied, the pipeline
-  remains in a valid and operational state. The **unit of operation is the
-  pipeline**: transactional updates are atomic at the pipeline level.
+- **Transactional updates:** Updates can target multiple nodes as part of a
+  single, consistent transaction. A consistent transaction is an operation
+  where, once applied, the pipeline remains in a valid and operational state.
+  The **unit of operation is the pipeline**: transactional updates are atomic at
+  the pipeline level.
 
 - Every component of the configuration model will be addressable and manageable
   via this API.
