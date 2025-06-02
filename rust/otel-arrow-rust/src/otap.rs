@@ -48,7 +48,7 @@ impl OtapBatch {
     }
 
     /// Get the list of possible payload types associated with the batch of this type.
-    /// Note: It's not guaranteed that this batch will actual contain all these 
+    /// Note: It's not guaranteed that this batch will actual contain all these
     /// payload types
     pub fn allowed_payload_types(&self) -> &'static [ArrowPayloadType] {
         match self {
@@ -191,7 +191,7 @@ impl OtapBatchStore for Logs {
     fn batches(&self) -> &[Option<RecordBatch>] {
         &self.batches
     }
-    
+
     fn allowed_payload_types() -> &'static [ArrowPayloadType] {
         return &[
             ArrowPayloadType::ResourceAttrs,
@@ -200,7 +200,6 @@ impl OtapBatchStore for Logs {
             ArrowPayloadType::LogAttrs,
         ];
     }
-
 }
 
 /// Store of record batches for a batch of OTAP metrics data.
