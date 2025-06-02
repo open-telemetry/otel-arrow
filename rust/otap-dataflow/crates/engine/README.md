@@ -138,8 +138,8 @@ testing.
 ## Compile-Time Plugin System
 
 This project uses a compile-time plugin system based on the
-[`linkme`](https://docs.rs/linkme) crate to register node factories—such as
-receivers, processors, and exporters—along with their associated URNs (Uniform
+[`linkme`](https://docs.rs/linkme) crate to register node factories, such as
+receivers, processors, and exporters, along with their associated URNs (Uniform
 Resource Names). This mechanism enables the engine to dynamically instantiate
 nodes for specific URNs by looking up and invoking the appropriate factory at
 runtime.
