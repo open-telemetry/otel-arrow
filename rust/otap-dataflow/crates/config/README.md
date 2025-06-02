@@ -83,4 +83,4 @@ multiple issues at once and increasing overall productivity.
 - Every component of the configuration model will be addressable and manageable via this API.
 
 - An **authorization framework** will be introduced to manage access and permissions at the level of
-  tenants, pipelines, and nodes.
+  tenants, pipelines, and potentially nodes.
