@@ -68,13 +68,19 @@ multiple issues at once and increasing overall productivity.
 
 ## Roadmap
 
-An API will be introduced to allow for **dynamic management** of configuration:
+- An API will be introduced to allow for **dynamic management** of configuration:
 
-- Add, update, get, and delete tenants
-- Add, update, get, and delete pipelines within tenants
-- Add, update, get, and delete nodes within pipelines
+  - Add, update, get, and delete tenants
+  - Add, update, get, and delete pipelines within tenants
+  - Add, update, get, and delete nodes within pipelines
 
-Every component of the configuration model will be addressable and manageable via this API.
+- **Transactional updates:**  
+  Updates can target multiple nodes as part of a single, consistent transaction.  
+  A consistent transaction is an operation where, once applied, the pipeline remains in a valid and
+  operational state. The **unit of operation is the pipeline**: transactional updates are atomic at
+  the pipeline level.
 
-We are also exploring an **authorization framework** to manage access and permissions at the level
-of tenants, pipelines, and nodes.
+- Every component of the configuration model will be addressable and manageable via this API.
+
+- An **authorization framework** will be introduced to manage access and permissions at the level of
+  tenants, pipelines, and nodes.
