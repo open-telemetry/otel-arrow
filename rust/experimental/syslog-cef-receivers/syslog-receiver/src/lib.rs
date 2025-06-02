@@ -285,7 +285,7 @@ mod tests {
 
         // Structured data check
         let sd = &parsed.structured_data;
-        if sd.len() > 0 {
+        if !sd.is_empty() {
             assert_eq!(sd.len(), 2);
 
             // First structured data element
@@ -296,22 +296,19 @@ mod tests {
                 sd_element1
                     .params
                     .iter()
-                    .find(|item| item.0 == "iut" && item.1 == "3")
-                    .is_some()
+                    .any(|item| item.0 == "iut" && item.1 == "3")
             );
             assert!(
                 sd_element1
                     .params
                     .iter()
-                    .find(|item| item.0 == "eventSource" && item.1 == "Application")
-                    .is_some()
+                    .any(|item| item.0 == "eventSource" && item.1 == "Application")
             );
             assert!(
                 sd_element1
                     .params
                     .iter()
-                    .find(|item| item.0 == "eventID" && item.1 == "1011")
-                    .is_some()
+                    .any(|item| item.0 == "eventID" && item.1 == "1011")
             );
 
             // Second structured data element
@@ -322,8 +319,7 @@ mod tests {
                 sd_element2
                     .params
                     .iter()
-                    .find(|item| item.0 == "foo" && item.1 == "bar")
-                    .is_some()
+                    .any(|item| item.0 == "foo" && item.1 == "bar")
             );
         } else {
             panic!("Structured data not parsed");
@@ -393,7 +389,7 @@ mod tests {
         assert_eq!(parsed.msgid, Some("ID47"));
 
         let sd = &parsed.structured_data;
-        if sd.len() > 0 {
+        if !sd.is_empty() {
             assert_eq!(sd.len(), 1);
             assert_eq!(sd[0].id, "exampleSDID@32473");
             assert_eq!(sd[0].params.len(), 2);
@@ -401,15 +397,13 @@ mod tests {
                 sd[0]
                     .params
                     .iter()
-                    .find(|item| item.0 == "iut" && item.1 == "3")
-                    .is_some()
+                    .any(|item| item.0 == "iut" && item.1 == "3")
             );
             assert!(
                 sd[0]
                     .params
                     .iter()
-                    .find(|item| item.0 == "eventSource" && item.1 == "Application")
-                    .is_some()
+                    .any(|item| item.0 == "eventSource" && item.1 == "Application")
             );
         } else {
             panic!("Structured data not parsed");
@@ -446,7 +440,7 @@ mod tests {
         assert_eq!(parsed.msgid, Some("ID47"));
 
         let sd = &parsed.structured_data;
-        if sd.len() > 0 {
+        if !sd.is_empty() {
             assert_eq!(sd.len(), 1);
             assert_eq!(sd[0].id, "exampleSDID@32473");
             assert_eq!(sd[0].params.len(), 2);
@@ -454,15 +448,13 @@ mod tests {
                 sd[0]
                     .params
                     .iter()
-                    .find(|item| item.0 == "message" && item.1 == r#"Hello \"quoted\" world"#)
-                    .is_some()
+                    .any(|item| item.0 == "message" && item.1 == r#"Hello \"quoted\" world"#)
             );
             assert!(
                 sd[0]
                     .params
                     .iter()
-                    .find(|item| item.0 == "escaped" && item.1 == r#"\]\"\\\n"#)
-                    .is_some()
+                    .any(|item| item.0 == "escaped" && item.1 == r#"\]\"\\\n"#)
             );
         } else {
             panic!("Structured data not parsed");
@@ -552,21 +544,19 @@ mod tests {
         assert_eq!(ts.to_rfc3339(), "2003-08-24T05:14:15.000003-07:00");
 
         let sd = &parsed.structured_data;
-        if sd.len() > 0 {
+        if !sd.is_empty() {
             assert_eq!(sd.len(), 2);
             assert!(
                 sd[0]
                     .params
                     .iter()
-                    .find(|item| item.0 == "param" && item.1 == "value with spaces")
-                    .is_some()
+                    .any(|item| item.0 == "param" && item.1 == "value with spaces")
             );
             assert!(
                 sd[1]
                     .params
                     .iter()
-                    .find(|item| item.0 == "empty" && item.1 == "")
-                    .is_some()
+                    .any(|item| item.0 == "empty" && item.1.is_empty())
             );
         } else {
             panic!("Structured data not parsed");
