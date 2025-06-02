@@ -6,6 +6,7 @@
 //! ToDo: Handle configuratin changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
+use crate::LOCAL_EXPORTERS;
 use crate::compression::CompressionMethod;
 use crate::grpc::OTLPData;
 use crate::proto::opentelemetry::collector::{
@@ -15,9 +16,11 @@ use crate::proto::opentelemetry::collector::{
     trace::v1::trace_service_client::TraceServiceClient,
 };
 use async_trait::async_trait;
+use linkme::distributed_slice;
 use otap_df_engine::error::Error;
-use otap_df_engine::local::exporter as local;
+use otap_df_engine::local::{LocalExporterFactory, exporter as local};
 use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
+use serde_json::Value;
 
 /// Exporter that sends OTLP data via gRPC
 struct OTLPExporter {
@@ -25,13 +28,35 @@ struct OTLPExporter {
     compression_method: Option<CompressionMethod>,
 }
 
+/// Declares the OTLP exporter as a local exporter factory
+///
+/// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
+/// This macro is part of the `linkme` crate which is considered safe and well maintained.
+#[allow(unsafe_code)]
+#[distributed_slice(LOCAL_EXPORTERS)]
+pub static OTLP_EXPORTER: LocalExporterFactory<OTLPData> = LocalExporterFactory {
+    name: "urn:otel:otlp:exporter",
+    create: |config: &Value| Box::new(OTLPExporter::from_config(config)),
+};
+
 impl OTLPExporter {
     /// Creates a new OTLP exporter
+    #[allow(dead_code)]
     #[must_use]
     pub fn new(grpc_endpoint: String, compression_method: Option<CompressionMethod>) -> Self {
         OTLPExporter {
             grpc_endpoint,
             compression_method,
+        }
+    }
+
+    /// Creates a new OTLPExporter from a configuration object
+    #[must_use]
+    pub fn from_config(_config: &Value) -> Self {
+        // ToDo: implement config parsing
+        OTLPExporter {
+            grpc_endpoint: "127.0.0.1:4317".to_owned(),
+            compression_method: None,
         }
     }
 }
@@ -95,7 +120,7 @@ impl local::Exporter<OTLPData> for OTLPExporter {
                 Message::Control(ControlMsg::TimerTick { .. })
                 | Message::Control(ControlMsg::Config { .. }) => {}
                 // shutdown the exporter
-                Message::Control(ControlMsg::Shutdown { deadline, reason }) => {
+                Message::Control(ControlMsg::Shutdown { .. }) => {
                     // ToDo: add proper deadline function
                     break;
                 }
@@ -273,14 +298,14 @@ mod tests {
             let mock_trace_service = TraceServiceServer::new(TraceServiceMock::new(sender.clone()));
             let mock_profiles_service =
                 ProfilesServiceServer::new(ProfilesServiceMock::new(sender.clone()));
-            _ = Server::builder()
+            Server::builder()
                 .add_service(mock_logs_service)
                 .add_service(mock_metrics_service)
                 .add_service(mock_trace_service)
                 .add_service(mock_profiles_service)
                 .serve_with_incoming_shutdown(tcp_stream, async {
                     // Wait for the shutdown signal
-                    drop(shutdown_signal.await.ok())
+                    let _ = shutdown_signal.await;
                 })
                 .await
                 .expect("Test gRPC server has failed");

@@ -8,6 +8,7 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
+use crate::SHARED_RECEIVERS;
 use crate::compression::CompressionMethod;
 use crate::grpc::{
     LogsServiceImpl, MetricsServiceImpl, OTLPData, ProfilesServiceImpl, TraceServiceImpl,
@@ -19,9 +20,11 @@ use crate::proto::opentelemetry::collector::{
     trace::v1::trace_service_server::TraceServiceServer,
 };
 use async_trait::async_trait;
+use linkme::distributed_slice;
 use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
-use otap_df_engine::shared::receiver as shared;
+use otap_df_engine::shared::{SharedReceiverFactory, receiver as shared};
+use serde_json::Value;
 use std::net::SocketAddr;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
@@ -32,6 +35,17 @@ pub struct OTLPReceiver {
     compression_method: Option<CompressionMethod>,
 }
 
+/// Declares the OTLP receiver as a shared receiver factory
+///
+/// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
+/// This macro is part of the `linkme` crate which is considered safe and well maintained.
+#[allow(unsafe_code)]
+#[distributed_slice(SHARED_RECEIVERS)]
+pub static OTLP_RECEIVER: SharedReceiverFactory<OTLPData> = SharedReceiverFactory {
+    name: "urn:otel:otlp:receiver",
+    create: |config: &Value| Box::new(OTLPReceiver::from_config(config)),
+};
+
 impl OTLPReceiver {
     /// creates a new OTLP Receiver
     #[must_use]
@@ -39,6 +53,16 @@ impl OTLPReceiver {
         OTLPReceiver {
             listening_addr,
             compression_method,
+        }
+    }
+
+    /// Creates a new OTLPReceiver from a configuration object
+    #[must_use]
+    pub fn from_config(_config: &Value) -> Self {
+        // ToDo: implement config parsing
+        OTLPReceiver {
+            listening_addr: "127.0.0.1:4317".parse().expect("Invalid socket address"),
+            compression_method: None,
         }
     }
 }
@@ -93,7 +117,7 @@ impl shared::Receiver<OTLPData> for OTLPReceiver {
                 // Process internal event
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
-                        Ok(ControlMsg::Shutdown {deadline, reason}) => {
+                        Ok(ControlMsg::Shutdown {..}) => {
                             // ToDo: add proper deadline function
                             break;
                         },

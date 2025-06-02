@@ -94,6 +94,7 @@ allow = [
     "Apache-2.0",
     "Unicode-3.0",
     "BSD-3-Clause",
+    "ISC",  # Used by the `is_ci`, similar to MIT license
 ]
 # The confidence threshold for detecting a license from license text.
 # The higher the value, the more closely the license text must be to the
