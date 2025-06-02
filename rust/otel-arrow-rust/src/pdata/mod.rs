@@ -72,3 +72,42 @@ impl From<[u8; 8]> for SpanID {
         SpanID(sid)
     }
 }
+
+/// StringVisitor
+pub trait StringVisitor {
+    /// Visit a string value
+    fn visit_string(&mut self, value: &str);
+}
+
+/// IntegerVisitor
+pub trait IntegerVisitor {
+    /// Visit an integer value
+    fn visit_i32(&mut self, value: i32);
+    /// Visit an integer value
+    fn visit_i64(&mut self, value: i64);
+    /// Visit an integer value
+    fn visit_u32(&mut self, value: u32);
+
+    // Visit an u64 value (not used)
+    fn visit_u64(&mut self, value: u64);
+}
+
+/// FloatVisitor
+pub trait FloatVisitor {
+    /// Visit a float value
+    fn visit_f32(&mut self, value: f32);
+    /// Visit a float value
+    fn visit_f64(&mut self, value: f64);
+}
+
+/// BooleanVisitor
+pub trait BooleanVisitor {
+    /// Visit a boolean value
+    fn visit_bool(&mut self, value: bool);
+}
+
+/// BytesVisitor
+pub trait BytesVisitor {
+    /// Visit a bytes value
+    fn visit_bytes(&mut self, value: &[u8]);
+}
