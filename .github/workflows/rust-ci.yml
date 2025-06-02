@@ -99,7 +99,13 @@ jobs:
           toolchain: stable
           components: clippy
       - name: cargo clippy ${{ matrix.folder }}
-        run: cargo clippy --all-targets --all-features --workspace -- -D warnings
+        # beaubourg is a reference implementation without active development, so don't break the build on warnings
+        run: |
+          if [ "${{ matrix.folder }}" = "beaubourg" ]; then
+            cargo clippy --all-targets --all-features --workspace
+          else
+            cargo clippy --all-targets --all-features --workspace -- -D warnings
+          fi
         working-directory: ./rust/${{ matrix.folder }}
 
   deny:

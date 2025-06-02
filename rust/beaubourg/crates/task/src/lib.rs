@@ -119,7 +119,6 @@ impl TaskManager {
             task_count=%self.registered_tasks.lock().expect("registered_tasks lock failed").len(),
             "joining registered tasks");
         
-        #[allow(clippy::await_holding_lock)]
         while let Some(item) = self
             .registered_tasks
             .lock()
