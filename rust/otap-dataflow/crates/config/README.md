@@ -27,7 +27,7 @@ This configuration model is intentionally simple and self-contained:
 - **No references, inheritance, or overwriting:** The model does not support
   referencing other config objects, inheritance, or any kind of overwriting.
 - **No templates or placeholders:** There are no templates or placeholder
-  mechanisms—each configuration is self-contained and explicit.
+  mechanisms-each configuration is self-contained and explicit.
 - **Easy to interpret:** The configuration is designed to be unambiguous and
   easy for both humans and machines to parse and validate.
 
