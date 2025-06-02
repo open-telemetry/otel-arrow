@@ -24,25 +24,21 @@ to manipulate and retrieve configuration fragments.
 
 This configuration model is intentionally simple and self-contained:
 
-- **No references, inheritance, or overwriting:**  
-  The model does not support referencing other config objects, inheritance, or
-  any kind of overwriting.
-- **No templates or placeholders:**  
-  There are no templates or placeholder mechanisms—each configuration is
-  self-contained and explicit.
-- **Easy to interpret:**  
-  The configuration is designed to be unambiguous and easy for both humans and
-  machines to parse and validate.
+- **No references, inheritance, or overwriting:** The model does not support
+  referencing other config objects, inheritance, or any kind of overwriting.
+- **No templates or placeholders:** There are no templates or placeholder
+  mechanisms—each configuration is self-contained and explicit.
+- **Easy to interpret:** The configuration is designed to be unambiguous and
+  easy for both humans and machines to parse and validate.
 
 The goal is to make the configuration as **predictable and transparent** as
 possible, reducing cognitive load and the risk of hidden or implicit behaviors.
 
-> **Advanced Configuration Layer**  
-> Support for advanced concepts such as references, inheritance, and templating
-> is planned for a dedicated configuration layer aimed at human authors.  
-> A translator/resolver will assemble these advanced, versionable configuration
-> files into this more self-contained, straightforward model for engine
-> consumption.
+> **Advanced Configuration Layer** Support for advanced concepts such as
+> references, inheritance, and templating is planned for a dedicated
+> configuration layer aimed at human authors. A translator/resolver will
+> assemble these advanced, versionable configuration files into this more
+> self-contained, straightforward model for engine consumption.
 
 This configuration model is intended to be easily integrable with systems like
 **Kubernetes** as well as other environments.
@@ -50,12 +46,12 @@ This configuration model is intended to be easily integrable with systems like
 ## Compatibility & Translation
 
 This configuration model is intended to be a **superset of the current OTEL Go
-Collector configuration**. It introduces advanced concepts—such as multi-tenancy
-and configurable dispatch strategies—that are not present in the upstream
-Collector.
+Collector configuration**. It introduces advanced concepts, such as
+multi-tenancy and configurable dispatch strategies, that are not present in the
+upstream Collector.
 
 A translation mechanism will be developed to **automatically convert any OTEL
-Collector YAML configuration file into this new config model**.  
+Collector YAML configuration file into this new config model**.
 Some aspects of the OTEL Collector, such as the extension mechanism, are still
 under consideration and have not yet been fully mapped in the new model.
 
@@ -80,9 +76,9 @@ at once and increasing overall productivity.
   - Add, update, get, and delete pipelines within tenants
   - Add, update, get, and delete nodes within pipelines
 
-- **Transactional updates:**  
+- **Transactional updates:**
   Updates can target multiple nodes as part of a single, consistent
-  transaction.  
+  transaction.
   A consistent transaction is an operation where, once applied, the pipeline
   remains in a valid and operational state. The **unit of operation is the
   pipeline**: transactional updates are atomic at the pipeline level.
