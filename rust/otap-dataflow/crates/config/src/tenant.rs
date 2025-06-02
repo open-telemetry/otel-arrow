@@ -3,24 +3,35 @@
 //! The configuration for a tenant.
 
 use crate::error::Error;
-use crate::pipeline::PipelineSpec;
+use crate::pipeline::PipelineConfig;
 use crate::{Description, PipelineId, TenantId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// A tenant specification.
+/// Configuration for a single tenant.
+/// Contains tenant-specific settings and all its pipelines.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TenantSpec {
+pub struct TenantConfig {
     /// An optional description of the tenant.
     pub description: Option<Description>,
 
-    /// The pipelines in this tenant, keyed by their unique pipeline id.
-    pub pipelines: HashMap<PipelineId, PipelineSpec>,
+    /// Settings that apply to this tenant only.
+    pub settings: TenantSettings,
+
+    /// All pipelines belonging to this tenant, keyed by pipeline ID.
+    pub pipelines: HashMap<PipelineId, PipelineConfig>,
 }
 
-impl TenantSpec {
-    /// Validates the tenant specification.
+/// Tenant-specific settings.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TenantSettings {
+    /// If false, the tenant is disabled and cannot process data.
+    pub enabled: bool,
+}
+
+impl TenantConfig {
+    /// Validates the tenant configuration.
     pub fn validate(&self, tenant_id: &TenantId) -> Result<(), Error> {
         let mut errors = Vec::new();
 

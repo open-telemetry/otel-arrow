@@ -1,39 +1,45 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! The configuration for the data plane.
+//! The configuration for engine.
 
 use crate::error::Error;
-use crate::tenant::TenantSpec;
-use crate::{Description, TenantId};
+use crate::tenant::TenantConfig;
+use crate::TenantId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// A data plane specification containing multiple tenants.
-/// This is the top-level configuration structure.
+/// Root configuration for the pipeline engine.
+/// Contains engine-level settings and all tenants.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct DataPlaneSpec {
-    /// An optional description of this data plane.
-    description: Option<Description>,
+pub struct EngineConfig {
+    /// Settings that apply to the entire engine instance.
+    settings: EngineSettings,
 
-    /// The tenants in this data plane, keyed by their unique tenant id.
-    tenants: HashMap<TenantId, TenantSpec>,
+    /// All tenants managed by this engine, keyed by tenant ID.
+    tenants: HashMap<TenantId, TenantConfig>,
 }
 
-impl DataPlaneSpec {
-    /// Creates a new `DataPlaneSpec` with the given JSON string.
+/// Global settings for the engine.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EngineSettings {
+    // TBD: Add settings fields as needed
+}
+
+impl EngineConfig {
+    /// Creates a new `EngineConfig` with the given JSON string.
     pub fn from_json(json: &str) -> Result<Self, Error> {
-        let spec: DataPlaneSpec =
+        let config: EngineConfig =
             serde_json::from_str(json).map_err(|e| Error::DeserializationError {
                 context: Default::default(),
                 format: "JSON".to_string(),
                 details: e.to_string(),
             })?;
-        spec.validate()?;
-        Ok(spec)
+        config.validate()?;
+        Ok(config)
     }
 
-    /// Validates the data plane specification and returns a [`Error::InvalidConfiguration`] error
+    /// Validates the engine configuration and returns a [`Error::InvalidConfiguration`] error
     /// containing all validation errors found in the tenants.
     pub fn validate(&self) -> Result<(), Error> {
         let mut errors = Vec::new();

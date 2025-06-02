@@ -3,7 +3,7 @@
 //! Pipeline configuration specification.
 
 use crate::error::{Context, Error};
-use crate::node::{DispatchStrategy, HyperEdgeSpec, NodeKind, NodeSpec};
+use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeConfig, NodeKind};
 use crate::{Description, NodeId, PipelineId, PortName, TenantId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -11,25 +11,27 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-/// A pipeline specification describing the interconnections between nodes.
-/// A pipeline is a directed acyclic graph (DAG), which can be described as a hyper-DAG. The term
-/// “hyper” indicates that the edges connecting nodes can be hyper-edges, meaning a node can have
-/// multiple outgoing connections. The way messages are dispatched over each hyper-edge is governed
-/// by a dispatch strategy representing different communication model semantics. For example, it
-/// could use a broadcast channel to send the same message to all destination nodes, or it might
-/// employ round-robin or least-loaded semantics, similar to a Single-Producer-Multiple-Consumer
-/// (SPMC) channel.
+/// A pipeline configuration describing the interconnections between nodes.
+/// A pipeline is a directed acyclic graph that could be qualified as a hyper-DAG:
+/// - "Hyper" because the edges connecting the nodes can be hyper-edges.  
+/// - A node can be connected to multiple outgoing nodes.  
+/// - The way messages are dispatched over each hyper-edge is defined by a dispatch strategy representing
+///   different communication model semantics. For example, it could be a broadcast channel that sends
+///   the same message to all destination nodes, or it might have a round-robin or least-loaded semantic,
+///   similar to an SPMC channel.
+///
+/// This configuration defines the pipeline’s nodes, the interconnections (hyper-edges), and pipeline-level settings.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct PipelineSpec {
-    /// An optional description of this pipeline.
+pub struct PipelineConfig {
+    /// Optional description of the pipeline’s purpose.
     description: Option<Description>,
 
-    /// The nodes in this pipeline, keyed by their unique node id.
-    nodes: HashMap<NodeId, NodeSpec>,
-
-    /// The configuration for this pipeline.
+    /// Settings for this pipeline.
     #[serde(default)]
-    configuration: Configuration,
+    settings: PipelineSettings,
+
+    /// All nodes in this pipeline, keyed by node ID.
+    nodes: HashMap<NodeId, NodeConfig>,
 }
 
 fn default_control_channel_size() -> usize {
@@ -41,7 +43,7 @@ fn default_pdata_channel_size() -> usize {
 
 /// A configuration for a pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct Configuration {
+pub struct PipelineSettings {
     /// The default size of the control channels.
     #[serde(default = "default_control_channel_size")]
     pub default_control_channel_size: usize,
@@ -51,7 +53,7 @@ pub struct Configuration {
     pub default_pdata_channel_size: usize,
 }
 
-impl Default for Configuration {
+impl Default for PipelineSettings {
     fn default() -> Self {
         Self {
             default_control_channel_size: default_control_channel_size(),
@@ -60,14 +62,14 @@ impl Default for Configuration {
     }
 }
 
-impl PipelineSpec {
+impl PipelineConfig {
     /// Create a new PipelineSpec from a JSON string.
     pub fn from_json(
         tenant_id: TenantId,
         pipeline_id: PipelineId,
         json_str: &str,
     ) -> Result<Self, Error> {
-        let spec: PipelineSpec =
+        let spec: PipelineConfig =
             serde_json::from_str(json_str).map_err(|e| Error::DeserializationError {
                 context: Context::new(tenant_id.clone(), pipeline_id.clone()),
                 format: "JSON".to_string(),
@@ -106,7 +108,7 @@ impl PipelineSpec {
             for edge in node.out_ports.values() {
                 let mut missing_targets = Vec::new();
 
-                for target in &edge.targets {
+                for target in &edge.destinations {
                     if !self.nodes.contains_key(target) {
                         missing_targets.push(target.clone());
                     }
@@ -116,7 +118,7 @@ impl PipelineSpec {
                     errors.push(Error::InvalidHyperEdgeSpec {
                         context: Context::new(tenant_id.clone(), pipeline_id.clone()),
                         source_node: node_id.clone(),
-                        target_nodes: edge.targets.iter().cloned().collect(),
+                        target_nodes: edge.destinations.iter().cloned().collect(),
                         dispatch_strategy: edge.dispatch_strategy.clone(),
                         missing_source: false, // source exists since we're iterating over nodes
                         missing_targets,
@@ -146,7 +148,7 @@ impl PipelineSpec {
     fn detect_cycles(&self) -> Vec<Vec<NodeId>> {
         fn visit(
             node: &NodeId,
-            nodes: &HashMap<NodeId, NodeSpec>,
+            nodes: &HashMap<NodeId, NodeConfig>,
             visiting: &mut HashSet<NodeId>,
             visited: &mut HashSet<NodeId>,
             current_path: &mut Vec<NodeId>,
@@ -167,7 +169,7 @@ impl PipelineSpec {
 
             if let Some(n) = nodes.get(node) {
                 for edge in n.out_ports.values() {
-                    for tgt in &edge.targets {
+                    for tgt in &edge.destinations {
                         visit(tgt, nodes, visiting, visited, current_path, cycles);
                     }
                 }
@@ -203,7 +205,7 @@ impl PipelineSpec {
 /// A builder for constructing a [`PipelineSpec`].
 pub struct PipelineBuilder {
     description: Option<Description>,
-    nodes: HashMap<NodeId, NodeSpec>,
+    nodes: HashMap<NodeId, NodeConfig>,
     duplicate_nodes: Vec<NodeId>,
     pending_connections: Vec<PendingConnection>,
 }
@@ -248,7 +250,7 @@ impl PipelineBuilder {
         } else {
             _ = self.nodes.insert(
                 id.clone(),
-                NodeSpec {
+                NodeConfig {
                     kind,
                     description: None,
                     out_ports: HashMap::new(),
@@ -352,7 +354,7 @@ impl PipelineBuilder {
     /// missing source/targets, invalid edges, cycles) into one `InvalidHyperDag`
     /// report. This lets callers see every problem at once, rather than failing
     /// fast on the first error.
-    pub fn build<T, P>(mut self, tenant_id: T, pipeline_id: P) -> Result<PipelineSpec, Error>
+    pub fn build<T, P>(mut self, tenant_id: T, pipeline_id: P) -> Result<PipelineConfig, Error>
     where
         T: Into<TenantId>,
         P: Into<PipelineId>,
@@ -419,8 +421,8 @@ impl PipelineBuilder {
             if let Some(node) = self.nodes.get_mut(&conn.src) {
                 let _ = node.out_ports.insert(
                     conn.out_port.clone(),
-                    HyperEdgeSpec {
-                        targets: conn.targets.clone(),
+                    HyperEdgeConfig {
+                        destinations: conn.targets.clone(),
                         dispatch_strategy: conn.strategy,
                     },
                 );
@@ -431,10 +433,10 @@ impl PipelineBuilder {
             Err(Error::InvalidConfiguration { errors })
         } else {
             // Build the spec and validate it
-            let spec = PipelineSpec {
+            let spec = PipelineConfig {
                 description: self.description,
                 nodes: self.nodes,
-                configuration: Configuration::default(),
+                settings: PipelineSettings::default(),
             };
 
             spec.validate(&tenant_id, &pipeline_id)?;
@@ -594,7 +596,7 @@ mod tests {
                 let start = &pipeline_spec.nodes["Start"];
                 assert_eq!(start.out_ports.len(), 1);
                 let edge = &start.out_ports["out"];
-                assert!(edge.targets.contains("End"));
+                assert!(edge.destinations.contains("End"));
             }
             Err(e) => panic!("expected successful build, got {:?}", e),
         }

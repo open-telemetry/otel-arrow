@@ -14,9 +14,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-/// A node specification within the pipeline.
+/// Configuration for a node in the pipeline.
+/// Each node contains its own settings and defines how it connects to downstream nodes via out_ports.
+/// Each out_port is a named output (e.g. "success", "error") that defines a hyper-edge:
+/// - The hyper-edge configuration determines which downstream nodes are connected,
+///   and how messages are routed (broadcast, round-robin, ...).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct NodeSpec {
+pub struct NodeConfig {
     /// The kind of this node, which determines its role in the pipeline.
     /// 4 kinds are currently specified:
     /// - `Receiver`: A node that receives data from an external source.
@@ -28,10 +32,11 @@ pub struct NodeSpec {
     /// An optional description of this node.
     pub description: Option<Description>,
 
-    /// The outgoing ports of this node, each connected to a hyper-edge.
-    pub out_ports: HashMap<PortName, HyperEdgeSpec>,
+    /// Outgoing hyper-edges, keyed by port name.
+    /// Each port connects this node to one or more downstream nodes, with a specific dispatch strategy.
+    pub out_ports: HashMap<PortName, HyperEdgeConfig>,
 
-    /// The custom configuration for this node.
+    /// Node-specific configuration.
     ///
     /// This configuration is interpreted by the node itself and is not interpreted and validated by
     /// the pipeline engine.
@@ -42,21 +47,21 @@ pub struct NodeSpec {
     pub config: Value,
 }
 
-/// A directed hyper-edge in the pipeline establishing a connection between one source node and
-/// one or more target nodes.
+/// Describes a hyper-edge from a node output port to one or more destination nodes,
+/// and defines the dispatching strategy for this port.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct HyperEdgeSpec {
-    /// The target nodes of this hyper-edge.
+pub struct HyperEdgeConfig {
+    /// List of downstream node IDs this port connects to.
     ///
     /// When there is only one target node, the hyper-edge is a simple edge and the dispatch
     /// strategy is ignored.
-    pub targets: HashSet<NodeId>,
+    pub destinations: HashSet<NodeId>,
 
-    /// The strategy used to dispatch data to the targets of this hyper-edge.
+    /// Dispatch strategy for sending messages (broadcast, round-robin, ...).
     pub dispatch_strategy: DispatchStrategy,
 }
 
-/// The strategy used to dispatch data to the targets of a hyper-edge.
+/// Dispatching strategies for hyper-edges.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum DispatchStrategy {
     /// Broadcast the data to all targeted nodes.
