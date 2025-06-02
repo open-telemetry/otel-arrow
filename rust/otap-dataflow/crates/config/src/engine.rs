@@ -2,9 +2,9 @@
 
 //! The configuration for engine.
 
+use crate::TenantId;
 use crate::error::Error;
 use crate::tenant::TenantConfig;
-use crate::TenantId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

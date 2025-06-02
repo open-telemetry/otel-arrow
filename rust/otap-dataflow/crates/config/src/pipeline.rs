@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::rc::Rc;
 
 /// A pipeline configuration describing the interconnections between nodes.
 /// A pipeline is a directed acyclic graph that could be qualified as a hyper-DAG:
@@ -31,7 +32,7 @@ pub struct PipelineConfig {
     settings: PipelineSettings,
 
     /// All nodes in this pipeline, keyed by node ID.
-    nodes: HashMap<NodeId, NodeConfig>,
+    nodes: HashMap<NodeId, Rc<NodeConfig>>,
 }
 
 fn default_control_channel_size() -> usize {
@@ -148,7 +149,7 @@ impl PipelineConfig {
     fn detect_cycles(&self) -> Vec<Vec<NodeId>> {
         fn visit(
             node: &NodeId,
-            nodes: &HashMap<NodeId, NodeConfig>,
+            nodes: &HashMap<NodeId, Rc<NodeConfig>>,
             visiting: &mut HashSet<NodeId>,
             visited: &mut HashSet<NodeId>,
             current_path: &mut Vec<NodeId>,
@@ -435,7 +436,11 @@ impl PipelineBuilder {
             // Build the spec and validate it
             let spec = PipelineConfig {
                 description: self.description,
-                nodes: self.nodes,
+                nodes: self
+                    .nodes
+                    .into_iter()
+                    .map(|(id, node)| (id, Rc::new(node)))
+                    .collect(),
                 settings: PipelineSettings::default(),
             };
 
