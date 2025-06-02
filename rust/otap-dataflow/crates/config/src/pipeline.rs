@@ -203,7 +203,7 @@ impl PipelineConfig {
     }
 }
 
-/// A builder for constructing a [`PipelineSpec`].
+/// A builder for constructing a [`PipelineConfig`].
 pub struct PipelineBuilder {
     description: Option<Description>,
     nodes: HashMap<NodeId, NodeConfig>,

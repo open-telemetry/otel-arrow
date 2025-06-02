@@ -36,8 +36,6 @@ impl TestMsg {
 }
 
 /// Set of counters for tracking the number of control messages processed.
-///
-/// Uses Rc<RefCell<usize>> to allow sharing between components and test code.
 #[derive(Clone)]
 pub struct CtrlMsgCounters {
     timer_tick_count: Arc<AtomicUsize>,
