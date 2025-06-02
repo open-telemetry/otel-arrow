@@ -15,6 +15,7 @@ pub mod transform;
 
 /// The OtapBatch enum is used to represent a batch of OTAP data.
 #[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum OtapBatch {
     /// Represents a batch of logs data.
     Logs(Logs),
@@ -365,9 +366,10 @@ mod test {
 
         // for purpose of this test, the shape of the data doesn't really matter...
         let schema = Schema::new(vec![Field::new("a", DataType::UInt8, false)]);
-        let record_batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(
-            UInt8Array::from_iter_values(vec![1]),
-        )])
+        let record_batch = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![Arc::new(UInt8Array::from_iter_values(vec![1]))],
+        )
         .unwrap();
 
         // the assertions here are maybe a bit more robust than the ones
@@ -420,9 +422,10 @@ mod test {
 
         // for purpose of this test, the shape of the data doesn't really matter...
         let schema = Schema::new(vec![Field::new("a", DataType::UInt8, false)]);
-        let record_batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(
-            UInt8Array::from_iter_values(vec![1]),
-        )])
+        let record_batch = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![Arc::new(UInt8Array::from_iter_values(vec![1]))],
+        )
         .unwrap();
 
         let metric_types = [
@@ -462,9 +465,10 @@ mod test {
 
         // for purpose of this test, the shape of the data doesn't really matter...
         let schema = Schema::new(vec![Field::new("a", DataType::UInt8, false)]);
-        let record_batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(
-            UInt8Array::from_iter_values(vec![1]),
-        )])
+        let record_batch = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![Arc::new(UInt8Array::from_iter_values(vec![1]))],
+        )
         .unwrap();
 
         let trace_types = [
