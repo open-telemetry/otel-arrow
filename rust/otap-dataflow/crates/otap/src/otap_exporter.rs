@@ -29,7 +29,7 @@ struct OTAPExporter {
 }
 
 /// Declares the OTAP exporter as a local exporter factory
-/// 
+///
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
