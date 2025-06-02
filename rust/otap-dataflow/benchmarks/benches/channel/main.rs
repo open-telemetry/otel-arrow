@@ -42,13 +42,13 @@ fn bench_compare(c: &mut Criterion) {
             let pdata = Rc::new("test".to_string());
 
             let local = LocalSet::new();
-            let _ = local.spawn_local(async move {
+            _ = local.spawn_local(async move {
                 for _ in 0..MSG_COUNT {
                     _ = tx.send(pdata.clone()).await;
                 }
             });
 
-            let _ = local.run_until(async {
+            _ = local.run_until(async {
                 let mut _sum = 0;
                 while let Some(_v) = rx.next().await {
                     _sum += 1;
@@ -65,13 +65,13 @@ fn bench_compare(c: &mut Criterion) {
             let pdata = Rc::new("test".to_string());
 
             let local = LocalSet::new();
-            let _ = local.spawn_local(async move {
+            _ = local.spawn_local(async move {
                 for _ in 0..MSG_COUNT {
                     _ = tx.send_async(pdata.clone()).await;
                 }
             });
 
-            let _ = local.run_until(async {
+            _ = local.run_until(async {
                 let mut _sum = 0;
                 while let Ok(_v) = rx.recv_async().await {
                     _sum += 1;
@@ -88,13 +88,13 @@ fn bench_compare(c: &mut Criterion) {
             let pdata = Rc::new("test".to_string());
 
             let local = LocalSet::new();
-            let _ = local.spawn_local(async move {
+            _ = local.spawn_local(async move {
                 for _ in 0..MSG_COUNT {
                     _ = tx.send_async(pdata.clone()).await;
                 }
             });
 
-            let _ = local.run_until(async {
+            _ = local.run_until(async {
                 let mut _sum = 0;
                 while let Ok(_v) = rx.recv().await {
                     _sum += 1;
@@ -111,13 +111,13 @@ fn bench_compare(c: &mut Criterion) {
             let pdata = Rc::new("test".to_string());
 
             let local = LocalSet::new();
-            let _ = local.spawn_local(async move {
+            _ = local.spawn_local(async move {
                 for _ in 0..MSG_COUNT {
                     _ = tx.send(pdata.clone()).await;
                 }
             });
 
-            let _ = local.run_until(async {
+            _ = local.run_until(async {
                 let mut _sum = 0;
                 while let Some(_v) = rx.recv().await {
                     _sum += 1;
@@ -134,13 +134,13 @@ fn bench_compare(c: &mut Criterion) {
             let pdata = Rc::new("test".to_string());
 
             let local = LocalSet::new();
-            let _ = local.spawn_local(async move {
+            _ = local.spawn_local(async move {
                 for _ in 0..MSG_COUNT {
                     _ = tx.send(pdata.clone());
                 }
             });
 
-            let _ = local.run_until(async {
+            _ = local.run_until(async {
                 let mut _sum = 0;
                 while let Some(_v) = rx.recv().await {
                     _sum += 1;
@@ -157,13 +157,13 @@ fn bench_compare(c: &mut Criterion) {
             let pdata = Rc::new("test".to_string());
 
             let local = LocalSet::new();
-            let _ = local.spawn_local(async move {
+            _ = local.spawn_local(async move {
                 for _ in 0..MSG_COUNT {
                     _ = tx.send(pdata.clone());
                 }
             });
 
-            let _ = local.run_until(async {
+            _ = local.run_until(async {
                 let mut _sum = 0;
                 while let Some(_v) = rx.recv().await {
                     _sum += 1;

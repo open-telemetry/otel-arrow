@@ -16,3 +16,6 @@ workspace = true
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+miette = {workspace = true}
+
+schemars = { version="0.9.0" }

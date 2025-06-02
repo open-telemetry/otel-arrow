@@ -29,6 +29,7 @@ pub struct ValidateContext {
 
 impl<PData> TestContext<PData> {
     /// Creates a new NotSendTestContext.
+    #[must_use]
     pub fn new(processor: ProcessorWrapper<PData>) -> Self {
         Self { processor }
     }
@@ -70,6 +71,7 @@ impl<PData> TestContext<PData> {
 
 impl ValidateContext {
     /// Returns the control message counters.
+    #[must_use]
     pub fn counters(&self) -> CtrlMsgCounters {
         self.counters.clone()
     }
@@ -111,6 +113,7 @@ pub struct ValidationPhase {
 
 impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
+    #[must_use]
     pub fn new() -> Self {
         let config = ProcessorConfig::new("test_processor");
         let (rt, local_tasks) = setup_test_runtime();
@@ -142,6 +145,12 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
             processor,
             counters: self.counter,
         }
+    }
+}
+
+impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
