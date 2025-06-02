@@ -46,6 +46,17 @@ impl OtapBatch {
             Self::Traces(spans) => spans.get(payload_type),
         }
     }
+
+    /// Get the list of possible payload types associated with the batch of this type.
+    /// Note: It's not guaranteed that this batch will actual contain all these 
+    /// payload types
+    pub fn allowed_payload_types(&self) -> &'static [ArrowPayloadType] {
+        match self {
+            Self::Logs(_) => Logs::allowed_payload_types(),
+            Self::Metrics(_) => Metrics::allowed_payload_types(),
+            Self::Traces(_) => Traces::allowed_payload_types(),
+        }
+    }
 }
 
 /// The ArrowBatchStore helper trait is used to define a common interface for
@@ -62,6 +73,9 @@ trait OtapBatchStore: Sized + Default + Clone {
     /// that types to be positioned in the array according to the POSITION_LOOKUP array.
     fn batches_mut(&mut self) -> &mut [Option<RecordBatch>];
     fn batches(&self) -> &[Option<RecordBatch>];
+
+    /// Return a list of the allowed payload types associated with this type of batch
+    fn allowed_payload_types() -> &'static [ArrowPayloadType];
 
     fn new() -> Self {
         Self::default()
@@ -177,6 +191,16 @@ impl OtapBatchStore for Logs {
     fn batches(&self) -> &[Option<RecordBatch>] {
         &self.batches
     }
+    
+    fn allowed_payload_types() -> &'static [ArrowPayloadType] {
+        return &[
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::Logs,
+            ArrowPayloadType::LogAttrs,
+        ];
+    }
+
 }
 
 /// Store of record batches for a batch of OTAP metrics data.
@@ -212,6 +236,29 @@ impl OtapBatchStore for Metrics {
     fn batches(&self) -> &[Option<RecordBatch>] {
         &self.batches
     }
+
+    fn allowed_payload_types() -> &'static [ArrowPayloadType] {
+        return &[
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::UnivariateMetrics,
+            ArrowPayloadType::NumberDataPoints,
+            ArrowPayloadType::SummaryDataPoints,
+            ArrowPayloadType::HistogramDataPoints,
+            ArrowPayloadType::ExpHistogramDataPoints,
+            ArrowPayloadType::NumberDpAttrs,
+            ArrowPayloadType::SummaryDpAttrs,
+            ArrowPayloadType::HistogramDpAttrs,
+            ArrowPayloadType::ExpHistogramDpAttrs,
+            ArrowPayloadType::NumberDpExemplars,
+            ArrowPayloadType::HistogramDpExemplars,
+            ArrowPayloadType::ExpHistogramDpExemplars,
+            ArrowPayloadType::NumberDpExemplarAttrs,
+            ArrowPayloadType::HistogramDpExemplarAttrs,
+            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+            ArrowPayloadType::MultivariateMetrics,
+        ];
+    }
 }
 
 /// Store of record batches for a batch of OTAP traces data.
@@ -236,6 +283,19 @@ impl OtapBatchStore for Traces {
 
     fn batches(&self) -> &[Option<RecordBatch>] {
         &self.batches
+    }
+
+    fn allowed_payload_types() -> &'static [ArrowPayloadType] {
+        return &[
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::Spans,
+            ArrowPayloadType::SpanAttrs,
+            ArrowPayloadType::SpanEvents,
+            ArrowPayloadType::SpanLinks,
+            ArrowPayloadType::SpanEventAttrs,
+            ArrowPayloadType::SpanLinkAttrs,
+        ];
     }
 }
 
