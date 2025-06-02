@@ -19,6 +19,8 @@ pub mod otap_receiver;
 /// Generated protobuf files
 pub mod proto;
 
+pub mod parquet_exporter;
+
 /// testing utilities
 #[cfg(test)]
 mod mock;

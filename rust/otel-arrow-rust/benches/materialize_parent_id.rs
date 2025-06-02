@@ -79,15 +79,18 @@ fn create_bench_batch(num_attrs: usize) -> RecordBatch {
         Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
     ]);
 
-    RecordBatch::try_new(Arc::new(schema), vec![
-        Arc::new(parent_ids.finish()),
-        Arc::new(keys.finish()),
-        Arc::new(types.finish()),
-        Arc::new(str_values.finish()),
-        Arc::new(int_values.finish()),
-        Arc::new(double_values.finish()),
-        Arc::new(bool_values.finish()),
-    ])
+    RecordBatch::try_new(
+        Arc::new(schema),
+        vec![
+            Arc::new(parent_ids.finish()),
+            Arc::new(keys.finish()),
+            Arc::new(types.finish()),
+            Arc::new(str_values.finish()),
+            Arc::new(int_values.finish()),
+            Arc::new(double_values.finish()),
+            Arc::new(bool_values.finish()),
+        ],
+    )
     .expect("expect can create this record batch")
 }
 
