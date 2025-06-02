@@ -99,12 +99,8 @@ jobs:
           toolchain: stable
           components: clippy
       - name: cargo clippy ${{ matrix.folder }}
-        # To not block initial checkin of CI, removing build break on warnings for now
-        # TODO: re-enable '-- -D warnings' when we have fixed all clippy warnings
-        run: cargo clippy --all-targets --all-features
+        run: cargo clippy --all-targets --all-features --workspace -- -D warnings
         working-directory: ./rust/${{ matrix.folder }}
-
-
 
   deny:
     strategy:
