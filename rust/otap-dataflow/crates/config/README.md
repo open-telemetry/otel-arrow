@@ -55,6 +55,17 @@ configuration file into this new config model**.
 Some aspects of the OTEL Collector, such as the extension mechanism, are still under consideration
 and have not yet been fully mapped in the new model.
 
+## Config Validation & Error Reporting
+
+A **strict validation stage** will be developed to ensure the stability and robustness of the
+engine. The validator will perform comprehensive checks on configuration files before they are
+accepted by the engine.
+
+Instead of stopping at the first error, the parser and validator will attempt to **collect all
+configuration errors in a single run**, providing detailed and informative context for each issue.
+This approach makes debugging and troubleshooting significantly easier, allowing users to resolve
+multiple issues at once and increasing overall productivity.
+
 ## Roadmap
 
 An API will be introduced to allow for **dynamic management** of configuration:
