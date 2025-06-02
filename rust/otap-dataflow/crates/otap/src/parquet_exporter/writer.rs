@@ -78,26 +78,12 @@ impl WriterManager {
 
     pub async fn write(&mut self, writes: &[WriteBatch<'_>]) -> Result<(), ParquetError> {
         for write in writes {
-            let payload_types = match write.otap_batch {
-                OtapBatch::Logs(_) => [
-                    ArrowPayloadType::LogAttrs,
-                    ArrowPayloadType::ResourceAttrs,
-                    ArrowPayloadType::ScopeAttrs,
-                    ArrowPayloadType::Logs,
-                ],
-                _ => {
-                    // TODO need to handle traces & metrics signal types
-                    // https://github.com/open-telemetry/otel-arrow/issues/503
-                    todo!("handle for other signal types")
-                }
-            };
-
             // schedule the writes for each payload type for this signal
-            for payload_type in payload_types {
-                if let Some(record_batch) = write.otap_batch.get(payload_type) {
+            for payload_type in write.otap_batch.allowed_payload_types() {
+                if let Some(record_batch) = write.otap_batch.get(*payload_type) {
                     self.schedule_write_batch(
                         write.batch_id,
-                        payload_type,
+                        *payload_type,
                         record_batch,
                         write.partition_attributes,
                     )

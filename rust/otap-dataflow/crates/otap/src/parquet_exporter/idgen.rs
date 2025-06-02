@@ -74,7 +74,7 @@ impl PartitionSequenceIdGenerator {
                 OtapBatch::Logs(_) => {
                     let logs_rb = match otap_batch.get(ArrowPayloadType::Logs) {
                         Some(rb) => rb,
-                        // nothing to do -- this would be unusual
+                        // nothing to do -- this could mean an empty batch
                         None => break,
                     };
 
