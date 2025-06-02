@@ -51,6 +51,7 @@ impl OtapBatch {
     /// Get the list of possible payload types associated with the batch of this type.
     /// Note: It's not guaranteed that this batch will actual contain all these
     /// payload types
+    #[must_use]
     pub fn allowed_payload_types(&self) -> &'static [ArrowPayloadType] {
         match self {
             Self::Logs(_) => Logs::allowed_payload_types(),
@@ -194,12 +195,12 @@ impl OtapBatchStore for Logs {
     }
 
     fn allowed_payload_types() -> &'static [ArrowPayloadType] {
-        return &[
+        &[
             ArrowPayloadType::ResourceAttrs,
             ArrowPayloadType::ScopeAttrs,
             ArrowPayloadType::Logs,
             ArrowPayloadType::LogAttrs,
-        ];
+        ]
     }
 }
 
@@ -238,7 +239,7 @@ impl OtapBatchStore for Metrics {
     }
 
     fn allowed_payload_types() -> &'static [ArrowPayloadType] {
-        return &[
+        &[
             ArrowPayloadType::ResourceAttrs,
             ArrowPayloadType::ScopeAttrs,
             ArrowPayloadType::UnivariateMetrics,
@@ -257,7 +258,7 @@ impl OtapBatchStore for Metrics {
             ArrowPayloadType::HistogramDpExemplarAttrs,
             ArrowPayloadType::ExpHistogramDpExemplarAttrs,
             ArrowPayloadType::MultivariateMetrics,
-        ];
+        ]
     }
 }
 
@@ -286,7 +287,7 @@ impl OtapBatchStore for Traces {
     }
 
     fn allowed_payload_types() -> &'static [ArrowPayloadType] {
-        return &[
+        &[
             ArrowPayloadType::ResourceAttrs,
             ArrowPayloadType::ScopeAttrs,
             ArrowPayloadType::Spans,
@@ -295,7 +296,7 @@ impl OtapBatchStore for Traces {
             ArrowPayloadType::SpanLinks,
             ArrowPayloadType::SpanEventAttrs,
             ArrowPayloadType::SpanLinkAttrs,
-        ];
+        ]
     }
 }
 
