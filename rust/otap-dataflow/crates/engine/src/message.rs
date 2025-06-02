@@ -302,7 +302,7 @@ impl<PData> MessageChannel<PData> {
                         // Begin draining mode, but don’t return Shutdown yet
                         let when = Instant::now() + deadline;
                         self.shutting_down_deadline = Some(when);
-                        self.pending_shutdown = Some(ControlMsg::Shutdown { deadline: Duration::ZERO, reason });
+                        self.pending_shutdown = Some(ControlMsg::Shutdown { deadline, reason });
                         continue; // re-enter the loop into draining mode
                     }
                     Ok(msg) => return Ok(Message::Control(msg)),
