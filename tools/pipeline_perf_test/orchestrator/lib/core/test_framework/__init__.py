@@ -2,7 +2,7 @@
 
 from .test_data import TestData
 from .test_definition import TestDefinition
-from .test_step import TestStep
+from .test_step import TestStep, TestStepActionConfig, TestStepAction
 from .test_suite import TestSuite
 from .test_element import TestFrameworkElement, TestLifecyclePhase
 
@@ -12,5 +12,7 @@ __all__ = [
     "TestSuite",
     "TestDefinition",
     "TestStep",
+    "TestStepActionConfig",
+    "TestStepAction",
     "TestLifecyclePhase",
 ]
