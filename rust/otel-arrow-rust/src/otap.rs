@@ -14,6 +14,7 @@ use crate::{
 pub mod transform;
 
 /// The OtapBatch enum is used to represent a batch of OTAP data.
+#[allow(clippy::large_enum_variant)]
 pub enum OtapBatch {
     /// Represents a batch of logs data.
     Logs(Logs),
