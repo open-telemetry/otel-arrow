@@ -10,30 +10,50 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::arrays::NullableArrayAccessor;
+use crate::error::{self, Result};
 use crate::otlp::attributes::decoder::{
     Attrs16ParentIdDecoder, Attrs32ParentIdDecoder, AttrsParentIdDecoder,
 };
-use arrow::array::{UInt16Array, UInt32Array};
-use arrow::datatypes::DataType;
-use num_enum::TryFromPrimitive;
+use crate::schema::consts;
+use arrow::array::{ArrowPrimitiveType, PrimitiveArray, RecordBatch};
+use arrow::datatypes::{UInt16Type, UInt32Type};
+use snafu::OptionExt;
 use std::hash::Hash;
 use std::ops::{Add, AddAssign};
 
-pub trait ParentId: Copy + Hash + Eq + Default + Add<Output = Self> + AddAssign {
-    type Array: NullableArrayAccessor<Native = Self> + 'static;
-
-    fn arrow_data_type() -> DataType;
+pub trait ParentId: Copy + Hash + Eq + Default + Add<Output = Self> + AddAssign
+where
+    <Self as ParentId>::ArrayType: ArrowPrimitiveType,
+{
+    type ArrayType;
 
     fn new_decoder() -> AttrsParentIdDecoder<Self>;
+
+    /// Get the parent id columns from the record batch, downcast to the correct type
+    fn get_parent_id_column(
+        record_batch: &RecordBatch,
+    ) -> Result<&PrimitiveArray<Self::ArrayType>> {
+        let parent_id_arr =
+            record_batch
+                .column_by_name(consts::PARENT_ID)
+                .context(error::ColumnNotFoundSnafu {
+                    name: consts::PARENT_ID,
+                })?;
+        let parent_id_arr = parent_id_arr
+            .as_any()
+            .downcast_ref::<PrimitiveArray<Self::ArrayType>>()
+            .with_context(|| error::ColumnDataTypeMismatchSnafu {
+                name: consts::PARENT_ID,
+                expect: Self::ArrayType::DATA_TYPE,
+                actual: parent_id_arr.data_type().clone(),
+            })?;
+
+        Ok(parent_id_arr)
+    }
 }
 
 impl ParentId for u16 {
-    type Array = UInt16Array;
-
-    fn arrow_data_type() -> DataType {
-        DataType::UInt16
-    }
+    type ArrayType = UInt16Type;
 
     fn new_decoder() -> AttrsParentIdDecoder<Self> {
         Attrs16ParentIdDecoder::default()
@@ -41,28 +61,9 @@ impl ParentId for u16 {
 }
 
 impl ParentId for u32 {
-    type Array = UInt32Array;
-
-    fn arrow_data_type() -> DataType {
-        DataType::UInt32
-    }
+    type ArrayType = UInt32Type;
 
     fn new_decoder() -> AttrsParentIdDecoder<Self> {
         Attrs32ParentIdDecoder::default()
     }
-}
-
-#[allow(clippy::enum_variant_names)]
-#[derive(Copy, Clone, Eq, PartialEq, Debug, TryFromPrimitive)]
-#[repr(u8)]
-pub enum ParentIdEncoding {
-    /// ParentIdNoEncoding stores the parent ID as is.
-    ParentIdNoEncoding = 0,
-    /// ParentIdDeltaEncoding stores the parent ID as a delta from the previous
-    /// parent ID.
-    ParentIdDeltaEncoding = 1,
-    /// ParentIdDeltaGroupEncoding stores the parent ID as a delta from the
-    /// previous parent ID in the same group. A group is defined by the
-    /// combination Key and Value.
-    ParentIdDeltaGroupEncoding = 2,
 }

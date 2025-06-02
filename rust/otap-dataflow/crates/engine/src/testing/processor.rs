@@ -2,59 +2,78 @@
 
 //! Testing utilities for processors.
 //!
-//! This module provides specialized utilities for testing processor components:
-//!
-//! - `ProcessorTestContext`: Provides a context for interacting with processors during tests
-//! - `ProcessorTestRuntime`: Configures and manages a single-threaded tokio runtime for processor tests
-//!
 //! These utilities are designed to make testing processors simpler by abstracting away common
 //! setup and lifecycle management.
 
+use crate::config::ProcessorConfig;
 use crate::error::Error;
 use crate::message::Message;
-use crate::processor::{EffectHandler, Processor};
-use crate::testing::{create_test_channel, setup_test_runtime};
-use otap_df_channel::mpsc;
+use crate::processor::ProcessorWrapper;
+use crate::testing::{CtrlMsgCounters, setup_test_runtime};
+use std::fmt::Debug;
 use std::future::Future;
+use std::marker::PhantomData;
+use std::time::Duration;
 use tokio::task::LocalSet;
+use tokio::time::sleep;
 
-/// A context object.
-pub struct ProcessorTestContext<P>
-where
-    P: Processor,
-{
-    processor: P,
-    pdata_rx: mpsc::Receiver<P::PData>,
-    effect_handler: EffectHandler<P::PData>,
+/// Context used during the test phase of a test.
+pub struct TestContext<PData> {
+    processor: ProcessorWrapper<PData>,
 }
 
-impl<P> ProcessorTestContext<P>
-where
-    P: Processor,
-{
-    /// Creates a new TestContext with the given transmitters.
-    pub fn new(processor: P, channel_capacity: usize) -> Self {
-        let (pdata_tx, pdata_rx) = create_test_channel(channel_capacity);
-        let effect_handler = EffectHandler::new("test_processor", pdata_tx);
-        Self {
-            processor,
-            pdata_rx,
-            effect_handler,
-        }
+/// Context used during the validation phase of a test.
+pub struct ValidateContext {
+    counters: CtrlMsgCounters,
+}
+
+impl<PData> TestContext<PData> {
+    /// Creates a new NotSendTestContext.
+    #[must_use]
+    pub fn new(processor: ProcessorWrapper<PData>) -> Self {
+        Self { processor }
     }
 
-    /// Calls the processor's process method with the given message.
-    pub async fn process(&mut self, msg: Message<P::PData>) -> Result<(), Error<P::PData>> {
-        self.processor.process(msg, &mut self.effect_handler).await
+    /// Processes a new message.
+    pub async fn process(&mut self, msg: Message<PData>) -> Result<(), Error<PData>> {
+        self.processor.process(msg).await
     }
 
-    /// Drains and returns all pdata messages emitted by the processor via the effect handler.
-    pub async fn drain_pdata(&mut self) -> Vec<P::PData> {
+    /// Drains and returns all messages from the pdata receiver.
+    pub async fn drain_pdata(&mut self) -> Vec<PData> {
         let mut emitted = Vec::new();
-        while let Ok(msg) = self.pdata_rx.try_recv() {
-            emitted.push(msg);
+
+        match &mut self.processor {
+            ProcessorWrapper::Local { pdata_receiver, .. } => {
+                if let Some(pdata_receiver) = pdata_receiver {
+                    while let Ok(msg) = pdata_receiver.try_recv() {
+                        emitted.push(msg);
+                    }
+                }
+            }
+            ProcessorWrapper::Shared { pdata_receiver, .. } => {
+                if let Some(pdata_receiver) = pdata_receiver {
+                    while let Ok(msg) = pdata_receiver.try_recv() {
+                        emitted.push(msg);
+                    }
+                }
+            }
         }
+
         emitted
+    }
+
+    /// Sleeps for the specified duration.
+    pub async fn sleep(&self, duration: Duration) {
+        sleep(duration).await;
+    }
+}
+
+impl ValidateContext {
+    /// Returns the control message counters.
+    #[must_use]
+    pub fn counters(&self) -> CtrlMsgCounters {
+        self.counters.clone()
     }
 }
 
@@ -62,49 +81,102 @@ where
 ///
 /// This structure encapsulates the common setup logic needed for testing processors,
 /// including channel creation, processor instantiation, and task management.
-pub struct ProcessorTestRuntime<P>
-where
-    P: Processor,
-{
-    processor: Option<P>,
-    channel_capacity: usize,
+pub struct TestRuntime<PData> {
+    /// The configuration for the processor
+    config: ProcessorConfig,
 
     /// Runtime instance
     rt: tokio::runtime::Runtime,
     /// Local task set for non-Send futures
     local_tasks: LocalSet,
+
+    /// Message counter for tracking processed messages
+    counter: CtrlMsgCounters,
+
+    _pd: PhantomData<PData>,
 }
 
-impl<P> ProcessorTestRuntime<P>
-where
-    P: Processor + 'static,
-{
+/// Data and operations for the test phase of a processor.
+pub struct TestPhase<PData> {
+    rt: tokio::runtime::Runtime,
+    local_tasks: LocalSet,
+    processor: ProcessorWrapper<PData>,
+    counters: CtrlMsgCounters,
+}
+
+/// Data and operations for the validation phase of a processor.
+pub struct ValidationPhase {
+    rt: tokio::runtime::Runtime,
+    local_tasks: LocalSet,
+    counters: CtrlMsgCounters,
+}
+
+impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
     /// Creates a new test runtime with channels of the specified capacity.
-    pub fn new(processor: P, channel_capacity: usize) -> Self {
+    #[must_use]
+    pub fn new() -> Self {
+        let config = ProcessorConfig::new("test_processor");
         let (rt, local_tasks) = setup_test_runtime();
 
         Self {
-            processor: Some(processor),
-            channel_capacity,
+            config,
             rt,
             local_tasks,
+            counter: CtrlMsgCounters::new(),
+            _pd: PhantomData,
         }
     }
 
-    /// Spawns a local task with a TestContext that provides access to transmitters.
-    pub fn start_test<F, Fut>(&mut self, f: F)
-    where
-        F: FnOnce(ProcessorTestContext<P>) -> Fut + 'static,
-        Fut: Future<Output = ()> + 'static,
-    {
-        let processor = self.processor.take().expect("Processor not set");
-        let context = ProcessorTestContext::new(processor, self.channel_capacity);
-
-        let _ = self.local_tasks.spawn_local(async move {
-            f(context).await;
-        });
+    /// Returns the current receiver configuration.
+    pub fn config(&self) -> &ProcessorConfig {
+        &self.config
     }
 
+    /// Returns the message counter.
+    pub fn counters(&self) -> CtrlMsgCounters {
+        self.counter.clone()
+    }
+
+    /// Initializes the test runtime with a processor using a non-sendable effect handler.
+    pub fn set_processor(self, processor: ProcessorWrapper<PData>) -> TestPhase<PData> {
+        TestPhase {
+            rt: self.rt,
+            local_tasks: self.local_tasks,
+            processor,
+            counters: self.counter,
+        }
+    }
+}
+
+impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<PData: Debug + 'static> TestPhase<PData> {
+    /// Starts the test scenario by executing the provided function with the test context.
+    pub fn run_test<F, Fut>(self, f: F) -> ValidationPhase
+    where
+        F: FnOnce(TestContext<PData>) -> Fut + 'static,
+        Fut: Future<Output = ()> + 'static,
+    {
+        // The entire scenario is run to completion before the validation phase
+        let context = TestContext::new(self.processor);
+        self.rt.block_on(async move {
+            f(context).await;
+        });
+
+        // Prepare for next phase
+        ValidationPhase {
+            rt: self.rt,
+            local_tasks: self.local_tasks,
+            counters: self.counters,
+        }
+    }
+}
+
+impl ValidationPhase {
     /// Runs all spawned tasks to completion and executes the provided future to validate test
     /// expectations.
     ///
@@ -119,13 +191,17 @@ where
     /// The result of the provided future.
     pub fn validate<F, Fut, T>(self, future_fn: F) -> T
     where
-        F: FnOnce() -> Fut,
+        F: FnOnce(ValidateContext) -> Fut,
         Fut: Future<Output = T>,
     {
+        let context = ValidateContext {
+            counters: self.counters,
+        };
+
         // First run all the spawned tasks to completion
         self.rt.block_on(self.local_tasks);
 
         // Then run the validation future with the test context
-        self.rt.block_on(future_fn())
+        self.rt.block_on(future_fn(context))
     }
 }

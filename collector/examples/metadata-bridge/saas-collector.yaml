@@ -16,7 +16,7 @@ receivers:
           authenticator: basicauth
 
 exporters:
-  debug:      
+  debug:
     verbosity: normal
 
   otlphttp:
@@ -29,7 +29,7 @@ exporters:
     # so that it passes through headers set on the edge collector.
     auth:
       authenticator: headers_setter
-    
+
 extensions:
   # Configure the headers_setter extension to propagate the
   # X-Scope-OrgID property in the outgoing context.
@@ -43,7 +43,7 @@ extensions:
         from_context: Authorization
   # Configure basic auth for incoming data.
   basicauth:
-    htpasswd: 
+    htpasswd:
       inline: |
         testuser:testpw
         arrowstream:arrowpw
@@ -53,7 +53,6 @@ service:
   pipelines:
     traces:
       receivers: [otelarrow]
-      processors: []
       exporters: [debug, otlphttp]
 
   telemetry:

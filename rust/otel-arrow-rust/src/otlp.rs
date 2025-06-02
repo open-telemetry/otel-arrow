@@ -10,9 +10,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-mod exemplar;
-pub mod metric;
+// TODO write documentation for this crate
+#![allow(missing_docs)]
 
 pub mod attributes;
-pub mod data_points;
-pub mod related_data;
+pub mod logs;
+pub mod metrics;
+
+mod common;

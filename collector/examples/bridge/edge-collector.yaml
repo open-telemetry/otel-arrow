@@ -4,10 +4,6 @@ receivers:
   # There are no required configuration fields.
   otelarrow/standard:
 
-processors:
-  # The batch processor will benefit pipelines with small export sizes.
-  concurrentbatch:
-
 exporters:
   # otelarrow/arrow is an OTel-Arrow exporter.
   otelarrow/arrow:
@@ -35,11 +31,9 @@ service:
   pipelines:
     traces:
       receivers: [otelarrow/standard]
-      processors: [concurrentbatch]
       exporters: [otelarrow/arrow, debug]
     metrics:
       receivers: [otelarrow/standard]
-      processors: [concurrentbatch]
       exporters: [otelarrow/arrow, debug]
 
   telemetry:

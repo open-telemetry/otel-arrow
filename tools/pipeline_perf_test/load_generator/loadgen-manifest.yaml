@@ -1,0 +1,31 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: otel-loadgen
+  labels:
+    app: loadgen
+spec:
+  ttlSecondsAfterFinished: 100
+  template:
+    metadata:
+      labels:
+        app: loadgen
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: loadgen
+        image: otel-loadgen:latest
+        imagePullPolicy: IfNotPresent # Use the local image
+        env:
+        - name: OTLP_ENDPOINT
+          value: "otel-collector-service:4317"
+        args:
+        - "--duration"
+        - "{{DURATION}}"  # This will be replaced by the orchestrator
+        resources:
+          requests:
+            cpu: "2"
+            memory: 1000Mi
+          limits:
+            cpu: "4"
+            memory: 1000Mi

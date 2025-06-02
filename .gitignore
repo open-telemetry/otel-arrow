@@ -45,8 +45,15 @@ coverage.html
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
+# Python
+__pycache__/
+
 # Benchmarks output
 /output/
 
+# PerfTest pipeline output
+/tools/pipeline_perf_test/results/
+
 # Collector test binary
 collector/cmd/otelarrowcol/otelarrowcol
+tools/pipeline_perf_test/load_generator/loadgen-manifest.yaml.tmp
