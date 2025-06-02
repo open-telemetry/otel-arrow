@@ -88,7 +88,7 @@ impl ArrowLogsService for ArrowLogsServiceMock {
 
                 _ = tx
                     .send(Ok(BatchStatus {
-                        batch_id: batch_id,
+                        batch_id,
                         status_code: status_result.0 as i32,
                         status_message: status_result.1,
                     }))
@@ -127,7 +127,7 @@ impl ArrowMetricsService for ArrowMetricsServiceMock {
                 };
                 _ = tx
                     .send(Ok(BatchStatus {
-                        batch_id: batch_id,
+                        batch_id,
                         status_code: status_result.0 as i32,
                         status_message: status_result.1,
                     }))
@@ -166,7 +166,7 @@ impl ArrowTracesService for ArrowTracesServiceMock {
                 };
                 _ = tx
                     .send(Ok(BatchStatus {
-                        batch_id: batch_id,
+                        batch_id,
                         status_code: status_result.0 as i32,
                         status_message: status_result.1,
                     }))
@@ -190,7 +190,7 @@ pub fn create_batch_arrow_record(
         record: vec![0],
     };
     BatchArrowRecords {
-        batch_id: batch_id,
+        batch_id,
         arrow_payloads: vec![arrow_payload],
         headers: vec![0],
     }

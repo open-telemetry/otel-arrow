@@ -8,6 +8,7 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
+use crate::SHARED_RECEIVERS;
 use crate::grpc::{
     ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OTAPData,
 };
@@ -17,10 +18,12 @@ use crate::proto::opentelemetry::experimental::arrow::v1::{
     arrow_traces_service_server::ArrowTracesServiceServer,
 };
 use async_trait::async_trait;
+use linkme::distributed_slice;
 use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
-use otap_df_engine::shared::receiver as shared;
+use otap_df_engine::shared::{SharedReceiverFactory, receiver as shared};
 use otap_df_otlp::compression::CompressionMethod;
+use serde_json::Value;
 use std::net::SocketAddr;
 use tonic::codegen::tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
@@ -31,6 +34,17 @@ pub struct OTAPReceiver {
     compression_method: Option<CompressionMethod>,
     message_size: usize,
 }
+
+/// Declares the OTAP exporter as a local exporter factory
+///
+/// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
+/// This macro is part of the `linkme` crate which is considered safe and well maintained.
+#[allow(unsafe_code)]
+#[distributed_slice(SHARED_RECEIVERS)]
+pub static OTAP_EXPORTER: SharedReceiverFactory<OTAPData> = SharedReceiverFactory {
+    name: "urn:otel:otap:receiver",
+    create: |config: &Value| Box::new(OTAPReceiver::from_config(config)),
+};
 
 impl OTAPReceiver {
     /// creates a new OTAP Receiver
@@ -44,6 +58,17 @@ impl OTAPReceiver {
             listening_addr,
             compression_method,
             message_size,
+        }
+    }
+
+    /// Creates a new OTAPReceiver from a configuration object
+    #[must_use]
+    pub fn from_config(_config: &Value) -> Self {
+        // ToDo: implement config parsing
+        OTAPReceiver {
+            listening_addr: "127.0.0.1:4317".parse().expect("Invalid socket address"),
+            compression_method: None,
+            message_size: 100, // default message size
         }
     }
 }
@@ -95,7 +120,7 @@ impl shared::Receiver<OTAPData> for OTAPReceiver {
                 // Process internal event
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
-                        Ok(ControlMsg::Shutdown {deadline, reason}) => {
+                        Ok(ControlMsg::Shutdown {..}) => {
                             // ToDo: add proper deadline function
                             break;
                         },
@@ -157,6 +182,7 @@ mod tests {
                     ArrowMetricsServiceClient::connect(grpc_endpoint.clone())
                         .await
                         .expect("Failed to connect to server from Metrics Service Client");
+                #[allow(tail_expr_drop_order)]
                 let metrics_stream = stream! {
                     for batch_id in 0..3 {
                         let metrics_records = create_batch_arrow_record(batch_id, ArrowPayloadType::MultivariateMetrics);
@@ -171,6 +197,7 @@ mod tests {
                 let mut arrow_logs_client = ArrowLogsServiceClient::connect(grpc_endpoint.clone())
                     .await
                     .expect("Failed to connect to server from Logs Service Client");
+                #[allow(tail_expr_drop_order)]
                 let logs_stream = stream! {
                     for batch_id in 0..3 {
                         let logs_records = create_batch_arrow_record(batch_id, ArrowPayloadType::Logs);
@@ -186,6 +213,7 @@ mod tests {
                     ArrowTracesServiceClient::connect(grpc_endpoint.clone())
                         .await
                         .expect("Failed to connect to server from Trace Service Client");
+                #[allow(tail_expr_drop_order)]
                 let traces_stream = stream! {
                     for batch_id in 0..3 {
                         let traces_records = create_batch_arrow_record(batch_id, ArrowPayloadType::Spans);

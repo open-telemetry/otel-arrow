@@ -76,10 +76,14 @@ fn create_metrics_data() -> MetricsData {
     // Sum Metric
     let sum_metric = Metric::new_sum(
         "counter",
-        Sum::new(AggregationTemporality::Delta, true, vec![
-            NumberDataPoint::new_int(125_000_000_000u64, 123i64),
-            NumberDataPoint::new_double(125_000_000_000u64, 123f64),
-        ]),
+        Sum::new(
+            AggregationTemporality::Delta,
+            true,
+            vec![
+                NumberDataPoint::new_int(125_000_000_000u64, 123i64),
+                NumberDataPoint::new_double(125_000_000_000u64, 123f64),
+            ],
+        ),
     );
 
     // Gauge Metric
@@ -94,38 +98,47 @@ fn create_metrics_data() -> MetricsData {
     // Histogram Metric
     let histogram_metric = Metric::new_histogram(
         "histogram",
-        Histogram::new(AggregationTemporality::Delta, vec![
-            HistogramDataPoint::build(125_000_000_000u64, [1u64, 2u64, 3u64], [1.0, 10.0])
-                .start_time_unix_nano(124_000_000_000u64)
-                .finish(),
-            HistogramDataPoint::build(126_000_000_000u64, [3u64, 2u64, 1u64], [1.0, 10.0])
-                .start_time_unix_nano(125_000_000_000u64)
-                .count(100u64)
-                .sum(1000.0)
-                .min(0.1)
-                .max(10.1)
-                .finish(),
-        ]),
+        Histogram::new(
+            AggregationTemporality::Delta,
+            vec![
+                HistogramDataPoint::build(125_000_000_000u64, [1u64, 2u64, 3u64], [1.0, 10.0])
+                    .start_time_unix_nano(124_000_000_000u64)
+                    .finish(),
+                HistogramDataPoint::build(126_000_000_000u64, [3u64, 2u64, 1u64], [1.0, 10.0])
+                    .start_time_unix_nano(125_000_000_000u64)
+                    .count(100u64)
+                    .sum(1000.0)
+                    .min(0.1)
+                    .max(10.1)
+                    .finish(),
+            ],
+        ),
     );
 
     // Summary Metric
     let summary_metric = Metric::new_summary(
         "summary",
         Summary::new(vec![
-            SummaryDataPoint::build(125_000_000_000u64, vec![
-                ValueAtQuantile::new(0.1, 0.1),
-                ValueAtQuantile::new(0.5, 2.1),
-                ValueAtQuantile::new(1.0, 10.1),
-            ])
+            SummaryDataPoint::build(
+                125_000_000_000u64,
+                vec![
+                    ValueAtQuantile::new(0.1, 0.1),
+                    ValueAtQuantile::new(0.5, 2.1),
+                    ValueAtQuantile::new(1.0, 10.1),
+                ],
+            )
             .start_time_unix_nano(124_000_000_000u64)
             .count(100u64)
             .sum(1000.0)
             .finish(),
-            SummaryDataPoint::build(126_000_000_000u64, vec![
-                ValueAtQuantile::new(0.1, 0.5),
-                ValueAtQuantile::new(0.5, 2.5),
-                ValueAtQuantile::new(1.0, 10.5),
-            ])
+            SummaryDataPoint::build(
+                126_000_000_000u64,
+                vec![
+                    ValueAtQuantile::new(0.1, 0.5),
+                    ValueAtQuantile::new(0.5, 2.5),
+                    ValueAtQuantile::new(1.0, 10.5),
+                ],
+            )
             .start_time_unix_nano(124_000_000_000u64)
             .count(200u64)
             .sum(2000.0)
@@ -136,18 +149,21 @@ fn create_metrics_data() -> MetricsData {
     // Exponential Histogram Metric
     let exp_histogram_metric = Metric::new_exponential_histogram(
         "exp_histogram",
-        ExponentialHistogram::new(AggregationTemporality::Delta, vec![
-            ExponentialHistogramDataPoint::build(
-                125_000_000_000u64,
-                7,
-                Buckets::new(1, vec![3, 4, 5]),
-            )
-            .start_time_unix_nano(124_000_000_000u64)
-            .count(17u64)
-            .zero_count(2u64)
-            .negative(Buckets::new(0, vec![1, 2]))
-            .finish(),
-        ]),
+        ExponentialHistogram::new(
+            AggregationTemporality::Delta,
+            vec![
+                ExponentialHistogramDataPoint::build(
+                    125_000_000_000u64,
+                    7,
+                    Buckets::new(1, vec![3, 4, 5]),
+                )
+                .start_time_unix_nano(124_000_000_000u64)
+                .count(17u64)
+                .zero_count(2u64)
+                .negative(Buckets::new(0, vec![1, 2]))
+                .finish(),
+            ],
+        ),
     );
 
     let is1 = InstrumentationScope::new("library");
