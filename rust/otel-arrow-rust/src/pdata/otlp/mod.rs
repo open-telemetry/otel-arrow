@@ -16,11 +16,5 @@
 pub use otlp_derive::Message;
 pub use otlp_derive::qualified;
 
-/// Direct translation OTAP->OTLP experimentl
-pub mod direct;
-
 #[cfg(test)]
 mod tests;
-
-// pub use direct::ItemCounter;
-// pub use direct::LogsDataAdapter;

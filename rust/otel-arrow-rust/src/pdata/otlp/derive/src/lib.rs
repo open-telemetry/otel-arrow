@@ -638,9 +638,13 @@ fn generate_visitor_type_for_oneof_variant(case_type: &syn::Type) -> proc_macro2
                     // For primitive types, use the appropriate visitor trait
                     "String" => quote! { impl crate::pdata::StringVisitor },
                     "bool" => quote! { impl crate::pdata::BooleanVisitor },
-                    "i32" | "i64" | "u32" | "u64" => quote! { impl crate::pdata::IntegerVisitor },
-                    "f32" | "f64" => quote! { impl crate::pdata::FloatVisitor },
-                    "u8" => quote! { impl crate::pdata::IntegerVisitor },
+                    "i32" => quote! { impl crate::pdata::I32Visitor },
+                    "i64" => quote! { impl crate::pdata::I64Visitor },
+                    "u32" => quote! { impl crate::pdata::U32Visitor },
+                    "u64" => quote! { impl crate::pdata::U64Visitor },
+                    "f32" => quote! { impl crate::pdata::F64Visitor }, // F32 maps to F64Visitor
+                    "f64" => quote! { impl crate::pdata::F64Visitor },
+                    "u8" => quote! { impl crate::pdata::U32Visitor },
                     _ => {
                         // For message types, generate visitor trait path
                         let mut visitor_path = type_path.path.clone();
@@ -664,21 +668,18 @@ fn generate_visitor_type_for_oneof_variant(case_type: &syn::Type) -> proc_macro2
 
 impl FieldInfo {
     fn base_type(&self) -> proc_macro2::TokenStream {
-        // If this field has an as_type (enum field), use the underlying primitive type
+        // If this field has an as_type (enum field), use the underlying primitive type visitor
         if let Some(as_type) = &self.as_type {
             return match as_type {
                 syn::Type::Path(type_path) => {
                     if let Some(segment) = type_path.path.segments.last() {
                         match segment.ident.to_string().as_str() {
-                            "String" => quote! { &str },
-                            "bool" => quote! { bool },
-                            "i32" => quote! { i32 },
-                            "i64" => quote! { i64 },
-                            "u32" => quote! { u32 },
-                            "u64" => quote! { u64 },
-                            "f32" => quote! { f32 },
-                            "f64" => quote! { f64 },
-                            "u8" => quote! { u8 },
+                            "i32" => quote! { impl crate::pdata::I32Visitor },
+                            "i64" => quote! { impl crate::pdata::I64Visitor },
+                            "u32" => quote! { impl crate::pdata::U32Visitor },
+                            "u64" => quote! { impl crate::pdata::U64Visitor },
+                            "f32" => quote! { impl crate::pdata::F64Visitor }, // F32 maps to F64Visitor
+                            "f64" => quote! { impl crate::pdata::F64Visitor },
                             _ => quote! { #as_type },
                         }
                     } else {
@@ -699,7 +700,7 @@ impl FieldInfo {
                                 if let syn::Type::Path(inner_path) = inner_ty {
                                     if let Some(inner_segment) = inner_path.path.segments.last() {
                                         if inner_segment.ident == "u8" {
-                                            return quote! { &[u8] };
+                                            return quote! { impl crate::pdata::BytesVisitor };
                                         }
                                     }
                                 }
@@ -712,20 +713,20 @@ impl FieldInfo {
 
         let base_type = self.extract_base_type();
 
-        // Convert the base type to appropriate parameter type for visitor pattern
+        // Convert the base type to appropriate visitor trait for visitor pattern
         match &base_type {
             syn::Type::Path(type_path) => {
                 if let Some(segment) = type_path.path.segments.last() {
                     match segment.ident.to_string().as_str() {
-                        "String" => quote! { &str },
-                        "bool" => quote! { bool },
-                        "i32" => quote! { i32 },
-                        "i64" => quote! { i64 },
-                        "u32" => quote! { u32 },
-                        "u64" => quote! { u64 },
-                        "f32" => quote! { f32 },
-                        "f64" => quote! { f64 },
-                        "u8" => quote! { u8 }, // Handle raw u8 case
+                        "String" => quote! { impl crate::pdata::StringVisitor },
+                        "bool" => quote! { impl crate::pdata::BooleanVisitor },
+                        "i32" => quote! { impl crate::pdata::I32Visitor },
+                        "i64" => quote! { impl crate::pdata::I64Visitor },
+                        "u32" => quote! { impl crate::pdata::U32Visitor },
+                        "u64" => quote! { impl crate::pdata::U64Visitor },
+                        "f32" => quote! { impl crate::pdata::F64Visitor }, // F32 maps to F64Visitor
+                        "f64" => quote! { impl crate::pdata::F64Visitor },
+                        "u8" => quote! { impl crate::pdata::U32Visitor }, // Handle raw u8 case
                         _ => {
                             // For message types, generate fully qualified visitor trait path
                             self.generate_visitor_trait_path(type_path)

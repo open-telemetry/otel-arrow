@@ -80,22 +80,31 @@ pub trait StringVisitor {
 }
 
 /// IntegerVisitor
-pub trait IntegerVisitor {
+pub trait I32Visitor {
     /// Visit an integer value
     fn visit_i32(&mut self, value: i32);
+}
+
+/// IntegerVisitor
+pub trait I64Visitor {
     /// Visit an integer value
     fn visit_i64(&mut self, value: i64);
+}
+
+/// IntegerVisitor
+pub trait U32Visitor {
     /// Visit an integer value
     fn visit_u32(&mut self, value: u32);
+}
 
-    // Visit an u64 value (not used)
+/// IntegerVisitor
+pub trait U64Visitor {
+    /// Visit an integer value
     fn visit_u64(&mut self, value: u64);
 }
 
 /// FloatVisitor
-pub trait FloatVisitor {
-    /// Visit a float value
-    fn visit_f32(&mut self, value: f32);
+pub trait F64Visitor {
     /// Visit a float value
     fn visit_f64(&mut self, value: f64);
 }
