@@ -9,6 +9,15 @@
 //! It also handles minor transformations of the data, such as creating a unique ID
 //! (normally, IDs are only unique within some OTAP batch) and removing certain encodings
 //! such as the delta encoded parent IDs.
+//!
+//! This exporter is currently experimental and is not yet ready for production use. There
+//! are several outstanding issues that need to be addressed including:
+//! - support for metrics and traces
+//! - proper error handling and retry logic
+//! - support for acknowledgements and nack messages
+//! - handle periodically flushing batches after some time threshold
+//! - dynamic configuration updates
+//! See the [GitHub issue](https://github.com/open-telemetry/otel-arrow/issues/399) for more details.
 
 use std::io::ErrorKind;
 
