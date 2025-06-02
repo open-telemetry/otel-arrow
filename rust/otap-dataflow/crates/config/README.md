@@ -12,13 +12,19 @@ distinct layer of the configuration hierarchy:
   and all tenants.
 - **TenantConfig**: Represents an individual tenant, including its own settings
   and pipelines.
-- **PipelineConfig**: Describes a pipeline as a hyper-DAG of interconnected
-  nodes, with pipeline-level settings.
+- **PipelineConfig**: Describes a pipeline as a directed-acyclic-hypergraph of
+  interconnected nodes, with pipeline-level settings.
 - **NodeConfig**: Defines a node (receiver, processor, exporter, or connector)
   and its output ports, which represent hyper-edges to downstream nodes.
 
 Each of these components is **directly addressable**, making it straightforward
 to manipulate and retrieve configuration fragments.
+
+The concept of a directed-acyclic-hypergraph (or hyperDAG) is used to extend the
+expressiveness beyond what is currently possible with the existing collector
+configuration. For example, we would like to be able to express that a processor
+can broadcast the same message to multiple destinations, or that a processor can
+load balance a message to one of the destinations connected to the hyper-edge.
 
 ## Design Philosophy
 
