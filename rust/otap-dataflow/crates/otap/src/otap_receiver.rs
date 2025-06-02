@@ -39,7 +39,7 @@ pub struct OTAPReceiver {
 #[allow(unsafe_code)]
 #[distributed_slice(SHARED_RECEIVERS)]
 pub static OTAP_EXPORTER: SharedReceiverFactory<OTAPData> = SharedReceiverFactory {
-    name: "builtin:otap:receiver",
+    name: "urn:otel:otap:receiver",
     create: |config: &Value| Box::new(OTAPReceiver::from_config(config)),
 };
 

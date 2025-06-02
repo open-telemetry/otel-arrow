@@ -8,7 +8,7 @@
 //! A node can have multiple outgoing named ports, each connected to a hyper-edge that defines how
 //! data flows from this node to one or more target nodes.
 
-use crate::{Description, NodeId, PortName};
+use crate::{Description, NodeId, PortName, Urn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,6 +28,10 @@ pub struct NodeConfig {
     /// - `Exporter`: A node that exports data to an external destination.
     /// - `Connector`: A node that connects 2 pipelines together, allowing data to flow between them.
     pub kind: NodeKind,
+
+    /// The URN identifying the plugin (factory) to use for this node.
+    /// This determines which implementation is loaded and instantiated.
+    pub plugin_urn: Urn,
 
     /// An optional description of this node.
     pub description: Option<Description>,

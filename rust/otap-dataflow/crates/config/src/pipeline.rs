@@ -4,7 +4,7 @@
 
 use crate::error::{Context, Error};
 use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeConfig, NodeKind};
-use crate::{Description, NodeId, PipelineId, PortName, TenantId};
+use crate::{Description, NodeId, PipelineId, PortName, TenantId, Urn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -239,13 +239,15 @@ impl PipelineBuilder {
 
     /// Add a node with a given id and kind.
     /// Optionally provide config.
-    pub fn add_node<S: Into<NodeId>>(
+    pub fn add_node<S: Into<NodeId>, U: Into<Urn>>(
         mut self,
         id: S,
         kind: NodeKind,
+        plugin_urn: U,
         config: Option<Value>,
     ) -> Self {
         let id = id.into();
+        let plugin_urn = plugin_urn.into();
         if self.nodes.contains_key(&id) {
             self.duplicate_nodes.push(id.clone());
         } else {
@@ -253,6 +255,7 @@ impl PipelineBuilder {
                 id.clone(),
                 NodeConfig {
                     kind,
+                    plugin_urn,
                     description: None,
                     out_ports: HashMap::new(),
                     config: config.unwrap_or(Value::Null),
@@ -263,18 +266,33 @@ impl PipelineBuilder {
     }
 
     /// Add a receiver node.
-    pub fn add_receiver<S: Into<NodeId>>(self, id: S, config: Option<Value>) -> Self {
-        self.add_node(id, NodeKind::Receiver, config)
+    pub fn add_receiver<S: Into<NodeId>, U: Into<Urn>>(
+        self,
+        id: S,
+        plugin_urn: U,
+        config: Option<Value>,
+    ) -> Self {
+        self.add_node(id, NodeKind::Receiver, plugin_urn, config)
     }
 
     /// Add a processor node.
-    pub fn add_processor<S: Into<NodeId>>(self, id: S, config: Option<Value>) -> Self {
-        self.add_node(id, NodeKind::Processor, config)
+    pub fn add_processor<S: Into<NodeId>, U: Into<Urn>>(
+        self,
+        id: S,
+        plugin_urn: U,
+        config: Option<Value>,
+    ) -> Self {
+        self.add_node(id, NodeKind::Processor, plugin_urn, config)
     }
 
     /// Add an exporter node.
-    pub fn add_exporter<S: Into<NodeId>>(self, id: S, config: Option<Value>) -> Self {
-        self.add_node(id, NodeKind::Exporter, config)
+    pub fn add_exporter<S: Into<NodeId>, U: Into<Urn>>(
+        self,
+        id: S,
+        plugin_urn: U,
+        config: Option<Value>,
+    ) -> Self {
+        self.add_node(id, NodeKind::Exporter, plugin_urn, config)
     }
 
     /// Connect source node's out_port to one or more target nodes
@@ -466,8 +484,8 @@ mod tests {
     #[test]
     fn test_duplicate_node_errors() {
         let result = PipelineBuilder::new()
-            .add_receiver("A", None)
-            .add_processor("A", None) // duplicate
+            .add_receiver("A", "urn:test:receiver", None)
+            .add_processor("A", "urn:test:processor", None) // duplicate
             .build("tenant", "pipeline");
 
         match result {
@@ -486,8 +504,8 @@ mod tests {
     #[test]
     fn test_duplicate_outport_errors() {
         let result = PipelineBuilder::new()
-            .add_receiver("A", None)
-            .add_exporter("B", None)
+            .add_receiver("A", "urn:test:receiver", None)
+            .add_exporter("B", "urn:test:exporter", None)
             .round_robin("A", "p", ["B"])
             .round_robin("A", "p", ["B"]) // duplicate port on A
             .build("tenant", "pipeline");
@@ -510,7 +528,7 @@ mod tests {
     #[test]
     fn test_missing_source_error() {
         let result = PipelineBuilder::new()
-            .add_receiver("B", None)
+            .add_receiver("B", "urn:test:receiver", None)
             .connect("X", "out", ["B"], DispatchStrategy::Broadcast) // X does not exist
             .build("tenant", "pipeline");
 
@@ -534,7 +552,7 @@ mod tests {
     #[test]
     fn test_missing_target_error() {
         let result = PipelineBuilder::new()
-            .add_receiver("A", None)
+            .add_receiver("A", "urn:test:receiver", None)
             .connect("A", "out", ["Y"], DispatchStrategy::Broadcast) // Y does not exist
             .build("tenant", "pipeline");
 
@@ -562,8 +580,8 @@ mod tests {
     #[test]
     fn test_cycle_detection_error() {
         let result = PipelineBuilder::new()
-            .add_processor("A", None)
-            .add_processor("B", None)
+            .add_processor("A", "urn:test:processor", None)
+            .add_processor("B", "urn:test:processor", None)
             .round_robin("A", "p", ["B"])
             .round_robin("B", "p", ["A"])
             .build("tenant", "pipeline");
@@ -589,8 +607,8 @@ mod tests {
     #[test]
     fn test_successful_simple_build() {
         let dag = PipelineBuilder::new()
-            .add_receiver("Start", Some(json!({"foo": 1})))
-            .add_exporter("End", None)
+            .add_receiver("Start", "urn:test:receiver", Some(json!({"foo": 1})))
+            .add_exporter("End", "urn:test:exporter", None)
             .broadcast("Start", "out", ["End"])
             .build("tenant", "pipeline");
 
@@ -613,22 +631,27 @@ mod tests {
             // ----- TRACES pipeline -----
             .add_receiver(
                 "receiver_otlp_traces",
+                "urn:test:receiver",
                 Some(json!({"desc": "OTLP trace receiver"})),
             )
             .add_processor(
                 "processor_batch_traces",
+                "urn:test:processor",
                 Some(json!({"name": "batch_traces"})),
             )
             .add_processor(
                 "processor_resource_traces",
+                "urn:test:processor",
                 Some(json!({"name": "resource_traces"})),
             )
             .add_processor(
                 "processor_traces_to_metrics",
+                "urn:test:processor",
                 Some(json!({"desc": "convert traces to metrics"})),
             )
             .add_exporter(
                 "exporter_otlp_traces",
+                "urn:test:exporter",
                 Some(json!({"desc": "OTLP trace exporter"})),
             )
             .round_robin("receiver_otlp_traces", "out", ["processor_batch_traces"])
@@ -650,22 +673,27 @@ mod tests {
             // ----- METRICS pipeline -----
             .add_receiver(
                 "receiver_otlp_metrics",
+                "urn:test:receiver",
                 Some(json!({"desc": "OTLP metric receiver"})),
             )
             .add_processor(
                 "processor_batch_metrics",
+                "urn:test:processor",
                 Some(json!({"name": "batch_metrics"})),
             )
             .add_processor(
                 "processor_metrics_to_events",
+                "urn:test:processor",
                 Some(json!({"desc": "convert metrics to events"})),
             )
             .add_exporter(
                 "exporter_prometheus",
+                "urn:test:exporter",
                 Some(json!({"desc": "Prometheus exporter"})),
             )
             .add_exporter(
                 "exporter_otlp_metrics",
+                "urn:test:exporter",
                 Some(json!({"desc": "OTLP metric exporter"})),
             )
             .round_robin("receiver_otlp_metrics", "out", ["processor_batch_metrics"])
@@ -684,19 +712,27 @@ mod tests {
             // ----- LOGS pipeline -----
             .add_receiver(
                 "receiver_filelog",
+                "urn:test:receiver",
                 Some(json!({"desc": "file log receiver"})),
             )
-            .add_receiver("receiver_syslog", Some(json!({"desc": "syslog receiver"})))
+            .add_receiver(
+                "receiver_syslog",
+                "urn:test:receiver",
+                Some(json!({"desc": "syslog receiver"})),
+            )
             .add_processor(
                 "processor_filter_logs",
+                "urn:test:processor",
                 Some(json!({"name": "filter_logs"})),
             )
             .add_processor(
                 "processor_logs_to_events",
+                "urn:test:processor",
                 Some(json!({"desc": "convert logs to events"})),
             )
             .add_exporter(
                 "exporter_otlp_logs",
+                "urn:test:exporter",
                 Some(json!({"desc": "OTLP log exporter"})),
             )
             .round_robin("receiver_filelog", "out", ["processor_filter_logs"])
@@ -706,14 +742,17 @@ mod tests {
             // ----- EVENTS pipeline -----
             .add_receiver(
                 "receiver_some_events",
+                "urn:test:receiver",
                 Some(json!({"desc": "custom event receiver"})),
             )
             .add_processor(
                 "processor_enrich_events",
+                "urn:test:processor",
                 Some(json!({"name": "enrich_events"})),
             )
             .add_exporter(
                 "exporter_queue_events",
+                "urn:test:exporter",
                 Some(json!({"desc": "push events to queue"})),
             )
             .round_robin("receiver_some_events", "out", ["processor_enrich_events"])

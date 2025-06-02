@@ -39,7 +39,7 @@ pub struct OTLPReceiver {
 #[allow(unsafe_code)]
 #[distributed_slice(SHARED_RECEIVERS)]
 pub static OTLP_RECEIVER: SharedReceiverFactory<OTLPData> = SharedReceiverFactory {
-    name: "builtin:otlp:receiver",
+    name: "urn:otel:otlp:receiver",
     create: |config: &Value| Box::new(OTLPReceiver::from_config(config)),
 };
 

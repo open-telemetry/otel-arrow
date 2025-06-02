@@ -32,7 +32,7 @@ struct OTAPExporter {
 #[allow(unsafe_code)]
 #[distributed_slice(LOCAL_EXPORTERS)]
 pub static OTAP_EXPORTER: LocalExporterFactory<OTAPData> = LocalExporterFactory {
-    name: "builtin:otap:exporter",
+    name: "urn:otel:otap:exporter",
     create: |config: &Value| Box::new(OTAPExporter::from_config(config)),
 };
 

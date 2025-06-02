@@ -32,7 +32,7 @@ struct OTLPExporter {
 #[allow(unsafe_code)]
 #[distributed_slice(LOCAL_EXPORTERS)]
 pub static OTLP_EXPORTER: LocalExporterFactory<OTLPData> = LocalExporterFactory {
-    name: "builtin:otlp:exporter",
+    name: "urn:otel:otlp:exporter",
     create: |config: &Value| Box::new(OTLPExporter::from_config(config)),
 };
 
