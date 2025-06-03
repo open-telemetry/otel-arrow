@@ -17,8 +17,7 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 use otel_arrow_rust::pdata::otlp::ItemCounter;
-use otel_arrow_rust::pdata::otlp::LogsDataAdapter;
-use otel_arrow_rust::pdata::otlp::direct::LogsVisitor;
+use otel_arrow_rust::pdata::otlp::LogsVisitor;
 
 use otel_arrow_rust::proto::opentelemetry::common::v1::*;
 use otel_arrow_rust::proto::opentelemetry::logs::v1::*;
@@ -61,11 +60,13 @@ fn create_logs_data() -> LogsData {
 fn count_logs(c: &mut Criterion) {
     let mut group = c.benchmark_group("OTLP Logs counting");
 
+    // TODO: add a flat_map variation like ddahl.
+
     let logs = create_logs_data();
 
     _ = group.bench_function("Visitor", |b| {
         b.iter(|| {
-            black_box(ItemCounter::new().visit_logs(&LogsDataAdapter::new(&logs)));
+            _ = black_box(ItemCounter::new().visit_logs(&LogsDataAdapter::new(&logs)));
         })
     });
 
@@ -78,7 +79,7 @@ fn count_logs(c: &mut Criterion) {
                     count += sl.log_records.len();
                 }
             }
-            black_box(count);
+            _ = black_box(count);
         })
     });
 

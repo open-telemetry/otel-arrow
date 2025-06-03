@@ -285,6 +285,15 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
         oneof_mapping,
     ));
 
+    tokens.extend(derive_otlp_adapters(
+        outer_name,
+        param_names,
+        &param_fields,
+        &builder_fields,
+        &all_fields,
+        oneof_mapping,
+    ));
+
     tokens
 }
 
@@ -813,5 +822,594 @@ impl FieldInfo {
             }
         }
         None
+    }
+}
+
+/// Determine if a field needs to be wrapped in an adapter (message types) vs used directly (primitives)
+fn needs_adapter_for_field(info: &FieldInfo) -> bool {
+    // Check if this field has an as_type (enum field), use the underlying primitive type
+    let base_type = if let Some(as_type) = &info.as_type {
+        as_type
+    } else if info.is_repeated {
+        // For repeated fields, check the element type
+        match &info.field_type {
+            syn::Type::Path(type_path) => {
+                if let Some(segment) = type_path.path.segments.last() {
+                    // Handle Vec<T> - extract T
+                    if segment.ident == "Vec" {
+                        if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                            if let Some(syn::GenericArgument::Type(inner_type)) = args.args.first() {
+                                return needs_adapter_for_type(inner_type);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        return false;
+    } else {
+        &info.field_type
+    };
+
+    needs_adapter_for_type(base_type)
+}
+
+/// Determine if a type needs an adapter wrapper
+fn needs_adapter_for_type(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Path(type_path) => {
+            if let Some(segment) = type_path.path.segments.last() {
+                match segment.ident.to_string().as_str() {
+                    // Primitive types don't need adapters
+                    "String" | "bool" | "i32" | "i64" | "u32" | "u64" | "f32" | "f64" | "u8" => false,
+                    // Vec<u8> (bytes) don't need adapters
+                    "Vec" => {
+                        if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                            if let Some(syn::GenericArgument::Type(syn::Type::Path(inner_path))) = args.args.first() {
+                                if let Some(inner_segment) = inner_path.path.segments.last() {
+                                    return inner_segment.ident.to_string() != "u8";
+                                }
+                            }
+                        }
+                        false
+                    }
+                    // Message types need adapters
+                    _ => true,
+                }
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Get the adapter name for a field type
+fn get_adapter_name_for_field(info: &FieldInfo) -> proc_macro2::TokenStream {
+    let base_type = if info.is_repeated {
+        info.extract_base_type()
+    } else {
+        info.field_type.clone()
+    };
+
+    match &base_type {
+        syn::Type::Path(type_path) => {
+            if let Some(segment) = type_path.path.segments.last() {
+                let type_name = segment.ident.to_string();
+                let adapter_name = format!("{}Adapter", type_name);
+                
+                // Handle specific known protobuf type patterns
+                let adapter_path = resolve_adapter_path_for_type(type_path, &adapter_name);
+                
+                // Parse the path and return as TokenStream
+                match syn::parse_str::<syn::Path>(&adapter_path) {
+                    Ok(path) => quote! { #path },
+                    Err(_) => {
+                        // Fallback to simple name if parsing fails
+                        let adapter_ident = syn::Ident::new(&adapter_name, segment.ident.span());
+                        quote! { #adapter_ident }
+                    }
+                }
+            } else {
+                quote! { UnknownAdapter }
+            }
+        }
+        _ => quote! { UnknownAdapter },
+    }
+}
+
+/// Resolve adapter path for protobuf types with proper module resolution
+fn resolve_adapter_path_for_type(type_path: &syn::TypePath, adapter_name: &str) -> String {
+    // Convert path to string for analysis
+    let path_str = type_path.path.segments.iter()
+        .map(|seg| seg.ident.to_string())
+        .collect::<Vec<_>>()
+        .join("::");
+    
+    // Handle common OpenTelemetry protobuf type patterns
+    match path_str.as_str() {
+        // Resource types
+        path if path.contains("resource::v1::Resource") => {
+            "crate::proto::opentelemetry::resource::v1::ResourceAdapter".to_string()
+        }
+        // Common types
+        path if path.contains("common::v1::InstrumentationScope") => {
+            "crate::proto::opentelemetry::common::v1::InstrumentationScopeAdapter".to_string()
+        }
+        path if path.contains("common::v1::KeyValue") => {
+            "crate::proto::opentelemetry::common::v1::KeyValueAdapter".to_string()
+        }
+        path if path.contains("common::v1::AnyValue") => {
+            "crate::proto::opentelemetry::common::v1::AnyValueAdapter".to_string()
+        }
+        path if path.contains("common::v1::ArrayValue") => {
+            "crate::proto::opentelemetry::common::v1::ArrayValueAdapter".to_string()
+        }
+        path if path.contains("common::v1::KeyValueList") => {
+            "crate::proto::opentelemetry::common::v1::KeyValueListAdapter".to_string()
+        }
+        path if path.contains("common::v1::EntityRef") => {
+            "crate::proto::opentelemetry::common::v1::EntityRefAdapter".to_string()
+        }
+        // Metrics types
+        path if path.contains("metrics::v1::") => {
+            let type_name = path.split("::").last().unwrap_or("Unknown");
+            format!("crate::proto::opentelemetry::metrics::v1::{}Adapter", type_name)
+        }
+        // Logs types  
+        path if path.contains("logs::v1::") => {
+            let type_name = path.split("::").last().unwrap_or("Unknown");
+            format!("crate::proto::opentelemetry::logs::v1::{}Adapter", type_name)
+        }
+        // Trace types
+        path if path.contains("trace::v1::") => {
+            let type_name = path.split("::").last().unwrap_or("Unknown");
+            format!("crate::proto::opentelemetry::trace::v1::{}Adapter", type_name)
+        }
+        // Handle nested types like span::Event, span::Link
+        path if path.contains("::") => {
+            let parts: Vec<&str> = path.split("::").collect();
+            if parts.len() == 2 {
+                // This is a nested type like "span::Event"
+                // The adapter should be "span::EventAdapter"
+                let module = parts[0];
+                format!("{}::{}", module, adapter_name)
+            } else {
+                // For complex paths, just use the adapter name
+                adapter_name.to_string()
+            }
+        }
+        // Local types (same module)
+        _ => {
+            adapter_name.to_string()
+        }
+    }
+}
+
+/// Emits the adapter struct and implementation for the visitor pattern
+fn derive_otlp_adapters(
+    outer_name: &syn::Ident,
+    _param_names: &Vec<&str>,
+    _param_fields: &[FieldInfo],
+    _builder_fields: &[FieldInfo],
+    all_fields: &[FieldInfo],
+    _oneof_mapping: OneofMapping,
+) -> TokenStream {
+    let adapter_name = syn::Ident::new(&format!("{}Adapter", outer_name), outer_name.span());
+    let visitable_name = syn::Ident::new(&format!("{}Visitable", outer_name), outer_name.span());
+    
+    // Generate the method name based on the outer type name
+    // Convert CamelCase to snake_case (e.g., LogsData -> logs_data)
+    let method_name = syn::Ident::new(
+        &format!("visit_{}", outer_name.to_string().to_case(Case::Snake)),
+        outer_name.span(),
+    );
+
+    // Generate visitor calls for each field
+    let visitor_calls: TokenVec = all_fields
+        .iter()
+        .filter_map(|info| {
+            let field_name = &info.ident;
+            
+            // Skip oneof fields for now - they need special handling
+            if info.is_oneof {
+                return None;
+            }
+
+            // Get the visitor parameter name and type from the field
+            // Handle raw identifiers (r#keyword) by stripping the r# prefix
+            let field_name_str = field_name.to_string();
+            let clean_field_name = if field_name_str.starts_with("r#") {
+                &field_name_str[2..]
+            } else {
+                &field_name_str
+            };
+            
+            let visitor_param = syn::Ident::new(
+                &format!("{}_visitor", clean_field_name),
+                field_name.span(),
+            );
+
+            // Get the specific method name for this field type
+            let visit_method = generate_visit_method_for_field(info);
+            
+            // Determine if we need to wrap in an adapter (for message types) or use directly (for primitives)
+            let needs_adapter = needs_adapter_for_field(info);
+
+            // For Vec<u8> fields, we need special handling to pass as slice
+            let is_bytes_field = info.is_repeated && matches!(&info.field_type, syn::Type::Path(type_path) 
+                if type_path.path.segments.last().map(|s| s.ident == "Vec").unwrap_or(false) 
+                && matches!(&type_path.path.segments.last().unwrap().arguments, syn::PathArguments::AngleBracketed(args) 
+                    if matches!(args.args.first(), Some(syn::GenericArgument::Type(syn::Type::Path(inner_path))) 
+                        if inner_path.path.segments.last().map(|s| s.ident == "u8").unwrap_or(false))));
+
+            match (info.is_optional, info.is_repeated) {
+                (false, false) => {
+                    // Regular field
+                    if needs_adapter {
+                        let adapter_name = get_adapter_name_for_field(info);
+                        Some(quote! {
+                            #visitor_param.#visit_method(&(#adapter_name::new(&self.data.#field_name)));
+                        })
+                    } else {
+                        // For primitive types, handle strings vs numeric types
+                        if matches!(visit_method.to_string().as_str(), "visit_string") {
+                            Some(quote! {
+                                #visitor_param.#visit_method(&self.data.#field_name);
+                            })
+                        } else {
+                            // For numeric types, pass by value (dereference)
+                            Some(quote! {
+                                #visitor_param.#visit_method(*&self.data.#field_name);
+                            })
+                        }
+                    }
+                }
+                (true, false) => {
+                    // Optional field
+                    if needs_adapter {
+                        let adapter_name = get_adapter_name_for_field(info);
+                        Some(quote! {
+                            self.data.#field_name.as_ref().map(|f| #visitor_param.#visit_method(&(#adapter_name::new(f))));
+                        })
+                    } else {
+                        // For primitive types, handle strings vs numeric types 
+                        if matches!(visit_method.to_string().as_str(), "visit_string") {
+                            Some(quote! {
+                                self.data.#field_name.as_ref().map(|f| #visitor_param.#visit_method(f));
+                            })
+                        } else {
+                            Some(quote! {
+                                self.data.#field_name.as_ref().map(|f| #visitor_param.#visit_method(*f));
+                            })
+                        }
+                    }
+                }
+                (false, true) => {
+                    // Repeated field
+                    if needs_adapter {
+                        let adapter_name = get_adapter_name_for_field(info);
+                        Some(quote! {
+                            for item in &self.data.#field_name {
+                                #visitor_param.#visit_method(&(#adapter_name::new(item)));
+                            }
+                        })
+                    } else if is_bytes_field {
+                        // For Vec<u8>, pass the whole vector as slice
+                        Some(quote! {
+                            #visitor_param.#visit_method(&self.data.#field_name);
+                        })
+                    } else {
+                        // For other primitive vectors, handle strings vs numeric types
+                        if matches!(visit_method.to_string().as_str(), "visit_string") {
+                            Some(quote! {
+                                for item in &self.data.#field_name {
+                                    #visitor_param.#visit_method(item);
+                                }
+                            })
+                        } else {
+                            // For numeric types, dereference each item
+                            Some(quote! {
+                                for item in &self.data.#field_name {
+                                    #visitor_param.#visit_method(*item);
+                                }
+                            })
+                        }
+                    }
+                }
+                (true, true) => {
+                    // Optional repeated field
+                    if needs_adapter {
+                        let adapter_name = get_adapter_name_for_field(info);
+                        Some(quote! {
+                            if let Some(items) = &self.data.#field_name {
+                                for item in items {
+                                    #visitor_param.#visit_method(&(#adapter_name::new(item)));
+                                }
+                            }
+                        })
+                    } else if is_bytes_field {
+                        // For Optional<Vec<u8>>, pass the whole vector as slice
+                        Some(quote! {
+                            if let Some(items) = &self.data.#field_name {
+                                #visitor_param.#visit_method(items);
+                            }
+                        })
+                    } else {
+                        // For other optional primitive vectors, handle strings vs numeric types
+                        if matches!(visit_method.to_string().as_str(), "visit_string") {
+                            Some(quote! {
+                                if let Some(items) = &self.data.#field_name {
+                                    for item in items {
+                                        #visitor_param.#visit_method(item);
+                                    }
+                                }
+                            })
+                        } else {
+                            // For numeric types, dereference each item
+                            Some(quote! {
+                                if let Some(items) = &self.data.#field_name {
+                                    for item in items {
+                                        #visitor_param.#visit_method(*item);
+                                    }
+                                }
+                            })
+                        }
+                    }
+                }
+            }
+        })
+        .collect();
+
+    // Generate visitor parameters for the visitable trait method
+    let mut visitor_params: TokenVec = Vec::new();
+    
+    for info in all_fields {
+        if info.is_oneof {
+            // For oneof fields, generate separate parameters for each variant
+            if let Some((oneof_name, oneof_cases)) = _oneof_mapping {
+                if oneof_name.ends_with(&format!(".{}", info.ident)) {
+                    // This is the oneof field we're looking for
+                    for case in oneof_cases {
+                        let variant_param_name = syn::Ident::new(
+                            &format!("{}_{}_visitor", info.ident, case.name),
+                            info.ident.span(),
+                        );
+
+                        // Parse the type_param to get the visitor trait path
+                        if let Ok(case_type) = syn::parse_str::<syn::Type>(case.type_param) {
+                            let visitor_type = generate_visitor_type_for_oneof_variant(&case_type);
+                            visitor_params.push(quote! { mut #variant_param_name: #visitor_type });
+                        }
+                    }
+                    continue;
+                }
+            }
+        } else {
+            let field_name = &info.ident;
+            // Handle raw identifiers (r#keyword) by stripping the r# prefix
+            let field_name_str = field_name.to_string();
+            let clean_field_name = if field_name_str.starts_with("r#") {
+                &field_name_str[2..]
+            } else {
+                &field_name_str
+            };
+            
+            let visitor_param = syn::Ident::new(
+                &format!("{}_visitor", clean_field_name),
+                field_name.span(),
+            );
+            
+            // Generate the appropriate visitor trait type
+            let visitor_trait = generate_visitor_trait_for_field(info);
+            visitor_params.push(quote! { mut #visitor_param: impl #visitor_trait });
+        }
+    }
+
+    let expanded = quote! {
+        /// Adapter for presenting OTLP data as visitable
+        pub struct #adapter_name<'a> {
+            data: &'a #outer_name,
+        }
+
+        impl<'a> #adapter_name<'a> {
+            /// Create a new adapter
+            pub fn new(data: &'a #outer_name) -> Self {
+                Self { data }
+            }
+        }
+
+        impl<'a> #visitable_name for &#adapter_name<'a> {
+            fn #method_name(&self, #(#visitor_params),*) {
+                #(#visitor_calls)*
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+
+/// Generate the correct visit method name for a field based on its type
+fn generate_visit_method_for_field(info: &FieldInfo) -> syn::Ident {
+    // Special handling for repeated Vec<u8> fields (bytes)
+    if info.is_repeated {
+        if let syn::Type::Path(type_path) = &info.field_type {
+            if let Some(segment) = type_path.path.segments.last() {
+                if segment.ident == "Vec" {
+                    if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                        if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
+                            if let syn::Type::Path(inner_path) = inner_ty {
+                                if let Some(inner_segment) = inner_path.path.segments.last() {
+                                    if inner_segment.ident == "u8" {
+                                        return syn::Ident::new("visit_bytes", proc_macro2::Span::call_site());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Check if this field has an as_type (enum field), use the underlying primitive type
+    let base_type = if let Some(as_type) = &info.as_type {
+        as_type.clone()
+    } else if info.is_repeated {
+        info.extract_base_type()
+    } else {
+        info.field_type.clone()
+    };
+
+    let method_name = match &base_type {
+        syn::Type::Path(type_path) => {
+            if let Some(segment) = type_path.path.segments.last() {
+                match segment.ident.to_string().as_str() {
+                    "String" => "visit_string".to_string(),
+                    "bool" => "visit_bool".to_string(),
+                    "i32" => "visit_i32".to_string(),
+                    "i64" => "visit_i64".to_string(),
+                    "u32" => "visit_u32".to_string(),
+                    "u64" => "visit_u64".to_string(),
+                    "f32" | "f64" => "visit_f64".to_string(),
+                    "u8" => "visit_u32".to_string(), // Map u8 to u32
+                    _ => {
+                        // For message types, convert to snake_case (e.g., LogRecord -> visit_log_record)
+                        let type_name = segment.ident.to_string();
+                        format!("visit_{}", type_name.to_case(Case::Snake))
+                    }
+                }
+            } else {
+                "visit_unknown".to_string()
+            }
+        }
+        _ => "visit_unknown".to_string(),
+    };
+
+    syn::Ident::new(&method_name, proc_macro2::Span::call_site())
+}
+
+/// Generate visitor trait for a field based on its type  
+fn generate_visitor_trait_for_field(info: &FieldInfo) -> proc_macro2::TokenStream {
+    // Special handling for repeated Vec<u8> fields (bytes)
+    if info.is_repeated {
+        if let syn::Type::Path(type_path) = &info.field_type {
+            if let Some(segment) = type_path.path.segments.last() {
+                if segment.ident == "Vec" {
+                    if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                        if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
+                            if let syn::Type::Path(inner_path) = inner_ty {
+                                if let Some(inner_segment) = inner_path.path.segments.last() {
+                                    if inner_segment.ident == "u8" {
+                                        return quote! { crate::pdata::BytesVisitor };
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Check if this field has an as_type (enum field), use the underlying primitive type
+    let base_type = if let Some(as_type) = &info.as_type {
+        as_type.clone()
+    } else if info.is_repeated {
+        info.extract_base_type()
+    } else {
+        info.field_type.clone()
+    };
+
+    generate_visitor_trait_for_type(&base_type)
+}
+
+/// Generate visitor trait for a given type
+fn generate_visitor_trait_for_type(ty: &syn::Type) -> proc_macro2::TokenStream {
+    match ty {
+        syn::Type::Path(type_path) => {
+            if let Some(segment) = type_path.path.segments.last() {
+                match segment.ident.to_string().as_str() {
+                    "String" => quote! { crate::pdata::StringVisitor },
+                    "bool" => quote! { crate::pdata::BooleanVisitor },
+                    "i32" => quote! { crate::pdata::I32Visitor },
+                    "i64" => quote! { crate::pdata::I64Visitor },
+                    "u32" => quote! { crate::pdata::U32Visitor },
+                    "u64" => quote! { crate::pdata::U64Visitor },
+                    "f32" | "f64" => quote! { crate::pdata::F64Visitor },
+                    "u8" => quote! { crate::pdata::U32Visitor },
+                    _ => {
+                        // For message types, generate visitor trait using the same resolver as adapters
+                        let type_name = segment.ident.to_string();
+                        let visitor_name = format!("{}Visitor", type_name);
+                        let visitor_path = resolve_visitor_trait_path_for_type(type_path, &visitor_name);
+                        
+                        match syn::parse_str::<syn::Path>(&visitor_path) {
+                            Ok(path) => quote! { #path },
+                            Err(_) => {
+                                let visitor_ident = syn::Ident::new(&visitor_name, segment.ident.span());
+                                quote! { #visitor_ident }
+                            }
+                        }
+                    }
+                }
+            } else {
+                quote! { UnknownVisitor }
+            }
+        }
+        _ => quote! { UnknownVisitor },
+    }
+}
+
+/// Resolve visitor trait path for protobuf types with proper module resolution
+fn resolve_visitor_trait_path_for_type(type_path: &syn::TypePath, visitor_name: &str) -> String {
+    // Convert path to string for analysis
+    let path_str = type_path.path.segments.iter()
+        .map(|seg| seg.ident.to_string())
+        .collect::<Vec<_>>()
+        .join("::");
+    
+    // Use relative path format to match the trait definitions
+    // The trait definitions use paths like "super::super::resource::v1::ResourceVisitor"
+    match path_str.as_str() {
+        // For paths starting with "super::", keep them as-is and just add the visitor suffix
+        path if path.starts_with("super::super::") => {
+            // Extract the module path and add Visitor suffix
+            if let Some(last_segment) = path.split("::").last() {
+                let module_path = &path[..path.len() - last_segment.len() - 2]; // Remove "::TypeName"
+                format!("{}::{}", module_path, visitor_name)
+            } else {
+                visitor_name.to_string()
+            }
+        }
+        // For nested types with multiple segments, build a reasonable path
+        path if path.contains("::") => {
+            let parts: Vec<&str> = path.split("::").collect();
+            if parts.len() >= 2 {
+                let parent = parts[parts.len() - 2];
+                let type_name = parts[parts.len() - 1];
+                
+                // Check if this looks like a nested type (parent::child)
+                if parent.chars().next().map_or(false, |c| c.is_uppercase()) {
+                    // This looks like ParentType::ChildType, generate nested visitor name
+                    format!("{}{}Visitor", parent, type_name)
+                } else {
+                    // Build path from the module segments
+                    if let Some(last_segment) = path.split("::").last() {
+                        let module_path = &path[..path.len() - last_segment.len() - 2]; // Remove "::TypeName"
+                        format!("{}::{}", module_path, visitor_name)
+                    } else {
+                        visitor_name.to_string()
+                    }
+                }
+            } else {
+                visitor_name.to_string()
+            }
+        }
+        // Local types (same module) or unknown patterns
+        _ => {
+            visitor_name.to_string()
+        }
     }
 }

@@ -16,5 +16,77 @@
 pub use otlp_derive::Message;
 pub use otlp_derive::qualified;
 
+use crate::proto::opentelemetry::logs::v1::LogRecordVisitable;
+use crate::proto::opentelemetry::logs::v1::LogRecordVisitor;
+use crate::proto::opentelemetry::logs::v1::LogsDataVisitable;
+use crate::proto::opentelemetry::logs::v1::LogsDataVisitor;
+use crate::proto::opentelemetry::logs::v1::ResourceLogsVisitable;
+use crate::proto::opentelemetry::logs::v1::ResourceLogsVisitor;
+use crate::proto::opentelemetry::logs::v1::ScopeLogsVisitable;
+use crate::proto::opentelemetry::logs::v1::ScopeLogsVisitor;
+
+/// NoopVisitor implements every visitor, does nothing.
+pub struct NoopVisitor {}
+
+/// LogsVisitor is the entry point for visiting OTLP logs data.
+pub trait LogsVisitor {
+    /// The return type of the visitor
+    type Return;
+
+    /// Visit logs data and return the computed result
+    fn visit_logs(self, v: impl LogsDataVisitable) -> Self::Return;
+}
+
+/// ItemCounter implements counting log records. This sort of item
+/// counting is a built-in feature of the Golang Pdata API.
+pub struct ItemCounter {
+    count: usize,
+}
+
+impl ItemCounter {
+    /// Create a new ItemCounter starting at 0
+    pub fn new() -> Self {
+        Self { count: 0 }
+    }
+
+    #[allow(dead_code)] // Will be used when full adapter pattern is implemented
+    fn borrow_mut<'a>(&'a mut self) -> &'a mut Self {
+        self
+    }
+}
+
+impl LogsVisitor for ItemCounter {
+    type Return = usize;
+
+    fn visit_logs(mut self, v: impl LogsDataVisitable) -> Self::Return {
+        self.visit_logs_data(v);
+        self.count
+    }
+}
+
+impl LogsDataVisitor for ItemCounter {
+    fn visit_logs_data(&mut self, v: impl LogsDataVisitable) {
+        v.visit_logs_data(self.borrow_mut());
+    }
+}
+
+impl ResourceLogsVisitor for &mut ItemCounter {
+    fn visit_resource_logs(&mut self, v: impl ResourceLogsVisitable) {
+        v.visit_resource_logs(NoopVisitor {}, self.borrow_mut(), NoopVisitor {});
+    }
+}
+
+impl ScopeLogsVisitor for &mut ItemCounter {
+    fn visit_scope_logs(&mut self, sv: impl ScopeLogsVisitable) {
+        sv.visit_scope_logs(NoopVisitor {}, self.borrow_mut(), NoopVisitor {});
+    }
+}
+
+impl LogRecordVisitor for &mut ItemCounter {
+    fn visit_log_record(&mut self, _: impl LogRecordVisitable) {
+        self.count += 1;
+    }
+}
+
 #[cfg(test)]
 mod tests;

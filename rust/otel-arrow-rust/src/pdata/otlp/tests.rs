@@ -13,6 +13,8 @@
 #[cfg(test)]
 use crate::pdata::SpanID;
 use crate::pdata::TraceID;
+use crate::pdata::otlp::ItemCounter;
+use crate::pdata::otlp::LogsVisitor;
 use crate::proto::opentelemetry::common::v1::AnyValue;
 use crate::proto::opentelemetry::common::v1::ArrayValue;
 use crate::proto::opentelemetry::common::v1::EntityRef;
@@ -22,6 +24,8 @@ use crate::proto::opentelemetry::common::v1::KeyValueList;
 use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::proto::opentelemetry::logs::v1::LogRecord;
 use crate::proto::opentelemetry::logs::v1::LogRecordFlags;
+use crate::proto::opentelemetry::logs::v1::LogsData;
+use crate::proto::opentelemetry::logs::v1::LogsDataAdapter;
 use crate::proto::opentelemetry::logs::v1::ResourceLogs;
 use crate::proto::opentelemetry::logs::v1::ScopeLogs;
 use crate::proto::opentelemetry::logs::v1::SeverityNumber;
@@ -677,4 +681,45 @@ fn test_metric_exponential_histogram() {
     };
 
     assert_eq!(m1, m1_value);
+}
+
+#[test]
+fn test_logs_item_count() {
+    let ld = LogsData::new(vec![
+        ResourceLogs::build(Resource::new(vec![]))
+            .scope_logs(vec![
+                ScopeLogs::build(InstrumentationScope::new("test0"))
+                    .log_records(vec![
+                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
+                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
+                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
+                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
+                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
+                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
+                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
+                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
+                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
+                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
+                    ])
+                    .finish(),
+                ScopeLogs::build(InstrumentationScope::new("test1"))
+                    .log_records(vec![
+                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
+                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
+                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
+                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
+                        LogRecord::new(1000000000u64, SeverityNumber::Info, "my_log"),
+                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
+                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
+                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
+                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
+                        LogRecord::new(1000000001u64, SeverityNumber::Warn, "my_log warn"),
+                    ])
+                    .finish(),
+            ])
+            .finish(),
+    ]);
+
+    let ic = ItemCounter::new().visit_logs(&LogsDataAdapter::new(&ld));
+    assert_eq!(20, ic);
 }
