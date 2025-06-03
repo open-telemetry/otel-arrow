@@ -592,6 +592,12 @@ fn derive_otlp_visitors(
     pub trait #visitable_name {
     fn #method_name(&self, #(#visitable_args),*);
     }
+
+    impl #visitor_name for crate::pdata::NoopVisitor {
+        fn #method_name(&mut self, _v: impl #visitable_name) {
+            // NoopVisitor does nothing
+        }
+    }
     };
 
     TokenStream::from(expanded)
