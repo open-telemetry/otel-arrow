@@ -8,7 +8,7 @@ use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, PrimitiveArray,
     PrimitiveBuilder, RecordBatch,
 };
-use arrow::compute::partition;
+use arrow::compute::{and, partition};
 use arrow::compute::{kernels::cmp::eq, sort_to_indices, take_record_batch};
 use arrow::datatypes::{DataType, UInt8Type, UInt16Type};
 use snafu::{OptionExt, ResultExt};
@@ -20,11 +20,11 @@ use crate::arrays::{
 use crate::error::{self, Result};
 use crate::otlp::attributes::parent_id;
 use crate::otlp::attributes::{parent_id::ParentId, store::AttributeValueType};
-use crate::schema::update_field_metadata;
 use crate::schema::{
     consts::{self, metadata},
     update_schema_metadata,
 };
+use crate::schema::{get_field_metadata, update_field_metadata};
 
 pub fn sort_by_parent_id(record_batch: &RecordBatch) -> Result<RecordBatch> {
     let parent_id_column = record_batch.column_by_name(consts::PARENT_ID);
@@ -83,6 +83,7 @@ where
     <T as ArrowPrimitiveType>::Native: AddAssign,
 {
     let schema = record_batch.schema_ref();
+
     let column_index = schema.index_of(column_name);
     if column_index.is_err() {
         // column doesn't exist, nothing to do
@@ -90,6 +91,13 @@ where
     }
     // safety: we've already returned if column_index is an error
     let column_index = column_index.expect("column_index should be Ok");
+
+    // check that the column hasn't already been decoded
+    let column_encoding = get_field_metadata(schema, column_name, metadata::COLUMN_ENCODING);
+    if let Some(metadata::encodings::PLAIN) = column_encoding {
+        // column already decoded, nothing to do
+        return Ok(record_batch.clone());
+    }
 
     let column = record_batch.column(column_index);
     let column = column
@@ -150,8 +158,6 @@ where
     result.finish()
 }
 
-// TODO -- everything below should probably eventually move to otap::transform module
-
 /// Decodes the parent IDs from their transport optimized encoding to the actual ID values.
 ///
 /// In the transport optimized encoding, the record batch is sorted by value Type, then
@@ -193,6 +199,17 @@ where
 {
     // if the batch is empty, just skip all this logic and return a batch
     if record_batch.num_rows() == 0 {
+        return Ok(record_batch.clone());
+    }
+
+    // check if the column is already decoded
+    let column_encoding = get_field_metadata(
+        record_batch.schema_ref(),
+        consts::PARENT_ID,
+        metadata::COLUMN_ENCODING,
+    );
+    if let Some(metadata::encodings::PLAIN) = column_encoding {
+        // column already decoded, nothing to do
         return Ok(record_batch.clone());
     }
 
@@ -303,22 +320,55 @@ where
 }
 
 // TODO write tests and rustdocs for this
-pub fn materialize_parent_ids_by_column<'a, T>(
+pub fn materialize_parent_ids_by_columns<'a, T>(
     record_batch: &RecordBatch,
-    equality_column_name: &'a str,
+    equality_column_names: impl IntoIterator<Item = &'a str>,
 ) -> Result<RecordBatch>
 where
     T: ParentId,
     <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native: AddAssign,
 {
+    // if the record batch is empty, nothing to decode so return early
     if record_batch.num_rows() == 0 {
         return Ok(record_batch.clone());
     }
 
-    let encoded_parent_ids = T::get_parent_id_column(record_batch)?;
-    let equality_column = get_required_array(record_batch, equality_column_name)?;
-    let eq_next = create_next_element_equality_array(equality_column)?;
+    // check that the column hasn't already been decoded
+    let column_encoding = get_field_metadata(
+        record_batch.schema_ref(),
+        consts::PARENT_ID,
+        metadata::COLUMN_ENCODING,
+    );
+    if let Some(metadata::encodings::PLAIN) = column_encoding {
+        // column already decoded, nothing to do
+        return Ok(record_batch.clone());
+    }
 
+    // here we're building up the next-element equality array for multiple columns by 'and'ing
+    // the equality array for each column together. This gives us an array that is true if all
+    // the values in each column are equal (index offset by 1). If some column doesn't exist, in
+    // this case assume this means null values which are equal
+    let mut eq_next: Option<BooleanArray> = None;
+    for column_name in equality_column_names.into_iter() {
+        if let Some(column) = record_batch.column_by_name(column_name) {
+            let eq_next_column = create_next_element_equality_array(column)?;
+            eq_next = Some(match eq_next {
+                Some(eq_next) => and(&eq_next_column, &eq_next)
+                    .expect("can 'and' arrays together of same length"),
+                None => eq_next_column,
+            })
+        }
+    }
+
+    let eq_next = match eq_next {
+        Some(eq_next) => eq_next,
+        // all the columns are null values, which means that the parent_id column will just
+        // be effectively delta encoded since empty columns are always treated as equal for
+        // purposes of checking equality to determine delta encoding sequence ends.
+        None => return remove_delta_encoding::<T::ArrayType>(record_batch, consts::PARENT_ID),
+    };
+
+    let encoded_parent_ids = T::get_parent_id_column(record_batch)?;
     let mut materialized_parent_ids =
         PrimitiveBuilder::<T::ArrayType>::with_capacity(record_batch.num_rows());
     // safety: there's a check at the beginning of this method that the batch is not empty
@@ -348,54 +398,7 @@ where
     T: ParentId,
     <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native: AddAssign,
 {
-    // TODO add check & test for null record batch
-
-    let encoded_parent_ids = T::get_parent_id_column(record_batch)?;
-
-    let mut partition_cols = Vec::with_capacity(2);
-    if let Some(column) = record_batch.column_by_name(consts::INT_VALUE) {
-        partition_cols.push(column.clone());
-    }
-    if let Some(column) = record_batch.column_by_name(consts::DOUBLE_VALUE) {
-        partition_cols.push(column.clone());
-    }
-
-    if partition_cols.len() == 0 {
-        // all the exemplars have empty values, which means that the parent_id column will just
-        // be effectively delta encoded since empty exemplars are always treated as equal for
-        // purposes of checking equality to determine delta encoding sequence ends.
-        return remove_delta_encoding::<T::ArrayType>(record_batch, consts::PARENT_ID);
-    }
-
-    let partitions = partition(&partition_cols).map_err(|e| {
-        error::UnexpectedRecordBatchStateSnafu {
-            reason: format!(
-                "Could not create partitions for materializing exemplar parent id {}",
-                e
-            ),
-        }
-        .build()
-    })?;
-    let ranges = partitions.ranges();
-    let mut ranges_idx = 0;
-    let mut curr_parent_id = <T::ArrayType as ArrowPrimitiveType>::Native::default();
-    let mut materialized_parent_ids =
-        PrimitiveBuilder::<T::ArrayType>::with_capacity(record_batch.num_rows());
-
-    for i in 0..record_batch.num_rows() {
-        let parent_id_or_delta = encoded_parent_ids.value(i);
-
-        if ranges_idx < ranges.len() && i == ranges[ranges_idx].start {
-            curr_parent_id = parent_id_or_delta;
-            ranges_idx += 1;
-        } else {
-            curr_parent_id += parent_id_or_delta;
-        }
-        materialized_parent_ids.append_value(curr_parent_id);
-    }
-
-    let materialized_parent_ids = Arc::new(materialized_parent_ids.finish());
-    replace_materialized_parent_id_column(record_batch, materialized_parent_ids)
+    materialize_parent_ids_by_columns::<T>(record_batch, [consts::INT_VALUE, consts::DOUBLE_VALUE])
 }
 
 fn replace_materialized_parent_id_column(
@@ -496,6 +499,7 @@ mod test {
     use arrow::datatypes::{
         ArrowDictionaryKeyType, DataType, Field, Schema, UInt8Type, UInt16Type,
     };
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     use crate::arrays::{get_string_array, get_u16_array, get_u32_array};
@@ -788,7 +792,58 @@ mod test {
     }
 
     #[test]
-    fn test_materialize_parent_id_by_column() {
+    fn test_materialize_parent_id_for_attributes_noop() {
+        // check that we don't re-decode the parent ID if the column is already decoded
+        let test_data = [
+            // (key, str_val, parent_id)
+            ("attr1", Some("a"), 1),
+            ("attr1", Some("a"), 1),
+            ("attr1", Some("a"), 1),
+            ("attr1", Some("b"), 1),
+            ("attr1", Some("b"), 1),
+            ("attr2", Some("a"), 1),
+            ("attr2", Some("a"), 1),
+            ("attr2", None, 1),
+            ("attr2", None, 1),
+        ];
+
+        let keys_arr = StringArray::from_iter_values(test_data.iter().map(|a| a.0));
+        let parent_ids_before = UInt16Array::from_iter_values(test_data.iter().map(|a| a.2));
+
+        let strs: Vec<Option<&str>> = test_data.iter().map(|a| a.1).collect();
+        let string_val_arr = StringArray::from(strs);
+
+        let type_arr =
+            UInt8Array::from_iter_values(test_data.iter().map(|_| AttributeValueType::Str as u8));
+
+        let record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false).with_metadata(
+                    HashMap::from_iter(vec![(
+                        metadata::COLUMN_ENCODING.into(),
+                        metadata::encodings::PLAIN.into(),
+                    )]),
+                ),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(parent_ids_before.clone()),
+                Arc::new(type_arr),
+                Arc::new(keys_arr),
+                Arc::new(string_val_arr),
+            ],
+        )
+        .unwrap();
+
+        let result_batch = materialize_parent_id_for_attributes::<u16>(&record_batch).unwrap();
+        let parent_ids_after = get_u16_array(&result_batch, consts::PARENT_ID).unwrap();
+        assert_eq!(parent_ids_after, &parent_ids_before);
+    }
+
+    #[test]
+    fn test_materialize_parent_id_by_columns() {
         let input = UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1]);
         let column = StringArray::from_iter_values(vec!["a", "a", "b", "b", "c"]);
         let record_batch = RecordBatch::try_new(
@@ -799,9 +854,35 @@ mod test {
             vec![Arc::new(input), Arc::new(column)],
         )
         .unwrap();
-        let result = materialize_parent_ids_by_column::<u16>(&record_batch, consts::NAME).unwrap();
+        let result =
+            materialize_parent_ids_by_columns::<u16>(&record_batch, [consts::NAME]).unwrap();
         let result_ids = get_u16_array(&result, consts::PARENT_ID).unwrap();
         let expected = UInt16Array::from_iter_values(vec![1, 2, 1, 2, 1]);
+        assert_eq!(&expected, result_ids)
+    }
+
+    #[test]
+    fn test_materialize_parent_id_by_column_noop() {
+        // check that we don't re-decode the column if it's already decoded
+        let input = UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1]);
+        let column = StringArray::from_iter_values(vec!["a", "a", "b", "b", "c"]);
+        let record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false).with_metadata(
+                    HashMap::from_iter(vec![(
+                        metadata::COLUMN_ENCODING.into(),
+                        metadata::encodings::PLAIN.into(),
+                    )]),
+                ),
+                Field::new(consts::NAME, DataType::Utf8, false),
+            ])),
+            vec![Arc::new(input), Arc::new(column)],
+        )
+        .unwrap();
+        let result =
+            materialize_parent_ids_by_columns::<u16>(&record_batch, [consts::NAME]).unwrap();
+        let result_ids = get_u16_array(&result, consts::PARENT_ID).unwrap();
+        let expected = UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1]);
         assert_eq!(&expected, result_ids)
     }
 
@@ -834,7 +915,7 @@ mod test {
         )
         .unwrap();
         let result =
-            materialize_parent_ids_by_column::<u16>(&record_batch, consts::TRACE_ID).unwrap();
+            materialize_parent_ids_by_columns::<u16>(&record_batch, [consts::TRACE_ID]).unwrap();
         let result_ids = get_u16_array(&result, consts::PARENT_ID).unwrap();
         let expected = UInt16Array::from_iter_values(vec![1, 2, 1, 2, 3]);
         assert_eq!(&expected, result_ids)
@@ -853,7 +934,8 @@ mod test {
             vec![Arc::new(input), Arc::new(column)],
         )
         .unwrap();
-        let result = materialize_parent_ids_by_column::<u16>(&record_batch, consts::NAME).unwrap();
+        let result =
+            materialize_parent_ids_by_columns::<u16>(&record_batch, [consts::NAME]).unwrap();
         let result_ids = get_u16_array(&result, consts::PARENT_ID).unwrap();
         let expected = UInt16Array::from_iter_values(vec![]);
         assert_eq!(&expected, result_ids)
@@ -1080,5 +1162,42 @@ mod test {
         // check it returns an error if invoked for the wrong record type
         let result = remove_delta_encoding::<UInt8Type>(&record_batch, "test");
         assert!(matches!(result, Err(Error::ColumnDataTypeMismatch { .. })))
+    }
+
+    #[test]
+    fn test_remove_delta_encoding_noop() {
+        // check we don't remove delta encoding if the column metadata
+        // already has encoding=plain
+        let record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("test", DataType::UInt16, true).with_metadata(HashMap::from_iter(vec![
+                    (
+                        metadata::COLUMN_ENCODING.into(),
+                        metadata::encodings::PLAIN.into(),
+                    ),
+                ])),
+            ])),
+            vec![Arc::new(UInt16Array::from(vec![
+                Some(1),
+                Some(1),
+                None,
+                Some(1),
+                Some(1),
+                None,
+            ]))],
+        )
+        .unwrap();
+
+        let result = remove_delta_encoding::<UInt16Type>(&record_batch, "test").unwrap();
+
+        let transformed_column = result
+            .column_by_name("test")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .unwrap();
+
+        let expected = UInt16Array::from(vec![Some(1), Some(1), None, Some(1), Some(1), None]);
+        assert_eq!(transformed_column, &expected);
     }
 }
