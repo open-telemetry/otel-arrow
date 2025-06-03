@@ -4,6 +4,7 @@
 [![Go-CI](https://github.com/open-telemetry/otel-arrow/actions/workflows/go-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/go-ci.yml)
 [![Rust-CI](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml/badge.svg)](https://github.com/open-telemetry/otel-arrow/actions/workflows/rust-ci.yml)
 [![OpenSSF Scorecard for otel-arrow](https://api.scorecard.dev/projects/github.com/open-telemetry/otel-arrow/badge)](https://scorecard.dev/viewer/?uri=github.com/open-telemetry/otel-arrow)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/10684/badge)](https://www.bestpractices.dev/projects/10684)
 [![codecov](https://codecov.io/gh/open-telemetry/otel-arrow/graph/badge.svg?token=7u3gFLH54G)](https://codecov.io/gh/open-telemetry/otel-arrow)
 
 The [OpenTelemetry with Apache
