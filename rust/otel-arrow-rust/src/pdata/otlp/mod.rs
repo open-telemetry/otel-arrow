@@ -25,9 +25,6 @@ use crate::proto::opentelemetry::logs::v1::ResourceLogsVisitor;
 use crate::proto::opentelemetry::logs::v1::ScopeLogsVisitable;
 use crate::proto::opentelemetry::logs::v1::ScopeLogsVisitor;
 
-/// NoopVisitor implements every visitor, does nothing.
-pub struct NoopVisitor {}
-
 /// LogsVisitor is the entry point for visiting OTLP logs data.
 pub trait LogsVisitor {
     /// The return type of the visitor
@@ -72,13 +69,21 @@ impl LogsDataVisitor for ItemCounter {
 
 impl ResourceLogsVisitor for &mut ItemCounter {
     fn visit_resource_logs(&mut self, v: impl ResourceLogsVisitable) {
-        v.visit_resource_logs(NoopVisitor {}, self.borrow_mut(), NoopVisitor {});
+        v.visit_resource_logs(
+            super::NoopVisitor {},
+            self.borrow_mut(),
+            super::NoopVisitor {},
+        );
     }
 }
 
 impl ScopeLogsVisitor for &mut ItemCounter {
     fn visit_scope_logs(&mut self, sv: impl ScopeLogsVisitable) {
-        sv.visit_scope_logs(NoopVisitor {}, self.borrow_mut(), NoopVisitor {});
+        sv.visit_scope_logs(
+            super::NoopVisitor {},
+            self.borrow_mut(),
+            super::NoopVisitor {},
+        );
     }
 }
 
