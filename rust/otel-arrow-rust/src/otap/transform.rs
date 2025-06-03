@@ -315,7 +315,11 @@ where
     replace_materialized_parent_id_column(record_batch, materialized_parent_ids)
 }
 
-// TODO write tests and rustdocs for this
+/// Materialize quasi-delta encoded record batch. Subsequent parent IDs are considered
+/// with values that are equal in all the columns will be considered to be delta encoded.
+/// If the column does not exist in the record batch, it is considered that all the column
+/// is all null, and in this case it treats subsequent nulls as equal for purposes of
+/// determining if the parent ID is delta encoded.
 pub fn materialize_parent_ids_by_columns<'a, T>(
     record_batch: &RecordBatch,
     equality_column_names: impl IntoIterator<Item = &'a str>,
@@ -388,7 +392,23 @@ where
     replace_materialized_parent_id_column(record_batch, materialized_parent_ids)
 }
 
-// TODO write tests and rustdocs for this
+/// Decodes the quasi-delta encoded Parent IDs field for a record batch of exemplars.
+/// Exemplars' Parent IDs are encoded in a scheme where if subsequent values are equal then
+/// the parent IDs are delta encoded. In this case, nulls in both value columns which represent
+/// empty exemplar values, are considered equal in subsequent rows
+///
+/// For example:
+///
+/// | val f64  |  val int64 | parent_id |
+/// |----------|------------| --------- |
+/// |   null   |    1       |  0        | <-- parent id = 0
+/// |   null   |    1       |  1        | <-- val == previous row -> delta encoded -> parent id = prev id + 1 = 1
+/// |   null   |    2       |  1        | <-- val != prev val -> parent_id = 1
+/// |   1.0    |    null    |  1        | <-- val != prev val -> parent_id = 1
+/// |   1.0    |    null    |  1        | <-- val == previous row -> delta encoded -> parent id = prev id + 1 = 2
+/// |   2.0    |    null    |  1        | <-- val != prev val -> parent_id = 1
+/// |   null   |    null    |  1        | <-- val != prev val -> parent_id = 1 (this means empty exemplar value)
+/// |   null   |    null    |  1        | <-- val == previous row -> delta encoded -> parent id = prev id + 1 = 2
 pub fn materialize_parent_id_for_exemplars<T>(record_batch: &RecordBatch) -> Result<RecordBatch>
 where
     T: ParentId,
@@ -397,6 +417,11 @@ where
     materialize_parent_ids_by_columns::<T>(record_batch, [consts::INT_VALUE, consts::DOUBLE_VALUE])
 }
 
+/// Returns a new record batch with the parent ID column replaced by the passed
+/// `materialized_parent_ids` column. This function expects the new parent IDs to have
+/// the same type, nullability and length as the record batch, and it also expects the
+/// original record batch to have a parent_id column. If these conditions are not met,
+/// an error is returned.
 fn replace_materialized_parent_id_column(
     record_batch: &RecordBatch,
     materialized_parent_ids: ArrayRef,

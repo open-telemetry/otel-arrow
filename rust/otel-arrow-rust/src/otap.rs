@@ -68,7 +68,8 @@ impl OtapBatch {
         }
     }
 
-    /// TODO comments
+    /// Decode the delta-encoded and quasi-delta encoded IDs & parent IDs
+    /// on each Arrow Record Batch contained in this Otap Batch.
     pub fn decode_transport_optimized_ids(&mut self) -> Result<()> {
         match self {
             Self::Logs(_) => Logs::decode_transport_optimized_ids(self),
@@ -96,7 +97,10 @@ trait OtapBatchStore: Sized + Default + Clone {
     /// Return a list of the allowed payload types associated with this type of batch
     fn allowed_payload_types() -> &'static [ArrowPayloadType];
 
-    /// TODO comments
+    /// Decode the delta-encoded and quasi-delta encoded IDs & parent IDs on each Arrow
+    /// Arrow Record Batch contained in this Otap Batch. Internally, implementers should
+    /// know which payloads use which types (u16 or u32) for ID/Parent ID fields as well
+    /// as how the IDs are encoded.
     fn decode_transport_optimized_ids(otap_batch: &mut OtapBatch) -> Result<()>;
 
     fn new() -> Self {
@@ -306,7 +310,6 @@ impl OtapBatchStore for Metrics {
             let rb = remove_delta_encoding::<UInt16Type>(metrics_rb, consts::ID)?;
             otap_batch.set(ArrowPayloadType::UnivariateMetrics, rb);
         }
-        // TODO - do we need to handle multivariate metrics here?
 
         for payload_type in [
             ArrowPayloadType::ResourceAttrs,
