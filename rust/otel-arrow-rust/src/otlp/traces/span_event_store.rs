@@ -174,13 +174,16 @@ mod tests {
         ]));
         let dropped_count_array = Arc::new(UInt32Array::from(vec![Some(0), Some(1), Some(2)]));
 
-        RecordBatch::try_new(schema, vec![
-            id_array,
-            name_array,
-            parent_id_array,
-            time_array,
-            dropped_count_array,
-        ])
+        RecordBatch::try_new(
+            schema,
+            vec![
+                id_array,
+                name_array,
+                parent_id_array,
+                time_array,
+                dropped_count_array,
+            ],
+        )
         .unwrap()
     }
 
@@ -203,13 +206,16 @@ mod tests {
         let time_array = Arc::new(TimestampNanosecondArray::from(Vec::<Option<i64>>::new()));
         let dropped_count_array = Arc::new(UInt32Array::from(Vec::<Option<u32>>::new()));
 
-        RecordBatch::try_new(schema, vec![
-            id_array,
-            name_array,
-            parent_id_array,
-            time_array,
-            dropped_count_array,
-        ])
+        RecordBatch::try_new(
+            schema,
+            vec![
+                id_array,
+                name_array,
+                parent_id_array,
+                time_array,
+                dropped_count_array,
+            ],
+        )
         .unwrap()
     }
 
@@ -375,13 +381,16 @@ mod tests {
         let dropped_count_array =
             Arc::new(UInt32Array::from(vec![Some(0), Some(0), Some(0), Some(0)]));
 
-        let rb = RecordBatch::try_new(schema, vec![
-            id_array,
-            name_array,
-            parent_id_array,
-            time_array,
-            dropped_count_array,
-        ])
+        let rb = RecordBatch::try_new(
+            schema,
+            vec![
+                id_array,
+                name_array,
+                parent_id_array,
+                time_array,
+                dropped_count_array,
+            ],
+        )
         .unwrap();
 
         let store = span_events_store_from_record_batch(&rb, None).unwrap();
@@ -418,13 +427,16 @@ mod tests {
         let time_array = Arc::new(TimestampNanosecondArray::from(vec![None, Some(2000000000)]));
         let dropped_count_array = Arc::new(UInt32Array::from(vec![None, Some(1)]));
 
-        let rb = RecordBatch::try_new(schema, vec![
-            id_array,
-            name_array,
-            parent_id_array,
-            time_array,
-            dropped_count_array,
-        ])
+        let rb = RecordBatch::try_new(
+            schema,
+            vec![
+                id_array,
+                name_array,
+                parent_id_array,
+                time_array,
+                dropped_count_array,
+            ],
+        )
         .unwrap();
 
         let store = span_events_store_from_record_batch(&rb, None).unwrap();

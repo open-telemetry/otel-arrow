@@ -13,7 +13,7 @@
 use crate::error;
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray,
-    DurationMillisecondArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int8Array,
+    DurationNanosecondArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int8Array,
     Int16Array, Int32Array, Int64Array, PrimitiveArray, RecordBatch, StringArray, StructArray,
     TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
@@ -454,7 +454,7 @@ pub type Int32ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int32Array>;
 pub type Int64ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int64Array>;
 pub type StringArrayAccessor<'a> = MaybeDictArrayAccessor<'a, StringArray>;
 pub type FixedSizeBinaryArrayAccessor<'a> = MaybeDictArrayAccessor<'a, FixedSizeBinaryArray>;
-pub type DurationMillisArrayAccessor<'a> = MaybeDictArrayAccessor<'a, DurationMillisecondArray>;
+pub type DurationNanosArrayAccessor<'a> = MaybeDictArrayAccessor<'a, DurationNanosecondArray>;
 
 pub struct DictionaryArrayAccessor<'a, K, V>
 where

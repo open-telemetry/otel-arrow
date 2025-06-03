@@ -207,14 +207,17 @@ mod tests {
 
         let dropped_count_array = Arc::new(UInt32Array::from(vec![Some(0), Some(1), Some(2)]));
 
-        RecordBatch::try_new(schema, vec![
-            id_array,
-            trace_id_array,
-            parent_id_array,
-            span_id_array,
-            trace_state_array,
-            dropped_count_array,
-        ])
+        RecordBatch::try_new(
+            schema,
+            vec![
+                id_array,
+                trace_id_array,
+                parent_id_array,
+                span_id_array,
+                trace_state_array,
+                dropped_count_array,
+            ],
+        )
         .unwrap()
     }
 
@@ -247,14 +250,17 @@ mod tests {
         let trace_state_array = Arc::new(StringArray::from(Vec::<Option<String>>::new()));
         let dropped_count_array = Arc::new(UInt32Array::from(Vec::<Option<u32>>::new()));
 
-        RecordBatch::try_new(schema, vec![
-            id_array,
-            trace_id_array,
-            parent_id_array,
-            span_id_array,
-            trace_state_array,
-            dropped_count_array,
-        ])
+        RecordBatch::try_new(
+            schema,
+            vec![
+                id_array,
+                trace_id_array,
+                parent_id_array,
+                span_id_array,
+                trace_state_array,
+                dropped_count_array,
+            ],
+        )
         .unwrap()
     }
 
@@ -278,14 +284,17 @@ mod tests {
         let trace_state_array = Arc::new(StringArray::from(vec![Some("minimal")]));
         let dropped_count_array = Arc::new(UInt32Array::from(vec![Some(0)]));
 
-        RecordBatch::try_new(schema, vec![
-            id_array,
-            trace_id_array,
-            parent_id_array,
-            span_id_array,
-            trace_state_array,
-            dropped_count_array,
-        ])
+        RecordBatch::try_new(
+            schema,
+            vec![
+                id_array,
+                trace_id_array,
+                parent_id_array,
+                span_id_array,
+                trace_state_array,
+                dropped_count_array,
+            ],
+        )
         .unwrap()
     }
 
@@ -483,14 +492,17 @@ mod tests {
         let dropped_count_array =
             Arc::new(UInt32Array::from(vec![Some(0), Some(0), Some(0), Some(0)]));
 
-        let rb = RecordBatch::try_new(schema, vec![
-            id_array,
-            trace_id_array,
-            parent_id_array,
-            span_id_array,
-            trace_state_array,
-            dropped_count_array,
-        ])
+        let rb = RecordBatch::try_new(
+            schema,
+            vec![
+                id_array,
+                trace_id_array,
+                parent_id_array,
+                span_id_array,
+                trace_state_array,
+                dropped_count_array,
+            ],
+        )
         .unwrap();
 
         let store = span_links_store_from_record_batch(&rb, None).unwrap();
@@ -537,14 +549,17 @@ mod tests {
         let trace_state_array = Arc::new(StringArray::from(vec![None, Some("state2")]));
         let dropped_count_array = Arc::new(UInt32Array::from(vec![None, Some(1)]));
 
-        let rb = RecordBatch::try_new(schema, vec![
-            id_array,
-            trace_id_array,
-            parent_id_array,
-            span_id_array,
-            trace_state_array,
-            dropped_count_array,
-        ])
+        let rb = RecordBatch::try_new(
+            schema,
+            vec![
+                id_array,
+                trace_id_array,
+                parent_id_array,
+                span_id_array,
+                trace_state_array,
+                dropped_count_array,
+            ],
+        )
         .unwrap();
 
         let _ = span_links_store_from_record_batch(&rb, None).unwrap();
@@ -594,14 +609,17 @@ mod tests {
 
         let dropped_count_array = Arc::new(UInt32Array::from(vec![Some(0), Some(1), Some(2)]));
 
-        let rb = RecordBatch::try_new(schema, vec![
-            id_array,
-            trace_id_array,
-            parent_id_array,
-            span_id_array,
-            trace_state_array,
-            dropped_count_array,
-        ])
+        let rb = RecordBatch::try_new(
+            schema,
+            vec![
+                id_array,
+                trace_id_array,
+                parent_id_array,
+                span_id_array,
+                trace_state_array,
+                dropped_count_array,
+            ],
+        )
         .unwrap();
 
         let store = span_links_store_from_record_batch(&rb, None).unwrap();

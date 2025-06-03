@@ -140,32 +140,41 @@ pub fn traces_from(traces_otap_batch: OtapBatch) -> Result<ExportTraceServiceReq
         let span_id = related_data.span_id_from_delta(delta_id);
 
         if let Some(trace_id_bytes) = spans_arrays.trace_id.value_at(idx) {
-            ensure!(trace_id_bytes.len() == 16, error::InvalidTraceIdSnafu {
-                message: format!(
-                    "span_id = {}, index = {}, trace_id = {:?}",
-                    span_id, idx, trace_id_bytes
-                ),
-            });
+            ensure!(
+                trace_id_bytes.len() == 16,
+                error::InvalidTraceIdSnafu {
+                    message: format!(
+                        "span_id = {}, index = {}, trace_id = {:?}",
+                        span_id, idx, trace_id_bytes
+                    ),
+                }
+            );
             current_span.trace_id = trace_id_bytes;
         }
 
         if let Some(span_id_bytes) = spans_arrays.span_id.value_at(idx) {
-            ensure!(span_id_bytes.len() == 8, error::InvalidSpanIdSnafu {
-                message: format!(
-                    "span_id = {}, index = {}, span_id = {:?}",
-                    span_id, idx, span_id_bytes
-                ),
-            });
+            ensure!(
+                span_id_bytes.len() == 8,
+                error::InvalidSpanIdSnafu {
+                    message: format!(
+                        "span_id = {}, index = {}, span_id = {:?}",
+                        span_id, idx, span_id_bytes
+                    ),
+                }
+            );
             current_span.span_id = span_id_bytes;
         }
 
         if let Some(parent_span_id_bytes) = spans_arrays.parent_span_id.value_at(idx) {
-            ensure!(parent_span_id_bytes.len() == 8, error::InvalidSpanIdSnafu {
-                message: format!(
-                    "span_id = {}, index = {}, parent_span_id = {:?}",
-                    span_id, idx, parent_span_id_bytes
-                ),
-            });
+            ensure!(
+                parent_span_id_bytes.len() == 8,
+                error::InvalidSpanIdSnafu {
+                    message: format!(
+                        "span_id = {}, index = {}, parent_span_id = {:?}",
+                        span_id, idx, parent_span_id_bytes
+                    ),
+                }
+            );
             current_span.parent_span_id = parent_span_id_bytes;
         }
 
