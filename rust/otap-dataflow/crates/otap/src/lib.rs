@@ -5,10 +5,7 @@
 
 use crate::grpc::OTAPData;
 use linkme::distributed_slice;
-use otap_df_engine::local::{LocalExporterFactory, LocalProcessorFactory, LocalReceiverFactory};
-use otap_df_engine::shared::{
-    SharedExporterFactory, SharedProcessorFactory, SharedReceiverFactory,
-};
+use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
 
 /// gRPC service implementation
 pub mod grpc;

@@ -19,9 +19,12 @@ use crate::proto::opentelemetry::experimental::arrow::v1::{
 };
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_engine::ReceiverFactory;
+use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::error::Error;
 use otap_df_engine::message::ControlMsg;
-use otap_df_engine::shared::{SharedReceiverFactory, receiver as shared};
+use otap_df_engine::receiver::ReceiverWrapper;
+use otap_df_engine::shared::receiver as shared;
 use otap_df_otlp::compression::CompressionMethod;
 use serde_json::Value;
 use std::net::SocketAddr;
