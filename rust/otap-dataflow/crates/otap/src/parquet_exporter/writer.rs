@@ -386,7 +386,7 @@ mod test {
 
     use crate::parquet_exporter::{
         partition::PartitionAttributeValue,
-        test::datagen::{SimpleLogDataGenOptions, create_single_arrow_record_batch},
+        test::datagen::{SimpleDataGenOptions, create_simple_logs_arrow_record_batches},
     };
 
     fn to_logs_record_batch(mut bar: BatchArrowRecords) -> OtapBatch {
@@ -403,8 +403,8 @@ mod test {
         let mut writer = WriterManager::new(object_store, None);
 
         // write some batch:
-        let otap_batch = to_logs_record_batch(create_single_arrow_record_batch(
-            SimpleLogDataGenOptions::default(),
+        let otap_batch = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions::default(),
         ));
         writer
             .write(&[WriteBatch::new(0, &otap_batch, None)])
@@ -458,13 +458,13 @@ mod test {
         let mut writer = WriterManager::new(object_store, None);
 
         let batch1 =
-            to_logs_record_batch(create_single_arrow_record_batch(SimpleLogDataGenOptions {
+            to_logs_record_batch(create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                 id_offset: 0,
                 ..Default::default()
             }));
 
         let batch2 =
-            to_logs_record_batch(create_single_arrow_record_batch(SimpleLogDataGenOptions {
+            to_logs_record_batch(create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                 id_offset: 1,
                 ..Default::default()
             }));
@@ -521,7 +521,7 @@ mod test {
         let mut writer = WriterManager::new(object_store, None);
 
         let partition1_batch =
-            to_logs_record_batch(create_single_arrow_record_batch(SimpleLogDataGenOptions {
+            to_logs_record_batch(create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                 id_offset: 0,
                 ..Default::default()
             }));
@@ -538,7 +538,7 @@ mod test {
         ];
 
         let partition2_batch =
-            to_logs_record_batch(create_single_arrow_record_batch(SimpleLogDataGenOptions {
+            to_logs_record_batch(create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                 id_offset: 1,
                 ..Default::default()
             }));
@@ -624,13 +624,13 @@ mod test {
         );
 
         let batch1 =
-            to_logs_record_batch(create_single_arrow_record_batch(SimpleLogDataGenOptions {
+            to_logs_record_batch(create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                 id_offset: 0,
                 ..Default::default()
             }));
 
         let batch2 =
-            to_logs_record_batch(create_single_arrow_record_batch(SimpleLogDataGenOptions {
+            to_logs_record_batch(create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                 id_offset: 1,
                 ..Default::default()
             }));
@@ -690,15 +690,15 @@ mod test {
         );
 
         let batch1 =
-            to_logs_record_batch(create_single_arrow_record_batch(SimpleLogDataGenOptions {
+            to_logs_record_batch(create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                 id_offset: 0,
                 ..Default::default()
             }));
 
         let batch2 =
-            to_logs_record_batch(create_single_arrow_record_batch(SimpleLogDataGenOptions {
+            to_logs_record_batch(create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                 id_offset: 1,
-                with_log_attrs: false,
+                with_main_record_attrs: false,
                 ..Default::default()
             }));
         writer

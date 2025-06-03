@@ -169,7 +169,7 @@ mod test {
     use std::pin::Pin;
     use std::time::Duration;
 
-    use datagen::SimpleLogDataGenOptions;
+    use datagen::SimpleDataGenOptions;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::testing::exporter::{TestContext, TestRuntime};
     use otel_arrow_rust::Consumer;
@@ -201,21 +201,29 @@ mod test {
                     batch_id,
                     OtapBatch::Logs(from_record_messages(record_messages)),
                 )),
-                _ => {
-                    todo!("handle other payload types in TestPDataInput.try_into")
+                ArrowPayloadType::Spans => Ok((
+                    batch_id,
+                    OtapBatch::Traces(from_record_messages(record_messages))
+                )),
+                ArrowPayloadType::UnivariateMetrics => Ok((
+                     batch_id,
+                     OtapBatch::Metrics(from_record_messages(record_messages))
+                )),
+                payload_type => {
+                    panic!("unexpected payload type in TestPDataInput.try_into: {:?}", payload_type)
                 }
             }
         }
     }
 
-    fn scenario(
+    fn logs_scenario(
         num_rows: usize,
         shutdown_timeout: Duration,
     ) -> impl FnOnce(TestContext<TestPDataInput>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |ctx| {
             Box::pin(async move {
                 ctx.send_pdata(TestPDataInput {
-                    batch: datagen::create_single_arrow_record_batch(SimpleLogDataGenOptions {
+                    batch: datagen::create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
                         num_rows,
                         ..Default::default()
                     }),
@@ -250,7 +258,7 @@ mod test {
         let num_rows = 100;
         test_runtime
             .set_exporter(exporter)
-            .run_test(scenario(num_rows, Duration::from_secs(1)))
+            .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
             .run_validation(move |_ctx| {
                 Box::pin(async move {
                     // simply ensure there is a parquet file for each type we should have
@@ -315,7 +323,7 @@ mod test {
         let num_rows = 100;
         test_runtime
             .set_exporter(exporter)
-            .run_test(scenario(num_rows, Duration::from_secs(1)))
+            .run_test(logs_scenario(num_rows, Duration::from_secs(1)))
             .run_validation(move |_ctx| {
                 Box::pin(async move {
                     // simply ensure there is a parquet file for each type we should have
@@ -362,7 +370,7 @@ mod test {
         let num_rows = 1000;
         test_runtime
             .set_exporter(exporter)
-            .run_test(scenario(num_rows, Duration::ZERO))
+            .run_test(logs_scenario(num_rows, Duration::ZERO))
             .run_validation(move |_ctx| {
                 Box::pin(async move {
                     // assert we didn't write because the timeout
@@ -376,6 +384,69 @@ mod test {
                         let result = std::fs::read_dir(format!("{}/{}", base_dir, table_name));
                         let error = result.unwrap_err();
                         assert_eq!(error.kind(), ErrorKind::NotFound);
+                    }
+                })
+            });
+    }
+
+    #[test]
+    fn test_traces() {
+        let test_runtime = TestRuntime::<TestPDataInput>::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_dir: String = temp_dir.path().to_str().unwrap().into();
+        let exporter = ParquetExporter::new(config::Config {
+            base_uri: base_dir.clone(),
+            partitioning_strategies: None,
+            writer_options: None,
+        });
+        let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
+            exporter,
+            test_runtime.config(),
+        );
+
+        let num_rows = 100;
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(move |ctx| {
+                Box::pin(async move {
+                    ctx.send_pdata(TestPDataInput {
+                        batch: datagen::create_simple_trace_arrow_record_batches(SimpleDataGenOptions {
+                            num_rows,
+                            ..Default::default()
+                        }),
+                    })
+                    .await
+                    .expect("Failed to send  logs message");
+
+                    ctx.send_shutdown(Duration::from_millis(200), "test completed")
+                        .await
+                        .unwrap();
+                    })
+            })
+            .run_validation(move |_ctx| {
+                Box::pin(async move {
+                    // simply ensure there is a parquet file for each type we should have
+                    // written and that it has the expected number of rows
+                    for payload_type in [
+                        ArrowPayloadType::Spans,
+                        ArrowPayloadType::SpanAttrs,
+                        ArrowPayloadType::ResourceAttrs,
+                        ArrowPayloadType::ScopeAttrs,
+                    ] {
+                        let table_name = payload_type.as_str_name().to_lowercase();
+                        let file_path = std::fs::read_dir(format!("{}/{}", base_dir, table_name))
+                            .unwrap()
+                            .next()
+                            .unwrap()
+                            .unwrap()
+                            .path();
+
+                        let file = File::open(file_path).unwrap();
+                        let reader_builder =
+                            ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+                        let mut reader = reader_builder.build().unwrap();
+                        let batch = reader.next().unwrap().unwrap();
+                        assert_eq!(batch.num_rows(), num_rows);
                     }
                 })
             });

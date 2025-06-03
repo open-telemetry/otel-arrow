@@ -233,16 +233,16 @@ pub mod test {
     use otel_arrow_rust::schema::consts::metadata;
     use otel_arrow_rust::schema::get_schema_metadata;
 
-    use crate::parquet_exporter::test::datagen::SimpleLogDataGenOptions;
+    use crate::parquet_exporter::test::datagen::SimpleDataGenOptions;
 
-    use super::super::test::datagen::create_single_arrow_record_batch;
+    use super::super::test::datagen::create_simple_logs_arrow_record_batches;
     use super::*;
 
     #[test]
     fn test_partition_sequence_id_generator_logs() {
         let mut id_generator = PartitionSequenceIdGenerator::new();
 
-        let mut log_batch = create_single_arrow_record_batch(SimpleLogDataGenOptions {
+        let mut log_batch = create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
             id_offset: 0,
             num_rows: 2,
             ..Default::default()
@@ -283,7 +283,7 @@ pub mod test {
         }
 
         // add a second batch
-        let mut log_batch = create_single_arrow_record_batch(SimpleLogDataGenOptions {
+        let mut log_batch = create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
             id_offset: 0,
             num_rows: 2,
             ..Default::default()
@@ -327,7 +327,7 @@ pub mod test {
         id_generator.curr_max = u32::MAX - 5;
         let curr_partition_id = id_generator.part_id;
 
-        let mut log_batch = create_single_arrow_record_batch(SimpleLogDataGenOptions {
+        let mut log_batch = create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
             id_offset: 0,
             num_rows: 10,
             ..Default::default()
@@ -358,7 +358,7 @@ pub mod test {
     fn test_partition_sequence_id_generator_decodes_ids() {
         let mut id_generator = PartitionSequenceIdGenerator::new();
 
-        let mut log_batch = create_single_arrow_record_batch(SimpleLogDataGenOptions {
+        let mut log_batch = create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
             id_offset: 0,
             num_rows: 3,
             ids_decoded: false,
