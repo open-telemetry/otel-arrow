@@ -6,7 +6,7 @@
 //! ToDo: Handle configuratin changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 
-use crate::LOCAL_EXPORTERS;
+use crate::EXPORTER_FACTORIES;
 use crate::compression::CompressionMethod;
 use crate::grpc::OTLPData;
 use crate::proto::opentelemetry::collector::{
@@ -17,8 +17,11 @@ use crate::proto::opentelemetry::collector::{
 };
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_engine::ExporterFactory;
+use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::error::Error;
-use otap_df_engine::local::{LocalExporterFactory, exporter as local};
+use otap_df_engine::exporter::ExporterWrapper;
+use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
 use serde_json::Value;
 
@@ -33,10 +36,12 @@ struct OTLPExporter {
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
-#[distributed_slice(LOCAL_EXPORTERS)]
-pub static OTLP_EXPORTER: LocalExporterFactory<OTLPData> = LocalExporterFactory {
+#[distributed_slice(EXPORTER_FACTORIES)]
+pub static OTLP_EXPORTER: ExporterFactory<OTLPData> = ExporterFactory {
     name: "urn:otel:otlp:exporter",
-    create: |config: &Value| Box::new(OTLPExporter::from_config(config)),
+    create: |config: &Value, exporter_config: &ExporterConfig| {
+        ExporterWrapper::local(OTLPExporter::from_config(config), exporter_config)
+    },
 };
 
 impl OTLPExporter {

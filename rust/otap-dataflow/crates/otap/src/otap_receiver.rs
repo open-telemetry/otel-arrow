@@ -8,7 +8,7 @@
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
 //!
 
-use crate::SHARED_RECEIVERS;
+use crate::RECEIVER_FACTORIES;
 use crate::grpc::{
     ArrowLogsServiceImpl, ArrowMetricsServiceImpl, ArrowTracesServiceImpl, OTAPData,
 };
@@ -40,10 +40,12 @@ pub struct OTAPReceiver {
 /// Unsafe code is temporarily used here to allow the use of `distributed_slice` macro
 /// This macro is part of the `linkme` crate which is considered safe and well maintained.
 #[allow(unsafe_code)]
-#[distributed_slice(SHARED_RECEIVERS)]
-pub static OTAP_EXPORTER: SharedReceiverFactory<OTAPData> = SharedReceiverFactory {
+#[distributed_slice(RECEIVER_FACTORIES)]
+pub static OTAP_EXPORTER: ReceiverFactory<OTAPData> = ReceiverFactory {
     name: "urn:otel:otap:receiver",
-    create: |config: &Value| Box::new(OTAPReceiver::from_config(config)),
+    create: |config: &Value, receiver_config: &ReceiverConfig| {
+        ReceiverWrapper::shared(OTAPReceiver::from_config(config), receiver_config)
+    },
 };
 
 impl OTAPReceiver {

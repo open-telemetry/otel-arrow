@@ -4,10 +4,7 @@
 
 use crate::grpc::OTLPData;
 use linkme::distributed_slice;
-use otap_df_engine::local::{LocalExporterFactory, LocalProcessorFactory, LocalReceiverFactory};
-use otap_df_engine::shared::{
-    SharedExporterFactory, SharedProcessorFactory, SharedReceiverFactory,
-};
+use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
 
 /// compression formats
 pub mod compression;
@@ -24,39 +21,27 @@ pub mod proto;
 #[cfg(test)]
 mod mock;
 
-/// A slice of local receiver factories for OTLP data.
+/// A slice of receiver factories for OTAP data.
 #[distributed_slice]
-pub static LOCAL_RECEIVERS: [LocalReceiverFactory<OTLPData>] = [..];
+pub static RECEIVER_FACTORIES: [ReceiverFactory<OTLPData>] = [..];
 
-/// A slice of local processor factories for OTLP data.
+/// A slice of local processor factories for OTAP data.
 #[distributed_slice]
-pub static LOCAL_PROCESSORS: [LocalProcessorFactory<OTLPData>] = [..];
+pub static PROCESSOR_FACTORIES: [ProcessorFactory<OTLPData>] = [..];
 
-/// A slice of local exporter factories for OTLP data.
+/// A slice of local exporter factories for OTAP data.
 #[distributed_slice]
-pub static LOCAL_EXPORTERS: [LocalExporterFactory<OTLPData>] = [..];
-
-/// A slice of shared receiver factories for OTLP data.
-#[distributed_slice]
-pub static SHARED_RECEIVERS: [SharedReceiverFactory<OTLPData>] = [..];
-
-/// A slice of shared processor factories for OTLP data.
-#[distributed_slice]
-pub static SHARED_PROCESSORS: [SharedProcessorFactory<OTLPData>] = [..];
-
-/// A slice of shared exporter factories for OTLP data.
-#[distributed_slice]
-pub static SHARED_EXPORTERS: [SharedExporterFactory<OTLPData>] = [..];
+pub static EXPORTER_FACTORIES: [ExporterFactory<OTLPData>] = [..];
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn test_plugins() {
-        for receiver in crate::SHARED_RECEIVERS.iter() {
+        for receiver in crate::RECEIVER_FACTORIES.iter() {
             println!("Receiver: {}", receiver.name);
         }
 
-        for exporter in crate::LOCAL_EXPORTERS.iter() {
+        for exporter in crate::EXPORTER_FACTORIES.iter() {
             println!("Exporter: {}", exporter.name);
         }
     }

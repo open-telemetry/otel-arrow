@@ -25,26 +25,14 @@ pub mod parquet_exporter;
 #[cfg(test)]
 mod mock;
 
-/// A slice of local receiver factories for OTAP data.
+/// A slice of receiver factories for OTAP data.
 #[distributed_slice]
-pub static LOCAL_RECEIVERS: [LocalReceiverFactory<OTAPData>] = [..];
+pub static RECEIVER_FACTORIES: [ReceiverFactory<OTAPData>] = [..];
 
 /// A slice of local processor factories for OTAP data.
 #[distributed_slice]
-pub static LOCAL_PROCESSORS: [LocalProcessorFactory<OTAPData>] = [..];
+pub static PROCESSOR_FACTORIES: [ProcessorFactory<OTAPData>] = [..];
 
 /// A slice of local exporter factories for OTAP data.
 #[distributed_slice]
-pub static LOCAL_EXPORTERS: [LocalExporterFactory<OTAPData>] = [..];
-
-/// A slice of shared receiver factories for OTAP data.
-#[distributed_slice]
-pub static SHARED_RECEIVERS: [SharedReceiverFactory<OTAPData>] = [..];
-
-/// A slice of shared processor factories for OTAP data.
-#[distributed_slice]
-pub static SHARED_PROCESSORS: [SharedProcessorFactory<OTAPData>] = [..];
-
-/// A slice of shared exporter factories for OTAP data.
-#[distributed_slice]
-pub static SHARED_EXPORTERS: [SharedExporterFactory<OTAPData>] = [..];
+pub static EXPORTER_FACTORIES: [ExporterFactory<OTAPData>] = [..];
