@@ -15,9 +15,11 @@ use crate::error;
 use crate::otap::{OtapBatch, from_record_messages};
 use crate::otlp::logs::logs_from;
 use crate::otlp::metrics::metrics_from;
+use crate::otlp::traces::traces_from;
 use crate::proto::opentelemetry::arrow::v1::{ArrowPayload, ArrowPayloadType, BatchArrowRecords};
 use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
 use arrow::array::RecordBatch;
 use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
@@ -142,6 +144,24 @@ impl Consumer {
                 let record_messages = self.consume_bar(records)?;
                 let otap_batch = OtapBatch::Logs(from_record_messages(record_messages));
                 logs_from(otap_batch)
+            }
+            main_record_type => error::UnsupportedPayloadTypeSnafu {
+                actual: main_record_type,
+            }
+            .fail(),
+        }
+    }
+
+    /// Consumes record batches in [BatchArrowRecords] to [ExportTraceServiceRequest].
+    pub fn consume_traces_batches(
+        &mut self,
+        records: &mut BatchArrowRecords,
+    ) -> error::Result<ExportTraceServiceRequest> {
+        match get_main_payload_type(records)? {
+            ArrowPayloadType::Spans => {
+                let record_messages = self.consume_bar(records)?;
+                let otap_batch = OtapBatch::Traces(from_record_messages(record_messages));
+                traces_from(otap_batch)
             }
             main_record_type => error::UnsupportedPayloadTypeSnafu {
                 actual: main_record_type,
