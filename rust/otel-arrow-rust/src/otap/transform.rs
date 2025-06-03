@@ -8,17 +8,13 @@ use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, DictionaryArray, PrimitiveArray,
     PrimitiveBuilder, RecordBatch,
 };
-use arrow::compute::{and, partition};
+use arrow::compute::and;
 use arrow::compute::{kernels::cmp::eq, sort_to_indices, take_record_batch};
 use arrow::datatypes::{DataType, UInt8Type, UInt16Type};
 use snafu::{OptionExt, ResultExt};
 
-use crate::arrays::{
-    NullableArrayAccessor, get_f64_array, get_f64_array_opt, get_i64_array, get_i64_array_opt,
-    get_required_array, get_u8_array,
-};
+use crate::arrays::{NullableArrayAccessor, get_required_array, get_u8_array};
 use crate::error::{self, Result};
-use crate::otlp::attributes::parent_id;
 use crate::otlp::attributes::{parent_id::ParentId, store::AttributeValueType};
 use crate::schema::{
     consts::{self, metadata},
@@ -349,7 +345,7 @@ where
     // the values in each column are equal (index offset by 1). If some column doesn't exist, in
     // this case assume this means null values which are equal
     let mut eq_next: Option<BooleanArray> = None;
-    for column_name in equality_column_names.into_iter() {
+    for column_name in equality_column_names {
         if let Some(column) = record_batch.column_by_name(column_name) {
             let eq_next_column = create_next_element_equality_array(column)?;
             eq_next = Some(match eq_next {
@@ -430,14 +426,12 @@ fn replace_materialized_parent_id_column(
         metadata::encodings::PLAIN,
     );
 
-    Ok(
-        RecordBatch::try_new(Arc::new(schema), columns).map_err(|e| {
-            error::UnexpectedRecordBatchStateSnafu {
-                reason: format!("could not replace parent id {}", e),
-            }
-            .build()
-        })?,
-    )
+    RecordBatch::try_new(Arc::new(schema), columns).map_err(|e| {
+        error::UnexpectedRecordBatchStateSnafu {
+            reason: format!("could not replace parent id {}", e),
+        }
+        .build()
+    })
 }
 
 // Creates a boolean array where an element having value true means that the

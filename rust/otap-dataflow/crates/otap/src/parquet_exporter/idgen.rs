@@ -10,14 +10,11 @@ use arrow::array::{RecordBatch, UInt32Array};
 use arrow::compute::kernels::cast;
 use arrow::compute::kernels::numeric::add;
 use arrow::compute::max;
-use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
+use arrow::datatypes::{DataType, Field, Schema};
 use arrow::error::ArrowError;
-use otel_arrow_rust::otap::transform::remove_delta_encoding;
 use otel_arrow_rust::otap::{OtapBatch, child_payload_types};
-use otel_arrow_rust::otlp::attributes::decoder::materialize_parent_id;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otel_arrow_rust::schema::consts::metadata;
-use otel_arrow_rust::schema::{consts, get_field_metadata, update_schema_metadata};
+use otel_arrow_rust::schema::{consts, update_schema_metadata};
 use uuid::Uuid;
 
 /// Definition of errors that could happen when generating an ID
@@ -69,6 +66,15 @@ impl PartitionSequenceIdGenerator {
         &mut self,
         otap_batch: &mut OtapBatch,
     ) -> Result<(), IdGeneratorError> {
+        // decode the transport optimized IDs if they are not already decoded. This is needed
+        // to ensure that we are not computing the sequence of IDs based on delta-encoded IDs.
+        // If the IDs are already decoded, this is a no-op.
+        otap_batch.decode_transport_optimized_ids().map_err(|e| {
+            IdGeneratorError::InvalidRecordBatch {
+                error: format!("failed to decode transport optimized IDs: {}", e),
+            }
+        })?;
+
         loop {
             match otap_batch {
                 OtapBatch::Logs(_) => {
@@ -78,32 +84,7 @@ impl PartitionSequenceIdGenerator {
                         None => break,
                     };
 
-                    // remove the delta encoding from ID column
-                    // TODO -- it might be nice to make this a helper method on OTAP batch in future
-                    // https://github.com/open-telemetry/otel-arrow/issues/512
-                    let logs_rb = if Some(metadata::encodings::PLAIN)
-                        != get_field_metadata(
-                            logs_rb.schema_ref(),
-                            consts::ID,
-                            metadata::COLUMN_ENCODING,
-                        ) {
-                        match remove_delta_encoding::<UInt16Type>(logs_rb, consts::ID) {
-                            Ok(logs_rb) => logs_rb,
-                            Err(e) => {
-                                return Err(IdGeneratorError::InvalidRecordBatch {
-                                    error: format!(
-                                        "could not remove delta encodings from batch: {}",
-                                        e
-                                    ),
-                                });
-                            }
-                        }
-                    } else {
-                        // Nothing to do, just clone the batch to make the type-system happy
-                        logs_rb.clone()
-                    };
-
-                    let new_logs_rb = match self.add_offset_to_column(consts::ID, &logs_rb) {
+                    let new_logs_rb = match self.add_offset_to_column(consts::ID, logs_rb) {
                         Ok(rb) => rb,
                         Err(IdGeneratorError::Overflow {}) => {
                             // re-init the curr_offset with a new node_id
@@ -140,32 +121,7 @@ impl PartitionSequenceIdGenerator {
 
                     for child_payload_type in child_payload_types(ArrowPayloadType::Logs) {
                         if let Some(rb) = otap_batch.get(*child_payload_type) {
-                            // remove the quasi-delta encoding from the parent IDs
-                            // TODO -- it might be nice to make this a helper method on OTAP batch in the future
-                            // https://github.com/open-telemetry/otel-arrow/issues/512
-                            let rb = if Some(metadata::encodings::PLAIN)
-                                != get_field_metadata(
-                                    rb.schema_ref(),
-                                    consts::PARENT_ID,
-                                    metadata::COLUMN_ENCODING,
-                                ) {
-                                match materialize_parent_id::<u16>(rb) {
-                                    Ok(rb) => rb,
-                                    Err(e) => {
-                                        return Err(IdGeneratorError::InvalidRecordBatch {
-                                            error: format!(
-                                                "could not remove delta encodings from batch: {}",
-                                                e
-                                            ),
-                                        });
-                                    }
-                                }
-                            } else {
-                                // nothing to do
-                                rb.clone()
-                            };
-
-                            let new_rb = self.add_offset_to_column(consts::PARENT_ID, &rb)?;
+                            let new_rb = self.add_offset_to_column(consts::PARENT_ID, rb)?;
                             otap_batch.set(*child_payload_type, new_rb);
                         }
                     }
