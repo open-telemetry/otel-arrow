@@ -48,6 +48,26 @@ Pre-requisites:
         --k8s-backend-manifest backend/backend-manifest.yaml \
         --k8s-loadgen-manifest load_generator/loadgen-manifest.yaml \
         --k8s-namespace perf-test-otel --duration 30
+    
+    NOTES: 
+        - If you are using a local kind cluster, you can import the images into the cluster by running:
+        
+            kind load docker-image otel-loadgen --name kind
+            kind load docker-image backend-service --name kind
+
+        - And setup the metrics server by running:
+
+            # Apply metrics-server
+            kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+
+            # Patch with both required flags
+            kubectl patch deployment metrics-server -n kube-system --type=json -p='[
+            {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"},
+            {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-preferred-address-types=InternalIP"}
+            ]'
+
+            # Restart deployment
+            kubectl rollout restart deployment metrics-server -n kube-system
 """
 import argparse
 import os
