@@ -9,7 +9,17 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
-- Remove `concurrentbatch` and `obfuscation` processors. [#409](https://github.com/open-telemetry/otel-arrow/pull/409)
+- Remove `concurrentbatch` and `obfuscation` processors.
+  [#409](https://github.com/open-telemetry/otel-arrow/pull/409)
+- OTAP AttributeStore parent_id encoding cleanup.
+  [#431](https://github.com/open-telemetry/otel-arrow/pull/431)
+- Upgrade Go to 1.24.3.
+  [#440](https://github.com/open-telemetry/otel-arrow/pull/440),
+  [#508](https://github.com/open-telemetry/otel-arrow/pull/508)
+- Fix time unit of `DurationTimeUnixNano` to `Duration_ns` in Traces.
+  [#517](https://github.com/open-telemetry/otel-arrow/pull/517)
+- Upgrade to v0.127.0 / v1.33.0 of collector dependencies.
+  [#526](https://github.com/open-telemetry/otel-arrow/pull/526)
 
 ## [0.35.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.35.0) - 2025-04-07
 
