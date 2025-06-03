@@ -13,9 +13,9 @@
 use crate::error;
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BinaryArray, BooleanArray, DictionaryArray,
-    FixedSizeBinaryArray, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array,
-    Int64Array, PrimitiveArray, RecordBatch, StringArray, StructArray, TimestampNanosecondArray,
-    UInt8Array, UInt16Array, UInt32Array, UInt64Array,
+    DurationNanosecondArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int8Array,
+    Int16Array, Int32Array, Int64Array, PrimitiveArray, RecordBatch, StringArray, StructArray,
+    TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{
     ArrowDictionaryKeyType, ArrowNativeType, DataType, TimeUnit, UInt8Type, UInt16Type,
@@ -449,9 +449,12 @@ impl<'a> MaybeDictArrayAccessor<'a, StringArray> {
     }
 }
 
+pub type UInt32ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, UInt32Array>;
 pub type Int32ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int32Array>;
 pub type Int64ArrayAccessor<'a> = MaybeDictArrayAccessor<'a, Int64Array>;
 pub type StringArrayAccessor<'a> = MaybeDictArrayAccessor<'a, StringArray>;
+pub type FixedSizeBinaryArrayAccessor<'a> = MaybeDictArrayAccessor<'a, FixedSizeBinaryArray>;
+pub type DurationNanosArrayAccessor<'a> = MaybeDictArrayAccessor<'a, DurationNanosecondArray>;
 
 pub struct DictionaryArrayAccessor<'a, K, V>
 where
@@ -565,6 +568,16 @@ impl<'a> StructColumnAccessor<'a> {
         self.inner
             .column_by_name(column_name)
             .map(ByteArrayAccessor::try_new)
+            .transpose()
+    }
+
+    pub fn int32_column_op(
+        &self,
+        column_name: &str,
+    ) -> error::Result<Option<Int32ArrayAccessor<'a>>> {
+        self.inner
+            .column_by_name(column_name)
+            .map(Int32ArrayAccessor::try_new)
             .transpose()
     }
 }

@@ -12,6 +12,8 @@
 
 //! This module contains data structures for OTLP and OTAP pipeline data
 
+use crate::error;
+
 pub mod otlp;
 
 // Note that these types are placeholders, we probably want to share
@@ -26,7 +28,7 @@ pub mod otlp;
 // the spec.
 
 /// TraceID identifier of a Trace
-#[derive(Clone, Copy, Debug)]
+#[derive(Eq, PartialEq, Clone, Copy, Debug, Default)]
 pub struct TraceID([u8; 16]);
 
 impl TraceID {
@@ -43,6 +45,21 @@ impl From<[u8; 16]> for TraceID {
     }
 }
 
+impl TryFrom<&[u8]> for TraceID {
+    type Error = error::Error;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let id_bytes: [u8; 16] = value.try_into().map_err(|_| {
+            error::InvalidIdSnafu {
+                expected: 16usize,
+                given: value.len(),
+            }
+            .build()
+        })?;
+        Ok(TraceID::from(id_bytes))
+    }
+}
+
 impl From<TraceID> for Vec<u8> {
     fn from(tid: TraceID) -> Self {
         tid.0.to_vec()
@@ -50,7 +67,7 @@ impl From<TraceID> for Vec<u8> {
 }
 
 /// SpanID identifier of a Span
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct SpanID([u8; 8]);
 
 impl SpanID {
@@ -70,5 +87,20 @@ impl From<SpanID> for Vec<u8> {
 impl From<[u8; 8]> for SpanID {
     fn from(sid: [u8; 8]) -> Self {
         SpanID(sid)
+    }
+}
+
+impl TryFrom<&[u8]> for SpanID {
+    type Error = error::Error;
+
+    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
+        let id_bytes: [u8; 8] = value.try_into().map_err(|_| {
+            error::InvalidIdSnafu {
+                expected: 8usize,
+                given: value.len(),
+            }
+            .build()
+        })?;
+        Ok(SpanID::from(id_bytes))
     }
 }
