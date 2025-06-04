@@ -10,6 +10,7 @@ use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::message::{ControlMsg, Message};
 use std::time::{Duration, Instant};
+use prost::Message as ProstMessage;
 
 /// Trait for hierarchical batch splitting
 ///
@@ -129,6 +130,17 @@ impl HierarchicalBatchSplit for ExportMetricsServiceRequest {
     }
 }
 
+impl ExportMetricsServiceRequest {
+    pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
+        self.resource_metrics
+            .chunks(max_requests)
+            .map(|chunk| ExportMetricsServiceRequest {
+                resource_metrics: chunk.to_vec(),
+            })
+            .collect()
+    }
+}
+
 impl HierarchicalBatchSplit for ExportLogsServiceRequest {
     fn split_into_batches(mut self, max_batch_size: usize) -> Vec<Self> {
         let mut batches = Vec::new();
@@ -185,11 +197,52 @@ impl HierarchicalBatchSplit for ExportLogsServiceRequest {
     }
 }
 
+impl ExportLogsServiceRequest {
+    pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
+        self.resource_logs
+            .chunks(max_requests)
+            .map(|chunk| ExportLogsServiceRequest {
+                resource_logs: chunk.to_vec(),
+            })
+            .collect()
+    }
+}
+
+impl ExportTraceServiceRequest {
+    pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
+        self.resource_spans
+            .chunks(max_requests)
+            .map(|chunk| ExportTraceServiceRequest {
+                resource_spans: chunk.to_vec(),
+            })
+            .collect()
+    }
+}
+
+// Enum to define how to size the batches
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchSizer {
+    Requests,
+    Items,
+    Bytes,
+}
+
 // Generic batch config
 #[derive(Debug, Clone)]
 pub struct BatchConfig {
+    pub sizer: BatchSizer,
     pub send_batch_size: usize,
     pub timeout: Duration,
+}
+
+impl Default for BatchConfig {
+    fn default() -> Self {
+        Self {
+            sizer: BatchSizer::Items,
+            send_batch_size: 512,
+            timeout: Duration::from_secs(5),
+        }
+    }
 }
 
 pub struct GenericBatcher {
@@ -240,6 +293,16 @@ impl GenericBatcher {
             last_update_logs: now,
             config,
         }
+    }
+
+    fn count_trace_requests(req: &ExportTraceServiceRequest) -> usize {
+        req.resource_spans.len()
+    }
+    fn count_metric_requests(req: &ExportMetricsServiceRequest) -> usize {
+        req.resource_metrics.len()
+    }
+    fn count_log_requests(req: &ExportLogsServiceRequest) -> usize {
+        req.resource_logs.len()
     }
 
     async fn flush_traces(
@@ -313,6 +376,83 @@ impl Processor<OTLPData> for GenericBatcher {
         msg: Message<OTLPData>,
         effect_handler: &mut EffectHandler<OTLPData>,
     ) -> Result<(), Error<OTLPData>> {
+
+        // Check if we need to flush on requests size
+        if self.config.sizer == BatchSizer::Requests {
+
+
+            match &msg {
+                Message::PData(OTLPData::Traces(req)) => {
+                    if Self::count_trace_requests(req) >= self.config.send_batch_size {
+                        self.flush_traces(effect_handler).await?;
+                    }
+                }
+                Message::PData(OTLPData::Metrics(req)) => {
+                    if Self::count_metric_requests(req) >= self.config.send_batch_size {
+                        self.flush_metrics(effect_handler).await?;
+                    }
+                }
+                Message::PData(OTLPData::Logs(req)) => {
+                    if Self::count_log_requests(req) >= self.config.send_batch_size {
+                        self.flush_logs(effect_handler).await?;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Check if we need to flush on items size
+        if self.config.sizer == BatchSizer::Items {
+            match &msg {
+                Message::PData(OTLPData::Traces(req)) => {
+                    if Self::count_spans(req) >= self.config.send_batch_size {
+                        self.flush_traces(effect_handler).await?;
+                    }
+                }
+                Message::PData(OTLPData::Metrics(req)) => {
+                    if Self::count_metrics(req) >= self.config.send_batch_size {
+                        self.flush_metrics(effect_handler).await?;
+                    }
+                }
+                Message::PData(OTLPData::Logs(req)) => {
+                    if Self::count_logs(req) >= self.config.send_batch_size {
+                        self.flush_logs(effect_handler).await?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Check if we need to flush on bytes size
+        if self.config.sizer == BatchSizer::Bytes {
+            match &msg {
+                Message::PData(OTLPData::Traces(req)) => {
+                    let pending_size = self.traces_pending.as_ref().map(|p| p.encoded_len()).unwrap_or(0);
+                    let new_size = req.encoded_len();
+                    let total_size = pending_size + new_size;
+                    if total_size >= self.config.send_batch_size {
+                        self.flush_traces(effect_handler).await?;
+                    }
+                }
+                Message::PData(OTLPData::Metrics(req)) => {
+                    let pending_size = self.metrics_pending.as_ref().map(|p| p.encoded_len()).unwrap_or(0);
+                    let new_size = req.encoded_len();
+                    let total_size = pending_size + new_size;
+                    if total_size >= self.config.send_batch_size {
+                        self.flush_metrics(effect_handler).await?;
+                    }
+                }
+                Message::PData(OTLPData::Logs(req)) => {
+                    let pending_size = self.logs_pending.as_ref().map(|p| p.encoded_len()).unwrap_or(0);
+                    let new_size = req.encoded_len();
+                    let total_size = pending_size + new_size;
+                    if total_size >= self.config.send_batch_size {
+                        self.flush_logs(effect_handler).await?;
+                    }
+                }
+                _ => {}
+            }
+        }
+                   
         match msg {
             Message::PData(data) => {
                 match data {
@@ -323,7 +463,10 @@ impl Processor<OTLPData> for GenericBatcher {
                                 .resource_spans
                                 .splice(0..0, pending.resource_spans.drain(..));
                         }
-                        let mut batches = req.split_into_batches(self.config.send_batch_size);
+                        let mut batches = match self.config.sizer {
+                            BatchSizer::Requests => req.split_by_requests(self.config.send_batch_size),
+                            _ => req.split_into_batches(self.config.send_batch_size),
+                        };
                         // The last batch may not be full: buffer it, emit the rest
                         if let Some(last) = batches.pop() {
                             for batch in &batches {
@@ -346,7 +489,10 @@ impl Processor<OTLPData> for GenericBatcher {
                                 .resource_metrics
                                 .splice(0..0, pending.resource_metrics.drain(..));
                         }
-                        let mut batches = req.split_into_batches(self.config.send_batch_size);
+                        let mut batches = match self.config.sizer {
+                            BatchSizer::Requests => req.split_by_requests(self.config.send_batch_size),
+                            _ => req.split_into_batches(self.config.send_batch_size),
+                        };
                         if let Some(last) = batches.pop() {
                             for batch in &batches {
                                 effect_handler
@@ -367,7 +513,10 @@ impl Processor<OTLPData> for GenericBatcher {
                                 .resource_logs
                                 .splice(0..0, pending.resource_logs.drain(..));
                         }
-                        let mut batches = req.split_into_batches(self.config.send_batch_size);
+                        let mut batches = match self.config.sizer {
+                            BatchSizer::Requests => req.split_by_requests(self.config.send_batch_size),
+                            _ => req.split_into_batches(self.config.send_batch_size),
+                        };
                         if let Some(last) = batches.pop() {
                             for batch in &batches {
                                 effect_handler
@@ -427,6 +576,7 @@ mod tests {
     fn traces_group_preserving_split() {
         let runtime = TestRuntime::<OTLPData>::new();
         let config = BatchConfig {
+            sizer: BatchSizer::Items,
             send_batch_size: 3,
             timeout: Duration::from_secs(60),
         };
@@ -537,6 +687,7 @@ mod tests {
     fn metrics_group_preserving_split() {
         let runtime = TestRuntime::<OTLPData>::new();
         let config = BatchConfig {
+            sizer: BatchSizer::Items,
             send_batch_size: 2,
             timeout: Duration::from_secs(60),
         };
@@ -647,6 +798,7 @@ mod tests {
     fn logs_group_preserving_split() {
         let runtime = TestRuntime::<OTLPData>::new();
         let config = BatchConfig {
+            sizer: BatchSizer::Items,
             send_batch_size: 3,
             timeout: Duration::from_secs(60),
         };
@@ -756,7 +908,11 @@ mod tests {
     #[test]
     fn handles_empty_input_batch() {
         let runtime = TestRuntime::<OTLPData>::new();
-        let wrapper = wrap_local(GenericBatcher::new(BatchConfig { send_batch_size: 10, timeout: Duration::from_secs(1) }));
+        let wrapper = wrap_local(GenericBatcher::new(BatchConfig {
+            sizer: BatchSizer::Items,
+            send_batch_size: 10,
+            timeout: Duration::from_secs(1),
+        }));
         runtime.set_processor(wrapper)
             .run_test(|mut ctx| async move {
                 ctx.process(Message::PData(OTLPData::Traces(ExportTraceServiceRequest { resource_spans: vec![] }))).await.unwrap();
@@ -769,7 +925,11 @@ mod tests {
     #[test]
     fn skips_empty_resource_spans() {
         let runtime = TestRuntime::<OTLPData>::new();
-        let wrapper = wrap_local(GenericBatcher::new(BatchConfig { send_batch_size: 3, timeout: Duration::from_secs(1) }));
+        let wrapper = wrap_local(GenericBatcher::new(BatchConfig {
+            sizer: BatchSizer::Items,
+            send_batch_size: 3,
+            timeout: Duration::from_secs(1),
+        }));
         runtime.set_processor(wrapper).run_test(|mut ctx| async move {
             // input has many resource/spans with no actual spans
             let req = ExportTraceServiceRequest {
@@ -785,6 +945,269 @@ mod tests {
         let emitted = ctx.drain_pdata().await;
         assert!(emitted.is_empty());
         }).validate(|_| async {});
+    }
+    
+    #[test]
+    fn traces_flushes_on_request_count() {
+        let runtime = TestRuntime::<OTLPData>::new();
+        let config = BatchConfig {
+            sizer: BatchSizer::Requests,
+            send_batch_size: 2,
+            timeout: Duration::from_secs(60),
+        };
+        let wrapper = wrap_local(GenericBatcher::new(config));
+        runtime
+            .set_processor(wrapper)
+            .run_test(|mut ctx| async move {
+                // Compose a request with 2 resource_spans, each with 1 span
+                let req = ExportTraceServiceRequest {
+                    resource_spans: vec![
+                        ResourceSpans {
+                            resource: None,
+                            schema_url: String::new(),
+                            scope_spans: vec![ScopeSpans {
+                                scope: None,
+                                spans: vec![Span { name: "A".into(), ..Default::default() }],
+                                schema_url: String::new(),
+                            }],
+                        },
+                        ResourceSpans {
+                            resource: None,
+                            schema_url: String::new(),
+                            scope_spans: vec![ScopeSpans {
+                                scope: None,
+                                spans: vec![Span { name: "B".into(), ..Default::default() }],
+                                schema_url: String::new(),
+                            }],
+                        },
+                    ],
+                };
+                ctx.process(Message::PData(OTLPData::Traces(req)))
+                    .await
+                    .unwrap();
+                ctx.process(Message::Control(ControlMsg::Shutdown {
+                    deadline: Duration::from_secs(1),
+                    reason: "test".to_string(),
+                }))
+                .await
+                .unwrap();
+                let emitted = ctx.drain_pdata().await;
+                // Should flush after 2 requests (resource_spans)
+                assert_eq!(emitted.len(), 1, "Should emit 1 batch for 2 requests");
+            })
+            .validate(|_ctx| async {});
+    }
+    
+    #[test]
+    fn metrics_flushes_on_request_count() {
+        let runtime = TestRuntime::<OTLPData>::new();
+        let config = BatchConfig {
+            sizer: BatchSizer::Requests,
+            send_batch_size: 2,
+            timeout: Duration::from_secs(60),
+        };
+        let wrapper = wrap_local(GenericBatcher::new(config));
+        runtime
+            .set_processor(wrapper)
+            .run_test(|mut ctx| async move {
+                let req = ExportMetricsServiceRequest {
+                    resource_metrics: vec![
+                        ResourceMetrics {
+                            resource: None,
+                            schema_url: String::new(),
+                            scope_metrics: vec![ScopeMetrics {
+                                scope: None,
+                                schema_url: String::new(),
+                                metrics: vec![Metric { name: "A".into(), ..Default::default() }],
+                            }],
+                        },
+                        ResourceMetrics {
+                            resource: None,
+                            schema_url: String::new(),
+                            scope_metrics: vec![ScopeMetrics {
+                                scope: None,
+                                schema_url: String::new(),
+                                metrics: vec![Metric { name: "B".into(), ..Default::default() }],
+                            }],
+                        },
+                    ],
+                };
+                ctx.process(Message::PData(OTLPData::Metrics(req)))
+                    .await
+                    .unwrap();
+                ctx.process(Message::Control(ControlMsg::Shutdown {
+                    deadline: Duration::from_secs(1),
+                    reason: "test".to_string(),
+                }))
+                .await
+                .unwrap();
+                let emitted = ctx.drain_pdata().await;
+                assert_eq!(emitted.len(), 1, "Should emit 1 batch for 2 requests");
+            })
+            .validate(|_ctx| async {});
+    }
+    
+    #[test]
+    fn logs_flushes_on_request_count() {
+        let runtime = TestRuntime::<OTLPData>::new();
+        let config = BatchConfig {
+            sizer: BatchSizer::Requests,
+            send_batch_size: 2,
+            timeout: Duration::from_secs(60),
+        };
+        let wrapper = wrap_local(GenericBatcher::new(config));
+        runtime
+            .set_processor(wrapper)
+            .run_test(|mut ctx| async move {
+                let req = ExportLogsServiceRequest {
+                    resource_logs: vec![
+                        ResourceLogs {
+                            resource: None,
+                            schema_url: String::new(),
+                            scope_logs: vec![ScopeLogs {
+                                scope: None,
+                                schema_url: String::new(),
+                                log_records: vec![LogRecord { severity_text: "A".into(), ..Default::default() }],
+                            }],
+                        },
+                        ResourceLogs {
+                            resource: None,
+                            schema_url: String::new(),
+                            scope_logs: vec![ScopeLogs {
+                                scope: None,
+                                schema_url: String::new(),
+                                log_records: vec![LogRecord { severity_text: "B".into(), ..Default::default() }],
+                            }],
+                        },
+                    ],
+                };
+                ctx.process(Message::PData(OTLPData::Logs(req)))
+                    .await
+                    .unwrap();
+                ctx.process(Message::Control(ControlMsg::Shutdown {
+                    deadline: Duration::from_secs(1),
+                    reason: "test".to_string(),
+                }))
+                .await
+                .unwrap();
+                let emitted = ctx.drain_pdata().await;
+                assert_eq!(emitted.len(), 1, "Should emit 1 batch for 2 requests");
+            })
+            .validate(|_ctx| async {});
+    }
+    
+    #[test]
+    fn traces_flushes_on_byte_size() {
+        let runtime = TestRuntime::<OTLPData>::new();
+        let config = BatchConfig {
+            sizer: BatchSizer::Bytes,
+            send_batch_size: 1, // very small, should flush immediately
+            timeout: Duration::from_secs(60),
+        };
+        let wrapper = wrap_local(GenericBatcher::new(config));
+        runtime
+            .set_processor(wrapper)
+            .run_test(|mut ctx| async move {
+                let req = ExportTraceServiceRequest {
+                    resource_spans: vec![ResourceSpans {
+                        resource: None,
+                        schema_url: String::new(),
+                        scope_spans: vec![ScopeSpans {
+                            scope: None,
+                            spans: vec![Span { name: "A".into(), ..Default::default() }],
+                            schema_url: String::new(),
+                        }],
+                    }],
+                };
+                ctx.process(Message::PData(OTLPData::Traces(req)))
+                    .await
+                    .unwrap();
+                ctx.process(Message::Control(ControlMsg::Shutdown {
+                    deadline: Duration::from_secs(1),
+                    reason: "test".to_string(),
+                }))
+                .await
+                .unwrap();
+                let emitted = ctx.drain_pdata().await;
+                assert_eq!(emitted.len(), 1, "Should emit 1 batch due to byte size");
+            })
+            .validate(|_ctx| async {});
+    }
+    
+    #[test]
+    fn metrics_flushes_on_byte_size() {
+        let runtime = TestRuntime::<OTLPData>::new();
+        let config = BatchConfig {
+            sizer: BatchSizer::Bytes,
+            send_batch_size: 1, // very small, should flush immediately
+            timeout: Duration::from_secs(60),
+        };
+        let wrapper = wrap_local(GenericBatcher::new(config));
+        runtime
+            .set_processor(wrapper)
+            .run_test(|mut ctx| async move {
+                let req = ExportMetricsServiceRequest {
+                    resource_metrics: vec![ResourceMetrics {
+                        resource: None,
+                        schema_url: String::new(),
+                        scope_metrics: vec![ScopeMetrics {
+                            scope: None,
+                            schema_url: String::new(),
+                            metrics: vec![Metric { name: "A".into(), ..Default::default() }],
+                        }],
+                    }],
+                };
+                ctx.process(Message::PData(OTLPData::Metrics(req)))
+                    .await
+                    .unwrap();
+                ctx.process(Message::Control(ControlMsg::Shutdown {
+                    deadline: Duration::from_secs(1),
+                    reason: "test".to_string(),
+                }))
+                .await
+                .unwrap();
+                let emitted = ctx.drain_pdata().await;
+                assert_eq!(emitted.len(), 1, "Should emit 1 batch due to byte size");
+            })
+            .validate(|_ctx| async {});
+    }
+    
+    #[test]
+    fn logs_flushes_on_byte_size() {
+        let runtime = TestRuntime::<OTLPData>::new();
+        let config = BatchConfig {
+            sizer: BatchSizer::Bytes,
+            send_batch_size: 1, // very small, should flush immediately
+            timeout: Duration::from_secs(60),
+        };
+        let wrapper = wrap_local(GenericBatcher::new(config));
+        runtime
+            .set_processor(wrapper)
+            .run_test(|mut ctx| async move {
+                let req = ExportLogsServiceRequest {
+                    resource_logs: vec![ResourceLogs {
+                        resource: None,
+                        schema_url: String::new(),
+                        scope_logs: vec![ScopeLogs {
+                            scope: None,
+                            schema_url: String::new(),
+                            log_records: vec![LogRecord { severity_text: "A".into(), ..Default::default() }],
+                        }],
+                    }],
+                };
+                ctx.process(Message::PData(OTLPData::Logs(req)))
+                    .await
+                    .unwrap();
+                ctx.process(Message::Control(ControlMsg::Shutdown {
+                    deadline: Duration::from_secs(1),
+                    reason: "test".to_string(),
+                }))
+                .await
+                .unwrap();
+                let emitted = ctx.drain_pdata().await;
+                assert_eq!(emitted.len(), 1, "Should emit 1 batch due to byte size");
+            })
+            .validate(|_ctx| async {});
     }
 }
 
@@ -898,6 +1321,7 @@ mod integration_tests {
 
         let mut runtime = otap_df_engine::testing::processor::TestRuntime::<OTLPData>::new();
         let wrapper = wrap_local(GenericBatcher::new(BatchConfig {
+            sizer: BatchSizer::Items,
             send_batch_size: 2, // test splitting
             timeout: Duration::from_secs(1),
         }));
