@@ -2,7 +2,14 @@ name: Go-CI
 permissions:
   contents: read
 
-on: [push, pull_request]
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  merge_group:
 
 # Cancel in-progress runs on new commits to same PR
 concurrency:

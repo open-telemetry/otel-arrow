@@ -6,7 +6,9 @@ permissions: read-all
 
 on:
   pull_request:
-    branches: [ main ]
+    branches:
+      - main
+  merge_group:
 
 jobs:
   markdownlint:
