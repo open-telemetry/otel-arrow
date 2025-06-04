@@ -610,6 +610,93 @@ mod tests {
     }
 
     #[test]
+    fn flushes_partial_batch_on_shutdown() {
+        let runtime = TestRuntime::<OTLPData>::new();
+        let config = BatchConfig {
+            sizer: BatchSizer::Items,
+            send_batch_size: 10, // Large, so won't flush by size
+            timeout: Duration::from_secs(60),
+        };
+        let wrapper = wrap_local(GenericBatcher::new(config));
+        runtime
+            .set_processor(wrapper)
+            .run_test(|mut ctx| async move {
+                // Send a partial batch (only 3 spans, less than batch size)
+                let req = ExportTraceServiceRequest {
+                    resource_spans: vec![ResourceSpans {
+                        resource: None,
+                        schema_url: String::new(),
+                        scope_spans: vec![ScopeSpans {
+                            scope: None,
+                            spans: vec![
+                                Span { name: "A".into(), ..Default::default() },
+                                Span { name: "B".into(), ..Default::default() },
+                                Span { name: "C".into(), ..Default::default() },
+                            ],
+                            schema_url: String::new(),
+                        }],
+                    }],
+                };
+                ctx.process(Message::PData(OTLPData::Traces(req))).await.unwrap();
+                // Trigger shutdown
+                ctx.process(Message::Control(ControlMsg::Shutdown {
+                    deadline: Duration::from_secs(1),
+                    reason: "test".to_string(),
+                }))
+                .await
+                .unwrap();
+                let emitted = ctx.drain_pdata().await;
+                // Should emit 1 batch containing the partial data
+                assert_eq!(emitted.len(), 1, "Should flush partial batch on shutdown");
+                match &emitted[0] {
+                    OTLPData::Traces(req) => {
+                        let count = req.resource_spans.iter()
+                            .flat_map(|rs| &rs.scope_spans)
+                            .flat_map(|ss| &ss.spans)
+                            .count();
+                        assert_eq!(count, 3, "All partial spans should be present in the flushed batch");
+                    }
+                    _ => panic!("Expected Traces batch"),
+                }
+            })
+            .validate(|_| async {});
+    }
+
+    #[test]
+    fn flushes_on_timeout() {
+        let runtime = TestRuntime::<OTLPData>::new();
+        let config = BatchConfig {
+            sizer: BatchSizer::Items,
+            send_batch_size: 10, // large, so won't flush by size
+            timeout: Duration::from_millis(10),
+        };
+        let wrapper = wrap_local(GenericBatcher::new(config));
+        runtime
+            .set_processor(wrapper)
+            .run_test(|mut ctx| async move {
+                // Send a single span
+                let req = ExportTraceServiceRequest {
+                    resource_spans: vec![ResourceSpans {
+                        resource: None,
+                        schema_url: String::new(),
+                        scope_spans: vec![ScopeSpans {
+                            scope: None,
+                            spans: vec![Span { name: "A".into(), ..Default::default() }],
+                            schema_url: String::new(),
+                        }],
+                    }],
+                };
+                ctx.process(Message::PData(OTLPData::Traces(req))).await.unwrap();
+                // Simulate timer tick after timeout
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                ctx.process(Message::Control(ControlMsg::TimerTick {})).await.unwrap();
+                let emitted = ctx.drain_pdata().await;
+                assert_eq!(emitted.len(), 1, "Should flush after timeout");
+            })
+            .validate(|_| async {});
+    }
+
+    #[test]
     fn no_duplicate_scope_groups_across_batches() {
         let runtime = TestRuntime::<OTLPData>::new();
         let config = BatchConfig {

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+
 //! # OTLP Crate
 //!
 //! This crate provides OpenTelemetry Protocol (OTLP) support for the OTAP dataflow system.
@@ -22,8 +24,8 @@
 #![warn(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-/// Simple batch processor implementation
-mod simple_generic_batch_processor;
+/// OTLP batch processor implementation
+mod otlp_batch_processor;
 
 use crate::grpc::OTLPData;
 use linkme::distributed_slice;
