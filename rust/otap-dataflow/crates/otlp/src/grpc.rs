@@ -25,7 +25,6 @@ use crate::proto::opentelemetry::collector::{
 };
 
 use otap_df_engine::shared::receiver as shared;
-use tonic::codec::CompressionEncoding;
 use tonic::{Request, Response, Status};
 
 /// struct that implements the Log Service trait
@@ -35,6 +34,7 @@ pub struct LogsServiceImpl {
 
 impl LogsServiceImpl {
     /// Create a LogsServiceImpl with a sendable Effect Handler
+    #[must_use]
     pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
@@ -47,6 +47,7 @@ pub struct MetricsServiceImpl {
 
 impl MetricsServiceImpl {
     /// Create a MetricsServiceImpl with a sendable Effect Handler
+    #[must_use]
     pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
@@ -59,6 +60,7 @@ pub struct TraceServiceImpl {
 
 impl TraceServiceImpl {
     /// Create a TraceServiceImpl with a sendable Effect Handler
+    #[must_use]
     pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
@@ -71,6 +73,7 @@ pub struct ProfilesServiceImpl {
 
 impl ProfilesServiceImpl {
     /// create a ProfileServiceImpl with a sendable Effect Handler
+    #[must_use]
     pub fn new(effect_handler: shared::EffectHandler<OTLPData>) -> Self {
         Self { effect_handler }
     }
@@ -151,27 +154,4 @@ pub enum OTLPData {
     Traces(ExportTraceServiceRequest),
     /// Profiles Object
     Profiles(ExportProfilesServiceRequest),
-}
-
-/// Enum to represent various compression methods
-#[derive(Debug)]
-pub enum CompressionMethod {
-    /// Fastest compression
-    Zstd,
-    /// Most compatible compression method
-    Gzip,
-    /// Used for legacy systems
-    Deflate,
-}
-
-impl CompressionMethod {
-    /// map the compression method to the proper tonic compression encoding equivalent
-    /// use the CompressionMethod enum to abstract from tonic
-    pub fn map_to_compression_encoding(&self) -> CompressionEncoding {
-        match *self {
-            CompressionMethod::Gzip => CompressionEncoding::Gzip,
-            CompressionMethod::Zstd => CompressionEncoding::Zstd,
-            CompressionMethod::Deflate => CompressionEncoding::Deflate,
-        }
-    }
 }

@@ -11,13 +11,22 @@ The three key components in this module are:
     - `ReportingStrategy`: Integrates the formatting and output strategies to generate and report test data.
 
 Classes:
+    ReportingStrategyConfig(BaseModel) Base model for configuring reporting strategies.
     FormatStrategy (ABC): Interface for strategies that format aggregated test data.
     DestinationStrategy (ABC): Interface for strategies that determine where and how to output formatted data.
     ReportingStrategy (ABC): Interface for strategies that combine formatting and output to report aggregated data.
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any
+from typing import Any, Dict
+
+from pydantic import BaseModel
+
+from ..test_framework.test_data import TestData
+
+
+class ReportingStrategyConfig(BaseModel):
+    """Base model for Reporting Strategy config, passed to strategy init."""
 
 
 class FormatStrategy(ABC):
@@ -94,10 +103,14 @@ class ReportingStrategy(ABC):
     """
 
     @abstractmethod
-    def report(self, aggregated_data: Dict[str, Dict[str, Any]]):
+    def __init__(self, config: ReportingStrategyConfig) -> None:
+        """All reporting strategies must be initialized with a config object."""
+
+    @abstractmethod
+    def report(self, test_data: TestData):
         """
-        Generate and report test data by formatting and outputting the aggregated data.
+        Generate and report by formatting and outputting the test data.
 
         Args:
-            aggregated_data (Dict[str, Dict[str, any]]): The aggregated data to format and report.
+            test_data: The aggregated data to format and report.
         """

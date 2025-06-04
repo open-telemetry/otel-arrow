@@ -8,19 +8,21 @@ Monitoring strategies are responsible for gathering, starting, and stopping moni
 for components during tests. This can involve collecting performance metrics, logging,
 or gathering any relevant statistics or insights from the component.
 
-Typical implementations of this interface include:
-    - ResourceMonitoring: Monitors system resources such as CPU, memory, and network usage.
-    - HealthMonitoring: Monitors the health and availability of the component (e.g., via heartbeats).
-    - ResourceLogging: Monitors the application's logs from file, docker, k8s.
-
 Classes:
+    MonitoringStrategyConfig(BaseModel): Base class for configuring monitoring strategies.
     MonitoringStrategy (ABC): Abstract base class for all monitoring strategies.
 """
 
 from abc import ABC, abstractmethod
 
-from ..component.lifecycle_component import LifecycleComponent
-from ..test_framework.test_context import TestStepContext, TestExecutionContext
+from pydantic import BaseModel
+
+from ..component.component import Component
+from ..context.test_contexts import TestStepContext, TestExecutionContext
+
+
+class MonitoringStrategyConfig(BaseModel):
+    """Base model for Monitoring Strategy config, passed to strategy init."""
 
 
 class MonitoringStrategy(ABC):
@@ -38,7 +40,11 @@ class MonitoringStrategy(ABC):
     """
 
     @abstractmethod
-    def start(self, component: LifecycleComponent, ctx: TestStepContext):
+    def __init__(self, config: MonitoringStrategyConfig) -> None:
+        """All monitoring strategies must be initialized with a config object."""
+
+    @abstractmethod
+    def start(self, component: Component, ctx: TestStepContext):
         """
         Start the monitoring process.
 
@@ -49,7 +55,7 @@ class MonitoringStrategy(ABC):
         """
 
     @abstractmethod
-    def stop(self, component: LifecycleComponent, ctx: TestStepContext):
+    def stop(self, component: Component, ctx: TestStepContext):
         """
         Stop the monitoring process.
 
@@ -60,7 +66,7 @@ class MonitoringStrategy(ABC):
         """
 
     @abstractmethod
-    def collect(self, component: LifecycleComponent, ctx: TestExecutionContext) -> dict:
+    def collect(self, component: Component, ctx: TestExecutionContext) -> dict:
         """
         Collect and return monitoring data.
 

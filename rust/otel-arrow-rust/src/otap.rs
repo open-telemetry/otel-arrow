@@ -14,6 +14,8 @@ use crate::{
 pub mod transform;
 
 /// The OtapBatch enum is used to represent a batch of OTAP data.
+#[derive(Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum OtapBatch {
     /// Represents a batch of logs data.
     Logs(Logs),
@@ -45,13 +47,25 @@ impl OtapBatch {
             Self::Traces(spans) => spans.get(payload_type),
         }
     }
+
+    /// Get the list of possible payload types associated with the batch of this type.
+    /// Note: It's not guaranteed that this batch will actual contain all these
+    /// payload types
+    #[must_use]
+    pub fn allowed_payload_types(&self) -> &'static [ArrowPayloadType] {
+        match self {
+            Self::Logs(_) => Logs::allowed_payload_types(),
+            Self::Metrics(_) => Metrics::allowed_payload_types(),
+            Self::Traces(_) => Traces::allowed_payload_types(),
+        }
+    }
 }
 
 /// The ArrowBatchStore helper trait is used to define a common interface for
 /// storing and retrieving Arrow record batches in a type-safe manner. It is
 /// implemented by various structs that represent each signal type and provides
 /// methods to efficiently set and get record batches.
-trait OtapBatchStore: Sized + Default {
+trait OtapBatchStore: Sized + Default + Clone {
     // Internally, implementers should use a bitmask for the types they support.
     // The offsets in the bitmask should correspond to the ArrowPayloadType enum values.
     const TYPE_MASK: u64;
@@ -61,6 +75,9 @@ trait OtapBatchStore: Sized + Default {
     /// that types to be positioned in the array according to the POSITION_LOOKUP array.
     fn batches_mut(&mut self) -> &mut [Option<RecordBatch>];
     fn batches(&self) -> &[Option<RecordBatch>];
+
+    /// Return a list of the allowed payload types associated with this type of batch
+    fn allowed_payload_types() -> &'static [ArrowPayloadType];
 
     fn new() -> Self {
         Self::default()
@@ -158,7 +175,7 @@ const POSITION_LOOKUP: &[usize] = &[
 const UNUSED_INDEX: usize = 99;
 
 /// Store of record batches for a batch of OTAP logs data.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Logs {
     batches: [Option<RecordBatch>; 4],
 }
@@ -176,10 +193,19 @@ impl OtapBatchStore for Logs {
     fn batches(&self) -> &[Option<RecordBatch>] {
         &self.batches
     }
+
+    fn allowed_payload_types() -> &'static [ArrowPayloadType] {
+        &[
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::Logs,
+            ArrowPayloadType::LogAttrs,
+        ]
+    }
 }
 
 /// Store of record batches for a batch of OTAP metrics data.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Metrics {
     batches: [Option<RecordBatch>; 18],
 }
@@ -211,10 +237,33 @@ impl OtapBatchStore for Metrics {
     fn batches(&self) -> &[Option<RecordBatch>] {
         &self.batches
     }
+
+    fn allowed_payload_types() -> &'static [ArrowPayloadType] {
+        &[
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::UnivariateMetrics,
+            ArrowPayloadType::NumberDataPoints,
+            ArrowPayloadType::SummaryDataPoints,
+            ArrowPayloadType::HistogramDataPoints,
+            ArrowPayloadType::ExpHistogramDataPoints,
+            ArrowPayloadType::NumberDpAttrs,
+            ArrowPayloadType::SummaryDpAttrs,
+            ArrowPayloadType::HistogramDpAttrs,
+            ArrowPayloadType::ExpHistogramDpAttrs,
+            ArrowPayloadType::NumberDpExemplars,
+            ArrowPayloadType::HistogramDpExemplars,
+            ArrowPayloadType::ExpHistogramDpExemplars,
+            ArrowPayloadType::NumberDpExemplarAttrs,
+            ArrowPayloadType::HistogramDpExemplarAttrs,
+            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+            ArrowPayloadType::MultivariateMetrics,
+        ]
+    }
 }
 
 /// Store of record batches for a batch of OTAP traces data.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Traces {
     batches: [Option<RecordBatch>; 8],
 }
@@ -236,6 +285,72 @@ impl OtapBatchStore for Traces {
     fn batches(&self) -> &[Option<RecordBatch>] {
         &self.batches
     }
+
+    fn allowed_payload_types() -> &'static [ArrowPayloadType] {
+        &[
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::Spans,
+            ArrowPayloadType::SpanAttrs,
+            ArrowPayloadType::SpanEvents,
+            ArrowPayloadType::SpanLinks,
+            ArrowPayloadType::SpanEventAttrs,
+            ArrowPayloadType::SpanLinkAttrs,
+        ]
+    }
+}
+
+/// Return the child payload types for the given payload type
+#[must_use]
+pub fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPayloadType] {
+    match payload_type {
+        ArrowPayloadType::Logs => &[
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::LogAttrs,
+        ],
+        ArrowPayloadType::Spans => &[
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::LogAttrs,
+            ArrowPayloadType::SpanEvents,
+            ArrowPayloadType::SpanLinks,
+        ],
+        ArrowPayloadType::SpanEvents => &[ArrowPayloadType::SpanEventAttrs],
+        ArrowPayloadType::SpanLinks => &[ArrowPayloadType::SpanLinkAttrs],
+        ArrowPayloadType::UnivariateMetrics => &[
+            ArrowPayloadType::ResourceAttrs,
+            ArrowPayloadType::ScopeAttrs,
+            ArrowPayloadType::LogAttrs,
+            ArrowPayloadType::NumberDataPoints,
+            ArrowPayloadType::SummaryDataPoints,
+            ArrowPayloadType::HistogramDataPoints,
+            ArrowPayloadType::ExpHistogramDataPoints,
+        ],
+        ArrowPayloadType::NumberDataPoints => &[
+            ArrowPayloadType::NumberDpAttrs,
+            ArrowPayloadType::NumberDpExemplars,
+        ],
+        ArrowPayloadType::NumberDpExemplarAttrs => &[ArrowPayloadType::NumberDpExemplarAttrs],
+        ArrowPayloadType::SummaryDataPoints => &[ArrowPayloadType::SummaryDpAttrs],
+        ArrowPayloadType::HistogramDataPoints => &[
+            ArrowPayloadType::HistogramDpAttrs,
+            ArrowPayloadType::HistogramDpExemplars,
+        ],
+        ArrowPayloadType::HistogramDpExemplars => &[ArrowPayloadType::HistogramDpExemplarAttrs],
+        ArrowPayloadType::ExpHistogramDataPoints => &[
+            ArrowPayloadType::ExpHistogramDpAttrs,
+            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+        ],
+
+        ArrowPayloadType::ExpHistogramDpExemplarAttrs => {
+            &[ArrowPayloadType::ExpHistogramDpExemplarAttrs]
+        }
+        ArrowPayloadType::MultivariateMetrics => {
+            child_payload_types(ArrowPayloadType::MultivariateMetrics)
+        }
+        _ => &[],
+    }
 }
 
 #[cfg(test)]
@@ -252,9 +367,10 @@ mod test {
 
         // for purpose of this test, the shape of the data doesn't really matter...
         let schema = Schema::new(vec![Field::new("a", DataType::UInt8, false)]);
-        let record_batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(
-            UInt8Array::from_iter_values(vec![1]),
-        )])
+        let record_batch = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![Arc::new(UInt8Array::from_iter_values(vec![1]))],
+        )
         .unwrap();
 
         // the assertions here are maybe a bit more robust than the ones
@@ -307,9 +423,10 @@ mod test {
 
         // for purpose of this test, the shape of the data doesn't really matter...
         let schema = Schema::new(vec![Field::new("a", DataType::UInt8, false)]);
-        let record_batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(
-            UInt8Array::from_iter_values(vec![1]),
-        )])
+        let record_batch = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![Arc::new(UInt8Array::from_iter_values(vec![1]))],
+        )
         .unwrap();
 
         let metric_types = [
@@ -349,9 +466,10 @@ mod test {
 
         // for purpose of this test, the shape of the data doesn't really matter...
         let schema = Schema::new(vec![Field::new("a", DataType::UInt8, false)]);
-        let record_batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(
-            UInt8Array::from_iter_values(vec![1]),
-        )])
+        let record_batch = RecordBatch::try_new(
+            Arc::new(schema),
+            vec![Arc::new(UInt8Array::from_iter_values(vec![1]))],
+        )
         .unwrap();
 
         let trace_types = [

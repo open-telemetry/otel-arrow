@@ -24,6 +24,7 @@ tonic = { version = "0.13.1", default-features = false, features = [
 prost = "0.13.5"
 prost-types = "0.13.5"
 hex = "0.4.3"
+linkme = "0.3.33"
 
 # Workspace dependencies
 thiserror.workspace = true
@@ -35,6 +36,7 @@ log.workspace = true
 
 [build-dependencies]
 tonic-build = { version = "0.13.1", features = ["cleanup-markdown"] }
+linkme = { workspace = true }
 
 [dev-dependencies]
 portpicker = "0.1.1"

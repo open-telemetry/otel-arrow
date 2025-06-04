@@ -23,7 +23,7 @@ from ...core.component.lifecycle_component import (
     LifecyclePhase,
 )
 from ..strategies.deployment.docker import DockerDeploymentConfig
-from ...core.test_framework.test_context import TestStepContext, TestExecutionContext
+from ...core.context.test_contexts import TestStepContext, TestExecutionContext
 
 
 LifecycleHookStrategy = Literal["append", "replace"]

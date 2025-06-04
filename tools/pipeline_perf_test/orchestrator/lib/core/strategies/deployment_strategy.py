@@ -14,18 +14,30 @@ Typical concrete implementations of this interface include:
     - ProcessDeployment: Manages components as local OS processes.
 
 Classes:
+    DeploymentStrategyConfig (BaseModel): Base class for strategy configs.
     DeploymentStrategy (ABC): Abstract base class for defining component deployment behavior.
 """
 
 from abc import ABC, abstractmethod
 
-from ..component.lifecycle_component import LifecycleComponent
-from ..test_framework.test_context import TestStepContext
+from pydantic import BaseModel
+
+from ..component.component import Component
+from ..context.test_contexts import TestStepContext
+
+
+class DeploymentStrategyConfig(BaseModel):
+    """Base model for Deployment Strategy config, passed to strategy init."""
 
 
 class DeploymentStrategy(ABC):
+
     @abstractmethod
-    def start(self, component: LifecycleComponent, ctx: TestStepContext):
+    def __init__(self, config: DeploymentStrategyConfig) -> None:
+        """All deployment strategies must be initialized with a config object."""
+
+    @abstractmethod
+    def start(self, component: Component, ctx: TestStepContext):
         """
         Deploy the component to the target environment.
 
@@ -35,7 +47,7 @@ class DeploymentStrategy(ABC):
         """
 
     @abstractmethod
-    def stop(self, component: LifecycleComponent, ctx: TestStepContext):
+    def stop(self, component: Component, ctx: TestStepContext):
         """
         Tear down and remove the deployed component.
 
