@@ -457,17 +457,19 @@ mod test {
         let object_store = Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
         let mut writer = WriterManager::new(object_store, None);
 
-        let batch1 =
-            to_logs_record_batch(create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+        let batch1 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions {
                 id_offset: 0,
                 ..Default::default()
-            }));
+            },
+        ));
 
-        let batch2 =
-            to_logs_record_batch(create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+        let batch2 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions {
                 id_offset: 1,
                 ..Default::default()
-            }));
+            },
+        ));
 
         writer
             .write(&[
@@ -520,11 +522,12 @@ mod test {
         let object_store = Arc::new(LocalFileSystem::new_with_prefix(path).unwrap());
         let mut writer = WriterManager::new(object_store, None);
 
-        let partition1_batch =
-            to_logs_record_batch(create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+        let partition1_batch = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions {
                 id_offset: 0,
                 ..Default::default()
-            }));
+            },
+        ));
 
         let partition1_attrs = vec![
             PartitionAttribute {
@@ -537,11 +540,12 @@ mod test {
             },
         ];
 
-        let partition2_batch =
-            to_logs_record_batch(create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+        let partition2_batch = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions {
                 id_offset: 1,
                 ..Default::default()
-            }));
+            },
+        ));
 
         let partition2_attrs = vec![
             PartitionAttribute {
@@ -623,17 +627,19 @@ mod test {
             }),
         );
 
-        let batch1 =
-            to_logs_record_batch(create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+        let batch1 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions {
                 id_offset: 0,
                 ..Default::default()
-            }));
+            },
+        ));
 
-        let batch2 =
-            to_logs_record_batch(create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+        let batch2 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions {
                 id_offset: 1,
                 ..Default::default()
-            }));
+            },
+        ));
 
         writer
             .write(&[
@@ -689,18 +695,20 @@ mod test {
             }),
         );
 
-        let batch1 =
-            to_logs_record_batch(create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+        let batch1 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions {
                 id_offset: 0,
                 ..Default::default()
-            }));
+            },
+        ));
 
-        let batch2 =
-            to_logs_record_batch(create_simple_logs_arrow_record_batches(SimpleDataGenOptions {
+        let batch2 = to_logs_record_batch(create_simple_logs_arrow_record_batches(
+            SimpleDataGenOptions {
                 id_offset: 1,
                 with_main_record_attrs: false,
                 ..Default::default()
-            }));
+            },
+        ));
         writer
             .write(&[
                 WriteBatch::new(0, &batch1, None),

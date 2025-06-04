@@ -203,14 +203,17 @@ mod test {
                 )),
                 ArrowPayloadType::Spans => Ok((
                     batch_id,
-                    OtapBatch::Traces(from_record_messages(record_messages))
+                    OtapBatch::Traces(from_record_messages(record_messages)),
                 )),
                 ArrowPayloadType::UnivariateMetrics => Ok((
-                     batch_id,
-                     OtapBatch::Metrics(from_record_messages(record_messages))
+                    batch_id,
+                    OtapBatch::Metrics(from_record_messages(record_messages)),
                 )),
                 payload_type => {
-                    panic!("unexpected payload type in TestPDataInput.try_into: {:?}", payload_type)
+                    panic!(
+                        "unexpected payload type in TestPDataInput.try_into: {:?}",
+                        payload_type
+                    )
                 }
             }
         }
@@ -275,9 +278,15 @@ mod test {
                         // with the expected key
                         let partition_path =
                             std::fs::read_dir(format!("{}/{}", base_dir, table_name))
-                                .unwrap()
+                                .expect(&format!(
+                                    "expect to have found table for {:?}",
+                                    payload_type
+                                ))
                                 .next()
-                                .unwrap()
+                                .expect(&format!(
+                                    "expect at least one partition directory for type {:?}",
+                                    payload_type
+                                ))
                                 .unwrap()
                                 .path();
 
@@ -291,7 +300,10 @@ mod test {
                         let file_path = std::fs::read_dir(partition_path)
                             .unwrap()
                             .next()
-                            .unwrap()
+                            .expect(&format!(
+                                "expect at least one parquet file for type {:?}",
+                                payload_type
+                            ))
                             .unwrap()
                             .path();
 
@@ -336,9 +348,15 @@ mod test {
                     ] {
                         let table_name = payload_type.as_str_name().to_lowercase();
                         let file_path = std::fs::read_dir(format!("{}/{}", base_dir, table_name))
-                            .unwrap()
+                            .expect(&format!(
+                                "expect to have found table for {:?}",
+                                payload_type
+                            ))
                             .next()
-                            .unwrap()
+                            .expect(&format!(
+                                "expect at least one parquet file file for type {:?}",
+                                payload_type
+                            ))
                             .unwrap()
                             .path();
 
@@ -410,10 +428,13 @@ mod test {
             .run_test(move |ctx| {
                 Box::pin(async move {
                     ctx.send_pdata(TestPDataInput {
-                        batch: datagen::create_simple_trace_arrow_record_batches(SimpleDataGenOptions {
-                            num_rows,
-                            ..Default::default()
-                        }),
+                        batch: datagen::create_simple_trace_arrow_record_batches(
+                            SimpleDataGenOptions {
+                                num_rows,
+                                traces_options: Some(Default::default()),
+                                ..Default::default()
+                            },
+                        ),
                     })
                     .await
                     .expect("Failed to send  logs message");
@@ -421,7 +442,7 @@ mod test {
                     ctx.send_shutdown(Duration::from_millis(200), "test completed")
                         .await
                         .unwrap();
-                    })
+                })
             })
             .run_validation(move |_ctx| {
                 Box::pin(async move {
@@ -432,12 +453,22 @@ mod test {
                         ArrowPayloadType::SpanAttrs,
                         ArrowPayloadType::ResourceAttrs,
                         ArrowPayloadType::ScopeAttrs,
+                        ArrowPayloadType::SpanEvents,
+                        ArrowPayloadType::SpanEventAttrs,
+                        ArrowPayloadType::SpanLinks,
+                        ArrowPayloadType::SpanLinkAttrs,
                     ] {
                         let table_name = payload_type.as_str_name().to_lowercase();
                         let file_path = std::fs::read_dir(format!("{}/{}", base_dir, table_name))
-                            .unwrap()
+                            .expect(&format!(
+                                "expect to have found table for {:?}",
+                                payload_type
+                            ))
                             .next()
-                            .unwrap()
+                            .expect(&format!(
+                                "expect at least one parquet file file for type {:?}",
+                                payload_type
+                            ))
                             .unwrap()
                             .path();
 

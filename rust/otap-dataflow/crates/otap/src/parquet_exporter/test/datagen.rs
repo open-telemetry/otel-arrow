@@ -4,8 +4,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow::array::{ArrowPrimitiveType, NativeAdapter, PrimitiveArray, RecordBatch, StringArray, TimestampNanosecondArray, UInt16Array, UInt8Array};
-use arrow::datatypes::{DataType, Field, Schema, UInt16Type};
+use arrow::array::{
+    ArrowPrimitiveType, FixedSizeBinaryArray, NativeAdapter, PrimitiveArray, RecordBatch,
+    StringArray, TimestampNanosecondArray, UInt8Array, UInt16Array,
+};
+use arrow::datatypes::{DataType, Field, Schema, UInt16Type, UInt32Type};
+use arrow_ipc::FixedSizeBinary;
 use arrow_ipc::writer::StreamWriter;
 use otel_arrow_rust::otlp::attributes::store::AttributeValueType;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchArrowRecords;
@@ -51,12 +55,10 @@ impl Default for SimpleTracesDataGenOptions {
             with_span_events: true,
             with_span_events_attrs: true,
             with_span_links: true,
-            with_span_links_attrs: true
+            with_span_links_attrs: true,
         }
     }
 }
-
-
 
 pub fn create_simple_logs_arrow_record_batches(options: SimpleDataGenOptions) -> BatchArrowRecords {
     let mut arrow_payloads = vec![];
@@ -69,7 +71,7 @@ pub fn create_simple_logs_arrow_record_batches(options: SimpleDataGenOptions) ->
     });
 
     if options.with_main_record_attrs {
-        let log_attrs_batch = create_attributes_records_batch(&options);
+        let log_attrs_batch = create_attributes_records_batch::<UInt16Type>(&options);
         arrow_payloads.push(ArrowPayload {
             schema_id: "log_attrs_schema_1".to_string(),
             r#type: ArrowPayloadType::LogAttrs as i32,
@@ -78,7 +80,7 @@ pub fn create_simple_logs_arrow_record_batches(options: SimpleDataGenOptions) ->
     }
 
     if options.with_resource_attrs {
-        let resource_attrs_batch = create_attributes_records_batch(&options);
+        let resource_attrs_batch = create_attributes_records_batch::<UInt16Type>(&options);
         arrow_payloads.push(ArrowPayload {
             schema_id: "resource_attrs_schema_1".to_string(),
             r#type: ArrowPayloadType::ResourceAttrs as i32,
@@ -87,7 +89,7 @@ pub fn create_simple_logs_arrow_record_batches(options: SimpleDataGenOptions) ->
     }
 
     if options.with_scope_attrs {
-        let scope_attrs_batch = create_attributes_records_batch(&options);
+        let scope_attrs_batch = create_attributes_records_batch::<UInt16Type>(&options);
         arrow_payloads.push(ArrowPayload {
             schema_id: "scope_attrs_schema_1".to_string(),
             r#type: ArrowPayloadType::ScopeAttrs as i32,
@@ -102,7 +104,9 @@ pub fn create_simple_logs_arrow_record_batches(options: SimpleDataGenOptions) ->
     }
 }
 
-pub fn create_simple_trace_arrow_record_batches(options: SimpleDataGenOptions) -> BatchArrowRecords {
+pub fn create_simple_trace_arrow_record_batches(
+    options: SimpleDataGenOptions,
+) -> BatchArrowRecords {
     let mut arrow_payloads = vec![];
 
     let spans_batch = create_main_record_batch(&options);
@@ -113,7 +117,7 @@ pub fn create_simple_trace_arrow_record_batches(options: SimpleDataGenOptions) -
     });
 
     if options.with_main_record_attrs {
-        let log_attrs_batch = create_attributes_records_batch(&options);
+        let log_attrs_batch = create_attributes_records_batch::<UInt16Type>(&options);
         arrow_payloads.push(ArrowPayload {
             schema_id: "log_attrs_schema_1".to_string(),
             r#type: ArrowPayloadType::SpanAttrs as i32,
@@ -122,7 +126,7 @@ pub fn create_simple_trace_arrow_record_batches(options: SimpleDataGenOptions) -
     }
 
     if options.with_resource_attrs {
-        let resource_attrs_batch = create_attributes_records_batch(&options);
+        let resource_attrs_batch = create_attributes_records_batch::<UInt16Type>(&options);
         arrow_payloads.push(ArrowPayload {
             schema_id: "resource_attrs_schema_1".to_string(),
             r#type: ArrowPayloadType::ResourceAttrs as i32,
@@ -131,12 +135,91 @@ pub fn create_simple_trace_arrow_record_batches(options: SimpleDataGenOptions) -
     }
 
     if options.with_scope_attrs {
-        let scope_attrs_batch = create_attributes_records_batch(&options);
+        let scope_attrs_batch = create_attributes_records_batch::<UInt16Type>(&options);
         arrow_payloads.push(ArrowPayload {
             schema_id: "scope_attrs_schema_1".to_string(),
             r#type: ArrowPayloadType::ScopeAttrs as i32,
             record: serialize(&scope_attrs_batch),
         });
+    }
+
+    if let Some(trace_options) = options.traces_options.as_ref() {
+        if trace_options.with_span_events {
+            let span_events_schema = Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt32, true)
+                    .with_metadata(create_ids_metadata(&options)),
+                Field::new(consts::PARENT_ID, DataType::UInt16, false)
+                    .with_metadata(create_ids_metadata(&options)),
+                Field::new(consts::NAME, DataType::Utf8, false),
+            ]));
+
+            let span_events_batch = RecordBatch::try_new(
+                span_events_schema,
+                vec![
+                    create_ids_array::<UInt32Type>(&options),
+                    create_ids_array::<UInt16Type>(&options),
+                    Arc::new(StringArray::from_iter_values(
+                        (0..options.num_rows).map(|i| format!("name{}", i)),
+                    )),
+                ],
+            )
+            .unwrap();
+
+            arrow_payloads.push(ArrowPayload {
+                schema_id: "span_events_schema_1".to_string(),
+                r#type: ArrowPayloadType::SpanEvents as i32,
+                record: serialize(&span_events_batch),
+            });
+
+            if trace_options.with_span_events_attrs {
+                let span_events_attrs = create_attributes_records_batch::<UInt32Type>(&options);
+                arrow_payloads.push(ArrowPayload {
+                    schema_id: "span_events_attrs_schema_1".to_string(),
+                    r#type: ArrowPayloadType::SpanEventAttrs as i32,
+                    record: serialize(&span_events_attrs),
+                });
+            }
+        }
+
+        if trace_options.with_span_links {
+            let span_events_schema = Arc::new(Schema::new(vec![
+                Field::new(consts::ID, DataType::UInt32, true)
+                    .with_metadata(create_ids_metadata(&options)),
+                Field::new(consts::PARENT_ID, DataType::UInt16, false)
+                    .with_metadata(create_ids_metadata(&options)),
+                Field::new(consts::TRACE_ID, DataType::FixedSizeBinary(16), true),
+            ]));
+
+            let trace_ids = FixedSizeBinaryArray::try_from_iter(
+                (0..options.num_rows).map(|_| (0..16).collect::<Vec<_>>()),
+            )
+            .unwrap();
+
+            let span_events_batch = RecordBatch::try_new(
+                span_events_schema,
+                vec![
+                    create_ids_array::<UInt32Type>(&options),
+                    create_ids_array::<UInt16Type>(&options),
+                    Arc::new(trace_ids),
+                ],
+            )
+            .unwrap();
+
+            arrow_payloads.push(ArrowPayload {
+                schema_id: "span_links_schema_1".to_string(),
+                r#type: ArrowPayloadType::SpanLinks as i32,
+                record: serialize(&span_events_batch),
+            });
+
+            if trace_options.with_span_events_attrs {
+                let span_links_attrs = create_attributes_records_batch::<UInt32Type>(&options);
+                arrow_payloads.push(ArrowPayload {
+                    schema_id: "span_links_attrs_schema_1".to_string(),
+                    r#type: ArrowPayloadType::SpanLinkAttrs as i32,
+                    record: serialize(&span_links_attrs),
+                });
+            }
+        }
     }
 
     BatchArrowRecords {
@@ -157,16 +240,24 @@ pub fn create_ids_metadata(options: &SimpleDataGenOptions) -> HashMap<String, St
     }
 }
 
+/// creates the IDs for the generic type. if options.ids_decoded is passed, it creates
+/// a sequence 0..num_rows, otherwise it is all 1 (which is the same sequence with
+/// delta encoding).
 pub fn create_ids_array<T>(options: &SimpleDataGenOptions) -> Arc<PrimitiveArray<T>>
-where T: ArrowPrimitiveType,
-    NativeAdapter<T>: From<u16> {
-    Arc::new(PrimitiveArray::<T>::from_iter((0..options.num_rows).map(|i| {
-        if options.ids_decoded {
-            i as u16 + options.id_offset
-        } else {
-            1
-        }
-    })))
+where
+    T: ArrowPrimitiveType,
+    <T as ArrowPrimitiveType>::Native: From<u16>,
+{
+    Arc::new(PrimitiveArray::<T>::from_iter_values(
+        (0..options.num_rows).map(|i| {
+            let id = if options.ids_decoded {
+                i as u16 + options.id_offset
+            } else {
+                1
+            };
+            <T as ArrowPrimitiveType>::Native::from(id)
+        }),
+    ))
 }
 
 pub fn create_main_record_batch(options: &SimpleDataGenOptions) -> RecordBatch {
@@ -191,14 +282,14 @@ pub fn create_main_record_batch(options: &SimpleDataGenOptions) -> RecordBatch {
     .unwrap()
 }
 
-
-pub fn create_attributes_records_batch<T>(options: &SimpleDataGenOptions) -> RecordBatch
-where 
-    T: ArrowPrimitiveType,
-    NativeAdapter<T>: From<u16> 
+pub fn create_attributes_records_batch<ParentIdType>(options: &SimpleDataGenOptions) -> RecordBatch
+where
+    ParentIdType: ArrowPrimitiveType,
+    <ParentIdType as ArrowPrimitiveType>::Native: From<u16>,
 {
     let attr_schema = Arc::new(Schema::new(vec![
-        Field::new(consts::PARENT_ID, DataType::UInt16, false).with_metadata(create_ids_metadata(&options)),
+        Field::new(consts::PARENT_ID, ParentIdType::DATA_TYPE, false)
+            .with_metadata(create_ids_metadata(&options)),
         Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
         Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
         Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
@@ -207,17 +298,17 @@ where
     RecordBatch::try_new(
         attr_schema.clone(),
         vec![
-            create_ids_array::<T>(&options),
+            create_ids_array::<ParentIdType>(&options),
             Arc::new(UInt8Array::from_iter_values(
                 vec![AttributeValueType::Str; options.num_rows]
                     .iter()
                     .map(|i| *i as u8),
             )),
             Arc::new(StringArray::from_iter_values(
-                (0..options.num_rows).map(|_| "log_attr"),
+                (0..options.num_rows).map(|_| "attr"),
             )),
             Arc::new(StringArray::from_iter(
-                (0..options.num_rows).map(|_| Some("log_val")),
+                (0..options.num_rows).map(|_| Some("val")),
             )),
         ],
     )
