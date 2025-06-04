@@ -131,6 +131,9 @@ impl HierarchicalBatchSplit for ExportMetricsServiceRequest {
 }
 
 impl ExportMetricsServiceRequest {
+    /// Splits the batch into multiple batches, each containing at most `max_requests` top-level requests.
+    ///
+    /// This preserves the original structure of each request.
     pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
         self.resource_metrics
             .chunks(max_requests)
@@ -198,6 +201,9 @@ impl HierarchicalBatchSplit for ExportLogsServiceRequest {
 }
 
 impl ExportLogsServiceRequest {
+    /// Splits the batch into multiple batches, each containing at most `max_requests` top-level requests.
+    /// 
+    /// This preserves the original structure of each request.
     pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
         self.resource_logs
             .chunks(max_requests)
@@ -209,6 +215,9 @@ impl ExportLogsServiceRequest {
 }
 
 impl ExportTraceServiceRequest {
+    /// Splits the batch into multiple batches, each containing at most `max_requests` top-level requests.
+    ///
+    /// This preserves the original structure of each request.
     pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
         self.resource_spans
             .chunks(max_requests)
@@ -1217,7 +1226,6 @@ mod integration_tests {
     use std::fs::OpenOptions;
     use std::io::Write;
     use std::time::Duration;
-    use serde_json;
     use crate::proto::opentelemetry::logs::v1::LogRecord;
     use crate::proto::opentelemetry::metrics::v1::Metric;
     use crate::proto::opentelemetry::trace::v1::Span;
@@ -1319,7 +1327,7 @@ mod integration_tests {
         // Clear output file
         std::fs::write("/tmp/generic_batch_proc_test.json", "").unwrap();
 
-        let mut runtime = otap_df_engine::testing::processor::TestRuntime::<OTLPData>::new();
+        let runtime = otap_df_engine::testing::processor::TestRuntime::<OTLPData>::new();
         let wrapper = wrap_local(GenericBatcher::new(BatchConfig {
             sizer: BatchSizer::Items,
             send_batch_size: 2, // test splitting
