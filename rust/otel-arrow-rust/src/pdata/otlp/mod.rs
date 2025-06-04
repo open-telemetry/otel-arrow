@@ -63,13 +63,13 @@ impl LogsVisitor for ItemCounter {
 
 impl LogsDataVisitor for ItemCounter {
     fn visit_logs_data(&mut self, v: impl LogsDataVisitable) {
-        v.visit_logs_data(self.borrow_mut());
+        v.accept_logs_data(self.borrow_mut());
     }
 }
 
 impl ResourceLogsVisitor for &mut ItemCounter {
     fn visit_resource_logs(&mut self, v: impl ResourceLogsVisitable) {
-        v.visit_resource_logs(
+        v.accept_resource_logs(
             super::NoopVisitor {},
             self.borrow_mut(),
             super::NoopVisitor {},
@@ -79,7 +79,7 @@ impl ResourceLogsVisitor for &mut ItemCounter {
 
 impl ScopeLogsVisitor for &mut ItemCounter {
     fn visit_scope_logs(&mut self, sv: impl ScopeLogsVisitable) {
-        sv.visit_scope_logs(
+        sv.accept_scope_logs(
             super::NoopVisitor {},
             self.borrow_mut(),
             super::NoopVisitor {},

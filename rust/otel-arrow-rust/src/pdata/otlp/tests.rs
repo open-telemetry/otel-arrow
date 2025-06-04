@@ -25,7 +25,7 @@ use crate::proto::opentelemetry::common::v1::any_value::Value;
 use crate::proto::opentelemetry::logs::v1::LogRecord;
 use crate::proto::opentelemetry::logs::v1::LogRecordFlags;
 use crate::proto::opentelemetry::logs::v1::LogsData;
-use crate::proto::opentelemetry::logs::v1::LogsDataAdapter;
+use crate::proto::opentelemetry::logs::v1::LogsDataMessageAdapter;
 use crate::proto::opentelemetry::logs::v1::ResourceLogs;
 use crate::proto::opentelemetry::logs::v1::ScopeLogs;
 use crate::proto::opentelemetry::logs::v1::SeverityNumber;
@@ -720,6 +720,6 @@ fn test_logs_item_count() {
             .finish(),
     ]);
 
-    let ic = ItemCounter::new().visit_logs(&LogsDataAdapter::new(&ld));
+    let ic = ItemCounter::new().visit_logs(&LogsDataMessageAdapter::new(&ld));
     assert_eq!(20, ic);
 }

@@ -60,13 +60,11 @@ fn create_logs_data() -> LogsData {
 fn count_logs(c: &mut Criterion) {
     let mut group = c.benchmark_group("OTLP Logs counting");
 
-    // TODO: add a flat_map variation like ddahl.
-
     let logs = create_logs_data();
 
     _ = group.bench_function("Visitor", |b| {
         b.iter(|| {
-            _ = black_box(ItemCounter::new().visit_logs(&LogsDataAdapter::new(&logs)));
+            _ = black_box(ItemCounter::new().visit_logs(&LogsDataMessageAdapter::new(&logs)));
         })
     });
 
@@ -79,6 +77,18 @@ fn count_logs(c: &mut Criterion) {
                     count += sl.log_records.len();
                 }
             }
+            _ = black_box(count);
+        })
+    });
+
+    _ = group.bench_function("FlatMap", |b| {
+        b.iter(|| {
+            let count = logs
+                .resource_logs
+                .iter()
+                .flat_map(|rl| &rl.scope_logs)
+                .flat_map(|sl| &sl.log_records)
+                .count();
             _ = black_box(count);
         })
     });
