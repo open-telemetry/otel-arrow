@@ -241,6 +241,32 @@ mod test {
         }
     }
 
+    fn assert_parquet_file_has_rows(
+        base_dir: &str,
+        payload_type: ArrowPayloadType,
+        num_rows: usize,
+    ) {
+        let table_name = payload_type.as_str_name().to_lowercase();
+        let file_path = std::fs::read_dir(format!("{}/{}", base_dir, table_name))
+            .expect(&format!(
+                "expect to have found table for {:?}",
+                payload_type
+            ))
+            .next()
+            .expect(&format!(
+                "expect at least one parquet file file for type {:?}",
+                payload_type
+            ))
+            .unwrap()
+            .path();
+
+        let file = File::open(file_path).unwrap();
+        let reader_builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
+        let mut reader = reader_builder.build().unwrap();
+        let batch = reader.next().unwrap().unwrap();
+        assert_eq!(batch.num_rows(), num_rows);
+    }
+
     #[test]
     fn test_with_partitioning() {
         let test_runtime = TestRuntime::<TestPDataInput>::new();
@@ -346,26 +372,7 @@ mod test {
                         ArrowPayloadType::ResourceAttrs,
                         ArrowPayloadType::ScopeAttrs,
                     ] {
-                        let table_name = payload_type.as_str_name().to_lowercase();
-                        let file_path = std::fs::read_dir(format!("{}/{}", base_dir, table_name))
-                            .expect(&format!(
-                                "expect to have found table for {:?}",
-                                payload_type
-                            ))
-                            .next()
-                            .expect(&format!(
-                                "expect at least one parquet file file for type {:?}",
-                                payload_type
-                            ))
-                            .unwrap()
-                            .path();
-
-                        let file = File::open(file_path).unwrap();
-                        let reader_builder =
-                            ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-                        let mut reader = reader_builder.build().unwrap();
-                        let batch = reader.next().unwrap().unwrap();
-                        assert_eq!(batch.num_rows(), num_rows);
+                        assert_parquet_file_has_rows(&base_dir, payload_type, num_rows);
                     }
                 })
             });
@@ -386,6 +393,7 @@ mod test {
             test_runtime.config(),
         );
         let num_rows = 1000;
+
         test_runtime
             .set_exporter(exporter)
             .run_test(logs_scenario(num_rows, Duration::ZERO))
@@ -458,26 +466,73 @@ mod test {
                         ArrowPayloadType::SpanLinks,
                         ArrowPayloadType::SpanLinkAttrs,
                     ] {
-                        let table_name = payload_type.as_str_name().to_lowercase();
-                        let file_path = std::fs::read_dir(format!("{}/{}", base_dir, table_name))
-                            .expect(&format!(
-                                "expect to have found table for {:?}",
-                                payload_type
-                            ))
-                            .next()
-                            .expect(&format!(
-                                "expect at least one parquet file file for type {:?}",
-                                payload_type
-                            ))
-                            .unwrap()
-                            .path();
+                        assert_parquet_file_has_rows(&base_dir, payload_type, num_rows);
+                    }
+                })
+            });
+    }
 
-                        let file = File::open(file_path).unwrap();
-                        let reader_builder =
-                            ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
-                        let mut reader = reader_builder.build().unwrap();
-                        let batch = reader.next().unwrap().unwrap();
-                        assert_eq!(batch.num_rows(), num_rows);
+    #[test]
+    fn test_metrics() {
+        let test_runtime = TestRuntime::<TestPDataInput>::new();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let base_dir: String = temp_dir.path().to_str().unwrap().into();
+        let exporter = ParquetExporter::new(config::Config {
+            base_uri: base_dir.clone(),
+            partitioning_strategies: None,
+            writer_options: None,
+        });
+        let exporter = ExporterWrapper::<TestPDataInput>::local::<ParquetExporter>(
+            exporter,
+            test_runtime.config(),
+        );
+
+        let num_rows = 100;
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(move |ctx| {
+                Box::pin(async move {
+                    ctx.send_pdata(TestPDataInput {
+                        batch: datagen::create_simple_metrics_arrow_record_batches(
+                            SimpleDataGenOptions {
+                                num_rows,
+                                metrics_options: Some(Default::default()),
+                                ..Default::default()
+                            },
+                        ),
+                    })
+                    .await
+                    .expect("Failed to send  logs message");
+
+                    ctx.send_shutdown(Duration::from_millis(1000), "test completed")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(move |_ctx| {
+                Box::pin(async move {
+                    // simply ensure there is a parquet file for each type we should have
+                    // written and that it has the expected number of rows
+                    for payload_type in [
+                        ArrowPayloadType::UnivariateMetrics,
+                        ArrowPayloadType::ResourceAttrs,
+                        ArrowPayloadType::ScopeAttrs,
+                        ArrowPayloadType::SummaryDataPoints,
+                        ArrowPayloadType::SummaryDpAttrs,
+                        ArrowPayloadType::NumberDataPoints,
+                        ArrowPayloadType::NumberDpAttrs,
+                        ArrowPayloadType::NumberDpExemplars,
+                        ArrowPayloadType::NumberDpExemplarAttrs,
+                        ArrowPayloadType::HistogramDataPoints,
+                        ArrowPayloadType::HistogramDpAttrs,
+                        ArrowPayloadType::HistogramDpExemplars,
+                        ArrowPayloadType::HistogramDpExemplarAttrs,
+                        ArrowPayloadType::ExpHistogramDataPoints,
+                        ArrowPayloadType::ExpHistogramDpAttrs,
+                        ArrowPayloadType::ExpHistogramDpExemplars,
+                        ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+                    ] {
+                        assert_parquet_file_has_rows(&base_dir, payload_type, num_rows);
                     }
                 })
             });

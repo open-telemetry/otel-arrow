@@ -5,11 +5,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::array::{
-    ArrowPrimitiveType, FixedSizeBinaryArray, NativeAdapter, PrimitiveArray, RecordBatch,
-    StringArray, TimestampNanosecondArray, UInt8Array, UInt16Array,
+    ArrowPrimitiveType, FixedSizeBinaryArray, PrimitiveArray, RecordBatch, StringArray,
+    TimestampNanosecondArray, UInt8Array,
 };
-use arrow::datatypes::{DataType, Field, Schema, UInt16Type, UInt32Type};
-use arrow_ipc::FixedSizeBinary;
+use arrow::datatypes::{DataType, Field, Schema, TimeUnit, UInt16Type, UInt32Type};
 use arrow_ipc::writer::StreamWriter;
 use otel_arrow_rust::otlp::attributes::store::AttributeValueType;
 use otel_arrow_rust::proto::opentelemetry::arrow::v1::BatchArrowRecords;
@@ -26,6 +25,7 @@ pub struct SimpleDataGenOptions {
 
     pub ids_decoded: bool,
 
+    pub metrics_options: Option<SimpleMetricsDataGenOptions>,
     pub traces_options: Option<SimpleTracesDataGenOptions>,
 }
 pub struct SimpleTracesDataGenOptions {
@@ -33,6 +33,26 @@ pub struct SimpleTracesDataGenOptions {
     pub with_span_links_attrs: bool,
     pub with_span_events: bool,
     pub with_span_events_attrs: bool,
+}
+
+pub struct SimpleMetricsDataGenOptions {
+    pub with_numbers_dp: bool,
+    pub with_numbers_dp_attrs: bool,
+    pub with_numbers_dp_exemplars: bool,
+    pub with_numbers_dp_exemplar_attrs: bool,
+
+    pub with_summary_dp: bool,
+    pub with_summary_attrs: bool,
+
+    pub with_histogram_dp: bool,
+    pub with_histogram_dp_attrs: bool,
+    pub with_histogram_dp_exemplars: bool,
+    pub with_histogram_dp_exemplars_attrs: bool,
+
+    pub with_exp_histogram_dp: bool,
+    pub with_exp_histogram_dp_attrs: bool,
+    pub with_exp_histogram_dp_exemplars: bool,
+    pub with_exp_histogram_dp_exemplars_attrs: bool,
 }
 
 impl Default for SimpleDataGenOptions {
@@ -45,6 +65,7 @@ impl Default for SimpleDataGenOptions {
             with_scope_attrs: true,
             ids_decoded: true,
             traces_options: None,
+            metrics_options: None,
         }
     }
 }
@@ -56,6 +77,27 @@ impl Default for SimpleTracesDataGenOptions {
             with_span_events_attrs: true,
             with_span_links: true,
             with_span_links_attrs: true,
+        }
+    }
+}
+
+impl Default for SimpleMetricsDataGenOptions {
+    fn default() -> Self {
+        Self {
+            with_numbers_dp: true,
+            with_numbers_dp_attrs: true,
+            with_numbers_dp_exemplars: true,
+            with_numbers_dp_exemplar_attrs: true,
+            with_summary_dp: true,
+            with_summary_attrs: true,
+            with_histogram_dp: true,
+            with_histogram_dp_attrs: true,
+            with_histogram_dp_exemplars: true,
+            with_histogram_dp_exemplars_attrs: true,
+            with_exp_histogram_dp: true,
+            with_exp_histogram_dp_attrs: true,
+            with_exp_histogram_dp_exemplars: true,
+            with_exp_histogram_dp_exemplars_attrs: true,
         }
     }
 }
@@ -119,7 +161,7 @@ pub fn create_simple_trace_arrow_record_batches(
     if options.with_main_record_attrs {
         let log_attrs_batch = create_attributes_records_batch::<UInt16Type>(&options);
         arrow_payloads.push(ArrowPayload {
-            schema_id: "log_attrs_schema_1".to_string(),
+            schema_id: "span_attrs_schema_1".to_string(),
             r#type: ArrowPayloadType::SpanAttrs as i32,
             record: serialize(&log_attrs_batch),
         });
@@ -211,7 +253,7 @@ pub fn create_simple_trace_arrow_record_batches(
                 record: serialize(&span_events_batch),
             });
 
-            if trace_options.with_span_events_attrs {
+            if trace_options.with_span_links_attrs {
                 let span_links_attrs = create_attributes_records_batch::<UInt32Type>(&options);
                 arrow_payloads.push(ArrowPayload {
                     schema_id: "span_links_attrs_schema_1".to_string(),
@@ -226,6 +268,157 @@ pub fn create_simple_trace_arrow_record_batches(
         batch_id: 0,
         arrow_payloads,
         headers: Vec::default(),
+    }
+}
+
+pub fn create_simple_metrics_arrow_record_batches(
+    options: SimpleDataGenOptions,
+) -> BatchArrowRecords {
+    let mut arrow_payloads = vec![];
+
+    let metrics_batch = create_main_record_batch(&options);
+    arrow_payloads.push(ArrowPayload {
+        schema_id: "metrics_schema_1".to_string(),
+        r#type: ArrowPayloadType::UnivariateMetrics as i32,
+        record: serialize(&metrics_batch),
+    });
+
+    if options.with_resource_attrs {
+        let resource_attrs_batch = create_attributes_records_batch::<UInt16Type>(&options);
+        arrow_payloads.push(ArrowPayload {
+            schema_id: "resource_attrs_schema_1".to_string(),
+            r#type: ArrowPayloadType::ResourceAttrs as i32,
+            record: serialize(&resource_attrs_batch),
+        });
+    }
+
+    if options.with_scope_attrs {
+        let scope_attrs_batch = create_attributes_records_batch::<UInt16Type>(&options);
+        arrow_payloads.push(ArrowPayload {
+            schema_id: "scope_attrs_schema_1".to_string(),
+            r#type: ArrowPayloadType::ScopeAttrs as i32,
+            record: serialize(&scope_attrs_batch),
+        });
+    }
+
+    if let Some(metrics_options) = options.metrics_options.as_ref() {
+        append_payloads_for_metrics_type(
+            &mut arrow_payloads,
+            &options,
+            metrics_options
+                .with_summary_dp
+                .then(|| ArrowPayloadType::SummaryDataPoints),
+            metrics_options
+                .with_summary_attrs
+                .then(|| ArrowPayloadType::SummaryDpAttrs),
+            None,
+            None,
+        );
+    }
+
+    if let Some(metrics_options) = options.metrics_options.as_ref() {
+        append_payloads_for_metrics_type(
+            &mut arrow_payloads,
+            &options,
+            metrics_options
+                .with_numbers_dp
+                .then(|| ArrowPayloadType::NumberDataPoints),
+            metrics_options
+                .with_numbers_dp_attrs
+                .then(|| ArrowPayloadType::NumberDpAttrs),
+            metrics_options
+                .with_numbers_dp_exemplars
+                .then(|| ArrowPayloadType::NumberDpExemplars),
+            metrics_options
+                .with_numbers_dp_exemplar_attrs
+                .then(|| ArrowPayloadType::NumberDpExemplarAttrs),
+        );
+    }
+
+    if let Some(metrics_options) = options.metrics_options.as_ref() {
+        append_payloads_for_metrics_type(
+            &mut arrow_payloads,
+            &options,
+            metrics_options
+                .with_histogram_dp
+                .then(|| ArrowPayloadType::HistogramDataPoints),
+            metrics_options
+                .with_histogram_dp_attrs
+                .then(|| ArrowPayloadType::HistogramDpAttrs),
+            metrics_options
+                .with_histogram_dp_exemplars
+                .then(|| ArrowPayloadType::HistogramDpExemplars),
+            metrics_options
+                .with_histogram_dp_exemplars_attrs
+                .then(|| ArrowPayloadType::HistogramDpExemplarAttrs),
+        );
+    }
+
+    if let Some(metrics_options) = options.metrics_options.as_ref() {
+        append_payloads_for_metrics_type(
+            &mut arrow_payloads,
+            &options,
+            metrics_options
+                .with_exp_histogram_dp
+                .then(|| ArrowPayloadType::ExpHistogramDataPoints),
+            metrics_options
+                .with_exp_histogram_dp_attrs
+                .then(|| ArrowPayloadType::ExpHistogramDpAttrs),
+            metrics_options
+                .with_exp_histogram_dp_exemplars
+                .then(|| ArrowPayloadType::ExpHistogramDpExemplars),
+            metrics_options
+                .with_exp_histogram_dp_exemplars_attrs
+                .then(|| ArrowPayloadType::ExpHistogramDpExemplarAttrs),
+        );
+    }
+
+    // Placeholder for metrics data generation logic
+    BatchArrowRecords {
+        batch_id: 0,
+        arrow_payloads,
+        headers: Vec::default(),
+    }
+}
+
+fn append_payloads_for_metrics_type(
+    arrow_payloads: &mut Vec<ArrowPayload>,
+    options: &SimpleDataGenOptions,
+    data_point_payload_type: Option<ArrowPayloadType>,
+    data_point_attrs_payload_type: Option<ArrowPayloadType>,
+    exemplar_payload_type: Option<ArrowPayloadType>,
+    exemplar_attrs_payload_type: Option<ArrowPayloadType>,
+) {
+    if let Some(payload_type) = data_point_payload_type {
+        arrow_payloads.push(ArrowPayload {
+            schema_id: format!("{:?}_schema_1", payload_type.as_str_name().to_lowercase()),
+            r#type: payload_type as i32,
+            record: serialize(&create_metrics_data_point_record_batch(options)),
+        })
+    }
+
+    if let Some(payload_type) = data_point_attrs_payload_type {
+        arrow_payloads.push(ArrowPayload {
+            schema_id: format!("{:?}_schema_1", payload_type.as_str_name().to_lowercase()),
+            r#type: payload_type as i32,
+            record: serialize(&create_attributes_records_batch::<UInt32Type>(options)),
+        });
+    }
+
+    if let Some(payload_type) = exemplar_payload_type {
+        arrow_payloads.push(ArrowPayload {
+            schema_id: format!("{:?}_schema_1", payload_type.as_str_name().to_lowercase()),
+            r#type: payload_type as i32,
+            record: serialize(&create_exemplars_record_batch(options)),
+        });
+    }
+
+    if let Some(payload_type) = exemplar_attrs_payload_type {
+        arrow_payloads.push(ArrowPayload {
+            schema_id: format!("{:?}_schema_1", payload_type.as_str_name().to_lowercase()),
+            r#type: payload_type as i32,
+            record: serialize(&create_attributes_records_batch::<UInt32Type>(options)),
+        });
     }
 }
 
@@ -260,12 +453,18 @@ where
     ))
 }
 
+pub fn create_timestamp_ns_array(options: &SimpleDataGenOptions) -> Arc<TimestampNanosecondArray> {
+    Arc::new(TimestampNanosecondArray::from_iter_values(
+        (0..options.num_rows).map(|_| 1748297321 * 1_000_000_000),
+    ))
+}
+
 pub fn create_main_record_batch(options: &SimpleDataGenOptions) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![
         Field::new(consts::ID, DataType::UInt16, true).with_metadata(create_ids_metadata(options)),
         Field::new(
             consts::TIME_UNIX_NANO,
-            DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, None),
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
             true,
         ),
     ]));
@@ -274,9 +473,7 @@ pub fn create_main_record_batch(options: &SimpleDataGenOptions) -> RecordBatch {
         schema.clone(),
         vec![
             create_ids_array::<UInt16Type>(options),
-            Arc::new(TimestampNanosecondArray::from_iter_values(
-                (0..options.num_rows).map(|_| 1748297321 * 1_000_000_000),
-            )),
+            create_timestamp_ns_array(options),
         ],
     )
     .unwrap()
@@ -310,6 +507,44 @@ where
             Arc::new(StringArray::from_iter(
                 (0..options.num_rows).map(|_| Some("val")),
             )),
+        ],
+    )
+    .unwrap()
+}
+
+pub fn create_metrics_data_point_record_batch(options: &SimpleDataGenOptions) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt32, false),
+        Field::new(consts::PARENT_ID, DataType::UInt16, false),
+        Field::new(
+            consts::START_TIME_UNIX_NANO,
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            true,
+        ),
+    ]));
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            create_ids_array::<UInt32Type>(options),
+            create_ids_array::<UInt16Type>(options),
+            create_timestamp_ns_array(options),
+        ],
+    )
+    .unwrap()
+}
+
+pub fn create_exemplars_record_batch(options: &SimpleDataGenOptions) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(consts::ID, DataType::UInt32, false),
+        Field::new(consts::PARENT_ID, DataType::UInt32, false),
+    ]));
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            create_ids_array::<UInt32Type>(options),
+            create_ids_array::<UInt32Type>(options),
         ],
     )
     .unwrap()
