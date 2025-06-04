@@ -38,12 +38,6 @@ where
     fn finish(&mut self) -> DictionaryArrayWithType<T>;
 }
 
-// // this trait is used to help ensure that types that implement DictionaryArrayBuilder
-// // actually return an array that can be safely downcast into a DictionaryArray
-// pub trait DictionaryArrayRefInner: Array + AnyDictionaryArray {}
-// impl<T> DictionaryArrayRefInner for DictionaryArray<T> where T: ArrowDictionaryKeyType {}
-// pub type DictionaryArrayRef = Arc<dyn DictionaryArrayRefInner>;
-
 pub struct DictionaryArrayWithType<T>
 where
     T: ArrowDictionaryKeyType,
