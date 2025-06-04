@@ -49,11 +49,6 @@ Pre-requisites:
         --k8s-loadgen-manifest load_generator/loadgen-manifest.yaml \
         --k8s-namespace perf-test-otel --duration 30
     
-    If you are using a local kind cluster you will need to import the images into the cluster by running:
-    
-        kind load docker-image otel-loadgen --name kind
-        kind load docker-image backend-service --name kind
-
     If the cluster does not have the metrics server installed, you will need to install it. Be aware that the script below also enables insecure TLS for dev purposes:
 
         # Apply metrics-server
