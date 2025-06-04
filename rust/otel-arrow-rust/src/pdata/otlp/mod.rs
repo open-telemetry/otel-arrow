@@ -64,25 +64,17 @@ impl LogsVisitor<()> for ItemCounter {
 }
 
 impl<Argument> LogsDataVisitor<Argument> for ItemCounter {
-    type Return = Argument;
-
-    fn visit_logs_data(
-        &mut self,
-        arg: Argument,
-        v: impl LogsDataVisitable<Argument>,
-    ) -> Self::Return {
+    fn visit_logs_data(&mut self, arg: Argument, v: impl LogsDataVisitable<Argument>) -> Argument {
         v.accept_logs_data(arg, self.borrow_mut())
     }
 }
 
 impl<Argument> ResourceLogsVisitor<Argument> for &mut ItemCounter {
-    type Return = Argument;
-
     fn visit_resource_logs(
         &mut self,
         arg: Argument,
         v: impl ResourceLogsVisitable<Argument>,
-    ) -> Self::Return {
+    ) -> Argument {
         v.accept_resource_logs(
             arg,
             super::NoopVisitor {},
@@ -93,13 +85,11 @@ impl<Argument> ResourceLogsVisitor<Argument> for &mut ItemCounter {
 }
 
 impl<Argument> ScopeLogsVisitor<Argument> for &mut ItemCounter {
-    type Return = Argument;
-
     fn visit_scope_logs(
         &mut self,
         arg: Argument,
         sv: impl ScopeLogsVisitable<Argument>,
-    ) -> Self::Return {
+    ) -> Argument {
         sv.accept_scope_logs(
             arg,
             super::NoopVisitor {},
@@ -110,13 +100,11 @@ impl<Argument> ScopeLogsVisitor<Argument> for &mut ItemCounter {
 }
 
 impl<Argument> LogRecordVisitor<Argument> for &mut ItemCounter {
-    type Return = Argument;
-
     fn visit_log_record(
         &mut self,
         arg: Argument,
         _: impl LogRecordVisitable<Argument>,
-    ) -> Self::Return {
+    ) -> Argument {
         self.count += 1;
         arg
     }

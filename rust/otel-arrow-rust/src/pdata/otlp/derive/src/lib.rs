@@ -16,6 +16,7 @@ use quote::{ToTokens, quote};
 use std::collections::HashMap;
 use syn::{DeriveInput, parse_macro_input};
 
+
 #[derive(Clone, Debug)]
 struct FieldInfo {
     ident: syn::Ident,
@@ -1121,8 +1122,7 @@ fn derive_otlp_visitors(
 
     let expanded = quote! {
     pub trait #visitor_name<Argument> {
-        type Return;
-        fn #visitor_method_name(&mut self, arg: Argument, v: impl #visitable_name<Argument>) -> Self::Return;
+        fn #visitor_method_name(&mut self, arg: Argument, v: impl #visitable_name<Argument>) -> Argument;
     }
 
     pub trait #visitable_name<Argument> {
@@ -1130,8 +1130,8 @@ fn derive_otlp_visitors(
     }
 
     impl<Argument> #visitor_name<Argument> for crate::pdata::NoopVisitor {
-        type Return = Argument;
-        fn #visitor_method_name(&mut self, arg: Argument, _v: impl #visitable_name<Argument>) -> Self::Return {
+        fn #visitor_method_name(&mut self, arg: Argument, _v: impl #visitable_name<Argument>) -> Argument {
+            // NoopVisitor threads the argument through unchanged.
             arg
         }
     }
@@ -1461,3 +1461,5 @@ fn generate_visitor_trait_for_type(ty: &syn::Type) -> proc_macro2::TokenStream {
 fn resolve_visitor_trait_path_for_type(type_path: &syn::TypePath, _visitor_name: &str) -> String {
     path_utils::resolve_type_path(type_path, "Visitor")
 }
+
+

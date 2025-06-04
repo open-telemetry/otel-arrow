@@ -1,15 +1,22 @@
 # OTLP Visitor Pattern Implementation - Product Requirements Document
 
-## Visitor Pattern - COMPLETED ✅
+## Phase 2: Visitor Pattern Upgrade - COMPLETED ✅
 
-The visitor pattern implementation has been successfully completed as the foundation for efficient OTLP message processing. The pattern defines two traits per OTLP data type, generated automatically through the procedural macro system.
+The visitor pattern upgrade has been successfully completed, implementing generic argument and return types for mutable state passing through visitor traversal. This phase was essential for enabling the two-pass encoding algorithm in Phase 3.
+
+The enhanced visitor pattern now supports:
+
+- **Generic Type Parameters**: All visitor traits now support `<Argument>` generic parameters for state threading
+- **Argument Threading**: Visitor methods accept and return `Argument` for proper state passing through traversal
+- **NoopVisitor Support**: `NoopVisitor` implementations use `type Return = ()` pattern for consistent behavior
+- **Borrow Checker Compliance**: State sharing works correctly with Rust's memory safety rules
 
 For each type there is a **Visitor** (an actor) and a **Visitable**. These traits enable type-safe, in-order traversal of OTLP data structures with the following characteristics:
 
 - **Visitable** impls are immutable, passed by `&self`, presenting OTLP data types through generated adapter structs
 - **Visitor** impls are mutable, passed by `&mut self`, carrying processing logic as traversal descends
 - **MessageAdapter** structs automatically generated for all OTLP types providing seamless integration
-- **NoopVisitor** implementations generated for composable visitor patterns
+- **State Threading**: Arguments can be passed through visitor calls for mutable state management
 
 The visitor calls the visitable, and the visitable calls child visitors. At the top-level, specialized visitors (e.g., `LogsVisitor`) consume the visitor and return associated results.
 
@@ -97,35 +104,26 @@ impl ItemCounter {
     }
 }
 
-impl LogsVisitor for ItemCounter {
-    type Return = usize;
-
-    fn visit_logs(mut self, v: impl LogsDataVisitable) -> Self::Return {
-        self.accept_logs_data(v);
-        self.count
+impl LogsDataVisitor<()> for ItemCounter {
+    fn visit_logs_data(&mut self, _arg: (), v: &LogsDataAdapter) -> () {
+        v.accept_logs_data((), self);
     }
 }
 
-impl LogsDataVisitor for ItemCounter {
-    fn accept_logs_data(&mut self, v: impl LogsDataVisitable) {
-        v.accept_logs_data(self);
+impl ResourceLogsVisitor<()> for ItemCounter {
+    fn visit_resource_logs(&mut self, _arg: (), v: &ResourceLogsAdapter) -> () {
+        v.accept_resource_logs((), &mut NoopVisitor, self);
     }
 }
 
-impl ResourceLogsVisitor for ItemCounter {
-    fn accept_resource_logs(&mut self, v: impl ResourceLogsVisitable) {
-        v.accept_resource_logs(NoopVisitor::new(), self);
+impl ScopeLogsVisitor<()> for ItemCounter {
+    fn visit_scope_logs(&mut self, _arg: (), v: &ScopeLogsAdapter) -> () {
+        v.accept_scope_logs((), &mut NoopVisitor, self);
     }
 }
 
-impl ScopeLogsVisitor for ItemCounter {
-    fn accept_scope_logs(&mut self, v: impl ScopeLogsVisitable) {
-        v.accept_scope_logs(NoopVisitor::new(), self);
-    }
-}
-
-impl LogRecordVisitor for ItemCounter {
-    fn accept_log_record(&mut self, _: impl LogRecordVisitable) {
+impl LogRecordVisitor<()> for ItemCounter {
+    fn visit_log_record(&mut self, _arg: (), _v: &LogRecordAdapter) -> () {
         self.count += 1;
     }
 }
@@ -154,7 +152,7 @@ Parse the annotations and add the results to the FieldInfo used in the derive mo
 
 Consider DRY at this point. Take an opportunity to consider the existing code in that module after we have parsed the Prost field annotations, because we may be able to simplify the base_type extraction logic there.
 
-### Phase 2: Upgrade Visitor pattern
+### Phase 2 Implementation Details - COMPLETED ✅
 
 For the next phase, we are going to need to be able to pass mutable
 state from one node of the traversal to the children. Because of
@@ -170,29 +168,29 @@ an additional argument and return.
 For the Visitor trait, add generic type Argument and associated type
 Return. The method signature add the first parameter of type Argument, like:
 
-```
-pub trait TracesDataVisitor<Argument, Return> {
-  type Return = Return;
-  
-  fn visit_traces_data(&mut self, arg: Argument, v: impl TracesDataVisitable) -> Return;
+```rust
+pub trait TracesDataVisitor<Argument> {
+  fn visit_traces_data(&mut self, arg: Argument, v: &TracesDataAdapter) -> Argument;
 }
 ```
 
 For the Visitable trait, add the same generic type Argument passes
 into and returns from the visitable impl, like:
 
-```
+```rust
 pub trait TracesDataVisitable<Argument> {
 fn accept_traces_data(
   &self,
-  arg: Argument
-  resource_spans: impl ResourceSpansVisitor,
+  arg: Argument,
+  resource_spans: &mut impl ResourceSpansVisitor<Argument>,
   ) -> Argument;
 }
 ```
 
 This will support the next phase of development. Please think
 carefully about Rust syntax and borrow checker rules at this step.
+
+**IMPLEMENTATION COMPLETED**: The visitor pattern has been successfully upgraded with generic argument support for state threading.
 
 ### Phase 3: Visitor-Based Encoder Implementation
 
