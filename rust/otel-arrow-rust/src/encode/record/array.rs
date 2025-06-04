@@ -11,7 +11,7 @@
 //! the cardinality of the allows.
 //!
 //! This module contains adaptive array builders that can dynamically create either no array (for
-//! an all-null) column, an array that may be a dictionary, or an array or native types. It will
+//! an all-null) column, an array that may be a dictionary, of an array or native types. It will
 //! handle converting between different builders dynamically  based on the data which is appended.
 //! ```
 

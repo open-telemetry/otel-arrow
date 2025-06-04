@@ -53,7 +53,7 @@ where
 
             // safety: shouldn't happen. The only error type append should
             // return should be for dictionary overflows
-            Err(e) => panic!("{}", e),
+            Err(e) => panic!("unexpected error type appending to dictionary {}", e),
         }
     }
 
