@@ -16,7 +16,7 @@ use snafu::{OptionExt, ResultExt};
 use crate::arrays::{NullableArrayAccessor, get_u8_array};
 use crate::error::{self, Result};
 use crate::otlp::attributes::{parent_id::ParentId, store::AttributeValueType};
-use crate::schema:: consts::{self, metadata};
+use crate::schema::consts::{self, metadata};
 use crate::schema::{get_field_metadata, update_field_metadata};
 
 pub fn remove_delta_encoding<T>(
