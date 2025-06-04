@@ -154,11 +154,51 @@ Parse the annotations and add the results to the FieldInfo used in the derive mo
 
 Consider DRY at this point. Take an opportunity to consider the existing code in that module after we have parsed the Prost field annotations, because we may be able to simplify the base_type extraction logic there.
 
-### Phase 2: Visitor-Based Encoder Implementation
+### Phase 2: Upgrade Visitor pattern
+
+For the next phase, we are going to need to be able to pass mutable
+state from one node of the traversal to the children. Because of
+Rust's memory safety rules, we will need to return the object from the
+traversal in order to continue using it under the borrow checker.
+
+For Phase 3, first pass, we need to share a `&mut Vec<usize>` throughout
+the traversal in order to allocate each node's precomputed size. In
+Phase 3, second pass, we need to pass an `Iterator<Item = usize>`
+through the same traversal, but currently this is not possible without
+an additional argument and return.
+
+For the Visitor trait, add generic type Argument and associated type
+Return. The method signature add the first parameter of type Argument, like:
+
+```
+pub trait TracesDataVisitor<Argument, Return> {
+  type Return = Return;
+  
+  fn visit_traces_data(&mut self, arg: Argument, v: impl TracesDataVisitable) -> Return;
+}
+```
+
+For the Visitable trait, add the same generic type Argument passes
+into and returns from the visitable impl, like:
+
+```
+pub trait TracesDataVisitable<Argument> {
+fn accept_traces_data(
+  &self,
+  arg: Argument
+  resource_spans: impl ResourceSpansVisitor,
+  ) -> Argument;
+}
+```
+
+This will support the next phase of development. Please think
+carefully about Rust syntax and borrow checker rules at this step.
+
+### Phase 3: Visitor-Based Encoder Implementation
 
 Implement two visitor patterns:
 
-**Encoding Visitor (Visitable → protobuf bytes)**
+**Encoding Visitor (Visitable → protobuf \bytes)**
 - Generate protobuf bytes directly from OTLP message objects
 - Use Prost field annotations to determine encoding approach
 - Two-pass algorithm:
@@ -170,7 +210,28 @@ Implement two visitor patterns:
 - Use tag numbers from field annotations for field identification
 - Support incremental parsing for streaming scenarios
 
-### Phase 3: Performance Benchmarking
+We will create two Visitors, one for to compute the length and one to encode bytes w/ precomputed length.
+
+We will call the first pass visitor "{}PrecomputeSize" and the second pass visitor "{}EncodeBytes".
+
+Keep in mind that the Prost implementations for encoded_len and
+encode_raw are available in EXPANDED to give you an idea of the
+pattern.
+
+Note, however, that Prost uses an inefficient algorithm and that we
+aim to improve upon it. Prost has no way to re-use the size computed
+at each level in the traversal, so it repeatedly computes the size for
+every level as it descends, which has O(n * m) complexity for depth m
+and node count n. We want an O(n) algorithm which we get by computing
+the sizes once.
+
+The PrecomputedSize visitor new() a pre-allocated ("inner") Vec<usize>
+by value to allow re-use. It will reset the vector and then for each
+node in the order of traversal, it will claim the next slot and
+calculate the the size of the body using recursive calls to the
+visitables using child PrecompuedSize .
+
+### Phase 4: Performance Benchmarking
 
 Compare three approaches:
 1. **Standard Prost**: Generated structs with intermediate objects
