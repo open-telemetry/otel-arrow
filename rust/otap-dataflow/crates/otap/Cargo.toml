@@ -22,6 +22,7 @@ object_store.workspace = true
 otel-arrow-rust.workspace = true
 otap-df-engine = { path = "../engine" }
 otap-df-channel = { path = "../channel" }
+otap-df-config = { path = "../config" }
 otap-df-otlp = { path = "../otlp" }
 parquet.workspace = true
 tonic = { version = "0.13.1", default-features = false, features = [

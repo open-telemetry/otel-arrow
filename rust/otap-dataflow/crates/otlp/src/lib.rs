@@ -158,7 +158,10 @@ mod tests {
     fn test_create_runtime_pipeline() {
         let config = PipelineConfigBuilder::new()
             .add_receiver("otlp_receiver", "urn:otel:otlp:receiver", None)
-            .add_exporter("otlp_exporter", "urn:otel:otlp:exporter", None)
+            .add_exporter("otlp_exporter1", "urn:otel:otlp:exporter", None)
+            .add_exporter("otlp_exporter2", "urn:otel:otlp:exporter", None)
+            // ToDo(LQ): Check the validity of the outport.
+            .broadcast("otlp_receiver", "out_port", targets)
             .build(PipelineType::OTLP, "namespace", "pipeline")
             .expect("Failed to build pipeline config");
         let result = create_runtime_pipeline(config);
