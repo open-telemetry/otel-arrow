@@ -48,6 +48,20 @@ Pre-requisites:
         --k8s-backend-manifest backend/backend-manifest.yaml \
         --k8s-loadgen-manifest load_generator/loadgen-manifest.yaml \
         --k8s-namespace perf-test-otel --duration 30
+    
+    If the cluster does not have the metrics server installed, you will need to install it. Be aware that the script below also enables insecure TLS for dev purposes:
+
+        # Apply metrics-server
+        kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+
+        # Patch with both required flags
+        kubectl patch deployment metrics-server -n kube-system --type=json -p='[
+        {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"},
+        {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-preferred-address-types=InternalIP"}
+        ]'
+
+        # Restart deployment
+        kubectl rollout restart deployment metrics-server -n kube-system
 """
 import argparse
 import os
