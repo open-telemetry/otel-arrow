@@ -16,7 +16,7 @@ use quote::{ToTokens, quote};
 use std::collections::HashMap;
 use syn::{DeriveInput, parse_macro_input};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct FieldInfo {
     ident: syn::Ident,
     is_param: bool,
@@ -25,6 +25,8 @@ struct FieldInfo {
     is_oneof: bool,
     field_type: syn::Type,
     as_type: Option<syn::Type>,
+    tag: u32,
+    prost_type: String,
 }
 
 type TokenVec = Vec<proc_macro2::TokenStream>;
@@ -467,6 +469,7 @@ mod field_utils {
     }
 }
 
+/// Prost field annotation parsing utilities for protobuf encoding/decoding
 /// Oneof processing utilities to reduce repetitive oneof handling
 mod oneof_utils {
     use super::*;
@@ -565,6 +568,52 @@ mod oneof_utils {
             })
             .collect()
     }
+}
+
+/// Simple prost field annotation parsing utilities
+fn parse_prost_tag_and_type(field: &syn::Field) -> (u32, String) {
+    // Find the #[prost(...)] attribute
+    let prost_attr = field
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("prost"));
+    
+    if let Some(attr) = prost_attr {
+        if let syn::Meta::List(meta_list) = &attr.meta {
+            let tokens = &meta_list.tokens;
+            
+            // Simple parsing: extract tag number and type
+            let attr_str = tokens.to_string();
+            let mut tag = 0u32;
+            let mut prost_type = "unknown".to_string();
+            
+            // Parse tag number from "tag = \"1\"" or "tag = 1"
+            if let Some(tag_start) = attr_str.find("tag = ") {
+                let tag_part = &attr_str[tag_start + 6..];
+                if let Some(comma_pos) = tag_part.find(',') {
+                    let tag_value = &tag_part[..comma_pos].trim().trim_matches('"');
+                    tag = tag_value.parse().unwrap_or(0);
+                } else {
+                    let tag_value = tag_part.trim().trim_matches('"');
+                    tag = tag_value.parse().unwrap_or(0);
+                }
+            }
+            
+            // Extract first identifier as protobuf type (string, int64, message, etc.)
+            let parts: Vec<&str> = attr_str.split(',').collect();
+            if let Some(first_part) = parts.first() {
+                let type_part = first_part.trim();
+                if !type_part.starts_with("tag") {
+                    prost_type = type_part.to_string();
+                }
+            }
+            
+            return (tag, prost_type);
+        }
+    }
+    
+    // Default values if parsing fails
+    (0, "unknown".to_string())
 }
 
 /// Attribute macro for associating the OTLP protocol buffer fully
@@ -725,6 +774,9 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
                     })
                     .unwrap_or_else(|| (inner_type, None));
 
+                // Parse Prost field annotation
+                let (tag, prost_type) = parse_prost_tag_and_type(field);
+
                 FieldInfo {
                     ident: ident.clone(),
                     is_param,
@@ -733,6 +785,8 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
                     is_oneof,
                     field_type,
                     as_type,
+                    tag,
+                    prost_type,
                 }
             })
         })
@@ -1055,6 +1109,8 @@ fn generate_visitor_type_for_oneof_variant(case_type: &syn::Type) -> proc_macro2
                                     is_oneof: false,
                                     field_type: inner_type,
                                     as_type: None,
+                                    tag: 0,
+                                    prost_type: "message".to_string(),
                                 });
                                 quote! { impl #visitor_trait }
                             }
@@ -1076,6 +1132,8 @@ fn generate_visitor_type_for_oneof_variant(case_type: &syn::Type) -> proc_macro2
                             is_oneof: false,
                             field_type: case_type.clone(),
                             as_type: None,
+                            tag: 0,
+                            prost_type: "message".to_string(),
                         });
                         quote! { impl #visitor_trait }
                     }
@@ -1097,17 +1155,24 @@ impl FieldInfo {
 
 /// Determine if a field needs to be wrapped in an adapter (message types) vs used directly (primitives)
 fn needs_adapter_for_field(info: &FieldInfo) -> bool {
-    // Check if this field has an as_type (enum field), use the underlying primitive type
-    let base_type = if let Some(as_type) = &info.as_type {
-        as_type
-    } else if info.is_repeated {
-        // For repeated fields, check the element type
-        &type_utils::get_base_type(&info.field_type, false, true)
-    } else {
-        &info.field_type
-    };
-
-    needs_adapter_for_type(base_type)
+    // Use the parsed prost_type for fast determination - this is the main benefit!
+    match info.prost_type.as_str() {
+        "message" | "enumeration" => true,  // Complex types need adapters
+        "string" | "int64" | "uint32" | "int32" | "uint64" | "bool" | "double" | "float" | "bytes" => false,  // Primitives don't need adapters
+        _ => {
+            // For unknown or missing prost_type, fall back to the original type-based analysis
+            // This ensures backward compatibility and handles edge cases
+            let base_type = if let Some(as_type) = &info.as_type {
+                as_type
+            } else if info.is_repeated {
+                // For repeated fields, check the element type
+                &type_utils::get_base_type(&info.field_type, false, true)
+            } else {
+                &info.field_type
+            };
+            needs_adapter_for_type(base_type)
+        }
+    }
 }
 
 /// Determine if a type needs an adapter wrapper
@@ -1118,42 +1183,54 @@ fn needs_adapter_for_type(ty: &syn::Type) -> bool {
 
 /// Get the adapter name for a field type
 fn get_adapter_name_for_field(info: &FieldInfo) -> proc_macro2::TokenStream {
-    let base_type = if info.is_repeated {
-        info.extract_base_type()
-    } else {
-        info.field_type.clone()
-    };
+    // Use the parsed prost_type to determine if we should generate an adapter,
+    // but still use the original type path resolution for proper module qualification
+    match info.prost_type.as_str() {
+        "message" | "enumeration" => {
+            // These types need adapters - use original complex path resolution
+            // to ensure proper module qualification
+            let base_type = if info.is_repeated {
+                info.extract_base_type()
+            } else {
+                info.field_type.clone()
+            };
 
-    match &base_type {
-        syn::Type::Path(type_path) => {
-            if let Some(segment) = type_path.path.segments.last() {
-                let type_name = segment.ident.to_string();
-                let adapter_name = format!("{}MessageAdapter", type_name);
+            match &base_type {
+                syn::Type::Path(type_path) => {
+                    if let Some(segment) = type_path.path.segments.last() {
+                        let type_name = segment.ident.to_string();
+                        let adapter_name = format!("{}MessageAdapter", type_name);
 
-                // Handle specific known protobuf type patterns
-                let adapter_path = resolve_adapter_path_for_type(type_path, &adapter_name);
+                        // Use the original complex path resolution for proper module qualification
+                        let adapter_path = path_utils::resolve_type_path(type_path, "MessageAdapter");
 
-                // Parse the path and return as TokenStream
-                match syn::parse_str::<syn::Path>(&adapter_path) {
-                    Ok(path) => quote! { #path },
-                    Err(_) => {
-                        // Fallback to simple name if parsing fails
-                        let adapter_ident = syn::Ident::new(&adapter_name, segment.ident.span());
-                        quote! { #adapter_ident }
+                        // Parse the path and return as TokenStream
+                        match syn::parse_str::<syn::Path>(&adapter_path) {
+                            Ok(path) => quote! { #path },
+                            Err(_) => {
+                                // Fallback to simple name if parsing fails
+                                let adapter_ident = syn::Ident::new(&adapter_name, segment.ident.span());
+                                quote! { #adapter_ident }
+                            }
+                        }
+                    } else {
+                        quote! { UnknownMessageAdapter }
                     }
                 }
-            } else {
-                quote! { UnknownAdapter }
+                _ => quote! { UnknownMessageAdapter },
             }
         }
-        _ => quote! { UnknownAdapter },
+        // Primitive types like "string", "int64", "uint32", "bytes", "bool", "double", "float"
+        // don't need adapters - this case should be handled by needs_adapter_for_field()
+        _ => {
+            // For primitive types or unknown types, this shouldn't be called
+            // if needs_adapter_for_field() is working correctly
+            quote! { PrimitiveAdapter }
+        }
     }
 }
 
-/// Resolve adapter path for protobuf types with proper module resolution
-fn resolve_adapter_path_for_type(type_path: &syn::TypePath, _adapter_name: &str) -> String {
-    path_utils::resolve_type_path(type_path, "MessageAdapter")
-}
+
 
 /// Emits the adapter struct and implementation for the visitor pattern
 fn derive_otlp_adapters(
