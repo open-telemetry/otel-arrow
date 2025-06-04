@@ -16,51 +16,41 @@ use std::time::{Duration, Instant};
 /// This trait is used to split a batch into a vector of smaller batches, each with at most `max_batch_size`
 /// leaf items, preserving all resource/scope/leaf (span/metric/logrecord) structure.
 pub trait HierarchicalBatchSplit: Sized {
-    /// Splits a batch into a vector of smaller batches, each with at most `max_batch_size`
-    /// leaf items, preserving all resource/scope/leaf (span/metric/logrecord) structure.
-    fn split_into_batches(&self, max_batch_size: usize) -> Vec<Self>;
+    fn split_into_batches(self, max_batch_size: usize) -> Vec<Self>;
 }
 
+/// TODO: Use the pdata/otlp support library, rewrite this function to be generic over PData as that library develops
+
 impl HierarchicalBatchSplit for ExportTraceServiceRequest {
-    fn split_into_batches(&self, max_batch_size: usize) -> Vec<Self> {
+    fn split_into_batches(mut self, max_batch_size: usize) -> Vec<Self> {
         let mut batches = Vec::new();
         let mut current_batch = ExportTraceServiceRequest {
             resource_spans: Vec::new(),
         };
         let mut current_span_count = 0;
 
-        // Cursor position if we have to split mid-group
-        let mut rs_idx = 0;
-        while rs_idx < self.resource_spans.len() {
-            let rs = &self.resource_spans[rs_idx];
+        for mut rs in self.resource_spans.drain(..) {
             let mut res = ResourceSpans {
-                resource: rs.resource.clone(),
+                resource: rs.resource.take(),
                 scope_spans: Vec::new(),
                 schema_url: rs.schema_url.clone(),
             };
-            let mut ss_idx = 0;
-            while ss_idx < rs.scope_spans.len() {
-                let ss = &rs.scope_spans[ss_idx];
+            for mut ss in rs.scope_spans.drain(..) {
                 let mut sc = ScopeSpans {
-                    scope: ss.scope.clone(),
+                    scope: ss.scope.take(),
                     spans: Vec::new(),
                     schema_url: ss.schema_url.clone(),
                 };
-                let mut span_idx = 0;
-                while span_idx < ss.spans.len() {
+                while !ss.spans.is_empty() {
                     let remaining = max_batch_size - current_span_count;
-                    let span_left = ss.spans.len() - span_idx;
-                    let take = remaining.min(span_left);
-
-                    sc.spans
-                        .extend(ss.spans[span_idx..span_idx + take].iter().cloned());
+                    let take = remaining.min(ss.spans.len());
+                    sc.spans.extend(ss.spans.drain(..take));
                     current_span_count += take;
-                    span_idx += take;
 
                     if !sc.spans.is_empty() {
                         res.scope_spans.push(sc.clone());
                         sc.spans.clear();
-                    }
+                    }   
 
                     if current_span_count == max_batch_size {
                         if !res.scope_spans.is_empty() {
@@ -74,12 +64,10 @@ impl HierarchicalBatchSplit for ExportTraceServiceRequest {
                         current_span_count = 0;
                     }
                 }
-                ss_idx += 1;
             }
             if !res.scope_spans.is_empty() {
                 current_batch.resource_spans.push(res.clone());
             }
-            rs_idx += 1;
         }
         if current_span_count > 0 && !current_batch.resource_spans.is_empty() {
             batches.push(current_batch);
@@ -88,40 +76,31 @@ impl HierarchicalBatchSplit for ExportTraceServiceRequest {
     }
 }
 
+
 impl HierarchicalBatchSplit for ExportMetricsServiceRequest {
-    fn split_into_batches(&self, max_batch_size: usize) -> Vec<Self> {
+    fn split_into_batches(mut self, max_batch_size: usize) -> Vec<Self> {
         let mut batches = Vec::new();
-        let mut current_batch = ExportMetricsServiceRequest {
-            resource_metrics: Vec::new(),
-        };
+        let mut current_batch = ExportMetricsServiceRequest::default();
         let mut current_metric_count = 0;
 
-        let mut rm_idx = 0;
-        while rm_idx < self.resource_metrics.len() {
-            let rm = &self.resource_metrics[rm_idx];
+        for mut rm in self.resource_metrics.drain(..) {
             let mut res = ResourceMetrics {
-                resource: rm.resource.clone(),
+                resource: rm.resource.take(),
                 scope_metrics: Vec::new(),
                 schema_url: rm.schema_url.clone(),
             };
-            let mut sm_idx = 0;
-            while sm_idx < rm.scope_metrics.len() {
-                let sm = &rm.scope_metrics[sm_idx];
+            for mut sm in rm.scope_metrics.drain(..) {
                 let mut sc = ScopeMetrics {
-                    scope: sm.scope.clone(),
+                    scope: sm.scope.take(),
                     metrics: Vec::new(),
                     schema_url: sm.schema_url.clone(),
                 };
-                let mut m_idx = 0;
-                while m_idx < sm.metrics.len() {
+                while !sm.metrics.is_empty() {
                     let remaining = max_batch_size - current_metric_count;
-                    let m_left = sm.metrics.len() - m_idx;
-                    let take = remaining.min(m_left);
+                    let take = remaining.min(sm.metrics.len());
 
-                    sc.metrics
-                        .extend(sm.metrics[m_idx..m_idx + take].iter().cloned());
+                    sc.metrics.extend(sm.metrics.drain(..take));
                     current_metric_count += take;
-                    m_idx += take;
 
                     if !sc.metrics.is_empty() {
                         res.scope_metrics.push(sc.clone());
@@ -133,19 +112,15 @@ impl HierarchicalBatchSplit for ExportMetricsServiceRequest {
                             current_batch.resource_metrics.push(res.clone());
                             res.scope_metrics.clear();
                         }
-                        batches.push(current_batch.clone());
-                        current_batch = ExportMetricsServiceRequest {
-                            resource_metrics: Vec::new(),
-                        };
+                        batches.push(std::mem::take(&mut current_batch));
+                        current_batch = ExportMetricsServiceRequest::default();
                         current_metric_count = 0;
                     }
                 }
-                sm_idx += 1;
             }
             if !res.scope_metrics.is_empty() {
                 current_batch.resource_metrics.push(res.clone());
             }
-            rm_idx += 1;
         }
         if current_metric_count > 0 && !current_batch.resource_metrics.is_empty() {
             batches.push(current_batch);
@@ -155,39 +130,31 @@ impl HierarchicalBatchSplit for ExportMetricsServiceRequest {
 }
 
 impl HierarchicalBatchSplit for ExportLogsServiceRequest {
-    fn split_into_batches(&self, max_batch_size: usize) -> Vec<Self> {
+    fn split_into_batches(mut self, max_batch_size: usize) -> Vec<Self> {
         let mut batches = Vec::new();
         let mut current_batch = ExportLogsServiceRequest {
             resource_logs: Vec::new(),
         };
         let mut current_log_count = 0;
 
-        let mut rl_idx = 0;
-        while rl_idx < self.resource_logs.len() {
-            let rl = &self.resource_logs[rl_idx];
+        for mut rl in self.resource_logs.drain(..) {
             let mut res = ResourceLogs {
-                resource: rl.resource.clone(),
+                resource: rl.resource.take(),
                 scope_logs: Vec::new(),
                 schema_url: rl.schema_url.clone(),
             };
-            let mut sl_idx = 0;
-            while sl_idx < rl.scope_logs.len() {
-                let sl = &rl.scope_logs[sl_idx];
+            for mut sl in rl.scope_logs.drain(..) {
                 let mut sc = ScopeLogs {
-                    scope: sl.scope.clone(),
+                    scope: sl.scope.take(),
                     log_records: Vec::new(),
                     schema_url: sl.schema_url.clone(),
                 };
-                let mut rec_idx = 0;
-                while rec_idx < sl.log_records.len() {
+                while !sl.log_records.is_empty() {
                     let remaining = max_batch_size - current_log_count;
-                    let rec_left = sl.log_records.len() - rec_idx;
-                    let take = remaining.min(rec_left);
+                    let take = remaining.min(sl.log_records.len());
 
-                    sc.log_records
-                        .extend(sl.log_records[rec_idx..rec_idx + take].iter().cloned());
+                    sc.log_records.extend(sl.log_records.drain(..take));
                     current_log_count += take;
-                    rec_idx += take;
 
                     if !sc.log_records.is_empty() {
                         res.scope_logs.push(sc.clone());
@@ -206,12 +173,10 @@ impl HierarchicalBatchSplit for ExportLogsServiceRequest {
                         current_log_count = 0;
                     }
                 }
-                sl_idx += 1;
             }
             if !res.scope_logs.is_empty() {
                 current_batch.resource_logs.push(res.clone());
             }
-            rl_idx += 1;
         }
         if current_log_count > 0 && !current_batch.resource_logs.is_empty() {
             batches.push(current_batch);
