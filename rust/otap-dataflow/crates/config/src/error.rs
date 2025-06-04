@@ -3,14 +3,14 @@
 //! Errors for the config crate.
 
 use crate::node::DispatchStrategy;
-use crate::{NodeId, PipelineId, PortName, TenantId};
+use crate::{NamespaceId, NodeId, PipelineId, PortName};
 use miette::Diagnostic;
 use std::fmt::Display;
 
-/// Errors that can occur while processing the configuration of a data plane, a tenant, a pipeline,
+/// Errors that can occur while processing the configuration of a data plane, a namespace, a pipeline,
 /// or a node.
 ///
-/// Note: All errors are contextualized with the tenant and pipeline ids, if applicable.
+/// Note: All errors are contextualized with the namespace and pipeline ids, if applicable.
 #[derive(thiserror::Error, Debug, Diagnostic)]
 pub enum Error {
     /// A collection of errors that occurred during parsing or validating the configuration.
@@ -104,18 +104,18 @@ pub enum Error {
 /// the context in which they occurred.
 #[derive(Debug, Default)]
 pub struct Context {
-    /// The tenant id, if applicable.
-    pub tenant_id: Option<TenantId>,
+    /// The namespace id, if applicable.
+    pub namespace_id: Option<NamespaceId>,
     /// The pipeline id, if applicable.
     pub pipeline_id: Option<PipelineId>,
 }
 
 impl Context {
-    /// Creates a new context with the given tenant and pipeline ids.
+    /// Creates a new context with the given namespace and pipeline ids.
     #[must_use]
-    pub fn new(tenant_id: TenantId, pipeline_id: PipelineId) -> Self {
+    pub fn new(namespace_id: NamespaceId, pipeline_id: PipelineId) -> Self {
         Self {
-            tenant_id: Some(tenant_id),
+            namespace_id: Some(namespace_id),
             pipeline_id: Some(pipeline_id),
         }
     }
@@ -123,8 +123,8 @@ impl Context {
 
 impl Display for Context {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(tenant_id) = &self.tenant_id {
-            write!(f, "Tenant: '{tenant_id}'")?;
+        if let Some(namespace_id) = &self.namespace_id {
+            write!(f, "Namespace: '{namespace_id}'")?;
         }
         if let Some(pipeline_id) = &self.pipeline_id {
             write!(f, " Pipeline: '{pipeline_id}'")?;

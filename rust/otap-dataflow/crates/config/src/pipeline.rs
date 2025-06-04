@@ -4,7 +4,7 @@
 
 use crate::error::{Context, Error};
 use crate::node::{DispatchStrategy, HyperEdgeConfig, NodeConfig, NodeKind};
-use crate::{Description, NodeId, PipelineId, PortName, TenantId, Urn};
+use crate::{Description, NamespaceId, NodeId, PipelineId, PortName, Urn};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,6 +24,9 @@ use std::rc::Rc;
 /// This configuration defines the pipeline’s nodes, the interconnections (hyper-edges), and pipeline-level settings.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PipelineConfig {
+    /// Type of the pipeline, which determines the type of PData it processes.
+    r#type: PipelineType,
+
     /// Optional description of the pipeline’s purpose.
     description: Option<Description>,
 
@@ -42,6 +45,15 @@ fn default_pdata_channel_size() -> usize {
     100
 }
 
+/// The type of pipeline, which can be either OTLP (OpenTelemetry Protocol) or
+/// OTAP (OpenTelemetry with Apache Arrow Protocol).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub enum PipelineType {
+    /// OpenTelemetry Protocol (OTLP) pipeline.
+    OTLP,
+    /// OpenTelemetry with Apache Arrow Protocol (OTAP) pipeline.
+    OTAP
+}
 /// A configuration for a pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PipelineSettings {
@@ -66,33 +78,43 @@ impl Default for PipelineSettings {
 impl PipelineConfig {
     /// Create a new PipelineSpec from a JSON string.
     pub fn from_json(
-        tenant_id: TenantId,
+        namespace_id: NamespaceId,
         pipeline_id: PipelineId,
         json_str: &str,
     ) -> Result<Self, Error> {
         let spec: PipelineConfig =
             serde_json::from_str(json_str).map_err(|e| Error::DeserializationError {
-                context: Context::new(tenant_id.clone(), pipeline_id.clone()),
+                context: Context::new(namespace_id.clone(), pipeline_id.clone()),
                 format: "JSON".to_string(),
                 details: e.to_string(),
             })?;
 
-        spec.validate(&tenant_id, &pipeline_id)?;
+        spec.validate(&namespace_id, &pipeline_id)?;
         Ok(spec)
     }
 
     /// Load a PipelineSpec from a JSON file.
     pub fn from_json_file<P: AsRef<Path>>(
-        tenant_id: TenantId,
+        namespace_id: NamespaceId,
         pipeline_id: PipelineId,
         path: P,
     ) -> Result<Self, Error> {
         let contents = std::fs::read_to_string(path).map_err(|e| Error::FileReadError {
-            context: Context::new(tenant_id.clone(), pipeline_id.clone()),
+            context: Context::new(namespace_id.clone(), pipeline_id.clone()),
             details: e.to_string(),
         })?;
-        Self::from_json(tenant_id, pipeline_id, &contents)
+        Self::from_json(namespace_id, pipeline_id, &contents)
     }
+
+    /// Returns an iterator visiting all nodes in the pipeline.
+    pub fn node_iter(&self) -> impl Iterator<Item = (&NodeId, &Rc<NodeConfig>)> {
+        self.nodes.iter()
+    }
+
+    /// Creates a consuming iterator over the nodes in the pipeline.
+    pub fn node_into_iter(self) -> impl Iterator<Item = (NodeId, Rc<NodeConfig>)> {
+        self.nodes.into_iter()
+    } 
 
     /// Validate the pipeline specification.
     ///
@@ -101,7 +123,11 @@ impl PipelineConfig {
     /// - Duplicate out-ports (same source node + port name)
     /// - Invalid hyper-edges (missing source or target nodes)
     /// - Cycles in the DAG
-    pub fn validate(&self, tenant_id: &TenantId, pipeline_id: &PipelineId) -> Result<(), Error> {
+    pub fn validate(
+        &self,
+        namespace_id: &NamespaceId,
+        pipeline_id: &PipelineId,
+    ) -> Result<(), Error> {
         let mut errors = Vec::new();
 
         // Check for invalid hyper-edges (references to non-existent nodes)
@@ -117,7 +143,7 @@ impl PipelineConfig {
 
                 if !missing_targets.is_empty() {
                     errors.push(Error::InvalidHyperEdgeSpec {
-                        context: Context::new(tenant_id.clone(), pipeline_id.clone()),
+                        context: Context::new(namespace_id.clone(), pipeline_id.clone()),
                         source_node: node_id.clone(),
                         target_nodes: edge.destinations.iter().cloned().collect(),
                         dispatch_strategy: edge.dispatch_strategy.clone(),
@@ -133,7 +159,7 @@ impl PipelineConfig {
             let cycles = self.detect_cycles();
             for cycle in cycles {
                 errors.push(Error::CycleDetected {
-                    context: Context::new(tenant_id.clone(), pipeline_id.clone()),
+                    context: Context::new(namespace_id.clone(), pipeline_id.clone()),
                     nodes: cycle,
                 });
             }
@@ -204,7 +230,7 @@ impl PipelineConfig {
 }
 
 /// A builder for constructing a [`PipelineConfig`].
-pub struct PipelineBuilder {
+pub struct PipelineConfigBuilder {
     description: Option<Description>,
     nodes: HashMap<NodeId, NodeConfig>,
     duplicate_nodes: Vec<NodeId>,
@@ -218,7 +244,7 @@ struct PendingConnection {
     strategy: DispatchStrategy,
 }
 
-impl PipelineBuilder {
+impl PipelineConfigBuilder {
     /// Create a new pipeline builder.
     #[must_use]
     pub fn new() -> Self {
@@ -373,19 +399,19 @@ impl PipelineBuilder {
     /// missing source/targets, invalid edges, cycles) into one `InvalidHyperDag`
     /// report. This lets callers see every problem at once, rather than failing
     /// fast on the first error.
-    pub fn build<T, P>(mut self, tenant_id: T, pipeline_id: P) -> Result<PipelineConfig, Error>
+    pub fn build<T, P>(mut self, pipeline_type: PipelineType, namespace_id: T, pipeline_id: P) -> Result<PipelineConfig, Error>
     where
-        T: Into<TenantId>,
+        T: Into<NamespaceId>,
         P: Into<PipelineId>,
     {
         let mut errors = Vec::new();
-        let tenant_id = tenant_id.into();
+        let namespace_id = namespace_id.into();
         let pipeline_id = pipeline_id.into();
 
         // Report duplicated nodes
         for node_id in &self.duplicate_nodes {
             errors.push(Error::DuplicateNode {
-                context: Context::new(tenant_id.clone(), pipeline_id.clone()),
+                context: Context::new(namespace_id.clone(), pipeline_id.clone()),
                 node_id: node_id.clone(),
             });
         }
@@ -397,7 +423,7 @@ impl PipelineBuilder {
                 let key = (conn.src.clone(), conn.out_port.clone());
                 if !seen_ports.insert(key.clone()) {
                     errors.push(Error::DuplicateOutPort {
-                        context: Context::new(tenant_id.clone(), pipeline_id.clone()),
+                        context: Context::new(namespace_id.clone(), pipeline_id.clone()),
                         source_node: conn.src.clone(),
                         port: conn.out_port.clone(),
                     });
@@ -426,7 +452,7 @@ impl PipelineBuilder {
             // if anything is missing, record as InvalidHyperEdgeSpec
             if !src_exists || !missing.is_empty() {
                 errors.push(Error::InvalidHyperEdgeSpec {
-                    context: Context::new(tenant_id.clone(), pipeline_id.clone()),
+                    context: Context::new(namespace_id.clone(), pipeline_id.clone()),
                     source_node: conn.src.clone(),
                     target_nodes: conn.targets.iter().cloned().collect(),
                     dispatch_strategy: conn.strategy,
@@ -460,15 +486,16 @@ impl PipelineBuilder {
                     .map(|(id, node)| (id, Rc::new(node)))
                     .collect(),
                 settings: PipelineSettings::default(),
+                r#type: pipeline_type,
             };
 
-            spec.validate(&tenant_id, &pipeline_id)?;
+            spec.validate(&namespace_id, &pipeline_id)?;
             Ok(spec)
         }
     }
 }
 
-impl Default for PipelineBuilder {
+impl Default for PipelineConfigBuilder {
     fn default() -> Self {
         Self::new()
     }
@@ -478,15 +505,15 @@ impl Default for PipelineBuilder {
 mod tests {
     use crate::error::Error;
     use crate::node::DispatchStrategy;
-    use crate::pipeline::PipelineBuilder;
+    use crate::pipeline::{PipelineConfigBuilder, PipelineType};
     use serde_json::json;
 
     #[test]
     fn test_duplicate_node_errors() {
-        let result = PipelineBuilder::new()
+        let result = PipelineConfigBuilder::new()
             .add_receiver("A", "urn:test:receiver", None)
             .add_processor("A", "urn:test:processor", None) // duplicate
-            .build("tenant", "pipeline");
+            .build(PipelineType::OTAP, "namespace", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -503,12 +530,12 @@ mod tests {
 
     #[test]
     fn test_duplicate_outport_errors() {
-        let result = PipelineBuilder::new()
+        let result = PipelineConfigBuilder::new()
             .add_receiver("A", "urn:test:receiver", None)
             .add_exporter("B", "urn:test:exporter", None)
             .round_robin("A", "p", ["B"])
             .round_robin("A", "p", ["B"]) // duplicate port on A
-            .build("tenant", "pipeline");
+            .build(PipelineType::OTAP, "namespace", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -527,10 +554,10 @@ mod tests {
 
     #[test]
     fn test_missing_source_error() {
-        let result = PipelineBuilder::new()
+        let result = PipelineConfigBuilder::new()
             .add_receiver("B", "urn:test:receiver", None)
             .connect("X", "out", ["B"], DispatchStrategy::Broadcast) // X does not exist
-            .build("tenant", "pipeline");
+            .build(PipelineType::OTAP, "namespace", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -551,10 +578,10 @@ mod tests {
 
     #[test]
     fn test_missing_target_error() {
-        let result = PipelineBuilder::new()
+        let result = PipelineConfigBuilder::new()
             .add_receiver("A", "urn:test:receiver", None)
             .connect("A", "out", ["Y"], DispatchStrategy::Broadcast) // Y does not exist
-            .build("tenant", "pipeline");
+            .build(PipelineType::OTAP, "namespace", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -579,12 +606,12 @@ mod tests {
 
     #[test]
     fn test_cycle_detection_error() {
-        let result = PipelineBuilder::new()
+        let result = PipelineConfigBuilder::new()
             .add_processor("A", "urn:test:processor", None)
             .add_processor("B", "urn:test:processor", None)
             .round_robin("A", "p", ["B"])
             .round_robin("B", "p", ["A"])
-            .build("tenant", "pipeline");
+            .build(PipelineType::OTAP, "namespace", "pipeline");
 
         match result {
             Err(Error::InvalidConfiguration { errors }) => {
@@ -606,11 +633,11 @@ mod tests {
 
     #[test]
     fn test_successful_simple_build() {
-        let dag = PipelineBuilder::new()
+        let dag = PipelineConfigBuilder::new()
             .add_receiver("Start", "urn:test:receiver", Some(json!({"foo": 1})))
             .add_exporter("End", "urn:test:exporter", None)
             .broadcast("Start", "out", ["End"])
-            .build("tenant", "pipeline");
+            .build(PipelineType::OTAP, "namespace", "pipeline");
 
         match dag {
             Ok(pipeline_spec) => {
@@ -627,7 +654,7 @@ mod tests {
 
     #[test]
     fn test_valid_complex_pipeline_spec() {
-        let dag = PipelineBuilder::new()
+        let dag = PipelineConfigBuilder::new()
             // ----- TRACES pipeline -----
             .add_receiver(
                 "receiver_otlp_traces",
@@ -768,7 +795,7 @@ mod tests {
                 ["processor_enrich_events"],
             )
             // Finalize build
-            .build("tenant", "pipeline");
+            .build(PipelineType::OTAP, "namespace", "pipeline");
 
         // Assert the DAG is valid and acyclic
         match dag {

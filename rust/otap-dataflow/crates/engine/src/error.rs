@@ -46,6 +46,13 @@ pub enum Error<T> {
         error: String,
     },
 
+    /// Unknown receiver plugin.
+    #[error("Unknown receiver plugin `{plugin_urn}`")]
+    UnknownReceiver {
+        /// The name of the unknown receiver plugin.
+        plugin_urn: Cow<'static, str>,
+    },
+
     /// The specified processor already exists in the pipeline.
     #[error("The processor `{processor}` already exists")]
     ProcessorAlreadyExists {
@@ -64,6 +71,13 @@ pub enum Error<T> {
         error: String,
     },
 
+    /// Unknown processor plugin.
+    #[error("Unknown processor plugin `{plugin_urn}`")]
+    UnknownProcessor {
+        /// The name of the unknown processor plugin.
+        plugin_urn: Cow<'static, str>,
+    },
+
     /// The specified exporter already exists in the pipeline.
     #[error("The exporter `{exporter}` already exists")]
     ExporterAlreadyExists {
@@ -80,5 +94,19 @@ pub enum Error<T> {
         /// The error that occurred.
         /// ToDo We probably need to use a more specific error type here (JSON Node?).
         error: String,
+    },
+
+    /// Unknown exporter plugin.
+    #[error("Unknown exporter plugin `{plugin_urn}`")]
+    UnknownExporter {
+        /// The name of the unknown exporter plugin.
+        plugin_urn: Cow<'static, str>,
+    },
+
+    /// Unsupported node kind.
+    #[error("Unsupported node kind `{kind}`")]
+    UnsupportedNodeKind {
+        /// The kind of the node that is not supported.
+        kind: Cow<'static, str>,
     },
 }

@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 otap-df-engine = { path = "../engine" }
 otap-df-channel = { path = "../channel" }
+otap-df-config = { path = "../config" }
 tonic = { version = "0.13.1", default-features = false, features = [
     "server",
     "channel",

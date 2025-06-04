@@ -21,6 +21,7 @@ pub mod config;
 mod effect_handler;
 pub mod local;
 pub mod pipeline;
+pub mod runtime_config;
 pub mod shared;
 
 pub mod testing;
