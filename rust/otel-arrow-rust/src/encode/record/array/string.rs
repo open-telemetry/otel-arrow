@@ -6,6 +6,8 @@ use arrow::array::{
 use arrow::datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type};
 use arrow::error::ArrowError;
 
+use crate::encode::record::array::dictionary::DictionaryArrayWithType;
+
 use super::dictionary::{DictionaryArrayBuilder, DictionaryBuilderError as Error, Result};
 use super::{ArrayBuilder, ArrayBuilderConstructor, dictionary::UpdateDictionaryIndexInto};
 
@@ -23,10 +25,10 @@ impl ArrayBuilder for StringBuilder {
     }
 
     fn finish(&mut self) -> super::ArrayWithType {
-        return super::ArrayWithType {
+        super::ArrayWithType {
             data_type: DataType::Utf8,
             array: Arc::new(self.finish()),
-        };
+        }
     }
 }
 
@@ -39,7 +41,7 @@ where
     }
 }
 
-impl<T> DictionaryArrayBuilder for StringDictionaryBuilder<T>
+impl<T> DictionaryArrayBuilder<T> for StringDictionaryBuilder<T>
 where
     T: ArrowDictionaryKeyType + ArrowPrimitiveType,
     <T as ArrowPrimitiveType>::Native: Into<usize>,
@@ -57,11 +59,11 @@ where
         }
     }
 
-    fn finish(&mut self) -> super::ArrayWithType {
-        return super::ArrayWithType {
+    fn finish(&mut self) -> DictionaryArrayWithType<T> {
+        DictionaryArrayWithType {
             data_type: DataType::Dictionary(Box::new(T::DATA_TYPE), Box::new(DataType::Utf8)),
             array: Arc::new(self.finish()),
-        };
+        }
     }
 }
 
@@ -80,17 +82,25 @@ impl UpdateDictionaryIndexInto<StringDictionaryBuilder<UInt16Type>>
         // create a new builder with the same keys (but use `cast` kernel) cast them
         // to u16 then reuse the same values
 
-        let arr = self.finish();
-        let dict_arr: &DictionaryArray<UInt8Type> = arr.as_any().downcast_ref().unwrap();
-        let keys = dict_arr.downcast_dict::<StringArray>().unwrap();
+        let dict_arr = self.finish();
+
+        // safety: StringDictionaryBuilder returns a dictionary that has String values
+        let str_values = dict_arr
+            .downcast_dict::<StringArray>()
+            .expect("expect values are of type string");
 
         let mut upgraded_builder = StringDictionaryBuilder::<UInt16Type>::new();
-        for str in keys {
-            // TODO need to handle nulls
-            let _ = upgraded_builder.append(str.unwrap()).unwrap();
+        for str_value in str_values {
+            match str_value {
+                Some(str_value) => upgraded_builder.append_value(str_value),
+                None => {
+                    // TODO handle this in https://github.com/open-telemetry/otel-arrow/issues/534
+                    todo!("nulls not yet supported by adaptive array builders")
+                }
+            }
         }
 
-        return upgraded_builder;
+        upgraded_builder
     }
 }
 

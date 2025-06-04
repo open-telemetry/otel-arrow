@@ -59,8 +59,8 @@ pub trait ArrayBuilderConstructor {
 /// native builder when the dictionary builder overflows.
 enum MaybeDictionaryBuilder<
     NativeBuilder: ArrayBuilder + ArrayBuilderConstructor,
-    DictBuilderU8: DictionaryArrayBuilder + ArrayBuilderConstructor,
-    DictBuilderU16: DictionaryArrayBuilder + ArrayBuilderConstructor,
+    DictBuilderU8: DictionaryArrayBuilder<UInt8Type> + ArrayBuilderConstructor,
+    DictBuilderU16: DictionaryArrayBuilder<UInt16Type> + ArrayBuilderConstructor,
 > {
     Native(NativeBuilder),
     Dictionary(AdaptiveDictionaryBuilder<DictBuilderU8, DictBuilderU16>),
@@ -69,9 +69,13 @@ enum MaybeDictionaryBuilder<
 impl<T, TN, TD8, TD16> ArrayBuilder for MaybeDictionaryBuilder<TN, TD8, TD16>
 where
     TN: ArrayBuilder<Native = T> + ArrayBuilderConstructor,
-    TD8: DictionaryArrayBuilder<Native = T> + ArrayBuilderConstructor + ConvertToNativeHelper,
+    TD8: DictionaryArrayBuilder<UInt8Type, Native = T>
+        + ArrayBuilderConstructor
+        + ConvertToNativeHelper,
     <TD8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
-    TD16: DictionaryArrayBuilder<Native = T> + ArrayBuilderConstructor + ConvertToNativeHelper,
+    TD16: DictionaryArrayBuilder<UInt16Type, Native = T>
+        + ArrayBuilderConstructor
+        + ConvertToNativeHelper,
     <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
     TD8: UpdateDictionaryIndexInto<TD16>,
 {
@@ -114,8 +118,8 @@ pub struct ArrayOptions {
 
 pub struct AdaptiveArrayBuilder<
     TN: ArrayBuilder + ArrayBuilderConstructor,
-    TD8: DictionaryArrayBuilder + ArrayBuilderConstructor,
-    TD16: DictionaryArrayBuilder + ArrayBuilderConstructor,
+    TD8: DictionaryArrayBuilder<UInt8Type> + ArrayBuilderConstructor,
+    TD16: DictionaryArrayBuilder<UInt16Type> + ArrayBuilderConstructor,
 > {
     dictionary_options: Option<DictionaryOptions>,
     inner: Option<MaybeDictionaryBuilder<TN, TD8, TD16>>,
@@ -124,9 +128,13 @@ pub struct AdaptiveArrayBuilder<
 impl<T, TN, TD8, TD16> AdaptiveArrayBuilder<TN, TD8, TD16>
 where
     TN: ArrayBuilder<Native = T> + ArrayBuilderConstructor,
-    TD8: DictionaryArrayBuilder<Native = T> + ArrayBuilderConstructor + ConvertToNativeHelper,
+    TD8: DictionaryArrayBuilder<UInt8Type, Native = T>
+        + ArrayBuilderConstructor
+        + ConvertToNativeHelper,
     <TD8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
-    TD16: DictionaryArrayBuilder<Native = T> + ArrayBuilderConstructor + ConvertToNativeHelper,
+    TD16: DictionaryArrayBuilder<UInt16Type, Native = T>
+        + ArrayBuilderConstructor
+        + ConvertToNativeHelper,
     <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
     TD8: UpdateDictionaryIndexInto<TD16>,
 {

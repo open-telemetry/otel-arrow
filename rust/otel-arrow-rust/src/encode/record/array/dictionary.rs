@@ -1,6 +1,8 @@
+use std::sync::Arc;
+
 use arrow::{
-    array::{ArrowPrimitiveType, DictionaryArray},
-    datatypes::{ArrowDictionaryKeyType, UInt8Type, UInt16Type},
+    array::{AnyDictionaryArray, Array, ArrayRef, ArrowPrimitiveType, DictionaryArray},
+    datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type},
 };
 use snafu::Snafu;
 
@@ -19,7 +21,10 @@ pub type Result<T> = std::result::Result<T, DictionaryBuilderError>;
 
 // This is the base trait for array builder implementations that are
 // used to construct dictionary arrays
-pub trait DictionaryArrayBuilder {
+pub trait DictionaryArrayBuilder<T>
+where
+    T: ArrowDictionaryKeyType,
+{
     type Native;
 
     // Append a new value to the dictionary, and return the index of
@@ -30,10 +35,36 @@ pub trait DictionaryArrayBuilder {
     // would overflow, it can also return `DictOverflow` error
     fn append_value(&mut self, value: &Self::Native) -> Result<usize>;
 
-    fn finish(&mut self) -> super::ArrayWithType;
+    fn finish(&mut self) -> DictionaryArrayWithType<T>;
 }
 
-// This †rait is used to help the AdaptiveDictionaryBuilder to convert the dictionary
+// // this trait is used to help ensure that types that implement DictionaryArrayBuilder
+// // actually return an array that can be safely downcast into a DictionaryArray
+// pub trait DictionaryArrayRefInner: Array + AnyDictionaryArray {}
+// impl<T> DictionaryArrayRefInner for DictionaryArray<T> where T: ArrowDictionaryKeyType {}
+// pub type DictionaryArrayRef = Arc<dyn DictionaryArrayRefInner>;
+
+pub struct DictionaryArrayWithType<T>
+where
+    T: ArrowDictionaryKeyType,
+{
+    pub array: Arc<DictionaryArray<T>>,
+    pub data_type: DataType,
+}
+
+impl<T> From<DictionaryArrayWithType<T>> for super::ArrayWithType
+where
+    T: ArrowDictionaryKeyType,
+{
+    fn from(value: DictionaryArrayWithType<T>) -> Self {
+        super::ArrayWithType {
+            array: value.array,
+            data_type: value.data_type,
+        }
+    }
+}
+
+// This trait is used to help the AdaptiveDictionaryBuilder to convert the dictionary
 // array constructed by the underlying builder to the native type. It will use the
 // associated `Accessor` type to downcast the values array, so by implementing this trait
 // implementations of `DictionaryArrayBuilder` have a way to signal to
@@ -42,8 +73,8 @@ pub trait ConvertToNativeHelper {
     type Accessor;
 }
 
-// Implementaions of this trait are used to upgrade from a builder for a dictionary
-// keyed by a smaller index type into a larger typer. E.g. a builder for
+// Implementations of this trait are used to upgrade from a builder for a dictionary
+// keyed by a smaller index type into a larger type. E.g. a builder for
 // DictionaryArray<u8> -> DictionaryArray<u16>
 pub trait UpdateDictionaryIndexInto<T> {
     fn upgrade_into(&mut self) -> T;
@@ -115,9 +146,9 @@ where
 
 impl<T, T8, T16> AdaptiveDictionaryBuilder<T8, T16>
 where
-    T8: DictionaryArrayBuilder<Native = T> + ConvertToNativeHelper,
+    T8: DictionaryArrayBuilder<UInt8Type, Native = T> + ConvertToNativeHelper,
     <T8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
-    T16: DictionaryArrayBuilder<Native = T> + ConvertToNativeHelper,
+    T16: DictionaryArrayBuilder<UInt16Type, Native = T> + ConvertToNativeHelper,
     <T16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
 {
     pub fn to_native<TN>(&mut self, builder: &mut TN)
@@ -127,14 +158,8 @@ where
         match &mut self.variant {
             DictIndexVariant::UInt8(dict_builder) => {
                 let result = dict_builder.finish();
-                let dict_arr = result
-                    .array
-                    .as_any()
-                    .downcast_ref::<DictionaryArray<UInt8Type>>()
-                    // TODO - instead of unwrapping here, we might want to enforce that this builder returns a DictArray<UInt8Type>
-                    .unwrap();
                 populate_native_builder::<_, UInt8Type, <T8 as ConvertToNativeHelper>::Accessor, _>(
-                    dict_arr,
+                    &result.array,
                     builder,
                     self.overflow_index,
                 );
@@ -142,14 +167,8 @@ where
 
             DictIndexVariant::UInt16(dict_builder) => {
                 let result = dict_builder.finish();
-                // TODO - see comment above related to unwrap the downcast
-                let dict_arr = result
-                    .array
-                    .as_any()
-                    .downcast_ref::<DictionaryArray<UInt16Type>>()
-                    .unwrap();
                 populate_native_builder::<_, UInt16Type, <T16 as ConvertToNativeHelper>::Accessor, _>(
-                    dict_arr,
+                    &result.array,
                     builder,
                     self.overflow_index,
                 );
@@ -171,10 +190,19 @@ fn populate_native_builder<T, K, V, TN>(
     V: NullableArrayAccessor<Native = T> + 'static,
 {
     let keys = dict_arr.keys();
-    let values = dict_arr.values().as_any().downcast_ref::<V>().unwrap();
+    // safety: in the places this method is called, the type constraints are enforced
+    // in a way that this cast should be safe
+    let values = dict_arr
+        .values()
+        .as_any()
+        .downcast_ref::<V>()
+        .expect("expect dictionary value types match native builder type");
 
     for i in 0..dict_arr.len() {
-        // TODO need to handle nulls here
+        if !keys.is_valid(i) {
+            // TODO handle nulls in https://github.com/open-telemetry/otel-arrow/issues/534
+            todo!("nulls not currently supported in adaptive array builders");
+        }
         let key = keys.value(i);
         let index = key.into();
 
@@ -183,22 +211,21 @@ fn populate_native_builder<T, K, V, TN>(
             break;
         }
 
-        // TODO no unwrap here when we handle nulls
-        let value = values.value_at(index).unwrap();
-        builder.append_value(&value);
+        // safety: we've already checked that the key at this index is valid
+        let value = values
+            .value_at(index)
+            .expect("expect index in dict values array to be valid");
     }
 }
 
-impl<T, T8, T16> DictionaryArrayBuilder for AdaptiveDictionaryBuilder<T8, T16>
+impl<T, T8, T16> AdaptiveDictionaryBuilder<T8, T16>
 where
-    T8: DictionaryArrayBuilder<Native = T>
+    T8: DictionaryArrayBuilder<UInt8Type, Native = T>
         + ArrayBuilderConstructor
         + UpdateDictionaryIndexInto<T16>,
-    T16: DictionaryArrayBuilder<Native = T> + ArrayBuilderConstructor,
+    T16: DictionaryArrayBuilder<UInt16Type, Native = T> + ArrayBuilderConstructor,
 {
-    type Native = T;
-
-    fn append_value(&mut self, value: &Self::Native) -> Result<usize> {
+    pub fn append_value(&mut self, value: &T) -> Result<usize> {
         let append_result = match &mut self.variant {
             DictIndexVariant::UInt8(dict_builder) => dict_builder.append_value(value),
             DictIndexVariant::UInt16(dict_builder) => dict_builder.append_value(value),
@@ -222,10 +249,10 @@ where
         }
     }
 
-    fn finish(&mut self) -> super::ArrayWithType {
+    pub fn finish(&mut self) -> super::ArrayWithType {
         match &mut self.variant {
-            DictIndexVariant::UInt8(u8_dict_builder) => u8_dict_builder.finish(),
-            DictIndexVariant::UInt16(u16_dict_builder) => u16_dict_builder.finish(),
+            DictIndexVariant::UInt8(u8_dict_builder) => u8_dict_builder.finish().into(),
+            DictIndexVariant::UInt16(u16_dict_builder) => u16_dict_builder.finish().into(),
         }
     }
 }
@@ -235,7 +262,6 @@ mod test {
     use super::*;
 
     use std::sync::Arc;
-    use std::u16;
 
     use arrow::array::{
         StringBuilder, StringDictionaryBuilder, UInt8Array, UInt8DictionaryArray, UInt16Array,
