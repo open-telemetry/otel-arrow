@@ -147,7 +147,7 @@ impl ExportMetricsServiceRequest {
     /// Splits the batch into multiple batches, each containing at most `max_requests` top-level requests.
     ///
     /// This preserves the original structure of each request.
-    pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
+    #[must_use] pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
         self.resource_metrics
             .chunks(max_requests)
             .map(|chunk| ExportMetricsServiceRequest {
@@ -221,7 +221,7 @@ impl ExportLogsServiceRequest {
     /// Splits the batch into multiple batches, each containing at most `max_requests` top-level requests.
     /// 
     /// This preserves the original structure of each request.
-    pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
+    #[must_use] pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
         self.resource_logs
             .chunks(max_requests)
             .map(|chunk| ExportLogsServiceRequest {
@@ -235,7 +235,7 @@ impl ExportTraceServiceRequest {
     /// Splits the batch into multiple batches, each containing at most `max_requests` top-level requests.
     ///
     /// This preserves the original structure of each request.
-    pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
+    #[must_use] pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
         self.resource_spans
             .chunks(max_requests)
             .map(|chunk| ExportTraceServiceRequest {
