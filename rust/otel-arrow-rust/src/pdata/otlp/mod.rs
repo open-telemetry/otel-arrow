@@ -26,12 +26,12 @@ use crate::proto::opentelemetry::logs::v1::ScopeLogsVisitable;
 use crate::proto::opentelemetry::logs::v1::ScopeLogsVisitor;
 
 /// LogsVisitor is the entry point for visiting OTLP logs data.
-pub trait LogsVisitor {
+pub trait LogsVisitor<Argument> {
     /// The return type of the visitor
     type Return;
 
     /// Visit logs data and return the computed result
-    fn visit_logs(self, v: impl LogsDataVisitable) -> Self::Return;
+    fn visit_logs(self, v: impl LogsDataVisitable<Argument>) -> Self::Return;
 }
 
 /// ItemCounter implements counting log records. This sort of item
@@ -52,44 +52,73 @@ impl ItemCounter {
     }
 }
 
-impl LogsVisitor for ItemCounter {
+impl LogsVisitor<()> for ItemCounter {
+    /// The return type of the visitor
     type Return = usize;
 
-    fn visit_logs(mut self, v: impl LogsDataVisitable) -> Self::Return {
-        self.visit_logs_data(v);
+    /// Visit logs data and return the computed result
+    fn visit_logs(mut self, v: impl LogsDataVisitable<()>) -> Self::Return {
+        v.accept_logs_data((), &mut self);
         self.count
     }
 }
 
-impl LogsDataVisitor for ItemCounter {
-    fn visit_logs_data(&mut self, v: impl LogsDataVisitable) {
-        v.accept_logs_data(self.borrow_mut());
+impl<Argument> LogsDataVisitor<Argument> for ItemCounter {
+    type Return = Argument;
+
+    fn visit_logs_data(
+        &mut self,
+        arg: Argument,
+        v: impl LogsDataVisitable<Argument>,
+    ) -> Self::Return {
+        v.accept_logs_data(arg, self.borrow_mut())
     }
 }
 
-impl ResourceLogsVisitor for &mut ItemCounter {
-    fn visit_resource_logs(&mut self, v: impl ResourceLogsVisitable) {
+impl<Argument> ResourceLogsVisitor<Argument> for &mut ItemCounter {
+    type Return = Argument;
+
+    fn visit_resource_logs(
+        &mut self,
+        arg: Argument,
+        v: impl ResourceLogsVisitable<Argument>,
+    ) -> Self::Return {
         v.accept_resource_logs(
+            arg,
             super::NoopVisitor {},
             self.borrow_mut(),
             super::NoopVisitor {},
-        );
+        )
     }
 }
 
-impl ScopeLogsVisitor for &mut ItemCounter {
-    fn visit_scope_logs(&mut self, sv: impl ScopeLogsVisitable) {
+impl<Argument> ScopeLogsVisitor<Argument> for &mut ItemCounter {
+    type Return = Argument;
+
+    fn visit_scope_logs(
+        &mut self,
+        arg: Argument,
+        sv: impl ScopeLogsVisitable<Argument>,
+    ) -> Self::Return {
         sv.accept_scope_logs(
+            arg,
             super::NoopVisitor {},
             self.borrow_mut(),
             super::NoopVisitor {},
-        );
+        )
     }
 }
 
-impl LogRecordVisitor for &mut ItemCounter {
-    fn visit_log_record(&mut self, _: impl LogRecordVisitable) {
+impl<Argument> LogRecordVisitor<Argument> for &mut ItemCounter {
+    type Return = Argument;
+
+    fn visit_log_record(
+        &mut self,
+        arg: Argument,
+        _: impl LogRecordVisitable<Argument>,
+    ) -> Self::Return {
         self.count += 1;
+        arg
     }
 }
 

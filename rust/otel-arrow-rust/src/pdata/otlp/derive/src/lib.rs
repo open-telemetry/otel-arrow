@@ -162,17 +162,17 @@ mod type_utils {
         }
     }
 
-    /// Get primitive type visitor trait
+    /// Get primitive type visitor trait with generic argument
     pub fn get_primitive_visitor_trait(type_name: &str) -> proc_macro2::TokenStream {
         match type_name {
-            "String" => quote! { crate::pdata::StringVisitor },
-            "bool" => quote! { crate::pdata::BooleanVisitor },
-            "i32" => quote! { crate::pdata::I32Visitor },
-            "i64" => quote! { crate::pdata::I64Visitor },
-            "u32" | "u8" => quote! { crate::pdata::U32Visitor },
-            "u64" => quote! { crate::pdata::U64Visitor },
-            "f32" | "f64" => quote! { crate::pdata::F64Visitor },
-            _ => quote! { UnknownVisitor },
+            "String" => quote! { crate::pdata::StringVisitor<Argument> },
+            "bool" => quote! { crate::pdata::BooleanVisitor<Argument> },
+            "i32" => quote! { crate::pdata::I32Visitor<Argument> },
+            "i64" => quote! { crate::pdata::I64Visitor<Argument> },
+            "u32" | "u8" => quote! { crate::pdata::U32Visitor<Argument> },
+            "u64" => quote! { crate::pdata::U64Visitor<Argument> },
+            "f32" | "f64" => quote! { crate::pdata::F64Visitor<Argument> },
+            _ => quote! { UnknownVisitor<Argument> },
         }
     }
 
@@ -356,8 +356,9 @@ mod field_utils {
 
     /// Generate visitor call for a field with proper handling for different field types
     pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStream> {
+        // Oneof fields are handled separately in generate_oneof_visitor_calls
         if info.is_oneof {
-            return None; // Skip oneof fields for now
+            return None;
         }
 
         let field_name = &info.ident;
@@ -378,30 +379,40 @@ mod field_utils {
             (false, false, true, _) => {
                 let adapter_name = get_adapter_name_for_field(info);
                 Some(quote! {
-                    #visitor_param.#visit_method(&(#adapter_name::new(&self.data.#field_name)));
+                    arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(&self.data.#field_name)));
                 })
             }
             (false, false, false, _) => {
                 if matches!(visit_method.to_string().as_str(), "visit_string") {
-                    Some(quote! { #visitor_param.#visit_method(&self.data.#field_name); })
+                    Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
                 } else {
-                    Some(quote! { #visitor_param.#visit_method(*&self.data.#field_name); })
+                    Some(quote! { arg = #visitor_param.#visit_method(arg, *&self.data.#field_name); })
                 }
             }
             (true, false, true, _) => {
                 let adapter_name = get_adapter_name_for_field(info);
                 Some(quote! {
-                    self.data.#field_name.as_ref().map(|f| #visitor_param.#visit_method(&(#adapter_name::new(f))));
+                    if let Some(f) = &self.data.#field_name {
+                        arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(f)));
+                    }
                 })
             }
             (true, false, false, _) => {
                 if matches!(visit_method.to_string().as_str(), "visit_string") {
                     Some(
-                        quote! { self.data.#field_name.as_ref().map(|f| #visitor_param.#visit_method(f)); },
+                        quote! { 
+                            if let Some(f) = &self.data.#field_name {
+                                arg = #visitor_param.#visit_method(arg, f);
+                            }
+                        },
                     )
                 } else {
                     Some(
-                        quote! { self.data.#field_name.as_ref().map(|f| #visitor_param.#visit_method(*f)); },
+                        quote! { 
+                            if let Some(f) = &self.data.#field_name {
+                                arg = #visitor_param.#visit_method(arg, *f);
+                            }
+                        },
                     )
                 }
             }
@@ -409,24 +420,24 @@ mod field_utils {
                 let adapter_name = get_adapter_name_for_field(info);
                 Some(quote! {
                     for item in &self.data.#field_name {
-                        #visitor_param.#visit_method(&(#adapter_name::new(item)));
+                        arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(item)));
                     }
                 })
             }
             (false, true, false, true) => {
-                Some(quote! { #visitor_param.#visit_method(&self.data.#field_name); })
+                Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
             }
             (false, true, false, false) => {
                 if matches!(visit_method.to_string().as_str(), "visit_string") {
                     Some(quote! {
                         for item in &self.data.#field_name {
-                            #visitor_param.#visit_method(item);
+                            arg = #visitor_param.#visit_method(arg, item);
                         }
                     })
                 } else {
                     Some(quote! {
                         for item in &self.data.#field_name {
-                            #visitor_param.#visit_method(*item);
+                            arg = #visitor_param.#visit_method(arg, *item);
                         }
                     })
                 }
@@ -437,21 +448,21 @@ mod field_utils {
                     Some(quote! {
                         if let Some(items) = &self.data.#field_name {
                             for item in items {
-                                #visitor_param.#visit_method(&(#adapter_name::new(item)));
+                                arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(item)));
                             }
                         }
                     })
                 } else if is_bytes {
                     Some(quote! {
                         if let Some(items) = &self.data.#field_name {
-                            #visitor_param.#visit_method(items);
+                            arg = #visitor_param.#visit_method(arg, items);
                         }
                     })
                 } else if matches!(visit_method.to_string().as_str(), "visit_string") {
                     Some(quote! {
                         if let Some(items) = &self.data.#field_name {
                             for item in items {
-                                #visitor_param.#visit_method(item);
+                                arg = #visitor_param.#visit_method(arg, item);
                             }
                         }
                     })
@@ -459,13 +470,50 @@ mod field_utils {
                     Some(quote! {
                         if let Some(items) = &self.data.#field_name {
                             for item in items {
-                                #visitor_param.#visit_method(*item);
+                                arg = #visitor_param.#visit_method(arg, *item);
                             }
                         }
                     })
                 }
             }
         }
+    }
+
+    /// Generate visitor calls for oneof fields based on their variants
+    pub fn generate_oneof_visitor_calls(
+        info: &FieldInfo,
+        oneof_mapping: OneofMapping,
+    ) -> Vec<proc_macro2::TokenStream> {
+        let mut visitor_calls = Vec::new();
+
+        if !info.is_oneof {
+            return visitor_calls;
+        }
+
+        if let Some((oneof_name, oneof_cases)) = oneof_mapping {
+            if oneof_name.ends_with(&format!(".{}", info.ident)) {
+                let field_name = &info.ident;
+
+                for case in oneof_cases {
+                    let variant_param_name = syn::Ident::new(
+                        &format!("{}_{}_visitor", field_name, case.name),
+                        field_name.span(),
+                    );
+
+                    // For now, generate a no-op visitor call that just threads the argument
+                    // This ensures we consume all the visitor parameters that were generated
+                    // TODO: Implement proper oneof variant matching and visiting
+                    let visitor_call = quote! {
+                        // TODO: Implement oneof visitor call for #variant_param_name
+                        let _ = &#variant_param_name; // Consume the parameter to avoid unused warnings
+                    };
+
+                    visitor_calls.push(visitor_call);
+                }
+            }
+        }
+
+        visitor_calls
     }
 }
 
@@ -1072,17 +1120,19 @@ fn derive_otlp_visitors(
     }
 
     let expanded = quote! {
-    pub trait #visitor_name {
-    fn #visitor_method_name(&mut self, v: impl #visitable_name);
+    pub trait #visitor_name<Argument> {
+        type Return;
+        fn #visitor_method_name(&mut self, arg: Argument, v: impl #visitable_name<Argument>) -> Self::Return;
     }
 
-    pub trait #visitable_name {
-    fn #visitable_method_name(&self, #(#visitable_args),*);
+    pub trait #visitable_name<Argument> {
+        fn #visitable_method_name(&self, arg: Argument, #(#visitable_args),*) -> Argument;
     }
 
-    impl #visitor_name for crate::pdata::NoopVisitor {
-        fn #visitor_method_name(&mut self, _v: impl #visitable_name) {
-            // NoopVisitor does nothing
+    impl<Argument> #visitor_name<Argument> for crate::pdata::NoopVisitor {
+        type Return = Argument;
+        fn #visitor_method_name(&mut self, arg: Argument, _v: impl #visitable_name<Argument>) -> Self::Return {
+            arg
         }
     }
     };
@@ -1099,7 +1149,7 @@ fn generate_visitor_type_for_oneof_variant(case_type: &syn::Type) -> proc_macro2
                     "Vec" => {
                         if let Some(inner_type) = type_utils::extract_inner_type(case_type) {
                             if type_utils::is_bytes_type(case_type) {
-                                quote! { impl crate::pdata::BytesVisitor }
+                                quote! { impl crate::pdata::BytesVisitor<Argument> }
                             } else {
                                 let visitor_trait = generate_visitor_trait_for_field(&FieldInfo {
                                     ident: syn::Ident::new("temp", proc_macro2::Span::call_site()),
@@ -1239,7 +1289,7 @@ fn derive_otlp_adapters(
     _param_fields: &[FieldInfo],
     _builder_fields: &[FieldInfo],
     all_fields: &[FieldInfo],
-    _oneof_mapping: OneofMapping,
+    oneof_mapping: OneofMapping,
 ) -> TokenStream {
     let adapter_name = ident_utils::adapter_name(outer_name);
     let visitable_name = ident_utils::visitable_name(outer_name);
@@ -1252,33 +1302,38 @@ fn derive_otlp_adapters(
     );
 
     // Generate visitor calls for each field
-    let visitor_calls: TokenVec = all_fields
+    let mut visitor_calls: TokenVec = all_fields
         .iter()
         .filter_map(field_utils::generate_visitor_call)
         .collect();
+
+    // Add oneof visitor calls
+    for info in all_fields {
+        if info.is_oneof {
+            let oneof_calls = field_utils::generate_oneof_visitor_calls(info, oneof_mapping);
+            visitor_calls.extend(oneof_calls);
+        }
+    }
 
     // Generate visitor parameters for the visitable trait method
     let mut visitor_params: TokenVec = Vec::new();
 
     for info in all_fields {
         if info.is_oneof {
-            // For oneof fields, generate separate parameters for each variant
-            if let Some((oneof_name, oneof_cases)) = _oneof_mapping {
+            // Generate parameters for each oneof variant (matching the trait definition)
+            if let Some((oneof_name, oneof_cases)) = oneof_mapping {
                 if oneof_name.ends_with(&format!(".{}", info.ident)) {
-                    // This is the oneof field we're looking for
                     for case in oneof_cases {
                         let variant_param_name = syn::Ident::new(
                             &format!("{}_{}_visitor", info.ident, case.name),
                             info.ident.span(),
                         );
 
-                        // Parse the type_param to get the visitor trait path
                         if let Ok(case_type) = syn::parse_str::<syn::Type>(case.type_param) {
                             let visitor_type = generate_visitor_type_for_oneof_variant(&case_type);
                             visitor_params.push(quote! { mut #variant_param_name: #visitor_type });
                         }
                     }
-                    continue;
                 }
             }
         } else {
@@ -1313,9 +1368,10 @@ fn derive_otlp_adapters(
             }
         }
 
-        impl<'a> #visitable_name for &#adapter_name<'a> {
-            fn #visitable_method_name(&self, #(#visitor_params),*) {
+        impl<'a, Argument> #visitable_name<Argument> for &#adapter_name<'a> {
+            fn #visitable_method_name(&self, mut arg: Argument, #(#visitor_params),*) -> Argument {
                 #(#visitor_calls)*
+                arg
             }
         }
     };
@@ -1358,7 +1414,7 @@ fn generate_visit_method_for_field(info: &FieldInfo) -> syn::Ident {
 fn generate_visitor_trait_for_field(info: &FieldInfo) -> proc_macro2::TokenStream {
     // Special handling for repeated Vec<u8> fields (bytes)
     if info.is_repeated && type_utils::is_bytes_type(&info.field_type) {
-        return quote! { crate::pdata::BytesVisitor };
+        return quote! { crate::pdata::BytesVisitor<Argument> };
     }
 
     // Check if this field has an as_type (enum field), use the underlying primitive type
@@ -1379,24 +1435,25 @@ fn generate_visitor_trait_for_type(ty: &syn::Type) -> proc_macro2::TokenStream {
         let type_name = type_ident.to_string();
 
         if type_utils::is_primitive_type(ty) {
-            type_utils::get_primitive_visitor_trait(&type_name)
+            let primitive_trait = type_utils::get_primitive_visitor_trait(&type_name);
+            quote! { #primitive_trait }
         } else if let syn::Type::Path(type_path) = ty {
             // For message types, generate visitor trait using the path resolver
             let visitor_name = format!("{}Visitor", type_name);
             let visitor_path = resolve_visitor_trait_path_for_type(type_path, &visitor_name);
 
             match syn::parse_str::<syn::Path>(&visitor_path) {
-                Ok(path) => quote! { #path },
+                Ok(path) => quote! { #path<Argument> },
                 Err(_) => {
                     let visitor_ident = syn::Ident::new(&visitor_name, type_ident.span());
-                    quote! { #visitor_ident }
+                    quote! { #visitor_ident<Argument> }
                 }
             }
         } else {
-            quote! { UnknownVisitor }
+            quote! { UnknownVisitor<Argument> }
         }
     } else {
-        quote! { UnknownVisitor }
+        quote! { UnknownVisitor<Argument> }
     }
 }
 

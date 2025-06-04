@@ -74,84 +74,100 @@ impl From<[u8; 8]> for SpanID {
 }
 
 /// StringVisitor
-pub trait StringVisitor {
+pub trait StringVisitor<Argument> {
     /// Visit a string value
-    fn visit_string(&mut self, value: &str);
+    fn visit_string(&mut self, arg: Argument, value: &str) -> Argument;
 }
 
 /// IntegerVisitor
-pub trait I32Visitor {
+pub trait I32Visitor<Argument> {
     /// Visit an integer value
-    fn visit_i32(&mut self, value: i32);
+    fn visit_i32(&mut self, arg: Argument, value: i32) -> Argument;
 }
 
 /// IntegerVisitor
-pub trait I64Visitor {
+pub trait I64Visitor<Argument> {
     /// Visit an integer value
-    fn visit_i64(&mut self, value: i64);
+    fn visit_i64(&mut self, arg: Argument, value: i64) -> Argument;
 }
 
 /// IntegerVisitor
-pub trait U32Visitor {
+pub trait U32Visitor<Argument> {
     /// Visit an integer value
-    fn visit_u32(&mut self, value: u32);
+    fn visit_u32(&mut self, arg: Argument, value: u32) -> Argument;
 }
 
 /// IntegerVisitor
-pub trait U64Visitor {
+pub trait U64Visitor<Argument> {
     /// Visit an integer value
-    fn visit_u64(&mut self, value: u64);
+    fn visit_u64(&mut self, arg: Argument, value: u64) -> Argument;
 }
 
 /// FloatVisitor
-pub trait F64Visitor {
+pub trait F64Visitor<Argument> {
     /// Visit a float value
-    fn visit_f64(&mut self, value: f64);
+    fn visit_f64(&mut self, arg: Argument, value: f64) -> Argument;
 }
 
 /// BooleanVisitor
-pub trait BooleanVisitor {
+pub trait BooleanVisitor<Argument> {
     /// Visit a boolean value
-    fn visit_bool(&mut self, value: bool);
+    fn visit_bool(&mut self, arg: Argument, value: bool) -> Argument;
 }
 
 /// BytesVisitor
-pub trait BytesVisitor {
+pub trait BytesVisitor<Argument> {
     /// Visit a bytes value
-    fn visit_bytes(&mut self, value: &[u8]);
+    fn visit_bytes(&mut self, arg: Argument, value: &[u8]) -> Argument;
 }
 
 /// NoopVisitor implements every visitor, does nothing.
 pub struct NoopVisitor {}
 
-impl BytesVisitor for NoopVisitor {
-    fn visit_bytes(&mut self, _: &[u8]) {}
+impl<Argument> BytesVisitor<Argument> for NoopVisitor {
+    fn visit_bytes(&mut self, arg: Argument, _: &[u8]) -> Argument {
+        arg
+    }
 }
 
-impl StringVisitor for NoopVisitor {
-    fn visit_string(&mut self, _: &str) {}
+impl<Argument> StringVisitor<Argument> for NoopVisitor {
+    fn visit_string(&mut self, arg: Argument, _: &str) -> Argument {
+        arg
+    }
 }
 
-impl I32Visitor for NoopVisitor {
-    fn visit_i32(&mut self, _: i32) {}
+impl<Argument> I32Visitor<Argument> for NoopVisitor {
+    fn visit_i32(&mut self, arg: Argument, _: i32) -> Argument {
+        arg
+    }
 }
 
-impl I64Visitor for NoopVisitor {
-    fn visit_i64(&mut self, _: i64) {}
+impl<Argument> I64Visitor<Argument> for NoopVisitor {
+    fn visit_i64(&mut self, arg: Argument, _: i64) -> Argument {
+        arg
+    }
 }
 
-impl U32Visitor for NoopVisitor {
-    fn visit_u32(&mut self, _: u32) {}
+impl<Argument> U32Visitor<Argument> for NoopVisitor {
+    fn visit_u32(&mut self, arg: Argument, _: u32) -> Argument {
+        arg
+    }
 }
 
-impl U64Visitor for NoopVisitor {
-    fn visit_u64(&mut self, _: u64) {}
+impl<Argument> U64Visitor<Argument> for NoopVisitor {
+    fn visit_u64(&mut self, arg: Argument, _: u64) -> Argument {
+        arg
+    }
 }
 
-impl F64Visitor for NoopVisitor {
-    fn visit_f64(&mut self, _: f64) {}
+impl<Argument> F64Visitor<Argument> for NoopVisitor {
+    fn visit_f64(&mut self, arg: Argument, _: f64) -> Argument {
+        arg
+    }
 }
 
-impl BooleanVisitor for NoopVisitor {
-    fn visit_bool(&mut self, _: bool) {}
+impl<Argument> BooleanVisitor<Argument> for NoopVisitor {
+    fn visit_bool(&mut self, arg: Argument, _: bool) -> Argument {
+        arg
+    }
 }
