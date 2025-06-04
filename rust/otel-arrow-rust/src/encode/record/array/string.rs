@@ -81,6 +81,7 @@ impl UpdateDictionaryIndexInto<StringDictionaryBuilder<UInt16Type>>
         // TODO there should be an optimized way to implement this. Thinking we could
         // create a new builder with the same keys (but use `cast` kernel) cast them
         // to u16 then reuse the same values
+        // related issue https://github.com/open-telemetry/otel-arrow/issues/536
 
         let dict_arr = self.finish();
 

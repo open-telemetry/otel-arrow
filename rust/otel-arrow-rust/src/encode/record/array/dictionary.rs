@@ -215,6 +215,7 @@ fn populate_native_builder<T, K, V, TN>(
         let value = values
             .value_at(index)
             .expect("expect index in dict values array to be valid");
+        builder.append_value(&value);
     }
 }
 
