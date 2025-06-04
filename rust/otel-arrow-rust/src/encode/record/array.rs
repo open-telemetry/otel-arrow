@@ -34,8 +34,6 @@ pub trait ArrayBuilder {
 
     fn append_value(&mut self, value: &Self::Native);
 
-    // TODO add a method for appending nulls
-
     fn finish(&mut self) -> ArrayWithType;
 }
 
@@ -169,6 +167,7 @@ where
             // TODO -- when we handle nulls here we need to keep track of how many
             // nulls have been appended before the first value, and prefix this
             // newly initialized array with that number of nulls
+            // https://github.com/open-telemetry/otel-arrow/issues/534
             self.inner = Some(Self::initial_builder(&self.dictionary_options));
         }
 
