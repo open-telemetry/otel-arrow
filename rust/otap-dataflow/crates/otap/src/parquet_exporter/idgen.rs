@@ -434,7 +434,7 @@ pub mod test {
 
         let mut id_generator = PartitionSequenceIdGenerator::new();
         id_generator.curr_max = 2;
-        _ = id_generator.generate_unique_ids(&mut traces_batch).unwrap();
+        id_generator.generate_unique_ids(&mut traces_batch).unwrap();
 
         let spans_events_result = traces_batch.get(ArrowPayloadType::SpanEvents).unwrap();
         let id_column = spans_events_result
@@ -473,7 +473,7 @@ pub mod test {
         let mut traces_batch = OtapBatch::Traces(Traces::default());
         traces_batch.set(ArrowPayloadType::Spans, root_batch.clone());
         let mut id_generator = PartitionSequenceIdGenerator::new();
-        _ = id_generator.generate_unique_ids(&mut traces_batch).unwrap();
+        id_generator.generate_unique_ids(&mut traces_batch).unwrap();
         let spans_batch = traces_batch.get(ArrowPayloadType::Spans).unwrap();
         let partition_id =
             get_schema_metadata(spans_batch.schema_ref(), PARTITION_METADATA_KEY).unwrap();
@@ -481,7 +481,7 @@ pub mod test {
 
         let mut metrics_batch = OtapBatch::Metrics(Metrics::default());
         metrics_batch.set(ArrowPayloadType::UnivariateMetrics, root_batch.clone());
-        _ = id_generator
+        id_generator
             .generate_unique_ids(&mut metrics_batch)
             .unwrap();
         let spans_batch = metrics_batch

@@ -307,10 +307,10 @@ pub fn create_simple_metrics_arrow_record_batches(
             &options,
             metrics_options
                 .with_summary_dp
-                .then(|| ArrowPayloadType::SummaryDataPoints),
+                .then_some(ArrowPayloadType::SummaryDataPoints),
             metrics_options
                 .with_summary_attrs
-                .then(|| ArrowPayloadType::SummaryDpAttrs),
+                .then_some(ArrowPayloadType::SummaryDpAttrs),
             None,
             None,
         );
@@ -322,16 +322,16 @@ pub fn create_simple_metrics_arrow_record_batches(
             &options,
             metrics_options
                 .with_numbers_dp
-                .then(|| ArrowPayloadType::NumberDataPoints),
+                .then_some(ArrowPayloadType::NumberDataPoints),
             metrics_options
                 .with_numbers_dp_attrs
-                .then(|| ArrowPayloadType::NumberDpAttrs),
+                .then_some(ArrowPayloadType::NumberDpAttrs),
             metrics_options
                 .with_numbers_dp_exemplars
-                .then(|| ArrowPayloadType::NumberDpExemplars),
+                .then_some(ArrowPayloadType::NumberDpExemplars),
             metrics_options
                 .with_numbers_dp_exemplar_attrs
-                .then(|| ArrowPayloadType::NumberDpExemplarAttrs),
+                .then_some(ArrowPayloadType::NumberDpExemplarAttrs),
         );
     }
 
@@ -341,16 +341,16 @@ pub fn create_simple_metrics_arrow_record_batches(
             &options,
             metrics_options
                 .with_histogram_dp
-                .then(|| ArrowPayloadType::HistogramDataPoints),
+                .then_some(ArrowPayloadType::HistogramDataPoints),
             metrics_options
                 .with_histogram_dp_attrs
-                .then(|| ArrowPayloadType::HistogramDpAttrs),
+                .then_some(ArrowPayloadType::HistogramDpAttrs),
             metrics_options
                 .with_histogram_dp_exemplars
-                .then(|| ArrowPayloadType::HistogramDpExemplars),
+                .then_some(ArrowPayloadType::HistogramDpExemplars),
             metrics_options
                 .with_histogram_dp_exemplars_attrs
-                .then(|| ArrowPayloadType::HistogramDpExemplarAttrs),
+                .then_some(ArrowPayloadType::HistogramDpExemplarAttrs),
         );
     }
 
@@ -360,16 +360,16 @@ pub fn create_simple_metrics_arrow_record_batches(
             &options,
             metrics_options
                 .with_exp_histogram_dp
-                .then(|| ArrowPayloadType::ExpHistogramDataPoints),
+                .then_some(ArrowPayloadType::ExpHistogramDataPoints),
             metrics_options
                 .with_exp_histogram_dp_attrs
-                .then(|| ArrowPayloadType::ExpHistogramDpAttrs),
+                .then_some(ArrowPayloadType::ExpHistogramDpAttrs),
             metrics_options
                 .with_exp_histogram_dp_exemplars
-                .then(|| ArrowPayloadType::ExpHistogramDpExemplars),
+                .then_some(ArrowPayloadType::ExpHistogramDpExemplars),
             metrics_options
                 .with_exp_histogram_dp_exemplars_attrs
-                .then(|| ArrowPayloadType::ExpHistogramDpExemplarAttrs),
+                .then_some(ArrowPayloadType::ExpHistogramDpExemplarAttrs),
         );
     }
 
@@ -486,7 +486,7 @@ where
 {
     let attr_schema = Arc::new(Schema::new(vec![
         Field::new(consts::PARENT_ID, ParentIdType::DATA_TYPE, false)
-            .with_metadata(create_ids_metadata(&options)),
+            .with_metadata(create_ids_metadata(options)),
         Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
         Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
         Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
@@ -495,7 +495,7 @@ where
     RecordBatch::try_new(
         attr_schema.clone(),
         vec![
-            create_ids_array::<ParentIdType>(&options),
+            create_ids_array::<ParentIdType>(options),
             Arc::new(UInt8Array::from_iter_values(
                 vec![AttributeValueType::Str; options.num_rows]
                     .iter()
