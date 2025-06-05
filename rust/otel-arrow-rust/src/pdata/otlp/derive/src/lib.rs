@@ -1,21 +1,11 @@
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 use convert_case::{Case, Casing};
 use proc_macro::TokenStream;
 use quote::{ToTokens, quote};
 use std::collections::HashMap;
 use syn::{DeriveInput, parse_macro_input};
-
 
 #[derive(Clone, Debug)]
 struct FieldInfo {
@@ -385,9 +375,13 @@ mod field_utils {
             }
             (false, false, false, _) => {
                 if matches!(visit_method.to_string().as_str(), "visit_string") {
-                    Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
+                    Some(
+                        quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); },
+                    )
                 } else {
-                    Some(quote! { arg = #visitor_param.#visit_method(arg, *&self.data.#field_name); })
+                    Some(
+                        quote! { arg = #visitor_param.#visit_method(arg, *&self.data.#field_name); },
+                    )
                 }
             }
             (true, false, true, _) => {
@@ -400,21 +394,17 @@ mod field_utils {
             }
             (true, false, false, _) => {
                 if matches!(visit_method.to_string().as_str(), "visit_string") {
-                    Some(
-                        quote! { 
-                            if let Some(f) = &self.data.#field_name {
-                                arg = #visitor_param.#visit_method(arg, f);
-                            }
-                        },
-                    )
+                    Some(quote! {
+                        if let Some(f) = &self.data.#field_name {
+                            arg = #visitor_param.#visit_method(arg, f);
+                        }
+                    })
                 } else {
-                    Some(
-                        quote! { 
-                            if let Some(f) = &self.data.#field_name {
-                                arg = #visitor_param.#visit_method(arg, *f);
-                            }
-                        },
-                    )
+                    Some(quote! {
+                        if let Some(f) = &self.data.#field_name {
+                            arg = #visitor_param.#visit_method(arg, *f);
+                        }
+                    })
                 }
             }
             (false, true, true, _) => {
@@ -626,16 +616,16 @@ fn parse_prost_tag_and_type(field: &syn::Field) -> (u32, String) {
         .attrs
         .iter()
         .find(|attr| attr.path().is_ident("prost"));
-    
+
     if let Some(attr) = prost_attr {
         if let syn::Meta::List(meta_list) = &attr.meta {
             let tokens = &meta_list.tokens;
-            
+
             // Simple parsing: extract tag number and type
             let attr_str = tokens.to_string();
             let mut tag = 0u32;
             let mut prost_type = "unknown".to_string();
-            
+
             // Parse tag number from "tag = \"1\"" or "tag = 1"
             if let Some(tag_start) = attr_str.find("tag = ") {
                 let tag_part = &attr_str[tag_start + 6..];
@@ -647,7 +637,7 @@ fn parse_prost_tag_and_type(field: &syn::Field) -> (u32, String) {
                     tag = tag_value.parse().unwrap_or(0);
                 }
             }
-            
+
             // Extract first identifier as protobuf type (string, int64, message, etc.)
             let parts: Vec<&str> = attr_str.split(',').collect();
             if let Some(first_part) = parts.first() {
@@ -656,11 +646,11 @@ fn parse_prost_tag_and_type(field: &syn::Field) -> (u32, String) {
                     prost_type = type_part.to_string();
                 }
             }
-            
+
             return (tag, prost_type);
         }
     }
-    
+
     // Default values if parsing fails
     (0, "unknown".to_string())
 }
@@ -887,6 +877,16 @@ pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     ));
 
     tokens.extend(derive_otlp_adapters(
+        outer_name,
+        param_names,
+        &param_fields,
+        &builder_fields,
+        &all_fields,
+        oneof_mapping,
+    ));
+
+    // Add encoder generation for the two-pass encoding algorithm
+    tokens.extend(derive_otlp_encoders(
         outer_name,
         param_names,
         &param_fields,
@@ -1207,8 +1207,9 @@ impl FieldInfo {
 fn needs_adapter_for_field(info: &FieldInfo) -> bool {
     // Use the parsed prost_type for fast determination - this is the main benefit!
     match info.prost_type.as_str() {
-        "message" | "enumeration" => true,  // Complex types need adapters
-        "string" | "int64" | "uint32" | "int32" | "uint64" | "bool" | "double" | "float" | "bytes" => false,  // Primitives don't need adapters
+        "message" | "enumeration" => true, // Complex types need adapters
+        "string" | "int64" | "uint32" | "int32" | "uint64" | "bool" | "double" | "float"
+        | "bytes" => false, // Primitives don't need adapters
         _ => {
             // For unknown or missing prost_type, fall back to the original type-based analysis
             // This ensures backward compatibility and handles edge cases
@@ -1252,14 +1253,16 @@ fn get_adapter_name_for_field(info: &FieldInfo) -> proc_macro2::TokenStream {
                         let adapter_name = format!("{}MessageAdapter", type_name);
 
                         // Use the original complex path resolution for proper module qualification
-                        let adapter_path = path_utils::resolve_type_path(type_path, "MessageAdapter");
+                        let adapter_path =
+                            path_utils::resolve_type_path(type_path, "MessageAdapter");
 
                         // Parse the path and return as TokenStream
                         match syn::parse_str::<syn::Path>(&adapter_path) {
                             Ok(path) => quote! { #path },
                             Err(_) => {
                                 // Fallback to simple name if parsing fails
-                                let adapter_ident = syn::Ident::new(&adapter_name, segment.ident.span());
+                                let adapter_ident =
+                                    syn::Ident::new(&adapter_name, segment.ident.span());
                                 quote! { #adapter_ident }
                             }
                         }
@@ -1279,8 +1282,6 @@ fn get_adapter_name_for_field(info: &FieldInfo) -> proc_macro2::TokenStream {
         }
     }
 }
-
-
 
 /// Emits the adapter struct and implementation for the visitor pattern
 fn derive_otlp_adapters(
@@ -1462,4 +1463,170 @@ fn resolve_visitor_trait_path_for_type(type_path: &syn::TypePath, _visitor_name:
     path_utils::resolve_type_path(type_path, "Visitor")
 }
 
+/// Emits encoders for the two-pass encoding algorithm.
+fn derive_otlp_encoders(
+    outer_name: &syn::Ident,
+    _param_names: &Vec<&str>,
+    _param_fields: &[FieldInfo],
+    _builder_fields: &[FieldInfo],
+    all_fields: &[FieldInfo],
+    oneof_mapping: OneofMapping,
+) -> TokenStream {
+    // Generate the first pass: PrecomputeSize visitor
+    let precompute_visitor_name = ident_utils::create_ident(&format!("{}EncodedLen", outer_name));
+    let visitor_trait_name = ident_utils::create_ident(&format!("{}Visitor", outer_name));
+    let visitable_trait_name = ident_utils::create_ident(&format!("{}Visitable", outer_name));
+    let visit_method_name = ident_utils::create_ident(&format!(
+        "visit_{}",
+        outer_name.to_string().to_case(Case::Snake)
+    ));
+    let accept_method_name = ident_utils::create_ident(&format!(
+        "accept_{}",
+        outer_name.to_string().to_case(Case::Snake)
+    ));
 
+    // Generate child visitor calls for message fields
+    let child_visitor_calls =
+        generate_child_visitor_calls(all_fields, oneof_mapping, &accept_method_name);
+
+    let expanded = quote! {
+        /// Precompute size visitor for first pass encoding
+        pub struct #precompute_visitor_name {}
+
+        impl #visitor_trait_name<crate::pdata::otlp::PrecomputedSizes> for #precompute_visitor_name {
+            fn #visit_method_name(
+                &mut self,
+                mut arg: crate::pdata::otlp::PrecomputedSizes,
+                v: impl #visitable_trait_name<crate::pdata::otlp::PrecomputedSizes>
+            ) -> crate::pdata::otlp::PrecomputedSizes {
+                // Reserve space for our size calculation
+                let my_idx = arg.len();
+                arg.reserve();
+
+                // Track child start position for size aggregation
+                let child_start_idx = arg.len();
+
+                // Visit all child fields
+                #(#child_visitor_calls)*
+
+                // Calculate our total size from children
+                let child_size = if arg.len() > child_start_idx {
+                    (child_start_idx..arg.len()).map(|i| arg.get_size(i)).sum()
+                } else {
+                    0
+                };
+
+                // Set our total size (1-byte tag + varint length + child content)
+                arg.set_size(my_idx, 1, child_size);
+                arg
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+
+/// Generate child visitor calls for message fields
+fn generate_child_visitor_calls(
+    all_fields: &[FieldInfo],
+    oneof_mapping: OneofMapping,
+    accept_method_name: &syn::Ident,
+) -> Vec<proc_macro2::TokenStream> {
+    let mut calls = Vec::new();
+
+    // Get the parameters needed for the accept method by looking at the trait definition
+    // We need to generate proper EncodedLen visitors for each parameter type
+    let child_visitors = generate_accept_method_visitors(all_fields, oneof_mapping);
+
+    // Generate call with the child visitors
+    calls.push(quote! {
+        arg = v.#accept_method_name(arg, #(#child_visitors),*);
+    });
+
+    calls
+}
+
+/// Generate the appropriate EncodedLen visitors for an accept method
+fn generate_accept_method_visitors(
+    all_fields: &[FieldInfo],
+    _oneof_mapping: OneofMapping,
+) -> Vec<proc_macro2::TokenStream> {
+    let mut visitors = Vec::new();
+
+    // For each field, determine what type of visitor we need
+    for field in all_fields {
+        let visitor = generate_visitor_for_field_type(field, field.is_repeated);
+        visitors.push(visitor);
+    }
+
+    visitors
+}
+
+/// Generate appropriate visitor for a field type using model information
+fn generate_visitor_for_field_type(
+    field_info: &FieldInfo,
+    _is_repeated: bool,
+) -> proc_macro2::TokenStream {
+    // Use the prost_type to determine the appropriate visitor
+    match field_info.prost_type.as_str() {
+        "message" => {
+            // Message types need EncodedLen visitors
+            let ty = if field_info.is_repeated {
+                field_info.extract_base_type()
+            } else {
+                field_info.field_type.clone()
+            };
+
+            match &ty {
+                syn::Type::Path(type_path) => {
+                    let encoded_len_path = path_utils::resolve_type_path(type_path, "EncodedLen");
+                    match syn::parse_str::<syn::Path>(&encoded_len_path) {
+                        Ok(path) => quote! { #path {} },
+                        Err(_) => quote! { crate::pdata::NoopVisitor },
+                    }
+                }
+                _ => quote! { crate::pdata::NoopVisitor },
+            }
+        }
+        "enumeration" => {
+            // Enum types use varint encoding
+            quote! { crate::pdata::otlp::primitive_encoders::VarintEncodedLen {} }
+        }
+        _ => {
+            // Determine primitive visitor based on prost type
+            match field_info.prost_type.as_str() {
+                "string" => {
+                    quote! { crate::pdata::otlp::primitive_encoders::LengthDelimitedEncodedLen {} }
+                }
+                "bytes" => {
+                    quote! { crate::pdata::otlp::primitive_encoders::LengthDelimitedEncodedLen {} }
+                }
+                "bool" => {
+                    quote! { crate::pdata::otlp::primitive_encoders::VarintEncodedLen {} }
+                }
+                "double" => {
+                    quote! { crate::pdata::otlp::primitive_encoders::Fixed64EncodedLen {} }
+                }
+                "float" => {
+                    quote! { crate::pdata::otlp::primitive_encoders::Fixed32EncodedLen {} }
+                }
+                "fixed64" | "sfixed64" => {
+                    quote! { crate::pdata::otlp::primitive_encoders::Fixed64EncodedLen {} }
+                }
+                "fixed32" | "sfixed32" => {
+                    quote! { crate::pdata::otlp::primitive_encoders::Fixed32EncodedLen {} }
+                }
+                "int32" | "int64" | "uint32" | "uint64" => {
+                    quote! { crate::pdata::otlp::primitive_encoders::VarintEncodedLen {} }
+                }
+                "sint32" | "sint64" => {
+                    quote! { crate::pdata::otlp::primitive_encoders::SintEncodedLen {} }
+                }
+                _ => {
+                    // Default to NoopVisitor for unknown types
+                    quote! { crate::pdata::NoopVisitor {} }
+                }
+            }
+        }
+    }
+}

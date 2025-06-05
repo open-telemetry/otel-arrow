@@ -109,6 +109,11 @@ pub trait F64Visitor<Argument> {
     fn visit_f64(&mut self, arg: Argument, value: f64) -> Argument;
 }
 
+/// FloatVisitor
+// pub trait F32Visitor<Argument> {
+//     fn visit_f32(&mut self, arg: Argument, value: f32) -> Argument;
+// }
+
 /// BooleanVisitor
 pub trait BooleanVisitor<Argument> {
     /// Visit a boolean value

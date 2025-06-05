@@ -1,20 +1,14 @@
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 //! This module contains traits and utilities for OTLP (OpenTelemetry Protocol) message types.
 
 // Re-export derive macros (required for generated code)
 pub use otlp_derive::Message;
 pub use otlp_derive::qualified;
+
+// Primitive encoders for the first pass of two-pass encoding
+pub mod primitive_encoders;
 
 use crate::proto::opentelemetry::logs::v1::LogRecordVisitable;
 use crate::proto::opentelemetry::logs::v1::LogRecordVisitor;
@@ -130,6 +124,8 @@ impl PrecomputedSizes {
 
     /// Calculate the length in bytes needed to encode a varint
     pub fn varint_len(value: usize) -> usize {
+        // TODO: use a Prost helper, otherwise this has duplication
+        // with primitive_encoders.rs.
         if value == 0 {
             1
         } else {
@@ -150,6 +146,11 @@ impl PrecomputedSizes {
     /// Push a size value (used for reserving space)
     pub fn reserve(&mut self) {
         self.sizes.push(0);
+    }
+
+    /// Push a size value (used for reserving space)
+    pub fn push_size(&mut self, value: value) {
+        self.sizes.push(value);
     }
 
     /// Update a previously reserved space with the calculated size
@@ -173,7 +174,7 @@ impl LogsDataVisitor<PrecomputedSizes> for LogsDataEncodedLen {
         arg.sizes.push(0); // Reserve space for our size
 
         let child_start_idx = arg.len();
-        arg = rs.visit_resource_logs(arg, &mut ResourceEncodedLen{}, &mut ScopeLogsEncodedLen{});
+        arg = rs.accept_resource_logs(arg, ResourceEncodedLen{}, ScopeLogsEncodedLen{});
 
         let child_size = arg.get_size(child_start_idx);
         arg.set_size(my_idx, 1, child_size); // 1-byte tag
