@@ -316,6 +316,7 @@ impl GenericBatcher {
 
 impl GenericBatcher {
     /// Creates a new `GenericBatcher` with the given configuration.
+    #[allow(dead_code)]
     pub fn new(config: BatchConfig) -> Self {
         let now = Instant::now();
         Self {
@@ -852,22 +853,14 @@ mod tests {
                                 ScopeSpans {
                                     scope: None,
                                     spans: (0..2)
-                                        .map(|i| {
-                                            let mut s = Span::default();
-                                            s.name = format!("A1_span{i}");
-                                            s
-                                        })
+                                        .map(|i| Span { name: format!("A1_scope0_span{i}"), ..Default::default() })
                                         .collect(),
                                     schema_url: String::new(),
                                 },
                                 ScopeSpans {
                                     scope: None,
                                     spans: (0..2)
-                                        .map(|i| {
-                                            let mut s = Span::default();
-                                            s.name = format!("A2_span{i}");
-                                            s
-                                        })
+                                        .map(|i| Span { name: format!("A1_scope1_span{i}"), ..Default::default() })
                                         .collect(),
                                     schema_url: String::new(),
                                 },
@@ -880,22 +873,14 @@ mod tests {
                                 ScopeSpans {
                                     scope: None,
                                     spans: (0..2)
-                                        .map(|i| {
-                                            let mut s = Span::default();
-                                            s.name = format!("B1_span{i}");
-                                            s
-                                        })
+                                        .map(|i| Span { name: format!("B1_scope0_span{i}"), ..Default::default() })
                                         .collect(),
                                     schema_url: String::new(),
                                 },
                                 ScopeSpans {
                                     scope: None,
                                     spans: (0..2)
-                                        .map(|i| {
-                                            let mut s = Span::default();
-                                            s.name = format!("B2_span{i}");
-                                            s
-                                        })
+                                        .map(|i| Span { name: format!("B2_scope1_span{i}"), ..Default::default() })
                                         .collect(),
                                     schema_url: String::new(),
                                 },
@@ -966,23 +951,15 @@ mod tests {
                                 ScopeMetrics {
                                     scope: None,
                                     schema_url: String::new(),
-                                    metrics: (0..2)
-                                        .map(|i| {
-                                            let mut m = Metric::default();
-                                            m.name = format!("A1_metric{i}");
-                                            m
-                                        })
+                                        metrics: (0..2)
+                                        .map(|i| Metric { name: format!("A1_metric{i}"), ..Default::default() })
                                         .collect(),
                                 },
                                 ScopeMetrics {
                                     scope: None,
                                     schema_url: String::new(),
-                                    metrics: (0..2)
-                                        .map(|i| {
-                                            let mut m = Metric::default();
-                                            m.name = format!("A2_metric{i}");
-                                            m
-                                        })
+                                        metrics: (0..2)
+                                        .map(|i| Metric { name: format!("A2_metric{i}"), ..Default::default() })
                                         .collect(),
                                 },
                             ],
@@ -994,23 +971,15 @@ mod tests {
                                 ScopeMetrics {
                                     scope: None,
                                     schema_url: String::new(),
-                                    metrics: (0..2)
-                                        .map(|i| {
-                                            let mut m = Metric::default();
-                                            m.name = format!("B1_metric{i}");
-                                            m
-                                        })
+                                        metrics: (0..2)
+                                        .map(|i| Metric { name: format!("B1_metric{i}"), ..Default::default() })
                                         .collect(),
                                 },
                                 ScopeMetrics {
                                     scope: None,
                                     schema_url: String::new(),
-                                    metrics: (0..2)
-                                        .map(|i| {
-                                            let mut m = Metric::default();
-                                            m.name = format!("B2_metric{i}");
-                                            m
-                                        })
+                                        metrics: (0..2)
+                                        .map(|i| Metric { name: format!("B2_metric{i}"), ..Default::default() })
                                         .collect(),
                                 },
                             ],
@@ -1077,23 +1046,15 @@ mod tests {
                                 ScopeLogs {
                                     scope: None,
                                     schema_url: String::new(),
-                                    log_records: (0..2)
-                                        .map(|i| {
-                                            let mut rec = LogRecord::default();
-                                            rec.severity_text = format!("A1_rec{i}");
-                                            rec
-                                        })
+                                        log_records: (0..2)
+                                        .map(|i| LogRecord { severity_text: format!("A1_rec{i}"), ..Default::default() })
                                         .collect(),
                                 },
                                 ScopeLogs {
                                     scope: None,
                                     schema_url: String::new(),
-                                    log_records: (0..2)
-                                        .map(|i| {
-                                            let mut rec = LogRecord::default();
-                                            rec.severity_text = format!("A2_rec{i}");
-                                            rec
-                                        })
+                                        log_records: (0..2)
+                                        .map(|i| LogRecord { severity_text: format!("A2_rec{i}"), ..Default::default() })
                                         .collect(),
                                 },
                             ],
@@ -1105,23 +1066,15 @@ mod tests {
                                 ScopeLogs {
                                     scope: None,
                                     schema_url: String::new(),
-                                    log_records: (0..2)
-                                        .map(|i| {
-                                            let mut rec = LogRecord::default();
-                                            rec.severity_text = format!("B1_rec{i}");
-                                            rec
-                                        })
+                                        log_records: (0..2)
+                                        .map(|i| LogRecord { severity_text: format!("B1_rec{i}"), ..Default::default() })
                                         .collect(),
                                 },
                                 ScopeLogs {
                                     scope: None,
                                     schema_url: String::new(),
-                                    log_records: (0..2)
-                                        .map(|i| {
-                                            let mut rec = LogRecord::default();
-                                            rec.severity_text = format!("B2_rec{i}");
-                                            rec
-                                        })
+                                        log_records: (0..2)
+                                        .map(|i| LogRecord { severity_text: format!("B2_rec{i}"), ..Default::default() })
                                         .collect(),
                                 },
                             ],
@@ -1664,21 +1617,21 @@ mod integration_tests {
             .run_test(|mut ctx| async move {
                 // TRACE INPUT
                 let trace_req = sample_trace();
-                log_to_file(&format!("INPUT TRACE:\n{}", format!("{:#?}", trace_req)));
+                log_to_file(&format!("INPUT TRACE:\n{:#?}", trace_req));
                 ctx.process(Message::PData(OTLPData::Traces(trace_req)))
                     .await
                     .unwrap();
 
                 // METRICS INPUT
                 let metrics_req = sample_metrics();
-                log_to_file(&format!("INPUT METRIC:\n{}", format!("{:#?}", metrics_req)));
+                log_to_file(&format!("INPUT METRIC:\n{:#?}", metrics_req));
                 ctx.process(Message::PData(OTLPData::Metrics(metrics_req)))
                     .await
                     .unwrap();
 
                 // LOGS INPUT
                 let logs_req = sample_logs();
-                log_to_file(&format!("INPUT LOGS:\n{}", format!("{:#?}", logs_req)));
+                log_to_file(&format!("INPUT LOGS:\n{:#?}", logs_req));
                 ctx.process(Message::PData(OTLPData::Logs(logs_req)))
                     .await
                     .unwrap();
@@ -1696,18 +1649,18 @@ mod integration_tests {
                 for (i, out) in outputs.iter().enumerate() {
                     match out {
                         OTLPData::Traces(req) => {
-                            log_to_file(&format!("OUTPUT[{}] TRACE:\n{}", i, format!("{:#?}", req)))
+                            log_to_file(&format!("OUTPUT[{}] TRACE:\n{:#?}", i, req));
                         }
-                        OTLPData::Metrics(req) => log_to_file(&format!(
-                            "OUTPUT[{}] METRIC:\n{}",
-                            i,
-                            format!("{:#?}", req)
-                        )),
+                        OTLPData::Metrics(req) => {
+                            log_to_file(&format!("OUTPUT[{}] METRICS:\n{:#?}", i, req));
+                        }
                         OTLPData::Logs(req) => {
-                            log_to_file(&format!("OUTPUT[{}] LOGS:\n{}", i, format!("{:#?}", req)))
+                            log_to_file(&format!("OUTPUT[{}] LOGS:\n{:#?}", i, req));
                         }
                         #[allow(unreachable_patterns)]
-                        _ => log_to_file(&format!("OUTPUT[{}] (unknown type)", i)),
+                        _ => {
+                            log_to_file(&format!("OUTPUT[{}] UNKNOWN:\n<unhandled type>", i));
+                        }
                     }
                 }
             })
