@@ -25,6 +25,12 @@ pub enum ScalarExpression
     /// executions.
     Variable(VariableScalarExpression),
 
+    /// Resolve a static bool value provided directly in a query.
+    Boolean(BooleanScalarExpression),
+
+    /// Resolve a static double value provided directly in a query.
+    Double(DoubleScalarExpression),
+
     /// Resolve a static integer value provided directly in a query.
     Integer(IntegerScalarExpression),
 
@@ -128,6 +134,50 @@ impl NegateScalarExpression {
 }
 
 impl Expression for NegateScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BooleanScalarExpression {
+    query_location: QueryLocation,
+    value: bool
+}
+
+impl BooleanScalarExpression {
+    pub fn new(query_location: QueryLocation, value: bool) -> BooleanScalarExpression {
+        Self { query_location, value }
+    }
+
+    pub fn get_value(&self) -> bool {
+        self.value
+    }
+}
+
+impl Expression for BooleanScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DoubleScalarExpression {
+    query_location: QueryLocation,
+    value: f64
+}
+
+impl DoubleScalarExpression {
+    pub fn new(query_location: QueryLocation, value: f64) -> DoubleScalarExpression {
+        Self { query_location, value }
+    }
+
+    pub fn get_value(&self) -> f64 {
+        self.value
+    }
+}
+
+impl Expression for DoubleScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }

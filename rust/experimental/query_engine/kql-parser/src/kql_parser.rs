@@ -1,4 +1,4 @@
-use std::collections::{HashSet};
+use std::{collections::HashSet};
 
 use data_engine_expressions::*;
 use pest::iterators::Pair;
@@ -99,6 +99,17 @@ pub(crate) fn parse_string_literal(
     return s;
 }
 
+pub(crate) fn parse_double_literal(
+    double_literal_rule: Pair<Rule>) -> Result<f64, Error>
+{
+    let r = double_literal_rule.as_str().parse::<f64>();
+    if r.is_err() {
+        return Err(Error::SyntaxError(to_query_location(&double_literal_rule), "Double value could not be parsed".into()));
+    }
+
+    Ok(r.unwrap())
+}
+
 pub(crate) fn parse_integer_literal(
     integer_literal_rule: Pair<Rule>) -> Result<i64, Error>
 {
@@ -108,6 +119,34 @@ pub(crate) fn parse_integer_literal(
     }
 
     Ok(r.unwrap())
+}
+
+pub(crate) fn parse_real_expression(
+    real_expression_rule: Pair<Rule>) -> Result<ScalarExpression, Error>
+{
+    let query_location = to_query_location(&real_expression_rule);
+
+    let real_rule = real_expression_rule.into_inner().next().unwrap();
+
+    match real_rule.as_rule() {
+        Rule::positive_infinity_token => {
+            Ok(ScalarExpression::Double(DoubleScalarExpression::new(query_location, f64::INFINITY)))
+        },
+        Rule::negative_infinity_token => {
+            Ok(ScalarExpression::Double(DoubleScalarExpression::new(query_location, f64::NEG_INFINITY)))
+        },
+        Rule::double_literal => {
+            let d = parse_double_literal(real_rule)?;
+
+            Ok(ScalarExpression::Double(DoubleScalarExpression::new(query_location, d)))
+        },
+        Rule::integer_literal => {
+            let i = parse_integer_literal(real_rule)?;
+
+            Ok(ScalarExpression::Double(DoubleScalarExpression::new(query_location, i as f64)))
+        }
+        _ => panic!("Unexpected rule in real_expression: {}", real_rule)
+    }
 }
 
 /// The goal of this code is to translate a KQL dynamic access
@@ -133,10 +172,7 @@ pub(crate) fn parse_accessor_expression(
     accessor_expression_rule: Pair<Rule>,
     state: &KqlParserState) -> Result<ScalarExpression, Error>
 {
-
     let query_location = to_query_location(&accessor_expression_rule);
-
-    println!("{:?}", query_location);
 
     let mut accessor_rules = accessor_expression_rule.into_inner();
 
@@ -237,6 +273,42 @@ mod pest_tests {
     use pest::{iterators::Pairs, Parser};
 
     #[test]
+    fn test_true_literal() {
+        assert!(KqlParser::parse(Rule::true_literal, "true").is_ok());
+        assert!(KqlParser::parse(Rule::true_literal, "True").is_ok());
+        assert!(KqlParser::parse(Rule::true_literal, "TRUE").is_ok());
+        assert!(KqlParser::parse(Rule::true_literal, "tRuE").is_err());
+        assert!(KqlParser::parse(Rule::true_literal, "false").is_err());
+        assert!(KqlParser::parse(Rule::true_literal, "tru").is_err());
+    }
+
+    #[test]
+    fn test_false_literal() {
+        assert!(KqlParser::parse(Rule::false_literal, "false").is_ok());
+        assert!(KqlParser::parse(Rule::false_literal, "False").is_ok());
+        assert!(KqlParser::parse(Rule::false_literal, "FALSE").is_ok());
+        assert!(KqlParser::parse(Rule::false_literal, "fAlSe").is_err());
+        assert!(KqlParser::parse(Rule::false_literal, "true").is_err());
+        assert!(KqlParser::parse(Rule::false_literal, "fals").is_err());
+    }
+
+    #[test]
+    fn test_double_literal() {
+        assert!(KqlParser::parse(Rule::double_literal, "1.0").is_ok());
+        assert!(KqlParser::parse(Rule::double_literal, "-1.0").is_ok());
+        assert!(KqlParser::parse(Rule::double_literal, "1.0e1").is_ok());
+        assert!(KqlParser::parse(Rule::double_literal, "-1.0e1").is_ok());
+        assert!(KqlParser::parse(Rule::double_literal, "1e1").is_ok());
+        assert!(KqlParser::parse(Rule::double_literal, "-1e1").is_ok());
+        assert!(KqlParser::parse(Rule::double_literal, "1e+1").is_ok());
+        assert!(KqlParser::parse(Rule::double_literal, "1e-1").is_ok());
+
+        assert!(KqlParser::parse(Rule::double_literal, "1").is_err());
+        assert!(KqlParser::parse(Rule::double_literal, ".1").is_err());
+        assert!(KqlParser::parse(Rule::double_literal, "abc").is_err());
+    }
+
+    #[test]
     fn test_integer_literal() {
         assert!(KqlParser::parse(Rule::integer_literal, "123").is_ok());
         assert!(KqlParser::parse(Rule::integer_literal, "-123").is_ok());
@@ -261,6 +333,18 @@ mod pest_tests {
         assert!(KqlParser::parse(Rule::identifier_literal, "Abc").is_ok());
         assert!(KqlParser::parse(Rule::identifier_literal, "abc_123").is_ok());
         assert!(KqlParser::parse(Rule::identifier_literal, "_abc").is_ok());
+    }
+
+    #[test]
+    fn test_real_expression() {
+        assert!(KqlParser::parse(Rule::real_expression, "real(1.0)").is_ok());
+        assert!(KqlParser::parse(Rule::real_expression, "real(1)").is_ok());
+        assert!(KqlParser::parse(Rule::real_expression, "real(+inf)").is_ok());
+        assert!(KqlParser::parse(Rule::real_expression, "real(-inf)").is_ok());
+
+        assert!(KqlParser::parse(Rule::real_expression, "real(.1)").is_err());
+        assert!(KqlParser::parse(Rule::real_expression, "real()").is_err());
+        assert!(KqlParser::parse(Rule::real_expression, "real(abc)").is_err());
     }
 
     #[test]
@@ -352,25 +436,47 @@ mod parse_tests {
     use pest::Parser;
 
     #[test]
-    fn test_parse_positive_integer_literal() -> Result<(), pest::error::Error<Rule>> {
-        let mut result = KqlParser::parse(Rule::integer_literal, "1")?;
+    fn test_parse_double_literal() -> Result<(), pest::error::Error<Rule>> {
+        let run_test = |input: &str, expected: f64| -> Result<(), pest::error::Error<Rule>> {
+            let mut result = KqlParser::parse(Rule::double_literal, input)?;
 
-        let i = parse_integer_literal(result.next().unwrap());
+            let f = parse_double_literal(result.next().unwrap());
 
-        assert!(!i.is_err());
-        assert_eq!(1, i.unwrap());
+            assert!(!f.is_err());
+            assert_eq!(expected, f.unwrap());
+
+            Ok(())
+        };
+
+        run_test("1.0", 1.0)?;
+        run_test("-1.0", -1.0)?;
+        run_test("1.0e10", 1.0e10)?;
+        run_test("-1.0e10", -1.0e10)?;
+        run_test("1e-10", 1e-10)?;
+        run_test("-1e10", -1e10)?;
+        run_test("-1e+10", -1e10)?;
+
+        run_test("1e+1000", f64::INFINITY)?;
+        run_test("-1e+1000", f64::NEG_INFINITY)?;
 
         Ok(())
     }
 
     #[test]
-    fn test_parse_negative_integer_literal() -> Result<(), pest::error::Error<Rule>> {
-        let mut result = KqlParser::parse(Rule::integer_literal, "-1")?;
+    fn test_parse_integer_literal() -> Result<(), pest::error::Error<Rule>> {
+        let run_test = |input: &str, expected: i64| -> Result<(), pest::error::Error<Rule>> {
+            let mut result = KqlParser::parse(Rule::integer_literal, input)?;
 
-        let i = parse_integer_literal(result.next().unwrap());
+            let i = parse_integer_literal(result.next().unwrap());
 
-        assert!(!i.is_err());
-        assert_eq!(-1, i.unwrap());
+            assert!(!i.is_err());
+            assert_eq!(expected, i.unwrap());
+
+            Ok(())
+        };
+
+        run_test("1", 1)?;
+        run_test("-1", -1)?;
 
         Ok(())
     }
@@ -410,6 +516,32 @@ mod parse_tests {
         run_test("'Hello world'", "Hello world")?;
         run_test("'Hello \" world'", "Hello \" world")?;
         run_test("'Hello \\' world'", "Hello ' world")?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_real_expression() -> Result<(), pest::error::Error<Rule>> {
+        let run_test = |input: &str, expected: f64| -> Result<(), pest::error::Error<Rule>> {
+            let mut result = KqlParser::parse(Rule::real_expression, input)?;
+
+            let expression = parse_real_expression(result.next().unwrap()).unwrap();
+
+            if let ScalarExpression::Double(d) = expression {
+                assert_eq!(expected, d.get_value());
+            }
+            else {
+                assert!(false);
+            }
+
+            Ok(())
+        };
+
+        run_test("real(1.0)", 1.0)?;
+        run_test("real(1.0e10)", 1.0e10)?;
+        run_test("real(1)", 1.0)?;
+        run_test("real(+inf)", f64::INFINITY)?;
+        run_test("real(-inf)", f64::NEG_INFINITY)?;
 
         Ok(())
     }
