@@ -461,7 +461,8 @@ mod parse_tests {
 
     #[test]
     fn test_parse_accessor_expression_from_source() {
-        let mut result = KqlParser::parse(Rule::accessor_expression, "source.subkey['array'][0]").unwrap();
+        let mut result =
+            KqlParser::parse(Rule::accessor_expression, "source.subkey['array'][0]").unwrap();
 
         let expression =
             parse_accessor_expression(result.next().unwrap(), &KqlParserState::new()).unwrap();
@@ -492,7 +493,8 @@ mod parse_tests {
 
     #[test]
     fn test_parse_accessor_expression_implicit_source() {
-        let mut result = KqlParser::parse(Rule::accessor_expression, "subkey[var][-neg_attr]").unwrap();
+        let mut result =
+            KqlParser::parse(Rule::accessor_expression, "subkey[var][-neg_attr]").unwrap();
 
         let mut state = KqlParserState::new();
 
@@ -576,7 +578,8 @@ mod parse_tests {
 
     #[test]
     fn test_parse_accessor_expression_from_attached() {
-        let mut result = KqlParser::parse(Rule::accessor_expression, "resource['~at\\'tr~']").unwrap();
+        let mut result =
+            KqlParser::parse(Rule::accessor_expression, "resource['~at\\'tr~']").unwrap();
 
         let expression = parse_accessor_expression(
             result.next().unwrap(),
