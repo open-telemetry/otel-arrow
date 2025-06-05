@@ -9,8 +9,10 @@ use crate::Error;
 
 #[derive(Parser)]
 #[grammar = "kql.pest"]
+#[allow(dead_code)]
 pub(crate) struct KqlParser;
 
+#[allow(dead_code)]
 pub(crate) struct KqlParserState {
     default_source_map_key: Option<Box<str>>,
     attached_data_names: HashSet<Box<str>>,
@@ -18,6 +20,7 @@ pub(crate) struct KqlParserState {
 }
 
 impl KqlParserState {
+    #[allow(dead_code)]
     pub fn new() -> KqlParserState {
         Self {
             default_source_map_key: None,
@@ -26,14 +29,16 @@ impl KqlParserState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_default_source_map_key_name(mut self, name: &str) -> KqlParserState {
-        if name.len() > 0 {
+        if !name.is_empty() {
             self.default_source_map_key = Some(name.into());
         }
 
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_attached_data_names(mut self, names: &[&str]) -> KqlParserState {
         for name in names {
             self.attached_data_names.insert((*name).into());
@@ -42,6 +47,7 @@ impl KqlParserState {
         self
     }
 
+    #[allow(dead_code)]
     pub fn push_variable_name(&mut self, name: &str) {
         self.variable_names.insert(name.into());
     }
@@ -51,6 +57,7 @@ impl KqlParserState {
 /// when parsed from pest:
 /// * `'some \\' string'` -> `some ' string`
 /// * `\"some \\\" string\"` -> `some \" string`
+#[allow(dead_code)]
 pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> String {
     let raw_string = string_literal_rule.as_str();
     let mut chars = raw_string.chars();
@@ -60,14 +67,12 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> String {
 
     let mut c = chars.next();
     loop {
-        debug_assert!(!c.is_none());
+        debug_assert!(c.is_some());
 
         let mut current_char = c.unwrap();
         let mut skip_push = false;
 
-        if position == 1 {
-            skip_push = true;
-        } else if current_char == '\\' {
+        if position == 1 || current_char == '\\' {
             skip_push = true;
         } else if last_char == '\\' {
             match current_char {
@@ -82,7 +87,7 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> String {
         }
 
         last_char = current_char;
-        position = position + 1;
+        position += 1;
 
         c = chars.next();
         if c.is_none() {
@@ -94,9 +99,10 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> String {
         }
     }
 
-    return s;
+    s
 }
 
+#[allow(dead_code)]
 pub(crate) fn parse_integer_literal(integer_literal_rule: Pair<Rule>) -> Result<i64, Error> {
     let r = integer_literal_rule.as_str().parse::<i64>();
     if r.is_err() {
@@ -128,6 +134,7 @@ pub(crate) fn parse_integer_literal(integer_literal_rule: Pair<Rule>) -> Result<
 ///   [`KqlParserState`].
 ///
 ///   `unknown` -> `Source(MapKey("attributes"), MapKey("unknown"))`
+#[allow(dead_code)]
 pub(crate) fn parse_accessor_expression(
     accessor_expression_rule: Pair<Rule>,
     state: &KqlParserState,
@@ -182,7 +189,7 @@ pub(crate) fn parse_accessor_expression(
             Rule::accessor_expression => {
                 let expression = parse_accessor_expression(pair, state)?;
 
-                if !negate_location.is_none() {
+                if negate_location.is_some() {
                     value_accessor.push_selector(ValueSelector::ScalarExpression(
                         ScalarExpression::Negate(NegateScalarExpression::new(
                             negate_location.unwrap(),
@@ -202,10 +209,10 @@ pub(crate) fn parse_accessor_expression(
     }
 
     if root_accessor_identity == "source" {
-        return Ok(ScalarExpression::Source(SourceScalarExpression::new(
+        Ok(ScalarExpression::Source(SourceScalarExpression::new(
             query_location,
             value_accessor,
-        )));
+        )))
     } else if state.attached_data_names.contains(root_accessor_identity) {
         return Ok(ScalarExpression::Attached(AttachedScalarExpression::new(
             query_location,
@@ -227,7 +234,7 @@ pub(crate) fn parse_accessor_expression(
             )),
         );
 
-        if !state.default_source_map_key.is_none() {
+        if state.default_source_map_key.is_some() {
             value_accessor.insert_selector(
                 0,
                 ValueSelector::MapKey(StringScalarExpression::new(
@@ -403,7 +410,7 @@ mod parse_tests {
 
         let i = parse_integer_literal(result.next().unwrap());
 
-        assert!(!i.is_err());
+        assert!(i.is_ok());
         assert_eq!(1, i.unwrap());
 
         Ok(())
@@ -415,7 +422,7 @@ mod parse_tests {
 
         let i = parse_integer_literal(result.next().unwrap());
 
-        assert!(!i.is_err());
+        assert!(i.is_ok());
         assert_eq!(-1, i.unwrap());
 
         Ok(())
