@@ -51,82 +51,83 @@ The ~50% overhead represents the abstraction cost, which is acceptable for the f
 
 All visitor traits, adapter structs, and implementations are now automatically generated through the procedural macro system. The following examples demonstrate the production-ready implementation:
 
-### Generated Visitor Traits
-
-For the `LogsData` type, the system generates:
-
-```rust
-pub trait LogsDataVisitor {
-    fn accept_logs_data(&mut self, v: impl LogsDataVisitable);
-}
-
-pub trait LogsDataVisitable {
-    fn accept_logs_data(&self, v: impl ResourceLogsVisitor);
-}
-```
-
-### Generated MessageAdapter
-
-The OTLP adapter is automatically generated:
+This is our current generated code for Visitor and Vistitable traits
+and the NoopVisitor and MessageAdapter patterns, for example using
+ResourceSpans.
 
 ```rust
-pub struct LogsDataAdapter<'a> {
-    data: &'a LogsData,
-}
-
-impl<'a> LogsDataAdapter<'a> {
-    pub fn new(data: &'a LogsData) -> Self {
-        Self { data }
-    }
-}
-
-impl<'a> LogsDataVisitable for &LogsDataAdapter<'a> {
-    fn accept_logs_data(&self, mut v: impl ResourceLogsVisitor) {
-        for rl in &self.data.resource_logs {
-            v.accept_resource_logs(&ResourceLogsAdapter::new(rl));
-        }
-    }
-}
-```
-
-### ItemCounter Implementation
-
-The complete production-ready ItemCounter using the generated visitor traits:
-
-```rust
-pub struct ItemCounter {
-    count: usize,
-}
-
-impl ItemCounter {
-    pub fn new() -> Self {
-        Self { count: 0 }
-    }
-}
-
-impl LogsDataVisitor<()> for ItemCounter {
-    fn visit_logs_data(&mut self, _arg: (), v: &LogsDataAdapter) -> () {
-        v.accept_logs_data((), self);
-    }
-}
-
-impl ResourceLogsVisitor<()> for ItemCounter {
-    fn visit_resource_logs(&mut self, _arg: (), v: &ResourceLogsAdapter) -> () {
-        v.accept_resource_logs((), &mut NoopVisitor, self);
-    }
-}
-
-impl ScopeLogsVisitor<()> for ItemCounter {
-    fn visit_scope_logs(&mut self, _arg: (), v: &ScopeLogsAdapter) -> () {
-        v.accept_scope_logs((), &mut NoopVisitor, self);
-    }
-}
-
-impl LogRecordVisitor<()> for ItemCounter {
-    fn visit_log_record(&mut self, _arg: (), _v: &LogRecordAdapter) -> () {
-        self.count += 1;
-    }
-}
+                pub trait ResourceSpansVisitor<Argument> {
+                    fn visit_resource_spans(
+                        &mut self,
+                        arg: Argument,
+                        v: impl ResourceSpansVisitable<Argument>,
+                    ) -> Argument;
+                }
+                pub trait ResourceSpansVisitable<Argument> {
+                    fn accept_resource_spans(
+                        &self,
+                        arg: Argument,
+                        resource: impl crate::proto::opentelemetry::resource::v1::ResourceVisitor<
+                            Argument,
+                        >,
+                        scope_spans: impl ScopeSpansVisitor<Argument>,
+                        schema_url: impl crate::pdata::StringVisitor<Argument>,
+                    ) -> Argument;
+                }
+                impl<Argument> ResourceSpansVisitor<Argument>
+                for crate::pdata::NoopVisitor {
+                    fn visit_resource_spans(
+                        &mut self,
+                        arg: Argument,
+                        _v: impl ResourceSpansVisitable<Argument>,
+                    ) -> Argument {
+                        arg
+                    }
+                }
+                /// MessageAdapter for presenting OTLP message objects as visitable.
+                pub struct ResourceSpansMessageAdapter<'a> {
+                    data: &'a ResourceSpans,
+                }
+                impl<'a> ResourceSpansMessageAdapter<'a> {
+                    /// Create a new adapter
+                    pub fn new(data: &'a ResourceSpans) -> Self {
+                        Self { data }
+                    }
+                }
+                impl<'a, Argument> ResourceSpansVisitable<Argument>
+                for &ResourceSpansMessageAdapter<'a> {
+                    fn accept_resource_spans(
+                        &self,
+                        mut arg: Argument,
+                        mut resource_visitor: impl crate::proto::opentelemetry::resource::v1::ResourceVisitor<
+                            Argument,
+                        >,
+                        mut scope_spans_visitor: impl ScopeSpansVisitor<Argument>,
+                        mut schema_url_visitor: impl crate::pdata::StringVisitor<
+                            Argument,
+                        >,
+                    ) -> Argument {
+                        if let Some(f) = &self.data.resource {
+                            arg = resource_visitor
+                                .visit_resource(
+                                    arg,
+                                    &(crate::proto::opentelemetry::resource::v1::ResourceMessageAdapter::new(
+                                        f,
+                                    )),
+                                );
+                        }
+                        for item in &self.data.scope_spans {
+                            arg = scope_spans_visitor
+                                .visit_scope_spans(
+                                    arg,
+                                    &(ScopeSpansMessageAdapter::new(item)),
+                                );
+                        }
+                        arg = schema_url_visitor
+                            .visit_string(arg, &self.data.schema_url);
+                        arg
+                    }
+                }
 ```
 
 ## Next Phase: OTLP Protobuf Encoding/Decoding via Visitor Pattern
@@ -200,8 +201,37 @@ Implement two visitor patterns:
 - Generate protobuf bytes directly from OTLP message objects
 - Use Prost field annotations to determine encoding approach
 - Two-pass algorithm:
-  1. **Size calculation pass**: Build `Vec<usize>` containing length-delimited field sizes in traversal order
+  1. **Size calculation pass**: Build `PrecomputedSizes` containing length-delimited field sizes in traversal order
   2. **Encoding pass**: Generate output bytes using pre-calculated sizes
+
+As an example for the first pass:
+
+```rust
+pub struct LogsDataEncodedLen {
+  tag: u32,
+}
+
+impl LogsDataVisitor<PrecomputedSizes> for LogsDataEncodedLen {
+    fn visit_logs_data(&mut self, mut arg: PrecomputedSizes, rs: impl LogsDataVisitable<PrecomputedSizes>) -> PrecomputedSizes {
+        let my_idx = arg.len();
+        arg.sizes.reserve();
+
+        let child_idx = arg.len();
+        arg = rs.accept_resource_logs(arg, ResourceEncodedLen{TAG}, ScopeLogsEncodedLen{TAG});
+        let child_size = arg.get_size(child_idx);
+
+        // sum all children
+        let total_size = child_size;
+        let my_size = varint_size(self.tag<<3) + varint_size(total_size) + total_size;
+
+        arg.set_size(my_idx, my_size);
+        arg
+    }
+}
+```
+
+Note that "TAG" needs to be replaced by the protobuf tag number of
+each child, which is known in the derive package.
 
 **Decoding Visitor (protobuf bytes → Visitor calls)**
 - Parse protobuf bytes and invoke visitor methods
@@ -210,7 +240,7 @@ Implement two visitor patterns:
 
 We will create two Visitors, one for to compute the length and one to encode bytes w/ precomputed length.
 
-We will call the first pass visitor "{}PrecomputeSize" and the second pass visitor "{}EncodeBytes".
+We will call the first pass visitor "{}EncodedLen" and the second pass visitor "{}EncodeBytes".
 
 Keep in mind that the Prost implementations for encoded_len and
 encode_raw are available in EXPANDED to give you an idea of the
@@ -223,7 +253,7 @@ every level as it descends, which has O(n * m) complexity for depth m
 and node count n. We want an O(n) algorithm which we get by computing
 the sizes once.
 
-The PrecomputedSize visitor new() a pre-allocated ("inner") Vec<usize>
+The EncodeLen visitor new() a pre-allocated ("inner") Vec<usize>
 by value to allow re-use. It will reset the vector and then for each
 node in the order of traversal, it will claim the next slot and
 calculate the the size of the body using recursive calls to the

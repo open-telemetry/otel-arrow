@@ -166,18 +166,24 @@ impl PrecomputedSizes {
 /*
 Example of how the generated code will look using the helpers:
 
-pub struct LogsDataEncodedLen {}
+pub struct LogsDataEncodedLen {
+  tag: u32,
+}
 
 impl LogsDataVisitor<PrecomputedSizes> for LogsDataEncodedLen {
     fn visit_logs_data(&mut self, mut arg: PrecomputedSizes, rs: impl LogsDataVisitable<PrecomputedSizes>) -> PrecomputedSizes {
         let my_idx = arg.len();
-        arg.sizes.push(0); // Reserve space for our size
+        arg.sizes.reserve();
 
-        let child_start_idx = arg.len();
-        arg = rs.accept_resource_logs(arg, ResourceEncodedLen{}, ScopeLogsEncodedLen{});
+        let child_idx = arg.len();
+        arg = rs.accept_resource_logs(arg, ResourceEncodedLen{TAG}, ScopeLogsEncodedLen{TAG});
+        let child_size = arg.get_size(child_idx);
 
-        let child_size = arg.get_size(child_start_idx);
-        arg.set_size(my_idx, 1, child_size); // 1-byte tag
+        // sum all children
+        let total_size = child_size;
+        let my_size = varint_size(self.tag<<3) + varint_size(total_size) + total_size;
+
+        arg.set_size(my_idx, my_size);
         arg
     }
 }
