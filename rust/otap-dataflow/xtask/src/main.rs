@@ -70,7 +70,17 @@ fn format_all() -> anyhow::Result<()> {
 
 fn clippy_all() -> anyhow::Result<()> {
     println!("🚀 Linting workspace with cargo clippy...");
-    run("cargo", &["clippy", "--workspace", "--", "-D", "warnings"])?;
+    run(
+        "cargo",
+        &[
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    )?;
     println!("✅ Clippy linting passed without warnings.\n");
     Ok(())
 }
