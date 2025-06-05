@@ -20,7 +20,7 @@ single_quote_string_char = _{
     | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
 }
 string_literal = @{
-	("\"" ~ double_quote_string_char* ~ "\"")
+    ("\"" ~ double_quote_string_char* ~ "\"")
     | ("'" ~ single_quote_string_char* ~ "'")
 }
 identifier_literal = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
