@@ -1,3 +1,8 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Some description
+
 use std::sync::Arc;
 
 use arrow::{
