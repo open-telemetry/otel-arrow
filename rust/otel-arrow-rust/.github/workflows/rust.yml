@@ -32,5 +32,5 @@ jobs:
     name: Check License Header
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: korandoru/hawkeye@fac79d40d62222ef10fa8ecf9c097af6ae13ea95 # v5
+      - uses: korandoru/hawkeye@fac79d40d62222ef10fa8ecf9c097af6ae13ea95 # v5.9.1
 
