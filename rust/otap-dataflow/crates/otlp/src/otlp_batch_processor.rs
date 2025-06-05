@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use otap_df_engine::error::Error;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::message::{ControlMsg, Message};
-use std::time::{Duration, Instant};
 use prost::Message as ProstMessage;
+use std::time::{Duration, Instant};
 
 /// Trait for hierarchical batch splitting
 ///
@@ -56,7 +56,7 @@ impl HierarchicalBatchSplit for ExportTraceServiceRequest {
                     if !sc.spans.is_empty() {
                         res.scope_spans.push(sc.clone());
                         sc.spans.clear();
-                    }   
+                    }
 
                     if current_span_count == max_batch_size {
                         if !res.scope_spans.is_empty() {
@@ -84,7 +84,6 @@ impl HierarchicalBatchSplit for ExportTraceServiceRequest {
         batches
     }
 }
-
 
 impl HierarchicalBatchSplit for ExportMetricsServiceRequest {
     fn split_into_batches(mut self, max_batch_size: usize) -> Vec<Self> {
@@ -147,7 +146,8 @@ impl ExportMetricsServiceRequest {
     /// Splits the batch into multiple batches, each containing at most `max_requests` top-level requests.
     ///
     /// This preserves the original structure of each request.
-    #[must_use] pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
+    #[must_use]
+    pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
         self.resource_metrics
             .chunks(max_requests)
             .map(|chunk| ExportMetricsServiceRequest {
@@ -219,9 +219,10 @@ impl HierarchicalBatchSplit for ExportLogsServiceRequest {
 
 impl ExportLogsServiceRequest {
     /// Splits the batch into multiple batches, each containing at most `max_requests` top-level requests.
-    /// 
+    ///
     /// This preserves the original structure of each request.
-    #[must_use] pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
+    #[must_use]
+    pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
         self.resource_logs
             .chunks(max_requests)
             .map(|chunk| ExportLogsServiceRequest {
@@ -235,7 +236,8 @@ impl ExportTraceServiceRequest {
     /// Splits the batch into multiple batches, each containing at most `max_requests` top-level requests.
     ///
     /// This preserves the original structure of each request.
-    #[must_use] pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
+    #[must_use]
+    pub fn split_by_requests(self, max_requests: usize) -> Vec<Self> {
         self.resource_spans
             .chunks(max_requests)
             .map(|chunk| ExportTraceServiceRequest {
@@ -409,12 +411,10 @@ impl Processor<OTLPData> for GenericBatcher {
         msg: Message<OTLPData>,
         effect_handler: &mut EffectHandler<OTLPData>,
     ) -> Result<(), Error<OTLPData>> {
-
         // Check if we need to flush on requests size
 
         // ToDo: Future optimization, we should avoid to traverse multiple times the same request to compute multiple counters. That could be done in one pass.
         if self.config.sizer == BatchSizer::Requests {
-
             match &msg {
                 Message::PData(OTLPData::Traces(req)) => {
                     if Self::count_trace_requests(req) >= self.config.send_batch_size {
@@ -461,7 +461,11 @@ impl Processor<OTLPData> for GenericBatcher {
             match &msg {
                 Message::PData(OTLPData::Traces(req)) => {
                     // ToDo: There is probably a more optimal way to do that! The current implementation is serializing the traces_pending for every incoming req to maintain the total number of bytes and that is way too much overhead.
-                    let pending_size = self.traces_pending.as_ref().map(|p| p.encoded_len()).unwrap_or(0);
+                    let pending_size = self
+                        .traces_pending
+                        .as_ref()
+                        .map(|p| p.encoded_len())
+                        .unwrap_or(0);
                     let new_size = req.encoded_len();
                     let total_size = pending_size + new_size;
                     if total_size >= self.config.send_batch_size {
@@ -469,7 +473,11 @@ impl Processor<OTLPData> for GenericBatcher {
                     }
                 }
                 Message::PData(OTLPData::Metrics(req)) => {
-                    let pending_size = self.metrics_pending.as_ref().map(|p| p.encoded_len()).unwrap_or(0);
+                    let pending_size = self
+                        .metrics_pending
+                        .as_ref()
+                        .map(|p| p.encoded_len())
+                        .unwrap_or(0);
                     let new_size = req.encoded_len();
                     let total_size = pending_size + new_size;
                     if total_size >= self.config.send_batch_size {
@@ -477,7 +485,11 @@ impl Processor<OTLPData> for GenericBatcher {
                     }
                 }
                 Message::PData(OTLPData::Logs(req)) => {
-                    let pending_size = self.logs_pending.as_ref().map(|p| p.encoded_len()).unwrap_or(0);
+                    let pending_size = self
+                        .logs_pending
+                        .as_ref()
+                        .map(|p| p.encoded_len())
+                        .unwrap_or(0);
                     let new_size = req.encoded_len();
                     let total_size = pending_size + new_size;
                     if total_size >= self.config.send_batch_size {
@@ -487,7 +499,7 @@ impl Processor<OTLPData> for GenericBatcher {
                 _ => {}
             }
         }
-                   
+
         match msg {
             Message::PData(data) => {
                 match data {
@@ -499,7 +511,9 @@ impl Processor<OTLPData> for GenericBatcher {
                                 .splice(0..0, pending.resource_spans.drain(..));
                         }
                         let mut batches = match self.config.sizer {
-                            BatchSizer::Requests => req.split_by_requests(self.config.send_batch_size),
+                            BatchSizer::Requests => {
+                                req.split_by_requests(self.config.send_batch_size)
+                            }
                             _ => req.split_into_batches(self.config.send_batch_size),
                         };
                         // The last batch may not be full: buffer it, emit the rest
@@ -525,7 +539,9 @@ impl Processor<OTLPData> for GenericBatcher {
                                 .splice(0..0, pending.resource_metrics.drain(..));
                         }
                         let mut batches = match self.config.sizer {
-                            BatchSizer::Requests => req.split_by_requests(self.config.send_batch_size),
+                            BatchSizer::Requests => {
+                                req.split_by_requests(self.config.send_batch_size)
+                            }
                             _ => req.split_into_batches(self.config.send_batch_size),
                         };
                         if let Some(last) = batches.pop() {
@@ -549,7 +565,9 @@ impl Processor<OTLPData> for GenericBatcher {
                                 .splice(0..0, pending.resource_logs.drain(..));
                         }
                         let mut batches = match self.config.sizer {
-                            BatchSizer::Requests => req.split_by_requests(self.config.send_batch_size),
+                            BatchSizer::Requests => {
+                                req.split_by_requests(self.config.send_batch_size)
+                            }
                             _ => req.split_into_batches(self.config.send_batch_size),
                         };
                         if let Some(last) = batches.pop() {
@@ -592,13 +610,13 @@ impl Processor<OTLPData> for GenericBatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_engine::config::ProcessorConfig;
-    use otap_df_engine::processor::ProcessorWrapper;
-    use otap_df_engine::testing::processor::TestRuntime;
+    use crate::proto::opentelemetry::common::v1::InstrumentationScope;
     use crate::proto::opentelemetry::logs::v1::LogRecord;
     use crate::proto::opentelemetry::metrics::v1::Metric;
     use crate::proto::opentelemetry::trace::v1::Span;
-    use crate::proto::opentelemetry::common::v1::InstrumentationScope;
+    use otap_df_engine::config::ProcessorConfig;
+    use otap_df_engine::processor::ProcessorWrapper;
+    use otap_df_engine::testing::processor::TestRuntime;
 
     /// Wraps a processor in a local test wrapper.
     fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
@@ -629,15 +647,26 @@ mod tests {
                         scope_spans: vec![ScopeSpans {
                             scope: None,
                             spans: vec![
-                                Span { name: "A".into(), ..Default::default() },
-                                Span { name: "B".into(), ..Default::default() },
-                                Span { name: "C".into(), ..Default::default() },
+                                Span {
+                                    name: "A".into(),
+                                    ..Default::default()
+                                },
+                                Span {
+                                    name: "B".into(),
+                                    ..Default::default()
+                                },
+                                Span {
+                                    name: "C".into(),
+                                    ..Default::default()
+                                },
                             ],
                             schema_url: String::new(),
                         }],
                     }],
                 };
-                ctx.process(Message::PData(OTLPData::Traces(req))).await.unwrap();
+                ctx.process(Message::PData(OTLPData::Traces(req)))
+                    .await
+                    .unwrap();
                 // Trigger shutdown
                 ctx.process(Message::Control(ControlMsg::Shutdown {
                     deadline: Duration::from_secs(1),
@@ -650,11 +679,16 @@ mod tests {
                 assert_eq!(emitted.len(), 1, "Should flush partial batch on shutdown");
                 match &emitted[0] {
                     OTLPData::Traces(req) => {
-                        let count = req.resource_spans.iter()
+                        let count = req
+                            .resource_spans
+                            .iter()
                             .flat_map(|rs| &rs.scope_spans)
                             .flat_map(|ss| &ss.spans)
                             .count();
-                        assert_eq!(count, 3, "All partial spans should be present in the flushed batch");
+                        assert_eq!(
+                            count, 3,
+                            "All partial spans should be present in the flushed batch"
+                        );
                     }
                     _ => panic!("Expected Traces batch"),
                 }
@@ -681,15 +715,22 @@ mod tests {
                         schema_url: String::new(),
                         scope_spans: vec![ScopeSpans {
                             scope: None,
-                            spans: vec![Span { name: "A".into(), ..Default::default() }],
+                            spans: vec![Span {
+                                name: "A".into(),
+                                ..Default::default()
+                            }],
                             schema_url: String::new(),
                         }],
                     }],
                 };
-                ctx.process(Message::PData(OTLPData::Traces(req))).await.unwrap();
+                ctx.process(Message::PData(OTLPData::Traces(req)))
+                    .await
+                    .unwrap();
                 // Simulate timer tick after timeout
                 tokio::time::sleep(Duration::from_millis(20)).await;
-                ctx.process(Message::Control(ControlMsg::TimerTick {})).await.unwrap();
+                ctx.process(Message::Control(ControlMsg::TimerTick {}))
+                    .await
+                    .unwrap();
                 let emitted = ctx.drain_pdata().await;
                 assert_eq!(emitted.len(), 1, "Should flush after timeout");
             })
@@ -710,38 +751,45 @@ mod tests {
             .run_test(|mut ctx| async move {
                 // Compose a request with 1 resource group, 3 scope groups, each with 1 span
                 let req = ExportTraceServiceRequest {
-                    resource_spans: vec![
-                        ResourceSpans {
-                            resource: None,
-                            schema_url: String::new(),
-                            scope_spans: vec![
-                                ScopeSpans {
-                                    scope: Some(InstrumentationScope {
-                                        name: "scope1".to_string(),
-                                        ..Default::default()
-                                    }),
-                                    spans: vec![Span { name: "A".into(), ..Default::default() }],
-                                    schema_url: String::new(),
-                                },
-                                ScopeSpans {
-                                    scope: Some(InstrumentationScope {
-                                        name: "scope2".to_string(),
-                                        ..Default::default()
-                                    }),
-                                    spans: vec![Span { name: "B".into(), ..Default::default() }],
-                                    schema_url: String::new(),
-                                },
-                                ScopeSpans {
-                                    scope: Some(InstrumentationScope {
-                                        name: "scope3".to_string(),
-                                        ..Default::default()
-                                    }),
-                                    spans: vec![Span { name: "C".into(), ..Default::default() }],
-                                    schema_url: String::new(),
-                                },
-                            ],
-                        }
-                    ],
+                    resource_spans: vec![ResourceSpans {
+                        resource: None,
+                        schema_url: String::new(),
+                        scope_spans: vec![
+                            ScopeSpans {
+                                scope: Some(InstrumentationScope {
+                                    name: "scope1".to_string(),
+                                    ..Default::default()
+                                }),
+                                spans: vec![Span {
+                                    name: "A".into(),
+                                    ..Default::default()
+                                }],
+                                schema_url: String::new(),
+                            },
+                            ScopeSpans {
+                                scope: Some(InstrumentationScope {
+                                    name: "scope2".to_string(),
+                                    ..Default::default()
+                                }),
+                                spans: vec![Span {
+                                    name: "B".into(),
+                                    ..Default::default()
+                                }],
+                                schema_url: String::new(),
+                            },
+                            ScopeSpans {
+                                scope: Some(InstrumentationScope {
+                                    name: "scope3".to_string(),
+                                    ..Default::default()
+                                }),
+                                spans: vec![Span {
+                                    name: "C".into(),
+                                    ..Default::default()
+                                }],
+                                schema_url: String::new(),
+                            },
+                        ],
+                    }],
                 };
                 ctx.process(Message::PData(OTLPData::Traces(req)))
                     .await
@@ -753,7 +801,7 @@ mod tests {
                 .await
                 .unwrap();
                 let emitted = ctx.drain_pdata().await;
-    
+
                 // Collect all scope names from all batches
                 let mut seen = std::collections::HashSet::new();
                 for batch in &emitted {
@@ -761,7 +809,11 @@ mod tests {
                         OTLPData::Traces(req) => {
                             for rs in &req.resource_spans {
                                 for ss in &rs.scope_spans {
-                                    let name = ss.scope.as_ref().map(|s| s.name.clone()).unwrap_or_default();
+                                    let name = ss
+                                        .scope
+                                        .as_ref()
+                                        .map(|s| s.name.clone())
+                                        .unwrap_or_default();
                                     assert!(
                                         seen.insert(name.clone()),
                                         "duplicate scope group: {}",
@@ -873,7 +925,10 @@ mod tests {
                             for rs in &req.resource_spans {
                                 for ss in &rs.scope_spans {
                                     for span in &ss.spans {
-                                        assert!(seen.insert(span.name.clone()), "duplicate span name?");
+                                        assert!(
+                                            seen.insert(span.name.clone()),
+                                            "duplicate span name?"
+                                        );
                                     }
                                 }
                             }
@@ -1120,13 +1175,26 @@ mod tests {
             send_batch_size: 10,
             timeout: Duration::from_secs(1),
         }));
-        runtime.set_processor(wrapper)
+        runtime
+            .set_processor(wrapper)
             .run_test(|mut ctx| async move {
-                ctx.process(Message::PData(OTLPData::Traces(ExportTraceServiceRequest { resource_spans: vec![] }))).await.unwrap();
-            ctx.process(Message::Control(ControlMsg::Shutdown { deadline: Duration::from_secs(1), reason: "test".into() })).await.unwrap();
-            let emitted = ctx.drain_pdata().await;
-            assert!(emitted.is_empty());
-        }).validate(|_| async {});
+                ctx.process(Message::PData(OTLPData::Traces(
+                    ExportTraceServiceRequest {
+                        resource_spans: vec![],
+                    },
+                )))
+                .await
+                .unwrap();
+                ctx.process(Message::Control(ControlMsg::Shutdown {
+                    deadline: Duration::from_secs(1),
+                    reason: "test".into(),
+                }))
+                .await
+                .unwrap();
+                let emitted = ctx.drain_pdata().await;
+                assert!(emitted.is_empty());
+            })
+            .validate(|_| async {});
     }
 
     #[test]
@@ -1137,23 +1205,43 @@ mod tests {
             send_batch_size: 3,
             timeout: Duration::from_secs(1),
         }));
-        runtime.set_processor(wrapper).run_test(|mut ctx| async move {
-            // input has many resource/spans with no actual spans
-            let req = ExportTraceServiceRequest {
-            resource_spans: vec![
-                ResourceSpans { resource: None, schema_url: String::new(), scope_spans: vec![] },
-                ResourceSpans { resource: None, schema_url: String::new(), scope_spans: vec![
-                    ScopeSpans { scope: None, schema_url: String::new(), spans: vec![] }
-                ] },
-            ]
-        };
-        ctx.process(Message::PData(OTLPData::Traces(req))).await.unwrap();
-        ctx.process(Message::Control(ControlMsg::Shutdown { deadline: Duration::from_secs(1), reason: "test".into() })).await.unwrap();
-        let emitted = ctx.drain_pdata().await;
-        assert!(emitted.is_empty());
-        }).validate(|_| async {});
+        runtime
+            .set_processor(wrapper)
+            .run_test(|mut ctx| async move {
+                // input has many resource/spans with no actual spans
+                let req = ExportTraceServiceRequest {
+                    resource_spans: vec![
+                        ResourceSpans {
+                            resource: None,
+                            schema_url: String::new(),
+                            scope_spans: vec![],
+                        },
+                        ResourceSpans {
+                            resource: None,
+                            schema_url: String::new(),
+                            scope_spans: vec![ScopeSpans {
+                                scope: None,
+                                schema_url: String::new(),
+                                spans: vec![],
+                            }],
+                        },
+                    ],
+                };
+                ctx.process(Message::PData(OTLPData::Traces(req)))
+                    .await
+                    .unwrap();
+                ctx.process(Message::Control(ControlMsg::Shutdown {
+                    deadline: Duration::from_secs(1),
+                    reason: "test".into(),
+                }))
+                .await
+                .unwrap();
+                let emitted = ctx.drain_pdata().await;
+                assert!(emitted.is_empty());
+            })
+            .validate(|_| async {});
     }
-    
+
     #[test]
     fn traces_flushes_on_request_count() {
         let runtime = TestRuntime::<OTLPData>::new();
@@ -1174,7 +1262,10 @@ mod tests {
                             schema_url: String::new(),
                             scope_spans: vec![ScopeSpans {
                                 scope: None,
-                                spans: vec![Span { name: "A".into(), ..Default::default() }],
+                                spans: vec![Span {
+                                    name: "A".into(),
+                                    ..Default::default()
+                                }],
                                 schema_url: String::new(),
                             }],
                         },
@@ -1183,7 +1274,10 @@ mod tests {
                             schema_url: String::new(),
                             scope_spans: vec![ScopeSpans {
                                 scope: None,
-                                spans: vec![Span { name: "B".into(), ..Default::default() }],
+                                spans: vec![Span {
+                                    name: "B".into(),
+                                    ..Default::default()
+                                }],
                                 schema_url: String::new(),
                             }],
                         },
@@ -1204,7 +1298,7 @@ mod tests {
             })
             .validate(|_ctx| async {});
     }
-    
+
     #[test]
     fn metrics_flushes_on_request_count() {
         let runtime = TestRuntime::<OTLPData>::new();
@@ -1225,7 +1319,10 @@ mod tests {
                             scope_metrics: vec![ScopeMetrics {
                                 scope: None,
                                 schema_url: String::new(),
-                                metrics: vec![Metric { name: "A".into(), ..Default::default() }],
+                                metrics: vec![Metric {
+                                    name: "A".into(),
+                                    ..Default::default()
+                                }],
                             }],
                         },
                         ResourceMetrics {
@@ -1234,7 +1331,10 @@ mod tests {
                             scope_metrics: vec![ScopeMetrics {
                                 scope: None,
                                 schema_url: String::new(),
-                                metrics: vec![Metric { name: "B".into(), ..Default::default() }],
+                                metrics: vec![Metric {
+                                    name: "B".into(),
+                                    ..Default::default()
+                                }],
                             }],
                         },
                     ],
@@ -1253,7 +1353,7 @@ mod tests {
             })
             .validate(|_ctx| async {});
     }
-    
+
     #[test]
     fn logs_flushes_on_request_count() {
         let runtime = TestRuntime::<OTLPData>::new();
@@ -1274,7 +1374,10 @@ mod tests {
                             scope_logs: vec![ScopeLogs {
                                 scope: None,
                                 schema_url: String::new(),
-                                log_records: vec![LogRecord { severity_text: "A".into(), ..Default::default() }],
+                                log_records: vec![LogRecord {
+                                    severity_text: "A".into(),
+                                    ..Default::default()
+                                }],
                             }],
                         },
                         ResourceLogs {
@@ -1283,7 +1386,10 @@ mod tests {
                             scope_logs: vec![ScopeLogs {
                                 scope: None,
                                 schema_url: String::new(),
-                                log_records: vec![LogRecord { severity_text: "B".into(), ..Default::default() }],
+                                log_records: vec![LogRecord {
+                                    severity_text: "B".into(),
+                                    ..Default::default()
+                                }],
                             }],
                         },
                     ],
@@ -1302,7 +1408,7 @@ mod tests {
             })
             .validate(|_ctx| async {});
     }
-    
+
     #[test]
     fn traces_flushes_on_byte_size() {
         let runtime = TestRuntime::<OTLPData>::new();
@@ -1321,7 +1427,10 @@ mod tests {
                         schema_url: String::new(),
                         scope_spans: vec![ScopeSpans {
                             scope: None,
-                            spans: vec![Span { name: "A".into(), ..Default::default() }],
+                            spans: vec![Span {
+                                name: "A".into(),
+                                ..Default::default()
+                            }],
                             schema_url: String::new(),
                         }],
                     }],
@@ -1340,7 +1449,7 @@ mod tests {
             })
             .validate(|_ctx| async {});
     }
-    
+
     #[test]
     fn metrics_flushes_on_byte_size() {
         let runtime = TestRuntime::<OTLPData>::new();
@@ -1360,7 +1469,10 @@ mod tests {
                         scope_metrics: vec![ScopeMetrics {
                             scope: None,
                             schema_url: String::new(),
-                            metrics: vec![Metric { name: "A".into(), ..Default::default() }],
+                            metrics: vec![Metric {
+                                name: "A".into(),
+                                ..Default::default()
+                            }],
                         }],
                     }],
                 };
@@ -1378,7 +1490,7 @@ mod tests {
             })
             .validate(|_ctx| async {});
     }
-    
+
     #[test]
     fn logs_flushes_on_byte_size() {
         let runtime = TestRuntime::<OTLPData>::new();
@@ -1398,7 +1510,10 @@ mod tests {
                         scope_logs: vec![ScopeLogs {
                             scope: None,
                             schema_url: String::new(),
-                            log_records: vec![LogRecord { severity_text: "A".into(), ..Default::default() }],
+                            log_records: vec![LogRecord {
+                                severity_text: "A".into(),
+                                ..Default::default()
+                            }],
                         }],
                     }],
                 };
@@ -1421,18 +1536,18 @@ mod tests {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
-    use std::fs::OpenOptions;
-    use std::io::Write;
-    use std::time::Duration;
-    use crate::proto::opentelemetry::logs::v1::LogRecord;
-    use crate::proto::opentelemetry::metrics::v1::Metric;
-    use crate::proto::opentelemetry::trace::v1::Span;
     use crate::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
     use crate::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
     use crate::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+    use crate::proto::opentelemetry::logs::v1::LogRecord;
+    use crate::proto::opentelemetry::metrics::v1::Metric;
+    use crate::proto::opentelemetry::trace::v1::Span;
     use otap_df_engine::config::ProcessorConfig;
-    use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::local::processor::Processor;
+    use otap_df_engine::processor::ProcessorWrapper;
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::time::Duration;
 
     fn wrap_local<P>(processor: P) -> ProcessorWrapper<OTLPData>
     where
@@ -1454,67 +1569,82 @@ mod integration_tests {
 
     fn sample_trace() -> ExportTraceServiceRequest {
         ExportTraceServiceRequest {
-            resource_spans: vec![
-                ResourceSpans {
-                    resource: None,
-                    schema_url: "".to_string(),
-                    scope_spans: vec![
-                        ScopeSpans {
-                            scope: None,
-                            spans: vec![
-                                Span { name: "trace-span-1".into(), ..Default::default() },
-                                Span { name: "trace-span-2".into(), ..Default::default() },
-                                Span { name: "trace-span-3".into(), ..Default::default() },
-                            ],
-                            schema_url: "".to_string(),
-                        }
+            resource_spans: vec![ResourceSpans {
+                resource: None,
+                schema_url: "".to_string(),
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![
+                        Span {
+                            name: "trace-span-1".into(),
+                            ..Default::default()
+                        },
+                        Span {
+                            name: "trace-span-2".into(),
+                            ..Default::default()
+                        },
+                        Span {
+                            name: "trace-span-3".into(),
+                            ..Default::default()
+                        },
                     ],
-                }
-            ]
+                    schema_url: "".to_string(),
+                }],
+            }],
         }
     }
 
     fn sample_metrics() -> ExportMetricsServiceRequest {
         ExportMetricsServiceRequest {
-            resource_metrics: vec![
-                ResourceMetrics {
-                    resource: None,
-                    schema_url: "".to_string(),
-                    scope_metrics: vec![
-                        ScopeMetrics {
-                            scope: None,
-                            metrics: vec![
-                                Metric { name: "metric-1".to_string(), ..Default::default() },
-                                Metric { name: "metric-2".to_string(), ..Default::default() },
-                                Metric { name: "metric-3".to_string(), ..Default::default() },
-                            ],
-                            schema_url: "".to_string(),
-                        }
+            resource_metrics: vec![ResourceMetrics {
+                resource: None,
+                schema_url: "".to_string(),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: None,
+                    metrics: vec![
+                        Metric {
+                            name: "metric-1".to_string(),
+                            ..Default::default()
+                        },
+                        Metric {
+                            name: "metric-2".to_string(),
+                            ..Default::default()
+                        },
+                        Metric {
+                            name: "metric-3".to_string(),
+                            ..Default::default()
+                        },
                     ],
-                }
-            ]
+                    schema_url: "".to_string(),
+                }],
+            }],
         }
     }
 
     fn sample_logs() -> ExportLogsServiceRequest {
         ExportLogsServiceRequest {
-            resource_logs: vec![
-                ResourceLogs {
-                    resource: None,
-                    schema_url: "".to_string(),
-                    scope_logs: vec![
-                        ScopeLogs {
-                            scope: None,
-                            log_records: vec![
-                                LogRecord { severity_text: "info".to_string(), ..Default::default() },
-                                LogRecord { severity_text: "error".to_string(), ..Default::default() },
-                                LogRecord { severity_text: "error".to_string(), ..Default::default() },
-                            ],
-                            schema_url: "".to_string(),
-                        }
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                schema_url: "".to_string(),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![
+                        LogRecord {
+                            severity_text: "info".to_string(),
+                            ..Default::default()
+                        },
+                        LogRecord {
+                            severity_text: "error".to_string(),
+                            ..Default::default()
+                        },
+                        LogRecord {
+                            severity_text: "error".to_string(),
+                            ..Default::default()
+                        },
                     ],
-                }
-            ]
+                    schema_url: "".to_string(),
+                }],
+            }],
         }
     }
 
@@ -1530,33 +1660,53 @@ mod integration_tests {
             timeout: Duration::from_secs(1),
         }));
 
-        runtime.set_processor(wrapper)
+        runtime
+            .set_processor(wrapper)
             .run_test(|mut ctx| async move {
                 // TRACE INPUT
                 let trace_req = sample_trace();
                 log_to_file(&format!("INPUT TRACE:\n{}", format!("{:#?}", trace_req)));
-                ctx.process(Message::PData(OTLPData::Traces(trace_req))).await.unwrap();
+                ctx.process(Message::PData(OTLPData::Traces(trace_req)))
+                    .await
+                    .unwrap();
 
                 // METRICS INPUT
                 let metrics_req = sample_metrics();
                 log_to_file(&format!("INPUT METRIC:\n{}", format!("{:#?}", metrics_req)));
-                ctx.process(Message::PData(OTLPData::Metrics(metrics_req))).await.unwrap();
+                ctx.process(Message::PData(OTLPData::Metrics(metrics_req)))
+                    .await
+                    .unwrap();
 
                 // LOGS INPUT
                 let logs_req = sample_logs();
                 log_to_file(&format!("INPUT LOGS:\n{}", format!("{:#?}", logs_req)));
-                ctx.process(Message::PData(OTLPData::Logs(logs_req))).await.unwrap();
+                ctx.process(Message::PData(OTLPData::Logs(logs_req)))
+                    .await
+                    .unwrap();
 
                 // flush everything
-                ctx.process(Message::Control(ControlMsg::Shutdown { deadline: Duration::from_secs(1), reason: "test".into() })).await.unwrap();
+                ctx.process(Message::Control(ControlMsg::Shutdown {
+                    deadline: Duration::from_secs(1),
+                    reason: "test".into(),
+                }))
+                .await
+                .unwrap();
 
                 // OUTPUTS
                 let outputs = ctx.drain_pdata().await;
                 for (i, out) in outputs.iter().enumerate() {
                     match out {
-                        OTLPData::Traces(req) => log_to_file(&format!("OUTPUT[{}] TRACE:\n{}", i, format!("{:#?}", req))),
-                        OTLPData::Metrics(req) => log_to_file(&format!("OUTPUT[{}] METRIC:\n{}", i, format!("{:#?}", req))),
-                        OTLPData::Logs(req) => log_to_file(&format!("OUTPUT[{}] LOGS:\n{}", i, format!("{:#?}", req))),
+                        OTLPData::Traces(req) => {
+                            log_to_file(&format!("OUTPUT[{}] TRACE:\n{}", i, format!("{:#?}", req)))
+                        }
+                        OTLPData::Metrics(req) => log_to_file(&format!(
+                            "OUTPUT[{}] METRIC:\n{}",
+                            i,
+                            format!("{:#?}", req)
+                        )),
+                        OTLPData::Logs(req) => {
+                            log_to_file(&format!("OUTPUT[{}] LOGS:\n{}", i, format!("{:#?}", req)))
+                        }
                         #[allow(unreachable_patterns)]
                         _ => log_to_file(&format!("OUTPUT[{}] (unknown type)", i)),
                     }
