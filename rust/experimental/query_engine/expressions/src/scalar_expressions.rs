@@ -166,12 +166,15 @@ impl Expression for NegateScalarExpression {
 #[derive(Debug, Clone, PartialEq)]
 pub struct BooleanScalarExpression {
     query_location: QueryLocation,
-    value: bool
+    value: bool,
 }
 
 impl BooleanScalarExpression {
     pub fn new(query_location: QueryLocation, value: bool) -> BooleanScalarExpression {
-        Self { query_location, value }
+        Self {
+            query_location,
+            value,
+        }
     }
 
     pub fn get_value(&self) -> bool {
@@ -188,12 +191,15 @@ impl Expression for BooleanScalarExpression {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DoubleScalarExpression {
     query_location: QueryLocation,
-    value: f64
+    value: f64,
 }
 
 impl DoubleScalarExpression {
     pub fn new(query_location: QueryLocation, value: f64) -> DoubleScalarExpression {
-        Self { query_location, value }
+        Self {
+            query_location,
+            value,
+        }
     }
 
     pub fn get_value(&self) -> f64 {

@@ -103,21 +103,20 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> String {
 }
 
 #[allow(dead_code)]
-pub(crate) fn parse_double_literal(
-    double_literal_rule: Pair<Rule>) -> Result<f64, Error>
-{
+pub(crate) fn parse_double_literal(double_literal_rule: Pair<Rule>) -> Result<f64, Error> {
     let r = double_literal_rule.as_str().parse::<f64>();
     if r.is_err() {
-        return Err(Error::SyntaxError(to_query_location(&double_literal_rule), "Double value could not be parsed".into()));
+        return Err(Error::SyntaxError(
+            to_query_location(&double_literal_rule),
+            "Double value could not be parsed".into(),
+        ));
     }
 
     Ok(r.unwrap())
 }
 
 #[allow(dead_code)]
-pub(crate) fn parse_integer_literal(
-    integer_literal_rule: Pair<Rule>) -> Result<i64, Error>
-{
+pub(crate) fn parse_integer_literal(integer_literal_rule: Pair<Rule>) -> Result<i64, Error> {
     let r = integer_literal_rule.as_str().parse::<i64>();
     if r.is_err() {
         return Err(Error::SyntaxError(
@@ -131,30 +130,38 @@ pub(crate) fn parse_integer_literal(
 
 #[allow(dead_code)]
 pub(crate) fn parse_real_expression(
-    real_expression_rule: Pair<Rule>) -> Result<ScalarExpression, Error>
-{
+    real_expression_rule: Pair<Rule>,
+) -> Result<ScalarExpression, Error> {
     let query_location = to_query_location(&real_expression_rule);
 
     let real_rule = real_expression_rule.into_inner().next().unwrap();
 
     match real_rule.as_rule() {
-        Rule::positive_infinity_token => {
-            Ok(ScalarExpression::Double(DoubleScalarExpression::new(query_location, f64::INFINITY)))
-        },
-        Rule::negative_infinity_token => {
-            Ok(ScalarExpression::Double(DoubleScalarExpression::new(query_location, f64::NEG_INFINITY)))
-        },
+        Rule::positive_infinity_token => Ok(ScalarExpression::Double(DoubleScalarExpression::new(
+            query_location,
+            f64::INFINITY,
+        ))),
+        Rule::negative_infinity_token => Ok(ScalarExpression::Double(DoubleScalarExpression::new(
+            query_location,
+            f64::NEG_INFINITY,
+        ))),
         Rule::double_literal => {
             let d = parse_double_literal(real_rule)?;
 
-            Ok(ScalarExpression::Double(DoubleScalarExpression::new(query_location, d)))
-        },
+            Ok(ScalarExpression::Double(DoubleScalarExpression::new(
+                query_location,
+                d,
+            )))
+        }
         Rule::integer_literal => {
             let i = parse_integer_literal(real_rule)?;
 
-            Ok(ScalarExpression::Double(DoubleScalarExpression::new(query_location, i as f64)))
+            Ok(ScalarExpression::Double(DoubleScalarExpression::new(
+                query_location,
+                i as f64,
+            )))
         }
-        _ => panic!("Unexpected rule in real_expression: {}", real_rule)
+        _ => panic!("Unexpected rule in real_expression: {}", real_rule),
     }
 }
 
@@ -573,8 +580,7 @@ mod parse_tests {
 
             if let ScalarExpression::Double(d) = expression {
                 assert_eq!(expected, d.get_value());
-            }
-            else {
+            } else {
                 assert!(false);
             }
         };
@@ -588,7 +594,8 @@ mod parse_tests {
 
     #[test]
     fn test_parse_accessor_expression_from_source() {
-        let mut result = KqlParser::parse(Rule::accessor_expression, "source.subkey['array'][0]").unwrap();
+        let mut result =
+            KqlParser::parse(Rule::accessor_expression, "source.subkey['array'][0]").unwrap();
 
         let expression =
             parse_accessor_expression(result.next().unwrap(), &KqlParserState::new()).unwrap();
