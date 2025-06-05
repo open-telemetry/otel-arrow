@@ -12,5 +12,5 @@
 
 pub mod cbor;
 pub mod decoder;
-mod parent_id;
+pub(crate) mod parent_id;
 pub mod store;
