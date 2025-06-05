@@ -149,7 +149,7 @@ impl PrecomputedSizes {
     }
 
     /// Push a size value (used for reserving space)
-    pub fn push_size(&mut self, value: value) {
+    pub fn push_size(&mut self, value: usize) {
         self.sizes.push(value);
     }
 

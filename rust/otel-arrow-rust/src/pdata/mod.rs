@@ -110,6 +110,7 @@ pub trait F64Visitor<Argument> {
 }
 
 /// FloatVisitor
+/// OTel has no f32 fields
 // pub trait F32Visitor<Argument> {
 //     fn visit_f32(&mut self, arg: Argument, value: f32) -> Argument;
 // }
