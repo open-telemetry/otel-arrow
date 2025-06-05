@@ -92,7 +92,7 @@ class BaseContext:
         Updates the context status to ERROR if an exception occurred,
         or SUCCESS if the status was still RUNNING. Finalizes the context
         by calling the end() method.
-        
+
         Args:
             exc_type: The exception type, if any occurred.
             exc_value: The exception instance.
@@ -111,11 +111,11 @@ class BaseContext:
 
         - Sets the execution status to RUNNING.
         - Records the current UTC time as the start time.
-        - Initializes a tracing span (if a tracer is available) using the object's class name 
+        - Initializes a tracing span (if a tracer is available) using the object's class name
         and optional `name` attribute for the span name.
         - Attaches contextual attributes to the tracing span.
         - Records a start event with a precise timestamp in nanoseconds.
-        
+
         This method is typically called at the beginning of a timed or monitored execution block,
         such as within a context manager (`__enter__`).
         """
@@ -127,14 +127,14 @@ class BaseContext:
             span_name = getattr(
                 self,
                 "span_name",
-                f"{self.__class__.__name__} - {getattr(self, 'name', 'unnamed')}"
+                f"{self.__class__.__name__} - {getattr(self, 'name', 'unnamed')}",
             )
             self.span_cm = tracer.start_as_current_span(span_name)
             self.span = self.span_cm.__enter__()
             attrs = self.merge_ctx_metadata()
             for k, v in attrs.items():
                 self.span.set_attribute(k, v)
-        
+
         timestamp_unix_nanos = int(self.start_time.timestamp() * 1_000_000_000)
         self._record_start_event(timestamp_unix_nanos)
 
@@ -147,7 +147,7 @@ class BaseContext:
         - If a tracing span is active:
             - Sets the span's status based on the current execution status (SUCCESS, ERROR, etc.).
             - Closes the span context manager to finalize the trace.
-        
+
         This method is typically called at the end of a monitored or timed execution block,
         such as within a context manager (`__exit__`).
         """
@@ -158,7 +158,9 @@ class BaseContext:
             if self.status == ExecutionStatus.SUCCESS:
                 self.span.set_status(StatusCode.OK)
             elif self.status == ExecutionStatus.ERROR:
-                self.span.set_status(Status(StatusCode.ERROR, str(self.error) or "Context failed"))
+                self.span.set_status(
+                    Status(StatusCode.ERROR, str(self.error) or "Context failed")
+                )
             else:
                 # Optional: Handle PENDING or other states explicitly
                 self.span.set_status(Status(StatusCode.UNSET))
@@ -207,7 +209,9 @@ class BaseContext:
             return self.parent_ctx.get_test_suite()
         raise NotImplementedError("This context does not support get_test_suite")
 
-    def record_event(self, event_name: str, timestamp_unix_nanos: Optional[int]=None, **kwargs):
+    def record_event(
+        self, event_name: str, timestamp_unix_nanos: Optional[int] = None, **kwargs
+    ):
         """
         Record an event, enriching it with context-specific metadata.
         """
@@ -311,7 +315,7 @@ class BaseContext:
         - If the runtime is not found, returns None.
 
         Args:
-            runtime_name (str): The name/type of the telemetry runtime to use. 
+            runtime_name (str): The name/type of the telemetry runtime to use.
                                 Defaults to the class-level `TelemetryRuntime.type`.
 
         Returns:
@@ -329,11 +333,15 @@ class BaseContext:
 
     def _record_start_event(self, timestamp_unix_nanos: Optional[int]):
         """Hook to record a context-specific start event."""
-        self.record_event(self.start_event_type.namespaced(), timestamp=timestamp_unix_nanos)
+        self.record_event(
+            self.start_event_type.namespaced(), timestamp=timestamp_unix_nanos
+        )
 
     def _record_end_event(self, timestamp_unix_nanos: Optional[int]):
         """Hook to record a context-specific end event."""
-        self.record_event(self.end_event_type.namespaced(), timestamp=timestamp_unix_nanos)
+        self.record_event(
+            self.end_event_type.namespaced(), timestamp=timestamp_unix_nanos
+        )
 
     @staticmethod
     def _format_time(timestamp: Optional[datetime.datetime]) -> str:
