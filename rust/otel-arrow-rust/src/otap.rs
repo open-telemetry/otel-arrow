@@ -476,7 +476,7 @@ pub fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPay
             ArrowPayloadType::NumberDpAttrs,
             ArrowPayloadType::NumberDpExemplars,
         ],
-        ArrowPayloadType::NumberDpExemplarAttrs => &[ArrowPayloadType::NumberDpExemplarAttrs],
+        ArrowPayloadType::NumberDpExemplars => &[ArrowPayloadType::NumberDpExemplarAttrs],
         ArrowPayloadType::SummaryDataPoints => &[ArrowPayloadType::SummaryDpAttrs],
         ArrowPayloadType::HistogramDataPoints => &[
             ArrowPayloadType::HistogramDpAttrs,
@@ -485,10 +485,10 @@ pub fn child_payload_types(payload_type: ArrowPayloadType) -> &'static [ArrowPay
         ArrowPayloadType::HistogramDpExemplars => &[ArrowPayloadType::HistogramDpExemplarAttrs],
         ArrowPayloadType::ExpHistogramDataPoints => &[
             ArrowPayloadType::ExpHistogramDpAttrs,
-            ArrowPayloadType::ExpHistogramDpExemplarAttrs,
+            ArrowPayloadType::ExpHistogramDpExemplars,
         ],
 
-        ArrowPayloadType::ExpHistogramDpExemplarAttrs => {
+        ArrowPayloadType::ExpHistogramDpExemplars => {
             &[ArrowPayloadType::ExpHistogramDpExemplarAttrs]
         }
         ArrowPayloadType::MultivariateMetrics => {
