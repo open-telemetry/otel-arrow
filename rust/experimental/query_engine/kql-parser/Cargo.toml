@@ -1,0 +1,12 @@
+[package]
+name = "data_engine_kql_parser"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pest = "2.8"
+pest_derive = "2.8"
+
+data_engine_expressions = { path = "../expressions" }
+
+thiserror = { workspace = true }

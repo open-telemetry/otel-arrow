@@ -1,0 +1,11 @@
+pub(crate) mod expression;
+pub(crate) mod scalar_expressions;
+pub(crate) mod value_accessor;
+
+pub use expression::Expression;
+pub use expression::QueryLocation;
+
+pub use value_accessor::ValueAccessor;
+pub use value_accessor::ValueSelector;
+
+pub use scalar_expressions::*;
