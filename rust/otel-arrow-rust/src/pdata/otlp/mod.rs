@@ -25,6 +25,9 @@ use crate::proto::opentelemetry::logs::v1::ResourceLogsVisitor;
 use crate::proto::opentelemetry::logs::v1::ScopeLogsVisitable;
 use crate::proto::opentelemetry::logs::v1::ScopeLogsVisitor;
 
+#[cfg(test)]
+mod tests;
+
 /// LogsVisitor is the entry point for visiting OTLP logs data.
 pub trait LogsVisitor<Argument> {
     /// The return type of the visitor
@@ -110,5 +113,71 @@ impl<Argument> LogRecordVisitor<Argument> for &mut ItemCounter {
     }
 }
 
-#[cfg(test)]
-mod tests;
+/// PrecomputeSizes is an argument to the PrecomputedSize visitor
+pub struct PrecomputedSizes {
+    sizes: Vec<usize>,
+}
+
+impl PrecomputedSizes {
+    /// Create a new PrecomputedSizes with initial capacity
+    pub fn default() -> Self {
+        Self { sizes: Vec::new() }
+    }
+
+    // pub fn new(sizes: Vec<usize>) -> Self {
+    //     Self { sizes }
+    // }
+
+    /// Calculate the length in bytes needed to encode a varint
+    pub fn varint_len(value: usize) -> usize {
+        if value == 0 {
+            1
+        } else {
+            ((64 - value.leading_zeros()) as usize + 6) / 7
+        }
+    }
+
+    /// Get the size at a specific index (for reading child sizes)
+    pub fn get_size(&self, idx: usize) -> usize {
+        self.sizes[idx]
+    }
+
+    /// Get the current length (for tracking child positions)
+    pub fn len(&self) -> usize {
+        self.sizes.len()
+    }
+
+    /// Push a size value (used for reserving space)
+    pub fn reserve(&mut self) {
+        self.sizes.push(0);
+    }
+
+    /// Update a previously reserved space with the calculated size
+    pub fn set_size(&mut self, idx: usize, tag_size: usize, child_size: usize) {
+        let total_size = tag_size + Self::varint_len(child_size) + child_size;
+        self.sizes[idx] = total_size;
+    }
+}
+
+// TODO: As described in prd.md, in Phase 3, the derive crate will
+// be extended to generate a impl LogsDataVisitor<PrecomputedSizes> for
+
+/*
+Example of how the generated code will look using the helpers:
+
+pub struct LogsDataEncodedLen {}
+
+impl LogsDataVisitor<PrecomputedSizes> for LogsDataEncodedLen {
+    fn visit_logs_data(&mut self, mut arg: PrecomputedSizes, rs: impl LogsDataVisitable<PrecomputedSizes>) -> PrecomputedSizes {
+        let my_idx = arg.len();
+        arg.sizes.push(0); // Reserve space for our size
+
+        let child_start_idx = arg.len();
+        arg = rs.visit_resource_logs(arg, &mut ResourceEncodedLen{}, &mut ScopeLogsEncodedLen{});
+
+        let child_size = arg.get_size(child_start_idx);
+        arg.set_size(my_idx, 1, child_size); // 1-byte tag
+        arg
+    }
+}
+*/

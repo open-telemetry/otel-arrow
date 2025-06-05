@@ -723,3 +723,52 @@ fn test_logs_item_count() {
     let ic = ItemCounter::new().visit_logs(&LogsDataMessageAdapter::new(&ld));
     assert_eq!(20, ic);
 }
+
+#[test]
+fn test_precomputed_sizes_varint_len() {
+    use crate::pdata::otlp::PrecomputedSizes;
+
+    assert_eq!(PrecomputedSizes::varint_len(0), 1);
+    assert_eq!(PrecomputedSizes::varint_len(127), 1);
+    assert_eq!(PrecomputedSizes::varint_len(128), 2);
+    assert_eq!(PrecomputedSizes::varint_len(16383), 2);
+    assert_eq!(PrecomputedSizes::varint_len(16384), 3);
+}
+
+#[test]
+fn test_precomputed_sizes_tracking() {
+    use crate::pdata::otlp::PrecomputedSizes;
+
+    let mut sizes = PrecomputedSizes::default();
+
+    // Test the inline pattern
+    let my_idx = sizes.len();
+    sizes.sizes.push(0); // Reserve space
+    assert_eq!(my_idx, 0);
+    assert_eq!(sizes.get_size(my_idx), 0);
+
+    sizes.set_size(my_idx, 1, 10); // 1-byte tag, 10-byte child
+    // Total should be: 1 (tag) + 1 (varint_len(10)) + 10 (child) = 12
+    assert_eq!(sizes.get_size(my_idx), 12);
+}
+
+#[test]
+fn test_precomputed_sizes_inline_pattern() {
+    use crate::pdata::otlp::PrecomputedSizes;
+
+    let mut sizes = PrecomputedSizes::default();
+
+    // Test the complete inline pattern
+    let my_idx = sizes.len();
+    sizes.sizes.push(0); // Reserve space for our size
+
+    // Simulate child visit that adds its own size
+    let child_start_idx = sizes.len();
+    sizes.sizes.push(5); // Child has size 5
+
+    let child_size = sizes.get_size(child_start_idx);
+    sizes.set_size(my_idx, 1, child_size); // 1-byte tag
+
+    // Should have: 1 (tag) + 1 (varint_len(5)) + 5 (child) = 7
+    assert_eq!(sizes.get_size(my_idx), 7);
+}
