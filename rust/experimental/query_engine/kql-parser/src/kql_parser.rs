@@ -102,6 +102,7 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> String {
     s
 }
 
+#[allow(dead_code)]
 pub(crate) fn parse_double_literal(
     double_literal_rule: Pair<Rule>) -> Result<f64, Error>
 {
@@ -128,6 +129,7 @@ pub(crate) fn parse_integer_literal(
     Ok(r.unwrap())
 }
 
+#[allow(dead_code)]
 pub(crate) fn parse_real_expression(
     real_expression_rule: Pair<Rule>) -> Result<ScalarExpression, Error>
 {
@@ -486,15 +488,13 @@ mod pest_tests {
 
 #[cfg(test)]
 mod parse_tests {
-    use core::panic;
-
     use super::*;
     use pest::Parser;
 
     #[test]
-    fn test_parse_double_literal() -> Result<(), pest::error::Error<Rule>> {
-        let run_test = |input: &str, expected: f64| -> Result<(), pest::error::Error<Rule>> {
-            let mut result = KqlParser::parse(Rule::double_literal, input)?;
+    fn test_parse_double_literal() {
+        let run_test = |input: &str, expected: f64| {
+            let mut result = KqlParser::parse(Rule::double_literal, input).unwrap();
 
             let f = parse_double_literal(result.next().unwrap());
 
@@ -514,27 +514,21 @@ mod parse_tests {
 
         run_test("1e+1000", f64::INFINITY)?;
         run_test("-1e+1000", f64::NEG_INFINITY)?;
-
-        Ok(())
     }
 
     #[test]
-    fn test_parse_integer_literal() -> Result<(), pest::error::Error<Rule>> {
-        let run_test = |input: &str, expected: i64| -> Result<(), pest::error::Error<Rule>> {
-            let mut result = KqlParser::parse(Rule::integer_literal, input)?;
+    fn test_parse_integer_literal() {
+        let run_test = |input: &str, expected: i64| {
+            let mut result = KqlParser::parse(Rule::integer_literal, input).unwrap();
 
             let i = parse_integer_literal(result.next().unwrap());
 
             assert!(!i.is_err());
             assert_eq!(expected, i.unwrap());
-
-            Ok(())
         };
 
         run_test("1", 1)?;
         run_test("-1", -1)?;
-
-        Ok(())
     }
 
     #[test]
@@ -573,9 +567,9 @@ mod parse_tests {
     }
 
     #[test]
-    fn test_parse_real_expression() -> Result<(), pest::error::Error<Rule>> {
-        let run_test = |input: &str, expected: f64| -> Result<(), pest::error::Error<Rule>> {
-            let mut result = KqlParser::parse(Rule::real_expression, input)?;
+    fn test_parse_real_expression() {
+        let run_test = |input: &str, expected: f64| {
+            let mut result = KqlParser::parse(Rule::real_expression, input).unwrap();
 
             let expression = parse_real_expression(result.next().unwrap()).unwrap();
 
@@ -585,8 +579,6 @@ mod parse_tests {
             else {
                 assert!(false);
             }
-
-            Ok(())
         };
 
         run_test("real(1.0)", 1.0)?;
@@ -594,8 +586,6 @@ mod parse_tests {
         run_test("real(1)", 1.0)?;
         run_test("real(+inf)", f64::INFINITY)?;
         run_test("real(-inf)", f64::NEG_INFINITY)?;
-
-        Ok(())
     }
 
     #[test]
