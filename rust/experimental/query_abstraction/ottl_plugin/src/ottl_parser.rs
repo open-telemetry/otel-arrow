@@ -146,11 +146,13 @@ mod tests {
         assert!(
             OttlParser::parse(Rule::filter_query, "filter: logs: log_record: - 'x = 42'").is_err()
         );
-        assert!(OttlParser::parse(
-            Rule::filter_query,
-            "filter: logs: log_record: - 'x == 42' - 'y == true'"
-        )
-        .is_ok());
+        assert!(
+            OttlParser::parse(
+                Rule::filter_query,
+                "filter: logs: log_record: - 'x == 42' - 'y == true'"
+            )
+            .is_ok()
+        );
         let multiline_query = r#"filter:
         logs:
         log_record:
@@ -161,21 +163,27 @@ mod tests {
 
     #[test]
     fn test_transform_query() {
-        assert!(OttlParser::parse(
-            Rule::transform_query,
-            "transform: log_statements: - set(x, 42)"
-        )
-        .is_ok());
-        assert!(OttlParser::parse(
-            Rule::transform_query,
-            "transform: log_statements: - set(x = 42)"
-        )
-        .is_err());
-        assert!(OttlParser::parse(
-            Rule::transform_query,
-            r#"transform: log_statements: - set(x, 42) where someColumn == "blue""#
-        )
-        .is_ok());
+        assert!(
+            OttlParser::parse(
+                Rule::transform_query,
+                "transform: log_statements: - set(x, 42)"
+            )
+            .is_ok()
+        );
+        assert!(
+            OttlParser::parse(
+                Rule::transform_query,
+                "transform: log_statements: - set(x = 42)"
+            )
+            .is_err()
+        );
+        assert!(
+            OttlParser::parse(
+                Rule::transform_query,
+                r#"transform: log_statements: - set(x, 42) where someColumn == "blue""#
+            )
+            .is_ok()
+        );
         let multiline_query = r#"transform:
         log_statements:
         - set(x, 42)

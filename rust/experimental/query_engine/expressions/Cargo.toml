@@ -1,4 +1,9 @@
 [package]
 name = "data_engine_expressions"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true

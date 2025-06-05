@@ -1,5 +1,9 @@
 # Query Abstraction
 
+> Note: The plan is for the initial work here to be folded into the neighboring
+> `query_engine` component. See [this tracking
+> issue](https://github.com/open-telemetry/otel-arrow/issues/543).
+
 One of the mentioned key deliverables in Phase 2 of otel-arrow is:
 
 - **Prototype for DataFusion integration with OpenTelemetry data, OTTL-transform
