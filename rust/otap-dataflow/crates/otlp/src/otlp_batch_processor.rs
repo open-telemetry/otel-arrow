@@ -21,7 +21,6 @@ pub trait HierarchicalBatchSplit: Sized {
 }
 
 /// TODO: Use the pdata/otlp support library, rewrite this function to be generic over PData as that library develops
-
 impl HierarchicalBatchSplit for ExportTraceServiceRequest {
     fn split_into_batches(mut self, max_batch_size: usize) -> Vec<Self> {
         let mut batches = Vec::new();
