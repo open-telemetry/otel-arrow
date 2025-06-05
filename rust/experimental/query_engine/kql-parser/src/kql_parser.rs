@@ -500,20 +500,18 @@ mod parse_tests {
 
             assert!(!f.is_err());
             assert_eq!(expected, f.unwrap());
-
-            Ok(())
         };
 
-        run_test("1.0", 1.0)?;
-        run_test("-1.0", -1.0)?;
-        run_test("1.0e10", 1.0e10)?;
-        run_test("-1.0e10", -1.0e10)?;
-        run_test("1e-10", 1e-10)?;
-        run_test("-1e10", -1e10)?;
-        run_test("-1e+10", -1e10)?;
+        run_test("1.0", 1.0);
+        run_test("-1.0", -1.0);
+        run_test("1.0e10", 1.0e10);
+        run_test("-1.0e10", -1.0e10);
+        run_test("1e-10", 1e-10);
+        run_test("-1e10", -1e10);
+        run_test("-1e+10", -1e10);
 
-        run_test("1e+1000", f64::INFINITY)?;
-        run_test("-1e+1000", f64::NEG_INFINITY)?;
+        run_test("1e+1000", f64::INFINITY);
+        run_test("-1e+1000", f64::NEG_INFINITY);
     }
 
     #[test]
@@ -527,8 +525,8 @@ mod parse_tests {
             assert_eq!(expected, i.unwrap());
         };
 
-        run_test("1", 1)?;
-        run_test("-1", -1)?;
+        run_test("1", 1);
+        run_test("-1", -1);
     }
 
     #[test]
@@ -581,11 +579,11 @@ mod parse_tests {
             }
         };
 
-        run_test("real(1.0)", 1.0)?;
-        run_test("real(1.0e10)", 1.0e10)?;
-        run_test("real(1)", 1.0)?;
-        run_test("real(+inf)", f64::INFINITY)?;
-        run_test("real(-inf)", f64::NEG_INFINITY)?;
+        run_test("real(1.0)", 1.0);
+        run_test("real(1.0e10)", 1.0e10);
+        run_test("real(1)", 1.0);
+        run_test("real(+inf)", f64::INFINITY);
+        run_test("real(-inf)", f64::NEG_INFINITY);
     }
 
     #[test]
