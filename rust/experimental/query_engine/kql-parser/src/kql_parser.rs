@@ -69,17 +69,15 @@ pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> String {
             skip_push = true;
         } else if current_char == '\\' {
             skip_push = true;
-        } else {
-            if last_char == '\\' {
-                match current_char {
-                    '"' => current_char = '"',
-                    '\'' => current_char = '\'',
-                    '\\' => current_char = '\\',
-                    'n' => current_char = '\n',
-                    'r' => current_char = '\r',
-                    't' => current_char = '\t',
-                    _ => panic!("Unexpected escape character"),
-                }
+        } else if last_char == '\\' {
+            match current_char {
+                '"' => current_char = '"',
+                '\'' => current_char = '\'',
+                '\\' => current_char = '\\',
+                'n' => current_char = '\n',
+                'r' => current_char = '\r',
+                't' => current_char = '\t',
+                _ => panic!("Unexpected escape character"),
             }
         }
 
@@ -394,6 +392,8 @@ mod pest_tests {
 
 #[cfg(test)]
 mod parse_tests {
+    use core::panic;
+
     use super::*;
     use pest::Parser;
 
@@ -432,7 +432,7 @@ mod parse_tests {
 
         if let Error::SyntaxError(_, _) = i.unwrap_err() {
         } else {
-            assert!(false);
+            panic!("Expected SyntaxError");
         }
 
         Ok(())
@@ -486,7 +486,7 @@ mod parse_tests {
                 path.get_selectors()
             );
         } else {
-            assert!(false);
+            panic!("Expected SourceScalarExpression");
         }
 
         Ok(())
@@ -536,7 +536,7 @@ mod parse_tests {
                 s.get_selectors()
             );
         } else {
-            assert!(false);
+            panic!("Expected SourceScalarExpression");
         }
 
         Ok(())
@@ -575,7 +575,7 @@ mod parse_tests {
                 s.get_selectors()
             );
         } else {
-            assert!(false);
+            panic!("Expected SourceScalarExpression");
         }
 
         Ok(())
@@ -602,7 +602,7 @@ mod parse_tests {
                 a.get_selectors()
             );
         } else {
-            assert!(false);
+            panic!("Expected AttachedScalarExpression");
         }
 
         Ok(())
@@ -629,7 +629,7 @@ mod parse_tests {
                 v.get_selectors()
             );
         } else {
-            assert!(false);
+            panic!("Expected VariableScalarExpression");
         }
 
         Ok(())

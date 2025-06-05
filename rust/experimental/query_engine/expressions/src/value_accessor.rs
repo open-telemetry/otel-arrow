@@ -5,7 +5,7 @@ use crate::{IntegerScalarExpression, ScalarExpression, StringScalarExpression};
 /// Notes:
 ///
 /// * Given a target such as `source` and selectors `MapKey('SubItem')`,
-/// `ArrayIndex(0)` evaluation would be equivalent to: `source.SubItem[0]`.
+///   `ArrayIndex(0)` evaluation would be equivalent to: `source.SubItem[0]`.
 /// * An empty set of selectors resolves the initial target.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValueAccessor {
@@ -57,5 +57,11 @@ impl ValueAccessor {
 
     pub fn push_selector(&mut self, selector: ValueSelector) {
         self.selectors.push(selector)
+    }
+}
+
+impl Default for ValueAccessor {
+    fn default() -> Self {
+        Self::new()
     }
 }
