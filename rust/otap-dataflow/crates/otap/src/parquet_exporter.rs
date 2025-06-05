@@ -248,15 +248,14 @@ mod test {
     ) {
         let table_name = payload_type.as_str_name().to_lowercase();
         let file_path = std::fs::read_dir(format!("{}/{}", base_dir, table_name))
-            .unwrap_or_else(|_| panic!(
-                "expect to have found table for {:?}",
-                payload_type
-            ))
+            .unwrap_or_else(|_| panic!("expect to have found table for {:?}", payload_type))
             .next()
-            .unwrap_or_else(|| panic!(
-                "expect at least one parquet file file for type {:?}",
-                payload_type
-            ))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expect at least one parquet file file for type {:?}",
+                    payload_type
+                )
+            })
             .unwrap()
             .path();
 
@@ -304,15 +303,16 @@ mod test {
                         // with the expected key
                         let partition_path =
                             std::fs::read_dir(format!("{}/{}", base_dir, table_name))
-                                .unwrap_or_else(|_| panic!(
-                                    "expect to have found table for {:?}",
-                                    payload_type
-                                ))
+                                .unwrap_or_else(|_| {
+                                    panic!("expect to have found table for {:?}", payload_type)
+                                })
                                 .next()
-                                .unwrap_or_else(|| panic!(
-                                    "expect at least one partition directory for type {:?}",
-                                    payload_type
-                                ))
+                                .unwrap_or_else(|| {
+                                    panic!(
+                                        "expect at least one partition directory for type {:?}",
+                                        payload_type
+                                    )
+                                })
                                 .unwrap()
                                 .path();
 
@@ -326,10 +326,12 @@ mod test {
                         let file_path = std::fs::read_dir(partition_path)
                             .unwrap()
                             .next()
-                            .unwrap_or_else(|| panic!(
-                                "expect at least one parquet file for type {:?}",
-                                payload_type
-                            ))
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "expect at least one parquet file for type {:?}",
+                                    payload_type
+                                )
+                            })
                             .unwrap()
                             .path();
 
