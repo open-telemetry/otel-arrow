@@ -8,9 +8,8 @@ use crate::{IntegerScalarExpression, ScalarExpression, StringScalarExpression};
 /// `ArrayIndex(0)` evaluation would be equivalent to: `source.SubItem[0]`.
 /// * An empty set of selectors resolves the initial target.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ValueAccessor
-{
-    selectors: Vec<ValueSelector>
+pub struct ValueAccessor {
+    selectors: Vec<ValueSelector>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,12 +37,14 @@ pub enum ValueSelector {
     ///   be attempted.
     /// * If any other value type is returned by the [`ScalarExpression`] then
     ///   no data will be resolved.
-    ScalarExpression(ScalarExpression)
+    ScalarExpression(ScalarExpression),
 }
 
 impl ValueAccessor {
     pub fn new() -> ValueAccessor {
-        Self { selectors: Vec::new() }
+        Self {
+            selectors: Vec::new(),
+        }
     }
 
     pub fn get_selectors(&self) -> &Vec<ValueSelector> {

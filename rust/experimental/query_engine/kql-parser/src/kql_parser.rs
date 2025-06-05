@@ -1,4 +1,4 @@
-use std::collections::{HashSet};
+use std::collections::HashSet;
 
 use data_engine_expressions::*;
 use pest::iterators::Pair;
@@ -14,12 +14,16 @@ pub(crate) struct KqlParser;
 pub(crate) struct KqlParserState {
     default_source_map_key: Option<Box<str>>,
     attached_data_names: HashSet<Box<str>>,
-    variable_names: HashSet<Box<str>>
+    variable_names: HashSet<Box<str>>,
 }
 
 impl KqlParserState {
     pub fn new() -> KqlParserState {
-        Self { default_source_map_key: None, attached_data_names: HashSet::new(), variable_names: HashSet::new() }
+        Self {
+            default_source_map_key: None,
+            attached_data_names: HashSet::new(),
+            variable_names: HashSet::new(),
+        }
     }
 
     pub fn with_default_source_map_key_name(mut self, name: &str) -> KqlParserState {
@@ -47,9 +51,7 @@ impl KqlParserState {
 /// when parsed from pest:
 /// * `'some \\' string'` -> `some ' string`
 /// * `\"some \\\" string\"` -> `some \" string`
-pub(crate) fn parse_string_literal(
-    string_literal_rule: Pair<Rule>) -> String
-{
+pub(crate) fn parse_string_literal(string_literal_rule: Pair<Rule>) -> String {
     let raw_string = string_literal_rule.as_str();
     let mut chars = raw_string.chars();
     let mut s = String::with_capacity(raw_string.len());
@@ -65,11 +67,9 @@ pub(crate) fn parse_string_literal(
 
         if position == 1 {
             skip_push = true;
-        }
-        else if current_char == '\\' {
+        } else if current_char == '\\' {
             skip_push = true;
-        }
-        else {
+        } else {
             if last_char == '\\' {
                 match current_char {
                     '"' => current_char = '"',
@@ -78,7 +78,7 @@ pub(crate) fn parse_string_literal(
                     'n' => current_char = '\n',
                     'r' => current_char = '\r',
                     't' => current_char = '\t',
-                    _ => panic!("Unexpected escape character")
+                    _ => panic!("Unexpected escape character"),
                 }
             }
         }
@@ -99,12 +99,13 @@ pub(crate) fn parse_string_literal(
     return s;
 }
 
-pub(crate) fn parse_integer_literal(
-    integer_literal_rule: Pair<Rule>) -> Result<i64, Error>
-{
+pub(crate) fn parse_integer_literal(integer_literal_rule: Pair<Rule>) -> Result<i64, Error> {
     let r = integer_literal_rule.as_str().parse::<i64>();
     if r.is_err() {
-        return Err(Error::SyntaxError(to_query_location(&integer_literal_rule), "Integer value could not be parsed".into()));
+        return Err(Error::SyntaxError(
+            to_query_location(&integer_literal_rule),
+            "Integer value could not be parsed".into(),
+        ));
     }
 
     Ok(r.unwrap())
@@ -131,9 +132,8 @@ pub(crate) fn parse_integer_literal(
 ///   `unknown` -> `Source(MapKey("attributes"), MapKey("unknown"))`
 pub(crate) fn parse_accessor_expression(
     accessor_expression_rule: Pair<Rule>,
-    state: &KqlParserState) -> Result<ScalarExpression, Error>
-{
-
+    state: &KqlParserState,
+) -> Result<ScalarExpression, Error> {
     let query_location = to_query_location(&accessor_expression_rule);
 
     println!("{:?}", query_location);
@@ -159,67 +159,90 @@ pub(crate) fn parse_accessor_expression(
 
                 let i = parse_integer_literal(pair)?;
                 if i < i32::MIN as i64 || i > i32::MAX as i64 {
-                    return Err(Error::SyntaxError(location, "Integer value for array index is too large to fit into a 32bit value".into()));
+                    return Err(Error::SyntaxError(
+                        location,
+                        "Integer value for array index is too large to fit into a 32bit value"
+                            .into(),
+                    ));
                 }
-                value_accessor.push_selector(
-                    ValueSelector::ArrayIndex(
-                        IntegerScalarExpression::new(location, i)));
-            },
+                value_accessor.push_selector(ValueSelector::ArrayIndex(
+                    IntegerScalarExpression::new(location, i),
+                ));
+            }
             Rule::string_literal => {
-                value_accessor.push_selector(
-                    ValueSelector::MapKey(
-                        StringScalarExpression::new(to_query_location(&pair), parse_string_literal(pair).as_str())));
-            },
+                value_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
+                    to_query_location(&pair),
+                    parse_string_literal(pair).as_str(),
+                )));
+            }
             Rule::identifier_literal => {
-                value_accessor.push_selector(
-                    ValueSelector::MapKey(
-                        StringScalarExpression::new(to_query_location(&pair), pair.as_str())));
-            },
+                value_accessor.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
+                    to_query_location(&pair),
+                    pair.as_str(),
+                )));
+            }
             Rule::accessor_expression => {
                 let expression = parse_accessor_expression(pair, state)?;
 
                 if !negate_location.is_none() {
-                    value_accessor.push_selector(
-                        ValueSelector::ScalarExpression(
-                            ScalarExpression::Negate(
-                                NegateScalarExpression::new(negate_location.unwrap(), expression))));
+                    value_accessor.push_selector(ValueSelector::ScalarExpression(
+                        ScalarExpression::Negate(NegateScalarExpression::new(
+                            negate_location.unwrap(),
+                            expression,
+                        )),
+                    ));
                     negate_location = None;
+                } else {
+                    value_accessor.push_selector(ValueSelector::ScalarExpression(expression));
                 }
-                else {
-                    value_accessor.push_selector(
-                        ValueSelector::ScalarExpression(expression));
-                }
-            },
+            }
             Rule::minus_token => {
                 negate_location = Some(to_query_location(&pair));
-            },
-            _ => panic!("Unexpected rule in accessor_expression: {}", pair)
+            }
+            _ => panic!("Unexpected rule in accessor_expression: {}", pair),
         }
     }
 
     if root_accessor_identity == "source" {
-        return Ok(ScalarExpression::Source(SourceScalarExpression::new(query_location, value_accessor)));
-    }
-    else if state.attached_data_names.contains(root_accessor_identity) {
-        return Ok(ScalarExpression::Attached(AttachedScalarExpression::new(query_location, root_accessor_identity, value_accessor)));
-    }
-    else if state.variable_names.contains(root_accessor_identity) {
-        return Ok(ScalarExpression::Variable(VariableScalarExpression::new(query_location, root_accessor_identity, value_accessor)));
-    }
-    else {
+        return Ok(ScalarExpression::Source(SourceScalarExpression::new(
+            query_location,
+            value_accessor,
+        )));
+    } else if state.attached_data_names.contains(root_accessor_identity) {
+        return Ok(ScalarExpression::Attached(AttachedScalarExpression::new(
+            query_location,
+            root_accessor_identity,
+            value_accessor,
+        )));
+    } else if state.variable_names.contains(root_accessor_identity) {
+        return Ok(ScalarExpression::Variable(VariableScalarExpression::new(
+            query_location,
+            root_accessor_identity,
+            value_accessor,
+        )));
+    } else {
         value_accessor.insert_selector(
             0,
-            ValueSelector::MapKey(
-                StringScalarExpression::new(query_location.clone(), root_accessor_identity)));
+            ValueSelector::MapKey(StringScalarExpression::new(
+                query_location.clone(),
+                root_accessor_identity,
+            )),
+        );
 
         if !state.default_source_map_key.is_none() {
             value_accessor.insert_selector(
                 0,
-                ValueSelector::MapKey(
-                    StringScalarExpression::new(query_location.clone(), state.default_source_map_key.as_ref().unwrap())));
+                ValueSelector::MapKey(StringScalarExpression::new(
+                    query_location.clone(),
+                    state.default_source_map_key.as_ref().unwrap(),
+                )),
+            );
         }
 
-        return Ok(ScalarExpression::Source(SourceScalarExpression::new(query_location, value_accessor)));
+        return Ok(ScalarExpression::Source(SourceScalarExpression::new(
+            query_location,
+            value_accessor,
+        )));
     }
 }
 
@@ -234,7 +257,7 @@ mod pest_tests {
     use std::mem::discriminant;
 
     use super::*;
-    use pest::{iterators::Pairs, Parser};
+    use pest::{Parser, iterators::Pairs};
 
     #[test]
     fn test_integer_literal() {
@@ -265,57 +288,78 @@ mod pest_tests {
 
     #[test]
     fn test_accessor_expression() {
-        validate_rule(KqlParser::parse(
-            Rule::accessor_expression, "Abc").unwrap(),
+        validate_rule(
+            KqlParser::parse(Rule::accessor_expression, "Abc").unwrap(),
             &[
                 (Rule::accessor_expression, "Abc"),
-                (Rule::identifier_literal, "Abc")]);
+                (Rule::identifier_literal, "Abc"),
+            ],
+        );
 
-        validate_rule(KqlParser::parse(
-            Rule::accessor_expression, "abc_123").unwrap(),
+        validate_rule(
+            KqlParser::parse(Rule::accessor_expression, "abc_123").unwrap(),
             &[
                 (Rule::accessor_expression, "abc_123"),
-                (Rule::identifier_literal, "abc_123")]);
+                (Rule::identifier_literal, "abc_123"),
+            ],
+        );
 
-        validate_rule(KqlParser::parse(
-            Rule::accessor_expression, "_abc").unwrap(),
+        validate_rule(
+            KqlParser::parse(Rule::accessor_expression, "_abc").unwrap(),
             &[
                 (Rule::accessor_expression, "_abc"),
-                (Rule::identifier_literal, "_abc")]);
+                (Rule::identifier_literal, "_abc"),
+            ],
+        );
 
-        validate_rule(KqlParser::parse(
-            Rule::accessor_expression, "array[0]").unwrap(),
+        validate_rule(
+            KqlParser::parse(Rule::accessor_expression, "array[0]").unwrap(),
             &[
                 (Rule::accessor_expression, "array[0]"),
                 (Rule::identifier_literal, "array"),
-                (Rule::integer_literal, "0")]);
+                (Rule::integer_literal, "0"),
+            ],
+        );
 
-        validate_rule(KqlParser::parse(
-            Rule::accessor_expression, "array[-1]").unwrap(),
+        validate_rule(
+            KqlParser::parse(Rule::accessor_expression, "array[-1]").unwrap(),
             &[
                 (Rule::accessor_expression, "array[-1]"),
                 (Rule::identifier_literal, "array"),
-                (Rule::integer_literal, "-1")]);
+                (Rule::integer_literal, "-1"),
+            ],
+        );
 
-        validate_rule(KqlParser::parse(
-            Rule::accessor_expression, "abc.name").unwrap(),
+        validate_rule(
+            KqlParser::parse(Rule::accessor_expression, "abc.name").unwrap(),
             &[
                 (Rule::accessor_expression, "abc.name"),
                 (Rule::identifier_literal, "abc"),
-                (Rule::identifier_literal, "name")]);
+                (Rule::identifier_literal, "name"),
+            ],
+        );
 
-        validate_rule(KqlParser::parse(
-            Rule::accessor_expression, "abc.name1.name2").unwrap(),
+        validate_rule(
+            KqlParser::parse(Rule::accessor_expression, "abc.name1.name2").unwrap(),
             &[
                 (Rule::accessor_expression, "abc.name1.name2"),
                 (Rule::identifier_literal, "abc"),
                 (Rule::identifier_literal, "name1"),
-                (Rule::identifier_literal, "name2")]);
+                (Rule::identifier_literal, "name2"),
+            ],
+        );
 
-        validate_rule(KqlParser::parse(
-            Rule::accessor_expression, "abc['~name-!'].name1[0][-sub].name2").unwrap(),
+        validate_rule(
+            KqlParser::parse(
+                Rule::accessor_expression,
+                "abc['~name-!'].name1[0][-sub].name2",
+            )
+            .unwrap(),
             &[
-                (Rule::accessor_expression, "abc['~name-!'].name1[0][-sub].name2"),
+                (
+                    Rule::accessor_expression,
+                    "abc['~name-!'].name1[0][-sub].name2",
+                ),
                 (Rule::identifier_literal, "abc"),
                 (Rule::string_literal, "'~name-!'"),
                 (Rule::identifier_literal, "name1"),
@@ -323,7 +367,9 @@ mod pest_tests {
                 (Rule::minus_token, "-"),
                 (Rule::accessor_expression, "sub"),
                 (Rule::identifier_literal, "sub"),
-                (Rule::identifier_literal, "name2")]);
+                (Rule::identifier_literal, "name2"),
+            ],
+        );
 
         assert!(KqlParser::parse(Rule::accessor_expression, "123").is_err());
         assert!(KqlParser::parse(Rule::accessor_expression, "+name").is_err());
@@ -385,8 +431,7 @@ mod parse_tests {
         assert!(i.is_err());
 
         if let Error::SyntaxError(_, _) = i.unwrap_err() {
-        }
-        else {
+        } else {
             assert!(false);
         }
 
@@ -418,19 +463,29 @@ mod parse_tests {
     fn test_parse_accessor_expression_from_source() -> Result<(), pest::error::Error<Rule>> {
         let mut result = KqlParser::parse(Rule::accessor_expression, "source.subkey['array'][0]")?;
 
-        let expression = parse_accessor_expression(
-            result.next().unwrap(),
-            &KqlParserState::new()).unwrap();
+        let expression =
+            parse_accessor_expression(result.next().unwrap(), &KqlParserState::new()).unwrap();
 
         if let ScalarExpression::Source(path) = expression {
             assert_eq!(
                 &[
-                    ValueSelector::MapKey(StringScalarExpression::new(QueryLocation::new(7, 13, 1, 8), "subkey")),
-                    ValueSelector::MapKey(StringScalarExpression::new(QueryLocation::new(14, 21, 1, 15), "array")),
-                    ValueSelector::ArrayIndex(IntegerScalarExpression::new(QueryLocation::new(23, 24, 1, 24), 0))].to_vec(),
-                path.get_selectors());
-        }
-        else {
+                    ValueSelector::MapKey(StringScalarExpression::new(
+                        QueryLocation::new(7, 13, 1, 8),
+                        "subkey"
+                    )),
+                    ValueSelector::MapKey(StringScalarExpression::new(
+                        QueryLocation::new(14, 21, 1, 15),
+                        "array"
+                    )),
+                    ValueSelector::ArrayIndex(IntegerScalarExpression::new(
+                        QueryLocation::new(23, 24, 1, 24),
+                        0
+                    ))
+                ]
+                .to_vec(),
+                path.get_selectors()
+            );
+        } else {
             assert!(false);
         }
 
@@ -445,29 +500,42 @@ mod parse_tests {
 
         state.push_variable_name("var");
 
-        let expression = parse_accessor_expression(
-            result.next().unwrap(),
-            &state).unwrap();
+        let expression = parse_accessor_expression(result.next().unwrap(), &state).unwrap();
 
         let mut v = ValueAccessor::new();
-        v.push_selector(ValueSelector::MapKey(StringScalarExpression::new(QueryLocation::new(13, 21, 1, 14), "neg_attr")));
+        v.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
+            QueryLocation::new(13, 21, 1, 14),
+            "neg_attr",
+        )));
 
         if let ScalarExpression::Source(s) = expression {
             assert_eq!(
                 &[
-                    ValueSelector::MapKey(StringScalarExpression::new(QueryLocation::new(0, 22, 1, 1), "subkey")),
-                    ValueSelector::ScalarExpression(
-                        ScalarExpression::Variable(
-                            VariableScalarExpression::new(QueryLocation::new(7, 10, 1, 8), "var", ValueAccessor::new()))),
-                    ValueSelector::ScalarExpression(
-                        ScalarExpression::Negate(
-                            NegateScalarExpression::new(
-                                QueryLocation::new(12, 13, 1, 13),
-                                ScalarExpression::Source(SourceScalarExpression::new(QueryLocation::new(13, 21, 1, 14), v)))))
-                ].to_vec(),
-                s.get_selectors());
-        }
-        else {
+                    ValueSelector::MapKey(StringScalarExpression::new(
+                        QueryLocation::new(0, 22, 1, 1),
+                        "subkey"
+                    )),
+                    ValueSelector::ScalarExpression(ScalarExpression::Variable(
+                        VariableScalarExpression::new(
+                            QueryLocation::new(7, 10, 1, 8),
+                            "var",
+                            ValueAccessor::new()
+                        )
+                    )),
+                    ValueSelector::ScalarExpression(ScalarExpression::Negate(
+                        NegateScalarExpression::new(
+                            QueryLocation::new(12, 13, 1, 13),
+                            ScalarExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new(13, 21, 1, 14),
+                                v
+                            ))
+                        )
+                    ))
+                ]
+                .to_vec(),
+                s.get_selectors()
+            );
+        } else {
             assert!(false);
         }
 
@@ -475,25 +543,38 @@ mod parse_tests {
     }
 
     #[test]
-    fn test_parse_accessor_expression_implicit_source_and_default_map() -> Result<(), pest::error::Error<Rule>> {
+    fn test_parse_accessor_expression_implicit_source_and_default_map()
+    -> Result<(), pest::error::Error<Rule>> {
         let mut result = KqlParser::parse(Rule::accessor_expression, "subkey")?;
 
         let expression = parse_accessor_expression(
             result.next().unwrap(),
-            &KqlParserState::new().with_default_source_map_key_name("attributes")).unwrap();
+            &KqlParserState::new().with_default_source_map_key_name("attributes"),
+        )
+        .unwrap();
 
         let mut v = ValueAccessor::new();
-        v.push_selector(ValueSelector::MapKey(StringScalarExpression::new(QueryLocation::new(13, 21, 1, 14), "neg_attr")));
+        v.push_selector(ValueSelector::MapKey(StringScalarExpression::new(
+            QueryLocation::new(13, 21, 1, 14),
+            "neg_attr",
+        )));
 
         if let ScalarExpression::Source(s) = expression {
             assert_eq!(
                 &[
-                    ValueSelector::MapKey(StringScalarExpression::new(QueryLocation::new(0, 6, 1, 1), "attributes")),
-                    ValueSelector::MapKey(StringScalarExpression::new(QueryLocation::new(0, 6, 1, 1), "subkey"))
-                ].to_vec(),
-                s.get_selectors());
-        }
-        else {
+                    ValueSelector::MapKey(StringScalarExpression::new(
+                        QueryLocation::new(0, 6, 1, 1),
+                        "attributes"
+                    )),
+                    ValueSelector::MapKey(StringScalarExpression::new(
+                        QueryLocation::new(0, 6, 1, 1),
+                        "subkey"
+                    ))
+                ]
+                .to_vec(),
+                s.get_selectors()
+            );
+        } else {
             assert!(false);
         }
 
@@ -506,15 +587,21 @@ mod parse_tests {
 
         let expression = parse_accessor_expression(
             result.next().unwrap(),
-            &KqlParserState::new().with_attached_data_names(&["resource"])).unwrap();
+            &KqlParserState::new().with_attached_data_names(&["resource"]),
+        )
+        .unwrap();
 
         if let ScalarExpression::Attached(a) = expression {
             assert_eq!("resource", a.get_name());
             assert_eq!(
-                &[ValueSelector::MapKey(StringScalarExpression::new(QueryLocation::new(9, 19, 1, 10), "~at'tr~"))].to_vec(),
-                a.get_selectors());
-        }
-        else {
+                &[ValueSelector::MapKey(StringScalarExpression::new(
+                    QueryLocation::new(9, 19, 1, 10),
+                    "~at'tr~"
+                ))]
+                .to_vec(),
+                a.get_selectors()
+            );
+        } else {
             assert!(false);
         }
 
@@ -529,17 +616,19 @@ mod parse_tests {
 
         state.push_variable_name("a");
 
-        let expression = parse_accessor_expression(
-            result.next().unwrap(),
-            &state).unwrap();
+        let expression = parse_accessor_expression(result.next().unwrap(), &state).unwrap();
 
         if let ScalarExpression::Variable(v) = expression {
             assert_eq!("a", v.get_name());
             assert_eq!(
-                &[ValueSelector::ArrayIndex(IntegerScalarExpression::new(QueryLocation::new(2, 4, 1, 3), -1))].to_vec(),
-                v.get_selectors());
-        }
-        else {
+                &[ValueSelector::ArrayIndex(IntegerScalarExpression::new(
+                    QueryLocation::new(2, 4, 1, 3),
+                    -1
+                ))]
+                .to_vec(),
+                v.get_selectors()
+            );
+        } else {
             assert!(false);
         }
 
