@@ -1,0 +1,31 @@
+WHITESPACE = _{ " " | NEWLINE }
+COMMENT = _{ ("/*" ~ (!"*/" ~ ANY)* ~ "*/") | ("//" ~ (!"\n" ~ ANY)*) }
+
+// Tokens
+minus_token = { "-" }
+
+// Literals
+integer_literal = @{
+    "-"?
+    ~ ("0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*)
+}
+double_quote_string_char = _{
+    !("\"" | "\\") ~ ANY
+    | "\\" ~ ("\"" | "\\" | "n" | "r" | "t")
+    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
+single_quote_string_char = _{
+    !("'" | "\\") ~ ANY
+    | "\\" ~ ("'" | "\\" | "n" | "r" | "t")
+    | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
+}
+string_literal = @{
+    ("\"" ~ double_quote_string_char* ~ "\"")
+    | ("'" ~ single_quote_string_char* ~ "'")
+}
+identifier_literal = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
+
+// Expressions
+accessor_index = _{ "[" ~ (integer_literal | string_literal | (minus_token? ~ accessor_expression)) ~ "]" }
+accessor = _{ identifier_literal ~ accessor_index? }
+accessor_expression = { accessor ~ (("." ~ accessor)|accessor_index)* }
