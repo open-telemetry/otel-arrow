@@ -6,34 +6,37 @@
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrowPrimitiveType, DictionaryArray, StringArray, StringBuilder, StringDictionaryBuilder,
+    Array, ArrayRef, ArrowPrimitiveType, DictionaryArray, StringArray, StringBuilder,
+    StringDictionaryBuilder,
 };
 use arrow::datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type};
 use arrow::error::ArrowError;
 
-use crate::encode::record::array::dictionary::DictionaryArrayWithType;
+use crate::encode::record::array::dictionary::DictionaryBuilder;
+use crate::encode::record::array::{ArrayAppend, NoArgs};
 
-use super::dictionary::{DictionaryArrayBuilder, DictionaryBuilderError as Error, Result};
+use super::dictionary::{DictionaryArrayAppend, DictionaryBuilderError as Error, Result};
 use super::{ArrayBuilder, ArrayBuilderConstructor, dictionary::UpdateDictionaryIndexInto};
 
 impl ArrayBuilderConstructor for StringBuilder {
-    fn new() -> Self {
+    type Args = NoArgs;
+
+    fn new(_args: Self::Args) -> Self {
         Self::new()
     }
 }
 
-impl ArrayBuilder for StringBuilder {
+impl ArrayAppend for StringBuilder {
     type Native = String;
 
     fn append_value(&mut self, value: &Self::Native) {
         self.append_value(value);
     }
+}
 
-    fn finish(&mut self) -> super::ArrayWithType {
-        super::ArrayWithType {
-            data_type: DataType::Utf8,
-            array: Arc::new(self.finish()),
-        }
+impl ArrayBuilder for StringBuilder {
+    fn finish(&mut self) -> ArrayRef {
+        Arc::new(self.finish())
     }
 }
 
@@ -41,12 +44,14 @@ impl<T> ArrayBuilderConstructor for StringDictionaryBuilder<T>
 where
     T: ArrowDictionaryKeyType,
 {
-    fn new() -> Self {
+    type Args = ();
+
+    fn new(_args: Self::Args) -> Self {
         Self::new()
     }
 }
 
-impl<T> DictionaryArrayBuilder<T> for StringDictionaryBuilder<T>
+impl<T> DictionaryArrayAppend for StringDictionaryBuilder<T>
 where
     T: ArrowDictionaryKeyType + ArrowPrimitiveType,
     <T as ArrowPrimitiveType>::Native: Into<usize>,
@@ -63,12 +68,14 @@ where
             Err(e) => panic!("unexpected error type appending to dictionary {}", e),
         }
     }
+}
 
-    fn finish(&mut self) -> DictionaryArrayWithType<T> {
-        DictionaryArrayWithType {
-            data_type: DataType::Dictionary(Box::new(T::DATA_TYPE), Box::new(DataType::Utf8)),
-            array: Arc::new(self.finish()),
-        }
+impl<K> DictionaryBuilder<K> for StringDictionaryBuilder<K>
+where
+    K: ArrowDictionaryKeyType,
+{
+    fn finish(&mut self) -> DictionaryArray<K> {
+        self.finish()
     }
 }
 
@@ -122,17 +129,17 @@ mod test {
     #[test]
     fn test_string_builder() {
         let mut string_builder = StringBuilder::new();
-        ArrayBuilder::append_value(&mut string_builder, &"a".to_string());
-        ArrayBuilder::append_value(&mut string_builder, &"b".to_string());
-        ArrayBuilder::append_value(&mut string_builder, &"c".to_string());
+        ArrayAppend::append_value(&mut string_builder, &"a".to_string());
+        ArrayAppend::append_value(&mut string_builder, &"b".to_string());
+        ArrayAppend::append_value(&mut string_builder, &"c".to_string());
 
         let result = ArrayBuilder::finish(&mut string_builder);
 
-        assert_eq!(result.data_type, DataType::Utf8);
+        assert_eq!(result.data_type(), &DataType::Utf8);
 
         let expected = StringArray::from(vec!["a", "b", "c"]);
         assert_eq!(
-            result.array.as_any().downcast_ref::<StringArray>().unwrap(),
+            result.as_any().downcast_ref::<StringArray>().unwrap(),
             &expected
         );
     }
@@ -141,20 +148,20 @@ mod test {
     fn test_dictionary_builder() {
         let mut dict_builder = StringDictionaryBuilder::<UInt8Type>::new();
         let index =
-            DictionaryArrayBuilder::append_value(&mut dict_builder, &"a".to_string()).unwrap();
+            DictionaryArrayAppend::append_value(&mut dict_builder, &"a".to_string()).unwrap();
         assert_eq!(index, 0);
         let index =
-            DictionaryArrayBuilder::append_value(&mut dict_builder, &"a".to_string()).unwrap();
+            DictionaryArrayAppend::append_value(&mut dict_builder, &"a".to_string()).unwrap();
         assert_eq!(index, 0);
         let index =
-            DictionaryArrayBuilder::append_value(&mut dict_builder, &"b".to_string()).unwrap();
+            DictionaryArrayAppend::append_value(&mut dict_builder, &"b".to_string()).unwrap();
         assert_eq!(index, 1);
 
-        let result = DictionaryArrayBuilder::finish(&mut dict_builder);
+        let result = DictionaryBuilder::finish(&mut dict_builder);
 
         assert_eq!(
-            result.data_type,
-            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8))
+            result.data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8))
         );
 
         let mut expected_dict_values = StringBuilder::new();
@@ -166,7 +173,6 @@ mod test {
 
         assert_eq!(
             result
-                .array
                 .as_any()
                 .downcast_ref::<UInt8DictionaryArray>()
                 .unwrap(),
@@ -178,15 +184,14 @@ mod test {
     fn test_dictionary_builder_overflow() {
         let mut dict_builder = StringDictionaryBuilder::<UInt8Type>::new();
         for i in 0..255 {
-            let _ =
-                DictionaryArrayBuilder::append_value(&mut dict_builder, &i.to_string()).unwrap();
+            let _ = DictionaryArrayAppend::append_value(&mut dict_builder, &i.to_string()).unwrap();
         }
 
         // this should be fine
-        let _ = DictionaryArrayBuilder::append_value(&mut dict_builder, &"a".to_string()).unwrap();
+        let _ = DictionaryArrayAppend::append_value(&mut dict_builder, &"a".to_string()).unwrap();
 
         // this should overflow
-        let result = DictionaryArrayBuilder::append_value(&mut dict_builder, &"b".to_string());
+        let result = DictionaryArrayAppend::append_value(&mut dict_builder, &"b".to_string());
         assert!(result.is_err());
 
         let err = result.unwrap_err();
