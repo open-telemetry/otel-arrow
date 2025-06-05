@@ -1,7 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Some description
+//! this module contains base types for enabling dictionary encoding with the adaptive array
+//! builder. The adaptive array builder will try to use the smallest dictionary index possible
+//! when building array using dictionary encoding and will interact with the types in this module
+//! to building the dictionary and upgrading the index type on overflows.
 
 use std::sync::Arc;
 

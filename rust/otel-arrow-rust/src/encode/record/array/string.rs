@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Some description
+//! this module contains the base builders for building strings using the adaptive array builders
 
 use std::sync::Arc;
 
