@@ -405,35 +405,34 @@ mod parse_tests {
     use pest::Parser;
 
     #[test]
-    fn test_parse_positive_integer_literal() -> Result<(), pest::error::Error<Rule>> {
-        let mut result = KqlParser::parse(Rule::integer_literal, "1")?;
+    fn test_parse_positive_integer_literal() {
+        let mut result = KqlParser::parse(Rule::integer_literal, "1").unwrap();
 
         let i = parse_integer_literal(result.next().unwrap());
 
         assert!(i.is_ok());
         assert_eq!(1, i.unwrap());
-
-        Ok(())
     }
 
     #[test]
-    fn test_parse_negative_integer_literal() -> Result<(), pest::error::Error<Rule>> {
-        let mut result = KqlParser::parse(Rule::integer_literal, "-1")?;
+    fn test_parse_negative_integer_literal() {
+        let mut result = KqlParser::parse(Rule::integer_literal, "-1").unwrap();
 
         let i = parse_integer_literal(result.next().unwrap());
 
         assert!(i.is_ok());
         assert_eq!(-1, i.unwrap());
-
-        Ok(())
     }
 
     #[test]
-    fn test_parse_invalid_integer_literal() -> Result<(), pest::error::Error<Rule>> {
+    fn test_parse_invalid_integer_literal() {
         let input = format!("{}", i64::MAX as i128 + 1);
-        let mut result = KqlParser::parse(Rule::integer_literal, input.as_str())?;
+        let result = KqlParser::parse(Rule::integer_literal, input.as_str());
 
-        let i = parse_integer_literal(result.next().unwrap());
+        assert!(result.is_ok());
+
+        let mut pairs = result.unwrap();
+        let i = parse_integer_literal(pairs.next().unwrap());
 
         assert!(i.is_err());
 
@@ -441,34 +440,28 @@ mod parse_tests {
         } else {
             panic!("Expected SyntaxError");
         }
-
-        Ok(())
     }
 
     #[test]
-    fn test_parse_string_literal() -> Result<(), pest::error::Error<Rule>> {
-        let run_test = |input: &str, expected: &str| -> Result<(), pest::error::Error<Rule>> {
-            let mut result = KqlParser::parse(Rule::string_literal, input)?;
+    fn test_parse_string_literal() {
+        let run_test = |input: &str, expected: &str| {
+            let mut result = KqlParser::parse(Rule::string_literal, input).unwrap();
 
             let actual = parse_string_literal(result.next().unwrap());
 
             assert_eq!(expected, actual);
-
-            Ok(())
         };
 
-        run_test("\"Hello world\"", "Hello world")?;
-        run_test("\"Hello \\\" world\"", "Hello \" world")?;
-        run_test("'Hello world'", "Hello world")?;
-        run_test("'Hello \" world'", "Hello \" world")?;
-        run_test("'Hello \\' world'", "Hello ' world")?;
-
-        Ok(())
+        run_test("\"Hello world\"", "Hello world");
+        run_test("\"Hello \\\" world\"", "Hello \" world");
+        run_test("'Hello world'", "Hello world");
+        run_test("'Hello \" world'", "Hello \" world");
+        run_test("'Hello \\' world'", "Hello ' world");
     }
 
     #[test]
-    fn test_parse_accessor_expression_from_source() -> Result<(), pest::error::Error<Rule>> {
-        let mut result = KqlParser::parse(Rule::accessor_expression, "source.subkey['array'][0]")?;
+    fn test_parse_accessor_expression_from_source() {
+        let mut result = KqlParser::parse(Rule::accessor_expression, "source.subkey['array'][0]").unwrap();
 
         let expression =
             parse_accessor_expression(result.next().unwrap(), &KqlParserState::new()).unwrap();
@@ -495,13 +488,11 @@ mod parse_tests {
         } else {
             panic!("Expected SourceScalarExpression");
         }
-
-        Ok(())
     }
 
     #[test]
-    fn test_parse_accessor_expression_implicit_source() -> Result<(), pest::error::Error<Rule>> {
-        let mut result = KqlParser::parse(Rule::accessor_expression, "subkey[var][-neg_attr]")?;
+    fn test_parse_accessor_expression_implicit_source() {
+        let mut result = KqlParser::parse(Rule::accessor_expression, "subkey[var][-neg_attr]").unwrap();
 
         let mut state = KqlParserState::new();
 
@@ -545,14 +536,11 @@ mod parse_tests {
         } else {
             panic!("Expected SourceScalarExpression");
         }
-
-        Ok(())
     }
 
     #[test]
-    fn test_parse_accessor_expression_implicit_source_and_default_map()
-    -> Result<(), pest::error::Error<Rule>> {
-        let mut result = KqlParser::parse(Rule::accessor_expression, "subkey")?;
+    fn test_parse_accessor_expression_implicit_source_and_default_map() {
+        let mut result = KqlParser::parse(Rule::accessor_expression, "subkey").unwrap();
 
         let expression = parse_accessor_expression(
             result.next().unwrap(),
@@ -584,13 +572,11 @@ mod parse_tests {
         } else {
             panic!("Expected SourceScalarExpression");
         }
-
-        Ok(())
     }
 
     #[test]
-    fn test_parse_accessor_expression_from_attached() -> Result<(), pest::error::Error<Rule>> {
-        let mut result = KqlParser::parse(Rule::accessor_expression, "resource['~at\\'tr~']")?;
+    fn test_parse_accessor_expression_from_attached() {
+        let mut result = KqlParser::parse(Rule::accessor_expression, "resource['~at\\'tr~']").unwrap();
 
         let expression = parse_accessor_expression(
             result.next().unwrap(),
@@ -611,13 +597,11 @@ mod parse_tests {
         } else {
             panic!("Expected AttachedScalarExpression");
         }
-
-        Ok(())
     }
 
     #[test]
-    fn test_parse_accessor_expression_from_variable() -> Result<(), pest::error::Error<Rule>> {
-        let mut result = KqlParser::parse(Rule::accessor_expression, "a[-1]")?;
+    fn test_parse_accessor_expression_from_variable() {
+        let mut result = KqlParser::parse(Rule::accessor_expression, "a[-1]").unwrap();
 
         let mut state = KqlParserState::new();
 
@@ -638,7 +622,5 @@ mod parse_tests {
         } else {
             panic!("Expected VariableScalarExpression");
         }
-
-        Ok(())
     }
 }
