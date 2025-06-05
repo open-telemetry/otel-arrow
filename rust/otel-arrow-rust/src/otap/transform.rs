@@ -470,10 +470,10 @@ mod test {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use crate::arrays::{get_string_array, get_u16_array, get_u32_array};
+    use crate::arrays::{get_u16_array, get_u32_array};
     use crate::error::Error;
     use crate::otlp::attributes::store::AttributeValueType;
-    use crate::schema::{get_field_metadata, get_schema_metadata};
+    use crate::schema::get_field_metadata;
 
     #[test]
     fn test_materialize_parent_id_for_attributes_val_change() {
