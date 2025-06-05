@@ -1,37 +1,21 @@
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
 
 use convert_case::{Case, Casing};
 use proc_macro::TokenStream;
 use quote::{ToTokens, quote};
 use std::collections::HashMap;
-use syn::{DeriveInput, parse_macro_input};
+use syn::DeriveInput;
 
+mod field_info;
+mod message_info;
 
-#[derive(Clone, Debug)]
-struct FieldInfo {
-    ident: syn::Ident,
-    is_param: bool,
-    is_optional: bool,
-    is_repeated: bool,
-    is_oneof: bool,
-    field_type: syn::Type,
-    as_type: Option<syn::Type>,
-    tag: u32,
-    prost_type: String,
-}
+use field_info::FieldInfo;
+use message_info::MessageInfo;
+use otlp_model::OneofCase;
+use otlp_model::OneofMapping;
 
 type TokenVec = Vec<proc_macro2::TokenStream>;
-type OneofMapping<'a> = Option<(&'a &'a str, &'a Vec<otlp_model::OneofCase>)>;
 
 /// Identifier generation utilities for consistent naming patterns
 mod ident_utils {
@@ -385,9 +369,13 @@ mod field_utils {
             }
             (false, false, false, _) => {
                 if matches!(visit_method.to_string().as_str(), "visit_string") {
-                    Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
+                    Some(
+                        quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); },
+                    )
                 } else {
-                    Some(quote! { arg = #visitor_param.#visit_method(arg, *&self.data.#field_name); })
+                    Some(
+                        quote! { arg = #visitor_param.#visit_method(arg, *&self.data.#field_name); },
+                    )
                 }
             }
             (true, false, true, _) => {
@@ -400,21 +388,17 @@ mod field_utils {
             }
             (true, false, false, _) => {
                 if matches!(visit_method.to_string().as_str(), "visit_string") {
-                    Some(
-                        quote! { 
-                            if let Some(f) = &self.data.#field_name {
-                                arg = #visitor_param.#visit_method(arg, f);
-                            }
-                        },
-                    )
+                    Some(quote! {
+                        if let Some(f) = &self.data.#field_name {
+                            arg = #visitor_param.#visit_method(arg, f);
+                        }
+                    })
                 } else {
-                    Some(
-                        quote! { 
-                            if let Some(f) = &self.data.#field_name {
-                                arg = #visitor_param.#visit_method(arg, *f);
-                            }
-                        },
-                    )
+                    Some(quote! {
+                        if let Some(f) = &self.data.#field_name {
+                            arg = #visitor_param.#visit_method(arg, *f);
+                        }
+                    })
                 }
             }
             (false, true, true, _) => {
@@ -483,7 +467,7 @@ mod field_utils {
     /// Generate visitor calls for oneof fields based on their variants
     pub fn generate_oneof_visitor_calls(
         info: &FieldInfo,
-        oneof_mapping: OneofMapping,
+        oneof_mapping: &OneofMapping,
     ) -> Vec<proc_macro2::TokenStream> {
         let mut visitor_calls = Vec::new();
 
@@ -578,8 +562,8 @@ mod oneof_utils {
 
     /// Generate all constructors for a oneof mapping
     pub fn generate_oneof_constructors(
-        oneof_mapping: (&str, &Vec<otlp_model::OneofCase>),
-        param_names: &[&str],
+        oneof_mapping: &(String, Vec<OneofCase>),
+        param_names: &[String],
         param_bounds: &[proc_macro2::TokenStream],
         param_decls: &[proc_macro2::TokenStream],
         param_args: &[proc_macro2::TokenStream],
@@ -597,7 +581,7 @@ mod oneof_utils {
         let oneof_name = oneof_path.split('.').last().unwrap();
         let oneof_idx = param_names
             .iter()
-            .position(|&name| name == oneof_name)
+            .position(|name| name.as_str() == oneof_name)
             .unwrap();
 
         oneof_cases
@@ -617,52 +601,6 @@ mod oneof_utils {
             })
             .collect()
     }
-}
-
-/// Simple prost field annotation parsing utilities
-fn parse_prost_tag_and_type(field: &syn::Field) -> (u32, String) {
-    // Find the #[prost(...)] attribute
-    let prost_attr = field
-        .attrs
-        .iter()
-        .find(|attr| attr.path().is_ident("prost"));
-    
-    if let Some(attr) = prost_attr {
-        if let syn::Meta::List(meta_list) = &attr.meta {
-            let tokens = &meta_list.tokens;
-            
-            // Simple parsing: extract tag number and type
-            let attr_str = tokens.to_string();
-            let mut tag = 0u32;
-            let mut prost_type = "unknown".to_string();
-            
-            // Parse tag number from "tag = \"1\"" or "tag = 1"
-            if let Some(tag_start) = attr_str.find("tag = ") {
-                let tag_part = &attr_str[tag_start + 6..];
-                if let Some(comma_pos) = tag_part.find(',') {
-                    let tag_value = &tag_part[..comma_pos].trim().trim_matches('"');
-                    tag = tag_value.parse().unwrap_or(0);
-                } else {
-                    let tag_value = tag_part.trim().trim_matches('"');
-                    tag = tag_value.parse().unwrap_or(0);
-                }
-            }
-            
-            // Extract first identifier as protobuf type (string, int64, message, etc.)
-            let parts: Vec<&str> = attr_str.split(',').collect();
-            if let Some(first_part) = parts.first() {
-                let type_part = first_part.trim();
-                if !type_part.starts_with("tag") {
-                    prost_type = type_part.to_string();
-                }
-            }
-            
-            return (tag, prost_type);
-        }
-    }
-    
-    // Default values if parsing fails
-    (0, "unknown".to_string())
 }
 
 /// Attribute macro for associating the OTLP protocol buffer fully
@@ -694,228 +632,32 @@ pub fn qualified(args: TokenStream, input: TokenStream) -> TokenStream {
 /// beyond what prost::Message provides.
 #[proc_macro_derive(Message)]
 pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let outer_name = &input.ident;
+    MessageInfo::new(input, |message_info| {
+        let mut tokens = TokenStream::new();
 
-    // Get the fully qualified type name from attribute
-    let type_name = input
-        .attrs
-        .iter()
-        .find_map(|attr| {
-            if attr.path().is_ident("doc") {
-                // Use parse_nested_meta to extract the qualified name
-                let mut qualified_name = None;
-                let _ = attr.parse_nested_meta(|meta| {
-                    if meta.path.is_ident("hidden") {
-                        Ok(())
-                    } else if meta.path.is_ident("otlp_qualified_name") {
-                        let value = meta.value()?;
-                        let lit: syn::LitStr = value.parse()?;
-                        qualified_name = Some(lit.value());
-                        Ok(())
-                    } else {
-                        Ok(())
-                    }
-                });
-                qualified_name
-            } else {
-                None
-            }
-        })
-        .unwrap();
+        tokens.extend(derive_otlp_builders(&message_info));
 
-    // Get required parameters for this type.
-    let param_names = otlp_model::REQUIRED_PARAMS.get(type_name.as_str()).unwrap();
+        tokens.extend(derive_otlp_visitors(&message_info));
 
-    // Check if this struct has a oneof field
-    let oneof_mapping = otlp_model::ONEOF_MAPPINGS
-        .iter()
-        .find(|(field, _)| field.starts_with(&type_name));
+        tokens.extend(derive_otlp_adapters(&message_info));
 
-    // Extract all fields from the struct definition
-    let struct_fields = match &input.data {
-        syn::Data::Struct(data) => {
-            if let syn::Fields::Named(fields) = &data.fields {
-                fields.named.iter().collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            }
-        }
-        _ => Vec::new(),
-    };
-
-    // If there are no fields, it's either an empty message or an enum,
-    // either way should not be listed, no builder is needed.
-    if struct_fields.is_empty() {
-        panic!("message with empty fields")
-    }
-
-    // Helper function to check if a type is Option<T>
-    let is_option_type = |ty: &syn::Type| -> bool { type_utils::is_container_type(ty, "Option") };
-
-    // Helper function to check if a type is Vec<T>
-    let is_vec_type = |ty: &syn::Type| -> bool { type_utils::is_container_type(ty, "Vec") };
-
-    // Function to check if a field is marked as optional
-    let is_optional_repeated = |field: &syn::Field| {
-        // Check prost attributes first
-        let attr_optional = field.attrs.iter().any(|attr| {
-            attr.path().is_ident("prost") && attr.to_token_stream().to_string().contains("optional")
-        });
-        let attr_repeated = field.attrs.iter().any(|attr| {
-            attr.path().is_ident("prost") && attr.to_token_stream().to_string().contains("repeated")
-        });
-
-        // Also check the actual type structure
-        let type_optional = is_option_type(&field.ty);
-        let type_repeated = is_vec_type(&field.ty);
-
-        (
-            attr_optional || type_optional,
-            attr_repeated || type_repeated,
-        )
-    };
-
-    // Extract option inner type as a standalone function for better reuse
-    let extract_option_inner_type = |ty: &syn::Type| -> Option<(syn::Type, bool)> {
-        if type_utils::is_container_type(ty, "Option") {
-            type_utils::extract_inner_type(ty).map(|inner| (inner, true))
-        } else {
-            None
-        }
-    };
-
-    let fields_original: Vec<FieldInfo> = struct_fields
-        .iter()
-        .filter_map(|field| {
-            // Early return if no identifier
-            field.ident.as_ref().map(|ident| {
-                let ident_str = ident.to_string();
-                let field_path = format!("{}.{}", type_name, ident_str);
-                let is_param = param_names.contains(&ident_str.as_str());
-                let (is_optional, is_repeated) = is_optional_repeated(field);
-                let is_oneof = oneof_mapping.map(|x| *x.0 == field_path).unwrap_or(false);
-
-                // Process type information
-                let (inner_type, is_optional_extraction_ok) = if is_optional {
-                    extract_option_inner_type(&field.ty)
-                        .unwrap_or_else(|| (field.ty.clone(), false))
-                } else {
-                    (field.ty.clone(), true)
-                };
-
-                // Validate optional field extraction
-                if is_optional && !is_optional_extraction_ok {
-                    panic!(
-                        "Field '{}' is marked optional but does not have a valid Option<T> type",
-                        ident
-                    );
-                }
-
-                // Get type overrides if present
-                let (field_type, as_type) = otlp_model::FIELD_TYPE_OVERRIDES
-                    .get(field_path.as_str())
-                    .map(|over| {
-                        (
-                            syn::parse_str::<syn::Type>(over.datatype).unwrap(),
-                            Some(syn::parse_str::<syn::Type>(over.fieldtype).unwrap()),
-                        )
-                    })
-                    .unwrap_or_else(|| (inner_type, None));
-
-                // Parse Prost field annotation
-                let (tag, prost_type) = parse_prost_tag_and_type(field);
-
-                FieldInfo {
-                    ident: ident.clone(),
-                    is_param,
-                    is_optional,
-                    is_repeated,
-                    is_oneof,
-                    field_type,
-                    as_type,
-                    tag,
-                    prost_type,
-                }
-            })
-        })
-        .collect();
-
-    // Partition fields into ordered parameters and remaining builder fields.
-    let param_fields: Vec<_> = param_names
-        .iter()
-        .map(|param_name| {
-            fields_original
-                .iter()
-                .find(|info| {
-                    let ident = info.ident.to_string();
-                    info.is_param && ident == *param_name
-                })
-                .unwrap()
-        })
-        .cloned()
-        .collect();
-    let builder_fields: Vec<_> = fields_original
-        .iter()
-        .filter(|info| !info.is_param)
-        .cloned()
-        .collect();
-    let all_fields: Vec<_> = param_fields
-        .iter()
-        .chain(builder_fields.iter())
-        .cloned()
-        .collect();
-
-    let mut tokens = TokenStream::new();
-
-    tokens.extend(derive_otlp_builders(
-        outer_name,
-        param_names,
-        &param_fields,
-        &builder_fields,
-        &all_fields,
-        oneof_mapping,
-    ));
-
-    tokens.extend(derive_otlp_visitors(
-        outer_name,
-        param_names,
-        &param_fields,
-        &builder_fields,
-        &all_fields,
-        oneof_mapping,
-    ));
-
-    tokens.extend(derive_otlp_adapters(
-        outer_name,
-        param_names,
-        &param_fields,
-        &builder_fields,
-        &all_fields,
-        oneof_mapping,
-    ));
-
-    tokens
+        tokens
+    })
 }
 
 /// Emits the builders, new(), and finish() methods.
-fn derive_otlp_builders(
-    outer_name: &syn::Ident,
-    param_names: &Vec<&str>,
-    param_fields: &[FieldInfo],
-    builder_fields: &[FieldInfo],
-    all_fields: &[FieldInfo],
-    oneof_mapping: OneofMapping,
-) -> TokenStream {
-    let builder_name = ident_utils::builder_name(outer_name);
+fn derive_otlp_builders(msg: &MessageInfo) -> TokenStream {
+    let outer_name = &msg.outer_name;
+    let builder_name = ident_utils::builder_name(&outer_name);
 
     // Generate generic type parameters names like ["T1", "T2", ...]
-    let type_params: Vec<syn::Ident> = (0..all_fields.len())
+    let type_params: Vec<syn::Ident> = (0..msg.all_fields.len())
         .map(|idx| ident_utils::create_ident(&format!("T{}", idx + 1)))
         .collect();
 
     // Generate a list of arguments to pass from build() to new().
-    let param_args: TokenVec = param_fields
+    let param_args: TokenVec = msg
+        .param_fields
         .iter()
         .map(|info| {
             let field_name = &info.ident;
@@ -924,7 +666,8 @@ fn derive_otlp_builders(
         .collect();
 
     // Generate parameter declarations and where bounds
-    let (param_decls, param_bounds): (TokenVec, TokenVec) = param_fields
+    let (param_decls, param_bounds): (TokenVec, TokenVec) = msg
+        .param_fields
         .iter()
         .enumerate()
         .map(|(idx, info)| {
@@ -940,21 +683,23 @@ fn derive_otlp_builders(
         .unzip();
 
     // Generate field assignments and initializers
-    let (field_assignments, field_initializers): (TokenVec, TokenVec) = all_fields
+    let (field_assignments, field_initializers): (TokenVec, TokenVec) = msg
+        .all_fields
         .iter()
         .map(field_utils::generate_field_assignment)
         .unzip();
 
     // Default initializers for fields
-    let default_initializers: TokenVec = all_fields
+    let default_initializers: TokenVec = msg
+        .all_fields
         .iter()
         .map(field_utils::generate_default_initializer)
         .collect();
 
     // All field initializers includes parameters and defaults
-    let all_field_initializers: Vec<_> = (0..all_fields.len())
+    let all_field_initializers: Vec<_> = (0..msg.all_fields.len())
         .map(|idx| {
-            if idx < param_names.len() {
+            if idx < msg.param_names.len() {
                 field_initializers[idx].clone()
             } else {
                 default_initializers[idx].clone()
@@ -963,7 +708,8 @@ fn derive_otlp_builders(
         .collect();
 
     // Generate builder methods
-    let builder_methods: TokenVec = all_fields
+    let builder_methods: TokenVec = msg
+        .all_fields
         .iter()
         .enumerate()
         .filter(|(_, info)| !info.is_oneof)
@@ -983,7 +729,7 @@ fn derive_otlp_builders(
         .collect();
 
     // When there are no builder fields, we can skip the builder struct.
-    let derive_builder = !builder_fields.is_empty();
+    let derive_builder = !msg.builder_fields.is_empty();
 
     // Function to build constructors used in oneof and normal cases.
     let create_constructor =
@@ -1015,7 +761,7 @@ fn derive_otlp_builders(
         };
 
     // Build constructors for both regular and oneof cases.
-    let all_constructors: TokenVec = match oneof_mapping {
+    let all_constructors: TokenVec = match msg.oneof_mapping.as_ref() {
         None => {
             vec![create_constructor(
                 "".to_string(),
@@ -1025,9 +771,9 @@ fn derive_otlp_builders(
                 &all_field_initializers,
             )]
         }
-        Some((oneof_path, oneof_cases)) => oneof_utils::generate_oneof_constructors(
-            (oneof_path, oneof_cases),
-            param_names,
+        Some(oneof_mapping) => oneof_utils::generate_oneof_constructors(
+            oneof_mapping,
+            &msg.param_names,
             &param_bounds,
             &param_decls,
             &param_args,
@@ -1070,16 +816,10 @@ fn derive_otlp_builders(
 }
 
 /// Emits the visitor, visitable and adapters methods.
-fn derive_otlp_visitors(
-    outer_name: &syn::Ident,
-    _param_names: &Vec<&str>,
-    _param_fields: &[FieldInfo],
-    _builder_fields: &[FieldInfo],
-    all_fields: &[FieldInfo],
-    oneof_mapping: OneofMapping,
-) -> TokenStream {
-    let visitor_name = ident_utils::visitor_name(outer_name);
-    let visitable_name = ident_utils::visitable_name(outer_name);
+fn derive_otlp_visitors(msg: &MessageInfo) -> TokenStream {
+    let outer_name = &msg.outer_name;
+    let visitor_name = ident_utils::visitor_name(&outer_name);
+    let visitable_name = ident_utils::visitable_name(&outer_name);
     let visitor_method_name = syn::Ident::new(
         &format!("visit_{}", outer_name).to_case(Case::Snake),
         outer_name.span(),
@@ -1091,10 +831,10 @@ fn derive_otlp_visitors(
 
     let mut visitable_args: TokenVec = Vec::new();
 
-    for info in all_fields {
+    for info in &msg.all_fields {
         if info.is_oneof {
             // For oneof fields, generate separate parameters for each variant
-            if let Some((oneof_name, oneof_cases)) = oneof_mapping {
+            if let Some((oneof_name, oneof_cases)) = msg.oneof_mapping.as_ref() {
                 if oneof_name.ends_with(&format!(".{}", info.ident)) {
                     // This is the oneof field we're looking for
                     for case in oneof_cases {
@@ -1116,24 +856,24 @@ fn derive_otlp_visitors(
 
         // For non-oneof fields, generate normal visitor parameter
         let param_name = &info.ident;
-        let visitor_type = generate_visitor_trait_for_field(info);
+        let visitor_type = generate_visitor_trait_for_field(&info);
         visitable_args.push(quote! { #param_name: impl #visitor_type });
     }
 
     let expanded = quote! {
     pub trait #visitor_name<Argument> {
-        fn #visitor_method_name(&mut self, arg: Argument, v: impl #visitable_name<Argument>) -> Argument;
+            fn #visitor_method_name(&mut self, arg: Argument, v: impl #visitable_name<Argument>) -> Argument;
     }
 
     pub trait #visitable_name<Argument> {
-        fn #visitable_method_name(&self, arg: Argument, #(#visitable_args),*) -> Argument;
+            fn #visitable_method_name(&self, arg: Argument, #(#visitable_args),*) -> Argument;
     }
 
     impl<Argument> #visitor_name<Argument> for crate::pdata::NoopVisitor {
-        fn #visitor_method_name(&mut self, arg: Argument, _v: impl #visitable_name<Argument>) -> Argument {
-            // NoopVisitor threads the argument through unchanged.
-            arg
-        }
+            fn #visitor_method_name(&mut self, arg: Argument, _v: impl #visitable_name<Argument>) -> Argument {
+        // NoopVisitor threads the argument through unchanged.
+        arg
+            }
     }
     };
 
@@ -1207,8 +947,9 @@ impl FieldInfo {
 fn needs_adapter_for_field(info: &FieldInfo) -> bool {
     // Use the parsed prost_type for fast determination - this is the main benefit!
     match info.prost_type.as_str() {
-        "message" | "enumeration" => true,  // Complex types need adapters
-        "string" | "int64" | "uint32" | "int32" | "uint64" | "bool" | "double" | "float" | "bytes" => false,  // Primitives don't need adapters
+        "message" | "enumeration" => true, // Complex types need adapters
+        "string" | "int64" | "uint32" | "int32" | "uint64" | "bool" | "double" | "float"
+        | "bytes" => false, // Primitives don't need adapters
         _ => {
             // For unknown or missing prost_type, fall back to the original type-based analysis
             // This ensures backward compatibility and handles edge cases
@@ -1252,14 +993,16 @@ fn get_adapter_name_for_field(info: &FieldInfo) -> proc_macro2::TokenStream {
                         let adapter_name = format!("{}MessageAdapter", type_name);
 
                         // Use the original complex path resolution for proper module qualification
-                        let adapter_path = path_utils::resolve_type_path(type_path, "MessageAdapter");
+                        let adapter_path =
+                            path_utils::resolve_type_path(type_path, "MessageAdapter");
 
                         // Parse the path and return as TokenStream
                         match syn::parse_str::<syn::Path>(&adapter_path) {
                             Ok(path) => quote! { #path },
                             Err(_) => {
                                 // Fallback to simple name if parsing fails
-                                let adapter_ident = syn::Ident::new(&adapter_name, segment.ident.span());
+                                let adapter_ident =
+                                    syn::Ident::new(&adapter_name, segment.ident.span());
                                 quote! { #adapter_ident }
                             }
                         }
@@ -1280,19 +1023,11 @@ fn get_adapter_name_for_field(info: &FieldInfo) -> proc_macro2::TokenStream {
     }
 }
 
-
-
 /// Emits the adapter struct and implementation for the visitor pattern
-fn derive_otlp_adapters(
-    outer_name: &syn::Ident,
-    _param_names: &Vec<&str>,
-    _param_fields: &[FieldInfo],
-    _builder_fields: &[FieldInfo],
-    all_fields: &[FieldInfo],
-    oneof_mapping: OneofMapping,
-) -> TokenStream {
-    let adapter_name = ident_utils::adapter_name(outer_name);
-    let visitable_name = ident_utils::visitable_name(outer_name);
+fn derive_otlp_adapters(msg: &MessageInfo) -> TokenStream {
+    let outer_name = &msg.outer_name;
+    let adapter_name = ident_utils::adapter_name(&outer_name);
+    let visitable_name = ident_utils::visitable_name(&outer_name);
 
     // Generate the method name based on the outer type name
     // Convert CamelCase to snake_case (e.g., LogsData -> logs_data)
@@ -1302,15 +1037,16 @@ fn derive_otlp_adapters(
     );
 
     // Generate visitor calls for each field
-    let mut visitor_calls: TokenVec = all_fields
+    let mut visitor_calls: TokenVec = msg
+        .all_fields
         .iter()
         .filter_map(field_utils::generate_visitor_call)
         .collect();
 
     // Add oneof visitor calls
-    for info in all_fields {
+    for info in &msg.all_fields {
         if info.is_oneof {
-            let oneof_calls = field_utils::generate_oneof_visitor_calls(info, oneof_mapping);
+            let oneof_calls = field_utils::generate_oneof_visitor_calls(info, &msg.oneof_mapping);
             visitor_calls.extend(oneof_calls);
         }
     }
@@ -1318,10 +1054,10 @@ fn derive_otlp_adapters(
     // Generate visitor parameters for the visitable trait method
     let mut visitor_params: TokenVec = Vec::new();
 
-    for info in all_fields {
+    for info in &msg.all_fields {
         if info.is_oneof {
             // Generate parameters for each oneof variant (matching the trait definition)
-            if let Some((oneof_name, oneof_cases)) = oneof_mapping {
+            if let Some((oneof_name, oneof_cases)) = msg.oneof_mapping.as_ref() {
                 if oneof_name.ends_with(&format!(".{}", info.ident)) {
                     for case in oneof_cases {
                         let variant_param_name = syn::Ident::new(
@@ -1461,5 +1197,3 @@ fn generate_visitor_trait_for_type(ty: &syn::Type) -> proc_macro2::TokenStream {
 fn resolve_visitor_trait_path_for_type(type_path: &syn::TypePath, _visitor_name: &str) -> String {
     path_utils::resolve_type_path(type_path, "Visitor")
 }
-
-

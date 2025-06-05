@@ -27,6 +27,8 @@ fn oneof(
     }
 }
 
+pub type OneofMapping = Option<(String, Vec<OneofCase>)>;
+
 /// This provides detail about the underlying type of protobuf enum values.
 #[derive(Clone, Debug, Default)]
 pub struct EnumField {
@@ -194,9 +196,9 @@ pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> =
     });
 
 /// This lists all the known oneof fields in OpenTelemetry, with their cases.
-pub static ONEOF_MAPPINGS: LazyLock<HashMap<&'static str, Vec<OneofCase>>> = LazyLock::new(|| {
+pub static ONEOF_MAPPINGS: LazyLock<HashMap<String, Vec<OneofCase>>> = LazyLock::new(|| {
     HashMap::from([
-        ("opentelemetry.proto.common.v1.AnyValue.value", vec![
+        ("opentelemetry.proto.common.v1.AnyValue.value".into(), vec![
             oneof(
                 "string",
                 "::prost::alloc::string::String",
@@ -220,7 +222,7 @@ pub static ONEOF_MAPPINGS: LazyLock<HashMap<&'static str, Vec<OneofCase>>> = Laz
             ),
             oneof("bytes", "Vec<u8>", "any_value::Value::BytesValue", None),
         ]),
-        ("opentelemetry.proto.metrics.v1.Metric.data", vec![
+        ("opentelemetry.proto.metrics.v1.Metric.data".into(), vec![
             oneof("sum", "Sum", "metric::Data::Sum", None),
             oneof("gauge", "Gauge", "metric::Data::Gauge", None),
             oneof("histogram", "Histogram", "metric::Data::Histogram", None),
@@ -233,16 +235,19 @@ pub static ONEOF_MAPPINGS: LazyLock<HashMap<&'static str, Vec<OneofCase>>> = Laz
             oneof("summary", "Summary", "metric::Data::Summary", None),
         ]),
         (
-            "opentelemetry.proto.metrics.v1.NumberDataPoint.value",
+            "opentelemetry.proto.metrics.v1.NumberDataPoint.value".into(),
             vec![
                 oneof("int", "i64", "number_data_point::Value::AsInt", None),
                 oneof("double", "f64", "number_data_point::Value::AsDouble", None),
             ],
         ),
-        ("opentelemetry.proto.metrics.v1.Exemplar.value", vec![
-            oneof("int", "i64", "exemplar::Value::AsInt", None),
-            oneof("double", "f64", "exemplar::Value::AsDouble", None),
-        ]),
+        (
+            "opentelemetry.proto.metrics.v1.Exemplar.value".into(),
+            vec![
+                oneof("int", "i64", "exemplar::Value::AsInt", None),
+                oneof("double", "f64", "exemplar::Value::AsDouble", None),
+            ],
+        ),
     ])
 });
 
