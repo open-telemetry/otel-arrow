@@ -54,7 +54,7 @@ var ProducerStats = stats.NewProducerStats()
 func TestTracesEncodingDecoding(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+	entropy := datagen.NewTestEntropy()
 
 	tracesGen := datagen.NewTracesGenerator(
 		entropy,
@@ -70,7 +70,7 @@ func TestTracesEncodingDecoding(t *testing.T) {
 func TestRandomTracesEncodingDecoding(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+	entropy := datagen.NewTestEntropy()
 
 	tracesGen := datagen.NewTracesGenerator(
 		entropy,
@@ -270,7 +270,7 @@ func TestCustom2TracesEncodingDecoding(t *testing.T) {
 func TestInvalidTracesDecoding(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+	entropy := datagen.NewTestEntropy()
 
 	tracesGen := datagen.NewTracesGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
@@ -330,7 +330,7 @@ func MultiRoundOfCheckEncodeMessUpDecode(
 	t *testing.T,
 	expectedRequest ptraceotlp.ExportRequest,
 ) {
-	rng := rand.New(rand.NewSource(int64(rand.Uint64())))
+	rng := rand.New(rand.NewSource(42))
 
 	for i := 0; i < 100; i++ {
 		CheckEncodeMessUpDecode(t, expectedRequest, rng)
