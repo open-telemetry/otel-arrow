@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
+//! Expose the OTLP gRPC services.
 //!
 //! Provides a set of structs and enums that interact with the gRPC Server
 //!
 //! Implements the necessary service traits for OTLP data
 //!
 //! ToDo Modify OTLPData -> Optimize message transport
-//!
-
 use crate::proto::opentelemetry::collector::{
     logs::v1::{
         ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,

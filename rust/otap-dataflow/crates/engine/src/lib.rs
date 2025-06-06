@@ -13,5 +13,4 @@ mod effect_handler;
 pub mod local;
 pub mod pipeline;
 pub mod shared;
-
 pub mod testing;
