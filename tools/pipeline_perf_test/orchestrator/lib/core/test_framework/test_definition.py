@@ -15,15 +15,16 @@ Classes:
 from typing import List, Optional, TYPE_CHECKING
 
 from ..component.component_data import ComponentData
-from ..context.base import ExecutionStatus, BaseContext
+from ..context.base import ExecutionStatus
 from ..context.test_contexts import TestExecutionContext, TestStepContext
-from .test_data import TestData
-from .test_step import TestStep
-from .test_element import TestFrameworkElement
 from ..context.test_element_hook_context import HookableTestPhase
+from .test_data import TestData
+from .test_element import TestFrameworkElement
 
 if TYPE_CHECKING:
     from ..strategies.reporting_strategy import ReportingStrategy
+    from .test_step import TestStep
+    from ..context.base import BaseContext
 
 
 class TestDefinition(TestFrameworkElement):
@@ -43,7 +44,7 @@ class TestDefinition(TestFrameworkElement):
     def __init__(
         self,
         name: str,
-        steps: List[TestStep],
+        steps: List["TestStep"],
         reporting_strategies: Optional[List["ReportingStrategy"]] = None,
     ):
         """
@@ -60,7 +61,7 @@ class TestDefinition(TestFrameworkElement):
         self.steps = steps
         self.reporting_strategies = reporting_strategies or []
 
-    def run(self, ctx: Optional[BaseContext] = None) -> None:
+    def run(self, ctx: Optional["BaseContext"] = None) -> None:
         """
         Runs the test by executing steps and any pre/post run hooks.
 
@@ -68,29 +69,28 @@ class TestDefinition(TestFrameworkElement):
             ctx (TestExecutionContext): The test execution context.
         """
 
+        logger = ctx.get_logger(__name__)
         assert isinstance(ctx, TestExecutionContext), "Expected TestExecutionContext"
         self._run_hooks(HookableTestPhase.PRE_RUN, ctx)
 
+        logger.info("Running %d test steps...", len(self.steps))
         for step in self.steps:
-            step_ctx = TestStepContext(name=step.name, step=step)
+            step_ctx = TestStepContext(name=step.name, step=step, parent_ctx=ctx)
             ctx.add_child_ctx(step_ctx)
-
-            try:
-                step_ctx.start()
-                step.run(step_ctx)
-                if step_ctx.status == ExecutionStatus.RUNNING:
-                    step_ctx.status = ExecutionStatus.SUCCESS
-            except Exception as e:
-                step_ctx.status = ExecutionStatus.ERROR
-                step_ctx.error = e
-                step_ctx.log(f"Step '{step.name}' failed: {e}")
-                raise  # or continue, based on policy
-            finally:
-                step_ctx.end()
+            with step_ctx:
+                try:
+                    step.run(step_ctx)
+                    if step_ctx.status == ExecutionStatus.RUNNING:
+                        step_ctx.status = ExecutionStatus.SUCCESS
+                except Exception as e:
+                    step_ctx.status = ExecutionStatus.ERROR
+                    step_ctx.error = e
+                    logger.error("Error: Test Step: %s failed: %s", step.name, e)
+                    raise  # or continue, based on policy
 
         self._run_hooks(HookableTestPhase.POST_RUN, ctx)
 
-    def get_test_data(self, ctx: TestExecutionContext) -> TestData:
+    def get_test_data(self, ctx: "TestExecutionContext") -> TestData:
         """
         Aggregates test data, including the current test context and monitoring data from all components.
 

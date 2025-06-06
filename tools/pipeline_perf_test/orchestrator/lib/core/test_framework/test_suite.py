@@ -20,6 +20,7 @@ from .test_definition import TestDefinition
 from ..context.test_contexts import TestSuiteContext, TestExecutionContext
 from .test_element import TestFrameworkElement
 from ..context.test_element_hook_context import HookableTestPhase
+from ..telemetry.telemetry_runtime import TelemetryRuntime
 
 if TYPE_CHECKING:
     from ..component.component import Component
@@ -36,12 +37,20 @@ class TestSuite(TestFrameworkElement):
     Attributes:
         tests (List[TestDefinition]): A list of test definitions that define the tests to run.
         components (Dict[str, Component]): A dictionary of components, indexed by their names.
+        name str: The name for the test suite.
+        telemetry_runtime Optional[TelemetryRuntime]: A runtime object that holds Opentelemetry trace/meter providers.
 
     Methods:
         run(): Executes all the tests in the test suite, providing each test with the necessary context.
     """
 
-    def __init__(self, tests: List[TestDefinition], components: Dict[str, "Component"]):
+    def __init__(
+        self,
+        tests: List[TestDefinition],
+        components: Dict[str, "Component"],
+        name: Optional[str] = "TestSuite",
+        telemetry_runtime: Optional[TelemetryRuntime] = None,
+    ):
         """
         Initializes the test suite with a list of tests and a dictionary of components.
 
@@ -53,10 +62,11 @@ class TestSuite(TestFrameworkElement):
             components (Dict[str, Component]): A dictionary of components to be used in the tests.
         """
         super().__init__()
+        self.name = name
         self.tests = tests
         self.components = components
-        # TODO: support a name field on TestSuite
-        self.context = TestSuiteContext(name="TestSuite")
+        self.context = TestSuiteContext(name=self.name)
+        self.set_runtime_data(TelemetryRuntime.type, telemetry_runtime)
         for k, v in components.items():
             self.context.add_component(k, v)
 
@@ -72,31 +82,37 @@ class TestSuite(TestFrameworkElement):
             _ctx: unused context object, defaults to None.
         """
         self.context.test_suite = self
-        self.context.start()
-        self._run_hooks(HookableTestPhase.PRE_RUN, self.context)
-        for test_definition in self.tests:
-            test_execution_context = TestExecutionContext(
-                name=test_definition.name, test_definition=test_definition
-            )
-            self.context.add_child_ctx(test_execution_context)
-            test_execution_context.start()
-            try:
-                test_definition.run(test_execution_context)
-                if test_execution_context.status == ExecutionStatus.RUNNING:
-                    test_execution_context.status = ExecutionStatus.SUCCESS
-            except Exception as e:
-                test_execution_context.status = ExecutionStatus.ERROR
-                test_execution_context.error = e
-                test_execution_context.log(f"Test '{test_definition.name}' failed: {e}")
-                # TODO: Depending on policy: break or continue
-                raise
-            finally:
-                test_execution_context.end()
-            # Report using all defined reporting strategies
-            test_data = test_definition.get_test_data(test_execution_context)
-            for strategy in test_definition.reporting_strategies:
-                strategy.report(test_data)
-        # TODO: Support policy based status (fail if any test fails, etc)
-        self._run_hooks(HookableTestPhase.POST_RUN, self.context)
-        self.context.status = ExecutionStatus.SUCCESS
-        self.context.end()
+        logger = self.context.get_logger(__name__)
+        with self.context:
+            self._run_hooks(HookableTestPhase.PRE_RUN, self.context)
+            for test_definition in self.tests:
+                test_execution_context = TestExecutionContext(
+                    name=test_definition.name,
+                    test_definition=test_definition,
+                    parent_ctx=self.context,
+                )
+                self.context.add_child_ctx(test_execution_context)
+                with test_execution_context:
+                    logger.info("Starting Test: %s", test_definition.name)
+                    try:
+                        test_definition.run(test_execution_context)
+                        if test_execution_context.status == ExecutionStatus.RUNNING:
+                            test_execution_context.status = ExecutionStatus.SUCCESS
+                    except Exception as e:
+                        test_execution_context.status = ExecutionStatus.ERROR
+                        test_execution_context.error = e
+                        logger.error("Test %s failed %s", test_definition.name, e)
+                        # test_execution_context.log(f"Test '{test_definition.name}' failed: {e}")
+                        # TODO: Depending on policy: break or continue
+                        raise
+
+                logger.debug(
+                    "Test %s finished. Running reports...", test_definition.name
+                )
+                # Report using all defined reporting strategies
+                test_data = test_definition.get_test_data(test_execution_context)
+                for strategy in test_definition.reporting_strategies:
+                    strategy.report(test_data)
+            # TODO: Support policy based status (fail if any test fails, etc)
+            self._run_hooks(HookableTestPhase.POST_RUN, self.context)
+            self.context.status = ExecutionStatus.SUCCESS
