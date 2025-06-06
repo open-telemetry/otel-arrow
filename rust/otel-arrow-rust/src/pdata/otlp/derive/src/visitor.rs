@@ -41,10 +41,14 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             continue;
         }
 
-        // For non-oneof fields, generate normal visitor parameter
+        // For non-oneof fields, generate normal visitor parameter only for complex types
         let param_name = &info.ident;
-        let visitor_type = info.related_type("Visitable");
-        visitable_args.push(quote! { #param_name: impl #visitor_type });
+        
+        // Only generate visitable parameters for fields that need adapters (complex message types)
+        if needs_adapter_for_field(info) {
+            let visitor_type = info.related_type("Visitable");
+            visitable_args.push(quote! { #param_name: impl #visitor_type });
+        }
     }
 
     let expanded = quote! {

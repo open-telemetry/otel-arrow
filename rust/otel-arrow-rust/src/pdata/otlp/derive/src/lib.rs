@@ -2,8 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use proc_macro::TokenStream;
-use quote::ToTokens;
-use syn::DeriveInput;
 
 mod builder;
 mod field_info;
@@ -21,22 +19,19 @@ type TokenVec = Vec<proc_macro2::TokenStream>;
 pub fn qualified(args: TokenStream, input: TokenStream) -> TokenStream {
     let args_str: String = args.to_string().trim_matches('"').into();
 
-    // Parse input and add the qualified attribute in a more functional way
-    let input_ast = syn::parse_macro_input!(input as syn::DeriveInput)
-        .into_token_stream()
-        .to_string();
+    // Parse input directly without round-trip conversion
+    let mut input_ast = syn::parse_macro_input!(input as syn::DeriveInput);
 
     // Create a special doc comment that will store the qualified name
     let qualified_attr = syn::parse_quote! {
         #[doc(hidden, otlp_qualified_name = #args_str)]
     };
 
-    // Parse again and add the attribute
-    let mut final_ast = syn::parse_str::<DeriveInput>(&input_ast).unwrap();
-    final_ast.attrs.push(qualified_attr);
+    // Add the attribute directly
+    input_ast.attrs.push(qualified_attr);
 
     // Return the modified struct definition
-    quote::quote!(#final_ast).into()
+    quote::quote!(#input_ast).into()
 }
 
 /// Derives the OTLP Message trait implementation for protocol buffer

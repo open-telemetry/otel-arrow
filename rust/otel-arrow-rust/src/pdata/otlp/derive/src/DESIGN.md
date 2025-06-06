@@ -763,3 +763,130 @@ for info in all_fields {
 2. **Check**: No `StringVisitable` references in EXPANDED
 3. **Verify**: All trait references use `crate::pdata::*Visitor<Argument>` pattern
 4. **Test**: All 36 tests pass after restoration
+
+### OTLP Data Model (otlp_model)
+
+**Location**: The OTLP data model structures are defined in the separate `otlp_model` crate located at `src/pdata/otlp/model/src/lib.rs`. This crate provides static data structures that encode knowledge about the OpenTelemetry Protocol schema structure.
+
+**Purpose**: The otlp_model crate serves as a central repository of OTLP schema metadata, allowing the derive macros to generate correct visitor patterns for complex protobuf structures without hardcoding schema details in the macro code itself.
+
+**Key Data Sources**:
+
+#### 1. ONEOF_MAPPINGS - Static HashMap (src/pdata/otlp/model/src/lib.rs lines 199+)
+Maps qualified oneof field names to their possible variant cases:
+
+```rust
+pub static ONEOF_MAPPINGS: LazyLock<HashMap<String, Vec<OneofCase>>> = LazyLock::new(|| {
+    HashMap::from([
+        ("opentelemetry.proto.common.v1.AnyValue.value".into(), vec![
+            oneof("string", "::prost::alloc::string::String", "any_value::Value::StringValue", None),
+            oneof("bool", "bool", "any_value::Value::BoolValue", None),
+            oneof("int", "i64", "any_value::Value::IntValue", None),
+            oneof("double", "f64", "any_value::Value::DoubleValue", None),
+            oneof("kvlist", "Vec<KeyValue>", "any_value::Value::KvlistValue", Some("KeyValueList::new")),
+            oneof("array", "Vec<AnyValue>", "any_value::Value::ArrayValue", Some("ArrayValue::new")),
+            oneof("bytes", "Vec<u8>", "any_value::Value::BytesValue", None),
+        ]),
+        ("opentelemetry.proto.metrics.v1.Metric.data".into(), vec![
+            oneof("sum", "Sum", "metric::Data::Sum", None),
+            oneof("gauge", "Gauge", "metric::Data::Gauge", None),
+            oneof("histogram", "Histogram", "metric::Data::Histogram", None),
+            oneof("exponential_histogram", "ExponentialHistogram", "metric::Data::ExponentialHistogram", None),
+            oneof("summary", "Summary", "metric::Data::Summary", None),
+        ]),
+        // ... additional oneof mappings for NumberDataPoint.value, Exemplar.value, etc.
+    ])
+});
+```
+
+#### 2. OneofCase Structure (src/pdata/otlp/model/src/lib.rs lines 7-24)
+Encodes detailed information about each oneof variant:
+
+```rust
+#[derive(Clone, Debug, Default)]
+pub struct OneofCase {
+    pub name: &'static str,         // Short field name (e.g., "string", "bool")
+    pub type_param: &'static str,   // Rust type for visitor parameter (e.g., "::prost::alloc::string::String")
+    pub value_variant: &'static str,// Protobuf enum variant (e.g., "any_value::Value::StringValue")
+    pub extra_call: Option<&'static str>, // Optional constructor call (e.g., "KeyValueList::new")
+}
+
+pub type OneofMapping = Option<(String, Vec<OneofCase>)>;
+```
+
+#### 3. REQUIRED_PARAMS - Static HashMap (src/pdata/otlp/model/src/lib.rs lines 47+)
+Defines which visitor parameters are required for each OTLP message type:
+
+```rust
+pub static REQUIRED_PARAMS: LazyLock<HashMap<&'static str, Vec<&'static str>>> = LazyLock::new(|| {
+    HashMap::from([
+        ("opentelemetry.proto.common.v1.AnyValue", vec!["value"]),
+        ("opentelemetry.proto.common.v1.KeyValue", vec!["key", "value"]),
+        ("opentelemetry.proto.logs.v1.LogRecord", vec!["time_unix_nano", "severity_number", "event_name"]),
+        ("opentelemetry.proto.trace.v1.Span", vec!["trace_id", "span_id", "name", "start_time_unix_nano"]),
+        ("opentelemetry.proto.metrics.v1.Metric", vec!["name", "data"]),
+        // ... extensive mapping of message types to their required visitor parameters
+    ])
+});
+```
+
+#### 4. FIELD_TYPE_OVERRIDES - Static HashMap (src/pdata/otlp/model/src/lib.rs lines 254+)
+Provides type override information for protobuf enum fields:
+
+```rust
+#[derive(Clone, Debug, Default)]
+pub struct EnumField {
+    pub datatype: &'static str,   // Enum type name (e.g., "LogRecordFlags")
+    pub fieldtype: &'static str,  // Underlying representation (e.g., "u32")
+}
+
+pub static FIELD_TYPE_OVERRIDES: LazyLock<HashMap<&'static str, EnumField>> = LazyLock::new(|| {
+    HashMap::from([
+        ("opentelemetry.proto.logs.v1.LogRecord.flags", enumfield("LogRecordFlags", "u32")),
+        ("opentelemetry.proto.trace.v1.Span.flags", enumfield("SpanFlags", "u32")),
+        ("opentelemetry.proto.trace.v1.Span.kind", enumfield("span::SpanKind", "i32")),
+        ("opentelemetry.proto.trace.v1.Status.code", enumfield("status::StatusCode", "i32")),
+        // ... additional enum field overrides
+    ])
+});
+```
+
+#### 5. Integration with Build Process (src/pdata/otlp/model/src/lib.rs lines 289+)
+The otlp_model is integrated into the build process through `build.rs`:
+
+```rust
+pub fn add_type_attributes(mut builder: tonic_build::Builder) -> tonic_build::Builder {
+    for (name, _) in REQUIRED_PARAMS.iter() {
+        let attr = format!(r#"#[crate::pdata::otlp::qualified("{}")]"#, name);
+        builder = builder.type_attribute(name, attr);
+        builder = builder.type_attribute(name, r#"#[derive(crate::pdata::otlp::Message)]"#);
+    }
+    builder
+}
+```
+
+**Usage in Derive Macros**:
+The derive macros import and use otlp_model data structures:
+
+```rust
+// In derive macro files:
+use otlp_model::{OneofCase, OneofMapping, ONEOF_MAPPINGS, REQUIRED_PARAMS, FIELD_TYPE_OVERRIDES};
+
+// Message info lookup:
+let param_names: Vec<_> = otlp_model::REQUIRED_PARAMS.get(type_name.as_str()).unwrap();
+
+// Oneof handling:
+let oneof_mapping = otlp_model::ONEOF_MAPPINGS.get(&qualified_name).map(|cases| (qualified_name.clone(), cases.clone()));
+
+// Field type overrides:
+let (field_type, as_type) = otlp_model::FIELD_TYPE_OVERRIDES.get(&field_key).map(|ef| (ef.datatype, ef.fieldtype));
+```
+
+**Design Rationale**:
+
+- **Compile-time**: Data available during macro expansion without external dependencies
+- **Centralized**: All OTLP-specific knowledge contained in one location
+- **Maintainable**: Easy to update when OTLP schema changes
+- **Type-safe**: Rust's type system validates the data structure definitions
+- **Modular**: Separation of schema metadata from macro implementation logic
+

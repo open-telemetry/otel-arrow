@@ -1,34 +1,48 @@
 # OTLP Visitor Pattern Implementation - Product Requirements Document
 
-## URGENT: Restoration Required 🚨
+## URGENT: Macro Execution Restoration - IN PROGRESS 🚨
 
-**Current Status**: The refactoring has left the project in a broken state. The procedural macros are generating incorrect trait references that don't match the actual trait definitions.
+**Current Status**: Actively working on procedural macro restoration. The macros compile but panic during execution.
 
-### Immediate Action Required
+### Current Situation Analysis
 
-**Step 1: Fix Trait Name Generation**
-- Current: Macros generate `StringVisitable`, `VecVisitable`, etc. in wrong modules
-- Target: Should generate `crate::pdata::StringVisitor<Argument>`, etc.
-- Location: `src/pdata/otlp/derive/src/visitor.rs` and `field_info.rs`
+**Problem**: Procedural macros are crashing during trait generation:
+- **Symptoms**: 32+ "proc-macro derive panicked" errors across all proto files
+- **Impact**: No visitor/visitable traits being generated, causing 53 compilation errors
+- **Example**: `no LogRecordVisitable in proto::opentelemetry::logs::v1` - traits simply don't exist
 
-**Step 2: Restore Working Visitor Pattern**
-- Reference: `src/pdata/otlp/derive/src/original.rs` contains the working implementation
-- Key Function: `generate_visitor_trait_for_field()` in original.rs (line 1414)
-- Key Function: `get_primitive_visitor_trait()` in original.rs (line 167)
+**Root Cause**: Deeper than trait naming - the macros crash before any trait generation occurs.
 
-**Step 3: Fix Module Path Resolution**
-- Current: Generating `prost::alloc::string::StringVisitable`
-- Target: Should generate `crate::pdata::StringVisitor<Argument>`
+### Progress Made
 
-**Key Files to Fix:**
-1. `src/pdata/otlp/derive/src/field_info.rs` - Fix `related_type()` method
-2. `src/pdata/otlp/derive/src/visitor.rs` - Fix trait generation logic
-3. Restore primitive type mapping from original.rs
+✅ **Diagnostic Complete**: Identified macro execution panics as primary blocker  
+✅ **Reference Located**: Working implementation in `src/pdata/otlp/derive/src/original.rs`  
+✅ **DESIGN.md Updated**: Documented otlp_model crate location at `src/pdata/otlp/model/src/lib.rs`  
+✅ **ONEOF_MAPPINGS Located**: Found at `otlp_model::ONEOF_MAPPINGS` with static HashMap structure  
+✅ **Key Files Updated**: Enhanced `field_info.rs` and `visitor.rs` with trait generation fixes  
 
-**Validation:**
-- Run `cargo expand > EXPANDED` to check generated trait references
-- Should see `crate::pdata::StringVisitor<Argument>` not `StringVisitable`
-- All 36 tests should pass when fixed
+### Restoration Strategy
+
+**Phase 1: Restore Basic Execution** (Current)
+- Debug why procedural macros panic during trait generation
+- Get macros executing without crashes (even if traits are incorrectly named)
+- Verify basic visitor/visitable trait generation occurs
+
+**Phase 2: Apply Trait Fixes** (Next)
+- Implement trait naming fixes already developed in `field_info.rs`
+- Ensure proper `crate::pdata::StringVisitor<Argument>` generation
+- Fix module path resolution issues
+
+**Phase 3: Validation** (Final)
+- Run full compilation test
+- Verify all 36 tests pass
+- Confirm macro expansion matches expected patterns
+
+### Key Reference Files
+
+- **Working Implementation**: `src/pdata/otlp/derive/src/original.rs` (contains functional macro logic)
+- **ONEOF Data**: `src/pdata/otlp/model/src/lib.rs` (contains `ONEOF_MAPPINGS` HashMap)
+- **Current Fixes**: `src/pdata/otlp/derive/src/field_info.rs` and `visitor.rs` (trait generation improvements)
 
 ---
 
