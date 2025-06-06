@@ -102,8 +102,6 @@ class TestSuite(TestFrameworkElement):
                         test_execution_context.status = ExecutionStatus.ERROR
                         test_execution_context.error = e
                         logger.error("Test %s failed %s", test_definition.name, e)
-                        # test_execution_context.log(f"Test '{test_definition.name}' failed: {e}")
-                        # TODO: Depending on policy: break or continue
                         raise
 
                 logger.debug(
@@ -113,6 +111,5 @@ class TestSuite(TestFrameworkElement):
                 test_data = test_definition.get_test_data(test_execution_context)
                 for strategy in test_definition.reporting_strategies:
                     strategy.report(test_data)
-            # TODO: Support policy based status (fail if any test fails, etc)
             self._run_hooks(HookableTestPhase.POST_RUN, self.context)
             self.context.status = ExecutionStatus.SUCCESS
