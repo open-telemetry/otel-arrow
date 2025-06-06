@@ -86,9 +86,14 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
 
     let visit_method = generate_visit_method_for_field(info);
     let needs_adapter = needs_adapter_for_field(info);
-    let is_bytes = is_bytes_type(&info.full_type_name);
+    let is_bytes_field = is_bytes_type(&info.full_type_name); // Vec<u8> specifically
 
-    match (info.is_optional, info.is_repeated, needs_adapter, is_bytes) {
+    match (
+        info.is_optional,
+        info.is_repeated,
+        needs_adapter,
+        is_bytes_field,
+    ) {
         (false, false, true, _) => {
             let adapter_name = get_adapter_name_for_field(info);
             Some(quote! {
@@ -161,7 +166,7 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
                         }
                     }
                 })
-            } else if is_bytes {
+            } else if is_bytes_field {
                 Some(quote! {
                     if let Some(items) = &self.data.#field_name {
                         arg = #visitor_param.#visit_method(arg, items);
@@ -188,50 +193,56 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
     }
 }
 
-/// Generate visitor calls for oneof fields based on their variants
-pub fn generate_oneof_visitor_calls(
-    info: &FieldInfo,
-) -> Vec<proc_macro2::TokenStream> {
-    let mut visitor_calls = Vec::new();
+// /// Generate visitor calls for oneof fields based on their variants
+// pub fn generate_oneof_visitor_calls(
+//     info: &FieldInfo,
+// ) -> Vec<proc_macro2::TokenStream> {
+//     let mut visitor_calls = Vec::new();
 
-    if let Some(oneof_cases) = &info.oneof {
-        for case in oneof_cases {
-            let variant_param_name = syn::Ident::new(
-                &format!("{}_{}_visitor", info.ident, case.name),
-                info.ident.span(),
-            );
+//     if let Some(oneof_cases) = &info.oneof {
+//         for case in oneof_cases {
+//             let variant_param_name = syn::Ident::new(
+//                 &format!("{}_{}_visitor", info.ident, case.name),
+//                 info.ident.span(),
+//             );
 
-            // Generate visitor call for this oneof variant
-            let field_name = &info.ident;
-            let variant_path = syn::parse_str::<syn::Expr>(case.value_variant).unwrap();
+//             // Generate visitor call for this oneof variant
+//             let field_name = &info.ident;
+//             let variant_path = syn::parse_str::<syn::Expr>(case.value_variant).unwrap();
 
-            visitor_calls.push(quote! {
-                if let Some(#variant_path(ref value)) = self.data.#field_name {
-                    arg = #variant_param_name.visit(arg, value);
-                }
-            });
-        }
-    }
+//             visitor_calls.push(quote! {
+//                 if let Some(#variant_path(ref value)) = self.data.#field_name {
+//                     arg = #variant_param_name.visit(arg, value);
+//                 }
+//             });
+//         }
+//     }
 
-    visitor_calls
-}
+//     visitor_calls
+// }
 
 /// Generate visitor parameter name for a field
 fn visitor_param_name(field_name: &str) -> syn::Ident {
-    syn::Ident::new(&format!("{}_visitor", field_name), proc_macro2::Span::call_site())
+    syn::Ident::new(
+        &format!("{}_visitor", field_name),
+        proc_macro2::Span::call_site(),
+    )
 }
 
 /// Generate the correct visit method name for a field based on its type
 fn generate_visit_method_for_field(info: &FieldInfo) -> syn::Ident {
-    let method_name = if info.is_bytes {
+    let method_name = if info.is_primitive && is_bytes_type(&info.full_type_name) {
         "visit_bytes".to_string()
     } else if is_primitive_type(&info.full_type_name) {
-        format!("visit_{}", get_primitive_method_suffix(&info.full_type_name))
+        format!(
+            "visit_{}",
+            get_primitive_method_suffix(&info.full_type_name)
+        )
     } else {
         let type_name = &info.base_type_name;
         format!("visit_{}", type_name.to_case(Case::Snake))
     };
-    
+
     syn::Ident::new(&method_name, proc_macro2::Span::call_site())
 }
 
@@ -264,7 +275,9 @@ pub fn is_bytes_type(ty: &syn::Type) -> bool {
                 "Vec" => {
                     // Check if it's Vec<u8>
                     if let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments {
-                        if let Some(syn::GenericArgument::Type(syn::Type::Path(inner_path))) = args.args.first() {
+                        if let Some(syn::GenericArgument::Type(syn::Type::Path(inner_path))) =
+                            args.args.first()
+                        {
                             if let Some(inner_segment) = inner_path.path.segments.last() {
                                 return inner_segment.ident == "u8";
                             }
@@ -289,7 +302,7 @@ fn get_primitive_method_suffix(ty: &syn::Type) -> String {
             match last_segment.ident.to_string().as_str() {
                 "String" => "string".to_string(),
                 "u32" => "u32".to_string(),
-                "u64" => "u64".to_string(), 
+                "u64" => "u64".to_string(),
                 "i32" => "i32".to_string(),
                 "i64" => "i64".to_string(),
                 "f32" => "f32".to_string(),
@@ -337,7 +350,9 @@ fn generate_visitor_type_for_oneof_variant(case_type: &syn::Type) -> proc_macro2
                         } else {
                             // For Vec<MessageType>, generate visitor trait for the inner type
                             if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                                if let Some(syn::GenericArgument::Type(inner_type)) = args.args.first() {
+                                if let Some(syn::GenericArgument::Type(inner_type)) =
+                                    args.args.first()
+                                {
                                     let visitor_trait = generate_visitor_trait_for_type(inner_type);
                                     quote! { impl #visitor_trait }
                                 } else {
