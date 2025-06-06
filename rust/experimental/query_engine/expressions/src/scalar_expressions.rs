@@ -200,7 +200,10 @@ pub struct DateTimeScalarExpression {
 }
 
 impl DateTimeScalarExpression {
-    pub fn new(query_location: QueryLocation, value: DateTime<FixedOffset>) -> DateTimeScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        value: DateTime<FixedOffset>,
+    ) -> DateTimeScalarExpression {
         Self {
             query_location,
             value,

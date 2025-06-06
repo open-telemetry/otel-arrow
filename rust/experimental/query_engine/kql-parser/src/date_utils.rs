@@ -3,24 +3,18 @@ use std::{ops::Range, str::FromStr, sync::LazyLock};
 use chrono::{Datelike, Month, Utc};
 use regex::Regex;
 
-static ISO_DATE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new("(\\d+)[-\\/](\\d+)[-\\/](\\d+)").unwrap()
-});
-static RFC_DATE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new("(\\d+)[- ]([A-Za-z]+)[- ](\\d+)").unwrap()
-});
-static LOCAL_DATE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new("([A-Za-z])+[- ](\\d+),?[ \\-](\\d+)").unwrap()
-});
-static ISO_TIME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new("(?:^|[^-+:\\d])(\\d+):(\\d+)(?::(\\d+)(?:\\.(\\d+))?)?").unwrap()
-});
-static LOCAL_TIME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new("(\\d+)(?::(\\d+))?\\s*([AaPp][Mm])").unwrap()
-});
-static ISO_TIME_OFFSET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new("([-+])(\\d+)(?::(\\d+))?").unwrap()
-});
+static ISO_DATE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new("(\\d+)[-\\/](\\d+)[-\\/](\\d+)").unwrap());
+static RFC_DATE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new("(\\d+)[- ]([A-Za-z]+)[- ](\\d+)").unwrap());
+static LOCAL_DATE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new("([A-Za-z])+[- ](\\d+),?[ \\-](\\d+)").unwrap());
+static ISO_TIME_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new("(?:^|[^-+:\\d])(\\d+):(\\d+)(?::(\\d+)(?:\\.(\\d+))?)?").unwrap());
+static LOCAL_TIME_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new("(\\d+)(?::(\\d+))?\\s*([AaPp][Mm])").unwrap());
+static ISO_TIME_OFFSET_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new("([-+])(\\d+)(?::(\\d+))?").unwrap());
 
 pub(crate) fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), ()> {
     let iso = ISO_DATE_REGEX.captures(input);
@@ -34,12 +28,10 @@ pub(crate) fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), (
         let mut c = captures.get(3).unwrap().as_str().parse::<u32>().unwrap();
         if a > 99 {
             return Ok((b, c, a, r));
-        }
-        else {
+        } else {
             if c < 50 {
                 c = c + 2000;
-            }
-            else if c < 100 {
+            } else if c < 100 {
                 c = c + 1900;
             }
             return Ok((a, b, c, r));
@@ -62,8 +54,7 @@ pub(crate) fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), (
 
         if year < 50 {
             year = year + 2000;
-        }
-        else if year < 100 {
+        } else if year < 100 {
             year = year + 1900;
         }
         return Ok((month.unwrap().number_from_month(), day, year, r));
@@ -85,8 +76,7 @@ pub(crate) fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), (
 
         if year < 50 {
             year = year + 2000;
-        }
-        else if year < 100 {
+        } else if year < 100 {
             year = year + 1900;
         }
         return Ok((month.unwrap().number_from_month(), day, year, r));
