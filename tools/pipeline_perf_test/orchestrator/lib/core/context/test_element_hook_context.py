@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional, TYPE_CHECKING
 
+from ..telemetry.test_event import TestEvent
 from .base import BaseContext
 from .test_contexts import TestFrameworkElementContext
 
@@ -63,6 +64,19 @@ class TestElementHookContext(BaseContext):
 
     parent_ctx: Optional["TestFrameworkElementContext"] = None
     phase: Optional["TestLifecyclePhase"] = None
+
+    def __post_init__(self):
+        """
+        Performs additional initialization after object creation.
+        """
+        super().__post_init__()
+        self.start_event_type = TestEvent.HOOK_START
+        self.end_event_type = TestEvent.HOOK_END
+        if self.parent_ctx:
+            merged_metadata = {**self.parent_ctx.metadata, **self.metadata}
+            self.metadata = merged_metadata
+        self.metadata["test.ctx.phase"] = self.phase.value
+        self.span_name = f"Run Framework Hook {self.name} {self.phase.value}"
 
     def get_test_element(self) -> Optional["TestFrameworkElement"]:
         """Returns the test element associated with the current context, if available."""
