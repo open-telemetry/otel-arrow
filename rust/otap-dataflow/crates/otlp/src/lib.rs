@@ -8,7 +8,7 @@ use crate::grpc::OTLPData;
 use linkme::distributed_slice;
 use otap_df_config::{node::NodeKind, pipeline::PipelineConfig};
 use otap_df_engine::{
-    config::{ExporterConfig, ProcessorConfig, ReceiverConfig}, error::Error, runtime_config::{RuntimeNode, RuntimePipeline}, ExporterFactory, ProcessorFactory, ReceiverFactory
+    config::{ExporterConfig, ProcessorConfig, ReceiverConfig}, error::Error, get_factory_map, runtime_config::{RuntimeNode, RuntimePipeline}, ExporterFactory, ProcessorFactory, ReceiverFactory
 };
 
 /// compression formats
@@ -45,55 +45,19 @@ static PROCESSOR_FACTORY_MAP: OnceLock<HashMap<&'static str, ProcessorFactory<OT
 static EXPORTER_FACTORY_MAP: OnceLock<HashMap<&'static str, ExporterFactory<OTLPData>>> =
     OnceLock::new();
 
-fn get_receiver_factory_map<PData>(
-    factory_map: &'static OnceLock<HashMap<&'static str, ReceiverFactory<PData>>>,
-    factory_slice: &'static [ReceiverFactory<PData>]
-) -> &'static HashMap<&'static str, ReceiverFactory<PData>> {
-    factory_map.get_or_init(|| {
-        factory_slice
-            .iter()
-            .map(|f| (f.name, f.clone()))
-            .collect::<HashMap<&'static str, ReceiverFactory<PData>>>()
-    })
-}
-
-fn get_processor_factory_map<PData>(
-    factory_map: &'static OnceLock<HashMap<&'static str, ProcessorFactory<PData>>>,
-    factory_slice: &'static [ProcessorFactory<PData>]
-) -> &'static HashMap<&'static str, ProcessorFactory<PData>> {
-    factory_map.get_or_init(|| {
-        factory_slice
-            .iter()
-            .map(|f| (f.name, f.clone()))
-            .collect::<HashMap<&'static str, ProcessorFactory<PData>>>()
-    })
-}
-
-fn get_exporter_factory_map<PData>(
-    factory_map: &'static OnceLock<HashMap<&'static str, ExporterFactory<PData>>>,
-    factory_slice: &'static [ExporterFactory<PData>]
-) -> &'static HashMap<&'static str, ExporterFactory<PData>> {
-    factory_map.get_or_init(|| {
-        factory_slice
-            .iter()
-            .map(|f| (f.name, f.clone()))
-            .collect::<HashMap<&'static str, ExporterFactory<PData>>>()
-    })
-}
-
 /// Creates a runtime pipeline from the given pipeline configuration.
 pub fn create_runtime_pipeline(
     config: PipelineConfig,
 ) -> Result<RuntimePipeline<OTLPData>, Error<OTLPData>> {
-    let receiver_factory_map = get_receiver_factory_map(
+    let receiver_factory_map = get_factory_map(
         &RECEIVER_FACTORY_MAP,
         &RECEIVER_FACTORIES,
     );
-    let processor_factory_map = get_processor_factory_map(
+    let processor_factory_map = get_factory_map(
         &PROCESSOR_FACTORY_MAP,
         &PROCESSOR_FACTORIES,
     );
-    let exporter_factory_map = get_exporter_factory_map(
+    let exporter_factory_map = get_factory_map(
         &EXPORTER_FACTORY_MAP,
         &EXPORTER_FACTORIES,
     );
