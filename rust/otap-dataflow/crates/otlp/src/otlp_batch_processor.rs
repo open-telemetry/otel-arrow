@@ -853,14 +853,20 @@ mod tests {
                                 ScopeSpans {
                                     scope: None,
                                     spans: (0..2)
-                                        .map(|i| Span { name: format!("A1_scope0_span{i}"), ..Default::default() })
+                                        .map(|i| Span {
+                                            name: format!("A1_scope0_span{i}"),
+                                            ..Default::default()
+                                        })
                                         .collect(),
                                     schema_url: String::new(),
                                 },
                                 ScopeSpans {
                                     scope: None,
                                     spans: (0..2)
-                                        .map(|i| Span { name: format!("A1_scope1_span{i}"), ..Default::default() })
+                                        .map(|i| Span {
+                                            name: format!("A1_scope1_span{i}"),
+                                            ..Default::default()
+                                        })
                                         .collect(),
                                     schema_url: String::new(),
                                 },
@@ -873,14 +879,20 @@ mod tests {
                                 ScopeSpans {
                                     scope: None,
                                     spans: (0..2)
-                                        .map(|i| Span { name: format!("B1_scope0_span{i}"), ..Default::default() })
+                                        .map(|i| Span {
+                                            name: format!("B1_scope0_span{i}"),
+                                            ..Default::default()
+                                        })
                                         .collect(),
                                     schema_url: String::new(),
                                 },
                                 ScopeSpans {
                                     scope: None,
                                     spans: (0..2)
-                                        .map(|i| Span { name: format!("B2_scope1_span{i}"), ..Default::default() })
+                                        .map(|i| Span {
+                                            name: format!("B2_scope1_span{i}"),
+                                            ..Default::default()
+                                        })
                                         .collect(),
                                     schema_url: String::new(),
                                 },
@@ -951,15 +963,21 @@ mod tests {
                                 ScopeMetrics {
                                     scope: None,
                                     schema_url: String::new(),
-                                        metrics: (0..2)
-                                        .map(|i| Metric { name: format!("A1_metric{i}"), ..Default::default() })
+                                    metrics: (0..2)
+                                        .map(|i| Metric {
+                                            name: format!("A1_metric{i}"),
+                                            ..Default::default()
+                                        })
                                         .collect(),
                                 },
                                 ScopeMetrics {
                                     scope: None,
                                     schema_url: String::new(),
-                                        metrics: (0..2)
-                                        .map(|i| Metric { name: format!("A2_metric{i}"), ..Default::default() })
+                                    metrics: (0..2)
+                                        .map(|i| Metric {
+                                            name: format!("A2_metric{i}"),
+                                            ..Default::default()
+                                        })
                                         .collect(),
                                 },
                             ],
@@ -971,15 +989,21 @@ mod tests {
                                 ScopeMetrics {
                                     scope: None,
                                     schema_url: String::new(),
-                                        metrics: (0..2)
-                                        .map(|i| Metric { name: format!("B1_metric{i}"), ..Default::default() })
+                                    metrics: (0..2)
+                                        .map(|i| Metric {
+                                            name: format!("B1_metric{i}"),
+                                            ..Default::default()
+                                        })
                                         .collect(),
                                 },
                                 ScopeMetrics {
                                     scope: None,
                                     schema_url: String::new(),
-                                        metrics: (0..2)
-                                        .map(|i| Metric { name: format!("B2_metric{i}"), ..Default::default() })
+                                    metrics: (0..2)
+                                        .map(|i| Metric {
+                                            name: format!("B2_metric{i}"),
+                                            ..Default::default()
+                                        })
                                         .collect(),
                                 },
                             ],
@@ -1046,15 +1070,21 @@ mod tests {
                                 ScopeLogs {
                                     scope: None,
                                     schema_url: String::new(),
-                                        log_records: (0..2)
-                                        .map(|i| LogRecord { severity_text: format!("A1_rec{i}"), ..Default::default() })
+                                    log_records: (0..2)
+                                        .map(|i| LogRecord {
+                                            severity_text: format!("A1_rec{i}"),
+                                            ..Default::default()
+                                        })
                                         .collect(),
                                 },
                                 ScopeLogs {
                                     scope: None,
                                     schema_url: String::new(),
-                                        log_records: (0..2)
-                                        .map(|i| LogRecord { severity_text: format!("A2_rec{i}"), ..Default::default() })
+                                    log_records: (0..2)
+                                        .map(|i| LogRecord {
+                                            severity_text: format!("A2_rec{i}"),
+                                            ..Default::default()
+                                        })
                                         .collect(),
                                 },
                             ],
@@ -1066,15 +1096,21 @@ mod tests {
                                 ScopeLogs {
                                     scope: None,
                                     schema_url: String::new(),
-                                        log_records: (0..2)
-                                        .map(|i| LogRecord { severity_text: format!("B1_rec{i}"), ..Default::default() })
+                                    log_records: (0..2)
+                                        .map(|i| LogRecord {
+                                            severity_text: format!("B1_rec{i}"),
+                                            ..Default::default()
+                                        })
                                         .collect(),
                                 },
                                 ScopeLogs {
                                     scope: None,
                                     schema_url: String::new(),
-                                        log_records: (0..2)
-                                        .map(|i| LogRecord { severity_text: format!("B2_rec{i}"), ..Default::default() })
+                                    log_records: (0..2)
+                                        .map(|i| LogRecord {
+                                            severity_text: format!("B2_rec{i}"),
+                                            ..Default::default()
+                                        })
                                         .collect(),
                                 },
                             ],
