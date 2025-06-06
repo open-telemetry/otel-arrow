@@ -17,7 +17,6 @@ package arrow_record
 import (
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"testing"
 	"time"
 
@@ -41,7 +40,7 @@ import (
 func FuzzConsumerTraces(f *testing.F) {
 	const numSeeds = 5
 
-	ent := datagen.NewTestEntropy(12345)
+	ent := datagen.NewTestEntropy()
 
 	for i := 0; i < numSeeds; i++ {
 		func() {
@@ -100,7 +99,7 @@ func FuzzConsumerTraces(f *testing.F) {
 func FuzzProducerTraces2(f *testing.F) {
 	const numSeeds = 5
 
-	ent := datagen.NewTestEntropy(12345)
+	ent := datagen.NewTestEntropy()
 
 	for i := 0; i < numSeeds; i++ {
 		dg := datagen.NewTracesGenerator(
@@ -154,7 +153,7 @@ func FuzzProducerTraces2(f *testing.F) {
 func FuzzProducerTraces1(f *testing.F) {
 	const numSeeds = 5
 
-	ent := datagen.NewTestEntropy(12345)
+	ent := datagen.NewTestEntropy()
 
 	dg := datagen.NewTracesGenerator(
 		ent,
@@ -198,7 +197,7 @@ func FuzzProducerTraces1(f *testing.F) {
 }
 
 func TestProducerConsumerTraces(t *testing.T) {
-	ent := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+	ent := datagen.NewTestEntropy()
 
 	stdTesting := assert.NewStdUnitTest(t)
 
@@ -271,7 +270,7 @@ func TestProducerConsumerTraces(t *testing.T) {
 }
 
 func TestProducerConsumerLogs(t *testing.T) {
-	ent := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+	ent := datagen.NewTestEntropy()
 
 	stdTesting := assert.NewStdUnitTest(t)
 
@@ -325,7 +324,7 @@ func TestProducerConsumerLogs(t *testing.T) {
 }
 
 func TestProducerConsumerMetrics(t *testing.T) {
-	ent := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+	ent := datagen.NewTestEntropy()
 
 	stdTesting := assert.NewStdUnitTest(t)
 
