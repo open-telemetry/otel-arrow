@@ -40,12 +40,22 @@ pub fn qualified(args: TokenStream, input: TokenStream) -> TokenStream {
 #[proc_macro_derive(Message)]
 pub fn derive_otlp_message(input: TokenStream) -> TokenStream {
     MessageInfo::new(input, |message_info| {
+        eprintln!("🚨 DEBUG: Starting derive_otlp_message for: {}", message_info.outer_name);
         let mut tokens = TokenStream::new();
 
+        eprintln!("🚨 DEBUG: About to call builder::derive");
         tokens.extend(builder::derive(&message_info));
-        tokens.extend(visitor::derive(&message_info));
-        tokens.extend(message_adapter::derive(&message_info));
+        eprintln!("🚨 DEBUG: builder::derive completed successfully");
 
+        eprintln!("🚨 DEBUG: About to call visitor::derive");
+        tokens.extend(visitor::derive(&message_info));
+        eprintln!("🚨 DEBUG: visitor::derive completed successfully");
+
+        eprintln!("🚨 DEBUG: About to call message_adapter::derive");
+        tokens.extend(message_adapter::derive(&message_info));
+        eprintln!("🚨 DEBUG: message_adapter::derive completed successfully");
+
+        eprintln!("🚨 DEBUG: All derives completed successfully for: {}", message_info.outer_name);
         tokens
     })
 }

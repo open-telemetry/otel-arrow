@@ -13,9 +13,13 @@ use otlp_model::OneofCase;
 
 /// Emits the adapter struct and implementation for the visitor pattern
 pub fn derive(msg: &MessageInfo) -> TokenStream {
+    eprintln!("🚨 DEBUG: Starting message_adapter::derive for: {}", msg.outer_name);
+
     let outer_name = &msg.outer_name;
     let adapter_name = msg.related_typename("Adapter");
     let visitable_name = msg.related_typename("Visitable");
+
+    eprintln!("🚨 DEBUG: Generated names - adapter: {}, visitable: {}", adapter_name, visitable_name);
 
     // Generate the method name based on the outer type name
     // Convert CamelCase to snake_case (e.g., LogsData -> logs_data)
@@ -24,14 +28,22 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
         outer_name.span(),
     );
 
+    eprintln!("🚨 DEBUG: Generated visitable method name: {}", visitable_method_name);
+
     // Generate visitor calls for each field
+    eprintln!("🚨 DEBUG: About to generate visitor calls for {} fields", msg.all_fields.len());
     let visitor_calls: TokenVec = msg.all_fields.iter().map(generate_visitor_call).collect();
+    eprintln!("🚨 DEBUG: Generated {} visitor calls", visitor_calls.len());
 
     // Generate visitor parameters for the visitable trait method
+    eprintln!("🚨 DEBUG: About to generate visitor parameters");
     let mut visitor_params: TokenVec = Vec::new();
 
     for info in &msg.all_fields {
+        eprintln!("🚨 DEBUG: Processing field for visitor params: {}", info.ident);
+        
         if let Some(oneof_cases) = info.oneof.as_ref() {
+            eprintln!("🚨 DEBUG: Field {} has oneof with {} cases", info.ident, oneof_cases.len());
             for case in oneof_cases {
                 let variant_param_name = syn::Ident::new(
                     &format!("{}_{}_visitor", info.ident, case.name),
@@ -42,6 +54,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                 visitor_params.push(quote! { mut #variant_param_name: #visitor_type });
             }
         } else {
+            eprintln!("🚨 DEBUG: Field {} is not oneof, generating regular visitor param", info.ident);
             let field_name = &info.ident;
             // Handle raw identifiers (r#keyword) by stripping the r# prefix
             let field_name_str = field_name.to_string();
@@ -54,11 +67,25 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             let visitor_param =
                 syn::Ident::new(&format!("{}_visitor", clean_field_name), field_name.span());
 
+            eprintln!("🚨 DEBUG: About to generate visitor trait for field: {}", info.ident);
             let visitor_trait = generate_visitor_trait_for_field(&info);
+            eprintln!("🚨 DEBUG: Generated visitor trait for field: {}", info.ident);
             visitor_params.push(quote! { mut #visitor_param: impl #visitor_trait });
         }
     }
+    
+    eprintln!("🚨 DEBUG: Generated {} visitor parameters", visitor_params.len());
+    eprintln!("🚨 DEBUG: About to generate final quote! block");
 
+    // Debug individual components before combining
+    eprintln!("🚨 DEBUG: adapter_name: {}", adapter_name);
+    eprintln!("🚨 DEBUG: outer_name: {}", outer_name);
+    eprintln!("🚨 DEBUG: visitable_name: {}", visitable_name);
+    eprintln!("🚨 DEBUG: visitable_method_name: {}", visitable_method_name);
+    eprintln!("🚨 DEBUG: visitor_params count: {}", visitor_params.len());
+    eprintln!("🚨 DEBUG: visitor_calls count: {}", visitor_calls.len());
+
+    eprintln!("🚨 DEBUG: About to execute quote! macro");
     let expanded = quote! {
         /// Message adapter for presenting OTLP message objects as visitable.
         pub struct #adapter_name<'a> {
@@ -80,15 +107,23 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             }
         }
     };
+    
+    eprintln!("🚨 DEBUG: quote! macro completed successfully");
+    
+    eprintln!("🚨 DEBUG: Successfully generated quote! block");
+    eprintln!("🚨 DEBUG: About to return TokenStream");
 
     TokenStream::from(expanded)
 }
 
 /// Generates visitor call for a field 
 fn generate_visitor_call(info: &FieldInfo) -> proc_macro2::TokenStream {
+    eprintln!("🚨 DEBUG: Generating visitor call for field: {}", info.ident);
     if let Some(call) = super::visitor::generate_visitor_call(info) {
+        eprintln!("🚨 DEBUG: Successfully generated visitor call for field: {}", info.ident);
         call
     } else {
+        eprintln!("🚨 DEBUG: No visitor call generated for field: {}, using empty block", info.ident);
         quote::quote! {}
     }
 }
@@ -147,14 +182,31 @@ fn is_primitive_type_direct(ty: &syn::Type) -> bool {
 }
 
 fn generate_visitor_trait_for_field(info: &FieldInfo) -> syn::Type {
+    eprintln!("🚨 DEBUG: generate_visitor_trait_for_field called for field: {}", info.ident);
+    
     // Check if this field needs an adapter (complex type) or is primitive
     if needs_adapter_for_field(info) {
-        // For complex types, use the Visitor trait
+        eprintln!("🚨 DEBUG: Field {} needs adapter, generating visitor trait", info.ident);
+        // For complex types, use the Visitor trait - note: related_type already includes <Argument>
         let visitor_trait = info.related_type("Visitor");
-        syn::parse_quote! { #visitor_trait<Argument> }
+        
+        // Parse the visitor trait directly as a type (it already includes <Argument>)
+        match syn::parse2::<syn::Type>(visitor_trait.clone()) {
+            Ok(parsed_type) => {
+                eprintln!("🚨 DEBUG: Successfully parsed visitor trait as Type: {}", quote! { #parsed_type });
+                parsed_type
+            }
+            Err(e) => {
+                eprintln!("🚨 DEBUG: Failed to parse visitor trait '{}' as Type: {}", visitor_trait, e);
+                // Fallback to unknown visitor
+                syn::parse_quote! { crate::pdata::UnknownVisitor<Argument> }
+            }
+        }
     } else {
+        eprintln!("🚨 DEBUG: Field {} is primitive, generating primitive visitor", info.ident);
         // For primitive types, determine the appropriate visitor trait
         let base_type = get_base_type_name(&info.full_type_name);
+        eprintln!("🚨 DEBUG: Base type for {}: {}", info.ident, base_type);
         match base_type.as_str() {
             "String" => syn::parse_quote! { crate::pdata::StringVisitor<Argument> },
             "bool" => syn::parse_quote! { crate::pdata::BooleanVisitor<Argument> },

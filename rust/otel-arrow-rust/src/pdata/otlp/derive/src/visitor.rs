@@ -32,40 +32,36 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                 let variant_param_name =
                     syn::Ident::new(&format!("{}_{}", info.ident, case.name), info.ident.span());
 
-                // TODO: Compute the visitor type name from the oneof case
-                // Note probably need syn::parse_str::<syn::Type>(value)
-                let visitor_type = &info.full_type_name;
-
-                visitable_args.push(quote! { #variant_param_name: #visitor_type });
+                // Parse the type_param to get the visitor trait path
+                if let Ok(case_type) = syn::parse_str::<syn::Type>(&case.type_param) {
+                    let visitor_type = generate_visitor_type_for_oneof_variant(&case_type);
+                    visitable_args.push(quote! { #variant_param_name: #visitor_type });
+                }
             }
             continue;
         }
 
-        // For non-oneof fields, generate normal visitor parameter only for complex types
+        // For non-oneof fields, generate normal visitor parameter
         let param_name = &info.ident;
-        
-        // Only generate visitable parameters for fields that need adapters (complex message types)
-        if needs_adapter_for_field(info) {
-            let visitor_type = info.related_type("Visitable");
-            visitable_args.push(quote! { #param_name: impl #visitor_type });
-        }
+        let visitor_type = generate_visitor_trait_for_field(info);
+        visitable_args.push(quote! { #param_name: impl #visitor_type });
     }
 
     let expanded = quote! {
-    pub trait #visitor_name<Argument> {
+        pub trait #visitor_name<Argument> {
             fn #visitor_method_name(&mut self, arg: Argument, v: impl #visitable_name<Argument>) -> Argument;
-    }
+        }
 
-    pub trait #visitable_name<Argument> {
+        pub trait #visitable_name<Argument> {
             fn #visitable_method_name(&self, arg: Argument, #(#visitable_args),*) -> Argument;
-    }
+        }
 
-    impl<Argument> #visitor_name<Argument> for crate::pdata::NoopVisitor {
+        impl<Argument> #visitor_name<Argument> for crate::pdata::NoopVisitor {
             fn #visitor_method_name(&mut self, arg: Argument, _v: impl #visitable_name<Argument>) -> Argument {
-        // NoopVisitor threads the argument through unchanged.
-        arg
+                // NoopVisitor threads the argument through unchanged.
+                arg
             }
-    }
+        }
     };
 
     TokenStream::from(expanded)
@@ -326,5 +322,94 @@ pub fn get_base_type_name(ty: &syn::Type) -> String {
             }
         }
         _ => "unknown".to_string(),
+    }
+}
+
+/// Generate visitor type for a oneof variant
+fn generate_visitor_type_for_oneof_variant(case_type: &syn::Type) -> proc_macro2::TokenStream {
+    match case_type {
+        syn::Type::Path(type_path) => {
+            if let Some(segment) = type_path.path.segments.last() {
+                match segment.ident.to_string().as_str() {
+                    "Vec" => {
+                        if is_bytes_type(case_type) {
+                            quote! { impl crate::pdata::BytesVisitor<Argument> }
+                        } else {
+                            // For Vec<MessageType>, generate visitor trait for the inner type
+                            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                                if let Some(syn::GenericArgument::Type(inner_type)) = args.args.first() {
+                                    let visitor_trait = generate_visitor_trait_for_type(inner_type);
+                                    quote! { impl #visitor_trait }
+                                } else {
+                                    quote! { impl UnknownVisitor }
+                                }
+                            } else {
+                                quote! { impl UnknownVisitor }
+                            }
+                        }
+                    }
+                    type_name if is_primitive_type(case_type) => {
+                        let visitor_trait = get_primitive_visitor_trait(type_name);
+                        quote! { impl #visitor_trait }
+                    }
+                    _ => {
+                        // For message types
+                        let visitor_trait = generate_visitor_trait_for_type(case_type);
+                        quote! { impl #visitor_trait }
+                    }
+                }
+            } else {
+                quote! { impl UnknownVisitor }
+            }
+        }
+        _ => quote! { impl UnknownVisitor },
+    }
+}
+
+/// Generate visitor trait for a field based on its type  
+fn generate_visitor_trait_for_field(info: &FieldInfo) -> proc_macro2::TokenStream {
+    // Special handling for repeated Vec<u8> fields (bytes)
+    if info.is_repeated && is_bytes_type(&info.full_type_name) {
+        return quote! { crate::pdata::BytesVisitor<Argument> };
+    }
+
+    // Use the full_type_name for trait generation
+    generate_visitor_trait_for_type(&info.full_type_name)
+}
+
+/// Generate visitor trait for a given type
+fn generate_visitor_trait_for_type(ty: &syn::Type) -> proc_macro2::TokenStream {
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            let type_name = segment.ident.to_string();
+
+            if is_primitive_type(ty) {
+                get_primitive_visitor_trait(&type_name)
+            } else {
+                // For message types, generate visitor trait
+                let visitor_name = format!("{}Visitor", type_name);
+                let visitor_ident = syn::Ident::new(&visitor_name, segment.ident.span());
+                quote! { #visitor_ident<Argument> }
+            }
+        } else {
+            quote! { UnknownVisitor<Argument> }
+        }
+    } else {
+        quote! { UnknownVisitor<Argument> }
+    }
+}
+
+/// Get primitive type visitor trait with generic argument
+fn get_primitive_visitor_trait(type_name: &str) -> proc_macro2::TokenStream {
+    match type_name {
+        "String" => quote! { crate::pdata::StringVisitor<Argument> },
+        "bool" => quote! { crate::pdata::BooleanVisitor<Argument> },
+        "i32" => quote! { crate::pdata::I32Visitor<Argument> },
+        "i64" => quote! { crate::pdata::I64Visitor<Argument> },
+        "u32" | "u8" => quote! { crate::pdata::U32Visitor<Argument> },
+        "u64" => quote! { crate::pdata::U64Visitor<Argument> },
+        "f32" => quote! { crate::pdata::F32Visitor<Argument> },
+        "f64" => quote! { crate::pdata::F64Visitor<Argument> },
+        _ => quote! { UnknownVisitor<Argument> },
     }
 }
