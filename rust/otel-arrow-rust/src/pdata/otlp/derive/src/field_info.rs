@@ -231,7 +231,13 @@ impl FieldInfo {
                 let (base_type_name, qualifier) = Self::decompose_type(&inner_type);
                 //eprintln!("🚨 DEBUG: Decomposed type - base_name: {}, has_qualifier: {}",
                 //    base_type_name, qualifier.is_some());
-                let full_type_name = inner_type;
+                
+                // For repeated fields, full_type_name should be the original Vec type, not the inner type
+                let full_type_name = if is_repeated {
+                    field.ty.clone()
+                } else {
+                    inner_type.clone()
+                };
 
                 // Parse Prost tag, _p
                 //eprintln!("🚨 DEBUG: Parsing prost tag for field: {}", ident_str);
