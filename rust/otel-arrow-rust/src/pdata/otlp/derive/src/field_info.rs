@@ -112,11 +112,11 @@ impl FieldInfo {
                             Some(syn::parse_str::<syn::Type>(over.fieldtype).unwrap()),
                         )
                     })
-                    .unwrap_or_else(|| (inner_type, None));
+                    .unwrap_or_else(|| (inner_type.clone(), None));
 
-                let base_type_name: String; // TODO
-                let full_type_name: syn::Type; // TODO
-                let qualifier: Option<proc_macro2::TokenStream>; // TODO
+                // Decompose type into base name and qualifier
+                let (base_type_name, qualifier) = Self::decompose_type(&inner_type);
+                let full_type_name = inner_type;
 
                 // Parse Prost tag, _p
                 let (tag, proto_type) = parse_prost_tag_and_type(field);
@@ -141,10 +141,71 @@ impl FieldInfo {
     }
 
     pub fn related_type(&self, suffix: &str) -> proc_macro2::TokenStream {
-        // TODO This function should use the qualifier (which must be Some())
-        // up through and including the  '::' syntax, followed by
-        // a single Identifier formed of the base_name plus the suffix
-        // like format!("{}{}", base_name, suffix);
+        if let Some(ref qualifier) = self.qualifier {
+            let base_with_suffix = syn::Ident::new(
+                &format!("{}{}", self.base_type_name, suffix),
+                proc_macro2::Span::call_site()
+            );
+            quote::quote! { #qualifier::#base_with_suffix }
+        } else {
+            let type_with_suffix = syn::Ident::new(
+                &format!("{}{}", self.base_type_name, suffix),
+                proc_macro2::Span::call_site()
+            );
+            quote::quote! { #type_with_suffix }
+        }
+    }
+
+    /// Decompose a type into base type name and qualifier
+    /// Returns (base_type_name, qualifier) where qualifier is the module path
+    fn decompose_type(ty: &syn::Type) -> (String, Option<proc_macro2::TokenStream>) {
+        match ty {
+            syn::Type::Path(type_path) => {
+                let path_str = type_path
+                    .path
+                    .segments
+                    .iter()
+                    .map(|seg| seg.ident.to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                
+                // Get the base type name (last segment)
+                let base_type_name = type_path
+                    .path
+                    .segments
+                    .last()
+                    .map(|seg| seg.ident.to_string())
+                    .unwrap_or_else(|| path_str.clone());
+
+                // If there's only one segment, no qualifier needed
+                if type_path.path.segments.len() == 1 {
+                    return (base_type_name, None);
+                }
+
+                // Create qualifier from all but last segment
+                let qualifier_segments: Vec<_> = type_path
+                    .path
+                    .segments
+                    .iter()
+                    .take(type_path.path.segments.len() - 1)
+                    .collect();
+
+                if qualifier_segments.is_empty() {
+                    (base_type_name, None)
+                } else {
+                    let qualifier = qualifier_segments
+                        .iter()
+                        .map(|seg| &seg.ident)
+                        .collect::<Vec<_>>();
+                    (base_type_name, Some(quote::quote! { #(#qualifier)::* }))
+                }
+            }
+            _ => {
+                // For non-path types, just use the string representation as base name
+                let base_name = quote::quote! { #ty }.to_string();
+                (base_name, None)
+            }
+        }
     }
 
     /// Extract inner type from a generic container (Option<T>, Vec<T>)

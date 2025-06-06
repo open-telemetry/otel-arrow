@@ -8,6 +8,7 @@ use quote::quote;
 use super::TokenVec;
 use super::field_info::FieldInfo;
 use super::message_info::MessageInfo;
+use super::visitor::{needs_adapter_for_field, is_bytes_type, get_base_type_name};
 use otlp_model::OneofCase;
 
 /// Emits the adapter struct and implementation for the visitor pattern
@@ -83,17 +84,92 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// Generates  
-fn generate_visitor_call(_info: &FieldInfo) -> proc_macro2::TokenStream {
-    // TODO:
+/// Generates visitor call for a field 
+fn generate_visitor_call(info: &FieldInfo) -> proc_macro2::TokenStream {
+    if let Some(call) = super::visitor::generate_visitor_call(info) {
+        call
+    } else {
+        quote::quote! {}
+    }
 }
 
-fn generate_visitor_type_for_oneof_variant(_info: &FieldInfo, _case: &OneofCase) -> syn::Type {
-    // TODO
-    // if let Ok(case_type) = syn::parse_str::<syn::Type>(case.type_param) {
-    // let visitor_type: syn::Type; // TODO
+fn generate_visitor_type_for_oneof_variant(_info: &FieldInfo, case: &OneofCase) -> syn::Type {
+    // For oneof variants, we need to determine the type from the case
+    // This is a simplified implementation - might need refinement based on actual usage
+    if let Ok(case_type) = syn::parse_str::<syn::Type>(&case.type_param) {
+        if needs_adapter_for_field_type(&case_type) {
+            // Generate the visitor trait name from the case type
+            let type_name = get_base_type_name(&case_type);
+            let visitor_trait_name = format!("{}Visitor", type_name);
+            if let Ok(visitor_trait) = syn::parse_str::<syn::Type>(&visitor_trait_name) {
+                syn::parse_quote! { #visitor_trait<Argument> }
+            } else {
+                syn::parse_quote! { crate::pdata::UnknownVisitor<Argument> }
+            }
+        } else {
+            // For primitive types
+            let base_type = get_base_type_name(&case_type);
+            match base_type.as_str() {
+                "String" => syn::parse_quote! { crate::pdata::StringVisitor<Argument> },
+                "bool" => syn::parse_quote! { crate::pdata::BooleanVisitor<Argument> },
+                "i32" => syn::parse_quote! { crate::pdata::I32Visitor<Argument> },
+                "i64" => syn::parse_quote! { crate::pdata::I64Visitor<Argument> },
+                "u32" | "u8" => syn::parse_quote! { crate::pdata::U32Visitor<Argument> },
+                "u64" => syn::parse_quote! { crate::pdata::U64Visitor<Argument> },
+                "f32" | "f64" => syn::parse_quote! { crate::pdata::F64Visitor<Argument> },
+                _ => syn::parse_quote! { crate::pdata::UnknownVisitor<Argument> },
+            }
+        }
+    } else {
+        syn::parse_quote! { crate::pdata::UnknownVisitor<Argument> }
+    }
 }
 
-fn generate_visitor_trait_for_field(_info: &FieldInfo) -> syn::Type {
-    // TODO
+/// Check if a type needs an adapter (helper for oneof processing)
+fn needs_adapter_for_field_type(ty: &syn::Type) -> bool {
+    !is_primitive_type_direct(ty) && !is_bytes_type(ty)
+}
+
+/// Check if a type is primitive (helper for oneof processing)
+fn is_primitive_type_direct(ty: &syn::Type) -> bool {
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            matches!(
+                segment.ident.to_string().as_str(),
+                "String" | "bool" | "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "f32" | "f64"
+            )
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
+fn generate_visitor_trait_for_field(info: &FieldInfo) -> syn::Type {
+    // Check if this field needs an adapter (complex type) or is primitive
+    if needs_adapter_for_field(info) {
+        // For complex types, use the Visitor trait
+        let visitor_trait = info.related_type("Visitor");
+        syn::parse_quote! { #visitor_trait<Argument> }
+    } else {
+        // For primitive types, determine the appropriate visitor trait
+        let base_type = get_base_type_name(&info.full_type_name);
+        match base_type.as_str() {
+            "String" => syn::parse_quote! { crate::pdata::StringVisitor<Argument> },
+            "bool" => syn::parse_quote! { crate::pdata::BooleanVisitor<Argument> },
+            "i32" => syn::parse_quote! { crate::pdata::I32Visitor<Argument> },
+            "i64" => syn::parse_quote! { crate::pdata::I64Visitor<Argument> },
+            "u32" | "u8" => syn::parse_quote! { crate::pdata::U32Visitor<Argument> },
+            "u64" => syn::parse_quote! { crate::pdata::U64Visitor<Argument> },
+            "f32" | "f64" => syn::parse_quote! { crate::pdata::F64Visitor<Argument> },
+            _ => {
+                if is_bytes_type(&info.full_type_name) {
+                    syn::parse_quote! { crate::pdata::BytesVisitor<Argument> }
+                } else {
+                    syn::parse_quote! { crate::pdata::UnknownVisitor<Argument> }
+                }
+            }
+        }
+    }
 }

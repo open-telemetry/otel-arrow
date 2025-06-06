@@ -63,17 +63,15 @@ impl crate::pdata::BooleanVisitor<PrecomputedSizes> for BooleanEncodedLen {
 }
 
 impl crate::pdata::StringVisitor<PrecomputedSizes> for StringEncodedLen {
-    fn visit_string(&mut self, mut arg: PrecomputedSizes, _value: &str) -> PrecomputedSizes {
-        //arg.push_size(::prost::encoding::string::encoded_len(self.tag, value));
-        arg.push_size(1); // @@@ Incorrect
+    fn visit_string(&mut self, mut arg: PrecomputedSizes, value: &str) -> PrecomputedSizes {
+        arg.push_size(::prost::encoding::string::encoded_len(self.tag, value));
         arg
     }
 }
 
 impl crate::pdata::BytesVisitor<PrecomputedSizes> for BytesEncodedLen {
-    fn visit_bytes(&mut self, mut arg: PrecomputedSizes, _value: &[u8]) -> PrecomputedSizes {
-        //arg.push_size(::prost::encoding::bytes::encoded_len(self.tag, &value));
-        arg.push_size(1); // @@@ Incorrect
+    fn visit_bytes(&mut self, mut arg: PrecomputedSizes, value: &[u8]) -> PrecomputedSizes {
+        arg.push_size(::prost::encoding::bytes::encoded_len(self.tag, value));
         arg
     }
 }

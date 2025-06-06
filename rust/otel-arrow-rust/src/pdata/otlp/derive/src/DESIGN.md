@@ -1,5 +1,16 @@
 # OTLP Derive Package - Design Document
 
+## URGENT STATUS: BROKEN - REQUIRES RESTORATION 🚨
+
+**Current State**: The derive package is in a broken state after refactoring. The procedural macros are generating incorrect trait references that don't match actual trait definitions.
+
+**Critical Issues**:
+1. Trait naming mismatch: generating `StringVisitable` vs actual `StringVisitor<Argument>`
+2. Wrong module paths: generating `prost::alloc::string::` vs `crate::pdata::`
+3. Missing generic parameters in generated trait references
+
+**Working Reference**: `src/pdata/otlp/derive/src/original.rs` contains the working implementation that needs to be restored.
+
 ## Overview
 
 The OTLP Derive package is a procedural macro system that automatically generates visitor pattern implementations for OpenTelemetry Protocol (OTLP) message types. It enables type-safe, efficient traversal of OTLP data structures without manual implementation overhead.
@@ -694,3 +705,61 @@ for info in all_fields {
     // Generate visitor parameter and call for every field
 }
 ```
+
+## RESTORATION INSTRUCTIONS
+
+### Broken Components Analysis
+
+**Current Broken Trait Generation**:
+```rust
+// BROKEN - Current macro generates:
+#param_name: impl prost::alloc::string::StringVisitable
+#param_name: impl prost::alloc::vec::VecVisitable
+```
+
+**Working Pattern (from original.rs)**:
+```rust
+// WORKING - Should generate:
+#param_name: impl crate::pdata::StringVisitor<Argument>
+#param_name: impl crate::pdata::BytesVisitor<Argument>  // for Vec<u8>
+```
+
+### Key Functions to Restore
+
+**1. `generate_visitor_trait_for_field()` (original.rs:1414)**
+- Handles primitive vs message type detection
+- Maps primitive types to correct `crate::pdata::*Visitor<Argument>` traits
+- Uses `get_primitive_visitor_trait()` for primitive type mapping
+
+**2. `get_primitive_visitor_trait()` (original.rs:167)**
+- Essential mapping function for primitive types:
+```rust
+"String" => quote! { crate::pdata::StringVisitor<Argument> },
+"bool" => quote! { crate::pdata::BooleanVisitor<Argument> },
+"i32" => quote! { crate::pdata::I32Visitor<Argument> },
+"u32" | "u8" => quote! { crate::pdata::U32Visitor<Argument> },
+"u64" => quote! { crate::pdata::U64Visitor<Argument> },
+"f32" | "f64" => quote! { crate::pdata::F64Visitor<Argument> },
+```
+
+**3. Trait Name Pattern**
+- Message types: `{TypeName}Visitor<Argument>` (e.g., `SpanVisitor<Argument>`)
+- Primitive types: Use `crate::pdata::{Type}Visitor<Argument>` mapping
+- Special case: `Vec<u8>` → `crate::pdata::BytesVisitor<Argument>`
+
+### Files Requiring Fix
+
+**`field_info.rs`**:
+- `related_type()` method generates wrong trait names
+- Should call `generate_visitor_trait_for_field()` logic instead
+
+**`visitor.rs`**:
+- Replace current trait generation with original's `generate_visitor_trait_for_field()`
+- Add `get_primitive_visitor_trait()` function from original
+
+### Validation Steps
+
+1. **Run**: `cargo expand > EXPANDED`
+2. **Check**: No `StringVisitable` references in EXPANDED
+3. **Verify**: All trait references use `crate::pdata::*Visitor<Argument>` pattern
+4. **Test**: All 36 tests pass after restoration

@@ -1,5 +1,37 @@
 # OTLP Visitor Pattern Implementation - Product Requirements Document
 
+## URGENT: Restoration Required 🚨
+
+**Current Status**: The refactoring has left the project in a broken state. The procedural macros are generating incorrect trait references that don't match the actual trait definitions.
+
+### Immediate Action Required
+
+**Step 1: Fix Trait Name Generation**
+- Current: Macros generate `StringVisitable`, `VecVisitable`, etc. in wrong modules
+- Target: Should generate `crate::pdata::StringVisitor<Argument>`, etc.
+- Location: `src/pdata/otlp/derive/src/visitor.rs` and `field_info.rs`
+
+**Step 2: Restore Working Visitor Pattern**
+- Reference: `src/pdata/otlp/derive/src/original.rs` contains the working implementation
+- Key Function: `generate_visitor_trait_for_field()` in original.rs (line 1414)
+- Key Function: `get_primitive_visitor_trait()` in original.rs (line 167)
+
+**Step 3: Fix Module Path Resolution**
+- Current: Generating `prost::alloc::string::StringVisitable`
+- Target: Should generate `crate::pdata::StringVisitor<Argument>`
+
+**Key Files to Fix:**
+1. `src/pdata/otlp/derive/src/field_info.rs` - Fix `related_type()` method
+2. `src/pdata/otlp/derive/src/visitor.rs` - Fix trait generation logic
+3. Restore primitive type mapping from original.rs
+
+**Validation:**
+- Run `cargo expand > EXPANDED` to check generated trait references
+- Should see `crate::pdata::StringVisitor<Argument>` not `StringVisitable`
+- All 36 tests should pass when fixed
+
+---
+
 ## Phase 2: Visitor Pattern Upgrade - COMPLETED ✅
 
 The visitor pattern upgrade has been successfully completed, implementing generic argument and return types for mutable state passing through visitor traversal. This phase was essential for enabling the two-pass encoding algorithm in Phase 3.

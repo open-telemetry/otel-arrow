@@ -125,7 +125,9 @@ impl MessageInfo {
     }
 
     pub fn related_typename(&self, suffix: &str) -> syn::Ident {
-        // TODO: This should return an identifier consisting of
-        // self.outer_name joined with the suffix.
+        syn::Ident::new(
+            &format!("{}{}", self.outer_name, suffix),
+            self.outer_name.span()
+        )
     }
 }

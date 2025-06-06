@@ -6,6 +6,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 
 use super::TokenVec;
+use super::field_info::FieldInfo;
 use super::message_info::MessageInfo;
 
 /// Emits the visitor, visitable and adapters methods.
@@ -68,9 +69,9 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
 
 /// Generate visitor call for a field with proper handling for different field types
 pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStream> {
-    // Oneof fields are handled separately in generate_oneof_visitor_calls
+    // Oneof fields are handled separately
     if info.oneof.is_some() {
-        return field_utils::generate_oneof_visitor_calls(info);
+        return None; // Will be handled by generate_oneof_visitor_calls
     }
 
     let field_name = &info.ident;
@@ -81,11 +82,11 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
         &field_name_str
     };
 
-    let visitor_param = ident_utils::visitor_param_name(&clean_field_name);
+    let visitor_param = visitor_param_name(&clean_field_name);
 
     let visit_method = generate_visit_method_for_field(info);
     let needs_adapter = needs_adapter_for_field(info);
-    let is_bytes = type_utils::is_bytes_type(&info.field_type);
+    let is_bytes = is_bytes_type(&info.full_type_name);
 
     match (info.is_optional, info.is_repeated, needs_adapter, is_bytes) {
         (false, false, true, _) => {
@@ -190,36 +191,136 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
 /// Generate visitor calls for oneof fields based on their variants
 pub fn generate_oneof_visitor_calls(
     info: &FieldInfo,
-    oneof_mapping: &OneofMapping,
 ) -> Vec<proc_macro2::TokenStream> {
     let mut visitor_calls = Vec::new();
 
-    if !info.is_oneof {
-        return visitor_calls;
-    }
+    if let Some(oneof_cases) = &info.oneof {
+        for case in oneof_cases {
+            let variant_param_name = syn::Ident::new(
+                &format!("{}_{}_visitor", info.ident, case.name),
+                info.ident.span(),
+            );
 
-    if let Some((oneof_name, oneof_cases)) = oneof_mapping {
-        if oneof_name.ends_with(&format!(".{}", info.ident)) {
+            // Generate visitor call for this oneof variant
             let field_name = &info.ident;
+            let variant_path = syn::parse_str::<syn::Expr>(case.value_variant).unwrap();
 
-            for case in oneof_cases {
-                let variant_param_name = syn::Ident::new(
-                    &format!("{}_{}_visitor", field_name, case.name),
-                    field_name.span(),
-                );
-
-                // For now, generate a no-op visitor call that just threads the argument
-                // This ensures we consume all the visitor parameters that were generated
-                // TODO: Implement proper oneof variant matching and visiting
-                let visitor_call = quote! {
-                    // TODO: Implement oneof visitor call for #variant_param_name
-                    let _ = &#variant_param_name; // Consume the parameter to avoid unused warnings
-                };
-
-                visitor_calls.push(visitor_call);
-            }
+            visitor_calls.push(quote! {
+                if let Some(#variant_path(ref value)) = self.data.#field_name {
+                    arg = #variant_param_name.visit(arg, value);
+                }
+            });
         }
     }
 
     visitor_calls
+}
+
+/// Generate visitor parameter name for a field
+fn visitor_param_name(field_name: &str) -> syn::Ident {
+    syn::Ident::new(&format!("{}_visitor", field_name), proc_macro2::Span::call_site())
+}
+
+/// Generate the correct visit method name for a field based on its type
+fn generate_visit_method_for_field(info: &FieldInfo) -> syn::Ident {
+    let method_name = if info.is_bytes {
+        "visit_bytes".to_string()
+    } else if is_primitive_type(&info.full_type_name) {
+        format!("visit_{}", get_primitive_method_suffix(&info.full_type_name))
+    } else {
+        let type_name = &info.base_type_name;
+        format!("visit_{}", type_name.to_case(Case::Snake))
+    };
+    
+    syn::Ident::new(&method_name, proc_macro2::Span::call_site())
+}
+
+/// Determine if a field needs to be wrapped in an adapter (message types) vs used directly (primitives)
+pub fn needs_adapter_for_field(info: &FieldInfo) -> bool {
+    info.is_message || !is_primitive_type(&info.full_type_name)
+}
+
+/// Determine if a type is a primitive type that doesn't need an adapter
+fn is_primitive_type(ty: &syn::Type) -> bool {
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(last_segment) = type_path.path.segments.last() {
+            match last_segment.ident.to_string().as_str() {
+                "String" | "u32" | "u64" | "i32" | "i64" | "f32" | "f64" | "bool" => true,
+                _ => false,
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
+/// Check if a type is a bytes type
+pub fn is_bytes_type(ty: &syn::Type) -> bool {
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(last_segment) = type_path.path.segments.last() {
+            match last_segment.ident.to_string().as_str() {
+                "Vec" => {
+                    // Check if it's Vec<u8>
+                    if let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments {
+                        if let Some(syn::GenericArgument::Type(syn::Type::Path(inner_path))) = args.args.first() {
+                            if let Some(inner_segment) = inner_path.path.segments.last() {
+                                return inner_segment.ident == "u8";
+                            }
+                        }
+                    }
+                    false
+                }
+                _ => false,
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
+/// Get the method suffix for primitive types
+fn get_primitive_method_suffix(ty: &syn::Type) -> String {
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(last_segment) = type_path.path.segments.last() {
+            match last_segment.ident.to_string().as_str() {
+                "String" => "string".to_string(),
+                "u32" => "u32".to_string(),
+                "u64" => "u64".to_string(), 
+                "i32" => "i32".to_string(),
+                "i64" => "i64".to_string(),
+                "f32" => "f32".to_string(),
+                "f64" => "f64".to_string(),
+                "bool" => "bool".to_string(),
+                name => name.to_case(Case::Snake),
+            }
+        } else {
+            "unknown".to_string()
+        }
+    } else {
+        "unknown".to_string()
+    }
+}
+
+/// Get the adapter name for a field type
+fn get_adapter_name_for_field(info: &FieldInfo) -> proc_macro2::TokenStream {
+    let adapter_suffix = "Adapter";
+    info.related_type(adapter_suffix)
+}
+
+/// Extract the base type name from a syn::Type
+pub fn get_base_type_name(ty: &syn::Type) -> String {
+    match ty {
+        syn::Type::Path(type_path) => {
+            if let Some(segment) = type_path.path.segments.last() {
+                segment.ident.to_string()
+            } else {
+                "unknown".to_string()
+            }
+        }
+        _ => "unknown".to_string(),
+    }
 }
