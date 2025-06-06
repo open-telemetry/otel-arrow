@@ -20,12 +20,11 @@ Classes:
 from abc import ABC, abstractmethod
 from typing import Any, Dict
 
-from pydantic import BaseModel
-
 from ..test_framework.test_data import TestData
+from .base import BaseStrategyConfig
 
 
-class ReportingStrategyConfig(BaseModel):
+class ReportingStrategyConfig(BaseStrategyConfig):
     """Base model for Reporting Strategy config, passed to strategy init."""
 
 

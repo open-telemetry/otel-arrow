@@ -20,13 +20,12 @@ Classes:
 
 from abc import ABC, abstractmethod
 
-from pydantic import BaseModel
-
 from ..component.component import Component
 from ..context.test_contexts import TestStepContext
+from .base import BaseStrategyConfig
 
 
-class DeploymentStrategyConfig(BaseModel):
+class DeploymentStrategyConfig(BaseStrategyConfig):
     """Base model for Deployment Strategy config, passed to strategy init."""
 
 
