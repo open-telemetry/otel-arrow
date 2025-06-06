@@ -46,12 +46,12 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             //eprintln!("🚨 DEBUG: Field {} has oneof with {} cases", info.ident, oneof_cases.len());
             for case in oneof_cases {
                 let variant_param_name = syn::Ident::new(
-                    &format!("{}_{}_visitor", info.ident, case.name),
+                    &format!("{}_{}", info.ident, case.name),
                     info.ident.span(),
                 );
 
                 let visitor_type = generate_visitor_type_for_oneof_variant(&info, &case);
-                visitor_params.push(quote! { mut #variant_param_name: #visitor_type });
+                visitor_params.push(quote! { mut #variant_param_name: impl #visitor_type });
             }
         } else {
             //eprintln!("🚨 DEBUG: Field {} is not oneof, generating regular visitor param", info.ident);
@@ -136,23 +136,32 @@ fn generate_visitor_type_for_oneof_variant(_info: &FieldInfo, case: &OneofCase) 
             // Generate the visitor trait name from the case type
             let type_name = get_base_type_name(&case_type);
             let visitor_trait_name = format!("{}Visitor", type_name);
-            if let Ok(visitor_trait) = syn::parse_str::<syn::Type>(&visitor_trait_name) {
+            
+            // For Vec types that need adapters, use the proper prefix
+            if type_name == "Vec" {
+                syn::parse_quote! { crate::pdata::VecVisitor<Argument> }
+            } else if let Ok(visitor_trait) = syn::parse_str::<syn::Type>(&visitor_trait_name) {
                 syn::parse_quote! { #visitor_trait<Argument> }
             } else {
                 syn::parse_quote! { crate::pdata::UnknownVisitor<Argument> }
             }
         } else {
             // For primitive types
-            let base_type = get_base_type_name(&case_type);
-            match base_type.as_str() {
-                "String" => syn::parse_quote! { crate::pdata::StringVisitor<Argument> },
-                "bool" => syn::parse_quote! { crate::pdata::BooleanVisitor<Argument> },
-                "i32" => syn::parse_quote! { crate::pdata::I32Visitor<Argument> },
-                "i64" => syn::parse_quote! { crate::pdata::I64Visitor<Argument> },
-                "u32" | "u8" => syn::parse_quote! { crate::pdata::U32Visitor<Argument> },
-                "u64" => syn::parse_quote! { crate::pdata::U64Visitor<Argument> },
-                "f32" | "f64" => syn::parse_quote! { crate::pdata::F64Visitor<Argument> },
-                _ => syn::parse_quote! { crate::pdata::UnknownVisitor<Argument> },
+            if is_bytes_type(&case_type) {
+                syn::parse_quote! { crate::pdata::BytesVisitor<Argument> }
+            } else {
+                let base_type = get_base_type_name(&case_type);
+                match base_type.as_str() {
+                    "String" => syn::parse_quote! { crate::pdata::StringVisitor<Argument> },
+                    "bool" => syn::parse_quote! { crate::pdata::BooleanVisitor<Argument> },
+                    "i32" => syn::parse_quote! { crate::pdata::I32Visitor<Argument> },
+                    "i64" => syn::parse_quote! { crate::pdata::I64Visitor<Argument> },
+                    "u32" | "u8" => syn::parse_quote! { crate::pdata::U32Visitor<Argument> },
+                    "u64" => syn::parse_quote! { crate::pdata::U64Visitor<Argument> },
+                    "f32" | "f64" => syn::parse_quote! { crate::pdata::F64Visitor<Argument> },
+                    "Vec" => syn::parse_quote! { crate::pdata::VecVisitor<Argument> },
+                    _ => syn::parse_quote! { crate::pdata::UnknownVisitor<Argument> },
+                }
             }
         }
     } else {

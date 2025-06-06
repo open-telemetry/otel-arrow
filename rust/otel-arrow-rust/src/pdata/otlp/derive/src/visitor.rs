@@ -257,6 +257,19 @@ fn is_primitive_type(ty: &syn::Type) -> bool {
         if let Some(last_segment) = type_path.path.segments.last() {
             match last_segment.ident.to_string().as_str() {
                 "String" | "u32" | "u64" | "i32" | "i64" | "f32" | "f64" | "bool" => true,
+                "Vec" => {
+                    // Check if it's Vec<u8> (bytes)
+                    if let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments {
+                        if let Some(syn::GenericArgument::Type(syn::Type::Path(inner_path))) =
+                            args.args.first()
+                        {
+                            if let Some(inner_segment) = inner_path.path.segments.last() {
+                                return inner_segment.ident == "u8";
+                            }
+                        }
+                    }
+                    false
+                }
                 _ => false,
             }
         } else {
@@ -370,6 +383,7 @@ fn generate_visitor_type_for_oneof_variant(case_type: &syn::Type) -> proc_macro2
                 "u64" => quote! { crate::pdata::U64Visitor<Argument> },
                 "f32" => quote! { crate::pdata::F32Visitor<Argument> },
                 "f64" => quote! { crate::pdata::F64Visitor<Argument> },
+                "Vec" => quote! { crate::pdata::VecVisitor<Argument> },
                 _ => {
                     // For message types, construct visitor name with qualifier
                     let visitor_name = format!("{}Visitor", base_type_name);
