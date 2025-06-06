@@ -760,7 +760,6 @@ mod parse_tests {
                 .unwrap()
                 .and_local_timezone(FixedOffset::east_opt(offset).unwrap())
                 .unwrap()
-                .into()
         };
 
         let now = Utc::now();
@@ -801,7 +800,7 @@ mod parse_tests {
         );
         run_test(
             "datetime(2014-05-25T08:20:03.123456)",
-            create_utc(2014, 05, 25, 8, 20, 3, 123456),
+            create_utc(2014, 5, 25, 8, 20, 3, 123456),
         );
         run_test(
             "datetime(2014-05-25T08:20)",

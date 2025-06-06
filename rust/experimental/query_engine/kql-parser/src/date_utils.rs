@@ -16,70 +16,64 @@ static LOCAL_TIME_REGEX: LazyLock<Regex> =
 static ISO_TIME_OFFSET_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new("([-+])(\\d+)(?::(\\d+))?").unwrap());
 
+fn expand_year(mut year: u32) -> u32 {
+    if year < 50 {
+        year += 2000;
+    } else if year < 100 {
+        year += 1900;
+    }
+    year
+}
+
 pub(crate) fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), ()> {
     let iso = ISO_DATE_REGEX.captures(input);
-    if !iso.is_none() {
+    if iso.is_some() {
         let captures = iso.unwrap();
 
         let r = captures.get(0).unwrap().range();
 
         let a = captures.get(1).unwrap().as_str().parse::<u32>().unwrap();
         let b = captures.get(2).unwrap().as_str().parse::<u32>().unwrap();
-        let mut c = captures.get(3).unwrap().as_str().parse::<u32>().unwrap();
+        let c = captures.get(3).unwrap().as_str().parse::<u32>().unwrap();
         if a > 99 {
             return Ok((b, c, a, r));
         } else {
-            if c < 50 {
-                c = c + 2000;
-            } else if c < 100 {
-                c = c + 1900;
-            }
-            return Ok((a, b, c, r));
+            return Ok((a, b, expand_year(c), r));
         }
     }
 
     let rfc = RFC_DATE_REGEX.captures(input);
-    if !rfc.is_none() {
+    if rfc.is_some() {
         let captures = rfc.unwrap();
 
         let r = captures.get(0).unwrap().range();
 
         let day = captures.get(1).unwrap().as_str().parse::<u32>().unwrap();
         let month = Month::from_str(captures.get(2).unwrap().as_str());
-        let mut year = captures.get(3).unwrap().as_str().parse::<u32>().unwrap();
+        let year = captures.get(3).unwrap().as_str().parse::<u32>().unwrap();
 
         if month.is_err() {
             return Err(());
         }
 
-        if year < 50 {
-            year = year + 2000;
-        } else if year < 100 {
-            year = year + 1900;
-        }
-        return Ok((month.unwrap().number_from_month(), day, year, r));
+        return Ok((month.unwrap().number_from_month(), day, expand_year(year), r));
     }
 
     let local = LOCAL_DATE_REGEX.captures(input);
-    if !local.is_none() {
+    if local.is_some() {
         let captures = local.unwrap();
 
         let r = captures.get(0).unwrap().range();
 
         let month = Month::from_str(captures.get(1).unwrap().as_str());
         let day = captures.get(2).unwrap().as_str().parse::<u32>().unwrap();
-        let mut year = captures.get(3).unwrap().as_str().parse::<u32>().unwrap();
+        let year = captures.get(3).unwrap().as_str().parse::<u32>().unwrap();
 
         if month.is_err() {
             return Err(());
         }
 
-        if year < 50 {
-            year = year + 2000;
-        } else if year < 100 {
-            year = year + 1900;
-        }
-        return Ok((month.unwrap().number_from_month(), day, year, r));
+        return Ok((month.unwrap().number_from_month(), day, expand_year(year), r));
     }
 
     let now = Utc::now();
@@ -88,7 +82,7 @@ pub(crate) fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), (
 
 pub(crate) fn parse_time(input: &str) -> Result<(u32, u32, u32, u32, Range<usize>), ()> {
     let local = LOCAL_TIME_REGEX.captures(input);
-    if !local.is_none() {
+    if local.is_some() {
         let captures = local.unwrap();
 
         let r = captures.get(0).unwrap().range();
@@ -97,19 +91,19 @@ pub(crate) fn parse_time(input: &str) -> Result<(u32, u32, u32, u32, Range<usize
 
         let mut minute = 0;
         let cminute = captures.get(2);
-        if !cminute.is_none() {
+        if cminute.is_some() {
             minute = cminute.unwrap().as_str().parse::<u32>().unwrap();
         }
 
         if captures.get(3).unwrap().as_str().to_lowercase() == "pm" {
-            hour = hour + 12;
+            hour += 12;
         }
 
         return Ok((hour, minute, 0, 0, r));
     }
 
     let iso = ISO_TIME_REGEX.captures(input);
-    if !iso.is_none() {
+    if iso.is_some() {
         let captures = iso.unwrap();
 
         let r = captures.get(0).unwrap().range();
@@ -119,13 +113,13 @@ pub(crate) fn parse_time(input: &str) -> Result<(u32, u32, u32, u32, Range<usize
 
         let mut seconds = 0;
         let cseconds = captures.get(3);
-        if !cseconds.is_none() {
+        if cseconds.is_some() {
             seconds = cseconds.unwrap().as_str().parse::<u32>().unwrap();
         }
 
         let mut micro = 0;
         let cmicro = captures.get(4);
-        if !cmicro.is_none() {
+        if cmicro.is_some() {
             micro = cmicro.unwrap().as_str().parse::<u32>().unwrap();
         }
 
@@ -137,8 +131,8 @@ pub(crate) fn parse_time(input: &str) -> Result<(u32, u32, u32, u32, Range<usize
 
 pub(crate) fn parse_offset(input: &str) -> i32 {
     let mut offset: i32 = 0;
-    let c = ISO_TIME_OFFSET_REGEX.captures(&input);
-    if !c.is_none() {
+    let c = ISO_TIME_OFFSET_REGEX.captures(input);
+    if c.is_some() {
         let captures = c.unwrap();
 
         let mut multipler: i32 = 1;
@@ -150,7 +144,7 @@ pub(crate) fn parse_offset(input: &str) -> i32 {
 
         let mut minutes: i32 = 0;
         let cminutes = captures.get(3);
-        if !cminutes.is_none() {
+        if cminutes.is_some() {
             minutes = cminutes.unwrap().as_str().parse::<i32>().unwrap();
         }
 
