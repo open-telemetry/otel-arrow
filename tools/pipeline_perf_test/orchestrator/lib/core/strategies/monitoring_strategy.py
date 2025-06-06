@@ -15,13 +15,12 @@ Classes:
 
 from abc import ABC, abstractmethod
 
-from pydantic import BaseModel
-
 from ..component.component import Component
 from ..context.test_contexts import TestStepContext, TestExecutionContext
+from .base import BaseStrategyConfig
 
 
-class MonitoringStrategyConfig(BaseModel):
+class MonitoringStrategyConfig(BaseStrategyConfig):
     """Base model for Monitoring Strategy config, passed to strategy init."""
 
 

@@ -16,10 +16,10 @@ Typical usage:
 from dataclasses import dataclass, field
 from typing import Any, Dict, TYPE_CHECKING
 
-from ..context.test_contexts import TestExecutionContext
 from ..runtime.runtime import Runtime
 
 if TYPE_CHECKING:
+    from ..context.test_contexts import TestExecutionContext
     from .component import Component
 
 
@@ -32,7 +32,7 @@ class ComponentData:
 
     @classmethod
     def from_component(
-        cls, component: "Component", context: TestExecutionContext
+        cls, component: "Component", context: "TestExecutionContext"
     ) -> "ComponentData":
         """Create a ComponentData instance from a component and context."""
         return cls(
