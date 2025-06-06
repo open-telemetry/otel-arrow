@@ -505,7 +505,7 @@ mod parse_tests {
 
             let f = parse_double_literal(result.next().unwrap());
 
-            assert!(!f.is_err());
+            assert!(f.is_ok());
             assert_eq!(expected, f.unwrap());
         };
 
@@ -528,7 +528,7 @@ mod parse_tests {
 
             let i = parse_integer_literal(result.next().unwrap());
 
-            assert!(!i.is_err());
+            assert!(i.is_ok());
             assert_eq!(expected, i.unwrap());
         };
 
@@ -581,7 +581,7 @@ mod parse_tests {
             if let ScalarExpression::Double(d) = expression {
                 assert_eq!(expected, d.get_value());
             } else {
-                assert!(false);
+                panic!("Expected DoubleScalarExpression");
             }
         };
 
