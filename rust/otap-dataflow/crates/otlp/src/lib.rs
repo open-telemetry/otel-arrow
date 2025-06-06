@@ -161,7 +161,7 @@ mod tests {
             .add_exporter("otlp_exporter1", "urn:otel:otlp:exporter", None)
             .add_exporter("otlp_exporter2", "urn:otel:otlp:exporter", None)
             // ToDo(LQ): Check the validity of the outport.
-            .broadcast("otlp_receiver", "out_port", targets)
+            .broadcast("otlp_receiver", "out_port", ["otlp_exporter1", "otlp_exporter2"])
             .build(PipelineType::OTLP, "namespace", "pipeline")
             .expect("Failed to build pipeline config");
         let result = create_runtime_pipeline(config);
