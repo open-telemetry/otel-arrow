@@ -7,12 +7,22 @@ pub struct QueryLocation {
     start: usize,
     end: usize,
     line_number: usize,
-    column_number: usize
+    column_number: usize,
 }
 
 impl QueryLocation {
-    pub fn new(start: usize, end: usize, line_number: usize, column_number: usize) -> QueryLocation {
-        Self { start, end, line_number, column_number }
+    pub fn new(
+        start: usize,
+        end: usize,
+        line_number: usize,
+        column_number: usize,
+    ) -> QueryLocation {
+        Self {
+            start,
+            end,
+            line_number,
+            column_number,
+        }
     }
 
     pub fn get_start_and_end_positions(&self) -> (usize, usize) {

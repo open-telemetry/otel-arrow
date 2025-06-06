@@ -24,7 +24,7 @@ pub mod consts;
 /// Returns a new record batch with the new key/value updated in the schema metadata.
 #[must_use]
 pub fn update_schema_metadata(
-    record_batch: RecordBatch,
+    record_batch: &RecordBatch,
     key: String,
     value: String,
 ) -> RecordBatch {
@@ -37,6 +37,7 @@ pub fn update_schema_metadata(
     // safety: this should not fail, as we haven't changed the fields in the schema,
     // just the metadata, so the schema should be compatible with the columns
     record_batch
+        .clone()
         .with_schema(Arc::new(new_schema))
         .expect("can create record batch with same schema.")
 }

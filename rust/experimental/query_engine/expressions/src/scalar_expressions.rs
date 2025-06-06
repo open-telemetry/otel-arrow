@@ -1,8 +1,7 @@
 use crate::{Expression, QueryLocation, ValueAccessor, ValueSelector};
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ScalarExpression
-{
+pub enum ScalarExpression {
     /// Resolve a value from the mutable query source.
     Source(SourceScalarExpression),
 
@@ -25,6 +24,12 @@ pub enum ScalarExpression
     /// executions.
     Variable(VariableScalarExpression),
 
+    /// Resolve a static bool value provided directly in a query.
+    Boolean(BooleanScalarExpression),
+
+    /// Resolve a static double value provided directly in a query.
+    Double(DoubleScalarExpression),
+
     /// Resolve a static integer value provided directly in a query.
     Integer(IntegerScalarExpression),
 
@@ -32,18 +37,21 @@ pub enum ScalarExpression
     String(StringScalarExpression),
 
     /// Negate the value returned by the inner scalar expression.
-    Negate(NegateScalarExpression)
+    Negate(NegateScalarExpression),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceScalarExpression {
     query_location: QueryLocation,
-    accessor: ValueAccessor
+    accessor: ValueAccessor,
 }
 
 impl SourceScalarExpression {
     pub fn new(query_location: QueryLocation, accessor: ValueAccessor) -> SourceScalarExpression {
-        Self { query_location, accessor }
+        Self {
+            query_location,
+            accessor,
+        }
     }
 
     pub fn get_selectors(&self) -> &Vec<ValueSelector> {
@@ -61,12 +69,20 @@ impl Expression for SourceScalarExpression {
 pub struct AttachedScalarExpression {
     query_location: QueryLocation,
     name: Box<str>,
-    accessor: ValueAccessor
+    accessor: ValueAccessor,
 }
 
 impl AttachedScalarExpression {
-    pub fn new(query_location: QueryLocation, name: &str, accessor: ValueAccessor) -> AttachedScalarExpression {
-        Self { query_location, name: name.into(), accessor }
+    pub fn new(
+        query_location: QueryLocation,
+        name: &str,
+        accessor: ValueAccessor,
+    ) -> AttachedScalarExpression {
+        Self {
+            query_location,
+            name: name.into(),
+            accessor,
+        }
     }
 
     pub fn get_name(&self) -> &str {
@@ -88,12 +104,20 @@ impl Expression for AttachedScalarExpression {
 pub struct VariableScalarExpression {
     query_location: QueryLocation,
     name: Box<str>,
-    accessor: ValueAccessor
+    accessor: ValueAccessor,
 }
 
 impl VariableScalarExpression {
-    pub fn new(query_location: QueryLocation, name: &str, accessor: ValueAccessor) -> VariableScalarExpression {
-        Self { query_location, name: name.into(), accessor }
+    pub fn new(
+        query_location: QueryLocation,
+        name: &str,
+        accessor: ValueAccessor,
+    ) -> VariableScalarExpression {
+        Self {
+            query_location,
+            name: name.into(),
+            accessor,
+        }
     }
 
     pub fn get_name(&self) -> &str {
@@ -114,12 +138,18 @@ impl Expression for VariableScalarExpression {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NegateScalarExpression {
     query_location: QueryLocation,
-    inner_expression: Box<ScalarExpression>
+    inner_expression: Box<ScalarExpression>,
 }
 
 impl NegateScalarExpression {
-    pub fn new(query_location: QueryLocation, inner_expression: ScalarExpression) -> NegateScalarExpression {
-        Self { query_location, inner_expression: inner_expression.into() }
+    pub fn new(
+        query_location: QueryLocation,
+        inner_expression: ScalarExpression,
+    ) -> NegateScalarExpression {
+        Self {
+            query_location,
+            inner_expression: inner_expression.into(),
+        }
     }
 
     pub fn get_inner_expression(&self) -> &ScalarExpression {
@@ -134,14 +164,67 @@ impl Expression for NegateScalarExpression {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct BooleanScalarExpression {
+    query_location: QueryLocation,
+    value: bool,
+}
+
+impl BooleanScalarExpression {
+    pub fn new(query_location: QueryLocation, value: bool) -> BooleanScalarExpression {
+        Self {
+            query_location,
+            value,
+        }
+    }
+
+    pub fn get_value(&self) -> bool {
+        self.value
+    }
+}
+
+impl Expression for BooleanScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DoubleScalarExpression {
+    query_location: QueryLocation,
+    value: f64,
+}
+
+impl DoubleScalarExpression {
+    pub fn new(query_location: QueryLocation, value: f64) -> DoubleScalarExpression {
+        Self {
+            query_location,
+            value,
+        }
+    }
+
+    pub fn get_value(&self) -> f64 {
+        self.value
+    }
+}
+
+impl Expression for DoubleScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct IntegerScalarExpression {
     query_location: QueryLocation,
-    value: i64
+    value: i64,
 }
 
 impl IntegerScalarExpression {
     pub fn new(query_location: QueryLocation, value: i64) -> IntegerScalarExpression {
-        Self { query_location, value }
+        Self {
+            query_location,
+            value,
+        }
     }
 
     pub fn get_value(&self) -> i64 {
@@ -158,12 +241,15 @@ impl Expression for IntegerScalarExpression {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StringScalarExpression {
     query_location: QueryLocation,
-    value: Box<str>
+    value: Box<str>,
 }
 
 impl StringScalarExpression {
     pub fn new(query_location: QueryLocation, value: &str) -> StringScalarExpression {
-        Self { query_location, value: value.into() }
+        Self {
+            query_location,
+            value: value.into(),
+        }
     }
 
     pub fn get_value(&self) -> &str {
