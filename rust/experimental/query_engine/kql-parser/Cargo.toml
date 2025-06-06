@@ -11,7 +11,9 @@ rust-version.workspace = true
 [dependencies]
 pest = "2.8"
 pest_derive = "2.8"
+regex = "1.11.1"
 
 data_engine_expressions = { path = "../expressions" }
 
+chrono = { workspace = true }
 thiserror = { workspace = true }
