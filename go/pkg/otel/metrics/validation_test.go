@@ -113,7 +113,7 @@ func TestExponentialHistograms(t *testing.T) {
 }
 
 func MetricsGenerator() *datagen.MetricsGenerator {
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec // only used for testing
+	entropy := datagen.NewTestEntropy()
 
 	dg := datagen.NewDataGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes()).
 		WithConfig(datagen.Config{
@@ -175,7 +175,7 @@ func CheckEncodeDecode(t *testing.T, expectedRequest pmetricotlp.ExportRequest) 
 // records in order to test the robustness of the conversion. In this situation,
 // the conversion can generate errors, but should never panic.
 func MultiRoundOfCheckEncodeMessUpDecode(t *testing.T, expectedRequest pmetricotlp.ExportRequest) {
-	rng := rand.New(rand.NewSource(int64(rand.Uint64())))
+	rng := rand.New(rand.NewSource(42))
 
 	for i := 0; i < 100; i++ {
 		OneRoundOfMessUpArrowRecords(t, expectedRequest, rng)
