@@ -127,6 +127,16 @@ pub trait BytesVisitor<Argument> {
     fn visit_bytes(&mut self, arg: Argument, value: &[u8]) -> Argument;
 }
 
+/// Visitor trait for vector/array types
+pub trait VecVisitor<Argument> {
+    fn visit_vec(&mut self, arg: Argument, value: &[u8]) -> Argument;
+}
+
+/// Visitor trait for unknown/unhandled field types
+pub trait UnknownVisitor<Argument> {
+    fn visit_unknown(&mut self, arg: Argument) -> Argument;
+}
+
 /// NoopVisitor implements every visitor, does nothing.
 pub struct NoopVisitor {}
 
@@ -174,6 +184,18 @@ impl<Argument> F64Visitor<Argument> for NoopVisitor {
 
 impl<Argument> BooleanVisitor<Argument> for NoopVisitor {
     fn visit_bool(&mut self, arg: Argument, _: bool) -> Argument {
+        arg
+    }
+}
+
+impl<Argument> VecVisitor<Argument> for NoopVisitor {
+    fn visit_vec(&mut self, arg: Argument, _: &[u8]) -> Argument {
+        arg
+    }
+}
+
+impl<Argument> UnknownVisitor<Argument> for NoopVisitor {
+    fn visit_unknown(&mut self, arg: Argument) -> Argument {
         arg
     }
 }

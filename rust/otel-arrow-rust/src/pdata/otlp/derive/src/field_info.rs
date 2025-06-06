@@ -28,6 +28,7 @@ pub struct FieldInfo {
 
 /// Simple prost field annotation parsing utilities
 fn parse_prost_tag_and_type(field: &syn::Field) -> (u32, String) {
+
     // Find the #[prost(...)] attribute
     let prost_attr = field
         .attrs
@@ -35,16 +36,27 @@ fn parse_prost_tag_and_type(field: &syn::Field) -> (u32, String) {
         .find(|attr| attr.path().is_ident("prost"));
 
     if let Some(attr) = prost_attr {
+
         if let syn::Meta::List(meta_list) = &attr.meta {
             let tokens = &meta_list.tokens;
 
             // Simple parsing: extract tag number and type
             let attr_str = tokens.to_string();
+
             let mut tag = 0u32;
             let mut proto_type = "unknown".to_string();
 
-            // Parse tag number from "tag = \"1\"" or "tag = 1"
-            if let Some(tag_start) = attr_str.find("tag = ") {
+            // Parse tag number from "tag = \"1\"" or "tag = 1" or "tag=\"1\""
+            if let Some(tag_start) = attr_str.find("tag=") {
+                let tag_part = &attr_str[tag_start + 4..];
+                if let Some(comma_pos) = tag_part.find(',') {
+                    let tag_value = &tag_part[..comma_pos].trim().trim_matches('"');
+                    tag = tag_value.parse().unwrap_or(0);
+                } else {
+                    let tag_value = tag_part.trim().trim_matches('"');
+                    tag = tag_value.parse().unwrap_or(0);
+                }
+            } else if let Some(tag_start) = attr_str.find("tag = ") {
                 let tag_part = &attr_str[tag_start + 6..];
                 if let Some(comma_pos) = tag_part.find(',') {
                     let tag_value = &tag_part[..comma_pos].trim().trim_matches('"');
@@ -78,6 +90,7 @@ impl FieldInfo {
         param_names: &[String],
         oneof_mapping: &OneofMapping,
     ) -> Self {
+
         field
             .ident
             .as_ref()

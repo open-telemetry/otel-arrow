@@ -41,8 +41,8 @@
 ### Key Reference Files
 
 - **Working Implementation**: `src/pdata/otlp/derive/src/original.rs` (contains functional macro logic)
-- **ONEOF Data**: `src/pdata/otlp/model/src/lib.rs` (contains `ONEOF_MAPPINGS` HashMap)
-- **Current Fixes**: `src/pdata/otlp/derive/src/field_info.rs` and `visitor.rs` (trait generation improvements)
+- **Model Data**: `src/pdata/otlp/model/src/lib.rs` (contains `ONEOF_MAPPINGS` HashMap)
+- **Current Fixes**: `src/pdata/otlp/derive/src/*.rs`
 
 ---
 

@@ -50,8 +50,11 @@ impl MessageInfo {
                 }
             })
             .unwrap();
+        
+
 
         // Get required parameters for this type.
+
         let param_names: Vec<_> = otlp_model::REQUIRED_PARAMS
             .get(type_name.as_str())
             .unwrap()
@@ -59,6 +62,7 @@ impl MessageInfo {
             .iter()
             .map(|x| x.to_string())
             .collect();
+
 
         // Check if this struct has a oneof field
         let oneof_mapping = otlp_model::ONEOF_MAPPINGS
@@ -78,6 +82,8 @@ impl MessageInfo {
             _ => Vec::new(),
         };
 
+
+
         // If there are no fields, it's either an empty message or an enum,
         // either way should not be listed, no builder is needed.
         if struct_fields.is_empty() {
@@ -86,7 +92,10 @@ impl MessageInfo {
 
         let fields_original: Vec<FieldInfo> = struct_fields
             .iter()
-            .map(|field| FieldInfo::new(field, &type_name, &param_names, &oneof_mapping))
+            .map(|field| {
+
+                FieldInfo::new(field, &type_name, &param_names, &oneof_mapping)
+            })
             .collect();
 
         // Partition fields into ordered parameters and remaining builder fields.
