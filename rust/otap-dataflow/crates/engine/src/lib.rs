@@ -27,7 +27,6 @@ pub mod shared;
 pub mod testing;
 
 /// A factory for creating receivers.
-#[derive(Clone)]
 pub struct ReceiverFactory<PData> {
     /// The name of the receiver.
     pub name: &'static str,
@@ -35,8 +34,17 @@ pub struct ReceiverFactory<PData> {
     pub create: fn(config: &Value, receiver_config: &ReceiverConfig) -> ReceiverWrapper<PData>,
 }
 
+// Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
+impl<PData> Clone for ReceiverFactory<PData> {
+    fn clone(&self) -> Self {
+        ReceiverFactory {
+            name: self.name,
+            create: self.create,
+        }
+    }
+}
+
 /// A factory for creating processors.
-#[derive(Clone)]
 pub struct ProcessorFactory<PData> {
     /// The name of the processor.
     pub name: &'static str,
@@ -44,11 +52,30 @@ pub struct ProcessorFactory<PData> {
     pub create: fn(config: &Value, processor_config: &ProcessorConfig) -> ProcessorWrapper<PData>,
 }
 
+// Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
+impl<PData> Clone for ProcessorFactory<PData> {
+    fn clone(&self) -> Self {
+        ProcessorFactory {
+            name: self.name,
+            create: self.create,
+        }
+    }
+}
+
 /// A factory for creating exporter.
-#[derive(Clone)]
 pub struct ExporterFactory<PData> {
     /// The name of the receiver.
     pub name: &'static str,
     /// A function that creates a new exporter instance.
     pub create: fn(config: &Value, exporter_config: &ExporterConfig) -> ExporterWrapper<PData>,
+}
+
+// Note: We don't use `#[derive(Clone)]` here to avoid forcing the `PData` type to implement `Clone`.
+impl<PData> Clone for ExporterFactory<PData> {
+    fn clone(&self) -> Self {
+        ExporterFactory {
+            name: self.name,
+            create: self.create,
+        }
+    }
 }
