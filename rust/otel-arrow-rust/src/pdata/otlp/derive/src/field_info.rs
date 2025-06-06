@@ -330,7 +330,12 @@ impl FieldInfo {
 
     /// Get primitive type visitor trait with generic argument
     fn get_primitive_visitor_trait(&self) -> proc_macro2::TokenStream {
-        //eprintln!("🚨 DEBUG: get_primitive_visitor_trait called for: {}", self.base_type_name);
+        //eprintln!("🚨 DEBUG: get_primitive_visitor_trait called for: {}, proto_type: {}", self.base_type_name, self.proto_type);
+
+        // Special handling for Vec<u8> (bytes) - check proto_type first
+        if self.proto_type == "bytes" || (self.base_type_name == "Vec" && self.proto_type.contains("bytes")) {
+            return quote! { crate::pdata::BytesVisitor<Argument> };
+        }
 
         let result = match self.base_type_name.as_str() {
             "String" => quote! { crate::pdata::StringVisitor<Argument> },
@@ -340,7 +345,7 @@ impl FieldInfo {
             "u32" | "u8" => quote! { crate::pdata::U32Visitor<Argument> },
             "u64" => quote! { crate::pdata::U64Visitor<Argument> },
             "f32" | "f64" => quote! { crate::pdata::F64Visitor<Argument> },
-            "Vec" => quote! { crate::pdata::VecVisitor<Argument> },
+            "Vec" => quote! { crate::pdata::VecVisitor<Argument> }, // This should rarely be used after bytes check above
             _ => {
                 //eprintln!("🚨 DEBUG: Non-primitive type: {}, generating custom visitor trait", self.base_type_name);
                 // For non-primitive types, use the standard logic
@@ -375,6 +380,11 @@ impl FieldInfo {
 
     /// Get primitive type visitable trait with generic argument  
     fn get_primitive_visitable_trait(&self) -> proc_macro2::TokenStream {
+        // Special handling for Vec<u8> (bytes) - check proto_type first
+        if self.proto_type == "bytes" || (self.base_type_name == "Vec" && self.proto_type.contains("bytes")) {
+            return quote! { crate::pdata::BytesVisitable<Argument> };
+        }
+
         match self.base_type_name.as_str() {
             "String" => quote! { crate::pdata::StringVisitable<Argument> },
             "bool" => quote! { crate::pdata::BooleanVisitable<Argument> },
@@ -383,7 +393,7 @@ impl FieldInfo {
             "u32" | "u8" => quote! { crate::pdata::U32Visitable<Argument> },
             "u64" => quote! { crate::pdata::U64Visitable<Argument> },
             "f32" | "f64" => quote! { crate::pdata::F64Visitable<Argument> },
-            "Vec" => quote! { crate::pdata::VecVisitable<Argument> },
+            "Vec" => quote! { crate::pdata::VecVisitable<Argument> }, // This should rarely be used after bytes check above
             _ => {
                 // For non-primitive types, use the standard logic
                 if let Some(ref qualifier) = self.qualifier {

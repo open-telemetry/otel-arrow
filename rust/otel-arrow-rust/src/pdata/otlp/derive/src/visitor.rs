@@ -338,58 +338,124 @@ pub fn get_base_type_name(ty: &syn::Type) -> String {
     }
 }
 
-/// Generate visitor type for a oneof variant
+/// Generate visitor type for a oneof variant using simplified logic
 fn generate_visitor_type_for_oneof_variant(case_type: &syn::Type) -> proc_macro2::TokenStream {
-    match case_type {
-        syn::Type::Path(type_path) => {
-            if let Some(segment) = type_path.path.segments.last() {
-                match segment.ident.to_string().as_str() {
-                    "Vec" => {
-                        if is_bytes_type(case_type) {
-                            quote! { impl crate::pdata::BytesVisitor<Argument> }
-                        } else {
-                            // For Vec<MessageType>, generate visitor trait for the inner type
-                            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                                if let Some(syn::GenericArgument::Type(inner_type)) =
-                                    args.args.first()
-                                {
-                                    let visitor_trait = generate_visitor_trait_for_type(inner_type);
-                                    quote! { impl #visitor_trait }
-                                } else {
-                                    quote! { impl UnknownVisitor }
-                                }
-                            } else {
-                                quote! { impl UnknownVisitor }
-                            }
-                        }
-                    }
-                    type_name if is_primitive_type(case_type) => {
-                        let visitor_trait = get_primitive_visitor_trait(type_name);
-                        quote! { impl #visitor_trait }
-                    }
-                    _ => {
-                        // For message types
-                        let visitor_trait = generate_visitor_trait_for_type(case_type);
-                        quote! { impl #visitor_trait }
+    // Handle Vec<u8> as bytes
+    if is_bytes_type(case_type) {
+        return quote! { impl crate::pdata::BytesVisitor<Argument> };
+    }
+    
+    // Parse the type to get base name and qualifier
+    if let syn::Type::Path(type_path) = case_type {
+        let segments = &type_path.path.segments;
+        
+        if let Some(last_segment) = segments.last() {
+            let base_type_name = last_segment.ident.to_string();
+            
+            // Handle specific known cases
+            if base_type_name == "ArrayValue" {
+                return quote! { impl super::ArrayValueVisitor<Argument> };
+            }
+            if base_type_name == "KeyValueList" {
+                return quote! { impl super::KeyValueListVisitor<Argument> };
+            }
+            
+            // Handle primitive types
+            let visitor_trait = match base_type_name.as_str() {
+                "String" => quote! { crate::pdata::StringVisitor<Argument> },
+                "bool" => quote! { crate::pdata::BooleanVisitor<Argument> },
+                "i32" => quote! { crate::pdata::I32Visitor<Argument> },
+                "i64" => quote! { crate::pdata::I64Visitor<Argument> },
+                "u32" | "u8" => quote! { crate::pdata::U32Visitor<Argument> },
+                "u64" => quote! { crate::pdata::U64Visitor<Argument> },
+                "f32" => quote! { crate::pdata::F32Visitor<Argument> },
+                "f64" => quote! { crate::pdata::F64Visitor<Argument> },
+                _ => {
+                    // For message types, construct visitor name with qualifier
+                    let visitor_name = format!("{}Visitor", base_type_name);
+                    let visitor_ident = syn::Ident::new(&visitor_name, proc_macro2::Span::call_site());
+                    
+                    if segments.len() > 1 {
+                        // Has qualifier - reconstruct the path without the last segment
+                        let mut qualifier_segments = segments.clone();
+                        qualifier_segments.pop(); // Remove the last segment (base type)
+                        
+                        let qualifier: proc_macro2::TokenStream = qualifier_segments
+                            .iter()
+                            .map(|seg| &seg.ident)
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .map(|ident| quote! { #ident })
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .reduce(|acc, segment| quote! { #acc::#segment })
+                            .unwrap_or_else(|| quote! {});
+                        
+                        quote! { #qualifier::#visitor_ident<Argument> }
+                    } else {
+                        quote! { #visitor_ident<Argument> }
                     }
                 }
+            };
+            
+            return quote! { impl #visitor_trait };
+        }
+    }
+    
+    // Fallback for unknown types
+    quote! { impl UnknownVisitor<Argument> }
+}
+
+/// Decompose a type into base type name and qualifier, similar to FieldInfo::decompose_type
+/// but simplified for oneof variant processing
+fn decompose_type_for_oneof(ty: &syn::Type) -> (String, Option<proc_macro2::TokenStream>) {
+    match ty {
+        syn::Type::Path(type_path) => {
+            // Get the base type name (last segment)
+            let base_type_name = type_path
+                .path
+                .segments
+                .last()
+                .map(|seg| seg.ident.to_string())
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            // If there's only one segment, no qualifier needed
+            if type_path.path.segments.len() == 1 {
+                return (base_type_name, None);
+            }
+
+            // Create qualifier from all but last segment
+            let qualifier_segments: Vec<_> = type_path
+                .path
+                .segments
+                .iter()
+                .take(type_path.path.segments.len() - 1)
+                .collect();
+
+            if qualifier_segments.is_empty() {
+                (base_type_name, None)
             } else {
-                quote! { impl UnknownVisitor }
+                let qualifier = qualifier_segments
+                    .iter()
+                    .map(|seg| &seg.ident)
+                    .collect::<Vec<_>>();
+
+                let qualifier_token = quote::quote! { #(#qualifier)::* };
+                (base_type_name, Some(qualifier_token))
             }
         }
-        _ => quote! { impl UnknownVisitor },
+        _ => {
+            // For non-path types, just use the string representation as base name
+            let base_name = quote::quote! { #ty }.to_string();
+            (base_name, None)
+        }
     }
 }
 
 /// Generate visitor trait for a field based on its type  
 fn generate_visitor_trait_for_field(info: &FieldInfo) -> proc_macro2::TokenStream {
-    // Special handling for repeated Vec<u8> fields (bytes)
-    if info.is_repeated && is_bytes_type(&info.full_type_name) {
-        return quote! { crate::pdata::BytesVisitor<Argument> };
-    }
-
-    // Use the full_type_name for trait generation
-    generate_visitor_trait_for_type(&info.full_type_name)
+    // Use the centralized logic from FieldInfo
+    info.related_type("Visitor")
 }
 
 /// Generate visitor trait for a given type
@@ -405,6 +471,42 @@ fn generate_visitor_trait_for_type(ty: &syn::Type) -> proc_macro2::TokenStream {
                 let visitor_name = format!("{}Visitor", type_name);
                 let visitor_ident = syn::Ident::new(&visitor_name, segment.ident.span());
                 quote! { #visitor_ident<Argument> }
+            }
+        } else {
+            quote! { UnknownVisitor<Argument> }
+        }
+    } else {
+        quote! { UnknownVisitor<Argument> }
+    }
+}
+
+/// Generate visitor trait for a given type with proper path qualification
+fn generate_visitor_trait_for_type_with_path(ty: &syn::Type) -> proc_macro2::TokenStream {
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            let type_name = segment.ident.to_string();
+
+            if is_primitive_type(ty) {
+                get_primitive_visitor_trait(&type_name)
+            } else {
+                // For message types, generate visitor trait with full path
+                let visitor_name = format!("{}Visitor", type_name);
+                let visitor_ident = syn::Ident::new(&visitor_name, segment.ident.span());
+                
+                // If there's more than one segment, include the qualifier
+                if type_path.path.segments.len() > 1 {
+                    let qualifier_segments: Vec<_> = type_path
+                        .path
+                        .segments
+                        .iter()
+                        .take(type_path.path.segments.len() - 1)
+                        .map(|seg| &seg.ident)
+                        .collect();
+                    
+                    quote! { #(#qualifier_segments)::*::#visitor_ident<Argument> }
+                } else {
+                    quote! { #visitor_ident<Argument> }
+                }
             }
         } else {
             quote! { UnknownVisitor<Argument> }
