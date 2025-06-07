@@ -153,7 +153,10 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
             Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
         }
         (false, true, false, false) => {
-            if matches!(visit_method.to_string().as_str(), "visit_string") {
+            if matches!(visit_method.to_string().as_str(), "visit_vec") {
+                // For repeated primitives using SliceVisitor, pass the entire slice
+                Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
+            } else if matches!(visit_method.to_string().as_str(), "visit_string") {
                 Some(quote! {
                     for item in &self.data.#field_name {
                         arg = #visitor_param.#visit_method(arg, item);
@@ -178,6 +181,13 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
                     }
                 })
             } else if is_bytes_field {
+                Some(quote! {
+                    if let Some(items) = &self.data.#field_name {
+                        arg = #visitor_param.#visit_method(arg, items);
+                    }
+                })
+            } else if matches!(visit_method.to_string().as_str(), "visit_vec") {
+                // For optional repeated primitives using SliceVisitor, pass the entire slice
                 Some(quote! {
                     if let Some(items) = &self.data.#field_name {
                         arg = #visitor_param.#visit_method(arg, items);
@@ -456,7 +466,7 @@ fn generate_visitor_type_for_oneof_variant(case_type: &syn::Type) -> proc_macro2
                 "u64" => quote! { crate::pdata::U64Visitor<Argument> },
                 "f32" => quote! { crate::pdata::F32Visitor<Argument> },
                 "f64" => quote! { crate::pdata::F64Visitor<Argument> },
-                "Vec" => quote! { crate::pdata::SliceVisitor<Argument> },
+                "Vec" => quote! { crate::pdata::BytesVisitor<Argument> }, // This should be bytes after checking is_bytes_type above
                 _ => {
                     // For message types, construct visitor name with qualifier
                     let visitor_name = format!("{}Visitor", base_type_name);

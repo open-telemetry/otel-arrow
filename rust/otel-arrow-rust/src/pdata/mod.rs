@@ -129,6 +129,7 @@ pub trait BytesVisitor<Argument> {
 
 /// Visitor trait for primitive slices.
 pub trait SliceVisitor<Argument, Primitive> {
+    /// Visit a slice of primitives
     fn visit_vec(&mut self, arg: Argument, value: &[Primitive]) -> Argument;
 }
 

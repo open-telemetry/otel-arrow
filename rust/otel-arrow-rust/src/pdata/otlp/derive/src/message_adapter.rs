@@ -137,9 +137,9 @@ fn generate_visitor_type_for_oneof_variant(_info: &FieldInfo, case: &OneofCase) 
             let type_name = get_base_type_name(&case_type);
             let visitor_trait_name = format!("{}Visitor", type_name);
             
-            // For Vec types that need adapters, use the proper prefix
+            // For Vec types that need adapters, these are typically bytes
             if type_name == "Vec" {
-                syn::parse_quote! { crate::pdata::SliceVisitor<Argument> }
+                syn::parse_quote! { crate::pdata::BytesVisitor<Argument> }
             } else if let Ok(visitor_trait) = syn::parse_str::<syn::Type>(&visitor_trait_name) {
                 syn::parse_quote! { #visitor_trait<Argument> }
             } else {
@@ -161,7 +161,7 @@ fn generate_visitor_type_for_oneof_variant(_info: &FieldInfo, case: &OneofCase) 
                     "u32" | "u8" => syn::parse_quote! { crate::pdata::U32Visitor<Argument> },
                     "u64" => syn::parse_quote! { crate::pdata::U64Visitor<Argument> },
                     "f32" | "f64" => syn::parse_quote! { crate::pdata::F64Visitor<Argument> },
-                    "Vec" => syn::parse_quote! { crate::pdata::SliceVisitor<Argument> },
+                    "Vec" => syn::parse_quote! { crate::pdata::BytesVisitor<Argument> }, // Vec in protobuf context is typically bytes
                     _ => {
                         // For message types, generate the appropriate visitor trait
                         let visitor_trait_name = format!("{}Visitor", base_type);
@@ -231,23 +231,42 @@ fn generate_visitor_trait_for_field(info: &FieldInfo) -> syn::Type {
             }
         }
     } else {
-        //eprintln!("🚨 DEBUG: Field {} is primitive, generating primitive visitor", info.ident);
-        // For primitive types, determine the appropriate visitor trait
-        let base_type = get_base_type_name(&info.full_type_name);
-        //eprintln!("🚨 DEBUG: Base type for {}: {}", info.ident, base_type);
-        match base_type.as_str() {
-            "String" => syn::parse_quote! { crate::pdata::StringVisitor<Argument> },
-            "bool" => syn::parse_quote! { crate::pdata::BooleanVisitor<Argument> },
-            "i32" => syn::parse_quote! { crate::pdata::I32Visitor<Argument> },
-            "i64" => syn::parse_quote! { crate::pdata::I64Visitor<Argument> },
-            "u32" | "u8" => syn::parse_quote! { crate::pdata::U32Visitor<Argument> },
-            "u64" => syn::parse_quote! { crate::pdata::U64Visitor<Argument> },
-            "f32" | "f64" => syn::parse_quote! { crate::pdata::F64Visitor<Argument> },
-            _ => {
-                if is_bytes_type(&info.full_type_name) {
-                    syn::parse_quote! { crate::pdata::BytesVisitor<Argument> }
-                } else {
-                    panic!("Unknown primitive type for visitor generation: {}", info.base_type_name);
+        eprintln!("🚨 DEBUG: Field {} is primitive, generating primitive visitor", info.ident);
+        
+        // Check if this is a repeated primitive field first
+        if info.is_repeated {
+            eprintln!("🚨 DEBUG: Field {} is repeated primitive, using SliceVisitor", info.ident);
+            // For repeated primitive types, use SliceVisitor
+            match info.base_type_name.as_str() {
+                "String" => syn::parse_quote! { crate::pdata::SliceVisitor<Argument, String> },
+                "bool" => syn::parse_quote! { crate::pdata::SliceVisitor<Argument, bool> },
+                "i32" => syn::parse_quote! { crate::pdata::SliceVisitor<Argument, i32> },
+                "i64" => syn::parse_quote! { crate::pdata::SliceVisitor<Argument, i64> },
+                "u32" | "u8" => syn::parse_quote! { crate::pdata::SliceVisitor<Argument, u32> },
+                "u64" => syn::parse_quote! { crate::pdata::SliceVisitor<Argument, u64> },
+                "f32" => syn::parse_quote! { crate::pdata::SliceVisitor<Argument, f32> },
+                "f64" => syn::parse_quote! { crate::pdata::SliceVisitor<Argument, f64> },
+                _ => {
+                    panic!("Unknown repeated primitive type for visitor generation: {}", info.base_type_name);
+                }
+            }
+        } else {
+            // For non-repeated primitive types, determine the appropriate visitor trait
+            eprintln!("🚨 DEBUG: Using info.base_type_name: '{}'", info.base_type_name);
+            match info.base_type_name.as_str() {
+                "String" => syn::parse_quote! { crate::pdata::StringVisitor<Argument> },
+                "bool" => syn::parse_quote! { crate::pdata::BooleanVisitor<Argument> },
+                "i32" => syn::parse_quote! { crate::pdata::I32Visitor<Argument> },
+                "i64" => syn::parse_quote! { crate::pdata::I64Visitor<Argument> },
+                "u32" | "u8" => syn::parse_quote! { crate::pdata::U32Visitor<Argument> },
+                "u64" => syn::parse_quote! { crate::pdata::U64Visitor<Argument> },
+                "f32" | "f64" => syn::parse_quote! { crate::pdata::F64Visitor<Argument> },
+                _ => {
+                    if is_bytes_type(&info.full_type_name) {
+                        syn::parse_quote! { crate::pdata::BytesVisitor<Argument> }
+                    } else {
+                        panic!("Unknown primitive type for visitor generation: {}", info.base_type_name);
+                    }
                 }
             }
         }
