@@ -52,7 +52,7 @@ pub enum PipelineType {
     /// OpenTelemetry Protocol (OTLP) pipeline.
     OTLP,
     /// OpenTelemetry with Apache Arrow Protocol (OTAP) pipeline.
-    OTAP
+    OTAP,
 }
 /// A configuration for a pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -114,7 +114,7 @@ impl PipelineConfig {
     /// Creates a consuming iterator over the nodes in the pipeline.
     pub fn node_into_iter(self) -> impl Iterator<Item = (NodeId, Rc<NodeConfig>)> {
         self.nodes.into_iter()
-    } 
+    }
 
     /// Validate the pipeline specification.
     ///
@@ -399,7 +399,12 @@ impl PipelineConfigBuilder {
     /// missing source/targets, invalid edges, cycles) into one `InvalidHyperDag`
     /// report. This lets callers see every problem at once, rather than failing
     /// fast on the first error.
-    pub fn build<T, P>(mut self, pipeline_type: PipelineType, namespace_id: T, pipeline_id: P) -> Result<PipelineConfig, Error>
+    pub fn build<T, P>(
+        mut self,
+        pipeline_type: PipelineType,
+        namespace_id: T,
+        pipeline_id: P,
+    ) -> Result<PipelineConfig, Error>
     where
         T: Into<NamespaceId>,
         P: Into<PipelineId>,

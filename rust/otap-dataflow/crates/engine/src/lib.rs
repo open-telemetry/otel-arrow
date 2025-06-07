@@ -33,7 +33,7 @@ pub mod testing;
 pub use linkme::distributed_slice;
 
 /// Trait for factory types that expose a name.
-/// 
+///
 /// This trait is used to define a common interface for different types of factories
 /// that create instances of receivers, processors, or exporters.
 pub trait NamedFactory {
@@ -116,7 +116,7 @@ impl<PData> NamedFactory for ExporterFactory<PData> {
 /// Returns a map of factory names to factory instances.
 pub fn get_factory_map<T>(
     factory_map: &'static OnceLock<HashMap<&'static str, T>>,
-    factory_slice: &'static [T]
+    factory_slice: &'static [T],
 ) -> &'static HashMap<&'static str, T>
 where
     T: NamedFactory + Clone,
@@ -127,6 +127,26 @@ where
             .map(|f| (f.name(), f.clone()))
             .collect::<HashMap<&'static str, T>>()
     })
+}
+
+/// Builds a factory registry for initialization.
+///
+/// This function is used as a placeholder when declaring a factory registry with the
+/// `#[factory_registry]` attribute macro. The macro will replace this placeholder with
+/// proper lazy initialization using `LazyLock`.
+///
+/// # Example
+/// ```rust,ignore
+/// #[factory_registry(MyData)]
+/// static FACTORY_REGISTRY: FactoryRegistry<MyData> = build_registry();
+/// ```
+#[must_use]
+pub const fn build_registry<PData: 'static>() -> FactoryRegistry<PData> {
+    // This function should never actually be called since the macro replaces it entirely.
+    // If it is called, that indicates a bug in the macro system.
+    panic!(
+        "build_registry() should never be called - it's replaced by the #[factory_registry] macro"
+    )
 }
 
 /// Generic factory registry that encapsulates all factory maps for a given pdata type.
@@ -141,6 +161,7 @@ pub struct FactoryRegistry<PData: 'static> {
 
 impl<PData: 'static> FactoryRegistry<PData> {
     /// Creates a new factory registry with the given factory slices.
+    #[must_use]
     pub const fn new(
         receiver_factories: &'static [ReceiverFactory<PData>],
         processor_factories: &'static [ProcessorFactory<PData>],
@@ -157,9 +178,7 @@ impl<PData: 'static> FactoryRegistry<PData> {
     }
 
     /// Gets the receiver factory map, initializing it if necessary.
-    pub fn get_receiver_factory_map(
-        &self,
-    ) -> &HashMap<&'static str, ReceiverFactory<PData>> {
+    pub fn get_receiver_factory_map(&self) -> &HashMap<&'static str, ReceiverFactory<PData>> {
         self.receiver_factory_map.get_or_init(|| {
             self.receiver_factories
                 .iter()
@@ -169,9 +188,7 @@ impl<PData: 'static> FactoryRegistry<PData> {
     }
 
     /// Gets the processor factory map, initializing it if necessary.
-    pub fn get_processor_factory_map(
-        &self,
-    ) -> &HashMap<&'static str, ProcessorFactory<PData>> {
+    pub fn get_processor_factory_map(&self) -> &HashMap<&'static str, ProcessorFactory<PData>> {
         self.processor_factory_map.get_or_init(|| {
             self.processor_factories
                 .iter()
@@ -181,9 +198,7 @@ impl<PData: 'static> FactoryRegistry<PData> {
     }
 
     /// Gets the exporter factory map, initializing it if necessary.
-    pub fn get_exporter_factory_map(
-        &self,
-    ) -> &HashMap<&'static str, ExporterFactory<PData>> {
+    pub fn get_exporter_factory_map(&self) -> &HashMap<&'static str, ExporterFactory<PData>> {
         self.exporter_factory_map.get_or_init(|| {
             self.exporter_factories
                 .iter()
@@ -208,43 +223,40 @@ impl<PData: 'static> FactoryRegistry<PData> {
                 otap_df_config::node::NodeKind::Receiver => {
                     let factory = receiver_factory_map
                         .get(node_config.plugin_urn.as_ref())
-                        .ok_or_else(|| Error::UnknownReceiver{plugin_urn: node_config.plugin_urn.clone()})?;
+                        .ok_or_else(|| Error::UnknownReceiver {
+                            plugin_urn: node_config.plugin_urn.clone(),
+                        })?;
                     let receiver_config = ReceiverConfig::new(node_id.clone());
                     let create = factory.create;
                     nodes.push(RuntimeNode::Receiver {
                         config: node_config.clone(),
-                        instance: create(
-                            &node_config.config,
-                            &receiver_config,
-                        )
+                        instance: create(&node_config.config, &receiver_config),
                     });
                 }
                 otap_df_config::node::NodeKind::Processor => {
                     let factory = processor_factory_map
                         .get(node_config.plugin_urn.as_ref())
-                        .ok_or_else(|| Error::UnknownProcessor{plugin_urn: node_config.plugin_urn.clone()})?;
+                        .ok_or_else(|| Error::UnknownProcessor {
+                            plugin_urn: node_config.plugin_urn.clone(),
+                        })?;
                     let processor_config = ProcessorConfig::new(node_id.clone());
                     let create = factory.create;
                     nodes.push(RuntimeNode::Processor {
                         config: node_config.clone(),
-                        instance: create(
-                            &node_config.config,
-                            &processor_config,
-                        )
+                        instance: create(&node_config.config, &processor_config),
                     });
                 }
                 otap_df_config::node::NodeKind::Exporter => {
                     let factory = exporter_factory_map
                         .get(node_config.plugin_urn.as_ref())
-                        .ok_or_else(|| Error::UnknownExporter{plugin_urn: node_config.plugin_urn.clone()})?;
+                        .ok_or_else(|| Error::UnknownExporter {
+                            plugin_urn: node_config.plugin_urn.clone(),
+                        })?;
                     let exporter_config = ExporterConfig::new(node_id.clone());
                     let create = factory.create;
                     nodes.push(RuntimeNode::Exporter {
                         config: node_config.clone(),
-                        instance: create(
-                            &node_config.config,
-                            &exporter_config,
-                        )
+                        instance: create(&node_config.config, &exporter_config),
                     });
                 }
                 otap_df_config::node::NodeKind::ProcessorChain => {
@@ -258,4 +270,3 @@ impl<PData: 'static> FactoryRegistry<PData> {
         Ok(RuntimePipeline::new(config, nodes))
     }
 }
-

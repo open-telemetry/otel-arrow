@@ -23,6 +23,6 @@ mod mock;
 
 /// Factory registry for OTAP data processing
 #[factory_registry(OTAPData)]
-static FACTORY_REGISTRY: FactoryRegistry<OTAPData> = unsafe { std::mem::zeroed() };
+static FACTORY_REGISTRY: FactoryRegistry<OTAPData> = build_registry();
 
 

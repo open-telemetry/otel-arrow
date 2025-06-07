@@ -44,6 +44,7 @@ pub enum RuntimeNode<PData> {
 // ToDo create 2 versions of this function into otlp and otap crates.
 impl<PData> RuntimePipeline<PData> {
     /// Creates a new `RuntimePipeline` from the given pipeline configuration and nodes.
+    #[must_use]
     pub fn new(config: PipelineConfig, nodes: Vec<RuntimeNode<PData>>) -> Self {
         Self { config, nodes }
     }
