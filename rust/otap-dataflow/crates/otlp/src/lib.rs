@@ -5,10 +5,12 @@
 use std::vec;
 
 use crate::grpc::OTLPData;
-use linkme::distributed_slice;
 use otap_df_config::{node::NodeKind, pipeline::PipelineConfig};
 use otap_df_engine::{
-    config::{ExporterConfig, ProcessorConfig, ReceiverConfig}, error::Error, runtime_config::{RuntimeNode, RuntimePipeline}, ExporterFactory, FactoryRegistry, ProcessorFactory, ReceiverFactory
+    config::{ExporterConfig, ProcessorConfig, ReceiverConfig}, 
+    create_factory_registry,
+    error::Error, 
+    runtime_config::{RuntimeNode, RuntimePipeline}
 };
 
 /// compression formats
@@ -26,28 +28,16 @@ pub mod proto;
 #[cfg(test)]
 mod mock;
 
-/// A slice of receiver factories for OTAP data.
-#[distributed_slice]
-pub static RECEIVER_FACTORIES: [ReceiverFactory<OTLPData>] = [..];
-
-/// A slice of local processor factories for OTAP data.
-#[distributed_slice]
-pub static PROCESSOR_FACTORIES: [ProcessorFactory<OTLPData>] = [..];
-
-/// A slice of local exporter factories for OTAP data.
-#[distributed_slice]
-pub static EXPORTER_FACTORIES: [ExporterFactory<OTLPData>] = [..];
-
-/// Global factory registry for OTLP data.
-static FACTORY_REGISTRY: FactoryRegistry<OTLPData> = FactoryRegistry::new();
+// Create the factory registry with distributed slices for OTLP data
+create_factory_registry!(OTLPData, OtlpFactoryRegistry);
 
 /// Creates a runtime pipeline from the given pipeline configuration.
 pub fn create_runtime_pipeline(
     config: PipelineConfig,
 ) -> Result<RuntimePipeline<OTLPData>, Error<OTLPData>> {
-    let receiver_factory_map = FACTORY_REGISTRY.get_receiver_factory_map(&RECEIVER_FACTORIES);
-    let processor_factory_map = FACTORY_REGISTRY.get_processor_factory_map(&PROCESSOR_FACTORIES);
-    let exporter_factory_map = FACTORY_REGISTRY.get_exporter_factory_map(&EXPORTER_FACTORIES);
+    let receiver_factory_map = OtlpFactoryRegistry::get_receiver_factory_map();
+    let processor_factory_map = OtlpFactoryRegistry::get_processor_factory_map();
+    let exporter_factory_map = OtlpFactoryRegistry::get_exporter_factory_map();
     let mut nodes = vec![]; // ToDo(LQ): initialize with the correct size
 
     // ToDo(LQ): Generate all the errors.

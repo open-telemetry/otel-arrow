@@ -4,14 +4,12 @@
 //!
 
 use crate::grpc::OTAPData;
-use linkme::distributed_slice;
-use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
-use std::{collections::HashMap, sync::OnceLock};
 use otap_df_config::{node::NodeKind, pipeline::PipelineConfig};
 use otap_df_engine::{
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
+    create_factory_registry,
     error::Error,
-    runtime_config::{RuntimeNode, RuntimePipeline},
+    runtime_config::{RuntimeNode, RuntimePipeline}
 };
 
 /// gRPC service implementation
@@ -29,56 +27,16 @@ pub mod parquet_exporter;
 #[cfg(test)]
 mod mock;
 
-/// A slice of receiver factories for OTAP data.
-#[distributed_slice]
-pub static RECEIVER_FACTORIES: [ReceiverFactory<OTAPData>] = [..];
-
-/// A slice of local processor factories for OTAP data.
-#[distributed_slice]
-pub static PROCESSOR_FACTORIES: [ProcessorFactory<OTAPData>] = [..];
-
-/// A slice of local exporter factories for OTAP data.
-#[distributed_slice]
-pub static EXPORTER_FACTORIES: [ExporterFactory<OTAPData>] = [..];
-
-static RECEIVER_FACTORY_MAP: OnceLock<HashMap<&'static str, ReceiverFactory<OTAPData>>> = OnceLock::new();
-static PROCESSOR_FACTORY_MAP: OnceLock<HashMap<&'static str, ProcessorFactory<OTAPData>>> = OnceLock::new();
-static EXPORTER_FACTORY_MAP: OnceLock<HashMap<&'static str, ExporterFactory<OTAPData>>> = OnceLock::new();
-
-fn get_receiver_factory_map() -> &'static HashMap<&'static str, ReceiverFactory<OTAPData>> {
-    RECEIVER_FACTORY_MAP.get_or_init(|| {
-        RECEIVER_FACTORIES
-            .iter()
-            .map(|f| (f.name, f.clone()))
-            .collect()
-    })
-}
-
-fn get_processor_factory_map() -> &'static HashMap<&'static str, ProcessorFactory<OTAPData>> {
-    PROCESSOR_FACTORY_MAP.get_or_init(|| {
-        PROCESSOR_FACTORIES
-            .iter()
-            .map(|f| (f.name, f.clone()))
-            .collect()
-    })
-}
-
-fn get_exporter_factory_map() -> &'static HashMap<&'static str, ExporterFactory<OTAPData>> {
-    EXPORTER_FACTORY_MAP.get_or_init(|| {
-        EXPORTER_FACTORIES
-            .iter()
-            .map(|f| (f.name, f.clone()))
-            .collect()
-    })
-}
+// Create the factory registry with distributed slices for OTAP data
+create_factory_registry!(OTAPData, OtapFactoryRegistry);
 
 /// Creates a runtime pipeline from the given pipeline configuration.
 pub fn create_runtime_pipeline(
     config: PipelineConfig,
 ) -> Result<RuntimePipeline<OTAPData>, Error<OTAPData>> {
-    let receiver_factory_map = get_receiver_factory_map();
-    let processor_factory_map = get_processor_factory_map();
-    let exporter_factory_map = get_exporter_factory_map();
+    let receiver_factory_map = OtapFactoryRegistry::get_receiver_factory_map();
+    let processor_factory_map = OtapFactoryRegistry::get_processor_factory_map();
+    let exporter_factory_map = OtapFactoryRegistry::get_exporter_factory_map();
     let mut nodes = vec![];
 
     for (node_id, node_config) in config.node_iter() {

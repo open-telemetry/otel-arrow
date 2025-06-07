@@ -28,6 +28,8 @@ pub mod shared;
 
 pub mod testing;
 
+pub use linkme::distributed_slice;
+
 /// Trait for factory types that expose a name.
 /// 
 /// This trait is used to define a common interface for different types of factories
@@ -165,4 +167,46 @@ impl<PData> FactoryRegistry<PData> {
     ) -> &'static HashMap<&'static str, ExporterFactory<PData>> {
         get_factory_map(&self.exporter_factory_map, factory_slice)
     }
+}
+
+/// Macro to create a factory registry with distributed slices for a specific data type.
+/// This macro is hygienic and doesn't require any additional imports.
+#[macro_export]
+macro_rules! create_factory_registry {
+    ($pdata_type:ty, $registry_name:ident) => {
+        /// A slice of receiver factories.
+        #[$crate::distributed_slice]
+        pub static RECEIVER_FACTORIES: [$crate::ReceiverFactory<$pdata_type>] = [..];
+
+        /// A slice of processor factories.
+        #[$crate::distributed_slice]
+        pub static PROCESSOR_FACTORIES: [$crate::ProcessorFactory<$pdata_type>] = [..];
+
+        /// A slice of exporter factories.
+        #[$crate::distributed_slice]
+        pub static EXPORTER_FACTORIES: [$crate::ExporterFactory<$pdata_type>] = [..];
+
+        /// Factory registry instance with distributed slices.
+        pub struct $registry_name;
+
+        impl $registry_name {
+            /// Gets the receiver factory map, initializing it if necessary.
+            pub fn get_receiver_factory_map() -> &'static std::collections::HashMap<&'static str, $crate::ReceiverFactory<$pdata_type>> {
+                static RECEIVER_FACTORY_MAP: std::sync::OnceLock<std::collections::HashMap<&'static str, $crate::ReceiverFactory<$pdata_type>>> = std::sync::OnceLock::new();
+                $crate::get_factory_map(&RECEIVER_FACTORY_MAP, &RECEIVER_FACTORIES)
+            }
+
+            /// Gets the processor factory map, initializing it if necessary.
+            pub fn get_processor_factory_map() -> &'static std::collections::HashMap<&'static str, $crate::ProcessorFactory<$pdata_type>> {
+                static PROCESSOR_FACTORY_MAP: std::sync::OnceLock<std::collections::HashMap<&'static str, $crate::ProcessorFactory<$pdata_type>>> = std::sync::OnceLock::new();
+                $crate::get_factory_map(&PROCESSOR_FACTORY_MAP, &PROCESSOR_FACTORIES)
+            }
+
+            /// Gets the exporter factory map, initializing it if necessary.
+            pub fn get_exporter_factory_map() -> &'static std::collections::HashMap<&'static str, $crate::ExporterFactory<$pdata_type>> {
+                static EXPORTER_FACTORY_MAP: std::sync::OnceLock<std::collections::HashMap<&'static str, $crate::ExporterFactory<$pdata_type>>> = std::sync::OnceLock::new();
+                $crate::get_factory_map(&EXPORTER_FACTORY_MAP, &EXPORTER_FACTORIES)
+            }
+        }
+    };
 }
