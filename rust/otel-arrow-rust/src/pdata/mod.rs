@@ -127,14 +127,9 @@ pub trait BytesVisitor<Argument> {
     fn visit_bytes(&mut self, arg: Argument, value: &[u8]) -> Argument;
 }
 
-/// Visitor trait for vector/array types
-pub trait VecVisitor<Argument> {
-    fn visit_vec(&mut self, arg: Argument, value: &[u8]) -> Argument;
-}
-
-/// Visitor trait for unknown/unhandled field types
-pub trait UnknownVisitor<Argument> {
-    fn visit_unknown(&mut self, arg: Argument) -> Argument;
+/// Visitor trait for primitive slices.
+pub trait SliceVisitor<Argument, Primitive> {
+    fn visit_vec(&mut self, arg: Argument, value: &[Primitive]) -> Argument;
 }
 
 /// NoopVisitor implements every visitor, does nothing.
@@ -188,14 +183,8 @@ impl<Argument> BooleanVisitor<Argument> for NoopVisitor {
     }
 }
 
-impl<Argument> VecVisitor<Argument> for NoopVisitor {
-    fn visit_vec(&mut self, arg: Argument, _: &[u8]) -> Argument {
-        arg
-    }
-}
-
-impl<Argument> UnknownVisitor<Argument> for NoopVisitor {
-    fn visit_unknown(&mut self, arg: Argument) -> Argument {
+impl<Argument, Primitive> SliceVisitor<Argument, Primitive> for NoopVisitor {
+    fn visit_vec(&mut self, arg: Argument, _: &[Primitive]) -> Argument {
         arg
     }
 }
