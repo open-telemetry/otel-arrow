@@ -3,7 +3,8 @@
 //! Implementation of the OTLP nodes (receiver, exporter, processor).
 
 use crate::grpc::OTLPData;
-use otap_df_engine::create_factory_registry;
+use otap_df_engine::FactoryRegistry;
+use otap_df_engine_macros::factory_registry;
 
 /// compression formats
 pub mod compression;
@@ -20,8 +21,9 @@ pub mod proto;
 #[cfg(test)]
 mod mock;
 
-// Create the factory registry with distributed slices for OTLP data
-create_factory_registry!(OTLPData, OtlpFactoryRegistry);
+// Factory registry for OTLP data with distributed slices
+#[factory_registry(OTLPData)]
+static FACTORY_REGISTRY: FactoryRegistry<OTLPData> = FactoryRegistry::new();
 
 
 

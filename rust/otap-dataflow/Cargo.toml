@@ -33,6 +33,9 @@ async-trait = "0.1.88"
 criterion = "0.5.1"
 miette = { version="7.6.0", features = ["fancy"] }
 linkme = "0.3.33"
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full"] }
 
 [workspace.lints.rust]
 # General compatibility lints
