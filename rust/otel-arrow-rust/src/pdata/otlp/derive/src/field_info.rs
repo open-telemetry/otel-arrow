@@ -336,11 +336,44 @@ impl FieldInfo {
 
     /// Get primitive type visitor trait with generic argument
     fn get_primitive_visitor_trait(&self) -> proc_macro2::TokenStream {
-        //eprintln!("🚨 DEBUG: get_primitive_visitor_trait called for: {}, proto_type: {}", self.base_type_name, self.proto_type);
+        eprintln!("🚨 DEBUG: get_primitive_visitor_trait called for: {}, proto_type: {}, is_repeated: {}", 
+                  self.base_type_name, self.proto_type, self.is_repeated);
 
         // Special handling for Vec<u8> (bytes) - check proto_type first
         if self.proto_type == "bytes" || (self.base_type_name == "Vec" && self.proto_type.contains("bytes")) {
             return quote! { crate::pdata::BytesVisitor<Argument> };
+        }
+
+        // For repeated primitive fields, use SliceVisitor with the inner primitive type
+        if self.is_repeated && self.is_primitive {
+            eprintln!("🚨 DEBUG: Repeated primitive field detected: {}", self.base_type_name);
+            let result = match self.base_type_name.as_str() {
+                "String" => quote! { crate::pdata::SliceVisitor<Argument, String> },
+                "bool" => quote! { crate::pdata::SliceVisitor<Argument, bool> },
+                "i32" => quote! { crate::pdata::SliceVisitor<Argument, i32> },
+                "i64" => quote! { crate::pdata::SliceVisitor<Argument, i64> },
+                "u32" | "u8" => quote! { crate::pdata::SliceVisitor<Argument, u32> },
+                "u64" => quote! { crate::pdata::SliceVisitor<Argument, u64> },
+                "f32" => quote! { crate::pdata::SliceVisitor<Argument, f32> },
+                "f64" => quote! { crate::pdata::SliceVisitor<Argument, f64> },
+                _ => {
+                    panic!(
+                        "Unknown repeated primitive type - this should not happen!\n\
+                         base_type_name: '{}'\n\
+                         full_type_name: {:?}\n\
+                         is_primitive: {}\n\
+                         is_repeated: {}\n\
+                         field_ident: {:?}", 
+                        self.base_type_name, 
+                        self.full_type_name, 
+                        self.is_primitive, 
+                        self.is_repeated,
+                        self.ident
+                    );
+                }
+            };
+            eprintln!("🚨 DEBUG: Returning SliceVisitor for repeated primitive: {}", result);
+            return result;
         }
 
         let result = match self.base_type_name.as_str() {
@@ -351,7 +384,7 @@ impl FieldInfo {
             "u32" | "u8" => quote! { crate::pdata::U32Visitor<Argument> },
             "u64" => quote! { crate::pdata::U64Visitor<Argument> },
             "f32" | "f64" => quote! { crate::pdata::F64Visitor<Argument> },
-            "Vec" => quote! { crate::pdata::VecVisitor<Argument> }, // This should rarely be used after bytes check above
+            "Vec" => quote! { crate::pdata::SliceVisitor<Argument, u8> }, // This should rarely be used after bytes check above
             _ => {
                 //eprintln!("🚨 DEBUG: Non-primitive type: {}, generating custom visitor trait", self.base_type_name);
                 // For non-primitive types, use the standard logic
@@ -391,6 +424,21 @@ impl FieldInfo {
             return quote! { crate::pdata::BytesVisitable<Argument> };
         }
 
+        // For repeated primitive fields, use SliceVisitable with the inner primitive type
+        if self.is_repeated && self.is_primitive {
+            return match self.base_type_name.as_str() {
+                "String" => quote! { crate::pdata::SliceVisitable<Argument, String> },
+                "bool" => quote! { crate::pdata::SliceVisitable<Argument, bool> },
+                "i32" => quote! { crate::pdata::SliceVisitable<Argument, i32> },
+                "i64" => quote! { crate::pdata::SliceVisitable<Argument, i64> },
+                "u32" | "u8" => quote! { crate::pdata::SliceVisitable<Argument, u32> },
+                "u64" => quote! { crate::pdata::SliceVisitable<Argument, u64> },
+                "f32" => quote! { crate::pdata::SliceVisitable<Argument, f32> },
+                "f64" => quote! { crate::pdata::SliceVisitable<Argument, f64> },
+                _ => quote! { crate::pdata::UnknownVisitable<Argument> }
+            };
+        }
+
         match self.base_type_name.as_str() {
             "String" => quote! { crate::pdata::StringVisitable<Argument> },
             "bool" => quote! { crate::pdata::BooleanVisitable<Argument> },
@@ -399,7 +447,7 @@ impl FieldInfo {
             "u32" | "u8" => quote! { crate::pdata::U32Visitable<Argument> },
             "u64" => quote! { crate::pdata::U64Visitable<Argument> },
             "f32" | "f64" => quote! { crate::pdata::F64Visitable<Argument> },
-            "Vec" => quote! { crate::pdata::VecVisitable<Argument> }, // This should rarely be used after bytes check above
+            "Vec" => quote! { crate::pdata::SliceVisitable<Argument, u8> }, // This should rarely be used after bytes check above
             _ => {
                 // For non-primitive types, use the standard logic
                 if let Some(ref qualifier) = self.qualifier {

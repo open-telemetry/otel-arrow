@@ -139,7 +139,7 @@ fn generate_visitor_type_for_oneof_variant(_info: &FieldInfo, case: &OneofCase) 
             
             // For Vec types that need adapters, use the proper prefix
             if type_name == "Vec" {
-                syn::parse_quote! { crate::pdata::VecVisitor<Argument> }
+                syn::parse_quote! { crate::pdata::SliceVisitor<Argument> }
             } else if let Ok(visitor_trait) = syn::parse_str::<syn::Type>(&visitor_trait_name) {
                 syn::parse_quote! { #visitor_trait<Argument> }
             } else {
@@ -161,7 +161,7 @@ fn generate_visitor_type_for_oneof_variant(_info: &FieldInfo, case: &OneofCase) 
                     "u32" | "u8" => syn::parse_quote! { crate::pdata::U32Visitor<Argument> },
                     "u64" => syn::parse_quote! { crate::pdata::U64Visitor<Argument> },
                     "f32" | "f64" => syn::parse_quote! { crate::pdata::F64Visitor<Argument> },
-                    "Vec" => syn::parse_quote! { crate::pdata::VecVisitor<Argument> },
+                    "Vec" => syn::parse_quote! { crate::pdata::SliceVisitor<Argument> },
                     _ => {
                         // For message types, generate the appropriate visitor trait
                         let visitor_trait_name = format!("{}Visitor", base_type);
@@ -172,9 +172,8 @@ fn generate_visitor_type_for_oneof_variant(_info: &FieldInfo, case: &OneofCase) 
             }
         }
     } else {
-        // If we can't parse the type, fallback to a reasonable default
-        // This should rarely happen in practice
-        syn::parse_quote! { crate::pdata::UnknownVisitor<Argument> }
+        // If we can't parse the type, panic as this should not happen
+        panic!("Failed to parse type for visitor generation");
     }
 }
 
@@ -227,8 +226,8 @@ fn generate_visitor_trait_for_field(info: &FieldInfo) -> syn::Type {
             }
             Err(_e) => {
                 //eprintln!("🚨 DEBUG: Failed to parse visitor trait '{}' as Type: {}", visitor_trait, e);
-                // Fallback to unknown visitor
-                syn::parse_quote! { crate::pdata::UnknownVisitor<Argument> }
+                // This should not happen, panic for debugging
+                panic!("Failed to parse visitor trait: {}", visitor_trait);
             }
         }
     } else {
@@ -248,7 +247,7 @@ fn generate_visitor_trait_for_field(info: &FieldInfo) -> syn::Type {
                 if is_bytes_type(&info.full_type_name) {
                     syn::parse_quote! { crate::pdata::BytesVisitor<Argument> }
                 } else {
-                    syn::parse_quote! { crate::pdata::UnknownVisitor<Argument> }
+                    panic!("Unknown primitive type for visitor generation: {}", info.base_type_name);
                 }
             }
         }

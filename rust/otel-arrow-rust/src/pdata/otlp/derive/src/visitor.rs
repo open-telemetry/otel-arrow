@@ -267,23 +267,9 @@ fn generate_visit_method_for_field(info: &FieldInfo) -> syn::Ident {
         format!("visit_{}", suffix)
     } else if info.is_repeated && info.is_primitive {
         // CASE 3: Repeated primitive field (Vec<u64>, Vec<f64>, etc.)
-        // ISSUE: This branch exists because is_primitive_type(Vec<u64>) = false
-        // BUT info.is_primitive should be true for the same field!
-        // This suggests is_primitive_type() and info.is_primitive use different logic
-        eprintln!("  -> CASE 3: Repeated primitive (this is confusing!)");
-        
-        if let Some(inner_type) = extract_vec_inner_type(&info.full_type_name) {
-            eprintln!("    extracted inner_type: {}", inner_type.to_token_stream());
-            let suffix = get_primitive_method_suffix(&inner_type);
-            eprintln!("    inner primitive suffix: {}", suffix);
-            format!("visit_{}", suffix)
-        } else {
-            // FALLBACK 3A: This shouldn't happen if the logic above is correct
-            eprintln!("    -> FALLBACK 3A: Failed to extract inner type, using snake_case");
-            let type_name = &info.base_type_name;
-            eprintln!("    base_type_name for snake_case: {}", type_name);
-            format!("visit_{}", type_name.to_case(Case::Snake))
-        }
+        // These should use SliceVisitor with visit_vec method
+        eprintln!("  -> CASE 3: Repeated primitive - using SliceVisitor with visit_vec");
+        "visit_vec".to_string()
     } else {
         // CASE 4: Message types or other non-primitive types
         eprintln!("  -> CASE 4: Non-primitive (message type)");
@@ -299,6 +285,8 @@ fn generate_visit_method_for_field(info: &FieldInfo) -> syn::Ident {
 }
 
 /// Extract the inner type from Vec<T> -> T
+// Function no longer used since repeated primitives now use visit_vec
+/*
 fn extract_vec_inner_type(ty: &syn::Type) -> Option<syn::Type> {
     if let syn::Type::Path(type_path) = ty {
         if let Some(last_segment) = type_path.path.segments.last() {
@@ -313,6 +301,7 @@ fn extract_vec_inner_type(ty: &syn::Type) -> Option<syn::Type> {
     }
     None
 }
+*/
 
 /// Determine if a field needs to be wrapped in an adapter (message types) vs used directly (primitives)
 pub fn needs_adapter_for_field(info: &FieldInfo) -> bool {
@@ -467,7 +456,7 @@ fn generate_visitor_type_for_oneof_variant(case_type: &syn::Type) -> proc_macro2
                 "u64" => quote! { crate::pdata::U64Visitor<Argument> },
                 "f32" => quote! { crate::pdata::F32Visitor<Argument> },
                 "f64" => quote! { crate::pdata::F64Visitor<Argument> },
-                "Vec" => quote! { crate::pdata::VecVisitor<Argument> },
+                "Vec" => quote! { crate::pdata::SliceVisitor<Argument> },
                 _ => {
                     // For message types, construct visitor name with qualifier
                     let visitor_name = format!("{}Visitor", base_type_name);
@@ -502,8 +491,13 @@ fn generate_visitor_type_for_oneof_variant(case_type: &syn::Type) -> proc_macro2
     }
 
     // Fallback for unknown types - should not reach here in normal cases
-    eprintln!("🚨 WARNING: Falling back to UnknownVisitor for type: {:?}", case_type);
-    quote! { crate::pdata::UnknownVisitor<Argument> }
+    panic!(
+        "Unknown oneof variant type, cannot generate visitor!\n\
+         case_type: {:?}\n\
+         This usually means a new type was added that the derive macro doesn't know how to handle.\n\
+         You may need to add support for this type in generate_visitor_type_for_oneof_variant().", 
+        case_type
+    );
 }
 
 // /// Decompose a type into base type name and qualifier, similar to FieldInfo::decompose_type
