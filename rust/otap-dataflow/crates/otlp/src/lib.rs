@@ -2,13 +2,13 @@
 
 //! Implementation of the OTLP nodes (receiver, exporter, processor).
 
-use std::{collections::HashMap, sync::OnceLock, vec};
+use std::vec;
 
 use crate::grpc::OTLPData;
 use linkme::distributed_slice;
 use otap_df_config::{node::NodeKind, pipeline::PipelineConfig};
 use otap_df_engine::{
-    config::{ExporterConfig, ProcessorConfig, ReceiverConfig}, error::Error, get_factory_map, runtime_config::{RuntimeNode, RuntimePipeline}, ExporterFactory, ProcessorFactory, ReceiverFactory
+    config::{ExporterConfig, ProcessorConfig, ReceiverConfig}, error::Error, runtime_config::{RuntimeNode, RuntimePipeline}, ExporterFactory, FactoryRegistry, ProcessorFactory, ReceiverFactory
 };
 
 /// compression formats
@@ -38,29 +38,16 @@ pub static PROCESSOR_FACTORIES: [ProcessorFactory<OTLPData>] = [..];
 #[distributed_slice]
 pub static EXPORTER_FACTORIES: [ExporterFactory<OTLPData>] = [..];
 
-static RECEIVER_FACTORY_MAP: OnceLock<HashMap<&'static str, ReceiverFactory<OTLPData>>> =
-    OnceLock::new();
-static PROCESSOR_FACTORY_MAP: OnceLock<HashMap<&'static str, ProcessorFactory<OTLPData>>> =
-    OnceLock::new();
-static EXPORTER_FACTORY_MAP: OnceLock<HashMap<&'static str, ExporterFactory<OTLPData>>> =
-    OnceLock::new();
+/// Global factory registry for OTLP data.
+static FACTORY_REGISTRY: FactoryRegistry<OTLPData> = FactoryRegistry::new();
 
 /// Creates a runtime pipeline from the given pipeline configuration.
 pub fn create_runtime_pipeline(
     config: PipelineConfig,
 ) -> Result<RuntimePipeline<OTLPData>, Error<OTLPData>> {
-    let receiver_factory_map = get_factory_map(
-        &RECEIVER_FACTORY_MAP,
-        &RECEIVER_FACTORIES,
-    );
-    let processor_factory_map = get_factory_map(
-        &PROCESSOR_FACTORY_MAP,
-        &PROCESSOR_FACTORIES,
-    );
-    let exporter_factory_map = get_factory_map(
-        &EXPORTER_FACTORY_MAP,
-        &EXPORTER_FACTORIES,
-    );
+    let receiver_factory_map = FACTORY_REGISTRY.get_receiver_factory_map(&RECEIVER_FACTORIES);
+    let processor_factory_map = FACTORY_REGISTRY.get_processor_factory_map(&PROCESSOR_FACTORIES);
+    let exporter_factory_map = FACTORY_REGISTRY.get_exporter_factory_map(&EXPORTER_FACTORIES);
     let mut nodes = vec![]; // ToDo(LQ): initialize with the correct size
 
     // ToDo(LQ): Generate all the errors.

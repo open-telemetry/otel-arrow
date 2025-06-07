@@ -32,7 +32,7 @@ pub mod testing;
 /// 
 /// This trait is used to define a common interface for different types of factories
 /// that create instances of receivers, processors, or exporters.
-trait NamedFactory {
+pub trait NamedFactory {
     /// Returns the name of the node factory.
     fn name(&self) -> &'static str;
 }
@@ -123,4 +123,46 @@ where
             .map(|f| (f.name(), f.clone()))
             .collect::<HashMap<&'static str, T>>()
     })
+}
+
+/// Generic factory registry that encapsulates all factory maps for a given pdata type.
+pub struct FactoryRegistry<PData> {
+    receiver_factory_map: OnceLock<HashMap<&'static str, ReceiverFactory<PData>>>,
+    processor_factory_map: OnceLock<HashMap<&'static str, ProcessorFactory<PData>>>,
+    exporter_factory_map: OnceLock<HashMap<&'static str, ExporterFactory<PData>>>,
+}
+
+impl<PData> FactoryRegistry<PData> {
+    /// Creates a new factory registry.
+    pub const fn new() -> Self {
+        Self {
+            receiver_factory_map: OnceLock::new(),
+            processor_factory_map: OnceLock::new(),
+            exporter_factory_map: OnceLock::new(),
+        }
+    }
+
+    /// Gets the receiver factory map, initializing it if necessary.
+    pub fn get_receiver_factory_map(
+        &'static self,
+        factory_slice: &'static [ReceiverFactory<PData>],
+    ) -> &'static HashMap<&'static str, ReceiverFactory<PData>> {
+        get_factory_map(&self.receiver_factory_map, factory_slice)
+    }
+
+    /// Gets the processor factory map, initializing it if necessary.
+    pub fn get_processor_factory_map(
+        &'static self,
+        factory_slice: &'static [ProcessorFactory<PData>],
+    ) -> &'static HashMap<&'static str, ProcessorFactory<PData>> {
+        get_factory_map(&self.processor_factory_map, factory_slice)
+    }
+
+    /// Gets the exporter factory map, initializing it if necessary.
+    pub fn get_exporter_factory_map(
+        &'static self,
+        factory_slice: &'static [ExporterFactory<PData>],
+    ) -> &'static HashMap<&'static str, ExporterFactory<PData>> {
+        get_factory_map(&self.exporter_factory_map, factory_slice)
+    }
 }
