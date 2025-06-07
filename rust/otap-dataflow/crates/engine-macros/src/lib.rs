@@ -9,35 +9,36 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, ItemStatic, Type};
 
-/// Attribute macro to generate distributed slices and helper functions for a factory registry.
+/// Attribute macro to generate distributed slices and initialize a factory registry.
 /// 
-/// This macro generates distributed slices for factories and helper functions to access them.
+/// This macro generates distributed slices for factories and initializes the annotated
+/// FACTORY_REGISTRY static variable.
 /// 
 /// # Usage
 /// 
-/// First, import the necessary types and macro:
+/// Simply declare a FACTORY_REGISTRY static and annotate it with the data type:
 /// ```rust,ignore
-/// use otap_df_engine::{FactoryRegistry};
 /// use otap_df_engine_macros::factory_registry;
 /// 
 /// // Define your data type (this would be defined elsewhere)
 /// struct MyData;
 /// 
-/// // Apply the macro to generate distributed slices and helpers
+/// // Declare and initialize the factory registry
 /// #[factory_registry(MyData)]
-/// static FACTORY_REGISTRY: FactoryRegistry<MyData> = FactoryRegistry::new();
+/// static FACTORY_REGISTRY: FactoryRegistry<MyData> = unsafe { std::mem::zeroed() };
 /// ```
 /// 
 /// This generates:
 /// - Distributed slices for receiver, processor, and exporter factories
+/// - Proper initialization of the FACTORY_REGISTRY with lazy loading
 /// - Helper functions to access factory maps
-/// - A create_runtime_pipeline function
 #[proc_macro_attribute]
 pub fn factory_registry(args: TokenStream, input: TokenStream) -> TokenStream {
     let pdata_type = parse_macro_input!(args as Type);
     let registry_static = parse_macro_input!(input as ItemStatic);
     
     let registry_name = &registry_static.ident;
+    let registry_vis = &registry_static.vis;
     
     let output = quote! {
         /// A slice of receiver factories.
@@ -53,33 +54,27 @@ pub fn factory_registry(args: TokenStream, input: TokenStream) -> TokenStream {
         pub static EXPORTER_FACTORIES: [::otap_df_engine::ExporterFactory<#pdata_type>] = [..];
 
         /// The factory registry instance.
-        #registry_static
-
-        /// Gets the receiver factory map, initializing it if necessary.
-        pub fn get_receiver_factory_map() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ReceiverFactory<#pdata_type>> {
-            #registry_name.get_receiver_factory_map(&RECEIVER_FACTORIES)
-        }
-
-        /// Gets the processor factory map, initializing it if necessary.
-        pub fn get_processor_factory_map() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ProcessorFactory<#pdata_type>> {
-            #registry_name.get_processor_factory_map(&PROCESSOR_FACTORIES)
-        }
-
-        /// Gets the exporter factory map, initializing it if necessary.
-        pub fn get_exporter_factory_map() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ExporterFactory<#pdata_type>> {
-            #registry_name.get_exporter_factory_map(&EXPORTER_FACTORIES)
-        }
-
-        /// Creates a runtime pipeline from the given pipeline configuration.
-        pub fn create_runtime_pipeline(
-            config: ::otap_df_config::pipeline::PipelineConfig,
-        ) -> Result<::otap_df_engine::runtime_config::RuntimePipeline<#pdata_type>, ::otap_df_engine::error::Error<#pdata_type>> {
-            #registry_name.create_runtime_pipeline(
-                config,
+        #registry_vis static #registry_name: std::sync::LazyLock<::otap_df_engine::FactoryRegistry<#pdata_type>> = std::sync::LazyLock::new(|| {
+            ::otap_df_engine::FactoryRegistry::new(
                 &RECEIVER_FACTORIES,
                 &PROCESSOR_FACTORIES,
                 &EXPORTER_FACTORIES,
             )
+        });
+
+        /// Gets the receiver factory map, initializing it if necessary.
+        pub fn get_receiver_factory_map() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ReceiverFactory<#pdata_type>> {
+            #registry_name.get_receiver_factory_map()
+        }
+
+        /// Gets the processor factory map, initializing it if necessary.
+        pub fn get_processor_factory_map() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ProcessorFactory<#pdata_type>> {
+            #registry_name.get_processor_factory_map()
+        }
+
+        /// Gets the exporter factory map, initializing it if necessary.
+        pub fn get_exporter_factory_map() -> &'static std::collections::HashMap<&'static str, ::otap_df_engine::ExporterFactory<#pdata_type>> {
+            #registry_name.get_exporter_factory_map()
         }
     };
 

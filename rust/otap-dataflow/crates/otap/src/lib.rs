@@ -4,7 +4,6 @@
 //!
 
 use crate::grpc::OTAPData;
-use otap_df_engine::FactoryRegistry;
 use otap_df_engine_macros::factory_registry;
 
 /// gRPC service implementation
@@ -22,8 +21,8 @@ pub mod parquet_exporter;
 #[cfg(test)]
 mod mock;
 
-// Factory registry for OTAP data with distributed slices
+/// Factory registry for OTAP data processing
 #[factory_registry(OTAPData)]
-static FACTORY_REGISTRY: FactoryRegistry<OTAPData> = FactoryRegistry::new();
+static FACTORY_REGISTRY: FactoryRegistry<OTAPData> = unsafe { std::mem::zeroed() };
 
 

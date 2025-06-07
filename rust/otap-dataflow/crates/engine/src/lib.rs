@@ -130,57 +130,76 @@ where
 }
 
 /// Generic factory registry that encapsulates all factory maps for a given pdata type.
-pub struct FactoryRegistry<PData> {
+pub struct FactoryRegistry<PData: 'static> {
     receiver_factory_map: OnceLock<HashMap<&'static str, ReceiverFactory<PData>>>,
     processor_factory_map: OnceLock<HashMap<&'static str, ProcessorFactory<PData>>>,
     exporter_factory_map: OnceLock<HashMap<&'static str, ExporterFactory<PData>>>,
+    receiver_factories: &'static [ReceiverFactory<PData>],
+    processor_factories: &'static [ProcessorFactory<PData>],
+    exporter_factories: &'static [ExporterFactory<PData>],
 }
 
-impl<PData> FactoryRegistry<PData> {
-    /// Creates a new factory registry.
-    pub const fn new() -> Self {
+impl<PData: 'static> FactoryRegistry<PData> {
+    /// Creates a new factory registry with the given factory slices.
+    pub const fn new(
+        receiver_factories: &'static [ReceiverFactory<PData>],
+        processor_factories: &'static [ProcessorFactory<PData>],
+        exporter_factories: &'static [ExporterFactory<PData>],
+    ) -> Self {
         Self {
             receiver_factory_map: OnceLock::new(),
             processor_factory_map: OnceLock::new(),
             exporter_factory_map: OnceLock::new(),
+            receiver_factories,
+            processor_factories,
+            exporter_factories,
         }
     }
 
     /// Gets the receiver factory map, initializing it if necessary.
     pub fn get_receiver_factory_map(
-        &'static self,
-        factory_slice: &'static [ReceiverFactory<PData>],
-    ) -> &'static HashMap<&'static str, ReceiverFactory<PData>> {
-        get_factory_map(&self.receiver_factory_map, factory_slice)
+        &self,
+    ) -> &HashMap<&'static str, ReceiverFactory<PData>> {
+        self.receiver_factory_map.get_or_init(|| {
+            self.receiver_factories
+                .iter()
+                .map(|f| (f.name(), f.clone()))
+                .collect::<HashMap<&'static str, ReceiverFactory<PData>>>()
+        })
     }
 
     /// Gets the processor factory map, initializing it if necessary.
     pub fn get_processor_factory_map(
-        &'static self,
-        factory_slice: &'static [ProcessorFactory<PData>],
-    ) -> &'static HashMap<&'static str, ProcessorFactory<PData>> {
-        get_factory_map(&self.processor_factory_map, factory_slice)
+        &self,
+    ) -> &HashMap<&'static str, ProcessorFactory<PData>> {
+        self.processor_factory_map.get_or_init(|| {
+            self.processor_factories
+                .iter()
+                .map(|f| (f.name(), f.clone()))
+                .collect::<HashMap<&'static str, ProcessorFactory<PData>>>()
+        })
     }
 
     /// Gets the exporter factory map, initializing it if necessary.
     pub fn get_exporter_factory_map(
-        &'static self,
-        factory_slice: &'static [ExporterFactory<PData>],
-    ) -> &'static HashMap<&'static str, ExporterFactory<PData>> {
-        get_factory_map(&self.exporter_factory_map, factory_slice)
+        &self,
+    ) -> &HashMap<&'static str, ExporterFactory<PData>> {
+        self.exporter_factory_map.get_or_init(|| {
+            self.exporter_factories
+                .iter()
+                .map(|f| (f.name(), f.clone()))
+                .collect::<HashMap<&'static str, ExporterFactory<PData>>>()
+        })
     }
 
     /// Creates a runtime pipeline from the given pipeline configuration.
     pub fn create_runtime_pipeline(
-        &'static self,
+        &self,
         config: otap_df_config::pipeline::PipelineConfig,
-        receiver_factories: &'static [ReceiverFactory<PData>],
-        processor_factories: &'static [ProcessorFactory<PData>],
-        exporter_factories: &'static [ExporterFactory<PData>],
     ) -> Result<RuntimePipeline<PData>, Error<PData>> {
-        let receiver_factory_map = self.get_receiver_factory_map(receiver_factories);
-        let processor_factory_map = self.get_processor_factory_map(processor_factories);
-        let exporter_factory_map = self.get_exporter_factory_map(exporter_factories);
+        let receiver_factory_map = self.get_receiver_factory_map();
+        let processor_factory_map = self.get_processor_factory_map();
+        let exporter_factory_map = self.get_exporter_factory_map();
         let mut nodes = Vec::new();
 
         // Generate all the errors.

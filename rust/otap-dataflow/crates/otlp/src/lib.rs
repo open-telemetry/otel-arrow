@@ -3,7 +3,6 @@
 //! Implementation of the OTLP nodes (receiver, exporter, processor).
 
 use crate::grpc::OTLPData;
-use otap_df_engine::FactoryRegistry;
 use otap_df_engine_macros::factory_registry;
 
 /// compression formats
@@ -21,28 +20,16 @@ pub mod proto;
 #[cfg(test)]
 mod mock;
 
-// Factory registry for OTLP data with distributed slices
+/// Factory registry for OTLP data processing
 #[factory_registry(OTLPData)]
-static FACTORY_REGISTRY: FactoryRegistry<OTLPData> = FactoryRegistry::new();
-
+static FACTORY_REGISTRY: FactoryRegistry<OTLPData> = unsafe { std::mem::zeroed() };
 
 
 #[cfg(test)]
 mod tests {
     use otap_df_config::pipeline::{PipelineConfigBuilder, PipelineType};
 
-    use crate::create_runtime_pipeline;
-
-    #[test]
-    fn test_plugins() {
-        for receiver in crate::RECEIVER_FACTORIES.iter() {
-            println!("Receiver: {}", receiver.name);
-        }
-
-        for exporter in crate::EXPORTER_FACTORIES.iter() {
-            println!("Exporter: {}", exporter.name);
-        }
-    }
+    use crate::FACTORY_REGISTRY;
 
     #[test]
     fn test_create_runtime_pipeline() {
@@ -54,7 +41,7 @@ mod tests {
             .broadcast("otlp_receiver", "out_port", ["otlp_exporter1", "otlp_exporter2"])
             .build(PipelineType::OTLP, "namespace", "pipeline")
             .expect("Failed to build pipeline config");
-        let result = create_runtime_pipeline(config);
+        let result = FACTORY_REGISTRY.create_runtime_pipeline(config);
         assert!(result.is_ok(), "Failed to create runtime pipeline: {:?}", result.err());
     }
 }
