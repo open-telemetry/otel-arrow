@@ -17,6 +17,7 @@ pub struct FieldInfo {
     pub is_message: bool,
     pub oneof: Option<Vec<OneofCase>>,
     pub as_type: Option<syn::Type>, // primitive type for enums
+    pub enum_type: Option<syn::Type>, // enum type for enums (from datatype in FIELD_TYPE_OVERRIDES)
     pub proto_type: String,
     pub qualifier: Option<proc_macro2::TokenStream>,
 
@@ -215,12 +216,20 @@ impl FieldInfo {
                         });
 
                 // Handle any errors from the parsing
-                let (_field_type, as_type) = match result {
-                    Ok(types) => types,
+                let (enum_type, as_type) = match result {
+                    Ok(types) => {
+                        let (datatype, fieldtype) = types;
+                        // If we have an override, store the enum type
+                        if fieldtype.is_some() {
+                            (Some(datatype), fieldtype)
+                        } else {
+                            (None, None)
+                        }
+                    },
                     Err(_err) => {
                         //eprintln!("🚨 ERROR: {}", err);
                         // Fallback to inner_type on error
-                        (inner_type.clone(), None)
+                        (None, None)
                     }
                 };
 
@@ -263,6 +272,7 @@ impl FieldInfo {
                     is_primitive,
                     oneof,
                     as_type,
+                    enum_type,
                     proto_type,
                     tag,
                     base_type_name,

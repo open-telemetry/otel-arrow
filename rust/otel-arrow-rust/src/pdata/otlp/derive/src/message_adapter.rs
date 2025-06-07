@@ -16,7 +16,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
     //eprintln!("🚨 DEBUG: Starting message_adapter::derive for: {}", msg.outer_name);
 
     let outer_name = &msg.outer_name;
-    let adapter_name = msg.related_typename("Adapter");
+    let adapter_name = msg.related_typename("MessageAdapter");
     let visitable_name = msg.related_typename("Visitable");
 
     //eprintln!("🚨 DEBUG: Generated names - adapter: {}, visitable: {}", adapter_name, visitable_name);

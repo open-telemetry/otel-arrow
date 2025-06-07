@@ -69,21 +69,50 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
         })
         .collect();
 
-    // Generate builder methods
+    // Generate builder methods for all non-parameter fields
     let builder_methods: TokenVec = msg
-        .all_fields
+        .builder_fields
         .iter()
-        .enumerate()
-        .filter(|(_, info)| info.oneof.is_some())
-        .map(|(idx, info)| {
+        .map(|info| {
             let field_name = &info.ident;
             let field_type = &info.full_type_name;
-            let value_assignment = field_assignments[idx].clone();
+            
+            // Find the corresponding field assignment by matching field name
+            let field_assignment = msg.all_fields
+                .iter()
+                .position(|f| f.ident == info.ident)
+                .map(|idx| field_assignments[idx].clone())
+                .unwrap_or_else(|| {
+                    // Fallback assignment for cases where position lookup fails
+                    if info.proto_type == "enumeration" {
+                        match (info.is_optional, &info.as_type) {
+                            (true, Some(as_type)) => quote! { self.inner.#field_name = Some(#field_name as #as_type); },
+                            (true, None) => quote! { self.inner.#field_name = Some(#field_name.into()); },
+                            (false, Some(as_type)) => quote! { self.inner.#field_name = #field_name as #as_type; },
+                            (false, None) => quote! { self.inner.#field_name = #field_name.into(); },
+                        }
+                    } else {
+                        match (info.is_optional, &info.as_type) {
+                            (true, Some(as_type)) => quote! { self.inner.#field_name = Some(#field_name.into() as #as_type); },
+                            (true, None) => quote! { self.inner.#field_name = Some(#field_name.into()); },
+                            (false, Some(as_type)) => quote! { self.inner.#field_name = #field_name.into() as #as_type; },
+                            (false, None) => quote! { self.inner.#field_name = #field_name.into(); },
+                        }
+                    }
+                });
+
+            // For fields with enum types, use the enum type for the constraint
+            // For other fields, use the field type
+            let constraint_type = if let Some(ref enum_type) = info.enum_type {
+                enum_type.clone()
+            } else {
+                field_type.clone()
+            };
 
             quote! {
-                pub fn #field_name<T: Into<#field_type>>(mut self, #field_name: T) -> Self
+                pub fn #field_name<T: Into<#constraint_type>>(mut self, #field_name: T) -> Self
                 {
-                    #value_assignment
+                    #field_assignment
                     self
                 }
             }
@@ -183,23 +212,46 @@ fn generate_field_assignment(
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     let field_name = &info.ident;
 
-    match (info.is_optional, &info.as_type) {
-        (true, Some(as_type)) => (
-            quote! { self.inner.#field_name = Some(#field_name.into() as #as_type); },
-            quote! { #field_name: Some(#field_name.into() as #as_type), },
-        ),
-        (true, None) => (
-            quote! { self.inner.#field_name = Some(#field_name.into()); },
-            quote! { #field_name: Some(#field_name.into()), },
-        ),
-        (false, Some(as_type)) => (
-            quote! { self.inner.#field_name = #field_name.into() as #as_type; },
-            quote! { #field_name: #field_name.into() as #as_type, },
-        ),
-        (false, None) => (
-            quote! { self.inner.#field_name = #field_name.into(); },
-            quote! { #field_name: #field_name.into(), },
-        ),
+    // For enum fields, use direct casting instead of .into()
+    if info.proto_type == "enumeration" {
+        match (info.is_optional, &info.as_type) {
+            (true, Some(as_type)) => (
+                quote! { self.inner.#field_name = Some(#field_name as #as_type); },
+                quote! { #field_name: Some(#field_name as #as_type), },
+            ),
+            (true, None) => (
+                quote! { self.inner.#field_name = Some(#field_name.into()); },
+                quote! { #field_name: Some(#field_name.into()), },
+            ),
+            (false, Some(as_type)) => (
+                quote! { self.inner.#field_name = #field_name as #as_type; },
+                quote! { #field_name: #field_name as #as_type, },
+            ),
+            (false, None) => (
+                quote! { self.inner.#field_name = #field_name.into(); },
+                quote! { #field_name: #field_name.into(), },
+            ),
+        }
+    } else {
+        // For non-enum fields, use the original logic with .into()
+        match (info.is_optional, &info.as_type) {
+            (true, Some(as_type)) => (
+                quote! { self.inner.#field_name = Some(#field_name.into() as #as_type); },
+                quote! { #field_name: Some(#field_name.into() as #as_type), },
+            ),
+            (true, None) => (
+                quote! { self.inner.#field_name = Some(#field_name.into()); },
+                quote! { #field_name: Some(#field_name.into()), },
+            ),
+            (false, Some(as_type)) => (
+                quote! { self.inner.#field_name = #field_name.into() as #as_type; },
+                quote! { #field_name: #field_name.into() as #as_type, },
+            ),
+            (false, None) => (
+                quote! { self.inner.#field_name = #field_name.into(); },
+                quote! { #field_name: #field_name.into(), },
+            ),
+        }
     }
 }
 

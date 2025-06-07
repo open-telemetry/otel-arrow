@@ -416,7 +416,7 @@ fn get_primitive_method_suffix(ty: &syn::Type) -> String {
 
 /// Get the adapter name for a field type
 fn get_adapter_name_for_field(info: &FieldInfo) -> proc_macro2::TokenStream {
-    let adapter_suffix = "Adapter";
+    let adapter_suffix = "MessageAdapter";
     info.related_type(adapter_suffix)
 }
 
