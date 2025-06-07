@@ -3,7 +3,7 @@
 
 use convert_case::{Case, Casing};
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{quote, ToTokens};
 
 use super::TokenVec;
 use super::field_info::FieldInfo;
@@ -35,7 +35,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                 // Parse the type_param to get the visitor trait path
                 if let Ok(case_type) = syn::parse_str::<syn::Type>(&case.type_param) {
                     let visitor_type = generate_visitor_type_for_oneof_variant(&case_type);
-                    visitable_args.push(quote! { #variant_param_name: #visitor_type });
+                    visitable_args.push(quote! { #variant_param_name: impl #visitor_type });
                 }
             }
             continue;
@@ -103,6 +103,9 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
         (false, false, false, _) => {
             if matches!(visit_method.to_string().as_str(), "visit_string") {
                 Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
+            } else if is_bytes_field {
+                // For bytes fields (Vec<u8>), pass as slice
+                Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
             } else {
                 Some(quote! { arg = #visitor_param.#visit_method(arg, *&self.data.#field_name); })
             }
@@ -117,6 +120,13 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
         }
         (true, false, false, _) => {
             if matches!(visit_method.to_string().as_str(), "visit_string") {
+                Some(quote! {
+                    if let Some(f) = &self.data.#field_name {
+                        arg = #visitor_param.#visit_method(arg, f);
+                    }
+                })
+            } else if is_bytes_field {
+                // For bytes fields (Vec<u8>), pass as slice
                 Some(quote! {
                     if let Some(f) = &self.data.#field_name {
                         arg = #visitor_param.#visit_method(arg, f);
@@ -139,6 +149,7 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
             })
         }
         (false, true, false, true) => {
+            // For bytes fields (Vec<u8>), pass as slice
             Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
         }
         (false, true, false, false) => {
@@ -231,19 +242,76 @@ fn visitor_param_name(field_name: &str) -> syn::Ident {
 
 /// Generate the correct visit method name for a field based on its type
 fn generate_visit_method_for_field(info: &FieldInfo) -> syn::Ident {
+    // DEBUG: Print all the field information to understand the logic
+    eprintln!("🚨 DEBUG generate_visit_method_for_field:");
+    eprintln!("  field_name: {}", info.ident);
+    eprintln!("  info.is_primitive: {}", info.is_primitive);
+    eprintln!("  info.is_repeated: {}", info.is_repeated);
+    eprintln!("  info.full_type_name: {}", info.full_type_name.to_token_stream());
+    eprintln!("  info.base_type_name: {}", info.base_type_name);
+    eprintln!("  is_primitive_type(&info.full_type_name): {}", is_primitive_type(&info.full_type_name));
+    eprintln!("  is_bytes_type(&info.full_type_name): {}", is_bytes_type(&info.full_type_name));
+
     let method_name = if info.is_primitive && is_bytes_type(&info.full_type_name) {
+        // CASE 1: Primitive bytes field (Vec<u8>)
+        // This checks BOTH info.is_primitive AND is_bytes_type() - redundant!
+        eprintln!("  -> CASE 1: Primitive bytes");
         "visit_bytes".to_string()
     } else if is_primitive_type(&info.full_type_name) {
-        format!(
-            "visit_{}",
-            get_primitive_method_suffix(&info.full_type_name)
-        )
+        // CASE 2: Direct primitive type (u64, f64, String, etc.)
+        // This should handle: u64, f64, String, bool, i32, i64, u32, f32
+        // BUT it only works if full_type_name is the primitive directly, not Vec<u64>
+        eprintln!("  -> CASE 2: Direct primitive type");
+        let suffix = get_primitive_method_suffix(&info.full_type_name);
+        eprintln!("    primitive suffix: {}", suffix);
+        format!("visit_{}", suffix)
+    } else if info.is_repeated && info.is_primitive {
+        // CASE 3: Repeated primitive field (Vec<u64>, Vec<f64>, etc.)
+        // ISSUE: This branch exists because is_primitive_type(Vec<u64>) = false
+        // BUT info.is_primitive should be true for the same field!
+        // This suggests is_primitive_type() and info.is_primitive use different logic
+        eprintln!("  -> CASE 3: Repeated primitive (this is confusing!)");
+        
+        if let Some(inner_type) = extract_vec_inner_type(&info.full_type_name) {
+            eprintln!("    extracted inner_type: {}", inner_type.to_token_stream());
+            let suffix = get_primitive_method_suffix(&inner_type);
+            eprintln!("    inner primitive suffix: {}", suffix);
+            format!("visit_{}", suffix)
+        } else {
+            // FALLBACK 3A: This shouldn't happen if the logic above is correct
+            eprintln!("    -> FALLBACK 3A: Failed to extract inner type, using snake_case");
+            let type_name = &info.base_type_name;
+            eprintln!("    base_type_name for snake_case: {}", type_name);
+            format!("visit_{}", type_name.to_case(Case::Snake))
+        }
     } else {
+        // CASE 4: Message types or other non-primitive types
+        eprintln!("  -> CASE 4: Non-primitive (message type)");
         let type_name = &info.base_type_name;
+        eprintln!("    base_type_name for snake_case: {}", type_name);
         format!("visit_{}", type_name.to_case(Case::Snake))
     };
 
+    eprintln!("  FINAL method_name: {}", method_name);
+    eprintln!("");
+    
     syn::Ident::new(&method_name, proc_macro2::Span::call_site())
+}
+
+/// Extract the inner type from Vec<T> -> T
+fn extract_vec_inner_type(ty: &syn::Type) -> Option<syn::Type> {
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(last_segment) = type_path.path.segments.last() {
+            if last_segment.ident == "Vec" {
+                if let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments {
+                    if let Some(syn::GenericArgument::Type(inner_ty)) = args.args.first() {
+                        return Some(inner_ty.clone());
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Determine if a field needs to be wrapped in an adapter (message types) vs used directly (primitives)
@@ -371,7 +439,7 @@ pub fn get_base_type_name(ty: &syn::Type) -> String {
 fn generate_visitor_type_for_oneof_variant(case_type: &syn::Type) -> proc_macro2::TokenStream {
     // Handle Vec<u8> as bytes
     if is_bytes_type(case_type) {
-        return quote! { impl crate::pdata::BytesVisitor<Argument> };
+        return quote! { crate::pdata::BytesVisitor<Argument> };
     }
 
     // Parse the type to get base name and qualifier
@@ -383,10 +451,10 @@ fn generate_visitor_type_for_oneof_variant(case_type: &syn::Type) -> proc_macro2
 
             // Handle specific known cases
             if base_type_name == "ArrayValue" {
-                return quote! { impl super::ArrayValueVisitor<Argument> };
+                return quote! { super::ArrayValueVisitor<Argument> };
             }
             if base_type_name == "KeyValueList" {
-                return quote! { impl super::KeyValueListVisitor<Argument> };
+                return quote! { super::KeyValueListVisitor<Argument> };
             }
 
             // Handle primitive types
@@ -429,12 +497,13 @@ fn generate_visitor_type_for_oneof_variant(case_type: &syn::Type) -> proc_macro2
                 }
             };
 
-            return quote! { impl #visitor_trait };
+            return visitor_trait;
         }
     }
 
-    // Fallback for unknown types
-    quote! { impl UnknownVisitor<Argument> }
+    // Fallback for unknown types - should not reach here in normal cases
+    eprintln!("🚨 WARNING: Falling back to UnknownVisitor for type: {:?}", case_type);
+    quote! { crate::pdata::UnknownVisitor<Argument> }
 }
 
 // /// Decompose a type into base type name and qualifier, similar to FieldInfo::decompose_type

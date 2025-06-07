@@ -143,7 +143,9 @@ fn generate_visitor_type_for_oneof_variant(_info: &FieldInfo, case: &OneofCase) 
             } else if let Ok(visitor_trait) = syn::parse_str::<syn::Type>(&visitor_trait_name) {
                 syn::parse_quote! { #visitor_trait<Argument> }
             } else {
-                syn::parse_quote! { crate::pdata::UnknownVisitor<Argument> }
+                // For message types, try unqualified first, then fallback
+                let visitor_ident = syn::Ident::new(&visitor_trait_name, proc_macro2::Span::call_site());
+                syn::parse_quote! { #visitor_ident<Argument> }
             }
         } else {
             // For primitive types
@@ -160,11 +162,18 @@ fn generate_visitor_type_for_oneof_variant(_info: &FieldInfo, case: &OneofCase) 
                     "u64" => syn::parse_quote! { crate::pdata::U64Visitor<Argument> },
                     "f32" | "f64" => syn::parse_quote! { crate::pdata::F64Visitor<Argument> },
                     "Vec" => syn::parse_quote! { crate::pdata::VecVisitor<Argument> },
-                    _ => syn::parse_quote! { crate::pdata::UnknownVisitor<Argument> },
+                    _ => {
+                        // For message types, generate the appropriate visitor trait
+                        let visitor_trait_name = format!("{}Visitor", base_type);
+                        let visitor_ident = syn::Ident::new(&visitor_trait_name, proc_macro2::Span::call_site());
+                        syn::parse_quote! { #visitor_ident<Argument> }
+                    },
                 }
             }
         }
     } else {
+        // If we can't parse the type, fallback to a reasonable default
+        // This should rarely happen in practice
         syn::parse_quote! { crate::pdata::UnknownVisitor<Argument> }
     }
 }

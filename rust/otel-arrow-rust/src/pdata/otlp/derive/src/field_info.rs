@@ -569,6 +569,14 @@ impl FieldInfo {
             || Self::has_prost_attr(field, "bool")
             || Self::has_prost_attr(field, "double")
             || Self::has_prost_attr(field, "float")
+            // Fixed-size primitive types
+            || Self::has_prost_attr(field, "fixed64")
+            || Self::has_prost_attr(field, "fixed32")
+            || Self::has_prost_attr(field, "sfixed64")
+            || Self::has_prost_attr(field, "sfixed32")
+            // Alternative protobuf type names
+            || Self::has_prost_attr(field, "sint64")
+            || Self::has_prost_attr(field, "sint32")
     }
 
     fn has_prost_attr(field: &syn::Field, value: &'static str) -> bool {
