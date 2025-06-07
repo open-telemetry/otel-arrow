@@ -56,7 +56,12 @@ pub(crate) fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), (
             return Err(());
         }
 
-        return Ok((month.unwrap().number_from_month(), day, expand_year(year), r));
+        return Ok((
+            month.unwrap().number_from_month(),
+            day,
+            expand_year(year),
+            r,
+        ));
     }
 
     let local = LOCAL_DATE_REGEX.captures(input);
@@ -73,7 +78,12 @@ pub(crate) fn parse_date(input: &str) -> Result<(u32, u32, u32, Range<usize>), (
             return Err(());
         }
 
-        return Ok((month.unwrap().number_from_month(), day, expand_year(year), r));
+        return Ok((
+            month.unwrap().number_from_month(),
+            day,
+            expand_year(year),
+            r,
+        ));
     }
 
     let now = Utc::now();
