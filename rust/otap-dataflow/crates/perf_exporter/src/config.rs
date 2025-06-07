@@ -3,40 +3,100 @@
 //! Implementation of the configuration of the perf exporter
 //!
 
+use serde::Deserialize;
+
 /// Defines the settings of the perf exporter such as what to track
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct Config {
     /// Time duration after which a perf trace is displayed (default = 1000ms).
-    timeout: u64,
+    #[serde(default = "default_frequency")]
+    frequency: u64,
+
+    #[serde(default = "default_self_usage")]
     self_usage: bool,
+
+    #[serde(default = "default_cpu_usage")]
     cpu_usage: bool,
+
+    #[serde(default = "default_mem_usage")]
     mem_usage: bool,
+
+    #[serde(default = "default_disk_usage")]
     disk_usage: bool,
+
+    #[serde(default = "default_io_usage")]
     io_usage: bool,
 }
 
+fn default_frequency() -> u64 {
+    1000
+}
+
+fn default_self_usage() -> bool {
+    true
+}
+
+fn default_cpu_usage() -> bool {
+    true
+}
+
+fn default_mem_usage() -> bool {
+    true
+}
+fn default_disk_usage() -> bool {
+    true
+}
+fn default_io_usage() -> bool {
+    true
+}
+
 impl Config {
-    /// check the timeout interval
-    pub fn timeout(&self) -> u64 {
-        self.timeout
+    /// Create a new Config object
+    #[must_use]
+    pub fn new(
+        frequency: u64,
+        self_usage: bool,
+        cpu_usage: bool,
+        mem_usage: bool,
+        disk_usage: bool,
+        io_usage: bool,
+    ) -> Self {
+        Self {
+            frequency,
+            self_usage,
+            cpu_usage,
+            mem_usage,
+            disk_usage,
+            io_usage,
+        }
+    }
+    /// check the frequency interval
+    #[must_use]
+    pub fn frequency(&self) -> u64 {
+        self.frequency
     }
     /// check if self_usage is enabled
+    #[must_use]
     pub fn self_usage(&self) -> bool {
         self.self_usage
     }
     /// check if cpu_usage is enabled
+    #[must_use]
     pub fn cpu_usage(&self) -> bool {
         self.cpu_usage
     }
     /// check if mem_usage is enabled
+    #[must_use]
     pub fn mem_usage(&self) -> bool {
         self.mem_usage
     }
     /// check if disk_usage is enabled
+    #[must_use]
     pub fn disk_usage(&self) -> bool {
         self.disk_usage
     }
     /// check if io_usage is enabled
+    #[must_use]
     pub fn io_usage(&self) -> bool {
         self.io_usage
     }
@@ -45,12 +105,12 @@ impl Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            timeout: 1000,
-            self_usage: true,
-            cpu_usage: true,
-            mem_usage: true,
-            disk_usage: true,
-            io_usage: true,
+            frequency: default_frequency(),
+            self_usage: default_self_usage(),
+            cpu_usage: default_cpu_usage(),
+            mem_usage: default_mem_usage(),
+            disk_usage: default_disk_usage(),
+            io_usage: default_io_usage(),
         }
     }
 }
