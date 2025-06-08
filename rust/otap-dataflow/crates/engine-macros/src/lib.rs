@@ -29,6 +29,11 @@ use syn::{ItemStatic, Type, parse_macro_input};
 /// static FACTORY_REGISTRY: FactoryRegistry<MyData> = build_registry();
 /// ```
 ///
+/// Note: You need to import both `FactoryRegistry` and `build_registry`. The 
+/// `build_registry()` call is a placeholder that gets replaced by the macro, but
+/// importing it explicitly makes the API more natural and clear.
+/// The individual factory types are imported internally by the macro.
+///
 /// This generates:
 /// - Distributed slices for receiver, processor, and exporter factories
 /// - Proper initialization of the FACTORY_REGISTRY with lazy loading
@@ -55,8 +60,10 @@ pub fn factory_registry(args: TokenStream, input: TokenStream) -> TokenStream {
         pub static EXPORTER_FACTORIES: [::otap_df_engine::ExporterFactory<#pdata_type>] = [..];
 
         /// The factory registry instance.
-        #registry_vis static #registry_name: std::sync::LazyLock<::otap_df_engine::FactoryRegistry<#pdata_type>> = std::sync::LazyLock::new(|| {
-            ::otap_df_engine::FactoryRegistry::new(
+        #registry_vis static #registry_name: std::sync::LazyLock<FactoryRegistry<#pdata_type>> = std::sync::LazyLock::new(|| {
+            // Reference build_registry to avoid unused import warning, even though we don't call it
+            let _ = build_registry::<#pdata_type>;
+            FactoryRegistry::new(
                 &RECEIVER_FACTORIES,
                 &PROCESSOR_FACTORIES,
                 &EXPORTER_FACTORIES,

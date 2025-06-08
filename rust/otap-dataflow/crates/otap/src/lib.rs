@@ -4,6 +4,7 @@
 //!
 
 use crate::grpc::OTAPData;
+use otap_df_engine::{FactoryRegistry, build_registry};
 use otap_df_engine_macros::factory_registry;
 
 /// gRPC service implementation

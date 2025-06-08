@@ -3,8 +3,8 @@
 //! Implementation of the OTLP nodes (receiver, exporter, processor).
 
 use crate::grpc::OTLPData;
+use otap_df_engine::{FactoryRegistry, build_registry};
 use otap_df_engine_macros::factory_registry;
-
 /// compression formats
 pub mod compression;
 /// gRPC service implementation
