@@ -125,30 +125,92 @@ impl UpdateDictionaryIndexInto<FixedSizeBinaryDictionaryBuilder<UInt16Type>>
 #[cfg(test)]
 mod test {
     use super::*;
-    use arrow::array::{FixedSizeBinaryArray, FixedSizeBinaryBuilder};
+    use arrow::array::{
+        FixedSizeBinaryArray, FixedSizeBinaryBuilder, UInt8Array, UInt8DictionaryArray,
+    };
     use arrow::datatypes::DataType;
 
     #[test]
     fn test_fsb_builder() {
-        // let mut fsb_builder = FixedSizeBinaryBuilder::new(4);
-        // ArrayBuilder::append_value(&mut fsb_builder, &b"1234".to_vec());
-        // ArrayBuilder::append_value(&mut fsb_builder, &b"5678".to_vec());
-        // ArrayBuilder::append_value(&mut fsb_builder, &b"9012".to_vec());
-        // let result = ArrayBuilder::finish(&mut fsb_builder);
-        // assert_eq!(result.data_type, DataType::FixedSizeBinary(4));
+        let mut fsb_builder = FixedSizeBinaryBuilder::new(4);
+        CheckedArrayAppend::append_value(&mut fsb_builder, &b"1234".to_vec());
+        CheckedArrayAppend::append_value(&mut fsb_builder, &b"5678".to_vec());
+        CheckedArrayAppend::append_value(&mut fsb_builder, &b"9012".to_vec());
+        let result = ArrayBuilder::finish(&mut fsb_builder);
+        assert_eq!(result.data_type(), &DataType::FixedSizeBinary(4));
 
-        // let expected = FixedSizeBinaryArray::try_from_iter(
-        //     vec![b"1234".to_vec(), b"5678".to_vec(), b"9012".to_vec()].iter(),
-        // )
-        // .unwrap();
+        let expected = FixedSizeBinaryArray::try_from_iter(
+            [b"1234".to_vec(), b"5678".to_vec(), b"9012".to_vec()].iter(),
+        )
+        .unwrap();
 
-        // assert_eq!(
-        //     result
-        //         .array
-        //         .as_any()
-        //         .downcast_ref::<FixedSizeBinaryArray>()
-        //         .unwrap(),
-        //     &expected
-        // );
+        assert_eq!(
+            result
+                .as_any()
+                .downcast_ref::<FixedSizeBinaryArray>()
+                .unwrap(),
+            &expected
+        );
+    }
+
+    #[test]
+    fn test_dict_fsb_builder() {
+        let mut dict_builder = FixedSizeBinaryDictionaryBuilder::<UInt8Type>::new(1);
+        let index =
+            CheckedDictionaryArrayAppend::append_value(&mut dict_builder, &b"a".to_vec()).unwrap();
+        assert_eq!(index, 0);
+        let index =
+            CheckedDictionaryArrayAppend::append_value(&mut dict_builder, &b"a".to_vec()).unwrap();
+        assert_eq!(index, 0);
+        let index =
+            CheckedDictionaryArrayAppend::append_value(&mut dict_builder, &b"b".to_vec()).unwrap();
+        assert_eq!(index, 1);
+
+        let result = DictionaryBuilder::finish(&mut dict_builder);
+
+        assert_eq!(
+            result.data_type(),
+            &DataType::Dictionary(
+                Box::new(DataType::UInt8),
+                Box::new(DataType::FixedSizeBinary(1))
+            )
+        );
+
+        let mut expected_dict_values = FixedSizeBinaryBuilder::new(1);
+        expected_dict_values.append_value(b"a");
+        expected_dict_values.append_value(b"b");
+        let expected_dict_keys = UInt8Array::from_iter_values(vec![0, 0, 1]);
+        let expected =
+            UInt8DictionaryArray::new(expected_dict_keys, Arc::new(expected_dict_values.finish()));
+
+        assert_eq!(
+            result
+                .as_any()
+                .downcast_ref::<UInt8DictionaryArray>()
+                .unwrap(),
+            &expected
+        );
+    }
+
+    #[test]
+    fn test_dict_fsb_builder_overflow() {
+        let mut dict_builder = FixedSizeBinaryDictionaryBuilder::<UInt8Type>::new(2);
+        for i in 0..255 {
+            let _ =
+                CheckedDictionaryArrayAppend::append_value(&mut dict_builder, &vec![0, i]).unwrap();
+        }
+
+        // this should be fine
+        let _ = CheckedDictionaryArrayAppend::append_value(&mut dict_builder, &vec![1, 0]).unwrap();
+
+        // this should overflow
+        let result = CheckedDictionaryArrayAppend::append_value(&mut dict_builder, &vec![1, 1]);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err,
+            super::super::dictionary::checked::DictionaryBuilderError::DictOverflow {}
+        ));
     }
 }
