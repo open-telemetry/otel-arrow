@@ -9,6 +9,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## [0.36.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.36.0) - 2025-06-09
+
 - Remove `concurrentbatch` and `obfuscation` processors.
   [#409](https://github.com/open-telemetry/otel-arrow/pull/409)
 - OTAP AttributeStore parent_id encoding cleanup.
