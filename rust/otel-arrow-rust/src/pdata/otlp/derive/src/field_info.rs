@@ -435,8 +435,8 @@ impl FieldInfo {
 
     /// Compute the visit method name for this field
     fn compute_visit_method_name(&self) -> syn::Ident {
-        let method_name = if self.proto_type == "bytes" || (self.base_type_name == "Vec" && self.proto_type.contains("bytes")) {
-            // CASE 1: Bytes field (Vec<u8>) - always use visit_bytes regardless of repetition
+        let method_name = if self.proto_type.contains("bytes") || (self.base_type_name == "Vec" && self.is_primitive && !self.is_repeated) {
+            // CASE 1: Bytes field (Vec<u8>) - these have proto_type="bytes=\"vec\"" and are primitive but not repeated
             "visit_bytes".to_string()
         } else if self.is_repeated && self.is_primitive {
             // CASE 2: Repeated primitive field (Vec<u64>, Vec<f64>, etc.) but NOT bytes
@@ -472,8 +472,8 @@ impl FieldInfo {
 
     /// Compute the visitor trait for this field
     fn compute_visitor_trait(&self) -> proc_macro2::TokenStream {
-        // Special handling for Vec<u8> (bytes) - check proto_type first
-        if self.proto_type == "bytes" || (self.base_type_name == "Vec" && self.proto_type.contains("bytes")) {
+        // Special handling for Vec<u8> (bytes) - these have proto_type="bytes=\"vec\"" and are primitive but not repeated
+        if self.proto_type.contains("bytes") || (self.base_type_name == "Vec" && self.is_primitive && !self.is_repeated) {
             return quote! { crate::pdata::BytesVisitor<Argument> };
         }
 
@@ -489,12 +489,14 @@ impl FieldInfo {
                 "f32" => quote! { crate::pdata::SliceVisitor<Argument, f32> },
                 "f64" => quote! { crate::pdata::SliceVisitor<Argument, f64> },
                 _ => {
+                    eprintln!("🚨 DEBUG: {} -> SliceVisitor fallback to standard", self.ident);
                     // Unknown repeated primitive type - use the standard path logic
                     self.generate_standard_visitor_trait()
                 }
             };
         }
 
+        // For direct types (both primitives and non-primitives), use type-specific visitors
         match self.base_type_name.as_str() {
             "String" => quote! { crate::pdata::StringVisitor<Argument> },
             "bool" => quote! { crate::pdata::BooleanVisitor<Argument> },
@@ -503,7 +505,7 @@ impl FieldInfo {
             "u32" | "u8" => quote! { crate::pdata::U32Visitor<Argument> },
             "u64" => quote! { crate::pdata::U64Visitor<Argument> },
             "f32" | "f64" => quote! { crate::pdata::F64Visitor<Argument> },
-            "Vec" => quote! { crate::pdata::SliceVisitor<Argument, u8> }, // This should rarely be used after bytes check above
+            "Vec" => quote! { crate::pdata::SliceVisitor<Argument, u8> },
             _ => {
                 // For non-primitive types, use the standard logic
                 self.generate_standard_visitor_trait()
@@ -530,8 +532,8 @@ impl FieldInfo {
 
     /// Compute the visitable trait for this field
     fn compute_visitable_trait(&self) -> proc_macro2::TokenStream {
-        // Special handling for Vec<u8> (bytes) - check proto_type first
-        if self.proto_type == "bytes" || (self.base_type_name == "Vec" && self.proto_type.contains("bytes")) {
+        // Special handling for Vec<u8> (bytes) - these have proto_type="bytes=\"vec\"" and are primitive but not repeated
+        if self.proto_type.contains("bytes") || (self.base_type_name == "Vec" && self.is_primitive && !self.is_repeated) {
             return quote! { crate::pdata::BytesVisitable<Argument> };
         }
 
