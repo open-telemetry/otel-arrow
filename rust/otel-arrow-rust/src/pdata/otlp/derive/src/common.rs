@@ -189,22 +189,6 @@ where
     )
 }
 
-/// Check if a type parameter represents a primitive type
-pub fn is_primitive_type_param(type_param: &str) -> bool {
-    matches!(
-        type_param,
-        "bool"
-            | "i32"
-            | "i64"
-            | "u32"
-            | "u64"
-            | "f32"
-            | "f64"
-            | "::prost::alloc::string::String"
-            | "Vec<u8>"
-    )
-}
-
 /// Generate visitor call for oneof fields with common match arm generation
 pub fn visitor_oneof_call(info: &FieldInfo, oneof_cases: &[OneofCase]) -> Option<TokenStream> {
     if oneof_cases.is_empty() {
@@ -243,7 +227,7 @@ pub fn visitor_oneof_call(info: &FieldInfo, oneof_cases: &[OneofCase]) -> Option
                 let extra_call_tokens = syn::parse_str::<TokenStream>(extra_call).unwrap();
                 quote! { arg = #param_name.#visit_method(arg, #extra_call_tokens(inner)); }
             }
-        } else if is_primitive_type_param(&case.type_param) {
+        } else if case.is_primitive {
             // For primitive types, handle references correctly
             let value_arg = match case.type_param {
                 "::prost::alloc::string::String" => quote! { inner.as_str() },

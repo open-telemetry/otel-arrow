@@ -11,6 +11,7 @@ pub struct OneofCase {
     pub type_param: &'static str,
     pub value_variant: &'static str,
     pub extra_call: Option<&'static str>,
+    pub is_primitive: bool,
 }
 
 fn oneof(
@@ -19,11 +20,17 @@ fn oneof(
     value_variant: &'static str,
     extra_call: Option<&'static str>,
 ) -> OneofCase {
+    let is_primitive = matches!(
+        type_param,
+        "bool" | "i32" | "i64" | "u32" | "u64" | "f32" | "f64" | "::prost::alloc::string::String" | "Vec<u8>"
+    );
+    
     OneofCase {
         name,
         type_param,
         value_variant,
         extra_call,
+        is_primitive,
     }
 }
 
