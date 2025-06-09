@@ -14,7 +14,6 @@ pub struct FieldInfo {
     pub is_param: bool,
     pub is_optional: bool,
     pub is_repeated: bool,
-    pub is_primitive: bool, // Includes basic types (String, u32, bool) AND bytes (Vec<u8>)
     pub is_message: bool,
     pub oneof: Option<Vec<OneofCase>>,
     pub as_type: Option<syn::Type>,   // primitive type for enums
@@ -195,14 +194,46 @@ impl FieldInfo {
                 // Parse Prost tag
                 let (tag, proto_type) = parse_prost_tag_and_type(field);
 
-                // Create field info first without visitor info
-                let mut field_info = FieldInfo {
+                // Compute visitor information directly
+                let field_name_str = ident.to_string();
+                let clean_field_name = if field_name_str.starts_with("r#") {
+                    &field_name_str[2..]
+                } else {
+                    &field_name_str
+                };
+                let visitor_param_name = syn::Ident::new(
+                    &format!("{}_visitor", clean_field_name),
+                    proc_macro2::Span::call_site(),
+                );
+
+                let visit_method_name = Self::compute_visit_method_name(
+                    &proto_type,
+                    is_repeated,
+                    is_primitive,
+                    &base_type_name,
+                );
+                let visitor_trait = Self::compute_visitor_trait(
+                    &proto_type,
+                    is_repeated,
+                    is_primitive,
+                    &base_type_name,
+                    &qualifier,
+                );
+                let visitable_trait = Self::compute_visitable_trait(
+                    &proto_type,
+                    is_repeated,
+                    is_primitive,
+                    &base_type_name,
+                    &qualifier,
+                );
+
+                // Create complete field info
+                FieldInfo {
                     ident: ident.clone(),
                     is_param,
                     is_optional,
                     is_repeated,
                     is_message,
-                    is_primitive,
                     oneof: oneof.clone(),
                     as_type,
                     enum_type,
@@ -211,21 +242,11 @@ impl FieldInfo {
                     base_type_name,
                     full_type_name,
                     qualifier,
-                    visitor_trait: quote::quote! {},
-                    visitable_trait: quote::quote! {},
-                    visitor_param_name: syn::Ident::new(
-                        "placeholder",
-                        proc_macro2::Span::call_site(),
-                    ),
-                    visit_method_name: syn::Ident::new(
-                        "placeholder",
-                        proc_macro2::Span::call_site(),
-                    ),
-                };
-
-                // Compute and store visitor-related information
-                field_info.compute_visitor_info();
-                field_info
+                    visitor_trait,
+                    visitable_trait,
+                    visitor_param_name,
+                    visit_method_name,
+                }
             })
             .expect("has field name")
     }
@@ -352,7 +373,6 @@ impl FieldInfo {
     }
 
     fn is_primitive(field: &syn::Field) -> bool {
-        // Primitive includes basic protobuf types AND bytes (Vec<u8>) AND enumerations
         Self::has_prost_attr(field, "bytes=\"vec\"")
             || Self::has_prost_attr(field, "string")
             || Self::has_prost_attr(field, "int64")
@@ -380,39 +400,22 @@ impl FieldInfo {
         })
     }
 
-    /// Compute and store all visitor-related information for this field
-    fn compute_visitor_info(&mut self) {
-        // Generate visitor parameter name
-        let field_name_str = self.ident.to_string();
-        let clean_field_name = if field_name_str.starts_with("r#") {
-            &field_name_str[2..]
-        } else {
-            &field_name_str
-        };
-        self.visitor_param_name = syn::Ident::new(
-            &format!("{}_visitor", clean_field_name),
-            proc_macro2::Span::call_site(),
-        );
-
-        // Generate visit method name
-        self.visit_method_name = self.compute_visit_method_name();
-
-        // Generate visitor and visitable traits
-        self.visitor_trait = self.compute_visitor_trait();
-        self.visitable_trait = self.compute_visitable_trait();
-    }
-
     /// Compute the visit method name for this field
-    fn compute_visit_method_name(&self) -> syn::Ident {
-        let method_name = if self.proto_type.contains("bytes") {
+    fn compute_visit_method_name(
+        proto_type: &str,
+        is_repeated: bool,
+        is_primitive: bool,
+        base_type_name: &str,
+    ) -> syn::Ident {
+        let method_name = if proto_type.contains("bytes") {
             "visit_bytes".to_string()
-        } else if self.is_repeated && self.is_primitive {
+        } else if is_repeated && is_primitive {
             "visit_slice".to_string()
-        } else if self.is_primitive {
+        } else if is_primitive {
             // For non-bytes, non-repeated primitives, use the base type name in lowercase
-            format!("visit_{}", self.base_type_name.to_lowercase())
+            format!("visit_{}", base_type_name.to_lowercase())
         } else {
-            let type_name = &self.base_type_name;
+            let type_name = base_type_name;
             format!("visit_{}", type_name.to_case(convert_case::Case::Snake))
         };
 
@@ -420,15 +423,20 @@ impl FieldInfo {
     }
 
     /// Compute the visitor trait for this field
-    fn compute_visitor_trait(&self) -> proc_macro2::TokenStream {
-        // Special handling for Vec<u8> (bytes) - these have proto_type="bytes=\"vec\"" and are primitive but not repeated
-        if self.proto_type.contains("bytes") {
+    fn compute_visitor_trait(
+        proto_type: &str,
+        is_repeated: bool,
+        is_primitive: bool,
+        base_type_name: &str,
+        qualifier: &Option<proc_macro2::TokenStream>,
+    ) -> proc_macro2::TokenStream {
+        if proto_type.contains("bytes") {
             return quote! { crate::pdata::BytesVisitor<Argument> };
         }
 
         // For repeated primitive fields, use SliceVisitor with the inner primitive type
-        if self.is_repeated && self.is_primitive {
-            return match self.base_type_name.as_str() {
+        if is_repeated && is_primitive {
+            return match base_type_name {
                 "String" => quote! { crate::pdata::SliceVisitor<Argument, String> },
                 "bool" => quote! { crate::pdata::SliceVisitor<Argument, bool> },
                 "i32" => quote! { crate::pdata::SliceVisitor<Argument, i32> },
@@ -439,13 +447,13 @@ impl FieldInfo {
                 "f64" => quote! { crate::pdata::SliceVisitor<Argument, f64> },
                 _ => {
                     // Unknown repeated primitive type - use the standard path logic
-                    self.generate_standard_visitor_trait()
+                    Self::generate_standard_visitor_trait_static(base_type_name, qualifier)
                 }
             };
         }
 
         // For direct types (both primitives and non-primitives), use type-specific visitors
-        match self.base_type_name.as_str() {
+        match base_type_name {
             "String" => quote! { crate::pdata::StringVisitor<Argument> },
             "bool" => quote! { crate::pdata::BooleanVisitor<Argument> },
             "i32" => quote! { crate::pdata::I32Visitor<Argument> },
@@ -453,25 +461,27 @@ impl FieldInfo {
             "u32" | "u8" => quote! { crate::pdata::U32Visitor<Argument> },
             "u64" => quote! { crate::pdata::U64Visitor<Argument> },
             "f32" | "f64" => quote! { crate::pdata::F64Visitor<Argument> },
-            "Vec" => quote! { crate::pdata::SliceVisitor<Argument, u8> },
             _ => {
                 // For non-primitive types, use the standard logic
-                self.generate_standard_visitor_trait()
+                Self::generate_standard_visitor_trait_static(base_type_name, qualifier)
             }
         }
     }
 
-    /// Generate standard visitor trait for non-primitive types
-    fn generate_standard_visitor_trait(&self) -> proc_macro2::TokenStream {
-        if let Some(ref qualifier) = self.qualifier {
+    /// Generate standard visitor trait for non-primitive types (static version)
+    fn generate_standard_visitor_trait_static(
+        base_type_name: &str,
+        qualifier: &Option<proc_macro2::TokenStream>,
+    ) -> proc_macro2::TokenStream {
+        if let Some(ref qualifier) = qualifier {
             let base_with_suffix = syn::Ident::new(
-                &format!("{}Visitor", self.base_type_name),
+                &format!("{}Visitor", base_type_name),
                 proc_macro2::Span::call_site(),
             );
             quote! { #qualifier::#base_with_suffix<Argument> }
         } else {
             let type_with_suffix = syn::Ident::new(
-                &format!("{}Visitor", self.base_type_name),
+                &format!("{}Visitor", base_type_name),
                 proc_macro2::Span::call_site(),
             );
             quote! { #type_with_suffix<Argument> }
@@ -479,17 +489,20 @@ impl FieldInfo {
     }
 
     /// Compute the visitable trait for this field
-    fn compute_visitable_trait(&self) -> proc_macro2::TokenStream {
-        // Special handling for Vec<u8> (bytes) - these have proto_type="bytes=\"vec\"" and are primitive but not repeated
-        if self.proto_type.contains("bytes")
-            || (self.base_type_name == "Vec" && self.is_primitive && !self.is_repeated)
-        {
+    fn compute_visitable_trait(
+        proto_type: &str,
+        is_repeated: bool,
+        is_primitive: bool,
+        base_type_name: &str,
+        qualifier: &Option<proc_macro2::TokenStream>,
+    ) -> proc_macro2::TokenStream {
+        if proto_type.contains("bytes") {
             return quote! { crate::pdata::BytesVisitable<Argument> };
         }
 
         // For repeated primitive fields, use SliceVisitable with the inner primitive type
-        if self.is_repeated && self.is_primitive {
-            return match self.base_type_name.as_str() {
+        if is_repeated && is_primitive {
+            return match base_type_name {
                 "String" => quote! { crate::pdata::SliceVisitable<Argument, String> },
                 "bool" => quote! { crate::pdata::SliceVisitable<Argument, bool> },
                 "i32" => quote! { crate::pdata::SliceVisitable<Argument, i32> },
@@ -502,7 +515,7 @@ impl FieldInfo {
             };
         }
 
-        match self.base_type_name.as_str() {
+        match base_type_name {
             "String" => quote! { crate::pdata::StringVisitable<Argument> },
             "bool" => quote! { crate::pdata::BooleanVisitable<Argument> },
             "i32" => quote! { crate::pdata::I32Visitable<Argument> },
@@ -512,15 +525,15 @@ impl FieldInfo {
             "f32" | "f64" => quote! { crate::pdata::F64Visitable<Argument> },
             _ => {
                 // For non-primitive types, use the standard logic
-                if let Some(ref qualifier) = self.qualifier {
+                if let Some(ref qualifier) = qualifier {
                     let base_with_suffix = syn::Ident::new(
-                        &format!("{}Visitable", self.base_type_name),
+                        &format!("{}Visitable", base_type_name),
                         proc_macro2::Span::call_site(),
                     );
                     quote! { #qualifier::#base_with_suffix<Argument> }
                 } else {
                     let type_with_suffix = syn::Ident::new(
-                        &format!("{}Visitable", self.base_type_name),
+                        &format!("{}Visitable", base_type_name),
                         proc_macro2::Span::call_site(),
                     );
                     quote! { #type_with_suffix<Argument> }
