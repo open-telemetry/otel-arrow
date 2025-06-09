@@ -33,6 +33,26 @@ pub struct FieldInfo {
     pub visit_method_name: syn::Ident,
 }
 
+/// Helper function to parse tag value from different formats
+fn parse_tag_value(attr_str: &str, tag_start_pattern: &str, offset: usize) -> Option<u32> {
+    attr_str
+        .find(tag_start_pattern)
+        .and_then(|tag_start| {
+            let tag_part = &attr_str[tag_start + offset..];
+            let tag_value = if let Some(comma_pos) = tag_part.find(',') {
+                &tag_part[..comma_pos]
+            } else {
+                tag_part
+            };
+            
+            tag_value
+                .trim()
+                .trim_matches('"')
+                .parse()
+                .ok()
+        })
+}
+
 /// Simple prost field annotation parsing utilities
 fn parse_prost_tag_and_type(field: &syn::Field) -> (u32, String) {
     // Find the #[prost(...)] attribute
@@ -44,50 +64,21 @@ fn parse_prost_tag_and_type(field: &syn::Field) -> (u32, String) {
     if let Some(attr) = prost_attr {
         if let syn::Meta::List(meta_list) = &attr.meta {
             let tokens = &meta_list.tokens;
-
-            // Simple parsing: extract tag number and type
             let attr_str = tokens.to_string();
 
-            let mut tag = 0u32;
-            let mut proto_type = "unknown".to_string();
-
-            // Parse tag number from "tag = \"1\"" or "tag = 1" or "tag=\"1\""
-            if let Some(tag_start) = attr_str.find("tag=") {
-                let tag_part = &attr_str[tag_start + 4..];
-                if let Some(comma_pos) = tag_part.find(',') {
-                    let tag_value = &tag_part[..comma_pos].trim().trim_matches('"');
-                    tag = tag_value
-                        .parse()
-                        .expect(&format!("Failed to parse tag number: {}", tag_value));
-                } else {
-                    let tag_value = tag_part.trim().trim_matches('"');
-                    tag = tag_value
-                        .parse()
-                        .expect(&format!("Failed to parse tag number: {}", tag_value));
-                }
-            } else if let Some(tag_start) = attr_str.find("tag = ") {
-                let tag_part = &attr_str[tag_start + 6..];
-                if let Some(comma_pos) = tag_part.find(',') {
-                    let tag_value = &tag_part[..comma_pos].trim().trim_matches('"');
-                    tag = tag_value
-                        .parse()
-                        .expect(&format!("Failed to parse tag number: {}", tag_value));
-                } else {
-                    let tag_value = tag_part.trim().trim_matches('"');
-                    tag = tag_value
-                        .parse()
-                        .expect(&format!("Failed to parse tag number: {}", tag_value));
-                }
-            }
+            // Parse tag number using helper function with multiple patterns
+            let tag = parse_tag_value(&attr_str, "tag=", 4)
+                .or_else(|| parse_tag_value(&attr_str, "tag = ", 6))
+                .unwrap_or(0);
 
             // Extract first identifier as protobuf type (string, int64, message, etc.)
-            let parts: Vec<&str> = attr_str.split(',').collect();
-            if let Some(first_part) = parts.first() {
-                let type_part = first_part.trim();
-                if !type_part.starts_with("tag") {
-                    proto_type = type_part.to_string();
-                }
-            }
+            let proto_type = attr_str
+                .split(',')
+                .next()
+                .map(|first_part| first_part.trim())
+                .filter(|type_part| !type_part.starts_with("tag"))
+                .map(|type_part| type_part.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
 
             return (tag, proto_type);
         }
@@ -97,7 +88,151 @@ fn parse_prost_tag_and_type(field: &syn::Field) -> (u32, String) {
     (0, "unknown".to_string())
 }
 
+/// Mapping for primitive types to their corresponding trait names
+fn get_primitive_trait_mapping(base_type_name: &str, trait_suffix: &str) -> Option<proc_macro2::TokenStream> {
+    let trait_name = match base_type_name {
+        "String" => format!("String{}", trait_suffix),
+        "bool" => format!("Boolean{}", trait_suffix),
+        "i32" => format!("I32{}", trait_suffix),
+        "i64" => format!("I64{}", trait_suffix),
+        "u32" | "u8" => format!("U32{}", trait_suffix),
+        "u64" => format!("U64{}", trait_suffix),
+        "f32" | "f64" => format!("F64{}", trait_suffix),
+        _ => return None,
+    };
+    
+    let trait_ident = syn::Ident::new(&trait_name, proc_macro2::Span::call_site());
+    Some(quote! { crate::pdata::#trait_ident<Argument> })
+}
+
+/// Mapping for repeated primitive types to their corresponding slice trait names
+fn get_repeated_primitive_trait_mapping(base_type_name: &str, trait_suffix: &str) -> Option<proc_macro2::TokenStream> {
+    let slice_trait_name = format!("Slice{}", trait_suffix);
+    let slice_trait_ident = syn::Ident::new(&slice_trait_name, proc_macro2::Span::call_site());
+    
+    match base_type_name {
+        "String" => Some(quote! { crate::pdata::#slice_trait_ident<Argument, String> }),
+        "bool" => Some(quote! { crate::pdata::#slice_trait_ident<Argument, bool> }),
+        "i32" => Some(quote! { crate::pdata::#slice_trait_ident<Argument, i32> }),
+        "i64" => Some(quote! { crate::pdata::#slice_trait_ident<Argument, i64> }),
+        "u32" | "u8" => Some(quote! { crate::pdata::#slice_trait_ident<Argument, u32> }),
+        "u64" => Some(quote! { crate::pdata::#slice_trait_ident<Argument, u64> }),
+        "f32" => Some(quote! { crate::pdata::#slice_trait_ident<Argument, f32> }),
+        "f64" => Some(quote! { crate::pdata::#slice_trait_ident<Argument, f64> }),
+        _ => None,
+    }
+}
+
+/// Generate standard trait for non-primitive types
+fn generate_standard_trait(
+    base_type_name: &str,
+    qualifier: &Option<proc_macro2::TokenStream>,
+    trait_suffix: &str,
+) -> proc_macro2::TokenStream {
+    let needs_argument = trait_suffix == "Visitor" || trait_suffix == "Visitable";
+    
+    if let Some(ref qualifier) = qualifier {
+        let base_with_suffix = syn::Ident::new(
+            &format!("{}{}", base_type_name, trait_suffix),
+            proc_macro2::Span::call_site(),
+        );
+        if needs_argument {
+            quote! { #qualifier::#base_with_suffix<Argument> }
+        } else {
+            quote! { #qualifier::#base_with_suffix }
+        }
+    } else {
+        let type_with_suffix = syn::Ident::new(
+            &format!("{}{}", base_type_name, trait_suffix),
+            proc_macro2::Span::call_site(),
+        );
+        if needs_argument {
+            quote! { #type_with_suffix<Argument> }
+        } else {
+            quote! { #type_with_suffix }
+        }
+    }
+}
+
 impl FieldInfo {
+    /// Parse field type overrides and return (enum_type, as_type)
+    fn parse_field_type_overrides(
+        field_path: &str,
+        _inner_type: &syn::Type,
+    ) -> (Option<syn::Type>, Option<syn::Type>) {
+        otlp_model::FIELD_TYPE_OVERRIDES
+            .get(field_path)
+            .and_then(|over| {
+                // Parse datatype and fieldtype with proper error handling
+                let datatype = syn::parse_str::<syn::Type>(over.datatype).ok()?;
+                let fieldtype = syn::parse_str::<syn::Type>(over.fieldtype).ok();
+                
+                // If we have an override, store the enum type
+                if fieldtype.is_some() {
+                    Some((Some(datatype), fieldtype))
+                } else {
+                    Some((None, None))
+                }
+            })
+            .unwrap_or((None, None))
+    }
+
+    /// Compute visitor-related information for a field
+    fn compute_visitor_info(
+        field_ident: &syn::Ident,
+        proto_type: &str,
+        is_repeated: bool,
+        is_primitive: bool,
+        base_type_name: &str,
+        qualifier: &Option<proc_macro2::TokenStream>,
+    ) -> (
+        syn::Ident,
+        syn::Ident,
+        proc_macro2::TokenStream,
+        proc_macro2::TokenStream,
+    ) {
+        let field_name_str = field_ident.to_string();
+        let clean_field_name = if field_name_str.starts_with("r#") {
+            &field_name_str[2..]
+        } else {
+            &field_name_str
+        };
+
+        let visitor_param_name = syn::Ident::new(
+            &format!("{}_visitor", clean_field_name),
+            proc_macro2::Span::call_site(),
+        );
+
+        let visit_method_name = Self::compute_visit_method_name(
+            proto_type,
+            is_repeated,
+            is_primitive,
+            base_type_name,
+        );
+
+        let visitor_trait = Self::compute_visitor_trait(
+            proto_type,
+            is_repeated,
+            is_primitive,
+            base_type_name,
+            qualifier,
+        );
+
+        let visitable_trait = Self::compute_visitable_trait(
+            proto_type,
+            is_repeated,
+            is_primitive,
+            base_type_name,
+            qualifier,
+        );
+
+        (
+            visitor_param_name,
+            visit_method_name,
+            visitor_trait,
+            visitable_trait,
+        )
+    }
     pub(crate) fn new(
         field: &syn::Field,
         type_name: &str,
@@ -133,53 +268,8 @@ impl FieldInfo {
                     field.ty.clone()
                 };
 
-                // Use a safer approach with try_fold to handle errors
-                let result: Result<(syn::Type, Option<syn::Type>), String> =
-                    otlp_model::FIELD_TYPE_OVERRIDES
-                        .get(field_path.as_str())
-                        .map(|over| {
-                            // Parse datatype with better error handling
-                            let datatype = match syn::parse_str::<syn::Type>(over.datatype) {
-                                Ok(dt) => dt,
-                                Err(e) => {
-                                    return Err(format!(
-                                        "Failed to parse datatype '{}' for field {}: {}",
-                                        over.datatype, field_path, e
-                                    ));
-                                }
-                            };
-
-                            // Parse fieldtype with better error handling
-                            let fieldtype = match syn::parse_str::<syn::Type>(over.fieldtype) {
-                                Ok(ft) => Some(ft),
-                                Err(e) => {
-                                    return Err(format!(
-                                        "Failed to parse fieldtype '{}' for field {}: {}",
-                                        over.fieldtype, field_path, e
-                                    ));
-                                }
-                            };
-
-                            Ok((datatype, fieldtype))
-                        })
-                        .unwrap_or_else(|| Ok((inner_type.clone(), None)));
-
-                // Handle any errors from the parsing
-                let (enum_type, as_type) = match result {
-                    Ok(types) => {
-                        let (datatype, fieldtype) = types;
-                        // If we have an override, store the enum type
-                        if fieldtype.is_some() {
-                            (Some(datatype), fieldtype)
-                        } else {
-                            (None, None)
-                        }
-                    }
-                    Err(_err) => {
-                        // Fallback to inner_type on error
-                        (None, None)
-                    }
-                };
+                // Parse field type overrides
+                let (enum_type, as_type) = Self::parse_field_type_overrides(&field_path, &inner_type);
 
                 // Decompose type into base name and qualifier
                 let (base_type_name, qualifier) = Self::decompose_type(&inner_type);
@@ -194,38 +284,16 @@ impl FieldInfo {
                 // Parse Prost tag
                 let (tag, proto_type) = parse_prost_tag_and_type(field);
 
-                // Compute visitor information directly
-                let field_name_str = ident.to_string();
-                let clean_field_name = if field_name_str.starts_with("r#") {
-                    &field_name_str[2..]
-                } else {
-                    &field_name_str
-                };
-                let visitor_param_name = syn::Ident::new(
-                    &format!("{}_visitor", clean_field_name),
-                    proc_macro2::Span::call_site(),
-                );
-
-                let visit_method_name = Self::compute_visit_method_name(
-                    &proto_type,
-                    is_repeated,
-                    is_primitive,
-                    &base_type_name,
-                );
-                let visitor_trait = Self::compute_visitor_trait(
-                    &proto_type,
-                    is_repeated,
-                    is_primitive,
-                    &base_type_name,
-                    &qualifier,
-                );
-                let visitable_trait = Self::compute_visitable_trait(
-                    &proto_type,
-                    is_repeated,
-                    is_primitive,
-                    &base_type_name,
-                    &qualifier,
-                );
+                // Compute visitor information
+                let (visitor_param_name, visit_method_name, visitor_trait, visitable_trait) =
+                    Self::compute_visitor_info(
+                        ident,
+                        &proto_type,
+                        is_repeated,
+                        is_primitive,
+                        &base_type_name,
+                        &qualifier,
+                    );
 
                 // Create complete field info
                 FieldInfo {
@@ -262,20 +330,8 @@ impl FieldInfo {
             return self.visitable_trait.clone();
         }
 
-        // For other suffixes, use original logic
-        if let Some(ref qualifier) = self.qualifier {
-            let base_with_suffix = syn::Ident::new(
-                &format!("{}{}", self.base_type_name, suffix),
-                proc_macro2::Span::call_site(),
-            );
-            quote::quote! { #qualifier::#base_with_suffix }
-        } else {
-            let type_with_suffix = syn::Ident::new(
-                &format!("{}{}", self.base_type_name, suffix),
-                proc_macro2::Span::call_site(),
-            );
-            quote::quote! { #type_with_suffix }
-        }
+        // For other suffixes, use standard trait generation logic
+        generate_standard_trait(&self.base_type_name, &self.qualifier, suffix)
     }
 
     /// Decompose a type into base type name and qualifier
@@ -334,30 +390,23 @@ impl FieldInfo {
 
     /// Extract inner type from a generic container (Option<T>, Vec<T>)
     fn extract_inner_type(ty: &syn::Type) -> Option<syn::Type> {
-        let result = match ty {
-            syn::Type::Path(type_path) => {
-                if let Some(last_segment) = type_path.path.segments.last() {
-                    match &last_segment.arguments {
-                        syn::PathArguments::AngleBracketed(args) => {
-                            if let Some(first_arg) = args.args.first() {
-                                match first_arg {
-                                    syn::GenericArgument::Type(inner_ty) => Some(inner_ty.clone()),
-                                    _ => None,
-                                }
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    }
-                } else {
-                    None
-                }
-            }
+        match ty {
+            syn::Type::Path(type_path) => type_path
+                .path
+                .segments
+                .last()
+                .and_then(|segment| match &segment.arguments {
+                    syn::PathArguments::AngleBracketed(args) => args
+                        .args
+                        .first()
+                        .and_then(|arg| match arg {
+                            syn::GenericArgument::Type(inner_ty) => Some(inner_ty.clone()),
+                            _ => None,
+                        }),
+                    _ => None,
+                }),
             _ => None,
-        };
-
-        result
+        }
     }
 
     fn is_optional(field: &syn::Field) -> bool {
@@ -373,25 +422,28 @@ impl FieldInfo {
     }
 
     fn is_primitive(field: &syn::Field) -> bool {
-        Self::has_prost_attr(field, "bytes=\"vec\"")
-            || Self::has_prost_attr(field, "string")
-            || Self::has_prost_attr(field, "int64")
-            || Self::has_prost_attr(field, "uint32")
-            || Self::has_prost_attr(field, "int32")
-            || Self::has_prost_attr(field, "uint64")
-            || Self::has_prost_attr(field, "bool")
-            || Self::has_prost_attr(field, "double")
-            || Self::has_prost_attr(field, "float")
-            // Fixed-size primitive types
-            || Self::has_prost_attr(field, "fixed64")
-            || Self::has_prost_attr(field, "fixed32")
-            || Self::has_prost_attr(field, "sfixed64")
-            || Self::has_prost_attr(field, "sfixed32")
-            // Alternative protobuf type names
-            || Self::has_prost_attr(field, "sint64")
-            || Self::has_prost_attr(field, "sint32")
-            // Enumerations are primitive types (represented as integers)
-            || Self::has_prost_attr(field, "enumeration=")
+        const PRIMITIVE_PATTERNS: &[&str] = &[
+            "bytes=\"vec\"",
+            "string",
+            "int64",
+            "uint32",
+            "int32",
+            "uint64",
+            "bool",
+            "double",
+            "float",
+            "fixed64",
+            "fixed32",
+            "sfixed64",
+            "sfixed32",
+            "sint64",
+            "sint32",
+            "enumeration=",
+        ];
+
+        PRIMITIVE_PATTERNS
+            .iter()
+            .any(|pattern| Self::has_prost_attr(field, pattern))
     }
 
     fn has_prost_attr(field: &syn::Field, value: &'static str) -> bool {
@@ -436,56 +488,19 @@ impl FieldInfo {
 
         // For repeated primitive fields, use SliceVisitor with the inner primitive type
         if is_repeated && is_primitive {
-            return match base_type_name {
-                "String" => quote! { crate::pdata::SliceVisitor<Argument, String> },
-                "bool" => quote! { crate::pdata::SliceVisitor<Argument, bool> },
-                "i32" => quote! { crate::pdata::SliceVisitor<Argument, i32> },
-                "i64" => quote! { crate::pdata::SliceVisitor<Argument, i64> },
-                "u32" | "u8" => quote! { crate::pdata::SliceVisitor<Argument, u32> },
-                "u64" => quote! { crate::pdata::SliceVisitor<Argument, u64> },
-                "f32" => quote! { crate::pdata::SliceVisitor<Argument, f32> },
-                "f64" => quote! { crate::pdata::SliceVisitor<Argument, f64> },
-                _ => {
+            return get_repeated_primitive_trait_mapping(base_type_name, "Visitor")
+                .unwrap_or_else(|| {
                     // Unknown repeated primitive type - use the standard path logic
-                    Self::generate_standard_visitor_trait_static(base_type_name, qualifier)
-                }
-            };
+                    generate_standard_trait(base_type_name, qualifier, "Visitor")
+                });
         }
 
         // For direct types (both primitives and non-primitives), use type-specific visitors
-        match base_type_name {
-            "String" => quote! { crate::pdata::StringVisitor<Argument> },
-            "bool" => quote! { crate::pdata::BooleanVisitor<Argument> },
-            "i32" => quote! { crate::pdata::I32Visitor<Argument> },
-            "i64" => quote! { crate::pdata::I64Visitor<Argument> },
-            "u32" | "u8" => quote! { crate::pdata::U32Visitor<Argument> },
-            "u64" => quote! { crate::pdata::U64Visitor<Argument> },
-            "f32" | "f64" => quote! { crate::pdata::F64Visitor<Argument> },
-            _ => {
+        get_primitive_trait_mapping(base_type_name, "Visitor")
+            .unwrap_or_else(|| {
                 // For non-primitive types, use the standard logic
-                Self::generate_standard_visitor_trait_static(base_type_name, qualifier)
-            }
-        }
-    }
-
-    /// Generate standard visitor trait for non-primitive types (static version)
-    fn generate_standard_visitor_trait_static(
-        base_type_name: &str,
-        qualifier: &Option<proc_macro2::TokenStream>,
-    ) -> proc_macro2::TokenStream {
-        if let Some(ref qualifier) = qualifier {
-            let base_with_suffix = syn::Ident::new(
-                &format!("{}Visitor", base_type_name),
-                proc_macro2::Span::call_site(),
-            );
-            quote! { #qualifier::#base_with_suffix<Argument> }
-        } else {
-            let type_with_suffix = syn::Ident::new(
-                &format!("{}Visitor", base_type_name),
-                proc_macro2::Span::call_site(),
-            );
-            quote! { #type_with_suffix<Argument> }
-        }
+                generate_standard_trait(base_type_name, qualifier, "Visitor")
+            })
     }
 
     /// Compute the visitable trait for this field
@@ -502,44 +517,16 @@ impl FieldInfo {
 
         // For repeated primitive fields, use SliceVisitable with the inner primitive type
         if is_repeated && is_primitive {
-            return match base_type_name {
-                "String" => quote! { crate::pdata::SliceVisitable<Argument, String> },
-                "bool" => quote! { crate::pdata::SliceVisitable<Argument, bool> },
-                "i32" => quote! { crate::pdata::SliceVisitable<Argument, i32> },
-                "i64" => quote! { crate::pdata::SliceVisitable<Argument, i64> },
-                "u32" | "u8" => quote! { crate::pdata::SliceVisitable<Argument, u32> },
-                "u64" => quote! { crate::pdata::SliceVisitable<Argument, u64> },
-                "f32" => quote! { crate::pdata::SliceVisitable<Argument, f32> },
-                "f64" => quote! { crate::pdata::SliceVisitable<Argument, f64> },
-                _ => quote! { crate::pdata::UnknownVisitable<Argument> },
-            };
+            return get_repeated_primitive_trait_mapping(base_type_name, "Visitable")
+                .unwrap_or_else(|| quote! { crate::pdata::UnknownVisitable<Argument> });
         }
 
-        match base_type_name {
-            "String" => quote! { crate::pdata::StringVisitable<Argument> },
-            "bool" => quote! { crate::pdata::BooleanVisitable<Argument> },
-            "i32" => quote! { crate::pdata::I32Visitable<Argument> },
-            "i64" => quote! { crate::pdata::I64Visitable<Argument> },
-            "u32" | "u8" => quote! { crate::pdata::U32Visitable<Argument> },
-            "u64" => quote! { crate::pdata::U64Visitable<Argument> },
-            "f32" | "f64" => quote! { crate::pdata::F64Visitable<Argument> },
-            _ => {
+        // For direct types (both primitives and non-primitives), use type-specific visitables
+        get_primitive_trait_mapping(base_type_name, "Visitable")
+            .unwrap_or_else(|| {
                 // For non-primitive types, use the standard logic
-                if let Some(ref qualifier) = qualifier {
-                    let base_with_suffix = syn::Ident::new(
-                        &format!("{}Visitable", base_type_name),
-                        proc_macro2::Span::call_site(),
-                    );
-                    quote! { #qualifier::#base_with_suffix<Argument> }
-                } else {
-                    let type_with_suffix = syn::Ident::new(
-                        &format!("{}Visitable", base_type_name),
-                        proc_macro2::Span::call_site(),
-                    );
-                    quote! { #type_with_suffix<Argument> }
-                }
-            }
-        }
+                generate_standard_trait(base_type_name, qualifier, "Visitable")
+            })
     }
 
     /// Generate visitor trait for a oneof case based on its case name
