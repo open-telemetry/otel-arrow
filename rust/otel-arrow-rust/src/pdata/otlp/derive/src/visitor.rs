@@ -99,7 +99,7 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
             })
         }
     } else if info.is_repeated {
-        if visit_method.to_string() == "visit_slice" {
+        if info.is_primitive {
             Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
         } else {
             Some(quote! {
