@@ -33,10 +33,12 @@ string_literal = @{
     ("\"" ~ double_quote_string_char* ~ "\"")
     | ("'" ~ single_quote_string_char* ~ "'")
 }
+datetime_literal = { (ASCII_ALPHANUMERIC|"-"|"+"|":"|"/"|"."|",")+ }
 identifier_literal = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
 
 // Expressions
 real_expression = { "real(" ~ (positive_infinity_token|negative_infinity_token|double_literal|integer_literal) ~ ")" }
+datetime_expression = { "datetime(" ~ datetime_literal ~ ")" }
 
 accessor_index = _{ "[" ~ (integer_literal | string_literal | (minus_token? ~ accessor_expression)) ~ "]" }
 accessor = _{ identifier_literal ~ accessor_index? }
