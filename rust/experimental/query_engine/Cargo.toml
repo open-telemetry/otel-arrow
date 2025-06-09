@@ -1,7 +1,9 @@
 [workspace]
 members = [
     "expressions",
-    "kql-parser"
+    "kql-parser",
+    "engine-columnar",
+    "engine-recordset",
 ]
 resolver = "2"
 
