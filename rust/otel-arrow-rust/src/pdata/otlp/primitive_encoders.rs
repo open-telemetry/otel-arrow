@@ -65,6 +65,68 @@ pub struct DoubleEncodedLen {
     pub tag: u32,
 }
 
+// Slice visitor types for repeated primitive fields
+
+/// Slice visitor for repeated u32 fields in encoded length computation
+pub struct SliceU32EncodedLen {
+    /// The protobuf field tag
+    pub tag: u32,
+}
+
+/// Slice visitor for repeated u64 fields in encoded length computation  
+pub struct SliceU64EncodedLen {
+    /// The protobuf field tag
+    pub tag: u32,
+}
+
+/// Slice visitor for repeated i32 fields in encoded length computation
+pub struct SliceI32EncodedLen {
+    /// The protobuf field tag
+    pub tag: u32,
+}
+
+/// Slice visitor for repeated i64 fields in encoded length computation
+pub struct SliceI64EncodedLen {
+    /// The protobuf field tag
+    pub tag: u32,
+}
+
+/// Slice visitor for repeated f64 fields in encoded length computation
+pub struct SliceDoubleEncodedLen {
+    /// The protobuf field tag
+    pub tag: u32,
+}
+
+/// Slice visitor for repeated f32 fields in encoded length computation
+pub struct SliceFixed32EncodedLen {
+    /// The protobuf field tag
+    pub tag: u32,
+}
+
+/// Slice visitor for repeated fixed64 fields in encoded length computation
+pub struct SliceFixed64EncodedLen {
+    /// The protobuf field tag
+    pub tag: u32,
+}
+
+/// Slice visitor for repeated bool fields in encoded length computation
+pub struct SliceBooleanEncodedLen {
+    /// The protobuf field tag
+    pub tag: u32,
+}
+
+/// Slice visitor for repeated string fields in encoded length computation
+pub struct SliceStringEncodedLen {
+    /// The protobuf field tag
+    pub tag: u32,
+}
+
+/// Slice visitor for repeated bytes fields in encoded length computation
+pub struct SliceBytesEncodedLen {
+    /// The protobuf field tag
+    pub tag: u32,
+}
+
 impl crate::pdata::BooleanVisitor<PrecomputedSizes> for BooleanEncodedLen {
     fn visit_bool(&mut self, mut arg: PrecomputedSizes, value: bool) -> PrecomputedSizes {
         arg.push_size(::prost::encoding::bool::encoded_len(self.tag, &value));
@@ -127,6 +189,88 @@ impl crate::pdata::I64Visitor<PrecomputedSizes> for I64EncodedLen {
 impl crate::pdata::F64Visitor<PrecomputedSizes> for DoubleEncodedLen {
     fn visit_f64(&mut self, mut arg: PrecomputedSizes, value: f64) -> PrecomputedSizes {
         arg.push_size(::prost::encoding::double::encoded_len(self.tag, &value));
+        arg
+    }
+}
+
+// Implementations of SliceVisitor for the slice types
+impl crate::pdata::SliceVisitor<PrecomputedSizes, u32> for SliceU32EncodedLen {
+    fn visit_slice(&mut self, mut arg: PrecomputedSizes, slice: &[u32]) -> PrecomputedSizes {
+        for value in slice {
+            arg.push_size(::prost::encoding::uint32::encoded_len(self.tag, value));
+        }
+        arg
+    }
+}
+
+impl crate::pdata::SliceVisitor<PrecomputedSizes, u64> for SliceU64EncodedLen {
+    fn visit_slice(&mut self, mut arg: PrecomputedSizes, slice: &[u64]) -> PrecomputedSizes {
+        for value in slice {
+            arg.push_size(::prost::encoding::uint64::encoded_len(self.tag, value));
+        }
+        arg
+    }
+}
+
+impl crate::pdata::SliceVisitor<PrecomputedSizes, i32> for SliceI32EncodedLen {
+    fn visit_slice(&mut self, mut arg: PrecomputedSizes, slice: &[i32]) -> PrecomputedSizes {
+        for value in slice {
+            arg.push_size(::prost::encoding::int32::encoded_len(self.tag, value));
+        }
+        arg
+    }
+}
+
+impl crate::pdata::SliceVisitor<PrecomputedSizes, i64> for SliceI64EncodedLen {
+    fn visit_slice(&mut self, mut arg: PrecomputedSizes, slice: &[i64]) -> PrecomputedSizes {
+        for value in slice {
+            arg.push_size(::prost::encoding::int64::encoded_len(self.tag, value));
+        }
+        arg
+    }
+}
+
+impl crate::pdata::SliceVisitor<PrecomputedSizes, f64> for SliceDoubleEncodedLen {
+    fn visit_slice(&mut self, mut arg: PrecomputedSizes, slice: &[f64]) -> PrecomputedSizes {
+        for value in slice {
+            arg.push_size(::prost::encoding::double::encoded_len(self.tag, value));
+        }
+        arg
+    }
+}
+
+impl crate::pdata::SliceVisitor<PrecomputedSizes, f32> for SliceFixed32EncodedLen {
+    fn visit_slice(&mut self, mut arg: PrecomputedSizes, slice: &[f32]) -> PrecomputedSizes {
+        for value in slice {
+            arg.push_size(::prost::encoding::float::encoded_len(self.tag, value));
+        }
+        arg
+    }
+}
+
+impl crate::pdata::SliceVisitor<PrecomputedSizes, bool> for SliceBooleanEncodedLen {
+    fn visit_slice(&mut self, mut arg: PrecomputedSizes, slice: &[bool]) -> PrecomputedSizes {
+        for value in slice {
+            arg.push_size(::prost::encoding::bool::encoded_len(self.tag, value));
+        }
+        arg
+    }
+}
+
+impl crate::pdata::SliceVisitor<PrecomputedSizes, String> for SliceStringEncodedLen {
+    fn visit_slice(&mut self, mut arg: PrecomputedSizes, slice: &[String]) -> PrecomputedSizes {
+        for value in slice {
+            arg.push_size(::prost::encoding::string::encoded_len(self.tag, value));
+        }
+        arg
+    }
+}
+
+impl crate::pdata::SliceVisitor<PrecomputedSizes, Vec<u8>> for SliceBytesEncodedLen {
+    fn visit_slice(&mut self, mut arg: PrecomputedSizes, slice: &[Vec<u8>]) -> PrecomputedSizes {
+        for value in slice {
+            arg.push_size(::prost::encoding::bytes::encoded_len(self.tag, value));
+        }
         arg
     }
 }

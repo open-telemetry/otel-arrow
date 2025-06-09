@@ -9,6 +9,29 @@ pub use otlp_derive::qualified;
 
 // Primitive encoders for the first pass of two-pass encoding
 pub mod primitive_encoders;
+pub use primitive_encoders::{
+    BooleanEncodedLen,
+    BytesEncodedLen,
+    DoubleEncodedLen,
+    Fixed32EncodedLen,
+    Fixed64EncodedLen,
+    I32EncodedLen,
+    I64EncodedLen,
+    // Slice visitor types for repeated primitive fields
+    SliceBooleanEncodedLen,
+    SliceBytesEncodedLen,
+    SliceDoubleEncodedLen,
+    SliceFixed32EncodedLen,
+    SliceFixed64EncodedLen,
+    SliceI32EncodedLen,
+    SliceI64EncodedLen,
+    SliceStringEncodedLen,
+    SliceU32EncodedLen,
+    SliceU64EncodedLen,
+    StringEncodedLen,
+    U32EncodedLen,
+    U64EncodedLen,
+};
 
 use crate::proto::opentelemetry::logs::v1::LogRecordVisitable;
 use crate::proto::opentelemetry::logs::v1::LogRecordVisitor;
@@ -159,32 +182,3 @@ impl PrecomputedSizes {
         self.sizes[idx] = total_size;
     }
 }
-
-// TODO: As described in prd.md, in Phase 3, the derive crate will
-// be extended to generate a impl LogsDataVisitor<PrecomputedSizes> for
-
-/*
-Example of how the generated code will look using the helpers:
-
-pub struct LogsDataEncodedLen {
-  tag: u32,
-}
-
-impl LogsDataVisitor<PrecomputedSizes> for LogsDataEncodedLen {
-    fn visit_logs_data(&mut self, mut arg: PrecomputedSizes, rs: impl LogsDataVisitable<PrecomputedSizes>) -> PrecomputedSizes {
-        let my_idx = arg.len();
-        arg.sizes.reserve();
-
-        let child_idx = arg.len();
-        arg = rs.accept_resource_logs(arg, ResourceEncodedLen{TAG}, ScopeLogsEncodedLen{TAG});
-        let child_size = arg.get_size(child_idx);
-
-        // sum all children
-        let total_size = child_size;
-        let my_size = varint_size(self.tag<<3) + varint_size(total_size) + total_size;
-
-        arg.set_size(my_idx, my_size);
-        arg
-    }
-}
-*/
