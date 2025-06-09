@@ -24,15 +24,11 @@ pub trait HierarchicalBatchSplit: Sized {
 impl HierarchicalBatchSplit for ExportTraceServiceRequest {
     fn split_into_batches(mut self, max_batch_size: usize) -> Vec<Self> {
         let mut batches = Vec::new();
-
-        // Accumulates resource groups and their contents until the batch reaches max_batch_size leaf items.
-        // When full, this batch is pushed to the output and a new one is started.
         let mut current_batch = ExportTraceServiceRequest {
             resource_spans: Vec::new(),
         };
         let mut current_span_count = 0;
 
-        // ToDo: The current implementation is recreating the entire hierarchy of ResourceSpans, ScopeSpans, Spans but we should probably avoid most of those allocations.
         for mut rs in self.resource_spans.drain(..) {
             let mut res = ResourceSpans {
                 resource: rs.resource.take(),
@@ -40,41 +36,39 @@ impl HierarchicalBatchSplit for ExportTraceServiceRequest {
                 schema_url: rs.schema_url.clone(),
             };
             for mut ss in rs.scope_spans.drain(..) {
-                let mut sc = ScopeSpans {
-                    scope: ss.scope.take(),
-                    spans: Vec::new(),
-                    schema_url: ss.schema_url.clone(),
-                };
                 while !ss.spans.is_empty() {
-                    // Number of items that can still be added to the current batch before reaching max_batch_size
                     let remaining = max_batch_size - current_span_count;
-                    let take = remaining.min(ss.spans.len());
-                    sc.spans.extend(ss.spans.drain(..take));
-                    current_span_count += take;
+                    let take_amount = remaining.min(ss.spans.len());
+                    let mut this_spans = ss.spans.split_off(ss.spans.len() - take_amount);
+                    // The original `ss.spans` now only has the left-overs
 
-                    if !sc.spans.is_empty() {
-                        res.scope_spans.push(sc.clone());
-                        sc.spans.clear();
-                    }
+                    let mut this_scope = ScopeSpans {
+                        scope: ss.scope.clone(),
+                        spans: Vec::new(),
+                        schema_url: ss.schema_url.clone(),
+                    };
+                    this_scope.spans.append(&mut this_spans);
+                    res.scope_spans.push(this_scope);
+                    current_span_count += take_amount;
 
                     if current_span_count == max_batch_size {
-                        if !res.scope_spans.is_empty() {
-                            current_batch.resource_spans.push(res.clone());
-                            // Clear res.scope_spans after pushing to prevent duplicating scope groups in subsequent batches.
-                            // This ensures each batch only contains the intended scope groups for that batch.
-                            res.scope_spans.clear();
-                        }
-                        // Push the full batch to output and start a new one.
-                        batches.push(current_batch.clone());
+                        current_batch.resource_spans.push(res);
+                        batches.push(current_batch);
+
                         current_batch = ExportTraceServiceRequest {
                             resource_spans: Vec::new(),
+                        };
+                        res = ResourceSpans {
+                            resource: rs.resource.clone(),
+                            scope_spans: Vec::new(),
+                            schema_url: rs.schema_url.clone(),
                         };
                         current_span_count = 0;
                     }
                 }
             }
             if !res.scope_spans.is_empty() {
-                current_batch.resource_spans.push(res.clone());
+                current_batch.resource_spans.push(res);
             }
         }
         if current_span_count > 0 && !current_batch.resource_spans.is_empty() {
@@ -87,12 +81,9 @@ impl HierarchicalBatchSplit for ExportTraceServiceRequest {
 impl HierarchicalBatchSplit for ExportMetricsServiceRequest {
     fn split_into_batches(mut self, max_batch_size: usize) -> Vec<Self> {
         let mut batches = Vec::new();
-
-        // The batch currently being filled; pushed to output when max_batch_size is reached.
         let mut current_batch = ExportMetricsServiceRequest::default();
         let mut current_metric_count = 0;
 
-        // ToDo: The current implementation is recreating the entire hierarchy of ResourceMetrics, ScopeMetrics, Metrics but we should probably avoid most of those allocations.
         for mut rm in self.resource_metrics.drain(..) {
             let mut res = ResourceMetrics {
                 resource: rm.resource.take(),
@@ -100,38 +91,37 @@ impl HierarchicalBatchSplit for ExportMetricsServiceRequest {
                 schema_url: rm.schema_url.clone(),
             };
             for mut sm in rm.scope_metrics.drain(..) {
-                let mut sc = ScopeMetrics {
-                    scope: sm.scope.take(),
-                    metrics: Vec::new(),
-                    schema_url: sm.schema_url.clone(),
-                };
                 while !sm.metrics.is_empty() {
-                    // Number of items that can still be added to the current batch before reaching max_batch_size
                     let remaining = max_batch_size - current_metric_count;
-                    let take = remaining.min(sm.metrics.len());
+                    let take_amount = remaining.min(sm.metrics.len());
+                    let mut this_metrics = sm.metrics.split_off(sm.metrics.len() - take_amount);
 
-                    sc.metrics.extend(sm.metrics.drain(..take));
-                    current_metric_count += take;
+                    let mut this_scope = ScopeMetrics {
+                        scope: sm.scope.clone(),
+                        metrics: Vec::new(),
+                        schema_url: sm.schema_url.clone(),
+                    };
+                    this_scope.metrics.append(&mut this_metrics);
 
-                    if !sc.metrics.is_empty() {
-                        res.scope_metrics.push(sc.clone());
-                        sc.metrics.clear();
-                    }
+                    res.scope_metrics.push(this_scope);
+                    current_metric_count += take_amount;
 
                     if current_metric_count == max_batch_size {
-                        if !res.scope_metrics.is_empty() {
-                            current_batch.resource_metrics.push(res.clone());
-                            res.scope_metrics.clear();
-                        }
-                        // Push the full batch to output and start a new one.
-                        batches.push(std::mem::take(&mut current_batch));
+                        current_batch.resource_metrics.push(res);
+                        batches.push(current_batch);
+
                         current_batch = ExportMetricsServiceRequest::default();
+                        res = ResourceMetrics {
+                            resource: rm.resource.clone(),
+                            scope_metrics: Vec::new(),
+                            schema_url: rm.schema_url.clone(),
+                        };
                         current_metric_count = 0;
                     }
                 }
             }
             if !res.scope_metrics.is_empty() {
-                current_batch.resource_metrics.push(res.clone());
+                current_batch.resource_metrics.push(res);
             }
         }
         if current_metric_count > 0 && !current_batch.resource_metrics.is_empty() {
@@ -159,57 +149,52 @@ impl ExportMetricsServiceRequest {
 impl HierarchicalBatchSplit for ExportLogsServiceRequest {
     fn split_into_batches(mut self, max_batch_size: usize) -> Vec<Self> {
         let mut batches = Vec::new();
+        let mut current_batch = ExportLogsServiceRequest::default();
+        let mut current_count = 0;
 
-        // The batch currently being filled; pushed to output when max_batch_size is reached.
-        let mut current_batch = ExportLogsServiceRequest {
-            resource_logs: Vec::new(),
-        };
-        let mut current_log_count = 0;
-        // ToDo: The current implementation is recreating the entire hierarchy of ResourceLogs, ScopeLogs, LogRecords but we should probably avoid most of those allocations.
         for mut rl in self.resource_logs.drain(..) {
-            let mut res = ResourceLogs {
-                resource: rl.resource.take(),
-                scope_logs: Vec::new(),
-                schema_url: rl.schema_url.clone(),
-            };
             for mut sl in rl.scope_logs.drain(..) {
-                let mut sc = ScopeLogs {
-                    scope: sl.scope.take(),
-                    log_records: Vec::new(),
-                    schema_url: sl.schema_url.clone(),
-                };
                 while !sl.log_records.is_empty() {
-                    // Number of items that can still be added to the current batch before reaching max_batch_size
-                    let remaining = max_batch_size - current_log_count;
-                    let take = remaining.min(sl.log_records.len());
-
-                    sc.log_records.extend(sl.log_records.drain(..take));
-                    current_log_count += take;
-
-                    if !sc.log_records.is_empty() {
-                        res.scope_logs.push(sc.clone());
-                        sc.log_records.clear();
+                    let take = max_batch_size - current_count;
+                    if take == 0 {
+                        // Flush and start new batch
+                        batches.push(current_batch);
+                        current_batch = ExportLogsServiceRequest::default();
+                        current_count = 0;
                     }
+                    let split_off_here = sl.log_records.len().min(take);
+                    let mut taken = sl
+                        .log_records
+                        .split_off(sl.log_records.len() - split_off_here);
 
-                    if current_log_count == max_batch_size {
-                        if !res.scope_logs.is_empty() {
-                            current_batch.resource_logs.push(res.clone());
-                            res.scope_logs.clear();
+                    if let Some(last_rl) = current_batch.resource_logs.last_mut() {
+                        // Add to existing scope batch
+                        if let Some(last_sl) = last_rl.scope_logs.last_mut() {
+                            last_sl.log_records.append(&mut taken);
+                        } else {
+                            last_rl.scope_logs.push(ScopeLogs {
+                                scope: sl.scope.clone(),
+                                log_records: taken,
+                                schema_url: sl.schema_url.clone(),
+                            });
                         }
-                        // Push the full batch to output and start a new one.
-                        batches.push(current_batch.clone());
-                        current_batch = ExportLogsServiceRequest {
-                            resource_logs: Vec::new(),
-                        };
-                        current_log_count = 0;
+                    } else {
+                        // Start new
+                        current_batch.resource_logs.push(ResourceLogs {
+                            resource: rl.resource.clone(),
+                            scope_logs: vec![ScopeLogs {
+                                scope: sl.scope.clone(),
+                                log_records: taken,
+                                schema_url: sl.schema_url.clone(),
+                            }],
+                            schema_url: rl.schema_url.clone(),
+                        });
                     }
+                    current_count += split_off_here;
                 }
             }
-            if !res.scope_logs.is_empty() {
-                current_batch.resource_logs.push(res.clone());
-            }
         }
-        if current_log_count > 0 && !current_batch.resource_logs.is_empty() {
+        if !current_batch.resource_logs.is_empty() {
             batches.push(current_batch);
         }
         batches
