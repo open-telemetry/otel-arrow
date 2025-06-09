@@ -24,27 +24,25 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
         outer_name.span(),
     );
 
-    let mut visitable_args: TokenVec = Vec::new();        // For oneof fields, generate separate parameters for each variant
-        for info in &msg.all_fields {
-            if let Some(oneof_cases) = info.oneof.as_ref() {
-                for case in oneof_cases {
-                    let variant_param_name = syn::Ident::new(
-                        &format!("{}_{}", info.ident, case.name),
-                        info.ident.span(),
-                    );
+    let mut visitable_args: TokenVec = Vec::new(); // For oneof fields, generate separate parameters for each variant
+    for info in &msg.all_fields {
+        if let Some(oneof_cases) = info.oneof.as_ref() {
+            for case in oneof_cases {
+                let variant_param_name =
+                    syn::Ident::new(&format!("{}_{}", info.ident, case.name), info.ident.span());
 
-                    // Use the centralized visitor type generation
-                    let visitor_type = FieldInfo::generate_visitor_type_for_oneof_case(case);
-                    visitable_args.push(quote! { #variant_param_name: impl #visitor_type });
-                }
-                continue;
+                // Use the centralized visitor type generation
+                let visitor_type = FieldInfo::generate_visitor_type_for_oneof_case(case);
+                visitable_args.push(quote! { #variant_param_name: impl #visitor_type });
             }
-
-            // For non-oneof fields, use the precomputed visitor trait from FieldInfo
-            let param_name = &info.ident;
-            let visitor_type = &info.visitor_trait;
-            visitable_args.push(quote! { #param_name: impl #visitor_type });
+            continue;
         }
+
+        // For non-oneof fields, use the precomputed visitor trait from FieldInfo
+        let param_name = &info.ident;
+        let visitor_type = &info.visitor_trait;
+        visitable_args.push(quote! { #param_name: impl #visitor_type });
+    }
 
     let expanded = quote! {
         pub trait #visitor_name<Argument> {
@@ -76,7 +74,7 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
     let field_name = &info.ident;
     let visitor_param = &info.visitor_param_name;
     let visit_method = &info.visit_method_name;
-    let needs_adapter = info.needs_adapter;
+    let needs_adapter = info.is_message;
     let is_bytes_field = FieldInfo::is_bytes_type(&info.full_type_name); // Vec<u8> specifically
 
     match (
@@ -206,9 +204,12 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
 }
 
 /// Generate visitor call for oneof fields with proper variant matching
-pub fn generate_oneof_visitor_call(info: &FieldInfo, oneof_cases: &[OneofCase]) -> Option<proc_macro2::TokenStream> {
+pub fn generate_oneof_visitor_call(
+    info: &FieldInfo,
+    oneof_cases: &[OneofCase],
+) -> Option<proc_macro2::TokenStream> {
     let field_name = &info.ident;
-    
+
     if oneof_cases.is_empty() {
         return None;
     }
@@ -218,12 +219,10 @@ pub fn generate_oneof_visitor_call(info: &FieldInfo, oneof_cases: &[OneofCase]) 
         // Use the full value_variant path for the match pattern
         let variant_path = syn::parse_str::<syn::Path>(case.value_variant)
             .unwrap_or_else(|_| panic!("Invalid variant path: {}", case.value_variant));
-        
-        let param_name = syn::Ident::new(
-            &format!("{}_{}", field_name, case.name),
-            field_name.span(),
-        );
-        
+
+        let param_name =
+            syn::Ident::new(&format!("{}_{}", field_name, case.name), field_name.span());
+
         // Determine the visit method based on the case name and type - map to correct method names
         let visit_method = match case.name {
             "string" => syn::Ident::new("visit_string", field_name.span()),
@@ -235,7 +234,7 @@ pub fn generate_oneof_visitor_call(info: &FieldInfo, oneof_cases: &[OneofCase]) 
             "array" => syn::Ident::new("visit_array_value", field_name.span()),
             name => syn::Ident::new(&format!("visit_{}", name), field_name.span()),
         };
-        
+
         // Generate the visitor call based on the type and extra_call
         let visitor_call = if let Some(extra_call) = case.extra_call {
             // Transform Xyz::new to XyzMessageAdapter::new for visitor generation
@@ -245,7 +244,7 @@ pub fn generate_oneof_visitor_call(info: &FieldInfo, oneof_cases: &[OneofCase]) 
             } else {
                 panic!("Unsupported extra_call format for visitor: {}", extra_call)
             };
-            
+
             let constructor = syn::parse_str::<syn::Path>(&adapter_constructor)
                 .unwrap_or_else(|_| panic!("Invalid adapter constructor: {}", adapter_constructor));
             quote! {
@@ -272,7 +271,7 @@ pub fn generate_oneof_visitor_call(info: &FieldInfo, oneof_cases: &[OneofCase]) 
                 arg = #param_name.#visit_method(arg, &adapter);
             }
         };
-        
+
         quote! {
             Some(#variant_path(ref inner)) => {
                 #visitor_call
@@ -295,21 +294,16 @@ pub fn generate_oneof_visitor_call(info: &FieldInfo, oneof_cases: &[OneofCase]) 
 
 /// Check if a type parameter represents a primitive type
 fn is_primitive_type_param(type_param: &str) -> bool {
-    matches!(type_param, 
-        "bool" | "i32" | "i64" | "u32" | "u64" | "f32" | "f64" | 
-        "::prost::alloc::string::String" | "Vec<u8>"
+    matches!(
+        type_param,
+        "bool"
+            | "i32"
+            | "i64"
+            | "u32"
+            | "u64"
+            | "f32"
+            | "f64"
+            | "::prost::alloc::string::String"
+            | "Vec<u8>"
     )
 }
-
-
-
-
-
-
-
-
-
-
-
-
-

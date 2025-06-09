@@ -15,7 +15,7 @@ pub struct FieldInfo {
     pub is_optional: bool,
     pub is_repeated: bool,
     pub is_primitive: bool, // Includes basic types (String, u32, bool) AND bytes (Vec<u8>)
-    pub is_message: bool,   // TODO: Why is this not used?
+    pub is_message: bool,
     pub oneof: Option<Vec<OneofCase>>,
     pub as_type: Option<syn::Type>,   // primitive type for enums
     pub enum_type: Option<syn::Type>, // enum type for enums (from datatype in FIELD_TYPE_OVERRIDES)
@@ -32,7 +32,6 @@ pub struct FieldInfo {
     pub visitable_trait: proc_macro2::TokenStream,
     pub visitor_param_name: syn::Ident,
     pub visit_method_name: syn::Ident,
-    pub needs_adapter: bool,
 }
 
 /// Simple prost field annotation parsing utilities
@@ -224,7 +223,6 @@ impl FieldInfo {
                         "placeholder",
                         proc_macro2::Span::call_site(),
                     ),
-                    needs_adapter: false,
                 };
 
                 // Compute and store visitor-related information
@@ -263,7 +261,6 @@ impl FieldInfo {
                 )
             {
                 // Return empty token stream - this should not be called for primitive types
-                // The caller should check needs_adapter first
                 return quote::quote! { /* PRIMITIVE_NO_ADAPTER */ };
             }
         }
@@ -422,9 +419,6 @@ impl FieldInfo {
         // Generate visit method name
         self.visit_method_name = self.compute_visit_method_name();
 
-        // Determine if field needs adapter
-        self.needs_adapter = self.compute_needs_adapter();
-
         // Generate visitor and visitable traits
         self.visitor_trait = self.compute_visitor_trait();
         self.visitable_trait = self.compute_visitable_trait();
@@ -452,21 +446,6 @@ impl FieldInfo {
         };
 
         syn::Ident::new(&method_name, proc_macro2::Span::call_site())
-    }
-
-    /// Compute whether this field needs an adapter
-    fn compute_needs_adapter(&self) -> bool {
-        // Use the parsed proto_type for fast determination
-        match self.proto_type.as_str() {
-            "message" | "enumeration" => true, // Complex types need adapters
-            "string" | "int64" | "uint32" | "int32" | "uint64" | "bool" | "double" | "float"
-            | "bytes" => false, // Primitives don't need adapters
-            _ => {
-                // For unknown or missing proto_type, fall back to type-based analysis
-                // This ensures backward compatibility and handles edge cases
-                !self.is_primitive_type_direct() && !self.is_primitive
-            }
-        }
     }
 
     /// Compute the visitor trait for this field
