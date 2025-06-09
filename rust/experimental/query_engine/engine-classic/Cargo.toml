@@ -1,0 +1,13 @@
+[package]
+name = "data_engine_classic"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+thiserror = { workspace = true }
