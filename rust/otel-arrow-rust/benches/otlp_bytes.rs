@@ -14,7 +14,8 @@
 
 //! This crate benchmarks OTLP and OTAP.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use std::hint::black_box;
+use criterion::{Criterion, criterion_group, criterion_main};
 use prost::Message;
 
 use otel_arrow_rust::pdata::*;
