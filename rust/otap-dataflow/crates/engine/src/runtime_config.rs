@@ -24,6 +24,10 @@ pub enum RuntimeNode<PData> {
         config: Rc<NodeConfig>,
         /// The instance of the receiver that processes incoming data.
         instance: ReceiverWrapper<PData>,
+        /// Sender for control messages.
+        control_sender: Option<ReceiverWrapper<PData>>,        
+        /// Receiver for control messages.
+        control_receiver: Option<ReceiverWrapper<PData>>,
     },
     /// A node that processes data, transforming or analyzing it.
     Processor {
@@ -31,6 +35,14 @@ pub enum RuntimeNode<PData> {
         config: Rc<NodeConfig>,
         /// The instance of the processor that performs operations on the data.
         instance: ProcessorWrapper<PData>,
+        /// Sender for control messages.
+        control_sender: Option<ReceiverWrapper<PData>>,        
+        /// Receiver for control messages.
+        control_receiver: Option<ReceiverWrapper<PData>>,
+        /// Sender for PData messages.
+        pdata_sender: Option<ReceiverWrapper<PData>>,
+        /// Receiver for PData messages.
+        pdata_receiver: Option<ReceiverWrapper<PData>>,
     },
     /// A node that exports data to an external destination.
     Exporter {
@@ -38,6 +50,14 @@ pub enum RuntimeNode<PData> {
         config: Rc<NodeConfig>,
         /// The instance of the exporter that sends data to an external system.
         instance: ExporterWrapper<PData>,
+        /// Sender for control messages.
+        control_sender: Option<ReceiverWrapper<PData>>,        
+        /// Receiver for control messages.
+        control_receiver: Option<ReceiverWrapper<PData>>,
+        /// Sender for PData messages.
+        pdata_sender: Option<ReceiverWrapper<PData>>,
+        /// Receiver for PData messages.
+        pdata_receiver: Option<ReceiverWrapper<PData>>,
     },
 }
 

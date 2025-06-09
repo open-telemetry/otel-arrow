@@ -2,9 +2,9 @@
 
 //! Async Pipeline Engine
 
-use std::{collections::HashMap, sync::OnceLock};
-
 use serde_json::Value;
+use std::rc::Rc;
+use std::{collections::HashMap, sync::OnceLock};
 
 use crate::{
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
@@ -31,6 +31,8 @@ pub mod shared;
 pub mod testing;
 
 pub use linkme::distributed_slice;
+use otap_df_config::node::NodeConfig;
+use otap_df_config::NodeId;
 
 /// Trait for factory types that expose a name.
 ///
@@ -212,54 +214,29 @@ impl<PData: 'static> FactoryRegistry<PData> {
         &self,
         config: otap_df_config::pipeline::PipelineConfig,
     ) -> Result<RuntimePipeline<PData>, Error<PData>> {
-        let receiver_factory_map = self.get_receiver_factory_map();
-        let processor_factory_map = self.get_processor_factory_map();
-        let exporter_factory_map = self.get_exporter_factory_map();
         let mut nodes = Vec::new();
 
-        // Generate all the errors.
+        // Create runtime nodes based on the pipeline configuration.
+        // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         for (node_id, node_config) in config.node_iter() {
             match node_config.kind {
-                otap_df_config::node::NodeKind::Receiver => {
-                    let factory = receiver_factory_map
-                        .get(node_config.plugin_urn.as_ref())
-                        .ok_or_else(|| Error::UnknownReceiver {
-                            plugin_urn: node_config.plugin_urn.clone(),
-                        })?;
-                    let receiver_config = ReceiverConfig::new(node_id.clone());
-                    let create = factory.create;
-                    nodes.push(RuntimeNode::Receiver {
-                        config: node_config.clone(),
-                        instance: create(&node_config.config, &receiver_config),
-                    });
-                }
-                otap_df_config::node::NodeKind::Processor => {
-                    let factory = processor_factory_map
-                        .get(node_config.plugin_urn.as_ref())
-                        .ok_or_else(|| Error::UnknownProcessor {
-                            plugin_urn: node_config.plugin_urn.clone(),
-                        })?;
-                    let processor_config = ProcessorConfig::new(node_id.clone());
-                    let create = factory.create;
-                    nodes.push(RuntimeNode::Processor {
-                        config: node_config.clone(),
-                        instance: create(&node_config.config, &processor_config),
-                    });
-                }
-                otap_df_config::node::NodeKind::Exporter => {
-                    let factory = exporter_factory_map
-                        .get(node_config.plugin_urn.as_ref())
-                        .ok_or_else(|| Error::UnknownExporter {
-                            plugin_urn: node_config.plugin_urn.clone(),
-                        })?;
-                    let exporter_config = ExporterConfig::new(node_id.clone());
-                    let create = factory.create;
-                    nodes.push(RuntimeNode::Exporter {
-                        config: node_config.clone(),
-                        instance: create(&node_config.config, &exporter_config),
-                    });
-                }
+                otap_df_config::node::NodeKind::Receiver => self.create_receiver(
+                    &mut nodes,
+                    node_id.clone(),
+                    node_config.clone(),
+                )?,
+                otap_df_config::node::NodeKind::Processor => self.create_processor(
+                    &mut nodes,
+                    node_id.clone(),
+                    node_config.clone(),
+                )?,
+                otap_df_config::node::NodeKind::Exporter => self.create_exporter(
+                    &mut nodes,
+                    node_id.clone(),
+                    node_config.clone(),
+                )?,
                 otap_df_config::node::NodeKind::ProcessorChain => {
+                    // ToDo(LQ): Implement processor chain support.
                     return Err(Error::UnsupportedNodeKind {
                         kind: "ProcessorChain".into(),
                     });
@@ -268,5 +245,79 @@ impl<PData: 'static> FactoryRegistry<PData> {
         }
 
         Ok(RuntimePipeline::new(config, nodes))
+    }
+
+    /// Creates a receiver node and adds it to the list of runtime nodes.
+    fn create_receiver(
+        &self,
+        nodes: &mut Vec<RuntimeNode<PData>>,
+        node_id: NodeId,
+        node_config: Rc<NodeConfig>,
+    ) -> Result<(), Error<PData>> {
+        let factory = self.get_receiver_factory_map()
+            .get(node_config.plugin_urn.as_ref())
+            .ok_or_else(|| Error::UnknownReceiver {
+                plugin_urn: node_config.plugin_urn.clone(),
+            })?;
+        let receiver_config = ReceiverConfig::new(node_id.clone());
+        let create = factory.create;
+
+        nodes.push(RuntimeNode::Receiver {
+            config: node_config.clone(),
+            instance: create(&node_config.config, &receiver_config),
+            control_sender: None,
+            control_receiver: None,
+        });
+        Ok(())
+    }
+
+    /// Creates a processor node and adds it to the list of runtime nodes.
+    fn create_processor(
+        &self,
+        nodes: &mut Vec<RuntimeNode<PData>>,
+        node_id: NodeId,
+        node_config: Rc<NodeConfig>,
+    ) -> Result<(), Error<PData>> {
+        let factory = self.get_processor_factory_map()
+            .get(node_config.plugin_urn.as_ref())
+            .ok_or_else(|| Error::UnknownProcessor {
+                plugin_urn: node_config.plugin_urn.clone(),
+            })?;
+        let processor_config = ProcessorConfig::new(node_id.clone());
+        let create = factory.create;
+        nodes.push(RuntimeNode::Processor {
+            config: node_config.clone(),
+            instance: create(&node_config.config, &processor_config),
+            control_sender: None,
+            control_receiver: None,
+            pdata_sender: None,
+            pdata_receiver: None,
+        });
+        Ok(())
+    }
+
+    /// Creates an exporter node and adds it to the list of runtime nodes.
+    fn create_exporter(
+        &self,
+        nodes: &mut Vec<RuntimeNode<PData>>,
+        node_id: NodeId,
+        node_config: Rc<NodeConfig>,
+    ) -> Result<(), Error<PData>> {
+        let factory = self.get_exporter_factory_map()
+            .get(node_config.plugin_urn.as_ref())
+            .ok_or_else(|| Error::UnknownExporter {
+                plugin_urn: node_config.plugin_urn.clone(),
+            })?;
+        let exporter_config = ExporterConfig::new(node_id.clone());
+        let create = factory.create;
+        nodes.push(RuntimeNode::Exporter {
+            config: node_config.clone(),
+            instance: create(&node_config.config, &exporter_config),
+            control_sender: None,
+            control_receiver: None,
+            pdata_sender: None,
+            pdata_receiver: None,
+        });
+        Ok(())
     }
 }
