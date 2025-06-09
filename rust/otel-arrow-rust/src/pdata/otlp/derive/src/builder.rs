@@ -5,10 +5,9 @@ use proc_macro::TokenStream;
 use quote::quote;
 
 use super::TokenVec;
+use super::common;
 use super::create_ident;
-use super::field_info::FieldInfo;
 use super::message_info::MessageInfo;
-use otlp_model::OneofCase;
 
 /// Emits the builders, new(), and finish() methods.
 pub fn derive(msg: &MessageInfo) -> TokenStream {
@@ -16,46 +15,27 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
     let builder_name = msg.related_typename("Builder");
 
     // Generate generic type parameters names like ["T1", "T2", ...]
-    let type_params: Vec<syn::Ident> = (0..msg.all_fields.len())
-        .map(|idx| create_ident(&format!("T{}", idx + 1)))
-        .collect();
+    let type_params = common::generic_type_names(msg.all_fields.len());
 
     // Generate a list of arguments to pass from build() to new().
-    let param_args: TokenVec = msg
-        .param_fields
-        .iter()
-        .map(|info| {
-            let field_name = &info.ident;
-            quote! { #field_name }
-        })
-        .collect();
+    let param_args = common::builder_argument_list(&msg.param_fields);
 
     // Generate parameter declarations and where bounds
-    let (param_decls, param_bounds): (TokenVec, TokenVec) = msg
-        .param_fields
-        .iter()
-        .enumerate()
-        .map(|(idx, info)| {
-            let param_name = &info.ident;
-            let type_param = &type_params[idx];
-            let target_type = &info.full_type_name;
-
-            let decl = quote! { #param_name: #type_param };
-            let bound = quote! { #type_param: Into<#target_type> };
-
-            (decl, bound)
-        })
-        .unzip();
+    let (param_decls, param_bounds) =
+        common::builder_formal_parameters(&msg.param_fields, &type_params);
 
     // Generate field assignments and initializers
-    let (field_assignments, field_initializers): (TokenVec, TokenVec) =
-        msg.all_fields.iter().map(generate_field_assignment).unzip();
+    let (field_assignments, field_initializers): (TokenVec, TokenVec) = msg
+        .all_fields
+        .iter()
+        .map(common::builder_field_assignment)
+        .unzip();
 
     // Default initializers for fields
     let default_initializers: TokenVec = msg
         .all_fields
         .iter()
-        .map(generate_default_initializer)
+        .map(common::builder_default_initializer)
         .collect();
 
     // All field initializers includes parameters and defaults
@@ -76,7 +56,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
         .map(|info| {
             let field_name = &info.ident;
             let field_type = &info.full_type_name;
-            
+
             // Find the corresponding field assignment by matching field name
             let field_assignment = msg.all_fields
                 .iter()
@@ -162,7 +142,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                 &all_field_initializers,
             )]
         }
-        Some(oneof_mapping) => generate_oneof_constructors(
+        Some(oneof_mapping) => common::builder_oneof_constructors(
             oneof_mapping,
             &msg.param_names,
             &param_bounds,
@@ -204,166 +184,4 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
     }
 
     TokenStream::from(expanded)
-}
-
-/// Generate field assignment patterns for different field types
-fn generate_field_assignment(
-    info: &FieldInfo,
-) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
-    let field_name = &info.ident;
-
-    // For enum fields, use direct casting instead of .into()
-    if info.proto_type == "enumeration" {
-        match (info.is_optional, &info.as_type) {
-            (true, Some(as_type)) => (
-                quote! { self.inner.#field_name = Some(#field_name as #as_type); },
-                quote! { #field_name: Some(#field_name as #as_type), },
-            ),
-            (true, None) => (
-                quote! { self.inner.#field_name = Some(#field_name.into()); },
-                quote! { #field_name: Some(#field_name.into()), },
-            ),
-            (false, Some(as_type)) => (
-                quote! { self.inner.#field_name = #field_name as #as_type; },
-                quote! { #field_name: #field_name as #as_type, },
-            ),
-            (false, None) => (
-                quote! { self.inner.#field_name = #field_name.into(); },
-                quote! { #field_name: #field_name.into(), },
-            ),
-        }
-    } else {
-        // For non-enum fields, use the original logic with .into()
-        match (info.is_optional, &info.as_type) {
-            (true, Some(as_type)) => (
-                quote! { self.inner.#field_name = Some(#field_name.into() as #as_type); },
-                quote! { #field_name: Some(#field_name.into() as #as_type), },
-            ),
-            (true, None) => (
-                quote! { self.inner.#field_name = Some(#field_name.into()); },
-                quote! { #field_name: Some(#field_name.into()), },
-            ),
-            (false, Some(as_type)) => (
-                quote! { self.inner.#field_name = #field_name.into() as #as_type; },
-                quote! { #field_name: #field_name.into() as #as_type, },
-            ),
-            (false, None) => (
-                quote! { self.inner.#field_name = #field_name.into(); },
-                quote! { #field_name: #field_name.into(), },
-            ),
-        }
-    }
-}
-
-/// Generate default initializer for a field
-fn generate_default_initializer(info: &FieldInfo) -> proc_macro2::TokenStream {
-    let field_name = &info.ident;
-
-    if info.is_optional {
-        quote! { #field_name: None, }
-    } else {
-        match info.base_type_name.as_str() {
-            "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" => {
-                quote! { #field_name: 0, }
-            }
-            "f32" | "f64" => quote! { #field_name: 0.0, },
-            "bool" => quote! { #field_name: false, },
-            _ => quote! { #field_name: ::core::default::Default::default(), },
-        }
-    }
-}
-
-/// Generate constructor for a single oneof case
-fn generate_oneof_constructor(
-    case: &otlp_model::OneofCase,
-    oneof_name: &str,
-    oneof_idx: usize,
-    param_bounds: &[proc_macro2::TokenStream],
-    param_decls: &[proc_macro2::TokenStream],
-    param_args: &[proc_macro2::TokenStream],
-    all_field_initializers: &[proc_macro2::TokenStream],
-    type_params: &[syn::Ident],
-    create_constructor: &dyn Fn(
-        String,
-        &[proc_macro2::TokenStream],
-        &[proc_macro2::TokenStream],
-        &[proc_macro2::TokenStream],
-        &[proc_macro2::TokenStream],
-    ) -> proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    let case_type = syn::parse_str::<syn::Type>(case.type_param).unwrap();
-    let variant_path = syn::parse_str::<syn::Expr>(case.value_variant).unwrap();
-    let suffix = format!("_{}", case.name);
-    let oneof_ident = syn::Ident::new(oneof_name, proc_macro2::Span::call_site());
-
-    // Duplicate the param bounds and field initializers
-    let mut cur_param_bounds = param_bounds.to_vec();
-    let mut cur_field_initializers = all_field_initializers.to_vec();
-    let type_param = &type_params[oneof_idx];
-
-    let value_bound = quote! { #type_param: Into<#case_type> };
-    let value_initializer = if let Some(extra_call) = &case.extra_call {
-        let extra_call_path = syn::parse_str::<syn::Expr>(extra_call).unwrap();
-        quote! {
-            #oneof_ident: Some(#variant_path(#extra_call_path(#oneof_ident.into()))),
-        }
-    } else {
-        quote! {
-            #oneof_ident: Some(#variant_path(#oneof_ident.into())),
-        }
-    };
-
-    // Replace the parameter with oneof-specific expansion
-    cur_param_bounds[oneof_idx] = value_bound;
-    cur_field_initializers[oneof_idx] = value_initializer;
-
-    create_constructor(
-        suffix,
-        &cur_param_bounds,
-        param_decls,
-        param_args,
-        &cur_field_initializers,
-    )
-}
-
-/// Generate all constructors for a oneof mapping
-pub fn generate_oneof_constructors(
-    oneof_mapping: &(String, Vec<OneofCase>),
-    param_names: &[String],
-    param_bounds: &[proc_macro2::TokenStream],
-    param_decls: &[proc_macro2::TokenStream],
-    param_args: &[proc_macro2::TokenStream],
-    all_field_initializers: &[proc_macro2::TokenStream],
-    type_params: &[syn::Ident],
-    create_constructor: &dyn Fn(
-        String,
-        &[proc_macro2::TokenStream],
-        &[proc_macro2::TokenStream],
-        &[proc_macro2::TokenStream],
-        &[proc_macro2::TokenStream],
-    ) -> proc_macro2::TokenStream,
-) -> Vec<proc_macro2::TokenStream> {
-    let (oneof_path, oneof_cases) = oneof_mapping;
-    let oneof_name = oneof_path.split('.').last().unwrap();
-    let oneof_idx = param_names
-        .iter()
-        .position(|name| name.as_str() == oneof_name)
-        .unwrap();
-
-    oneof_cases
-        .iter()
-        .map(|case| {
-            generate_oneof_constructor(
-                case,
-                oneof_name,
-                oneof_idx,
-                param_bounds,
-                param_decls,
-                param_args,
-                all_field_initializers,
-                type_params,
-                create_constructor,
-            )
-        })
-        .collect()
 }

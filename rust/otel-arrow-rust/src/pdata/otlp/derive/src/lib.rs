@@ -4,6 +4,7 @@
 use proc_macro::TokenStream;
 
 mod builder;
+mod common;
 mod field_info;
 mod message_adapter;
 mod message_info;

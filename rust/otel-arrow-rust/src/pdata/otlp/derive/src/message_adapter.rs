@@ -1,11 +1,11 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use convert_case::{Case, Casing};
 use proc_macro::TokenStream;
 use quote::quote;
 
 use super::TokenVec;
+use super::common;
 use super::field_info::FieldInfo;
 use super::message_info::MessageInfo;
 
@@ -16,38 +16,13 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
     let visitable_name = msg.related_typename("Visitable");
 
     // Generate the method name based on the outer type name
-    // Convert CamelCase to snake_case (e.g., LogsData -> logs_data)
-    let visitable_method_name = syn::Ident::new(
-        &format!("accept_{}", outer_name.to_string().to_case(Case::Snake)),
-        outer_name.span(),
-    );
+    let visitable_method_name = common::visitable_method_name(&outer_name);
 
     // Generate visitor calls for each field
     let visitor_calls: TokenVec = msg.all_fields.iter().map(generate_visitor_call).collect();
 
-    // Generate visitor parameters for the visitable trait method
-    let mut visitor_params: TokenVec = Vec::new();
-
-    for info in &msg.all_fields {
-        if let Some(oneof_cases) = info.oneof.as_ref() {
-            for case in oneof_cases {
-                let variant_param_name = syn::Ident::new(
-                    &format!("{}_{}", info.ident, case.name),
-                    info.ident.span(),
-                );
-
-                let visitor_type_tokens = FieldInfo::generate_visitor_type_for_oneof_case(&case);
-                // Parse the token stream as a type for use in function signatures
-                let visitor_type: syn::Type = syn::parse2(visitor_type_tokens)
-                    .expect("Failed to parse visitor type tokens as syn::Type");
-                visitor_params.push(quote! { mut #variant_param_name: impl #visitor_type });
-            }
-        } else {
-            let visitor_param = &info.visitor_param_name;
-            let visitor_trait = &info.visitor_trait;
-            visitor_params.push(quote! { mut #visitor_param: impl #visitor_trait });
-        }
-    }
+    // Generate visitor parameters for all fields including oneof variants
+    let visitor_params = common::visitor_formal_parameters(&msg.all_fields);
 
     let expanded = quote! {
         /// Message adapter for presenting OTLP message objects as visitable.
@@ -82,5 +57,3 @@ fn generate_visitor_call(info: &FieldInfo) -> proc_macro2::TokenStream {
         quote::quote! {}
     }
 }
-
-
