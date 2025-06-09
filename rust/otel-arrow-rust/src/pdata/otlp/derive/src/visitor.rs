@@ -215,9 +215,9 @@ pub fn generate_oneof_visitor_call(info: &FieldInfo, oneof_cases: &[OneofCase]) 
 
     // Generate match arms for each oneof variant
     let match_arms = oneof_cases.iter().map(|case| {
-        // Extract just the variant name from the full path like "metric::Data::Sum" -> "Sum"
-        let variant_name = case.value_variant.split("::").last().unwrap_or(case.value_variant);
-        let variant_ident = syn::Ident::new(variant_name, field_name.span());
+        // Use the full value_variant path for the match pattern
+        let variant_path = syn::parse_str::<syn::Path>(case.value_variant)
+            .unwrap_or_else(|_| panic!("Invalid variant path: {}", case.value_variant));
         
         let param_name = syn::Ident::new(
             &format!("{}_{}", field_name, case.name),
@@ -231,36 +231,50 @@ pub fn generate_oneof_visitor_call(info: &FieldInfo, oneof_cases: &[OneofCase]) 
             "int" => syn::Ident::new("visit_i64", field_name.span()),
             "double" => syn::Ident::new("visit_f64", field_name.span()),
             "bytes" => syn::Ident::new("visit_bytes", field_name.span()),
-            "kvlist" => syn::Ident::new("visit_kvlist", field_name.span()),
-            "array" => syn::Ident::new("visit_array", field_name.span()),
+            "kvlist" => syn::Ident::new("visit_key_value_list", field_name.span()),
+            "array" => syn::Ident::new("visit_array_value", field_name.span()),
             name => syn::Ident::new(&format!("visit_{}", name), field_name.span()),
         };
         
         // Generate the visitor call based on the type and extra_call
         let visitor_call = if let Some(extra_call) = case.extra_call {
-            // For cases with extra_call, use the constructor function
-            let constructor = syn::parse_str::<syn::Path>(extra_call)
-                .unwrap_or_else(|_| panic!("Invalid extra_call: {}", extra_call));
+            // Transform Xyz::new to XyzMessageAdapter::new for visitor generation
+            let adapter_constructor = if extra_call.ends_with("::new") {
+                let base_type = &extra_call[..extra_call.len() - 5]; // Remove "::new"
+                format!("{}MessageAdapter::new", base_type)
+            } else {
+                panic!("Unsupported extra_call format for visitor: {}", extra_call)
+            };
+            
+            let constructor = syn::parse_str::<syn::Path>(&adapter_constructor)
+                .unwrap_or_else(|_| panic!("Invalid adapter constructor: {}", adapter_constructor));
             quote! {
                 let adapter = #constructor(inner);
                 arg = #param_name.#visit_method(arg, &adapter);
             }
         } else if is_primitive_type_param(case.type_param) {
-            // For primitive types, use the value directly
+            // For primitive types, handle references correctly
+            let value_arg = match case.type_param {
+                "::prost::alloc::string::String" => quote! { inner.as_str() },
+                "Vec<u8>" => quote! { inner.as_slice() },
+                _ => quote! { *inner }, // For basic types like i64, f64, bool
+            };
             quote! {
-                arg = #param_name.#visit_method(arg, inner);
+                arg = #param_name.#visit_method(arg, #value_arg);
             }
         } else {
-            // For message types, create an adapter
-            let type_ident = syn::Ident::new(case.type_param, field_name.span());
+            // For message types, create an adapter using TypeNameMessageAdapter::new pattern
+            let adapter_name = format!("{}MessageAdapter", case.type_param);
+            let adapter_constructor = syn::parse_str::<syn::Path>(&adapter_name)
+                .unwrap_or_else(|_| panic!("Invalid adapter constructor: {}", adapter_name));
             quote! {
-                let adapter = #type_ident::MessageAdapter::new(inner);
+                let adapter = #adapter_constructor::new(inner);
                 arg = #param_name.#visit_method(arg, &adapter);
             }
         };
         
         quote! {
-            Some(#field_name::#variant_ident(ref inner)) => {
+            Some(#variant_path(ref inner)) => {
                 #visitor_call
             }
         }

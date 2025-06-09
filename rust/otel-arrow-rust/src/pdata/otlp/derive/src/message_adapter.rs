@@ -36,7 +36,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                     info.ident.span(),
                 );
 
-                let visitor_type_tokens = FieldInfo::generate_visitor_type_for_oneof_variant(&case);
+                let visitor_type_tokens = FieldInfo::generate_visitor_type_for_oneof_case(&case);
                 // Parse the token stream as a type for use in function signatures
                 let visitor_type: syn::Type = syn::parse2(visitor_type_tokens)
                     .expect("Failed to parse visitor type tokens as syn::Type");

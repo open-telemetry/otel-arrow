@@ -15,9 +15,9 @@ pub struct FieldInfo {
     pub is_optional: bool,
     pub is_repeated: bool,
     pub is_primitive: bool, // Includes basic types (String, u32, bool) AND bytes (Vec<u8>)
-    pub is_message: bool,
+    pub is_message: bool,   // TODO: Why is this not used?
     pub oneof: Option<Vec<OneofCase>>,
-    pub as_type: Option<syn::Type>, // primitive type for enums
+    pub as_type: Option<syn::Type>,   // primitive type for enums
     pub enum_type: Option<syn::Type>, // enum type for enums (from datatype in FIELD_TYPE_OVERRIDES)
     pub proto_type: String,
     pub qualifier: Option<proc_macro2::TokenStream>,
@@ -26,7 +26,7 @@ pub struct FieldInfo {
 
     pub base_type_name: String,
     pub full_type_name: syn::Type,
-    
+
     // Visitor-related precomputed information
     pub visitor_trait: proc_macro2::TokenStream,
     pub visitable_trait: proc_macro2::TokenStream,
@@ -44,7 +44,6 @@ fn parse_prost_tag_and_type(field: &syn::Field) -> (u32, String) {
         .find(|attr| attr.path().is_ident("prost"));
 
     if let Some(attr) = prost_attr {
-
         if let syn::Meta::List(meta_list) = &attr.meta {
             let tokens = &meta_list.tokens;
 
@@ -101,7 +100,7 @@ fn parse_prost_tag_and_type(field: &syn::Field) -> (u32, String) {
 }
 
 impl FieldInfo {
-    pub(crate)    fn new(
+    pub(crate) fn new(
         field: &syn::Field,
         type_name: &str,
         param_names: &[String],
@@ -179,7 +178,7 @@ impl FieldInfo {
                         } else {
                             (None, None)
                         }
-                    },
+                    }
                     Err(_err) => {
                         // Fallback to inner_type on error
                         (None, None)
@@ -188,7 +187,7 @@ impl FieldInfo {
 
                 // Decompose type into base name and qualifier
                 let (base_type_name, qualifier) = Self::decompose_type(&inner_type);
-                
+
                 // For repeated fields, full_type_name should be the original Vec type, not the inner type
                 let full_type_name = if is_repeated {
                     field.ty.clone()
@@ -217,8 +216,14 @@ impl FieldInfo {
                     qualifier,
                     visitor_trait: quote::quote! {},
                     visitable_trait: quote::quote! {},
-                    visitor_param_name: syn::Ident::new("placeholder", proc_macro2::Span::call_site()),
-                    visit_method_name: syn::Ident::new("placeholder", proc_macro2::Span::call_site()),
+                    visitor_param_name: syn::Ident::new(
+                        "placeholder",
+                        proc_macro2::Span::call_site(),
+                    ),
+                    visit_method_name: syn::Ident::new(
+                        "placeholder",
+                        proc_macro2::Span::call_site(),
+                    ),
                     needs_adapter: false,
                 };
 
@@ -342,28 +347,20 @@ impl FieldInfo {
                         syn::PathArguments::AngleBracketed(args) => {
                             if let Some(first_arg) = args.args.first() {
                                 match first_arg {
-                                    syn::GenericArgument::Type(inner_ty) => {
-                                        Some(inner_ty.clone())
-                                    }
-                                    _ => {
-                                        None
-                                    }
+                                    syn::GenericArgument::Type(inner_ty) => Some(inner_ty.clone()),
+                                    _ => None,
                                 }
                             } else {
                                 None
                             }
                         }
-                        _ => {
-                            None
-                        }
+                        _ => None,
                     }
                 } else {
                     None
                 }
             }
-            _ => {
-                None
-            }
+            _ => None,
         };
 
         result
@@ -435,7 +432,9 @@ impl FieldInfo {
 
     /// Compute the visit method name for this field
     fn compute_visit_method_name(&self) -> syn::Ident {
-        let method_name = if self.proto_type.contains("bytes") || (self.base_type_name == "Vec" && self.is_primitive && !self.is_repeated) {
+        let method_name = if self.proto_type.contains("bytes")
+            || (self.base_type_name == "Vec" && self.is_primitive && !self.is_repeated)
+        {
             // CASE 1: Bytes field (Vec<u8>) - these have proto_type="bytes=\"vec\"" and are primitive but not repeated
             "visit_bytes".to_string()
         } else if self.is_repeated && self.is_primitive {
@@ -449,9 +448,9 @@ impl FieldInfo {
         } else {
             // CASE 4: Message types or other non-primitive types
             let type_name = &self.base_type_name;
-            format!("visit_{}", type_name.to_lowercase())
+            format!("visit_{}", type_name.to_case(convert_case::Case::Snake))
         };
-        
+
         syn::Ident::new(&method_name, proc_macro2::Span::call_site())
     }
 
@@ -473,7 +472,9 @@ impl FieldInfo {
     /// Compute the visitor trait for this field
     fn compute_visitor_trait(&self) -> proc_macro2::TokenStream {
         // Special handling for Vec<u8> (bytes) - these have proto_type="bytes=\"vec\"" and are primitive but not repeated
-        if self.proto_type.contains("bytes") || (self.base_type_name == "Vec" && self.is_primitive && !self.is_repeated) {
+        if self.proto_type.contains("bytes")
+            || (self.base_type_name == "Vec" && self.is_primitive && !self.is_repeated)
+        {
             return quote! { crate::pdata::BytesVisitor<Argument> };
         }
 
@@ -489,7 +490,6 @@ impl FieldInfo {
                 "f32" => quote! { crate::pdata::SliceVisitor<Argument, f32> },
                 "f64" => quote! { crate::pdata::SliceVisitor<Argument, f64> },
                 _ => {
-                    eprintln!("🚨 DEBUG: {} -> SliceVisitor fallback to standard", self.ident);
                     // Unknown repeated primitive type - use the standard path logic
                     self.generate_standard_visitor_trait()
                 }
@@ -533,7 +533,9 @@ impl FieldInfo {
     /// Compute the visitable trait for this field
     fn compute_visitable_trait(&self) -> proc_macro2::TokenStream {
         // Special handling for Vec<u8> (bytes) - these have proto_type="bytes=\"vec\"" and are primitive but not repeated
-        if self.proto_type.contains("bytes") || (self.base_type_name == "Vec" && self.is_primitive && !self.is_repeated) {
+        if self.proto_type.contains("bytes")
+            || (self.base_type_name == "Vec" && self.is_primitive && !self.is_repeated)
+        {
             return quote! { crate::pdata::BytesVisitable<Argument> };
         }
 
@@ -548,7 +550,7 @@ impl FieldInfo {
                 "u64" => quote! { crate::pdata::SliceVisitable<Argument, u64> },
                 "f32" => quote! { crate::pdata::SliceVisitable<Argument, f32> },
                 "f64" => quote! { crate::pdata::SliceVisitable<Argument, f64> },
-                _ => quote! { crate::pdata::UnknownVisitable<Argument> }
+                _ => quote! { crate::pdata::UnknownVisitable<Argument> },
             };
         }
 
@@ -590,17 +592,7 @@ impl FieldInfo {
 
     /// Get the method suffix for primitive types
     fn get_primitive_method_suffix(&self) -> String {
-        match self.base_type_name.as_str() {
-            "String" => "string".to_string(),
-            "u32" => "u32".to_string(),
-            "u64" => "u64".to_string(),
-            "i32" => "i32".to_string(),
-            "i64" => "i64".to_string(),
-            "f32" => "f32".to_string(),
-            "f64" => "f64".to_string(),
-            "bool" => "bool".to_string(),
-            name => name.to_lowercase(),
-        }
+        self.base_type_name.to_lowercase()
     }
 
     /// Generate visitor trait for a oneof case based on its case name
@@ -612,103 +604,17 @@ impl FieldInfo {
             "int" => quote! { crate::pdata::I64Visitor<Argument> },
             "double" => quote! { crate::pdata::F64Visitor<Argument> },
             "bytes" => quote! { crate::pdata::BytesVisitor<Argument> },
-            
+
             // Complex message types - use case name to generate visitor
             "kvlist" => quote! { KeyValueListVisitor<Argument> },
             "array" => quote! { ArrayValueVisitor<Argument> },
-            
+
             // Standard message types - convert to PascalCase and append Visitor
             _ => {
-                let visitor_name = format!("{}Visitor", Self::to_pascal_case(&case.name));
+                let visitor_name = format!("{}Visitor", case.name.to_case(Case::Pascal));
                 let visitor_ident = syn::Ident::new(&visitor_name, proc_macro2::Span::call_site());
                 quote! { #visitor_ident<Argument> }
             }
-        }
-    }
-
-    /// Generate visitor type for a oneof variant using oneof case information
-    pub fn generate_visitor_type_for_oneof_variant(case: &OneofCase) -> proc_macro2::TokenStream {
-        // For oneof variants, we need to determine the type from the case
-        if let Ok(case_type) = syn::parse_str::<syn::Type>(&case.type_param) {
-            if Self::needs_adapter_for_type(&case_type) {
-                // Generate the visitor trait name from the case type
-                let type_name = Self::get_base_type_name_from_type(&case_type);
-                let visitor_trait_name = format!("{}Visitor", type_name);
-                
-                // For Vec types that need adapters, these are typically bytes
-                if type_name == "Vec" {
-                    quote! { crate::pdata::BytesVisitor<Argument> }
-                } else {
-                    // For message types, try unqualified first, then fallback
-                    let visitor_ident = syn::Ident::new(&visitor_trait_name, proc_macro2::Span::call_site());
-                    quote! { #visitor_ident<Argument> }
-                }
-            } else {
-                // For primitive types
-                if Self::is_bytes_type(&case_type) {
-                    quote! { crate::pdata::BytesVisitor<Argument> }
-                } else {
-                    let base_type = Self::get_base_type_name_from_type(&case_type);
-                    match base_type.as_str() {
-                        "String" => quote! { crate::pdata::StringVisitor<Argument> },
-                        "bool" => quote! { crate::pdata::BooleanVisitor<Argument> },
-                        "i32" => quote! { crate::pdata::I32Visitor<Argument> },
-                        "i64" => quote! { crate::pdata::I64Visitor<Argument> },
-                        "u32" | "u8" => quote! { crate::pdata::U32Visitor<Argument> },
-                        "u64" => quote! { crate::pdata::U64Visitor<Argument> },
-                        "f32" | "f64" => quote! { crate::pdata::F64Visitor<Argument> },
-                        "Vec" => quote! { crate::pdata::BytesVisitor<Argument> }, // Vec in protobuf context is typically bytes
-                        _ => {
-                            // For message types, generate the appropriate visitor trait
-                            let visitor_trait_name = format!("{}Visitor", base_type);
-                            let visitor_ident = syn::Ident::new(&visitor_trait_name, proc_macro2::Span::call_site());
-                            quote! { #visitor_ident<Argument> }
-                        },
-                    }
-                }
-            }
-        } else {
-            // If we can't parse the type, use a generic fallback
-            let visitor_trait_name = format!("{}Visitor", case.name);
-            let visitor_ident = syn::Ident::new(&visitor_trait_name, proc_macro2::Span::call_site());
-            quote! { #visitor_ident<Argument> }
-        }
-    }
-
-    /// Helper function to convert a string to PascalCase
-    fn to_pascal_case(s: &str) -> String {
-        s.to_case(Case::Pascal)
-    }
-
-    /// Check if a type needs an adapter (helper for oneof processing)
-    fn needs_adapter_for_type(ty: &syn::Type) -> bool {
-        !Self::is_primitive_type_direct_static(ty) && !Self::is_bytes_type(ty)
-    }
-
-    /// Check if a type is primitive (static helper for oneof processing)
-    fn is_primitive_type_direct_static(ty: &syn::Type) -> bool {
-        if let syn::Type::Path(type_path) = ty {
-            if let Some(segment) = type_path.path.segments.last() {
-                matches!(
-                    segment.ident.to_string().as_str(),
-                    "String"
-                        | "bool"
-                        | "i8"
-                        | "i16"
-                        | "i32"
-                        | "i64"
-                        | "u8"
-                        | "u16"
-                        | "u32"
-                        | "u64"
-                        | "f32"
-                        | "f64"
-                )
-            } else {
-                false
-            }
-        } else {
-            false
         }
     }
 
@@ -737,20 +643,6 @@ impl FieldInfo {
             }
         } else {
             false
-        }
-    }
-
-    /// Extract the base type name from a syn::Type
-    pub fn get_base_type_name_from_type(ty: &syn::Type) -> String {
-        match ty {
-            syn::Type::Path(type_path) => {
-                if let Some(segment) = type_path.path.segments.last() {
-                    segment.ident.to_string()
-                } else {
-                    "unknown".to_string()
-                }
-            }
-            _ => "unknown".to_string(),
         }
     }
 }
