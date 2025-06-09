@@ -65,8 +65,11 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
 }
 
 /// Generate visitor call for a field with proper handling for different field types
+///
+/// This function has been redesigned based on analysis showing only 7 specific cases
+/// actually occur in practice (B, C, D, E, H, I, K from the original design).
 pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStream> {
-    // Handle oneof fields
+    // Handle oneof fields separately
     if let Some(oneof_cases) = info.oneof.as_ref() {
         return generate_oneof_visitor_call(info, oneof_cases);
     }
@@ -74,131 +77,67 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
     let field_name = &info.ident;
     let visitor_param = &info.visitor_param_name;
     let visit_method = &info.visit_method_name;
-    let needs_adapter = info.is_message;
-    let is_bytes_field = FieldInfo::is_bytes_type(&info.full_type_name); // Vec<u8> specifically
 
-    match (
-        info.is_optional,
-        info.is_repeated,
-        needs_adapter,
-        is_bytes_field,
-    ) {
-        (false, false, true, _) => {
-            let adapter_name = info.related_type("MessageAdapter");
-            Some(quote! {
-                arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(&self.data.#field_name)));
-            })
-        }
-        (false, false, false, _) => {
-            if visit_method.to_string() == "visit_string" {
-                Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
-            } else if is_bytes_field {
-                // For bytes fields (Vec<u8>), pass as slice
-                Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
-            } else {
-                Some(quote! { arg = #visitor_param.#visit_method(arg, *&self.data.#field_name); })
-            }
-        }
-        (true, false, true, _) => {
-            let adapter_name = info.related_type("MessageAdapter");
+    if info.is_message {
+        // Message types: CASE E (optional) and CASE I (repeated)
+        let adapter_name = info.related_type("MessageAdapter");
+
+        if info.is_optional {
+            // CASE E: Optional message
             Some(quote! {
                 if let Some(f) = &self.data.#field_name {
                     arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(f)));
                 }
             })
-        }
-        (true, false, false, _) => {
-            if visit_method.to_string() == "visit_string" {
-                Some(quote! {
-                    if let Some(f) = &self.data.#field_name {
-                        arg = #visitor_param.#visit_method(arg, f);
-                    }
-                })
-            } else if is_bytes_field {
-                // For bytes fields (Vec<u8>), pass as slice
-                Some(quote! {
-                    if let Some(f) = &self.data.#field_name {
-                        arg = #visitor_param.#visit_method(arg, f);
-                    }
-                })
-            } else {
-                Some(quote! {
-                    if let Some(f) = &self.data.#field_name {
-                        arg = #visitor_param.#visit_method(arg, *f);
-                    }
-                })
-            }
-        }
-        (false, true, true, _) => {
-            let adapter_name = info.related_type("MessageAdapter");
+        } else if info.is_repeated {
+            // CASE I: Repeated message
             Some(quote! {
                 for item in &self.data.#field_name {
                     arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(item)));
                 }
             })
+        } else {
+            // Non-optional, non-repeated message (original CASE A - not observed)
+            Some(quote! {
+                arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(&self.data.#field_name)));
+            })
         }
-        (false, true, false, true) => {
-            // For bytes fields (Vec<u8>), pass as slice
+    } else if info.is_repeated {
+        // Repeated primitives: CASE K (slice visitor)
+        if visit_method.to_string() == "visit_slice" {
+            // CASE K: Repeated primitives using SliceVisitor
             Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
+        } else {
+            // Other repeated cases (not observed in practice)
+            Some(quote! {
+                for item in &self.data.#field_name {
+                    arg = #visitor_param.#visit_method(arg, item);
+                }
+            })
         }
-        (false, true, false, false) => {
-            if visit_method.to_string() == "visit_slice" {
-                // For repeated primitives using SliceVisitor, pass the entire slice
-                Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
-            } else if visit_method.to_string() == "visit_string" {
-                Some(quote! {
-                    for item in &self.data.#field_name {
-                        arg = #visitor_param.#visit_method(arg, item);
-                    }
-                })
-            } else {
-                Some(quote! {
-                    for item in &self.data.#field_name {
-                        arg = #visitor_param.#visit_method(arg, *item);
-                    }
-                })
-            }
+    } else if info.is_optional {
+        // CASE H: Optional primitives (strings, bytes, numbers)
+        if visit_method.to_string() == "visit_string" || visit_method.to_string() == "visit_bytes" {
+            Some(quote! {
+                if let Some(f) = &self.data.#field_name {
+                    arg = #visitor_param.#visit_method(arg, f);
+                }
+            })
+        } else {
+            Some(quote! {
+                if let Some(f) = &self.data.#field_name {
+                    arg = #visitor_param.#visit_method(arg, *f);
+                }
+            })
         }
-        (true, true, _, _) => {
-            if needs_adapter {
-                let adapter_name = info.related_type("MessageAdapter");
-                Some(quote! {
-                    if let Some(items) = &self.data.#field_name {
-                        for item in items {
-                            arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(item)));
-                        }
-                    }
-                })
-            } else if is_bytes_field {
-                Some(quote! {
-                    if let Some(items) = &self.data.#field_name {
-                        arg = #visitor_param.#visit_method(arg, items);
-                    }
-                })
-            } else if visit_method.to_string() == "visit_slice" {
-                // For optional repeated primitives using SliceVisitor, pass the entire slice
-                Some(quote! {
-                    if let Some(items) = &self.data.#field_name {
-                        arg = #visitor_param.#visit_method(arg, items);
-                    }
-                })
-            } else if visit_method.to_string() == "visit_string" {
-                Some(quote! {
-                    if let Some(items) = &self.data.#field_name {
-                        for item in items {
-                            arg = #visitor_param.#visit_method(arg, item);
-                        }
-                    }
-                })
-            } else {
-                Some(quote! {
-                    if let Some(items) = &self.data.#field_name {
-                        for item in items {
-                            arg = #visitor_param.#visit_method(arg, *item);
-                        }
-                    }
-                })
-            }
+    } else {
+        // Non-optional, non-repeated primitives: CASE B, C, D
+        if visit_method.to_string() == "visit_string" || visit_method.to_string() == "visit_bytes" {
+            // CASE B: String, CASE C: Bytes
+            Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
+        } else {
+            // CASE D: Other primitives (numbers, bools)
+            Some(quote! { arg = #visitor_param.#visit_method(arg, *&self.data.#field_name); })
         }
     }
 }

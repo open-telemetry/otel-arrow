@@ -134,8 +134,6 @@ impl FieldInfo {
                     field.ty.clone()
                 };
 
-                // TODO: field_type should be used
-
                 // Use a safer approach with try_fold to handle errors
                 let result: Result<(syn::Type, Option<syn::Type>), String> =
                     otlp_model::FIELD_TYPE_OVERRIDES
@@ -241,28 +239,6 @@ impl FieldInfo {
         // For Visitable suffix, use precomputed visitable trait
         if suffix == "Visitable" {
             return self.visitable_trait.clone();
-        }
-
-        // For Adapter suffix, check if this is a primitive type that doesn't need adapters
-        if suffix == "Adapter" {
-            // Primitive types (including bytes/Vec<u8>) don't need adapters
-            if self.is_primitive
-                || self.proto_type == "bytes"
-                || matches!(
-                    self.proto_type.as_str(),
-                    "string"
-                        | "int64"
-                        | "uint32"
-                        | "int32"
-                        | "uint64"
-                        | "bool"
-                        | "double"
-                        | "float"
-                )
-            {
-                // Return empty token stream - this should not be called for primitive types
-                return quote::quote! { /* PRIMITIVE_NO_ADAPTER */ };
-            }
         }
 
         // For other suffixes, use original logic
@@ -426,21 +402,14 @@ impl FieldInfo {
 
     /// Compute the visit method name for this field
     fn compute_visit_method_name(&self) -> syn::Ident {
-        let method_name = if self.proto_type.contains("bytes")
-            || (self.base_type_name == "Vec" && self.is_primitive && !self.is_repeated)
-        {
-            // CASE 1: Bytes field (Vec<u8>) - these have proto_type="bytes=\"vec\"" and are primitive but not repeated
+        let method_name = if self.proto_type.contains("bytes") {
             "visit_bytes".to_string()
         } else if self.is_repeated && self.is_primitive {
-            // CASE 2: Repeated primitive field (Vec<u64>, Vec<f64>, etc.) but NOT bytes
-            // These should use SliceVisitor with visit_vec method
             "visit_slice".to_string()
         } else if self.is_primitive_type_direct() {
-            // CASE 3: Direct primitive type (u64, f64, String, etc.)
             let suffix = self.get_primitive_method_suffix();
             format!("visit_{}", suffix)
         } else {
-            // CASE 4: Message types or other non-primitive types
             let type_name = &self.base_type_name;
             format!("visit_{}", type_name.to_case(convert_case::Case::Snake))
         };
@@ -451,9 +420,7 @@ impl FieldInfo {
     /// Compute the visitor trait for this field
     fn compute_visitor_trait(&self) -> proc_macro2::TokenStream {
         // Special handling for Vec<u8> (bytes) - these have proto_type="bytes=\"vec\"" and are primitive but not repeated
-        if self.proto_type.contains("bytes")
-            || (self.base_type_name == "Vec" && self.is_primitive && !self.is_repeated)
-        {
+        if self.proto_type.contains("bytes") {
             return quote! { crate::pdata::BytesVisitor<Argument> };
         }
 
@@ -541,7 +508,6 @@ impl FieldInfo {
             "u32" | "u8" => quote! { crate::pdata::U32Visitable<Argument> },
             "u64" => quote! { crate::pdata::U64Visitable<Argument> },
             "f32" | "f64" => quote! { crate::pdata::F64Visitable<Argument> },
-            "Vec" => quote! { crate::pdata::SliceVisitable<Argument, u8> }, // This should rarely be used after bytes check above
             _ => {
                 // For non-primitive types, use the standard logic
                 if let Some(ref qualifier) = self.qualifier {
@@ -594,34 +560,6 @@ impl FieldInfo {
                 let visitor_ident = syn::Ident::new(&visitor_name, proc_macro2::Span::call_site());
                 quote! { #visitor_ident<Argument> }
             }
-        }
-    }
-
-    /// Check if a type is a bytes type
-    pub fn is_bytes_type(ty: &syn::Type) -> bool {
-        if let syn::Type::Path(type_path) = ty {
-            if let Some(last_segment) = type_path.path.segments.last() {
-                match last_segment.ident.to_string().as_str() {
-                    "Vec" => {
-                        // Check if it's Vec<u8>
-                        if let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments {
-                            if let Some(syn::GenericArgument::Type(syn::Type::Path(inner_path))) =
-                                args.args.first()
-                            {
-                                if let Some(inner_segment) = inner_path.path.segments.last() {
-                                    return inner_segment.ident == "u8";
-                                }
-                            }
-                        }
-                        false
-                    }
-                    _ => false,
-                }
-            } else {
-                false
-            }
-        } else {
-            false
         }
     }
 }
