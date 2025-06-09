@@ -352,7 +352,7 @@ impl FieldInfo {
     }
 
     fn is_primitive(field: &syn::Field) -> bool {
-        // Primitive includes basic protobuf types AND bytes (Vec<u8>)
+        // Primitive includes basic protobuf types AND bytes (Vec<u8>) AND enumerations
         Self::has_prost_attr(field, "bytes=\"vec\"")
             || Self::has_prost_attr(field, "string")
             || Self::has_prost_attr(field, "int64")
@@ -370,6 +370,8 @@ impl FieldInfo {
             // Alternative protobuf type names
             || Self::has_prost_attr(field, "sint64")
             || Self::has_prost_attr(field, "sint32")
+            // Enumerations are primitive types (represented as integers)
+            || Self::has_prost_attr(field, "enumeration=")
     }
 
     fn has_prost_attr(field: &syn::Field, value: &'static str) -> bool {
@@ -406,9 +408,9 @@ impl FieldInfo {
             "visit_bytes".to_string()
         } else if self.is_repeated && self.is_primitive {
             "visit_slice".to_string()
-        } else if self.is_primitive_type_direct() {
-            let suffix = self.get_primitive_method_suffix();
-            format!("visit_{}", suffix)
+        } else if self.is_primitive {
+            // For non-bytes, non-repeated primitives, use the base type name in lowercase
+            format!("visit_{}", self.base_type_name.to_lowercase())
         } else {
             let type_name = &self.base_type_name;
             format!("visit_{}", type_name.to_case(convert_case::Case::Snake))
@@ -525,19 +527,6 @@ impl FieldInfo {
                 }
             }
         }
-    }
-
-    /// Check if this field represents a primitive type
-    fn is_primitive_type_direct(&self) -> bool {
-        match self.base_type_name.as_str() {
-            "String" | "bool" | "i32" | "i64" | "u32" | "u64" | "f32" | "f64" | "u8" => true,
-            _ => false,
-        }
-    }
-
-    /// Get the method suffix for primitive types
-    fn get_primitive_method_suffix(&self) -> String {
-        self.base_type_name.to_lowercase()
     }
 
     /// Generate visitor trait for a oneof case based on its case name
