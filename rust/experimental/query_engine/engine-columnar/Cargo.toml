@@ -1,5 +1,5 @@
 [package]
-name = "data_engine_arrow"
+name = "data_engine_columnar"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

@@ -2,8 +2,8 @@
 members = [
     "expressions",
     "kql-parser",
-    "engine-arrow",
-    "engine-classic",
+    "engine-columnar",
+    "engine-recordset",
 ]
 resolver = "2"
 
