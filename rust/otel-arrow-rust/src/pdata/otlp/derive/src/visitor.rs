@@ -79,36 +79,29 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
     let visit_method = &info.visit_method_name;
 
     if info.is_message {
-        // Message types: CASE E (optional) and CASE I (repeated)
         let adapter_name = info.related_type("MessageAdapter");
 
         if info.is_optional {
-            // CASE E: Optional message
             Some(quote! {
                 if let Some(f) = &self.data.#field_name {
                     arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(f)));
                 }
             })
         } else if info.is_repeated {
-            // CASE I: Repeated message
             Some(quote! {
                 for item in &self.data.#field_name {
                     arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(item)));
                 }
             })
         } else {
-            // Non-optional, non-repeated message (original CASE A - not observed)
             Some(quote! {
                 arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(&self.data.#field_name)));
             })
         }
     } else if info.is_repeated {
-        // Repeated primitives: CASE K (slice visitor)
         if visit_method.to_string() == "visit_slice" {
-            // CASE K: Repeated primitives using SliceVisitor
             Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
         } else {
-            // Other repeated cases (not observed in practice)
             Some(quote! {
                 for item in &self.data.#field_name {
                     arg = #visitor_param.#visit_method(arg, item);
@@ -116,7 +109,6 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
             })
         }
     } else if info.is_optional {
-        // CASE H: Optional primitives (strings, bytes, numbers)
         if visit_method.to_string() == "visit_string" || visit_method.to_string() == "visit_bytes" {
             Some(quote! {
                 if let Some(f) = &self.data.#field_name {
@@ -131,12 +123,9 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
             })
         }
     } else {
-        // Non-optional, non-repeated primitives: CASE B, C, D
         if visit_method.to_string() == "visit_string" || visit_method.to_string() == "visit_bytes" {
-            // CASE B: String, CASE C: Bytes
             Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
         } else {
-            // CASE D: Other primitives (numbers, bools)
             Some(quote! { arg = #visitor_param.#visit_method(arg, *&self.data.#field_name); })
         }
     }
