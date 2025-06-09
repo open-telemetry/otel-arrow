@@ -59,10 +59,10 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
 
 /// Generate visitor call for a field with proper handling for different field types
 ///
-/// This function has been redesigned based on analysis showing only 7 specific cases
-/// actually occur in practice (B, C, D, E, H, I, K from the original design).
+/// This function has been redesigned to use the DRY principle with centralized utilities
+/// from the common module, eliminating repetitive patterns.
 pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStream> {
-    // Handle oneof fields separately
+    // Handle oneof fields separately using centralized utility
     if let Some(oneof_cases) = info.oneof.as_ref() {
         return common::visitor_oneof_call(info, oneof_cases);
     }
@@ -71,55 +71,13 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
     let visitor_param = &info.visitor_param_name;
     let visit_method = &info.visit_method_name;
 
-    if info.is_message {
-        let adapter_name = info.related_type("MessageAdapter");
-
-        if info.is_optional {
-            Some(quote! {
-                if let Some(f) = &self.data.#field_name {
-                    arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(f)));
-                }
-            })
-        } else if info.is_repeated {
-            Some(quote! {
-                for item in &self.data.#field_name {
-                    arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(item)));
-                }
-            })
-        } else {
-            Some(quote! {
-                arg = #visitor_param.#visit_method(arg, &(#adapter_name::new(&self.data.#field_name)));
-            })
-        }
-    } else if info.is_repeated {
-        if info.is_primitive {
-            Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
-        } else {
-            Some(quote! {
-                for item in &self.data.#field_name {
-                    arg = #visitor_param.#visit_method(arg, item);
-                }
-            })
-        }
-    } else if info.is_optional {
-        if visit_method.to_string() == "visit_string" || visit_method.to_string() == "visit_bytes" {
-            Some(quote! {
-                if let Some(f) = &self.data.#field_name {
-                    arg = #visitor_param.#visit_method(arg, f);
-                }
-            })
-        } else {
-            Some(quote! {
-                if let Some(f) = &self.data.#field_name {
-                    arg = #visitor_param.#visit_method(arg, *f);
-                }
-            })
-        }
-    } else {
-        if visit_method.to_string() == "visit_string" || visit_method.to_string() == "visit_bytes" {
-            Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
-        } else {
-            Some(quote! { arg = #visitor_param.#visit_method(arg, *&self.data.#field_name); })
-        }
-    }
+    // Use the centralized visitor call pattern generator
+    let category = common::FieldCategory::from_field_info(info);
+    Some(common::generate_visitor_call_pattern(
+        category,
+        field_name,
+        visitor_param,
+        visit_method,
+        info,
+    ))
 }
