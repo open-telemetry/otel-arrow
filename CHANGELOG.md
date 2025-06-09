@@ -9,7 +9,9 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
-## [0.36.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.36.0) - 2025-06-09
+> Note: v0.36.0 release was attempted on 2025-06-09, but had to be deleted per
+> problems mentioned in
+> [#566](https://github.com/open-telemetry/otel-arrow/issues/566).
 
 - Remove `concurrentbatch` and `obfuscation` processors.
   [#409](https://github.com/open-telemetry/otel-arrow/pull/409)
