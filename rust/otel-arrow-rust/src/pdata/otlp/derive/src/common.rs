@@ -174,8 +174,16 @@ pub fn visitor_method_name(type_name: &Ident) -> Ident {
 
 /// Generate visitable method name from type name (e.g., "LogsData" -> "accept_logs_data")
 pub fn visitable_method_name(type_name: &Ident) -> Ident {
+    // Handle raw identifiers by removing the "r#" prefix
+    let name_str = type_name.to_string();
+    let clean_name = if name_str.starts_with("r#") {
+        &name_str[2..] // Remove "r#" prefix
+    } else {
+        &name_str
+    };
+    
     syn::Ident::new(
-        &format!("accept_{}", type_name).to_case(Case::Snake),
+        &format!("accept_{}", clean_name).to_case(Case::Snake),
         type_name.span(),
     )
 }

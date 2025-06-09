@@ -46,13 +46,9 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
     let visitor_name = msg.related_typename("Visitor");
     let visitable_name = msg.related_typename("Visitable");
     let visitor_method_name = common::visitor_method_name(&outer_name);
-    let _visitable_method_name = common::visitable_method_name(&outer_name);
 
-    // Generate the visitor implementation method body
-    let visitor_body = generate_visitor_method_body(msg);
-
-    // Generate child visitor parameters for the visitor method
-    let _child_visitor_params = generate_child_visitor_params(&msg.all_fields);
+    // Generate the children_size helper method body for the visitor
+    let visitor_body = generate_helper_method_body(msg);
 
     let expanded = quote! {
         /// EncodedLen visitor for calculating protobuf encoded size
@@ -66,22 +62,19 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             pub fn new(tag: u32) -> Self {
                 Self { tag }
             }
-        }
 
-        impl #encoded_len_name {
             /// Helper method to calculate the sum of direct children's encoded lengths.
-            /// This method processes each child field individually to avoid double-counting
-            /// nested descendants.
-            fn children_size(
-                &mut self,
-                mut sizes: crate::pdata::otlp::PrecomputedSizes,
+            /// This method processes each child field individually via visitable interface
+            /// to avoid double-counting nested descendants.
+            fn children_encoded_size(
+                mut arg: crate::pdata::otlp::PrecomputedSizes,
                 v: impl #visitable_name<crate::pdata::otlp::PrecomputedSizes>
             ) -> (crate::pdata::otlp::PrecomputedSizes, usize) {
                 let mut total = 0;
                 
                 #visitor_body
                 
-                (sizes, total)
+                (arg, total)
             }
         }
 
@@ -95,14 +88,13 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                 let my_idx = arg.len();
                 arg.reserve();
 
-                // Calculate total size of direct children
-                let (updated_arg, total_child_size) = self.children_size(arg, v);
+                // Calculate total size of direct children using helper method
+                let (updated_arg, total_child_size) = Self::children_encoded_size(arg, v);
                 arg = updated_arg;
 
                 // Calculate this message's total size
                 // Formula: tag_size + length_varint_size + content_size
                 let tag_size = crate::pdata::otlp::PrecomputedSizes::varint_len((self.tag << 3) as usize);
-                let length_varint_size = crate::pdata::otlp::PrecomputedSizes::varint_len(total_child_size);
 
                 // Store the computed size
                 arg.set_size(my_idx, tag_size, total_child_size);
@@ -115,22 +107,21 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
     TokenStream::from(expanded)
 }
 
-/// Generate the children_size helper method body that calculates encoded sizes of direct children.
+/// Generate the helper method body that calculates encoded sizes of direct children.
 ///
-/// This implements the corrected algorithm that processes each child field individually:
-/// 1. For each field, reserve space and call accept_child
-/// 2. Track the size of each direct child
-/// 3. Sum only the direct children sizes (not grandchildren)
-/// 4. Return the total size of all direct children
-fn generate_visitor_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
+/// This generates code to be used in the children_encoded_size method on the visitor.
+/// It processes each field individually using visitable method calls instead of direct field access.
+fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
     let mut field_processing = Vec::new();
 
     for info in &msg.all_fields {
         if let Some(oneof_cases) = info.oneof.as_ref() {
             // Process each oneof variant individually
             for case in oneof_cases {
-                let variant_param_name =
-                    common::oneof_variant_field_or_method_name(&info.ident, &case.name);
+                let field_name = &info.ident;
+                
+                // Generate the visitable method name for this field
+                let visitable_method = common::visitable_method_name(&field_name);
 
                 let visitor_instantiation = if case.is_primitive {
                     generate_primitive_visitor_instantiation(case, &info.tag)
@@ -138,20 +129,22 @@ fn generate_visitor_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
                     generate_message_visitor_instantiation(case, &info.tag)
                 };
 
-                let accept_child_call = generate_accept_child_call_for_oneof(info, case);
-
+                // For oneof variants, call the visitable method which will handle the pattern matching
                 field_processing.push(quote! {
-                    // Process oneof variant: #variant_param_name
-                    let idx = sizes.len();
-                    sizes.reserve();
-                    let mut #variant_param_name = #visitor_instantiation;
-                    sizes = #accept_child_call;
-                    total += sizes.get_size(idx);
+                    // Process oneof field: #field_name
+                    let idx = arg.len();
+                    arg.reserve();
+                    let mut visitor = #visitor_instantiation;
+                    arg = v.#visitable_method(arg, &mut visitor);
+                    total += arg.get_size(idx);
                 });
             }
         } else {
             // Process regular field
-            let visitor_param = &info.visitor_param_name;
+            let field_name = &info.ident;
+            
+            // Generate the visitable method name for this field
+            let visitable_method = common::visitable_method_name(&field_name);
 
             let visitor_instantiation = if info.is_primitive {
                 generate_primitive_visitor_for_field(info)
@@ -159,15 +152,14 @@ fn generate_visitor_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
                 generate_message_visitor_for_field(info)
             };
 
-            let accept_child_call = generate_accept_child_call_for_field(info);
-
+            // Call the visitable method for this field
             field_processing.push(quote! {
-                // Process field: #visitor_param
-                let idx = sizes.len();
-                sizes.reserve();
-                let mut #visitor_param = #visitor_instantiation;
-                sizes = #accept_child_call;
-                total += sizes.get_size(idx);
+                // Process field: #field_name
+                let idx = arg.len();
+                arg.reserve();
+                let mut visitor = #visitor_instantiation;
+                arg = v.#visitable_method(arg, &mut visitor);
+                total += arg.get_size(idx);
             });
         }
     }
@@ -408,26 +400,105 @@ fn generate_child_visitor_params(fields: &[FieldInfo]) -> TokenVec {
     params
 }
 
-/// Generate accept_child call for a regular field.
-fn generate_accept_child_call_for_field(info: &FieldInfo) -> proc_macro2::TokenStream {
+/// Generate visitable call for a regular field.
+fn generate_visitable_call_for_field(info: &FieldInfo, visitor_param: &syn::Ident) -> proc_macro2::TokenStream {
     let field_name = &info.ident;
-    let visitor_param = &info.visitor_param_name;
     
-    quote! {
-        v.accept_child(sizes, &#field_name, &mut #visitor_param)
+    if info.is_primitive {
+        // For primitive fields, call the visitor's visit method directly  
+        let visit_method = &info.visit_method_name;
+        if info.is_repeated {
+            quote! {
+                #visitor_param.visit_slice(sizes, &v.#field_name)
+            }
+        } else if info.is_optional {
+            quote! {
+                if let Some(ref value) = v.#field_name {
+                    #visitor_param.#visit_method(sizes, value)
+                } else {
+                    sizes
+                }
+            }
+        } else {
+            quote! {
+                #visitor_param.#visit_method(sizes, v.#field_name)
+            }
+        }
+    } else {
+        // For message fields, call the visitable method
+        let base_type_ident = syn::Ident::new(&info.base_type_name, proc_macro2::Span::call_site());
+        let visitable_method = common::visitable_method_name(&base_type_ident);
+        
+        if info.is_repeated {
+            quote! {
+                v.#field_name.iter().fold(sizes, |acc, item| {
+                    item.#visitable_method(acc, &mut #visitor_param)
+                })
+            }
+        } else if info.is_optional {
+            quote! {
+                if let Some(ref item) = v.#field_name {
+                    item.#visitable_method(sizes, &mut #visitor_param)
+                } else {
+                    sizes
+                }
+            }
+        } else {
+            quote! {
+                v.#field_name.#visitable_method(sizes, &mut #visitor_param)
+            }
+        }
     }
 }
 
-/// Generate accept_child call for an oneof variant.
-fn generate_accept_child_call_for_oneof(
+/// Generate visitable call for an oneof variant.
+fn generate_visitable_call_for_oneof(
     info: &FieldInfo, 
-    case: &otlp_model::OneofCase
+    case: &otlp_model::OneofCase,
+    visitor_param: &syn::Ident
 ) -> proc_macro2::TokenStream {
     let field_name = &info.ident;
-    let variant_param_name =
-        common::oneof_variant_field_or_method_name(&info.ident, &case.name);
+    let value_variant = case.value_variant;
     
-    quote! {
-        v.accept_child(sizes, &#field_name, &mut #variant_param_name)
+    // Parse the value_variant to get the enum type and variant name
+    let variant_path = syn::parse_str::<syn::Path>(value_variant).unwrap_or_else(|e| {
+        panic!("Failed to parse variant path: {} (error: {:?})", value_variant, e);
+    });
+    
+    if case.is_primitive {
+        // For primitive oneof variants, we need to determine the visit method name
+        // Based on the type_param
+        let visit_method = match case.type_param {
+            "bool" => syn::Ident::new("visit_bool", proc_macro2::Span::call_site()),
+            "::prost::alloc::string::String" => syn::Ident::new("visit_string", proc_macro2::Span::call_site()),
+            "Vec<u8>" => syn::Ident::new("visit_bytes", proc_macro2::Span::call_site()),
+            "u32" => syn::Ident::new("visit_u32", proc_macro2::Span::call_site()),
+            "u64" => syn::Ident::new("visit_u64", proc_macro2::Span::call_site()),
+            "i32" => syn::Ident::new("visit_i32", proc_macro2::Span::call_site()),
+            "i64" => syn::Ident::new("visit_i64", proc_macro2::Span::call_site()),
+            "f64" => syn::Ident::new("visit_f64", proc_macro2::Span::call_site()),
+            "f32" => syn::Ident::new("visit_f32", proc_macro2::Span::call_site()),
+            _ => syn::Ident::new("visit_i32", proc_macro2::Span::call_site()), // Default for enums
+        };
+        
+        quote! {
+            if let Some(#variant_path(ref value)) = v.#field_name {
+                #visitor_param.#visit_method(sizes, value)
+            } else {
+                sizes
+            }
+        }
+    } else {
+        // For message oneof variants, call the visitable method
+        let base_type = case.type_param.split("::").last().unwrap_or(case.type_param);
+        let base_type_ident = syn::Ident::new(base_type, proc_macro2::Span::call_site());
+        let visitable_method = common::visitable_method_name(&base_type_ident);
+        quote! {
+            if let Some(#variant_path(ref value)) = v.#field_name {
+                value.#visitable_method(sizes, &mut #visitor_param)
+            } else {
+                sizes
+            }
+        }
     }
 }
