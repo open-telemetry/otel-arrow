@@ -142,7 +142,7 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
             Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
         }
         (false, true, false, false) => {
-            if visit_method.to_string() == "visit_vec" {
+            if visit_method.to_string() == "visit_slice" {
                 // For repeated primitives using SliceVisitor, pass the entire slice
                 Some(quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); })
             } else if visit_method.to_string() == "visit_string" {
@@ -175,7 +175,7 @@ pub fn generate_visitor_call(info: &FieldInfo) -> Option<proc_macro2::TokenStrea
                         arg = #visitor_param.#visit_method(arg, items);
                     }
                 })
-            } else if visit_method.to_string() == "visit_vec" {
+            } else if visit_method.to_string() == "visit_slice" {
                 // For optional repeated primitives using SliceVisitor, pass the entire slice
                 Some(quote! {
                     if let Some(items) = &self.data.#field_name {

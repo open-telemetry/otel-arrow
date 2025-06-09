@@ -434,7 +434,7 @@ impl FieldInfo {
         } else if self.is_repeated && self.is_primitive {
             // CASE 2: Repeated primitive field (Vec<u64>, Vec<f64>, etc.) but NOT bytes
             // These should use SliceVisitor with visit_vec method
-            "visit_vec".to_string()
+            "visit_slice".to_string()
         } else if self.is_primitive_type_direct() {
             // CASE 3: Direct primitive type (u64, f64, String, etc.)
             let suffix = self.get_primitive_method_suffix();

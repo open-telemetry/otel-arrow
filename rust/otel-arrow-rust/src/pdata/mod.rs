@@ -130,7 +130,7 @@ pub trait BytesVisitor<Argument> {
 /// Visitor trait for primitive slices.
 pub trait SliceVisitor<Argument, Primitive> {
     /// Visit a slice of primitives
-    fn visit_vec(&mut self, arg: Argument, value: &[Primitive]) -> Argument;
+    fn visit_slice(&mut self, arg: Argument, value: &[Primitive]) -> Argument;
 }
 
 /// NoopVisitor implements every visitor, does nothing.
@@ -185,7 +185,7 @@ impl<Argument> BooleanVisitor<Argument> for NoopVisitor {
 }
 
 impl<Argument, Primitive> SliceVisitor<Argument, Primitive> for NoopVisitor {
-    fn visit_vec(&mut self, arg: Argument, _: &[Primitive]) -> Argument {
+    fn visit_slice(&mut self, arg: Argument, _: &[Primitive]) -> Argument {
         arg
     }
 }
