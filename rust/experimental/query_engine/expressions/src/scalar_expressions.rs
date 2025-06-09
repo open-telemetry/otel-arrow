@@ -1,3 +1,5 @@
+use chrono::{DateTime, FixedOffset};
+
 use crate::{Expression, QueryLocation, ValueAccessor, ValueSelector};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +28,9 @@ pub enum ScalarExpression {
 
     /// Resolve a static bool value provided directly in a query.
     Boolean(BooleanScalarExpression),
+
+    /// Resolve a static DateTime value provided directly in a query.
+    DateTime(DateTimeScalarExpression),
 
     /// Resolve a static double value provided directly in a query.
     Double(DoubleScalarExpression),
@@ -183,6 +188,34 @@ impl BooleanScalarExpression {
 }
 
 impl Expression for BooleanScalarExpression {
+    fn get_query_location(&self) -> &QueryLocation {
+        &self.query_location
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DateTimeScalarExpression {
+    query_location: QueryLocation,
+    value: DateTime<FixedOffset>,
+}
+
+impl DateTimeScalarExpression {
+    pub fn new(
+        query_location: QueryLocation,
+        value: DateTime<FixedOffset>,
+    ) -> DateTimeScalarExpression {
+        Self {
+            query_location,
+            value,
+        }
+    }
+
+    pub fn get_value(&self) -> DateTime<FixedOffset> {
+        self.value
+    }
+}
+
+impl Expression for DateTimeScalarExpression {
     fn get_query_location(&self) -> &QueryLocation {
         &self.query_location
     }
