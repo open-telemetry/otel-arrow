@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1749571862921,
+  "lastUpdate": 1749575959873,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -2043,6 +2043,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "pipeline-perf-collector-config-memory-max",
             "value": 122.98,
+            "unit": "MiB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "drewrelmas@gmail.com",
+            "name": "Drew Relmas",
+            "username": "drewrelmas"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5afc0bc560667bf517043cc47774a9d1b9257b78",
+          "message": "Downgrade Go to 1.23.0 for Collector-Contrib compatibility (#569)\n\nAlthough our latest release `v0.37.0` resolved problems mentioned in\n#566 caused by folder structure changes, it has another unrelated issue.\n\nThe Go version used by our modules was upgraded to `1.24.x` in #440 and\n#508 due to prompting from the recently enabled Renovate bot. However,\nthe primary usage of the modules is in the\nOpenTelemetry-Collector-Contrib repository which currently only supports\ncomponents adhering to `1.23.0`.\n\nWhile there is nothing functionally wrong with our release `v0.37.0`, it\nis unusable in Collector-Contrib. Therefore, this PR:\n- Downgrades Go to 1.23.0\n- Adjusts Renovate config to constrain Go to that version, similar to\n[Collector-Contrib](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/5accecf1943f682b9e091fb4bf9e811f7b7fad98/renovate.json#L7-L9)",
+          "timestamp": "2025-06-10T17:09:08Z",
+          "tree_id": "7855af8d9bc24510c4a81cabf2215deec793df81",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/5afc0bc560667bf517043cc47774a9d1b9257b78"
+        },
+        "date": 1749575958119,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-throughput",
+            "value": 466666.6666666667,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-sent",
+            "value": 14000000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-logs-received",
+            "value": 14000000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-avg",
+            "value": 2.48,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-cpu-max",
+            "value": 2.83,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-avg",
+            "value": 148.23,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-with-batch-processor-memory-max",
+            "value": 180.27,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-throughput",
+            "value": 442166.6666666667,
+            "unit": "logs/sec"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-sent",
+            "value": 13265000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-logs-received",
+            "value": 13265000,
+            "unit": "count"
+          },
+          {
+            "name": "pipeline-perf-collector-config-loss-percentage",
+            "value": 0,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-avg",
+            "value": 2.33,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-cpu-max",
+            "value": 2.79,
+            "unit": "percent"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-avg",
+            "value": 110.75,
+            "unit": "MiB"
+          },
+          {
+            "name": "pipeline-perf-collector-config-memory-max",
+            "value": 129.61,
             "unit": "MiB"
           }
         ]
