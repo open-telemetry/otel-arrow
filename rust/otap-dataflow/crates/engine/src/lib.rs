@@ -456,6 +456,8 @@ impl<PData: 'static> PipelineFactory<PData> {
 /// its dispatch strategy, and the set of destination runtime nodes connected to that port.
 struct HyperEdgeRuntime<'a, PData> {
     source: &'a RuntimeNode<PData>,
+    // ToDo(LQ): Use port name for telemetry and debugging purposes.
+    #[allow(dead_code)]
     port: &'a PortName,
     dispatch_strategy: &'a DispatchStrategy,
     destinations: Vec<&'a RuntimeNode<PData>>,

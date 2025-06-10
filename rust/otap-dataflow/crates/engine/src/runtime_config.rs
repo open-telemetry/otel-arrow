@@ -70,4 +70,16 @@ impl<PData> RuntimePipeline<PData> {
     pub fn new(config: PipelineConfig, nodes: HashMap<NodeId, RuntimeNode<PData>>) -> Self {
         Self { config, nodes }
     }
+
+    /// Returns the number of nodes in the pipeline.
+    #[must_use]
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Returns a reference to the pipeline configuration.
+    #[must_use]
+    pub fn config(&self) -> &PipelineConfig {
+        &self.config
+    }
 }

@@ -49,5 +49,12 @@ mod tests {
             "Failed to create runtime pipeline: {:?}",
             result.err()
         );
+        let runtime_pipeline = result.unwrap();
+        assert_eq!(
+            runtime_pipeline.node_count(),
+            3,
+            "Expected 3 nodes in the pipeline"
+        );
+        dbg!(runtime_pipeline.config());
     }
 }
