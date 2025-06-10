@@ -117,12 +117,14 @@ impl AdaptiveStructBuilder {
             }
         }
 
-        // if arrays is empty, this returns 'None' meaning that all the fields were all null/empty
-        (!arrays.is_empty()).then(|| {
-            // if arrays is not empty, try to build the struct array, then wrap in an Arc to produce ArrayRef
-            StructArray::try_new(Fields::from(fields), arrays, None)
-                .map(|s| Arc::new(s) as ArrayRef)
-        })
+        if !arrays.is_empty() {
+            let struct_array_result = StructArray::try_new(Fields::from(fields), arrays, None)
+                .map(|sa| Arc::new(sa) as ArrayRef);
+            Some(struct_array_result)
+        } else {
+            // if arrays is empty, this returns 'None' meaning that all the fields were all null/empty
+            None
+        }
     }
 }
 

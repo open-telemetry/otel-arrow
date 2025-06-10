@@ -539,7 +539,7 @@ pub mod test {
         expected_data_type: DataType,
     ) where
         T: PartialEq + std::fmt::Debug,
-        TArgs: Clone + 'static,
+        TArgs: Clone,
         TN: CheckedArrayAppend<Native = T> + ArrayBuilderConstructor<Args = TArgs> + ArrayBuilder,
         TD8: CheckedDictionaryArrayAppend<Native = T>
             + DictionaryBuilder<UInt8Type>
@@ -550,8 +550,7 @@ pub mod test {
         TD16: CheckedDictionaryArrayAppend<Native = T>
             + DictionaryBuilder<UInt16Type>
             + ArrayBuilderConstructor<Args = TArgs>
-            + ConvertToNativeHelper
-            + 'static,
+            + ConvertToNativeHelper,
         <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
     {
         test_array_builder_generic(&array_builder_factory, expected_data_type.clone());
