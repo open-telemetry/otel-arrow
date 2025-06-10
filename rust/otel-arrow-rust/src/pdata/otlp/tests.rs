@@ -759,3 +759,148 @@ fn test_precomputed_sizes_varint_len() {
     assert_eq!(PrecomputedSizes::varint_len(16383), 2);
     assert_eq!(PrecomputedSizes::varint_len(16384), 3);
 }
+
+// Primitive encoded length tests - start from the bottom up
+#[test]
+fn test_encoded_len_i32() {
+    use crate::proto::opentelemetry::common::v1::any_value::Value;
+    use prost::Message;
+
+    let value: i32 = 42;
+    // prost encodes primitives as fields in messages, so we use AnyValue
+    let av = AnyValue {
+        value: Some(Value::IntValue(value as i64)),
+    };
+    let prost_len = av.encoded_len();
+    let pdata_len = av.pdata_size();
+    assert_eq!(
+        prost_len, pdata_len,
+        "pdata_size and prost encoded_len differ for i32: prost={}, pdata={}",
+        prost_len, pdata_len
+    );
+}
+
+#[test]
+fn test_encoded_len_f64() {
+    use crate::proto::opentelemetry::common::v1::any_value::Value;
+    use prost::Message;
+
+    let value: f64 = 3.1415;
+    let av = AnyValue {
+        value: Some(Value::DoubleValue(value)),
+    };
+    let prost_len = av.encoded_len();
+    let pdata_len = av.pdata_size();
+    assert_eq!(
+        prost_len, pdata_len,
+        "pdata_size and prost encoded_len differ for f64: prost={}, pdata={}",
+        prost_len, pdata_len
+    );
+}
+
+#[test]
+fn test_encoded_len_string() {
+    use crate::proto::opentelemetry::common::v1::any_value::Value;
+    use prost::Message;
+
+    let value = "hello world".to_string();
+    let av = AnyValue {
+        value: Some(Value::StringValue(value.clone())),
+    };
+    let prost_len = av.encoded_len();
+    let pdata_len = av.pdata_size();
+    assert_eq!(
+        prost_len, pdata_len,
+        "pdata_size and prost encoded_len differ for String: prost={}, pdata={}",
+        prost_len, pdata_len
+    );
+}
+
+#[test]
+fn test_encoded_len_keyvalue() {
+    use crate::proto::opentelemetry::common::v1::any_value::Value;
+    use prost::Message;
+
+    let kv = KeyValue {
+        key: "test_key".to_string(),
+        value: Some(AnyValue {
+            value: Some(Value::StringValue("test_value".to_string())),
+        }),
+    };
+    let prost_len = kv.encoded_len();
+    let pdata_len = kv.pdata_size();
+    assert_eq!(
+        prost_len, pdata_len,
+        "pdata_size and prost encoded_len differ for KeyValue: prost={}, pdata={}",
+        prost_len, pdata_len
+    );
+}
+
+#[test]
+fn test_debug_keyvalue_calculation() {
+    use crate::proto::opentelemetry::common::v1::any_value::Value;
+    use prost::Message;
+
+    // Create the components step by step
+    let key = "test_key";
+    let value_str = "test_value";
+
+    // Test AnyValue by itself first
+    let any_value = AnyValue {
+        value: Some(Value::StringValue(value_str.to_string())),
+    };
+    println!(
+        "AnyValue - prost: {}, pdata: {}",
+        any_value.encoded_len(),
+        any_value.pdata_size()
+    );
+
+    // Test string directly in AnyValue context
+    let just_string = AnyValue {
+        value: Some(Value::StringValue(value_str.to_string())),
+    };
+    println!(
+        "Just string in AnyValue - prost: {}, pdata: {}",
+        just_string.encoded_len(),
+        just_string.pdata_size()
+    );
+
+    // Test KeyValue with just key, no value
+    let kv_no_value = KeyValue {
+        key: key.to_string(),
+        value: None,
+    };
+    println!(
+        "KeyValue (no value) - prost: {}, pdata: {}",
+        kv_no_value.encoded_len(),
+        kv_no_value.pdata_size()
+    );
+
+    // Test KeyValue with value
+    let kv = KeyValue {
+        key: key.to_string(),
+        value: Some(any_value),
+    };
+    println!(
+        "KeyValue (with value) - prost: {}, pdata: {}",
+        kv.encoded_len(),
+        kv.pdata_size()
+    );
+
+    // Manual calculation for verification
+    println!("Manual calculation:");
+    println!(
+        "  key '{}' length: {} -> tag(1) + len(1) + data({}) = {}",
+        key,
+        key.len(),
+        key.len(),
+        1 + 1 + key.len()
+    );
+    println!(
+        "  AnyValue size: {} -> tag(1) + len(1) + data({}) = {}",
+        12,
+        12,
+        1 + 1 + 12
+    );
+    println!("  Expected total: {}", (1 + 1 + key.len()) + (1 + 1 + 12));
+}

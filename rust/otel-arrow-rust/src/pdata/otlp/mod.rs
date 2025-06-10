@@ -183,6 +183,17 @@ impl PrecomputedSizes {
         let total_size = tag_size + Self::varint_len(child_size) + child_size;
         self.sizes[idx] = total_size;
     }
+
+    /// Set size directly at a specific index (for pure oneof wrappers)
+    pub fn set_size_direct(&mut self, idx: usize, size: usize) {
+        self.sizes[idx] = size;
+    }
+
+    /// Debug method to inspect the sizes vector
+    #[cfg(test)]
+    pub fn debug_sizes(&self) -> &Vec<usize> {
+        &self.sizes
+    }
 }
 
 // Into implementations for OTLP common types to support builder APIs
