@@ -4,6 +4,8 @@
 //!
 //! ToDo: Handle configuration changes
 //! ToDo: Implement proper deadline function for Shutdown ctrl msg
+//! ToDo: track cpu usage per thread
+//! minalloc -> get memory allocation per thread
 
 use crate::config::Config;
 use async_trait::async_trait;
@@ -15,11 +17,13 @@ use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
 use otap_df_otap::proto::opentelemetry::experimental::arrow::v1::{
     ArrowPayloadType, BatchArrowRecords,
 };
-use std::borrow::Cow;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
-use sysinfo::{DiskUsage, NetworkData, Networks, Process, System, get_current_pid};
+use sysinfo::{
+    CpuRefreshKind, DiskUsage, NetworkData, Networks, Process, ProcessRefreshKind, RefreshKind,
+    System, get_current_pid,
+};
 use tokio::time::{Duration, Instant};
 
 /// Perf Exporter that emits performance data
@@ -41,24 +45,20 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
         mut msg_chan: MessageChannel<BatchArrowRecords>,
         effect_handler: local::EffectHandler<BatchArrowRecords>,
     ) -> Result<(), Error<BatchArrowRecords>> {
-        // create a tcp stream for sending data
-
         // init variables for tracking
-        //TODO: Add msg latency tracking
         let mut average_pipeline_latency: f64 = 0.0;
-        let mut received_msg_count: usize = 0;
-        let mut received_evt_count: usize = 0;
-        let mut total_received_msg_count: usize = 0;
-        let mut total_received_evt_count: usize = 0;
-        let mut received_pdata_count: usize = 0;
-        let mut total_received_pdata_count: usize = 0;
+        let mut received_arrow_records_count: u64 = 0;
+        let mut received_otlp_signal_count: u64 = 0;
+        let mut total_received_arrow_records_count: u128 = 0;
+        let mut total_received_otlp_signal_count: u128 = 0;
+        let mut received_pdata_batch_count: u64 = 0;
+        let mut total_received_pdata_batch_count: u64 = 0;
         let mut last_perf_time: Instant = Instant::now();
         let process_pid = get_current_pid().map_err(|e| Error::ExporterError {
             exporter: effect_handler.exporter_name(),
             error: format!("Failed to get process pid: {}", e),
         })?;
         let mut system = System::new();
-        let mut networks = Networks::new();
 
         let mut writer = get_writer(self.output);
 
@@ -79,22 +79,32 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                     let duration = now - last_perf_time;
 
                     // display pipeline report
-                    _ = writeln!(writer, "---Pipeline Report--");
+                    _ = writeln!(
+                        writer,
+                        "====================Pipeline Report===================="
+                    );
                     display_report_pipeline(
-                        effect_handler.exporter_name(),
-                        received_msg_count,
-                        received_evt_count,
-                        received_pdata_count,
-                        total_received_msg_count,
-                        total_received_evt_count,
-                        total_received_pdata_count,
+                        received_arrow_records_count,
+                        received_otlp_signal_count,
+                        received_pdata_batch_count,
+                        total_received_arrow_records_count,
+                        total_received_otlp_signal_count,
+                        total_received_pdata_batch_count,
                         average_pipeline_latency,
                         duration,
                         &mut writer,
                     );
 
-                    system = System::new_all();
-                    networks = Networks::new_with_refreshed_list();
+                    system.refresh_specifics(
+                        RefreshKind::nothing()
+                            .with_processes(
+                                ProcessRefreshKind::nothing()
+                                    .with_cpu()
+                                    .with_disk_usage()
+                                    .with_memory(),
+                            )
+                            .with_cpu(CpuRefreshKind::nothing().with_cpu_usage()),
+                    );
                     let process = system.process(process_pid).ok_or(Error::ExporterError {
                         exporter: effect_handler.exporter_name(),
                         error: "Failed to get process".to_owned(),
@@ -103,20 +113,33 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                     // check configuration and display data accordingly
                     if self.config.mem_usage() {
                         // get process
-                        _ = writeln!(writer, "---Memory Usage---");
+                        _ = writeln!(
+                            writer,
+                            "=====================Memory Usage======================"
+                        );
                         display_mem_usage(process, &mut writer);
                     }
                     if self.config.cpu_usage() {
-                        _ = writeln!(writer, "---Cpu Usage---");
+                        _ = writeln!(
+                            writer,
+                            "=======================Cpu Usage======================="
+                        );
                         display_cpu_usage(process, &system, &mut writer);
                     }
                     if self.config.disk_usage() {
-                        _ = writeln!(writer, "---Disk Usage---");
+                        _ = writeln!(
+                            writer,
+                            "======================Disk Usage======================="
+                        );
                         let disk_usage = process.disk_usage();
                         display_disk_usage(disk_usage, duration, &mut writer);
                     }
                     if self.config.io_usage() {
-                        _ = writeln!(writer, "---Network Usage---");
+                        let networks = Networks::new_with_refreshed_list();
+                        _ = writeln!(
+                            writer,
+                            "=====================Network Usage====================="
+                        );
                         for (interface_name, network) in &networks {
                             display_io_usage(interface_name, network, duration, &mut writer);
                         }
@@ -124,27 +147,28 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
 
                     // reset received counters
                     // update last_perf_time
-                    received_msg_count = 0;
-                    received_evt_count = 0;
-                    received_pdata_count = 0;
+                    received_arrow_records_count = 0;
+                    received_otlp_signal_count = 0;
+                    received_pdata_batch_count = 0;
                     last_perf_time = now;
                 }
+                // ToDo: Handle configuration changes
                 Message::Control(ControlMsg::Config { .. }) => {}
                 Message::Control(ControlMsg::Shutdown { .. }) => {
                     break;
                 }
                 Message::PData(batch) => {
-                    //TODO: check headers for timestamp
-                    //get time delta between now and timestamp
-                    // calculate average
+                    received_pdata_batch_count += 1;
+                    total_received_pdata_batch_count += 1;
                     // decode the headers which are hpack encoded
-                    received_pdata_count += 1;
-                    total_received_pdata_count += 1;
+                    // check for timestamp
+                    // get time delta between now and timestamp
+                    // calculate average
                     let mut decoder = Decoder::new();
                     let header_list =
                         decoder
                             .decode(&batch.headers)
-                            .map_err(|_| Error::ExporterError {
+                            .map_err(|error| Error::ExporterError {
                                 exporter: effect_handler.exporter_name(),
                                 error: "Failed to decode batch headers".to_owned(),
                             })?;
@@ -153,32 +177,55 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                     let timestamp_pair = header_list.iter().find(|(name, _)| name == b"timestamp");
                     if let Some((_, value)) = timestamp_pair {
                         let timestamp =
-                            decode_timestamp(value).map_err(|_| Error::ExporterError {
+                            decode_timestamp(value).map_err(|error| Error::ExporterError {
                                 exporter: effect_handler.exporter_name(),
-                                error: "Failed to decode timestamp".to_owned(),
+                                error: error,
                             })?;
-                        let unix_time =
-                            SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .map_err(|error| Error::ExporterError {
-                                    exporter: effect_handler.exporter_name(),
-                                    error: error.to_string(),
-                                })?;
-                        let latency = (unix_time - timestamp).as_secs_f64();
+                        let current_unix_time = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map_err(|error| Error::ExporterError {
+                                exporter: effect_handler.exporter_name(),
+                                error: error.to_string(),
+                            })?;
+                        let latency = (current_unix_time - timestamp).as_secs_f64();
                         average_pipeline_latency = update_average(
                             latency,
                             average_pipeline_latency,
-                            total_received_pdata_count as f64,
+                            total_received_pdata_batch_count as f64,
                         );
                     }
 
                     // increment counters for received messages
                     // increment by number of arrowpayloads
-                    received_msg_count += batch.arrow_payloads.len();
-                    total_received_msg_count += received_msg_count;
+                    received_arrow_records_count += batch.arrow_payloads.len() as u64;
+                    total_received_arrow_records_count += received_arrow_records_count as u128;
                     // increment counters for received events
-                    received_evt_count += calculate_event_count(batch);
-                    total_received_evt_count += received_evt_count;
+                    received_otlp_signal_count += calculate_otlp_signal_count(batch);
+                    total_received_otlp_signal_count += received_otlp_signal_count as u128;
+
+                    writeln!(writer, "Arrow Records {}", received_arrow_records_count);
+                    writeln!(writer, "Otlp Data Count {}", received_otlp_signal_count);
+                    writeln!(writer, "Pdata Count {}", received_pdata_batch_count);
+                    writeln!(
+                        writer,
+                        "Total Records Count {}",
+                        total_received_arrow_records_count
+                    );
+                    writeln!(
+                        writer,
+                        "Total Otlp Count {}",
+                        total_received_otlp_signal_count
+                    );
+                    writeln!(
+                        writer,
+                        "Total Pdata Count {}",
+                        total_received_pdata_batch_count
+                    );
+                    writeln!(
+                        writer,
+                        "Average Pipeline Latency {}",
+                        average_pipeline_latency
+                    );
                 }
                 _ => {
                     return Err(Error::ExporterError {
@@ -192,6 +239,7 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
     }
 }
 
+/// determine if output goes to console or to a file
 fn get_writer(output_file: Option<String>) -> Box<dyn Write> {
     match output_file {
         Some(file_name) => Box::new(
@@ -207,25 +255,30 @@ fn get_writer(output_file: Option<String>) -> Box<dyn Write> {
 }
 
 fn update_average(new_value: f64, old_average: f64, total: f64) -> f64 {
-    (old_average * (total - 1.0) + new_value) / total
+    // update the average using a expotential moving average which is more responsive to new data
+    new_value * (2.0 * total + 1.0) + old_average
 }
 
-fn decode_timestamp(timestamp: &[u8]) -> Result<Duration, ()> {
-    let timestamp_string = std::str::from_utf8(timestamp).map_err(|_| ())?;
+fn decode_timestamp(timestamp: &[u8]) -> Result<Duration, String> {
+    let timestamp_string = std::str::from_utf8(timestamp).map_err(|error| error.to_string())?;
     let timestamp_parts: Vec<&str> = timestamp_string.split(":").collect();
-    let secs = timestamp_parts[0].parse::<u64>().map_err(|_| ())?;
-    let nanosecs = timestamp_parts[1].parse::<u32>().map_err(|_| ())?;
+    let secs = timestamp_parts[0]
+        .parse::<u64>()
+        .map_err(|error| error.to_string())?;
+    let nanosecs = timestamp_parts[1]
+        .parse::<u32>()
+        .map_err(|error| error.to_string())?;
 
     Ok(Duration::new(secs, nanosecs))
 }
 
-fn calculate_event_count(batch: BatchArrowRecords) -> usize {
+fn calculate_otlp_signal_count(batch: BatchArrowRecords) -> u64 {
     batch.arrow_payloads.iter().fold(0, |acc, arrow_payload| {
         let table_size = if arrow_payload.r#type == ArrowPayloadType::Spans as i32
             || arrow_payload.r#type == ArrowPayloadType::Logs as i32
             || arrow_payload.r#type == ArrowPayloadType::UnivariateMetrics as i32
         {
-            arrow_payload.record.len()
+            arrow_payload.record.len() as u64
         } else {
             0
         };
@@ -238,12 +291,12 @@ fn display_cpu_usage(process: &Process, system: &System, writer: &mut impl Write
     let global_cpu_usage = system.global_cpu_usage(); // as %
     _ = writeln!(
         writer,
-        "\t- global cpu usage            : {}% (100% is all cores)",
+        "\t- global cpu usage                  : {}% (100% is all cores)",
         process_cpu_usage
     );
     _ = writeln!(
         writer,
-        "\t- process cpu usage           : {}% (100% is a single core)",
+        "\t- process cpu usage                 : {}% (100% is a single core)",
         global_cpu_usage
     );
 }
@@ -253,12 +306,12 @@ fn display_mem_usage(process: &Process, writer: &mut impl Write) {
     let memory_virtual = process.virtual_memory(); // as bytes
     _ = writeln!(
         writer,
-        "\t- memory rss                  : {}",
+        "\t- memory rss                        : {}",
         Byte::from_bytes(memory_rss as u128).get_appropriate_unit(false)
     );
     _ = writeln!(
         writer,
-        "\t- memory virtual              : {}",
+        "\t- memory virtual                    : {}",
         Byte::from_bytes(memory_virtual as u128).get_appropriate_unit(false)
     );
 }
@@ -270,24 +323,24 @@ fn display_disk_usage(disk_usage: DiskUsage, duration: Duration, writer: &mut im
     let read_bytes = disk_usage.read_bytes;
     _ = writeln!(
         writer,
-        "\t- read bytes                  : {}/s",
+        "\t- read bytes                        : {}/s",
         Byte::from_bytes((read_bytes as f64 / duration.as_secs_f64()) as u128)
             .get_appropriate_unit(false) // duration.as_secs_f64()
     );
     _ = writeln!(
         writer,
-        "\t- total read bytes            : {}",
+        "\t- total read bytes                  : {}",
         Byte::from_bytes(total_read_bytes as u128).get_appropriate_unit(false)
     );
     _ = writeln!(
         writer,
-        "\t- written bytes               : {}/s",
+        "\t- written bytes                     : {}/s",
         Byte::from_bytes((written_bytes as f64 / duration.as_secs_f64()) as u128)
             .get_appropriate_unit(false)
     );
     _ = writeln!(
         writer,
-        "\t- total written bytes         : {}",
+        "\t- total written bytes               : {}",
         Byte::from_bytes(total_written_bytes as u128).get_appropriate_unit(false)
     );
 }
@@ -316,124 +369,122 @@ fn display_io_usage(
 
     let errors_on_transmitted = network_data.errors_on_transmitted();
     let total_errors_on_transmitted = network_data.total_errors_on_transmitted();
-    _ = writeln!(writer, "Network {}", network_name);
+    _ = writeln!(writer, "Network Interface: {}", network_name);
     _ = writeln!(
         writer,
-        "\t- bytes read                  : {}/s",
+        "\t- bytes read                        : {}/s",
         Byte::from_bytes((bytes_received as f64 / duration.as_secs_f64()) as u128)
             .get_appropriate_unit(false)
     );
     _ = writeln!(
         writer,
-        "\t- total bytes recevied        : {}",
+        "\t- total bytes recevied              : {}",
         Byte::from_bytes(total_bytes_received as u128).get_appropriate_unit(false)
     );
     _ = writeln!(
         writer,
-        "\t- bytes transmitted           : {}/s",
+        "\t- bytes transmitted                 : {}/s",
         Byte::from_bytes((bytes_transmitted as f64 / duration.as_secs_f64()) as u128)
             .get_appropriate_unit(false)
     );
     _ = writeln!(
         writer,
-        "\t- total bytes transmitted     : {}",
+        "\t- total bytes transmitted           : {}",
         Byte::from_bytes(total_bytes_transmitted as u128).get_appropriate_unit(false)
     );
     _ = writeln!(
         writer,
-        "\t- packets received            : {}/s",
+        "\t- packets received                  : {}/s",
         Byte::from_bytes((packets_received as f64 / duration.as_secs_f64()) as u128)
             .get_appropriate_unit(false)
     );
     _ = writeln!(
         writer,
-        "\t- total packets received      : {}",
+        "\t- total packets received            : {}",
         Byte::from_bytes(total_packets_received as u128).get_appropriate_unit(false)
     );
     _ = writeln!(
         writer,
-        "\t- packets transmitted         : {}/s",
+        "\t- packets transmitted               : {}/s",
         Byte::from_bytes((packets_transmitted as f64 / duration.as_secs_f64()) as u128)
             .get_appropriate_unit(false)
     );
     _ = writeln!(
         writer,
-        "\t- total packets transmitted   : {}",
+        "\t- total packets transmitted         : {}",
         Byte::from_bytes(total_packets_transmitted as u128).get_appropriate_unit(false)
     );
     _ = writeln!(
         writer,
-        "\t- errors on received          : {}/s",
+        "\t- errors on received                : {}/s",
         Byte::from_bytes((errors_on_received as f64 / duration.as_secs_f64()) as u128)
             .get_appropriate_unit(false)
     );
     _ = writeln!(
         writer,
-        "\t- total errors on received    : {}",
+        "\t- total errors on received          : {}",
         Byte::from_bytes(total_errors_on_received as u128).get_appropriate_unit(false)
     );
     _ = writeln!(
         writer,
-        "\t- errors on transmitted       : {}/s",
+        "\t- errors on transmitted             : {}/s",
         Byte::from_bytes((errors_on_transmitted as f64 / duration.as_secs_f64()) as u128)
             .get_appropriate_unit(false)
     );
     _ = writeln!(
         writer,
-        "\t- total errors on transmitted : {}",
+        "\t- total errors on transmitted       : {}",
         Byte::from_bytes(total_errors_on_transmitted as u128).get_appropriate_unit(false)
     );
 }
 
 fn display_report_pipeline(
-    name: Cow<'static, str>,
-    received_msg_count: usize,
-    received_evt_count: usize,
-    received_pdata_count: usize,
-    total_received_msg_count: usize,
-    total_received_evt_count: usize,
-    total_received_pdata_count: usize,
+    received_arrow_records_count: u64,
+    received_otlp_signal_count: u64,
+    received_pdata_batch_count: u64,
+    total_received_arrow_records_count: u128,
+    total_received_otlp_signal_count: u128,
+    total_received_pdata_batch_count: u64,
     average_pipeline_latency: f64,
     duration: Duration,
     writer: &mut impl Write,
 ) {
-    _ = writeln!(writer, "Performance report for {}:", name);
     _ = writeln!(
         writer,
-        "\t- message throughput          : {:.2} msg/s",
-        (received_msg_count as f64 / duration.as_secs_f64())
+        "\t- arrow records throughput          : {:.2} records/s",
+        (received_arrow_records_count as f64 / duration.as_secs_f64())
     );
     _ = writeln!(
         writer,
-        "\t- average pipeline latency    : {:.2} s",
+        "\t- average pipeline latency          : {:.2} s",
         average_pipeline_latency * 1000.0
     );
 
     _ = writeln!(
         writer,
-        "\t- total message received      : {}",
-        total_received_msg_count
+        "\t- total arrow records received      : {}",
+        total_received_arrow_records_count
     );
     _ = writeln!(
         writer,
-        "\t- event throughput            : {:.2} evt/s",
-        (received_evt_count as f64 / duration.as_secs_f64())
+        "\t- otlp signal throughput            : {:.2} otlp/s",
+        (received_otlp_signal_count as f64 / duration.as_secs_f64())
     );
     _ = writeln!(
         writer,
-        "\t- total event received        : {}",
-        total_received_evt_count
+        "\t- total otlp signal received        : {}",
+        total_received_otlp_signal_count
     );
     _ = writeln!(
         writer,
-        "\t- pdata throughput            : {:.2} pdata/s",
-        received_pdata_count as f64 / duration.as_secs_f64()
+        "\t- pdata batch throughput            : {:.2} pdata/s",
+        received_pdata_batch_count as f64 / duration.as_secs_f64()
     );
 
     _ = writeln!(
         writer,
-        "\t- total pdata received        : {}",
-        total_received_pdata_count
+        "\t- total pdata batch received        : {}",
+        total_received_pdata_batch_count
     );
 }
 
@@ -510,7 +561,6 @@ mod tests {
         |ctx| {
             Box::pin(async move {
                 // Send 3 TimerTick events. with a couple messages between them
-
                 for _ in 0..3 {
                     let traces_batch_data = create_batch_arrow_record_helper(
                         TRACES_BATCH_ID,
@@ -530,7 +580,7 @@ mod tests {
                         MESSAGE_LEN,
                         ROW_SIZE,
                     );
-                    // Send a data message
+                    // // Send a data message
                     ctx.send_pdata(traces_batch_data)
                         .await
                         .expect("Failed to send data message");
@@ -542,6 +592,8 @@ mod tests {
                         .expect("Failed to send data message");
                 }
 
+                // TODO ADD DELAY BETWEEN HERE
+                let _ = sleep(Duration::from_millis(5000));
                 ctx.send_timer_tick()
                     .await
                     .expect("Failed to send TimerTick");
@@ -573,57 +625,57 @@ mod tests {
                 }
 
                 // report contains message throughput
-                let message_throughput_line = &lines[2];
-                assert!(message_throughput_line.contains("- message throughput"),);
+                let message_throughput_line = &lines[1];
+                assert!(message_throughput_line.contains("- arrow records throughput"),);
 
                 // report contains pipeline latency
-                let avg_pipeline_latency_line = &lines[3];
+                let avg_pipeline_latency_line = &lines[2];
                 assert!(avg_pipeline_latency_line.contains("- average pipeline latency"));
 
-                let total_msg_line = &lines[4];
-                assert!(total_msg_line.contains("- total message received"),);
+                let total_msg_line = &lines[3];
+                assert!(total_msg_line.contains("- total arrow records received"),);
 
-                let event_throughput_line = &lines[5];
-                assert!(event_throughput_line.contains("- event throughput"),);
+                let otlp_signal_throughput_line = &lines[4];
+                assert!(otlp_signal_throughput_line.contains("- otlp signal throughput"),);
 
-                let total_evt_line = &lines[6];
-                assert!(total_evt_line.contains("- total event received"),);
+                let total_otlp_signal_line = &lines[5];
+                assert!(total_otlp_signal_line.contains("- total otlp signal received"),);
 
-                let pdata_throughput_line = &lines[7];
-                assert!(pdata_throughput_line.contains("- pdata throughput"),);
+                let pdata_throughput_line = &lines[6];
+                assert!(pdata_throughput_line.contains("- pdata batch throughput"),);
 
-                let total_pdata_line = &lines[8];
-                assert!(total_pdata_line.contains("- total pdata received"),);
+                let total_pdata_line = &lines[7];
+                assert!(total_pdata_line.contains("- total pdata batch received"),);
 
                 //memory report contains memory rss
-                let memory_rss_line = &lines[10];
+                let memory_rss_line = &lines[9];
                 assert!(memory_rss_line.contains("- memory rss"),);
 
                 //memory report contains memory virtual
-                let memory_virtual_line = &lines[11];
+                let memory_virtual_line = &lines[10];
                 assert!(memory_virtual_line.contains("- memory virtual"),);
 
                 // cpu report contains cpu usage
-                let process_cpu_usage = &lines[13];
+                let process_cpu_usage = &lines[12];
                 assert!(process_cpu_usage.contains("- global cpu usage"),);
 
-                let global_cpu_usage = &lines[14];
+                let global_cpu_usage = &lines[13];
                 assert!(global_cpu_usage.contains("- process cpu usage"),);
 
                 // disk report contains read bytes
-                let read_bytes_line = &lines[16];
+                let read_bytes_line = &lines[15];
                 assert!(read_bytes_line.contains("- read bytes"),);
 
                 // disk report contains total read bytes
-                let total_read_bytes_line = &lines[17];
+                let total_read_bytes_line = &lines[16];
                 assert!(total_read_bytes_line.contains("- total read bytes"),);
 
                 // disk report contains written bytes
-                let written_bytes_line = &lines[18];
+                let written_bytes_line = &lines[17];
                 assert!(written_bytes_line.contains("- written bytes"),);
 
                 // disk report contains total written bytes
-                let total_written_bytes_line = &lines[19];
+                let total_written_bytes_line = &lines[18];
                 assert!(total_written_bytes_line.contains("- total written bytes"));
             })
         }
@@ -632,7 +684,7 @@ mod tests {
     #[test]
     fn test_exporter_local() {
         let test_runtime = TestRuntime::new();
-        let config = Config::new(1000, true, true, true, true, false);
+        let config = Config::new(1000, true, true, true, true, true);
         let output_file = "perf_output.txt".to_string();
         let exporter = ExporterWrapper::local(
             PerfExporter::new(config, Some(output_file.clone())),
@@ -645,6 +697,6 @@ mod tests {
             .run_test(scenario())
             .run_validation(validation_procedure(output_file.clone()));
 
-        remove_file(output_file).expect("Failed to remove file");
+        // remove_file(output_file).expect("Failed to remove file");
     }
 }
