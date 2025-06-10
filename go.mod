@@ -1,3 +1,4 @@
+// Deprecated: Terminal version of github.com/open-telemetry/otel-arrow, use github.com/open-telemetry/otel-arrow/go instead.
 module github.com/open-telemetry/otel-arrow
 
 go 1.23.0
@@ -55,4 +56,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-retract v0.36.0 // This version was released in the midst of a repository restructure causing incompatilibity between module name and source location.
+retract (
+	v0.37.0 // This version contained an upgrade to Go 1.24 which was incompatible with primary consumers.
+	v0.36.0 // This version was released in the midst of a repository restructure causing incompatilibity between module name and source location.
+)
