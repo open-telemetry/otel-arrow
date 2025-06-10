@@ -89,7 +89,7 @@ impl LogsVisitor<()> for ItemCounter {
 impl<Argument> LogsDataVisitor<Argument> for ItemCounter {
     fn visit_logs_data(
         &mut self,
-        mut arg: Argument,
+        arg: Argument,
         mut v: impl LogsDataVisitable<Argument>,
     ) -> Argument {
         v.accept_logs_data(arg, self.borrow_mut())
@@ -99,7 +99,7 @@ impl<Argument> LogsDataVisitor<Argument> for ItemCounter {
 impl<Argument> ResourceLogsVisitor<Argument> for &mut ItemCounter {
     fn visit_resource_logs(
         &mut self,
-        mut arg: Argument,
+        arg: Argument,
         mut v: impl ResourceLogsVisitable<Argument>,
     ) -> Argument {
         v.accept_resource_logs(
@@ -114,7 +114,7 @@ impl<Argument> ResourceLogsVisitor<Argument> for &mut ItemCounter {
 impl<Argument> ScopeLogsVisitor<Argument> for &mut ItemCounter {
     fn visit_scope_logs(
         &mut self,
-        mut arg: Argument,
+        arg: Argument,
         mut sv: impl ScopeLogsVisitable<Argument>,
     ) -> Argument {
         sv.accept_scope_logs(
@@ -129,7 +129,7 @@ impl<Argument> ScopeLogsVisitor<Argument> for &mut ItemCounter {
 impl<Argument> LogRecordVisitor<Argument> for &mut ItemCounter {
     fn visit_log_record(
         &mut self,
-        mut arg: Argument,
+        arg: Argument,
         _: impl LogRecordVisitable<Argument>,
     ) -> Argument {
         self.count += 1;

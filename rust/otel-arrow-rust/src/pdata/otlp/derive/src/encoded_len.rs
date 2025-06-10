@@ -88,12 +88,10 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                 let idx = arg.len();
                 arg.reserve();
 
-                let (arg, total_child_size) = self.children_encoded_size(arg, v);
+                let (mut arg, total_child_size) = self.children_encoded_size(arg, v);
 
                 let tag_size = crate::pdata::otlp::PrecomputedSizes::varint_len((self.tag << 3) as usize);
                 let total_size = tag_size + crate::pdata::otlp::PrecomputedSizes::varint_len(total_child_size) + total_child_size;
-
-                println!("DEBUG: {} child visitor computed total size: {}", stringify!(#outer_name), total_size);
 
         arg.set_size(idx, total_size);
                 arg

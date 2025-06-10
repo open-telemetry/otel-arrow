@@ -358,7 +358,9 @@ impl crate::pdata::SliceVisitor<PrecomputedSizes, Vec<u8>> for SliceBytesEncoded
 
 /// Accumulate is a wrapper that sums the sizes from a child visitor.
 pub struct Accumulate<V> {
+    /// The inner visitor
     pub inner: V,
+    /// The children's subtotal
     pub total: usize,
 }
 
@@ -455,7 +457,8 @@ impl<V: crate::pdata::BooleanVisitor<PrecomputedSizes>>
 impl<V: crate::pdata::SliceVisitor<PrecomputedSizes, Primitive>, Primitive>
     crate::pdata::SliceVisitor<PrecomputedSizes, Primitive> for Accumulate<V>
 {
-    fn visit_slice(&mut self, mut arg: PrecomputedSizes, value: &[Primitive]) -> PrecomputedSizes {
+    fn visit_slice(&mut self, arg: PrecomputedSizes, _value: &[Primitive]) -> PrecomputedSizes {
+        // @@@
         // arg = self.inner.visit_bytes(arg, value);
         // self.total += arg.last();
         // arg
