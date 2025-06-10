@@ -11,10 +11,14 @@ use std::sync::Arc;
 use arrow::{
     array::{AnyDictionaryArray, Array, ArrayRef, ArrowPrimitiveType, DictionaryArray},
     datatypes::{ArrowDictionaryKeyType, DataType, UInt8Type, UInt16Type},
+    error::ArrowError,
 };
 use snafu::Snafu;
 
-use crate::arrays::NullableArrayAccessor;
+use crate::{
+    arrays::NullableArrayAccessor,
+    encode::record::array::{ArrayAppend, CheckedArrayAppend},
+};
 
 use super::{ArrayBuilder, ArrayBuilderConstructor};
 
@@ -29,41 +33,57 @@ pub type Result<T> = std::result::Result<T, DictionaryBuilderError>;
 
 // This is the base trait for array builder implementations that are
 // used to construct dictionary arrays
-pub trait DictionaryArrayBuilder<T>
-where
-    T: ArrowDictionaryKeyType,
-{
+pub trait DictionaryArrayAppend {
     type Native;
 
-    // Append a new value to the dictionary, and return the index of
-    // the keys array. The returned index can by AdaptiveDictionaryBuilder
-    // to determine if the dictionary overflows.
+    // Append a new value to the dictionary, and return the index of the keys array. The returned
+    // index can be used by AdaptiveDictionaryBuilder to determine if the dictionary overflows.
     //
-    // If the implementing builder can determine internally that the dictionary
-    // would overflow, it can also return `DictOverflow` error
+    // If the implementing builder can determine internally that the dictionary would overflow,
+    // it can also return `DictOverflow` error
+    //
+    // If the underlying call can fail due to some invalid value of type `Native`, then the
+    // underlying builder should implemented `CheckedDictionaryAppend instead`
     fn append_value(&mut self, value: &Self::Native) -> Result<usize>;
-
-    fn finish(&mut self) -> DictionaryArrayWithType<T>;
 }
 
-pub struct DictionaryArrayWithType<T>
-where
-    T: ArrowDictionaryKeyType,
-{
-    pub array: Arc<DictionaryArray<T>>,
-    pub data_type: DataType,
+// This is the base trait for array builder implementations that are used to construct dictionary
+// arrays for types where the call to append could fail.
+pub trait CheckedDictionaryArrayAppend {
+    type Native;
+
+    // see comments on `DictionaryArrayAppend::append_value` for info about the returned value.
+    fn append_value(&mut self, value: &Self::Native) -> checked::Result<usize>;
 }
 
-impl<T> From<DictionaryArrayWithType<T>> for super::ArrayWithType
-where
-    T: ArrowDictionaryKeyType,
-{
-    fn from(value: DictionaryArrayWithType<T>) -> Self {
-        super::ArrayWithType {
-            array: value.array,
-            data_type: value.data_type,
-        }
+// This is the error type for the result that is returned by CheckedDictionaryArrayAppend trait.
+// It is the same as the error type for the regular `DictionaryArrayAppend` but with an extra
+// variant containing the underlying arrow error. We need a separate module for this due to how
+// snafu expects the errors definitions ot be organized.
+pub mod checked {
+    use super::*;
+
+    #[derive(Snafu, Debug)]
+    #[snafu(visibility(pub))]
+    pub enum DictionaryBuilderError {
+        #[snafu(display("dict overflow"))]
+        DictOverflow {},
+
+        #[snafu(display("checked builder error"))]
+        CheckedBuilderError {
+            #[snafu(source)]
+            source: ArrowError,
+        },
     }
+
+    pub type Result<T> = std::result::Result<T, DictionaryBuilderError>;
+}
+
+pub trait DictionaryBuilder<K>
+where
+    K: ArrowDictionaryKeyType,
+{
+    fn finish(&mut self) -> DictionaryArray<K>;
 }
 
 // This trait is used to help the AdaptiveDictionaryBuilder to convert the dictionary
@@ -106,18 +126,18 @@ pub struct AdaptiveDictionaryBuilder<T8, T16> {
     overflow_index: Option<usize>,
 }
 
-impl<T8, T16> AdaptiveDictionaryBuilder<T8, T16>
+impl<T, T8, T16> AdaptiveDictionaryBuilder<T8, T16>
 where
-    T8: ArrayBuilderConstructor + UpdateDictionaryIndexInto<T16>,
-    T16: ArrayBuilderConstructor,
+    T8: ArrayBuilderConstructor<Args = T>,
+    T16: ArrayBuilderConstructor<Args = T>,
 {
-    pub fn new(options: &DictionaryOptions) -> Self {
+    pub fn new(options: &DictionaryOptions, constructor_args: T) -> Self {
         // choose the default dictionary index type to be the smallest that can
         // hold the min cardinality
         let variant = if options.min_cardinality <= u8::MAX.into() {
-            DictIndexVariant::UInt8(T8::new())
+            DictIndexVariant::UInt8(T8::new(constructor_args))
         } else {
-            DictIndexVariant::UInt16(T16::new())
+            DictIndexVariant::UInt16(T16::new(constructor_args))
         };
 
         Self {
@@ -126,7 +146,13 @@ where
             overflow_index: None,
         }
     }
+}
 
+impl<T8, T16> AdaptiveDictionaryBuilder<T8, T16>
+where
+    T8: UpdateDictionaryIndexInto<T16>,
+    T16: ArrayBuilderConstructor,
+{
     fn upgrade_key(&mut self) -> Result<()> {
         match &mut self.variant {
             DictIndexVariant::UInt8(dict_builder) => {
@@ -148,34 +174,66 @@ where
 
 impl<T, T8, T16> AdaptiveDictionaryBuilder<T8, T16>
 where
-    T8: DictionaryArrayBuilder<UInt8Type, Native = T> + ConvertToNativeHelper,
+    T8: DictionaryBuilder<UInt8Type> + ConvertToNativeHelper,
     <T8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
-    T16: DictionaryArrayBuilder<UInt16Type, Native = T> + ConvertToNativeHelper,
+    T16: DictionaryBuilder<UInt16Type> + ConvertToNativeHelper,
     <T16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
 {
     pub fn to_native<TN>(&mut self, builder: &mut TN)
     where
-        TN: ArrayBuilder<Native = T>,
+        TN: ArrayAppend<Native = T>,
+    {
+        // safety: we're OK to call expect() here because UncheckedArrayAdapter will never return Error
+        // which means populate_native_builder will also not return an error
+        self.to_native_checked(&mut UncheckedArrayBuilderAdapter { inner: builder })
+            .expect("can convert to native");
+    }
+
+    pub fn to_native_checked<TN>(&mut self, builder: &mut TN) -> std::result::Result<(), ArrowError>
+    where
+        TN: CheckedArrayAppend<Native = T>,
     {
         match &mut self.variant {
             DictIndexVariant::UInt8(dict_builder) => {
                 let result = dict_builder.finish();
                 populate_native_builder::<_, UInt8Type, <T8 as ConvertToNativeHelper>::Accessor, _>(
-                    &result.array,
+                    &result,
                     builder,
                     self.overflow_index,
-                );
+                )
             }
 
             DictIndexVariant::UInt16(dict_builder) => {
                 let result = dict_builder.finish();
                 populate_native_builder::<_, UInt16Type, <T16 as ConvertToNativeHelper>::Accessor, _>(
-                    &result.array,
+                    &result,
                     builder,
                     self.overflow_index,
-                );
+                )
             }
         }
+    }
+}
+
+/// Simple adapter for treating an array builder that implements `ArrayAppend` as an implementer
+/// of `CheckedArrayAppend`. This is helpful so we don't need separate implementations of methods
+/// in this crate that might need to call append (like `populate_native_builder`).
+struct UncheckedArrayBuilderAdapter<'a, T>
+where
+    T: ArrayAppend,
+{
+    inner: &'a mut T,
+}
+
+impl<T> CheckedArrayAppend for UncheckedArrayBuilderAdapter<'_, T>
+where
+    T: ArrayAppend,
+{
+    type Native = T::Native;
+
+    fn append_value(&mut self, value: &Self::Native) -> std::result::Result<(), ArrowError> {
+        self.inner.append_value(value);
+        Ok(())
     }
 }
 
@@ -185,8 +243,9 @@ fn populate_native_builder<T, K, V, TN>(
     dict_arr: &DictionaryArray<K>,
     builder: &mut TN,
     overflow_index: Option<usize>,
-) where
-    TN: ArrayBuilder<Native = T>,
+) -> std::result::Result<(), ArrowError>
+where
+    TN: CheckedArrayAppend<Native = T>,
     K: ArrowDictionaryKeyType,
     <K as ArrowPrimitiveType>::Native: Into<usize>,
     V: NullableArrayAccessor<Native = T> + 'static,
@@ -217,16 +276,16 @@ fn populate_native_builder<T, K, V, TN>(
         let value = values
             .value_at(index)
             .expect("expect index in dict values array to be valid");
-        builder.append_value(&value);
+        builder.append_value(&value)?;
     }
+
+    Ok(())
 }
 
 impl<T, T8, T16> AdaptiveDictionaryBuilder<T8, T16>
 where
-    T8: DictionaryArrayBuilder<UInt8Type, Native = T>
-        + ArrayBuilderConstructor
-        + UpdateDictionaryIndexInto<T16>,
-    T16: DictionaryArrayBuilder<UInt16Type, Native = T> + ArrayBuilderConstructor,
+    T8: DictionaryArrayAppend<Native = T> + UpdateDictionaryIndexInto<T16>,
+    T16: DictionaryArrayAppend<Native = T> + ArrayBuilderConstructor,
 {
     pub fn append_value(&mut self, value: &T) -> Result<usize> {
         let append_result = match &mut self.variant {
@@ -251,11 +310,54 @@ where
             }
         }
     }
+}
 
-    pub fn finish(&mut self) -> super::ArrayWithType {
+impl<T, T8, T16> AdaptiveDictionaryBuilder<T8, T16>
+where
+    T8: CheckedDictionaryArrayAppend<Native = T> + UpdateDictionaryIndexInto<T16>,
+    T16: CheckedDictionaryArrayAppend<Native = T> + ArrayBuilderConstructor,
+{
+    pub fn append_value_checked(&mut self, value: &T) -> checked::Result<usize> {
+        let append_result = match &mut self.variant {
+            DictIndexVariant::UInt8(dict_builder) => dict_builder.append_value(value),
+            DictIndexVariant::UInt16(dict_builder) => dict_builder.append_value(value),
+        };
+
+        match append_result {
+            Ok(index) => {
+                if index + 1 > self.max_cardinality as usize {
+                    // if we're here, it means we did append successfully to the underlying builder
+                    // but we shouldn't have, because have overflowed the configured max cardinality
+                    self.overflow_index = Some(index);
+                    Err(checked::DictionaryBuilderError::DictOverflow {})
+                } else {
+                    Ok(index)
+                }
+            }
+            Err(checked::DictionaryBuilderError::DictOverflow {}) => {
+                self.upgrade_key().map_err(|err| match err {
+                    DictionaryBuilderError::DictOverflow {} => {
+                        checked::DictionaryBuilderError::DictOverflow {}
+                    }
+                })?;
+                self.append_value_checked(value)
+            }
+
+            // return other types of errors to caller
+            e => e,
+        }
+    }
+}
+
+impl<T8, T16> AdaptiveDictionaryBuilder<T8, T16>
+where
+    T8: DictionaryBuilder<UInt8Type>,
+    T16: DictionaryBuilder<UInt16Type>,
+{
+    pub fn finish(&mut self) -> ArrayRef {
         match &mut self.variant {
-            DictIndexVariant::UInt8(u8_dict_builder) => u8_dict_builder.finish().into(),
-            DictIndexVariant::UInt16(u16_dict_builder) => u16_dict_builder.finish().into(),
+            DictIndexVariant::UInt8(u8_dict_builder) => Arc::new(u8_dict_builder.finish()),
+            DictIndexVariant::UInt16(u16_dict_builder) => Arc::new(u16_dict_builder.finish()),
         }
     }
 }
@@ -264,89 +366,275 @@ where
 mod test {
     use super::*;
 
+    use std::fmt::format;
     use std::sync::Arc;
 
     use arrow::array::{
-        StringBuilder, StringDictionaryBuilder, UInt8Array, UInt8DictionaryArray, UInt16Array,
-        UInt16DictionaryArray,
+        BinaryDictionaryBuilder, FixedSizeBinaryDictionaryBuilder, PrimitiveDictionaryBuilder,
+        StringArray, StringBuilder, StringDictionaryBuilder, UInt8Array, UInt8DictionaryArray,
+        UInt16Array, UInt16DictionaryArray,
     };
-    use arrow::datatypes::{DataType, UInt8Type, UInt16Type};
+    use arrow::datatypes::{DataType, Int64Type, UInt8Type, UInt16Type};
+    use prost::Message;
 
     type TestDictBuilder = AdaptiveDictionaryBuilder<
         StringDictionaryBuilder<UInt8Type>,
         StringDictionaryBuilder<UInt16Type>,
     >;
 
-    #[test]
-    fn test_dict_builder() {
-        let mut dict_builder = TestDictBuilder::new(&DictionaryOptions {
+    fn test_dict_builder_generic<T, TArgs, TD8, TD16>(
+        array_builder_factory: impl Fn(&DictionaryOptions) -> AdaptiveDictionaryBuilder<TD8, TD16>,
+        values_generator: impl Fn(usize) -> T,
+        expected_values_type: DataType,
+    ) where
+        T: PartialEq + std::fmt::Debug,
+        TD8: ArrayBuilderConstructor<Args = TArgs>
+            + ConvertToNativeHelper
+            + DictionaryBuilder<UInt8Type>
+            + DictionaryArrayAppend<Native = T>
+            + UpdateDictionaryIndexInto<TD16>,
+        <TD8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
+        TD16: ArrayBuilderConstructor<Args = TArgs>
+            + ConvertToNativeHelper
+            + DictionaryArrayAppend<Native = T>
+            + DictionaryBuilder<UInt16Type>,
+    {
+        // test basic dictionary building:
+        let mut dict_builder = array_builder_factory(&DictionaryOptions {
             max_cardinality: u16::MAX,
             min_cardinality: u8::MAX.into(),
         });
-
-        let index = dict_builder.append_value(&"a".to_string()).unwrap();
+        let index = dict_builder.append_value(&values_generator(0)).unwrap();
         assert_eq!(index, 0);
-        let index = dict_builder.append_value(&"a".to_string()).unwrap();
+        let index = dict_builder.append_value(&values_generator(0)).unwrap();
         assert_eq!(index, 0);
-        let index = dict_builder.append_value(&"b".to_string()).unwrap();
+        let index = dict_builder.append_value(&values_generator(1)).unwrap();
         assert_eq!(index, 1);
 
         let result = dict_builder.finish();
 
         assert_eq!(
-            result.data_type,
-            DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8))
+            result.data_type(),
+            &DataType::Dictionary(
+                Box::new(DataType::UInt8),
+                Box::new(expected_values_type.clone())
+            )
         );
 
-        let mut expected_dict_values = StringBuilder::new();
-        expected_dict_values.append_value("a");
-        expected_dict_values.append_value("b");
-        let expected_dict_keys = UInt8Array::from_iter_values(vec![0, 0, 1]);
-        let expected =
-            UInt8DictionaryArray::new(expected_dict_keys, Arc::new(expected_dict_values.finish()));
+        let dict_array = result
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt8Type>>()
+            .unwrap();
+        let dict_keys = dict_array.keys();
+        assert_eq!(dict_keys, &UInt8Array::from_iter_values(vec![0, 0, 1]));
+        let dict_values = dict_array
+            .values()
+            .as_any()
+            .downcast_ref::<<TD8 as ConvertToNativeHelper>::Accessor>()
+            .unwrap();
+        assert_eq!(dict_values.value_at(0).unwrap(), values_generator(0));
+        assert_eq!(dict_values.value_at(1).unwrap(), values_generator(1));
 
-        assert_eq!(
-            result
-                .array
-                .as_any()
-                .downcast_ref::<UInt8DictionaryArray>()
-                .unwrap(),
-            &expected
-        );
-    }
-
-    #[test]
-    fn test_dict_builder_update_index_type() {
-        let mut dict_builder = TestDictBuilder::new(&DictionaryOptions {
+        // test overflow:
+        let mut dict_builder = array_builder_factory(&DictionaryOptions {
             max_cardinality: u16::MAX,
             min_cardinality: u8::MAX.into(),
         });
 
         for i in 0..257 {
-            let _ = dict_builder.append_value(&i.to_string()).unwrap();
+            let value = values_generator(i);
+            let index = dict_builder.append_value(&value).unwrap();
+            assert_eq!(index, i);
         }
 
         let result = dict_builder.finish();
 
         assert_eq!(
-            result.data_type,
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+            result.data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(expected_values_type))
         );
 
         // check that the dictionary is the correct type
-        let dict_array = result
-            .array
-            .as_any()
-            .downcast_ref::<UInt16DictionaryArray>();
+        let dict_array = result.as_any().downcast_ref::<UInt16DictionaryArray>();
         assert!(dict_array.is_some(), "Expected a UInt16DictionaryArray");
     }
 
     #[test]
-    fn test_dict_max_cardinality() {
-        let mut dict_builder = TestDictBuilder::new(&DictionaryOptions {
-            max_cardinality: u8::MAX as u16 + 1,
-            min_cardinality: u8::MAX as u16 + 1,
+    fn test_dict_builder() {
+        // test string
+        test_dict_builder_generic(
+            |opts| {
+                AdaptiveDictionaryBuilder::<
+                    StringDictionaryBuilder<UInt8Type>,
+                    StringDictionaryBuilder<UInt16Type>,
+                >::new(opts, ())
+            },
+            |i| i.to_string(),
+            DataType::Utf8,
+        );
+
+        // test primitive:
+        test_dict_builder_generic(
+            |opts| {
+                AdaptiveDictionaryBuilder::<
+                    PrimitiveDictionaryBuilder<UInt8Type, Int64Type>,
+                    PrimitiveDictionaryBuilder<UInt16Type, Int64Type>,
+                >::new(opts, ())
+            },
+            |i| i as i64,
+            DataType::Int64,
+        );
+
+        // test binary
+        test_dict_builder_generic(
+            |opts| {
+                AdaptiveDictionaryBuilder::<
+                    BinaryDictionaryBuilder<UInt8Type>,
+                    BinaryDictionaryBuilder<UInt16Type>,
+                >::new(opts, ())
+            },
+            |i| format!("{:?}", i).encode_to_vec(),
+            DataType::Binary,
+        );
+    }
+
+    fn test_checked_dict_builder_generic<T, TArgs, TD8, TD16>(
+        array_builder_factory: impl Fn(&DictionaryOptions) -> AdaptiveDictionaryBuilder<TD8, TD16>,
+        values_generator: impl Fn(usize) -> T,
+        invalid_values_generator: impl Fn(usize) -> T,
+        expected_values_type: DataType,
+    ) where
+        T: PartialEq + std::fmt::Debug,
+        TD8: ArrayBuilderConstructor<Args = TArgs>
+            + ConvertToNativeHelper
+            + DictionaryBuilder<UInt8Type>
+            + CheckedDictionaryArrayAppend<Native = T>
+            + UpdateDictionaryIndexInto<TD16>,
+        <TD8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
+        TD16: ArrayBuilderConstructor<Args = TArgs>
+            + CheckedDictionaryArrayAppend<Native = T>
+            + DictionaryBuilder<UInt16Type>,
+    {
+        // test basic dictionary building:
+        let mut dict_builder = array_builder_factory(&DictionaryOptions {
+            max_cardinality: u16::MAX,
+            min_cardinality: u8::MAX.into(),
         });
+        let index = dict_builder
+            .append_value_checked(&values_generator(0))
+            .unwrap();
+        assert_eq!(index, 0);
+        let index = dict_builder
+            .append_value_checked(&values_generator(0))
+            .unwrap();
+        assert_eq!(index, 0);
+        let index = dict_builder
+            .append_value_checked(&values_generator(1))
+            .unwrap();
+        assert_eq!(index, 1);
+
+        let result = dict_builder.finish();
+
+        assert_eq!(
+            result.data_type(),
+            &DataType::Dictionary(
+                Box::new(DataType::UInt8),
+                Box::new(expected_values_type.clone())
+            )
+        );
+
+        let dict_array = result
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt8Type>>()
+            .unwrap();
+        let dict_keys = dict_array.keys();
+        assert_eq!(dict_keys, &UInt8Array::from_iter_values(vec![0, 0, 1]));
+        let dict_values = dict_array
+            .values()
+            .as_any()
+            .downcast_ref::<<TD8 as ConvertToNativeHelper>::Accessor>()
+            .unwrap();
+        assert_eq!(dict_values.value_at(0).unwrap(), values_generator(0));
+        assert_eq!(dict_values.value_at(1).unwrap(), values_generator(1));
+
+        // test overflow:
+        let mut dict_builder = array_builder_factory(&DictionaryOptions {
+            max_cardinality: u16::MAX,
+            min_cardinality: 1 + u8::MAX as u16,
+        });
+
+        for i in 0..257 {
+            let value = values_generator(i);
+            let index = dict_builder.append_value_checked(&value).unwrap();
+            assert_eq!(index, i);
+        }
+
+        let result = dict_builder.finish();
+
+        assert_eq!(
+            result.data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(expected_values_type))
+        );
+
+        // check that the dictionary is the correct type
+        let dict_array = result.as_any().downcast_ref::<UInt16DictionaryArray>();
+        assert!(dict_array.is_some(), "Expected a UInt16DictionaryArray");
+
+        // check will return the expected error if we pass in a bad value:
+        let mut dict_builder = array_builder_factory(&DictionaryOptions {
+            max_cardinality: u16::MAX,
+            min_cardinality: u8::MAX.into(),
+        });
+        let result = dict_builder.append_value_checked(&invalid_values_generator(0));
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err,
+            checked::DictionaryBuilderError::CheckedBuilderError { source: _ }
+        ));
+
+        // check will overflow eventually when too many values added:
+        let mut dict_builder = array_builder_factory(&DictionaryOptions {
+            max_cardinality: u16::MAX,
+            min_cardinality: 1,
+        });
+        for i in 0..(u16::MAX as usize) {
+            let value = values_generator(i);
+            let index = dict_builder.append_value_checked(&value).unwrap();
+        }
+        let result = dict_builder.append_value_checked(&values_generator(1 + u16::MAX as usize));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err,
+            checked::DictionaryBuilderError::DictOverflow {}
+        ));
+    }
+
+    #[test]
+    fn test_checked_dict_builder() {
+        // test binary
+        test_checked_dict_builder_generic(
+            |opts| {
+                AdaptiveDictionaryBuilder::<
+                    FixedSizeBinaryDictionaryBuilder<UInt8Type>,
+                    FixedSizeBinaryDictionaryBuilder<UInt16Type>,
+                >::new(opts, 3)
+            },
+            |i| vec![(i >> 16) as u8, (i >> 8) as u8, i as u8],
+            |i| vec![0],
+            DataType::FixedSizeBinary(3),
+        );
+    }
+
+    #[test]
+    fn test_dict_max_cardinality() {
+        let mut dict_builder = TestDictBuilder::new(
+            &DictionaryOptions {
+                max_cardinality: u8::MAX as u16 + 1,
+                min_cardinality: u8::MAX as u16 + 1,
+            },
+            (),
+        );
 
         for i in 0..u8::MAX {
             let _ = dict_builder.append_value(&i.to_string()).unwrap();
@@ -371,10 +659,13 @@ mod test {
     fn test_dict_min_cardinality() {
         // test that we can force the dictionary index to be bigger type than is needed
         // by specifying the min cardinality.
-        let mut dict_builder = TestDictBuilder::new(&DictionaryOptions {
-            max_cardinality: u16::MAX,
-            min_cardinality: u16::MAX,
-        });
+        let mut dict_builder = TestDictBuilder::new(
+            &DictionaryOptions {
+                max_cardinality: u16::MAX,
+                min_cardinality: u16::MAX,
+            },
+            (),
+        );
 
         let _ = dict_builder.append_value(&"a".to_string()).unwrap();
         let _ = dict_builder.append_value(&"a".to_string()).unwrap();
@@ -383,8 +674,8 @@ mod test {
         let result = dict_builder.finish();
 
         assert_eq!(
-            result.data_type,
-            DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
+            result.data_type(),
+            &DataType::Dictionary(Box::new(DataType::UInt16), Box::new(DataType::Utf8))
         );
 
         let mut expected_dict_values = StringBuilder::new();
@@ -396,7 +687,6 @@ mod test {
 
         assert_eq!(
             result
-                .array
                 .as_any()
                 .downcast_ref::<UInt16DictionaryArray>()
                 .unwrap(),
@@ -408,10 +698,13 @@ mod test {
     fn test_dict_arbitrary_max_cardinality() {
         // check that we support a max-cardinality that is arbitrarily aligned
         // e.g. not necessarily alighed to u8/u16 max values
-        let mut dict_builder = TestDictBuilder::new(&DictionaryOptions {
-            max_cardinality: 4,
-            min_cardinality: 4,
-        });
+        let mut dict_builder = TestDictBuilder::new(
+            &DictionaryOptions {
+                max_cardinality: 4,
+                min_cardinality: 4,
+            },
+            (),
+        );
 
         let _ = dict_builder.append_value(&"a".to_string()).unwrap();
         let _ = dict_builder.append_value(&"b".to_string()).unwrap();
@@ -429,5 +722,67 @@ mod test {
             matches!(result.unwrap_err(), DictionaryBuilderError::DictOverflow {}),
             "Expected a DictOverflow error"
         );
+    }
+
+    #[test]
+    fn test_dict_upgrade_not_allowed_if_u8_and_max_card_less_than_u8() {
+        let mut dict_builder = TestDictBuilder::new(
+            &DictionaryOptions {
+                max_cardinality: 4,
+                min_cardinality: 4,
+            },
+            (),
+        );
+
+        assert!(matches!(dict_builder.variant, DictIndexVariant::UInt8(_)));
+        let result = dict_builder.upgrade_key();
+        assert!(matches!(
+            result.unwrap_err(),
+            DictionaryBuilderError::DictOverflow {}
+        ))
+    }
+
+    #[test]
+    fn test_dict_upgrade_not_allowed_from_u16() {
+        let mut dict_builder = TestDictBuilder::new(
+            &DictionaryOptions {
+                max_cardinality: u16::MAX,
+                min_cardinality: u8::MAX as u16 + 10,
+            },
+            (),
+        );
+
+        assert!(matches!(dict_builder.variant, DictIndexVariant::UInt16(_)));
+        let result = dict_builder.upgrade_key();
+        // already the highest index type, so cannot upgrade
+        assert!(matches!(
+            result.unwrap_err(),
+            DictionaryBuilderError::DictOverflow {}
+        ))
+    }
+
+    #[test]
+    fn test_convert_to_native_from_u16_variant() {
+        // most of the generic tests are covering converting from u8, which is fine because
+        // the logic is the same (it calls a function that is generic over key type). This test
+        // gets us extra coverage on the invocation of that function for u16 type key
+
+        let mut dict_builder = TestDictBuilder::new(
+            &DictionaryOptions {
+                max_cardinality: u16::MAX,
+                min_cardinality: u8::MAX as u16 + 10,
+            },
+            (),
+        );
+        assert!(matches!(dict_builder.variant, DictIndexVariant::UInt16(_)));
+        dict_builder.append_value(&"a".to_string());
+        dict_builder.append_value(&"a".to_string());
+        dict_builder.append_value(&"b".to_string());
+
+        let mut native_builder = StringBuilder::new();
+        dict_builder.to_native(&mut native_builder);
+
+        let result = native_builder.finish();
+        assert_eq!(result, StringArray::from_iter_values(vec!["a", "a", "b"]));
     }
 }
