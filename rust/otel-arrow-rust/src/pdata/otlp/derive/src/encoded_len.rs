@@ -29,7 +29,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
 
-use super::TokenVec;
 use super::common;
 use super::field_info::FieldInfo;
 use super::message_info::MessageInfo;
@@ -45,6 +44,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
     let encoded_len_name = msg.related_typename("EncodedLen");
     let visitor_name = msg.related_typename("Visitor");
     let visitable_name = msg.related_typename("Visitable");
+    let message_adapter_name = msg.related_typename("MessageAdapter");
     let visitor_method_name = common::visitor_method_name(&outer_name);
 
     // Generate the children_size helper method body for the visitor
@@ -102,6 +102,21 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                 arg
             }
         }
+
+        impl #outer_name {
+            /// Calculate the encoded size using the OTLP visitor pattern.
+            /// This method is generated for testing purposes to compare against
+            /// the prost-generated encoded_len method.
+            #[cfg(test)]
+            pub fn pdata_size(&self) -> usize {
+                let mut sizes = crate::pdata::otlp::PrecomputedSizes::default();
+                let (_, size) = #encoded_len_name::children_encoded_size(
+                    sizes,
+                    &#message_adapter_name::new(self),
+                );
+                size
+            }
+        }
     };
 
     TokenStream::from(expanded)
@@ -120,7 +135,8 @@ fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
         if let Some(oneof_cases) = info.oneof.as_ref() {
             // Process each oneof variant individually
             for case in oneof_cases {
-                let variant_param_name = common::oneof_variant_field_or_method_name(&info.ident, &case.name);
+                let variant_param_name =
+                    common::oneof_variant_field_or_method_name(&info.ident, &case.name);
 
                 let visitor_instantiation = if case.is_primitive {
                     generate_primitive_visitor_instantiation(case, &info.tag)
@@ -164,51 +180,6 @@ fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
         arg = v.#visitable_method_name(arg, #(#visitor_args),*);
         total += arg.get_size(idx);
     }
-}
-
-/// Generate child visitor instantiations for each field.
-///
-/// Creates the appropriate visitor instances based on field types:
-/// - Primitive fields use primitive-specific encoders (BooleanEncodedLen, StringEncodedLen, etc.)
-/// - Message fields use recursive EncodedLen visitors
-/// - Oneof fields generate separate visitors for each variant
-fn generate_child_visitor_instantiations(fields: &[FieldInfo]) -> TokenVec {
-    let mut visitors = Vec::new();
-
-    for info in fields {
-        if let Some(oneof_cases) = info.oneof.as_ref() {
-            // Generate separate visitors for each oneof variant
-            for case in oneof_cases {
-                let variant_param_name =
-                    common::oneof_variant_field_or_method_name(&info.ident, &case.name);
-
-                let visitor_instantiation = if case.is_primitive {
-                    generate_primitive_visitor_instantiation(case, &info.tag)
-                } else {
-                    generate_message_visitor_instantiation(case, &info.tag)
-                };
-
-                visitors.push(quote! {
-                    let mut #variant_param_name = #visitor_instantiation;
-                });
-            }
-        } else {
-            // Regular field visitor
-            let visitor_param = &info.visitor_param_name;
-
-            let visitor_instantiation = if info.is_primitive {
-                generate_primitive_visitor_for_field(info)
-            } else {
-                generate_message_visitor_for_field(info)
-            };
-
-            visitors.push(quote! {
-                let mut #visitor_param = #visitor_instantiation;
-            });
-        }
-    }
-
-    visitors
 }
 
 /// Generate primitive visitor instantiation for a field.
@@ -321,171 +292,4 @@ fn generate_message_visitor_instantiation(
     };
 
     quote! { #encoded_len_type::new(#tag) }
-}
-
-/// Generate the visitable call with all child visitors.
-fn generate_visitable_call(
-    fields: &[FieldInfo],
-    visitable_method_name: &syn::Ident,
-) -> proc_macro2::TokenStream {
-    let mut visitor_args = Vec::new();
-
-    for info in fields {
-        if let Some(oneof_cases) = info.oneof.as_ref() {
-            // Add arguments for each oneof variant
-            for case in oneof_cases {
-                let variant_param_name =
-                    common::oneof_variant_field_or_method_name(&info.ident, &case.name);
-                visitor_args.push(quote! { #variant_param_name });
-            }
-        } else {
-            // Regular field visitor argument
-            let visitor_param = &info.visitor_param_name;
-            visitor_args.push(quote! { #visitor_param });
-        }
-    }
-
-    quote! {
-        arg = v.#visitable_method_name(arg, #(#visitor_args),*);
-    }
-}
-
-/// Generate child visitor parameters for visitor method signature.
-/// This is currently unused but might be needed for more complex implementations.
-fn generate_child_visitor_params(fields: &[FieldInfo]) -> TokenVec {
-    let mut params = Vec::new();
-
-    for info in fields {
-        if let Some(oneof_cases) = info.oneof.as_ref() {
-            // Generate parameters for each oneof variant
-            for case in oneof_cases {
-                let variant_param_name =
-                    common::oneof_variant_field_or_method_name(&info.ident, &case.name);
-                let visitor_type = FieldInfo::generate_visitor_type_for_oneof_case(case);
-                params.push(quote! { #variant_param_name: impl #visitor_type });
-            }
-        } else {
-            // Regular field parameter
-            let param_name = &info.ident;
-            let visitor_type = &info.visitor_trait;
-            params.push(quote! { #param_name: impl #visitor_type });
-        }
-    }
-
-    params
-}
-
-/// Generate visitable call for a regular field.
-fn generate_visitable_call_for_field(
-    info: &FieldInfo,
-    visitor_param: &syn::Ident,
-) -> proc_macro2::TokenStream {
-    let field_name = &info.ident;
-
-    if info.is_primitive {
-        // For primitive fields, call the visitor's visit method directly
-        let visit_method = &info.visit_method_name;
-        if info.is_repeated {
-            quote! {
-                #visitor_param.visit_slice(sizes, &v.#field_name)
-            }
-        } else if info.is_optional {
-            quote! {
-                if let Some(ref value) = v.#field_name {
-                    #visitor_param.#visit_method(sizes, value)
-                } else {
-                    sizes
-                }
-            }
-        } else {
-            quote! {
-                #visitor_param.#visit_method(sizes, v.#field_name)
-            }
-        }
-    } else {
-        // For message fields, call the visitable method
-        let base_type_ident = syn::Ident::new(&info.base_type_name, proc_macro2::Span::call_site());
-        let visitable_method = common::visitable_method_name(&base_type_ident);
-
-        if info.is_repeated {
-            quote! {
-                v.#field_name.iter().fold(sizes, |acc, item| {
-                    item.#visitable_method(acc, &mut #visitor_param)
-                })
-            }
-        } else if info.is_optional {
-            quote! {
-                if let Some(ref item) = v.#field_name {
-                    item.#visitable_method(sizes, &mut #visitor_param)
-                } else {
-                    sizes
-                }
-            }
-        } else {
-            quote! {
-                v.#field_name.#visitable_method(sizes, &mut #visitor_param)
-            }
-        }
-    }
-}
-
-/// Generate visitable call for an oneof variant.
-fn generate_visitable_call_for_oneof(
-    info: &FieldInfo,
-    case: &otlp_model::OneofCase,
-    visitor_param: &syn::Ident,
-) -> proc_macro2::TokenStream {
-    let field_name = &info.ident;
-    let value_variant = case.value_variant;
-
-    // Parse the value_variant to get the enum type and variant name
-    let variant_path = syn::parse_str::<syn::Path>(value_variant).unwrap_or_else(|e| {
-        panic!(
-            "Failed to parse variant path: {} (error: {:?})",
-            value_variant, e
-        );
-    });
-
-    if case.is_primitive {
-        // For primitive oneof variants, we need to determine the visit method name
-        // Based on the type_param
-        let visit_method = match case.type_param {
-            "bool" => syn::Ident::new("visit_bool", proc_macro2::Span::call_site()),
-            "::prost::alloc::string::String" => {
-                syn::Ident::new("visit_string", proc_macro2::Span::call_site())
-            }
-            "Vec<u8>" => syn::Ident::new("visit_bytes", proc_macro2::Span::call_site()),
-            "u32" => syn::Ident::new("visit_u32", proc_macro2::Span::call_site()),
-            "u64" => syn::Ident::new("visit_u64", proc_macro2::Span::call_site()),
-            "i32" => syn::Ident::new("visit_i32", proc_macro2::Span::call_site()),
-            "i64" => syn::Ident::new("visit_i64", proc_macro2::Span::call_site()),
-            "f64" => syn::Ident::new("visit_f64", proc_macro2::Span::call_site()),
-            "f32" => syn::Ident::new("visit_f32", proc_macro2::Span::call_site()),
-            _ => syn::Ident::new("visit_i32", proc_macro2::Span::call_site()), // Default for enums
-        };
-
-        quote! {
-            if let Some(#variant_path(ref value)) = v.#field_name {
-                #visitor_param.#visit_method(sizes, value)
-            } else {
-                sizes
-            }
-        }
-    } else {
-        // For message oneof variants, call the visitable method
-        let base_type = case
-            .type_param
-            .split("::")
-            .last()
-            .unwrap_or(case.type_param);
-        let base_type_ident = syn::Ident::new(base_type, proc_macro2::Span::call_site());
-        let visitable_method = common::visitable_method_name(&base_type_ident);
-        quote! {
-            if let Some(#variant_path(ref value)) = v.#field_name {
-                value.#visitable_method(sizes, &mut #visitor_param)
-            } else {
-                sizes
-            }
-        }
-    }
 }

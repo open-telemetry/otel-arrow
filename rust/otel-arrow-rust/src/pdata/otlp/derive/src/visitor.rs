@@ -51,7 +51,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                     quote! { #trait_ident }
                 };
 
-                visitable_args.push(quote! { mut #variant_param_name: impl #visitor_type<Argument> });
+                visitable_args.push(quote! { #variant_param_name: impl #visitor_type<Argument> });
             }
             continue;
         }
@@ -110,15 +110,28 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
         let visitor_type_str = visitor_type.to_string();
         if visitor_type_str.contains('<') {
             // Already parameterized, use as-is
-            visitable_args.push(quote! { mut #param_name: impl #visitor_type });
+            visitable_args.push(quote! { #param_name: impl #visitor_type });
         } else {
             // Not parameterized, add <Argument>
-            visitable_args.push(quote! { mut #param_name: impl #visitor_type<Argument> });
+            visitable_args.push(quote! { #param_name: impl #visitor_type<Argument> });
         }
     }
 
     // Generate the visitable implementation body
     let visitable_impl_body = generate_visitable_implementation_body(msg);
+
+    // Extract parameter names for creating mutable rebindings
+    let mut param_names = Vec::new();
+    for info in &msg.all_fields {
+        if let Some(oneof_cases) = info.oneof.as_ref() {
+            for case in oneof_cases {
+                let variant_param_name = common::oneof_variant_field_or_method_name(&info.ident, &case.name);
+                param_names.push(variant_param_name);
+            }
+        } else {
+            param_names.push(info.ident.clone());
+        }
+    }
 
     let expanded = quote! {
         pub trait #visitor_name<Argument> {
@@ -138,6 +151,8 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
 
         impl<Argument> #visitable_name<Argument> for &#outer_name {
             fn #visitable_method_name(&self, mut arg: Argument, #(#visitable_args),*) -> Argument {
+                // Create mutable versions of visitor parameters to allow calling visitor methods
+                #(let mut #param_names = #param_names;)*
                 #visitable_impl_body
             }
         }
@@ -279,7 +294,7 @@ fn generate_visitable_implementation_body(msg: &MessageInfo) -> proc_macro2::Tok
                     });
                 } else {
                     field_calls.push(quote! {
-                        arg = #visitor_param.#visitor_method(arg, self.#field_name);
+                        arg = #visitor_param.#visitor_method(arg, &self.#field_name);
                     });
                 }
             }

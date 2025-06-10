@@ -42,6 +42,8 @@ use crate::proto::opentelemetry::logs::v1::ResourceLogsVisitor;
 use crate::proto::opentelemetry::logs::v1::ScopeLogsVisitable;
 use crate::proto::opentelemetry::logs::v1::ScopeLogsVisitor;
 
+use crate::proto::opentelemetry::common::v1::{AnyValue, ArrayValue, KeyValue, KeyValueList};
+
 #[cfg(test)]
 mod tests;
 
@@ -180,5 +182,21 @@ impl PrecomputedSizes {
     pub fn set_size(&mut self, idx: usize, tag_size: usize, child_size: usize) {
         let total_size = tag_size + Self::varint_len(child_size) + child_size;
         self.sizes[idx] = total_size;
+    }
+}
+
+// Into implementations for OTLP common types to support builder APIs
+
+/// Convert Vec<AnyValue> into ArrayValue for builder APIs
+impl Into<ArrayValue> for Vec<AnyValue> {
+    fn into(self) -> ArrayValue {
+        ArrayValue { values: self }
+    }
+}
+
+/// Convert Vec<KeyValue> into KeyValueList for builder APIs
+impl Into<KeyValueList> for Vec<KeyValue> {
+    fn into(self) -> KeyValueList {
+        KeyValueList { values: self }
     }
 }

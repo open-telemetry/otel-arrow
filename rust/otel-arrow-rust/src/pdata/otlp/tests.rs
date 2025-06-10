@@ -6,6 +6,8 @@ use crate::pdata::SpanID;
 use crate::pdata::TraceID;
 use crate::pdata::otlp::ItemCounter;
 use crate::pdata::otlp::LogsVisitor;
+#[cfg(test)]
+use crate::pdata::otlp::PrecomputedSizes;
 use crate::proto::opentelemetry::common::v1::AnyValue;
 use crate::proto::opentelemetry::common::v1::ArrayValue;
 use crate::proto::opentelemetry::common::v1::EntityRef;
@@ -48,6 +50,31 @@ use crate::proto::opentelemetry::trace::v1::span::Event;
 use crate::proto::opentelemetry::trace::v1::span::Link;
 use crate::proto::opentelemetry::trace::v1::span::SpanKind;
 use crate::proto::opentelemetry::trace::v1::status::StatusCode;
+
+#[cfg(test)]
+use crate::proto::opentelemetry::common::v1::{
+    AnyValueEncodedLen, AnyValueMessageAdapter, KeyValueEncodedLen, KeyValueMessageAdapter,
+};
+#[cfg(test)]
+use crate::proto::opentelemetry::common::v1::{
+    InstrumentationScopeEncodedLen, InstrumentationScopeMessageAdapter,
+};
+#[cfg(test)]
+use crate::proto::opentelemetry::logs::v1::{
+    LogRecordEncodedLen, LogRecordMessageAdapter, LogsDataEncodedLen,
+};
+#[cfg(test)]
+use crate::proto::opentelemetry::metrics::v1::{MetricsDataEncodedLen, MetricsDataMessageAdapter};
+#[cfg(test)]
+use crate::proto::opentelemetry::resource::v1::{ResourceEncodedLen, ResourceMessageAdapter};
+#[cfg(test)]
+use crate::proto::opentelemetry::trace::v1::{
+    ResourceSpansEncodedLen, ResourceSpansMessageAdapter,
+};
+#[cfg(test)]
+use crate::proto::opentelemetry::trace::v1::{SpanEncodedLen, SpanMessageAdapter};
+#[cfg(test)]
+use crate::proto::opentelemetry::trace::v1::{TracesDataEncodedLen, TracesDataMessageAdapter};
 
 #[test]
 fn test_any_value() {
@@ -92,7 +119,7 @@ fn test_any_value() {
 
     assert_eq!(AnyValue::new_kvlist(kvs), kvs_value);
     assert_eq!(
-        AnyValue::new_kvlist(&[
+        AnyValue::new_kvlist(vec![
             KeyValue::new("k1", AnyValue::new_string("s1")),
             KeyValue::new("k2", AnyValue::new_double(2.0)),
         ]),
@@ -359,6 +386,10 @@ fn test_resource_spans() {
     };
 
     assert_eq!(rds, rds_value);
+    
+    // Test that our generated pdata_size() method matches prost's encoded_len()
+    assert_eq!(rds.pdata_size(), rds.encoded_len());
+    assert_eq!(rds_value.pdata_size(), rds_value.encoded_len());
 }
 
 #[test]
