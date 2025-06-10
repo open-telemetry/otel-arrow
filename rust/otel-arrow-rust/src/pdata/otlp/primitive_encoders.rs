@@ -375,7 +375,7 @@ impl<V> Accumulate<V> {
 // These delegate to the inner visitor and accumulate the size difference
 
 impl<V: crate::pdata::StringVisitor<PrecomputedSizes>> crate::pdata::StringVisitor<PrecomputedSizes>
-    for Accumulate<V>
+    for &mut Accumulate<V>
 {
     fn visit_string(&mut self, mut arg: PrecomputedSizes, value: &str) -> PrecomputedSizes {
         arg = self.inner.visit_string(arg, value);
@@ -385,7 +385,7 @@ impl<V: crate::pdata::StringVisitor<PrecomputedSizes>> crate::pdata::StringVisit
 }
 
 impl<V: crate::pdata::BytesVisitor<PrecomputedSizes>> crate::pdata::BytesVisitor<PrecomputedSizes>
-    for Accumulate<V>
+    for &mut Accumulate<V>
 {
     fn visit_bytes(&mut self, mut arg: PrecomputedSizes, value: &[u8]) -> PrecomputedSizes {
         arg = self.inner.visit_bytes(arg, value);
@@ -395,7 +395,7 @@ impl<V: crate::pdata::BytesVisitor<PrecomputedSizes>> crate::pdata::BytesVisitor
 }
 
 impl<V: crate::pdata::I32Visitor<PrecomputedSizes>> crate::pdata::I32Visitor<PrecomputedSizes>
-    for Accumulate<V>
+    for &mut Accumulate<V>
 {
     fn visit_i32(&mut self, mut arg: PrecomputedSizes, value: i32) -> PrecomputedSizes {
         arg = self.inner.visit_i32(arg, value);
@@ -405,7 +405,7 @@ impl<V: crate::pdata::I32Visitor<PrecomputedSizes>> crate::pdata::I32Visitor<Pre
 }
 
 impl<V: crate::pdata::I64Visitor<PrecomputedSizes>> crate::pdata::I64Visitor<PrecomputedSizes>
-    for Accumulate<V>
+    for &mut Accumulate<V>
 {
     fn visit_i64(&mut self, mut arg: PrecomputedSizes, value: i64) -> PrecomputedSizes {
         arg = self.inner.visit_i64(arg, value);
@@ -415,7 +415,7 @@ impl<V: crate::pdata::I64Visitor<PrecomputedSizes>> crate::pdata::I64Visitor<Pre
 }
 
 impl<V: crate::pdata::U32Visitor<PrecomputedSizes>> crate::pdata::U32Visitor<PrecomputedSizes>
-    for Accumulate<V>
+    for &mut Accumulate<V>
 {
     fn visit_u32(&mut self, mut arg: PrecomputedSizes, value: u32) -> PrecomputedSizes {
         arg = self.inner.visit_u32(arg, value);
@@ -425,7 +425,7 @@ impl<V: crate::pdata::U32Visitor<PrecomputedSizes>> crate::pdata::U32Visitor<Pre
 }
 
 impl<V: crate::pdata::U64Visitor<PrecomputedSizes>> crate::pdata::U64Visitor<PrecomputedSizes>
-    for Accumulate<V>
+    for &mut Accumulate<V>
 {
     fn visit_u64(&mut self, mut arg: PrecomputedSizes, value: u64) -> PrecomputedSizes {
         arg = self.inner.visit_u64(arg, value);
@@ -435,7 +435,7 @@ impl<V: crate::pdata::U64Visitor<PrecomputedSizes>> crate::pdata::U64Visitor<Pre
 }
 
 impl<V: crate::pdata::F64Visitor<PrecomputedSizes>> crate::pdata::F64Visitor<PrecomputedSizes>
-    for Accumulate<V>
+    for &mut Accumulate<V>
 {
     fn visit_f64(&mut self, mut arg: PrecomputedSizes, value: f64) -> PrecomputedSizes {
         arg = self.inner.visit_f64(arg, value);
@@ -445,7 +445,7 @@ impl<V: crate::pdata::F64Visitor<PrecomputedSizes>> crate::pdata::F64Visitor<Pre
 }
 
 impl<V: crate::pdata::BooleanVisitor<PrecomputedSizes>>
-    crate::pdata::BooleanVisitor<PrecomputedSizes> for Accumulate<V>
+    crate::pdata::BooleanVisitor<PrecomputedSizes> for &mut Accumulate<V>
 {
     fn visit_bool(&mut self, mut arg: PrecomputedSizes, value: bool) -> PrecomputedSizes {
         arg = self.inner.visit_bool(arg, value);
@@ -455,7 +455,7 @@ impl<V: crate::pdata::BooleanVisitor<PrecomputedSizes>>
 }
 
 impl<V: crate::pdata::SliceVisitor<PrecomputedSizes, Primitive>, Primitive>
-    crate::pdata::SliceVisitor<PrecomputedSizes, Primitive> for Accumulate<V>
+    crate::pdata::SliceVisitor<PrecomputedSizes, Primitive> for &mut Accumulate<V>
 {
     fn visit_slice(&mut self, arg: PrecomputedSizes, _value: &[Primitive]) -> PrecomputedSizes {
         // @@@

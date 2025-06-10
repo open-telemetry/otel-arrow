@@ -178,7 +178,10 @@ fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
 
         // Call the main visitable method with all Accumulate-wrapped visitors
         // Each field's contribution will be accumulated separately in 'total'
-        arg = v.#visitable_method_name(arg, #(#accumulate_args),*);
+        arg = v.#visitable_method_name(arg, #(&mut #accumulate_args),*);
+
+        // Collect the total sizes from all Accumulate wrappers
+        #(total += #accumulate_args.total;)*
     }
 }
 
@@ -303,7 +306,7 @@ pub fn derive_accumulate_visitor(msg: &MessageInfo) -> TokenStream {
 
     let expanded = quote! {
         impl<V: #visitor_name<crate::pdata::otlp::PrecomputedSizes>>
-            #visitor_name<crate::pdata::otlp::PrecomputedSizes> for crate::pdata::otlp::Accumulate<V>
+            #visitor_name<crate::pdata::otlp::PrecomputedSizes> for &mut crate::pdata::otlp::Accumulate<V>
         {
             fn #visitor_method_name(
                 &mut self,
