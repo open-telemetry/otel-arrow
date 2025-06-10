@@ -1,7 +1,9 @@
 [workspace]
 members = [
     "expressions",
-    "kql-parser"
+    "kql-parser",
+    "engine-columnar",
+    "engine-recordset",
 ]
 resolver = "2"
 
@@ -15,4 +17,5 @@ publish = false
 rust-version = "1.86.0"
 
 [workspace.dependencies]
+chrono = "0.4.40"
 thiserror = "2.0.12"
