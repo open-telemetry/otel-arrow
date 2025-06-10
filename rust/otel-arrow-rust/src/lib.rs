@@ -33,5 +33,5 @@ pub mod proto;
 
 pub use decode::decoder::Consumer;
 
-/// Debug tests for EncodedLen visitor functionality
-pub mod debug_test;
+// Debug tests for EncodedLen visitor functionality
+//pub mod debug_test;

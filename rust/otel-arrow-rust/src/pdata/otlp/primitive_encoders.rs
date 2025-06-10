@@ -5,6 +5,24 @@
 
 use crate::pdata::otlp::PrecomputedSizes;
 
+/// Accumulate is WIP.
+pub struct Accumulate<A, V> {
+    _inner: V,
+    _total: usize,
+    _marker: std::marker::PhantomData<A>,
+}
+
+impl<A, V> Accumulate<A, V> {
+    /// Accumulate for children of V
+    pub fn new(inner: V) -> Self {
+        Self {
+            _inner: inner,
+            _total: 0,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
 /// Calculate the size of a varint encoded value
 fn varint_size(mut value: u32) -> usize {
     if value == 0 {

@@ -64,10 +64,10 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                 Self { tag }
             }
 
-            /// Helper method to calculate the sum of direct children's encoded lengths.
-            /// This method processes each child field individually via visitable interface
-            /// to avoid double-counting nested descendants.
+            /// Calculate the sum of direct children's encoded lengths.
+            /// This method processes each child field individually using the visitor pattern.
             fn children_encoded_size(
+                &mut self,
                 mut arg: crate::pdata::otlp::PrecomputedSizes,
                 v: impl #visitable_name<crate::pdata::otlp::PrecomputedSizes>
             ) -> (crate::pdata::otlp::PrecomputedSizes, usize) {
@@ -92,8 +92,8 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                     let my_idx = arg.len();
                     arg.reserve();
 
-                    // Calculate total size of direct children using helper method
-                    let (updated_arg, total_child_size) = Self::children_encoded_size(arg, v);
+                    // Calculate total size of direct children using instance method
+                    let (updated_arg, total_child_size) = self.children_encoded_size(arg, v);
                     arg = updated_arg;
 
                     println!("DEBUG: {} visitor - total_child_size from children: {}", stringify!(#outer_name), total_child_size);
@@ -114,8 +114,8 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                     let my_idx = child_accumulator.len();
                     child_accumulator.reserve();
 
-                    // Calculate total size of direct children using helper method with separate accumulator
-                    let (_, total_child_size) = Self::children_encoded_size(child_accumulator, v);
+                    // Calculate total size of direct children using instance method with separate accumulator
+                    let (_, total_child_size) = self.children_encoded_size(child_accumulator, v);
 
                     println!("DEBUG: {} child visitor - total_child_size from children: {}", stringify!(#outer_name), total_child_size);
 
@@ -138,10 +138,11 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             #[cfg(test)]
             pub fn pdata_size(&self) -> usize {
                 let mut sizes = crate::pdata::otlp::PrecomputedSizes::default();
-                let visitor = #encoded_len_name::new(0); // Use tag 0 for top-level
+                let mut visitor = #encoded_len_name::new(0); // Use tag 0 for top-level
                 let adapter = #message_adapter_name::new(self);
                 sizes = visitor.#visitor_method_name(sizes, &adapter);
                 // For testing, we want the computed size of the message itself
+                // TODO: Fix the size calculation to match prost's encoded_len exactly
                 if sizes.len() > 0 {
                     sizes.get_size(0)
                 } else {
@@ -157,12 +158,12 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
 /// Generate the helper method body that calculates encoded sizes of direct children.
 ///
 /// This generates code to be used in the children_encoded_size method on the visitor.
-/// It creates visitor instances for each field and calls the main visitable method once.
+/// It works through the visitable interface, using the visitor pattern properly.
 fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
     let mut visitor_instantiations = Vec::new();
     let mut visitor_args = Vec::new();
 
-    // Generate visitor instances for each field
+    // Generate visitor instances for each field  
     for info in &msg.all_fields {
         if let Some(oneof_cases) = info.oneof.as_ref() {
             // Process each oneof variant individually
@@ -177,7 +178,7 @@ fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
                 };
 
                 visitor_instantiations.push(quote! {
-                    let #variant_param_name = #visitor_instantiation;
+                    let mut #variant_param_name = #visitor_instantiation;
                 });
                 visitor_args.push(quote! { #variant_param_name });
             }
@@ -192,7 +193,7 @@ fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
             };
 
             visitor_instantiations.push(quote! {
-                let #field_name = #visitor_instantiation;
+                let mut #field_name = #visitor_instantiation;
             });
             visitor_args.push(quote! { #field_name });
         }
@@ -210,9 +211,7 @@ fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
         #(#visitor_instantiations)*
 
         // Call the main visitable method with all visitors
-        // Note: We don't call reserve() here because:
-        // 1. Child visitors reserve space for themselves
-        // 2. The caller of children_encoded_size reserves for itself
+        // This properly routes each field to its appropriate visitor
         arg = v.#visitable_method_name(arg, #(#visitor_args),*);
         
         // Sum up all the sizes that were added by child visitors
