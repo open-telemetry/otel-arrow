@@ -481,29 +481,15 @@ mod test {
 
     #[test]
     fn test_get_field_builder_failures() {
-        let mut struct_builder = AdaptiveStructBuilder::new(vec![
-            (
-                FieldData {
-                    name: "test".to_string(),
-                },
-                Box::new(StringArrayBuilder::new(ArrayOptions {
-                    dictionary_options: None,
-                    nullable: true,
-                })),
-            ),
-            (
-                FieldData {
-                    name: "test2".to_string(),
-                },
-                Box::new(FixedSizeBinaryArrayBuilder::new_with_args(
-                    ArrayOptions {
-                        dictionary_options: None,
-                        nullable: true,
-                    },
-                    1,
-                )),
-            ),
-        ]);
+        let mut struct_builder = AdaptiveStructBuilder::new(vec![(
+            FieldData {
+                name: "test".to_string(),
+            },
+            Box::new(StringArrayBuilder::new(ArrayOptions {
+                dictionary_options: None,
+                nullable: true,
+            })),
+        )]);
 
         // assert that we cannot get the field if the index is out of bounds
         assert!(
