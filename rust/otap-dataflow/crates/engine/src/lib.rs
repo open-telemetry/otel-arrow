@@ -31,8 +31,8 @@ pub mod shared;
 pub mod testing;
 
 pub use linkme::distributed_slice;
-use otap_df_config::node::NodeConfig;
-use otap_df_config::NodeId;
+use otap_df_config::node::{DispatchStrategy, NodeConfig};
+use otap_df_config::{NodeId, PortName};
 
 /// Trait for factory types that expose a name.
 ///
@@ -214,17 +214,19 @@ impl<PData: 'static> FactoryRegistry<PData> {
         &self,
         config: otap_df_config::pipeline::PipelineConfig,
     ) -> Result<RuntimePipeline<PData>, Error<PData>> {
-        let mut nodes = Vec::new();
+        let mut nodes = HashMap::new();
 
         // Create runtime nodes based on the pipeline configuration.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         for (node_id, node_config) in config.node_iter() {
             match node_config.kind {
-                otap_df_config::node::NodeKind::Receiver => self.create_receiver(
-                    &mut nodes,
-                    node_id.clone(),
-                    node_config.clone(),
-                )?,
+                otap_df_config::node::NodeKind::Receiver => {
+                    self.create_receiver(
+                        &mut nodes,
+                        node_id.clone(),
+                        node_config.clone(),
+                    )?
+                },
                 otap_df_config::node::NodeKind::Processor => self.create_processor(
                     &mut nodes,
                     node_id.clone(),
@@ -244,14 +246,25 @@ impl<PData: 'static> FactoryRegistry<PData> {
             }
         }
 
+        for hyper_edge in iter_hyper_edges_runtime(&nodes) {
+            // Both source and destination nodes are locals: we can create a local channel based on
+            // the dispatch strategy.
+            // - When we have a single source and a single destination, we can use a local SPSC channel.
+            // - When we have a single source and multiple destinations, we can use a local SPMC channel.
+            // Otherwise, we need to create a shared channel.
+            // - When we have a singe source and multiple destinations, we can use a tokio SPSC channel.
+            // - When we have a single source and multiple destinations, we can use a tokio SPMC channel.
+            
+            // We can start simple with MPMC channels for all cases.
+        }
         Ok(RuntimePipeline::new(config, nodes))
     }
 
     /// Creates a receiver node and adds it to the list of runtime nodes.
     fn create_receiver(
         &self,
-        nodes: &mut Vec<RuntimeNode<PData>>,
-        node_id: NodeId,
+        nodes: &mut HashMap<NodeId, RuntimeNode<PData>>,
+        receiver_id: NodeId,
         node_config: Rc<NodeConfig>,
     ) -> Result<(), Error<PData>> {
         let factory = self.get_receiver_factory_map()
@@ -259,23 +272,28 @@ impl<PData: 'static> FactoryRegistry<PData> {
             .ok_or_else(|| Error::UnknownReceiver {
                 plugin_urn: node_config.plugin_urn.clone(),
             })?;
-        let receiver_config = ReceiverConfig::new(node_id.clone());
+        let receiver_config = ReceiverConfig::new(receiver_id.clone());
         let create = factory.create;
 
-        nodes.push(RuntimeNode::Receiver {
+        let prev_node = nodes.insert(receiver_id.clone(), RuntimeNode::Receiver {
             config: node_config.clone(),
             instance: create(&node_config.config, &receiver_config),
             control_sender: None,
             control_receiver: None,
         });
+        if prev_node.is_some() {
+            return Err(Error::ReceiverAlreadyExists {
+                receiver: receiver_id,
+            });
+        }
         Ok(())
     }
 
     /// Creates a processor node and adds it to the list of runtime nodes.
     fn create_processor(
         &self,
-        nodes: &mut Vec<RuntimeNode<PData>>,
-        node_id: NodeId,
+        nodes: &mut HashMap<NodeId, RuntimeNode<PData>>,
+        processor_id: NodeId,
         node_config: Rc<NodeConfig>,
     ) -> Result<(), Error<PData>> {
         let factory = self.get_processor_factory_map()
@@ -283,9 +301,9 @@ impl<PData: 'static> FactoryRegistry<PData> {
             .ok_or_else(|| Error::UnknownProcessor {
                 plugin_urn: node_config.plugin_urn.clone(),
             })?;
-        let processor_config = ProcessorConfig::new(node_id.clone());
+        let processor_config = ProcessorConfig::new(processor_id.clone());
         let create = factory.create;
-        nodes.push(RuntimeNode::Processor {
+        let prev_node = nodes.insert(processor_id.clone(), RuntimeNode::Processor {
             config: node_config.clone(),
             instance: create(&node_config.config, &processor_config),
             control_sender: None,
@@ -293,14 +311,19 @@ impl<PData: 'static> FactoryRegistry<PData> {
             pdata_sender: None,
             pdata_receiver: None,
         });
+        if prev_node.is_some() {
+            return Err(Error::ProcessorAlreadyExists {
+                processor: processor_id,
+            });
+        }
         Ok(())
     }
 
     /// Creates an exporter node and adds it to the list of runtime nodes.
     fn create_exporter(
         &self,
-        nodes: &mut Vec<RuntimeNode<PData>>,
-        node_id: NodeId,
+        nodes: &mut HashMap<NodeId, RuntimeNode<PData>>,
+        exporter_id: NodeId,
         node_config: Rc<NodeConfig>,
     ) -> Result<(), Error<PData>> {
         let factory = self.get_exporter_factory_map()
@@ -308,9 +331,9 @@ impl<PData: 'static> FactoryRegistry<PData> {
             .ok_or_else(|| Error::UnknownExporter {
                 plugin_urn: node_config.plugin_urn.clone(),
             })?;
-        let exporter_config = ExporterConfig::new(node_id.clone());
+        let exporter_config = ExporterConfig::new(exporter_id.clone());
         let create = factory.create;
-        nodes.push(RuntimeNode::Exporter {
+        let prev_node = nodes.insert(exporter_id.clone(), RuntimeNode::Exporter {
             config: node_config.clone(),
             instance: create(&node_config.config, &exporter_config),
             control_sender: None,
@@ -318,6 +341,56 @@ impl<PData: 'static> FactoryRegistry<PData> {
             pdata_sender: None,
             pdata_receiver: None,
         });
+        if prev_node.is_some() {
+            return Err(Error::ExporterAlreadyExists {
+                exporter: exporter_id,
+            });
+        }
         Ok(())
     }
+}
+
+/// Represents a hyper-edge in the runtime graph, corresponding to a source node's output port,
+/// its dispatch strategy, and the set of destination runtime nodes connected to that port.
+struct HyperEdgeRuntime<'a, PData> {
+    source: &'a RuntimeNode<PData>,
+    port: &'a PortName,
+    dispatch_strategy: &'a DispatchStrategy,
+    destinations: Vec<&'a RuntimeNode<PData>>,
+}
+
+
+/// Returns an iterator over all hyper-edges in the runtime graph.
+///
+/// Each item represents a source node, one of its output ports, the dispatch strategy for that port,
+/// and the destination runtime nodes connected to it.
+fn iter_hyper_edges_runtime<'a, PData>(
+    nodes: &'a HashMap<NodeId, RuntimeNode<PData>>,
+) -> impl Iterator<Item = HyperEdgeRuntime<'a, PData>> + 'a {
+    nodes.iter().flat_map(move |(_, node)| {
+        let config = match node {
+            RuntimeNode::Receiver { config, .. }
+            | RuntimeNode::Processor { config, .. }
+            | RuntimeNode::Exporter { config, .. } => config,
+        };
+
+        config.out_ports.iter().filter_map(move |(port, port_cfg)| {
+            let destinations = port_cfg
+                .destinations
+                .iter()
+                .filter_map(|dest_id| nodes.get(dest_id))
+                .collect::<Vec<_>>();
+
+            if destinations.is_empty() {
+                return None;
+            }
+
+            Some(HyperEdgeRuntime {
+                source: node,
+                port,
+                dispatch_strategy: &port_cfg.dispatch_strategy,
+                destinations,
+            })
+        })
+    })
 }

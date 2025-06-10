@@ -2,9 +2,10 @@
 
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
-use otap_df_config::{node::NodeConfig, pipeline::PipelineConfig};
+use otap_df_config::{node::NodeConfig, pipeline::PipelineConfig, NodeId};
 
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 
@@ -12,8 +13,9 @@ use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::Re
 pub struct RuntimePipeline<PData> {
     /// The pipeline configuration that defines the structure and behavior of the pipeline.
     config: PipelineConfig,
-    /// A vector of runtime nodes, each containing a configuration and an instance of a receiver, processor, or exporter.
-    nodes: Vec<RuntimeNode<PData>>,
+    /// A map of node id -> runtime node, where each node can be a receiver, processor, or exporter.
+    /// This map allows for quick access to nodes by their unique identifiers.
+    nodes: HashMap<NodeId, RuntimeNode<PData>>,
 }
 
 /// Represents a node in the runtime pipeline, which can be a receiver, processor, or exporter.
@@ -65,7 +67,7 @@ pub enum RuntimeNode<PData> {
 impl<PData> RuntimePipeline<PData> {
     /// Creates a new `RuntimePipeline` from the given pipeline configuration and nodes.
     #[must_use]
-    pub fn new(config: PipelineConfig, nodes: Vec<RuntimeNode<PData>>) -> Self {
+    pub fn new(config: PipelineConfig, nodes: HashMap<NodeId, RuntimeNode<PData>>) -> Self {
         Self { config, nodes }
     }
 }
