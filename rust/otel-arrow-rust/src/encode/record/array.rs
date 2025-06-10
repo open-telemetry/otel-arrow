@@ -14,8 +14,6 @@
 //! an all-null) column, an array that may be a dictionary, of an array or native types. It will
 //! handle converting between different builders dynamically  based on the data which is appended.
 
-use std::any::Any;
-
 use arrow::array::{
     ArrayRef, ArrowPrimitiveType, BinaryBuilder, BinaryDictionaryBuilder, FixedSizeBinaryBuilder,
     FixedSizeBinaryDictionaryBuilder, PrimitiveBuilder, PrimitiveDictionaryBuilder, StringBuilder,
@@ -23,7 +21,7 @@ use arrow::array::{
 };
 use arrow::datatypes::{
     ArrowDictionaryKeyType, DataType, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type,
-    Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+    Int64Type, TimestampNanosecondType, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
 use arrow::error::ArrowError;
 
@@ -128,24 +126,6 @@ pub struct AdaptiveArrayBuilder<TArgs, TN, TD8, TD16> {
     inner_args: TArgs,
 }
 
-impl<TArgs, TN, TD8, TD16> AdaptiveArrayBuilder<TArgs, TN, TD8, TD16>
-where
-    TArgs: 'static,
-    TN: 'static,
-    TD8: 'static,
-    TD16: 'static,
-{
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-
-    /// get an indicator of whether the array that is being produced is nullable
-    fn nullable(&self) -> bool {
-        // TODO -- should there be tests for this method
-        self.nullable
-    }
-}
-
 impl<TN, TD8, TD16> AdaptiveArrayBuilder<NoArgs, TN, TD8, TD16>
 where
     TN: ArrayBuilderConstructor<Args = NoArgs>,
@@ -219,15 +199,13 @@ where
         + DictionaryBuilder<UInt8Type>
         + ArrayBuilderConstructor<Args = TArgs>
         + ConvertToNativeHelper
-        + UpdateDictionaryIndexInto<TD16>
-        + 'static,
-    <TD8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T>,
+        + UpdateDictionaryIndexInto<TD16>,
+    <TD8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
     TD16: DictionaryArrayAppend<Native = T>
         + DictionaryBuilder<UInt16Type>
         + ArrayBuilderConstructor<Args = TArgs>
-        + ConvertToNativeHelper
-        + 'static,
-    <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T>,
+        + ConvertToNativeHelper,
+    <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
 {
     type Native = T;
 
@@ -360,6 +338,7 @@ pub type Int8ArrayBuilder = PrimitiveArrayBuilder<Int8Type>;
 pub type Int16ArrayBuilder = PrimitiveArrayBuilder<Int16Type>;
 pub type Int32ArrayBuilder = PrimitiveArrayBuilder<Int32Type>;
 pub type Int64ArrayBuilder = PrimitiveArrayBuilder<Int64Type>;
+pub type TimestampNanosecondArrayBuilder = PrimitiveArrayBuilder<TimestampNanosecondType>;
 
 #[cfg(test)]
 pub mod test {
@@ -368,7 +347,7 @@ pub mod test {
     use std::sync::Arc;
 
     use arrow::array::{DictionaryArray, StringArray, UInt8Array, UInt8DictionaryArray};
-    use arrow::datatypes::DataType;
+    use arrow::datatypes::{DataType, TimeUnit};
 
     fn test_array_builder_generic<T, TArgs, TN, TD8, TD16>(
         array_builder_factory: &impl Fn(ArrayOptions) -> AdaptiveArrayBuilder<TArgs, TN, TD8, TD16>,
@@ -541,6 +520,11 @@ pub mod test {
             vec![b"a".to_vec(), b"b".to_vec()],
             DataType::Binary,
         );
+        test_array_append_generic(
+            TimestampNanosecondArrayBuilder::new,
+            vec![0, 1],
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+        )
     }
 
     fn test_checked_array_builder_generic<T, TArgs, TN, TD8, TD16>(

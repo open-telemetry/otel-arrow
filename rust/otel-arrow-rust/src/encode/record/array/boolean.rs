@@ -65,8 +65,7 @@ impl AdaptiveBooleanArrayBuilder {
     }
 }
 
-// Implement ArrayAppend as a helper so this can be used in places that are generic over ArrayAppend,
-// (like StringBuilder::field_builder<T: ArrayAppend>)
+// implement ArrayAppend as a helper so this can be used in places that are generic over ArrayAppend
 impl ArrayAppend for AdaptiveBooleanArrayBuilder {
     type Native = bool;
 

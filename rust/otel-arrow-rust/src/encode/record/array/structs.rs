@@ -1,6 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! this module contains the implementation of the adaptive array builder for struct fields.
+//! the `AdaptiveStructBuilder` is a container of child adaptive builders. Like adaptive array
+//! builders for primitive types, the resulting array that this builder produces is wrapped in an
+//! `Option` where the `None` variant means that all the fields for all columns in this struct
+//! were either null.
+
 use std::{any::Any, sync::Arc};
 
 use arrow::{
@@ -11,15 +17,13 @@ use arrow::{
 use paste::paste;
 
 use crate::encode::record::array::{
-    AdaptiveArrayBuilder, ArrayAppend, ArrayBuilder, ArrayOptions, BinaryArrayBuilder,
-    CheckedArrayAppend, FixedSizeBinaryArrayBuilder, Float32ArrayBuilder, Float64ArrayBuilder,
-    Int8ArrayBuilder, Int16ArrayBuilder, Int32ArrayBuilder, Int64ArrayBuilder,
-    PrimitiveArrayBuilder, StringArrayBuilder, UInt8ArrayBuilder, UInt16ArrayBuilder,
-    UInt32ArrayBuilder, UInt64ArrayBuilder, boolean::AdaptiveBooleanArrayBuilder,
-    dictionary::DictionaryBuilder,
+    AdaptiveArrayBuilder, ArrayAppend, ArrayBuilder, ArrayOptions, CheckedArrayAppend,
+    boolean::AdaptiveBooleanArrayBuilder, dictionary::DictionaryBuilder,
 };
 
+/// Data about some field contained in this struct
 struct FieldData {
+    /// name of the field
     name: String,
 }
 
@@ -71,6 +75,7 @@ impl StructArrayBuilderHelper for AdaptiveBooleanArrayBuilder {
     }
 }
 
+/// Adaptive array builder for columns of type struct.
 struct AdaptiveStructBuilder {
     fields: Vec<(FieldData, Box<dyn StructArrayBuilderHelper>)>,
 }
@@ -80,18 +85,28 @@ impl AdaptiveStructBuilder {
         Self { fields }
     }
 
+    /// Get the builder for some field index.
+    ///
+    /// If the field for at index doesn't exist or the generic type is wrong, this returns `None`
     pub fn field_builder<T>(&mut self, i: usize) -> Option<&mut T>
     where
-        T: ArrayAppend + 'static,
+        T: StructArrayBuilderHelper + ArrayAppend + 'static,
     {
         self.fields
             .get_mut(i)
             .and_then(|(_, builder)| builder.as_any_mut().downcast_mut())
     }
 
+    /// Get the builder for some field index.
+    ///
+    /// If the field for at index doesn't exist or the generic type is wrong, this returns `None`
+    ///
+    // Note: this method  is somewhat similar to field_builder just with a different trait bound
+    // on the generic. The hope with the trait bounds here is that is that it will avoid
+    // accidentally  calling this method with the wrong generic type.
     fn checked_field_builder<T>(&mut self, i: usize) -> Option<&mut T>
     where
-        T: CheckedArrayAppend + 'static,
+        T: StructArrayBuilderHelper + CheckedArrayAppend + 'static,
     {
         self.fields
             .get_mut(i)
@@ -128,14 +143,18 @@ mod test {
     use arrow::{
         array::{
             BinaryArray, BooleanArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int8Array,
-            Int16Array, Int32Array, Int64Array, StringArray, UInt8Array, UInt16Array, UInt32Array,
-            UInt64Array,
+            Int16Array, Int32Array, Int64Array, StringArray, TimestampNanosecondArray, UInt8Array,
+            UInt16Array, UInt32Array, UInt64Array,
         },
-        datatypes::Fields,
+        datatypes::{Fields, TimeUnit},
     };
 
     use crate::encode::record::array::{
-        ArrayBuilderConstructor, NoArgs, boolean::BooleanBuilderOptions,
+        ArrayBuilderConstructor, BinaryArrayBuilder, FixedSizeBinaryArrayBuilder,
+        Float32ArrayBuilder, Float64ArrayBuilder, Int8ArrayBuilder, Int16ArrayBuilder,
+        Int32ArrayBuilder, Int64ArrayBuilder, NoArgs, PrimitiveArrayBuilder, StringArrayBuilder,
+        TimestampNanosecondArrayBuilder, UInt8ArrayBuilder, UInt16ArrayBuilder, UInt32ArrayBuilder,
+        UInt64ArrayBuilder, boolean::BooleanBuilderOptions,
     };
 
     use super::*;
@@ -237,11 +256,7 @@ mod test {
         let result = struct_builder.finish().unwrap().unwrap();
         let result_struct_arr = result.as_any().downcast_ref::<StructArray>().unwrap();
         let expected = StructArray::new(
-            Fields::from(vec![
-                // TODO -- there's a bug in arrow that if the nullable arg is 'true' in the test below, it spits out a completely
-                // unhelpful error message. We should document on arrow-rs repo
-                Field::new("age", DataType::UInt8, false),
-            ]),
+            Fields::from(vec![Field::new("age", DataType::UInt8, false)]),
             vec![Arc::new(UInt8Array::from_iter_values(vec![]))],
             None,
         );
@@ -326,6 +341,9 @@ mod test {
         let mut builder = Float64ArrayBuilder::new(Default::default());
         builder.append_value(&2.0);
         fields.push((FieldData::new("f64"), Box::new(builder)));
+        let mut builder = TimestampNanosecondArrayBuilder::new(Default::default());
+        builder.append_value(&1);
+        fields.push((FieldData::new("ts_nano"), Box::new(builder)));
         let mut builder = FixedSizeBinaryArrayBuilder::new_with_args(
             ArrayOptions {
                 dictionary_options: None,
@@ -359,6 +377,11 @@ mod test {
                 Field::new("i64", DataType::Int64, false),
                 Field::new("f32", DataType::Float32, false),
                 Field::new("f64", DataType::Float64, false),
+                Field::new(
+                    "ts_nano",
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
                 Field::new("fsb", DataType::FixedSizeBinary(4), false),
                 Field::new("bool", DataType::Boolean, false),
             ]),
@@ -375,6 +398,7 @@ mod test {
                 Arc::new(Int64Array::from_iter_values(vec![-4])),
                 Arc::new(Float32Array::from_iter_values(vec![1.0])),
                 Arc::new(Float64Array::from_iter_values(vec![2.0])),
+                Arc::new(TimestampNanosecondArray::from_iter_values(vec![1])),
                 Arc::new(FixedSizeBinaryArray::try_from_iter([b"1234".to_vec()].iter()).unwrap()),
                 Arc::new(BooleanArray::from(vec![true])),
             ],
@@ -387,11 +411,10 @@ mod test {
     fn test_get_field_builder() {
         // this "do_positive_test" macro just ensures that we can get the field builder from
         // the struct builder for the given type
-        macro_rules! do_positive_test {
+        macro_rules! do_test {
             ($type:ident) => {
                 paste! {
                     let mut struct_builder = AdaptiveStructBuilder::new(vec![(
-                        // TODO it's ugly how we have to specify nullable here twice ...
                         FieldData {
                             name: "test".to_string(),
                         },
@@ -408,18 +431,19 @@ mod test {
             };
         }
 
-        do_positive_test!(String);
-        do_positive_test!(Binary);
-        do_positive_test!(UInt8);
-        do_positive_test!(UInt16);
-        do_positive_test!(UInt32);
-        do_positive_test!(UInt64);
-        do_positive_test!(Int8);
-        do_positive_test!(Int16);
-        do_positive_test!(Int32);
-        do_positive_test!(Int64);
-        do_positive_test!(Float32);
-        do_positive_test!(Float64);
+        do_test!(String);
+        do_test!(Binary);
+        do_test!(UInt8);
+        do_test!(UInt16);
+        do_test!(UInt32);
+        do_test!(UInt64);
+        do_test!(Int8);
+        do_test!(Int16);
+        do_test!(Int32);
+        do_test!(Int64);
+        do_test!(Float32);
+        do_test!(Float64);
+        do_test!(TimestampNanosecond);
 
         // check for boolean (special case b/c it is not a variation of AdaptiveArrayBuilder)
         let mut struct_builder = AdaptiveStructBuilder::new(vec![(
