@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use otap_df_config::{node::NodeConfig, pipeline::PipelineConfig, NodeId};
+use otap_df_config::{NodeId, node::NodeConfig, pipeline::PipelineConfig};
 
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 
@@ -27,7 +27,7 @@ pub enum RuntimeNode<PData> {
         /// The instance of the receiver that processes incoming data.
         instance: ReceiverWrapper<PData>,
         /// Sender for control messages.
-        control_sender: Option<ReceiverWrapper<PData>>,        
+        control_sender: Option<ReceiverWrapper<PData>>,
         /// Receiver for control messages.
         control_receiver: Option<ReceiverWrapper<PData>>,
     },
@@ -38,7 +38,7 @@ pub enum RuntimeNode<PData> {
         /// The instance of the processor that performs operations on the data.
         instance: ProcessorWrapper<PData>,
         /// Sender for control messages.
-        control_sender: Option<ReceiverWrapper<PData>>,        
+        control_sender: Option<ReceiverWrapper<PData>>,
         /// Receiver for control messages.
         control_receiver: Option<ReceiverWrapper<PData>>,
         /// Sender for PData messages.
@@ -53,7 +53,7 @@ pub enum RuntimeNode<PData> {
         /// The instance of the exporter that sends data to an external system.
         instance: ExporterWrapper<PData>,
         /// Sender for control messages.
-        control_sender: Option<ReceiverWrapper<PData>>,        
+        control_sender: Option<ReceiverWrapper<PData>>,
         /// Receiver for control messages.
         control_receiver: Option<ReceiverWrapper<PData>>,
         /// Sender for PData messages.

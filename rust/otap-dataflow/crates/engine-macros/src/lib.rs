@@ -29,7 +29,7 @@ use syn::{ItemStatic, Type, parse_macro_input};
 /// static FACTORY_REGISTRY: FactoryRegistry<MyData> = build_registry();
 /// ```
 ///
-/// Note: You need to import both `FactoryRegistry` and `build_registry`. The 
+/// Note: You need to import both `FactoryRegistry` and `build_registry`. The
 /// `build_registry()` call is a placeholder that gets replaced by the macro, but
 /// importing it explicitly makes the API more natural and clear.
 /// The individual factory types are imported internally by the macro.
@@ -39,7 +39,7 @@ use syn::{ItemStatic, Type, parse_macro_input};
 /// - Proper initialization of the FACTORY_REGISTRY with lazy loading
 /// - Helper functions to access factory maps
 #[proc_macro_attribute]
-pub fn factory_registry(args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
     let pdata_type = parse_macro_input!(args as Type);
     let registry_static = parse_macro_input!(input as ItemStatic);
 
@@ -60,10 +60,10 @@ pub fn factory_registry(args: TokenStream, input: TokenStream) -> TokenStream {
         pub static EXPORTER_FACTORIES: [::otap_df_engine::ExporterFactory<#pdata_type>] = [..];
 
         /// The factory registry instance.
-        #registry_vis static #registry_name: std::sync::LazyLock<FactoryRegistry<#pdata_type>> = std::sync::LazyLock::new(|| {
+        #registry_vis static #registry_name: std::sync::LazyLock<PipelineFactory<#pdata_type>> = std::sync::LazyLock::new(|| {
             // Reference build_registry to avoid unused import warning, even though we don't call it
-            let _ = build_registry::<#pdata_type>;
-            FactoryRegistry::new(
+            let _ = build_factory::<#pdata_type>;
+            PipelineFactory::new(
                 &RECEIVER_FACTORIES,
                 &PROCESSOR_FACTORIES,
                 &EXPORTER_FACTORIES,

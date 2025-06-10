@@ -4,8 +4,8 @@
 //!
 
 use crate::grpc::OTAPData;
-use otap_df_engine::{FactoryRegistry, build_registry};
-use otap_df_engine_macros::factory_registry;
+use otap_df_engine::{PipelineFactory, build_factory};
+use otap_df_engine_macros::pipeline_factory;
 
 /// gRPC service implementation
 pub mod grpc;
@@ -22,8 +22,6 @@ pub mod parquet_exporter;
 #[cfg(test)]
 mod mock;
 
-/// Factory registry for OTAP data processing
-#[factory_registry(OTAPData)]
-static FACTORY_REGISTRY: FactoryRegistry<OTAPData> = build_registry();
-
-
+/// Factory for OTAP-based pipeline
+#[pipeline_factory(OTAPData)]
+static OTAP_PIPELINE_FACTORY: PipelineFactory<OTAPData> = build_factory();

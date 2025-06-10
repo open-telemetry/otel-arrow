@@ -131,19 +131,19 @@ where
     })
 }
 
-/// Builds a factory registry for initialization.
+/// Builds a pipeline factory for initialization.
 ///
-/// This function is used as a placeholder when declaring a factory registry with the
+/// This function is used as a placeholder when declaring a pipeline factory with the
 /// `#[factory_registry]` attribute macro. The macro will replace this placeholder with
 /// proper lazy initialization using `LazyLock`.
 ///
 /// # Example
 /// ```rust,ignore
 /// #[factory_registry(MyData)]
-/// static FACTORY_REGISTRY: FactoryRegistry<MyData> = build_registry();
+/// static FACTORY_REGISTRY: PipelineFactory<MyData> = build_factory();
 /// ```
 #[must_use]
-pub const fn build_registry<PData: 'static>() -> FactoryRegistry<PData> {
+pub const fn build_factory<PData: 'static>() -> PipelineFactory<PData> {
     // This function should never actually be called since the macro replaces it entirely.
     // If it is called, that indicates a bug in the macro system.
     panic!(
@@ -151,8 +151,11 @@ pub const fn build_registry<PData: 'static>() -> FactoryRegistry<PData> {
     )
 }
 
-/// Generic factory registry that encapsulates all factory maps for a given pdata type.
-pub struct FactoryRegistry<PData: 'static> {
+/// A pipeline factory.
+///
+/// This factory contains a registry of all the micro-factories for receivers, processors, and
+/// exporters, as well as the logic for creating pipelines based on a given configuration.
+pub struct PipelineFactory<PData: 'static> {
     receiver_factory_map: OnceLock<HashMap<&'static str, ReceiverFactory<PData>>>,
     processor_factory_map: OnceLock<HashMap<&'static str, ProcessorFactory<PData>>>,
     exporter_factory_map: OnceLock<HashMap<&'static str, ExporterFactory<PData>>>,
@@ -161,7 +164,7 @@ pub struct FactoryRegistry<PData: 'static> {
     exporter_factories: &'static [ExporterFactory<PData>],
 }
 
-impl<PData: 'static> FactoryRegistry<PData> {
+impl<PData: 'static> PipelineFactory<PData> {
     /// Creates a new factory registry with the given factory slices.
     #[must_use]
     pub const fn new(
@@ -209,8 +212,8 @@ impl<PData: 'static> FactoryRegistry<PData> {
         })
     }
 
-    /// Creates a runtime pipeline from the given pipeline configuration.
-    pub fn create_runtime_pipeline(
+    /// Builds a runtime pipeline from the given pipeline configuration.
+    pub fn build(
         &self,
         config: otap_df_config::pipeline::PipelineConfig,
     ) -> Result<RuntimePipeline<PData>, Error<PData>> {
@@ -221,22 +224,14 @@ impl<PData: 'static> FactoryRegistry<PData> {
         for (node_id, node_config) in config.node_iter() {
             match node_config.kind {
                 otap_df_config::node::NodeKind::Receiver => {
-                    self.create_receiver(
-                        &mut nodes,
-                        node_id.clone(),
-                        node_config.clone(),
-                    )?
-                },
-                otap_df_config::node::NodeKind::Processor => self.create_processor(
-                    &mut nodes,
-                    node_id.clone(),
-                    node_config.clone(),
-                )?,
-                otap_df_config::node::NodeKind::Exporter => self.create_exporter(
-                    &mut nodes,
-                    node_id.clone(),
-                    node_config.clone(),
-                )?,
+                    self.create_receiver(&mut nodes, node_id.clone(), node_config.clone())?
+                }
+                otap_df_config::node::NodeKind::Processor => {
+                    self.create_processor(&mut nodes, node_id.clone(), node_config.clone())?
+                }
+                otap_df_config::node::NodeKind::Exporter => {
+                    self.create_exporter(&mut nodes, node_id.clone(), node_config.clone())?
+                }
                 otap_df_config::node::NodeKind::ProcessorChain => {
                     // ToDo(LQ): Implement processor chain support.
                     return Err(Error::UnsupportedNodeKind {
@@ -254,7 +249,7 @@ impl<PData: 'static> FactoryRegistry<PData> {
             // Otherwise, we need to create a shared channel.
             // - When we have a singe source and multiple destinations, we can use a tokio SPSC channel.
             // - When we have a single source and multiple destinations, we can use a tokio SPMC channel.
-            
+
             // We can start simple with MPMC channels for all cases.
         }
         Ok(RuntimePipeline::new(config, nodes))
@@ -267,7 +262,8 @@ impl<PData: 'static> FactoryRegistry<PData> {
         receiver_id: NodeId,
         node_config: Rc<NodeConfig>,
     ) -> Result<(), Error<PData>> {
-        let factory = self.get_receiver_factory_map()
+        let factory = self
+            .get_receiver_factory_map()
             .get(node_config.plugin_urn.as_ref())
             .ok_or_else(|| Error::UnknownReceiver {
                 plugin_urn: node_config.plugin_urn.clone(),
@@ -275,12 +271,15 @@ impl<PData: 'static> FactoryRegistry<PData> {
         let receiver_config = ReceiverConfig::new(receiver_id.clone());
         let create = factory.create;
 
-        let prev_node = nodes.insert(receiver_id.clone(), RuntimeNode::Receiver {
-            config: node_config.clone(),
-            instance: create(&node_config.config, &receiver_config),
-            control_sender: None,
-            control_receiver: None,
-        });
+        let prev_node = nodes.insert(
+            receiver_id.clone(),
+            RuntimeNode::Receiver {
+                config: node_config.clone(),
+                instance: create(&node_config.config, &receiver_config),
+                control_sender: None,
+                control_receiver: None,
+            },
+        );
         if prev_node.is_some() {
             return Err(Error::ReceiverAlreadyExists {
                 receiver: receiver_id,
@@ -296,21 +295,25 @@ impl<PData: 'static> FactoryRegistry<PData> {
         processor_id: NodeId,
         node_config: Rc<NodeConfig>,
     ) -> Result<(), Error<PData>> {
-        let factory = self.get_processor_factory_map()
+        let factory = self
+            .get_processor_factory_map()
             .get(node_config.plugin_urn.as_ref())
             .ok_or_else(|| Error::UnknownProcessor {
                 plugin_urn: node_config.plugin_urn.clone(),
             })?;
         let processor_config = ProcessorConfig::new(processor_id.clone());
         let create = factory.create;
-        let prev_node = nodes.insert(processor_id.clone(), RuntimeNode::Processor {
-            config: node_config.clone(),
-            instance: create(&node_config.config, &processor_config),
-            control_sender: None,
-            control_receiver: None,
-            pdata_sender: None,
-            pdata_receiver: None,
-        });
+        let prev_node = nodes.insert(
+            processor_id.clone(),
+            RuntimeNode::Processor {
+                config: node_config.clone(),
+                instance: create(&node_config.config, &processor_config),
+                control_sender: None,
+                control_receiver: None,
+                pdata_sender: None,
+                pdata_receiver: None,
+            },
+        );
         if prev_node.is_some() {
             return Err(Error::ProcessorAlreadyExists {
                 processor: processor_id,
@@ -326,21 +329,25 @@ impl<PData: 'static> FactoryRegistry<PData> {
         exporter_id: NodeId,
         node_config: Rc<NodeConfig>,
     ) -> Result<(), Error<PData>> {
-        let factory = self.get_exporter_factory_map()
+        let factory = self
+            .get_exporter_factory_map()
             .get(node_config.plugin_urn.as_ref())
             .ok_or_else(|| Error::UnknownExporter {
                 plugin_urn: node_config.plugin_urn.clone(),
             })?;
         let exporter_config = ExporterConfig::new(exporter_id.clone());
         let create = factory.create;
-        let prev_node = nodes.insert(exporter_id.clone(), RuntimeNode::Exporter {
-            config: node_config.clone(),
-            instance: create(&node_config.config, &exporter_config),
-            control_sender: None,
-            control_receiver: None,
-            pdata_sender: None,
-            pdata_receiver: None,
-        });
+        let prev_node = nodes.insert(
+            exporter_id.clone(),
+            RuntimeNode::Exporter {
+                config: node_config.clone(),
+                instance: create(&node_config.config, &exporter_config),
+                control_sender: None,
+                control_receiver: None,
+                pdata_sender: None,
+                pdata_receiver: None,
+            },
+        );
         if prev_node.is_some() {
             return Err(Error::ExporterAlreadyExists {
                 exporter: exporter_id,
@@ -358,7 +365,6 @@ struct HyperEdgeRuntime<'a, PData> {
     dispatch_strategy: &'a DispatchStrategy,
     destinations: Vec<&'a RuntimeNode<PData>>,
 }
-
 
 /// Returns an iterator over all hyper-edges in the runtime graph.
 ///
