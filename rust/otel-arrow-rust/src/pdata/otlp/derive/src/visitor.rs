@@ -125,7 +125,8 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
     for info in &msg.all_fields {
         if let Some(oneof_cases) = info.oneof.as_ref() {
             for case in oneof_cases {
-                let variant_param_name = common::oneof_variant_field_or_method_name(&info.ident, &case.name);
+                let variant_param_name =
+                    common::oneof_variant_field_or_method_name(&info.ident, &case.name);
                 param_names.push(variant_param_name);
             }
         } else {
@@ -139,7 +140,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
         }
 
         pub trait #visitable_name<Argument> {
-            fn #visitable_method_name(&self, arg: Argument, #(#visitable_args),*) -> Argument;
+            fn #visitable_method_name(&mut self, arg: Argument, #(#visitable_args),*) -> Argument;
         }
 
         impl<Argument> #visitor_name<Argument> for crate::pdata::NoopVisitor {
@@ -150,7 +151,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
         }
 
         impl<Argument> #visitable_name<Argument> for &#outer_name {
-            fn #visitable_method_name(&self, mut arg: Argument, #(#visitable_args),*) -> Argument {
+            fn #visitable_method_name(&mut self, mut arg: Argument, #(#visitable_args),*) -> Argument {
                 // Create mutable versions of visitor parameters to allow calling visitor methods
                 #(let mut #param_names = #param_names;)*
                 #visitable_impl_body
@@ -186,18 +187,46 @@ fn generate_visitable_implementation_body(msg: &MessageInfo) -> proc_macro2::Tok
                 if case.is_primitive {
                     // For primitive oneof variants, call the visitor method directly
                     let (visit_method, value_expr) = match case.type_param {
-                        "bool" => (syn::Ident::new("visit_bool", proc_macro2::Span::call_site()), quote! { *variant_value }),
-                        "::prost::alloc::string::String" => {
-                            (syn::Ident::new("visit_string", proc_macro2::Span::call_site()), quote! { variant_value.as_str() })
-                        }
-                        "Vec<u8>" => (syn::Ident::new("visit_bytes", proc_macro2::Span::call_site()), quote! { variant_value.as_slice() }),
-                        "u32" => (syn::Ident::new("visit_u32", proc_macro2::Span::call_site()), quote! { *variant_value }),
-                        "u64" => (syn::Ident::new("visit_u64", proc_macro2::Span::call_site()), quote! { *variant_value }),
-                        "i32" => (syn::Ident::new("visit_i32", proc_macro2::Span::call_site()), quote! { *variant_value }),
-                        "i64" => (syn::Ident::new("visit_i64", proc_macro2::Span::call_site()), quote! { *variant_value }),
-                        "f64" => (syn::Ident::new("visit_f64", proc_macro2::Span::call_site()), quote! { *variant_value }),
-                        "f32" => (syn::Ident::new("visit_f32", proc_macro2::Span::call_site()), quote! { *variant_value }),
-                        _ => (syn::Ident::new("visit_i32", proc_macro2::Span::call_site()), quote! { *variant_value }),
+                        "bool" => (
+                            syn::Ident::new("visit_bool", proc_macro2::Span::call_site()),
+                            quote! { *variant_value },
+                        ),
+                        "::prost::alloc::string::String" => (
+                            syn::Ident::new("visit_string", proc_macro2::Span::call_site()),
+                            quote! { variant_value.as_str() },
+                        ),
+                        "Vec<u8>" => (
+                            syn::Ident::new("visit_bytes", proc_macro2::Span::call_site()),
+                            quote! { variant_value.as_slice() },
+                        ),
+                        "u32" => (
+                            syn::Ident::new("visit_u32", proc_macro2::Span::call_site()),
+                            quote! { *variant_value },
+                        ),
+                        "u64" => (
+                            syn::Ident::new("visit_u64", proc_macro2::Span::call_site()),
+                            quote! { *variant_value },
+                        ),
+                        "i32" => (
+                            syn::Ident::new("visit_i32", proc_macro2::Span::call_site()),
+                            quote! { *variant_value },
+                        ),
+                        "i64" => (
+                            syn::Ident::new("visit_i64", proc_macro2::Span::call_site()),
+                            quote! { *variant_value },
+                        ),
+                        "f64" => (
+                            syn::Ident::new("visit_f64", proc_macro2::Span::call_site()),
+                            quote! { *variant_value },
+                        ),
+                        "f32" => (
+                            syn::Ident::new("visit_f32", proc_macro2::Span::call_site()),
+                            quote! { *variant_value },
+                        ),
+                        _ => (
+                            syn::Ident::new("visit_i32", proc_macro2::Span::call_site()),
+                            quote! { *variant_value },
+                        ),
                     };
 
                     field_calls.push(quote! {
@@ -252,7 +281,7 @@ fn generate_visitable_implementation_body(msg: &MessageInfo) -> proc_macro2::Tok
                             }
                         }
                     };
-                    
+
                     field_calls.push(quote! {
                         if let Some(ref field_value) = self.#field_name {
                             arg = #visitor_param.#visit_method(arg, #value_expr);
@@ -271,7 +300,7 @@ fn generate_visitable_implementation_body(msg: &MessageInfo) -> proc_macro2::Tok
                             }
                         }
                     };
-                    
+
                     field_calls.push(quote! {
                         arg = #visitor_param.#visit_method(arg, #value_expr);
                     });

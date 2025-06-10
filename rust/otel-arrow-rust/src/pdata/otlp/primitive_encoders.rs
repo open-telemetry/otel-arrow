@@ -357,112 +357,112 @@ impl crate::pdata::SliceVisitor<PrecomputedSizes, Vec<u8>> for SliceBytesEncoded
 //
 
 /// Accumulate is a wrapper that sums the sizes from a child visitor.
-pub struct Accumulate<'a, V> {
+pub struct Accumulate<V> {
     pub inner: V,
-    pub total: &'a mut usize,
+    pub total: usize,
 }
 
-impl<'a, V> Accumulate<'a, V> {
+impl<V> Accumulate<V> {
     /// Accumulate for children of V
-    pub fn new(inner: V, total: &'a mut usize) -> Self {
-        Self { inner, total }
+    pub fn new(inner: V) -> Self {
+        Self { inner, total: 0 }
     }
 }
 
 // Implement all primitive visitor traits for Accumulate wrapper
 // These delegate to the inner visitor and accumulate the size difference
 
-impl<'a, V: crate::pdata::StringVisitor<PrecomputedSizes>>
-    crate::pdata::StringVisitor<PrecomputedSizes> for Accumulate<'a, V>
+impl<V: crate::pdata::StringVisitor<PrecomputedSizes>> crate::pdata::StringVisitor<PrecomputedSizes>
+    for Accumulate<V>
 {
     fn visit_string(&mut self, mut arg: PrecomputedSizes, value: &str) -> PrecomputedSizes {
         arg = self.inner.visit_string(arg, value);
-        *self.total += arg.last();
+        self.total += arg.last();
         arg
     }
 }
 
-impl<'a, V: crate::pdata::BytesVisitor<PrecomputedSizes>>
-    crate::pdata::BytesVisitor<PrecomputedSizes> for Accumulate<'a, V>
+impl<V: crate::pdata::BytesVisitor<PrecomputedSizes>> crate::pdata::BytesVisitor<PrecomputedSizes>
+    for Accumulate<V>
 {
     fn visit_bytes(&mut self, mut arg: PrecomputedSizes, value: &[u8]) -> PrecomputedSizes {
         arg = self.inner.visit_bytes(arg, value);
-        *self.total += arg.last();
+        self.total += arg.last();
         arg
     }
 }
 
-impl<'a, V: crate::pdata::I32Visitor<PrecomputedSizes>> crate::pdata::I32Visitor<PrecomputedSizes>
-    for Accumulate<'a, V>
+impl<V: crate::pdata::I32Visitor<PrecomputedSizes>> crate::pdata::I32Visitor<PrecomputedSizes>
+    for Accumulate<V>
 {
     fn visit_i32(&mut self, mut arg: PrecomputedSizes, value: i32) -> PrecomputedSizes {
         arg = self.inner.visit_i32(arg, value);
-        *self.total += arg.last();
+        self.total += arg.last();
         arg
     }
 }
 
-impl<'a, V: crate::pdata::I64Visitor<PrecomputedSizes>> crate::pdata::I64Visitor<PrecomputedSizes>
-    for Accumulate<'a, V>
+impl<V: crate::pdata::I64Visitor<PrecomputedSizes>> crate::pdata::I64Visitor<PrecomputedSizes>
+    for Accumulate<V>
 {
     fn visit_i64(&mut self, mut arg: PrecomputedSizes, value: i64) -> PrecomputedSizes {
         arg = self.inner.visit_i64(arg, value);
-        *self.total += arg.last();
+        self.total += arg.last();
         arg
     }
 }
 
-impl<'a, V: crate::pdata::U32Visitor<PrecomputedSizes>> crate::pdata::U32Visitor<PrecomputedSizes>
-    for Accumulate<'a, V>
+impl<V: crate::pdata::U32Visitor<PrecomputedSizes>> crate::pdata::U32Visitor<PrecomputedSizes>
+    for Accumulate<V>
 {
     fn visit_u32(&mut self, mut arg: PrecomputedSizes, value: u32) -> PrecomputedSizes {
         arg = self.inner.visit_u32(arg, value);
-        *self.total += arg.last();
+        self.total += arg.last();
         arg
     }
 }
 
-impl<'a, V: crate::pdata::U64Visitor<PrecomputedSizes>> crate::pdata::U64Visitor<PrecomputedSizes>
-    for Accumulate<'a, V>
+impl<V: crate::pdata::U64Visitor<PrecomputedSizes>> crate::pdata::U64Visitor<PrecomputedSizes>
+    for Accumulate<V>
 {
     fn visit_u64(&mut self, mut arg: PrecomputedSizes, value: u64) -> PrecomputedSizes {
         arg = self.inner.visit_u64(arg, value);
-        *self.total += arg.last();
+        self.total += arg.last();
         arg
     }
 }
 
-impl<'a, V: crate::pdata::F64Visitor<PrecomputedSizes>> crate::pdata::F64Visitor<PrecomputedSizes>
-    for Accumulate<'a, V>
+impl<V: crate::pdata::F64Visitor<PrecomputedSizes>> crate::pdata::F64Visitor<PrecomputedSizes>
+    for Accumulate<V>
 {
     fn visit_f64(&mut self, mut arg: PrecomputedSizes, value: f64) -> PrecomputedSizes {
         arg = self.inner.visit_f64(arg, value);
-        *self.total += arg.last();
+        self.total += arg.last();
         arg
     }
 }
 
-impl<'a, V: crate::pdata::BooleanVisitor<PrecomputedSizes>>
-    crate::pdata::BooleanVisitor<PrecomputedSizes> for Accumulate<'a, V>
+impl<V: crate::pdata::BooleanVisitor<PrecomputedSizes>>
+    crate::pdata::BooleanVisitor<PrecomputedSizes> for Accumulate<V>
 {
     fn visit_bool(&mut self, mut arg: PrecomputedSizes, value: bool) -> PrecomputedSizes {
         arg = self.inner.visit_bool(arg, value);
-        *self.total += arg.last();
+        self.total += arg.last();
         arg
     }
 }
 
-impl<'a, V: crate::pdata::SliceVisitor<PrecomputedSizes, Primitive>, Primitive>
-    crate::pdata::SliceVisitor<PrecomputedSizes, Primitive> for Accumulate<'a, V>
+impl<V: crate::pdata::SliceVisitor<PrecomputedSizes, Primitive>, Primitive>
+    crate::pdata::SliceVisitor<PrecomputedSizes, Primitive> for Accumulate<V>
 {
     fn visit_slice(&mut self, mut arg: PrecomputedSizes, value: &[Primitive]) -> PrecomputedSizes {
         // arg = self.inner.visit_bytes(arg, value);
-        // *self.total += arg.last();
+        // self.total += arg.last();
         // arg
         // let before_size = arg.total_size();
         // let result = self.inner.visit_slice(arg, value);
         // let after_size = result.total_size();
-        // *self.total += after_size - before_size;
+        // self.total += after_size - before_size;
         // result
         arg
     }

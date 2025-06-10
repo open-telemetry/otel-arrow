@@ -80,14 +80,18 @@ impl LogsVisitor<()> for ItemCounter {
     type Return = usize;
 
     /// Visit logs data and return the computed result
-    fn visit_logs(mut self, v: impl LogsDataVisitable<()>) -> Self::Return {
+    fn visit_logs(mut self, mut v: impl LogsDataVisitable<()>) -> Self::Return {
         v.accept_logs_data((), &mut self);
         self.count
     }
 }
 
 impl<Argument> LogsDataVisitor<Argument> for ItemCounter {
-    fn visit_logs_data(&mut self, arg: Argument, v: impl LogsDataVisitable<Argument>) -> Argument {
+    fn visit_logs_data(
+        &mut self,
+        mut arg: Argument,
+        mut v: impl LogsDataVisitable<Argument>,
+    ) -> Argument {
         v.accept_logs_data(arg, self.borrow_mut())
     }
 }
@@ -95,8 +99,8 @@ impl<Argument> LogsDataVisitor<Argument> for ItemCounter {
 impl<Argument> ResourceLogsVisitor<Argument> for &mut ItemCounter {
     fn visit_resource_logs(
         &mut self,
-        arg: Argument,
-        v: impl ResourceLogsVisitable<Argument>,
+        mut arg: Argument,
+        mut v: impl ResourceLogsVisitable<Argument>,
     ) -> Argument {
         v.accept_resource_logs(
             arg,
@@ -110,8 +114,8 @@ impl<Argument> ResourceLogsVisitor<Argument> for &mut ItemCounter {
 impl<Argument> ScopeLogsVisitor<Argument> for &mut ItemCounter {
     fn visit_scope_logs(
         &mut self,
-        arg: Argument,
-        sv: impl ScopeLogsVisitable<Argument>,
+        mut arg: Argument,
+        mut sv: impl ScopeLogsVisitable<Argument>,
     ) -> Argument {
         sv.accept_scope_logs(
             arg,
@@ -125,7 +129,7 @@ impl<Argument> ScopeLogsVisitor<Argument> for &mut ItemCounter {
 impl<Argument> LogRecordVisitor<Argument> for &mut ItemCounter {
     fn visit_log_record(
         &mut self,
-        arg: Argument,
+        mut arg: Argument,
         _: impl LogRecordVisitable<Argument>,
     ) -> Argument {
         self.count += 1;
@@ -181,9 +185,8 @@ impl PrecomputedSizes {
     }
 
     /// Update a previously reserved space with the calculated size
-    pub fn set_size(&mut self, idx: usize, tag_size: usize, child_size: usize) {
-        let total_size = tag_size + Self::varint_len(child_size) + child_size;
-        self.sizes[idx] = total_size;
+    pub fn set_size(&mut self, idx: usize, value: usize) {
+        self.sizes[idx] = value;
     }
 }
 

@@ -69,7 +69,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             fn children_encoded_size(
                 &mut self,
                 mut arg: crate::pdata::otlp::PrecomputedSizes,
-                v: impl #visitable_name<crate::pdata::otlp::PrecomputedSizes>
+                mut v: impl #visitable_name<crate::pdata::otlp::PrecomputedSizes>
             ) -> (crate::pdata::otlp::PrecomputedSizes, usize) {
                 let mut total = 0;
 
@@ -83,51 +83,20 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             fn #visitor_method_name(
                 &mut self,
                 mut arg: crate::pdata::otlp::PrecomputedSizes,
-                v: impl #visitable_name<crate::pdata::otlp::PrecomputedSizes>
+                mut v: impl #visitable_name<crate::pdata::otlp::PrecomputedSizes>
             ) -> crate::pdata::otlp::PrecomputedSizes {
-                // For child visitors, use a separate accumulator to avoid double-counting
-                // Only top-level visitors (tag=0 in tests) should modify the parent accumulator
-                if self.tag == 0 {
-                    // Top-level visitor: use the provided accumulator
-                    let my_idx = arg.len();
-                    arg.reserve();
+                let idx = arg.len();
+                arg.reserve();
 
-                    // Calculate total size of direct children using instance method
-                    let (updated_arg, total_child_size) = self.children_encoded_size(arg, v);
-                    arg = updated_arg;
+                let (arg, total_child_size) = self.children_encoded_size(arg, v);
 
-                    println!("DEBUG: {} visitor - total_child_size from children: {}", stringify!(#outer_name), total_child_size);
+                let tag_size = crate::pdata::otlp::PrecomputedSizes::varint_len((self.tag << 3) as usize);
+                let total_size = tag_size + crate::pdata::otlp::PrecomputedSizes::varint_len(total_child_size) + total_child_size;
 
-                    // Calculate this message's total size including tag overhead
-                    // Formula: tag_size + length_varint_size + content_size
-                    let tag_size = crate::pdata::otlp::PrecomputedSizes::varint_len((self.tag << 3) as usize);
-                    println!("DEBUG: {} tag_size: {}, child_size: {}", stringify!(#outer_name), tag_size, total_child_size);
+                println!("DEBUG: {} child visitor computed total size: {}", stringify!(#outer_name), total_size);
 
-                    // Store the computed size
-                    arg.set_size(my_idx, tag_size, total_child_size);
-                    println!("DEBUG: {} set_size called with idx: {}, tag_size: {}, child_size: {}", stringify!(#outer_name), my_idx, tag_size, total_child_size);
-
-                    arg
-                } else {
-                    // Child visitor: use separate accumulator, don't modify parent
-                    let mut child_accumulator = crate::pdata::otlp::PrecomputedSizes::default();
-                    let my_idx = child_accumulator.len();
-                    child_accumulator.reserve();
-
-                    // Calculate total size of direct children using instance method with separate accumulator
-                    let (_, total_child_size) = self.children_encoded_size(child_accumulator, v);
-
-                    println!("DEBUG: {} child visitor - total_child_size from children: {}", stringify!(#outer_name), total_child_size);
-
-                    // Calculate this message's total size including tag overhead
-                    let tag_size = crate::pdata::otlp::PrecomputedSizes::varint_len((self.tag << 3) as usize);
-                    let total_size = tag_size + crate::pdata::otlp::PrecomputedSizes::varint_len(total_child_size) + total_child_size;
-
-                    println!("DEBUG: {} child visitor computed total size: {}", stringify!(#outer_name), total_size);
-
-                    // Don't modify parent accumulator - just return it unchanged
-                    arg
-                }
+        arg.set_size(idx, total_size);
+                arg
             }
         }
 
@@ -138,16 +107,10 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             #[cfg(test)]
             pub fn pdata_size(&self) -> usize {
                 let mut sizes = crate::pdata::otlp::PrecomputedSizes::default();
-                let mut visitor = #encoded_len_name::new(0); // Use tag 0 for top-level
+                let mut visitor = #encoded_len_name::new(0); // Use tag 0 for top-level, it is ignored.
                 let adapter = #message_adapter_name::new(self);
-                sizes = visitor.#visitor_method_name(sizes, &adapter);
-                // For testing, we want the computed size of the message itself
-                // TODO: Fix the size calculation to match prost's encoded_len exactly
-                if sizes.len() > 0 {
-                    sizes.get_size(0)
-                } else {
-                    0
-                }
+                let (_, total) = visitor.children_encoded_size(sizes, &adapter);
+        total
             }
         }
     };
@@ -183,7 +146,6 @@ fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
                 accumulate_instantiations.push(quote! {
                     let mut #variant_param_name = crate::pdata::otlp::Accumulate::new(
                         #visitor_instantiation,
-                        &mut total
                     );
                 });
                 accumulate_args.push(quote! { #variant_param_name });
@@ -201,7 +163,6 @@ fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
             accumulate_instantiations.push(quote! {
                 let mut #field_name = crate::pdata::otlp::Accumulate::new(
                     #visitor_instantiation,
-                    &mut total
                 );
             });
             accumulate_args.push(quote! { #field_name });
@@ -343,8 +304,8 @@ pub fn derive_accumulate_visitor(msg: &MessageInfo) -> TokenStream {
     let visitor_method_name = common::visitor_method_name(&msg.outer_name);
 
     let expanded = quote! {
-        impl<'a, V: #visitor_name<crate::pdata::otlp::PrecomputedSizes>>
-            #visitor_name<crate::pdata::otlp::PrecomputedSizes> for crate::pdata::otlp::Accumulate<'a, V>
+        impl<V: #visitor_name<crate::pdata::otlp::PrecomputedSizes>>
+            #visitor_name<crate::pdata::otlp::PrecomputedSizes> for crate::pdata::otlp::Accumulate<V>
         {
             fn #visitor_method_name(
                 &mut self,
@@ -353,7 +314,7 @@ pub fn derive_accumulate_visitor(msg: &MessageInfo) -> TokenStream {
             ) -> crate::pdata::otlp::PrecomputedSizes {
                 let idx = arg.len();
                 arg = self.inner.#visitor_method_name(arg, v);
-                *self.total = *self.total + arg.get_size(idx);
+                self.total += arg.get_size(idx);
                 arg
             }
         }

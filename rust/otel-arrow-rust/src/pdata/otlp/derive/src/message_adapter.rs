@@ -39,7 +39,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
 
         impl<'a, Argument> #visitable_name<Argument> for &#adapter_name<'a> {
             /// Visits a field of the associated type, passing child-visitors for the traversal.
-            fn #visitable_method_name(&self, mut arg: Argument, #(#visitor_params),*) -> Argument {
+            fn #visitable_method_name(&mut self, mut arg: Argument, #(#visitor_params),*) -> Argument {
                 #(#visitor_calls)*
                 arg
             }
