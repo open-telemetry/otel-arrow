@@ -18,6 +18,8 @@ pub use primitive_encoders::{
     Fixed64EncodedLen,
     I32EncodedLen,
     I64EncodedLen,
+    Sfixed64EncodedLen,
+    Sint32EncodedLen,
     // Slice visitor types for repeated primitive fields
     SliceBooleanEncodedLen,
     SliceBytesEncodedLen,

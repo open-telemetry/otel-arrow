@@ -12,9 +12,10 @@ pub struct OneofCase {
     pub value_variant: &'static str,
     pub is_primitive: bool,
     pub tag: u32,
+    pub proto_type: &'static str,
 }
 
-fn oneof(name: &'static str, type_param: &'static str, value_variant: &'static str, tag: u32) -> OneofCase {
+fn oneof(name: &'static str, type_param: &'static str, value_variant: &'static str, tag: u32, proto_type: &'static str) -> OneofCase {
     let is_primitive = matches!(
         type_param,
         "bool"
@@ -34,6 +35,7 @@ fn oneof(name: &'static str, type_param: &'static str, value_variant: &'static s
         value_variant,
         is_primitive,
         tag,
+        proto_type,
     }
 }
 
@@ -214,38 +216,40 @@ pub static ONEOF_MAPPINGS: LazyLock<HashMap<String, Vec<OneofCase>>> = LazyLock:
                 "::prost::alloc::string::String",
                 "any_value::Value::StringValue",
                 1,
+                "string",
             ),
-            oneof("bool", "bool", "any_value::Value::BoolValue", 2),
-            oneof("int", "i64", "any_value::Value::IntValue", 3),
-            oneof("double", "f64", "any_value::Value::DoubleValue", 4),
-            oneof("array", "ArrayValue", "any_value::Value::ArrayValue", 5),
-            oneof("kvlist", "KeyValueList", "any_value::Value::KvlistValue", 6),
-            oneof("bytes", "Vec<u8>", "any_value::Value::BytesValue", 7),
+            oneof("bool", "bool", "any_value::Value::BoolValue", 2, "bool"),
+            oneof("int", "i64", "any_value::Value::IntValue", 3, "int64"),
+            oneof("double", "f64", "any_value::Value::DoubleValue", 4, "double"),
+            oneof("array", "ArrayValue", "any_value::Value::ArrayValue", 5, "message"),
+            oneof("kvlist", "KeyValueList", "any_value::Value::KvlistValue", 6, "message"),
+            oneof("bytes", "Vec<u8>", "any_value::Value::BytesValue", 7, "bytes"),
         ]),
         ("opentelemetry.proto.metrics.v1.Metric.data".into(), vec![
-            oneof("sum", "Sum", "metric::Data::Sum", 5),
-            oneof("gauge", "Gauge", "metric::Data::Gauge", 6),
-            oneof("histogram", "Histogram", "metric::Data::Histogram", 7),
+            oneof("sum", "Sum", "metric::Data::Sum", 5, "message"),
+            oneof("gauge", "Gauge", "metric::Data::Gauge", 6, "message"),
+            oneof("histogram", "Histogram", "metric::Data::Histogram", 7, "message"),
             oneof(
                 "exponential_histogram",
                 "ExponentialHistogram",
                 "metric::Data::ExponentialHistogram",
                 8,
+                "message",
             ),
-            oneof("summary", "Summary", "metric::Data::Summary", 11),
+            oneof("summary", "Summary", "metric::Data::Summary", 11, "message"),
         ]),
         (
             "opentelemetry.proto.metrics.v1.NumberDataPoint.value".into(),
             vec![
-                oneof("int", "i64", "number_data_point::Value::AsInt", 4),
-                oneof("double", "f64", "number_data_point::Value::AsDouble", 5),
+                oneof("int", "i64", "number_data_point::Value::AsInt", 4, "sfixed64"),
+                oneof("double", "f64", "number_data_point::Value::AsDouble", 5, "double"),
             ],
         ),
         (
             "opentelemetry.proto.metrics.v1.Exemplar.value".into(),
             vec![
-                oneof("int", "i64", "exemplar::Value::AsInt", 4),
-                oneof("double", "f64", "exemplar::Value::AsDouble", 5),
+                oneof("int", "i64", "exemplar::Value::AsInt", 4, "sfixed64"),
+                oneof("double", "f64", "exemplar::Value::AsDouble", 5, "double"),
             ],
         ),
     ])

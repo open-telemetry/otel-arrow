@@ -97,6 +97,18 @@ pub struct Fixed64EncodedLen {
     pub tag: u32,
 }
 
+/// Encoder for sint32 fields (wire type 0 - varint with zigzag encoding)
+pub struct Sint32EncodedLen {
+    /// Protocol buffer tag number
+    pub tag: u32,
+}
+
+/// Encoder for sfixed64 fields (wire type 1 - 8 bytes, signed)
+pub struct Sfixed64EncodedLen {
+    /// Protocol buffer tag number
+    pub tag: u32,
+}
+
 /// Encoder for double fields (wire type 1 - 8 bytes)
 pub struct DoubleEncodedLen {
     /// Protocol buffer tag number
@@ -258,9 +270,39 @@ impl crate::pdata::U64Visitor<PrecomputedSizes> for Fixed64EncodedLen {
     }
 }
 
+impl crate::pdata::U32Visitor<PrecomputedSizes> for Fixed32EncodedLen {
+    fn visit_u32(&mut self, mut arg: PrecomputedSizes, value: u32) -> PrecomputedSizes {
+        // fixed32 is wire_type = 5 (4 bytes)
+        let total = if value != 0 {
+            let tag_size = varint_size(self.tag << 3 | 5); // wire_type = 5
+            let value_size = 4; // fixed32 is always 4 bytes
+            tag_size + value_size
+        } else {
+            0
+        };
+        arg.push_size(total);
+        arg
+    }
+}
+
+impl crate::pdata::I32Visitor<PrecomputedSizes> for Sint32EncodedLen {
+    fn visit_i32(&mut self, mut arg: PrecomputedSizes, value: i32) -> PrecomputedSizes {
+        // sint32 is wire_type = 0 (varint with zigzag encoding)
+        let total = if value != 0 {
+            let tag_size = varint_size(self.tag << 3); // wire_type = 0
+            let value_size = signed_varint_size(value);
+            tag_size + value_size
+        } else {
+            0
+        };
+        arg.push_size(total);
+        arg
+    }
+}
+
 impl crate::pdata::I32Visitor<PrecomputedSizes> for I32EncodedLen {
     fn visit_i32(&mut self, mut arg: PrecomputedSizes, value: i32) -> PrecomputedSizes {
-        // i32 is wire_type = 0 (varint with zigzag encoding)
+        // i32 is wire_type = 0 (varint)
         let total = if value != 0 {
             let tag_size = varint_size(self.tag << 3); // wire_type = 0
             let value_size = signed_varint_size(value);
@@ -294,6 +336,21 @@ impl crate::pdata::F64Visitor<PrecomputedSizes> for DoubleEncodedLen {
         let total = if value != 0.0 {
             let tag_size = varint_size(self.tag << 3 | 1); // wire_type = 1
             let value_size = 8; // f64 is always 8 bytes
+            tag_size + value_size
+        } else {
+            0
+        };
+        arg.push_size(total);
+        arg
+    }
+}
+
+impl crate::pdata::I64Visitor<PrecomputedSizes> for Sfixed64EncodedLen {
+    fn visit_i64(&mut self, mut arg: PrecomputedSizes, value: i64) -> PrecomputedSizes {
+        // sfixed64 is wire_type = 1 (8 bytes, signed)
+        let total = if value != 0 {
+            let tag_size = varint_size(self.tag << 3 | 1); // wire_type = 1
+            let value_size = 8; // sfixed64 is always 8 bytes
             tag_size + value_size
         } else {
             0
