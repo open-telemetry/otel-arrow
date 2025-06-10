@@ -33,11 +33,15 @@ impl FieldData {
     }
 }
 
+/// This trait is a is should be implemented by types that can build build some struct column
 trait StructArrayBuilderHelper {
+    /// Returns the builder as Any so that it can be downcasted to a specific implementation.
     fn as_any_mut(&mut self) -> &mut dyn Any;
 
+    /// whether or not the array can contain null values
     fn nullable(&self) -> bool;
 
+    /// produces the array, or None if the nullable array is all nulls
     fn finish(&mut self) -> Option<ArrayRef>;
 }
 
@@ -90,23 +94,7 @@ impl AdaptiveStructBuilder {
     /// If the field for at index doesn't exist or the generic type is wrong, this returns `None`
     pub fn field_builder<T>(&mut self, i: usize) -> Option<&mut T>
     where
-        T: StructArrayBuilderHelper + ArrayAppend + 'static,
-    {
-        self.fields
-            .get_mut(i)
-            .and_then(|(_, builder)| builder.as_any_mut().downcast_mut())
-    }
-
-    /// Get the builder for some field index.
-    ///
-    /// If the field for at index doesn't exist or the generic type is wrong, this returns `None`
-    ///
-    // Note: this method  is somewhat similar to field_builder just with a different trait bound
-    // on the generic. The hope with the trait bounds here is that is that it will avoid
-    // accidentally  calling this method with the wrong generic type.
-    fn checked_field_builder<T>(&mut self, i: usize) -> Option<&mut T>
-    where
-        T: StructArrayBuilderHelper + CheckedArrayAppend + 'static,
+        T: StructArrayBuilderHelper + 'static,
     {
         self.fields
             .get_mut(i)
@@ -453,6 +441,7 @@ mod test {
         do_test!(Float32);
         do_test!(Float64);
         do_test!(TimestampNanosecond);
+        do_test!(DurationNanosecond);
 
         // check for boolean (special case b/c it is not a variation of AdaptiveArrayBuilder)
         let mut struct_builder = AdaptiveStructBuilder::new(vec![(
@@ -470,7 +459,7 @@ mod test {
             "Expected field_builder at index 0 to return Some for AdaptiveBooleanArrayBuilder, but got None"
         );
 
-        // check for FSB (special case b/c it implements CheckedArrayAppend instead of ArrayAppend)
+        // check for FSB (special case b/c constructor takes some args)
         let mut struct_builder = AdaptiveStructBuilder::new(vec![(
             FieldData {
                 name: "test".to_string(),
@@ -482,9 +471,9 @@ mod test {
         )]);
         assert!(
             struct_builder
-                .checked_field_builder::<FixedSizeBinaryArrayBuilder>(0)
+                .field_builder::<FixedSizeBinaryArrayBuilder>(0)
                 .is_some(),
-            "Expected field_builder at index 0 to return Some for AdaptiveBooleanArrayBuilder, but got None"
+            "Expected field_builder at index 0 to return Some for FixedSizeBinaryArrayBuilder, but got None"
         );
     }
 
@@ -520,21 +509,11 @@ mod test {
                 .field_builder::<StringArrayBuilder>(2)
                 .is_none()
         );
-        assert!(
-            struct_builder
-                .checked_field_builder::<FixedSizeBinaryArrayBuilder>(2)
-                .is_none()
-        );
 
         // assert we cannot get the field if it is the wrong type
         assert!(
             struct_builder
                 .field_builder::<BinaryArrayBuilder>(0)
-                .is_none()
-        );
-        assert!(
-            struct_builder
-                .checked_field_builder::<FixedSizeBinaryArrayBuilder>(0)
                 .is_none()
         );
     }
