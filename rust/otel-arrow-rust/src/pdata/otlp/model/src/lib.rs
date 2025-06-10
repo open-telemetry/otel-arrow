@@ -10,26 +10,27 @@ pub struct OneofCase {
     pub name: &'static str,
     pub type_param: &'static str,
     pub value_variant: &'static str,
-    pub extra_call: Option<&'static str>,
     pub is_primitive: bool,
 }
 
-fn oneof(
-    name: &'static str,
-    type_param: &'static str,
-    value_variant: &'static str,
-    extra_call: Option<&'static str>,
-) -> OneofCase {
+fn oneof(name: &'static str, type_param: &'static str, value_variant: &'static str) -> OneofCase {
     let is_primitive = matches!(
         type_param,
-        "bool" | "i32" | "i64" | "u32" | "u64" | "f32" | "f64" | "::prost::alloc::string::String" | "Vec<u8>"
+        "bool"
+            | "i32"
+            | "i64"
+            | "u32"
+            | "u64"
+            | "f32"
+            | "f64"
+            | "::prost::alloc::string::String"
+            | "Vec<u8>"
     );
-    
+
     OneofCase {
         name,
         type_param,
         value_variant,
-        extra_call,
         is_primitive,
     }
 }
@@ -210,49 +211,37 @@ pub static ONEOF_MAPPINGS: LazyLock<HashMap<String, Vec<OneofCase>>> = LazyLock:
                 "string",
                 "::prost::alloc::string::String",
                 "any_value::Value::StringValue",
-                None,
             ),
-            oneof("bool", "bool", "any_value::Value::BoolValue", None),
-            oneof("int", "i64", "any_value::Value::IntValue", None),
-            oneof("double", "f64", "any_value::Value::DoubleValue", None),
-            oneof(
-                "kvlist",
-                "Vec<KeyValue>",
-                "any_value::Value::KvlistValue",
-                Some("KeyValueList::new"),
-            ),
-            oneof(
-                "array",
-                "Vec<AnyValue>",
-                "any_value::Value::ArrayValue",
-                Some("ArrayValue::new"),
-            ),
-            oneof("bytes", "Vec<u8>", "any_value::Value::BytesValue", None),
+            oneof("bool", "bool", "any_value::Value::BoolValue"),
+            oneof("int", "i64", "any_value::Value::IntValue"),
+            oneof("double", "f64", "any_value::Value::DoubleValue"),
+            oneof("kvlist", "KeyValueList", "any_value::Value::KvlistValue"),
+            oneof("array", "ArrayValue", "any_value::Value::ArrayValue"),
+            oneof("bytes", "Vec<u8>", "any_value::Value::BytesValue"),
         ]),
         ("opentelemetry.proto.metrics.v1.Metric.data".into(), vec![
-            oneof("sum", "Sum", "metric::Data::Sum", None),
-            oneof("gauge", "Gauge", "metric::Data::Gauge", None),
-            oneof("histogram", "Histogram", "metric::Data::Histogram", None),
+            oneof("sum", "Sum", "metric::Data::Sum"),
+            oneof("gauge", "Gauge", "metric::Data::Gauge"),
+            oneof("histogram", "Histogram", "metric::Data::Histogram"),
             oneof(
                 "exponential_histogram",
                 "ExponentialHistogram",
                 "metric::Data::ExponentialHistogram",
-                None,
             ),
-            oneof("summary", "Summary", "metric::Data::Summary", None),
+            oneof("summary", "Summary", "metric::Data::Summary"),
         ]),
         (
             "opentelemetry.proto.metrics.v1.NumberDataPoint.value".into(),
             vec![
-                oneof("int", "i64", "number_data_point::Value::AsInt", None),
-                oneof("double", "f64", "number_data_point::Value::AsDouble", None),
+                oneof("int", "i64", "number_data_point::Value::AsInt"),
+                oneof("double", "f64", "number_data_point::Value::AsDouble"),
             ],
         ),
         (
             "opentelemetry.proto.metrics.v1.Exemplar.value".into(),
             vec![
-                oneof("int", "i64", "exemplar::Value::AsInt", None),
-                oneof("double", "f64", "exemplar::Value::AsDouble", None),
+                oneof("int", "i64", "exemplar::Value::AsInt"),
+                oneof("double", "f64", "exemplar::Value::AsDouble"),
             ],
         ),
     ])

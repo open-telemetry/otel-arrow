@@ -134,20 +134,10 @@ pub fn generate_oneof_value_expression(case: &OneofCase) -> TokenStream {
 
 /// Generate adapter constructor call for message types
 pub fn generate_adapter_constructor(case: &OneofCase) -> TokenStream {
-    if let Some(extra_call) = &case.extra_call {
-        // Handle message adapter transformation (Xyz::new -> XyzMessageAdapter::new)
-        if extra_call.contains("::new") {
-            let adapter_type = extra_call.replace("::new", "MessageAdapter::new");
-            syn::parse_str::<TokenStream>(&adapter_type).unwrap()
-        } else {
-            syn::parse_str::<TokenStream>(extra_call).unwrap()
-        }
-    } else {
-        // For message types, create an adapter using TypeNameMessageAdapter::new pattern
-        let adapter_name = format!("{}MessageAdapter", case.type_param);
-        syn::parse_str::<TokenStream>(&adapter_name)
-            .unwrap_or_else(|_| panic!("Invalid adapter constructor: {}", adapter_name))
-    }
+    // For message types, create an adapter using TypeNameMessageAdapter::new pattern
+    let adapter_name = format!("{}MessageAdapter", case.type_param);
+    syn::parse_str::<TokenStream>(&adapter_name)
+        .unwrap_or_else(|_| panic!("Invalid adapter constructor: {}", adapter_name))
 }
 
 /// Common method name mappings for oneof cases
@@ -181,7 +171,7 @@ pub fn visitable_method_name(type_name: &Ident) -> Ident {
     } else {
         &name_str
     };
-    
+
     syn::Ident::new(
         &format!("accept_{}", clean_name).to_case(Case::Snake),
         type_name.span(),
@@ -321,15 +311,8 @@ where
     let type_param = &type_params[oneof_idx];
 
     let value_bound = quote! { #type_param: Into<#case_type> };
-    let value_initializer = if let Some(extra_call) = &case.extra_call {
-        let extra_call_path = syn::parse_str::<syn::Expr>(extra_call).unwrap();
-        quote! {
-            #oneof_ident: Some(#variant_path(#extra_call_path(#oneof_ident.into()))),
-        }
-    } else {
-        quote! {
-            #oneof_ident: Some(#variant_path(#oneof_ident.into())),
-        }
+    let value_initializer = quote! {
+        #oneof_ident: Some(#variant_path(#oneof_ident.into())),
     };
 
     // Replace the parameter with oneof-specific expansion
@@ -364,11 +347,7 @@ pub fn visitor_oneof_call(info: &FieldInfo, oneof_cases: &[OneofCase]) -> Option
         let visit_method = map_oneof_case_to_visit_method(&case.name, field_name);
 
         // Generate the visitor call based on the type and extra_call
-        let visitor_call = if case.extra_call.is_some() {
-            // Handle message adapter transformation using centralized function
-            let adapter_constructor = generate_adapter_constructor(case);
-            quote! { arg = #param_name.#visit_method(arg, &#adapter_constructor(inner)); }
-        } else if case.is_primitive {
+        let visitor_call = if case.is_primitive {
             // Use centralized value expression generation
             let value_arg = generate_oneof_value_expression(case);
             quote! {
@@ -458,7 +437,7 @@ fn generate_conversion_expression(
 pub fn builder_field_assignment(info: &FieldInfo) -> (TokenStream, TokenStream) {
     let field_name = &info.ident;
     let config = FieldAssignmentConfig::from_field_info(info);
-    
+
     let conversion = generate_conversion_expression(field_name, &config, info.as_type.as_ref());
 
     match config.is_optional {

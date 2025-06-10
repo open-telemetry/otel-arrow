@@ -4,12 +4,11 @@
 use proc_macro::TokenStream;
 use quote::quote;
 
+use super::TokenVec;
 use super::common;
 use super::field_info::FieldInfo;
 use super::message_info::MessageInfo;
-use super::TokenVec;
 
-/// Emits the visitor, visitable and adapters methods.
 pub fn derive(msg: &MessageInfo) -> TokenStream {
     let outer_name = &msg.outer_name;
     let visitor_name = msg.related_typename("Visitor");
@@ -18,7 +17,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
     let visitable_method_name = common::visitable_method_name(&outer_name);
 
     let mut visitable_args: TokenVec = Vec::new();
-    
+
     for info in &msg.all_fields {
         if let Some(oneof_cases) = info.oneof.as_ref() {
             // For oneof fields, generate separate parameters for each variant
@@ -42,21 +41,24 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                     }
                 } else {
                     // For message oneof variants, use type name + Visitor
-                    let type_name = case.type_param.split("::").last().unwrap_or(case.type_param);
+                    let type_name = case
+                        .type_param
+                        .split("::")
+                        .last()
+                        .unwrap_or(case.type_param);
                     let trait_name = format!("{}Visitor", type_name);
                     let trait_ident = syn::Ident::new(&trait_name, proc_macro2::Span::call_site());
                     quote! { #trait_ident }
                 };
 
-                visitable_args
-                    .push(quote! { #variant_param_name: impl #visitor_type<Argument> });
+                visitable_args.push(quote! { mut #variant_param_name: impl #visitor_type<Argument> });
             }
             continue;
         }
 
         // For non-oneof fields, generate visitor trait directly
         let param_name = &info.ident;
-        
+
         let visitor_type = if info.is_primitive {
             // Handle bytes specially
             if info.proto_type.contains("bytes") {
@@ -66,20 +68,20 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                     quote! { crate::pdata::BytesVisitor }
                 }
             } else if info.is_repeated {
-                // For repeated primitives
+                // For repeated primitives use the generic SliceVisitor trait with both type parameters
                 match info.base_type_name.as_str() {
-                    "bool" => quote! { crate::pdata::SliceBooleanVisitor },
-                    "String" | "string" => quote! { crate::pdata::SliceStringVisitor },
-                    "u32" => quote! { crate::pdata::SliceU32Visitor },
-                    "u64" => quote! { crate::pdata::SliceU64Visitor },
-                    "i32" => quote! { crate::pdata::SliceI32Visitor },
-                    "i64" => quote! { crate::pdata::SliceI64Visitor },
-                    "f64" => quote! { crate::pdata::SliceDoubleVisitor },
-                    "f32" => quote! { crate::pdata::SliceFixed32Visitor },
-                    _ => quote! { crate::pdata::SliceI32Visitor },
+                    "bool" => quote! { crate::pdata::SliceVisitor<Argument, bool> },
+                    "String" | "string" => quote! { crate::pdata::SliceVisitor<Argument, String> },
+                    "u32" => quote! { crate::pdata::SliceVisitor<Argument, u32> },
+                    "u64" => quote! { crate::pdata::SliceVisitor<Argument, u64> },
+                    "i32" => quote! { crate::pdata::SliceVisitor<Argument, i32> },
+                    "i64" => quote! { crate::pdata::SliceVisitor<Argument, i64> },
+                    "f64" => quote! { crate::pdata::SliceVisitor<Argument, f64> },
+                    "f32" => quote! { crate::pdata::SliceVisitor<Argument, f32> },
+                    _ => quote! { crate::pdata::SliceVisitor<Argument, i32> },
                 }
             } else {
-                // For non-repeated primitives  
+                // For non-repeated primitives
                 match info.base_type_name.as_str() {
                     "bool" => quote! { crate::pdata::BooleanVisitor },
                     "String" | "string" => quote! { crate::pdata::StringVisitor },
@@ -96,7 +98,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             // For message fields, use base type name + Visitor
             let trait_name = format!("{}Visitor", info.base_type_name);
             let trait_ident = syn::Ident::new(&trait_name, proc_macro2::Span::call_site());
-            
+
             if let Some(qualifier) = &info.qualifier {
                 quote! { #qualifier::#trait_ident }
             } else {
@@ -104,7 +106,15 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             }
         };
 
-        visitable_args.push(quote! { #param_name: impl #visitor_type<Argument> });
+        // Check if visitor type is already parameterized (e.g., SliceVisitor<Argument, Type>)
+        let visitor_type_str = visitor_type.to_string();
+        if visitor_type_str.contains('<') {
+            // Already parameterized, use as-is
+            visitable_args.push(quote! { mut #param_name: impl #visitor_type });
+        } else {
+            // Not parameterized, add <Argument>
+            visitable_args.push(quote! { mut #param_name: impl #visitor_type<Argument> });
+        }
     }
 
     // Generate the visitable implementation body
@@ -126,7 +136,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             }
         }
 
-        impl<Argument> #visitable_name<Argument> for #outer_name {
+        impl<Argument> #visitable_name<Argument> for &#outer_name {
             fn #visitable_method_name(&self, mut arg: Argument, #(#visitable_args),*) -> Argument {
                 #visitable_impl_body
             }
@@ -160,28 +170,28 @@ fn generate_visitable_implementation_body(msg: &MessageInfo) -> proc_macro2::Tok
 
                 if case.is_primitive {
                     // For primitive oneof variants, call the visitor method directly
-                    let visit_method = match case.type_param {
-                        "bool" => syn::Ident::new("visit_bool", proc_macro2::Span::call_site()),
+                    let (visit_method, value_expr) = match case.type_param {
+                        "bool" => (syn::Ident::new("visit_bool", proc_macro2::Span::call_site()), quote! { *variant_value }),
                         "::prost::alloc::string::String" => {
-                            syn::Ident::new("visit_string", proc_macro2::Span::call_site())
+                            (syn::Ident::new("visit_string", proc_macro2::Span::call_site()), quote! { variant_value.as_str() })
                         }
-                        "Vec<u8>" => syn::Ident::new("visit_bytes", proc_macro2::Span::call_site()),
-                        "u32" => syn::Ident::new("visit_u32", proc_macro2::Span::call_site()),
-                        "u64" => syn::Ident::new("visit_u64", proc_macro2::Span::call_site()),
-                        "i32" => syn::Ident::new("visit_i32", proc_macro2::Span::call_site()),
-                        "i64" => syn::Ident::new("visit_i64", proc_macro2::Span::call_site()),
-                        "f64" => syn::Ident::new("visit_f64", proc_macro2::Span::call_site()),
-                        "f32" => syn::Ident::new("visit_f32", proc_macro2::Span::call_site()),
-                        _ => syn::Ident::new("visit_i32", proc_macro2::Span::call_site()),
+                        "Vec<u8>" => (syn::Ident::new("visit_bytes", proc_macro2::Span::call_site()), quote! { variant_value.as_slice() }),
+                        "u32" => (syn::Ident::new("visit_u32", proc_macro2::Span::call_site()), quote! { *variant_value }),
+                        "u64" => (syn::Ident::new("visit_u64", proc_macro2::Span::call_site()), quote! { *variant_value }),
+                        "i32" => (syn::Ident::new("visit_i32", proc_macro2::Span::call_site()), quote! { *variant_value }),
+                        "i64" => (syn::Ident::new("visit_i64", proc_macro2::Span::call_site()), quote! { *variant_value }),
+                        "f64" => (syn::Ident::new("visit_f64", proc_macro2::Span::call_site()), quote! { *variant_value }),
+                        "f32" => (syn::Ident::new("visit_f32", proc_macro2::Span::call_site()), quote! { *variant_value }),
+                        _ => (syn::Ident::new("visit_i32", proc_macro2::Span::call_site()), quote! { *variant_value }),
                     };
 
                     field_calls.push(quote! {
-                        if let Some(#variant_path(ref value)) = self.#field_name {
-                            arg = #variant_param_name.#visit_method(arg, value);
+                        if let Some(#variant_path(ref variant_value)) = self.#field_name {
+                            arg = #variant_param_name.#visit_method(arg, #value_expr);
                         }
                     });
                 } else {
-                    // For message oneof variants, call the visitor method
+                    // For message oneof variants, always call the visitor's visit_* method, passing the value (the visitable)
                     let visitor_method = match case
                         .type_param
                         .split("::")
@@ -196,8 +206,8 @@ fn generate_visitable_implementation_body(msg: &MessageInfo) -> proc_macro2::Tok
                     };
 
                     field_calls.push(quote! {
-                        if let Some(#variant_path(ref value)) = self.#field_name {
-                            arg = #variant_param_name.#visitor_method(arg, value);
+                        if let Some(#variant_path(ref variant_value)) = self.#field_name {
+                            arg = #variant_param_name.#visitor_method(arg, variant_value);
                         }
                     });
                 }
@@ -215,18 +225,44 @@ fn generate_visitable_implementation_body(msg: &MessageInfo) -> proc_macro2::Tok
                         arg = #visitor_param.visit_slice(arg, &self.#field_name);
                     });
                 } else if info.is_optional {
+                    // For optional primitive fields, pass owned values
+                    let value_expr = match info.base_type_name.as_str() {
+                        "String" | "string" => quote! { field_value.as_str() },
+                        _ => {
+                            // Check if this is a bytes field by looking at proto_type
+                            if info.proto_type.contains("bytes") {
+                                quote! { field_value.as_slice() }
+                            } else {
+                                quote! { *field_value } // For Copy types like numbers, bools
+                            }
+                        }
+                    };
+                    
                     field_calls.push(quote! {
-                        if let Some(ref value) = self.#field_name {
-                            arg = #visitor_param.#visit_method(arg, value);
+                        if let Some(ref field_value) = self.#field_name {
+                            arg = #visitor_param.#visit_method(arg, #value_expr);
                         }
                     });
                 } else {
+                    // For required primitive fields, pass owned values
+                    let value_expr = match info.base_type_name.as_str() {
+                        "String" | "string" => quote! { self.#field_name.as_str() },
+                        _ => {
+                            // Check if this is a bytes field by looking at proto_type
+                            if info.proto_type.contains("bytes") {
+                                quote! { self.#field_name.as_slice() }
+                            } else {
+                                quote! { self.#field_name } // For Copy types like numbers, bools
+                            }
+                        }
+                    };
+                    
                     field_calls.push(quote! {
-                        arg = #visitor_param.#visit_method(arg, &self.#field_name);
+                        arg = #visitor_param.#visit_method(arg, #value_expr);
                     });
                 }
             } else {
-                // For message fields, call the visitor method
+                // For message fields, always call the visitor's visit_* method, passing the value (the visitable)
                 let visitor_method = &info.visit_method_name;
 
                 if info.is_repeated {
@@ -237,13 +273,13 @@ fn generate_visitable_implementation_body(msg: &MessageInfo) -> proc_macro2::Tok
                     });
                 } else if info.is_optional {
                     field_calls.push(quote! {
-                        if let Some(ref value) = self.#field_name {
-                            arg = #visitor_param.#visitor_method(arg, value);
+                        if let Some(ref field_value) = self.#field_name {
+                            arg = #visitor_param.#visitor_method(arg, field_value);
                         }
                     });
                 } else {
                     field_calls.push(quote! {
-                        arg = #visitor_param.#visitor_method(arg, &self.#field_name);
+                        arg = #visitor_param.#visitor_method(arg, self.#field_name);
                     });
                 }
             }
