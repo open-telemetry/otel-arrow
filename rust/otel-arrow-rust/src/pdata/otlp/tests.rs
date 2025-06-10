@@ -7,7 +7,7 @@ use crate::pdata::TraceID;
 use crate::pdata::otlp::ItemCounter;
 use crate::pdata::otlp::LogsVisitor;
 #[cfg(test)]
-use crate::pdata::otlp::PrecomputedSizes;
+//use crate::pdata::otlp::PrecomputedSizes;
 use crate::proto::opentelemetry::common::v1::AnyValue;
 use crate::proto::opentelemetry::common::v1::ArrayValue;
 use crate::proto::opentelemetry::common::v1::EntityRef;
@@ -54,30 +54,30 @@ use crate::proto::opentelemetry::trace::v1::status::StatusCode;
 // Import prost::Message trait for encoded_len() method
 use prost::Message;
 
-#[cfg(test)]
-use crate::proto::opentelemetry::common::v1::{
-    AnyValueEncodedLen, AnyValueMessageAdapter, KeyValueEncodedLen, KeyValueMessageAdapter,
-};
-#[cfg(test)]
-use crate::proto::opentelemetry::common::v1::{
-    InstrumentationScopeEncodedLen, InstrumentationScopeMessageAdapter,
-};
-#[cfg(test)]
-use crate::proto::opentelemetry::logs::v1::{
-    LogRecordEncodedLen, LogRecordMessageAdapter, LogsDataEncodedLen,
-};
-#[cfg(test)]
-use crate::proto::opentelemetry::metrics::v1::{MetricsDataEncodedLen, MetricsDataMessageAdapter};
-#[cfg(test)]
-use crate::proto::opentelemetry::resource::v1::{ResourceEncodedLen, ResourceMessageAdapter};
-#[cfg(test)]
-use crate::proto::opentelemetry::trace::v1::{
-    ResourceSpansEncodedLen, ResourceSpansMessageAdapter,
-};
-#[cfg(test)]
-use crate::proto::opentelemetry::trace::v1::{SpanEncodedLen, SpanMessageAdapter};
-#[cfg(test)]
-use crate::proto::opentelemetry::trace::v1::{TracesDataEncodedLen, TracesDataMessageAdapter};
+// #[cfg(test)]
+// use crate::proto::opentelemetry::common::v1::{
+//     AnyValueEncodedLen, AnyValueMessageAdapter, KeyValueEncodedLen, KeyValueMessageAdapter,
+// };
+// #[cfg(test)]
+// use crate::proto::opentelemetry::common::v1::{
+//     InstrumentationScopeEncodedLen, InstrumentationScopeMessageAdapter,
+// };
+// #[cfg(test)]
+// use crate::proto::opentelemetry::logs::v1::{
+//     LogRecordEncodedLen, LogRecordMessageAdapter, LogsDataEncodedLen,
+// };
+// #[cfg(test)]
+// use crate::proto::opentelemetry::metrics::v1::{MetricsDataEncodedLen, MetricsDataMessageAdapter};
+// #[cfg(test)]
+// use crate::proto::opentelemetry::resource::v1::{ResourceEncodedLen, ResourceMessageAdapter};
+// #[cfg(test)]
+// use crate::proto::opentelemetry::trace::v1::{
+//     ResourceSpansEncodedLen, ResourceSpansMessageAdapter,
+// };
+// #[cfg(test)]
+// use crate::proto::opentelemetry::trace::v1::{SpanEncodedLen, SpanMessageAdapter};
+// #[cfg(test)]
+// use crate::proto::opentelemetry::trace::v1::{TracesDataEncodedLen, TracesDataMessageAdapter};
 
 #[test]
 fn test_any_value() {

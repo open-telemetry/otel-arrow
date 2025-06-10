@@ -122,7 +122,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                     // Calculate this message's total size including tag overhead
                     let tag_size = crate::pdata::otlp::PrecomputedSizes::varint_len((self.tag << 3) as usize);
                     let total_size = tag_size + crate::pdata::otlp::PrecomputedSizes::varint_len(total_child_size) + total_child_size;
-                    
+
                     println!("DEBUG: {} child visitor computed total size: {}", stringify!(#outer_name), total_size);
 
                     // Don't modify parent accumulator - just return it unchanged
@@ -152,7 +152,10 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
         }
     };
 
-    TokenStream::from(expanded)
+    // Combine the main EncodedLen implementation with the Accumulate visitor implementation
+    let mut result = TokenStream::from(expanded);
+    result.extend(derive_accumulate_visitor(msg));
+    result
 }
 
 /// Generate the helper method body that calculates encoded sizes of direct children.
@@ -160,10 +163,10 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
 /// This generates code to be used in the children_encoded_size method on the visitor.
 /// It works through the visitable interface, using the visitor pattern properly.
 fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
-    let mut visitor_instantiations = Vec::new();
-    let mut visitor_args = Vec::new();
+    let mut accumulate_instantiations = Vec::new();
+    let mut accumulate_args = Vec::new();
 
-    // Generate visitor instances for each field  
+    // Generate Accumulate wrapper instances for each field
     for info in &msg.all_fields {
         if let Some(oneof_cases) = info.oneof.as_ref() {
             // Process each oneof variant individually
@@ -177,10 +180,13 @@ fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
                     generate_message_visitor_instantiation(case, &case.tag)
                 };
 
-                visitor_instantiations.push(quote! {
-                    let mut #variant_param_name = #visitor_instantiation;
+                accumulate_instantiations.push(quote! {
+                    let mut #variant_param_name = crate::pdata::otlp::Accumulate::new(
+                        #visitor_instantiation,
+                        &mut total
+                    );
                 });
-                visitor_args.push(quote! { #variant_param_name });
+                accumulate_args.push(quote! { #variant_param_name });
             }
         } else {
             // Process regular field
@@ -192,10 +198,13 @@ fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
                 generate_message_visitor_for_field(info)
             };
 
-            visitor_instantiations.push(quote! {
-                let mut #field_name = #visitor_instantiation;
+            accumulate_instantiations.push(quote! {
+                let mut #field_name = crate::pdata::otlp::Accumulate::new(
+                    #visitor_instantiation,
+                    &mut total
+                );
             });
-            visitor_args.push(quote! { #field_name });
+            accumulate_args.push(quote! { #field_name });
         }
     }
 
@@ -204,22 +213,13 @@ fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
     let visitable_method_name = common::visitable_method_name(&outer_name);
 
     quote! {
-        // Capture the starting length before creating any child visitors
-        let start_len = arg.len();
-        
-        // Create visitor instances for each field
-        #(#visitor_instantiations)*
+        // Create Accumulate wrapper instances for each field
+        // Each Accumulate will sum only the sizes from its direct child visitor
+        #(#accumulate_instantiations)*
 
-        // Call the main visitable method with all visitors
-        // This properly routes each field to its appropriate visitor
-        arg = v.#visitable_method_name(arg, #(#visitor_args),*);
-        
-        // Sum up all the sizes that were added by child visitors
-        for i in start_len..arg.len() {
-            let size = arg.get_size(i);
-            println!("DEBUG: children_encoded_size summing size[{}] = {}", i, size);
-            total += size;
-        }
+        // Call the main visitable method with all Accumulate-wrapped visitors
+        // Each field's contribution will be accumulated separately in 'total'
+        arg = v.#visitable_method_name(arg, #(#accumulate_args),*);
     }
 }
 
@@ -333,4 +333,31 @@ fn generate_message_visitor_instantiation(
     };
 
     quote! { #encoded_len_type::new(#tag) }
+}
+
+/// Generate Accumulate visitor implementations for a message type.
+/// This creates implementations that wrap a visitor and accumulate only the direct child sizes.
+pub fn derive_accumulate_visitor(msg: &MessageInfo) -> TokenStream {
+    let visitor_name = msg.related_typename("Visitor");
+    let visitable_name = msg.related_typename("Visitable");
+    let visitor_method_name = common::visitor_method_name(&msg.outer_name);
+
+    let expanded = quote! {
+        impl<'a, V: #visitor_name<crate::pdata::otlp::PrecomputedSizes>>
+            #visitor_name<crate::pdata::otlp::PrecomputedSizes> for crate::pdata::otlp::Accumulate<'a, V>
+        {
+            fn #visitor_method_name(
+                &mut self,
+                mut arg: crate::pdata::otlp::PrecomputedSizes,
+                v: impl #visitable_name<crate::pdata::otlp::PrecomputedSizes>,
+            ) -> crate::pdata::otlp::PrecomputedSizes {
+                let idx = arg.len();
+                arg = self.inner.#visitor_method_name(arg, v);
+                *self.total = *self.total + arg.get_size(idx);
+                arg
+            }
+        }
+    };
+
+    TokenStream::from(expanded)
 }

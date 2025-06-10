@@ -10,6 +10,7 @@ pub use otlp_derive::qualified;
 // Primitive encoders for the first pass of two-pass encoding
 pub mod primitive_encoders;
 pub use primitive_encoders::{
+    Accumulate,
     BooleanEncodedLen,
     BytesEncodedLen,
     DoubleEncodedLen,
@@ -143,10 +144,6 @@ impl PrecomputedSizes {
         Self { sizes: Vec::new() }
     }
 
-    // pub fn new(sizes: Vec<usize>) -> Self {
-    //     Self { sizes }
-    // }
-
     /// Calculate the length in bytes needed to encode a varint
     pub fn varint_len(value: usize) -> usize {
         // TODO: use a Prost helper, otherwise this has duplication
@@ -178,21 +175,15 @@ impl PrecomputedSizes {
         self.sizes.push(value);
     }
 
+    /// Gets the last size.
+    pub fn last(&self) -> usize {
+        *self.sizes.last().expect("has a size")
+    }
+
     /// Update a previously reserved space with the calculated size
     pub fn set_size(&mut self, idx: usize, tag_size: usize, child_size: usize) {
         let total_size = tag_size + Self::varint_len(child_size) + child_size;
         self.sizes[idx] = total_size;
-    }
-
-    /// Set size directly at a specific index (for pure oneof wrappers)
-    pub fn set_size_direct(&mut self, idx: usize, size: usize) {
-        self.sizes[idx] = size;
-    }
-
-    /// Debug method to inspect the sizes vector
-    #[cfg(test)]
-    pub fn debug_sizes(&self) -> &Vec<usize> {
-        &self.sizes
     }
 }
 
