@@ -11,7 +11,8 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.39.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.39.0) - 2025-06-11
 
-- Change module name to `github.com/open-telemetry/otel-arrow/go`. []()
+- Change module name to `github.com/open-telemetry/otel-arrow/go`.
+  [#574](https://github.com/open-telemetry/otel-arrow/pull/574)
 
 ## [0.38.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.38.0) - 2025-06-10
 
