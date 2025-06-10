@@ -142,6 +142,16 @@ fn test_any_value() {
         AnyValue::new_array(vec![AnyValue::new_string("s1"), AnyValue::new_double(2.0),]),
         vals_value
     );
+
+    // Test that our generated pdata_size() method matches prost's encoded_len() for a few examples
+    let int_val = AnyValue::new_int(3i64);
+    assert_eq!(int_val.pdata_size(), int_val.encoded_len());
+
+    let string_val = AnyValue::new_string("hello");
+    assert_eq!(string_val.pdata_size(), string_val.encoded_len());
+
+    assert_eq!(kvs_value.pdata_size(), kvs_value.encoded_len());
+    assert_eq!(vals_value.pdata_size(), vals_value.encoded_len());
 }
 
 #[test]
@@ -160,11 +170,21 @@ fn test_key_value() {
         value: Some(v2.clone()),
     };
 
-    assert_eq!(KeyValue::new("k1", v1.clone()), kv1_value);
-    assert_eq!(KeyValue::new(k1.clone(), v1), kv1_value);
+    let kv1 = KeyValue::new("k1", v1.clone());
+    let kv1_alt = KeyValue::new(k1.clone(), v1);
+    let kv2 = KeyValue::new("k2", v2.clone());
+    let kv2_alt = KeyValue::new(k2, v2);
 
-    assert_eq!(KeyValue::new("k2", v2.clone()), kv2_value);
-    assert_eq!(KeyValue::new(k2, v2), kv2_value);
+    assert_eq!(kv1, kv1_value);
+    assert_eq!(kv1_alt, kv1_value);
+    assert_eq!(kv2, kv2_value);
+    assert_eq!(kv2_alt, kv2_value);
+
+    // Test that our generated pdata_size() method matches prost's encoded_len()
+    assert_eq!(kv1.pdata_size(), kv1.encoded_len());
+    assert_eq!(kv1_value.pdata_size(), kv1_value.encoded_len());
+    assert_eq!(kv2.pdata_size(), kv2.encoded_len());
+    assert_eq!(kv2_value.pdata_size(), kv2_value.encoded_len());
 }
 
 #[test]
@@ -208,6 +228,10 @@ fn test_log_record_required_all() {
         .finish();
 
     assert_eq!(lr1, lr1_value);
+
+    // Test that our generated pdata_size() method matches prost's encoded_len()
+    assert_eq!(lr1.pdata_size(), lr1.encoded_len());
+    assert_eq!(lr1_value.pdata_size(), lr1_value.encoded_len());
 }
 
 #[test]
@@ -218,6 +242,20 @@ fn test_instrumentation_scope_default() {
         ..Default::default()
     };
     assert_eq!(is1, is1_value);
+
+    // Test that our generated pdata_size() method matches prost's encoded_len()
+    println!(
+        "InstrumentationScope default: pdata_size={}, encoded_len={}",
+        is1.pdata_size(),
+        is1.encoded_len()
+    );
+    println!(
+        "InstrumentationScope value: pdata_size={}, encoded_len={}",
+        is1_value.pdata_size(),
+        is1_value.encoded_len()
+    );
+    assert_eq!(is1.pdata_size(), is1.encoded_len());
+    assert_eq!(is1_value.pdata_size(), is1_value.encoded_len());
 }
 
 #[test]
@@ -238,6 +276,10 @@ fn test_instrumentation_scope_options() {
     };
 
     assert_eq!(is1, is1_value);
+
+    // Test that our generated pdata_size() method matches prost's encoded_len()
+    assert_eq!(is1.pdata_size(), is1.encoded_len());
+    assert_eq!(is1_value.pdata_size(), is1_value.encoded_len());
 }
 
 #[test]
@@ -435,6 +477,10 @@ fn test_metric_sum() {
     };
 
     assert_eq!(m1, m1_value);
+
+    // Test that our generated pdata_size() method matches prost's encoded_len()
+    assert_eq!(m1.pdata_size(), m1.encoded_len());
+    assert_eq!(m1_value.pdata_size(), m1_value.encoded_len());
 }
 
 #[test]
@@ -475,6 +521,10 @@ fn test_metric_gauge() {
     };
 
     assert_eq!(m1, m1_value);
+
+    // Test that our generated pdata_size() method matches prost's encoded_len()
+    assert_eq!(m1.pdata_size(), m1.encoded_len());
+    assert_eq!(m1_value.pdata_size(), m1_value.encoded_len());
 }
 
 #[test]
@@ -495,6 +545,86 @@ fn test_exemplar() {
     };
 
     assert_eq!(e1, e1_value);
+
+    // Test that our generated pdata_size() method matches prost's encoded_len()
+    assert_eq!(e1.pdata_size(), e1.encoded_len());
+    assert_eq!(e1_value.pdata_size(), e1_value.encoded_len());
+}
+
+#[test]
+fn debug_exemplar_encoding() {
+    let tid = TraceID([1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2]);
+    let sid = SpanID([1, 2, 1, 2, 1, 2, 1, 2]);
+
+    let e1 = Exemplar::build_double(124_500_000_000u64, 10.1)
+        .trace_id(tid)
+        .span_id(sid)
+        .finish();
+
+    println!("Exemplar pdata_size: {}", e1.pdata_size());
+    println!("Exemplar encoded_len: {}", e1.encoded_len());
+
+    // Manual calculation:
+    // time_unix_nano: 124_500_000_000u64 (field 2, varint)
+    // Tag: 1 byte (2 << 3 = 16 = 0x10)
+    // Value: varint_size(124_500_000_000) bytes
+    let time_value = 124_500_000_000u64;
+    let time_tag = 1; // (2 << 3) >> 3 = 2, so tag size is 1 byte for field 2
+    let time_size = crate::pdata::otlp::PrecomputedSizes::varint_len(time_value as usize);
+    println!(
+        "time_unix_nano: tag={}, value={}, total={}",
+        time_tag,
+        time_size,
+        time_tag + time_size
+    );
+
+    // value: Some(ExemplarValue::AsDouble(10.1)) (field 4, fixed64)
+    // Tag: 1 byte (4 << 3 | 1 = 33 = 0x21)
+    // Value: 8 bytes (f64)
+    let value_tag = 1; // field 4, wire type 1
+    let value_size = 8; // f64 is always 8 bytes
+    println!(
+        "value (f64): tag={}, value={}, total={}",
+        value_tag,
+        value_size,
+        value_tag + value_size
+    );
+
+    // span_id: [1,2,1,2,1,2,1,2] (field 5, bytes)
+    // Tag: 1 byte (5 << 3 | 2 = 42 = 0x2A)
+    // Length: 1 byte (8)
+    // Value: 8 bytes
+    let span_tag = 1; // field 5, wire type 2
+    let span_len = 1; // length 8 fits in 1 byte
+    let span_value = 8;
+    println!(
+        "span_id: tag={}, len={}, value={}, total={}",
+        span_tag,
+        span_len,
+        span_value,
+        span_tag + span_len + span_value
+    );
+
+    // trace_id: [1,2,1,2,...] (field 6, bytes)
+    // Tag: 1 byte (6 << 3 | 2 = 50 = 0x32)
+    // Length: 1 byte (16)
+    // Value: 16 bytes
+    let trace_tag = 1; // field 6, wire type 2
+    let trace_len = 1; // length 16 fits in 1 byte
+    let trace_value = 16;
+    println!(
+        "trace_id: tag={}, len={}, value={}, total={}",
+        trace_tag,
+        trace_len,
+        trace_value,
+        trace_tag + trace_len + trace_value
+    );
+
+    let manual_total = (time_tag + time_size)
+        + (value_tag + value_size)
+        + (span_tag + span_len + span_value)
+        + (trace_tag + trace_len + trace_value);
+    println!("Manual total: {}", manual_total);
 }
 
 #[test]

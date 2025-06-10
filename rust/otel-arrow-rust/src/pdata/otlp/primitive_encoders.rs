@@ -166,12 +166,16 @@ pub struct SliceBytesEncodedLen {
 }
 
 impl crate::pdata::BooleanVisitor<PrecomputedSizes> for BooleanEncodedLen {
-    fn visit_bool(&mut self, mut arg: PrecomputedSizes, _value: bool) -> PrecomputedSizes {
+    fn visit_bool(&mut self, mut arg: PrecomputedSizes, value: bool) -> PrecomputedSizes {
         // Boolean is encoded as varint: 1 byte for value (0 or 1)
-        // Plus tag size for the field
-        let tag_size = varint_size(self.tag << 3); // wire_type = 0 for varint
-        let value_size = 1; // booleans are always 1 byte
-        arg.push_size(tag_size + value_size);
+        let total = if value {
+            let tag_size = varint_size(self.tag << 3); // wire_type = 0 for varint
+            let value_size = 1; // booleans are always 1 byte
+            tag_size + value_size
+        } else {
+            0
+        };
+        arg.push_size(total);
         arg
     }
 }
@@ -179,11 +183,15 @@ impl crate::pdata::BooleanVisitor<PrecomputedSizes> for BooleanEncodedLen {
 impl crate::pdata::StringVisitor<PrecomputedSizes> for StringEncodedLen {
     fn visit_string(&mut self, mut arg: PrecomputedSizes, value: &str) -> PrecomputedSizes {
         // String is wire_type = 2 (length-delimited)
-        let tag_size = varint_size(self.tag << 3 | 2); // wire_type = 2
-        let byte_len = value.len();
-        let length_size = varint_size(byte_len as u32);
-        let value_size = byte_len;
-        arg.push_size(tag_size + length_size + value_size);
+        let total = if value.len() != 0 {
+            let tag_size = varint_size(self.tag << 3 | 2); // wire_type = 2
+            let byte_len = value.len();
+            let length_size = varint_size(byte_len as u32);
+            tag_size + length_size + byte_len
+        } else {
+            0
+        };
+        arg.push_size(total);
         arg
     }
 }
@@ -191,11 +199,16 @@ impl crate::pdata::StringVisitor<PrecomputedSizes> for StringEncodedLen {
 impl crate::pdata::BytesVisitor<PrecomputedSizes> for BytesEncodedLen {
     fn visit_bytes(&mut self, mut arg: PrecomputedSizes, value: &[u8]) -> PrecomputedSizes {
         // Bytes is wire_type = 2 (length-delimited)
-        let tag_size = varint_size(self.tag << 3 | 2); // wire_type = 2
-        let byte_len = value.len();
-        let length_size = varint_size(byte_len as u32);
-        let value_size = byte_len;
-        arg.push_size(tag_size + length_size + value_size);
+        let total = if value.len() != 0 {
+            let tag_size = varint_size(self.tag << 3 | 2); // wire_type = 2
+            let byte_len = value.len();
+            let length_size = varint_size(byte_len as u32);
+            let value_size = byte_len;
+            tag_size + length_size + value_size
+        } else {
+            0
+        };
+        arg.push_size(total);
         arg
     }
 }
@@ -203,9 +216,14 @@ impl crate::pdata::BytesVisitor<PrecomputedSizes> for BytesEncodedLen {
 impl crate::pdata::U32Visitor<PrecomputedSizes> for U32EncodedLen {
     fn visit_u32(&mut self, mut arg: PrecomputedSizes, value: u32) -> PrecomputedSizes {
         // u32 is wire_type = 0 (varint)
-        let tag_size = varint_size(self.tag << 3); // wire_type = 0
-        let value_size = varint_size(value);
-        arg.push_size(tag_size + value_size);
+        let total = if value != 0 {
+            let tag_size = varint_size(self.tag << 3); // wire_type = 0
+            let value_size = varint_size(value);
+            tag_size + value_size
+        } else {
+            0
+        };
+        arg.push_size(total);
         arg
     }
 }
@@ -213,9 +231,14 @@ impl crate::pdata::U32Visitor<PrecomputedSizes> for U32EncodedLen {
 impl crate::pdata::U64Visitor<PrecomputedSizes> for U64EncodedLen {
     fn visit_u64(&mut self, mut arg: PrecomputedSizes, value: u64) -> PrecomputedSizes {
         // u64 is wire_type = 0 (varint)
-        let tag_size = varint_size(self.tag << 3); // wire_type = 0
-        let value_size = varint64_size(value);
-        arg.push_size(tag_size + value_size);
+        let total = if value != 0 {
+            let tag_size = varint_size(self.tag << 3); // wire_type = 0
+            let value_size = varint64_size(value);
+            tag_size + value_size
+        } else {
+            0
+        };
+        arg.push_size(total);
         arg
     }
 }
@@ -223,9 +246,14 @@ impl crate::pdata::U64Visitor<PrecomputedSizes> for U64EncodedLen {
 impl crate::pdata::I32Visitor<PrecomputedSizes> for I32EncodedLen {
     fn visit_i32(&mut self, mut arg: PrecomputedSizes, value: i32) -> PrecomputedSizes {
         // i32 is wire_type = 0 (varint with zigzag encoding)
-        let tag_size = varint_size(self.tag << 3); // wire_type = 0
-        let value_size = signed_varint_size(value);
-        arg.push_size(tag_size + value_size);
+        let total = if value != 0 {
+            let tag_size = varint_size(self.tag << 3); // wire_type = 0
+            let value_size = signed_varint_size(value);
+            tag_size + value_size
+        } else {
+            0
+        };
+        arg.push_size(total);
         arg
     }
 }
@@ -233,19 +261,29 @@ impl crate::pdata::I32Visitor<PrecomputedSizes> for I32EncodedLen {
 impl crate::pdata::I64Visitor<PrecomputedSizes> for I64EncodedLen {
     fn visit_i64(&mut self, mut arg: PrecomputedSizes, value: i64) -> PrecomputedSizes {
         // i64 is wire_type = 0 (varint with zigzag encoding)
-        let tag_size = varint_size(self.tag << 3); // wire_type = 0
-        let value_size = signed_varint64_size(value);
-        arg.push_size(tag_size + value_size);
+        let total = if value != 0 {
+            let tag_size = varint_size(self.tag << 3); // wire_type = 0
+            let value_size = signed_varint64_size(value);
+            tag_size + value_size
+        } else {
+            0
+        };
+        arg.push_size(total);
         arg
     }
 }
 
 impl crate::pdata::F64Visitor<PrecomputedSizes> for DoubleEncodedLen {
-    fn visit_f64(&mut self, mut arg: PrecomputedSizes, _value: f64) -> PrecomputedSizes {
+    fn visit_f64(&mut self, mut arg: PrecomputedSizes, value: f64) -> PrecomputedSizes {
         // f64 is wire_type = 1 (fixed64 - 8 bytes)
-        let tag_size = varint_size(self.tag << 3 | 1); // wire_type = 1
-        let value_size = 8; // f64 is always 8 bytes
-        arg.push_size(tag_size + value_size);
+        let total = if value != 0.0 {
+            let tag_size = varint_size(self.tag << 3 | 1); // wire_type = 1
+            let value_size = 8; // f64 is always 8 bytes
+            tag_size + value_size
+        } else {
+            0
+        };
+        arg.push_size(total);
         arg
     }
 }

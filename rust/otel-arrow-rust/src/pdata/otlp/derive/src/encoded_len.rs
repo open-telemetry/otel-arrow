@@ -90,10 +90,15 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
 
                 let (mut arg, total_child_size) = self.children_encoded_size(arg, v);
 
-                let tag_size = crate::pdata::otlp::PrecomputedSizes::varint_len((self.tag << 3) as usize);
-                let total_size = tag_size + crate::pdata::otlp::PrecomputedSizes::varint_len(total_child_size) + total_child_size;
+        let total_size = if total_child_size == 0 {
+            0
+        } else {
+                    let tag_size = crate::pdata::otlp::PrecomputedSizes::varint_len((self.tag << 3) as usize);
+                    let total = tag_size + crate::pdata::otlp::PrecomputedSizes::varint_len(total_child_size) + total_child_size;
+            total
+        };
 
-        arg.set_size(idx, total_size);
+                arg.set_size(idx, total_size);
                 arg
             }
         }
@@ -108,7 +113,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
                 let mut visitor = #encoded_len_name::new(0); // Use tag 0 for top-level, it is ignored.
                 let adapter = #message_adapter_name::new(self);
                 let (_, total) = visitor.children_encoded_size(sizes, &adapter);
-        total
+                total
             }
         }
     };

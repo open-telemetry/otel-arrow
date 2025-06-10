@@ -84,15 +84,7 @@ pub fn generate_visitor_call_pattern(
             }
         }
         FieldCategory::PrimitiveRepeated => {
-            if info.is_primitive {
-                quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); }
-            } else {
-                quote! {
-                    for item in &self.data.#field_name {
-                        arg = #visitor_param.#visit_method(arg, item);
-                    }
-                }
-            }
+            quote! { arg = #visitor_param.#visit_method(arg, &self.data.#field_name); }
         }
         FieldCategory::PrimitiveOptional => {
             if is_string_or_bytes_method(visit_method) {
