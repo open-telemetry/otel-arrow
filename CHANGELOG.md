@@ -13,6 +13,7 @@ Versioning](https://semver.org/spec/v2.0.0.html).
   [#569](https://github.com/open-telemetry/otel-arrow/pull/569)
 - Publish new module `github.com/open-telemetry/otel-arrow/go` as a duplicate of
   `github.com/open-telemetry/otel-arrow`.
+  [#571](https://github.com/open-telemetry/otel-arrow/pull/571)
 
 ## [0.37.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.37.0) - 2025-06-10
 
