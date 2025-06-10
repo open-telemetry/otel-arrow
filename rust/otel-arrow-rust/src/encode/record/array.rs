@@ -20,8 +20,9 @@ use arrow::array::{
     StringDictionaryBuilder,
 };
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, DataType, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type,
-    Int64Type, TimestampNanosecondType, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+    ArrowDictionaryKeyType, DataType, DurationNanosecondType, Float32Type, Float64Type, Int8Type,
+    Int16Type, Int32Type, Int64Type, TimestampNanosecondType, UInt8Type, UInt16Type, UInt32Type,
+    UInt64Type,
 };
 use arrow::error::ArrowError;
 
@@ -339,6 +340,7 @@ pub type Int16ArrayBuilder = PrimitiveArrayBuilder<Int16Type>;
 pub type Int32ArrayBuilder = PrimitiveArrayBuilder<Int32Type>;
 pub type Int64ArrayBuilder = PrimitiveArrayBuilder<Int64Type>;
 pub type TimestampNanosecondArrayBuilder = PrimitiveArrayBuilder<TimestampNanosecondType>;
+pub type DurationNanosecondArrayBuilder = PrimitiveArrayBuilder<DurationNanosecondType>;
 
 #[cfg(test)]
 pub mod test {
@@ -524,7 +526,12 @@ pub mod test {
             TimestampNanosecondArrayBuilder::new,
             vec![0, 1],
             DataType::Timestamp(TimeUnit::Nanosecond, None),
-        )
+        );
+        test_array_append_generic(
+            DurationNanosecondArrayBuilder::new,
+            vec![0, 1],
+            DataType::Duration(TimeUnit::Nanosecond),
+        );
     }
 
     fn test_checked_array_builder_generic<T, TArgs, TN, TD8, TD16>(

@@ -142,19 +142,19 @@ impl AdaptiveStructBuilder {
 mod test {
     use arrow::{
         array::{
-            BinaryArray, BooleanArray, FixedSizeBinaryArray, Float32Array, Float64Array, Int8Array,
-            Int16Array, Int32Array, Int64Array, StringArray, TimestampNanosecondArray, UInt8Array,
-            UInt16Array, UInt32Array, UInt64Array,
+            BinaryArray, BooleanArray, DurationNanosecondArray, FixedSizeBinaryArray, Float32Array,
+            Float64Array, Int8Array, Int16Array, Int32Array, Int64Array, StringArray,
+            TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
         },
         datatypes::{Fields, TimeUnit},
     };
 
     use crate::encode::record::array::{
-        ArrayBuilderConstructor, BinaryArrayBuilder, FixedSizeBinaryArrayBuilder,
-        Float32ArrayBuilder, Float64ArrayBuilder, Int8ArrayBuilder, Int16ArrayBuilder,
-        Int32ArrayBuilder, Int64ArrayBuilder, NoArgs, PrimitiveArrayBuilder, StringArrayBuilder,
-        TimestampNanosecondArrayBuilder, UInt8ArrayBuilder, UInt16ArrayBuilder, UInt32ArrayBuilder,
-        UInt64ArrayBuilder, boolean::BooleanBuilderOptions,
+        ArrayBuilderConstructor, BinaryArrayBuilder, DurationNanosecondArrayBuilder,
+        FixedSizeBinaryArrayBuilder, Float32ArrayBuilder, Float64ArrayBuilder, Int8ArrayBuilder,
+        Int16ArrayBuilder, Int32ArrayBuilder, Int64ArrayBuilder, NoArgs, PrimitiveArrayBuilder,
+        StringArrayBuilder, TimestampNanosecondArrayBuilder, UInt8ArrayBuilder, UInt16ArrayBuilder,
+        UInt32ArrayBuilder, UInt64ArrayBuilder, boolean::BooleanBuilderOptions,
     };
 
     use super::*;
@@ -344,6 +344,9 @@ mod test {
         let mut builder = TimestampNanosecondArrayBuilder::new(Default::default());
         builder.append_value(&1);
         fields.push((FieldData::new("ts_nano"), Box::new(builder)));
+        let mut builder = DurationNanosecondArrayBuilder::new(Default::default());
+        builder.append_value(&1);
+        fields.push((FieldData::new("duration_nano"), Box::new(builder)));
         let mut builder = FixedSizeBinaryArrayBuilder::new_with_args(
             ArrayOptions {
                 dictionary_options: None,
@@ -382,6 +385,11 @@ mod test {
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
                     false,
                 ),
+                Field::new(
+                    "duration_nano",
+                    DataType::Duration(TimeUnit::Nanosecond),
+                    false,
+                ),
                 Field::new("fsb", DataType::FixedSizeBinary(4), false),
                 Field::new("bool", DataType::Boolean, false),
             ]),
@@ -399,6 +407,7 @@ mod test {
                 Arc::new(Float32Array::from_iter_values(vec![1.0])),
                 Arc::new(Float64Array::from_iter_values(vec![2.0])),
                 Arc::new(TimestampNanosecondArray::from_iter_values(vec![1])),
+                Arc::new(DurationNanosecondArray::from_iter_values(vec![1])),
                 Arc::new(FixedSizeBinaryArray::try_from_iter([b"1234".to_vec()].iter()).unwrap()),
                 Arc::new(BooleanArray::from(vec![true])),
             ],
