@@ -10,6 +10,7 @@ use crate::{
     config::{ExporterConfig, ProcessorConfig, ReceiverConfig},
     error::Error,
     exporter::ExporterWrapper,
+    message::Sender,
     processor::ProcessorWrapper,
     receiver::ReceiverWrapper,
     runtime_config::{RuntimeNode, RuntimePipeline},
@@ -241,16 +242,110 @@ impl<PData: 'static> PipelineFactory<PData> {
             }
         }
 
+        // For each hyper-edge in the runtime DAG, create the appropriate channels according to the
+        // following rules:
+        // - If both the source and destination nodes are local, create local MPSC channels.
+        // - If either node is shared, create shared Tokio MPSC channels.
+        //
+        // The sender and receiver will be assigned to the corresponding runtime nodes at the
+        // extremities of the hyper-edge.
         for hyper_edge in iter_hyper_edges_runtime(&nodes) {
-            // Both source and destination nodes are locals: we can create a local channel based on
-            // the dispatch strategy.
-            // - When we have a single source and a single destination, we can use a local SPSC channel.
-            // - When we have a single source and multiple destinations, we can use a local SPMC channel.
-            // Otherwise, we need to create a shared channel.
-            // - When we have a singe source and multiple destinations, we can use a tokio SPSC channel.
-            // - When we have a single source and multiple destinations, we can use a tokio SPMC channel.
+            // Determine if we need local or shared channels based on node types
+            let source_is_shared = matches!(
+                hyper_edge.source,
+                RuntimeNode::Receiver {
+                    instance: ReceiverWrapper::Shared { .. },
+                    ..
+                } | RuntimeNode::Processor {
+                    instance: ProcessorWrapper::Shared { .. },
+                    ..
+                } | RuntimeNode::Exporter {
+                    instance: ExporterWrapper::Shared { .. },
+                    ..
+                }
+            );
 
-            // We can start simple with MPMC channels for all cases.
+            let any_dest_is_shared = hyper_edge.destinations.iter().any(|dest| {
+                matches!(
+                    dest,
+                    RuntimeNode::Receiver {
+                        instance: ReceiverWrapper::Shared { .. },
+                        ..
+                    } | RuntimeNode::Processor {
+                        instance: ProcessorWrapper::Shared { .. },
+                        ..
+                    } | RuntimeNode::Exporter {
+                        instance: ExporterWrapper::Shared { .. },
+                        ..
+                    }
+                )
+            });
+
+            let use_shared_channels = source_is_shared || any_dest_is_shared;
+
+            // Create channels based on dispatch strategy
+            match hyper_edge.dispatch_strategy {
+                DispatchStrategy::Broadcast
+                | DispatchStrategy::Random
+                | DispatchStrategy::LeastLoaded => {
+                    if use_shared_channels {
+                        // For shared channels with broadcast/random/least-loaded, we need a broadcast channel
+                        // Since tokio::sync::mpsc is single-consumer, we create separate channels for each destination
+                        let mut senders: Vec<Sender<PData>> = Vec::new();
+
+                        for _destination in &hyper_edge.destinations {
+                            let (pdata_sender, _pdata_receiver) =
+                                tokio::sync::mpsc::channel::<PData>(1000);
+                            senders.push(Sender::Shared(pdata_sender));
+
+                            // TODO: Assign receiver to destination node
+                            // This would require modifying the RuntimeNode to accept the receiver
+                        }
+
+                        // TODO: Assign senders to source node for fan-out logic
+                        // The source would need to broadcast to all senders
+                    } else {
+                        // For local channels with broadcast/random/least-loaded, create separate MPSC channels
+                        // Note: MPMC is not publicly available, so we use MPSC instead
+                        let mut senders: Vec<Sender<PData>> = Vec::new();
+
+                        for _destination in &hyper_edge.destinations {
+                            let (pdata_sender, _pdata_receiver) =
+                                otap_df_channel::mpsc::Channel::new(1000);
+                            senders.push(Sender::Local(pdata_sender));
+
+                            // TODO: Assign receiver to destination node
+                            // This would require modifying the RuntimeNode to accept the receiver
+                        }
+
+                        // TODO: Assign senders to source node for fan-out logic
+                        // The source would need to broadcast to all senders
+                    }
+                }
+                DispatchStrategy::RoundRobin => {
+                    // For round-robin, create separate channels to each destination
+                    let mut senders: Vec<Sender<PData>> = Vec::new();
+
+                    for _destination in &hyper_edge.destinations {
+                        if use_shared_channels {
+                            let (pdata_sender, _pdata_receiver) =
+                                tokio::sync::mpsc::channel::<PData>(1000);
+                            senders.push(Sender::Shared(pdata_sender));
+
+                            // TODO: Assign receiver to destination node
+                        } else {
+                            let (pdata_sender, _pdata_receiver) =
+                                otap_df_channel::mpsc::Channel::new(1000);
+                            senders.push(Sender::Local(pdata_sender));
+
+                            // TODO: Assign receiver to destination node
+                        }
+                    }
+
+                    // TODO: Assign senders to source node for round-robin dispatch logic
+                    // The source would cycle through senders in round-robin fashion
+                }
+            }
         }
         Ok(RuntimePipeline::new(config, nodes))
     }

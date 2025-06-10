@@ -12,24 +12,24 @@ use syn::{ItemStatic, Type, parse_macro_input};
 /// Attribute macro to generate distributed slices and initialize a factory registry.
 ///
 /// This macro generates distributed slices for factories and initializes the annotated
-/// FACTORY_REGISTRY static variable.
+/// XYZ_FACTORY_PIPELINE static variable.
 ///
 /// # Usage
 ///
-/// Simply declare a FACTORY_REGISTRY static and annotate it with the data type:
+/// Simply declare a XYZ_FACTORY_PIPELINE static and annotate it with the data type:
 /// ```rust,ignore
-/// use otap_df_engine::{FactoryRegistry, build_registry};
-/// use otap_df_engine_macros::factory_registry;
+/// use otap_df_engine::{PipelineFactory, build_factory};
+/// use otap_df_engine_macros::pipeline_factory;
 ///
 /// // Define your data type (this would be defined elsewhere)
 /// struct MyData;
 ///
-/// // Declare and initialize the factory registry
-/// #[factory_registry(MyData)]
-/// static FACTORY_REGISTRY: FactoryRegistry<MyData> = build_registry();
+/// // Declare and initialize the factory of pipelines
+/// #[pipeline_factory(MyData)]
+/// static XYZ_FACTORY_PIPELINE: PipelineFactory<MyData> = build_factory();
 /// ```
 ///
-/// Note: You need to import both `FactoryRegistry` and `build_registry`. The
+/// Note: You need to import both `PipelineFactory` and `build_factory`. The
 /// `build_registry()` call is a placeholder that gets replaced by the macro, but
 /// importing it explicitly makes the API more natural and clear.
 /// The individual factory types are imported internally by the macro.
