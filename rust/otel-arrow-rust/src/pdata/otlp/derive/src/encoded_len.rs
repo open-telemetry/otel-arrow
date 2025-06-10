@@ -227,7 +227,14 @@ fn generate_primitive_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenS
             "bool" => quote! { crate::pdata::otlp::BooleanEncodedLen },
             "String" | "string" => quote! { crate::pdata::otlp::StringEncodedLen },
             "u32" => quote! { crate::pdata::otlp::U32EncodedLen },
-            "u64" => quote! { crate::pdata::otlp::U64EncodedLen },
+            "u64" => {
+                // Choose between varint and fixed64 encoding based on proto_type
+                if info.proto_type.contains("fixed64") {
+                    quote! { crate::pdata::otlp::Fixed64EncodedLen }
+                } else {
+                    quote! { crate::pdata::otlp::U64EncodedLen }
+                }
+            },
             "i32" => quote! { crate::pdata::otlp::I32EncodedLen },
             "i64" => quote! { crate::pdata::otlp::I64EncodedLen },
             "f64" => quote! { crate::pdata::otlp::DoubleEncodedLen },

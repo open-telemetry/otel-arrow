@@ -243,6 +243,21 @@ impl crate::pdata::U64Visitor<PrecomputedSizes> for U64EncodedLen {
     }
 }
 
+impl crate::pdata::U64Visitor<PrecomputedSizes> for Fixed64EncodedLen {
+    fn visit_u64(&mut self, mut arg: PrecomputedSizes, value: u64) -> PrecomputedSizes {
+        // fixed64 is wire_type = 1 (8 bytes)
+        let total = if value != 0 {
+            let tag_size = varint_size(self.tag << 3 | 1); // wire_type = 1
+            let value_size = 8; // fixed64 is always 8 bytes
+            tag_size + value_size
+        } else {
+            0
+        };
+        arg.push_size(total);
+        arg
+    }
+}
+
 impl crate::pdata::I32Visitor<PrecomputedSizes> for I32EncodedLen {
     fn visit_i32(&mut self, mut arg: PrecomputedSizes, value: i32) -> PrecomputedSizes {
         // i32 is wire_type = 0 (varint with zigzag encoding)
