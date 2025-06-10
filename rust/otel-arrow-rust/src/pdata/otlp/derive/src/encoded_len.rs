@@ -175,10 +175,16 @@ fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
         #(#visitor_instantiations)*
 
         // Call the main visitable method with all visitors
-        let idx = arg.len();
-        arg.reserve();
+        // Note: We don't call reserve() here because:
+        // 1. Child visitors reserve space for themselves
+        // 2. The caller of children_encoded_size reserves for itself
+        let start_len = arg.len();
         arg = v.#visitable_method_name(arg, #(#visitor_args),*);
-        total += arg.get_size(idx);
+        
+        // Sum up all the sizes that were added by child visitors
+        for i in start_len..arg.len() {
+            total += arg.get_size(i);
+        }
     }
 }
 

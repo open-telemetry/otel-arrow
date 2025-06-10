@@ -51,6 +51,9 @@ use crate::proto::opentelemetry::trace::v1::span::Link;
 use crate::proto::opentelemetry::trace::v1::span::SpanKind;
 use crate::proto::opentelemetry::trace::v1::status::StatusCode;
 
+// Import prost::Message trait for encoded_len() method
+use prost::Message;
+
 #[cfg(test)]
 use crate::proto::opentelemetry::common::v1::{
     AnyValueEncodedLen, AnyValueMessageAdapter, KeyValueEncodedLen, KeyValueMessageAdapter,
@@ -386,7 +389,7 @@ fn test_resource_spans() {
     };
 
     assert_eq!(rds, rds_value);
-    
+
     // Test that our generated pdata_size() method matches prost's encoded_len()
     assert_eq!(rds.pdata_size(), rds.encoded_len());
     assert_eq!(rds_value.pdata_size(), rds_value.encoded_len());
