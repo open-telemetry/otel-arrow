@@ -8,8 +8,6 @@ use arrow::compute::kernels::boolean;
 use arrow::datatypes::{ArrowDictionaryKeyType, DataType};
 use arrow::error::ArrowError;
 
-use crate::encode::record::array::ArrayAppend;
-
 use super::dictionary::{self, DictionaryArrayAppend};
 use super::{ArrayBuilder, ArrayBuilderConstructor};
 
@@ -65,15 +63,6 @@ impl AdaptiveBooleanArrayBuilder {
     }
 }
 
-// implement ArrayAppend as a helper so this can be used in places that are generic over ArrayAppend
-impl ArrayAppend for AdaptiveBooleanArrayBuilder {
-    type Native = bool;
-
-    fn append_value(&mut self, value: &Self::Native) {
-        self.append_value(*value);
-    }
-}
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -87,7 +76,6 @@ mod test {
             AdaptiveBooleanArrayBuilder::new(BooleanBuilderOptions { nullable: false });
         builder.append_value(true);
         builder.append_value(false);
-        ArrayAppend::append_value(&mut builder, &true);
         let result = builder.finish().expect("should finish successfully");
 
         assert_eq!(result.data_type(), &DataType::Boolean);
@@ -95,10 +83,9 @@ mod test {
             .as_any()
             .downcast_ref::<BooleanArray>()
             .expect("should downcast to BooleanArray");
-        assert_eq!(boolean_array.len(), 3);
+        assert_eq!(boolean_array.len(), 2);
         assert!(boolean_array.value(0));
         assert!(!boolean_array.value(1));
-        assert!(boolean_array.value(2));
     }
 
     #[test]

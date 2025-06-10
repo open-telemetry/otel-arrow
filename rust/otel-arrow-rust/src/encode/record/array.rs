@@ -411,14 +411,12 @@ pub mod test {
             + DictionaryBuilder<UInt8Type>
             + ArrayBuilderConstructor<Args = NoArgs>
             + ConvertToNativeHelper
-            + UpdateDictionaryIndexInto<TD16>
-            + 'static,
+            + UpdateDictionaryIndexInto<TD16>,
         <TD8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
         TD16: DictionaryArrayAppend<Native = T>
             + DictionaryBuilder<UInt16Type>
             + ArrayBuilderConstructor<Args = NoArgs>
-            + ConvertToNativeHelper
-            + 'static,
+            + ConvertToNativeHelper,
         <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
     {
         test_array_builder_generic(&array_builder_factory, expected_data_type.clone());
@@ -542,16 +540,12 @@ pub mod test {
     ) where
         T: PartialEq + std::fmt::Debug,
         TArgs: Clone + 'static,
-        TN: CheckedArrayAppend<Native = T>
-            + ArrayBuilderConstructor<Args = TArgs>
-            + ArrayBuilder
-            + 'static,
+        TN: CheckedArrayAppend<Native = T> + ArrayBuilderConstructor<Args = TArgs> + ArrayBuilder,
         TD8: CheckedDictionaryArrayAppend<Native = T>
             + DictionaryBuilder<UInt8Type>
             + ArrayBuilderConstructor<Args = TArgs>
             + ConvertToNativeHelper
-            + UpdateDictionaryIndexInto<TD16>
-            + 'static,
+            + UpdateDictionaryIndexInto<TD16>,
         <TD8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
         TD16: CheckedDictionaryArrayAppend<Native = T>
             + DictionaryBuilder<UInt16Type>
