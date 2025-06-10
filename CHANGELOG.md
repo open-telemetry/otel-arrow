@@ -9,9 +9,12 @@ Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+## [0.38.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.38.0) - 2025-06-10
+
 - Downgrade Go to 1.23.0.
   [#569](https://github.com/open-telemetry/otel-arrow/pull/569)
-- Mark terminal version of `github.com/open-telemetry/otel-arrow` module. [#]
+- Mark terminal version of `github.com/open-telemetry/otel-arrow` module.
+  [#572](https://github.com/open-telemetry/otel-arrow/pull/569)
 
 ## [0.37.0](https://github.com/open-telemetry/otel-arrow/releases/tag/v0.37.0) - 2025-06-10
 
