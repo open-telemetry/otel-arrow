@@ -1,4 +1,3 @@
-// Deprecated: use github.com/open-telemetry/otel-arrow/go instead.
 module github.com/open-telemetry/otel-arrow
 
 go 1.23.0
