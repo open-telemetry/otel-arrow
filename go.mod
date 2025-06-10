@@ -54,3 +54,5 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250218202821-56aae31c358a // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+retract v0.36.0 // This version was released in the midst of a repository restructure causing incompatilibity between module name and source location.
