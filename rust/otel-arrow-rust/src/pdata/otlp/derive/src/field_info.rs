@@ -59,6 +59,9 @@ pub struct FieldInfo {
     /// String, integers, etc.
     pub is_primitive: bool,
 
+    /// Whether it uses a 32- or 64-bit fixed size encoding.
+    pub is_fixed: bool,
+
     /// For oneof fields: contains the possible cases that this field can represent.
     /// `None` for regular fields, `Some(cases)` for oneof union types.
     pub oneof: Option<Vec<OneofCase>>,
@@ -381,6 +384,7 @@ impl FieldInfo {
                 let is_repeated = Self::is_repeated(field);
                 let is_message = Self::is_message(field);
                 let is_primitive = Self::is_primitive(field);
+                let is_fixed = Self::is_fixed(field);
 
                 // Process type information
                 let inner_type = if is_optional || is_repeated {
@@ -428,6 +432,7 @@ impl FieldInfo {
                     is_repeated,
                     is_message,
                     is_primitive,
+                    is_fixed,
                     oneof: oneof.clone(),
                     as_type,
                     enum_type,
@@ -574,6 +579,12 @@ impl FieldInfo {
 
     fn is_optional(field: &syn::Field) -> bool {
         Self::has_prost_attr(field, "optional")
+    }
+
+    fn is_fixed(field: &syn::Field) -> bool {
+        const FIXED_PATTERNS: &[&str] = &["fixed64", "fixed32", "sfixed64", "sfixed32"];
+
+        Self::has_any_prost_attr(field, FIXED_PATTERNS)
     }
 
     fn is_repeated(field: &syn::Field) -> bool {

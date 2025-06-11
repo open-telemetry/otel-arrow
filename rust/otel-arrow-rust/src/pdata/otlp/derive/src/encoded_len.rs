@@ -152,12 +152,35 @@ fn generate_primitive_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenS
         let visitor_type = match info.base_type_name.as_str() {
             "bool" => quote! { crate::pdata::otlp::SliceBooleanEncodedLen },
             "String" | "string" => quote! { crate::pdata::otlp::SliceStringEncodedLen },
-            "u32" => quote! { crate::pdata::otlp::SliceU32EncodedLen },
-            "u64" => quote! { crate::pdata::otlp::SliceU64EncodedLen },
-            "i32" => quote! { crate::pdata::otlp::SliceI32EncodedLen },
-            "i64" => quote! { crate::pdata::otlp::SliceI64EncodedLen },
+            "u32" => {
+                if info.is_fixed {
+                    quote! { crate::pdata::otlp::SliceU32FixedEncodedLen }
+                } else {
+                    quote! { crate::pdata::otlp::SliceU32VarintEncodedLen }
+                }
+            }
+            "u64" => {
+                if info.is_fixed {
+                    quote! { crate::pdata::otlp::SliceU64FixedEncodedLen }
+                } else {
+                    quote! { crate::pdata::otlp::SliceU64VarintEncodedLen }
+                }
+            }
+            "i32" => {
+                if info.is_fixed {
+                    quote! { crate::pdata::otlp::SliceI32FixedEncodedLen }
+                } else {
+                    quote! { crate::pdata::otlp::SliceI32VarintEncodedLen }
+                }
+            }
+            "i64" => {
+                if info.is_fixed {
+                    quote! { crate::pdata::otlp::SliceI64FixedEncodedLen }
+                } else {
+                    quote! { crate::pdata::otlp::SliceI64VarintEncodedLen }
+                }
+            }
             "f64" => quote! { crate::pdata::otlp::SliceDoubleEncodedLen },
-            "f32" => quote! { crate::pdata::otlp::SliceFixed32EncodedLen },
             _ => {
                 if !info.proto_type.contains("bytes") {
                     panic!("unimplemented");
@@ -174,40 +197,39 @@ fn generate_primitive_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenS
         let visitor_type = match info.base_type_name.as_str() {
             "bool" => quote! { crate::pdata::otlp::BooleanEncodedLen },
             "String" | "string" => quote! { crate::pdata::otlp::StringEncodedLen },
+            "f64" => quote! { crate::pdata::otlp::DoubleEncodedLen },
             "u32" => {
                 // Choose between varint and fixed32 encoding based on proto_type
-                if info.proto_type.contains("fixed32") {
-                    quote! { crate::pdata::otlp::Fixed32EncodedLen }
+                if info.is_fixed {
+                    quote! { crate::pdata::otlp::U32FixedEncodedLen }
                 } else {
-                    quote! { crate::pdata::otlp::U32EncodedLen }
+                    quote! { crate::pdata::otlp::U32VarintEncodedLen }
                 }
             }
             "u64" => {
                 // Choose between varint and fixed64 encoding based on proto_type
-                if info.proto_type.contains("fixed64") {
-                    quote! { crate::pdata::otlp::Fixed64EncodedLen }
+                if info.is_fixed {
+                    quote! { crate::pdata::otlp::U64FixedEncodedLen }
                 } else {
-                    quote! { crate::pdata::otlp::U64EncodedLen }
+                    quote! { crate::pdata::otlp::U64VarintEncodedLen }
                 }
             }
             "i32" => {
                 // Choose between varint and sint32 encoding based on proto_type
-                if info.proto_type.contains("sint32") {
-                    quote! { crate::pdata::otlp::Sint32EncodedLen }
+                if info.is_fixed {
+                    quote! { crate::pdata::otlp::I32FixedEncodedLen }
                 } else {
-                    quote! { crate::pdata::otlp::I32EncodedLen }
+                    quote! { crate::pdata::otlp::I32VarintEncodedLen }
                 }
             }
             "i64" => {
                 // Choose between varint and sfixed64 encoding based on proto_type
-                if info.proto_type.contains("sfixed64") {
-                    quote! { crate::pdata::otlp::Sfixed64EncodedLen }
+                if info.is_fixed {
+                    quote! { crate::pdata::otlp::I64FixedEncodedLen }
                 } else {
-                    quote! { crate::pdata::otlp::I64EncodedLen }
+                    quote! { crate::pdata::otlp::I64VarintEncodedLen }
                 }
             }
-            "f64" => quote! { crate::pdata::otlp::DoubleEncodedLen },
-            "f32" => quote! { crate::pdata::otlp::Fixed32EncodedLen },
             _ => panic!("unimplemented"),
         };
         // Generate const generic instantiation syntax: SomeEncodedLen::<TAG, OPTION> {}
@@ -231,40 +253,35 @@ fn generate_primitive_visitor_instantiation(
         "bool" => quote! { crate::pdata::otlp::BooleanEncodedLen },
         "::prost::alloc::string::String" => quote! { crate::pdata::otlp::StringEncodedLen },
         "Vec<u8>" => quote! { crate::pdata::otlp::BytesEncodedLen },
+        "f64" => quote! { crate::pdata::otlp::DoubleEncodedLen },
         "u32" => {
             if case.proto_type.contains("fixed32") {
-                quote! { crate::pdata::otlp::Fixed32EncodedLen }
+                quote! { crate::pdata::otlp::U32FixedEncodedLen }
             } else {
-                quote! { crate::pdata::otlp::U32EncodedLen }
+                quote! { crate::pdata::otlp::U32VarintEncodedLen }
             }
         }
         "u64" => {
             if case.proto_type.contains("fixed64") {
-                quote! { crate::pdata::otlp::Fixed64EncodedLen }
+                quote! { crate::pdata::otlp::U64FixedEncodedLen }
             } else {
-                quote! { crate::pdata::otlp::U64EncodedLen }
+                quote! { crate::pdata::otlp::U64VarintEncodedLen }
             }
         }
         "i32" => {
-            if case.proto_type.contains("sint32") {
-                quote! { crate::pdata::otlp::Sint32EncodedLen }
-            } else if case.proto_type.contains("sfixed32") {
-                quote! { crate::pdata::otlp::Sfixed32EncodedLen }
+            if case.proto_type.contains("sfixed32") {
+                quote! { crate::pdata::otlp::I32FixedEncodedLen }
             } else {
-                quote! { crate::pdata::otlp::I32EncodedLen }
+                quote! { crate::pdata::otlp::I32VarintEncodedLen }
             }
         }
         "i64" => {
             if case.proto_type.contains("sfixed64") {
-                quote! { crate::pdata::otlp::Sfixed64EncodedLen }
-            } else if case.proto_type.contains("sint64") {
-                quote! { crate::pdata::otlp::Sint64EncodedLen }
+                quote! { crate::pdata::otlp::I64FixedEncodedLen }
             } else {
-                quote! { crate::pdata::otlp::I64EncodedLen }
+                quote! { crate::pdata::otlp::I64VarintEncodedLen }
             }
         }
-        "f64" => quote! { crate::pdata::otlp::DoubleEncodedLen },
-        "f32" => quote! { crate::pdata::otlp::Fixed32EncodedLen },
         _ => panic!("unimplemented"),
     };
 

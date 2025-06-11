@@ -16,11 +16,32 @@ pub use otlp_derive::qualified; // Required for derived code
 // Primitive encoders for the first pass of two-pass encoding
 pub mod primitive_encoders;
 pub use primitive_encoders::{
-    Accumulate, BooleanEncodedLen, BytesEncodedLen, DoubleEncodedLen, Fixed32EncodedLen,
-    Fixed64EncodedLen, I32EncodedLen, I64EncodedLen, Sfixed64EncodedLen, Sint32EncodedLen,
-    SliceBooleanEncodedLen, SliceBytesEncodedLen, SliceDoubleEncodedLen, SliceFixed32EncodedLen,
-    SliceFixed64EncodedLen, SliceI32EncodedLen, SliceI64EncodedLen, SliceStringEncodedLen,
-    SliceU32EncodedLen, SliceU64EncodedLen, StringEncodedLen, U32EncodedLen, U64EncodedLen,
+    // TODO: export all (there are more)
+    Accumulate,
+    BooleanEncodedLen,
+    BytesEncodedLen,
+    DoubleEncodedLen,
+    I32FixedEncodedLen,
+    I32VarintEncodedLen,
+    I64FixedEncodedLen,
+    I64VarintEncodedLen,
+    SliceBooleanEncodedLen,
+    SliceBytesEncodedLen,
+    SliceDoubleEncodedLen,
+    SliceI32FixedEncodedLen,
+    SliceI32VarintEncodedLen,
+    SliceI64FixedEncodedLen,
+    SliceI64VarintEncodedLen,
+    SliceStringEncodedLen,
+    SliceU32FixedEncodedLen,
+    SliceU32VarintEncodedLen,
+    SliceU64FixedEncodedLen,
+    SliceU64VarintEncodedLen,
+    StringEncodedLen,
+    U32FixedEncodedLen,
+    U32VarintEncodedLen,
+    U64FixedEncodedLen,
+    U64VarintEncodedLen,
 };
 
 use crate::proto::opentelemetry::logs::v1::LogRecordVisitable;
