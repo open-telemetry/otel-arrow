@@ -53,7 +53,7 @@ var (
 func TestLogsEncodingDecoding(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec	// only used for testing
+	entropy := datagen.NewTestEntropy()
 	logsGen := datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
 	expectedRequest := plogotlp.NewExportRequestFromLogs(logsGen.Generate(5000, 100))
@@ -68,7 +68,7 @@ func TestLogsEncodingDecoding(t *testing.T) {
 func TestInvalidLogsDecoding(t *testing.T) {
 	t.Parallel()
 
-	entropy := datagen.NewTestEntropy(int64(rand.Uint64())) //nolint:gosec	// only used for testing
+	entropy := datagen.NewTestEntropy()
 	logsGen := datagen.NewLogsGenerator(entropy, entropy.NewStandardResourceAttributes(), entropy.NewStandardInstrumentationScopes())
 
 	expectedRequest := plogotlp.NewExportRequestFromLogs(logsGen.Generate(100, 100))
@@ -126,7 +126,7 @@ func MultiRoundOfCheckEncodeMessUpDecode(
 	t *testing.T,
 	expectedRequest plogotlp.ExportRequest,
 ) {
-	rng := rand.New(rand.NewSource(int64(rand.Uint64())))
+	rng := rand.New(rand.NewSource(42))
 
 	for i := 0; i < 100; i++ {
 		CheckEncodeMessUpDecode(t, expectedRequest, rng)
