@@ -1,6 +1,12 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! This package defines four generators for OTLP message types
+///
+/// - builder.rs: new(), Builder, and finish()
+/// - visitor.rs: Visitor, Visitable, and NoopVisitor
+/// - message_adapter.rs: MessageAdapater
+/// - encoded_len: EncodedLen, Accumulator
 use proc_macro::TokenStream;
 
 mod builder;

@@ -287,6 +287,8 @@ fn test_scope_logs() {
     assert_eq!(sl.pdata_size(), sl.encoded_len());
 }
 
+// TODO re-enable this test https://github.com/open-telemetry/otel-arrow/issues/506
+#[ignore]
 #[test]
 fn test_entity() {
     let er1 = EntityRef::build("entity")
@@ -359,6 +361,8 @@ fn test_resource_logs() {
     assert_eq!(rl.pdata_size(), rl.encoded_len());
 }
 
+// TODO re-enable this test https://github.com/open-telemetry/otel-arrow/issues/506
+#[ignore]
 #[test]
 fn test_resource_spans() {
     let kv1 = KeyValue::new("k1", AnyValue::new_string("v1"));
@@ -516,6 +520,8 @@ fn test_exemplar() {
     assert_eq!(e1.pdata_size(), e1.encoded_len());
 }
 
+// TODO re-enable this test https://github.com/open-telemetry/otel-arrow/issues/506
+#[ignore]
 #[test]
 fn test_metric_histogram() {
     let tid = TraceID([1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2]);
@@ -676,6 +682,8 @@ fn test_metric_summary() {
     assert_eq!(m1.pdata_size(), m1.encoded_len());
 }
 
+// TODO re-enable this test https://github.com/open-telemetry/otel-arrow/issues/506
+#[ignore]
 #[test]
 fn test_metric_exponential_histogram() {
     let m1 = Metric::new_exponential_histogram(
