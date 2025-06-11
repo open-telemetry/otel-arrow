@@ -233,7 +233,7 @@ fn generate_primitive_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenS
                 } else {
                     quote! { crate::pdata::otlp::U32EncodedLen }
                 }
-            },
+            }
             "u64" => {
                 // Choose between varint and fixed64 encoding based on proto_type
                 if info.proto_type.contains("fixed64") {
@@ -241,7 +241,7 @@ fn generate_primitive_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenS
                 } else {
                     quote! { crate::pdata::otlp::U64EncodedLen }
                 }
-            },
+            }
             "i32" => {
                 // Choose between varint and sint32 encoding based on proto_type
                 if info.proto_type.contains("sint32") {
@@ -249,7 +249,7 @@ fn generate_primitive_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenS
                 } else {
                     quote! { crate::pdata::otlp::I32EncodedLen }
                 }
-            },
+            }
             "i64" => {
                 // Choose between varint and sfixed64 encoding based on proto_type
                 if info.proto_type.contains("sfixed64") {
@@ -257,7 +257,7 @@ fn generate_primitive_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenS
                 } else {
                     quote! { crate::pdata::otlp::I64EncodedLen }
                 }
-            },
+            }
             "f64" => quote! { crate::pdata::otlp::DoubleEncodedLen },
             "f32" => quote! { crate::pdata::otlp::Fixed32EncodedLen },
             _ => {
@@ -292,7 +292,7 @@ fn generate_primitive_visitor_instantiation(
             } else {
                 quote! { crate::pdata::otlp::U32EncodedLen }
             }
-        },
+        }
         "u64" => {
             // Choose between fixed64 and varint encoding based on proto_type
             if case.proto_type.contains("fixed64") {
@@ -300,7 +300,7 @@ fn generate_primitive_visitor_instantiation(
             } else {
                 quote! { crate::pdata::otlp::U64EncodedLen }
             }
-        },
+        }
         "i32" => {
             // Choose encoder based on proto_type
             if case.proto_type.contains("sint32") {
@@ -310,9 +310,9 @@ fn generate_primitive_visitor_instantiation(
             } else {
                 quote! { crate::pdata::otlp::I32EncodedLen }
             }
-        },
+        }
         "i64" => {
-            // Choose encoder based on proto_type  
+            // Choose encoder based on proto_type
             if case.proto_type.contains("sfixed64") {
                 quote! { crate::pdata::otlp::Sfixed64EncodedLen }
             } else if case.proto_type.contains("sint64") {
@@ -320,7 +320,7 @@ fn generate_primitive_visitor_instantiation(
             } else {
                 quote! { crate::pdata::otlp::I64EncodedLen }
             }
-        },
+        }
         "f64" => quote! { crate::pdata::otlp::DoubleEncodedLen },
         "f32" => quote! { crate::pdata::otlp::Fixed32EncodedLen },
         _ => {
