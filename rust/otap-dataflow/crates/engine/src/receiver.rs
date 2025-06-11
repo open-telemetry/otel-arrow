@@ -7,10 +7,12 @@
 //! See [`shared::Receiver`] for the Send implementation.
 
 use crate::config::ReceiverConfig;
+use crate::control::{ControlMsg, Controllable};
 use crate::error::Error;
 use crate::local::receiver as local;
-use crate::message::{ControlMsg, Receiver, Sender};
+use crate::message::{Receiver, Sender};
 use crate::shared::receiver as shared;
+use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 
 /// A wrapper for the receiver that allows for both `Send` and `!Send` receivers.
@@ -44,6 +46,24 @@ pub enum ReceiverWrapper<PData> {
         /// A receiver for pdata messages.
         pdata_receiver: Option<tokio::sync::mpsc::Receiver<PData>>,
     },
+}
+
+#[async_trait::async_trait(?Send)]
+impl<PData> Controllable for ReceiverWrapper<PData> {
+    /// Sends a control message to the node.
+    async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>> {
+        self.control_sender().send(msg).await
+    }
+
+    /// Returns the control message sender for the receiver.
+    fn control_sender(&self) -> Sender<ControlMsg> {
+        match self {
+            ReceiverWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
+            ReceiverWrapper::Shared { control_sender, .. } => {
+                Sender::Shared(control_sender.clone())
+            }
+        }
+    }
 }
 
 impl<PData> ReceiverWrapper<PData> {
@@ -85,17 +105,6 @@ impl<PData> ReceiverWrapper<PData> {
             control_sender,
             control_receiver,
             pdata_receiver: Some(pdata_receiver),
-        }
-    }
-
-    /// Returns the control message sender for the receiver.
-    #[must_use]
-    pub fn control_sender(&self) -> Sender<ControlMsg> {
-        match self {
-            ReceiverWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
-            ReceiverWrapper::Shared { control_sender, .. } => {
-                Sender::Shared(control_sender.clone())
-            }
         }
     }
 

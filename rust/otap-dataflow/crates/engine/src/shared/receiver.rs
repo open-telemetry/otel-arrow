@@ -31,9 +31,9 @@
 //! To ensure scalability, the pipeline engine will start multiple instances of the same pipeline in
 //! parallel on different cores, each with its own receiver instance.
 
+use crate::control::ControlMsg;
 use crate::effect_handler::EffectHandlerCore;
 use crate::error::Error;
-use crate::message::ControlMsg;
 use async_trait::async_trait;
 use otap_df_channel::error::{RecvError, SendError};
 use std::borrow::Cow;

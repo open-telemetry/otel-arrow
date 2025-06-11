@@ -29,6 +29,7 @@ pub mod pipeline;
 pub mod runtime_config;
 pub mod shared;
 
+pub mod control;
 pub mod testing;
 
 pub use linkme::distributed_slice;
@@ -242,6 +243,7 @@ impl<PData: 'static> PipelineFactory<PData> {
             }
         }
 
+        // Create pdata channels
         // For each hyper-edge in the runtime DAG, create the appropriate channels according to the
         // following rules:
         // - If both the source and destination nodes are local, create local MPSC channels.
@@ -251,36 +253,8 @@ impl<PData: 'static> PipelineFactory<PData> {
         // extremities of the hyper-edge.
         for hyper_edge in iter_hyper_edges_runtime(&nodes) {
             // Determine if we need local or shared channels based on node types
-            let source_is_shared = matches!(
-                hyper_edge.source,
-                RuntimeNode::Receiver {
-                    instance: ReceiverWrapper::Shared { .. },
-                    ..
-                } | RuntimeNode::Processor {
-                    instance: ProcessorWrapper::Shared { .. },
-                    ..
-                } | RuntimeNode::Exporter {
-                    instance: ExporterWrapper::Shared { .. },
-                    ..
-                }
-            );
-
-            let any_dest_is_shared = hyper_edge.destinations.iter().any(|dest| {
-                matches!(
-                    dest,
-                    RuntimeNode::Receiver {
-                        instance: ReceiverWrapper::Shared { .. },
-                        ..
-                    } | RuntimeNode::Processor {
-                        instance: ProcessorWrapper::Shared { .. },
-                        ..
-                    } | RuntimeNode::Exporter {
-                        instance: ExporterWrapper::Shared { .. },
-                        ..
-                    }
-                )
-            });
-
+            let source_is_shared = hyper_edge.source.is_shared();
+            let any_dest_is_shared = hyper_edge.destinations.iter().any(|dest| dest.is_shared());
             let use_shared_channels = source_is_shared || any_dest_is_shared;
 
             // Create channels based on dispatch strategy

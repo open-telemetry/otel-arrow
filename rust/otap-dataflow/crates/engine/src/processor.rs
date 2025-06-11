@@ -7,9 +7,10 @@
 //! See [`shared::Processor`] for the Send implementation.
 
 use crate::config::ProcessorConfig;
+use crate::control::ControlMsg;
 use crate::error::Error;
 use crate::local::processor as local;
-use crate::message::{ControlMsg, Message, Receiver, Sender};
+use crate::message::{Message, Receiver, Sender};
 use crate::shared::processor as shared;
 use otap_df_channel::mpsc;
 
@@ -120,8 +121,8 @@ impl<PData> ProcessorWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
+    use crate::control::ControlMsg::{Config, Shutdown, TimerTick};
     use crate::local::processor as local;
-    use crate::message::ControlMsg::{Config, Shutdown, TimerTick};
     use crate::message::Message;
     use crate::processor::{Error, ProcessorWrapper};
     use crate::shared::processor as shared;

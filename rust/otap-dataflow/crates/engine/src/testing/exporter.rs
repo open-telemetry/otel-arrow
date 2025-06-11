@@ -6,8 +6,9 @@
 //! setup and lifecycle management.
 
 use crate::config::ExporterConfig;
+use crate::control::ControlMsg;
 use crate::exporter::ExporterWrapper;
-use crate::message::{ControlMsg, Receiver, Sender};
+use crate::message::{Receiver, Sender};
 use crate::testing::{CtrlMsgCounters, create_not_send_channel, setup_test_runtime};
 use otap_df_channel::error::SendError;
 use serde_json::Value;

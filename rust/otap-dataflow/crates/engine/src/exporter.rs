@@ -7,10 +7,10 @@
 //! See [`shared::Exporter`] for the Send implementation.
 
 use crate::config::ExporterConfig;
+use crate::control::ControlMsg;
 use crate::error::Error;
 use crate::local::exporter as local;
 use crate::message;
-use crate::message::ControlMsg;
 use crate::message::Receiver;
 use crate::shared::exporter as shared;
 
@@ -96,10 +96,11 @@ impl<PData> ExporterWrapper<PData> {
 
 #[cfg(test)]
 mod tests {
+    use crate::control::ControlMsg;
     use crate::exporter::{Error, ExporterWrapper};
     use crate::local::exporter as local;
     use crate::message;
-    use crate::message::{ControlMsg, Message};
+    use crate::message::Message;
     use crate::shared::exporter as shared;
     use crate::testing::exporter::TestContext;
     use crate::testing::exporter::TestRuntime;

@@ -21,17 +21,17 @@
 
 use std::io::ErrorKind;
 
-use async_trait::async_trait;
-use futures::{FutureExt, pin_mut};
-use futures_timer::Delay;
-use otap_df_engine::error::Error;
-use otap_df_engine::local::exporter::{EffectHandler, Exporter};
-use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
-use otel_arrow_rust::otap::OtapBatch;
-
 use self::idgen::PartitionSequenceIdGenerator;
 use self::partition::{Partition, partition};
 use self::writer::WriteBatch;
+use async_trait::async_trait;
+use futures::{FutureExt, pin_mut};
+use futures_timer::Delay;
+use otap_df_engine::control::ControlMsg;
+use otap_df_engine::error::Error;
+use otap_df_engine::local::exporter::{EffectHandler, Exporter};
+use otap_df_engine::message::{Message, MessageChannel};
+use otel_arrow_rust::otap::OtapBatch;
 
 mod config;
 mod idgen;

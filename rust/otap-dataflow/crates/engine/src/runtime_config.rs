@@ -2,11 +2,14 @@
 
 //! Set of runtime pipeline configuration structures used by the engine and derived from the pipeline configuration.
 
+use otap_df_channel::error::SendError;
+use otap_df_config::{NodeId, node::NodeConfig, pipeline::PipelineConfig};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use otap_df_config::{NodeId, node::NodeConfig, pipeline::PipelineConfig};
-
+use crate::control::{ControlMsg, Controllable};
+use crate::error::Error;
+use crate::message::Sender;
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 
 /// Represents a runtime pipeline configuration that includes nodes with their respective configurations and instances.
@@ -63,6 +66,55 @@ pub enum RuntimeNode<PData> {
     },
 }
 
+#[async_trait::async_trait(?Send)]
+impl<PData> Controllable for RuntimeNode<PData> {
+    /// Sends a control message to the node.
+    async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>> {
+        match self {
+            RuntimeNode::Receiver { instance, .. } => instance.send_control_msg(msg).await,
+            RuntimeNode::Processor { .. } => {
+                unimplemented!("Processor control message handling is not implemented yet");
+            }
+            RuntimeNode::Exporter { .. } => {
+                unimplemented!("Exporter control message handling is not implemented yet");
+            }
+        }
+    }
+
+    /// Returns the control message sender for the node.
+    fn control_sender(&self) -> Sender<ControlMsg> {
+        match self {
+            RuntimeNode::Receiver { instance, .. } => instance.control_sender(),
+            RuntimeNode::Processor { .. } => {
+                unimplemented!("Processor control message handling is not implemented yet");
+            }
+            RuntimeNode::Exporter { .. } => {
+                unimplemented!("Exporter control message handling is not implemented yet");
+            }
+        }
+    }
+}
+
+impl<PData> RuntimeNode<PData> {
+    /// Flag indicating whether the node is shared (true) or local (false).
+    #[must_use]
+    pub fn is_shared(&self) -> bool {
+        matches!(
+            self,
+            RuntimeNode::Receiver {
+                instance: ReceiverWrapper::Shared { .. },
+                ..
+            } | RuntimeNode::Processor {
+                instance: ProcessorWrapper::Shared { .. },
+                ..
+            } | RuntimeNode::Exporter {
+                instance: ExporterWrapper::Shared { .. },
+                ..
+            }
+        )
+    }
+}
+
 // ToDo create 2 versions of this function into otlp and otap crates.
 impl<PData> RuntimePipeline<PData> {
     /// Creates a new `RuntimePipeline` from the given pipeline configuration and nodes.
@@ -81,5 +133,23 @@ impl<PData> RuntimePipeline<PData> {
     #[must_use]
     pub fn config(&self) -> &PipelineConfig {
         &self.config
+    }
+
+    /// Sends a control message to the specified node.
+    pub async fn send_control_message(
+        &self,
+        node_id: NodeId,
+        ctrl_msg: ControlMsg,
+    ) -> Result<(), Error<PData>> {
+        if let Some(node) = self.nodes.get(&node_id) {
+            node.send_control_msg(ctrl_msg)
+                .await
+                .map_err(|e| Error::ControlMsgSendError {
+                    node: node_id,
+                    error: e,
+                })
+        } else {
+            Err(Error::UnknownNode { node_id })
+        }
     }
 }

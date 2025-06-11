@@ -6,8 +6,9 @@
 //! setup and lifecycle management.
 
 use crate::config::ReceiverConfig;
+use crate::control::{ControlMsg, Controllable};
 use crate::error::Error;
-use crate::message::{ControlMsg, Receiver, Sender};
+use crate::message::{Receiver, Sender};
 use crate::receiver::ReceiverWrapper;
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use otap_df_channel::error::RecvError;
