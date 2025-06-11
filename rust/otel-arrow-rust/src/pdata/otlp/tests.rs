@@ -372,6 +372,56 @@ fn test_resource_logs() {
 }
 
 #[test]
+fn test_empty_resource_spans() {
+    let rs = ResourceSpans::build(Resource::new(vec![])).finish();
+
+    assert_eq!(rs.pdata_size(), rs.encoded_len());
+}
+
+#[test]
+fn test_resource_spans() {
+    let kv1 = KeyValue::new("k1", AnyValue::new_string("v1"));
+    let kv2 = KeyValue::new("k2", AnyValue::new_int(2));
+    let kvs = vec![kv1, kv2];
+
+    let is1 = InstrumentationScope::new("library");
+
+    let tid: TraceID = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2].into();
+    let sid: SpanID = [1, 2, 1, 2, 1, 2, 1, 2].into();
+    let psid: SpanID = [2, 1, 2, 1, 2, 1, 2, 1].into();
+
+    let s1 = Span::build(tid, sid, "myop", 123_000_000_000u64)
+        .parent_span_id(psid)
+        .attributes(kvs.clone())
+        .flags(SpanFlags::ContextHasIsRemoteMask)
+        .kind(SpanKind::Server)
+        .trace_state("ot=th:0")
+        .links(vec![Link::new(tid, sid)])
+        .events(vec![Event::new("oops", 123_500_000_000u64)])
+        .end_time_unix_nano(124_000_000_000u64)
+        .status(Status::new("oh my!", StatusCode::Error))
+        .dropped_attributes_count(1u32)
+        .dropped_events_count(1u32)
+        .dropped_links_count(1u32)
+        .finish();
+
+    let s2 = s1.clone();
+    let sps = vec![s1, s2];
+
+    let ss1 = ScopeSpans::build(is1.clone()).spans(sps.clone()).finish();
+    let ss2 = ss1.clone();
+    let sss = vec![ss1, ss2];
+
+    let res = Resource::new(vec![]);
+
+    let rs1 = ResourceSpans::build(res.clone())
+        .scope_spans(sss.clone())
+        .finish();
+
+    assert_eq!(rs1.pdata_size(), rs1.encoded_len());
+}
+
+#[test]
 fn test_traces_data() {
     let kv1 = KeyValue::new("k1", AnyValue::new_string("v1"));
     let kv2 = KeyValue::new("k2", AnyValue::new_int(2));
