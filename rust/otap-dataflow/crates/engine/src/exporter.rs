@@ -7,12 +7,14 @@
 //! See [`shared::Exporter`] for the Send implementation.
 
 use crate::config::ExporterConfig;
-use crate::control::ControlMsg;
+use crate::control::{ControlMsg, Controllable};
 use crate::error::Error;
 use crate::local::exporter as local;
 use crate::message;
-use crate::message::Receiver;
+use crate::message::{Receiver, Sender};
 use crate::shared::exporter as shared;
+use otap_df_channel::error::SendError;
+use otap_df_channel::mpsc;
 
 /// A wrapper for the exporter that allows for both `Send` and `!Send` effect handlers.
 ///
@@ -25,6 +27,10 @@ pub enum ExporterWrapper<PData> {
         exporter: Box<dyn local::Exporter<PData>>,
         /// The effect handler instance for the exporter.
         effect_handler: local::EffectHandler<PData>,
+        /// A sender for control messages.
+        control_sender: mpsc::Sender<ControlMsg>,
+        /// A receiver for control messages.
+        control_receiver: Option<mpsc::Receiver<ControlMsg>>,
     },
     /// An exporter with a `Send` implementation.
     Shared {
@@ -32,7 +38,29 @@ pub enum ExporterWrapper<PData> {
         exporter: Box<dyn shared::Exporter<PData>>,
         /// The effect handler instance for the exporter.
         effect_handler: shared::EffectHandler<PData>,
+        /// A sender for control messages.
+        control_sender: tokio::sync::mpsc::Sender<ControlMsg>,
+        /// A receiver for control messages.
+        control_receiver: Option<tokio::sync::mpsc::Receiver<ControlMsg>>,
     },
+}
+
+#[async_trait::async_trait(?Send)]
+impl<PData> Controllable for ExporterWrapper<PData> {
+    /// Sends a control message to the node.
+    async fn send_control_msg(&self, msg: ControlMsg) -> Result<(), SendError<ControlMsg>> {
+        self.control_sender().send(msg).await
+    }
+
+    /// Returns the control message sender for the exporter.
+    fn control_sender(&self) -> Sender<ControlMsg> {
+        match self {
+            ExporterWrapper::Local { control_sender, .. } => Sender::Local(control_sender.clone()),
+            ExporterWrapper::Shared { control_sender, .. } => {
+                Sender::Shared(control_sender.clone())
+            }
+        }
+    }
 }
 
 impl<PData> ExporterWrapper<PData> {
@@ -42,9 +70,14 @@ impl<PData> ExporterWrapper<PData> {
     where
         E: local::Exporter<PData> + 'static,
     {
+        let (control_sender, control_receiver) =
+            mpsc::Channel::new(config.control_channel.capacity);
+
         ExporterWrapper::Local {
             effect_handler: local::EffectHandler::new(config.name.clone()),
             exporter: Box::new(exporter),
+            control_sender,
+            control_receiver: Some(control_receiver),
         }
     }
 
@@ -54,33 +87,47 @@ impl<PData> ExporterWrapper<PData> {
     where
         E: shared::Exporter<PData> + 'static,
     {
+        let (control_sender, control_receiver) =
+            tokio::sync::mpsc::channel(config.control_channel.capacity);
+
         ExporterWrapper::Shared {
             effect_handler: shared::EffectHandler::new(config.name.clone()),
             exporter: Box::new(exporter),
+            control_sender,
+            control_receiver: Some(control_receiver),
         }
     }
 
     /// Starts the exporter and begins exporting incoming data.
-    pub async fn start(
-        self,
-        control_rx: Receiver<ControlMsg>,
-        pdata_rx: Receiver<PData>,
-    ) -> Result<(), Error<PData>> {
+    pub async fn start(self, pdata_rx: Receiver<PData>) -> Result<(), Error<PData>> {
         match self {
             ExporterWrapper::Local {
                 effect_handler,
                 exporter,
+                mut control_receiver,
+                ..
             } => {
-                let message_channel = message::MessageChannel::new(control_rx, pdata_rx);
+                // Note: `start` consumes self, and self is initialized with a control_receiver.
+                // If control_receiver is None, it means the exporter was either created without
+                // a control channel or the receiver was already consumed somewhere else.
+                // Both cases are invalid for an exporter.
+                let control_rx = control_receiver.expect("control_receiver must be set");
+                let message_channel =
+                    message::MessageChannel::new(Receiver::Local(control_rx), pdata_rx);
                 exporter.start(message_channel, effect_handler).await
             }
             ExporterWrapper::Shared {
                 effect_handler,
                 exporter,
+                control_receiver,
+                ..
             } => {
-                if let (Receiver::Shared(control_rx), Receiver::Shared(pdata_rx)) =
-                    (control_rx, pdata_rx)
-                {
+                // Note: `start` consumes self, and self is initialized with a control_receiver.
+                // If control_receiver is None, it means the exporter was either created without
+                // a control channel or the receiver was already consumed somewhere else.
+                // Both cases are invalid for an exporter.
+                let control_rx = control_receiver.expect("control_receiver must be set");
+                if let Receiver::Shared(pdata_rx) = pdata_rx {
                     let message_channel = shared::MessageChannel::new(control_rx, pdata_rx);
                     exporter.start(message_channel, effect_handler).await
                 } else {
@@ -325,7 +372,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Send more pdata after shutdown is sent, but before receiver likely gets it
+        // Send more pdata after shutdown is sent, but before the receiver likely gets it
         pdata_tx.send_async("pdata3".to_string()).await.unwrap();
         pdata_tx
             .send_async("pdata4_during_drain".to_string())
@@ -390,7 +437,7 @@ mod tests {
             .await
             .unwrap();
 
-        sleep(Duration::from_millis(10)).await; // Give receiver a chance
+        sleep(Duration::from_millis(10)).await; // Give the receiver a chance
 
         // --- Start Receiving ---
 

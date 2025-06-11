@@ -345,8 +345,6 @@ impl<PData: 'static> PipelineFactory<PData> {
             RuntimeNode::Receiver {
                 config: node_config.clone(),
                 instance: create(&node_config.config, &receiver_config),
-                control_sender: None,
-                control_receiver: None,
             },
         );
         if prev_node.is_some() {
@@ -411,8 +409,6 @@ impl<PData: 'static> PipelineFactory<PData> {
             RuntimeNode::Exporter {
                 config: node_config.clone(),
                 instance: create(&node_config.config, &exporter_config),
-                control_sender: None,
-                control_receiver: None,
                 pdata_sender: None,
                 pdata_receiver: None,
             },

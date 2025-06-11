@@ -219,7 +219,7 @@ impl<PData: Clone + Debug + 'static> TestRuntime<PData> {
 
         let run_exporter_handle = self.local_tasks.spawn_local(async move {
             exporter
-                .start(control_rx, pdata_rx)
+                .start(pdata_rx)
                 .await
                 .expect("Exporter event loop failed");
         });
