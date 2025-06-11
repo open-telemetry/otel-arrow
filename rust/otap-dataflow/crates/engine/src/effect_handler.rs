@@ -79,6 +79,7 @@ impl EffectHandlerCore {
     /// Returns an [`Error::IoError`] if any step in the process fails.
     ///
     /// ToDo: return a std::net::UdpSocket instead of a tokio::net::UdpSocket to avoid leaking our current dependency on Tokio.
+    #[allow(dead_code)]
     pub(crate) fn udp_socket<PData>(
         &self,
         addr: SocketAddr,
