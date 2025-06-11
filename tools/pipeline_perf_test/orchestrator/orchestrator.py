@@ -48,6 +48,19 @@ Pre-requisites:
         --k8s-backend-manifest backend/backend-manifest.yaml \
         --k8s-loadgen-manifest load_generator/loadgen-manifest.yaml \
         --k8s-namespace perf-test-otel --duration 30
+    If the cluster does not have the metrics server installed, you will need to install it. Be aware that the script below also enables insecure TLS for dev purposes:
+
+        # Apply metrics-server
+        kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+
+        # Patch with both required flags
+        kubectl patch deployment metrics-server -n kube-system --type=json -p='[
+        {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"},
+        {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-preferred-address-types=InternalIP"}
+        ]'
+
+        # Restart deployment
+        kubectl rollout restart deployment metrics-server -n kube-system
 """
 import argparse
 import os
@@ -60,7 +73,7 @@ import docker
 from lib.process.utils.docker import VolumeMount, PortBinding, cleanup_docker_containers
 from lib.process.utils.docker import build_docker_image, launch_container, get_docker_logs, create_docker_network, delete_docker_network
 from lib.process.utils.kubernetes import create_k8s_namespace, deploy_kubernetes_resources, run_k8s_loadgen, setup_k8s_port_forwarding
-from lib.report.report import get_report_string, parse_logs_for_sent_count
+from lib.report.report import get_report_string, get_benchmark_json, parse_logs_for_sent_count
 
 def main():
     parser = argparse.ArgumentParser(description="Orchestrate OTel pipeline perf test")
@@ -97,7 +110,6 @@ def main():
     os.makedirs(args.results_dir, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_file = os.path.join(args.results_dir, f"perf_results_{timestamp}.txt")
 
     # Initialize resources and counters
     network_created = False
@@ -113,21 +125,25 @@ def main():
     try:
         print("\nRunning perf tests...")
 
+        # Initialize image names
+        backend_image = "backend-service:latest"
+        loadgen_image = "otel-loadgen:latest"
+
         docker_client = None
         if not args.skip_backend_build or not args.skip_loadgen_build:
             print("Building container images(s)...")
             docker_client = docker.from_env()
             # Build the backend Docker image if not skipped
-            backend_image = "backend-service:latest"
             if not args.skip_backend_build:
                 backend_image = build_docker_image(backend_image, "backend", docker_client, log_cli=args.log_cli_commands)
             else:
                 print(f"Using existing backend image: {backend_image}")
 
             # Build the loadgen Docker image if not skipped
-            loadgen_image = "otel-loadgen:latest"
             if not args.skip_loadgen_build:
                 loadgen_image = build_docker_image(loadgen_image, "load_generator", docker_client, log_cli=args.log_cli_commands)
+            else:
+                print(f"Using existing loadgen image: {loadgen_image}")
 
         if args.deployment_target == "docker":
             if not docker_client:
@@ -278,7 +294,7 @@ def main():
                 args.k8s_namespace,
                 args.duration,
                 k8s_collector_resource,
-                args.skip_loadgen_build
+                loadgen_image
             )
 
             target_process_stats = k8s_collector_resource.get_stats()
@@ -295,19 +311,21 @@ def main():
             )
         )
 
-        # # Write results to file
-        with open(results_file, "w") as f:
+        # Write benchmark result to file in a JSON
+        # format expected by GitHub Action Benchmark
+        benchmark_file = os.path.join(args.results_dir, f"benchmark_{timestamp}.json")
+        with open(benchmark_file, "w") as f:
             f.write(
-            get_report_string(
+            get_benchmark_json(
                 timestamp,
                 args,
                 logs_failed_count,
                 logs_sent_count,
                 target_process_stats
             )
-        )
+            )
 
-        print(f"Test completed. Results saved to {results_file}")
+        print(f"Test completed. Benchmark data saved to {benchmark_file}")
 
     finally:
         if not args.keep_resources:

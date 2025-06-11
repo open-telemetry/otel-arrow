@@ -14,13 +14,19 @@ Typical implementations of this interface include:
     - ReceiveLoad: Starts a component that passively receives load (e.g., validating otlp receiver).
 
 Classes:
+    ExecutionStrategyConfig(BaseModel):  Base model for Execution Strategy config.
     ExecutionStrategy (ABC): Abstract interface for starting and stopping a component's workload execution.
 """
 
 from abc import ABC, abstractmethod
 
-from ..component.lifecycle_component import LifecycleComponent
-from ..test_framework.test_context import TestStepContext
+from ..component.component import Component
+from ..context.test_contexts import TestStepContext
+from .base import BaseStrategyConfig
+
+
+class ExecutionStrategyConfig(BaseStrategyConfig):
+    """Base model for Execution Strategy config, passed to strategy init."""
 
 
 class ExecutionStrategy(ABC):
@@ -37,7 +43,11 @@ class ExecutionStrategy(ABC):
     """
 
     @abstractmethod
-    def start(self, component: LifecycleComponent, ctx: TestStepContext):
+    def __init__(self, config: ExecutionStrategyConfig) -> None:
+        """All execution strategies must be initialized with a config object."""
+
+    @abstractmethod
+    def start(self, component: Component, ctx: TestStepContext):
         """
         Start executing the component's workload.
 
@@ -47,7 +57,7 @@ class ExecutionStrategy(ABC):
         """
 
     @abstractmethod
-    def stop(self, component: LifecycleComponent, ctx: TestStepContext):
+    def stop(self, component: Component, ctx: TestStepContext):
         """
         Stop executing the component's workload.
 

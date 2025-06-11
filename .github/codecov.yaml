@@ -19,6 +19,10 @@ component_management:
       name: "query_abstraction"
       paths:
         - "rust/experimental/query_abstraction/"
+    - component_id: "query_engine"
+      name: "query_engine"
+      paths:
+        - "rust/experimental/query_engine/"
     - component_id: "syslog_cef_receivers"
       name: "syslog_cef_receivers"
       paths:
@@ -27,3 +31,4 @@ component_management:
       name: "otel-arrow-go"
       paths:
         - "go/"
+        - "pkg/"
