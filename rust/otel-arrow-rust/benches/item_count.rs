@@ -26,19 +26,19 @@ use otel_arrow_rust::proto::opentelemetry::resource::v1::*;
 fn create_logs_data() -> LogsData {
     let mut rl: Vec<ResourceLogs> = vec![];
 
-    for _ in [0..10] {
+    for _ in 0..10 {
         let kvs = vec![
             KeyValue::new("k1", AnyValue::new_string("v1")),
             KeyValue::new("k2", AnyValue::new_string("v2")),
         ];
         let res = Resource::new(kvs.clone());
         let mut sls: Vec<ScopeLogs> = vec![];
-        for _ in [0..10] {
+        for _ in 0..10 {
             let is1 = InstrumentationScope::new("library");
 
             let mut lrs: Vec<LogRecord> = vec![];
 
-            for _ in [0..10] {
+            for _ in 0..10 {
                 let lr = LogRecord::build(2_000_000_000u64, SeverityNumber::Info, "event1")
                     .attributes(kvs.clone())
                     .finish();
@@ -61,6 +61,10 @@ fn count_logs(c: &mut Criterion) {
     let mut group = c.benchmark_group("OTLP Logs counting");
 
     let logs = create_logs_data();
+    assert_eq!(
+        1000,
+        ItemCounter::new().visit_logs(&LogsDataMessageAdapter::new(&logs))
+    );
 
     _ = group.bench_function("Visitor", |b| {
         b.iter(|| {
