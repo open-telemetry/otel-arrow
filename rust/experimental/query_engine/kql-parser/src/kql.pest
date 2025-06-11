@@ -48,11 +48,11 @@ identifier_literal = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
 real_expression = { "real(" ~ (positive_infinity_token|negative_infinity_token|double_literal|integer_literal) ~ ")" }
 datetime_expression = { "datetime(" ~ datetime_literal ~ ")" }
 
-comparison_expressions = _ { scalar_expression|("(" ~ logical_expression ~ ")") }
-comparison_expression = { comparison_expressions ~ (equals_token|not_equals_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token) ~ comparison_expressions }
+comparison_expression = { scalar_expression ~ (equals_token|not_equals_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token) ~ scalar_expression }
 scalar_expression = {
 	(real_expression | datetime_expression | boolean_expression | double_literal | integer_literal | string_literal | accessor_expression)
     | ("(" ~ scalar_expression ~ ")")
+    | ("(" ~ logical_expression ~ ")")
 }
 boolean_expression = _{ true_literal | false_literal }
 logical_expressions = _{ comparison_expression|boolean_expression|accessor_expression }

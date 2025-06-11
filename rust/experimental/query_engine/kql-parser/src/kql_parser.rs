@@ -325,10 +325,6 @@ pub(crate) fn parse_comparison_expression(
 
     let left = match left_rule.as_rule() {
         Rule::scalar_expression => parse_scalar_expression(left_rule, state)?,
-        Rule::logical_expression => {
-            let logical = parse_logical_expression(left_rule, state)?;
-            ScalarExpression::Logical(logical.into())
-        }
         _ => panic!("Unexpected rule in comparison_expression: {}", left_rule),
     };
 
@@ -338,10 +334,6 @@ pub(crate) fn parse_comparison_expression(
 
     let right = match right_rule.as_rule() {
         Rule::scalar_expression => parse_scalar_expression(right_rule, state)?,
-        Rule::logical_expression => {
-            let logical = parse_logical_expression(right_rule, state)?;
-            ScalarExpression::Logical(logical.into())
-        }
         _ => panic!("Unexpected rule in comparison_expression: {}", right_rule),
     };
 
