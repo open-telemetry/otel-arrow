@@ -20,7 +20,7 @@ use otap_df_engine::local::exporter as local;
 use otap_df_engine::message::{ControlMsg, Message, MessageChannel};
 
 /// Exporter that sends OTLP data via gRPC
-struct OTLPExporter {
+pub struct OTLPExporter {
     grpc_endpoint: String,
     compression_method: Option<CompressionMethod>,
 }

@@ -27,12 +27,13 @@ use sysinfo::{
 use tokio::time::{Duration, Instant};
 
 /// Perf Exporter that emits performance data
-struct PerfExporter {
+pub struct PerfExporter {
     config: Config,
     output: Option<String>,
 }
 
 impl PerfExporter {
+    /// creates a perf exporter with the provided config
     pub fn new(config: Config, output: Option<String>) -> Self {
         PerfExporter { config, output }
     }
@@ -62,6 +63,7 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
 
         let mut writer = get_writer(self.output);
 
+        let sys_refresh_list = sys_refresh_list(&self.config);
         // Loop until a Shutdown event is received.
         loop {
             match msg_chan.recv().await? {
@@ -95,16 +97,7 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                         &mut writer,
                     );
 
-                    system.refresh_specifics(
-                        RefreshKind::nothing()
-                            .with_processes(
-                                ProcessRefreshKind::nothing()
-                                    .with_cpu()
-                                    .with_disk_usage()
-                                    .with_memory(),
-                            )
-                            .with_cpu(CpuRefreshKind::nothing().with_cpu_usage()),
-                    );
+                    system.refresh_specifics(sys_refresh_list);
                     let process = system.process(process_pid).ok_or(Error::ExporterError {
                         exporter: effect_handler.exporter_name(),
                         error: "Failed to get process".to_owned(),
@@ -168,7 +161,7 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                     let header_list =
                         decoder
                             .decode(&batch.headers)
-                            .map_err(|error| Error::ExporterError {
+                            .map_err(|_| Error::ExporterError {
                                 exporter: effect_handler.exporter_name(),
                                 error: "Failed to decode batch headers".to_owned(),
                             })?;
@@ -191,7 +184,7 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                         average_pipeline_latency = update_average(
                             latency,
                             average_pipeline_latency,
-                            total_received_pdata_batch_count as f64,
+                            self.config.smoothing_factor() as f64,
                         );
                     }
 
@@ -203,25 +196,25 @@ impl local::Exporter<BatchArrowRecords> for PerfExporter {
                     received_otlp_signal_count += calculate_otlp_signal_count(batch);
                     total_received_otlp_signal_count += received_otlp_signal_count as u128;
 
-                    writeln!(writer, "Arrow Records {}", received_arrow_records_count);
-                    writeln!(writer, "Otlp Data Count {}", received_otlp_signal_count);
-                    writeln!(writer, "Pdata Count {}", received_pdata_batch_count);
-                    writeln!(
+                    _ = writeln!(writer, "Arrow Records {}", received_arrow_records_count);
+                    _ = writeln!(writer, "Otlp Data Count {}", received_otlp_signal_count);
+                    _ = writeln!(writer, "Pdata Count {}", received_pdata_batch_count);
+                    _ = writeln!(
                         writer,
                         "Total Records Count {}",
                         total_received_arrow_records_count
                     );
-                    writeln!(
+                    _ = writeln!(
                         writer,
                         "Total Otlp Count {}",
                         total_received_otlp_signal_count
                     );
-                    writeln!(
+                    _ = writeln!(
                         writer,
                         "Total Pdata Count {}",
                         total_received_pdata_batch_count
                     );
-                    writeln!(
+                    _ = writeln!(
                         writer,
                         "Average Pipeline Latency {}",
                         average_pipeline_latency
@@ -254,9 +247,27 @@ fn get_writer(output_file: Option<String>) -> Box<dyn Write> {
     }
 }
 
-fn update_average(new_value: f64, old_average: f64, total: f64) -> f64 {
-    // update the average using a expotential moving average which is more responsive to new data
-    new_value * (2.0 * total + 1.0) + old_average
+fn sys_refresh_list(config: &Config) -> RefreshKind {
+    let mut sys_refresh_list = RefreshKind::nothing();
+    let mut process_refresh_list = ProcessRefreshKind::nothing();
+
+    if config.disk_usage() {
+        process_refresh_list = process_refresh_list.with_disk_usage();
+    }
+    if config.mem_usage() {
+        process_refresh_list = process_refresh_list.with_memory();
+    }
+    if config.cpu_usage() {
+        process_refresh_list = process_refresh_list.with_cpu();
+        sys_refresh_list = sys_refresh_list.with_cpu(CpuRefreshKind::nothing().with_cpu_usage());
+    }
+
+    sys_refresh_list.with_processes(process_refresh_list)
+}
+
+fn update_average(new_value: f64, old_average: f64, smoothing_factor: f64) -> f64 {
+    // update the average using a exponential moving average which allows new data points to have a greater impact depending on the smoothing factor
+    smoothing_factor * new_value + (1.0 - smoothing_factor) * old_average
 }
 
 fn decode_timestamp(timestamp: &[u8]) -> Result<Duration, String> {
@@ -684,7 +695,7 @@ mod tests {
     #[test]
     fn test_exporter_local() {
         let test_runtime = TestRuntime::new();
-        let config = Config::new(1000, true, true, true, true, true);
+        let config = Config::new(1000, 0.3, true, true, true, true, true);
         let output_file = "perf_output.txt".to_string();
         let exporter = ExporterWrapper::local(
             PerfExporter::new(config, Some(output_file.clone())),

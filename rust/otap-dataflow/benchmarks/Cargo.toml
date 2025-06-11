@@ -17,6 +17,10 @@ criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
 mimalloc = "0.1.46"
 otap-df-config = { path = "../crates/config" }
 otap-df-channel = { path = "../crates/channel" }
+otap-df-engine = { path = "../crates/engine"}
+otap-df-perf = { path="../crates/perf_exporter"}
+otap-df-otap = { path="../crates/otap"}
+fluke-hpack = "0.3.1"
 futures-channel = "0.3"
 futures = "0.3.31"
 flume = "0.11.1"
@@ -34,6 +38,10 @@ harness = false
 
 [[bench]]
 name = "channel"
+harness = false
+
+[[bench]]
+name = "perf_exporter"
 harness = false
 
 [profile.bench]
