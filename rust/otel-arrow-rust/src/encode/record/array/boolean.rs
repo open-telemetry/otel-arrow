@@ -17,11 +17,12 @@ use super::{ArrayBuilder, ArrayBuilderConstructor};
 /// This is implemented a bit differently than for other types because `Boolean` is the one datatype
 /// where it would never really make sense to have it in a dictionary.
 pub struct AdaptiveBooleanArrayBuilder {
+    pub nullable: bool,
     inner: Option<BooleanBuilder>,
 }
 
 pub struct BooleanBuilderOptions {
-    nullable: bool,
+    pub nullable: bool,
 }
 
 impl AdaptiveBooleanArrayBuilder {
@@ -32,10 +33,13 @@ impl AdaptiveBooleanArrayBuilder {
             Some(BooleanBuilder::new())
         };
 
-        Self { inner }
+        Self {
+            inner,
+            nullable: options.nullable,
+        }
     }
 
-    fn append_value(&mut self, value: bool) {
+    pub fn append_value(&mut self, value: bool) {
         if self.inner.is_none() {
             // TODO -- when we handle nulls here we need to keep track of how many
             // nulls have been appended before the first value, and prefix this
@@ -52,7 +56,7 @@ impl AdaptiveBooleanArrayBuilder {
         inner.append_value(value);
     }
 
-    fn finish(&mut self) -> Option<ArrayRef> {
+    pub fn finish(&mut self) -> Option<ArrayRef> {
         self.inner
             .as_mut()
             .map(|inner| Arc::new(inner.finish()) as ArrayRef)
