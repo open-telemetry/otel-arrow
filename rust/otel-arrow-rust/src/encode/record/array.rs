@@ -20,8 +20,9 @@ use arrow::array::{
     StringDictionaryBuilder,
 };
 use arrow::datatypes::{
-    ArrowDictionaryKeyType, DataType, Float32Type, Float64Type, Int8Type, Int16Type, Int32Type,
-    Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+    ArrowDictionaryKeyType, DataType, DurationNanosecondType, Float32Type, Float64Type, Int8Type,
+    Int16Type, Int32Type, Int64Type, TimestampNanosecondType, UInt8Type, UInt16Type, UInt32Type,
+    UInt64Type,
 };
 use arrow::error::ArrowError;
 
@@ -40,6 +41,7 @@ pub mod dictionary;
 pub mod fixed_size_binary;
 pub mod primitive;
 pub mod string;
+pub mod structs;
 
 /// This is the base trait that array builders should implement to build the array.
 ///
@@ -116,6 +118,7 @@ pub struct ArrayOptions {
 
 pub struct AdaptiveArrayBuilder<TArgs, TN, TD8, TD16> {
     dictionary_options: Option<DictionaryOptions>,
+    nullable: bool,
     inner: Option<MaybeDictionaryBuilder<TN, TD8, TD16>>,
 
     // these are the args that will be used to create the underlying builder. In most cases this
@@ -154,6 +157,7 @@ where
 
         Self {
             dictionary_options: options.dictionary_options,
+            nullable: options.nullable,
             inner,
             inner_args: args,
         }
@@ -232,7 +236,7 @@ where
     }
 }
 
-impl<T, TArgs, TN, TD8, TD16> AdaptiveArrayBuilder<TArgs, TN, TD8, TD16>
+impl<T, TArgs, TN, TD8, TD16> CheckedArrayAppend for AdaptiveArrayBuilder<TArgs, TN, TD8, TD16>
 where
     TArgs: Clone,
     TN: CheckedArrayAppend<Native = T> + ArrayBuilderConstructor<Args = TArgs>,
@@ -248,9 +252,11 @@ where
         + ConvertToNativeHelper,
     <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
 {
+    type Native = T;
+
     /// Try to append a value to the underlying builder. This method may return an error if
     /// the value is not valid.
-    fn append_value_checked(&mut self, value: &T) -> Result<(), ArrowError> {
+    fn append_value(&mut self, value: &T) -> Result<(), ArrowError> {
         self.initialize_inner();
         let inner = self
             .inner
@@ -269,7 +275,7 @@ where
                         let mut native = TN::new(self.inner_args.clone());
                         dictionary_builder.to_native_checked(&mut native)?;
                         self.inner = Some(MaybeDictionaryBuilder::Native(native));
-                        self.append_value_checked(value)
+                        self.append_value(value)
                     }
                     Err(checked::DictionaryBuilderError::CheckedBuilderError {
                         source: arrow_error,
@@ -333,6 +339,8 @@ pub type Int8ArrayBuilder = PrimitiveArrayBuilder<Int8Type>;
 pub type Int16ArrayBuilder = PrimitiveArrayBuilder<Int16Type>;
 pub type Int32ArrayBuilder = PrimitiveArrayBuilder<Int32Type>;
 pub type Int64ArrayBuilder = PrimitiveArrayBuilder<Int64Type>;
+pub type TimestampNanosecondArrayBuilder = PrimitiveArrayBuilder<TimestampNanosecondType>;
+pub type DurationNanosecondArrayBuilder = PrimitiveArrayBuilder<DurationNanosecondType>;
 
 #[cfg(test)]
 pub mod test {
@@ -341,7 +349,7 @@ pub mod test {
     use std::sync::Arc;
 
     use arrow::array::{DictionaryArray, StringArray, UInt8Array, UInt8DictionaryArray};
-    use arrow::datatypes::DataType;
+    use arrow::datatypes::{DataType, TimeUnit};
 
     fn test_array_builder_generic<T, TArgs, TN, TD8, TD16>(
         array_builder_factory: &impl Fn(ArrayOptions) -> AdaptiveArrayBuilder<TArgs, TN, TD8, TD16>,
@@ -353,11 +361,11 @@ pub mod test {
             + ArrayBuilderConstructor<Args = TArgs>
             + ConvertToNativeHelper
             + UpdateDictionaryIndexInto<TD16>,
-        <TD8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
+        <TD8 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T>,
         TD16: DictionaryBuilder<UInt16Type>
             + ArrayBuilderConstructor<Args = TArgs>
             + ConvertToNativeHelper,
-        <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T> + 'static,
+        <TD16 as ConvertToNativeHelper>::Accessor: NullableArrayAccessor<Native = T>,
     {
         // tests some common behaviours of checked & unchecked array builders:
 
@@ -512,6 +520,16 @@ pub mod test {
             vec![b"a".to_vec(), b"b".to_vec()],
             DataType::Binary,
         );
+        test_array_append_generic(
+            TimestampNanosecondArrayBuilder::new,
+            vec![0, 1],
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+        );
+        test_array_append_generic(
+            DurationNanosecondArrayBuilder::new,
+            vec![0, 1],
+            DataType::Duration(TimeUnit::Nanosecond),
+        );
     }
 
     fn test_checked_array_builder_generic<T, TArgs, TN, TD8, TD16>(
@@ -545,9 +563,9 @@ pub mod test {
             }),
         });
 
-        assert!(builder.append_value_checked(&values[0]).is_ok());
-        assert!(builder.append_value_checked(&values[0]).is_ok());
-        assert!(builder.append_value_checked(&values[1]).is_ok());
+        assert!(builder.append_value(&values[0]).is_ok());
+        assert!(builder.append_value(&values[0]).is_ok());
+        assert!(builder.append_value(&values[1]).is_ok());
 
         let result = builder.finish().unwrap();
         assert_eq!(
@@ -578,8 +596,8 @@ pub mod test {
             dictionary_options: None,
             nullable: false,
         });
-        assert!(builder.append_value_checked(&values[0]).is_ok());
-        assert!(builder.append_value_checked(&values[1]).is_ok());
+        assert!(builder.append_value(&values[0]).is_ok());
+        assert!(builder.append_value(&values[1]).is_ok());
         let result = builder.finish().unwrap();
         assert_eq!(result.len(), 2);
         let array = result
@@ -597,8 +615,8 @@ pub mod test {
             }),
             nullable: false,
         });
-        assert!(builder.append_value_checked(&values[0]).is_ok());
-        assert!(builder.append_value_checked(&values[1]).is_ok());
+        assert!(builder.append_value(&values[0]).is_ok());
+        assert!(builder.append_value(&values[1]).is_ok());
         let result = builder.finish().unwrap();
         assert_eq!(result.len(), 2);
         let array = result
@@ -616,7 +634,7 @@ pub mod test {
             }),
             nullable: false,
         });
-        let result = builder.append_value_checked(&invalid_values[0]);
+        let result = builder.append_value(&invalid_values[0]);
         let err = result.unwrap_err();
         assert!(matches!(err, ArrowError::InvalidArgumentError(_)))
     }
