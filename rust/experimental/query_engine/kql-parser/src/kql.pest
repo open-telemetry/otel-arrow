@@ -6,6 +6,14 @@ minus_token = { "-" }
 plus_token = { "+" }
 positive_infinity_token = { "+inf" }
 negative_infinity_token = { "-inf" }
+equals_token = @{ "==" }
+not_equals_token = @{ "!=" }
+greater_than_token = @{ ">" ~ !"=" }
+greater_than_or_equal_to_token = @{ ">=" }
+less_than_token = @{ "<" ~ !"=" }
+less_than_or_equal_to_token = @{ "<=" }
+and_token = @{ "and" }
+or_token = @{ "or" }
 
 // Literals
 true_literal = @{ "true" | "True" | "TRUE" }
@@ -39,6 +47,16 @@ identifier_literal = @{ ("_" | ASCII_ALPHA) ~ ("_" | ASCII_ALPHANUMERIC)* }
 // Expressions
 real_expression = { "real(" ~ (positive_infinity_token|negative_infinity_token|double_literal|integer_literal) ~ ")" }
 datetime_expression = { "datetime(" ~ datetime_literal ~ ")" }
+
+comparison_expressions = _ { scalar_expression|("(" ~ logical_expression ~ ")") }
+comparison_expression = { comparison_expressions ~ (equals_token|not_equals_token|greater_than_token|greater_than_or_equal_to_token|less_than_token|less_than_or_equal_to_token) ~ comparison_expressions }
+scalar_expression = {
+	(real_expression | datetime_expression | boolean_expression | double_literal | integer_literal | string_literal | accessor_expression)
+    | ("(" ~ scalar_expression ~ ")")
+}
+boolean_expression = _{ true_literal | false_literal }
+logical_expressions = _{ comparison_expression|boolean_expression|accessor_expression }
+logical_expression = { (logical_expressions|("(" ~ logical_expression ~ ")")) ~ ((and_token|or_token) ~ logical_expression)* }
 
 accessor_index = _{ "[" ~ (integer_literal | string_literal | (minus_token? ~ accessor_expression)) ~ "]" }
 accessor = _{ identifier_literal ~ accessor_index? }
