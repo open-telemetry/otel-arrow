@@ -24,21 +24,16 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
     let visitor_method_name = common::visitor_method_name(&outer_name);
 
     // Generate the children_size helper method body for the visitor
-    // Generate the children_size helper method body for the visitor
     let visitor_body = generate_helper_method_body(msg);
 
     let expanded = quote! {
         /// EncodedLen visitor for calculating protobuf encoded size
-        pub struct #encoded_len_name<const TAG: u32> {}
+        pub struct #encoded_len_name<const TAG: u32, const OPTION: bool> {}
 
-        impl<const TAG: u32> #encoded_len_name<TAG> {
+        impl<const TAG: u32, const OPTION: bool> #encoded_len_name<TAG, OPTION> {
             /// Create a new EncodedLen visitor.
             pub fn new() -> Self {
                 Self { }
-            }
-
-            pub const fn tag() -> u32 {
-        TAG
             }
 
             /// Calculate the sum of direct children's encoded lengths.
@@ -55,7 +50,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             }
         }
 
-        impl<const TAG: u32> #visitor_name<crate::pdata::otlp::PrecomputedSizes> for #encoded_len_name<TAG> {
+        impl<const TAG: u32, const OPTION: bool> #visitor_name<crate::pdata::otlp::PrecomputedSizes> for #encoded_len_name<TAG, OPTION> {
             fn #visitor_method_name(
                 &mut self,
                 mut arg: crate::pdata::otlp::PrecomputedSizes,
@@ -66,15 +61,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
 
                 let (mut arg, total_child_size) = self.children_encoded_size(arg, v);
 
-        let total_size = if total_child_size == 0 {
-            0
-        } else {
-                    let tag_size = crate::pdata::otlp::PrecomputedSizes::varint_len((Self::tag() << 3 | 2) as usize);
-                    let total = tag_size + crate::pdata::otlp::PrecomputedSizes::varint_len(total_child_size) + total_child_size;
-            total
-        };
-
-                arg.set_size(idx, total_size);
+                arg.set_size(idx, crate::pdata::otlp::primitive_encoders::conditional_length_delimited_size::<TAG, OPTION>(total_child_size));
                 arg
             }
         }
@@ -84,7 +71,7 @@ pub fn derive(msg: &MessageInfo) -> TokenStream {
             #[cfg(test)]
             pub fn pdata_size(&self) -> usize {
                 let mut sizes = crate::pdata::otlp::PrecomputedSizes::default();
-                let mut visitor = #encoded_len_name::<0> {};
+                let mut visitor = #encoded_len_name::<0, false> {};
                 let adapter = #message_adapter_name::new(self);
                 let (_, total) = visitor.children_encoded_size(sizes, &adapter);
                 total
@@ -160,16 +147,6 @@ fn generate_helper_method_body(msg: &MessageInfo) -> proc_macro2::TokenStream {
 fn generate_primitive_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenStream {
     let tag = &info.tag;
 
-    // Handle bytes fields specially - they use BytesEncodedLen regardless of base_type_name
-    if info.proto_type.contains("bytes") {
-        let visitor_type = if info.is_repeated {
-            quote! { crate::pdata::otlp::SliceBytesEncodedLen }
-        } else {
-            quote! { crate::pdata::otlp::BytesEncodedLen }
-        };
-        return quote! { #visitor_type::<#tag> {} };
-    }
-
     // For repeated primitive fields, use slice visitors
     if info.is_repeated {
         let visitor_type = match info.base_type_name.as_str() {
@@ -181,12 +158,12 @@ fn generate_primitive_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenS
             "i64" => quote! { crate::pdata::otlp::SliceI64EncodedLen },
             "f64" => quote! { crate::pdata::otlp::SliceDoubleEncodedLen },
             "f32" => quote! { crate::pdata::otlp::SliceFixed32EncodedLen },
-            _ => {
-                // For enums and other types, use SliceI32EncodedLen as default
-                quote! { crate::pdata::otlp::SliceI32EncodedLen }
-            }
+            _ => panic!("unimplemented"),
         };
         quote! { #visitor_type::<#tag> {} }
+    } else if info.proto_type.contains("bytes") {
+        // Handle bytes fields specially - they use BytesEncodedLen regardless of base_type_name
+        quote! { crate::pdata::otlp::BytesEncodedLen::<#tag, true> {} }
     } else {
         // For non-repeated primitive fields, use individual visitors
         let visitor_type = match info.base_type_name.as_str() {
@@ -226,13 +203,10 @@ fn generate_primitive_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenS
             }
             "f64" => quote! { crate::pdata::otlp::DoubleEncodedLen },
             "f32" => quote! { crate::pdata::otlp::Fixed32EncodedLen },
-            _ => {
-                // For enums and other types, use I32EncodedLen as default
-                quote! { crate::pdata::otlp::I32EncodedLen }
-            }
+            _ => panic!("unimplemented"),
         };
-        // Generate const generic instantiation syntax: SomeEncodedLen::<TAG> {}
-        quote! { #visitor_type::<#tag> {} }
+        // Generate const generic instantiation syntax: SomeEncodedLen::<TAG, OPTION> {}
+        quote! { #visitor_type::<#tag, true> {} }
     }
 }
 
@@ -240,7 +214,7 @@ fn generate_primitive_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenS
 fn generate_message_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenStream {
     let encoded_len_type = info.related_type("EncodedLen");
     let tag = &info.tag;
-    quote! { #encoded_len_type::<#tag> {} }
+    quote! { #encoded_len_type::<#tag, true> {} }
 }
 
 /// Generate primitive visitor instantiation for an oneof case.
@@ -289,8 +263,8 @@ fn generate_primitive_visitor_instantiation(
         _ => panic!("unimplemented"),
     };
 
-    // Generate const generic instantiation syntax: SomeEncodedLen::<TAG> {}
-    quote! { #visitor_type::<#tag> {} }
+    // Generate const generic instantiation syntax: SomeEncodedLen::<TAG, OPTION> {}
+    quote! { #visitor_type::<#tag, false> {} }
 }
 
 /// Generate message visitor instantiation for an oneof case.
@@ -320,7 +294,7 @@ fn generate_message_visitor_instantiation(
         })
     };
 
-    quote! { #encoded_len_type::<#tag> {} }
+    quote! { #encoded_len_type::<#tag, false> {} }
 }
 
 /// Generate Accumulate visitor implementations for a message type.

@@ -12,9 +12,10 @@ const WIRE_TYPE_VARINT: u32 = 0; // Varint (int32, int64, uint32, uint64, sint32
 const WIRE_TYPE_FIXED64: u32 = 1; // 64-bit (fixed64, sfixed64, double)
 const WIRE_TYPE_LENGTH_DELIMITED: u32 = 2; // Length-delimited (string, bytes, embedded messages)
 const WIRE_TYPE_FIXED32: u32 = 5; // 32-bit (fixed32, sfixed32, float)
+const WIRE_TYPE_DONTCARE: u32 = 0; // In situations where we are computing size
 
 /// Calculate the size of a varint encoded value
-fn varint_size(mut value: u32) -> usize {
+fn varint_size32(mut value: u32) -> usize {
     if value == 0 {
         return 1;
     }
@@ -27,7 +28,20 @@ fn varint_size(mut value: u32) -> usize {
 }
 
 /// Calculate the size of a varint64 encoded value
-fn varint64_size(mut value: u64) -> usize {
+fn varint_size64(mut value: u64) -> usize {
+    if value == 0 {
+        return 1;
+    }
+    let mut size = 0;
+    while value > 0 {
+        size += 1;
+        value >>= 7;
+    }
+    size
+}
+
+/// Calculate the size of a varint64 encoded value
+fn varint_usize(mut value: usize) -> usize {
     if value == 0 {
         return 1;
     }
@@ -40,31 +54,37 @@ fn varint64_size(mut value: u64) -> usize {
 }
 
 /// Calculate the size of a signed varint (zigzag encoded)
-fn signed_varint_size(value: i32) -> usize {
+fn signed_varint_size32(value: i32) -> usize {
     let zigzag = ((value << 1) ^ (value >> 31)) as u32;
-    varint_size(zigzag)
+    varint_size32(zigzag)
 }
 
 /// Calculate the size of a signed varint64 (zigzag encoded)
-fn signed_varint64_size(value: i64) -> usize {
+fn signed_varint_size64(value: i64) -> usize {
     let zigzag = ((value << 1) ^ (value >> 63)) as u64;
-    varint64_size(zigzag)
+    varint_size64(zigzag)
 }
 
-/// Helper function to calculate encoded size for non-zero primitive values
-fn calculate_primitive_size<const TAG: u32>(wire_type: u32, value_size: usize) -> usize {
-    let tag_size = varint_size(TAG << 3 | wire_type);
+/// Helper function to calculate encoded size for non-zero primitive
+/// values This is not conditional, callers have to test the
+/// appropriate equality function for default().
+fn calculate_primitive_size<const TAG: u32, const WIRE: u32>(value_size: usize) -> usize {
+    let tag_size = varint_size32(TAG << 3 | WIRE);
     tag_size + value_size
 }
 
 /// Helper function to calculate encoded size for length-delimited fields (strings, bytes)
-fn calculate_length_delimited_size<const TAG: u32>(byte_length: usize) -> usize {
-    if byte_length == 0 {
+/// This is conditional, for optional fields.
+/// pub(crate) because called from generated code.
+pub(crate) fn conditional_length_delimited_size<const TAG: u32, const OPTION: bool>(
+    byte_length: usize,
+) -> usize {
+    if OPTION && byte_length == 0 {
         0
     } else {
-        let tag_size = varint_size(TAG << 3 | WIRE_TYPE_LENGTH_DELIMITED);
-        let length_size = varint_size(byte_length as u32);
-        tag_size + length_size + byte_length
+        calculate_primitive_size::<TAG, WIRE_TYPE_LENGTH_DELIMITED>(
+            varint_usize(byte_length) + byte_length,
+        )
     }
 }
 
@@ -74,8 +94,8 @@ fn push_calculated_size(mut arg: PrecomputedSizes, size: usize) -> PrecomputedSi
     arg
 }
 
-/// Helper function to process slices with varint values
-fn process_varint_slice<const TAG: u32, T, F>(
+/// Helper function to process slices with varint values, where wire type does not matter.
+fn process_integer_slice<const TAG: u32, T, F>(
     mut arg: PrecomputedSizes,
     slice: &[T],
     size_fn: F,
@@ -85,23 +105,9 @@ where
     T: Copy,
 {
     for value in slice {
-        let tag_size = varint_size(TAG << 3); // wire_type = 0
-        let value_size = size_fn(*value);
-        arg.push_size(tag_size + value_size);
-    }
-    arg
-}
-
-/// Helper function to process slices with fixed-size values
-fn process_fixed_slice<const TAG: u32, T>(
-    mut arg: PrecomputedSizes,
-    slice: &[T],
-    wire_type: u32,
-    value_size: usize,
-) -> PrecomputedSizes {
-    for _ in slice {
-        let tag_size = varint_size(TAG << 3 | wire_type);
-        arg.push_size(tag_size + value_size);
+        arg.push_size(calculate_primitive_size::<TAG, WIRE_TYPE_DONTCARE>(
+            size_fn(*value),
+        ));
     }
     arg
 }
@@ -116,49 +122,48 @@ where
     F: Fn(&T) -> usize,
 {
     for value in slice {
-        let tag_size = varint_size(TAG << 3 | WIRE_TYPE_LENGTH_DELIMITED);
-        let byte_len = len_fn(value);
-        let length_size = varint_size(byte_len as u32);
-        arg.push_size(tag_size + length_size + byte_len);
+        arg.push_size(conditional_length_delimited_size::<TAG, false>(len_fn(
+            value,
+        )));
     }
     arg
 }
 
 /// Encoder for boolean fields (wire type 0 - varint)
-pub struct BooleanEncodedLen<const TAG: u32> {}
+pub struct BooleanEncodedLen<const TAG: u32, const OPTION: bool> {}
 
 /// Encoder for string fields (wire type 2 - length-delimited)
-pub struct StringEncodedLen<const TAG: u32> {}
+pub struct StringEncodedLen<const TAG: u32, const OPTION: bool> {}
 
 /// Encoder for bytes fields (wire type 2 - length-delimited)
-pub struct BytesEncodedLen<const TAG: u32> {}
+pub struct BytesEncodedLen<const TAG: u32, const OPTION: bool> {}
 
 /// Encoder for uint32 fields (wire type 0 - varint)
-pub struct U32EncodedLen<const TAG: u32> {}
+pub struct U32EncodedLen<const TAG: u32, const OPTION: bool> {}
 
 /// Encoder for uint64 fields (wire type 0 - varint)
-pub struct U64EncodedLen<const TAG: u32> {}
+pub struct U64EncodedLen<const TAG: u32, const OPTION: bool> {}
 
 /// Encoder for int32 fields (wire type 0 - varint)
-pub struct I32EncodedLen<const TAG: u32> {}
+pub struct I32EncodedLen<const TAG: u32, const OPTION: bool> {}
 
 /// Encoder for int64 fields (wire type 0 - varint)
-pub struct I64EncodedLen<const TAG: u32> {}
+pub struct I64EncodedLen<const TAG: u32, const OPTION: bool> {}
 
 /// Encoder for fixed32/sfixed32 fields (wire type 5 - 4 bytes)
-pub struct Fixed32EncodedLen<const TAG: u32> {}
+pub struct Fixed32EncodedLen<const TAG: u32, const OPTION: bool> {}
 
 /// Encoder for fixed64/sfixed64 fields (wire type 1 - 8 bytes)
-pub struct Fixed64EncodedLen<const TAG: u32> {}
+pub struct Fixed64EncodedLen<const TAG: u32, const OPTION: bool> {}
 
 /// Encoder for sint32 fields (wire type 0 - varint with zigzag encoding)
-pub struct Sint32EncodedLen<const TAG: u32> {}
+pub struct Sint32EncodedLen<const TAG: u32, const OPTION: bool> {}
 
 /// Encoder for sfixed64 fields (wire type 1 - 8 bytes, signed)
-pub struct Sfixed64EncodedLen<const TAG: u32> {}
+pub struct Sfixed64EncodedLen<const TAG: u32, const OPTION: bool> {}
 
 /// Encoder for double fields (wire type 1 - 8 bytes)
-pub struct DoubleEncodedLen<const TAG: u32> {}
+pub struct DoubleEncodedLen<const TAG: u32, const OPTION: bool> {}
 
 // Slice visitor types for repeated primitive fields
 
@@ -202,126 +207,150 @@ pub struct SliceBytesEncodedLen<const TAG: u32> {}
 // The same is true for messages in oneofs, and there are likely still
 // more logic errors which cause the tests to be disabled.
 
-impl<const TAG: u32> crate::pdata::BooleanVisitor<PrecomputedSizes> for BooleanEncodedLen<TAG> {
+impl<const TAG: u32, const OPTION: bool> crate::pdata::BooleanVisitor<PrecomputedSizes>
+    for BooleanEncodedLen<TAG, OPTION>
+{
     fn visit_bool(&mut self, arg: PrecomputedSizes, value: bool) -> PrecomputedSizes {
         // Boolean is encoded as varint: 1 byte for value (0 or 1)
-        let size = if value {
-            calculate_primitive_size::<TAG>(WIRE_TYPE_VARINT, 1)
-        } else {
+        let size = if OPTION && !value {
             0
+        } else {
+            calculate_primitive_size::<TAG, WIRE_TYPE_VARINT>(1)
         };
         push_calculated_size(arg, size)
     }
 }
 
-impl<const TAG: u32> crate::pdata::StringVisitor<PrecomputedSizes> for StringEncodedLen<TAG> {
+impl<const TAG: u32, const OPTION: bool> crate::pdata::StringVisitor<PrecomputedSizes>
+    for StringEncodedLen<TAG, OPTION>
+{
     fn visit_string(&mut self, arg: PrecomputedSizes, value: &str) -> PrecomputedSizes {
-        let size = calculate_length_delimited_size::<TAG>(value.len());
+        let size = conditional_length_delimited_size::<TAG, OPTION>(value.len());
         push_calculated_size(arg, size)
     }
 }
 
-impl<const TAG: u32> crate::pdata::BytesVisitor<PrecomputedSizes> for BytesEncodedLen<TAG> {
+impl<const TAG: u32, const OPTION: bool> crate::pdata::BytesVisitor<PrecomputedSizes>
+    for BytesEncodedLen<TAG, OPTION>
+{
     fn visit_bytes(&mut self, arg: PrecomputedSizes, value: &[u8]) -> PrecomputedSizes {
-        let size = calculate_length_delimited_size::<TAG>(value.len());
+        let size = conditional_length_delimited_size::<TAG, OPTION>(value.len());
         push_calculated_size(arg, size)
     }
 }
 
-impl<const TAG: u32> crate::pdata::U32Visitor<PrecomputedSizes> for U32EncodedLen<TAG> {
+impl<const TAG: u32, const OPTION: bool> crate::pdata::U32Visitor<PrecomputedSizes>
+    for U32EncodedLen<TAG, OPTION>
+{
     fn visit_u32(&mut self, arg: PrecomputedSizes, value: u32) -> PrecomputedSizes {
-        let size = if value != 0 {
-            calculate_primitive_size::<TAG>(WIRE_TYPE_VARINT, varint_size(value))
-        } else {
+        let size = if OPTION && value == 0 {
             0
+        } else {
+            calculate_primitive_size::<TAG, WIRE_TYPE_VARINT>(varint_size32(value))
         };
         push_calculated_size(arg, size)
     }
 }
 
-impl<const TAG: u32> crate::pdata::U64Visitor<PrecomputedSizes> for U64EncodedLen<TAG> {
+impl<const TAG: u32, const OPTION: bool> crate::pdata::U64Visitor<PrecomputedSizes>
+    for U64EncodedLen<TAG, OPTION>
+{
     fn visit_u64(&mut self, arg: PrecomputedSizes, value: u64) -> PrecomputedSizes {
-        let size = if value != 0 {
-            calculate_primitive_size::<TAG>(WIRE_TYPE_VARINT, varint64_size(value))
-        } else {
+        let size = if OPTION && value == 0 {
             0
+        } else {
+            calculate_primitive_size::<TAG, WIRE_TYPE_VARINT>(varint_size64(value))
         };
         push_calculated_size(arg, size)
     }
 }
 
-impl<const TAG: u32> crate::pdata::U64Visitor<PrecomputedSizes> for Fixed64EncodedLen<TAG> {
+impl<const TAG: u32, const OPTION: bool> crate::pdata::U64Visitor<PrecomputedSizes>
+    for Fixed64EncodedLen<TAG, OPTION>
+{
     fn visit_u64(&mut self, arg: PrecomputedSizes, value: u64) -> PrecomputedSizes {
-        let size = if value != 0 {
-            calculate_primitive_size::<TAG>(WIRE_TYPE_FIXED64, 8)
-        } else {
+        let size = if OPTION && value == 0 {
             0
+        } else {
+            calculate_primitive_size::<TAG, WIRE_TYPE_FIXED64>(8)
         };
         push_calculated_size(arg, size)
     }
 }
 
-impl<const TAG: u32> crate::pdata::U32Visitor<PrecomputedSizes> for Fixed32EncodedLen<TAG> {
+impl<const TAG: u32, const OPTION: bool> crate::pdata::U32Visitor<PrecomputedSizes>
+    for Fixed32EncodedLen<TAG, OPTION>
+{
     fn visit_u32(&mut self, arg: PrecomputedSizes, value: u32) -> PrecomputedSizes {
-        let size = if value != 0 {
-            calculate_primitive_size::<TAG>(WIRE_TYPE_FIXED32, 4)
-        } else {
+        let size = if OPTION && value == 0 {
             0
+        } else {
+            calculate_primitive_size::<TAG, WIRE_TYPE_FIXED32>(4)
         };
         push_calculated_size(arg, size)
     }
 }
 
-impl<const TAG: u32> crate::pdata::I32Visitor<PrecomputedSizes> for Sint32EncodedLen<TAG> {
+impl<const TAG: u32, const OPTION: bool> crate::pdata::I32Visitor<PrecomputedSizes>
+    for Sint32EncodedLen<TAG, OPTION>
+{
     fn visit_i32(&mut self, arg: PrecomputedSizes, value: i32) -> PrecomputedSizes {
-        let size = if value != 0 {
-            calculate_primitive_size::<TAG>(WIRE_TYPE_VARINT, signed_varint_size(value))
-        } else {
+        let size = if OPTION && value == 0 {
             0
+        } else {
+            calculate_primitive_size::<TAG, WIRE_TYPE_VARINT>(signed_varint_size32(value))
         };
         push_calculated_size(arg, size)
     }
 }
 
-impl<const TAG: u32> crate::pdata::I32Visitor<PrecomputedSizes> for I32EncodedLen<TAG> {
+impl<const TAG: u32, const OPTION: bool> crate::pdata::I32Visitor<PrecomputedSizes>
+    for I32EncodedLen<TAG, OPTION>
+{
     fn visit_i32(&mut self, arg: PrecomputedSizes, value: i32) -> PrecomputedSizes {
-        let size = if value != 0 {
-            calculate_primitive_size::<TAG>(WIRE_TYPE_VARINT, signed_varint_size(value))
-        } else {
+        let size = if OPTION && value == 0 {
             0
+        } else {
+            calculate_primitive_size::<TAG, WIRE_TYPE_VARINT>(signed_varint_size32(value))
         };
         push_calculated_size(arg, size)
     }
 }
 
-impl<const TAG: u32> crate::pdata::I64Visitor<PrecomputedSizes> for I64EncodedLen<TAG> {
+impl<const TAG: u32, const OPTION: bool> crate::pdata::I64Visitor<PrecomputedSizes>
+    for I64EncodedLen<TAG, OPTION>
+{
     fn visit_i64(&mut self, arg: PrecomputedSizes, value: i64) -> PrecomputedSizes {
-        let size = if value != 0 {
-            calculate_primitive_size::<TAG>(WIRE_TYPE_VARINT, signed_varint64_size(value))
-        } else {
+        let size = if OPTION && value == 0 {
             0
+        } else {
+            calculate_primitive_size::<TAG, WIRE_TYPE_VARINT>(signed_varint_size64(value))
         };
         push_calculated_size(arg, size)
     }
 }
 
-impl<const TAG: u32> crate::pdata::F64Visitor<PrecomputedSizes> for DoubleEncodedLen<TAG> {
+impl<const TAG: u32, const OPTION: bool> crate::pdata::F64Visitor<PrecomputedSizes>
+    for DoubleEncodedLen<TAG, OPTION>
+{
     fn visit_f64(&mut self, arg: PrecomputedSizes, value: f64) -> PrecomputedSizes {
-        let size = if value != 0.0 {
-            calculate_primitive_size::<TAG>(WIRE_TYPE_FIXED64, 8)
-        } else {
+        let size = if OPTION && value == 0.0 {
             0
+        } else {
+            calculate_primitive_size::<TAG, WIRE_TYPE_FIXED64>(8)
         };
         push_calculated_size(arg, size)
     }
 }
 
-impl<const TAG: u32> crate::pdata::I64Visitor<PrecomputedSizes> for Sfixed64EncodedLen<TAG> {
+impl<const TAG: u32, const OPTION: bool> crate::pdata::I64Visitor<PrecomputedSizes>
+    for Sfixed64EncodedLen<TAG, OPTION>
+{
     fn visit_i64(&mut self, arg: PrecomputedSizes, value: i64) -> PrecomputedSizes {
-        let size = if value != 0 {
-            calculate_primitive_size::<TAG>(WIRE_TYPE_FIXED64, 8)
-        } else {
+        let size = if OPTION && value == 0 {
             0
+        } else {
+            calculate_primitive_size::<TAG, WIRE_TYPE_FIXED64>(8)
         };
         push_calculated_size(arg, size)
     }
@@ -330,25 +359,25 @@ impl<const TAG: u32> crate::pdata::I64Visitor<PrecomputedSizes> for Sfixed64Enco
 // Implementations of SliceVisitor for the slice types
 impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, u32> for SliceU32EncodedLen<TAG> {
     fn visit_slice(&mut self, arg: PrecomputedSizes, slice: &[u32]) -> PrecomputedSizes {
-        process_varint_slice::<TAG, u32, _>(arg, slice, varint_size)
+        process_integer_slice::<TAG, u32, _>(arg, slice, varint_size32)
     }
 }
 
 impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, u64> for SliceU64EncodedLen<TAG> {
     fn visit_slice(&mut self, arg: PrecomputedSizes, slice: &[u64]) -> PrecomputedSizes {
-        process_varint_slice::<TAG, u64, _>(arg, slice, varint64_size)
+        process_integer_slice::<TAG, u64, _>(arg, slice, varint_size64)
     }
 }
 
 impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, i32> for SliceI32EncodedLen<TAG> {
     fn visit_slice(&mut self, arg: PrecomputedSizes, slice: &[i32]) -> PrecomputedSizes {
-        process_varint_slice::<TAG, i32, _>(arg, slice, signed_varint_size)
+        process_integer_slice::<TAG, i32, _>(arg, slice, signed_varint_size32)
     }
 }
 
 impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, i64> for SliceI64EncodedLen<TAG> {
     fn visit_slice(&mut self, arg: PrecomputedSizes, slice: &[i64]) -> PrecomputedSizes {
-        process_varint_slice::<TAG, i64, _>(arg, slice, signed_varint64_size)
+        process_integer_slice::<TAG, i64, _>(arg, slice, signed_varint_size64)
     }
 }
 
@@ -356,7 +385,7 @@ impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, f64>
     for SliceDoubleEncodedLen<TAG>
 {
     fn visit_slice(&mut self, arg: PrecomputedSizes, slice: &[f64]) -> PrecomputedSizes {
-        process_fixed_slice::<TAG, f64>(arg, slice, 1, 8)
+        process_integer_slice::<TAG, f64, _>(arg, slice, |_| 8)
     }
 }
 
@@ -364,7 +393,7 @@ impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, f32>
     for SliceFixed32EncodedLen<TAG>
 {
     fn visit_slice(&mut self, arg: PrecomputedSizes, slice: &[f32]) -> PrecomputedSizes {
-        process_fixed_slice::<TAG, f32>(arg, slice, 5, 4)
+        process_integer_slice::<TAG, f32, _>(arg, slice, |_| 4)
     }
 }
 
@@ -372,7 +401,7 @@ impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, bool>
     for SliceBooleanEncodedLen<TAG>
 {
     fn visit_slice(&mut self, arg: PrecomputedSizes, slice: &[bool]) -> PrecomputedSizes {
-        process_varint_slice::<TAG, bool, _>(arg, slice, |_| 1)
+        process_integer_slice::<TAG, bool, _>(arg, slice, |_| 1)
     }
 }
 
@@ -391,8 +420,6 @@ impl<const TAG: u32> crate::pdata::SliceVisitor<PrecomputedSizes, Vec<u8>>
         process_length_delimited_slice::<TAG, Vec<u8>, _>(arg, slice, |value| value.len())
     }
 }
-
-//
 
 /// Accumulate is a wrapper that sums the sizes from a child visitor.
 pub struct Accumulate<V> {

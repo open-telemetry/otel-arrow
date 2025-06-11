@@ -137,17 +137,6 @@ impl PrecomputedSizes {
         Self { sizes: Vec::new() }
     }
 
-    /// Calculate the length in bytes needed to encode a varint
-    pub fn varint_len(value: usize) -> usize {
-        // TODO: use a Prost helper, otherwise this has duplication
-        // with primitive_encoders.rs.
-        if value == 0 {
-            1
-        } else {
-            ((64 - value.leading_zeros()) as usize + 6) / 7
-        }
-    }
-
     /// Get the size at a specific index (for reading child sizes)
     pub fn get_size(&self, idx: usize) -> usize {
         self.sizes[idx]
