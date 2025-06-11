@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! This module contains primitive-field encoding support for protobufs.
-///
-/// - EncodedLen impls for primitive visitors.
-/// - Accumulate helper visitable
+//!
+//! - EncodedLen impls for primitive visitors.
+//! - Accumulate helper visitable
+//!
+//! See https://protobuf.dev/programming-guides/encoding/ for details
+//! about the protobuf encoding.
+
 use crate::pdata::otlp::PrecomputedSizes;
 
 /// Wire type constants for protobuf encoding
@@ -104,11 +108,11 @@ where
     F: Fn(T) -> usize,
     T: Copy,
 {
+    let mut size = 0;
     for value in slice {
-        arg.push_size(calculate_primitive_size::<TAG, WIRE_TYPE_DONTCARE>(
-            size_fn(*value),
-        ));
+        size += calculate_primitive_size::<TAG, WIRE_TYPE_DONTCARE>(size_fn(*value));
     }
+    arg.push_size(size);
     arg
 }
 
@@ -121,11 +125,11 @@ fn process_length_delimited_slice<const TAG: u32, T, F>(
 where
     F: Fn(&T) -> usize,
 {
+    let mut size = 0;
     for value in slice {
-        arg.push_size(conditional_length_delimited_size::<TAG, false>(len_fn(
-            value,
-        )));
+        size += conditional_length_delimited_size::<TAG, false>(len_fn(value));
     }
+    arg.push_size(size);
     arg
 }
 
@@ -196,16 +200,6 @@ pub struct SliceStringEncodedLen<const TAG: u32> {}
 
 /// Slice visitor for repeated bytes fields in encoded length computation
 pub struct SliceBytesEncodedLen<const TAG: u32> {}
-
-// TODO: Generally, the reason there are some tests with #[ignore] is
-// that the algorithm for EncodedLen implementations is still
-// incorrect. We need to add a generic paramter `const OPT: bool`
-// which indicates whether the field must be encoded, which allows
-// control over the feature of avoiding default-value fields. We see
-// that fields which are called in a oneof context need to always
-// encode, whereas the implementations are current unconditional.
-// The same is true for messages in oneofs, and there are likely still
-// more logic errors which cause the tests to be disabled.
 
 impl<const TAG: u32, const OPTION: bool> crate::pdata::BooleanVisitor<PrecomputedSizes>
     for BooleanEncodedLen<TAG, OPTION>
@@ -522,11 +516,9 @@ impl<V: crate::pdata::BooleanVisitor<PrecomputedSizes>>
 impl<V: crate::pdata::SliceVisitor<PrecomputedSizes, Primitive>, Primitive>
     crate::pdata::SliceVisitor<PrecomputedSizes, Primitive> for &mut Accumulate<V>
 {
-    fn visit_slice(&mut self, arg: PrecomputedSizes, _value: &[Primitive]) -> PrecomputedSizes {
-        // TODO: This is incorrect! We need to encode by message type.
-        // See https://github.com/open-telemetry/otel-arrow/issues/506
-        // arg = self.inner.visit_slice(arg, value);
-        // self.total += arg.last();
+    fn visit_slice(&mut self, mut arg: PrecomputedSizes, value: &[Primitive]) -> PrecomputedSizes {
+        arg = self.inner.visit_slice(arg, value);
+        self.total += arg.last();
         arg
     }
 }

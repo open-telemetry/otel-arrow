@@ -158,7 +158,12 @@ fn generate_primitive_visitor_for_field(info: &FieldInfo) -> proc_macro2::TokenS
             "i64" => quote! { crate::pdata::otlp::SliceI64EncodedLen },
             "f64" => quote! { crate::pdata::otlp::SliceDoubleEncodedLen },
             "f32" => quote! { crate::pdata::otlp::SliceFixed32EncodedLen },
-            _ => panic!("unimplemented"),
+            _ => {
+                if !info.proto_type.contains("bytes") {
+                    panic!("unimplemented");
+                }
+                quote! { crate::pdata::otlp::SliceBytesEncodedLen }
+            }
         };
         quote! { #visitor_type::<#tag> {} }
     } else if info.proto_type.contains("bytes") {
